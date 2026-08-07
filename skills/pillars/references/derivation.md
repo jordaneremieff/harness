@@ -220,7 +220,7 @@ Test subsumption and decide whether the observation warrants:
 
 A single event normally supports a clause or watch item, not a new standalone pillar. A standalone heuristic needs either recurrence, unusually clear transferable structure, or explicit acknowledgment that the evidence remains narrow.
 
-Before drafting, search the bench for near-cousin shapes. A benched cousin with decisive findings must be addressed by the new draft, or the draft spends a probe on a known defect.
+Before drafting, search prior run records (session transcripts and stash entries) for near-cousin shapes. A prior decisive finding about a near cousin must be addressed by the new draft, or the draft spends a probe on a known defect.
 
 ### 3. Draft
 
@@ -275,8 +275,7 @@ For each finding, record one disposition:
 Every Blocking finding must be folded or rebutted. Then choose one overall disposition:
 
 - **Land:** present the candidate for operator approval.
-- **Withdraw:** the candidate is wrong, redundant, or premature.
-- **Bench:** preserve it with decisive findings and a promotion path.
+- **Withdraw:** the candidate is wrong, redundant, or premature. The observation and decisive findings stay in the run record, never in the corpus.
 
 ### 7. Operator Approval
 
