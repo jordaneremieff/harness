@@ -133,10 +133,6 @@ Derived dashboards, summaries, and generated reports are empirical unless their 
 
 We do not need to relearn that a designated source of record is authoritative for its own bounded facet. It can still be audited for corruption, scope, permissions, freshness, and correct operation. We learn which empirical sources are reliable, how to interpret axiomatic data, and when two axiomatic facets disagree.
 
-### System Failures
-
-If a source of record has a bug, that is a system failure, not an epistemological update. Fix or qualify the source. Do not silently turn all ground truth into opinion.
-
 ### Multiple Axioms Disagreeing
 
 If an issue tracker says work is done but the code repository shows no implementation, both may be true within their domains:
@@ -146,7 +142,11 @@ If an issue tracker says work is done but the code repository shows no implement
 
 That is a real-world inconsistency. Surface it rather than degrading one source's authority.
 
-## Relationship to Other Principles
+## When NOT to Apply
+
+- **System failures.** If a source of record has a bug, that is a system failure, not an epistemological update. Fix or qualify the source. Do not silently turn all ground truth into opinion.
+
+## Relationship to Other Pillars
 
 ### Triangulated Truth
 

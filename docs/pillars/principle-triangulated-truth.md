@@ -142,7 +142,7 @@ Gaps between sources are diagnostic:
 
 The system should surface these gaps, not paper over them.
 
-## Relationship to Other Principles
+## Relationship to Other Pillars
 
 ### Epistemological Grounding
 

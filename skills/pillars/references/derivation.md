@@ -114,6 +114,9 @@ Concrete positive and negative examples.
 ## Tensions
 Where application can invert or conflict.
 
+## When NOT to Apply (optional)
+Scope carve-outs the belief does not govern; conflicts with other pillars stay in Tensions.
+
 ## Relationship to Other Pillars
 How it composes with the corpus.
 
@@ -221,7 +224,7 @@ Before drafting, search the bench for near-cousin shapes. A benched cousin with 
 
 ### 3. Draft
 
-Write the candidate at the smallest altitude that covers the observation without binding it to its original names, products, or business domain. Include explicit inversion cases. Read the implicated pillar files in full before drafting the subsumption argument.
+Write the candidate at the smallest altitude that covers the observation without binding it to its original names, products, or business domain. Include explicit inversion cases: conflicts with another pillar belong in Tensions; scope carve-outs belong in the optional "When NOT to Apply" section. Absence of that section asserts that all known inversions are conflicts recorded in Tensions. Read the implicated pillar files in full before drafting the subsumption argument.
 
 ### 4. Fresh-context Probe
 
