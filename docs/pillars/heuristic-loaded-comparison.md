@@ -81,7 +81,7 @@ Direct recommendation is often more honest and shorter. When a comparison is use
 - **Framed Menu:** checks whether the whole option set shares a faulty premise; Loaded Comparison checks bias inside a retained set.
 - **Frame Inspection:** tests the frame before comparison and the commitment before delivery.
 - **Corrected-Assumption Leakage:** a correction to one criterion must propagate through all comparison axes.
-- **Slop Register:** balanced-looking structure can fill the space where a position should have selected the prose.
+- **Tell Laundering:** balanced-looking structure can fill the space where a position should have selected the prose.
 
 ## Summary
 

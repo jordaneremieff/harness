@@ -20,7 +20,6 @@ Portable design doctrine for agent-assisted work. Three document types:
 | [Intrinsic Organization](principle-intrinsic-organization.md) | Knowledge is organized by what it describes, not what consumes it. |
 | [Compositional Simplicity](principle-compositional-simplicity.md) | Evaluate simplicity at system level, not component level. |
 | [Committed Contribution](principle-committed-contribution.md) | Truth emerges through committed claims refined by correction. |
-| [Slop Register](principle-slop-register.md) | Prose must be written from a position that selects its words; register, provenance, and integrity are separate questions. |
 
 ### Patterns
 

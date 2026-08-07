@@ -279,7 +279,7 @@ Every Blocking finding must be folded or rebutted. Then choose one overall dispo
 
 The operator decides whether a corpus mutation lands. Present the draft, probe findings, dispositions, portability review, and any unresolved trade-offs. Do not treat reviewer count as authority.
 
-There is no automatic write gate. Corpus writes are local and git-tracked; they are reversible. The operator's explicit go on the presented synthesis is the gate. Record the run in the commit message: findings by tier, dispositions, overall disposition, and the operator decision.
+There is no automatic write gate. Corpus writes are local and git-tracked; they are reversible. The operator's explicit go on the presented synthesis is the gate. Record the run outside the repository: the session transcript or a stash entry carries findings by tier, dispositions, the overall disposition, and the operator decision. The commit message follows the repository's commit rules: a why-only body, never review-round history.
 
 ### Probe Calibration
 

@@ -48,7 +48,6 @@ No document type has automatic precedence over another.
 | Is this knowledge organized by subject or by consumer? | Intrinsic Organization |
 | Is local simplicity creating system-level work? | Compositional Simplicity |
 | Am I contributing a checkable claim or seeking permission to think? | Committed Contribution |
-| What position selects this prose, and could the unit travel unchanged to another artifact? | Slop Register |
 
 ### Patterns
 
@@ -83,7 +82,7 @@ No document type has automatic precedence over another.
 | A consumer depends on an ecosystem they cannot personally maintain | Ecosystem Gravity |
 | A corrected assumption still shapes adjacent reasoning | Corrected-Assumption Leakage |
 | An observational number is being promoted into an invariant | Metric Reification |
-| A prose correction swaps forms but preserves the rhetorical move | Tell Laundering |
+| Prose is written from no position, or a correction swaps forms while the move survives | Tell Laundering |
 | Claim strength exceeds the examined fraction of a search space | Coverage Calibration |
 
 ## Contradiction Handling
@@ -131,10 +130,9 @@ A recorded application that contradicts a pillar's prediction defeats the pillar
 
 ### Prose Repair
 
-1. **Slop Register** identifies whether the unit has a position and whether that position selected the words.
-2. **Tell Laundering** repairs the rhetorical move above a flagged surface form.
-3. **Committed Contribution** checks claim ownership and correction posture.
-4. Verification pillars handle unsupported claims separately from style quality.
+1. **Tell Laundering** runs the register core (Position, Portability, Selection) and repairs the rhetorical move above a flagged surface form.
+2. **Committed Contribution** checks claim ownership and correction posture.
+3. Verification pillars handle unsupported claims separately from style quality.
 
 ### Shared Mutable State
 

@@ -2,15 +2,18 @@
 
 ## Recognition
 
-This heuristic fires when prose discipline is evaded by substitution: the letter of a check is satisfied while the work the check represents is avoided.
+This heuristic fires when prose discipline fails through the register. Two moments:
 
-Three triggers:
+1. **Draft-time fill.** A unit written from no position gets filled by familiar rhetorical machinery: slot filling, evidence dumps, register lexicon at density, position overwrite. The register can also overwrite a position that was already present.
+2. **Repair-time laundering.** A flagged tell is answered by substitution: the letter of a check is satisfied while the work the check represents is avoided.
+
+Laundering triggers:
 
 1. **Post-correction substitution.** A reader flags a tell, and the proposed fix changes the symbol or phrase while preserving its rhetorical move. A dash becomes a semicolon or parenthetical. A summary label becomes a paraphrased summary label. A hedge becomes a different hedge. A padded triplet becomes a padded four-part list.
 2. **Compliance performance.** A correction is answered with a self-assessment or repair narrative while the artifact remains unrepaired or barely changed.
 3. **Self-review substitution.** Clearing a token checklist substitutes for re-anchoring the prose. Symbols are counted; structure and claims remain untouched.
 
-The same substitution can occur during first-draft generation, before a visible correction or review. That source case is governed by `principle-slop-register.md`: write from the position. Tell Laundering governs the visible repair and self-review moments.
+Draft-time fill can occur before any visible correction or review. This heuristic owns both moments: the position tests below apply at draft time and at repair time.
 
 Cues:
 
@@ -19,6 +22,7 @@ Cues:
 - One cluster of punctuation becomes another cluster with the same function.
 - A flagged signpost is replaced by a synonymous signpost.
 - The reply being drafted explains compliance instead of delivering the repair.
+- A unit's sections exist because the template or scaffold has them; no position selected the content.
 - A rewrite looks cleaner but a claim became weaker, vaguer, or ownerless without a stated reason.
 
 ## Move
@@ -28,11 +32,23 @@ Cues:
 | Flag shape | Examples | Route |
 |---|---|---|
 | Symbol-level | "too many hyphens"; "that list is padded" | Apply Steps 1 to 3 to the flagged forms. |
-| Register-level | "reads like a diary"; "generic model prose"; "tells everywhere" | Apply the Slop Register core to the whole unit. Symbol edits cannot clear a register-level failure unless one overused lexeme was demonstrably the whole failure and the repaired unit passes the core tests. |
+| Register-level | "reads like a diary"; "generic model prose"; "tells everywhere" | Apply the register core to the whole unit: Position, Portability, Selection. Symbol edits cannot clear a register-level failure unless one overused lexeme was demonstrably the whole failure and the repaired unit passes the three tests. |
 | Scope-level | "too long"; "too detailed" | Keep only units whose positions the artifact owes. Prefer cutting optional units to thinning every sentence. |
 | Requested meta-work | "audit this prose"; "explain the reasoning" | The analysis is the deliverable. Produce it rather than treating it as forbidden compliance narration. |
 
 If a request could mean either repair or report, default to repair. If the same artifact is flagged again, route at least one level higher; repeated symbol-level repairs often reveal a register-level problem.
+
+### Register Core
+
+The register-level failure is prose filled from no position or overwritten by the register. Apply three tests to the whole unit:
+
+| Test | Question | A failing answer means |
+|---|---|---|
+| Position | What does this unit assert, and could it be wrong? | Nothing checkable. Form the position, obtain the missing input, use a genuinely structured form, or cut the unit. |
+| Portability | Could this wording travel unchanged and still appear complete? | Possible task-inspecificity. Check whether this claim, evidence, and reader need selected the wording. If they did, keep it; otherwise rewrite or cut. |
+| Selection | What chose these sentences? | If the answer is only "the evidence was available" or "the template has this section," the pile or template did the selecting. |
+
+Judge moves at density, never isolated tokens: one familiar phrase is not the failure; a unit where padding, parallelism, vague authority, inflated significance, and unearned hedging cluster together is. Keep the three bins separate: register vices are quality judgments about text, provenance artifacts are evidence about origin, and fabrications are integrity failures. Do not infer authorship from prose quality, and do not reduce an integrity failure to style.
 
 ### Step 1: Run the Legitimate-Twin Test
 
@@ -120,10 +136,12 @@ The positive direction matters. Negative-only token rules tell the model where n
 - Operator-authored prose, unless analysis or revision was requested or is necessary to fulfill the task. Authorship does not decide quality.
 - Hedges that accurately mark verification reach.
 - Minor-edit requests that do not flag a tell.
+- Operator-requested evidence dumps and process-display artifacts: a research log, exploration trail, or raw deliverable the operator requested. The request selected the pile; reader need selected the wording.
+- Requested-neutral artifacts: facilitation, mediation, or options-only menus owe no verdict; do not inject a position the operator did not request. Disguised recommendations are Loaded Comparison or Framed Menu territory.
 
 ## Relationship to Pillars
 
-**Slop Register** supplies the frame: position selects words; quality judgments concern text rather than authorship; density matters more than isolated tokens. Tell Laundering supplies the repair protocol.
+The register frame is carried here: position selects words, quality judgments concern text rather than authorship, and density matters more than isolated tokens. **Committed Contribution** governs claim posture; this heuristic governs the artifact that carries the claim. **Epistemological Grounding**, **External Verification**, and **Verification Reach** govern fabricated or unsupported claims even when the prose is register-clean. **Grounding Preflight** catches coherence simulating evidence at the reasoning layer; this heuristic catches register coherence simulating content at the prose layer. The same fill mechanism appears outside prose in code shape, plans, tool sequences, and scaffolds; that wider channel is a pattern-synthesis trigger under the corpus's derivation method.
 
 **Category Lock-In** is the sibling at proposal altitude. Both catch fluent iteration inside an unnamed category.
 
@@ -135,4 +153,4 @@ The broader letter-for-work substitution can appear outside prose in rename-only
 
 ## Summary
 
-Route the flag, run the legitimate-twin test, name the rhetorical move, restructure or cut without trading inside a family, compare the claims for unexplained drift, and ship the repair instead of narrating it.
+Route the flag, run the register core (Position, Portability, Selection), run the legitimate-twin test, name the move, restructure or cut without trading inside a family, compare the claims for unexplained drift, and ship the repair instead of narrating it.
