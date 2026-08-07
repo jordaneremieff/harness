@@ -12,18 +12,10 @@ One tool covers the observed general-search job. Specialized news, image, video,
 
 ## Configuration
 
-The first available credential wins:
-
-1. `BRAVE_API_KEY` in the Pi process environment.
-2. `extensions/brave/brave.config.json` beside the extension:
-
-```json
-{
-  "apiKey": "your-key"
-}
-```
-
-The local `*.config.json` overlay is excluded by both Git and npm packaging. Keep it mode `0600`. The reader accepts only a regular, non-symlink file up to 64 KiB and reads no fields beyond `apiKey`; it does not import unrelated dotenv settings or weaken Node's normal TLS verification.
+The subscription token comes from `PI_BRAVE_API_KEY` in the Pi process
+environment. The extension reads no configuration file; the token never sits
+inside the repository tree. An explicit key passed to the client options
+overrides the variable for tests and programmatic callers.
 
 ## Request and output boundaries
 

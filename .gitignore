@@ -1,8 +1,7 @@
 # Dependencies and local installs
 node_modules
 
-# Per-slice configuration overlays — may contain local paths or secrets; never committed
-*.config.json
+# Local pi session state
 .pi/
 
 # OS noise

@@ -7,8 +7,7 @@
 //      colocated *.test.mts;
 //   2. no extension imports a sibling: no `from "../"`, no absolute import,
 //      no path that reaches into another extension's directory;
-//   3. no `*.config.json` overlay is tracked by git;
-//   4. no hardcoded counts of tests, tools, or files in tracked docs
+//   3. no hardcoded counts of tests, tools, or files in tracked docs
 //      (AGENTS.md: "Do not hardcode counts ... in durable documentation").
 //
 // Dependency-free by design (node builtins only), mirroring the established
@@ -88,17 +87,9 @@ for (const file of sourceFiles) {
   }
 }
 
-// --- rule 3: no tracked per-extension overlay ---------------------------
+// --- rule 3: no hardcoded counts in tracked docs -----------------------
 
 const tracked = execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" });
-for (const line of tracked.split("\n")) {
-  if (line.endsWith(".config.json")) {
-    fail(`tracked per-extension overlay: ${line}`);
-  }
-}
-
-// --- rule 4: no hardcoded counts in tracked docs -----------------------
-
 const countPattern = /\b\d+\s+(test|tests|tool|tools|file|files)\b/g;
 for (const doc of tracked.split("\n")) {
   if (!doc.endsWith(".md")) continue;
@@ -116,5 +107,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(
-  "check-slices: ok — extension anatomy, slice isolation, overlay tracking, doc counts",
+  "check-slices: ok — extension anatomy, slice isolation, doc counts",
 );

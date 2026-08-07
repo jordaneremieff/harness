@@ -8,12 +8,12 @@ function registry() {
 	return tools;
 }
 
-const originalKey = process.env.BRAVE_API_KEY;
+const originalKey = process.env.PI_BRAVE_API_KEY;
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
-	if (originalKey === undefined) delete process.env.BRAVE_API_KEY;
-	else process.env.BRAVE_API_KEY = originalKey;
+	if (originalKey === undefined) delete process.env.PI_BRAVE_API_KEY;
+	else process.env.PI_BRAVE_API_KEY = originalKey;
 	globalThis.fetch = originalFetch;
 });
 
@@ -31,7 +31,7 @@ describe("Brave Search extension entrypoint", () => {
 	});
 
 	it("executes through native fetch and returns compact structured details", async () => {
-		process.env.BRAVE_API_KEY = "entrypoint-test-key";
+		process.env.PI_BRAVE_API_KEY = "entrypoint-test-key";
 		let observedUrl: URL | undefined;
 		globalThis.fetch = (async (input: URL | RequestInfo) => {
 			observedUrl = new URL(String(input));

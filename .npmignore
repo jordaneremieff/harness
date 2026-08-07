@@ -1,8 +1,7 @@
 # Runtime dependencies are supplied by Pi or installed as peers.
 node_modules
 
-# Local overlays and verification output must never enter an install artifact.
-*.config.json
+# Local session state and verification output must never enter an install artifact.
 .pi/
 .DS_Store
 *.tgz

@@ -1,13 +1,6 @@
-import { constants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 export const BRAVE_WEB_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search";
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
-const MAX_CONFIG_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
-const DEFAULT_CONFIG_PATH = join(dirname(fileURLToPath(import.meta.url)), "brave.config.json");
 
 export interface BraveWebSearchRequest {
 	query: string;
@@ -57,7 +50,6 @@ export type FetchLike = (
 
 interface BraveClientOptions {
 	apiKey?: string;
-	configPath?: string;
 	env?: Record<string, string | undefined>;
 	fetch?: FetchLike;
 	timeoutMs?: number;
@@ -87,68 +79,15 @@ function cleanErrorText(value: string): string {
 		.slice(0, 400);
 }
 
-async function readConfigFile(configPath: string, signal?: AbortSignal): Promise<string> {
-	if (signal?.aborted) throw new Error("Brave web search cancelled.");
-	const initial = await lstat(configPath);
-	if (!initial.isFile() || initial.isSymbolicLink()) {
-		throw new Error("configuration must be a regular, non-symlink file");
-	}
-	if (initial.size > MAX_CONFIG_BYTES) {
-		throw new Error(`configuration exceeds the ${MAX_CONFIG_BYTES}-byte limit`);
-	}
-
-	const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
-	const handle = await open(configPath, flags);
-	try {
-		const opened = await handle.stat();
-		if (!opened.isFile()) throw new Error("configuration must be a regular file");
-		const output = Buffer.allocUnsafe(MAX_CONFIG_BYTES + 1);
-		let total = 0;
-		while (total < output.length) {
-			if (signal?.aborted) throw new Error("Brave web search cancelled.");
-			const { bytesRead } = await handle.read(output, total, output.length - total, null);
-			if (bytesRead === 0) break;
-			total += bytesRead;
-		}
-		if (total > MAX_CONFIG_BYTES) throw new Error(`configuration exceeds the ${MAX_CONFIG_BYTES}-byte limit`);
-		return output.subarray(0, total).toString("utf8");
-	} finally {
-		await handle.close();
-	}
-}
-
 export async function resolveApiKey(options: BraveClientOptions = {}, signal?: AbortSignal): Promise<string> {
 	if (signal?.aborted) throw new Error("Brave web search cancelled.");
 	const explicit = cleanKey(options.apiKey);
 	if (explicit) return explicit;
 
-	const fromEnvironment = cleanKey((options.env ?? process.env).BRAVE_API_KEY);
+	const fromEnvironment = cleanKey((options.env ?? process.env).PI_BRAVE_API_KEY);
 	if (fromEnvironment) return fromEnvironment;
 
-	const configPath = options.configPath ?? DEFAULT_CONFIG_PATH;
-	let source: string;
-	try {
-		source = await readConfigFile(configPath, signal);
-	} catch (error) {
-		if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
-			throw new Error("Brave web search cancelled.");
-		}
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-			throw new Error(`Brave Search is not configured. Set BRAVE_API_KEY or create ${configPath}.`);
-		}
-		throw new Error(`Could not read Brave Search configuration at ${configPath}: ${cleanErrorText(String(error))}`);
-	}
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(source);
-	} catch {
-		throw new Error(`Brave Search configuration at ${configPath} is not valid JSON.`);
-	}
-
-	const key = cleanKey(asRecord(parsed)?.apiKey);
-	if (!key) throw new Error(`Brave Search configuration at ${configPath} must contain a non-empty "apiKey".`);
-	return key;
+	throw new Error("Brave Search is not configured. Set PI_BRAVE_API_KEY.");
 }
 
 function httpUrl(value: unknown): string | undefined {

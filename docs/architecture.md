@@ -56,9 +56,8 @@ An extension contains:
   for the slice.
 - Its own state on disk under the Pi agent directory, with an environment
   variable override where a store location is configurable.
-- Its own configuration: environment variables named `PI_*` (or
-  `BRAVE_API_KEY`) documented in the README, or the documented
-  `*.config.json` overlay shape (see `docs/conventions/extension-config.md`).
+- Its own configuration: environment variables named `PI_*`, documented in
+  the README (see `docs/conventions/extension-config.md`).
 - Optional footer status keys through `ctx.ui.setStatus` (see
   `docs/conventions/status-keys.md`).
 
@@ -88,8 +87,8 @@ contract names its producer and its current consumers and lives outside
 either extension, so no extension parses a sibling's format without a
 documented surface:
 
-- `extension-config.md` — environment-variable and overlay configuration
-  conventions for all extensions.
+- `extension-config.md` — environment-variable configuration convention for
+  all extensions.
 - `status-keys.md` — the footer status-key registry (publisher, meaning,
   consumers).
 
@@ -102,9 +101,8 @@ contract, name the producer and consumers, and keep it stable.
 2. Add colocated tests and a README; document every configuration variable
    in the README.
 3. Give the slice its own state and cleanup; no sibling imports.
-4. Use environment variables for configuration, or the documented overlay
-   shape; never commit `*.config.json` overlays (both `.gitignore` and
-   `.npmignore` exclude them).
+4. Use `PI_*` environment variables for configuration (see
+   `docs/conventions/extension-config.md`).
 5. Run the `AGENTS.md` gates before closing: focused tests, `npm test`, a
    TypeScript check against the installed Pi declarations, and README claims
    that match reality in the same change.

@@ -9,9 +9,8 @@
   shipped examples, plus observed operator needs.
 - No company doctrine, service names, internal hosts, model rosters, credentials,
   or operator-local absolute paths. Per-extension configuration uses
-  environment variables named `PI_*` (or `BRAVE_API_KEY`), each documented in
-  its extension README; optional `*.config.json` overlays are git-ignored and
-  never committed. See `docs/conventions/extension-config.md`.
+  environment variables named `PI_*`, each documented in its extension README.
+  See `docs/conventions/extension-config.md`.
 - Report to the operator only in adapted ASD-STE100 Simplified Technical English (STE).
   Apply STE to every operator-facing chat message: status updates, summaries, error
   reports, findings, questions, and recommendations. The register governs chat
@@ -162,12 +161,12 @@ Before considering repository work complete:
 4. confirm documentation links resolve;
 5. run focused tests;
 6. run `npm run typecheck` (TypeScript check against the installed Pi declarations);
-7. run `npm run check` (slice isolation, overlay tracking, hardcoded counts);
+7. run `npm run check` (slice isolation, hardcoded counts);
 8. run the normal full test command;
 9. report remaining untracked or modified files honestly.
 
 The automated gates are `npm run typecheck`, `npm run check` (slice isolation,
-overlay tracking, hardcoded counts), and the normal full test command. Credential
+hardcoded counts), and the normal full test command. Credential
 and personal-path scanning, documentation-link resolution, and the git-status
 report have no automated check in the tree; they are maintained by review, and the
 honest report of remaining untracked or modified files stays the final step.

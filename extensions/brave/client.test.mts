@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
 	BRAVE_WEB_SEARCH_URL,
@@ -29,43 +26,25 @@ function settleWithin<T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> {
 }
 
 describe("Brave Search configuration", () => {
-	it("prefers an explicit environment key and otherwise reads the ignored JSON overlay", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "brave-config-test-"));
-		const configPath = join(dir, "brave.config.json");
-		try {
-			await writeFile(configPath, JSON.stringify({ apiKey: "file-key" }));
-			assert.equal(await resolveApiKey({ env: { BRAVE_API_KEY: " env-key " }, configPath }), "env-key");
-			assert.equal(await resolveApiKey({ env: {}, configPath }), "file-key");
-		} finally {
-			await rm(dir, { recursive: true, force: true });
-		}
+	it("prefers an explicit key and otherwise reads PI_BRAVE_API_KEY", async () => {
+		assert.equal(
+			await resolveApiKey({ apiKey: " explicit-key ", env: { PI_BRAVE_API_KEY: "env-key" } }),
+			"explicit-key",
+		);
+		assert.equal(await resolveApiKey({ env: { PI_BRAVE_API_KEY: " env-key " } }), "env-key");
 	});
 
-	it("honors cancellation before credential-file I/O", async () => {
+	it("honors cancellation before configuration reads", async () => {
 		const controller = new AbortController();
 		controller.abort();
 		await assert.rejects(
-			resolveApiKey({ env: {}, configPath: "/missing/config.json" }, controller.signal),
+			resolveApiKey({ env: { PI_BRAVE_API_KEY: "key" } }, controller.signal),
 			/cancelled/,
 		);
 	});
 
-	it("fails clearly for missing, oversized, and malformed configuration without echoing file contents", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "brave-config-test-"));
-		const configPath = join(dir, "brave.config.json");
-		try {
-			await assert.rejects(resolveApiKey({ env: {}, configPath }), /not configured.*BRAVE_API_KEY/i);
-			await writeFile(configPath, "x".repeat(64 * 1024 + 1));
-			await assert.rejects(resolveApiKey({ env: {}, configPath }), /65536-byte limit/);
-			await writeFile(configPath, '{"apiKey":"secret-value"');
-			await assert.rejects(resolveApiKey({ env: {}, configPath }), (error: Error) => {
-				assert.match(error.message, /not valid JSON/);
-				assert.doesNotMatch(error.message, /secret-value/);
-				return true;
-			});
-		} finally {
-			await rm(dir, { recursive: true, force: true });
-		}
+	it("fails clearly when no key is configured", async () => {
+		await assert.rejects(resolveApiKey({ env: {} }), /not configured.*PI_BRAVE_API_KEY/i);
 	});
 });
 
