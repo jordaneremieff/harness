@@ -69,6 +69,22 @@ function fakeFactory(reply: string, opts?: { promptReject?: Error; neverResolves
 	return { factory, calls };
 }
 
+function withWatchdog<T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const watchdog = setTimeout(() => reject(new Error("the asynchronous test did not settle")), timeoutMs);
+		void promise.then(
+			(value) => {
+				clearTimeout(watchdog);
+				resolve(value);
+			},
+			(error) => {
+				clearTimeout(watchdog);
+				reject(error);
+			},
+		);
+	});
+}
+
 let dir: string;
 let oldStore: string | undefined;
 
@@ -324,7 +340,7 @@ describe("distill job", () => {
 			new Promise<DistillSession>((resolve) => {
 				resolveFactory = resolve;
 			});
-		const outcome = await startDistillJob(baseOptions(factory, { timeoutMs: 30 })).result;
+		const outcome = await withWatchdog(startDistillJob(baseOptions(factory, { timeoutMs: 30 })).result);
 		assert.equal(outcome.ok, false);
 		if (outcome.ok) return;
 		assert.equal(outcome.reason, "aborted");
@@ -368,7 +384,7 @@ describe("distill job", () => {
 
 	it("times out a stuck prompt with an aborted outcome", async () => {
 		const { factory } = fakeFactory("", { neverResolves: true });
-		const outcome = await startDistillJob(baseOptions(factory, { timeoutMs: 30 })).result;
+		const outcome = await withWatchdog(startDistillJob(baseOptions(factory, { timeoutMs: 30 })).result);
 		assert.equal(outcome.ok, false);
 		if (outcome.ok) return;
 		assert.equal(outcome.reason, "aborted");
