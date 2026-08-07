@@ -148,9 +148,9 @@ The system should surface these gaps, not paper over them.
 
 Epistemological Grounding establishes that some sources define truth for specific domains. Triangulated Truth explains why multiple sources still matter: even an authoritative source captures only one facet. Code state does not prove deployment state, decision quality, or runtime behavior.
 
-### AI-Native Expertise
+### Agent-Native Expertise
 
-AI-Native Expertise says everything is input. Triangulated Truth specifies that heterogeneous inputs cover more facets of reality than homogeneous inputs. Convergence across facets is stronger than repeated agreement inside one facet.
+Agent-Native Expertise says everything is input. Triangulated Truth specifies that heterogeneous inputs cover more facets of reality than homogeneous inputs. Convergence across facets is stronger than repeated agreement inside one facet.
 
 ### System Autonomy
 

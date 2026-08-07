@@ -1,4 +1,4 @@
-# Principle: AI-Native Expertise
+# Principle: Agent-Native Expertise
 
 ## Statement
 

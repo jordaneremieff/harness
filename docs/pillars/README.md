@@ -13,7 +13,7 @@ Portable design doctrine for agent-assisted work. Three document types:
 | Principle | Core belief |
 |---|---|
 | [System Autonomy](principle-system-autonomy.md) | Agents express intent; systems fulfill it autonomously. |
-| [AI-Native Expertise](principle-ai-native-expertise.md) | Achieve expertise through agent-native mechanisms rather than simulated human experience. |
+| [Agent-Native Expertise](principle-agent-native-expertise.md) | Achieve expertise through agent-native mechanisms rather than simulated human experience. |
 | [Cognitive Stratification](principle-cognitive-stratification.md) | Different information has different lifecycles and authority. |
 | [Epistemological Grounding](principle-epistemological-grounding.md) | Some sources define truth; others claim or measure it. |
 | [Triangulated Truth](principle-triangulated-truth.md) | Truth is triangulated across facets rather than located in one source. |

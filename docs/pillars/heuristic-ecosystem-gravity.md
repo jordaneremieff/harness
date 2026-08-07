@@ -60,7 +60,7 @@ As maintenance distance grows, ecosystem properties exert more gravity because t
 ## Relationship to Pillars
 
 - **Context Calibration:** specializes calibration to the operator role assumed by an evaluation rubric.
-- **AI-Native Expertise:** agent knowledge availability is an input to maintainability, not a substitute for evidence.
+- **Agent-Native Expertise:** agent knowledge availability is an input to maintainability, not a substitute for evidence.
 - **Compositional Simplicity:** component elegance can create system-level recovery cost.
 - **Redundant Corroboration:** multiple ecosystem metrics may share one underlying source and should not be counted as independent.
 - **Metric Reification:** adoption or activity counts remain observations conditioned on measurement choices.

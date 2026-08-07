@@ -68,7 +68,7 @@ The move is cooperative rather than contrary. It returns a better decision and g
 - **Frame Inspection:** provides the shared name-source-binding-step-outside procedure.
 - **Category Lock-In:** questions a solution category after repeated self-generated proposals; this heuristic can fire on the first received menu.
 - **Committed Contribution:** requires explicit framing rejection rather than a silent evasive pick.
-- **AI-Native Expertise:** received structure is input, not authority.
+- **Agent-Native Expertise:** received structure is input, not authority.
 
 ## Summary
 

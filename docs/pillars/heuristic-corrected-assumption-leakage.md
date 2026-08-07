@@ -76,7 +76,7 @@ Naming the premise and tracing dependencies turns correction into model integrat
 
 - **Frame Abandonment:** replaces a rejected governing model; Corrected-Assumption Leakage audits dependencies after a factual premise changes.
 - **Committed Contribution:** accepts correction by changing claims, not merely posture.
-- **AI-Native Expertise:** integrates consequential input into the model rather than treating acknowledgement as experience.
+- **Agent-Native Expertise:** integrates consequential input into the model rather than treating acknowledgement as experience.
 - **Loaded Comparison:** a corrected criterion must propagate through every axis.
 - **Tell Laundering:** both reject surface correction that leaves the generating structure intact.
 

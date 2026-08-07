@@ -24,7 +24,7 @@ At a default-selection moment:
 
 ## Implements
 
-- **AI-Native Expertise:** inherited defaults are inputs to judgment, not experience or authority.
+- **Agent-Native Expertise:** inherited defaults are inputs to judgment, not experience or authority.
 - **Compositional Simplicity:** the current context determines whole-system cost; local elegance in one origin context may create total complexity in another.
 
 ## Worked Example

@@ -152,7 +152,7 @@ That is a real-world inconsistency. Surface it rather than degrading one source'
 
 Epistemological Grounding establishes what can anchor a claim. Triangulated Truth explains why anchoring is not enough. A code source can prove code state; it cannot prove deployment, decision context, or operational success.
 
-### AI-Native Expertise
+### Agent-Native Expertise
 
 Everything is input, but not every input is the same kind of thing. Some inputs define a facet of reality. Others claim, interpret, or summarize it.
 

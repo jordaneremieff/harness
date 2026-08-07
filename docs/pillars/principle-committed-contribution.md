@@ -99,7 +99,7 @@ Do not invent operator intent. Ask when preference, policy, or authorization is 
 
 - **Triangulated Truth:** each facet must make a clear contribution before facets can be compared.
 - **Epistemological Grounding:** claiming sources should claim clearly, while defining-source gaps remain gaps.
-- **AI-Native Expertise:** an agent contributes evidence and claims rather than treating simulated certainty as authority.
+- **Agent-Native Expertise:** an agent contributes evidence and claims rather than treating simulated certainty as authority.
 - **Corrected-Assumption Leakage:** operationalizes genuine updating after correction.
 - **Slop Register:** prose must carry the owned position rather than overwrite it with vague authority or performed balance.
 - **Loaded Comparison:** recommendation should not be disguised as neutral option theater.

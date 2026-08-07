@@ -62,7 +62,7 @@ This heuristic complements Coverage Calibration. One prevents under-sampling; th
 
 ## Relationship to Pillars
 
-- **AI-Native Expertise:** consumed input is not expertise until it supports a tested working model.
+- **Agent-Native Expertise:** consumed input is not expertise until it supports a tested working model.
 - **Cognitive Stratification:** the model and gaps belong in working memory, not merely in the transient stream of reads.
 - **Grounding Preflight:** checks the conclusion boundary; Comprehension Checkpoint acts during intake and synthesis.
 - **Coverage Calibration:** balances depth with breadth.

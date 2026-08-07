@@ -32,7 +32,7 @@ A frame that survives the test is useful. The pattern does not prohibit frames; 
 ## Implements
 
 - **Committed Contribution:** turns a controlling frame into a claim that can be corrected.
-- **AI-Native Expertise:** treats self-generated and received structures as inputs rather than conferred authority.
+- **Agent-Native Expertise:** treats self-generated and received structures as inputs rather than conferred authority.
 - **Compositional Simplicity:** prevents downstream machinery from accumulating around an accidental bound.
 
 ## Worked Examples

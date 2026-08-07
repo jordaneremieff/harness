@@ -41,7 +41,7 @@ No document type has automatic precedence over another.
 | Question | Start with |
 |---|---|
 | Should an agent choose intent while a system executes mechanism? | System Autonomy |
-| Am I importing constraints from human expertise formation? | AI-Native Expertise |
+| Am I importing constraints from human expertise formation? | Agent-Native Expertise |
 | Where should information live, and with what authority or lifecycle? | Cognitive Stratification |
 | Does this source define truth, claim it, document it, or measure it? | Epistemological Grounding |
 | Have I covered independent facets such as decision, intent, enactment, documentation, and execution? | Triangulated Truth |
