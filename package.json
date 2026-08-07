@@ -1,0 +1,34 @@
+{
+  "name": "harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A pi harness with extensions and skills for governed reasoning, continuity, web search, and clipboard history.",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=60 --test-coverage-functions=60 --test-coverage-branches=50 \"extensions/*/*.test.mts\" \"skills/*/scripts/*.test.mjs\"",
+    "typecheck": "tsc -p .",
+    "check": "node scripts/check-slices.mjs",
+    "warmup:jiti": "pi --help --offline --extension extensions/brave/index.ts --extension extensions/statusline/index.ts --extension extensions/clipboard/index.ts --extension extensions/stash/index.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.83.0",
+    "@earendil-works/pi-coding-agent": ">=0.83.0",
+    "@earendil-works/pi-tui": ">=0.83.0",
+    "typebox": ">=1.3.7"
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ],
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,10 @@
+# Runtime dependencies are supplied by Pi or installed as peers.
+node_modules
+
+# Local overlays and verification output must never enter an install artifact.
+*.config.json
+.pi/
+.DS_Store
+*.zip
+dump/
+*.log
