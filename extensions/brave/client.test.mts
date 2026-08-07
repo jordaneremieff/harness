@@ -12,6 +12,22 @@ import {
 
 const success = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
 
+function settleWithin<T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const watchdog = setTimeout(() => reject(new Error("the asynchronous test did not settle")), timeoutMs);
+		void promise.then(
+			(value) => {
+				clearTimeout(watchdog);
+				resolve(value);
+			},
+			(error) => {
+				clearTimeout(watchdog);
+				reject(error);
+			},
+		);
+	});
+}
+
 describe("Brave Search configuration", () => {
 	it("prefers an explicit environment key and otherwise reads the ignored JSON overlay", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "brave-config-test-"));
@@ -230,7 +246,7 @@ describe("Brave Search client", () => {
 				init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
 			});
 		await assert.rejects(
-			searchBraveWeb({ query: "test" }, undefined, { apiKey: "key", fetch, timeoutMs: 10 }),
+			settleWithin(searchBraveWeb({ query: "test" }, undefined, { apiKey: "key", fetch, timeoutMs: 10 })),
 			/timed out after 10ms/,
 		);
 	});
