@@ -8,6 +8,9 @@
     "pi-package"
   ],
   "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "test": "node --test --experimental-test-coverage --test-coverage-lines=60 --test-coverage-functions=60 --test-coverage-branches=50 \"extensions/*/*.test.mts\" \"skills/*/scripts/*.test.mjs\"",
     "typecheck": "tsc -p .",
@@ -15,10 +18,10 @@
     "warmup:jiti": "pi --help --offline --extension extensions/brave/index.ts --extension extensions/statusline/index.ts --extension extensions/clipboard/index.ts --extension extensions/stash/index.ts"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.83.0",
-    "@earendil-works/pi-coding-agent": ">=0.83.0",
-    "@earendil-works/pi-tui": ">=0.83.0",
-    "typebox": ">=1.3.7"
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "pi": {
     "skills": [
@@ -29,6 +32,7 @@
     ]
   },
   "devDependencies": {
+    "@types/node": "^22.19.0",
     "typescript": "^5.9.3"
   }
 }

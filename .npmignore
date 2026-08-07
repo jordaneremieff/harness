@@ -5,6 +5,7 @@ node_modules
 *.config.json
 .pi/
 .DS_Store
+*.tgz
 *.zip
 dump/
 *.log

@@ -25,13 +25,15 @@ The harness is a Pi package. `package.json` declares the resources under the
   `pi --help --offline`. It is an operator step after a reboot or fresh
   install, not a build step; the cache is content-keyed, so jiti invalidates
   stale entries automatically.
-- Extensions are TypeScript sources loaded directly by the host (Pi requires
-  Node 22.19 or newer, which strips types natively). There is no build step;
-  tests run with `node --test` over the glob in the `test` script.
+- Extensions are TypeScript sources that Pi loads through jiti. There is no
+  build step. Pi requires Node 22.19 or newer; Node runs the direct TypeScript
+  tests through `node --test` over the glob in the `test` script.
 - Runtime dependencies on the Pi core packages
   (`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`,
-  `@earendil-works/pi-tui`, `typebox`) are declared as peers; Pi supplies
-  them at runtime.
+  `@earendil-works/pi-tui`, `typebox`) are declared as wildcard peers; Pi
+  supplies them at runtime.
+- `package-lock.json` pins the development dependency snapshot for reproducible
+  standalone checks. Refresh it with the Pi release used to validate the harness.
 - Every change is validated against the installed Pi declarations, not only
   against the tests.
 
