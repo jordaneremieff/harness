@@ -9,7 +9,8 @@ description: >
   a claim needs, flagging or repairing prose tells, or any judgment moment where
   a governing principle might bind. Also use when the operator says "check
   pillars", "what do the pillars say", "apply pillars", or asks for a decision to
-  be evaluated against principles, patterns, or heuristics.
+  be evaluated against principles, patterns, or heuristics. Also use when the
+  operator proposes, derives, revises, or challenges corpus entries.
 compatibility: Requires the sibling package corpus at ../../docs/pillars relative to this skill directory.
 ---
 
@@ -75,8 +76,10 @@ source authority, recognition scope, and explicit carve-outs—not by type.
   their delivery profile explicitly supplies it.
 - Version-attributed observations and evaluations must identify the doctrine snapshot
   and actual delivery profile. Ordinary use need not log consultation.
-- New principles, patterns, and heuristics are proposed via the derivation workflow in
-  `../../docs/pillars/CONTRIBUTING.md`; do not invent ad-hoc "principles" in session prose.
+- New, revised, or challenged corpus entries run the derivation method in
+  `references/derivation.md` (read it when the operator proposes, derives,
+  revises, or challenges a pillar); do not invent ad-hoc "principles" in session
+  prose. Corpus mutations require the operator's explicit approval.
 - When the operator asks for a Pillars evaluation, name the pillar, state its
   recognition condition, and show why it binds, is defeated, or collides—that is the
   deliverable.

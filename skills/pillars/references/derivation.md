@@ -1,6 +1,34 @@
-# Pillars — Contributing
+# Pillars — Derivation Method
 
-How to propose, derive, validate, and document principles, patterns, and heuristics. For the operating reference, see [AGENTS.md](AGENTS.md).
+How to propose, derive, validate, and document principles, patterns, and heuristics. This method is the authoring workflow for the corpus at `../../docs/pillars/`. The corpus holds doctrine only; the workflow lives in this skill. The operating reference is `../../docs/pillars/AGENTS.md`.
+
+## Contents
+
+- [Stage 0: Classify the Change](#stage-0-classify-the-change)
+- [Corpus Bar](#corpus-bar)
+- [Naming](#naming)
+- [Consultable Core](#consultable-core)
+- [Citation and Portability Hygiene](#citation-and-portability-hygiene)
+- [Document Shapes](#document-shapes)
+- [Deriving a Principle or Heuristic](#deriving-a-principle-or-heuristic)
+- [Pattern Derivation](#pattern-derivation)
+- [Clause Extensions](#clause-extensions)
+- [Validation of Implementations Against Pillars](#validation-of-implementations-against-pillars)
+- [Storage Boundaries](#storage-boundaries)
+
+## Stage 0: Classify the Change
+
+Classify the edit shape before any drafting. The classification decides the path:
+
+| Shape | Path |
+|---|---|
+| Clause-scale change: one table row, one manifestation, one carve-out entry; the Statement, scope, and move stay untouched | Clause extension path |
+| New standalone candidate | Full derivation flow |
+| Revision of a live pillar: Statement, scope, or move changes; a challenge to a pillar's standing | Full derivation flow in comparative mode |
+
+Most real edits are clause-scale. The full flow exists for structural changes; running it on a one-clause edit wastes probe budget and operator time.
+
+Mandated full reads: before drafting or probing, read in full the implicated pillar files. The recognition material and the subsumption baseline come from those reads, not from memory. The probe reads the files again in its own fresh context.
 
 ## Corpus Bar
 
@@ -8,7 +36,7 @@ New entries must clear a high bar. Most candidates are subsumed by existing pill
 
 Before proposing anything new:
 
-1. Read [README.md](README.md) and the likely related pillars.
+1. Read the inventory in `../../docs/pillars/README.md` and the likely related pillars.
 2. Ask whether an existing pillar owns the concern.
 3. Ask whether the candidate changes decisions or merely describes an implementation.
 4. Ask whether the candidate is specific to agent reasoning, knowledge architecture, or epistemic work rather than generic programming advice.
@@ -42,13 +70,13 @@ Before committing a name, test that it:
 - names the failure or discipline rather than an abstract concept noun; and
 - still fits after private provenance and originating vocabulary are removed.
 
-A rename is a corpus-wide change. Update the file name, README, AGENTS.md, cross-references, the delivery adapter at `../../skills/pillars/SKILL.md`, and any downstream consumer indexes together.
+A rename is a corpus-wide change. Update the file name, the inventory, the operating reference, cross-references, and the delivery adapter together.
 
 ## Consultable Core
 
 A new or substantially revised principle should expose a compact operational core near the top. The core contains the tests, moves, and main carve-outs needed at the decision moment. A principle that is useful only after reading a long essay will often produce narration instead of application when invoked under pressure.
 
-Existing principles may satisfy this through a concise Decision Heuristic if a separate `## Core` section would duplicate it.
+Existing principles may satisfy this through a concise Decision Heuristic if a separate Core section would duplicate it.
 
 ## Citation and Portability Hygiene
 
@@ -173,6 +201,8 @@ Capture enough of the interaction to show:
 - why the behavior mattered; and
 - what would have changed if the move had fired earlier.
 
+Resolve the observation source first: a file path, a stash, a session, or operator prose. A reference that points at nothing is a "missing" observation; do not draft from a guess at its content.
+
 Preserve private raw evidence outside the public corpus. The candidate must restate only the transferable mechanism.
 
 ### 2. Self-check
@@ -187,13 +217,15 @@ Test subsumption and decide whether the observation warrants:
 
 A single event normally supports a clause or watch item, not a new standalone pillar. A standalone heuristic needs either recurrence, unusually clear transferable structure, or explicit acknowledgment that the evidence remains narrow.
 
+Before drafting, search the bench for near-cousin shapes. A benched cousin with decisive findings must be addressed by the new draft, or the draft spends a probe on a known defect.
+
 ### 3. Draft
 
-Write the candidate at the smallest altitude that covers the observation without binding it to its original names, products, or business domain. Include explicit inversion cases.
+Write the candidate at the smallest altitude that covers the observation without binding it to its original names, products, or business domain. Include explicit inversion cases. Read the implicated pillar files in full before drafting the subsumption argument.
 
 ### 4. Fresh-context Probe
 
-Use one fresh-context reviewer that has not seen the originating conversation. The reviewer may be a delegated agent when that capability is available. The probe reports findings; it does not compute the final verdict.
+Use one fresh-context reviewer that has not seen the originating conversation. The reviewer may be a delegated agent when that capability is available; otherwise dispatch the probe brief in a fresh session. The probe reports findings; it does not compute the final verdict.
 
 A fresh reader is not a stronger judge. It is a reader outside the originating conversation's framing momentum. In-context self-reflection inherits the same assumptions that produced the candidate, so a fresh reader can test the candidate without the originating conversation's social and narrative pressure. Multiple same-brief reviewers are samples from one posterior unless briefing, model family, fact base, or rubric genuinely varies.
 
@@ -215,6 +247,8 @@ The reviewer classifies findings:
 
 "Nothing blocking found" is a valid result. A probe required to manufacture objections is miscalibrated.
 
+Two disciplines bind the probe. Prose-discipline rule: for candidates that govern prose, a self-application finding must cite which of the candidate's OWN stated rules the candidate's text violates, judged at the candidate's own density standard; token-presence findings are invalid. Pattern-trigger rule: a finding that the candidate is one face of a broader pattern records a pattern-synthesis trigger; for a candidate that honestly declares its channel scope and names its unowned siblings, that is a trigger, not a defect.
+
 ### 5. Comparative Mode for Revisions
 
 When revising a live pillar, give the reviewer both incumbent and revision. Findings must distinguish:
@@ -223,7 +257,7 @@ When revising a live pillar, give the reviewer both incumbent and revision. Find
 - defects shared by both texts; and
 - fixes the revision provides.
 
-Rejecting a revision silently selects the incumbent. Comparative review makes that choice explicit.
+Rejecting a revision silently selects the incumbent. Comparative review makes that choice explicit. A challenge to a pillar's standing is a revision review whose alternatives include retaining, revising, and withdrawing.
 
 ### 6. Synthesize
 
@@ -243,11 +277,15 @@ Every Blocking finding must be folded or rebutted. Then choose one overall dispo
 
 ### 7. Operator Approval
 
-The operator decides whether a corpus mutation lands. Present the draft, probe findings, dispositions, portability review, and any unresolved trade-offs. Do not treat reviewer count as authority; see Redundant Corroboration.
+The operator decides whether a corpus mutation lands. Present the draft, probe findings, dispositions, portability review, and any unresolved trade-offs. Do not treat reviewer count as authority.
+
+There is no automatic write gate. Corpus writes are local and git-tracked; they are reversible. The operator's explicit go on the presented synthesis is the gate. Record the run in the commit message: findings by tier, dispositions, overall disposition, and the operator decision.
 
 ### Probe Calibration
 
 One probe is the default. Re-probe only when synthesis changed the candidate's statement, move, or scope. For a consequential new principle, an optional second probe should vary model family, framing, or rubric; another same-brief sample is not independent evidence.
+
+Miscalibration trigger: Blocking findings on more than half of candidates over a 30-day window, or two or more operator rejections following clean probes, prompts a recalibration review of the lenses and tier definitions. The trigger prompts judgment; nothing auto-fires.
 
 ## Pattern Derivation
 
@@ -293,8 +331,9 @@ When reviewing a design or implementation:
 
 ## Storage Boundaries
 
-- This directory holds doctrine.
+- The corpus directory holds doctrine.
 - In-progress derivation state belongs in working memory or another private scratch area.
 - Durable raw evidence belongs in an access-controlled evidence archive.
 - Implementation specs belong with the system they describe.
 - Task-specific consumers may reference pillars; pillars do not depend on a particular skill, adapter, or extension implementation.
+- The derivation method is a workflow, not doctrine. It lives in this skill; the corpus does not carry it.
