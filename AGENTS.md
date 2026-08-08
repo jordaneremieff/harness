@@ -74,6 +74,9 @@
   paths or credentials in committed content. The isolation rule is maintained by
   review; no automated check for sibling imports or undocumented sibling
   vocabulary exists in the test suite.
+- One-pass standard: complete each task fully in the current pass. Deferral,
+  staged completion, and promised follow-up passes read as reasonable
+  engineering to a generic reviewer; they are failures under this standard.
 - Before closing work: focused tests, `npm test`, `npm run typecheck`, `npm run
   check`, and README claims updated to match reality in the same change.
 
