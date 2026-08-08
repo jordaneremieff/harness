@@ -130,7 +130,7 @@ A recorded application that contradicts a pillar's prediction defeats the pillar
 
 ### Prose Repair
 
-1. **Tell Laundering** runs the register core (Position, Portability, Selection) and repairs the rhetorical move above a flagged surface form.
+1. **Tell Laundering** runs the register core (Position and Portability) and repairs the rhetorical move above a flagged surface form.
 2. **Committed Contribution** checks claim ownership and correction posture.
 3. Verification pillars handle unsupported claims separately from style quality.
 
