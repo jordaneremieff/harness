@@ -48,6 +48,7 @@ No document type has automatic precedence over another.
 | Is this knowledge organized by subject or by consumer? | Intrinsic Organization |
 | Is local simplicity creating system-level work? | Compositional Simplicity |
 | Am I contributing a checkable claim or seeking permission to think? | Committed Contribution |
+| Is this prose carrying a position, or filled from no position? | Unearned Prose |
 
 ### Patterns
 
@@ -82,7 +83,7 @@ No document type has automatic precedence over another.
 | A consumer depends on an ecosystem they cannot personally maintain | Ecosystem Gravity |
 | A corrected assumption still shapes adjacent reasoning | Corrected-Assumption Leakage |
 | An observational number is being promoted into an invariant | Metric Reification |
-| Prose is written from no position, or a correction swaps forms while the move survives | Tell Laundering |
+| A correction swaps forms while the rhetorical move survives | Tell Laundering |
 | Claim strength exceeds the examined fraction of a search space | Coverage Calibration |
 
 ## Contradiction Handling
@@ -130,7 +131,7 @@ A recorded application that contradicts a pillar's prediction defeats the pillar
 
 ### Prose Repair
 
-1. **Tell Laundering** runs the register core (Position and Portability) and repairs the rhetorical move above a flagged surface form.
+1. **Unearned Prose** supplies the register core (Position and Portability); **Tell Laundering** repairs the rhetorical move above a flagged surface form.
 2. **Committed Contribution** checks claim ownership and correction posture.
 3. Verification pillars handle unsupported claims separately from style quality.
 

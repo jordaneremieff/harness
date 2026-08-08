@@ -2,18 +2,13 @@
 
 ## Recognition
 
-This heuristic fires when prose discipline fails through the register. Two moments:
-
-1. **Draft-time fill.** A unit written from no position gets filled by familiar rhetorical machinery: slot filling, evidence dumps, register lexicon at density, position overwrite. The register can also overwrite a position that was already present.
-2. **Repair-time laundering.** A flagged tell is answered by substitution: the letter of a check is satisfied while the work the check represents is avoided.
+This heuristic fires at repair time, when a flagged tell is answered by substitution: the letter of a check is satisfied while the work the check represents is avoided. The register frame that defines a positionless unit, including the Position and Portability tests, lives in Unearned Prose; this heuristic governs the repair.
 
 Laundering triggers:
 
 1. **Post-correction substitution.** A reader flags a tell, and the proposed fix changes the symbol or phrase while preserving its rhetorical move. A dash becomes a semicolon or parenthetical. A summary label becomes a paraphrased summary label. A hedge becomes a different hedge. A padded triplet becomes a padded four-part list.
 2. **Compliance performance.** A correction is answered with a self-assessment or repair narrative while the artifact remains unrepaired or barely changed.
 3. **Self-review substitution.** Clearing a token checklist substitutes for re-anchoring the prose. Symbols are counted; structure and claims remain untouched.
-
-Draft-time fill can occur before any visible correction or review. This heuristic owns both moments: the position tests below apply at draft time and at repair time.
 
 Cues:
 
@@ -22,7 +17,6 @@ Cues:
 - One cluster of punctuation becomes another cluster with the same function.
 - A flagged signpost is replaced by a synonymous signpost.
 - The reply being drafted explains compliance instead of delivering the repair.
-- A unit's sections exist because the template or scaffold has them; no position selected the content.
 - A rewrite looks cleaner but a claim became weaker, vaguer, or ownerless without a stated reason.
 
 ## Move
@@ -32,22 +26,11 @@ Cues:
 | Flag shape | Examples | Route |
 |---|---|---|
 | Symbol-level | "too many hyphens"; "that list is padded" | Apply Steps 1 to 3 to the flagged forms. |
-| Register-level | "reads like a diary"; "generic model prose"; "tells everywhere" | Apply the register core to the whole unit: Position and Portability. Symbol edits cannot clear a register-level failure unless one overused lexeme was demonstrably the whole failure and the repaired unit passes both tests. |
-| Scope-level | "too long"; "too detailed" | Keep only units whose positions the artifact owes. Prefer cutting optional units to thinning every sentence. |
-| Requested meta-work | "audit this prose"; "explain the reasoning" | The analysis is the deliverable. Produce it rather than treating it as forbidden compliance narration. |
+| Register-level | "reads like a diary"; "generic model prose"; "tells everywhere" | Apply the register core from Unearned Prose to the whole unit. Symbol edits cannot clear a register-level failure unless one overused lexeme was demonstrably the whole failure and the repaired unit passes both tests. |
+
+Scope-level flags ("too long", "too detailed") are owed-presence questions, not repair routes; consult Unearned Prose's Portability. Requested audits and explanations are covered under When NOT to Apply.
 
 If a request could mean either repair or report, default to repair. If the same artifact is flagged again, route at least one level higher; repeated symbol-level repairs often reveal a register-level problem.
-
-### Register Core
-
-The register-level failure is prose filled from no position or overwritten by the register. Apply two tests to the whole unit:
-
-| Test | Question | A failing answer means |
-|---|---|---|
-| Position | What does this unit assert, and could it be wrong? | Nothing checkable. Form the position, obtain the missing input, use a genuinely structured form, or cut the unit. |
-| Portability | Could this unit's wording and its place both travel unchanged into another artifact and still appear complete? | Check whether the claim, the evidence, or a reader need selected the unit's presence and its wording. If they did, keep it. If the template slot it fills or material that happened to be available provided it instead, the scaffold did the selecting: rewrite the unit to carry something the argument owes, or cut it. |
-
-Judge moves at density, never isolated tokens: one familiar phrase is not the failure; a unit where padding, parallelism, vague authority, inflated significance, and unearned hedging cluster together is. Keep the three bins separate: register vices are quality judgments about text, provenance artifacts are evidence about origin, and fabrications are integrity failures. Do not infer authorship from prose quality, and do not reduce an integrity failure to style.
 
 ### Step 1: Run the Legitimate-Twin Test
 
@@ -135,21 +118,18 @@ The positive direction matters. Negative-only token rules tell the model where n
 - Operator-authored prose, unless analysis or revision was requested or is necessary to fulfill the task. Authorship does not decide quality.
 - Hedges that accurately mark verification reach.
 - Minor-edit requests that do not flag a tell.
-- Operator-requested evidence dumps and process-display artifacts: a research log, exploration trail, or raw deliverable the operator requested. The request selected the pile; reader need selected the wording.
-- Requested-neutral artifacts: facilitation, mediation, or options-only menus owe no verdict; do not inject a position the operator did not request. Disguised recommendations are Loaded Comparison or Framed Menu territory.
+- Frame-level carve-outs — requested evidence piles and requested-neutral artifacts — live in Unearned Prose; this heuristic does not inject positions where the frame says none is owed.
 
 ## Relationship to Pillars
 
-The register frame is carried here: position selects words, quality judgments concern text rather than authorship, and density matters more than isolated tokens. **Committed Contribution** governs claim posture; this heuristic governs the artifact that carries the claim. **Epistemological Grounding**, **External Verification**, and **Verification Reach** govern fabricated or unsupported claims even when the prose is register-clean. **Grounding Preflight** catches coherence simulating evidence at the reasoning layer; this heuristic catches register coherence simulating content at the prose layer. The same fill mechanism appears outside prose in code shape, plans, tool sequences, and scaffolds; that wider channel is a pattern-synthesis trigger under the corpus's derivation method.
-
-**Category Lock-In** is the sibling at proposal altitude. Both catch fluent iteration inside an unnamed category.
-
-**Corrected-Assumption Leakage** audits downstream reasoning after a factual correction. Tell Laundering audits the corrected unit itself for a near-neighbor substitution.
-
-**Frame Abandonment** also treats prior output as evidence of a broken model rather than structure that must be preserved.
+- **Unearned Prose:** supplies the register core (Position and Portability), the density rule, and the three bins. This heuristic runs the repair procedure against that frame.
+- **Committed Contribution:** governs claim posture; this heuristic governs the artifact that carries the claim.
+- **Corrected-Assumption Leakage:** audits downstream reasoning after a factual correction. This heuristic audits the corrected unit itself for a near-neighbor substitution.
+- **Category Lock-In:** the sibling at proposal altitude. Both catch fluent iteration inside an unnamed category.
+- **Frame Abandonment:** also treats prior output as evidence of a broken model rather than structure that must be preserved.
 
 The broader letter-for-work substitution can appear outside prose in rename-only refactors, verification theater, test theater, and plan compression. Those channels remain a pattern-synthesis trigger; this heuristic stays scoped to prose repair and self-review.
 
 ## Summary
 
-Route the flag, run the register core (Position and Portability), run the legitimate-twin test, name the move, restructure or cut without trading inside a family, compare the claims for unexplained drift, and ship the repair instead of narrating it.
+Route the flag, apply the register core from Unearned Prose, run the legitimate-twin test, name the move, restructure or cut without trading inside a family, compare the claims for unexplained drift, and ship the repair instead of narrating it.

@@ -20,6 +20,7 @@ Portable design doctrine for agent-assisted work. Three document types:
 | [Intrinsic Organization](principle-intrinsic-organization.md) | Knowledge is organized by what it describes, not what consumes it. |
 | [Compositional Simplicity](principle-compositional-simplicity.md) | Evaluate simplicity at system level, not component level. |
 | [Committed Contribution](principle-committed-contribution.md) | Truth emerges through committed claims refined by correction. |
+| [Unearned Prose](principle-unearned-prose.md) | Prose must carry a position that selects its wording and its place. |
 
 ### Patterns
 

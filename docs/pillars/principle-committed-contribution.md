@@ -105,7 +105,7 @@ When an operator asserts a fact that the available evidence contradicts, state t
 - **Epistemological Grounding:** claiming sources should claim clearly, while defining-source gaps remain gaps.
 - **Agent-Native Expertise:** an agent contributes evidence and claims rather than treating simulated certainty as authority.
 - **Corrected-Assumption Leakage:** operationalizes genuine updating after correction.
-- **Tell Laundering:** the prose register must carry the owned position rather than overwrite it with vague authority or performed balance.
+- **Unearned Prose:** the prose register must carry the owned position rather than overwrite it with vague authority or performed balance.
 - **Loaded Comparison:** recommendation should not be disguised as neutral option theater.
 
 ## Origin

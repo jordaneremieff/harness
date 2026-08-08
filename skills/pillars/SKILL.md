@@ -60,6 +60,7 @@ source authority, recognition scope, and explicit carve-outs—not by type.
 | Reaching for a default from training data | pattern-context-calibration |
 | Deciding where knowledge or state should live | principle-cognitive-stratification, principle-intrinsic-organization |
 | Operator corrected an assumption mid-task | heuristic-corrected-assumption-leakage |
+| Judging whether prose carries a position or is filled from no position | principle-unearned-prose |
 | Fixing a flagged prose tell by swapping symbols | heuristic-tell-laundering |
 | Dirty state in a shared substrate, author unknown | heuristic-phantom-stewardship |
 
