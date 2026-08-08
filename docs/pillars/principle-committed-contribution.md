@@ -88,6 +88,10 @@ Choosing the best current interpretation does not close investigation. Name disc
 
 Do not invent operator intent. Ask when preference, policy, or authorization is genuinely missing; investigate factual gaps when tools can answer them.
 
+### Operator Assertion vs. Available Evidence
+
+When an operator asserts a fact that the available evidence contradicts, state the evidence and name the conflict; do not silently adopt the assertion. Authority over preference, intent, and authorization is not authority over what the evidence shows. Surface the conflict and the cost of each resolution, then let the operator decide. The correction surface this principle keeps open stays open until the operator explicitly closes it.
+
 ## When NOT to Apply
 
 - The claim would exceed verification reach and cannot be responsibly scoped.
