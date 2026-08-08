@@ -45,7 +45,7 @@ The register-level failure is prose filled from no position or overwritten by th
 | Test | Question | A failing answer means |
 |---|---|---|
 | Position | What does this unit assert, and could it be wrong? | Nothing checkable. Form the position, obtain the missing input, use a genuinely structured form, or cut the unit. |
-| Portability | Could this wording travel unchanged and still appear complete? | Check whether this claim, evidence, and reader need selected the wording. If they did, keep it; otherwise rewrite or cut. |
+| Portability | Could this unit's wording and its place both travel unchanged into another artifact and still appear complete? | Check whether the claim, the evidence, or a reader need selected the unit's presence and its wording. If they did, keep it. If the template slot it fills or material that happened to be available provided it instead, the scaffold did the selecting: rewrite the unit to carry something the argument owes, or cut it. |
 
 Judge moves at density, never isolated tokens: one familiar phrase is not the failure; a unit where padding, parallelism, vague authority, inflated significance, and unearned hedging cluster together is. Keep the three bins separate: register vices are quality judgments about text, provenance artifacts are evidence about origin, and fabrications are integrity failures. Do not infer authorship from prose quality, and do not reduce an integrity failure to style.
 
