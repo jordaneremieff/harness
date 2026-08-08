@@ -60,7 +60,8 @@ Separating state from constraint reopens the search without dismissing transitio
 ## Relationship to Pillars
 
 - **Committed Contribution:** propose the reorganization as a checkable option rather than self-censoring.
-- **Context Calibration:** inherited configuration is input to test, not automatic authority.
+- **Context Calibration:** tests a different object — whether an inherited default's source-context preconditions hold here. This heuristic tests whether the system's own current arrangement is a constraint at all. The first catches a misapplied borrowed pattern; this catches an occupied slot treated as law.
+- **Framed Menu:** tests a received menu's shared premise; this heuristic tests the agent's own inference that current state is binding. The first catches a frame inherited from another party; this catches a false constraint generated from occupied space.
 - **Coordination Phantom:** verifies whether imagined consumers really make the state fixed.
 - **Compositional Simplicity:** compares workaround accumulation with one coherent rearrangement.
 
