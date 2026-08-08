@@ -32,7 +32,7 @@ Cues:
 | Flag shape | Examples | Route |
 |---|---|---|
 | Symbol-level | "too many hyphens"; "that list is padded" | Apply Steps 1 to 3 to the flagged forms. |
-| Register-level | "reads like a diary"; "generic model prose"; "tells everywhere" | Apply the register core to the whole unit: Position, Portability, Selection. Symbol edits cannot clear a register-level failure unless one overused lexeme was demonstrably the whole failure and the repaired unit passes the three tests. |
+| Register-level | "reads like a diary"; "generic model prose"; "tells everywhere" | Apply the register core to the whole unit: Position and Portability. Symbol edits cannot clear a register-level failure unless one overused lexeme was demonstrably the whole failure and the repaired unit passes both tests. |
 | Scope-level | "too long"; "too detailed" | Keep only units whose positions the artifact owes. Prefer cutting optional units to thinning every sentence. |
 | Requested meta-work | "audit this prose"; "explain the reasoning" | The analysis is the deliverable. Produce it rather than treating it as forbidden compliance narration. |
 
@@ -40,13 +40,12 @@ If a request could mean either repair or report, default to repair. If the same 
 
 ### Register Core
 
-The register-level failure is prose filled from no position or overwritten by the register. Apply three tests to the whole unit:
+The register-level failure is prose filled from no position or overwritten by the register. Apply two tests to the whole unit:
 
 | Test | Question | A failing answer means |
 |---|---|---|
 | Position | What does this unit assert, and could it be wrong? | Nothing checkable. Form the position, obtain the missing input, use a genuinely structured form, or cut the unit. |
-| Portability | Could this wording travel unchanged and still appear complete? | Possible task-inspecificity. Check whether this claim, evidence, and reader need selected the wording. If they did, keep it; otherwise rewrite or cut. |
-| Selection | What chose these sentences? | If the answer is only "the evidence was available" or "the template has this section," the pile or template did the selecting. |
+| Portability | Could this wording travel unchanged and still appear complete? | Check whether this claim, evidence, and reader need selected the wording. If they did, keep it; otherwise rewrite or cut. |
 
 Judge moves at density, never isolated tokens: one familiar phrase is not the failure; a unit where padding, parallelism, vague authority, inflated significance, and unearned hedging cluster together is. Keep the three bins separate: register vices are quality judgments about text, provenance artifacts are evidence about origin, and fabrications are integrity failures. Do not infer authorship from prose quality, and do not reduce an integrity failure to style.
 
@@ -153,4 +152,4 @@ The broader letter-for-work substitution can appear outside prose in rename-only
 
 ## Summary
 
-Route the flag, run the register core (Position, Portability, Selection), run the legitimate-twin test, name the move, restructure or cut without trading inside a family, compare the claims for unexplained drift, and ship the repair instead of narrating it.
+Route the flag, run the register core (Position and Portability), run the legitimate-twin test, name the move, restructure or cut without trading inside a family, compare the claims for unexplained drift, and ship the repair instead of narrating it.
