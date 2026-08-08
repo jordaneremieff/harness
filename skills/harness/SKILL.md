@@ -18,6 +18,18 @@ Select, design, change, and verify Pi harness surfaces through one entry point. 
 - Follow the owning repository's provenance, privacy, worktree, testing, and release rules.
 - Keep common decisions here and lane-specific detail in one-level references. Read only the references that the selected lane requires.
 
+## Operator-facing diagrams
+
+Use Pi's native Mermaid rendering without an operator prompt when relationships are easier to understand visually: component or call flow, lifecycle sequence, state transition, ownership boundary, or before/after structure. Emit a compact top-level Mermaid block and pair it with the short conclusion it supports. Use the installed renderer's flowchart, sequence, state, class, or ER forms. Prefer top-to-bottom layouts and short labels so Pi renders within terminal width; simplify or split a diagram before it falls back to source.
+
+Do not paste a long tool transcript into chat. When a tool returns a purpose-built structural view, preserve its native shape and trim it to the load-bearing region; do not flatten it into a table or redraw it in Mermaid. Otherwise, preserve the raw result in the tool record and translate only the load-bearing structure. Use prose or a table when sequence or relationships are not the point. A diagram explains evidence; it does not replace source, tests, traces, or the verification ledger.
+
+## TypeScript call-graph checks
+
+When a harness change touches TypeScript, run calldiff against the change's base ref. Use it early to read the call graph you are changing, and again before you report to confirm what moved; a no-change result confirms the call structure held. Read [calldiff.md](references/calldiff.md) for invocation, how to read the output, and its limits, then record the result as structural evidence in the verification ledger.
+
+calldiff is syntactic, not a typechecker: it proves call shape, not runtime behavior. Pair it with a focused test for any behavior claim.
+
 ## Workflow
 
 ### 1. Reconstruct the contract
