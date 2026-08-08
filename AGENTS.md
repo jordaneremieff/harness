@@ -158,6 +158,8 @@ completion.
 
 Before considering repository work complete:
 
+- After a corpus mutation removes, renames, or redefines a term, grep that term across docs/ and skills/ before pushing.
+
 1. inspect `git status`;
 2. check for accidental credentials or absolute personal paths;
 3. remove temporary files;

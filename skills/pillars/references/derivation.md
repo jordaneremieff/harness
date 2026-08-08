@@ -70,7 +70,7 @@ Before committing a name, test that it:
 - names the failure or discipline rather than an abstract concept noun; and
 - still fits after private provenance and originating vocabulary are removed.
 
-A rename is a corpus-wide change. Update the file name, the inventory, the operating reference, cross-references, and the delivery adapter together.
+A rename, removal, or redefinition of a corpus term is a corpus-wide change. Update the file name (for a rename), the inventory, the operating reference, cross-references, and the delivery adapter together.
 
 ## Consultable Core
 
