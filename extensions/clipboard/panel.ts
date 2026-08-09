@@ -1,7 +1,7 @@
 /** Interactive /clipboard browser. Clipboard and archive I/O are delegated to the host. */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { decodeKittyPrintable, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ClipboardEntry } from "./store.ts";
 import { sanitizeTerminalText } from "./text.ts";
 
@@ -195,8 +195,12 @@ export class ClipboardPanel {
 			})();
 			return;
 		}
-		if (data.length > 0 && !matchesKey(data, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(data)) {
-			this.filter += data;
+		// A terminal that negotiated the Kitty keyboard protocol sends CSI-u for
+		// every key, printable ones included. Decode first, the way pi-tui's own
+		// input component does, or typed filter text never arrives.
+		const typed = decodeKittyPrintable(data) ?? data;
+		if (typed.length > 0 && !matchesKey(data, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(typed)) {
+			this.filter += typed;
 			this.selected = 0;
 			this.listScroll = 0;
 			this.previewScroll = 0;

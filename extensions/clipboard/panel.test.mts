@@ -90,6 +90,15 @@ describe("ClipboardPanel", () => {
 		assert.deepEqual(calls.done, {});
 	});
 
+	it("filters on Kitty CSI-u printable events", () => {
+		// A terminal with the Kitty keyboard protocol sends CSI-u for every key,
+		// so raw single-character handling loses all typed text there.
+		const { panel } = rig(sampleEntries());
+		for (const seq of ["\x1b[111u", "\x1b[108u", "\x1b[100u"]) panel.handleInput(seq);
+		assert.match(panel.render(72).join("\n"), /1 of 3 match/);
+		assert.match(panel.render(72).join("\n"), /oldest copy/);
+	});
+
 	it("scrolls the preview of a long entry with Right/Left", () => {
 		const { panel } = rig(sampleEntries(), undefined, 16);
 		panel.handleInput("\x1b[B");
