@@ -211,6 +211,7 @@ describe("StashPanel", () => {
 		const { panel, calls } = rig(samples(), 20);
 		panel.handleInput("h");
 		assert.match(panel.render(104).join("\n"), /What this is/);
+		assert.match(panel.render(104).join("\n"), /\/stash new <hint>/);
 		assert.match(panel.render(104).join("\n"), /Closing/);
 		assert.doesNotMatch(panel.render(104).join("\n"), /Keys/);
 		panel.handleInput("h");

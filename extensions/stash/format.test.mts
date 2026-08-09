@@ -48,8 +48,8 @@ describe("utcTimestamp", () => {
 });
 
 describe("resumeCommand", () => {
-	it("routes a fresh pi session through deterministic /stash pickup", () => {
-		assert.equal(resumeCommand("20260724T115030Z-test-stash"), 'pi "/stash 20260724T115030Z-test-stash"');
+	it("routes a fresh pi session through deterministic /stash get", () => {
+		assert.equal(resumeCommand("20260724T115030Z-test-stash"), 'pi "/stash get 20260724T115030Z-test-stash"');
 	});
 });
 

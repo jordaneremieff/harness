@@ -21,7 +21,7 @@ key, and a consumer must not parse a sibling's status text.
 
 | Key | Publisher | Meaning | Current texts | Cleared by |
 |---|---|---|---|---|
-| `stash` | `extensions/stash` | Stash distillation progress for `/stash new`. The publisher owns the animation; the footer renders the text generically. | `stash: running <spinner frame>` while a distillation runs (TUI, 120 ms animation); then `stash: done <id>`, `stash: skipped`, or `stash: failed`. | 3 seconds after the terminal text, on `/stash abort`, and on `session_shutdown`. |
+| `stash` | `extensions/stash` | Stash distillation progress for `/stash new <hint>`. The publisher owns the animation; the footer renders the text generically. | `stash: running <spinner frame>` while a distillation runs (TUI, 120 ms animation); then `stash: done <id>`, `stash: skipped`, or `stash: failed`. | 3 seconds after the terminal text, on `/stash abort`, and on `session_shutdown`. |
 
 ## Rules
 

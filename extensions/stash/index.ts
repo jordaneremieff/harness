@@ -28,7 +28,7 @@ const storeDir = () => resolveStoreDir(process.env, getAgentDir());
 const safe = (value: string) => sanitizeTerminalText(value).text;
 const safeLine = (value: string) => safe(value).replace(/\n/g, "↵");
 
-// /stash new status indicator. The publishing extension owns the animation;
+// /stash new <hint> status indicator. The publishing extension owns the animation;
 // the footer and the statusline extension render the text generically.
 const STATUS_KEY = "stash";
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -36,7 +36,10 @@ const SPINNER_INTERVAL_MS = 120;
 const RESULT_STATUS_MS = 3_000;
 
 interface InFlightJob {
-	job: DistillJob;
+	/** Null while setup is in progress (before any await reserves the slot). */
+	job: DistillJob | null;
+	/** Aborts both the setup awaits and the running job. */
+	controller: AbortController;
 }
 
 let inFlight: InFlightJob | null = null;
@@ -95,8 +98,8 @@ function startSpinner(ctx: StatusUi): void {
 	spinnerTimer.unref?.();
 }
 
-function settleDistill(job: DistillJob, outcome: DistillOutcome, ctx: StatusUi): void {
-	if (!inFlight || inFlight.job !== job) return;
+function settleDistill(slot: InFlightJob, outcome: DistillOutcome, ctx: StatusUi): void {
+	if (inFlight !== slot || slot.job === null) return;
 	inFlight = null;
 	stopSpinner();
 	clearResultStatus();
@@ -123,66 +126,104 @@ function settleDistill(job: DistillJob, outcome: DistillOutcome, ctx: StatusUi):
 	notify(ctx, `Stash distillation failed: ${safeLine(outcome.message ?? outcome.reason)}`, "error");
 }
 
+/** Release only this dispatch's slot; stale setup cleanup must not clear a replacement. */
+function releaseSlot(slot: InFlightJob): void {
+	if (inFlight === slot) inFlight = null;
+}
+
 async function startCreation(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	hint: string,
 	sessionFactory: DistillSessionFactory | undefined,
 ): Promise<void> {
+	// Synchronous failures must be visible in every mode: notify in TUI/RPC, throw in JSON/print.
+	const surface = (message: string, level: "info" | "warning" | "error"): void => {
+		if (!ctx.hasUI) throw new Error(message);
+		notify(ctx, message, level);
+	};
 	if (inFlight) {
-		notify(ctx, "A stash creation is already in flight. Use /stash abort to cancel.", "warning");
+		surface("A stash creation is already in flight. Use /stash abort to cancel.", "warning");
 		return;
 	}
 	const model = ctx.model;
 	if (!model) {
-		notify(ctx, "No model is available for this session; cannot start a stash distillation.", "error");
+		surface("No model is available for this session; cannot start a stash distillation.", "error");
 		return;
 	}
 	let entries;
 	try {
 		entries = ctx.sessionManager.buildContextEntries();
 	} catch (error) {
-		notify(ctx, `Could not read the session transcript: ${safeLine(error instanceof Error ? error.message : String(error))}`, "error");
+		surface(`Could not read the session transcript: ${safeLine(error instanceof Error ? error.message : String(error))}`, "error");
 		return;
 	}
-	let branch: string | undefined;
+	// Reserve the single-flight slot BEFORE any await so concurrent dispatches serialize,
+	// and wire one AbortController to both the setup awaits and the eventual job.
+	const controller = new AbortController();
+	const slot: InFlightJob = { job: null, controller };
+	inFlight = slot;
 	try {
-		const result = await pi.exec("git", ["branch", "--show-current"], { cwd: ctx.cwd });
-		if (result.code === 0) branch = result.stdout.trim() || undefined;
-	} catch {
-		branch = undefined;
+		let branch: string | undefined;
+		try {
+			const result = await pi.exec("git", ["branch", "--show-current"], { cwd: ctx.cwd, signal: controller.signal });
+			if (result.code === 0) branch = result.stdout.trim() || undefined;
+		} catch {
+			branch = undefined;
+		}
+		if (controller.signal.aborted) {
+			releaseSlot(slot);
+			return;
+		}
+		let sessionId: string | undefined;
+		try {
+			sessionId = ctx.sessionManager.getSessionId() ?? process.env.PI_SESSION_ID;
+		} catch {
+			sessionId = process.env.PI_SESSION_ID;
+		}
+		const job = startDistillJob({
+			model,
+			cwd: ctx.cwd,
+			hint,
+			entries,
+			project: ctx.cwd,
+			branch,
+			sessionId,
+			storeDir: storeDir(),
+			sessionFactory,
+		});
+		slot.job = job;
+		controller.signal.addEventListener("abort", () => job.abort(), { once: true });
+		// A pre-existing abort (shutdown/abort during setup) won't re-fire the listener.
+		if (controller.signal.aborted) {
+			job.abort();
+			releaseSlot(slot);
+			return;
+		}
+		// A stale result timer from a previous settle must not wipe the new status.
+		stopSpinner();
+		clearResultStatus();
+		if (ctx.mode === "tui") {
+			setStatus(ctx, `stash: running ${SPINNER_FRAMES[0]}`);
+			startSpinner(ctx);
+		}
+		notify(
+			ctx,
+			hint.trim() ? `Stash distillation started (hint: ${safeLine(hint.trim())}).` : "Stash distillation started.",
+			"info",
+		);
+		void job.result.then((outcome) => settleDistill(slot, outcome, ctx));
+	} catch (error) {
+		controller.abort();
+		releaseSlot(slot);
+		stopSpinner();
+		clearResultStatus();
+		setStatus(ctx, undefined);
+		surface(
+			`Could not start stash distillation: ${safeLine(error instanceof Error ? error.message : String(error))}`,
+			"error",
+		);
 	}
-	let sessionId: string | undefined;
-	try {
-		sessionId = ctx.sessionManager.getSessionId() ?? process.env.PI_SESSION_ID;
-	} catch {
-		sessionId = process.env.PI_SESSION_ID;
-	}
-	const job = startDistillJob({
-		model,
-		cwd: ctx.cwd,
-		hint,
-		entries,
-		project: ctx.cwd,
-		branch,
-		sessionId,
-		storeDir: storeDir(),
-		sessionFactory,
-	});
-	inFlight = { job };
-	// A stale result timer from a previous settle must not wipe the new status.
-	stopSpinner();
-	clearResultStatus();
-	if (ctx.mode === "tui") {
-		setStatus(ctx, `stash: running ${SPINNER_FRAMES[0]}`);
-		startSpinner(ctx);
-	}
-	notify(
-		ctx,
-		hint.trim() ? `Stash distillation started (hint: ${safeLine(hint.trim())}).` : "Stash distillation started.",
-		"info",
-	);
-	void job.result.then((outcome) => settleDistill(job, outcome, ctx));
 }
 
 const shortText = (description: string) => Type.String({ description, maxLength: 200 });
@@ -249,13 +290,249 @@ const changeLifecycle = (id: string, change: StashLifecycleChange, signal?: Abor
 const rotateLifecycle = (id: string, signal?: AbortSignal) =>
 	withStashTarget(id, signal, (dir, targetId) => rotateStash(dir, targetId));
 
+/** Reserved first-token actions exposed by `/stash` autocomplete. */
+const STASH_VERBS: ReadonlyArray<{ value: string; label: string; description: string }> = [
+	{ value: "new", label: "new", description: "<hint> · distill the live session into a new stash" },
+	{ value: "get", label: "get", description: "<id> · pick up by full id or unique prefix" },
+	{ value: "complete", label: "complete", description: "<id> <outcome> · close an active stash" },
+	{ value: "reopen", label: "reopen", description: "<id> · return a closed stash to open" },
+	{ value: "rotate", label: "rotate", description: "<id> · archive a stale stash (recoverable)" },
+	{ value: "abort", label: "abort", description: "cancel an in-flight stash creation" },
+	{ value: "help", label: "help", description: "show /stash usage" },
+];
+
+/** Removed retrieval verb. Hard-rejected (never aliased) with the replacement syntax. */
+const REMOVED_VERBS: ReadonlyArray<{ verb: string; replacement: string }> = [
+	{ verb: "pickup", replacement: "Removed: /stash pickup. Pick up with: /stash get <id>" },
+];
+
+/** Full stash id shape. A bare arg matching this is a stale resume string, not a hint. */
+const FULL_ID_RE = /^\d{8}T\d{6}Z-[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+
+const STASH_USAGE = [
+	"/stash — session-continuity handovers",
+	"",
+	"Create:",
+	"  /stash new <hint>           distill the live session into a new stash (hint guides it)",
+	"  /stash abort                cancel an in-flight creation",
+	"",
+	"Retrieve & manage:",
+	"  /stash                      browse & pick up (TUI overlay)",
+	"  /stash get <id>             pick up a stash",
+	"  /stash complete <id> <out>  close an active stash with a concrete outcome",
+	"  /stash reopen <id>          return a closed stash to open",
+	"  /stash rotate <id>          archive a stale stash (recoverable)",
+	"  /stash help                 show this usage",
+	"",
+	"  <id> may be a full stash id or a unique prefix.",
+	"",
+	"Agent tools: stash_write, stash_list, stash_read, stash_complete, stash_rotate.",
+].join("\n");
+
+type StashCompletionItem = { value: string; label: string; description: string };
+
+/** Stash-id prefix completion shared by the id-bearing verbs. Returns null on any store error. */
+async function stashIdCompletions(
+	prefix: string,
+	make: (id: string, state: string, title: string) => StashCompletionItem,
+): Promise<StashCompletionItem[] | null> {
+	try {
+		const entries = await listStashes(storeDir(), { limit: 50 });
+		const lower = prefix.toLowerCase();
+		const matches = entries.filter((entry) => entry.meta.id.toLowerCase().startsWith(lower));
+		if (matches.length === 0) return null;
+		return matches.map((entry) => make(entry.meta.id, entry.meta.state, entry.meta.title));
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * `/stash ` argument autocompletion. Bare text lists actions only. After an
+ * id-bearing verb, id prefixes complete. Pi's applyCompletion replaces the whole
+ * argument text, so id items re-attach their verb.
+ */
+async function stashArgumentCompletions(argumentText: string): Promise<StashCompletionItem[] | null> {
+	const text = argumentText ?? "";
+	if (!text.includes(" ")) {
+		const verbs = STASH_VERBS.filter((verb) => verb.value.startsWith(text));
+		return verbs.length > 0 ? verbs.map(({ value, label, description }) => ({ value, label, description })) : null;
+	}
+	const firstSpace = text.indexOf(" ");
+	const verb = text.slice(0, firstSpace);
+	const tail = text.slice(firstSpace + 1);
+	// All id-bearing verbs take one id; a second token means the user is past it
+	// (for complete, that token begins the outcome).
+	if (tail.includes(" ")) return null;
+	if (verb === "get" || verb === "complete" || verb === "reopen" || verb === "rotate") {
+		return stashIdCompletions(tail, (id, state, title) => ({
+			value: `${verb} ${id}`,
+			label: id,
+			description: `${state} · ${safeLine(title)}`,
+		}));
+	}
+	return null;
+}
+
+/** Activate a stash and inject its handover as the next user message. Shared by `get` and the browser. */
+async function deliverPickup(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	id: string,
+	fail: (message: string) => void,
+): Promise<void> {
+	let activated: Awaited<ReturnType<typeof changeLifecycle>>;
+	try {
+		activated = await changeLifecycle(id, { action: "activate" });
+	} catch (error) {
+		fail(`Could not activate stash for pickup: ${safeLine(error instanceof Error ? error.message : String(error))}`);
+		return;
+	}
+	try {
+		const message = buildPickupMessage(activated.id, activated.content, { currentCwd: ctx.cwd });
+		if (ctx.isIdle()) {
+			pi.sendUserMessage(message);
+		} else {
+			pi.sendUserMessage(message, { deliverAs: "followUp" });
+			if (ctx.hasUI) ctx.ui.notify(`Queued stash ${activated.id} for pickup after the current turn.`, "info");
+		}
+	} catch (error) {
+		fail(`Stash ${activated.id} is active, but pickup delivery failed: ${safeLine(error instanceof Error ? error.message : String(error))}`);
+	}
+}
+
+/** Bare `/stash` (TUI): browse stashes and act on them; a selected entry is picked up. */
+async function browseAndPickup(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	fail: (message: string) => void,
+	copyText?: (text: string) => Promise<void>,
+): Promise<void> {
+	let browserFilter: string | undefined;
+	let browserSelectedId: string | undefined;
+	let browserSelectedIndex: number | undefined;
+	let pickupId: string | undefined;
+
+	while (!pickupId) {
+		if (ctx.mode !== "tui") {
+			const message =
+				"The interactive stash browser requires TUI mode. Use stash_list to discover ids, /stash get <id> to pick up, /stash new <hint> to create, /stash complete <id> <outcome> to close, /stash reopen <id>, /stash rotate <id> to archive, or /stash help.";
+			if (ctx.hasUI) ctx.ui.notify(message, "info");
+			else throw new Error(message);
+			return;
+		}
+		let entries;
+		let hasMore = false;
+		try {
+			const loaded = await listStashes(storeDir(), { limit: 201, previewBytes: 32 * 1024 });
+			hasMore = loaded.length > 200;
+			entries = loaded.slice(0, 200);
+		} catch (error) {
+			fail(`Could not open stash store: ${safeLine(error instanceof Error ? error.message : String(error))}`);
+			return;
+		}
+		const result = await ctx.ui.custom<{
+			selected?: (typeof entries)[number];
+			manage?: (typeof entries)[number];
+			complete?: (typeof entries)[number];
+			filter?: string;
+			selectedId?: string;
+			selectedIndex?: number;
+		}>(
+			(tui, theme, _keybindings, done) =>
+				new StashPanel({
+					entries,
+					title: "Stashes",
+					theme,
+					tui,
+					getMaxRows: () => Math.max(1, tui.terminal.rows - 6),
+					hasMore,
+					initialFilter: browserFilter,
+					initialSelectedId: browserSelectedId,
+					initialSelectedIndex: browserSelectedIndex,
+					copyResume: (entry) => (copyText ?? copyToClipboard)(resumeCommand(entry.meta.id)),
+					done,
+				}),
+			{
+				overlay: true,
+				overlayOptions: { width: "90%", minWidth: 104, maxHeight: "92%", anchor: "center", margin: 1 },
+			},
+		);
+		browserFilter = result?.filter ?? "";
+		browserSelectedId = result?.selectedId;
+		browserSelectedIndex = result?.selectedIndex;
+		if (result?.selected) {
+			pickupId = result.selected.meta.id;
+			break;
+		}
+		if (result?.complete) {
+			try {
+				const outcome = await ctx.ui.input("Concrete outcome for this stashed effort:");
+				if (outcome?.trim()) {
+					const transitioned = await changeLifecycle(result.complete.meta.id, { action: "close", outcome });
+					ctx.ui.notify(`Closed stash ${transitioned.id}.`, "info");
+				}
+			} catch (error) {
+				fail(safeLine(error instanceof Error ? error.message : String(error)));
+				return;
+			}
+			continue;
+		}
+		if (!result?.manage) return;
+
+		const state: StashState = result.manage.meta.state;
+		const choices =
+			state === "active"
+				? ["Close with outcome", "Back"]
+				: state === "closed"
+					? ["Reopen", "Rotate (archive)", "Back"]
+					: ["Pick up", "Rotate (archive)", "Back"];
+		const action = await ctx.ui.select(`Stash ${result.manage.meta.id}`, choices);
+		if (!action || action === "Back") continue;
+		try {
+			if (action === "Pick up") {
+				pickupId = result.manage.meta.id;
+			} else if (action === "Close with outcome") {
+				const outcome = await ctx.ui.input("Concrete outcome for this stashed effort:");
+				if (outcome?.trim()) {
+					const transitioned = await changeLifecycle(result.manage.meta.id, { action: "close", outcome });
+					ctx.ui.notify(`Closed stash ${transitioned.id}.`, "info");
+				}
+			} else if (action === "Reopen") {
+				const confirmed = await ctx.ui.confirm(
+					"Reopen stashed effort?",
+					`Clear the closure outcome on ${result.manage.meta.id} and return it to open state?`,
+				);
+				if (confirmed) {
+					const transitioned = await changeLifecycle(result.manage.meta.id, { action: "reopen" });
+					ctx.ui.notify(`Reopened stash ${transitioned.id}.`, "info");
+				}
+			} else if (action === "Rotate (archive)") {
+				const confirmed = await ctx.ui.confirm(
+					"Rotate stashed effort?",
+					`Move ${result.manage.meta.id} into the stash store's .trash directory? It will disappear from listings and pickup; the file remains recoverable.`,
+				);
+				if (confirmed) {
+					const rotated = await rotateLifecycle(result.manage.meta.id);
+					ctx.ui.notify(`Rotated stash ${rotated.id} to the stash archive.`, "info");
+				}
+			}
+		} catch (error) {
+			fail(safeLine(error instanceof Error ? error.message : String(error)));
+			return;
+		}
+	}
+
+	if (pickupId) await deliverPickup(pi, ctx, pickupId, fail);
+}
+
 export default function (
 	pi: ExtensionAPI,
 	overrides?: { distillSessionFactory?: DistillSessionFactory; copyText?: (text: string) => Promise<void> },
 ) {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (inFlight) {
-			inFlight.job.abort();
+			inFlight.controller.abort();
 			inFlight = null;
 		}
 		stopSpinner();
@@ -427,9 +704,9 @@ export default function (
 	});
 
 	pi.registerCommand("stash", {
-		description: "Create, browse, pick up, close, reopen, or rotate stashed efforts",
+		description: "Create, browse, get, close, reopen, or rotate stashed efforts",
+		getArgumentCompletions: stashArgumentCompletions,
 		handler: async (args, ctx) => {
-			type FoundArtifact = Extract<Awaited<ReturnType<typeof readStash>>, { ok: true }>;
 			const raw = args.trim();
 			const parts = raw.split(/\s+/).filter(Boolean);
 			const verb = parts[0];
@@ -438,12 +715,29 @@ export default function (
 				else throw new Error(message);
 			};
 
+			// Removed verbs — hard-rejected with the replacement syntax, never aliased.
+			for (const removed of REMOVED_VERBS) {
+				if (verb === removed.verb) {
+					fail(removed.replacement);
+					return;
+				}
+			}
+
 			if (verb === "new") {
-				await startCreation(pi, ctx, parts.slice(1).join(" "), overrides?.distillSessionFactory);
+				const hint = parts.slice(1).join(" ");
+				if (!hint) {
+					fail("Usage: /stash new <hint>");
+					return;
+				}
+				await startCreation(pi, ctx, hint, overrides?.distillSessionFactory);
 				return;
 			}
 
 			if (verb === "abort") {
+				if (parts.length !== 1) {
+					fail("Usage: /stash abort");
+					return;
+				}
 				if (!inFlight) {
 					notify(ctx, "No stash creation is in flight.", "info");
 					return;
@@ -454,7 +748,27 @@ export default function (
 				clearResultStatus();
 				setStatus(ctx, undefined);
 				notify(ctx, "Stash creation cancelled.", "info");
-				current.job.abort();
+				current.controller.abort();
+				return;
+			}
+
+			if (verb === "help") {
+				if (parts.length !== 1) {
+					fail("Usage: /stash help");
+					return;
+				}
+				if (ctx.hasUI) ctx.ui.notify(STASH_USAGE, "info");
+				else throw new Error(STASH_USAGE);
+				return;
+			}
+
+			if (verb === "get") {
+				const id = parts[1];
+				if (!id || parts.length !== 2) {
+					fail("Usage: /stash get <id>");
+					return;
+				}
+				await deliverPickup(pi, ctx, id, fail);
 				return;
 			}
 
@@ -462,7 +776,7 @@ export default function (
 				const id = parts[1];
 				const outcome = parts.slice(2).join(" ");
 				if (!id || !outcome) {
-					fail("Usage: /stash complete <id-or-prefix> <concrete outcome>");
+					fail("Usage: /stash complete <id> <concrete outcome>");
 					return;
 				}
 				try {
@@ -477,7 +791,7 @@ export default function (
 			if (verb === "rotate") {
 				const id = parts[1];
 				if (!id || parts.length !== 2) {
-					fail("Usage: /stash rotate <id-or-prefix>");
+					fail("Usage: /stash rotate <id>");
 					return;
 				}
 				try {
@@ -492,7 +806,7 @@ export default function (
 			if (verb === "reopen") {
 				const id = parts[1];
 				if (!id || parts.length !== 2) {
-					fail("Usage: /stash reopen <id-or-prefix>");
+					fail("Usage: /stash reopen <id>");
 					return;
 				}
 				try {
@@ -504,166 +818,18 @@ export default function (
 				return;
 			}
 
-			const query = verb === "pickup" ? parts.slice(1).join(" ") : raw;
-			if (verb === "pickup" && !query) {
-				fail("Usage: /stash pickup <id-or-prefix>");
+			// A bare full-id arg is a stale `pi "/stash <id>"` string, not an action.
+			if (parts.length === 1 && verb && FULL_ID_RE.test(verb)) {
+				fail(`Pick up with: /stash get ${verb}`);
 				return;
 			}
-			let browserFilter = query;
-			let browserSelectedId: string | undefined;
-			let browserSelectedIndex: number | undefined;
-			let artifact: FoundArtifact | undefined;
-			if (query) {
-				try {
-					const direct = await readStash(storeDir(), query);
-					if (!("error" in direct)) artifact = direct;
-					else if (ctx.mode !== "tui") {
-						fail(readFailure(direct).message);
-						return;
-					}
-				} catch (error) {
-					fail(`Could not open stash store: ${safeLine(error instanceof Error ? error.message : String(error))}`);
-					return;
-				}
-			}
 
-			while (!artifact) {
-				if (ctx.mode !== "tui") {
-					const message =
-						"The interactive stash browser requires TUI mode. Use /stash <id-or-prefix> to pick up, /stash new <hint> to create, /stash complete <id> <outcome> to close, /stash reopen <id>, /stash rotate <id> to archive, or stash_list to discover ids.";
-					if (ctx.hasUI) ctx.ui.notify(message, "info");
-					else throw new Error(message);
-					return;
-				}
-				let entries;
-				let hasMore = false;
-				try {
-					const loaded = await listStashes(storeDir(), { limit: 201, previewBytes: 32 * 1024 });
-					hasMore = loaded.length > 200;
-					entries = loaded.slice(0, 200);
-				} catch (error) {
-					fail(`Could not open stash store: ${safeLine(error instanceof Error ? error.message : String(error))}`);
-					return;
-				}
-				const result = await ctx.ui.custom<{
-					selected?: (typeof entries)[number];
-					manage?: (typeof entries)[number];
-					complete?: (typeof entries)[number];
-					filter?: string;
-					selectedId?: string;
-					selectedIndex?: number;
-				}>(
-					(tui, theme, _keybindings, done) =>
-						new StashPanel({
-							entries,
-							title: "Stashes",
-							theme,
-							tui,
-							getMaxRows: () => Math.max(1, tui.terminal.rows - 6),
-							hasMore,
-							initialFilter: browserFilter,
-							initialSelectedId: browserSelectedId,
-							initialSelectedIndex: browserSelectedIndex,
-							copyResume: (entry) => (overrides?.copyText ?? copyToClipboard)(resumeCommand(entry.meta.id)),
-							done,
-						}),
-					{
-						overlay: true,
-						overlayOptions: { width: "90%", minWidth: 104, maxHeight: "92%", anchor: "center", margin: 1 },
-					},
-				);
-				browserFilter = result?.filter ?? "";
-				browserSelectedId = result?.selectedId;
-				browserSelectedIndex = result?.selectedIndex;
-				if (result?.selected) {
-					const selected = await readStash(storeDir(), result.selected.meta.id);
-					if ("error" in selected) {
-						fail(readFailure(selected).message);
-						return;
-					}
-					artifact = selected;
-					break;
-				}
-				if (result?.complete) {
-					try {
-						const outcome = await ctx.ui.input("Concrete outcome for this stashed effort:");
-						if (outcome?.trim()) {
-							const transitioned = await changeLifecycle(result.complete.meta.id, { action: "close", outcome });
-							ctx.ui.notify(`Closed stash ${transitioned.id}.`, "info");
-						}
-					} catch (error) {
-						fail(safeLine(error instanceof Error ? error.message : String(error)));
-						return;
-					}
-					continue;
-				}
-				if (!result?.manage) return;
-
-				const state: StashState = result.manage.meta.state;
-				const choices =
-					state === "active"
-						? ["Close with outcome", "Back"]
-						: state === "closed"
-							? ["Reopen", "Rotate (archive)", "Back"]
-							: ["Pick up", "Rotate (archive)", "Back"];
-				const action = await ctx.ui.select(`Stash ${result.manage.meta.id}`, choices);
-				if (!action || action === "Back") continue;
-				try {
-					if (action === "Pick up") {
-						const selected = await readStash(storeDir(), result.manage.meta.id);
-						if ("error" in selected) throw readFailure(selected);
-						artifact = selected;
-					} else if (action === "Close with outcome") {
-						const outcome = await ctx.ui.input("Concrete outcome for this stashed effort:");
-						if (outcome?.trim()) {
-							const transitioned = await changeLifecycle(result.manage.meta.id, { action: "close", outcome });
-							ctx.ui.notify(`Closed stash ${transitioned.id}.`, "info");
-						}
-					} else if (action === "Reopen") {
-						const confirmed = await ctx.ui.confirm(
-							"Reopen stashed effort?",
-							`Clear the closure outcome on ${result.manage.meta.id} and return it to open state?`,
-						);
-						if (confirmed) {
-							const transitioned = await changeLifecycle(result.manage.meta.id, { action: "reopen" });
-							ctx.ui.notify(`Reopened stash ${transitioned.id}.`, "info");
-						}
-					} else if (action === "Rotate (archive)") {
-						const confirmed = await ctx.ui.confirm(
-							"Rotate stashed effort?",
-							`Move ${result.manage.meta.id} into the stash store's .trash directory? It will disappear from listings and pickup; the file remains recoverable.`,
-						);
-						if (confirmed) {
-							const rotated = await rotateLifecycle(result.manage.meta.id);
-							ctx.ui.notify(`Rotated stash ${rotated.id} to the stash archive.`, "info");
-						}
-					}
-				} catch (error) {
-					fail(safeLine(error instanceof Error ? error.message : String(error)));
-					return;
-				}
-			}
-
-			let activated: Awaited<ReturnType<typeof changeLifecycle>>;
-			try {
-				activated = await changeLifecycle(artifact.id, { action: "activate" });
-			} catch (error) {
-				fail(`Could not activate stash for pickup: ${safeLine(error instanceof Error ? error.message : String(error))}`);
+			if (!verb) {
+				await browseAndPickup(pi, ctx, fail, overrides?.copyText);
 				return;
 			}
-			try {
-				const message = buildPickupMessage(activated.id, activated.content, { currentCwd: ctx.cwd });
-				if (ctx.isIdle()) {
-					pi.sendUserMessage(message);
-				} else {
-					pi.sendUserMessage(message, { deliverAs: "followUp" });
-					if (ctx.hasUI) ctx.ui.notify(`Queued stash ${activated.id} for pickup after the current turn.`, "info");
-				}
-			} catch (error) {
-				fail(
-					`Stash ${activated.id} is active, but pickup delivery failed: ${safeLine(error instanceof Error ? error.message : String(error))}`,
-				);
-			}
+
+			fail(`Unknown /stash action "${safeLine(verb)}". Create with /stash new <hint>, or use /stash help.`);
 		},
 	});
 }

@@ -174,7 +174,7 @@ describe("stash entrypoint", () => {
 		assert.match(result.content[0].text, /Full artifact:/);
 	});
 
-	it("uses an explicit id as a direct, deterministic pickup shortcut", async () => {
+	it("uses /stash get <id> as a direct, deterministic pickup", async () => {
 		const { commands, sent, tools } = registry();
 		const ctx: any = {
 			mode: "tui",
@@ -183,11 +183,11 @@ describe("stash entrypoint", () => {
 			ui: {
 				notify: () => {},
 				custom: async () => {
-					throw new Error("the browser should not open for an exact id");
+					throw new Error("the browser should not open for an explicit get");
 				},
 			},
 		};
-		await commands.get("stash").handler("20270724T100000Z-pickup-target", ctx);
+		await commands.get("stash").handler("get 20270724T100000Z-pickup-target", ctx);
 		assert.equal(sent.length, 1);
 		assert.match(sent[0].content, /UNIQUE_PICKUP_BODY/);
 		assert.match(sent[0].content, /stash_complete.*20270724T100000Z-pickup-target/);
@@ -208,7 +208,7 @@ describe("stash entrypoint", () => {
 			throw new Error("session delivery unavailable");
 		};
 		const notifications: string[] = [];
-		await registered.commands.get("stash").handler(record.id, {
+		await registered.commands.get("stash").handler(`get ${record.id}`, {
 			mode: "rpc",
 			hasUI: true,
 			cwd: "/workspace",
@@ -267,7 +267,7 @@ describe("stash entrypoint", () => {
 			ui: { notify: (message: string) => notifications.push(message) },
 		};
 
-		await commands.get("stash").handler(`pickup ${record.id}`, ctx);
+		await commands.get("stash").handler(`get ${record.id}`, ctx);
 		assert.equal(sent.length, 1);
 		assert.match(sent[0].content, /VERB_PICKUP_BODY/);
 		assert.ok((await listStashes(dir, { state: "active" })).some((entry) => entry.meta.id === record.id));
@@ -277,7 +277,7 @@ describe("stash entrypoint", () => {
 		assert.ok((await listStashes(dir, { state: "closed" })).some((entry) => entry.meta.id === record.id));
 
 		notifications.length = 0;
-		await commands.get("stash").handler(record.id, ctx);
+		await commands.get("stash").handler(`get ${record.id}`, ctx);
 		assert.match(notifications.join("\n"), /closed; reopen it before pickup/i);
 		assert.equal(sent.length, 1, "a closed effort must not inject a pickup message");
 	});
@@ -316,10 +316,10 @@ describe("stash entrypoint", () => {
 				},
 			},
 		});
-		assert.match(notifications.join("\n"), /requires TUI mode.*stash_list/i);
+		assert.match(notifications.join("\n"), /requires TUI mode.*stash_list.*\/stash get/i);
 		await assert.rejects(
 			commands.get("stash").handler("", { mode: "json", hasUI: false, ui: {} }),
-			/requires TUI mode.*stash_list/i,
+			/requires TUI mode.*stash_list.*\/stash get/i,
 		);
 	});
 
@@ -380,7 +380,7 @@ describe("stash entrypoint", () => {
 			},
 		});
 		assert.equal(copied.length, 1);
-		assert.match(copied[0], /^pi "\/stash \d{8}T\d{6}Z-/);
+		assert.match(copied[0], /^pi "\/stash get \d{8}T\d{6}Z-/);
 	});
 
 	it("closes an active stash from the direct outcome key", async () => {
@@ -392,7 +392,7 @@ describe("stash entrypoint", () => {
 		await transitionStash(dir, record.id, { action: "activate" });
 		const { commands } = registry();
 		let panels = 0;
-		await commands.get("stash").handler("Direct browser completion", {
+		await commands.get("stash").handler("", {
 			mode: "tui",
 			hasUI: true,
 			isIdle: () => true,
@@ -403,8 +403,12 @@ describe("stash entrypoint", () => {
 					new Promise((resolve) => {
 						const tui = { terminal: { rows: 20 }, requestRender: () => {} };
 						const component = factory(tui, theme, {}, resolve);
-						if (panels++ === 0) component.handleInput("o");
-						else {
+						if (panels++ === 0) {
+							component.handleInput("/");
+							for (const ch of "Direct browser completion") component.handleInput(ch);
+							component.handleInput("\x1b");
+							component.handleInput("o");
+						} else {
 							component.handleInput("/");
 							assert.match(component.render(104).join("\n"), /filter Direct browser completion▌/);
 							component.handleInput("\x1b");
@@ -426,7 +430,7 @@ describe("stash entrypoint", () => {
 		const { commands } = registry();
 		let overlays = 0;
 		const notifications: string[] = [];
-		await commands.get("stash").handler("Separate dialog target", {
+		await commands.get("stash").handler("", {
 			mode: "tui",
 			hasUI: true,
 			isIdle: () => true,
@@ -439,8 +443,12 @@ describe("stash entrypoint", () => {
 					new Promise((resolve) => {
 						const tui = { terminal: { rows: 20 }, requestRender: () => {} };
 						const component = factory(tui, theme, {}, resolve);
-						if (overlays++ === 0) component.handleInput("\t");
-						else {
+						if (overlays++ === 0) {
+							component.handleInput("/");
+							for (const ch of "Separate dialog target") component.handleInput(ch);
+							component.handleInput("\x1b");
+							component.handleInput("\t");
+						} else {
 							component.handleInput("\x1b");
 							component.handleInput("\x1b");
 						}
@@ -528,26 +536,76 @@ describe("stash creation", () => {
 		assert.ok((await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Distilled handover"));
 	});
 
-	it("rejects a second dispatch while a creation is in flight", async () => {
-		const pending: Array<() => void> = [];
-		const never = () =>
-			new Promise<void>((resolve) => {
-				pending.push(resolve);
-			});
+	it("reserves the single-flight slot before asynchronous setup", async () => {
+		type ExecResult = { code: number; stdout: string; stderr: string };
+		let releaseExec!: (result: ExecResult) => void;
+		const execGate = new Promise<ExecResult>((resolve) => {
+			releaseExec = resolve;
+		});
+		const never = () => new Promise<void>(() => {});
 		const factory = async () => ({
 			prompt: never,
 			getLastAssistantText: () => "",
 			abort: async () => {},
 			dispose: () => {},
 		});
-		const { commands } = registry({ distillSessionFactory: factory });
+		const { commands, pi } = registry({ distillSessionFactory: factory });
+		pi.exec = async () => execGate;
 		const notifications: string[] = [];
 		const ctx = creationCtx({ notify: (message: string) => notifications.push(message) });
-		await commands.get("stash").handler("new", ctx);
+
+		const first = commands.get("stash").handler("new first dispatch", ctx);
 		await commands.get("stash").handler("new second try", ctx);
 		assert.match(notifications.join("\n"), /already in flight.*abort/i);
-		// Release the stuck job so later tests share a clean slot.
+
+		releaseExec({ code: 0, stdout: "main\n", stderr: "" });
+		await first;
 		await commands.get("stash").handler("abort", ctx);
+	});
+
+	it("does not let aborted setup clear a replacement creation slot", async () => {
+		type ExecResult = { code: number; stdout: string; stderr: string };
+		const releases: Array<(result: ExecResult) => void> = [];
+		const never = () => new Promise<void>(() => {});
+		const factory = async () => ({
+			prompt: never,
+			getLastAssistantText: () => "",
+			abort: async () => {},
+			dispose: () => {},
+		});
+		const { commands, pi } = registry({ distillSessionFactory: factory });
+		pi.exec = () =>
+			new Promise<ExecResult>((resolve) => {
+				releases.push(resolve);
+			});
+		const notifications: string[] = [];
+		const ctx = creationCtx({ notify: (message: string) => notifications.push(message) });
+
+		const first = commands.get("stash").handler("new first setup", ctx);
+		await commands.get("stash").handler("abort", ctx);
+		const replacement = commands.get("stash").handler("new replacement setup", ctx);
+		assert.equal(releases.length, 2);
+
+		releases[0]({ code: 0, stdout: "main\n", stderr: "" });
+		await first;
+		notifications.length = 0;
+		await commands.get("stash").handler("new third dispatch", ctx);
+		assert.match(notifications.join("\n"), /already in flight.*abort/i);
+
+		releases[1]({ code: 0, stdout: "main\n", stderr: "" });
+		await replacement;
+		await commands.get("stash").handler("abort", ctx);
+	});
+
+	it("throws setup failures when no UI can carry the error", async () => {
+		const { commands } = registry();
+		await assert.rejects(
+			commands.get("stash").handler(
+				"new headless creation",
+				creationCtx({}, { mode: "json", hasUI: false, model: undefined }),
+			),
+			/No model is available/,
+		);
 	});
 
 	it("aborts an in-flight creation, clears the status, and frees the slot", async () => {
@@ -568,7 +626,7 @@ describe("stash creation", () => {
 			notify: (message: string) => notifications.push(message),
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 		});
-		await commands.get("stash").handler("new", ctx);
+		await commands.get("stash").handler("new create one", ctx);
 		assert.ok(statuses.some((text) => text.startsWith("stash: running")));
 		await commands.get("stash").handler("abort", ctx);
 		assert.equal(session.aborted, true, "the job must receive the abort");
@@ -602,11 +660,11 @@ describe("stash creation", () => {
 		const ctx = creationCtx({
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 		});
-		await commands.get("stash").handler("new first", ctx);
+		await commands.get("stash").handler("new first hint", ctx);
 		await flushUnderMockTimers(50);
 		// First job settled; its held status is pending a three-second clear.
 		assert.ok(statuses.some((text) => text === "stash: skipped"));
-		await commands.get("stash").handler("new second", ctx);
+		await commands.get("stash").handler("new second hint", ctx);
 		const before = statuses.length;
 		// Past the first job's hold deadline, its stale clear timer must not wipe
 		// the new running status: startCreation clears it before dispatch.
@@ -624,7 +682,7 @@ describe("stash creation", () => {
 		const ctx = creationCtx({
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 		});
-		await commands.get("stash").handler("new", ctx);
+		await commands.get("stash").handler("new skip me", ctx);
 		await flushUnderMockTimers(50);
 		assert.ok(statuses.some((text) => text === "stash: skipped"));
 		await mock.timers.tick(3100);
@@ -643,7 +701,7 @@ describe("stash creation", () => {
 			},
 			{ mode: "rpc" },
 		);
-		await commands.get("stash").handler("new", ctx);
+		await commands.get("stash").handler("new rpc dispatch", ctx);
 		await waitForSettle();
 		assert.equal(sent.length, 0);
 		assert.ok((await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Distilled handover"));
@@ -660,7 +718,7 @@ describe("stash creation", () => {
 			notify: (message: string, level: string) => notifications.push(`${level}: ${message}`),
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 		});
-		await commands.get("stash").handler("new", ctx);
+		await commands.get("stash").handler("new failing run", ctx);
 		await waitForSettle();
 		assert.match(notifications.join("\n"), /error: Stash distillation failed.*did not return valid JSON/);
 		assert.ok(statuses.some((text) => text === "stash: failed"));
@@ -676,7 +734,7 @@ describe("stash creation", () => {
 			notify: (message: string) => notifications.push(message),
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 		});
-		await commands.get("stash").handler("new", ctx);
+		await commands.get("stash").handler("new skip run", ctx);
 		await waitForSettle();
 		assert.match(notifications.join("\n"), /Nothing worth stashing/);
 		assert.ok(statuses.some((text) => text === "stash: skipped"));
@@ -699,11 +757,131 @@ describe("stash creation", () => {
 		const ctx = creationCtx({
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 		});
-		await commands.get("stash").handler("new", ctx);
+		await commands.get("stash").handler("new shutdown target", ctx);
 		const shutdownHandler = events.get("session_shutdown");
 		assert.equal(typeof shutdownHandler, "function", "a session_shutdown handler must be registered");
 		await shutdownHandler({}, ctx);
 		assert.equal(session.aborted, true, "session shutdown must abort the in-flight job");
 		assert.equal(statuses.at(-1), "<clear>", "session shutdown must clear the status");
+	});
+});
+
+describe("stash command grammar", () => {
+	it("advertises actions and completes ids without offering bare-id pickup", async () => {
+		const { commands } = registry();
+		const complete = commands.get("stash").getArgumentCompletions;
+		const actions = await complete("");
+		assert.deepEqual(
+			actions.map((item: any) => item.value),
+			["new", "get", "complete", "reopen", "rotate", "abort", "help"],
+		);
+		assert.equal(await complete("20270724"), null, "bare ids must not autocomplete as actions");
+		const ids = await complete("get 20270724");
+		assert.ok(ids.some((item: any) => item.value === "get 20270724T100000Z-pickup-target"));
+	});
+
+	it("always treats the first word as an action", async () => {
+		const { commands } = registry();
+		const notifications: string[] = [];
+		const ctx = {
+			mode: "rpc",
+			hasUI: true,
+			ui: { notify: (message: string) => notifications.push(message) },
+		};
+		await commands.get("stash").handler("abort the plan", ctx);
+		assert.match(notifications.join("\n"), /Usage: \/stash abort/);
+		notifications.length = 0;
+		await commands.get("stash").handler("help me", ctx);
+		assert.match(notifications.join("\n"), /Usage: \/stash help/);
+	});
+
+	it("creates through /stash new and preserves an action-shaped hint", async () => {
+		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
+		const notifications: string[] = [];
+		await commands.get("stash").handler(
+			"new abort the plan",
+			creationCtx({ notify: (message: string) => notifications.push(message) }),
+		);
+		assert.match(notifications.join("\n"), /hint: abort the plan/);
+		await waitForSettle();
+		assert.ok((await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Distilled handover"));
+	});
+
+	it("rejects bare creation text as an unknown action", async () => {
+		const { commands } = registry();
+		const notifications: string[] = [];
+		await commands.get("stash").handler("focus the harness", {
+			mode: "rpc",
+			hasUI: true,
+			ui: { notify: (message: string) => notifications.push(message) },
+		});
+		assert.match(notifications.join("\n"), /Unknown \/stash action.*\/stash new <hint>/);
+	});
+
+	it("requires a non-empty hint for /stash new", async () => {
+		const { commands } = registry();
+		await assert.rejects(
+			commands.get("stash").handler("new", { mode: "json", hasUI: false, ui: {} }),
+			/Usage: \/stash new <hint>/,
+		);
+	});
+
+	it("hard-rejects the removed /stash pickup verb", async () => {
+		const { commands } = registry();
+		const notifications: string[] = [];
+		await commands.get("stash").handler("pickup some-id", {
+			mode: "rpc",
+			hasUI: true,
+			ui: { notify: (message: string) => notifications.push(message) },
+		});
+		assert.match(notifications.join("\n"), /Removed: \/stash pickup.*\/stash get/);
+	});
+
+	it("prints usage for /stash help without touching the store", async () => {
+		const { commands } = registry();
+		const notifications: string[] = [];
+		await commands.get("stash").handler("help", {
+			mode: "rpc",
+			hasUI: true,
+			ui: { notify: (message: string) => notifications.push(message) },
+		});
+		assert.match(notifications.join("\n"), /Create:[\s\S]*\/stash new <hint>[\s\S]*\/stash get/);
+	});
+
+	it("requires one id for /stash get", async () => {
+		const { commands } = registry();
+		await assert.rejects(
+			commands.get("stash").handler("get", { mode: "json", hasUI: false, ui: {} }),
+			/Usage: \/stash get/,
+		);
+		await assert.rejects(
+			commands.get("stash").handler("get pickup target", { mode: "json", hasUI: false, ui: {} }),
+			/Usage: \/stash get/,
+		);
+	});
+
+	it("guards a bare full-id arg as a stale resume string, not an action", async () => {
+		const { commands } = registry();
+		await assert.rejects(
+			commands.get("stash").handler("20270724T100000Z-pickup-target", { mode: "json", hasUI: false, ui: {} }),
+			/Pick up with: \/stash get 20270724T100000Z-pickup-target/,
+		);
+	});
+
+	it("picks up via /stash get using a unique id prefix", async () => {
+		const { commands, sent } = registry();
+		await commands.get("stash").handler("get 20270724", {
+			mode: "tui",
+			hasUI: true,
+			isIdle: () => true,
+			ui: {
+				notify: () => {},
+				custom: async () => {
+					throw new Error("the browser must not open for an id-prefix match");
+				},
+			},
+		});
+		assert.equal(sent.length, 1);
+		assert.match(sent[0].content, /UNIQUE_PICKUP_BODY/);
 	});
 });

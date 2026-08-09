@@ -82,9 +82,9 @@ export function utcTimestamp(now: Date = new Date()): string {
 		.replace(/\.\d{3}/, "");
 }
 
-/** Copy-pasteable terminal shorthand; /stash injects the artifact before the agent turn starts. */
+/** Copy-pasteable terminal shorthand; `/stash get` injects the artifact before the agent turn starts. */
 export function resumeCommand(id: string): string {
-	return `pi "/stash ${id}"`;
+	return `pi "/stash get ${id}"`;
 }
 
 function section(heading: string, items: string[]): string[] {

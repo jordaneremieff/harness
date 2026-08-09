@@ -1,6 +1,6 @@
 # stash: session continuity
 
-The agent distills an effort into a durable Markdown handover. The extension owns deterministic storage, discovery, and pickup. The active agent distills its own effort through `stash_write`; a separate bounded agent can distill the live session on request through `/stash new`, which adds no turn to the live session.
+The agent distills an effort into a durable Markdown handover. The extension owns deterministic storage, discovery, and pickup. The active agent distills its own effort through `stash_write`; a separate bounded agent can distill the live session on request through `/stash new <hint>`, which adds no turn to the live session.
 
 ## Surfaces
 
@@ -11,14 +11,15 @@ The agent distills an effort into a durable Markdown handover. The extension own
 | `stash_read` | tool | Read by exact id or unique prefix. Results are capped at 50 KiB or 2000 lines and include the path when truncated. |
 | `stash_complete` | tool | Close an active effort with a required concrete outcome. |
 | `stash_rotate` | tool | Archive a stale open or closed effort so it no longer appears in listings or pickup; the file moves to the store's dot-hidden `.trash` directory and remains recoverable. |
-| `/stash` | command | Browse and manage efforts; direct pickup, completion, and reopening are available as explicit verbs. |
-| `/stash new` | command | Dispatch a separate agent to distill the live session plus an optional hint into a new stash. |
-| `/stash abort` | command | Cancel the in-flight `/stash new` job. |
+| `/stash` | command | Browse and pick up efforts (TUI overlay); bare invocation opens the browser. |
+| `/stash new <hint>` | command | Dispatch a separate agent to distill the live session plus the hint into a new stash. |
+| `/stash get <id>` | command | Pick up a stash by full id or unique prefix. |
+| `/stash abort` | command | Cancel the in-flight creation job. |
 
 Pickup is one system action. The command reads the selected artifact and sends it as the next user message through `pi.sendUserMessage()`. The agent does not need to orchestrate a second `stash_read` call. The current working directory is never changed implicitly; the pickup message names both the current workspace and the recorded project, and calls out a mismatch before edits begin. `stash_write` emits the equivalent fresh-session shortcut:
 
 ```bash
-pi "/stash <id>"
+pi "/stash get <id>"
 ```
 
 ## Lifecycle
@@ -38,15 +39,26 @@ lifecycle side effect.
 Command forms are:
 
 ```text
-/stash
-/stash <id-or-prefix>
-/stash new <hint>
-/stash abort
-/stash pickup <id-or-prefix>
-/stash complete <id-or-prefix> <concrete outcome>
-/stash reopen <id-or-prefix>
-/stash rotate <id-or-prefix>
+/stash                         browse & pick up (TUI overlay)
+/stash new <hint>              distill the live session into a new stash
+/stash abort                   cancel an in-flight creation
+/stash get <id>                pick up a stash
+/stash complete <id> <outcome> close an active stash with a concrete outcome
+/stash reopen <id>             return a closed stash to open
+/stash rotate <id>             archive a stale stash (recoverable)
+/stash help                    show usage
 ```
+
+Every `<id>` may be a full stash id or a unique prefix.
+
+The first token always selects an action. Creation therefore requires `new`, so
+hints such as `abort the plan` and `help me` remain unambiguous as
+`/stash new abort the plan` and `/stash new help me`. Unknown actions show
+replacement guidance instead of silently starting a distiller. A bare token shaped
+like a full stash id is treated as a stale `pi "/stash <id>"` resume string and
+rejected with `use /stash get <id>`. The previous `pickup` verb is hard-rejected
+with its replacement syntax; it is not aliased. Typing `/stash ` autocompletes the
+actions; after an id-bearing action it completes stash id prefixes.
 
 Rotation is the operator-initiated archive path for stale efforts: an open or
 closed artifact moves atomically into the store's dot-hidden `.trash` directory
@@ -73,7 +85,7 @@ The command handler returns immediately; the live agent receives no turn. The
 job is fire-and-forget with hard bounds: zero tools, one prompt, a 180-second
 wall-clock auto-abort, and an AbortController that `/stash abort` and
 `session_shutdown` both trigger. At most one creation runs at a time; a second
-`/stash new` during a run reports the in-flight creation. The result promise
+creation dispatch during a run reports the in-flight creation. The result promise
 settles exactly once and never rejects, so a detached callback cannot crash
 the host session.
 
@@ -91,8 +103,9 @@ In JSON/print the write still happens and the artifact appears in
 `stash_list`; the command itself is silent, matching the existing
 silent-success contract.
 
-Only TUI mode constructs the custom browser. Exact pickup and lifecycle verbs remain
-usable without it. RPC receives actionable notifications; bare JSON/print browser
+Only TUI mode constructs the custom browser. Headless callers can use `stash_list`
+to discover ids; the explicit `get` and lifecycle verbs remain usable without the
+browser. RPC receives actionable notifications; bare JSON/print browser
 invocations fail with directions to the direct commands and model-facing tools rather
 than silently returning or writing to Pi-owned stdout. In JSON/print, a successful
 direct verb is silent because fire-and-forget UI is a no-op in those modes; failures

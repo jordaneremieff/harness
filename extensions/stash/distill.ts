@@ -1,5 +1,5 @@
 /**
- * Background distillation for /stash new.
+ * Background distillation for /stash new <hint>.
  *
  * One bounded, tool-free agent session distills the live session transcript
  * plus an operator hint into a stash payload. The extension owns the whole

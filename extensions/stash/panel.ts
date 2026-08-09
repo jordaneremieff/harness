@@ -271,7 +271,7 @@ export class StashPanel {
 			}
 		};
 		section("What this is", [
-			"A two-pane browser over durable stashed work. Select an effort on the left and read its handover on the right.",
+			"A two-pane browser over durable stashed work. Select an effort on the left and read its handover on the right. To create another stash, run /stash new <hint>; the hint guides what the distiller preserves.",
 		]);
 		section("What it does", [
 			"Pickup activates a stash and resumes it in this session. Active efforts can close with a concrete outcome. Copy keeps the browser open; the actions dialog exposes guarded reopen and archive operations.",
