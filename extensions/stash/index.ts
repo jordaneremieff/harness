@@ -99,7 +99,20 @@ function startSpinner(ctx: StatusUi): void {
 }
 
 function settleDistill(slot: InFlightJob, outcome: DistillOutcome, ctx: StatusUi): void {
-	if (inFlight !== slot || slot.job === null) return;
+	if (inFlight !== slot || slot.job === null) {
+		// The slot was released while the artifact was already committing: an abort
+		// can land after the distiller's last cancellation check. The file exists on
+		// disk, so report it. Silence here would leave an unannounced artifact after
+		// the operator was told the creation was cancelled.
+		if (outcome.ok === true) {
+			notify(
+				ctx,
+				`The stash artifact was already written when the creation was cancelled: ${outcome.record.id}\n${safeLine(outcome.path)}\n\nRotate it with /stash rotate ${outcome.record.id} if you do not want it.`,
+				"warning",
+			);
+		}
+		return;
+	}
 	inFlight = null;
 	stopSpinner();
 	clearResultStatus();

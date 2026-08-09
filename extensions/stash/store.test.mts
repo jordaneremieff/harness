@@ -236,6 +236,44 @@ describe("readStash", () => {
 	});
 });
 
+describe("artifact header beyond the scan window", () => {
+	/** An artifact whose frontmatter is longer than the 16 KiB header scan. */
+	async function writeLongHeader(store: string, id: string): Promise<string> {
+		const path = join(store, `${id}.md`);
+		const filler = "x".repeat(20 * 1024);
+		await writeFile(
+			path,
+			`---\nid: ${JSON.stringify(id)}\nnote: ${JSON.stringify(filler)}\nstate: "active"\n---\n\n# body\n`,
+			{ mode: 0o600 },
+		);
+		return path;
+	}
+
+	it("never reports an unread header as an open state", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-longheader-"));
+		await chmod(store, 0o700);
+		const id = "20260726T100000Z-long-header";
+		await writeLongHeader(store, id);
+		const open = await listStashes(store, { state: "open" });
+		assert.equal(open.some((entry) => entry.meta.id === id), false);
+		const all = await listStashes(store, { limit: 50 });
+		const entry = all.find((item) => item.meta.id === id);
+		assert.ok(entry, "the artifact must still be listed without a state filter");
+		assert.ok(entry?.previewError, "an unread header must be reported, not defaulted");
+		await rm(store, { recursive: true, force: true });
+	});
+
+	it("refuses to rotate an artifact whose state it cannot verify", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-longheader-"));
+		await chmod(store, 0o700);
+		const id = "20260726T110000Z-long-header";
+		const path = await writeLongHeader(store, id);
+		await assert.rejects(rotateStash(store, id), /state cannot be verified/);
+		assert.ok((await stat(path)).isFile(), "the artifact must stay in place");
+		await rm(store, { recursive: true, force: true });
+	});
+});
+
 describe("rotateStash", () => {
 	it("moves an open artifact into the dot-hidden archive with identical content", async () => {
 		const { record, path } = await writeStash(

@@ -193,6 +193,20 @@ interface ListOptions {
 	previewBytes?: number;
 }
 
+/**
+ * True when a truncated prefix opens a frontmatter header the scan window never
+ * closed. `parseFrontmatter` cannot tell that apart from an artifact with no
+ * header at all, and the difference matters: an unread header means the state is
+ * UNKNOWN, not the default `open`. Treating it as open would let a state filter
+ * report an active effort as open and let rotation move it to the trash.
+ */
+function headerBeyondScan(text: string, truncated: boolean): boolean {
+	if (!truncated) return false;
+	const lines = text.split("\n");
+	if (lines[0]?.trim() !== "---") return false;
+	return !lines.slice(1).some((line) => line.trim() === "---");
+}
+
 async function readPrefix(path: string, maxBytes: number): Promise<{ text: string; truncated: boolean; size: number }> {
 	const limit = Math.max(0, Math.floor(maxBytes));
 	const { handle, info } = await openRegular(path);
@@ -269,6 +283,9 @@ export async function listStashes(dir: string, options: ListOptions = {}): Promi
 		try {
 			const previewBytes = Math.min(MAX_STASH_BYTES - HEADER_SCAN_BYTES, Math.max(0, options.previewBytes ?? 0));
 			const prefix = await readPrefix(path, HEADER_SCAN_BYTES + previewBytes);
+			if (headerBeyondScan(prefix.text, prefix.truncated)) {
+				throw new Error(`header is longer than the ${HEADER_SCAN_BYTES}-byte scan window`);
+			}
 			const parsed = parseFrontmatter(prefix.text);
 			meta = normalizeMeta(name, parsed.meta);
 			if (options.previewBytes !== undefined) {
@@ -485,6 +502,11 @@ export async function rotateStash(dir: string, idOrPrefix: string): Promise<Stas
 		prefix = await readPrefix(located.path, HEADER_SCAN_BYTES);
 	} catch (error) {
 		throw new Error(`failed to read ${located.path}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (headerBeyondScan(prefix.text, prefix.truncated)) {
+		throw new Error(
+			`stash ${located.id} has a header longer than the ${HEADER_SCAN_BYTES}-byte scan window; its state cannot be verified for rotation`,
+		);
 	}
 	const state = currentState(parseFrontmatter(prefix.text).meta);
 	if (state === "active") {

@@ -202,13 +202,19 @@ function messageToText(message: TranscriptMessage): string {
 	return lines.join("\n");
 }
 
-/** Keep the first quarter and the last three quarters, marking the cut. */
+/**
+ * Keep the first quarter and the last three quarters, marking the cut. Cuts fall
+ * on code-point boundaries: slicing UTF-16 units can split a surrogate pair and
+ * put a lone surrogate into the distiller's prompt.
+ */
 export function boundTranscript(text: string, maxChars: number = TRANSCRIPT_MAX_CHARS): string {
 	if (text.length <= maxChars) return text;
+	const points = Array.from(text);
+	if (points.length <= maxChars) return text;
 	const head = Math.floor(maxChars * 0.25);
 	const tail = maxChars - head;
-	const omitted = text.length - head - tail;
-	return `${text.slice(0, head)}\n\n[${omitted} characters omitted]\n\n${text.slice(-tail)}`;
+	const omitted = points.length - head - tail;
+	return `${points.slice(0, head).join("")}\n\n[${omitted} characters omitted]\n\n${points.slice(points.length - tail).join("")}`;
 }
 
 /** The single user message: the operator hint first, then the transcript. */

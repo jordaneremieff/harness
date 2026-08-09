@@ -173,6 +173,16 @@ describe("transcript bounding", () => {
 		assert.match(bound, /\[300 characters omitted\]/);
 		assert.equal(bound.length, 25 + 75 + 4 + "[300 characters omitted]".length);
 	});
+
+	it("cuts on code-point boundaries so no lone surrogate reaches the distiller", () => {
+		const text = "\u{1F600}".repeat(200);
+		const bound = boundTranscript(text, 100);
+		assert.doesNotMatch(bound, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+		assert.doesNotMatch(bound, /(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+		assert.ok(bound.startsWith("\u{1F600}".repeat(25)));
+		assert.ok(bound.endsWith("\u{1F600}".repeat(75)));
+		assert.match(bound, /\[100 characters omitted\]/);
+	});
 });
 
 describe("prompt building", () => {

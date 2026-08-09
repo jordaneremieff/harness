@@ -638,6 +638,37 @@ describe("stash creation", () => {
 		assert.match(notifications.join("\n"), /No stash creation is in flight/);
 	});
 
+	it("reports an artifact that commits after the creation is cancelled", async () => {
+		// The distiller checks the abort signal one last time before it writes. An
+		// abort that lands after that check still publishes the artifact, so the
+		// operator must hear about the file instead of only "cancelled".
+		let abortNow: (() => void) | null = null;
+		const factory = async () => ({
+			prompt: async () => {},
+			getLastAssistantText: () => {
+				abortNow?.();
+				return DISTILL_PAYLOAD;
+			},
+			abort: async () => {},
+			dispose: () => {},
+		});
+		const { commands } = registry({ distillSessionFactory: factory });
+		const notifications: string[] = [];
+		const ctx = creationCtx({
+			notify: (message: string) => notifications.push(message),
+			setStatus: () => {},
+		});
+		abortNow = () => {
+			void commands.get("stash").handler("abort", ctx);
+		};
+		await commands.get("stash").handler("new create one", ctx);
+		await waitForSettle();
+		const text = notifications.join("\n");
+		assert.match(text, /Stash creation cancelled/);
+		assert.match(text, /already written when the creation was cancelled/);
+		assert.match(text, /stash rotate/);
+	});
+
 	it("clears a stale done status before a new dispatch runs", async () => {
 		mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
 		// Job 1 settles on microtasks only (SKIP path), so synchronous ticks drive
