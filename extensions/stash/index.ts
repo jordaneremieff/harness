@@ -151,7 +151,7 @@ async function startCreation(
 		surface("No model is available for this session; cannot start a stash distillation.", "error");
 		return;
 	}
-	let entries;
+	let entries: ReturnType<typeof ctx.sessionManager.buildContextEntries>;
 	try {
 		entries = ctx.sessionManager.buildContextEntries();
 	} catch (error) {
@@ -421,7 +421,7 @@ async function browseAndPickup(
 			else throw new Error(message);
 			return;
 		}
-		let entries;
+		let entries: Awaited<ReturnType<typeof listStashes>>;
 		let hasMore = false;
 		try {
 			const loaded = await listStashes(storeDir(), { limit: 201, previewBytes: 32 * 1024 });

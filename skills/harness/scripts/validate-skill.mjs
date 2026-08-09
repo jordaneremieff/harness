@@ -139,7 +139,7 @@ function stripYamlComment(value) {
 	return result.trim();
 }
 
-function splitTopLevel(value, delimiter) {
+function _splitTopLevel(value, delimiter) {
 	const parts = [];
 	let current = "";
 	let square = 0;
@@ -169,7 +169,7 @@ function splitTopLevel(value, delimiter) {
 }
 
 function parseScalar(raw, path) {
-	let value = stripYamlComment(raw);
+	const value = stripYamlComment(raw);
 	if (!value) return { value: "" };
 	const block = value.match(/^([|>])([+-])?$/);
 	if (block) return { value: "", block: { style: block[1], chomping: block[2] ?? "clip" } };

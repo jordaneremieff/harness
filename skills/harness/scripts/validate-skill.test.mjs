@@ -41,7 +41,8 @@ test("accepts portable optional fields and fragment/reference links", () => {
 		frontmatter: "placeholder",
 		files: { "references/guide.md": "# Part\n" },
 	});
-	const body = "# " + basename(directory) + "\n\nSee [the guide](references/guide.md#part) and [the same guide][guide].\n\n[guide]: references/guide.md#part\n\n````markdown\n[example only](references/not-real.md)\n````\n";
+	// biome-ignore lint/style/useTemplate: test fixture with literal backtick sequences
+const body = "# " + basename(directory) + "\n\nSee [the guide](references/guide.md#part) and [the same guide][guide].\n\n[guide]: references/guide.md#part\n\n````markdown\n[example only](references/not-real.md)\n````\n";
 	writeFileSync(join(directory, "SKILL.md"), `---\nname: ${basename(directory)}\ndescription: >\n  Use when validating a portable\n  Agent Skill fixture. Do not use for non-fixtures.\nlicense: MIT\ncompatibility: Requires Node.js 18+\nmetadata:\n  author: example\n  version: "1.0"\nallowed-tools: Read Bash\n---\n\n${body}`);
 	const { status, report } = runJson(directory);
 	assert.equal(status, 0);
@@ -113,7 +114,7 @@ test("rejects links that escape through an in-skill symlink", () => {
 
 test("detects standalone credentials without relying on nearby keywords", () => {
 	const directory = createSkill({ frontmatter: "placeholder" });
-	const token = "ghp_" + "a".repeat(30);
+	const token = `ghp_${"a".repeat(30)}`;
 	const privateKeyHeader = "-----BEGIN " + "PRIVATE KEY-----";
 	writeFileSync(join(directory, "SKILL.md"), `---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n${token}\n${privateKeyHeader}\n`);
 	const { status, report } = runJson(directory);

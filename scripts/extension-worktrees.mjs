@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -387,7 +387,7 @@ function main() {
   }
   if (command === "activate" || command === "deactivate") {
     if (!name) throw new Error(`${command} requires an extension name`);
-    const result = reconcileSettings(context, records, {
+    const _result = reconcileSettings(context, records, {
       forceActive: command === "activate" ? [name] : [],
       forceInactive: command === "deactivate" ? [name] : [],
     });

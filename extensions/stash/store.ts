@@ -177,6 +177,7 @@ export async function writeStash(
 			} catch (error) {
 				// Do not turn a successful publish into a reported failure that could
 				// prompt a duplicate retry. Any orphan remains private and dot-hidden.
+				// biome-ignore lint/correctness/noUnsafeFinally: guarded rethrow after publish failure
 				if (!published && !hasCode(error, "ENOENT")) throw error;
 			}
 		}
@@ -449,7 +450,8 @@ export async function transitionStash(
 		try {
 			await unlink(temporary);
 		} catch (error) {
-			if (!hasCode(error, "ENOENT") && !published) throw error;
+			// biome-ignore lint/correctness/noUnsafeFinally: guarded rethrow after publish failure
+		if (!hasCode(error, "ENOENT") && !published) throw error;
 		}
 	}
 	return {
@@ -478,7 +480,7 @@ export async function rotateStash(dir: string, idOrPrefix: string): Promise<Stas
 		throw new Error(`${located.error}.${candidates}`);
 	}
 
-	let prefix;
+	let prefix: Awaited<ReturnType<typeof readPrefix>>;
 	try {
 		prefix = await readPrefix(located.path, HEADER_SCAN_BYTES);
 	} catch (error) {

@@ -169,12 +169,13 @@ Before considering repository work complete:
 3. remove temporary files;
 4. confirm documentation links resolve;
 5. run focused tests;
-6. run `npm run typecheck` (TypeScript check against the installed Pi declarations);
-7. run `npm run check` (slice isolation, hardcoded counts);
-8. run the normal full test command;
-9. report remaining untracked or modified files honestly.
+6. run `npm run lint` (Biome lint, same tool as the Pi upstream);
+7. run `npm run typecheck` (TypeScript check against the installed Pi declarations);
+8. run `npm run check` (slice isolation, hardcoded counts);
+9. run the normal full test command;
+10. report remaining untracked or modified files honestly.
 
-The automated gates are `npm run typecheck`, `npm run check` (slice isolation,
+The automated gates are `npm run lint`, `npm run typecheck`, `npm run check` (slice isolation,
 hardcoded counts), and the normal full test command. Credential
 and personal-path scanning, documentation-link resolution, and the git-status
 report have no automated check in the tree; they are maintained by review, and the

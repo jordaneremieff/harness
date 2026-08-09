@@ -13,6 +13,8 @@
   },
   "scripts": {
     "test": "node --test --experimental-test-coverage --test-coverage-lines=60 --test-coverage-functions=60 --test-coverage-branches=50 \"extensions/*/*.test.mts\" \"scripts/*.test.mjs\" \"skills/*/scripts/*.test.mjs\"",
+    "lint": "biome lint --error-on-warnings .",
+    "format": "biome format --error-on-warnings .",
     "typecheck": "tsc -p .",
     "check": "node scripts/check-slices.mjs",
     "worktrees": "node scripts/extension-worktrees.mjs",
@@ -36,6 +38,7 @@
     ]
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.7",
     "@types/node": "^22.19.0",
     "typescript": "^5.9.3"
   }

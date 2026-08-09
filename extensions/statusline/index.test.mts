@@ -7,7 +7,7 @@ import registerStatusline from "./index.ts";
 
 type Tick = { callback: () => void; ms: number; unref: () => void };
 const liveTicks = new Set<Tick>();
-let clearedTicks = 0;
+let _clearedTicks = 0;
 const realSetInterval = globalThis.setInterval;
 const realClearInterval = globalThis.clearInterval;
 
@@ -18,7 +18,7 @@ before(() => {
 		return tick;
 	}) as any;
 	globalThis.clearInterval = ((tick: Tick) => {
-		if (liveTicks.delete(tick)) clearedTicks++;
+		if (liveTicks.delete(tick)) _clearedTicks++;
 	}) as any;
 });
 
@@ -204,7 +204,7 @@ describe("tick ownership", () => {
 		const { handlers } = makePi();
 		const mocks = makeCtx({});
 		liveTicks.clear();
-		clearedTicks = 0;
+		_clearedTicks = 0;
 
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks); // factory creates the tick

@@ -52,7 +52,7 @@ export function scanSession(entries: Iterable<BranchEntryLike>): SessionMetrics 
 	for (const e of entries) {
 		if (e.type !== "message") continue;
 		const msg = e.message;
-		if (!msg || msg.role !== "assistant" || !msg.usage) continue;
+		if (msg?.role !== "assistant" || !msg.usage) continue;
 		const u = msg.usage;
 		m.inputTokens += u.input;
 		m.outputTokens += u.output;

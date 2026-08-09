@@ -34,7 +34,7 @@ interface TranscriptMessage {
 	toolName?: string;
 }
 
-const URL_REFERENCE = /\bhttps?:\/\/[^\s"'`<>{}\[\]()]+/giu;
+const URL_REFERENCE = /\bhttps?:\/\/[^\s"'`<>{}[\]()]+/giu;
 const WORK_ITEM_REFERENCE = /\b[A-Z][A-Z0-9]{1,9}-\d{1,6}\b/g;
 const POSIX_PATH_REFERENCE = /(?<![A-Za-z0-9.:/])(?:~\/|\/)(?:[A-Za-z0-9._+@%=-]+\/)*[A-Za-z0-9._+@%=-]+/g;
 
