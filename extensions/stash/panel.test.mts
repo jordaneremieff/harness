@@ -118,6 +118,17 @@ describe("StashPanel", () => {
 		assert.equal((calls.done as any).selectedId, samples()[0].meta.id);
 	});
 
+	it("accepts Kitty CSI-u printable events for commands and filter text", () => {
+		// A terminal with the Kitty keyboard protocol sends CSI-u for every key,
+		// so raw single-character handling loses letter commands and typed text.
+		const { panel } = rig(samples());
+		panel.handleInput("\x1b[47u");
+		for (const code of [99, 111, 110, 116, 105, 110, 117, 105, 116, 121]) {
+			panel.handleInput(`\x1b[${code}u`);
+		}
+		assert.match(panel.render(104).join("\n"), /filter continuity▌.*1 match/);
+	});
+
 	it("selects pickup on enter and opens lifecycle actions on tab", async () => {
 		const first = rig(samples());
 		first.panel.handleInput("\x1b[B");

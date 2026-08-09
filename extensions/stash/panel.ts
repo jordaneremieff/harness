@@ -2,6 +2,7 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
+	decodeKittyPrintable,
 	Markdown,
 	matchesKey,
 	truncateToWidth,
@@ -348,18 +349,23 @@ export class StashPanel {
 		this.previewScroll = 0;
 	}
 
-	handleInput(data: string): void {
+	handleInput(raw: string): void {
+		// A terminal that negotiated the Kitty keyboard protocol sends CSI-u for
+		// every key, printable ones included. Decode first, the way pi-tui's own
+		// input component does, or letter commands and typed filter text vanish.
+		const decoded = decodeKittyPrintable(raw);
+		const data = decoded ?? raw;
 		if (this.help) {
-			if (data === "h" || matchesKey(data, "escape")) {
+			if (data === "h" || matchesKey(raw, "escape")) {
 				this.help = false;
 				this.helpScroll = 0;
-			} else if (matchesKey(data, "up")) {
+			} else if (matchesKey(raw, "up")) {
 				this.helpScroll = Math.max(0, this.helpScroll - 1);
-			} else if (matchesKey(data, "down")) {
+			} else if (matchesKey(raw, "down")) {
 				this.helpScroll = Math.min(this.helpMaxScroll(), this.helpScroll + 1);
 			} else if (data === "b") {
 				this.helpScroll = Math.max(0, this.helpScroll - this.pageSize());
-			} else if (matchesKey(data, "space")) {
+			} else if (matchesKey(raw, "space")) {
 				this.helpScroll = Math.min(this.helpMaxScroll(), this.helpScroll + this.pageSize());
 			} else {
 				return;
@@ -369,16 +375,16 @@ export class StashPanel {
 		}
 
 		if (this.filtering) {
-			if (matchesKey(data, "escape") || matchesKey(data, "enter")) {
+			if (matchesKey(raw, "escape") || matchesKey(raw, "enter")) {
 				this.filtering = false;
-			} else if (matchesKey(data, "backspace")) {
+			} else if (matchesKey(raw, "backspace")) {
 				this.filter = Array.from(this.filter).slice(0, -1).join("");
 				this.resetSelection();
-			} else if (matchesKey(data, "up")) {
+			} else if (matchesKey(raw, "up")) {
 				this.moveSelection(-1);
-			} else if (matchesKey(data, "down")) {
+			} else if (matchesKey(raw, "down")) {
 				this.moveSelection(1);
-			} else if (data.length > 0 && !matchesKey(data, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(data)) {
+			} else if (data.length > 0 && !matchesKey(raw, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(data)) {
 				this.filter += data;
 				this.resetSelection();
 			} else {
@@ -388,22 +394,22 @@ export class StashPanel {
 			return;
 		}
 
-		if (matchesKey(data, "escape")) {
+		if (matchesKey(raw, "escape")) {
 			this.finish({});
 			return;
 		}
-		if (matchesKey(data, "up")) {
+		if (matchesKey(raw, "up")) {
 			this.moveSelection(-1);
 			this.bump();
 			return;
 		}
-		if (matchesKey(data, "down")) {
+		if (matchesKey(raw, "down")) {
 			this.moveSelection(1);
 			this.bump();
 			return;
 		}
 		if (this.lastWidth < 104) {
-			if (matchesKey(data, "enter")) {
+			if (matchesKey(raw, "enter")) {
 				const selected = this.current();
 				if (selected) this.finish({ selected });
 			}
@@ -414,7 +420,7 @@ export class StashPanel {
 			this.bump();
 			return;
 		}
-		if (matchesKey(data, "space")) {
+		if (matchesKey(raw, "space")) {
 			this.previewScroll = Math.min(this.previewMaxScroll(), this.previewScroll + this.pageSize());
 			this.bump();
 			return;
@@ -430,12 +436,12 @@ export class StashPanel {
 			this.bump();
 			return;
 		}
-		if (matchesKey(data, "enter")) {
+		if (matchesKey(raw, "enter")) {
 			const selected = this.current();
 			if (selected) this.finish({ selected });
 			return;
 		}
-		if (matchesKey(data, "tab")) {
+		if (matchesKey(raw, "tab")) {
 			const selected = this.current();
 			if (selected) this.finish({ manage: selected });
 			return;
