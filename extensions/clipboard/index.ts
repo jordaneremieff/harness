@@ -270,7 +270,9 @@ export default function (pi: ExtensionAPI) {
 			if (signal?.aborted) throw new Error("clipboard_restore cancelled");
 			const entry = await findEntry(params.id, params.date, "clipboard_restore");
 			try {
-				await pbCopy(entry.content);
+				// The signal must reach the child: without it an abort waits out the
+				// 30s pbcopy timeout instead of rejecting promptly.
+				await pbCopy(entry.content, signal);
 			} catch (error) {
 				throw new Error(`pbcopy failed: ${error instanceof Error ? error.message : String(error)}`);
 			}

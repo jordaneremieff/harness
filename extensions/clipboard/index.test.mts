@@ -43,7 +43,7 @@ before(async () => {
 	const pbpaste = join(bin, "pbpaste");
 	await writeFile(
 		pbcopy,
-		'#!/bin/sh\nif [ "$FAKE_PBCOPY_FAIL" = "1" ]; then exit 7; fi\ncat > "$FAKE_CLIPBOARD_FILE"\n',
+		'#!/bin/sh\nif [ "$FAKE_PBCOPY_FAIL" = "1" ]; then exit 7; fi\nif [ "$FAKE_PBCOPY_SLOW" = "1" ]; then sleep 20; fi\ncat > "$FAKE_CLIPBOARD_FILE"\n',
 	);
 	await writeFile(pbpaste, '#!/bin/sh\ncat "$FAKE_CLIPBOARD_FILE" 2>/dev/null || true\n');
 	await chmod(pbcopy, 0o755);
@@ -94,6 +94,34 @@ describe("clipboard entrypoint", () => {
 		await execute(copy, { content: "new arrival" });
 		await execute(restore, { id: first.details.id });
 		assert.equal(await readFile(clipboardFile, "utf8"), "first");
+	});
+
+	it("aborts a restore promptly instead of waiting out the pbcopy timeout", async () => {
+		const { tools } = registry();
+		const list = tools.get("clipboard_list");
+		const restore = tools.get("clipboard_restore");
+		const listed = await execute(list, { limit: 10 });
+		const target = listed.details.ids[0];
+		const controller = new AbortController();
+		process.env.FAKE_PBCOPY_SLOW = "1";
+		const started = Date.now();
+		try {
+			const pending = restore.execute(
+				"call",
+				{ id: target },
+				controller.signal,
+				undefined,
+				{},
+			);
+			setTimeout(() => controller.abort(), 50);
+			await assert.rejects(pending, /pbcopy failed/);
+			assert.ok(
+				Date.now() - started < 5_000,
+				"the abort must reach the child, not wait for the 30s timeout",
+			);
+		} finally {
+			delete process.env.FAKE_PBCOPY_SLOW;
+		}
 	});
 
 	it("throws on tool failure and leaves the current clipboard untouched", async () => {

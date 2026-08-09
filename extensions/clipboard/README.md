@@ -29,7 +29,7 @@ History is one append-only JSONL file per local calendar day at `<agentDir>/clip
 - Individual JSONL records are capped at 64 MiB. This contains malformed or unexpectedly large historical data while accommodating the tool's 8 MiB input limit and JSON escaping.
 - Restores append a new `(restored)` entry because they are real clipboard writes.
 
-A successful `pbcopy` followed by an archive failure is reported as a successful restore with a warning. A `pbcopy` failure remains an error and does not append a false history event.
+A successful `pbcopy` followed by an archive failure is reported as a successful copy or restore with a warning. A `pbcopy` failure remains an error and does not append a false history event.
 
 ## Retention and deletion
 
