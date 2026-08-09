@@ -59,7 +59,11 @@
   merely narrate the code (Cognitive Stratification, Intrinsic Organization).
 - Perform active development for each extension in one dedicated persistent Git
   worktree and stable branch. Reuse that worktree across sessions and tasks. Do
-  not remove it after one implementation cycle.
+  not remove it after one implementation cycle. Run `npm run worktrees:sync`
+  before extension work and after `main` advances. Keep provisional extensions
+  in their worktrees without global Pi activation. Route each active extension
+  through its worktree entrypoint instead of the main package copy. See
+  `docs/conventions/extension-worktrees.md`.
 - Each extension is an independent vertical slice with structural, semantic, state,
   and presentation boundaries. An extension must not import a sibling, parse
   sibling-formatted output, reproduce sibling-owned types or lifecycle states,

@@ -12,9 +12,13 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test --experimental-test-coverage --test-coverage-lines=60 --test-coverage-functions=60 --test-coverage-branches=50 \"extensions/*/*.test.mts\" \"skills/*/scripts/*.test.mjs\"",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=60 --test-coverage-functions=60 --test-coverage-branches=50 \"extensions/*/*.test.mts\" \"scripts/*.test.mjs\" \"skills/*/scripts/*.test.mjs\"",
     "typecheck": "tsc -p .",
     "check": "node scripts/check-slices.mjs",
+    "worktrees": "node scripts/extension-worktrees.mjs",
+    "worktrees:sync": "node scripts/extension-worktrees.mjs sync",
+    "worktrees:status": "node scripts/extension-worktrees.mjs status",
+    "worktrees:hooks": "node scripts/extension-worktrees.mjs install-hooks",
     "warmup:jiti": "pi --help --offline --extension extensions/brave/index.ts --extension extensions/statusline/index.ts --extension extensions/clipboard/index.ts --extension extensions/stash/index.ts"
   },
   "peerDependencies": {
