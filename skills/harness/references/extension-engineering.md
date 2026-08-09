@@ -159,10 +159,10 @@ part of the requested outcome.
   a parent repository's dependency tree.
 - During a host API upgrade, re-test discovery, registration, lifecycle, and
   mode behavior against the new Pi version, and record each broken assumption
-  with its supported replacement. Retention of results, transcripts, and
-  continuation lineage produced under the current system is a product contract
-  to preserve, not predecessor data to migrate: add no readers, aliases, or
-  migrations for retired record shapes (see the skill's no-backward-compatibility rule).
+  with its supported replacement. Add no readers, aliases, or migrations for
+  retired record shapes (see the skill's no-backward-compatibility rule); if a
+  format change breaks existing artifacts, the operator decides at that point
+  whether to migrate or discard.
 
 ## Harness integration
 

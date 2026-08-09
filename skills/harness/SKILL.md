@@ -25,7 +25,7 @@ This harness is built and operated by one party with no external consumers, so e
 Contracts that remain valid are current, not historical:
 
 - Honor the current Pi API and version-declared behavior, and the current public contracts a surface ships.
-- Durable retention of results, transcripts, and continuation lineage produced under the current system is a product contract, not predecessor support.
+- Data the harness produced under an older shape has no standing guarantee of readability. If a change breaks existing artifacts, the operator decides at that point whether to migrate, discard, or leave them unreadable.
 - Tolerant validation of malformed current data is corruption containment, not predecessor-schema support; keep it without interpreting retired field names or reconstructing old behavior.
 - Historical design records may describe superseded systems as history; they do not authorize compatibility code.
 
