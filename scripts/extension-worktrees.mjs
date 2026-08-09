@@ -208,7 +208,7 @@ function repositoryState(repoRoot, worktreeRoot) {
       if (existsSync(path) && readdirSync(path).length > 0) {
         throw new Error(`Expected worktree path is not empty: ${path}`);
       }
-      git(repoRoot, ["worktree", "add", path, branch], { inherit: true });
+      git(repoRoot, ["-c", "core.hooksPath=/dev/null", "worktree", "add", path, branch], { inherit: true });
     }
     records.push({ name, branch, path, entrypoint: join(path, "extensions", name, "index.ts") });
   }
