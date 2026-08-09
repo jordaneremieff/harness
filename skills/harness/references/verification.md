@@ -50,7 +50,8 @@ collapse distinct failures into a single pass percentage.
 6. Update existing or explicitly required README/operator guidance and
    provenance before optional exploratory checks; do not add governance files
    to repositories that do not require them.
-7. Report unperformed live layers explicitly.
+7. Keep unperformed stronger layers in the claim ledger only while they remain
+   material to an in-scope claim.
 
 Stop escalating when the operator's actual claim is reached. Conversely, do not
 substitute many cheap checks for the one runtime layer a claim requires.
@@ -71,14 +72,32 @@ private incidents to make a test realistic.
 
 ## Completion report
 
-State:
-
-- checks and exact results;
-- source/declaration paths used for version-sensitive claims;
-- which claims each result establishes;
-- which package, live Pi, RPC, PTY, privacy, or outcome checks were not run;
-- the narrowest next check for each material open claim still inside the
-  working contract.
-
+Translate the claim ledger into the strongest bounded conclusion that the
+recorded evidence supports. Give exact results when they establish a material
+claim or affect an operator decision; group routine supporting checks. Name
+version-sensitive source or declaration paths only when they are load-bearing.
 Use “tests pass,” “archive contains,” “controlled run observed,” or “operator
 reported” rather than one undifferentiated “verified.”
+
+Do not expose the ledger as the default delivery format. Select limitations by
+impact. Ask whether knowledge of the unperformed check changes acceptance, use,
+release, confidence, or next action. If it changes none of them, keep it out of
+the completion response.
+
+- If a missing check blocks the requested conclusion, say that the result is
+  not established and name the next check.
+- If it limits confidence or scope, state the exact boundary and the check that
+  closes it.
+- If it is only optional stronger evidence and would not change the conclusion
+  or require action, omit it. Do not instruct the operator to run an optional
+  confirmation.
+- Do not report unrelated unrun layers.
+
+Treat an owning repository's required completion or release gate as a material
+task term, not as an optional stronger evidence layer. If a required gate is
+absent, state the blocked status and group routine gates by their effect instead
+of listing unrelated test categories.
+
+Keep repository state separate from verification limitations. Honor binding
+repository state-report rules. Otherwise, report state when uncommitted,
+untracked, unpublished, or concurrent work affects review, use, or release.

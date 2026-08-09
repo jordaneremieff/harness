@@ -76,7 +76,7 @@ Use the selected lane's procedure. Change only owned files. Keep temporary probe
 
 ### 6. Verify by claim
 
-Read [verification.md](references/verification.md) before completion. Build a compact claim ledger: each consequential claim, the lowest evidence layer that reaches it, the check run, the result, and any material unperformed stronger check. Skill activation and output quality require behavior evidence; extension discovery and live UI require their own layers.
+Read [verification.md](references/verification.md) before completion. Build a compact claim ledger as working state: each consequential claim, the lowest evidence layer that reaches it, the check run, the result, and any material unperformed stronger check. Do not reproduce the ledger in the completion response by default. Use it to form a bounded conclusion and select only evidence that helps the operator assess that conclusion. Skill activation and output quality require behavior evidence; extension discovery and live UI require their own layers.
 
 Follow repository sequencing rules for manual review and broad suites. Do not substitute many cheap checks for the one layer that owns the claim.
 
@@ -90,4 +90,8 @@ An explicit operator request authorizes work inside its stated scope. Do not ask
 
 ## Closure
 
-Report the selected surface, files changed, checks and their evidence reach, remaining gaps, and repository state. Keep durable documentation about the current system; keep task chronology, transcripts, evaluation output, and private provenance outside the package.
+Lead with the resulting operator-visible state and its consequence. Name the selected surface and load-bearing files when they help the operator locate or review the result. Explain a change or relationship only when it helps the operator use, review, or decide about the result. Summarize the evidence that supports the conclusion; do not dump the claim ledger or a check transcript.
+
+Report a limitation only when it blocks the requested conclusion, materially reduces confidence in it, or requires operator action. State the affected conclusion, the impact, and the narrowest next check or action. Omit irrelevant unperformed layers and optional stronger checks that would not change the conclusion. A binding repository completion or release gate remains material until satisfied or explicitly waived. Follow the owning repository's state-report requirements; otherwise, report repository state when it changes how the operator must handle the result.
+
+Keep durable documentation about the current system; keep task chronology, transcripts, evaluation output, and private provenance outside the package.

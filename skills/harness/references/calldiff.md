@@ -88,22 +88,25 @@ new condition. Confirm the cause against the source before claiming intent.
 
 ## Presenting and recording the result
 
-Use calldiff's call-tree diff as the primary operator view. The rails show
-nesting, context lines orient the change, and the leading `-` and `+` markers
-identify structural removals and additions. Do not flatten this view into a
-table or redraw it in Mermaid.
+Show the native calldiff tree when the changed call relationship is part of the
+operator's requested understanding or decision, or when omission would hide a
+material structural risk. Do not show it only because TypeScript changed,
+calldiff ran, or the tree has an available interpretation. Otherwise, keep it
+as internal structural verification.
 
-Render the selected output in a `diff`-labelled Markdown block. Pi maps `-`
-lines to its removal color and `+` lines to its addition color. Preserve the
-leading markers, tree rails, spacing, and call order. Narrow the command first
-with `--entry`, `--max-depth`, and path filters. If an excerpt remains
-necessary, label it and preserve one contiguous subtree; do not inject
-commentary into the tree.
+When shown, use calldiff's call-tree diff as the structural evidence. Render it
+in a `diff`-labelled Markdown block; Pi maps `-` lines to its removal color and
+`+` lines to its addition color. Narrow the command to the load-bearing
+entrypoint, depth, and paths. Then show the shortest contiguous native region
+that contains the entrypoint and changed relationship. Label an incomplete
+region as an excerpt. Preserve the leading markers, tree rails, spacing, and
+call order. Cut an unchanged tail at a line boundary; do not insert ellipses or
+comments inside the tree. Do not flatten the tree into a table or redraw it as
+another artifact.
 
-Follow the tree with one short interpretation of the structural change. A
-Mermaid diagram may supplement it only when a wider lifecycle or component flow
-is outside the call tree. Before delivery, confirm that the call-tree shape
-remains the main view and the prose does not restate every line.
+Follow the tree with only the conclusion that it supports. A Mermaid diagram
+may supplement it only when a wider lifecycle or component flow is outside the
+call tree.
 
 In the claim ledger, record:
 
