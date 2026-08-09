@@ -18,6 +18,19 @@ Select, design, change, and verify Pi harness surfaces through one entry point. 
 - Follow the owning repository's provenance, privacy, worktree, testing, and release rules.
 - Keep common decisions here and lane-specific detail in one-level references. Read only the references that the selected lane requires.
 
+## No backward compatibility
+
+This harness is built and operated by one party with no external consumers, so every surface implements only the current contract. Do not carry predecessor behavior: no compatibility shims, schema migrations, dual read/write paths, deprecated field aliases, legacy-record normalizers, or fallback readers for retired shapes. Delete superseded machinery across code, tests, current docs, prompts, and review checklists rather than renaming "legacy" while keeping the mechanism.
+
+Contracts that remain valid are current, not historical:
+
+- Honor the current Pi API and version-declared behavior, and the current public contracts a surface ships.
+- Durable retention of results, transcripts, and continuation lineage produced under the current system is a product contract, not predecessor support.
+- Tolerant validation of malformed current data is corruption containment, not predecessor-schema support; keep it without interpreting retired field names or reconstructing old behavior.
+- Historical design records may describe superseded systems as history; they do not authorize compatibility code.
+
+A genuine one-time migration requires explicit operator direction from concrete data and consequence. Do not infer one from files merely existing on disk.
+
 ## Operator-facing diagrams
 
 Use Pi's native Mermaid rendering without an operator prompt when relationships are easier to understand visually: component or call flow, lifecycle sequence, state transition, ownership boundary, or before/after structure. Emit a compact top-level Mermaid block and pair it with the short conclusion it supports. Use the installed renderer's flowchart, sequence, state, class, or ER forms. Prefer top-to-bottom layouts and short labels so Pi renders within terminal width; simplify or split a diagram before it falls back to source.
@@ -51,7 +64,7 @@ Apply this warrant to an agent-proposed new persistent surface, recurring mechan
 - an observed failure with meaningful cost;
 - a reproducible local omission or measured opportunity;
 - direct structural evidence of a missing capability or inaccessible information; or
-- a binding security, privacy, compatibility, or platform requirement.
+- a binding security, privacy, current-host compatibility, or platform requirement.
 
 Then identify the nearest existing surface, explain why it cannot absorb the change, and state the lowest sufficient layer. For a recurring mechanism, estimate its normal fire rate and operating or context cost, state the observable behavior it changes, name an owner and evaluation point, and define removal conditions.
 
@@ -72,7 +85,7 @@ Do not require this warrant for a fixed repair, an operator-selected outcome or 
 
 Use the selected lane's procedure. Change only owned files. Keep temporary probes and evaluation artifacts outside tracked repository paths. Preserve supported public contracts and make lifecycle, cancellation, state, absence, failure, and delivery behavior explicit where they apply.
 
-**Complete when:** one reviewable capability reaches the requested outcome without unrelated governance or compatibility layers.
+**Complete when:** one reviewable capability reaches the requested outcome without unrelated governance layers or compatibility machinery.
 
 ### 6. Verify by claim
 

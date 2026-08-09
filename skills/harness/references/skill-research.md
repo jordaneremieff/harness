@@ -183,6 +183,7 @@ substitute model memory for research.
 
 The brief must be able to end in not creating a skill. If adoption or
 composition is sufficient, stop and explain that outcome. If extension is
-right, preserve the existing name and public trigger unless there is an
-explicit rename migration plan. If creation is right, carry only the
+right, preserve the existing name and public trigger unless the operator
+explicitly directs a rename; a retired name or trigger receives no
+compatibility path. If creation is right, carry only the
 justified structural lessons into the next design gate.

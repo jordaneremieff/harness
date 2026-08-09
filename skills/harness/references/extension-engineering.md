@@ -44,7 +44,7 @@ request to inspect every listed mechanism.
   behavior at the mediation boundary. An unavailable collaborator must not
   prevent unrelated capability from loading or cleaning up.
 - Do not exchange state through undeclared `globalThis` keys, shared mutable
-  singletons, or load-order assumptions. Reconstruct predecessor coupling
+  singletons, or load-order assumptions. Make any inherited coupling explicit
   behind the mediation boundary or keep the behavior inside one extension.
 - Introduce a shared abstraction when a real interaction establishes its
   semantics and it reduces total system complexity. Give it a narrow owner,
@@ -157,9 +157,12 @@ part of the requested outcome.
   directory is not proof of managed package installation.
 - Keep peer/runtime dependencies intentional and avoid relying accidentally on
   a parent repository's dependency tree.
-- During upgrades, test discovery, registration, lifecycle, mode behavior,
-  persistence compatibility, and migration/recovery paths affected by the API
-  change. Record the old assumption and the supported replacement.
+- During a host API upgrade, re-test discovery, registration, lifecycle, and
+  mode behavior against the new Pi version, and record each broken assumption
+  with its supported replacement. Retention of results, transcripts, and
+  continuation lineage produced under the current system is a product contract
+  to preserve, not predecessor data to migrate: add no readers, aliases, or
+  migrations for retired record shapes (see the skill's no-backward-compatibility rule).
 
 ## Harness integration
 

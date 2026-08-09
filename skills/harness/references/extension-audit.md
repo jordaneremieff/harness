@@ -71,8 +71,8 @@ access, retention, and deletion before collection.
 - Use synthetic fixtures for evaluation. Data-minimize repository audits and
   handoffs as well as shipped artifacts: omit credentials and private incident
   detail, anonymize people, and retain no identifier not needed by the decision.
-- Preserve useful mechanisms and demonstrated jobs when replacing an
-  implementation; do not carry architecture forward merely because it exists.
+- Preserve the demonstrated job when replacing an implementation; do not
+  carry mechanisms or architecture forward merely because they exist.
 
 Finish with the direct disposition, bounded next action, evidence limits, and
 what observation would change the decision.

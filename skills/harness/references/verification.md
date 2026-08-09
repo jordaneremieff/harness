@@ -58,10 +58,11 @@ substitute many cheap checks for the one runtime layer a claim requires.
 
 ## Failure and boundary cases
 
-Exercise the applicable cases: invalid input, empty state, malformed persisted
+Exercise the applicable cases: invalid input, empty state, malformed current
 records, missing resources, duplicate start/stop, partial startup, active
 cancellation, timeout, process failure, no UI, RPC transport, narrow terminal,
-package relocation, and upgrade from existing state. For asynchronous logic,
+package relocation, and upgrade from state produced under the current system;
+add no predecessor-shape readers or migrations for retired state. For asynchronous logic,
 use controlled promises and mocked dependencies so tests own resolution,
 rejection, cancellation, and late results. Select cases by risk and the
 requested capability; this is not a requirement to test every row every time.
