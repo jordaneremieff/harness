@@ -298,7 +298,7 @@ function installHooks(context) {
   const hooksDir = join(commonDir, "hooks");
   mkdirSync(hooksDir, { recursive: true });
   const events = ["post-checkout", "post-commit", "post-merge", "post-rewrite"];
-  const content = `#!/bin/sh\n${hookMarker}\nbranch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)\n[ "$branch" = "main" ] || exit 0\nexec node ${shellQuote(scriptPath)} sync --hook\n`;
+  const content = `#!/bin/sh\n${hookMarker}\nbranch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)\ncase "$branch" in\n  main|extension/*) ;;\n  *) exit 0 ;;\nesac\nexec node ${shellQuote(scriptPath)} sync --hook\n`;
   for (const event of events) {
     const path = join(hooksDir, event);
     if (existsSync(path)) {

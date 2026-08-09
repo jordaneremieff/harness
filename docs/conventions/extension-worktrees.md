@@ -33,8 +33,9 @@ npm run worktrees:hooks
 ```
 
 The hooks run reconciliation after checkout, commit, merge, and rebase operations
-on `main`. A manual reset or a dirty divergent worktree still requires the explicit
-reconciliation command.
+on `main` and `extension/*` branches. A dirty divergent worktree waits until its next
+clean branch event. A manual reset still requires the explicit reconciliation
+command.
 
 Inspect the invariant with:
 
