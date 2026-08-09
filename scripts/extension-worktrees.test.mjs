@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  cleanGitEnvironment,
   parseWorktreePorcelain,
   reconcilePackageEntries,
   worktreeExtensionName,
@@ -29,6 +30,16 @@ function reconcile(packages, options = {}) {
 }
 
 describe("extension worktree parsing", () => {
+  it("removes repository-local variables inherited from Git hooks", () => {
+    const environment = cleanGitEnvironment({
+      PATH: "/bin",
+      GIT_DIR: ".git",
+      GIT_INDEX_FILE: ".git/index",
+      GIT_PREFIX: "extensions/stash/",
+    });
+    assert.deepEqual(environment, { PATH: "/bin" });
+  });
+
   it("maps porcelain branch records to their worktrees", () => {
     const records = parseWorktreePorcelain(`worktree /repo
 HEAD abc

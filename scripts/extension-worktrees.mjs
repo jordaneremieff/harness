@@ -18,11 +18,35 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = resolve(dirname(scriptPath), "..");
 const hookMarker = "# managed by scripts/extension-worktrees.mjs";
+const localGitEnvironmentKeys = [
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_CONFIG",
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_DIR",
+  "GIT_GRAFT_FILE",
+  "GIT_IMPLICIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_NO_REPLACE_OBJECTS",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_PREFIX",
+  "GIT_REPLACE_REF_BASE",
+  "GIT_SHALLOW_FILE",
+  "GIT_WORK_TREE",
+];
+
+export function cleanGitEnvironment(environment) {
+  const clean = { ...environment };
+  for (const key of localGitEnvironmentKeys) delete clean[key];
+  return clean;
+}
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd,
     encoding: "utf8",
+    env: options.env ?? process.env,
     stdio: options.inherit ? "inherit" : "pipe",
   });
   const accepted = options.accept ?? [0];
@@ -38,7 +62,11 @@ function run(command, args, options = {}) {
 }
 
 function git(repoRoot, args, options = {}) {
-  return run("git", args, { cwd: options.cwd ?? repoRoot, ...options });
+  return run("git", args, {
+    cwd: options.cwd ?? repoRoot,
+    env: cleanGitEnvironment(process.env),
+    ...options,
+  });
 }
 
 export function parseWorktreePorcelain(text) {
