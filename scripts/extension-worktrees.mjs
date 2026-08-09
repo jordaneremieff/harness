@@ -354,7 +354,7 @@ function addExtension(context, name) {
     throw new Error("Extension name must use lowercase letters, numbers, and hyphens");
   }
   const branch = `extension/${name}`;
-  const exists = git(context.repoRoot, ["show-ref", "--verify", `refs/heads/${branch}`], {
+  const exists = git(context.repoRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
     accept: [0, 1],
   }).status === 0;
   if (!exists) git(context.repoRoot, ["branch", branch, "main"]);
