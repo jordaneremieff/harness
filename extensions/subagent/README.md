@@ -120,13 +120,15 @@ inheritance.
   `result.txt` (temp-write + rename), and the tool then ends the worker's run.
   The write is capped at 50KB of UTF-8 including a `[truncated]` marker. The
   parent never extracts results heuristically.
-- The worker system prompt states the deliverable protocol and two rules about
-  evidence: a tool that fails with an environment, authorization, or
-  initialization error is a defect to report with its exact error, never a
-  reason to substitute file-system credentials, a direct API call, or another
-  account's access; and a factual claim must come from live evidence obtained in
-  the run, with the age stated for any cached or exported artifact. A worker
-  blocked by a broken tool is told to submit what it established and stop.
+- The worker system prompt states the deliverable protocol and three disclosure
+  rules. They report, they do not restrict: a tool that fails with an
+  environment, authorization, or initialization error must be named with its
+  exact error even when the worker found another way; a workaround is allowed
+  without permission but must say which path it used instead; and cached or
+  exported evidence must carry its age rather than stand in for current state.
+  A worker that cannot finish submits what it established and names the blocker.
+  Nothing here withholds capability from a worker — the extension captures the
+  friction signal (`toolErrors`) and leaves the judgment call with the operator.
 - A worker should call `submit_result` alone in its final turn. If it is
   batched with a sequential tool such as `subagent_steer`/`subagent_kill`, the
   sibling call can be dropped on abort, leaving an unanswered toolCall in the

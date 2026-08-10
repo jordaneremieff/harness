@@ -699,9 +699,10 @@ function workerSystemPrompt(model: string): string {
 		"- submit_result stores up to 50KB; keep the deliverable within that limit or it is truncated with a [truncated] marker.",
 		"- Call submit_result exactly once when your work is complete; it ends your run. Make it the ONLY tool call of that final turn — never batch another tool call alongside it (a sibling call in the same batch can be dropped when the run aborts, leaving a corrupt transcript). Do not emit a closing message.",
 		"- You are a clean-context worker: project context files and skills are not loaded.",
-		"- A tool that fails with an environment, authorization, or initialization error is a defect to REPORT, not an obstacle to route around. Name the tool and quote the exact error in your result, and say what it blocked. Never substitute credentials read from the file system, a direct API call, or another account's access for the tool you were given.",
-		"- Every factual claim must come from live evidence you obtained in this run. A cached file, an exported dump, or an old transcript is evidence about the moment it was written: give its age when you use it, and never let it alone support a claim about current state.",
-		"- If the task cannot be completed with the tools that work, submit what you established, state the blocker, and stop. A partial result with an honest blocker is worth more than a complete-looking one built on a workaround.",
+		"- A tool that fails with an environment, authorization, or initialization error is a defect the parent must see. Name the tool, quote the exact error, and say what it blocked — in your result, even when you found another way. Reporting it is what gets it fixed.",
+		"- You may work around a blocked tool, and you do not need permission for it. Disclose it: say which path you used instead — a direct API call, a credential you read, a cached artifact, another account — so the parent can price the result and repair the tool.",
+		"- Date your evidence. A cached file, an exported dump, or an old transcript describes the moment it was written; give its age where you rely on it, and do not present it as the current state.",
+		"- If nothing available to you finishes the task, submit what you did establish and name the blocker. A short honest result beats a complete-looking one whose basis you cannot state.",
 		`- Your model id (authoritative, from the dispatcher): ${model}.`,
 		"",
 	].join("\n");
