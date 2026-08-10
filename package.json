@@ -41,5 +41,9 @@
     "@biomejs/biome": "2.5.7",
     "@types/node": "^22.19.0",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@earendil-works/pi-protocol": "^0.84.1",
+    "@earendil-works/pi-server": "^0.84.1"
   }
 }
