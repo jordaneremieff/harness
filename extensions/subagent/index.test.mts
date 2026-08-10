@@ -56,8 +56,13 @@ const {
 	collectWorker,
 	currentToolLabel,
 	completionNeedsNotification,
+	dispatchWorker,
 	disposeOnce,
 	finalizeWorker,
+	modelCapabilities,
+	shutdownWorkerSession,
+	thinkingLabel,
+	toolErrorSummary,
 	formatSubagentStatus,
 	listWorkers,
 	pruneTerminalWorkers,
@@ -254,6 +259,222 @@ describe("worker record normalization", () => {
 		finalizeWorker(id, { error: "stopped" });
 		const mode = statSync(join(storeDir, id, "worker.json")).mode & 0o777;
 		assert.equal(mode, 0o600, `worker.json mode was 0${mode.toString(8)}`);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Worker session lifecycle, thinking feasibility, and tool-failure reporting
+// ---------------------------------------------------------------------------
+
+/** The interior shutdownWorkerSession touches: the session's extension runner
+ * and its disposal. */
+function lifecycleSession(hasShutdownHandler: boolean) {
+	const order: string[] = [];
+	let emitted: unknown = null;
+	return {
+		order,
+		get emitted() {
+			return emitted;
+		},
+		session: {
+			extensionRunner: {
+				hasHandlers: (event: string) =>
+					hasShutdownHandler && event === "session_shutdown",
+				emit: async (event: unknown) => {
+					emitted = event;
+					order.push("emit");
+				},
+			},
+			dispose: () => {
+				order.push("dispose");
+			},
+		},
+	};
+}
+
+/** A model registry entry shaped the way pi's own capability reader expects. */
+function registryModel(extra: Record<string, unknown> = {}) {
+	return {
+		provider: "test",
+		id: "model-a",
+		input: ["text"],
+		reasoning: true,
+		...extra,
+	};
+}
+
+function dispatchCtx(model: Record<string, unknown>) {
+	return {
+		cwd: agentDir,
+		thinkingLevel: "high",
+		model,
+		modelRegistry: {
+			find: (provider: string, id: string) =>
+				provider === model.provider && id === model.id ? model : null,
+			getAvailable: () => [model],
+			hasConfiguredAuth: () => true,
+		},
+	};
+}
+
+describe("worker session lifecycle", () => {
+	it("starts and stops a real session's extensions the way a pi mode does", async () => {
+		// The claim this proves: a session built through the SDK never emits
+		// session_start on its own — pi emits it from bindExtensions, which only
+		// the interactive, print, and rpc modes call. An extension that opens its
+		// resources there is dead inside a worker until the dispatcher binds.
+		const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } =
+			await import("@earendil-works/pi-coding-agent");
+		const marker = join(agentDir, "lifecycle-probe.log");
+		const probePath = join(agentDir, "lifecycle-probe.ts");
+		writeFileSync(
+			probePath,
+			[
+				'import { appendFileSync } from "node:fs";',
+				"export default function (pi: any) {",
+				`	pi.on("session_start", () => appendFileSync(${JSON.stringify(marker)}, "start\\n"));`,
+				`	pi.on("session_shutdown", () => appendFileSync(${JSON.stringify(marker)}, "shutdown\\n"));`,
+				"}",
+				"",
+			].join("\n"),
+			"utf-8",
+		);
+		const settingsManager = SettingsManager.create(agentDir, agentDir);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: agentDir,
+			agentDir,
+			settingsManager,
+			noSkills: true,
+			noPromptTemplates: true,
+			noContextFiles: true,
+			additionalExtensionPaths: [probePath],
+		});
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd: agentDir,
+			agentDir,
+			settingsManager,
+			resourceLoader,
+			sessionManager: SessionManager.inMemory(),
+			tools: [],
+		});
+		assert.equal(
+			existsSync(marker),
+			false,
+			"construction alone must not start the extensions",
+		);
+
+		await session.bindExtensions({});
+		assert.equal(readFileSync(marker, "utf-8"), "start\n");
+
+		shutdownWorkerSession(session as never);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.equal(readFileSync(marker, "utf-8"), "start\nshutdown\n");
+	});
+
+	it("emits session_shutdown before disposing a worker session", async () => {
+		const fake = lifecycleSession(true);
+		shutdownWorkerSession(fake.session as never);
+		// The emission is chained, so disposal lands on a later microtask.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.deepEqual(fake.order, ["emit", "dispose"]);
+		assert.deepEqual(fake.emitted, {
+			type: "session_shutdown",
+			reason: "quit",
+		});
+	});
+
+	it("disposes immediately when no extension handles session_shutdown", () => {
+		const fake = lifecycleSession(false);
+		shutdownWorkerSession(fake.session as never);
+		assert.deepEqual(fake.order, ["dispose"]);
+		assert.equal(fake.emitted, null);
+	});
+});
+
+describe("thinking feasibility", () => {
+	it("reports the levels pi itself supports for the model", () => {
+		const reasoning = modelCapabilities(
+			dispatchCtx(registryModel({ thinkingLevelMap: { minimal: null } })) as never,
+			"test/model-a",
+		);
+		// xhigh and max need an explicit mapping; minimal is mapped away; the
+		// remaining levels are supported even though the map never names them.
+		assert.deepEqual(reasoning?.thinkingLevels, ["off", "low", "medium", "high"]);
+
+		const plain = modelCapabilities(
+			dispatchCtx(registryModel({ reasoning: false })) as never,
+			"test/model-a",
+		);
+		assert.deepEqual(plain?.thinkingLevels, ["off"]);
+	});
+
+	it("fails an explicit level the model cannot run, naming the supported set", async () => {
+		const ctx = dispatchCtx(registryModel({ reasoning: false }));
+		const outcome = await dispatchWorker(
+			{ task: "probe", thinking: "high" },
+			{ cwd: agentDir },
+			ctx as never,
+		);
+		assert.equal(outcome.state, "failed");
+		assert.match(outcome.error ?? "", /thinking "high" is not supported/);
+		assert.match(outcome.error ?? "", /supported levels: off/);
+		// The dispatch fails before a worker directory exists.
+		assert.equal(outcome.id, "");
+	});
+
+	it("lets an inherited level through to pi's clamp", async () => {
+		const ctx = dispatchCtx(registryModel({ reasoning: false }));
+		const outcome = await dispatchWorker(
+			{ task: "probe" },
+			{ cwd: join(agentDir, "no-such-directory") },
+			ctx as never,
+		);
+		// The parent's "high" is inherited, not declared: it must not fail the
+		// dispatch. The next check (cwd) is where this dispatch stops.
+		assert.equal(outcome.state, "failed");
+		assert.match(outcome.error ?? "", /cwd does not exist/);
+	});
+
+	it("labels a clamped level with what was requested", () => {
+		assert.equal(
+			thinkingLabel({ thinking: "off", thinkingRequested: "high" }),
+			"thinking:off (requested high)",
+		);
+		assert.equal(
+			thinkingLabel({ thinking: "high", thinkingRequested: "high" }),
+			"thinking:high",
+		);
+		assert.equal(
+			thinkingLabel({ thinking: "high", thinkingRequested: "" }),
+			"thinking:high",
+		);
+	});
+});
+
+describe("tool failure reporting", () => {
+	it("summarizes failed tools and keeps garbage counts out of the record", () => {
+		assert.equal(toolErrorSummary({ toolErrors: {} }), "");
+		assert.equal(
+			toolErrorSummary({ toolErrors: { mcp: 3, read: 1 } }),
+			"mcp ×3, read ×1",
+		);
+
+		seedWorker(
+			"bg-toolerr",
+			runningRecord("bg-toolerr", {
+				toolErrors: { mcp: 2, bogus: "lots", zero: 0 },
+			}),
+		);
+		const record = readWorker("bg-toolerr");
+		assert.deepEqual(record?.toolErrors, { mcp: 2 });
+		assert.match(statusLine(record as never, Date.now()), /tool errors: mcp ×2/);
+
+		seedWorker(
+			"bg-toolerr2",
+			runningRecord("bg-toolerr2", { toolErrors: "not-an-object" }),
+		);
+		assert.deepEqual(readWorker("bg-toolerr2")?.toolErrors, {});
 	});
 });
 

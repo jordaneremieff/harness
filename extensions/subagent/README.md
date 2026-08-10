@@ -32,8 +32,8 @@ the custom entry as an `entry_appended` event; print mode emits the optionally
 filtered text view to the terminal. The roster content-fits short lists; worker
 consoles grow to at most 85% of the terminal (floor 44 rows; pin a fixed cap
 with `PI_SUBAGENT_PANEL_MAX_ROWS`). Roster `thinking:` values
-are the EFFECTIVE level — pi clamps a requested level to what the model
-supports, and the record shows what actually ran.
+are the EFFECTIVE level — pi clamps an inherited level to what the model
+supports — and the requested level is shown beside it when the two differ.
 
 ## Dispatch
 
@@ -53,15 +53,20 @@ Per-task fields: `task` (required), `model`, `thinking`, `tools`, `cwd`,
 - **model** — bare id or `provider/id`, checked only against registry
   availability and configured auth. Omitted: inherits the parent's current
   model.
-- **thinking** — `off|minimal|low|medium|high|xhigh|max`. Omitted: inherits the
-  parent's current thinking level, default `medium`. pi clamps the level to
-  what the model supports; the effective level is what the record reports.
+- **thinking** — `off|minimal|low|medium|high|xhigh|max`. Declared: checked
+  against the levels the model supports (pi's own
+  `getSupportedThinkingLevels`); an unsupported level fails that task and names
+  the supported set, because pi would otherwise clamp it silently and a model
+  without reasoning support lands on `off`. Omitted: inherits the parent's
+  current level, default `medium`, and pi clamps it. The record keeps both
+  values — `thinking` is what ran, `thinkingRequested` is what was asked for —
+  and every roster, dispatch, and result line shows the requested level when it
+  differs.
 - **tools** — omitted: the worker snapshots the parent session's active tool
   surface. Reproduction is by registration source, so it covers built-ins and
-  file-backed extension registrations. A tool registered dynamically from a
-  `session_start` handler is NOT reproduced: the worker session is constructed
-  directly and never emits `session_start`. Such a tool fails the child readback
-  by name before any provider work rather than being silently dropped. Built-ins are rebuilt for the worker cwd, and extension registration
+  file-backed extension registrations, including a tool an extension registers
+  from its `session_start` handler — the worker runs that handler too (see
+  [Worker lifecycle](#worker-lifecycle)). Built-ins are rebuilt for the worker cwd, and extension registration
   files are reloaded from their registered source paths. Provided: exactly the
   declared set plus the disclosed `submit_result` protocol tool. A declared
   tool that is not in the current registry fails the dispatch with its name. A
@@ -94,6 +99,17 @@ inheritance.
 
 - Dispatch returns immediately with a stable `bg-*` worker id; workers never
   block the parent tool call.
+- A worker runs the extension lifecycle a primary session runs. pi emits
+  `session_start` from `AgentSession.bindExtensions`, which only the
+  interactive, print, and rpc modes call, so a session built through the SDK
+  alone never starts its extensions: an extension that opens session-scoped
+  resources in the documented `session_start` hook would hand the worker a
+  registered tool with nothing behind it (a gateway tool whose pool never
+  opened). The dispatcher binds the worker's extensions after construction and
+  emits `session_shutdown` before disposal, so those resources open and close
+  with the worker. Bindings are empty by design: a worker has no operator UI
+  and no command surface, so extensions see pi's no-op UI context and `print`
+  mode.
 - Each worker is an `AgentSession` constructed in this process. Live status
   (turns, usage, cost, current tool, output) comes from the worker session's own
   events; steering and abort are direct calls on it. Nothing is scraped. Every
@@ -104,6 +120,13 @@ inheritance.
   `result.txt` (temp-write + rename), and the tool then ends the worker's run.
   The write is capped at 50KB of UTF-8 including a `[truncated]` marker. The
   parent never extracts results heuristically.
+- The worker system prompt states the deliverable protocol and two rules about
+  evidence: a tool that fails with an environment, authorization, or
+  initialization error is a defect to report with its exact error, never a
+  reason to substitute file-system credentials, a direct API call, or another
+  account's access; and a factual claim must come from live evidence obtained in
+  the run, with the age stated for any cached or exported artifact. A worker
+  blocked by a broken tool is told to submit what it established and stop.
 - A worker should call `submit_result` alone in its final turn. If it is
   batched with a sequential tool such as `subagent_steer`/`subagent_kill`, the
   sibling call can be dropped on abort, leaving an unanswered toolCall in the
@@ -158,8 +181,13 @@ inheritance.
   assistant text or tool-call arguments, but the extension never scrapes that
   content or promotes it to a submitted result.
 - Dispatch details include the resolved model's capability metadata
-  (`capabilities: {images, thinkingLevels}`) — informational only, never
-  blocking a dispatch.
+  (`capabilities: {images, thinkingLevels}`), read from pi's own
+  `getSupportedThinkingLevels`. Image support is informational; the thinking
+  levels are what a declared level is checked against.
+- Every tool call that returns an error is counted by tool name in the record
+  (`toolErrors`). The count appears in `subagent_status` and in the completion
+  notification, so a worker whose declared tool never worked cannot hand back a
+  confident deliverable built on a workaround without the parent seeing it.
 - A continued worker forks the source transcript, so its session statistics
   start with the source's spend. The record subtracts that baseline: a
   continuation reports only its own turns, tools, and cost, and its budget

@@ -46,9 +46,13 @@
  *     pure-reasoning worker), and it is the caller's to make deliberately.
  *   - Workers are clean-context: project context files and skills are not
  *     loaded (documented; not tool inheritance).
- *   - Omitted `thinking` inherits the parent's current level; the level is
- *     clamped to what the worker's model supports and the effective level is
- *     what the record reports.
+ *   - A worker runs the extension lifecycle a primary session runs: its
+ *     extensions receive `session_start` when it is built and
+ *     `session_shutdown` when it is torn down, so an extension that opens
+ *     session-scoped resources there works inside a worker.
+ *   - An explicit `thinking` level the model cannot run fails the dispatch
+ *     with the supported levels. An inherited level is clamped by pi, and the
+ *     record and dispatch line report the requested and the effective level.
  */
 
 import { randomBytes } from "node:crypto";
@@ -65,7 +69,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
 import { WorkerRuntime, transcriptFromMessages } from "./runtime.ts";
@@ -224,7 +228,11 @@ export interface WorkerRecord {
 	id: string;
 	task: string;
 	model: string;
+	/** Level the worker actually runs at, after pi's clamp. */
 	thinking: string;
+	/** Level the dispatch asked for, explicit or inherited. It differs from
+	 * `thinking` when the model cannot run the inherited level. */
+	thinkingRequested: string;
 	tools: string[] | null;
 	cwd: string;
 	/** Terminal worker whose preserved session was forked to create this one. */
@@ -257,6 +265,10 @@ export interface WorkerRecord {
 	resultPreview: string | null;
 	lastOutput: string | null;
 	currentTool: string | null;
+	/** Tool names that returned an error during the run, with their counts. A
+	 * declared tool that cannot work is the worker's most common blocker, and
+	 * the parent cannot see it from the deliverable alone. */
+	toolErrors: Record<string, number>;
 	/** Exact tool surface the worker was built with (declared or inherited). */
 	resolvedTools: string[];
 	/** The worker's own session id — attach with this, and read its transcript. */
@@ -402,6 +414,16 @@ function asStrArrayOrNull(v: unknown): string[] | null {
 		: null;
 }
 
+function validateToolErrors(v: unknown): Record<string, number> {
+	if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+	const counts: Record<string, number> = {};
+	for (const [name, count] of Object.entries(v as Record<string, unknown>)) {
+		const n = asNumber(count);
+		if (name && n > 0) counts[name] = n;
+	}
+	return counts;
+}
+
 function validateWorkerUsage(v: unknown): WorkerUsage | null {
 	if (v == null) return null;
 	if (typeof v !== "object" || Array.isArray(v)) return null;
@@ -430,6 +452,7 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 		task: asString(o.task),
 		model: asString(o.model, "?"),
 		thinking: asString(o.thinking, "medium"),
+		thinkingRequested: asString(o.thinkingRequested),
 		tools: asStrArrayOrNull(o.tools),
 		cwd: asString(o.cwd),
 		continuedFrom: asStrOrNull(o.continuedFrom),
@@ -452,6 +475,7 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 		resultPreview: asStrOrNull(o.resultPreview),
 		lastOutput: asStrOrNull(o.lastOutput),
 		currentTool: asStrOrNull(o.currentTool),
+		toolErrors: validateToolErrors(o.toolErrors),
 		resolvedTools: asStrArray(o.resolvedTools),
 		sessionId: asString(o.sessionId),
 		sessionFile: asStrOrNull(o.sessionFile),
@@ -499,9 +523,12 @@ export function workerFiles(id: string): { result: string; prompt: string } {
 	return { result: join(dir, "result.txt"), prompt: join(dir, "prompt.md") };
 }
 
-/** Capability metadata from the model registry (informational only — never
- * blocks or narrows a dispatch): image input support and the thinking levels
- * the model actually supports (map entries with non-null values). */
+/** Capability metadata from the model registry: image input support, and the
+ * thinking levels the model supports. The levels come from pi's own
+ * `getSupportedThinkingLevels`, the function its clamp uses, so a dispatch
+ * never reports a level set the session layer disagrees with. Image support is
+ * informational; an explicit unsupported thinking level fails the dispatch,
+ * because the model cannot run it and pi would silently clamp it instead. */
 export function modelCapabilities(
 	ctx: ExtensionContext,
 	modelId: string | null,
@@ -513,12 +540,10 @@ export function modelCapabilities(
 			.getAvailable()
 			.find((m) => m.provider === provider && m.id === id);
 		if (!model) return null;
-		const thinkingLevels = model.thinkingLevelMap
-			? Object.entries(model.thinkingLevelMap)
-					.filter(([, v]) => v != null)
-					.map(([k]) => k)
-			: [];
-		return { images: model.input.includes("image"), thinkingLevels };
+		return {
+			images: model.input.includes("image"),
+			thinkingLevels: getSupportedThinkingLevels(model),
+		};
 	} catch {
 		return null;
 	}
@@ -674,6 +699,9 @@ function workerSystemPrompt(model: string): string {
 		"- submit_result stores up to 50KB; keep the deliverable within that limit or it is truncated with a [truncated] marker.",
 		"- Call submit_result exactly once when your work is complete; it ends your run. Make it the ONLY tool call of that final turn — never batch another tool call alongside it (a sibling call in the same batch can be dropped when the run aborts, leaving a corrupt transcript). Do not emit a closing message.",
 		"- You are a clean-context worker: project context files and skills are not loaded.",
+		"- A tool that fails with an environment, authorization, or initialization error is a defect to REPORT, not an obstacle to route around. Name the tool and quote the exact error in your result, and say what it blocked. Never substitute credentials read from the file system, a direct API call, or another account's access for the tool you were given.",
+		"- Every factual claim must come from live evidence you obtained in this run. A cached file, an exported dump, or an old transcript is evidence about the moment it was written: give its age when you use it, and never let it alone support a claim about current state.",
+		"- If the task cannot be completed with the tools that work, submit what you established, state the blocker, and stop. A partial result with an honest blocker is worth more than a complete-looking one built on a workaround.",
 		`- Your model id (authoritative, from the dispatcher): ${model}.`,
 		"",
 	].join("\n");
@@ -688,6 +716,23 @@ export function disposeOnce(dispose: () => void): () => void {
 		disposed = true;
 		dispose();
 	};
+}
+
+/** End a worker session the way a pi mode ends its own: emit session_shutdown
+ * so extensions close what they opened at session_start, then dispose. The
+ * emission is chained rather than awaited because the disposal owner is
+ * synchronous; disposal still runs after the handlers settle, and a handler
+ * that throws cannot keep the session alive. */
+export function shutdownWorkerSession(session: AgentSession): void {
+	const runner = session.extensionRunner;
+	if (!runner.hasHandlers("session_shutdown")) {
+		session.dispose();
+		return;
+	}
+	void runner
+		.emit({ type: "session_shutdown", reason: "quit" })
+		.catch(() => {})
+		.finally(() => session.dispose());
 }
 
 /** Persist the terminal state from whatever the store and the session show. */
@@ -784,6 +829,25 @@ function markWorkerAuthored(body: string, id: string): string {
 	);
 }
 
+/** `name ×count` for each tool that returned an error, or "" when none did. */
+export function toolErrorSummary(
+	record: Pick<WorkerRecord, "toolErrors">,
+): string {
+	return Object.entries(record.toolErrors ?? {})
+		.map(([name, count]) => `${name} ×${count}`)
+		.join(", ");
+}
+
+/** `thinking:<effective>`, plus the requested level when pi clamped it. */
+export function thinkingLabel(
+	record: Pick<WorkerRecord, "thinking" | "thinkingRequested">,
+): string {
+	const requested = record.thinkingRequested;
+	return requested && requested !== record.thinking
+		? `thinking:${record.thinking} (requested ${requested})`
+		: `thinking:${record.thinking}`;
+}
+
 export function completionNeedsNotification(
 	record: Pick<WorkerRecord, "state" | "notificationQueuedAt">,
 ): boolean {
@@ -812,7 +876,12 @@ function notifyCompletion(record: WorkerRecord): void {
 		const cost = record.usage ? `$${record.usage.cost.toFixed(4)}` : "n/a";
 		const header =
 			`Subagent ${record.id} (${record.model}) finished: ${record.state} · ` +
-			`${elapsed}s · ${record.usage?.turns ?? 0} turns · ${cost}`;
+			`${elapsed}s · ${record.usage?.turns ?? 0} turns · ${cost}` +
+			// A tool that failed during the run is invisible in the deliverable, so
+			// the parent gets it here: a blocked tool changes how the result reads.
+			(toolErrorSummary(record)
+				? `\nTool failures: ${toolErrorSummary(record)}`
+				: "");
 		// Provenance is load-bearing. This arrives as a follow-up with
 		// triggerTurn:true, which puts worker-authored text in the position the
 		// operator's own words occupy. The 50KB cap bounds size, not authority, so
@@ -832,8 +901,10 @@ function notifyCompletion(record: WorkerRecord): void {
 						state: record.state,
 						model: record.model,
 						thinking: record.thinking,
+						thinkingRequested: record.thinkingRequested,
 						elapsedSeconds: elapsed,
 						usage: record.usage,
+						toolErrors: record.toolErrors,
 						error: record.error,
 						...(hasResult ? { resultPath: files.result } : {}),
 					},
@@ -1601,6 +1672,7 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 				};
 				toolName?: string;
 				toolCallId?: string;
+				isError?: boolean;
 			};
 			if (event.type === "message_end" && event.message) {
 				// Every persisted message can affect getSessionStats: assistant
@@ -1662,6 +1734,13 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 					String(event.toolCallId ?? event.toolName ?? "?"),
 				);
 				record.currentTool = currentToolLabel(activeTools);
+				if (event.isError) {
+					// A tool the worker was given but cannot use is the failure the
+					// deliverable hides best: the worker improvises around it and the
+					// parent reads a confident answer built from a workaround.
+					const name = String(event.toolName ?? "?");
+					record.toolErrors[name] = (record.toolErrors[name] ?? 0) + 1;
+				}
 				writeWorker(record);
 				publishSubagentStatus();
 			} else if (
@@ -1720,8 +1799,26 @@ export async function dispatchWorker(
 	if ("error" in model) {
 		return { id: "", state: "failed", error: model.error, record: null };
 	}
-	const thinking =
-		task.thinking ?? defaults.thinking ?? ctx.thinkingLevel ?? "medium";
+	const modelId = `${model.provider}/${model.id}`;
+	// An explicit level the model cannot run is a feasibility error, not a
+	// preference: pi clamps silently, and a model without reasoning support lands
+	// on "off" — the dispatch would report a level nobody asked for. An inherited
+	// level still clamps; the record keeps both values so the parent sees it.
+	const requestedThinking = task.thinking ?? defaults.thinking;
+	const thinking = requestedThinking ?? ctx.thinkingLevel ?? "medium";
+	const supportedThinking = modelCapabilities(ctx, modelId)?.thinkingLevels;
+	if (
+		requestedThinking &&
+		supportedThinking &&
+		!supportedThinking.includes(requestedThinking)
+	) {
+		return {
+			id: "",
+			state: "failed",
+			error: `thinking "${requestedThinking}" is not supported by ${modelId}; supported levels: ${supportedThinking.join(", ")}.`,
+			record: null,
+		};
+	}
 	const cwd = task.cwd ?? defaults.cwd;
 	if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
 		return {
@@ -1737,7 +1834,6 @@ export async function dispatchWorker(
 	}
 	const limits = resolveRunLimits(task, defaults);
 	const resolvedTools = tools.tools;
-	const modelId = `${model.provider}/${model.id}`;
 
 	// The suffix must make a same-millisecond collision impossible: two workers
 	// that share an id share a record, a result file, and a live-map slot, and the
@@ -1764,6 +1860,7 @@ export async function dispatchWorker(
 		task: task.task,
 		model: modelId,
 		thinking,
+		thinkingRequested: thinking,
 		tools: task.tools ?? null,
 		cwd,
 		continuedFrom: continuation?.id ?? null,
@@ -1784,6 +1881,7 @@ export async function dispatchWorker(
 		resultPreview: null,
 		lastOutput: null,
 		currentTool: null,
+		toolErrors: {},
 		resolvedTools,
 		sessionId: "",
 		sessionFile: null,
@@ -1852,9 +1950,25 @@ export async function dispatchWorker(
 			customTools: [submitResultTool(files.result, endRun)],
 		});
 		session = created.session;
-		disposeSession = disposeOnce(() => session.dispose());
+		disposeSession = disposeOnce(() => shutdownWorkerSession(session));
 		live.session = session;
+		// A worker is a real pi session, so its extensions must start like one. pi
+		// emits session_start from bindExtensions only, which the interactive,
+		// print, and rpc modes call; a session built through the SDK alone never
+		// gets it. Without this call an extension that opens its session-scoped
+		// resources in the documented session_start hook hands the worker a
+		// registered tool with nothing behind it. Empty bindings are deliberate:
+		// the worker has no operator UI and no command surface, so pi's own
+		// no-op UI context and print mode are what it should see. The disposal
+		// owner is installed first, so a handler that already ran still receives
+		// session_shutdown if binding throws.
+		await session.bindExtensions({});
 	} catch (err) {
+		try {
+			disposeSession?.();
+		} catch {
+			// The dispatch failure below is what the caller acts on.
+		}
 		if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
 		return fail(
 			`failed to build the worker session: ${(err as Error).message}`,
@@ -1930,8 +2044,9 @@ export async function dispatchWorker(
 		);
 	}
 
-	// pi clamps a requested thinking level to what the model supports. The clamp
-	// is documented behavior, not a dispatch failure, so record what actually runs.
+	// pi clamps an inherited thinking level to what the model supports. The clamp
+	// is documented behavior, not a dispatch failure, so record what actually
+	// runs; thinkingRequested keeps what was asked for.
 	record.thinking = session.thinkingLevel ?? thinking;
 	record.sessionId = sessionManager.getSessionId();
 	record.sessionFile = sessionManager.getSessionFile() ?? null;
@@ -2471,7 +2586,7 @@ export function statusLine(record: WorkerRecord, now = Date.now()): string {
 					: " (other session)"
 				: ""),
 		record.model,
-		`thinking:${record.thinking}`,
+		thinkingLabel(record),
 		`${elapsed}s`,
 		`${record.usage?.turns ?? 0} turns`,
 		`${record.usage?.toolCalls ?? 0} tools`,
@@ -2479,6 +2594,8 @@ export function statusLine(record: WorkerRecord, now = Date.now()): string {
 	if (record.state === "running" && record.currentTool) {
 		parts.push(`now: ${record.currentTool}`);
 	}
+	const failedTools = toolErrorSummary(record);
+	if (failedTools) parts.push(`tool errors: ${failedTools}`);
 	const writeAge = sessionWriteAge(record, now);
 	if (writeAge) parts.push(`session write ${writeAge} ago`);
 	if (record.state === "running" && record.cancelRequestedAt)
@@ -2799,9 +2916,10 @@ const subagentTool = defineTool({
 		"Dispatch isolated Pi worker sessions for independent work: verification, investigation, review, research, drafting, or bounded implementation.",
 		"Single mode: pass `task` (plus optional model/thinking/tools/cwd). Batch mode: pass `tasks` for parallel dispatch; each task may carry its own fields, otherwise it inherits the top-level defaults.",
 		"Every worker runs in the BACKGROUND: the call returns immediately with stable worker ids; workers run under this session's control; a subagent_result message arrives when a worker settles without explicit cancellation (follow-up delivery, triggers a turn when idle). Explicit cancellation is acknowledged by its control response and adds no duplicate follow-up. submit_result stores at most 50KB and marks larger submissions [truncated].",
-		"Model: explicit `model` (bare id or provider/id) is checked against registry availability and configured auth only. Omitted model inherits the parent's current model; omitted thinking inherits the parent's current thinking level; omitted cwd inherits the session cwd.",
+		"Model: explicit `model` (bare id or provider/id) is checked against registry availability and configured auth only. Omitted model inherits the parent's current model; omitted cwd inherits the session cwd.",
+		"Thinking: an explicit level the model cannot run fails that task and names the levels the model supports. An omitted level inherits the parent's level, is clamped to the model, and reports the effective level with the requested one.",
 		"Tools: omitted `tools` reproduces this session's active tool surface exactly. Built-ins are rebuilt for the worker cwd, and extension registration files are reloaded from their registered source paths. The constructed surface is checked before provider work. Provided `tools` restricts the worker to exactly that set plus the submit_result protocol tool; a tool name that is not in the current registry fails the dispatch. `tools: []` is a declared EMPTY allowlist, not an omission: it yields a worker that has submit_result and nothing else.",
-		"Workers are clean-context: project context files (AGENTS.md) and skills are not loaded.",
+		"Workers are clean-context: project context files (AGENTS.md) and skills are not loaded. A worker runs the normal extension lifecycle, so an extension tool that opens its resources at session_start works inside a worker; a tool that still fails is reported with its failure count when the worker finishes.",
 		"Live workers can be steered (subagent_steer), interrupted and resumed (subagent_interrupt), cancelled (subagent_kill), and inspected (subagent_status). A terminal worker with a retained session can continue as a new linked worker (subagent_continue); its record, result, and transcript remain unchanged. Results persist in the store and are collectable later or from a replacement session (subagent_collect).",
 		"Limits: `deadlineMinutes` is your judgment of how long the task should take (default from the PI_SUBAGENT_DEADLINE_MINUTES setting; 0 removes it), and `budgetUsd` is an optional spend allowance. Breaching either PAUSES the worker and notifies you — the session, its transcript, and its work survive, and resuming with subagent_steer grants a fresh allowance. Nothing here kills a worker.",
 		"Parent-death contract: a worker that already submitted keeps its result and remains collectable. A worker still in flight when this session ends is recorded as owner_lost by the next session — re-dispatch if the work still matters.",
@@ -2962,7 +3080,10 @@ const subagentTool = defineTool({
 				const worker = outcome.id ? `${outcome.id} · ` : "";
 				return `✗ ${worker}${outcome.state}: ${outcome.error}`;
 			}
-			return `${outcome.id} · background · ${outcome.record?.model ?? "?"} · thinking:${outcome.record?.thinking ?? "?"} · cwd:${outcome.record?.cwd ?? "?"}`;
+			const thinking = outcome.record
+				? thinkingLabel(outcome.record)
+				: "thinking:?";
+			return `${outcome.id} · background · ${outcome.record?.model ?? "?"} · ${thinking} · cwd:${outcome.record?.cwd ?? "?"}`;
 		});
 		const started = outcomes.filter(
 			(outcome) => outcome.state === "running",
@@ -2986,6 +3107,7 @@ const subagentTool = defineTool({
 					state: outcome.state,
 					model: outcome.record?.model ?? null,
 					thinking: outcome.record?.thinking ?? null,
+					thinkingRequested: outcome.record?.thinkingRequested ?? null,
 					cwd: outcome.record?.cwd ?? null,
 					deadlineMinutes: outcome.record?.deadlineMinutes ?? null,
 					budgetUsd: outcome.record?.budgetUsd ?? null,
