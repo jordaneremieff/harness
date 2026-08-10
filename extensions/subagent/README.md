@@ -31,9 +31,9 @@ extension-UI notification plus a `subagent_status` custom entry; JSON receives
 the custom entry as an `entry_appended` event; print mode emits the optionally
 filtered text view to the terminal. The roster content-fits short lists; worker
 consoles grow to at most 85% of the terminal (floor 44 rows; pin a fixed cap
-with `PI_SUBAGENT_PANEL_MAX_ROWS`). Roster `thinking:` values
-are the EFFECTIVE level — pi clamps an inherited level to what the model
-supports — and the requested level is shown beside it when the two differ.
+with `PI_SUBAGENT_PANEL_MAX_ROWS`). The `thinking:` value in a status line is
+the EFFECTIVE level — pi clamps an inherited level to what the model supports —
+and it carries the requested level beside it when the two differ.
 
 ## Dispatch
 
