@@ -37,7 +37,15 @@ and it carries the requested level beside it when the two differ.
 
 ## Dispatch
 
-Note on `cwd`: a worker accepts any existing directory — it is validated, not
+Note on `cwd`: a worker declares where its work happens; it does not relocate
+the process. Workers run inside the parent's process, so an extension that
+resolves its configuration from the process working directory reads the
+parent's, not the worker's declared `cwd`. A tool whose registration derives
+from such configuration is compared against the parent's registration before
+the worker starts, so a divergence fails the dispatch by name instead of
+handing the worker a different tool.
+
+A worker accepts any existing directory — it is validated, not
 constrained. This is not an escalation (the worker inherits the parent's exact
 tool surface, so the parent already had that authority), but if you want a
 policy (e.g. confine workers to a workspace root), that is a deliberate choice
@@ -93,7 +101,10 @@ Omit the field entirely to inherit the parent's surface.
 
 Workers are clean-context: project context files (AGENTS.md) and skills are not
 loaded. That is a documented property of the worker, not a narrowing of tool
-inheritance.
+inheritance. It holds for the current extension set rather than by
+construction: binding a worker's extensions also runs `resources_discover`, so
+an extension that supplies skill, prompt, or theme paths from that handler
+would add them to a worker built with `noSkills`.
 
 ## Worker lifecycle
 
