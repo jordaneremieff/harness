@@ -813,6 +813,7 @@ export function finalizeWorker(
 	} finally {
 		// Terminal evidence is written first. Cleanup then runs exactly once even
 		// if settlement, cancellation, and session shutdown converge on this id.
+		sharedWorkerState.submittedSessionIds.delete(record.sessionId ?? "");
 		releaseLiveWorker(id);
 	}
 }
@@ -931,8 +932,72 @@ function notifyCompletion(record: WorkerRecord): void {
  */
 let piApi: ExtensionAPI | null = null;
 
-/** Depth of in-flight worker construction; concurrent dispatches nest. */
-let constructingWorkers = 0;
+/**
+ * Worker-construction state that must be visible across module instances.
+ * pi's extension loader caches extension factories per cwd (loader.js
+ * `useExtensionCacheCwd`) and imports a FRESH module instance when the cwd
+ * changes — a custom-cwd worker therefore loads this file as a new copy with
+ * its own module scope. Worker identity (the construction count) and the
+ * submitted marks must live in process-global state so the fresh copy still
+ * takes the worker branch and sees the marks the dispatcher's copy wrote.
+ * Everything else (piApi, liveWorkers, sessionReplacing) stays module-local
+ * per instance on purpose.
+ */
+const WORKER_STATE_KEY = Symbol.for("pi-subagent.worker-construction-state");
+interface WorkerConstructionState {
+	/** Depth of in-flight worker construction; concurrent dispatches nest. */
+	constructingWorkers: number;
+	/**
+	 * Worker SESSION ids whose runs already ended through submit_result. pi
+	 * runs its post-run auto-compaction (threshold) before the prompt promise
+	 * resolves; for a submitted worker that compaction is pure waste — it
+	 * stalls the settle (and the parent's "running · now: submit_result"
+	 * view) for the duration of a summarization provider call, observed at
+	 * ~23-40s locally and potentially minutes on larger transcripts. The veto
+	 * below cancels exactly that case. Mid-run compaction (threshold or
+	 * overflow) is untouched: a worker's transcript must still be able to
+	 * compact before the provider window overflows.
+	 *
+	 * Keyed by SESSION id (not worker id) so the veto handler can read its
+	 * own session id from the extension context at compaction time — no
+	 * captured construction state that concurrent dispatches could race.
+	 */
+	submittedSessionIds: Set<string>;
+}
+/**
+ * Process-global worker-construction state (see WORKER_STATE_KEY). Exported
+ * for the colocated tests, which simulate a second module instance by
+ * manipulating the same object a jiti copy would see.
+ */
+const sharedStateHost = globalThis as Record<symbol, WorkerConstructionState>;
+let stateOnGlobal = sharedStateHost[WORKER_STATE_KEY];
+if (!stateOnGlobal) {
+	stateOnGlobal = {
+		constructingWorkers: 0,
+		submittedSessionIds: new Set<string>(),
+	};
+	sharedStateHost[WORKER_STATE_KEY] = stateOnGlobal;
+}
+export const sharedWorkerState: WorkerConstructionState = stateOnGlobal;
+
+/**
+ * This module's own registration file, resolved from the source path pi
+ * records on this module's own `subagent` tool. Used to always load this
+ * module into workers (for the compaction veto) regardless of the declared
+ * surface. import.meta.url is NOT usable: pi loads extensions through jiti,
+ * which leaves import.meta.url undefined (verified against the installed
+ * loader). The tool-metadata path is the same mechanism resolveToolSurface
+ * already uses to reproduce extension-backed tools.
+ */
+export function ownToolSourcePath(ctx: ExtensionContext): string | null {
+	const surface = parentToolSurface(ctx);
+	for (const tool of surface.all) {
+		if (tool.name !== "subagent") continue;
+		const path = tool.sourceInfo?.path;
+		if (path && !path.startsWith("<") && existsSync(path)) return path;
+	}
+	return null;
+}
 
 /**
  * True while the session_shutdown hook is replacing this session (/new,
@@ -1060,7 +1125,8 @@ function envNumber(name: string): number | null {
  * alive, resumable, transcript intact) and tells the parent; resuming grants a
  * fresh leg. Nothing here ends a worker.
  */
-const DEFAULT_DEADLINE_MINUTES = envNumber("PI_SUBAGENT_DEADLINE_MINUTES") ?? 30;
+const DEFAULT_DEADLINE_MINUTES =
+	envNumber("PI_SUBAGENT_DEADLINE_MINUTES") ?? 30;
 const DEFAULT_BUDGET_USD = envNumber("PI_SUBAGENT_BUDGET_USD");
 
 const liveWorkers = new Map<string, LiveWorker>();
@@ -1313,7 +1379,9 @@ function armRunLimits(id: string): void {
 	const { deadlineMinutes, budgetUsd } = live.record;
 	const now = Date.now();
 	live.deadlineAt = deadlineMinutes ? now + deadlineMinutes * 60_000 : null;
-	live.budgetCeiling = budgetUsd ? (live.record.usage?.cost ?? 0) + budgetUsd : null;
+	live.budgetCeiling = budgetUsd
+		? (live.record.usage?.cost ?? 0) + budgetUsd
+		: null;
 	if (typeof live.deadlineAt !== "number") return;
 	let handle: BoundedTimer | null = null;
 	handle = armBoundedTimeout(live.deadlineAt - now, () => {
@@ -1471,7 +1539,47 @@ function ensureHost(ctx: ExtensionContext): WorkerHost {
  * heuristically from a transcript. Whatever the worker submits is the
  * deliverable.
  */
-function submitResultTool(resultPath: string, endRun: () => void) {
+/**
+ * The worker-side veto for pi's `session_before_compact`. Post-submit
+ * threshold compaction is the one case worth canceling: the run is over, the
+ * deliverable is written, and the only effect of compacting is a stalled
+ * settle and a misleading "running" status for the duration of a
+ * summarization call. Every other case (mid-run threshold, overflow
+ * recovery) returns no veto, so a worker's transcript can still compact
+ * before the provider window overflows.
+ *
+ * The key is the worker SESSION id: the handler reads it from the extension
+ * context at compaction time, so nothing here depends on construction-time
+ * capture.
+ */
+export function compactionVeto(
+	sessionId: string | null,
+	reason: "manual" | "threshold" | "overflow",
+	submitted: ReadonlySet<string> = sharedWorkerState.submittedSessionIds,
+): { cancel: true } | undefined {
+	if (sessionId === null) return undefined;
+	if (reason !== "threshold") return undefined;
+	return submitted.has(sessionId) ? { cancel: true } : undefined;
+}
+
+/**
+ * The worker-side `session_before_compact` veto: cancel threshold compaction
+ * only for the session that already submitted. Registered on every worker
+ * load of this module (which is every worker — the dispatcher always loads
+ * this file). The session id comes from the extension context at compaction
+ * time, so concurrent dispatches cannot race the wiring.
+ */
+export function registerWorkerCompactionVeto(pi: ExtensionAPI): void {
+	pi.on("session_before_compact", (event, ctx) =>
+		compactionVeto(ctx.sessionManager.getSessionId(), event.reason),
+	);
+}
+
+export function submitResultTool(
+	resultPath: string,
+	endRun: () => void,
+	sessionId: () => string,
+) {
 	return defineTool({
 		name: "submit_result",
 		label: "Submit Result",
@@ -1535,6 +1643,15 @@ function submitResultTool(resultPath: string, endRun: () => void) {
 			// path (pi's default) the signal recheck happens before execution and the
 			// result is emitted after Promise.all — the result is safe either way, by
 			// a different mechanism.
+			// The deliverable is safely on disk: arm the post-run compaction veto
+			// before the run ends, so the settle that follows submit_result is not
+			// stalled by pi's threshold compaction of a disposable conversation.
+			// A missing session id never enters the set (an empty key could not
+			// be cleaned up — finalize deletes the persisted session id).
+			const submittedSessionId = sessionId();
+			if (submittedSessionId) {
+				sharedWorkerState.submittedSessionIds.add(submittedSessionId);
+			}
 			endRun();
 			return {
 				content: [
@@ -1553,7 +1670,9 @@ function submitResultTool(resultPath: string, endRun: () => void) {
 }
 
 /** The cost a just-ended message carries before Pi persists it. */
-function messageCost(message: { usage?: { cost?: unknown } } | undefined): number {
+function messageCost(
+	message: { usage?: { cost?: unknown } } | undefined,
+): number {
 	const cost = message?.usage?.cost;
 	return typeof cost === "number" && Number.isFinite(cost) && cost > 0
 		? cost
@@ -1731,9 +1850,7 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 				writeWorker(record);
 				publishSubagentStatus();
 			} else if (event.type === "tool_execution_end") {
-				activeTools.delete(
-					String(event.toolCallId ?? event.toolName ?? "?"),
-				);
+				activeTools.delete(String(event.toolCallId ?? event.toolName ?? "?"));
 				record.currentTool = currentToolLabel(activeTools);
 				if (event.isError) {
 					// A tool the worker was given but cannot use is the failure the
@@ -1920,8 +2037,11 @@ export async function dispatchWorker(
 	};
 	// Loading the worker's extensions re-invokes this module's registration with
 	// the WORKER's api. Fence the whole construction so the parent's api survives
-	// (the worker still registers its tools — that is how inheritance works).
-	constructingWorkers++;
+	// (the worker still registers its tools — that is how inheritance works). The
+	// count is process-global: a custom-cwd worker loads this file as a fresh
+	// module instance (the loader's factory cache is per-cwd), and that copy must
+	// still see itself as a worker load.
+	sharedWorkerState.constructingWorkers++;
 	try {
 		await workerHost.ensureStarted(ctx);
 		const settingsManager = SettingsManager.create(cwd, getAgentDir());
@@ -1932,7 +2052,26 @@ export async function dispatchWorker(
 			noSkills: true,
 			noPromptTemplates: true,
 			noContextFiles: true,
-			additionalExtensionPaths: tools.extensionPaths,
+			// Always load this module into the worker: its worker-load branch
+			// carries the post-submit compaction veto. Dedupe against paths the
+			// surface already produced; if the module's own source path cannot
+			// be resolved, fall back to the surface's extension paths alone.
+			additionalExtensionPaths: (() => {
+				const self = ownToolSourcePath(ctx);
+				if (!self) {
+					// Nearly unreachable (the module's own registration is the
+					// surface it is dispatching from), but never silent: without
+					// the self-load the worker gets no compaction veto.
+					console.warn(
+						`[subagent] could not resolve this extension's own source path; worker ${id} will run without the post-submit compaction veto`,
+					);
+					return tools.extensionPaths;
+				}
+				if (tools.extensionPaths.some((p) => resolve(p) === resolve(self))) {
+					return tools.extensionPaths;
+				}
+				return [...tools.extensionPaths, self];
+			})(),
 			appendSystemPrompt: [prompt],
 		});
 		await resourceLoader.reload();
@@ -1948,7 +2087,13 @@ export async function dispatchWorker(
 			model: ctx.modelRegistry.find(model.provider, model.id),
 			thinkingLevel: thinking as never,
 			tools: resolvedTools,
-			customTools: [submitResultTool(files.result, endRun)],
+			customTools: [
+				submitResultTool(
+					files.result,
+					endRun,
+					() => live.session?.sessionManager.getSessionId() ?? "",
+				),
+			],
 		});
 		session = created.session;
 		disposeSession = disposeOnce(() => shutdownWorkerSession(session));
@@ -1975,7 +2120,7 @@ export async function dispatchWorker(
 			`failed to build the worker session: ${(err as Error).message}`,
 		);
 	} finally {
-		constructingWorkers--;
+		sharedWorkerState.constructingWorkers--;
 	}
 
 	// Verify the surface the worker actually got, before a single token is
@@ -3351,7 +3496,7 @@ const killTool = defineTool({
 export default function (pi: ExtensionAPI) {
 	// A worker session loading this same module must not take over the parent's
 	// api or its lifecycle hook; it only contributes its own tool surface.
-	const isWorkerLoad = constructingWorkers > 0;
+	const isWorkerLoad = sharedWorkerState.constructingWorkers > 0;
 	if (!isWorkerLoad) {
 		piApi = pi;
 		// A replacement parent in this same process reuses this module, so the
@@ -3368,6 +3513,12 @@ export default function (pi: ExtensionAPI) {
 			// Never block extension registration on a store housekeeping failure.
 		}
 	}
+	// This module is loaded into EVERY worker (for the compaction veto below).
+	// Worker loads register the full tool surface unconditionally, like any
+	// extension load; pi's per-session allowlist (createAgentSession `tools`)
+	// filters registered definitions down to exactly the declared surface, so a
+	// restricted worker never sees the subagent tools as callable or
+	// verifiable.
 	pi.registerTool(subagentTool);
 	pi.registerTool(statusTool);
 	pi.registerTool(steerTool);
@@ -3446,7 +3597,17 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	if (isWorkerLoad) return;
+	if (isWorkerLoad) {
+		// A worker conversation is disposable: the deliverable is result.txt.
+		// Cancel the post-submit threshold compaction that would otherwise
+		// stall the run's settle (status reads "running · now: submit_result"
+		// for the whole summarization call). The veto reads its own session id
+		// from the extension context at compaction time and fires only for the
+		// worker that actually submitted — mid-run compaction still runs, so a
+		// worker's transcript can never overflow the provider window hard.
+		registerWorkerCompactionVeto(pi);
+		return;
+	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		bindStatusContext(ctx);

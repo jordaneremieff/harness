@@ -34,7 +34,8 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-test-"));
@@ -54,6 +55,7 @@ const {
 	armBoundedTimeout,
 	capUtf8,
 	collectWorker,
+	compactionVeto,
 	currentToolLabel,
 	completionNeedsNotification,
 	dispatchWorker,
@@ -74,6 +76,10 @@ const {
 	resolveRunLimits,
 	resolveToolSurface,
 	sessionWriteAge,
+	registerWorkerCompactionVeto,
+	ownToolSourcePath,
+	sharedWorkerState,
+	submitResultTool,
 	subtractUsage,
 	statusLine,
 	statusView,
@@ -323,8 +329,12 @@ describe("worker session lifecycle", () => {
 		// session_start on its own — pi emits it from bindExtensions, which only
 		// the interactive, print, and rpc modes call. An extension that opens its
 		// resources there is dead inside a worker until the dispatcher binds.
-		const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } =
-			await import("@earendil-works/pi-coding-agent");
+		const {
+			createAgentSession,
+			DefaultResourceLoader,
+			SessionManager,
+			SettingsManager,
+		} = await import("@earendil-works/pi-coding-agent");
 		const marker = join(agentDir, "lifecycle-probe.log");
 		const probePath = join(agentDir, "lifecycle-probe.ts");
 		writeFileSync(
@@ -395,12 +405,19 @@ describe("worker session lifecycle", () => {
 describe("thinking feasibility", () => {
 	it("reports the levels pi itself supports for the model", () => {
 		const reasoning = modelCapabilities(
-			dispatchCtx(registryModel({ thinkingLevelMap: { minimal: null } })) as never,
+			dispatchCtx(
+				registryModel({ thinkingLevelMap: { minimal: null } }),
+			) as never,
 			"test/model-a",
 		);
 		// xhigh and max need an explicit mapping; minimal is mapped away; the
 		// remaining levels are supported even though the map never names them.
-		assert.deepEqual(reasoning?.thinkingLevels, ["off", "low", "medium", "high"]);
+		assert.deepEqual(reasoning?.thinkingLevels, [
+			"off",
+			"low",
+			"medium",
+			"high",
+		]);
 
 		const plain = modelCapabilities(
 			dispatchCtx(registryModel({ reasoning: false })) as never,
@@ -468,7 +485,10 @@ describe("tool failure reporting", () => {
 		);
 		const record = readWorker("bg-toolerr");
 		assert.deepEqual(record?.toolErrors, { mcp: 2 });
-		assert.match(statusLine(record as never, Date.now()), /tool errors: mcp ×2/);
+		assert.match(
+			statusLine(record as never, Date.now()),
+			/tool errors: mcp ×2/,
+		);
 
 		seedWorker(
 			"bg-toolerr2",
@@ -753,7 +773,11 @@ describe("run-leg limits", () => {
 		);
 		// A zero dispatch default is overridable by the task that wants a bound.
 		assert.deepEqual(
-			resolveRunLimits({ deadlineMinutes: 7 }, { deadlineMinutes: 0 }, settings),
+			resolveRunLimits(
+				{ deadlineMinutes: 7 },
+				{ deadlineMinutes: 0 },
+				settings,
+			),
 			{ deadlineMinutes: 7, budgetUsd: null },
 		);
 	});
@@ -874,7 +898,11 @@ describe("run-leg limits", () => {
 		const now = 10_000_000;
 		const leg = { phase: "thinking", deadlineAt: now - 1, budgetCeiling: 0 };
 		assert.equal(
-			limitBreach(runningRecord("bg-limit2") as any, { ...leg, phase: "idle" }, now),
+			limitBreach(
+				runningRecord("bg-limit2") as any,
+				{ ...leg, phase: "idle" },
+				now,
+			),
 			null,
 		);
 		assert.equal(
@@ -917,7 +945,9 @@ describe("run-leg limits", () => {
 		// The abort lands after the pause is recorded; a kill or a session switch
 		// inside that window ends the worker, and a pause notice would be false.
 		assert.equal(
-			limitPauseStillHolds(runningRecord("bg-hold1", { interruptedAt: 5 }) as any),
+			limitPauseStillHolds(
+				runningRecord("bg-hold1", { interruptedAt: 5 }) as any,
+			),
 			true,
 		);
 		assert.equal(limitPauseStillHolds(null), false);
@@ -932,7 +962,9 @@ describe("run-leg limits", () => {
 		);
 		// Resumed before the notice could fire.
 		assert.equal(
-			limitPauseStillHolds(runningRecord("bg-hold3", { interruptedAt: null }) as any),
+			limitPauseStillHolds(
+				runningRecord("bg-hold3", { interruptedAt: null }) as any,
+			),
 			false,
 		);
 	});
@@ -1035,6 +1067,296 @@ describe("finalizeWorker triage", () => {
 
 // ---------------------------------------------------------------------------
 // Transcript conversion — the one reader of pi's message shape
+// ---------------------------------------------------------------------------
+// Post-submit compaction veto
+// ---------------------------------------------------------------------------
+
+// The veto cancels pi's post-run threshold compaction for a worker that
+// already submitted, so the settle after submit_result is not stalled by a
+// summarization call over a disposable conversation. Mid-run compaction
+// (threshold or overflow) is never vetoed: a worker's transcript must still be
+// able to compact before the provider window overflows.
+describe("compaction veto", () => {
+	it("cancels threshold compaction only for the submitted session", () => {
+		const submitted = new Set(["sess-1"]);
+		assert.deepEqual(compactionVeto("sess-1", "threshold", submitted), {
+			cancel: true,
+		});
+		// Not the submitted session.
+		assert.equal(compactionVeto("sess-2", "threshold", submitted), undefined);
+		// No session identity.
+		assert.equal(compactionVeto(null, "threshold", submitted), undefined);
+	});
+
+	it("never cancels overflow recovery or manual compaction", () => {
+		const submitted = new Set(["sess-1"]);
+		assert.equal(compactionVeto("sess-1", "overflow", submitted), undefined);
+		assert.equal(compactionVeto("sess-1", "manual", submitted), undefined);
+	});
+
+	it("submit_result marks the session, arming the veto against the live set", async () => {
+		const dir = join(storeDir, "w-veto-marks");
+		mkdirSync(dir, { recursive: true });
+		const resultPath = join(dir, "result.txt");
+		let ended = 0;
+		const tool = submitResultTool(
+			resultPath,
+			() => {
+				ended++;
+			},
+			() => "sess-veto-marks",
+		);
+		await tool.execute(
+			"call-1",
+			{ content: "the deliverable" },
+			undefined,
+			undefined,
+			undefined as never,
+		);
+		assert.equal(ended, 1);
+		assert.equal(readFileSync(resultPath, "utf-8"), "the deliverable");
+		// The default set argument is the module-level submitted set.
+		assert.deepEqual(compactionVeto("sess-veto-marks", "threshold"), {
+			cancel: true,
+		});
+	});
+
+	it("worker load wiring: the registered veto reads the session id from the context", () => {
+		// Self-contained: arm the submitted mark inside this test, so the
+		// assertion does not depend on the preceding test's module state.
+		sharedWorkerState.submittedSessionIds.add("sess-veto-wiring");
+		const handlers = new Map<string, (event: any, ctx: any) => unknown>();
+		const workerPi = {
+			on: (event: string, handler: (event: any, ctx: any) => unknown) =>
+				handlers.set(event, handler),
+		};
+		registerWorkerCompactionVeto(workerPi as never);
+		const handler = handlers.get("session_before_compact");
+		assert.ok(handler, "worker load registers the veto handler");
+		const ctx = {
+			sessionManager: { getSessionId: () => "sess-veto-wiring" },
+		};
+		assert.deepEqual(handler({ reason: "threshold" }, ctx as never), {
+			cancel: true,
+		});
+		assert.equal(handler({ reason: "overflow" }, ctx as never), undefined);
+		assert.equal(handler({ reason: "manual" }, ctx as never), undefined);
+		sharedWorkerState.submittedSessionIds.delete("sess-veto-wiring");
+	});
+
+	it("worker-load registration: full surface plus veto; the allowlist keeps it exact", () => {
+		// Simulate a worker load the way a jiti copy of this module would see
+		// it: the shared construction count is > 0. The worker branch must
+		// register the full tool surface (pi's per-session allowlist filters
+		// it down) and the veto, and must NOT take the parent branch.
+		const tools: Array<Record<string, any>> = [];
+		const handlers = new Map<string, unknown>();
+		sharedWorkerState.constructingWorkers = 1;
+		try {
+			registerSubagent({
+				registerTool: (tool: { name: string }) => tools.push(tool),
+				registerCommand: () => undefined,
+				on: (event: string, handler: unknown) => handlers.set(event, handler),
+				getActiveTools: () => [],
+				getAllTools: () => [],
+				appendEntry: () => undefined,
+			} as never);
+		} finally {
+			sharedWorkerState.constructingWorkers = 0;
+		}
+		assert.equal(
+			tools.length,
+			7,
+			"worker loads register the full surface; the allowlist filters it",
+		);
+		assert.ok(
+			handlers.has("session_before_compact"),
+			"worker loads register the compaction veto",
+		);
+		assert.equal(
+			handlers.has("session_start"),
+			false,
+			"worker loads must not register parent lifecycle hooks",
+		);
+	});
+
+	it("construction state is process-global across module instances", () => {
+		// pi's loader caches extension factories per cwd and imports a FRESH
+		// module instance when the cwd changes. The fresh copy must read the
+		// same counter and the same submitted set — they live on a namespaced
+		// globalThis symbol, not module scope.
+		const viaSymbol = (
+			globalThis as Record<symbol, { submittedSessionIds: Set<string> }>
+		)[Symbol.for("pi-subagent.worker-construction-state")];
+		assert.ok(viaSymbol, "shared state is registered on the process global");
+		assert.equal(
+			viaSymbol.submittedSessionIds,
+			sharedWorkerState.submittedSessionIds,
+			"the exported state IS the process-global state",
+		);
+	});
+
+	it("finalizeWorker releases the submitted mark on every terminal path", () => {
+		// A worker that settles releases its session id so a later threshold
+		// event for that id is never vetoed.
+		const id = "bg-vetofinalize";
+		const dir = seedWorker(id, {
+			...runningRecord(id),
+			state: "running",
+			sessionId: "sess-veto-finalize",
+			model: "test/model-a",
+		});
+		void dir;
+		// Mark it the way submit_result would, then finalize as if the run had
+		// settled normally.
+		sharedWorkerState.submittedSessionIds.add("sess-veto-finalize");
+		assert.deepEqual(compactionVeto("sess-veto-finalize", "threshold"), {
+			cancel: true,
+		});
+		finalizeWorker(id, {});
+		assert.equal(
+			sharedWorkerState.submittedSessionIds.has("sess-veto-finalize"),
+			false,
+			"finalizeWorker must release the submitted mark",
+		);
+		assert.equal(
+			readWorker(id)?.state,
+			"no_result_submitted",
+			"the terminal triage is unaffected by the veto plumbing",
+		);
+	});
+
+	it("real loader: a jiti copy of this module takes the worker branch and the veto fires", async () => {
+		// Production shape: DefaultResourceLoader reloads the actual index.ts
+		// through jiti (a FRESH module instance, like a custom-cwd worker), and
+		// the dispatcher's construction count is shared via globalThis. This
+		// test drives the exact machinery: fresh copy + worker branch + real
+		// handler + real emit.
+		const {
+			createAgentSession,
+			DefaultResourceLoader,
+			SessionManager,
+			SettingsManager,
+		} = await import("@earendil-works/pi-coding-agent");
+		const settingsManager = SettingsManager.create(agentDir, agentDir);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: agentDir,
+			agentDir,
+			settingsManager,
+			noSkills: true,
+			noPromptTemplates: true,
+			noContextFiles: true,
+			additionalExtensionPaths: [
+				join(dirname(fileURLToPath(import.meta.url)), "index.ts"),
+			],
+		});
+		sharedWorkerState.constructingWorkers = 1;
+		let session: any;
+		try {
+			await resourceLoader.reload();
+			const created = await createAgentSession({
+				cwd: agentDir,
+				agentDir,
+				settingsManager,
+				resourceLoader,
+				sessionManager: SessionManager.inMemory(),
+				tools: ["read", "bash", "submit_result"],
+				customTools: [
+					submitResultTool(
+						join(agentDir, "unused-result.txt"),
+						() => undefined,
+						() => "unused",
+					),
+				],
+			});
+			session = created.session;
+		} finally {
+			sharedWorkerState.constructingWorkers = 0;
+		}
+
+		// The restricted allowlist keeps the callable surface exact even
+		// though the module registered its full surface.
+		assert.deepEqual(session.getActiveToolNames().sort(), [
+			"bash",
+			"read",
+			"submit_result",
+		]);
+		// The fresh jiti copy registered the veto on this session's runner.
+		assert.equal(
+			session.extensionRunner.hasHandlers("session_before_compact"),
+			true,
+			"a jiti copy of this module must register the veto on a worker load",
+		);
+		// Fire the real handler through the real runner: it must cancel a
+		// threshold compaction for the submitted session.
+		const sessionId = session.sessionManager.getSessionId();
+		sharedWorkerState.submittedSessionIds.add(sessionId);
+		try {
+			const result = await session.extensionRunner.emit({
+				type: "session_before_compact",
+				preparation: {},
+				branchEntries: [],
+				reason: "threshold",
+				willRetry: false,
+				signal: new AbortController().signal,
+			} as never);
+			assert.deepEqual(
+				(result as { cancel?: boolean } | undefined)?.cancel,
+				true,
+				"the veto cancels post-submit threshold compaction",
+			);
+		} finally {
+			sharedWorkerState.submittedSessionIds.delete(sessionId);
+		}
+	});
+
+	it("own module path comes from the tool registration, not import.meta.url", () => {
+		// pi loads extensions through jiti, which leaves import.meta.url
+		// undefined, so the module finds itself through the source path pi
+		// records on its own tool registration.
+		const probePath = join(agentDir, "own-path-probe.ts");
+		writeFileSync(probePath, "export default function () {}\n", "utf-8");
+		const ctx = {
+			getActiveTools: () => ["subagent"],
+			getAllTools: () => [
+				{
+					name: "subagent",
+					description: "d",
+					parameters: {},
+					sourceInfo: {
+						path: probePath,
+						source: "local",
+						scope: "temporary",
+						origin: "top-level",
+					},
+				},
+			],
+		};
+		assert.equal(ownToolSourcePath(ctx as never), probePath);
+		// Virtual/builtin paths and missing registrations resolve to nothing.
+		const virtual = {
+			getActiveTools: () => [],
+			getAllTools: () => [
+				{
+					name: "subagent",
+					sourceInfo: {
+						path: "<virtual:subagent>",
+						source: "virtual",
+					},
+				},
+			],
+		};
+		assert.equal(ownToolSourcePath(virtual as never), null);
+		assert.equal(
+			ownToolSourcePath({
+				getActiveTools: () => [],
+				getAllTools: () => [],
+			} as never),
+			null,
+		);
+	});
+});
+
 // ---------------------------------------------------------------------------
 
 const assistantWithToolCall = {

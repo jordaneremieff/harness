@@ -99,6 +99,12 @@ An omitted `tools` array and an empty one are different: `tools: []` is a
 declared, empty allowlist, so the worker gets `submit_result` and nothing else.
 Omit the field entirely to inherit the parent's surface.
 
+The subagent extension's own registration file is always loaded into a worker
+regardless of surface — it carries an internal post-submit compaction veto — but
+it never expands the worker's active allowlist: pi filters registered
+definitions down to exactly the declared surface, so a restricted worker sees
+no subagent tools as callable.
+
 Workers are clean-context: project context files (AGENTS.md) and skills are not
 loaded. That is a documented property of the worker, not a narrowing of tool
 inheritance. It holds for the current extension set rather than by
