@@ -443,34 +443,6 @@ The worker's transcript is its own pi session file, referenced by
 transcript view intentionally omits `custom`, `bashExecution`, `branchSummary`,
 and `compactionSummary` events, plus orphan tool results.
 
-## Verified live
-
-2026-08-08 through 2026-08-09, on the session-served backend, against real models:
-
-- background dispatch returning stable ids immediately, with completion
-  delivered later and real cumulative usage from the worker session's events;
-- active tool state persisted and surfaced through `subagent_status` as
-  `now: bash` while a real worker was inside a 15-second bash call;
-- terminal continuation completing as a new linked worker with a distinct Pi
-  session file and result path while the source result and transcript remained
-  byte-identical;
-- omitted `tools` reproducing the active file-backed parent surface, with the
-  child registry checked before provider work begins;
-- declared `tools` restricting exactly, and an unknown tool name failing the
-  dispatch before any record is created;
-- a 2-task batch running in parallel;
-- steering a live worker mid-`sleep`: the redirect was honored and the worker
-  submitted the steered content instead of its original task;
-- cancel recording intent first and finalizing `cancelled`;
-- a worker that never called `submit_result` triaged as `no_result_submitted`
-  with its final message flagged unprotocolled;
-- killing a parent mid-flight: the next session recorded `owner_lost`, and
-  results submitted before the death stayed collectable;
-- `openai-codex` models working as workers, which the process-based backend
-  could not do.
-
-The socket path was proven end to end by a spike against a real `AgentSession`
-(create, attach, prompt, streaming, mid-run steer, abort, detach and re-attach
-with the transcript preserved). In the shipped extension it is covered by the
-colocated conformance test, which drives a real protocol client over a real
-unix socket; it is not part of any operator workflow today.
+The worker socket is exercised by the colocated conformance test, which
+drives a real protocol client over a real unix socket. It is not part of
+any operator workflow today.
