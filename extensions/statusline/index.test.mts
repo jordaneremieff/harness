@@ -132,7 +132,7 @@ describe("footer render", () => {
 		assert.match(line1, /~\$0\.42/);
 		assert.match(line1, /●/);
 		assert.match(line1, /90% hit/);
-		assert.equal(line2, "/tmp/statusline-test (main) │ lint ok");
+		assert.equal(line2, "/tmp/statusline-test (main) │ \x1b[0mlint ok\x1b[0m");
 	});
 
 	it("bounds both lines on narrow terminals by shedding then truncating", async () => {
@@ -161,20 +161,55 @@ describe("footer render", () => {
 		assert.ok(!line1.includes("[high]"), "no bracket without reasoning");
 		assert.ok(!line1.includes("%"), "no context bar when percent is unknown");
 		assert.ok(!line1.includes("cache "), "no estimated cache TTL segment");
-		assert.equal(line2, "/tmp/statusline-test");
+		assert.equal(line2, "/tmp/statusline-test\x1b[0m");
+	});
+
+	it("keeps a pre-colored extension status colored, bounded by resets", async () => {
+		const { handlers } = makePi();
+		const colored = "\x1b[38;2;137;180;250m\u{1F50C} MCP: 10 servers enabled\x1b[39m";
+		const mocks = makeCtx({ statuses: new Map([["mcp", colored]]) });
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const footer = installFooter(mocks);
+		const [, line2] = footer.render(200);
+		assert.ok(line2.includes(colored), "color sequence survives intact");
+		assert.doesNotMatch(line2, /(^|[^\x1b])\[38;2;137/, "no literal escape residue");
+		assert.ok(line2.endsWith("\x1b[0m"), "line ends reset");
+	});
+
+	it("never emits a half-cut escape at any terminal width", async () => {
+		const { handlers } = makePi();
+		const mocks = makeCtx({
+			statuses: new Map([
+				["mcp", "\x1b[38;2;137;180;250m\u{1F50C} MCP: 10 servers enabled\x1b[39m"],
+				["lint", "\x1b[1mlint ok\x1b[22m"],
+			]),
+		});
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const footer = installFooter(mocks);
+		for (let width = 0; width <= 80; width++) {
+			for (const line of footer.render(width)) {
+				// Remove every complete SGR; a truncator that cut one in half would
+				// leave an ESC or its parameter bytes behind.
+				const stripped = line.replace(/\x1b\[[0-9;:]*m/g, "");
+				assert.ok(!stripped.includes("\x1b"), `partial escape at width ${width}: ${JSON.stringify(line)}`);
+				assert.ok(visibleWidth(line) <= width, `overflow at width ${width}`);
+			}
+		}
 	});
 
 	it("sanitizes hostile extension status text", async () => {
 		const { handlers } = makePi();
 		const mocks = makeCtx({
-			statuses: new Map([["evil", "\x1b[31m forged\nsecond line \x1b[0m"]]),
+			statuses: new Map([["evil", "\x1b[2J\x1b]0;title\x07 forged\nsecond line \x1b[38;2;1;2;3"]]),
 		});
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks);
 		const [, line2] = footer.render(200);
-		assert.ok(!line2.includes("\x1b"), "no escape sequences survive");
 		assert.ok(!line2.includes("\n"));
-		assert.match(line2, /\[31m forged second line \[0m/);
+		assert.ok(!line2.includes("[2J"), "no clear-screen residue");
+		assert.ok(!line2.includes("title"), "OSC payload dropped whole");
+		assert.ok(!line2.includes("[38;2;1;2;3"), "truncated sequence leaves no residue");
+		assert.match(line2, /forged second line/);
 	});
 
 	it("shows measured cache telemetry without a TTL estimate", async () => {

@@ -75,9 +75,23 @@ following Pi's footer convention) plus the git branch from
 `footerData.getExtensionStatuses()` — the supported host surface through
 which any extension can publish footer text with `ctx.ui.setStatus()`. The
 statusline renders them generically, with no per-key special cases, after
-sanitizing control characters (stricter than Pi's default footer: all C0
-and DEL bytes are stripped, so a hostile or buggy status cannot inject
-terminal escapes into the statusline).
+sanitizing each one.
+
+The sanitize contract is an SGR allowlist. A complete `ESC [ ... m` sequence
+survives, so a status that colors itself renders as its author intended.
+Everything else goes: other CSI sequences, terminated control strings (OSC,
+DCS, SOS, PM, APC in both 7-bit and C1 encodings), two-byte escapes, and
+truncated sequences whose parameter bytes would otherwise paint as literal
+text. An unterminated control string loses only its introducer, so a stray
+byte cannot swallow the rest of the status. Remaining C0/C1/DEL bytes blank
+to spaces, whitespace collapses, and input is cut to 512 characters — a cap
+that matters because SGR is zero-width and would otherwise slip past width
+shedding at any length.
+
+So a hostile status can pick its own colors inside its own cell and nothing
+else: each status is bracketed with a reset, which bounds effects like
+conceal or blink to that cell. It cannot move the cursor, clear the screen,
+set the window title, write the clipboard, or emit a hyperlink.
 
 ## Lifecycle and mode boundary
 

@@ -27,6 +27,8 @@ import {
 import { scanSession } from "./metrics.ts";
 
 const TICK_MS = 5_000;
+/** Footer reset, used to bound each status cell's own SGR state. */
+const RESET = "\x1b[0m";
 
 function thinkingColorKey(level: string): ThemeColor {
 	return `thinking${level.charAt(0).toUpperCase()}${level.slice(1)}` as ThemeColor;
@@ -82,14 +84,20 @@ function renderLines(
 	if (branch) {
 		project += fg("dim", ` (${sanitizeDisplay(branch)})`);
 	}
+	// Each status is bracketed by the reset so a kept SGR sequence cannot bleed
+	// its color into the next cell or the rest of the footer.
 	const statuses: string[] = [];
 	for (const text of footerData.getExtensionStatuses().values()) {
 		const clean = sanitizeDisplay(text);
-		if (clean) statuses.push(clean);
+		if (clean) statuses.push(`${RESET}${clean}${RESET}`);
 	}
 	const line2 = composeLine2(project, statuses, sep, width, visibleWidth);
 
-	return [truncateToWidth(line1, width), truncateToWidth(line2, width)];
+	// truncateToWidth is ANSI-aware and carries whole sequences, so a sanitized
+	// line cannot come back cut in half; it only needs a closing reset when it
+	// did not truncate and add one itself.
+	const body = truncateToWidth(line2, width);
+	return [truncateToWidth(line1, width), body.endsWith(RESET) ? body : `${body}${RESET}`];
 }
 
 export default function registerStatusline(pi: ExtensionAPI) {

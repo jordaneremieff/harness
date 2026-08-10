@@ -12,6 +12,7 @@ import {
 	formatTokens,
 	folderLabel,
 	hitRatePercent,
+	MAX_STATUS_LENGTH,
 	sanitizeDisplay,
 	type Line1Parts,
 } from "./format.ts";
@@ -111,11 +112,80 @@ describe("sanitizeDisplay", () => {
 	it("strips control characters, collapses whitespace, trims", () => {
 		assert.equal(sanitizeDisplay("alpha\nbeta\tgamma"), "alpha beta gamma");
 		assert.equal(sanitizeDisplay("  pad  ed  "), "pad ed");
-		const hostile = "\x1b[31mred\x1b[0m \x07";
-		const clean = sanitizeDisplay(hostile);
-		assert.ok(!clean.includes("\x1b"), "escape stripped");
-		assert.ok(!clean.includes("\n"));
-		assert.equal(clean, "[31mred [0m");
+	});
+
+	it("keeps complete SGR sequences intact", () => {
+		const colored = "\x1b[38;2;137;180;250m\u{1F50C} MCP: 10 servers enabled\x1b[39m";
+		assert.equal(sanitizeDisplay(colored), colored);
+		assert.equal(sanitizeDisplay("\x1b[31mred\x1b[0m"), "\x1b[31mred\x1b[0m");
+	});
+
+	it("drops non-SGR escape sequences as whole units", () => {
+		assert.equal(sanitizeDisplay("a\x1b[2Jb"), "ab");
+		assert.equal(sanitizeDisplay("a\x1b[?25lb"), "ab");
+		assert.equal(sanitizeDisplay("a\x1b]0;evil\x07b"), "ab");
+		assert.equal(sanitizeDisplay("a\x1b]0;evil\x1b\\b"), "ab");
+		assert.equal(sanitizeDisplay("a\x00b\x1b[38;2;1;2;3mX\x1b[39mc\x1b[Hd"), "a b\x1b[38;2;1;2;3mX\x1b[39mcd");
+	});
+
+	it("drops two-byte escapes whose final byte would otherwise paint as text", () => {
+		// These sit outside the Fe range, so they need the generic ESC rule to go.
+		assert.equal(sanitizeDisplay("a\x1b7b"), "ab");
+		assert.equal(sanitizeDisplay("a\x1b8b"), "ab");
+		assert.equal(sanitizeDisplay("a\x1b>b"), "ab");
+		assert.equal(sanitizeDisplay("a\x1bDb"), "ab");
+		assert.equal(sanitizeDisplay("a\x1b(Bb"), "ab");
+		assert.equal(sanitizeDisplay("a\x1b(%Gb"), "ab");
+	});
+
+	it("drops terminated control strings whole, in either encoding", () => {
+		assert.equal(sanitizeDisplay("a\x1bP1;2|evil\x1b\\b"), "ab"); // DCS
+		assert.equal(sanitizeDisplay("a\x1b_payload\x1b\\b"), "ab"); // APC
+		assert.equal(sanitizeDisplay("a\x1b^pm\x07b"), "ab"); // PM
+		assert.equal(sanitizeDisplay("a\x1b]0;evil\x9cb"), "ab"); // OSC closed by C1 ST
+		assert.equal(sanitizeDisplay("a\x9d0;evil\x07b"), "ab"); // C1 OSC
+		assert.equal(sanitizeDisplay("a\x1b]8;;https://evil\x07link\x1b]8;;\x07b"), "alinkb");
+	});
+
+	it("never lets an unterminated control string swallow later text", () => {
+		// Only the introducer goes; the payload degrades to plain text.
+		assert.equal(sanitizeDisplay("a\x9d0;evilb"), "a0;evilb");
+		assert.equal(sanitizeDisplay("a\x1b]0;evilb"), "a0;evilb");
+	});
+
+	it("bounds input length so zero-width sequences cannot bloat the footer", () => {
+		const bloat = `\x1b[${"1;".repeat(50_000)}31mX`;
+		assert.ok(sanitizeDisplay(bloat).length <= MAX_STATUS_LENGTH, "cut to the cap");
+		assert.ok(!sanitizeDisplay(bloat).includes("\x1b"), "the cut sequence is dropped, not leaked");
+		assert.equal(sanitizeDisplay("x".repeat(MAX_STATUS_LENGTH + 50)).length, MAX_STATUS_LENGTH);
+	});
+
+	it("leaves no literal residue from a truncated sequence", () => {
+		// Blanking the ESC alone would paint the parameters: "[38;2;1;2;3".
+		assert.equal(sanitizeDisplay("ok\x1b[38;2;1;2;3"), "ok");
+		assert.equal(sanitizeDisplay("ok\x1b["), "ok");
+		assert.equal(sanitizeDisplay("ok\x1b"), "ok");
+	});
+
+	it("drops single-byte C1 control sequences", () => {
+		assert.equal(sanitizeDisplay("a\x9b2Jb"), "ab");
+		assert.equal(sanitizeDisplay("a\x9b38;2;1;2;3mb"), "ab");
+		assert.equal(sanitizeDisplay("a\x9b?25lb"), "ab");
+	});
+});
+
+describe("sanitizeDisplay invariants", () => {
+	it("is idempotent and emits only complete SGR escapes", () => {
+		const hostile = [
+			"\x1b[38;2;1;2;3mkeep\x1b[0m",
+			"\x1b[2J\x1b]0;t\x07\x1b7\x1bP x \x1b\\\x9b5m\x9d evil ",
+			"tail\x1b[38;2;9",
+		].join("");
+		const once = sanitizeDisplay(hostile);
+		assert.equal(sanitizeDisplay(once), once, "idempotent");
+		// Strip every complete SGR: nothing escape-like may remain.
+		const stripped = once.replace(/\x1b\[[0-9;:]*m/g, "");
+		assert.ok(!/[\x00-\x1f\x7f-\x9f]/.test(stripped), `residue in ${JSON.stringify(stripped)}`);
 	});
 });
 
