@@ -1,12 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-	autoTabLabel,
-	capName,
-	composeBorderLabel,
-	decideTabAction,
-	sanitizeName,
-} from "./naming.ts";
+import { autoTabLabel, capName, decideTabAction, sanitizeName } from "./naming.ts";
 
 describe("sanitizeName", () => {
 	it("strips control characters and collapses whitespace", () => {
@@ -30,17 +24,6 @@ describe("capName", () => {
 	});
 	it("supports a one-character cap", () => {
 		assert.equal(capName("alpha", 1), "a");
-	});
-});
-
-describe("composeBorderLabel", () => {
-	it("composes name and model", () => {
-		assert.equal(composeBorderLabel("auth refactor", "Opus"), "auth refactor · Opus");
-	});
-	it("falls back to the agent kind when unnamed", () => {
-		assert.equal(composeBorderLabel(undefined, "Opus"), "pi · Opus");
-		assert.equal(composeBorderLabel(undefined, undefined), "pi");
-		assert.equal(composeBorderLabel("auth", undefined), "auth");
 	});
 });
 

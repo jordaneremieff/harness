@@ -20,15 +20,6 @@ export function capName(name: string, max: number): string {
 	return `${chars.slice(0, max - 1).join("").trimEnd()}…`;
 }
 
-/**
- * The pane-border label: the session name, or the agent kind when the session
- * is unnamed, plus the model when known.
- */
-export function composeBorderLabel(name: string | undefined, model: string | undefined): string {
-	const base = name && name.length > 0 ? name : "pi";
-	return model && model.length > 0 ? `${base} · ${model}` : base;
-}
-
 /** The label herdr shows for an auto-named tab at display position `index`. */
 export function autoTabLabel(index: number): string {
 	return String(index + 1);

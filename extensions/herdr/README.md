@@ -1,32 +1,40 @@
 # herdr: pi session identity for herdr UI
 
-Reports the pi session identity to herdr so the sidebar, pane borders, and tab
-bar distinguish sessions at a glance. The extension is a display-only
-complement to herdr's own pi integration; it never reports lifecycle state or
-session references.
+Reports the pi session name to herdr's tab bar and the model to its sidebar,
+so sessions are distinguishable at a glance without duplication. The extension
+is a display-only complement to herdr's own pi integration; it never reports
+lifecycle state or session references.
 
 ## Surfaces
 
 | Surface | Effect | Config |
 |---|---|---|
 | Tab bar | `tab.rename` to the session name on `/name` | none |
-| Pane border | metadata `title` composed as `<name> · <model>`, or `pi · <model>` while unnamed | none |
-| Sidebar agent row | metadata `display_agent` set to the session name | none |
-| Sidebar token | `model` metadata token for a `$model` sidebar row | none |
+| Sidebar token | `model` metadata token, rendered as `$model` in a sidebar row | one `rows_by_agent.pi` row |
 
-The default herdr sidebar rows render the `agent` token, which resolves to
-`display_agent` first, so one metadata report changes the default sidebar
-without herdr configuration. Pane borders resolve the metadata `title` before
-manual labels.
+The session name lives on the tab; herdr's default sidebar line already
+carries the tab name there. The model is reported as a `$model` token so a
+sidebar row can show the one fact the tab cannot. Add the row under
+`[ui.sidebar.agents.rows_by_agent]` so only pi panes are affected:
+
+```toml
+[ui.sidebar.agents.rows_by_agent]
+pi = [
+  ["state_icon", "workspace", "tab"],
+  ["$model"],
+]
+```
+
+Other agents keep herdr's default layout.
 
 ## Behavior
 
-- `session_start` reports the current session name, model, and tab label.
-  Resume, reload, and herdr restart converge on the next event.
+- `session_start` reports the model token and the tab label. Resume, reload,
+  and herdr restart converge on the next event.
 - `session_info_changed` (the `/name` command) re-reports with the new name.
-- `model_select` refreshes the border composition and the `model` token.
-- `session_shutdown` with reason `quit` clears the metadata and restores the
-  numeric fallback appearance for the tab's current position.
+- `model_select` refreshes the `model` token.
+- `session_shutdown` with reason `quit` clears the token and restores the
+  numeric fallback label for the tab's current position.
 
 Manual names stay authoritative:
 
@@ -34,7 +42,7 @@ Manual names stay authoritative:
 - A tab this extension named follows the session and returns to its current
   numeric label when the name clears. Herdr 0.8 has no API to clear a tab's
   `custom_name`, so the result looks automatic but remains a custom label.
-- Any other tab label and any manual pane label are never touched.
+- Any other tab label is never touched.
 
 The extension only acts when `HERDR_ENV=1`, the herdr socket and pane id are
 present, and pi runs in TUI mode. Outside herdr it loads as a no-op. All
@@ -45,7 +53,7 @@ error; the next event re-synchronizes.
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `PI_HERDR_MAX_NAME_LENGTH` | Cap for reported names and tab labels | 60 |
+| `PI_HERDR_MAX_NAME_LENGTH` | Cap for session names written as tab labels | 60 |
 
 ## Boundaries
 

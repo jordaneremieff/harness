@@ -1,22 +1,22 @@
 /**
- * herdr: report the pi session identity to herdr's UI surfaces.
+ * herdr: report the pi session identity to herdr's tab bar and sidebar.
  *
- * Reports the session name as pane metadata (title, display agent) and as the
- * tab-bar label, plus the model as a sidebar token. The pane-border title
- * composes as "<name> · <model>" and falls back to "pi · <model>" while the
- * session is unnamed. Manual herdr labels stay authoritative: an auto-named
- * tab may be taken over, a tab this extension named follows the session, and
- * any other tab or pane label is never touched.
+ * The session name becomes the herdr tab-bar label; the model is reported as a
+ * `$model` sidebar token. The name lives on the tab (herdr's default sidebar
+ * line already carries the tab name there), and the model earns the sidebar's
+ * second row as the one fact the tab cannot show. Manual herdr labels stay
+ * authoritative: an auto-named tab may be taken over, a tab this extension
+ * named follows the session, and any other tab label is never touched.
  *
  * Lifecycle state and native session references stay with herdr's own pi
  * integration; this extension reports presentation only. All socket traffic
  * is best-effort: the next event re-synchronizes after any drop.
  *
- * Configuration: PI_HERDR_MAX_NAME_LENGTH caps reported names (default 60).
+ * Configuration: PI_HERDR_MAX_NAME_LENGTH caps the tab label (default 60).
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { capName, composeBorderLabel, decideTabAction, sanitizeName, type ListedTab } from "./naming.ts";
+import { capName, decideTabAction, sanitizeName, type ListedTab } from "./naming.ts";
 import { HerdrClient, socketEndpoint } from "./socket.ts";
 
 const SOURCE = "custom:pi-identity";
@@ -26,10 +26,6 @@ const DEFAULT_MAX_NAME = 60;
 export interface SyncState {
 	/** Tab label this extension last wrote; undefined when the tab is not ours. */
 	registryLabel: string | undefined;
-	/** Whether a display_agent report is currently in effect. */
-	displayAgentSet: boolean;
-	/** Whether a title report is currently in effect. */
-	titleSent: boolean;
 }
 
 export interface SyncDeps {
@@ -38,10 +34,6 @@ export interface SyncDeps {
 	tabId: string | undefined;
 	workspaceId: string | undefined;
 	maxName: number;
-}
-
-interface PaneListResult {
-	panes?: { pane_id?: string; label?: string | null }[];
 }
 
 interface TabListResult {
@@ -60,22 +52,6 @@ function workspaceOf(deps: SyncDeps): string | undefined {
 	return deps.workspaceId ?? deps.tabId?.split(":")[0];
 }
 
-type PaneLabelRead = { known: true; label: string | undefined } | { known: false };
-
-/** Read the pane's manual label. Failure stays distinct from a known empty label. */
-async function readManualPaneLabel(deps: SyncDeps): Promise<PaneLabelRead> {
-	try {
-		const workspaceId = workspaceOf(deps);
-		const result = (await deps.client.request("pane.list", workspaceId ? { workspace_id: workspaceId } : {})) as PaneListResult;
-		const pane = result.panes?.find((candidate) => candidate.pane_id === deps.paneId);
-		if (!pane) return { known: false };
-		const trimmed = pane.label?.trim();
-		return { known: true, label: trimmed || undefined };
-	} catch {
-		return { known: false };
-	}
-}
-
 /** Read the workspace's tabs in display order; undefined on failure. */
 async function readTabs(deps: SyncDeps): Promise<ListedTab[] | undefined> {
 	if (!deps.tabId) return undefined;
@@ -92,8 +68,8 @@ async function readTabs(deps: SyncDeps): Promise<ListedTab[] | undefined> {
 }
 
 /**
- * Report the session identity to herdr. Reads the pane's manual label and the
- * tab list first so manual names always win over this extension's labels.
+ * Report the session identity to herdr: the model as a `$model` sidebar token
+ * and the session name as the tab-bar label. Manual tab labels always win.
  */
 export async function syncIdentity(
 	deps: SyncDeps,
@@ -102,33 +78,14 @@ export async function syncIdentity(
 ): Promise<void> {
 	const name = capName(sanitizeName(input.name ?? ""), deps.maxName) || undefined;
 	const model = sanitizeName(input.model ?? "") || undefined;
-	const border = capName(composeBorderLabel(name, model), deps.maxName);
 
-	const paneLabel = await readManualPaneLabel(deps);
-
-	const params: Record<string, unknown> = {
+	await deps.client.send("pane.report_metadata", {
 		pane_id: deps.paneId,
 		source: SOURCE,
 		agent: AGENT,
 		seq: deps.client.nextSeq(),
 		tokens: { model: model ?? null },
-	};
-	if (!paneLabel.known || paneLabel.label) {
-		// A manual label, or an unreadable pane state, cannot safely be overwritten.
-		params.clear_title = true;
-		state.titleSent = false;
-	} else {
-		params.title = border;
-		state.titleSent = true;
-	}
-	if (name) {
-		params.display_agent = name;
-		state.displayAgentSet = true;
-	} else if (state.displayAgentSet) {
-		params.clear_display_agent = true;
-		state.displayAgentSet = false;
-	}
-	await deps.client.send("pane.report_metadata", params);
+	});
 
 	if (deps.tabId) {
 		const tabs = await readTabs(deps);
@@ -147,19 +104,15 @@ export async function syncIdentity(
 	}
 }
 
-/** Withdraw every presentation label this extension may have set. */
+/** Withdraw the model token and restore a tab this extension named. */
 export async function clearIdentity(deps: SyncDeps, state: SyncState): Promise<void> {
 	await deps.client.send("pane.report_metadata", {
 		pane_id: deps.paneId,
 		source: SOURCE,
 		agent: AGENT,
 		seq: deps.client.nextSeq(),
-		clear_title: true,
-		clear_display_agent: true,
 		tokens: { model: null },
 	});
-	state.titleSent = false;
-	state.displayAgentSet = false;
 
 	if (deps.tabId && state.registryLabel !== undefined) {
 		const tabs = await readTabs(deps);
@@ -180,7 +133,7 @@ export async function clearIdentity(deps: SyncDeps, state: SyncState): Promise<v
 
 /** Wire the pi events to the identity sync. Exported for tests. */
 export function registerHerdrWithDeps(pi: ExtensionAPI, deps: SyncDeps): SyncState {
-	const state: SyncState = { registryLabel: undefined, displayAgentSet: false, titleSent: false };
+	const state: SyncState = { registryLabel: undefined };
 
 	let rootSession = false;
 	let chain: Promise<void> = Promise.resolve();
