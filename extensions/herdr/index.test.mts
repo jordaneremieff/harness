@@ -195,7 +195,7 @@ describe("identity sync", () => {
 		assert.equal(report?.params.display_agent, "beta");
 	});
 
-	it("restores the auto tab label when the name clears", async () => {
+	it("restores the current numeric tab label when the name clears", async () => {
 		const ownedTabs = { tabs: [{ tab_id: "w1:t1", label: "alpha" }] };
 		const { client, calls } = fakeClient({ "pane.list": noManualLabel, "tab.list": ownedTabs });
 		const fake = fakePi("alpha");

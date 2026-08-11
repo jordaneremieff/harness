@@ -28,6 +28,9 @@ describe("capName", () => {
 	it("counts astral characters as one", () => {
 		assert.equal(capName("🙂🙂🙂", 2), "🙂…");
 	});
+	it("supports a one-character cap", () => {
+		assert.equal(capName("alpha", 1), "a");
+	});
 });
 
 describe("composeBorderLabel", () => {
@@ -81,7 +84,7 @@ describe("decideTabAction", () => {
 		assert.deepEqual(action, { type: "none", registry: "alpha" });
 	});
 
-	it("restores the auto label when the name clears", () => {
+	it("restores the current numeric label when the name clears", () => {
 		const owned = [{ tabId: "w1:t1", label: "alpha" }];
 		const action = decideTabAction({ name: undefined, tabId: "w1:t1", tabs: owned, registryLabel: "alpha" });
 		assert.deepEqual(action, { type: "restore", label: "1", registry: undefined });

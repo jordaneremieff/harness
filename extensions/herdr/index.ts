@@ -22,7 +22,6 @@ import { HerdrClient, socketEndpoint } from "./socket.ts";
 const SOURCE = "custom:pi-identity";
 const AGENT = "pi";
 const DEFAULT_MAX_NAME = 60;
-const MIN_MAX_NAME = 8;
 
 export interface SyncState {
 	/** Tab label this extension last wrote; undefined when the tab is not ours. */
@@ -53,7 +52,7 @@ function readMaxName(): number {
 	const raw = process.env.PI_HERDR_MAX_NAME_LENGTH;
 	if (!raw) return DEFAULT_MAX_NAME;
 	const parsed = Number.parseInt(raw, 10);
-	if (!Number.isFinite(parsed) || parsed < MIN_MAX_NAME) return DEFAULT_MAX_NAME;
+	if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_MAX_NAME;
 	return Math.min(parsed, 80);
 }
 
