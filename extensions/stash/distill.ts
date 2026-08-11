@@ -9,7 +9,12 @@
  */
 
 import { createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { Model } from "@earendil-works/pi-ai";
+import {
+	clampThinkingLevel,
+	getSupportedThinkingLevels,
+	type Model,
+	type ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import type { StashRecord } from "./format.ts";
 import { redactPayload, redactSecrets, REDACTED } from "./redact.ts";
 import { writeStash } from "./store.ts";
@@ -17,6 +22,17 @@ import { writeStash } from "./store.ts";
 const TRANSCRIPT_MAX_CHARS = 150_000;
 const DEFAULT_TIMEOUT_MS = 180_000;
 const SKIP_MARKER = "SKIP_STASH";
+/** Distill-specific last resort when the parent session has no thinking level. */
+const DEFAULT_DISTILL_THINKING: ModelThinkingLevel = "low";
+const VALID_THINKING_LEVELS: readonly ModelThinkingLevel[] = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+];
 
 /**
  * Structural view of an LLM message. Kept local so this module does not depend
@@ -88,11 +104,16 @@ export interface DistillSession {
 	dispose(): void;
 }
 
-export type DistillSessionFactory = (options: { model: Model<any>; cwd: string }) => Promise<DistillSession>;
+export type DistillSessionFactory = (options: {
+	model: Model<any>;
+	cwd: string;
+	thinkingLevel: ModelThinkingLevel;
+}) => Promise<DistillSession>;
 
 interface DistillJobOptions {
 	model: Model<any>;
 	cwd: string;
+	thinkingLevel: ModelThinkingLevel;
 	hint: string;
 	entries: readonly SessionEntry[];
 	project: string;
@@ -104,9 +125,125 @@ interface DistillJobOptions {
 	now?: () => Date;
 }
 
+/** Minimal registry surface used to resolve PI_STASH_MODEL. */
+export interface DistillModelRegistry {
+	find(provider: string, id: string): Model<any> | null | undefined;
+	getAvailable(): readonly Model<any>[];
+	hasConfiguredAuth(model: Model<any>): boolean;
+}
+
+export type DistillModelResolution =
+	| { ok: true; model: Model<any> }
+	| { ok: false; error: string };
+
+export type DistillThinkingResolution =
+	| { ok: true; level: ModelThinkingLevel }
+	| { ok: false; error: string };
+
+/** Empty or whitespace env values count as unset (inherit). */
+export function readOptionalEnv(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Resolve the distillation model from an optional PI_STASH_MODEL override.
+ * Unset inherits the parent session model. A set value never falls back silently.
+ */
+export function resolveDistillModel(options: {
+	envModel: string | undefined;
+	parentModel: Model<any> | undefined | null;
+	registry: DistillModelRegistry | undefined | null;
+}): DistillModelResolution {
+	const raw = readOptionalEnv(options.envModel);
+	if (raw) {
+		const registry = options.registry;
+		if (!registry) {
+			return { ok: false, error: `model "${raw}" cannot be resolved because no model registry is available.` };
+		}
+		const slash = raw.indexOf("/");
+		let found: Model<any> | null | undefined = null;
+		if (slash > 0) {
+			found = registry.find(raw.slice(0, slash), raw.slice(slash + 1));
+		} else {
+			const matches = registry.getAvailable().filter((model) => model.id === raw);
+			found = matches.find((model) => registry.hasConfiguredAuth(model)) ?? matches[0] ?? null;
+		}
+		if (!found) {
+			return {
+				ok: false,
+				error: `model "${raw}" is not in the current registry. Check the id with: pi --list-models`,
+			};
+		}
+		if (!registry.hasConfiguredAuth(found)) {
+			return {
+				ok: false,
+				error: `model "${raw}" is registered but has no configured authentication (pi auth check --model ${raw}).`,
+			};
+		}
+		return { ok: true, model: found };
+	}
+	const parent = options.parentModel;
+	if (!parent) {
+		return {
+			ok: false,
+			error: "No model is available for this session; cannot start a stash distillation.",
+		};
+	}
+	return { ok: true, model: parent };
+}
+
+function isThinkingLevel(value: string): value is ModelThinkingLevel {
+	return (VALID_THINKING_LEVELS as readonly string[]).includes(value);
+}
+
+/**
+ * Resolve the distillation thinking level from an optional PI_STASH_THINKING override.
+ * Unset inherits the parent level (default "low" when the parent has none).
+ * An explicit unsupported level fails; an inherited unsupported level clamps.
+ */
+export function resolveDistillThinking(options: {
+	envThinking: string | undefined;
+	parentThinking: string | undefined | null;
+	model: Model<any>;
+}): DistillThinkingResolution {
+	const raw = readOptionalEnv(options.envThinking);
+	if (raw) {
+		if (!isThinkingLevel(raw)) {
+			return {
+				ok: false,
+				error: `thinking "${raw}" is not a valid level; valid values: ${VALID_THINKING_LEVELS.join(", ")}.`,
+			};
+		}
+		const supported = getSupportedThinkingLevels(options.model);
+		if (!supported.includes(raw)) {
+			const modelId = `${options.model.provider}/${options.model.id}`;
+			return {
+				ok: false,
+				error: `thinking "${raw}" is not supported by ${modelId}; supported levels: ${supported.join(", ")}.`,
+			};
+		}
+		return { ok: true, level: raw };
+	}
+	const parentRaw = options.parentThinking?.trim();
+	const parentLevel =
+		parentRaw && isThinkingLevel(parentRaw) ? parentRaw : DEFAULT_DISTILL_THINKING;
+	return { ok: true, level: clampThinkingLevel(options.model, parentLevel) };
+}
+
+/**
+ * A non-empty hint that is not the exact "(none)" sentinel selects sidequest scope.
+ * Whitespace and "(none)" are unhinted: the transcript is the subject.
+ */
+export function isHintedDistill(hint: string): boolean {
+	const trimmed = hint.trim();
+	return trimmed.length > 0 && trimmed !== "(none)";
+}
+
 export const DISTILL_SYSTEM_PROMPT = `You are a session distiller for the stash handover system.
 
-Your task: distill the provided session transcript plus an operator hint into a durable handover artifact for a future session. The operator hint, when present, takes priority over anything you infer from the transcript: the artifact is about the hint, not about the transcript. The hint states what the operator wants preserved; the transcript is context that supports the hint.
+Your task: distill the provided session transcript plus an operator hint into a durable handover artifact for a future session. The operator hint, when present and not "(none)", selects the single effort this artifact may cover. The artifact is a handover for that effort only: the artifact is about the hint, not about the transcript. The hint states what the operator wants preserved; the transcript is supporting context for the hint.
 
 The artifact must center the hint:
 - The title names the hint's subject.
@@ -114,7 +251,17 @@ The artifact must center the hint:
 - The summary covers the hint's subject first and in the most detail; transcript material appears only where it supports the hint.
 - When the hint is "(none)", the transcript is the subject.
 
-Before finalizing: verify the artifact centers the hint. The title must name the hint's subject, and the first summary sentence must be about it. If the artifact would read as being about the transcript instead, rewrite it.
+When the hint is not "(none)", it also defines the artifact's scope boundary (not merely a ranking preference):
+- Cover ONLY the hinted effort (the sidequest or focused subject named by the hint).
+- Concurrent or prior mainline work in the same live session is OUT OF SCOPE, even if it is longer, more recent, more urgent-looking, or appears to motivate the hint.
+- Do not put other efforts' decisions, open loops, next actions, files, or tags into the artifact.
+- Use transcript material from other efforts only when it directly advances the hinted subject (at most brief motivation or constraint in the summary). Never turn another effort into resume work.
+- Observed references are candidates, not requirements: include a path, URL, or work-item in "files" only if it is needed to resume the hinted effort.
+
+Before finalizing when the hint is present:
+- The title must name the hint's subject, and the first summary sentence must be about it.
+- Every decisions, openLoops, nextActions, files, and tags entry must be about the hint's subject; drop items about any other live-session effort.
+- If the artifact would read as a handover for a different effort than the hint, or as being about the transcript instead, rewrite it.
 
 Credential-shaped values in the transcript and references are replaced with ${REDACTED}; do not guess, reconstruct, or restate them.
 
@@ -234,15 +381,23 @@ export function buildDistillPrompt(hint: string, transcript: string, artifacts: 
 		? ["", "Observed references from tool results:", ...artifacts.map((artifact) => `- ${artifact}`)]
 		: [];
 	const hintText = hint.trim();
-	const framing = hintText
+	const framing = isHintedDistill(hint)
 		? [
-				"The operator hint below is the subject of this stash.",
+				"The operator hint below is the ONLY effort this stash may cover.",
 				"",
 				`Operator hint: ${hintText}`,
 				"The stash must center the hint: the title names the hint's subject, and the first summary sentence states the result, the state, or the question about the hint's subject.",
-				"The session transcript is context that supports the hint; it is not the subject.",
+				"Scope boundary (binding): this stash covers ONLY the hinted effort. Treat all other prior or concurrent session work as OUT OF SCOPE regardless of length, recency, urgency, or unresolved status.",
+				"Do not put other efforts' decisions, open loops, next actions, files, or tags into any output field.",
+				"The session transcript is context that supports the hint; it is not the subject. Use transcript text and observed references only when they directly advance the hint.",
+				"Observed references are candidates, not requirements: omit references that matter solely to other efforts; include a path or URL in files only if it is needed to resume the hinted effort.",
+				"Before finalizing: every decisions, openLoops, nextActions, files, and tags entry must be about the hint's subject; drop items about any other live-session effort.",
 			]
-		: ["Operator hint: (none)", "The session transcript is the subject of this stash."];
+		: [
+				"Operator hint: (none)",
+				"No sidequest scope exclusion applies. The session transcript is the subject of this stash.",
+				"All provided active-path transcript material remains the subject; observed references are supporting evidence for that full subject.",
+			];
 	return [
 		...framing,
 		"",
@@ -324,7 +479,7 @@ export function validatePayload(value: unknown): DistillPayload {
 }
 
 /** Spawn one bounded, tool-free session against the provided transcript. */
-const defaultDistillSessionFactory: DistillSessionFactory = async ({ model, cwd }) => {
+const defaultDistillSessionFactory: DistillSessionFactory = async ({ model, cwd, thinkingLevel }) => {
 	const loader = new DefaultResourceLoader({
 		cwd,
 		agentDir: getAgentDir(),
@@ -339,7 +494,8 @@ const defaultDistillSessionFactory: DistillSessionFactory = async ({ model, cwd 
 	await loader.reload();
 	const { session } = await createAgentSession({
 		model,
-		thinkingLevel: "low",
+		// "off" is a valid ModelThinkingLevel; createAgentSession's public type omits it.
+		thinkingLevel: thinkingLevel as never,
 		tools: [],
 		resourceLoader: loader,
 		sessionManager: SessionManager.inMemory(),
@@ -400,7 +556,11 @@ async function runDistill(options: DistillJobOptions, signal: AbortSignal): Prom
 		timeout.unref?.();
 
 		try {
-			const creating = factory({ model: options.model, cwd: options.cwd });
+			const creating = factory({
+				model: options.model,
+				cwd: options.cwd,
+				thinkingLevel: options.thinkingLevel,
+			});
 			// A factory that resolves after timeout or cancellation still owns a
 			// session resource. Dispose that late result instead of leaking it.
 			void creating.then(

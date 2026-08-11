@@ -73,13 +73,37 @@ retained byte-for-byte and restoring it is a plain move back into the store.
 live session, then runs one bounded, tool-free agent session in-process through
 the Pi SDK (`createAgentSession`, `SessionManager.inMemory()`, `tools: []`). The
 distiller receives a system prompt plus a single user message: the operator hint
-first (with priority over inferred signal), then the bounded transcript
-(first quarter and last three quarters, marked at the cut). A bounded reference
+first as the sole effort the artifact may cover, then the bounded transcript
+(first quarter and last three quarters, marked at the cut). Concurrent or prior
+mainline work in the same live session is out of scope for a hinted stash even
+when it is longer, more recent, or more urgent-looking. A bounded reference
 section retains deduplicated paths, work-item keys, and URLs observed in tool
-results, including references outside the retained transcript window. It returns one
+results, including references outside the retained transcript window; those
+references are candidates for the hinted effort only. It returns one
 fenced JSON payload that the extension validates against the same shape and
 caps as `stash_write` before writing through the atomic store with project,
 branch, and session metadata. A `SKIP_STASH` reply writes nothing.
+
+### Distillation model and thinking
+
+By default the distiller inherits the live session model and thinking level.
+Override either with environment variables (empty or whitespace values count as
+unset):
+
+| Variable | Unset | Set |
+|---|---|---|
+| `PI_STASH_MODEL` | Parent session model | `provider/id` or bare id from the current registry with configured auth |
+| `PI_STASH_THINKING` | Parent thinking level (or `low` when the parent has none) | Explicit level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
+
+A set `PI_STASH_MODEL` that is missing from the registry or has no configured
+auth fails creation; the parent model is never used as a silent fallback. An
+explicit `PI_STASH_THINKING` level the selected model cannot run also fails
+creation and names the supported levels. An inherited thinking level the model
+cannot run is clamped. Prefer `provider/id` when bare ids collide across
+providers. Distillation still has a 180-second wall-clock bound; pin
+`PI_STASH_THINKING` (for example to `low`) when a high parent thinking level
+would make the one-shot distill too slow or costly. `stash_write` is authored by
+the live agent and does not read these variables.
 
 The command handler returns immediately; the live agent receives no turn. The
 job is fire-and-forget with hard bounds: zero tools, one prompt, a 180-second
@@ -118,7 +142,7 @@ as open. Unrecognized values stay visible in unfiltered listings and read as
 
 ## Storage
 
-Artifacts live at `<agentDir>/stash/`, normally `~/.pi/agent/stash/`. `PI_STASH_DIR` overrides the location for tests and isolated deployments. `PI_SESSION_ID` is read as a fallback when the session manager supplies no session id.
+Artifacts live at `<agentDir>/stash/`, normally `~/.pi/agent/stash/`. `PI_STASH_DIR` overrides the location for tests and isolated deployments. `PI_STASH_MODEL` and `PI_STASH_THINKING` configure `/stash new` distillation (see Background distillation). `PI_SESSION_ID` is read as a fallback when the session manager supplies no session id.
 
 Flat files are the store of record because handovers must outlive sessions and remain greppable. Session entries were rejected because their lifecycle is the session. Project-local storage was rejected because it fragments cross-project continuity and pollutes checkouts.
 

@@ -9,7 +9,11 @@ import {
 	DISTILL_SYSTEM_PROMPT,
 	entriesToTranscript,
 	extractArtifacts,
+	isHintedDistill,
 	parseDistillPayload,
+	readOptionalEnv,
+	resolveDistillModel,
+	resolveDistillThinking,
 	startDistillJob,
 	validatePayload,
 	type DistillPayload,
@@ -111,8 +115,9 @@ const VALID_PAYLOAD: DistillPayload = {
 };
 
 const baseOptions = (factory: any, extra: any = {}) => ({
-	model: { id: "test-model" },
+	model: { id: "test-model", provider: "test", reasoning: true },
 	cwd: "/workspace",
+	thinkingLevel: "low" as const,
 	hint: "port the first tool",
 	entries: sessionEntries(),
 	project: "/workspace",
@@ -190,18 +195,22 @@ describe("prompt building", () => {
 	it("frames the hint as the stash subject before the transcript", () => {
 		const prompt = buildDistillPrompt("focus on the token budget", "transcript body");
 		assert.match(prompt, /Operator hint: focus on the token budget/);
-		assert.match(prompt, /subject of this stash/);
+		assert.match(prompt, /ONLY effort this stash may cover/);
 		assert.match(prompt, /The stash must center the hint/);
 		assert.match(prompt, /the title names the hint's subject/);
 		assert.match(prompt, /is not the subject/);
+		assert.match(prompt, /OUT OF SCOPE/);
+		assert.match(prompt, /Observed references are candidates/);
 		assert.ok(prompt.indexOf("focus on the token budget") < prompt.indexOf("transcript body"));
 		// Every framing directive must precede the transcript: a regression
 		// that buries the hint below the transcript body fails these orderings.
 		const transcriptAt = prompt.indexOf("Session transcript:");
 		for (const directive of [
-			"The operator hint below is the subject of this stash.",
+			"The operator hint below is the ONLY effort this stash may cover.",
 			"Operator hint: focus on the token budget",
 			"The stash must center the hint",
+			"Scope boundary (binding)",
+			"OUT OF SCOPE",
 			"it is not the subject.",
 		]) {
 			assert.ok(
@@ -215,8 +224,11 @@ describe("prompt building", () => {
 		const prompt = buildDistillPrompt("focus on the token budget", "transcript body");
 		assert.match(prompt, /Session transcript:\ntranscript body/);
 		const withArtifacts = buildDistillPrompt("hint", "body", ["/workspace/src/adapter.ts"]);
+		const observedHeading = "Observed references from tool results:";
 		assert.match(withArtifacts, /Observed references from tool results:/);
-		assert.ok(withArtifacts.indexOf("Observed references") > withArtifacts.indexOf("Session transcript:"));
+		assert.ok(withArtifacts.indexOf(observedHeading) > withArtifacts.indexOf("Session transcript:"));
+		assert.ok(withArtifacts.indexOf("OUT OF SCOPE") < withArtifacts.indexOf(observedHeading));
+		assert.ok(withArtifacts.indexOf("Observed references are candidates") < withArtifacts.indexOf("Session transcript:"));
 	});
 
 	it("preserves concrete references from tool output after the transcript", () => {
@@ -243,16 +255,51 @@ describe("prompt building", () => {
 		const prompt = buildDistillPrompt("   ", "body");
 		assert.match(prompt, /Operator hint: \(none\)/);
 		assert.match(prompt, /The session transcript is the subject of this stash\./);
+		assert.match(prompt, /No sidequest scope exclusion applies/);
 		assert.doesNotMatch(prompt, /must center the hint/);
+		assert.doesNotMatch(prompt, /OUT OF SCOPE/);
+	});
+
+	it("treats the exact (none) sentinel as unhinted", () => {
+		assert.equal(isHintedDistill("(none)"), false);
+		const prompt = buildDistillPrompt("(none)", "body");
+		assert.match(prompt, /Operator hint: \(none\)/);
+		assert.match(prompt, /No sidequest scope exclusion applies/);
+		assert.doesNotMatch(prompt, /OUT OF SCOPE/);
+		assert.doesNotMatch(prompt, /ONLY effort this stash may cover/);
+	});
+
+	it("keeps multi-effort exclusion language ahead of a mainline-plus-sidequest transcript", () => {
+		const transcript = [
+			"[USER]\nGate harness-surface changes and harden the skill.",
+			"[ASSISTANT]\nProposal before changes; uncommitted disputed prompts remain.",
+			"[USER]\nSide note: distill only the model inheritance finding for /stash new.",
+		].join("\n\n");
+		const prompt = buildDistillPrompt(
+			"session-model inheritance and hint-scoping for /stash new",
+			transcript,
+			["/workspace/harness/prompts", "/workspace/harness/extensions/stash/distill.ts"],
+		);
+		const transcriptAt = prompt.indexOf("Session transcript:");
+		assert.ok(transcriptAt > 0);
+		assert.ok(prompt.indexOf("OUT OF SCOPE") < transcriptAt);
+		assert.ok(prompt.indexOf("decisions, open loops, next actions, files, or tags") < transcriptAt);
+		assert.ok(prompt.indexOf("Observed references are candidates") < transcriptAt);
+		assert.ok(prompt.indexOf("every decisions, openLoops, nextActions, files, and tags") < transcriptAt);
+		assert.match(prompt, /session-model inheritance and hint-scoping/);
+		assert.match(prompt, /uncommitted disputed prompts remain/);
 	});
 });
 
 describe("distiller system prompt", () => {
-	it("gives the hint the role of artifact subject with a self-check", () => {
+	it("gives the hint the role of artifact subject with a scope self-check", () => {
 		assert.match(DISTILL_SYSTEM_PROMPT, /the artifact is about the hint/);
 		assert.match(DISTILL_SYSTEM_PROMPT, /The title names the hint's subject/);
 		assert.match(DISTILL_SYSTEM_PROMPT, /first sentence of the summary states the result/);
-		assert.match(DISTILL_SYSTEM_PROMPT, /Before finalizing: verify the artifact centers the hint/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /scope boundary/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /OUT OF SCOPE/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /Every decisions, openLoops, nextActions, files, and tags entry/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /Observed references are candidates/);
 		assert.match(DISTILL_SYSTEM_PROMPT, /When the hint is "\(none\)", the transcript is the subject/);
 		assert.match(DISTILL_SYSTEM_PROMPT, /^You are a session distiller for the stash handover system\./);
 	});
@@ -420,7 +467,7 @@ describe("distill job", () => {
 		assert.match(artifact, /rotate it soon/);
 	});
 
-	it("passes the model and cwd to the session factory", async () => {
+	it("passes the model, cwd, and thinking level to the session factory", async () => {
 		let received: any;
 		const factory = async (options: any) => {
 			received = options;
@@ -431,11 +478,12 @@ describe("distill job", () => {
 				dispose: () => {},
 			};
 		};
-		const job = startDistillJob(baseOptions(factory));
+		const job = startDistillJob(baseOptions(factory, { thinkingLevel: "high" }));
 		const outcome = await job.result;
 		assert.equal(outcome.ok, true);
 		assert.equal(received.model.id, "test-model");
 		assert.equal(received.cwd, "/workspace");
+		assert.equal(received.thinkingLevel, "high");
 	});
 
 	it("skips the write when the distiller says SKIP", async () => {
@@ -541,5 +589,146 @@ describe("distill job", () => {
 		const outcome = await startDistillJob(baseOptions(factory)).result;
 		assert.equal(outcome.ok, false);
 		assert.equal(calls.disposed, 1);
+	});
+});
+
+describe("distill model and thinking resolution", () => {
+	const parent = { id: "parent-model", provider: "parent", reasoning: true } as any;
+	const override = { id: "cheap-model", provider: "cheap", reasoning: true } as any;
+	const unauthed = { id: "locked-model", provider: "locked", reasoning: true } as any;
+	const noReasoning = { id: "plain", provider: "plain", reasoning: false } as any;
+
+	function registry(models: any[], authed: Set<any> = new Set(models)) {
+		return {
+			find(provider: string, id: string) {
+				return models.find((model) => model.provider === provider && model.id === id) ?? null;
+			},
+			getAvailable() {
+				return models;
+			},
+			hasConfiguredAuth(model: any) {
+				return authed.has(model);
+			},
+		};
+	}
+
+	it("treats empty env values as unset", () => {
+		assert.equal(readOptionalEnv(undefined), undefined);
+		assert.equal(readOptionalEnv(""), undefined);
+		assert.equal(readOptionalEnv("   "), undefined);
+		assert.equal(readOptionalEnv(" cheap/model "), "cheap/model");
+	});
+
+	it("inherits the parent model when PI_STASH_MODEL is unset", () => {
+		const result = resolveDistillModel({
+			envModel: undefined,
+			parentModel: parent,
+			registry: registry([override]),
+		});
+		assert.equal(result.ok, true);
+		if (result.ok) assert.equal(result.model, parent);
+	});
+
+	it("resolves an explicit provider/id model without requiring a parent model", () => {
+		const result = resolveDistillModel({
+			envModel: "cheap/cheap-model",
+			parentModel: undefined,
+			registry: registry([override]),
+		});
+		assert.equal(result.ok, true);
+		if (result.ok) assert.equal(result.model, override);
+	});
+
+	it("prefers an authenticated bare-id match and rejects missing or unauthed models", () => {
+		const withAuth = resolveDistillModel({
+			envModel: "cheap-model",
+			parentModel: parent,
+			registry: registry([unauthed, override], new Set([override])),
+		});
+		assert.equal(withAuth.ok, true);
+		if (withAuth.ok) assert.equal(withAuth.model, override);
+
+		const missing = resolveDistillModel({
+			envModel: "missing/model",
+			parentModel: parent,
+			registry: registry([override]),
+		});
+		assert.equal(missing.ok, false);
+		if (!missing.ok) assert.match(missing.error, /not in the current registry/);
+
+		const locked = resolveDistillModel({
+			envModel: "locked/locked-model",
+			parentModel: parent,
+			registry: registry([unauthed], new Set()),
+		});
+		assert.equal(locked.ok, false);
+		if (!locked.ok) {
+			assert.match(locked.error, /no configured authentication/);
+			assert.doesNotMatch(locked.error, /parent-model/);
+		}
+	});
+
+	it("fails inheritance when no parent model exists", () => {
+		const result = resolveDistillModel({
+			envModel: undefined,
+			parentModel: undefined,
+			registry: registry([override]),
+		});
+		assert.equal(result.ok, false);
+		if (!result.ok) assert.match(result.error, /No model is available/);
+	});
+
+	it("inherits parent thinking and defaults to low when the parent has none", () => {
+		const inherited = resolveDistillThinking({
+			envThinking: undefined,
+			parentThinking: "high",
+			model: parent,
+		});
+		assert.equal(inherited.ok, true);
+		if (inherited.ok) assert.equal(inherited.level, "high");
+
+		const fallback = resolveDistillThinking({
+			envThinking: undefined,
+			parentThinking: undefined,
+			model: parent,
+		});
+		assert.equal(fallback.ok, true);
+		if (fallback.ok) assert.equal(fallback.level, "low");
+	});
+
+	it("accepts an explicit supported thinking level and fails invalid or unsupported levels", () => {
+		const ok = resolveDistillThinking({
+			envThinking: "medium",
+			parentThinking: "high",
+			model: parent,
+		});
+		assert.equal(ok.ok, true);
+		if (ok.ok) assert.equal(ok.level, "medium");
+
+		const invalid = resolveDistillThinking({
+			envThinking: "turbo",
+			parentThinking: "high",
+			model: parent,
+		});
+		assert.equal(invalid.ok, false);
+		if (!invalid.ok) assert.match(invalid.error, /not a valid level/);
+
+		const unsupported = resolveDistillThinking({
+			envThinking: "high",
+			parentThinking: "low",
+			model: noReasoning,
+		});
+		assert.equal(unsupported.ok, false);
+		if (!unsupported.ok) assert.match(unsupported.error, /not supported by plain\/plain/);
+	});
+
+	it("clamps an inherited thinking level the model cannot run", () => {
+		const result = resolveDistillThinking({
+			envThinking: undefined,
+			parentThinking: "high",
+			model: noReasoning,
+		});
+		assert.equal(result.ok, true);
+		if (result.ok) assert.equal(result.level, "off");
 	});
 });

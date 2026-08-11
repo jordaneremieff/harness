@@ -9,7 +9,14 @@ import {
 	type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { startDistillJob, type DistillJob, type DistillOutcome, type DistillSessionFactory } from "./distill.ts";
+import {
+	resolveDistillModel,
+	resolveDistillThinking,
+	startDistillJob,
+	type DistillJob,
+	type DistillOutcome,
+	type DistillSessionFactory,
+} from "./distill.ts";
 import { resumeCommand, stateLabel, STASH_STATES, type StashState } from "./format.ts";
 import { redactPayload } from "./redact.ts";
 import { StashPanel } from "./panel.ts";
@@ -160,11 +167,28 @@ async function startCreation(
 		surface("A stash creation is already in flight. Use /stash abort to cancel.", "warning");
 		return;
 	}
-	const model = ctx.model;
-	if (!model) {
-		surface("No model is available for this session; cannot start a stash distillation.", "error");
+	// Resolve model and thinking before reserving the single-flight slot so a bad
+	// PI_STASH_* value fails cleanly without wedging creation or starting a spinner.
+	const modelResult = resolveDistillModel({
+		envModel: process.env.PI_STASH_MODEL,
+		parentModel: ctx.model,
+		registry: ctx.modelRegistry,
+	});
+	if (!modelResult.ok) {
+		surface(modelResult.error, "error");
 		return;
 	}
+	const thinkingResult = resolveDistillThinking({
+		envThinking: process.env.PI_STASH_THINKING,
+		parentThinking: ctx.thinkingLevel,
+		model: modelResult.model,
+	});
+	if (!thinkingResult.ok) {
+		surface(thinkingResult.error, "error");
+		return;
+	}
+	const model = modelResult.model;
+	const thinkingLevel = thinkingResult.level;
 	let entries: ReturnType<typeof ctx.sessionManager.buildContextEntries>;
 	try {
 		entries = ctx.sessionManager.buildContextEntries();
@@ -198,6 +222,7 @@ async function startCreation(
 		const job = startDistillJob({
 			model,
 			cwd: ctx.cwd,
+			thinkingLevel,
 			hint,
 			entries,
 			project: ctx.cwd,
