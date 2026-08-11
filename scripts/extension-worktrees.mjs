@@ -7,6 +7,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   statSync,
   writeFileSync,
@@ -269,6 +270,13 @@ function isDirty(path) {
   return git(path, ["status", "--porcelain"], { cwd: path }).stdout.trim().length > 0;
 }
 
+function hasTrackedChanges(path) {
+  return (
+    git(path, ["status", "--porcelain", "--untracked-files=no"], { cwd: path }).stdout.trim()
+      .length > 0
+  );
+}
+
 function syncBranches(context, records) {
   const changed = [];
   const failures = [];
@@ -278,10 +286,10 @@ function syncBranches(context, records) {
         throw new Error("branch has no common base with main");
       }
       if (!branchHasBase(context.repoRoot, record.branch)) {
-        if (isDirty(record.path)) {
-          throw new Error("worktree is dirty and main has advanced");
+        if (hasTrackedChanges(record.path)) {
+          throw new Error("worktree has uncommitted changes and main has advanced");
         }
-        git(context.repoRoot, ["rebase", "main"], { cwd: record.path, inherit: true });
+        git(context.repoRoot, noHooks(["rebase", "main"]), { cwd: record.path, inherit: true });
         changed.push(record.name);
       }
       if (!existsSync(record.entrypoint)) {
@@ -292,6 +300,377 @@ function syncBranches(context, records) {
     }
   }
   return { changed, failures };
+}
+
+const devRecordPatterns = [
+  /^extensions\/[^/]+\/(?:AGENTS|LOG|PLAN|REWRITE-SPEC|SOLUTION)\.md$/,
+  /^extensions\/[^/]+\/[A-Z][A-Z0-9-]*FINDINGS\.md$/,
+];
+
+export function isDevRecordPath(path) {
+  return devRecordPatterns.some((pattern) => pattern.test(path));
+}
+
+export function classifyCommitFiles(files) {
+  const devRecords = files.filter(isDevRecordPath);
+  const shipped = files.filter((file) => !isDevRecordPath(file));
+  if (shipped.length === 0) return { kind: "held", devRecords, shipped };
+  if (devRecords.length === 0) return { kind: "ship", devRecords, shipped };
+  return { kind: "filter", devRecords, shipped };
+}
+
+function canonicalPath(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+export function promoteNameFromCwd(cwd, worktreeRoot) {
+  const parts = relative(worktreeRoot, cwd).split(sep);
+  if (parts.length === 0 || parts[0] === "" || parts[0] === ".." || isAbsolute(parts[0])) {
+    return undefined;
+  }
+  return parts[0];
+}
+
+export function parsePromoteArguments(args) {
+  const options = { push: true, gates: true, json: false, dryRun: false };
+  const flags = new Map([
+    ["--no-push", "push"],
+    ["--no-gates", "gates"],
+    ["--json", "json"],
+    ["--dry-run", "dryRun"],
+  ]);
+  const seen = new Set();
+  let name;
+  for (const arg of args) {
+    if (arg.startsWith("--")) {
+      const key = flags.get(arg);
+      if (!key) throw new Error(`Unknown promote flag: ${arg}`);
+      if (seen.has(arg)) throw new Error(`Repeated promote flag: ${arg}`);
+      seen.add(arg);
+      options[key] = !(arg === "--no-push" || arg === "--no-gates");
+      continue;
+    }
+    if (name !== undefined) throw new Error(`Unexpected extra argument: ${arg}`);
+    name = arg;
+  }
+  return { name, options };
+}
+
+function noHooks(args) {
+  return ["-c", "core.hooksPath=/dev/null", ...args];
+}
+
+function commitFiles(repoRoot, sha) {
+  return git(repoRoot, ["show", "--pretty=format:", "--name-only", "--no-renames", sha])
+    .stdout.split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function runLoadGate(repoRoot, entrypoint) {
+  const checker = join(dirname(scriptPath), "extension-load-check.mjs");
+  const result = run(process.execPath, [checker, entrypoint], {
+    cwd: repoRoot,
+    accept: [0, 1],
+  });
+  if (result.status === 0) return { status: "pass" };
+  return { status: "fail", detail: (result.stderr || result.stdout).trim() };
+}
+
+function promoteGates(context, entrypoint) {
+  const override = process.env.PI_PROMOTE_GATES;
+  const commands = override
+    ? JSON.parse(override)
+    : [
+        { name: "test", command: ["npm", "test"] },
+        { name: "typecheck", command: ["npm", "run", "typecheck"] },
+        { name: "check", command: ["npm", "run", "check"] },
+        { name: "lint", command: ["npm", "run", "lint"] },
+      ];
+  const results = {};
+  for (const entry of commands) {
+    const [command, ...args] = entry.command;
+    const outcome = run(command, args, { cwd: context.repoRoot, accept: [0, 1, 2] });
+    results[entry.name] = outcome.status === 0 ? "pass" : "fail";
+    if (outcome.status !== 0) {
+      return { results, failure: { gate: entry.name, detail: (outcome.stdout + outcome.stderr).trim().slice(-2000) } };
+    }
+  }
+  const load = runLoadGate(context.repoRoot, entrypoint);
+  results.load = load.status;
+  if (load.status === "fail") {
+    return { results, failure: { gate: "load", detail: load.detail } };
+  }
+  return { results };
+}
+
+function remoteMainState(context) {
+  const remotes = git(context.repoRoot, ["remote"]).stdout.trim().split("\n").filter(Boolean);
+  if (!remotes.includes("origin")) return { present: false };
+  git(context.repoRoot, ["fetch", "origin", "main"], { accept: [0, 1, 128] });
+  const exists =
+    git(context.repoRoot, ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"], {
+      accept: [0, 1],
+    }).status === 0;
+  if (!exists) return { present: false };
+  const behindRemote =
+    git(context.repoRoot, ["merge-base", "--is-ancestor", "origin/main", "main"], {
+      accept: [0, 1],
+    }).status !== 0;
+  const ahead =
+    git(context.repoRoot, ["rev-list", "--count", "origin/main..main"]).stdout.trim() !== "0";
+  return { present: true, behindRemote, ahead };
+}
+
+function promote(context, requestedName, options) {
+  const name =
+    requestedName ??
+    promoteNameFromCwd(canonicalPath(process.cwd()), canonicalPath(context.worktreeRoot));
+  const fail = (stage, reason, extra = {}) => ({
+    ok: false,
+    extension: name,
+    stage,
+    reason,
+    promoted: [],
+    held: [],
+    recover: null,
+    ...extra,
+  });
+
+  if (!name || !/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+    return fail("preflight", "no extension name given and the working directory is not a worktree");
+  }
+  const branch = `extension/${name}`;
+  const branchExists =
+    git(context.repoRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
+      accept: [0, 1],
+    }).status === 0;
+  if (!branchExists) return fail("preflight", `branch does not exist: ${branch}`);
+
+  const head = git(context.repoRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+    accept: [0, 1],
+  }).stdout.trim();
+  if (head !== "main") {
+    return fail("preflight", `main must be checked out at ${context.repoRoot} (found: ${head || "detached"})`);
+  }
+  if (hasTrackedChanges(context.repoRoot)) {
+    return fail("preflight", `uncommitted tracked changes in ${context.repoRoot}`);
+  }
+  if (!branchHasCommonHistory(context.repoRoot, branch)) {
+    return fail("preflight", `${branch} shares no history with main`);
+  }
+
+  const remote = remoteMainState(context);
+  if (remote.present && remote.behindRemote) {
+    return fail("preflight", "origin/main has commits that main does not; sync before promoting");
+  }
+
+  const merges = git(context.repoRoot, ["rev-list", "--merges", `main..${branch}`]).stdout.trim();
+  if (merges) return fail("preflight", `${branch} contains merge commits; promote cannot replay them`);
+
+  const shas = git(context.repoRoot, ["rev-list", "--reverse", "--topo-order", `main..${branch}`])
+    .stdout.trim()
+    .split("\n")
+    .filter(Boolean);
+  const plan = shas.map((sha) => {
+    const files = commitFiles(context.repoRoot, sha);
+    const classified = classifyCommitFiles(files);
+    return {
+      sha: sha.slice(0, 7),
+      full: sha,
+      subject: git(context.repoRoot, ["log", "-1", "--format=%s", sha]).stdout.trim(),
+      ...classified,
+    };
+  });
+  const shipping = plan.filter((entry) => entry.kind !== "held");
+  const held = plan.filter((entry) => entry.kind === "held");
+  const mainBefore = git(context.repoRoot, ["rev-parse", "main"]).stdout.trim();
+
+  if (options.dryRun) {
+    return {
+      ok: true,
+      dryRun: true,
+      extension: name,
+      wouldPromote: shipping.map((entry) => ({
+        sha: entry.sha,
+        subject: entry.subject,
+        ships: entry.shipped,
+        dropped: entry.devRecords,
+      })),
+      held: held.map((entry) => ({ sha: entry.sha, subject: entry.subject })),
+      wouldRunGates: options.gates,
+      wouldPush: options.push,
+      mainBefore,
+    };
+  }
+
+  if (shipping.length === 0) {
+    let pushed = false;
+    if (options.push && remote.present && remote.ahead) {
+      const push = git(context.repoRoot, noHooks(["push", "origin", "main"]), { accept: [0, 1] });
+      if (push.status !== 0) {
+        return fail("push", (push.stderr || push.stdout).trim(), {
+          held: held.map((entry) => entry.sha),
+          mainBefore,
+          mainAfter: mainBefore,
+          recover: `git -C ${context.repoRoot} push origin main`,
+        });
+      }
+      pushed = true;
+    }
+    return {
+      ok: true,
+      extension: name,
+      promoted: [],
+      held: held.map((entry) => entry.sha),
+      mainBefore,
+      mainAfter: mainBefore,
+      gates: {},
+      pushed,
+    };
+  }
+
+  const rollback = () => {
+    git(context.repoRoot, ["cherry-pick", "--abort"], { accept: [0, 1, 128] });
+    git(context.repoRoot, ["cherry-pick", "--quit"], { accept: [0, 1, 128] });
+    const reset = git(context.repoRoot, noHooks(["reset", "--hard", mainBefore]), {
+      accept: [0, 1, 128],
+    });
+    return reset.status === 0;
+  };
+  const abandon = (stage, reason, extra = {}) => {
+    const restored = rollback();
+    return {
+      ...fail(stage, reason, extra),
+      held: held.map((entry) => entry.sha),
+      mainBefore,
+      mainAfter: restored ? mainBefore : git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
+      recover: restored ? null : `git -C ${context.repoRoot} reset --hard ${mainBefore}`,
+    };
+  };
+
+  const promoted = [];
+  for (const entry of shipping) {
+    const pick = git(context.repoRoot, noHooks(["cherry-pick", "-n", entry.full]), {
+      accept: [0, 1, 128],
+    });
+    if (pick.status !== 0) {
+      return abandon("cherry-pick", `${entry.sha} (${entry.subject}): ${(pick.stderr || pick.stdout).trim()}`);
+    }
+    for (const path of entry.devRecords) {
+      const inHead =
+        git(context.repoRoot, ["cat-file", "-e", `HEAD:${path}`], { accept: [0, 1, 128] }).status ===
+        0;
+      if (inHead) git(context.repoRoot, ["checkout", "HEAD", "--", path]);
+      else git(context.repoRoot, ["rm", "-f", "--quiet", "--", path], { accept: [0, 1, 128] });
+    }
+    const staged = git(context.repoRoot, ["diff", "--cached", "--quiet"], { accept: [0, 1] });
+    if (staged.status === 0) {
+      git(context.repoRoot, ["cherry-pick", "--quit"], { accept: [0, 1, 128] });
+      continue;
+    }
+    const commit = git(context.repoRoot, noHooks(["commit", "--no-verify", "-C", entry.full]), {
+      accept: [0, 1],
+    });
+    if (commit.status !== 0) {
+      return abandon("cherry-pick", `${entry.sha}: ${(commit.stderr || commit.stdout).trim()}`);
+    }
+    promoted.push(entry.sha);
+  }
+
+  const records = repositoryState(context.repoRoot, context.worktreeRoot);
+  const branchResult = syncBranches(context, records);
+  const targetFailure = branchResult.failures.find((failure) => failure.startsWith(`${name}:`));
+  if (targetFailure) return abandon("sync", targetFailure);
+  reconcileSettings(context, records);
+
+  const boundary = git(context.repoRoot, ["diff", "--name-only", "--no-renames", "main", branch])
+    .stdout.trim()
+    .split("\n")
+    .filter(Boolean);
+  const leaked = boundary.filter((path) => !isDevRecordPath(path));
+  if (leaked.length > 0) {
+    return abandon("verify", `${branch} still differs from main outside dev records: ${leaked.join(", ")}`);
+  }
+
+  const record = records.find((candidate) => candidate.name === name);
+  let gates = {};
+  if (options.gates) {
+    const outcome = promoteGates(context, record?.entrypoint ?? join(context.repoRoot, "extensions", name, "index.ts"));
+    gates = outcome.results;
+    if (outcome.failure) {
+      return {
+        ...abandon("gates", `${outcome.failure.gate} failed: ${outcome.failure.detail}`),
+        gates,
+      };
+    }
+  }
+
+  let pushed = false;
+  if (options.push && remote.present) {
+    const push = git(context.repoRoot, noHooks(["push", "origin", "main"]), { accept: [0, 1] });
+    if (push.status !== 0) {
+      return {
+        ...fail("push", (push.stderr || push.stdout).trim()),
+        promoted,
+        held: held.map((entry) => entry.sha),
+        mainBefore,
+        mainAfter: git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
+        gates,
+        recover: `git -C ${context.repoRoot} push origin main`,
+      };
+    }
+    pushed = true;
+  }
+
+  return {
+    ok: true,
+    extension: name,
+    promoted,
+    held: held.map((entry) => entry.sha),
+    mainBefore,
+    mainAfter: git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
+    gates,
+    pushed,
+    branchFailures: branchResult.failures,
+  };
+}
+
+function reportPromotion(report, json) {
+  if (json) {
+    console.log(JSON.stringify(report, null, 2));
+    return report.ok ? 0 : 1;
+  }
+  if (report.dryRun) {
+    console.log(`promote ${report.extension} (dry run)`);
+    for (const entry of report.wouldPromote) {
+      const dropped = entry.dropped.length > 0 ? ` (dropping ${entry.dropped.join(", ")})` : "";
+      console.log(`  ship ${entry.sha} ${entry.subject}${dropped}`);
+    }
+    for (const entry of report.held) console.log(`  hold ${entry.sha} ${entry.subject}`);
+    if (report.wouldPromote.length === 0) console.log("  nothing to promote");
+    console.log(`  gates: ${report.wouldRunGates ? "yes" : "no"}  push: ${report.wouldPush ? "yes" : "no"}`);
+    return 0;
+  }
+  if (!report.ok) {
+    console.error(`promote ${report.extension ?? ""} failed at ${report.stage}: ${report.reason}`);
+    if (report.recover) console.error(`recover: ${report.recover}`);
+    else console.error(`main is unchanged at ${report.mainAfter ?? report.mainBefore ?? "its original commit"}`);
+    return 1;
+  }
+  if (report.promoted.length === 0) console.log(`Nothing to promote from extension/${report.extension}`);
+  else console.log(`Promoted to main: ${report.promoted.join(", ")}`);
+  if (report.held.length > 0) console.log(`Held on the branch: ${report.held.join(", ")}`);
+  if (report.mainAfter && report.mainAfter !== report.mainBefore) {
+    console.log(`main ${report.mainBefore.slice(0, 7)} -> ${report.mainAfter.slice(0, 7)}`);
+  }
+  console.log(`Pushed: ${report.pushed ? "yes" : "no"}`);
+  for (const failure of report.branchFailures ?? []) console.error(failure);
+  return 0;
 }
 
 function activeNamesFromSettings(context) {
@@ -377,6 +756,12 @@ function main() {
   }
   if (command === "install-hooks") {
     installHooks(context);
+    return;
+  }
+  if (command === "promote") {
+    const parsed = parsePromoteArguments(args.slice(commandIndex + 1));
+    const report = promote(context, parsed.name, parsed.options);
+    process.exitCode = reportPromotion(report, parsed.options.json);
     return;
   }
 

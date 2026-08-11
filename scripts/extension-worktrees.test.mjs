@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { after, before, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
+  classifyCommitFiles,
   cleanGitEnvironment,
+  isDevRecordPath,
+  parsePromoteArguments,
   parseWorktreePorcelain,
+  promoteNameFromCwd,
   reconcilePackageEntries,
   worktreeExtensionName,
 } from "./extension-worktrees.mjs";
@@ -73,6 +82,74 @@ branch refs/heads/extension/stash
   });
 });
 
+describe("promotion classification", () => {
+  it("treats development records as unshippable wherever they sit", () => {
+    for (const path of [
+      "extensions/subagent/LOG.md",
+      "extensions/subagent/PLAN.md",
+      "extensions/stash/AGENTS.md",
+      "extensions/stash/SOLUTION.md",
+      "extensions/subagent/REWRITE-SPEC.md",
+      "extensions/subagent/RELIABILITY-FINDINGS.md",
+    ]) {
+      assert.equal(isDevRecordPath(path), true, path);
+    }
+  });
+
+  it("ships ordinary extension sources, tests, and READMEs", () => {
+    for (const path of [
+      "extensions/clipboard/index.ts",
+      "extensions/clipboard/panel.test.mts",
+      "extensions/clipboard/README.md",
+      "docs/conventions/extension-worktrees.md",
+      "AGENTS.md",
+    ]) {
+      assert.equal(isDevRecordPath(path), false, path);
+    }
+  });
+
+  it("separates shipping commits, held commits, and commits needing a filter", () => {
+    assert.equal(classifyCommitFiles(["extensions/demo/index.ts"]).kind, "ship");
+    assert.equal(classifyCommitFiles(["extensions/demo/LOG.md"]).kind, "held");
+    const mixed = classifyCommitFiles(["extensions/demo/index.ts", "extensions/demo/PLAN.md"]);
+    assert.equal(mixed.kind, "filter");
+    assert.deepEqual(mixed.shipped, ["extensions/demo/index.ts"]);
+    assert.deepEqual(mixed.devRecords, ["extensions/demo/PLAN.md"]);
+  });
+});
+
+describe("promotion arguments", () => {
+  it("defaults to pushing with gates and human output", () => {
+    assert.deepEqual(parsePromoteArguments(["clipboard"]), {
+      name: "clipboard",
+      options: { push: true, gates: true, json: false, dryRun: false },
+    });
+  });
+
+  it("accepts flags in any order and without a name", () => {
+    assert.deepEqual(parsePromoteArguments(["--json", "--no-push"]).options, {
+      push: false,
+      gates: true,
+      json: true,
+      dryRun: false,
+    });
+    assert.equal(parsePromoteArguments(["--dry-run", "stash"]).name, "stash");
+  });
+
+  it("rejects unknown, repeated, and surplus arguments", () => {
+    assert.throws(() => parsePromoteArguments(["--force"]), /Unknown promote flag/);
+    assert.throws(() => parsePromoteArguments(["--json", "--json"]), /Repeated promote flag/);
+    assert.throws(() => parsePromoteArguments(["a", "b"]), /Unexpected extra argument/);
+  });
+
+  it("reads the extension name from a worktree directory only", () => {
+    assert.equal(promoteNameFromCwd(`${worktreeRoot}/stash`, worktreeRoot), "stash");
+    assert.equal(promoteNameFromCwd(`${worktreeRoot}/stash/extensions`, worktreeRoot), "stash");
+    assert.equal(promoteNameFromCwd(repoRoot, worktreeRoot), undefined);
+    assert.equal(promoteNameFromCwd(worktreeRoot, worktreeRoot), undefined);
+  });
+});
+
 describe("Pi package reconciliation", () => {
   it("routes loaded main extensions and existing worktree extensions through worktrees", () => {
     const result = reconcile([
@@ -125,5 +202,176 @@ describe("Pi package reconciliation", () => {
     ]);
     const second = reconcile(first.packages);
     assert.deepEqual(second, first);
+  });
+});
+
+describe("promotion against a real repository", () => {
+  const script = fileURLToPath(new URL("./extension-worktrees.mjs", import.meta.url));
+  let root;
+  let repo;
+  let worktrees;
+  let origin;
+  let demoTree;
+  let env;
+
+  const git = (args, cwd = repo) => execFileSync("git", args, { cwd, env, encoding: "utf8" }).trim();
+  const writeIn = (base, path, content) => {
+    mkdirSync(dirname(join(base, path)), { recursive: true });
+    writeFileSync(join(base, path), content);
+  };
+  const commitIn = (base, message) => {
+    git(["add", "-A"], base);
+    git(["commit", "-q", "-m", message], base);
+  };
+  const promote = (args, cwd = repo) => {
+    try {
+      const stdout = execFileSync(process.execPath, [script, "promote", ...args, "--json"], {
+        cwd,
+        env,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return { report: JSON.parse(stdout), status: 0 };
+    } catch (error) {
+      if (typeof error.stdout !== "string" || error.stdout === "") throw error;
+      return { report: JSON.parse(error.stdout), status: error.status };
+    }
+  };
+
+  before(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), "worktree-promote-")));
+    repo = join(root, "harness");
+    worktrees = join(root, "harness.worktrees");
+    origin = join(root, "origin.git");
+    const agent = join(root, "agent");
+    demoTree = join(worktrees, "demo");
+    env = {
+      ...process.env,
+      PI_HARNESS_ROOT: repo,
+      PI_EXTENSION_WORKTREE_ROOT: worktrees,
+      PI_AGENT_DIR: agent,
+      PI_SETTINGS_PATH: join(agent, "settings.json"),
+      PI_PROMOTE_GATES: JSON.stringify([{ name: "test", command: ["true"] }]),
+      GIT_AUTHOR_NAME: "Fixture",
+      GIT_AUTHOR_EMAIL: "fixture@example.com",
+      GIT_COMMITTER_NAME: "Fixture",
+      GIT_COMMITTER_EMAIL: "fixture@example.com",
+    };
+
+    mkdirSync(repo, { recursive: true });
+    mkdirSync(agent, { recursive: true });
+    git(["init", "-q", "-b", "main"]);
+    git(["config", "user.name", "Fixture"]);
+    git(["config", "user.email", "fixture@example.com"]);
+    writeIn(repo, "extensions/demo/index.ts", "export default function demo() { return {}; }\n");
+    commitIn(repo, "feat(demo): initial");
+    execFileSync("git", ["init", "-q", "--bare", origin], { env });
+    git(["remote", "add", "origin", origin]);
+    git(["push", "-q", "-u", "origin", "main"]);
+    writeFileSync(
+      join(agent, "settings.json"),
+      `${JSON.stringify({ packages: [{ source: repo, extensions: [] }] }, null, 2)}\n`,
+    );
+    git(["branch", "extension/demo", "main"]);
+    git(["worktree", "add", "-q", demoTree, "extension/demo"]);
+
+    writeIn(demoTree, "extensions/demo/index.ts", "export default function demo() { return { ok: true }; }\n");
+    commitIn(demoTree, "fix(demo): return a value");
+    writeIn(demoTree, "extensions/demo/LOG.md", "# log\n");
+    commitIn(demoTree, "docs(demo): log");
+    writeIn(demoTree, "extensions/demo/panel.ts", "export const panel = 1;\n");
+    writeIn(demoTree, "extensions/demo/PLAN.md", "# plan\n");
+    commitIn(demoTree, "feat(demo): panel with a plan");
+  });
+
+  after(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  it("plans without touching the repository and infers the name from the worktree", () => {
+    const before = git(["rev-parse", "main"]);
+    const { report } = promote(["demo", "--dry-run"]);
+    assert.equal(report.wouldPromote.length, 2);
+    assert.equal(report.held.length, 1);
+    assert.deepEqual(report.wouldPromote[1].dropped, ["extensions/demo/PLAN.md"]);
+    assert.equal(git(["rev-parse", "main"]), before);
+    assert.equal(promote(["--dry-run"], demoTree).report.extension, "demo");
+  });
+
+  it("lands shipped code, holds development records, and pushes", () => {
+    const { report } = promote(["demo"]);
+    assert.equal(report.ok, true);
+    assert.equal(report.promoted.length, 2);
+    assert.equal(report.held.length, 1);
+    assert.equal(report.gates.test, "pass");
+    assert.equal(report.pushed, true);
+
+    const tracked = git(["ls-tree", "-r", "--name-only", "main"]).split("\n");
+    assert.ok(tracked.includes("extensions/demo/panel.ts"));
+    assert.ok(!tracked.includes("extensions/demo/LOG.md"));
+    assert.ok(!tracked.includes("extensions/demo/PLAN.md"));
+    assert.equal(git(["rev-parse", "origin/main"]), git(["rev-parse", "main"]));
+
+    const remaining = git(["diff", "--name-only", "--no-renames", "main", "extension/demo"])
+      .split("\n")
+      .filter(Boolean);
+    assert.ok(remaining.every((path) => isDevRecordPath(path)), remaining.join(","));
+  });
+
+  it("promotes nothing on a second run", () => {
+    const { report } = promote(["demo"]);
+    assert.equal(report.ok, true);
+    assert.deepEqual(report.promoted, []);
+  });
+
+  it("restores main exactly when a cherry-pick conflicts", () => {
+    writeIn(repo, "extensions/demo/conflict.ts", "export const value = 'main';\n");
+    commitIn(repo, "feat(demo): conflicting main change");
+    git(["push", "-q", "origin", "main"]);
+    writeIn(demoTree, "extensions/demo/conflict.ts", "export const value = 'branch';\n");
+    commitIn(demoTree, "feat(demo): conflicting branch change");
+
+    const before = git(["rev-parse", "main"]);
+    const { report, status } = promote(["demo"]);
+    assert.equal(status, 1);
+    assert.equal(report.ok, false);
+    assert.equal(report.stage, "cherry-pick");
+    assert.equal(git(["rev-parse", "main"]), before);
+    assert.equal(report.mainAfter, before);
+    assert.equal(report.recover, null);
+    assert.equal(git(["status", "--porcelain"]), "");
+
+    git(["reset", "-q", "--hard", "HEAD~1"], demoTree);
+    git(["rebase", "-q", "main"], demoTree);
+  });
+
+  it("rolls back and never pushes when a gate fails", () => {
+    writeIn(demoTree, "extensions/demo/late.ts", "export const late = true;\n");
+    commitIn(demoTree, "feat(demo): a late change");
+    const beforeMain = git(["rev-parse", "main"]);
+    const beforeOrigin = git(["rev-parse", "origin/main"]);
+
+    const failing = { ...env, PI_PROMOTE_GATES: JSON.stringify([{ name: "test", command: ["false"] }]) };
+    const saved = env;
+    env = failing;
+    const { report, status } = promote(["demo"]);
+    env = saved;
+
+    assert.equal(status, 1);
+    assert.equal(report.stage, "gates");
+    assert.equal(git(["rev-parse", "main"]), beforeMain);
+    assert.equal(git(["rev-parse", "origin/main"]), beforeOrigin);
+  });
+
+  it("refuses a dirty main checkout and an unknown extension", () => {
+    writeIn(repo, "extensions/demo/index.ts", "export default function demo() { return { dirty: true }; }\n");
+    const dirty = promote(["demo"]);
+    assert.equal(dirty.report.stage, "preflight");
+    assert.match(dirty.report.reason, /uncommitted tracked changes/);
+    git(["checkout", "-q", "--", "."]);
+
+    const unknown = promote(["nope"]);
+    assert.equal(unknown.report.stage, "preflight");
+    assert.match(unknown.report.reason, /branch does not exist/);
   });
 });
