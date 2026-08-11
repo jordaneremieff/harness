@@ -6,14 +6,38 @@
 // factory throws, so it cannot be used as a load gate. This runs Pi's own
 // loader and fails on the error list the loader returns.
 
+import type {
+  ExtensionRuntime,
+  LoadExtensionsResult,
+} from "@earendil-works/pi-coding-agent";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = resolve(dirname(scriptPath), "..");
+interface LoaderModule {
+  createExtensionRuntime(): ExtensionRuntime;
+  loadExtensions(
+    paths: string[],
+    cwd: string,
+    eventBus: undefined,
+    runtime: ExtensionRuntime,
+  ): Promise<LoadExtensionsResult>;
+}
 
-export function resolveLoaderPath(repoRoot, options = {}) {
+function errorMessage(error: unknown): string {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = error.message;
+    if (typeof message === "string") return message;
+  }
+  return String(error);
+}
+
+export function resolveLoaderPath(
+  repoRoot: string,
+  options: { binaryPath?: string } = {},
+) {
   const local = join(
     repoRoot,
     "node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js",
@@ -25,13 +49,16 @@ export function resolveLoaderPath(repoRoot, options = {}) {
   return existsSync(candidate) ? candidate : undefined;
 }
 
-export async function checkExtensionLoad(entrypoints, options = {}) {
+export async function checkExtensionLoad(
+  entrypoints: string[],
+  options: { repoRoot?: string; cwd?: string; binaryPath?: string } = {},
+) {
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
   const loaderPath = resolveLoaderPath(repoRoot, options);
   if (!loaderPath) {
     return { status: "skipped", reason: "Pi extension loader not found", failures: [] };
   }
-  const loader = await import(pathToFileURL(loaderPath).href);
+  const loader: LoaderModule = await import(pathToFileURL(loaderPath).href);
   const runtime = loader.createExtensionRuntime();
   const result = await loader.loadExtensions(
     entrypoints,
@@ -41,7 +68,7 @@ export async function checkExtensionLoad(entrypoints, options = {}) {
   );
   const failures = (result.errors ?? []).map((entry) => ({
     path: entry.path,
-    message: entry.error?.message ?? String(entry.error),
+    message: errorMessage(entry.error),
   }));
   return {
     status: failures.length > 0 ? "fail" : "pass",
@@ -53,7 +80,7 @@ export async function checkExtensionLoad(entrypoints, options = {}) {
 async function main() {
   const entrypoints = process.argv.slice(2).filter((argument) => !argument.startsWith("--"));
   if (entrypoints.length === 0) {
-    throw new Error("Usage: extension-load-check.mjs <entrypoint> [entrypoint...]");
+    throw new Error("Usage: extension-load-check.mts <entrypoint> [entrypoint...]");
   }
   const which = process.env.PATH?.split(":")
     .map((directory) => join(directory, "pi"))

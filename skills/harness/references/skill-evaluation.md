@@ -110,7 +110,7 @@ Before behavior evals, verify the artifact mechanically:
 Run the bundled structural validator from the skill directory:
 
 ```bash
-node scripts/validate-skill.mjs <skill-directory> --format json
+node scripts/validate-skill.mts <skill-directory> --format json
 ```
 
 In Pi, also verify discovery from the intended source: package `pi.skills`,

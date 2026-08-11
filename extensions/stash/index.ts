@@ -32,6 +32,13 @@ import {
 } from "./store.ts";
 import { boundedOutput, sanitizeTerminalText } from "./text.ts";
 
+type StashExecutionApi = Pick<ExtensionAPI, "exec">;
+type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage">;
+type StashExtensionApi = Pick<
+	ExtensionAPI,
+	"exec" | "on" | "registerCommand" | "registerTool" | "sendUserMessage"
+>;
+
 const storeDir = () => resolveStoreDir(process.env, getAgentDir());
 const safe = (value: string) => sanitizeTerminalText(value).text;
 const safeLine = (value: string) => safe(value).replace(/\n/g, "↵");
@@ -153,7 +160,7 @@ function releaseSlot(slot: InFlightJob): void {
 }
 
 async function startCreation(
-	pi: ExtensionAPI,
+	pi: StashExecutionApi,
 	ctx: ExtensionCommandContext,
 	hint: string,
 	sessionFactory: DistillSessionFactory | undefined,
@@ -417,7 +424,7 @@ async function stashArgumentCompletions(argumentText: string): Promise<StashComp
 
 /** Activate a stash and inject its handover as the next user message. Shared by `get` and the browser. */
 async function deliverPickup(
-	pi: ExtensionAPI,
+	pi: StashMessageApi,
 	ctx: ExtensionCommandContext,
 	id: string,
 	fail: (message: string) => void,
@@ -444,7 +451,7 @@ async function deliverPickup(
 
 /** Bare `/stash` (TUI): browse stashes and act on them; a selected entry is picked up. */
 async function browseAndPickup(
-	pi: ExtensionAPI,
+	pi: StashMessageApi,
 	ctx: ExtensionCommandContext,
 	fail: (message: string) => void,
 	copyText?: (text: string) => Promise<void>,
@@ -578,7 +585,7 @@ async function browseAndPickup(
 }
 
 export default function (
-	pi: ExtensionAPI,
+	pi: StashExtensionApi,
 	overrides?: { distillSessionFactory?: DistillSessionFactory; copyText?: (text: string) => Promise<void> },
 ) {
 	pi.on("session_shutdown", async (_event, ctx) => {

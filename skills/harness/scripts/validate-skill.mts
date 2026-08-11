@@ -13,31 +13,81 @@ const MAX_DIAGNOSTIC_LENGTH = 500;
 const DANGEROUS_YAML_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const SCRIPT_TEST_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".ts", ".mts", ".py", ".sh"]);
 
-const issues = [];
-const warnings = [];
+type YamlScalar = string | number | boolean | null;
+type YamlMapping = { [key: string]: YamlValue };
+type YamlValue = YamlScalar | YamlMapping;
+type BlockScalar = { style: "|" | ">"; chomping: "+" | "-" | "clip" };
+type ScalarResult =
+	| { value: YamlScalar }
+	| { value: string; block: BlockScalar }
+	| { error: string };
+type Frontmatter = { yaml: string; body: string };
+type BoundedText = { text: string; size: number; truncated: boolean };
+type Finding = { code: string; message: string };
+type SkillReference = { path: string; text: string };
+type Skill = {
+	directory: string;
+	frontmatter?: YamlMapping;
+	body?: string;
+	files: string[];
+	references: SkillReference[];
+	scriptFiles: string[];
+};
+type OutputFormat = "text" | "json";
+type ParseOptions = { help: true } | { help: false; directory: string; format: OutputFormat };
+type ScalarKind = "string" | "boolean";
+type ScalarCheck = { missing: boolean; value?: YamlValue };
+type CodeFence = { character: string; length: number };
+type LinkCandidate = { text: string; source: string };
+type ValidationCounts = {
+	fail: number;
+	warn: number;
+	shown: { fail: number; warn: number };
+	omitted: { fail: number; warn: number };
+};
+type ValidationReport = {
+	directory: string;
+	ok: boolean;
+	fail: Finding[];
+	warn: Finding[];
+	counts: ValidationCounts;
+};
+
+type YamlStackEntry = { indent: number; path: string[] };
+
+function createYamlMapping(): YamlMapping {
+	return Object.create(null) as YamlMapping;
+}
+
+function isYamlMapping(value: unknown): value is YamlMapping {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+const issues: Finding[] = [];
+const warnings: Finding[] = [];
 let issueCount = 0;
 let warningCount = 0;
-let skill;
+let skill: Skill;
 
-function boundedDiagnostic(message) {
-	const safe = String(message).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (character) =>
-		`\\u${character.codePointAt(0).toString(16).padStart(4, "0")}`,
+function boundedDiagnostic(message: unknown): string {
+	const safe = String(message).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (character: string) =>
+		`\\u${(character.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`,
 	);
 	return safe.length <= MAX_DIAGNOSTIC_LENGTH ? safe : `${safe.slice(0, MAX_DIAGNOSTIC_LENGTH - 1)}…`;
 }
 
-function fail(code, message) {
+function fail(code: string, message: string) {
 	issueCount++;
 	if (issues.length < MAX_REPORTED_PER_LEVEL) issues.push({ code, message: boundedDiagnostic(message) });
 }
 
-function warn(code, message) {
+function warn(code: string, message: string) {
 	warningCount++;
 	if (warnings.length < MAX_REPORTED_PER_LEVEL) warnings.push({ code, message: boundedDiagnostic(message) });
 }
 
 function usage() {
-	return `Usage: node scripts/validate-skill.mjs [OPTIONS] [SKILL_DIR]
+	return `Usage: node scripts/validate-skill.mts [OPTIONS] [SKILL_DIR]
 
 Validate a portable Agent Skills directory using dependency-free Node.
 
@@ -72,30 +122,32 @@ Checks:
 `;
 }
 
-function parseArgs(argv) {
-	let directory;
-	let format = "text";
+function parseArgs(argv: string[]): ParseOptions {
+	let directory: string | undefined;
+	let format: OutputFormat = "text";
 	for (let index = 0; index < argv.length; index++) {
 		const arg = argv[index];
 		if (arg === "--help" || arg === "-h") return { help: true };
 		if (arg === "--format") {
-			format = argv[++index] ?? "";
-			if (!["text", "json"].includes(format)) throw new Error(`--format must be text or json, received: ${format}`);
+			const requested = argv[++index] ?? "";
+			if (requested !== "text" && requested !== "json") throw new Error(`--format must be text or json, received: ${requested}`);
+			format = requested;
 			continue;
 		}
 		if (arg.startsWith("--format=")) {
-			format = arg.slice("--format=".length);
-			if (!["text", "json"].includes(format)) throw new Error(`--format must be text or json, received: ${format}`);
+			const requested = arg.slice("--format=".length);
+			if (requested !== "text" && requested !== "json") throw new Error(`--format must be text or json, received: ${requested}`);
+			format = requested;
 			continue;
 		}
 		if (arg.startsWith("-")) throw new Error(`Unknown option: ${arg}`);
 		if (directory) throw new Error(`Expected one skill directory, received extra argument: ${arg}`);
 		directory = arg;
 	}
-	return { directory: directory ?? process.cwd(), format };
+	return { help: false, directory: directory ?? process.cwd(), format };
 }
 
-function isDirectory(path) {
+function isDirectory(path: string): boolean {
 	try {
 		return statSync(path).isDirectory();
 	} catch {
@@ -103,12 +155,12 @@ function isDirectory(path) {
 	}
 }
 
-function readBoundedText(path) {
+function readBoundedText(path: string): BoundedText {
 	const size = statSync(path).size;
 	if (size === 0) return { text: "", size, truncated: false };
 	const buffer = Buffer.allocUnsafe(Math.min(size, MAX_FILE_BYTES));
 	const descriptor = openSync(path, "r");
-	let bytesRead;
+	let bytesRead = 0;
 	try {
 		bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0);
 	} finally {
@@ -117,15 +169,15 @@ function readBoundedText(path) {
 	return { text: buffer.subarray(0, bytesRead).toString("utf8"), size, truncated: size > MAX_FILE_BYTES };
 }
 
-function extractFrontmatter(markdown) {
+function extractFrontmatter(markdown: string): Frontmatter | undefined {
 	const normalized = markdown.replace(/^\uFEFF/, "");
 	const match = normalized.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/);
 	if (!match) return undefined;
 	return { yaml: match[1], body: normalized.slice(match[0].length) };
 }
 
-function stripYamlComment(value) {
-	let quote;
+function stripYamlComment(value: string): string {
+	let quote: string | undefined;
 	let result = "";
 	for (let index = 0; index < value.length; index++) {
 		const char = value[index];
@@ -139,12 +191,12 @@ function stripYamlComment(value) {
 	return result.trim();
 }
 
-function _splitTopLevel(value, delimiter) {
+function _splitTopLevel(value: string, delimiter: string): string[] {
 	const parts = [];
 	let current = "";
 	let square = 0;
 	let curly = 0;
-	let quote;
+	let quote: string | undefined;
 	for (let index = 0; index < value.length; index++) {
 		const char = value[index];
 		if ((char === '"' || char === "'") && value[index - 1] !== "\\") {
@@ -168,15 +220,20 @@ function _splitTopLevel(value, delimiter) {
 	return parts;
 }
 
-function parseScalar(raw, path) {
+function parseScalar(raw: string, path: string): ScalarResult {
 	const value = stripYamlComment(raw);
 	if (!value) return { value: "" };
 	const block = value.match(/^([|>])([+-])?$/);
-	if (block) return { value: "", block: { style: block[1], chomping: block[2] ?? "clip" } };
+	if (block) {
+		const style = block[1] === ">" ? ">" : "|";
+		const chomping = block[2] === "+" || block[2] === "-" ? block[2] : "clip";
+		return { value: "", block: { style, chomping } };
+	}
 	if (value.startsWith('"')) {
 		if (!value.endsWith('"') || value.length < 2) return { error: `${path}: unterminated double-quoted scalar` };
 		try {
-			return { value: JSON.parse(value) };
+			const parsed: unknown = JSON.parse(value);
+			return typeof parsed === "string" ? { value: parsed } : { error: `${path}: invalid double-quoted scalar` };
 		} catch {
 			return { error: `${path}: invalid double-quoted scalar` };
 		}
@@ -194,19 +251,23 @@ function parseScalar(raw, path) {
 	return { value };
 }
 
-function setNested(root, path, value) {
+function setNested(root: YamlMapping, path: string[], value: YamlValue): void {
 	let target = root;
 	for (let index = 0; index < path.length - 1; index++) {
 		const key = path[index];
-		if (!target[key] || typeof target[key] !== "object" || Array.isArray(target[key])) {
-			target[key] = Object.create(null);
+		const current = target[key];
+		if (!current || typeof current !== "object" || Array.isArray(current)) {
+			const next = createYamlMapping();
+			target[key] = next;
+			target = next;
+		} else {
+			target = current;
 		}
-		target = target[key];
 	}
 	target[path[path.length - 1]] = value;
 }
 
-function foldBlockLines(lines) {
+function foldBlockLines(lines: string[]): string {
 	let result = "";
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index];
@@ -217,7 +278,7 @@ function foldBlockLines(lines) {
 	return result;
 }
 
-function finishBlockScalar(lines, block) {
+function finishBlockScalar(lines: string[], block: BlockScalar): string {
 	let value = block.style === ">" ? foldBlockLines(lines) : lines.join("\n");
 	if (block.chomping === "-") return value.replace(/\n+$/, "");
 	if (block.chomping === "+") return lines.length > 0 && !value.endsWith("\n") ? `${value}\n` : value;
@@ -225,15 +286,16 @@ function finishBlockScalar(lines, block) {
 	return lines.length > 0 ? `${value}\n` : "";
 }
 
-function parseSimpleYaml(source) {
-	const root = Object.create(null);
+function parseSimpleYaml(source: string): { value: YamlMapping } | { error: string } {
+	const root = createYamlMapping();
 	const lines = source.split(/\r?\n/);
-	const stack = [{ indent: -1, path: [] }];
+	const stack: YamlStackEntry[] = [{ indent: -1, path: [] }];
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index];
 		if (!line.trim() || line.trimStart().startsWith("#")) continue;
 		if (/^ *\t/.test(line)) return { error: `line ${index + 1}: tabs are not supported for indentation` };
-		const indent = line.match(/^ */)[0].length;
+		const indentMatch = line.match(/^ */);
+		const indent = indentMatch ? indentMatch[0].length : 0;
 		const trimmed = line.trimEnd().slice(indent);
 		if (trimmed.startsWith("-")) return { error: `line ${index + 1}: sequences are outside this conservative validator` };
 		const match = trimmed.match(/^([^:]+):(.*)$/);
@@ -247,9 +309,9 @@ function parseSimpleYaml(source) {
 		const path = [...parent.path, key];
 		const raw = match[2];
 		const scalar = parseScalar(raw, path.join("."));
-		if (scalar.error) return { error: `line ${index + 1}: ${scalar.error}` };
-		if (scalar.block) {
-			const rawBlockLines = [];
+		if ("error" in scalar) return { error: `line ${index + 1}: ${scalar.error}` };
+		if ("block" in scalar) {
+			const rawBlockLines: string[] = [];
 			let cursor = index + 1;
 			for (; cursor < lines.length; cursor++) {
 				const next = lines[cursor];
@@ -257,13 +319,17 @@ function parseSimpleYaml(source) {
 					rawBlockLines.push(next);
 					continue;
 				}
-				const nextIndent = next.match(/^ */)[0].length;
+				const nextIndentMatch = next.match(/^ */);
+				const nextIndent = nextIndentMatch ? nextIndentMatch[0].length : 0;
 				if (nextIndent <= indent) break;
 				rawBlockLines.push(next);
 			}
 			const contentIndents = rawBlockLines
 				.filter((blockLine) => blockLine.trim())
-				.map((blockLine) => blockLine.match(/^ */)[0].length);
+				.map((blockLine) => {
+					const blockIndentMatch = blockLine.match(/^ */);
+					return blockIndentMatch ? blockIndentMatch[0].length : 0;
+				});
 			const contentIndent = contentIndents.length > 0 ? Math.min(...contentIndents) : indent + 1;
 			const blockLines = rawBlockLines.map((blockLine) => blockLine.trim() ? blockLine.slice(contentIndent) : "");
 			index = cursor - 1;
@@ -276,25 +342,34 @@ function parseSimpleYaml(source) {
 	return { value: root };
 }
 
-function checkScalar(path, expected) {
-	const value = path.reduce((target, key) => (target && typeof target === "object" ? target[key] : undefined), skill.frontmatter);
+function checkScalar(path: string[], expected: ScalarKind): ScalarCheck {
+	const value = path.reduce<YamlValue | undefined>(
+		(target, key) => (isYamlMapping(target) ? target[key] : undefined),
+		skill.frontmatter,
+	);
 	if (value === undefined) return { missing: true };
 	if (expected === "string" && typeof value !== "string") {
 		fail("frontmatter.type", `${path.join(".")} must be a string`);
-		return {};
+		return { missing: false };
 	}
 	if (expected === "boolean" && typeof value !== "boolean") {
 		fail("frontmatter.type", `${path.join(".")} must be a boolean`);
-		return {};
+		return { missing: false };
 	}
-	return { value };
+	return { missing: false, value };
 }
 
-function checkName() {
+function checkName(): void {
 	const { value, missing } = checkScalar(["name"], "string");
-	if (missing) return fail("frontmatter.required", "frontmatter.name is required");
+	if (missing) {
+		fail("frontmatter.required", "frontmatter.name is required");
+		return;
+	}
 	if (typeof value !== "string") return;
-	if (!value) return fail("name.empty", "frontmatter.name must not be empty");
+	if (!value) {
+		fail("name.empty", "frontmatter.name must not be empty");
+		return;
+	}
 	if (value.length > MAX_NAME_LENGTH) fail("name.length", `name is ${value.length} characters; maximum is ${MAX_NAME_LENGTH}`);
 	if (!/^[a-z0-9-]+$/.test(value)) fail("name.characters", "name must contain only lowercase letters, digits, and hyphens");
 	if (value.startsWith("-") || value.endsWith("-")) fail("name.edges", "name must not start or end with a hyphen");
@@ -303,19 +378,20 @@ function checkName() {
 	if (parent !== value) fail("name.directory", `name '${value}' does not match parent directory '${parent}'`);
 }
 
-function normalizedToken(text) {
+function normalizedToken(text: string): string {
 	return text.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
-function firstH1(markdown) {
+function firstH1(markdown: string): string | undefined {
 	const match = markdown.match(/^[ \t]{0,3}#[ \t]+(.+?)[ \t]*$/m);
 	return match ? match[1].trim() : undefined;
 }
 
-function checkBodyH1() {
+function checkBodyH1(): void {
 	const name = skill.frontmatter?.name;
-	if (typeof name !== "string" || name === "") return;
-	const h1 = firstH1(skill.body);
+	const body = skill.body;
+	if (typeof name !== "string" || name === "" || body === undefined) return;
+	const h1 = firstH1(body);
 	if (!h1) {
 		warn("body.h1", "SKILL.md body has no H1 heading matching the frontmatter name");
 		return;
@@ -325,18 +401,26 @@ function checkBodyH1() {
 	}
 }
 
-function checkDescription() {
+function checkDescription(): void {
 	const { value, missing } = checkScalar(["description"], "string");
-	if (missing) return fail("frontmatter.required", "frontmatter.description is required");
+	if (missing) {
+		fail("frontmatter.required", "frontmatter.description is required");
+		return;
+	}
 	if (typeof value !== "string") return;
-	if (!value.trim()) return fail("description.empty", "description must not be empty");
+	if (!value.trim()) {
+		fail("description.empty", "description must not be empty");
+		return;
+	}
 	if (value.length > MAX_DESCRIPTION_LENGTH) fail("description.length", `description is ${value.length} characters; maximum is ${MAX_DESCRIPTION_LENGTH}`);
 	if (!/\buse\b|\bwhen\b/i.test(value)) warn("description.trigger", "description should state when to use the skill");
 	if (!/\bdo not use\b/i.test(value)) warn("description.boundary", "description should state a do-not-use or boundary clause");
 }
 
-function checkFields() {
-	for (const key of Object.keys(skill.frontmatter)) {
+function checkFields(): void {
+	const frontmatter = skill.frontmatter;
+	if (!frontmatter) return;
+	for (const key of Object.keys(frontmatter)) {
 		if (["name", "description"].includes(key)) continue;
 		if (STANDARD_OPTIONAL_FIELDS.has(key)) continue;
 		if (PI_ONLY_FIELDS.has(key)) {
@@ -346,10 +430,10 @@ function checkFields() {
 		warn("frontmatter.unknown", `unknown frontmatter field: ${key}`);
 	}
 
-	const license = skill.frontmatter.license;
+	const license = frontmatter.license;
 	if (license !== undefined && typeof license !== "string") fail("license.type", "license must be a string");
 
-	const compatibility = skill.frontmatter.compatibility;
+	const compatibility = frontmatter.compatibility;
 	if (compatibility !== undefined) {
 		if (typeof compatibility !== "string") fail("compatibility.type", "compatibility must be a string");
 		else if (compatibility.length < 1 || compatibility.length > 500) {
@@ -357,7 +441,7 @@ function checkFields() {
 		}
 	}
 
-	const metadata = skill.frontmatter.metadata;
+	const metadata = frontmatter.metadata;
 	if (metadata !== undefined) {
 		if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
 			fail("metadata.type", "metadata must be a mapping from string keys to string values");
@@ -368,17 +452,17 @@ function checkFields() {
 		}
 	}
 
-	const allowedTools = skill.frontmatter["allowed-tools"];
+	const allowedTools = frontmatter["allowed-tools"];
 	if (allowedTools !== undefined && typeof allowedTools !== "string") {
 		fail("allowed-tools.type", "allowed-tools must be a space-separated string");
 	}
 
-	if (skill.frontmatter["disable-model-invocation"] !== undefined) {
+	if (frontmatter["disable-model-invocation"] !== undefined) {
 		checkScalar(["disable-model-invocation"], "boolean");
 	}
 }
 
-function decodeLink(link) {
+function decodeLink(link: string): string {
 	try {
 		return decodeURIComponent(link);
 	} catch {
@@ -386,8 +470,8 @@ function decodeLink(link) {
 	}
 }
 
-function markdownWithoutCode(text) {
-	let fence;
+function markdownWithoutCode(text: string): string {
+	let fence: CodeFence | undefined;
 	return text.split(/\r?\n/).map((line) => {
 		if (fence) {
 			const close = line.match(/^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/);
@@ -403,11 +487,11 @@ function markdownWithoutCode(text) {
 	}).join("\n");
 }
 
-function referenceId(value) {
+function referenceId(value: string): string {
 	return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function headingSlug(value) {
+function headingSlug(value: string): string {
 	return value
 		.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
 		.replace(/<[^>]+>/g, "")
@@ -418,12 +502,12 @@ function headingSlug(value) {
 		.replace(/\s+/g, "-");
 }
 
-function markdownAnchors(text) {
+function markdownAnchors(text: string): Set<string> {
 	const markdown = markdownWithoutCode(text);
 	const lines = markdown.split(/\r?\n/);
-	const anchors = new Set();
-	const slugCounts = new Map();
-	const addHeading = (heading) => {
+	const anchors = new Set<string>();
+	const slugCounts = new Map<string, number>();
+	const addHeading = (heading: string): void => {
 		const explicit = heading.match(/\s+\{#([^}]+)\}\s*$/);
 		if (explicit) {
 			anchors.add(explicit[1]);
@@ -448,7 +532,7 @@ function markdownAnchors(text) {
 	return anchors;
 }
 
-function checkFragment(resolved, fragment, source, target) {
+function checkFragment(resolved: string, fragment: string, source: string, target: string): void {
 	if (fragment === "") {
 		fail("link.fragment-empty", `${source}: link '${target}' has an empty fragment`);
 		return;
@@ -466,7 +550,7 @@ function checkFragment(resolved, fragment, source, target) {
 	}
 }
 
-function checkLinkTarget(rawTarget, source) {
+function checkLinkTarget(rawTarget: string, source: string): void {
 	let target = rawTarget.trim();
 	if (target.startsWith("<") && target.endsWith(">")) target = target.slice(1, -1);
 	if (/^[A-Za-z]:[\\/]/.test(target) || target.startsWith("/")) {
@@ -501,19 +585,21 @@ function checkLinkTarget(rawTarget, source) {
 	if (fragment !== undefined) checkFragment(resolved, fragment, source, target);
 }
 
-function checkLinks() {
+function checkLinks(): void {
+	const body = skill.body;
+	if (body === undefined) return;
 	const inlineLink = /!?\[[^\]]*\]\(\s*(<[^>]+>|[^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g;
 	const referenceDefinition = /^[ \t]{0,3}\[((?!\^)[^\]]+)\]:[ \t]*(<[^>]+>|\S+)/gm;
 	const referenceUse = /!?\[([^\]]+)\]\[([^\]]*)\]/g;
-	const candidates = [
-		{ text: skill.body, source: "SKILL.md body" },
+	const candidates: LinkCandidate[] = [
+		{ text: body, source: "SKILL.md body" },
 		...skill.references.map((file) => ({ text: file.text, source: relative(skill.directory, file.path) })),
 	];
 	for (const candidate of candidates) {
 		const markdown = markdownWithoutCode(candidate.text);
 		for (const match of markdown.matchAll(inlineLink)) checkLinkTarget(match[1], candidate.source);
 
-		const definitions = new Map();
+		const definitions = new Map<string, string>();
 		for (const match of markdown.matchAll(referenceDefinition)) {
 			definitions.set(referenceId(match[1]), match[2]);
 			checkLinkTarget(match[2], candidate.source);
@@ -525,8 +611,8 @@ function checkLinks() {
 	}
 }
 
-function walk(directory) {
-	const results = [];
+function walk(directory: string): string[] {
+	const results: string[] = [];
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
 		const path = join(directory, entry.name);
 		if (entry.isDirectory()) results.push(...walk(path));
@@ -535,7 +621,7 @@ function walk(directory) {
 	return results;
 }
 
-function likelySecret(text) {
+function likelySecret(text: string): boolean {
 	return [
 		/\bsk-[A-Za-z0-9_-]{12,}/,
 		/\bgh[pousr]_[A-Za-z0-9_]{12,}/,
@@ -546,7 +632,7 @@ function likelySecret(text) {
 	].some((pattern) => pattern.test(text));
 }
 
-function checkFiles() {
+function checkFiles(): void {
 	for (const file of skill.files) {
 		const rel = relative(skill.directory, file);
 		const extension = extname(file).toLowerCase();
@@ -575,7 +661,7 @@ function checkFiles() {
 	}
 }
 
-function checkScriptTests() {
+function checkScriptTests(): void {
 	const scriptsDir = join(skill.directory, "scripts");
 	if (!isDirectory(scriptsDir)) return;
 	const names = new Set(skill.scriptFiles.filter((file) => dirname(file) === scriptsDir).map((file) => basename(file)));
@@ -591,7 +677,7 @@ function checkScriptTests() {
 	}
 }
 
-function collectFiles() {
+function collectFiles(): void {
 	skill.files = walk(skill.directory);
 	skill.references = [];
 	const referencesDir = join(skill.directory, "references");
@@ -604,12 +690,13 @@ function collectFiles() {
 	skill.scriptFiles = isDirectory(scriptsDir) ? walk(scriptsDir) : [];
 }
 
-function main() {
-	let options;
+function main(): void {
+	let options: ParseOptions;
 	try {
 		options = parseArgs(process.argv.slice(2));
 	} catch (error) {
-		console.error(`Error: ${error.message}`);
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(`Error: ${message}`);
 		console.error(usage());
 		process.exit(2);
 	}
@@ -618,7 +705,7 @@ function main() {
 		process.exit(0);
 	}
 	const directory = resolve(options.directory);
-	skill = { directory };
+	skill = { directory, files: [], references: [], scriptFiles: [] };
 	if (!isDirectory(directory)) {
 		console.error(`Error: skill directory does not exist or is not a directory: ${directory}`);
 		process.exit(2);
@@ -631,7 +718,7 @@ function main() {
 		if (!parsed) fail("frontmatter.missing", "SKILL.md must start with YAML frontmatter fenced by --- lines");
 		else {
 			const frontmatter = parseSimpleYaml(parsed.yaml);
-			if (frontmatter.error) fail("frontmatter.parse", frontmatter.error);
+			if ("error" in frontmatter) fail("frontmatter.parse", frontmatter.error);
 			else {
 				skill.frontmatter = frontmatter.value;
 				skill.body = parsed.body;
@@ -651,7 +738,7 @@ function main() {
 
 	const omittedFail = issueCount - issues.length;
 	const omittedWarn = warningCount - warnings.length;
-	const report = {
+	const report: ValidationReport = {
 		directory,
 		ok: issueCount === 0,
 		fail: issues,

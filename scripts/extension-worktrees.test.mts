@@ -15,7 +15,31 @@ import {
   promoteNameFromCwd,
   reconcilePackageEntries,
   worktreeExtensionName,
-} from "./extension-worktrees.mjs";
+} from "./extension-worktrees.mts";
+
+interface ReconcileOverrides {
+  forceActive?: readonly string[];
+  forceInactive?: readonly string[];
+}
+
+interface SerializedPromotionReport {
+  extension: string;
+  wouldPromote: Array<{ dropped: string[] }>;
+  held: unknown[];
+  ok: boolean;
+  promoted: string[];
+  gates: Record<string, string>;
+  pushed: boolean;
+  mainAfter: string;
+  recover: string | null;
+  stage: string;
+  reason: string;
+}
+
+interface PromoteResult {
+  report: SerializedPromotionReport;
+  status: number | null;
+}
 
 const settingsDir = "/home/operator/.pi/agent";
 const repoRoot = "/home/operator/Workspace/harness";
@@ -27,7 +51,7 @@ const entrypoints = new Map(
   ]),
 );
 
-function reconcile(packages, options = {}) {
+function reconcile(packages: readonly unknown[], options: ReconcileOverrides = {}) {
   return reconcilePackageEntries(packages, {
     settingsDir,
     repoRoot,
@@ -206,24 +230,25 @@ describe("Pi package reconciliation", () => {
 });
 
 describe("promotion against a real repository", () => {
-  const script = fileURLToPath(new URL("./extension-worktrees.mjs", import.meta.url));
-  let root;
-  let repo;
-  let worktrees;
-  let origin;
-  let demoTree;
-  let env;
+  const script = fileURLToPath(new URL("./extension-worktrees.mts", import.meta.url));
+  let root: string;
+  let repo: string;
+  let worktrees: string;
+  let origin: string;
+  let demoTree: string;
+  let env: NodeJS.ProcessEnv;
 
-  const git = (args, cwd = repo) => execFileSync("git", args, { cwd, env, encoding: "utf8" }).trim();
-  const writeIn = (base, path, content) => {
+  const git = (args: readonly string[], cwd: string = repo): string =>
+    execFileSync("git", args, { cwd, env, encoding: "utf8" }).trim();
+  const writeIn = (base: string, path: string, content: string): void => {
     mkdirSync(dirname(join(base, path)), { recursive: true });
     writeFileSync(join(base, path), content);
   };
-  const commitIn = (base, message) => {
+  const commitIn = (base: string, message: string): void => {
     git(["add", "-A"], base);
     git(["commit", "-q", "-m", message], base);
   };
-  const promote = (args, cwd = repo) => {
+  const promote = (args: readonly string[], cwd: string = repo): PromoteResult => {
     try {
       const stdout = execFileSync(process.execPath, [script, "promote", ...args, "--json"], {
         cwd,
@@ -231,10 +256,22 @@ describe("promotion against a real repository", () => {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
       });
-      return { report: JSON.parse(stdout), status: 0 };
+      const report: SerializedPromotionReport = JSON.parse(stdout);
+      return { report, status: 0 };
     } catch (error) {
-      if (typeof error.stdout !== "string" || error.stdout === "") throw error;
-      return { report: JSON.parse(error.stdout), status: error.status };
+      if (
+        error === null ||
+        typeof error !== "object" ||
+        !("stdout" in error) ||
+        typeof error.stdout !== "string" ||
+        error.stdout === "" ||
+        !("status" in error) ||
+        (typeof error.status !== "number" && error.status !== null)
+      ) {
+        throw error;
+      }
+      const report: SerializedPromotionReport = JSON.parse(error.stdout);
+      return { report, status: error.status };
     }
   };
 

@@ -1,18 +1,70 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const script = fileURLToPath(new URL("./validate-skill.mjs", import.meta.url));
+type FixtureFiles = Record<string, string>;
+type CreateSkillOptions = { frontmatter: string; body?: string; files?: FixtureFiles };
+type Finding = { code: string; message: string };
+type CountGroup = { fail: number; warn: number };
+type ValidationCounts = {
+	fail: number;
+	warn: number;
+	shown: CountGroup;
+	omitted: CountGroup;
+};
+type ValidationReport = {
+	directory: string;
+	ok: boolean;
+	fail: Finding[];
+	warn: Finding[];
+	counts: ValidationCounts;
+};
+type RunJsonResult = SpawnSyncReturns<string> & { report: ValidationReport };
+type FrontmatterCase = readonly [field: string, code: string];
+type YamlViolationCase = readonly [makeFrontmatter: (name: string) => string, code: string, label: string];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object";
+}
+
+function isFinding(value: unknown): value is Finding {
+	return isRecord(value) && typeof value.code === "string" && typeof value.message === "string";
+}
+
+function isCountGroup(value: unknown): value is CountGroup {
+	return isRecord(value) && typeof value.fail === "number" && typeof value.warn === "number";
+}
+
+function isValidationReport(value: unknown): value is ValidationReport {
+	if (!isRecord(value) || typeof value.directory !== "string" || typeof value.ok !== "boolean") return false;
+	if (!Array.isArray(value.fail) || !value.fail.every(isFinding)) return false;
+	if (!Array.isArray(value.warn) || !value.warn.every(isFinding)) return false;
+	if (!isRecord(value.counts)) return false;
+	return (
+		typeof value.counts.fail === "number" &&
+		typeof value.counts.warn === "number" &&
+		isCountGroup(value.counts.shown) &&
+		isCountGroup(value.counts.omitted)
+	);
+}
+
+function parseReport(output: string): ValidationReport {
+	const parsed: unknown = JSON.parse(output);
+	if (!isValidationReport(parsed)) throw new Error("validator emitted an invalid JSON report");
+	return parsed;
+}
+
+const script = fileURLToPath(new URL("./validate-skill.mts", import.meta.url));
 const root = mkdtempSync(join(tmpdir(), "validate-skill-test-"));
 let sequence = 0;
 
 after(() => rmSync(root, { recursive: true, force: true }));
 
-function createSkill({ frontmatter, body, files = {} }) {
+function createSkill({ frontmatter, body, files = {} }: CreateSkillOptions): string {
 	const directory = join(root, `fixture-${++sequence}`);
 	mkdirSync(directory, { recursive: true });
 	writeFileSync(join(directory, "SKILL.md"), `---\n${frontmatter}\n---\n\n${body ?? `# ${basename(directory)}\n`}`);
@@ -24,15 +76,15 @@ function createSkill({ frontmatter, body, files = {} }) {
 	return directory;
 }
 
-function runJson(directory, extra = []) {
+function runJson(directory: string, extra: string[] = []): RunJsonResult {
 	const result = spawnSync(process.execPath, [script, directory, "--format", "json", ...extra], {
 		encoding: "utf8",
 	});
 	assert.equal(result.signal, null, result.stderr);
-	return { ...result, report: JSON.parse(result.stdout) };
+	return { ...result, report: parseReport(result.stdout) };
 }
 
-function validFrontmatter(directory, extra = "") {
+function validFrontmatter(directory: string, extra: string = ""): string {
 	return `name: ${basename(directory)}\ndescription: Use when validating an Agent Skill fixture. Do not use for non-fixtures.${extra ? `\n${extra}` : ""}`;
 }
 
@@ -52,7 +104,7 @@ const body = "# " + basename(directory) + "\n\nSee [the guide](references/guide.
 });
 
 test("rejects invalid optional frontmatter value types", async (t) => {
-	const cases = [
+	const cases: readonly FrontmatterCase[] = [
 		["license: false", "license.type"],
 		["compatibility: \"\"", "compatibility.length"],
 		["metadata:\n  count: 3", "metadata.value"],
@@ -71,13 +123,13 @@ test("rejects invalid optional frontmatter value types", async (t) => {
 });
 
 test("rejects required-field, naming, and conservative YAML violations", async (t) => {
-	const cases = [
+	const cases: readonly YamlViolationCase[] = [
 		[() => "name: wrong-name\ndescription: Use when validating.", "name.directory", "directory mismatch"],
-		[(name) => `name: ${name}`, "frontmatter.required", "missing description"],
-		[(name) => `name: ${name}\ndescription: false`, "frontmatter.type", "non-string description"],
-		[(name) => `name: ${name}\ndescription: Use when validating.\nallowed-tools: [Read, Bash]`, "frontmatter.parse", "flow collection"],
-		[(name) => `\tname: ${name}\n\tdescription: Use when validating.`, "frontmatter.parse", "tab indentation"],
-		[(name) => `__proto__:\n  name: ${name}\n  description: Use when validating.`, "frontmatter.parse", "unsafe mapping key"],
+		[(name: string) => `name: ${name}`, "frontmatter.required", "missing description"],
+		[(name: string) => `name: ${name}\ndescription: false`, "frontmatter.type", "non-string description"],
+		[(name: string) => `name: ${name}\ndescription: Use when validating.\nallowed-tools: [Read, Bash]`, "frontmatter.parse", "flow collection"],
+		[(name: string) => `\tname: ${name}\n\tdescription: Use when validating.`, "frontmatter.parse", "tab indentation"],
+		[(name: string) => `__proto__:\n  name: ${name}\n  description: Use when validating.`, "frontmatter.parse", "unsafe mapping key"],
 	];
 	for (const [makeFrontmatter, code, label] of cases) {
 		await t.test(label, () => {

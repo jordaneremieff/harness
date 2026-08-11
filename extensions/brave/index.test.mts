@@ -33,7 +33,7 @@ describe("Brave Search extension entrypoint", () => {
 	it("executes through native fetch and returns compact structured details", async () => {
 		process.env.PI_BRAVE_API_KEY = "entrypoint-test-key";
 		let observedUrl: URL | undefined;
-		globalThis.fetch = (async (input: URL | RequestInfo) => {
+		globalThis.fetch = (async (input: URL | Request | string) => {
 			observedUrl = new URL(String(input));
 			return new Response(
 				JSON.stringify({

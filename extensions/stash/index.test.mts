@@ -22,7 +22,7 @@ function registry(overrides?: { distillSessionFactory?: any; copyText?: (text: s
 	const pi = {
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		registerCommand: (name: string, command: any) => commands.set(name, command),
-		exec: async () => ({ code: 0, stdout: "main\n", stderr: "" }),
+		exec: async () => ({ code: 0, stdout: "main\n", stderr: "", killed: false }),
 		sendUserMessage: (content: string, options?: unknown) => sent.push({ content, options }),
 		on: (event: string, handler: any) => events.set(event, handler),
 	};
@@ -360,7 +360,11 @@ describe("stash entrypoint", () => {
 
 	it("copies the selected resume command without leaving the browser", async () => {
 		const copied: string[] = [];
-		const { commands } = registry({ copyText: async (text) => copied.push(text) });
+		const { commands } = registry({
+			copyText: async (text) => {
+				copied.push(text);
+			},
+		});
 		let panels = 0;
 		await commands.get("stash").handler("", {
 			mode: "tui",

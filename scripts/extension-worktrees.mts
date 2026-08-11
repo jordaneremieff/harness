@@ -16,9 +16,108 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+interface RunOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  inherit?: boolean;
+  accept?: readonly number[];
+}
+
+interface RunResult {
+  status: number;
+  stdout: string;
+  stderr: string;
+}
+
+interface WorktreePorcelainRecord {
+  path: string;
+  branch?: string;
+  detached?: boolean;
+}
+
+interface ExtensionWorktreeRecord {
+  name: string;
+  branch: string;
+  path: string;
+  entrypoint: string;
+}
+
+interface HarnessContext {
+  repoRoot: string;
+  worktreeRoot: string;
+  settingsPath: string;
+}
+
+interface ReconcilePackageOptions {
+  settingsDir: string;
+  repoRoot: string;
+  worktreeRoot: string;
+  mainExtensionNames: readonly string[];
+  entrypoints: ReadonlyMap<string, string>;
+  forceActive?: readonly string[];
+  forceInactive?: readonly string[];
+}
+
+interface ReconcileSettingsOptions {
+  forceActive?: readonly string[];
+  forceInactive?: readonly string[];
+}
+
+interface Settings {
+  packages?: unknown[];
+  [key: string]: unknown;
+}
+
+interface PromoteOptions {
+  push: boolean;
+  gates: boolean;
+  json: boolean;
+  dryRun: boolean;
+}
+
+type PromoteOptionName = keyof PromoteOptions;
+type GateStatus = "pass" | "fail";
+type GateResults = Record<string, GateStatus>;
+
+interface GateCommand {
+  name: string;
+  command: [string, ...string[]];
+}
+
+interface PromotionPlanEntry {
+  sha: string;
+  subject: string;
+  ships: string[];
+  dropped: string[];
+}
+
+interface HeldPlanEntry {
+  sha: string;
+  subject: string;
+}
+
+interface PromotionReport {
+  ok: boolean;
+  extension?: string;
+  stage?: string;
+  reason?: string;
+  promoted?: string[];
+  held?: Array<string | HeldPlanEntry>;
+  recover?: string | null;
+  dryRun?: boolean;
+  wouldPromote?: PromotionPlanEntry[];
+  wouldRunGates?: boolean;
+  wouldPush?: boolean;
+  mainBefore?: string;
+  mainAfter?: string;
+  gates?: GateResults;
+  pushed?: boolean;
+  branchFailures?: string[];
+}
+
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = resolve(dirname(scriptPath), "..");
-const hookMarker = "# managed by scripts/extension-worktrees.mjs";
+const hookMarker = "# managed by scripts/extension-worktrees.mts";
 const localGitEnvironmentKeys = [
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
   "GIT_COMMON_DIR",
@@ -37,13 +136,13 @@ const localGitEnvironmentKeys = [
   "GIT_WORK_TREE",
 ];
 
-export function cleanGitEnvironment(environment) {
+export function cleanGitEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const clean = { ...environment };
   for (const key of localGitEnvironmentKeys) delete clean[key];
   return clean;
 }
 
-function run(command, args, options = {}) {
+function run(command: string, args: readonly string[], options: RunOptions = {}): RunResult {
   const result = spawnSync(command, args, {
     cwd: options.cwd,
     encoding: "utf8",
@@ -62,7 +161,7 @@ function run(command, args, options = {}) {
   };
 }
 
-function git(repoRoot, args, options = {}) {
+function git(repoRoot: string, args: readonly string[], options: RunOptions = {}): RunResult {
   return run("git", args, {
     cwd: options.cwd ?? repoRoot,
     env: cleanGitEnvironment(process.env),
@@ -70,9 +169,9 @@ function git(repoRoot, args, options = {}) {
   });
 }
 
-export function parseWorktreePorcelain(text) {
-  const records = [];
-  let current;
+export function parseWorktreePorcelain(text: string): WorktreePorcelainRecord[] {
+  const records: WorktreePorcelainRecord[] = [];
+  let current: WorktreePorcelainRecord | undefined;
   for (const line of text.split("\n")) {
     if (line.startsWith("worktree ")) {
       current = { path: line.slice("worktree ".length) };
@@ -86,7 +185,7 @@ export function parseWorktreePorcelain(text) {
   return records;
 }
 
-export function worktreeExtensionName(path, worktreeRoot) {
+export function worktreeExtensionName(path: string, worktreeRoot: string): string | undefined {
   const parts = relative(worktreeRoot, path).split(sep);
   if (
     parts.length === 4 &&
@@ -99,25 +198,30 @@ export function worktreeExtensionName(path, worktreeRoot) {
   return undefined;
 }
 
-function packageSource(entry) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function packageSource(entry: unknown): string | undefined {
   if (typeof entry === "string") return entry;
-  if (entry && typeof entry === "object" && typeof entry.source === "string") {
-    return entry.source;
-  }
+  if (isRecord(entry) && typeof entry.source === "string") return entry.source;
   return undefined;
 }
 
-function resolveLocalSource(source, settingsDir) {
+function resolveLocalSource(source: string | undefined, settingsDir: string): string | undefined {
   if (!source || /^(?:npm:|git:|https?:|ssh:|git@)/.test(source)) return undefined;
   return resolve(settingsDir, source);
 }
 
-function settingsSource(path, settingsDir) {
+function settingsSource(path: string, settingsDir: string): string {
   const value = relative(settingsDir, path).split(sep).join("/");
   return value.startsWith(".") ? value : `./${value}`;
 }
 
-export function reconcilePackageEntries(packages, options) {
+export function reconcilePackageEntries(
+  packages: readonly unknown[],
+  options: ReconcilePackageOptions,
+): { packages: unknown[]; activeNames: string[] } {
   const {
     settingsDir,
     repoRoot,
@@ -146,8 +250,7 @@ export function reconcilePackageEntries(packages, options) {
 
   const mainEntry = packages[mainIndex];
   const mainLoadsAll =
-    typeof mainEntry === "string" ||
-    (mainEntry && typeof mainEntry === "object" && mainEntry.extensions === undefined);
+    typeof mainEntry === "string" || (isRecord(mainEntry) && mainEntry.extensions === undefined);
   if (mainLoadsAll) {
     for (const name of mainExtensionNames) active.add(name);
   }
@@ -159,15 +262,23 @@ export function reconcilePackageEntries(packages, options) {
     }
   }
 
-  const normalizedMain =
-    typeof mainEntry === "string"
-      ? { source: mainEntry, extensions: [] }
-      : { ...mainEntry, extensions: [] };
-  const managed = [...active]
-    .sort()
-    .map((name) => settingsSource(entrypoints.get(name), settingsDir));
+  let normalizedMain: Record<string, unknown>;
+  if (typeof mainEntry === "string") {
+    normalizedMain = { source: mainEntry, extensions: [] };
+  } else if (isRecord(mainEntry)) {
+    normalizedMain = { ...mainEntry, extensions: [] };
+  } else {
+    throw new Error(`Invalid harness package entry: ${String(mainEntry)}`);
+  }
+  const managed = [...active].sort().map((name) => {
+    const entrypoint = entrypoints.get(name);
+    if (entrypoint === undefined) {
+      throw new Error(`Active extension has no worktree entrypoint: ${name}`);
+    }
+    return settingsSource(entrypoint, settingsDir);
+  });
 
-  const next = [];
+  const next: unknown[] = [];
   for (let index = 0; index < packages.length; index += 1) {
     const entry = packages[index];
     if (index === mainIndex) {
@@ -183,7 +294,7 @@ export function reconcilePackageEntries(packages, options) {
   return { packages: next, activeNames: [...active].sort() };
 }
 
-function repositoryState(repoRoot, worktreeRoot) {
+function repositoryState(repoRoot: string, worktreeRoot: string): ExtensionWorktreeRecord[] {
   const branches = git(repoRoot, [
     "for-each-ref",
     "--format=%(refname:short)",
@@ -196,8 +307,11 @@ function repositoryState(repoRoot, worktreeRoot) {
   const worktrees = parseWorktreePorcelain(
     git(repoRoot, ["worktree", "list", "--porcelain"]).stdout,
   );
-  const byBranch = new Map(worktrees.map((entry) => [entry.branch, entry.path]));
-  const records = [];
+  const byBranch = new Map<string, string>();
+  for (const entry of worktrees) {
+    if (entry.branch !== undefined) byBranch.set(entry.branch, entry.path);
+  }
+  const records: ExtensionWorktreeRecord[] = [];
 
   mkdirSync(worktreeRoot, { recursive: true });
   for (const branch of branches) {
@@ -216,7 +330,7 @@ function repositoryState(repoRoot, worktreeRoot) {
   return records;
 }
 
-function mainExtensionNames(repoRoot) {
+function mainExtensionNames(repoRoot: string): string[] {
   const root = join(repoRoot, "extensions");
   return readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, "index.ts")))
@@ -224,11 +338,11 @@ function mainExtensionNames(repoRoot) {
     .sort();
 }
 
-function readSettings(settingsPath) {
+function readSettings(settingsPath: string): Settings {
   return JSON.parse(readFileSync(settingsPath, "utf8"));
 }
 
-function writeSettings(settingsPath, settings) {
+function writeSettings(settingsPath: string, settings: Settings): boolean {
   const content = `${JSON.stringify(settings, null, 2)}\n`;
   if (readFileSync(settingsPath, "utf8") === content) return false;
   const temporary = `${settingsPath}.extension-worktrees-${process.pid}`;
@@ -238,7 +352,11 @@ function writeSettings(settingsPath, settings) {
   return true;
 }
 
-function reconcileSettings(context, records, options = {}) {
+function reconcileSettings(
+  context: HarnessContext,
+  records: readonly ExtensionWorktreeRecord[],
+  options: ReconcileSettingsOptions = {},
+): { changed: boolean; activeNames: string[] } {
   const settings = readSettings(context.settingsPath);
   const entrypoints = new Map(
     records.filter((record) => existsSync(record.entrypoint)).map((record) => [record.name, record.entrypoint]),
@@ -256,30 +374,33 @@ function reconcileSettings(context, records, options = {}) {
   return { changed: writeSettings(context.settingsPath, settings), activeNames: result.activeNames };
 }
 
-function branchHasBase(repoRoot, branch) {
+function branchHasBase(repoRoot: string, branch: string): boolean {
   return git(repoRoot, ["merge-base", "--is-ancestor", "main", branch], {
     accept: [0, 1],
   }).status === 0;
 }
 
-function branchHasCommonHistory(repoRoot, branch) {
+function branchHasCommonHistory(repoRoot: string, branch: string): boolean {
   return git(repoRoot, ["merge-base", "main", branch], { accept: [0, 1] }).status === 0;
 }
 
-function isDirty(path) {
+function isDirty(path: string): boolean {
   return git(path, ["status", "--porcelain"], { cwd: path }).stdout.trim().length > 0;
 }
 
-function hasTrackedChanges(path) {
+function hasTrackedChanges(path: string): boolean {
   return (
     git(path, ["status", "--porcelain", "--untracked-files=no"], { cwd: path }).stdout.trim()
       .length > 0
   );
 }
 
-function syncBranches(context, records) {
-  const changed = [];
-  const failures = [];
+function syncBranches(
+  context: HarnessContext,
+  records: readonly ExtensionWorktreeRecord[],
+): { changed: string[]; failures: string[] } {
+  const changed: string[] = [];
+  const failures: string[] = [];
   for (const record of records) {
     try {
       if (!branchHasCommonHistory(context.repoRoot, record.branch)) {
@@ -296,7 +417,8 @@ function syncBranches(context, records) {
         throw new Error(`entrypoint is absent: ${record.entrypoint}`);
       }
     } catch (error) {
-      failures.push(`${record.name}: ${error.message}`);
+      const message = error instanceof Error ? error.message : undefined;
+      failures.push(`${record.name}: ${message}`);
     }
   }
   return { changed, failures };
@@ -307,11 +429,15 @@ const devRecordPatterns = [
   /^extensions\/[^/]+\/[A-Z][A-Z0-9-]*FINDINGS\.md$/,
 ];
 
-export function isDevRecordPath(path) {
+export function isDevRecordPath(path: string): boolean {
   return devRecordPatterns.some((pattern) => pattern.test(path));
 }
 
-export function classifyCommitFiles(files) {
+export function classifyCommitFiles(files: readonly string[]): {
+  kind: "held" | "ship" | "filter";
+  devRecords: string[];
+  shipped: string[];
+} {
   const devRecords = files.filter(isDevRecordPath);
   const shipped = files.filter((file) => !isDevRecordPath(file));
   if (shipped.length === 0) return { kind: "held", devRecords, shipped };
@@ -319,7 +445,7 @@ export function classifyCommitFiles(files) {
   return { kind: "filter", devRecords, shipped };
 }
 
-function canonicalPath(path) {
+function canonicalPath(path: string): string {
   try {
     return realpathSync(path);
   } catch {
@@ -327,7 +453,7 @@ function canonicalPath(path) {
   }
 }
 
-export function promoteNameFromCwd(cwd, worktreeRoot) {
+export function promoteNameFromCwd(cwd: string, worktreeRoot: string): string | undefined {
   const parts = relative(worktreeRoot, cwd).split(sep);
   if (parts.length === 0 || parts[0] === "" || parts[0] === ".." || isAbsolute(parts[0])) {
     return undefined;
@@ -335,16 +461,19 @@ export function promoteNameFromCwd(cwd, worktreeRoot) {
   return parts[0];
 }
 
-export function parsePromoteArguments(args) {
-  const options = { push: true, gates: true, json: false, dryRun: false };
-  const flags = new Map([
+export function parsePromoteArguments(args: readonly string[]): {
+  name: string | undefined;
+  options: PromoteOptions;
+} {
+  const options: PromoteOptions = { push: true, gates: true, json: false, dryRun: false };
+  const flags = new Map<string, PromoteOptionName>([
     ["--no-push", "push"],
     ["--no-gates", "gates"],
     ["--json", "json"],
     ["--dry-run", "dryRun"],
   ]);
-  const seen = new Set();
-  let name;
+  const seen = new Set<string>();
+  let name: string | undefined;
   for (const arg of args) {
     if (arg.startsWith("--")) {
       const key = flags.get(arg);
@@ -360,19 +489,22 @@ export function parsePromoteArguments(args) {
   return { name, options };
 }
 
-function noHooks(args) {
+function noHooks(args: readonly string[]): string[] {
   return ["-c", "core.hooksPath=/dev/null", ...args];
 }
 
-function commitFiles(repoRoot, sha) {
+function commitFiles(repoRoot: string, sha: string): string[] {
   return git(repoRoot, ["show", "--pretty=format:", "--name-only", "--no-renames", sha])
     .stdout.split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
 }
 
-function runLoadGate(repoRoot, entrypoint) {
-  const checker = join(dirname(scriptPath), "extension-load-check.mjs");
+function runLoadGate(
+  repoRoot: string,
+  entrypoint: string,
+): { status: "pass" } | { status: "fail"; detail: string } {
+  const checker = join(dirname(scriptPath), "extension-load-check.mts");
   const result = run(process.execPath, [checker, entrypoint], {
     cwd: repoRoot,
     accept: [0, 1],
@@ -381,9 +513,12 @@ function runLoadGate(repoRoot, entrypoint) {
   return { status: "fail", detail: (result.stderr || result.stdout).trim() };
 }
 
-function promoteGates(context, entrypoint) {
+function promoteGates(
+  context: HarnessContext,
+  entrypoint: string,
+): { results: GateResults; failure?: { gate: string; detail: string } } {
   const override = process.env.PI_PROMOTE_GATES;
-  const commands = override
+  const commands: GateCommand[] = override
     ? JSON.parse(override)
     : [
         { name: "test", command: ["npm", "test"] },
@@ -391,7 +526,7 @@ function promoteGates(context, entrypoint) {
         { name: "check", command: ["npm", "run", "check"] },
         { name: "lint", command: ["npm", "run", "lint"] },
       ];
-  const results = {};
+  const results: GateResults = {};
   for (const entry of commands) {
     const [command, ...args] = entry.command;
     const outcome = run(command, args, { cwd: context.repoRoot, accept: [0, 1, 2] });
@@ -408,7 +543,11 @@ function promoteGates(context, entrypoint) {
   return { results };
 }
 
-function remoteMainState(context) {
+function remoteMainState(context: HarnessContext): {
+  present: boolean;
+  behindRemote?: boolean;
+  ahead?: boolean;
+} {
   const remotes = git(context.repoRoot, ["remote"]).stdout.trim().split("\n").filter(Boolean);
   if (!remotes.includes("origin")) return { present: false };
   git(context.repoRoot, ["fetch", "origin", "main"], { accept: [0, 1, 128] });
@@ -426,11 +565,19 @@ function remoteMainState(context) {
   return { present: true, behindRemote, ahead };
 }
 
-function promote(context, requestedName, options) {
+function promote(
+  context: HarnessContext,
+  requestedName: string | undefined,
+  options: PromoteOptions,
+): PromotionReport {
   const name =
     requestedName ??
     promoteNameFromCwd(canonicalPath(process.cwd()), canonicalPath(context.worktreeRoot));
-  const fail = (stage, reason, extra = {}) => ({
+  const fail = (
+    stage: string,
+    reason: string,
+    extra: Partial<PromotionReport> = {},
+  ): PromotionReport => ({
     ok: false,
     extension: name,
     stage,
@@ -542,7 +689,11 @@ function promote(context, requestedName, options) {
     });
     return reset.status === 0;
   };
-  const abandon = (stage, reason, extra = {}) => {
+  const abandon = (
+    stage: string,
+    reason: string,
+    extra: Partial<PromotionReport> = {},
+  ): PromotionReport => {
     const restored = rollback();
     return {
       ...fail(stage, reason, extra),
@@ -553,7 +704,7 @@ function promote(context, requestedName, options) {
     };
   };
 
-  const promoted = [];
+  const promoted: string[] = [];
   for (const entry of shipping) {
     const pick = git(context.repoRoot, noHooks(["cherry-pick", "-n", entry.full]), {
       accept: [0, 1, 128],
@@ -598,7 +749,7 @@ function promote(context, requestedName, options) {
   }
 
   const record = records.find((candidate) => candidate.name === name);
-  let gates = {};
+  let gates: GateResults = {};
   if (options.gates) {
     const outcome = promoteGates(context, record?.entrypoint ?? join(context.repoRoot, "extensions", name, "index.ts"));
     gates = outcome.results;
@@ -640,19 +791,22 @@ function promote(context, requestedName, options) {
   };
 }
 
-function reportPromotion(report, json) {
+function reportPromotion(report: PromotionReport, json: boolean): number {
   if (json) {
     console.log(JSON.stringify(report, null, 2));
     return report.ok ? 0 : 1;
   }
   if (report.dryRun) {
     console.log(`promote ${report.extension} (dry run)`);
-    for (const entry of report.wouldPromote) {
+    const wouldPromote = report.wouldPromote ?? [];
+    for (const entry of wouldPromote) {
       const dropped = entry.dropped.length > 0 ? ` (dropping ${entry.dropped.join(", ")})` : "";
       console.log(`  ship ${entry.sha} ${entry.subject}${dropped}`);
     }
-    for (const entry of report.held) console.log(`  hold ${entry.sha} ${entry.subject}`);
-    if (report.wouldPromote.length === 0) console.log("  nothing to promote");
+    for (const entry of report.held ?? []) {
+      if (typeof entry !== "string") console.log(`  hold ${entry.sha} ${entry.subject}`);
+    }
+    if (wouldPromote.length === 0) console.log("  nothing to promote");
     console.log(`  gates: ${report.wouldRunGates ? "yes" : "no"}  push: ${report.wouldPush ? "yes" : "no"}`);
     return 0;
   }
@@ -662,10 +816,12 @@ function reportPromotion(report, json) {
     else console.error(`main is unchanged at ${report.mainAfter ?? report.mainBefore ?? "its original commit"}`);
     return 1;
   }
-  if (report.promoted.length === 0) console.log(`Nothing to promote from extension/${report.extension}`);
-  else console.log(`Promoted to main: ${report.promoted.join(", ")}`);
-  if (report.held.length > 0) console.log(`Held on the branch: ${report.held.join(", ")}`);
-  if (report.mainAfter && report.mainAfter !== report.mainBefore) {
+  const promoted = report.promoted ?? [];
+  const held = report.held ?? [];
+  if (promoted.length === 0) console.log(`Nothing to promote from extension/${report.extension}`);
+  else console.log(`Promoted to main: ${promoted.join(", ")}`);
+  if (held.length > 0) console.log(`Held on the branch: ${held.join(", ")}`);
+  if (report.mainAfter && report.mainBefore && report.mainAfter !== report.mainBefore) {
     console.log(`main ${report.mainBefore.slice(0, 7)} -> ${report.mainAfter.slice(0, 7)}`);
   }
   console.log(`Pushed: ${report.pushed ? "yes" : "no"}`);
@@ -673,7 +829,7 @@ function reportPromotion(report, json) {
   return 0;
 }
 
-function activeNamesFromSettings(context) {
+function activeNamesFromSettings(context: HarnessContext): Set<string> {
   const settings = readSettings(context.settingsPath);
   const names = [];
   for (const entry of settings.packages ?? []) {
@@ -685,7 +841,10 @@ function activeNamesFromSettings(context) {
   return new Set(names);
 }
 
-function showStatus(context, records) {
+function showStatus(
+  context: HarnessContext,
+  records: readonly ExtensionWorktreeRecord[],
+): void {
   const active = activeNamesFromSettings(context);
   for (const record of records) {
     const base = branchHasBase(context.repoRoot, record.branch) ? "current" : "behind";
@@ -695,11 +854,11 @@ function showStatus(context, records) {
   }
 }
 
-function shellQuote(value) {
+function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function installHooks(context) {
+function installHooks(context: HarnessContext): void {
   const common = git(context.repoRoot, ["rev-parse", "--git-common-dir"]).stdout.trim();
   const commonDir = isAbsolute(common) ? common : resolve(context.repoRoot, common);
   const hooksDir = join(commonDir, "hooks");
@@ -720,7 +879,7 @@ function installHooks(context) {
   console.log(`Installed extension worktree hooks in ${hooksDir}`);
 }
 
-function contextFromEnvironment() {
+function contextFromEnvironment(): HarnessContext {
   const repoRoot = resolve(process.env.PI_HARNESS_ROOT ?? defaultRepoRoot);
   const worktreeRoot = resolve(process.env.PI_EXTENSION_WORKTREE_ROOT ?? `${repoRoot}.worktrees`);
   const agentDir = resolve(process.env.PI_AGENT_DIR ?? join(homedir(), ".pi", "agent"));
@@ -728,7 +887,7 @@ function contextFromEnvironment() {
   return { repoRoot, worktreeRoot, settingsPath };
 }
 
-function addExtension(context, name) {
+function addExtension(context: HarnessContext, name: string | undefined): void {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name ?? "")) {
     throw new Error("Extension name must use lowercase letters, numbers, and hyphens");
   }
@@ -739,10 +898,11 @@ function addExtension(context, name) {
   if (!exists) git(context.repoRoot, ["branch", branch, "main"]);
   const records = repositoryState(context.repoRoot, context.worktreeRoot);
   const record = records.find((candidate) => candidate.name === name);
+  if (record === undefined) throw new Error(`Worktree was not created for extension: ${name}`);
   console.log(record.path);
 }
 
-function main() {
+function main(): void {
   const context = contextFromEnvironment();
   const args = process.argv.slice(2);
   const command = args.find((arg) => !arg.startsWith("--")) ?? "sync";
@@ -783,7 +943,7 @@ function main() {
     throw new Error(`Unknown command: ${command}`);
   }
 
-  let branchResult = { changed: [], failures: [] };
+  let branchResult: { changed: string[]; failures: string[] } = { changed: [], failures: [] };
   if (command === "sync") branchResult = syncBranches(context, records);
   const settingsResult = reconcileSettings(context, records);
   if (!quiet || branchResult.changed.length > 0 || settingsResult.changed || branchResult.failures.length > 0) {
@@ -806,7 +966,7 @@ if (invokedPath === import.meta.url) {
   try {
     main();
   } catch (error) {
-    console.error(error.message);
+    console.error(error instanceof Error ? error.message : undefined);
     process.exitCode = 1;
   }
 }

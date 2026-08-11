@@ -90,7 +90,8 @@ describe("Brave Search client", () => {
 			{ apiKey: "test-key", fetch },
 		);
 
-		assert.equal(observedUrl?.origin + observedUrl?.pathname, BRAVE_WEB_SEARCH_URL);
+		assert.ok(observedUrl, "the mocked fetch must have been called");
+		assert.equal(observedUrl.origin + observedUrl.pathname, BRAVE_WEB_SEARCH_URL);
 		assert.equal(observedUrl?.searchParams.get("q"), "rust docs");
 		assert.equal(observedUrl?.searchParams.get("count"), "7");
 		assert.equal(observedUrl?.searchParams.get("offset"), "2");
@@ -127,7 +128,7 @@ describe("Brave Search client", () => {
 			searchBraveWeb(
 				{ query: "   " },
 				undefined,
-				{ env: {}, configPath: "/missing/config.json", fetch: async () => { called = true; return success({}); } },
+				{ env: {}, fetch: async () => { called = true; return success({}); } },
 			),
 			/query cannot be empty/,
 		);

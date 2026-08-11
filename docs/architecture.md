@@ -71,13 +71,13 @@ Each skill lives under `skills/<name>/`:
 - `SKILL.md` — the always-loaded operating procedure, with YAML frontmatter;
   activation knowledge lives in the `description`, not in the body.
 - One-level `references/` — conditional detail loaded on demand.
-- `scripts/` — dependency-free Node (`.mjs`) automation when repeated work
+- `scripts/` — type-checked Node (`.mts`) automation when repeated work
   justifies it; scripts are non-interactive, documented with `--help`, safe
   by default, bounded in output, and directly tested with colocated test
   files.
 
 The portable shape is checked mechanically by
-`skills/harness/scripts/validate-skill.mjs`, the same gate the `harness` skill
+`skills/harness/scripts/validate-skill.mts`, the same gate the `harness` skill
 applies in its Agent Skill lane.
 
 ## Conventions registry
@@ -114,5 +114,5 @@ contract, name the producer and consumers, and keep it stable.
 2. Create `skills/<name>/SKILL.md` with frontmatter and one-level references;
    add dependency-free, tested `scripts/` only when repeated work justifies
    them.
-3. Validate the shape with `skills/harness/scripts/validate-skill.mjs` and run
+3. Validate the shape with `skills/harness/scripts/validate-skill.mts` and run
    the `AGENTS.md` gates before closing.

@@ -279,11 +279,15 @@ describe("/statusline toggle", () => {
 
 		await commands.get("statusline").handler("", mocks.ctx);
 		assert.equal(mocks.footerCalls.at(-1), undefined, "footer cleared on disable");
-		assert.match(mocks.notifications.at(-1), /disabled/);
+		const disabledNote = mocks.notifications.at(-1);
+		assert.ok(disabledNote !== undefined, "disable notification recorded");
+		assert.match(disabledNote, /disabled/);
 
 		await commands.get("statusline").handler("", mocks.ctx);
 		assert.notEqual(mocks.footerCalls.at(-1), undefined, "footer reinstalled on enable");
-		assert.match(mocks.notifications.at(-1), /enabled/);
+		const enabledNote = mocks.notifications.at(-1);
+		assert.ok(enabledNote !== undefined, "enable notification recorded");
+		assert.match(enabledNote, /enabled/);
 	});
 
 	it("toggles without touching the footer outside tui mode", async () => {
@@ -293,6 +297,8 @@ describe("/statusline toggle", () => {
 		assert.equal(mocks.footerCalls.length, 0);
 		await commands.get("statusline").handler("", mocks.ctx);
 		assert.equal(mocks.footerCalls.length, 0, "setFooter untouched in rpc");
-		assert.match(mocks.notifications.at(-1), /disabled/);
+		const disabledNote = mocks.notifications.at(-1);
+		assert.ok(disabledNote !== undefined, "disable notification recorded");
+		assert.match(disabledNote, /disabled/);
 	});
 });

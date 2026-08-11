@@ -92,7 +92,7 @@ repository itself.
 ## Entrypoint load checks
 
 ```bash
-node scripts/extension-load-check.mjs extensions/stash/index.ts
+node scripts/extension-load-check.mts extensions/stash/index.ts
 ```
 
 The check runs Pi's own extension loader and exits non-zero on any loader error.

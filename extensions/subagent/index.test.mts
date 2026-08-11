@@ -1349,7 +1349,10 @@ describe("buildTranscript", () => {
 					timestamp: 4,
 				},
 			] as never,
-			(m) => `m-${(m as { timestamp: number }).timestamp}`,
+			(message) => {
+				if (typeof message.timestamp !== "number") throw new Error("message timestamp is required");
+				return `m-${message.timestamp}`;
+			},
 		) as Array<Record<string, any>>;
 
 		assert.deepEqual(
@@ -1454,7 +1457,10 @@ describe("buildTranscript", () => {
 					timestamp: 6,
 				},
 			] as never,
-			(m) => `m-${(m as { timestamp: number }).timestamp}`,
+			(message) => {
+				if (typeof message.timestamp !== "number") throw new Error("message timestamp is required");
+				return `m-${message.timestamp}`;
+			},
 		) as Array<Record<string, any>>;
 		assert.deepEqual(
 			items.map((i) => i.role),
@@ -2584,14 +2590,16 @@ describe("registered tool surface", () => {
 	});
 
 	it("publishes structured status in RPC and JSON modes", async () => {
-		let command: { handler(args: string, ctx: any): Promise<void> } | null =
-			null;
+		type RegisteredCommand = Parameters<
+			Parameters<typeof registerSubagent>[0]["registerCommand"]
+		>[1];
+		const commands = new Map<string, RegisteredCommand>();
 		const entries: Array<{ customType: string; data: unknown }> = [];
 		const notifications: string[] = [];
 		registerSubagent({
 			registerTool: () => undefined,
-			registerCommand: (_name: string, value: typeof command) => {
-				command = value;
+			registerCommand: (name: string, value: RegisteredCommand) => {
+				commands.set(name, value);
 			},
 			on: () => undefined,
 			appendEntry: (customType: string, data: unknown) =>
@@ -2599,6 +2607,7 @@ describe("registered tool surface", () => {
 			getActiveTools: () => [],
 			getAllTools: () => [],
 		} as any);
+		const command = commands.get("subagent");
 		assert.ok(command);
 		const context = (mode: "rpc" | "json") =>
 			({

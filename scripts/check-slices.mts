@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// check-slices.mjs — repo gate for the vertical-slice architecture rules.
+// check-slices.mts — repo gate for the vertical-slice architecture rules.
 //
 // Enforces the AGENTS.md invariants that npm test cannot see:
 //   1. every extension under extensions/ is a complete vertical slice:
@@ -11,7 +11,7 @@
 //      (AGENTS.md: "Do not hardcode counts ... in durable documentation").
 //
 // Dependency-free by design (node builtins only), mirroring the established
-// pattern of skills/harness/scripts/validate-skill.mjs.
+// pattern of skills/harness/scripts/validate-skill.mts.
 //
 // Exit status: 0 when all rules hold, 1 listing every violation otherwise.
 
@@ -23,8 +23,8 @@ import { fileURLToPath } from "node:url";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const extensionsRoot = join(root, "extensions");
 
-const failures = [];
-const fail = (message) => failures.push(message);
+const failures: string[] = [];
+const fail = (message: string) => failures.push(message);
 
 // --- rule 1: extension anatomy -----------------------------------------
 
@@ -53,13 +53,13 @@ for (const entry of readdirSync(extensionsRoot, { withFileTypes: true })) {
 
 // --- rule 2: no sibling imports ----------------------------------------
 
-const sourceFiles = [];
-const walk = (dir) => {
+const sourceFiles: string[] = [];
+const walk = (dir: string) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith(".")) continue;
     const path = join(dir, entry.name);
     if (entry.isDirectory()) walk(path);
-    else if (entry.isFile() && /\.(ts|mts|mjs)$/.test(entry.name)) sourceFiles.push(path);
+    else if (entry.isFile() && /\.(ts|mts)$/.test(entry.name)) sourceFiles.push(path);
   }
 };
 if (existsSync(extensionsRoot)) walk(extensionsRoot);

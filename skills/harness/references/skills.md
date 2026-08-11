@@ -53,7 +53,7 @@ Keep environment-specific gotchas that prevent likely errors. Remove generic exp
 Run the bundled validator from the `harness` skill directory or use its repository-relative path:
 
 ```bash
-node scripts/validate-skill.mjs <candidate-skill> --format json
+node scripts/validate-skill.mts <candidate-skill> --format json
 ```
 
 Resolve failures and justify warnings. Test every bundled script directly with successful and failing inputs. Scripts must be non-interactive, safe by default, bounded in output, documented with `--help`, and explicit about dependencies.

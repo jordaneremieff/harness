@@ -104,7 +104,7 @@ current step, split the branch or place later detail behind a pointer.
 
 Add `scripts/` when agents repeatedly rewrite the same logic, when
 deterministic validation matters, or when structured output should be parsed.
-Default to dependency-free Node (`.mjs`) for Pi-oriented or TypeScript-adjacent
+Default to type-checked Node (`.mts`) for Pi-oriented or TypeScript-adjacent
 skills because Pi and the harness already require Node. Use Python or another
 language only when the target ecosystem clearly supplies that runtime or a
 mature library justifies the extra prerequisite. Scripts must be

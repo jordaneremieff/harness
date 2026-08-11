@@ -20,8 +20,8 @@
 		"includes": [
 			"extensions/**/*.ts",
 			"extensions/**/*.mts",
-			"scripts/**/*.mjs",
-			"skills/**/*.mjs"
+			"scripts/**/*.mts",
+			"skills/**/*.mts"
 		]
 	}
 }
