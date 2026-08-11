@@ -37,6 +37,7 @@ export interface SyncDeps {
 	client: HerdrClient;
 	paneId: string;
 	tabId: string | undefined;
+	workspaceId: string | undefined;
 	maxName: number;
 }
 
@@ -56,22 +57,23 @@ function readMaxName(): number {
 	return Math.min(parsed, 80);
 }
 
-function workspaceOfTab(tabId: string): string {
-	return tabId.split(":")[0];
+function workspaceOf(deps: SyncDeps): string | undefined {
+	return deps.workspaceId ?? deps.tabId?.split(":")[0];
 }
 
-/** Read the pane's manual label; undefined on failure, absence, or emptiness. */
-async function readManualPaneLabel(deps: SyncDeps): Promise<string | undefined> {
-	if (!deps.tabId) return undefined;
+type PaneLabelRead = { known: true; label: string | undefined } | { known: false };
+
+/** Read the pane's manual label. Failure stays distinct from a known empty label. */
+async function readManualPaneLabel(deps: SyncDeps): Promise<PaneLabelRead> {
 	try {
-		const result = (await deps.client.request("pane.list", {
-			workspace_id: workspaceOfTab(deps.tabId),
-		})) as PaneListResult;
-		const label = result.panes?.find((pane) => pane.pane_id === deps.paneId)?.label;
-		const trimmed = label?.trim();
-		return trimmed ? trimmed : undefined;
+		const workspaceId = workspaceOf(deps);
+		const result = (await deps.client.request("pane.list", workspaceId ? { workspace_id: workspaceId } : {})) as PaneListResult;
+		const pane = result.panes?.find((candidate) => candidate.pane_id === deps.paneId);
+		if (!pane) return { known: false };
+		const trimmed = pane.label?.trim();
+		return { known: true, label: trimmed || undefined };
 	} catch {
-		return undefined;
+		return { known: false };
 	}
 }
 
@@ -79,9 +81,8 @@ async function readManualPaneLabel(deps: SyncDeps): Promise<string | undefined> 
 async function readTabs(deps: SyncDeps): Promise<ListedTab[] | undefined> {
 	if (!deps.tabId) return undefined;
 	try {
-		const result = (await deps.client.request("tab.list", {
-			workspace_id: workspaceOfTab(deps.tabId),
-		})) as TabListResult;
+		const workspaceId = workspaceOf(deps);
+		const result = (await deps.client.request("tab.list", workspaceId ? { workspace_id: workspaceId } : {})) as TabListResult;
 		const tabs = result.tabs
 			?.filter((tab): tab is { tab_id: string; label: string } => Boolean(tab.tab_id && tab.label))
 			.map((tab) => ({ tabId: tab.tab_id, label: tab.label }));
@@ -104,7 +105,7 @@ export async function syncIdentity(
 	const model = sanitizeName(input.model ?? "") || undefined;
 	const border = capName(composeBorderLabel(name, model), deps.maxName);
 
-	const manualLabel = await readManualPaneLabel(deps);
+	const paneLabel = await readManualPaneLabel(deps);
 
 	const params: Record<string, unknown> = {
 		pane_id: deps.paneId,
@@ -113,12 +114,10 @@ export async function syncIdentity(
 		seq: deps.client.nextSeq(),
 		tokens: { model: model ?? null },
 	};
-	if (manualLabel) {
-		// A manual pane label shadows our border title; withdraw ours once.
-		if (state.titleSent) {
-			params.clear_title = true;
-			state.titleSent = false;
-		}
+	if (!paneLabel.known || paneLabel.label) {
+		// A manual label, or an unreadable pane state, cannot safely be overwritten.
+		params.clear_title = true;
+		state.titleSent = false;
 	} else {
 		params.title = border;
 		state.titleSent = true;
@@ -192,8 +191,8 @@ export function registerHerdrWithDeps(pi: ExtensionAPI, deps: SyncDeps): SyncSta
 		return chain;
 	};
 
-	const sync = (ctx: ExtensionContext): Promise<void> => {
-		const name = pi.getSessionName();
+	const sync = (ctx: ExtensionContext, eventName?: string): Promise<void> => {
+		const name = eventName ?? pi.getSessionName();
 		const model = ctx.model?.name;
 		return enqueue(() => syncIdentity(deps, state, { name, model }));
 	};
@@ -204,9 +203,9 @@ export function registerHerdrWithDeps(pi: ExtensionAPI, deps: SyncDeps): SyncSta
 		state.registryLabel = undefined;
 		return sync(ctx);
 	});
-	pi.on("session_info_changed", (_event, ctx) => {
+	pi.on("session_info_changed", (event, ctx) => {
 		if (!rootSession) return;
-		return sync(ctx);
+		return sync(ctx, event.name);
 	});
 	pi.on("model_select", (_event, ctx) => {
 		if (!rootSession) return;
@@ -232,6 +231,7 @@ export default function registerHerdr(pi: ExtensionAPI): void {
 		client,
 		paneId,
 		tabId: process.env.HERDR_TAB_ID || undefined,
+		workspaceId: process.env.HERDR_WORKSPACE_ID || undefined,
 		maxName: readMaxName(),
 	});
 }

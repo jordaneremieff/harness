@@ -1,9 +1,9 @@
 /**
  * Minimal JSONL client for the herdr socket API.
  *
- * The transport is injectable so tests never open a socket. Delivery of
- * reports is best-effort: one attempt, one retry, then drop. The next event
- * re-synchronizes, so no report is ever fatal.
+ * The transport is injectable so tests never open a socket. Every request gets
+ * one bounded retry. Delivery reports then drop their final error; the next
+ * event re-synchronizes, so no report is ever fatal.
  */
 
 import net from "node:net";
@@ -76,24 +76,19 @@ export class HerdrClient {
 		return this.seq;
 	}
 
-	/** One request, one response. Rejects on transport failure or an error response. */
+	/** One request, one response. Retries once, then rejects with the final error. */
 	async request(method: string, params: Record<string, unknown>): Promise<unknown> {
-		const payload = `${JSON.stringify({
-			id: `${this.options.source}:${method}:${this.now()}:${Math.random().toString(36).slice(2)}`,
-			method,
-			params,
-		})}\n`;
-		const raw = await this.transport(this.options.endpoint, payload, RETRY_TIMEOUT_MS);
-		return parseResponse(raw);
+		const payload = this.payload(method, params);
+		try {
+			return parseResponse(await this.transport(this.options.endpoint, payload, FIRST_TIMEOUT_MS));
+		} catch {
+			return parseResponse(await this.transport(this.options.endpoint, payload, RETRY_TIMEOUT_MS));
+		}
 	}
 
 	/** Best-effort report: one fast attempt, one retry, then drop. */
 	async send(method: string, params: Record<string, unknown>): Promise<void> {
-		const payload = `${JSON.stringify({
-			id: `${this.options.source}:${method}:${this.now()}:${Math.random().toString(36).slice(2)}`,
-			method,
-			params,
-		})}\n`;
+		const payload = this.payload(method, params);
 		try {
 			parseResponse(await this.transport(this.options.endpoint, payload, FIRST_TIMEOUT_MS));
 			return;
@@ -105,6 +100,14 @@ export class HerdrClient {
 		} catch {
 			// Display-only report: dropping is safe; the next event re-syncs.
 		}
+	}
+
+	private payload(method: string, params: Record<string, unknown>): string {
+		return `${JSON.stringify({
+			id: `${this.options.source}:${method}:${this.now()}:${Math.random().toString(36).slice(2)}`,
+			method,
+			params,
+		})}\n`;
 	}
 }
 

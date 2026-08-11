@@ -39,6 +39,21 @@ describe("HerdrClient.request", () => {
 		assert.ok(sent.id.startsWith("custom:test:tab.list:"));
 	});
 
+	it("retries once after a transport failure", async () => {
+		let calls = 0;
+		const client = new HerdrClient({
+			endpoint: "/tmp/x.sock",
+			source: "custom:test",
+			transport: async () => {
+				calls += 1;
+				if (calls === 1) throw new Error("boom");
+				return ok({ type: "tab_list", tabs: [] });
+			},
+		});
+		await client.request("tab.list", {});
+		assert.equal(calls, 2);
+	});
+
 	it("rejects with HerdrError on an error response", async () => {
 		const client = new HerdrClient({
 			endpoint: "/tmp/x.sock",

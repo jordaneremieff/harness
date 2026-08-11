@@ -58,7 +58,7 @@ function ctx(model?: string, mode = "tui"): ExtensionContext {
 }
 
 function depsWith(client: HerdrClient): SyncDeps {
-	return { client, paneId: "w1:p1", tabId: "w1:t1", maxName: 60 };
+	return { client, paneId: "w1:p1", tabId: "w1:t1", workspaceId: "w1", maxName: 60 };
 }
 
 const autoTabs = { tabs: [{ tab_id: "w1:t1", label: "1" }] };
@@ -145,6 +145,19 @@ describe("identity sync", () => {
 		const result = handler({ reason: "startup" }, ctx("Opus", "rpc"));
 		assert.equal(result, undefined);
 		assert.equal(calls.length, 0);
+	});
+
+	it("uses the session_info_changed event name directly", async () => {
+		const ownedTabs = { tabs: [{ tab_id: "w1:t1", label: "alpha" }] };
+		const { client, calls } = fakeClient({ "pane.list": noManualLabel, "tab.list": ownedTabs });
+		const fake = fakePi("alpha");
+		registerHerdrWithDeps(piApi(fake), depsWith(client));
+
+		await fire(fake, "session_start", { reason: "startup" }, ctx("Opus"));
+		await fire(fake, "session_info_changed", { name: "event-name" }, ctx("Opus"));
+
+		const report = calls.filter((c) => c.method === "pane.report_metadata").at(-1);
+		assert.equal(report?.params.display_agent, "event-name");
 	});
 
 	it("falls back to the agent kind on the border while unnamed", async () => {
@@ -253,12 +266,23 @@ describe("identity sync", () => {
 		assert.equal(reports.at(-1)?.params.display_agent, "gamma");
 	});
 
+	it("withdraws its title when pane ownership cannot be read", async () => {
+		const { client, calls } = fakeClient({ "tab.list": autoTabs });
+		const fake = fakePi("alpha");
+		registerHerdrWithDeps(piApi(fake), depsWith(client));
+
+		await fire(fake, "session_start", { reason: "startup" }, ctx("Opus"));
+
+		const report = calls.find((c) => c.method === "pane.report_metadata");
+		assert.equal(report?.params.title, undefined);
+		assert.equal(report?.params.clear_title, true);
+	});
+
 	it("survives a dead socket", async () => {
 		const { client } = fakeClient({});
 		const fake = fakePi("alpha");
 		registerHerdrWithDeps(piApi(fake), depsWith(client));
 		await fire(fake, "session_start", { reason: "startup" }, ctx("Opus"));
-		fake.sessionName = "beta";
 		await fire(fake, "session_info_changed", { name: "beta" }, ctx("Opus"));
 	});
 });

@@ -26,19 +26,20 @@ manual labels.
 - `session_info_changed` (the `/name` command) re-reports with the new name.
 - `model_select` refreshes the border composition and the `model` token.
 - `session_shutdown` with reason `quit` clears the metadata and restores the
-  auto tab label.
+  numeric fallback appearance for the tab's current position.
 
 Manual names stay authoritative:
 
 - An auto-named tab (label equals its position number) may be taken over.
-- A tab this extension named follows the session and restores when the name
-  clears.
+- A tab this extension named follows the session and returns to its current
+  numeric label when the name clears. Herdr 0.8 has no API to clear a tab's
+  `custom_name`, so the result looks automatic but remains a custom label.
 - Any other tab label and any manual pane label are never touched.
 
 The extension only acts when `HERDR_ENV=1`, the herdr socket and pane id are
 present, and pi runs in TUI mode. Outside herdr it loads as a no-op. All
-socket traffic is best-effort: one attempt, one retry, then drop; the next
-event re-synchronizes.
+socket traffic gets one bounded retry. Display reports then drop their final
+error; the next event re-synchronizes.
 
 ## Configuration
 
