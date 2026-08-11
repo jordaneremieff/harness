@@ -1,7 +1,7 @@
 ---
 name: harness
 description: >
-  Use when adding, changing, removing, testing, packaging, or evaluating any surface of the Pi agent harness; when a requested capability needs classification among an Agent Skill, extension-owned tool or command, provider, lifecycle hook, TUI, prompt template, theme, package, SDK/RPC integration, or standalone CLI; or when changing harness rules and shared contracts. Select the lowest sufficient surface, preserve fixed operator intent, load only the matching reference, and verify claims at the layer that owns them. Do not use for invoking or installing an unchanged resource, ordinary application code, unrelated uses of "tool", "skill", or "extension", or Pi core development.
+  Use when adding, changing, removing, testing, packaging, or evaluating any surface of the Pi agent harness; when a requested capability needs classification among an Agent Skill, extension-owned tool or command, provider, lifecycle hook, TUI, prompt template, theme, package, SDK/RPC integration, or standalone CLI; or when changing harness rules and shared contracts. Select the lowest sufficient surface, preserve fixed operator intent, load only the matching reference, and verify claims at the layer that owns them. New enumerated surfaces require a proposal and explicit operator approval before any write; reclassifying them as part of the requested outcome does not exempt them. Do not use for invoking or installing an unchanged resource, ordinary application code, unrelated uses of "tool", "skill", or "extension", or Pi core development.
 compatibility: Pi-specific workflow. The bundled skill validator is dependency-free Node.js and supports Node.js 18 or newer; verify Pi-sensitive behavior against the active Pi installation.
 ---
 
@@ -17,6 +17,35 @@ Select, design, change, and verify Pi harness surfaces through one entry point. 
 - Treat current Pi documentation, declarations, installed source, and shipped examples as the authority for version-sensitive claims.
 - Follow the owning repository's provenance, privacy, worktree, testing, and release rules.
 - Keep common decisions here and lane-specific detail in one-level references. Read only the references that the selected lane requires.
+- **New surfaces require a proposal and explicit operator approval before any write.** The enumeration below decides what counts — not the agent's framing of the request. Reclassifying an addition as "part of the requested outcome," "the sharing mechanism," or "just making it work" does not exempt it.
+
+## New surfaces require approval
+
+A change adds a **new surface** when it introduces any of the following that do not already exist in the repository:
+
+1. A new top-level directory (other than ignored tooling such as `node_modules` / `.git`).
+2. A new extension slice directory under `extensions/`.
+3. A new skill directory under `skills/`.
+4. A new prompt template file under `prompts/`.
+5. A new theme file under `themes/`.
+6. A new instructions file under `instructions/`.
+7. A new non-test script under `scripts/`.
+8. A new `package.json` `scripts` entry.
+9. A new key under `package.json` `pi` (for example `pi.prompts`).
+
+Edits, tests, docs, and refactors **inside** an already-registered surface are ordinary work. They still need surface classification and proportionate verification, but they do not need a new-surface proposal.
+
+### Hard stop before implementation
+
+When the intended change adds a new surface:
+
+1. **Stop.** Do not create the directory, file, or package field.
+2. **Propose in chat:** name each new surface against the enumeration; state the warrant (step 3); name the nearest existing surface and why it cannot absorb the change; state the lowest sufficient layer; list out-of-scope items you will not add.
+3. **Wait for explicit operator approval** of that proposal. Gate-clearing analysis is not permission to ship. Self-approval is a violation.
+4. **Implement only the approved scope.**
+
+If an unapproved new surface is already present in the tree when you notice it, stop, report what is present, and hold for operator disposition. Do not silently keep expanding it or silently revert concurrent work you did not author.
+
 
 ## No backward compatibility
 
@@ -59,6 +88,8 @@ Read [surface-selection.md](references/surface-selection.md) when the artifact t
 
 ### 3. Establish the warrant when required
 
+If the change adds anything on the **New surfaces require approval** enumeration, complete that hard stop first: warrant and design in chat, then explicit operator approval, before any write. The warrant below is the content of that proposal; it does not replace the approval step.
+
 Apply this warrant to an agent-proposed new persistent surface, recurring mechanism, guard, or high-frequency context producer. Establish at least one admissible basis:
 
 - an observed failure with meaningful cost;
@@ -68,9 +99,9 @@ Apply this warrant to an agent-proposed new persistent surface, recurring mechan
 
 Then identify the nearest existing surface, explain why it cannot absorb the change, and state the lowest sufficient layer. For a recurring mechanism, estimate its normal fire rate and operating or context cost, state the observable behavior it changes, name an owner and evaluation point, and define removal conditions.
 
-Do not require this warrant for a fixed repair, an operator-selected outcome or architecture, ordinary maintenance, a removal, or a documentation/test correction that preserves an established contract. Those changes still require surface classification and proportionate verification.
+Do not require this warrant for a fixed repair, an operator-selected outcome or architecture, ordinary maintenance, a removal, or a documentation/test correction that preserves an established contract. Those changes still require surface classification and proportionate verification. An operator-selected outcome authorizes work inside its stated scope; if realizing it still needs a new enumerated surface the operator has not named, propose that surface and obtain approval before creating it.
 
-**Complete when:** discretionary infrastructure has independent evidence and an exit, or the task has a named reason the warrant does not apply.
+**Complete when:** discretionary infrastructure has independent evidence and an exit, or the task has a named reason the warrant does not apply; and any new enumerated surface has explicit operator approval before implementation.
 
 ### 4. Load one implementation lane
 
@@ -97,9 +128,9 @@ Follow repository sequencing rules for manual review and broad suites. Do not su
 
 ### 7. Apply authority once
 
-An explicit operator request authorizes work inside its stated scope. Do not ask again for approval already supplied. Obtain explicit approval before placing an agent-proposed new shared or global surface when the operator has not selected that outcome or destination. Treat destructive state changes, publication, and credential use under their separate authority rules.
+An explicit operator request authorizes work inside its stated scope. Do not ask again for approval already supplied. Obtain explicit approval before placing any agent-proposed new surface on the enumeration in **New surfaces require approval**, including when the operator asked for an outcome and the agent chose a new surface as the means. The operator must approve the surface itself, not only the outcome. Treat destructive state changes, publication, and credential use under their separate authority rules.
 
-**Complete when:** execution neither exceeds authority nor transfers an already-settled decision back to the operator.
+**Complete when:** execution neither exceeds authority nor transfers an already-settled decision back to the operator, and no new enumerated surface is created without explicit approval.
 
 ## Closure
 

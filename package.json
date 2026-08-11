@@ -16,7 +16,7 @@
     "lint": "biome lint --error-on-warnings .",
     "format": "biome format --error-on-warnings .",
     "typecheck": "tsc -p .",
-    "check": "node scripts/check-slices.mts && node scripts/check-surfaces.mts",
+    "check": "node scripts/check-slices.mts",
     "worktrees": "node scripts/extension-worktrees.mts",
     "worktrees:sync": "node scripts/extension-worktrees.mts sync",
     "worktrees:status": "node scripts/extension-worktrees.mts status",
