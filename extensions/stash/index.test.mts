@@ -483,17 +483,37 @@ const DISTILL_PAYLOAD = JSON.stringify({
 });
 
 function creationCtx(ui: any, extra: any = {}) {
+	const parentModel = extra.model === undefined && !("model" in extra)
+		? { id: "test-model", provider: "test", reasoning: true }
+		: extra.model;
+	const available = extra.registryModels ?? (parentModel ? [parentModel] : []);
+	const registry =
+		extra.modelRegistry ??
+		{
+			find(provider: string, id: string) {
+				return available.find((model: any) => model.provider === provider && model.id === id) ?? null;
+			},
+			getAvailable() {
+				return available;
+			},
+			hasConfiguredAuth(model: any) {
+				return available.includes(model);
+			},
+		};
+	const { registryModels: _registryModels, modelRegistry: _modelRegistry, ...rest } = extra;
 	return {
 		mode: "tui",
 		hasUI: true,
 		cwd: "/workspace",
-		model: { id: "test-model", provider: "test" },
+		model: parentModel,
+		thinkingLevel: "medium",
+		modelRegistry: registry,
 		sessionManager: {
 			getSessionId: () => "sess-1",
 			buildContextEntries: () => [],
 		},
 		ui,
-		...extra,
+		...rest,
 	};
 }
 
@@ -606,6 +626,94 @@ describe("stash creation", () => {
 			),
 			/No model is available/,
 		);
+	});
+
+	it("uses PI_STASH_MODEL without a parent model and fails a missing override without starting a job", async () => {
+		const oldModel = process.env.PI_STASH_MODEL;
+		const override = { id: "cheap-model", provider: "cheap", reasoning: true };
+		let factoryCalls = 0;
+		const factory = async () => {
+			factoryCalls++;
+			return {
+				prompt: async () => {},
+				getLastAssistantText: () => DISTILL_PAYLOAD,
+				abort: async () => {},
+				dispose: () => {},
+			};
+		};
+		const { commands } = registry({ distillSessionFactory: factory });
+		try {
+			process.env.PI_STASH_MODEL = "cheap/cheap-model";
+			const notifications: string[] = [];
+			await commands.get("stash").handler(
+				"new use explicit model",
+				creationCtx(
+					{ notify: (message: string) => notifications.push(message) },
+					{ model: undefined, registryModels: [override] },
+				),
+			);
+			await waitForSettle();
+			assert.equal(factoryCalls, 1);
+			assert.match(notifications.join("\n"), /Stash distillation started/);
+
+			process.env.PI_STASH_MODEL = "missing/model";
+			notifications.length = 0;
+			await commands.get("stash").handler(
+				"new missing model",
+				creationCtx(
+					{ notify: (message: string) => notifications.push(message) },
+					{ model: undefined, registryModels: [override] },
+				),
+			);
+			assert.equal(factoryCalls, 1, "a missing override must not start the distiller");
+			assert.match(notifications.join("\n"), /not in the current registry/);
+		} finally {
+			if (oldModel === undefined) delete process.env.PI_STASH_MODEL;
+			else process.env.PI_STASH_MODEL = oldModel;
+		}
+	});
+
+	it("passes inherited thinking through the factory and rejects an unsupported explicit level", async () => {
+		const oldThinking = process.env.PI_STASH_THINKING;
+		let received: any;
+		const factory = async (options: any) => {
+			received = options;
+			return {
+				prompt: async () => {},
+				getLastAssistantText: () => DISTILL_PAYLOAD,
+				abort: async () => {},
+				dispose: () => {},
+			};
+		};
+		const { commands } = registry({ distillSessionFactory: factory });
+		try {
+			delete process.env.PI_STASH_THINKING;
+			await commands.get("stash").handler(
+				"new inherit thinking",
+				creationCtx({ notify: () => {} }, { thinkingLevel: "high" }),
+			);
+			await waitForSettle();
+			assert.equal(received.thinkingLevel, "high");
+
+			process.env.PI_STASH_THINKING = "high";
+			const notifications: string[] = [];
+			received = undefined;
+			await commands.get("stash").handler(
+				"new unsupported thinking",
+				creationCtx(
+					{ notify: (message: string) => notifications.push(message) },
+					{
+						model: { id: "plain", provider: "plain", reasoning: false },
+						registryModels: [{ id: "plain", provider: "plain", reasoning: false }],
+					},
+				),
+			);
+			assert.equal(received, undefined, "unsupported explicit thinking must not start the distiller");
+			assert.match(notifications.join("\n"), /thinking "high" is not supported by plain\/plain/);
+		} finally {
+			if (oldThinking === undefined) delete process.env.PI_STASH_THINKING;
+			else process.env.PI_STASH_THINKING = oldThinking;
+		}
 	});
 
 	it("aborts an in-flight creation, clears the status, and frees the slot", async () => {
