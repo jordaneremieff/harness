@@ -1227,86 +1227,44 @@ describe("compaction veto", () => {
 	});
 
 	it("real loader: a jiti copy of this module takes the worker branch and the veto fires", async () => {
-		// Production shape: DefaultResourceLoader reloads the actual index.ts
-		// through jiti (a FRESH module instance, like a custom-cwd worker), and
-		// the dispatcher's construction count is shared via globalThis. This
-		// test drives the exact machinery: fresh copy + worker branch + real
-		// handler + real emit.
-		const {
-			createAgentSession,
-			DefaultResourceLoader,
-			SessionManager,
-			SettingsManager,
-		} = await import("@earendil-works/pi-coding-agent");
-		const settingsManager = SettingsManager.create(agentDir, agentDir);
-		const resourceLoader = new DefaultResourceLoader({
-			cwd: agentDir,
-			agentDir,
-			settingsManager,
-			noSkills: true,
-			noPromptTemplates: true,
-			noContextFiles: true,
-			additionalExtensionPaths: [
-				join(dirname(fileURLToPath(import.meta.url)), "index.ts"),
-			],
-		});
-		sharedWorkerState.constructingWorkers = 1;
-		let session: any;
-		try {
-			await resourceLoader.reload();
-			const created = await createAgentSession({
-				cwd: agentDir,
-				agentDir,
-				settingsManager,
-				resourceLoader,
-				sessionManager: SessionManager.inMemory(),
-				tools: ["read", "bash", "submit_result"],
-				customTools: [
-					submitResultTool(
-						join(agentDir, "unused-result.txt"),
-						() => undefined,
-						() => "unused",
-					),
-				],
-			});
-			session = created.session;
-		} finally {
-			sharedWorkerState.constructingWorkers = 0;
-		}
-
-		// The restricted allowlist keeps the callable surface exact even
-		// though the module registered its full surface.
-		assert.deepEqual(session.getActiveToolNames().sort(), [
-			"bash",
-			"read",
-			"submit_result",
-		]);
-		// The fresh jiti copy registered the veto on this session's runner.
-		assert.equal(
-			session.extensionRunner.hasHandlers("session_before_compact"),
-			true,
-			"a jiti copy of this module must register the veto on a worker load",
+		// The exercise runs in a child process on purpose: the jiti copy of
+		// index.ts must load through the production loader (DefaultResourceLoader
+		// → jiti, a FRESH module instance like a custom-cwd worker sees), but
+		// node's coverage attributes the jiti-transformed copy's execution to
+		// the same file URL as the direct import and corrupts the coverage
+		// report for index.ts. The child runs without coverage flags, so the
+		// production path stays exercised and the parent suite's coverage
+		// measurement stays clean. See realloader-child.mts.
+		const childPath = join(
+			dirname(fileURLToPath(import.meta.url)),
+			"realloader-child.mts",
 		);
-		// Fire the real handler through the real runner: it must cancel a
-		// threshold compaction for the submitted session.
-		const sessionId = session.sessionManager.getSessionId();
-		sharedWorkerState.submittedSessionIds.add(sessionId);
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const run = promisify(execFile);
+		// Node passes NODE_V8_COVERAGE through to every spawned child when the
+		// test runner set it, so the child writes its own coverage into the
+		// runner's directory and the parent's reporter merges it — including
+		// the child's jiti-corrupted attribution for index.ts (measured: 78.1%
+		// line coverage without the child's write, 58.9% with it). Redirect the
+		// child's coverage to a private directory that the reporter never
+		// reads, and remove it afterwards.
+		const childCoverageDir = mkdtempSync(
+			join(tmpdir(), "subagent-realloader-cov-"),
+		);
+		const env = { ...process.env, NODE_V8_COVERAGE: childCoverageDir };
 		try {
-			const result = await session.extensionRunner.emit({
-				type: "session_before_compact",
-				preparation: {},
-				branchEntries: [],
-				reason: "threshold",
-				willRetry: false,
-				signal: new AbortController().signal,
-			} as never);
-			assert.deepEqual(
-				(result as { cancel?: boolean } | undefined)?.cancel,
+			const { stdout, stderr } = await run(process.execPath, [childPath], {
+				encoding: "utf-8",
+				env,
+			});
+			assert.equal(
+				stdout.includes("real-loader child: PASS"),
 				true,
-				"the veto cancels post-submit threshold compaction",
+				`real-loader child must pass: ${stdout}\n${stderr}`,
 			);
 		} finally {
-			sharedWorkerState.submittedSessionIds.delete(sessionId);
+			rmSync(childCoverageDir, { recursive: true, force: true });
 		}
 	});
 
