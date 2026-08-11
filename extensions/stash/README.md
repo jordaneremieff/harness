@@ -111,23 +111,27 @@ than silently returning or writing to Pi-owned stdout. In JSON/print, a successf
 direct verb is silent because fire-and-forget UI is a no-op in those modes; failures
 still throw. `stash_complete` remains the feedback-bearing closure surface for
 headless callers. A state filter matches only artifacts whose header was actually
-read; an artifact that vanishes or fails mid-listing is excluded from state-filtered
-results instead of being reported as open.
+read; an artifact that vanishes or fails mid-listing, or whose lifecycle value is not
+a recognized state, is excluded from state-filtered results instead of being reported
+as open. Unrecognized values stay visible in unfiltered listings and read as
+`unknown (<value>)`; every lifecycle action refuses them.
 
 ## Storage
 
-Artifacts live at `<agentDir>/stash/`, normally `~/.pi/agent/stash/`. `PI_STASH_DIR` overrides the location for tests and isolated deployments.
+Artifacts live at `<agentDir>/stash/`, normally `~/.pi/agent/stash/`. `PI_STASH_DIR` overrides the location for tests and isolated deployments. `PI_SESSION_ID` is read as a fallback when the session manager supplies no session id.
 
 Flat files are the store of record because handovers must outlive sessions and remain greppable. Session entries were rejected because their lifecycle is the session. Project-local storage was rejected because it fragments cross-project continuity and pollutes checkouts.
 
 Each artifact is `<utcTimestamp>-<slug>[-<collision>].md` with JSON-valued frontmatter and a Markdown body. The store provides these guarantees:
+
+- Credential-shaped content is redacted deterministically: before distillation, the transcript and observed references are scanned and credential-shaped values (prefixed provider tokens, JWTs, bearer headers, private keys, `key: value` assignments, URL userinfo passwords) are replaced with `[REDACTED]`; the same pass runs over the generated payload before the artifact is written, so no secret depends on the model's discretion. The operator hint is trusted input and is never redacted. Artifacts written before this version are not retroactively scrubbed.
 
 - Directory mode is enforced as `0700`; regular artifact files are enforced as `0600`, including artifacts created by older versions.
 - Completed temporary files are hard-linked into place. Existing names are never replaced; concurrent same-second writes receive numeric suffixes.
 - Lifecycle changes run through Pi's per-file mutation queue, reread the exact regular file with `O_NOFOLLOW`, preserve unknown frontmatter, write a private dot-hidden temporary file, recheck file identity, and atomically rename the completed revision into place.
 - Symlinks are ignored during discovery and reads. Mutation rechecks reject a selected target that is no longer the same regular file. Ordinary Node APIs cannot make the entire ancestor path descriptor-relative, so this is a private same-user local store rather than a claim of immunity to a hostile process replacing directory ancestors.
 - New artifacts and reads are capped at 256 KiB. Oversized historical files are rejected without being loaded wholesale.
-- Rotation moves an artifact into the dot-hidden `.trash` subdirectory with the same discipline as other mutations: the target is rechecked as the same regular file immediately before an atomic same-filesystem rename, an existing archive of the same id is never replaced, and the archive directory is hardened to `0700` like the store. Rotation reads only the bounded header (for active-state exclusion), so oversized historical artifacts remain rotatable.
+- Rotation moves an artifact into the dot-hidden `.trash` subdirectory with the same discipline as other mutations: the target is rechecked as the same regular file immediately before an atomic same-filesystem rename, an existing archive of the same id is never replaced, and the archive directory is hardened to `0700` like the store. Rotation reads only the bounded header (for active-state exclusion): an artifact remains rotatable as long as its header closes inside the 16 KiB scan window, and an unreadable header refuses rotation with the state unverified.
 - Malformed frontmatter falls back to filename metadata instead of hiding other artifacts.
 
 Artifacts are retained until the operator explicitly removes their exact `.md`
@@ -141,7 +145,7 @@ and lifecycle changes; nothing ever deletes continuity data automatically.
 
 ## Browser behavior
 
-The overlay loads the newest 200 artifacts and marks the count with `+` when older stashes exist. It is a framed, side-by-side browser: the left pane keeps the newest-first stash list visible while the right pane renders the selected handover as Markdown. The top border carries the supplied title and live position. Rows use `›` for selection plus a colored lifecycle glyph, date, and title: `○` open, `◐` active, and `●` closed. The preview includes state, creation and lifecycle timestamps, outcome, tags, session, project, branch, and artifact path above the body.
+The overlay loads the newest 200 artifacts and marks the count with `+` when older stashes exist. It is a framed, side-by-side browser: the left pane keeps the newest-first stash list visible while the right pane renders the selected handover as Markdown. The top border carries the supplied title and live position. Rows use `›` for selection plus a colored lifecycle glyph, date, and title: `○` open, `◐` active, `●` closed, and `◈` unknown (an unrecognized lifecycle value or an unreadable header). The preview includes state, creation and lifecycle timestamps, outcome, tags, session, project, branch, and artifact path above the body.
 
 `/` enters filter mode. Typing filters across id, title, tags, project, branch, lifecycle state/timestamps/outcome, and preview text; Up/Down still selects matches, and Enter or Escape returns to browsing with the query intact. The browser preserves the query and selected stash across outcome or action-dialog round trips.
 
@@ -159,6 +163,7 @@ The component derives its row budget from the host TUI and the overlay's height 
 - `panel.ts`: interactive browser state and rendering.
 - `pickup.ts`: self-contained pickup message.
 - `distill.ts`: transcript capture, prompt building, payload validation, and the bounded SDK session seam.
+- `redact.ts`: deterministic credential redaction for transcript, references, payloads, and lifecycle outcomes.
 - `text.ts`: terminal-safe text and output bounds local to this extension.
 - `*.test.mts`: unit and entrypoint drive tests.
 

@@ -13,7 +13,7 @@ const theme: never = {
 	strikethrough: (text: string) => text,
 } as never;
 
-function entry(id: string, title: string, preview: string, overrides: Partial<StashEntry> = {}): StashEntry {
+function entry(id: string, title: string, preview?: string, overrides: Partial<StashEntry> = {}): StashEntry {
 	return {
 		meta: {
 			id,
@@ -243,5 +243,67 @@ describe("StashPanel", () => {
 		assert.match(rendered, /○ 2026-07-24 New work/);
 		assert.match(rendered, /◐ 2026-07-24 Long work/);
 		assert.match(rendered, /● 2026-07-23 Closed work/);
+	});
+
+	it("marks unrecognized and unreadable states with the unknown glyph", () => {
+		const invalid = entry("invalid", "Invalid work", "body", {
+			meta: { id: "invalid", title: "Invalid work", created: "20260723T130000Z", tags: [], state: "open", invalidState: "mystery" },
+		});
+		const unread = entry("unread", "Unread work", undefined, {
+			previewError: "artifact header is unreadable; its state cannot be verified",
+		});
+		const rendered = rig([...samples(), invalid, unread]).panel.render(104).join("\n");
+		assert.match(rendered, /◈ 2026-07-23 Invalid work/);
+		assert.match(rendered, /◈ 2026-07-24 Unread work/);
+		assert.doesNotMatch(rendered, /○ 2026-07-23 Invalid work/);
+	});
+
+	it("labels an unknown state in the preview header and the filter", () => {
+		const invalid = entry("invalid", "Invalid work", "body", {
+			meta: { id: "invalid", title: "Invalid work", created: "20260723T130000Z", tags: [], state: "open", invalidState: "mystery" },
+		});
+		const unread = entry("unread", "Unread work", undefined, {
+			previewError: "artifact header is unreadable; its state cannot be verified",
+		});
+		const entries = [...samples(), invalid, unread];
+		// The selected first entry is a sample; its preview never claims the invalid label.
+		assert.doesNotMatch(rig(entries).panel.render(104).join("\n"), /unknown \(mystery\) · stashed/);
+		// Filtering by "open" must not match the unknown-state entries.
+		const openFiltered = rig(entries, 20, "open").panel.render(104).join("\n");
+		assert.match(openFiltered, /New work/);
+		assert.doesNotMatch(openFiltered, /Invalid work|Unread work/);
+		// Filtering by "unknown" must match exactly the unknown-state entries.
+		const unknownFiltered = rig(entries, 20, "unknown").panel.render(104).join("\n");
+		assert.match(unknownFiltered, /Invalid work/);
+		assert.match(unknownFiltered, /Unread work/);
+		assert.doesNotMatch(unknownFiltered, /New work|Long work/);
+	});
+
+	it("refuses pickup and manage on entries whose state is unknown", () => {
+		const invalid = entry("invalid", "Invalid work", "body", {
+			meta: { id: "invalid", title: "Invalid work", created: "20260723T130000Z", tags: [], state: "open", invalidState: "mystery" },
+		});
+		const unread = entry("unread", "Unread work", undefined, {
+			previewError: "artifact header is unreadable; its state cannot be verified",
+		});
+		const valid = entry("valid", "Valid work", "body");
+		const { panel, calls } = rig([invalid, unread, valid], 20);
+		// The footer must not advertise actions that the panel blocks on unknown rows.
+		const unknownFooter = panel.render(104).join("\n");
+		assert.doesNotMatch(unknownFooter, /enter pick|tab actions/);
+		assert.match(unknownFooter, /no actions/);
+		panel.handleInput("\r"); // enter on the invalid entry: no pickup
+		assert.equal(calls.done, undefined);
+		panel.handleInput("\t"); // tab on the invalid entry: no manage
+		assert.equal(calls.done, undefined);
+		panel.handleInput("\x1b[B"); // move to the unread entry
+		panel.handleInput("\r");
+		assert.equal(calls.done, undefined);
+		panel.handleInput("\x1b[B"); // move to the valid entry
+		// The footer advertises actions again once a readable row is selected.
+		assert.match(panel.render(104).join("\n"), /enter pick/);
+		panel.handleInput("\r");
+		assert.ok(calls.done, "a readable entry must still pick up");
+		assert.equal((calls.done as any).selected?.meta.id, "valid");
 	});
 });

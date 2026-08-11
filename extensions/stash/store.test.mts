@@ -126,16 +126,18 @@ describe("writeStash + listStashes", () => {
 		const scoped = join(dir, "multibyte-store");
 		await mkdir(scoped);
 		const id = "20260726T160000Z-multibyte";
-		// Frontmatter sized past the 16 KiB header scan so the byte-bounded cut
-		// lands inside the two-byte body characters and the cut tail survives
-		// the preview's own head-cut. One of the two preview budgets below must
-		// split a codepoint regardless of alignment.
-		const padLength = 16_400 - Buffer.byteLength('---\ntitle: "Multibyte"\npad: ""\n---\n');
-		const artifact = `---\ntitle: "Multibyte"\npad: "${"x".repeat(padLength)}"\n---\n${"é".repeat(400)}`;
+		// A large body past the 16 KiB header scan so the byte-bounded preview
+		// read cuts inside the two-byte body characters and the cut tail
+		// survives the preview's own head-cut. One of the two preview budgets
+		// below must split a codepoint regardless of alignment. The header
+		// itself stays small so the state stays verifiable at the scan window.
+		const artifact = `---\ntitle: "Multibyte"\n---\n${"é".repeat(17_000)}`;
 		await writeFile(join(scoped, `${id}.md`), artifact, "utf8");
 		for (const previewBytes of [200, 201]) {
 			const [entry] = await listStashes(scoped, { limit: 1, previewBytes });
 			assert.equal(entry.meta.id, id);
+			assert.equal(entry.meta.state, "open");
+			assert.equal(entry.previewError, undefined);
 			assert.equal(entry.previewTruncated, true);
 			assert.ok(!entry.preview?.includes("\uFFFD"), `previewBytes=${previewBytes} decoded a broken codepoint`);
 			assert.match(entry.preview ?? "", /é$/);
@@ -205,6 +207,20 @@ describe("stash lifecycle transitions", () => {
 		await writeFile(join(lifecycleDir, `${id}.md`), '---\nstate: "mystery"\n---\nbody\n', "utf8");
 		await assert.rejects(transitionStash(lifecycleDir, id, { action: "activate" }), /invalid lifecycle state/i);
 	});
+
+	it("redacts credential-shaped completion outcomes before they are stored", async () => {
+		const lifecycleDir = join(dir, "outcome-redact-store");
+		await mkdir(lifecycleDir);
+		const secret = "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz123456";
+		const { record } = await writeStash(lifecycleDir, { title: "Outcome redaction", summary: "s" }, at("2026-07-26T14:30:00Z"));
+		await transitionStash(lifecycleDir, record.id, { action: "activate" });
+		await transitionStash(lifecycleDir, record.id, { action: "close", outcome: `done; the key was ${secret}` });
+		const read = await readStash(lifecycleDir, record.id);
+		assert.equal(read.ok, true);
+		if (!read.ok) return;
+		assert.ok(!read.content.includes(secret), "a credential must not enter an artifact through the outcome");
+		assert.match(read.content, /\[REDACTED\]/);
+	});
 });
 
 describe("readStash", () => {
@@ -260,6 +276,12 @@ describe("artifact header beyond the scan window", () => {
 		const entry = all.find((item) => item.meta.id === id);
 		assert.ok(entry, "the artifact must still be listed without a state filter");
 		assert.ok(entry?.previewError, "an unread header must be reported, not defaulted");
+		assert.match(entry?.previewError ?? "", /scan window/, "a truncated scan must say so");
+		// The browser requests a large preview; the lifecycle decision must still
+		// use the bounded header window, so both surfaces agree on the state.
+		const browser = await listStashes(store, { limit: 50, previewBytes: 32 * 1024 });
+		const browserEntry = browser.find((item) => item.meta.id === id);
+		assert.ok(browserEntry?.previewError, "the browser must not verify a state beyond the scan window");
 		await rm(store, { recursive: true, force: true });
 	});
 
@@ -270,6 +292,156 @@ describe("artifact header beyond the scan window", () => {
 		const path = await writeLongHeader(store, id);
 		await assert.rejects(rotateStash(store, id), /state cannot be verified/);
 		assert.ok((await stat(path)).isFile(), "the artifact must stay in place");
+		await rm(store, { recursive: true, force: true });
+	});
+});
+
+describe("unreadable and invalid lifecycle states", () => {
+	it("never treats a small unclosed header as a verified state", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-unclosed-"));
+		await chmod(store, 0o700);
+		const id = "20260726T150000Z-unclosed";
+		const path = join(store, `${id}.md`);
+		await writeFile(path, '---\nstate: "active"\n\n# body\n', "utf8");
+		// Unfiltered listing still shows the artifact, marked unread, never as open.
+		const all = await listStashes(store, { limit: 50 });
+		const entry = all.find((item) => item.meta.id === id);
+		assert.ok(entry, "the artifact must still be listed without a state filter");
+		assert.ok(entry?.previewError, "an unclosed header must be reported, not defaulted");
+		assert.match(entry?.previewError ?? "", /never closes/);
+		assert.equal(entry?.meta.state, "open", "the defaulted fallback must stay distinguishable");
+		// No state filter may satisfy it.
+		assert.equal((await listStashes(store, { state: "open" })).some((item) => item.meta.id === id), false);
+		assert.equal((await listStashes(store, { state: "active" })).some((item) => item.meta.id === id), false);
+		// Rotation and every lifecycle transition refuse it, leaving the bytes intact.
+		const before = await readFile(path, "utf8");
+		await assert.rejects(rotateStash(store, id), /state cannot be verified/);
+		await assert.rejects(transitionStash(store, id, { action: "activate" }), /state cannot be verified/);
+		assert.ok((await stat(path)).isFile(), "the artifact must stay in place");
+		assert.equal(await readFile(path, "utf8"), before, "a refused transition must not rewrite the artifact");
+		await rm(store, { recursive: true, force: true });
+	});
+
+	it("keeps a legacy artifact without any header open and mutable", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-legacy-open-"));
+		await chmod(store, 0o700);
+		const id = "20260726T160000Z-legacy-open";
+		await writeFile(join(store, `${id}.md`), "# Legacy handover\n", "utf8");
+		const [entry] = await listStashes(store, { state: "open" });
+		assert.equal(entry.meta.id, id);
+		assert.equal(entry.meta.state, "open");
+		assert.equal(entry.previewError, undefined);
+		await transitionStash(store, id, { action: "activate" });
+		assert.equal((await listStashes(store, { state: "active" }))[0].meta.id, id);
+		await rm(store, { recursive: true, force: true });
+	});
+
+	it("treats a closing fence with trailing characters as unread, like parseFrontmatter", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-trailing-close-"));
+		await chmod(store, 0o700);
+		const id = "20260726T170000Z-trailing-close";
+		const path = join(store, `${id}.md`);
+		await writeFile(path, '---\nstate: "active"\n--- done\nbody\n', "utf8");
+		// The local parser only closes on a line that trims to exactly "---", so
+		// "--- done" never closes the header: the state is UNKNOWN, never open.
+		const all = await listStashes(store, { limit: 50 });
+		const entry = all.find((item) => item.meta.id === id);
+		assert.ok(entry, "the artifact must still be listed without a state filter");
+		assert.ok(entry?.previewError, "a trailing-character fence must be reported as unread");
+		assert.equal((await listStashes(store, { state: "open" })).some((item) => item.meta.id === id), false);
+		const before = await readFile(path, "utf8");
+		await assert.rejects(rotateStash(store, id), /state cannot be verified/);
+		await assert.rejects(transitionStash(store, id, { action: "activate" }), /state cannot be verified/);
+		assert.equal(await readFile(path, "utf8"), before, "a refused transition must not rewrite the artifact");
+		await rm(store, { recursive: true, force: true });
+	});
+
+	it("treats an unclosed header with diff-rule or markdown-rule lines in the body as unread", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-unclosed-body-"));
+		await chmod(store, 0o700);
+		const diffId = "20260726T190000Z-unclosed-diff";
+		await writeFile(join(store, `${diffId}.md`), '---\nstate: "active"\ntitle: "Live effort"\n\n# body\n--- a/src/foo.ts\n+++ b/src/foo.ts\n', "utf8");
+		const ruleId = "20260726T191000Z-unclosed-rule";
+		await writeFile(join(store, `${ruleId}.md`), '---\nstate: "active"\n\n# body\n----\n', "utf8");
+		// Diff headers and markdown rules are ordinary body content: they must not
+		// close the frontmatter fence for the guard any more than for the parser.
+		for (const id of [diffId, ruleId]) {
+			const all = await listStashes(store, { limit: 50 });
+			const entry = all.find((item) => item.meta.id === id);
+			assert.ok(entry, `${id} must still be listed`);
+			assert.ok(entry?.previewError, `${id} must be reported as unread`);
+			assert.equal((await listStashes(store, { state: "open" })).some((item) => item.meta.id === id), false);
+			await assert.rejects(rotateStash(store, id), /state cannot be verified/);
+			await assert.rejects(transitionStash(store, id, { action: "activate" }), /state cannot be verified/);
+		}
+		await rm(store, { recursive: true, force: true });
+	});
+
+	it("keeps a legacy artifact whose first line starts with dashes open and rotatable", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-legacy-dashes-"));
+		await chmod(store, 0o700);
+		const id = "20260726T192000Z-legacy-dashes";
+		await writeFile(join(store, `${id}.md`), "---- section\nbody\n", "utf8");
+		const [entry] = await listStashes(store, { state: "open" });
+		assert.equal(entry.meta.id, id);
+		assert.equal(entry.previewError, undefined);
+		await rotateStash(store, id);
+		assert.equal((await readStash(store, id)).ok, false, "a legacy artifact must remain rotatable");
+		await rm(store, { recursive: true, force: true });
+	});
+
+	it("reads a header whose closing fence is indented, like parseFrontmatter", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-indented-close-"));
+		await chmod(store, 0o700);
+		const id = "20260726T193000Z-indented-close";
+		await writeFile(join(store, `${id}.md`), '---\nstate: "active"\n  ---\nbody\n', "utf8");
+		const all = await listStashes(store, { limit: 50 });
+		const entry = all.find((item) => item.meta.id === id);
+		assert.ok(entry);
+		assert.equal(entry.previewError, undefined);
+		assert.equal(entry.meta.state, "active", "the real state must survive an indented close");
+		assert.equal((await listStashes(store, { state: "active" })).some((item) => item.meta.id === id), true);
+		await rm(store, { recursive: true, force: true });
+	});
+
+	it("keeps unreadable artifacts visible unfiltered and excludes them from tag-filtered listings", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-tag-unread-"));
+		await chmod(store, 0o700);
+		const id = "20260726T194000Z-tag-unread";
+		await writeFile(join(store, `${id}.md`), '---\nstate: "active"\n\n# body\n', "utf8");
+		assert.ok((await listStashes(store, { limit: 50 })).some((item) => item.meta.id === id));
+		assert.equal((await listStashes(store, { tag: "continuity" })).some((item) => item.meta.id === id), false);
+		await rm(store, { recursive: true, force: true });
+	});
+
+	it("treats a leading-whitespace header opener that never closes as unread, like parseFrontmatter", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-leading-open-"));
+		await chmod(store, 0o700);
+		const id = "20260726T173000Z-leading-open";
+		await writeFile(join(store, `${id}.md`), '  ---\nstate: "active"\n\n# body\n', "utf8");
+		// The local parser opens on the trimmed line, so this header is open but
+		// never closes: the state is UNKNOWN, never open.
+		const all = await listStashes(store, { limit: 50 });
+		const entry = all.find((item) => item.meta.id === id);
+		assert.ok(entry);
+		assert.ok(entry?.previewError);
+		assert.equal((await listStashes(store, { state: "open" })).some((item) => item.meta.id === id), false);
+		await rm(store, { recursive: true, force: true });
+	});
+
+	it("surfaces an explicit unrecognized state as invalid in listings", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-invalid-list-"));
+		await chmod(store, 0o700);
+		const id = "20260726T180000Z-invalid-list";
+		await writeFile(join(store, `${id}.md`), '---\nstate: "mystery"\n---\nbody\n', "utf8");
+		const all = await listStashes(store, { limit: 50 });
+		const entry = all.find((item) => item.meta.id === id);
+		assert.ok(entry);
+		assert.equal(entry.meta.invalidState, "mystery");
+		assert.equal(entry.meta.state, "open", "the defaulted fallback must stay distinguishable");
+		assert.equal(entry.previewError, undefined);
+		assert.equal((await listStashes(store, { state: "open" })).some((item) => item.meta.id === id), false);
+		await assert.rejects(rotateStash(store, id), /invalid lifecycle state/);
 		await rm(store, { recursive: true, force: true });
 	});
 });

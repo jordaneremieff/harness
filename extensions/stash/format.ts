@@ -44,9 +44,28 @@ export interface StashMeta {
 	sessionId?: string;
 	tags: string[];
 	state: StashState;
+	/**
+	 * A lifecycle value that is present but is not a real state. The artifact is
+	 * still listed so it cannot hide, but its state is UNKNOWN: every lifecycle
+	 * transition rejects it, so no action may be offered as if it would work.
+	 */
+	invalidState?: string;
 	activatedAt?: string;
 	closedAt?: string;
 	outcome?: string;
+}
+
+/**
+ * Human-readable lifecycle label for listings and previews: the verified state,
+ * or a marker when the state is unknown. `unread` covers artifacts whose header
+ * could not be read (listing failures, unclosed headers); `invalidState` covers
+ * a present-but-unrecognized lifecycle value. Neither may be presented as the
+ * defaulted "open" fallback.
+ */
+export function stateLabel(meta: { state: string; invalidState?: string }, unread = false): string {
+	if (meta.invalidState !== undefined) return `unknown (${meta.invalidState})`;
+	if (unread) return "unknown";
+	return meta.state;
 }
 
 const FRONTMATTER_KEYS = [

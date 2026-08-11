@@ -10,7 +10,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { startDistillJob, type DistillJob, type DistillOutcome, type DistillSessionFactory } from "./distill.ts";
-import { resumeCommand, STASH_STATES, type StashState } from "./format.ts";
+import { resumeCommand, stateLabel, STASH_STATES, type StashState } from "./format.ts";
+import { redactPayload } from "./redact.ts";
 import { StashPanel } from "./panel.ts";
 import { buildPickupMessage } from "./pickup.ts";
 import {
@@ -354,7 +355,9 @@ async function stashIdCompletions(
 		const lower = prefix.toLowerCase();
 		const matches = entries.filter((entry) => entry.meta.id.toLowerCase().startsWith(lower));
 		if (matches.length === 0) return null;
-		return matches.map((entry) => make(entry.meta.id, entry.meta.state, entry.meta.title));
+		return matches.map((entry) =>
+			make(entry.meta.id, safeLine(stateLabel(entry.meta, entry.previewError !== undefined)), entry.meta.title),
+		);
 	} catch {
 		return null;
 	}
@@ -493,6 +496,16 @@ async function browseAndPickup(
 		}
 		if (!result?.manage) return;
 
+		const managed = result.manage;
+		if (managed.meta.invalidState !== undefined || managed.previewError !== undefined) {
+			const reason =
+				managed.meta.invalidState !== undefined
+					? `state "${safeLine(managed.meta.invalidState)}" is not a recognized lifecycle state`
+					: "its header could not be read, so its state is unknown";
+			ctx.ui.notify(`Stash ${managed.meta.id} cannot be acted on: ${reason}.`, "warning");
+			continue;
+		}
+
 		const state: StashState = result.manage.meta.state;
 		const choices =
 			state === "active"
@@ -579,8 +592,11 @@ export default function (
 				sessionId = process.env.PI_SESSION_ID;
 			}
 			try {
+				// The same deterministic redaction applies to model-supplied stash_write
+				// params: an artifact is durable, so no credential-shaped value may be
+				// published on the model's discretion on any write path.
 				const { record, path } = await writeStash(storeDir(), {
-					...params,
+					...redactPayload(params),
 					project: ctx.cwd,
 					branch,
 					sessionId,
@@ -621,9 +637,9 @@ export default function (
 				return { content: [{ type: "text" as const, text: `No stashes found${scope}.` }], details: { count: 0 } };
 			}
 			const text = entries
-				.map(({ meta }) => {
-					const tags = meta.tags.length > 0 ? ` [${meta.tags.map(safeLine).join(", ")}]` : "";
-					return `${meta.id}\n  ${meta.state} · ${safeLine(meta.title)}${tags}`;
+				.map((entry) => {
+					const tags = entry.meta.tags.length > 0 ? ` [${entry.meta.tags.map(safeLine).join(", ")}]` : "";
+					return `${entry.meta.id}\n  ${safeLine(stateLabel(entry.meta, entry.previewError !== undefined))} · ${safeLine(entry.meta.title)}${tags}`;
 				})
 				.join("\n");
 			const bounded = boundedOutput(text, "Lower limit or filter by tag for a narrower list.");
@@ -632,7 +648,7 @@ export default function (
 				details: {
 					count: entries.length,
 					ids: entries.map((entry) => entry.meta.id),
-					states: entries.map((entry) => entry.meta.state),
+					states: entries.map((entry) => safeLine(stateLabel(entry.meta, entry.previewError !== undefined))),
 					truncated: bounded.truncated,
 				},
 			};

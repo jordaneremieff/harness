@@ -10,6 +10,7 @@ import {
 	wrapTextWithAnsi,
 	type MarkdownTheme,
 } from "@earendil-works/pi-tui";
+import { stateLabel } from "./format.ts";
 import type { StashEntry } from "./store.ts";
 import { sanitizeTerminalText } from "./text.ts";
 
@@ -142,6 +143,17 @@ function markdownTheme(theme: Theme): MarkdownTheme {
 	};
 }
 
+/** The mark for one entry: an unrecognized or unreadable lifecycle state is never a state. */
+function entryMark(entry: {
+	meta: { state: string; invalidState?: string };
+	previewError?: string;
+}): { glyph: string; color: Color } {
+	if (entry.meta.invalidState !== undefined || entry.previewError !== undefined) {
+		return { glyph: "◈", color: "warning" };
+	}
+	return stateMark(entry.meta.state);
+}
+
 function stateMark(state: string): { glyph: string; color: Color } {
 	switch (state) {
 		case "open":
@@ -202,7 +214,7 @@ export class StashPanel {
 				entry.meta.project ?? "",
 				entry.meta.branch ?? "",
 				entry.meta.tags.join(" "),
-				entry.meta.state,
+				stateLabel(entry.meta, entry.previewError !== undefined),
 				entry.meta.activatedAt ?? "",
 				entry.meta.closedAt ?? "",
 				entry.meta.outcome ?? "",
@@ -232,7 +244,7 @@ export class StashPanel {
 		}
 		const meta = entry.meta;
 		const metadata = [
-			`**${safeLine(meta.state)}** · stashed ${safeLine(formatCreated(meta.created)) || "?"}`,
+			`**${safeLine(stateLabel(meta))}** · stashed ${safeLine(formatCreated(meta.created)) || "?"}`,
 			meta.activatedAt ? `activated: ${safeLine(formatCreated(meta.activatedAt))}` : undefined,
 			meta.closedAt ? `closed: ${safeLine(formatCreated(meta.closedAt))}` : undefined,
 			meta.outcome ? `outcome: ${safeLine(meta.outcome)}` : undefined,
@@ -343,6 +355,11 @@ export class StashPanel {
 		this.previewScroll = 0;
 	}
 
+	/** False when the entry's state is unknown: no lifecycle action may be offered as if it would work. */
+	private actionable(entry: StashEntry | undefined): entry is StashEntry {
+		return entry !== undefined && entry.meta.invalidState === undefined && entry.previewError === undefined;
+	}
+
 	private moveSelection(delta: number): void {
 		const entries = this.filtered;
 		this.selected = Math.max(0, Math.min(Math.max(0, entries.length - 1), this.selected + delta));
@@ -411,7 +428,7 @@ export class StashPanel {
 		if (this.lastWidth < 104) {
 			if (matchesKey(raw, "enter")) {
 				const selected = this.current();
-				if (selected) this.finish({ selected });
+				if (this.actionable(selected)) this.finish({ selected });
 			}
 			return;
 		}
@@ -438,17 +455,17 @@ export class StashPanel {
 		}
 		if (matchesKey(raw, "enter")) {
 			const selected = this.current();
-			if (selected) this.finish({ selected });
+			if (this.actionable(selected)) this.finish({ selected });
 			return;
 		}
 		if (matchesKey(raw, "tab")) {
 			const selected = this.current();
-			if (selected) this.finish({ manage: selected });
+			if (this.actionable(selected)) this.finish({ manage: selected });
 			return;
 		}
 		if (data === "o") {
 			const selected = this.current();
-			if (selected?.meta.state === "active") this.finish({ complete: selected });
+			if (this.actionable(selected) && selected.meta.state === "active") this.finish({ complete: selected });
 			return;
 		}
 		if (data === "c") {
@@ -490,14 +507,19 @@ export class StashPanel {
 		if (this.lastWidth < 104) {
 			return [this.keyPair("↑↓", "select"), this.keyPair("enter", "pick"), this.keyPair("esc", "close")].join(theme.fg("dim", " · "));
 		}
+		const selected = this.current();
+		const actionable = this.actionable(selected);
 		const parts = [
 			this.keyPair("↑↓", "select"),
 			this.keyPair("b/spc", "page"),
-			this.keyPair("tab", "actions"),
 			this.keyPair("/", "filter"),
-			this.keyPair("enter", "pick"),
 		];
-		if (this.current()?.meta.state === "active") parts.push(this.keyPair("o", "close"));
+		if (actionable) {
+			parts.push(this.keyPair("tab", "actions"), this.keyPair("enter", "pick"));
+		} else {
+			parts.push(this.keyPair("enter/tab", "no actions"));
+		}
+		if (actionable && selected?.meta.state === "active") parts.push(this.keyPair("o", "close"));
 		parts.push(this.keyPair("c", "copy"), this.keyPair("h", "help"), this.keyPair("esc", "close"));
 		return parts.join(theme.fg("dim", " · "));
 	}
@@ -526,7 +548,7 @@ export class StashPanel {
 						? "No stashes yet. Create one with stash_write."
 						: "No matching stashes."
 					: "";
-				lines.push(paint(entry ? `${absolute === this.selected ? "›" : " "} ${stateMark(entry.meta.state).glyph} ${formatDate(entry.meta.created)} ${oneLine(entry.meta.title)}` : empty));
+				lines.push(paint(entry ? `${absolute === this.selected ? "›" : " "} ${entryMark(entry).glyph} ${safeLine(formatDate(entry.meta.created))} ${oneLine(entry.meta.title)}` : empty));
 			}
 			lines.push(paint(this.footerText(width)));
 			this.cachedWidth = width;
@@ -561,8 +583,8 @@ export class StashPanel {
 				let listCell = "";
 				if (entry) {
 					const selected = absolute === this.selected;
-					const mark = stateMark(entry.meta.state);
-					listCell = `${selected ? theme.fg("accent", "› ") : "  "}${theme.fg(mark.color, mark.glyph)} ${theme.fg("dim", formatDate(entry.meta.created))} ${theme.fg(selected ? "accent" : "text", oneLine(entry.meta.title))}`;
+					const mark = entryMark(entry);
+					listCell = `${selected ? theme.fg("accent", "› ") : "  "}${theme.fg(mark.color, mark.glyph)} ${theme.fg("dim", safeLine(formatDate(entry.meta.created)))} ${theme.fg(selected ? "accent" : "text", oneLine(entry.meta.title))}`;
 				}
 				lines.push(
 					theme.bg(

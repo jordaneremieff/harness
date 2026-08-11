@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
 	boundTranscript,
 	buildDistillPrompt,
+	DISTILL_SYSTEM_PROMPT,
 	entriesToTranscript,
 	extractArtifacts,
 	parseDistillPayload,
@@ -186,11 +187,36 @@ describe("transcript bounding", () => {
 });
 
 describe("prompt building", () => {
-	it("places the hint before the transcript with a priority statement", () => {
+	it("frames the hint as the stash subject before the transcript", () => {
 		const prompt = buildDistillPrompt("focus on the token budget", "transcript body");
 		assert.match(prompt, /Operator hint: focus on the token budget/);
-		assert.match(prompt, /takes priority/);
+		assert.match(prompt, /subject of this stash/);
+		assert.match(prompt, /The stash must center the hint/);
+		assert.match(prompt, /the title names the hint's subject/);
+		assert.match(prompt, /is not the subject/);
 		assert.ok(prompt.indexOf("focus on the token budget") < prompt.indexOf("transcript body"));
+		// Every framing directive must precede the transcript: a regression
+		// that buries the hint below the transcript body fails these orderings.
+		const transcriptAt = prompt.indexOf("Session transcript:");
+		for (const directive of [
+			"The operator hint below is the subject of this stash.",
+			"Operator hint: focus on the token budget",
+			"The stash must center the hint",
+			"it is not the subject.",
+		]) {
+			assert.ok(
+				prompt.indexOf(directive) !== -1 && prompt.indexOf(directive) < transcriptAt,
+				`directive must precede the transcript: ${directive}`,
+			);
+		}
+	});
+
+	it("keeps the transcript and observed references after the hint block", () => {
+		const prompt = buildDistillPrompt("focus on the token budget", "transcript body");
+		assert.match(prompt, /Session transcript:\ntranscript body/);
+		const withArtifacts = buildDistillPrompt("hint", "body", ["/workspace/src/adapter.ts"]);
+		assert.match(withArtifacts, /Observed references from tool results:/);
+		assert.ok(withArtifacts.indexOf("Observed references") > withArtifacts.indexOf("Session transcript:"));
 	});
 
 	it("preserves concrete references from tool output after the transcript", () => {
@@ -214,7 +240,31 @@ describe("prompt building", () => {
 	});
 
 	it("marks an absent hint", () => {
-		assert.match(buildDistillPrompt("   ", "body"), /Operator hint: \(none\)/);
+		const prompt = buildDistillPrompt("   ", "body");
+		assert.match(prompt, /Operator hint: \(none\)/);
+		assert.match(prompt, /The session transcript is the subject of this stash\./);
+		assert.doesNotMatch(prompt, /must center the hint/);
+	});
+});
+
+describe("distiller system prompt", () => {
+	it("gives the hint the role of artifact subject with a self-check", () => {
+		assert.match(DISTILL_SYSTEM_PROMPT, /the artifact is about the hint/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /The title names the hint's subject/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /first sentence of the summary states the result/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /Before finalizing: verify the artifact centers the hint/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /When the hint is "\(none\)", the transcript is the subject/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /^You are a session distiller for the stash handover system\./);
+	});
+
+	it("preserves the SKIP marker, JSON schema, and caps", () => {
+		assert.match(DISTILL_SYSTEM_PROMPT, /SKIP_STASH/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /```json/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /"title" is required, max 200 characters/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /"summary" is required, max 100000 characters/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /max 200 items, max 20000 characters each/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /"tags" is optional, max 50 items, max 80 characters each/);
+		assert.match(DISTILL_SYSTEM_PROMPT, /No prose outside the JSON block/);
 	});
 });
 
@@ -283,6 +333,91 @@ describe("distill job", () => {
 		assert.equal(calls.disposed, 1);
 		const listed = await listStashes(dir, { limit: 50 });
 		assert.ok(listed.some((entry) => entry.meta.id === outcome.record.id));
+	});
+
+	it("redacts credential-shaped transcript content before the distiller", async () => {
+		const secret = "sk-ant-oa" + "t01-abcdefghijklmnopqrstuvwxyz123456";
+		const entries = [
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: "bash",
+					content: [{ type: "text", text: `export API_KEY=${secret}` }],
+					isError: false,
+				},
+			},
+			{ type: "message", message: { role: "user", content: "Keep going." } },
+		] as any;
+		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
+		await startDistillJob(baseOptions(factory, { entries })).result;
+		assert.equal(calls.prompted.length, 1);
+		assert.ok(!calls.prompted[0].includes(secret), "the secret must not reach the distiller");
+		assert.match(calls.prompted[0], /\[REDACTED\]/);
+	});
+
+	it("redacts userinfo credentials from the observed references", async () => {
+		const entries = [
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: "bash",
+					content: [{ type: "text", text: "Deployed from https://deployer:p4ssw0rd123@example.com/repo" }],
+					isError: false,
+				},
+			},
+		] as any;
+		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
+		await startDistillJob(baseOptions(factory, { entries })).result;
+		assert.equal(calls.prompted.length, 1);
+		assert.ok(!calls.prompted[0].includes("p4ssw0rd123"), "the userinfo password must not reach the distiller");
+		assert.match(calls.prompted[0], /https:\/\/deployer:\[REDACTED\]@example\.com/);
+	});
+
+	it("redacts userinfo passwords that lossy reference extraction would truncate", async () => {
+		// Parentheses are valid in userinfo per RFC 3986 and terminate the
+		// reference regex; the pre-extraction redaction must remove the password
+		// before the reference is cut.
+		const entries = [
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: "bash",
+					content: [{ type: "text", text: "Deployed from https://alice:longpassword(foo)@example.com/path" }],
+					isError: false,
+				},
+			},
+		] as any;
+		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
+		await startDistillJob(baseOptions(factory, { entries })).result;
+		assert.equal(calls.prompted.length, 1);
+		assert.ok(!calls.prompted[0].includes("longpassword"), "the password must be gone before extraction truncates the URL");
+	});
+
+	it("keeps the operator hint verbatim while redacting the transcript", async () => {
+		const hint = "capture the auth setup for sk-ant-oa" + "t01-abcdefghijklmnopqrstuvwxyz123456";
+		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
+		await startDistillJob(baseOptions(factory, { hint })).result;
+		assert.equal(calls.prompted.length, 1);
+		assert.ok(calls.prompted[0].includes(hint), "the operator hint is trusted input and must stay verbatim");
+	});
+
+	it("redacts secrets from the written artifact", async () => {
+		const secret = "gsk_n4ABC" + "DEF1234567890abcdef1234567890abcdef";
+		const reply = JSON.stringify({
+			title: "Auth setup",
+			summary: `The provider key is ${secret}; rotate it soon.`,
+			decisions: [`Keep ${secret} out of the store`],
+		});
+		const outcome = await startDistillJob(baseOptions(fakeFactory(reply).factory)).result;
+		assert.equal(outcome.ok, true);
+		if (!outcome.ok) return;
+		const artifact = await readFile(outcome.path, "utf8");
+		assert.ok(!artifact.includes(secret), "the written artifact must not contain the secret");
+		assert.match(artifact, /\[REDACTED\]/);
+		assert.match(artifact, /rotate it soon/);
 	});
 
 	it("passes the model and cwd to the session factory", async () => {

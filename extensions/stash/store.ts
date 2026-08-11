@@ -16,6 +16,7 @@ import {
 	type StashRecord,
 	type StashState,
 } from "./format.ts";
+import { redactSecrets } from "./redact.ts";
 
 const HEADER_SCAN_BYTES = 16 * 1024;
 const MAX_STASH_BYTES = 256 * 1024;
@@ -194,14 +195,16 @@ interface ListOptions {
 }
 
 /**
- * True when a truncated prefix opens a frontmatter header the scan window never
- * closed. `parseFrontmatter` cannot tell that apart from an artifact with no
- * header at all, and the difference matters: an unread header means the state is
- * UNKNOWN, not the default `open`. Treating it as open would let a state filter
- * report an active effort as open and let rotation move it to the trash.
+ * True when a text opens a frontmatter header that never closes. Mirrors the
+ * extension's own parseFrontmatter (format.ts) exactly: the header opens only
+ * when the first line trims to "---" and closes at the first later line that
+ * trims to "---". The parser cannot tell an unclosed header from a legacy
+ * artifact with no header at all, and the difference matters: an unread header
+ * means the state is UNKNOWN, not the default "open". Treating it as open
+ * would let a state filter report an active effort as open and let rotation
+ * move it to the trash.
  */
-function headerBeyondScan(text: string, truncated: boolean): boolean {
-	if (!truncated) return false;
+function headerUnclosed(text: string): boolean {
 	const lines = text.split("\n");
 	if (lines[0]?.trim() !== "---") return false;
 	return !lines.slice(1).some((line) => line.trim() === "---");
@@ -254,7 +257,13 @@ function normalizeMeta(name: string, parsed: Partial<StashMeta> & Record<string,
 		branch: typeof parsed.branch === "string" ? parsed.branch : undefined,
 		sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : undefined,
 		tags: Array.isArray(parsed.tags) ? parsed.tags.filter((tag): tag is string => typeof tag === "string") : [],
+		// An ABSENT state is legacy `open`. A present-but-unrecognized value is not:
+		// every transition rejects it, so it must not be presented as usable.
 		state: isStashState(parsed.state) ? parsed.state : "open",
+		invalidState:
+			parsed.state !== undefined && !isStashState(parsed.state)
+				? String(parsed.state)
+				: undefined,
 		activatedAt: typeof parsed.activatedAt === "string" ? parsed.activatedAt : undefined,
 		closedAt: typeof parsed.closedAt === "string" ? parsed.closedAt : undefined,
 		outcome: typeof parsed.outcome === "string" ? parsed.outcome : undefined,
@@ -283,8 +292,17 @@ export async function listStashes(dir: string, options: ListOptions = {}): Promi
 		try {
 			const previewBytes = Math.min(MAX_STASH_BYTES - HEADER_SCAN_BYTES, Math.max(0, options.previewBytes ?? 0));
 			const prefix = await readPrefix(path, HEADER_SCAN_BYTES + previewBytes);
-			if (headerBeyondScan(prefix.text, prefix.truncated)) {
-				throw new Error(`header is longer than the ${HEADER_SCAN_BYTES}-byte scan window`);
+			// The lifecycle decision always uses the bounded header window, no
+			// matter how much preview was requested, so every consumer sees the
+			// same state for the same artifact (a header closing beyond the
+			// window is unverified everywhere, including the browser).
+			const headerPrefix = previewBytes > 0 ? await readPrefix(path, HEADER_SCAN_BYTES) : prefix;
+			if (headerUnclosed(headerPrefix.text)) {
+				throw new Error(
+					headerPrefix.truncated
+						? `artifact header is longer than the ${HEADER_SCAN_BYTES}-byte scan window; its state cannot be verified`
+						: "artifact header never closes; its state cannot be verified",
+				);
 			}
 			const parsed = parseFrontmatter(prefix.text);
 			meta = normalizeMeta(name, parsed.meta);
@@ -296,11 +314,20 @@ export async function listStashes(dir: string, options: ListOptions = {}): Promi
 		} catch (error) {
 			previewError = error instanceof Error ? error.message : String(error);
 		}
+		// An unreadable artifact has no readable tags, so an explicit tag filter
+		// cannot match it; it stays visible in unfiltered listings (the same rule
+		// as the state filter below).
 		if (options.tag && !meta.tags.includes(options.tag)) continue;
 		// An artifact whose header could not be read has an unknown state (for
 		// example a file removed or replaced mid-listing); it must not satisfy an
 		// explicit state filter as if it were verified open.
-		if (options.state && (previewError !== undefined || meta.state !== options.state)) continue;
+		if (
+			options.state &&
+			(previewError !== undefined ||
+				meta.invalidState !== undefined ||
+				meta.state !== options.state)
+		)
+			continue;
 		entries.push({ meta, path, preview, previewTruncated, previewError });
 		if (entries.length >= limit) break;
 	}
@@ -422,6 +449,13 @@ export async function transitionStash(
 	}
 	const source = await readMutationSource(located.path);
 	const parsed = parseFrontmatter(source.content);
+	// The full content is read here, so the unclosed-header check runs on the
+	// whole artifact, not the bounded scan window: a header that closes beyond
+	// 16 KiB stays readable, while a header that never closes is UNKNOWN and
+	// must not be mutated as if it were a verified state.
+	if (headerUnclosed(source.content)) {
+		throw new Error(`stash ${located.id} has a header that never closes; its state cannot be verified for lifecycle changes`);
+	}
 	const state = currentState(parsed.meta);
 	const stamp = utcTimestamp(now);
 	let patch: Record<string, unknown | undefined>;
@@ -438,7 +472,10 @@ export async function transitionStash(
 		}
 		patch = { state: "active", activatedAt: stamp, closedAt: undefined, outcome: undefined };
 	} else if (change.action === "close") {
-		const outcome = change.outcome.trim();
+		// The outcome is operator/model-authored text stored durably; the same
+		// deterministic redaction applies so a credential cannot enter an
+		// artifact through the lifecycle path either.
+		const outcome = redactSecrets(change.outcome.trim());
 		if (!outcome) throw new Error("stash completion outcome must not be empty");
 		if (outcome.length > 20_000) throw new Error("stash completion outcome exceeds 20000 characters");
 		if (state !== "active") throw new Error(`stash ${located.id} must be active before it can be closed (state: ${state})`);
@@ -503,9 +540,11 @@ export async function rotateStash(dir: string, idOrPrefix: string): Promise<Stas
 	} catch (error) {
 		throw new Error(`failed to read ${located.path}: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	if (headerBeyondScan(prefix.text, prefix.truncated)) {
+	if (headerUnclosed(prefix.text)) {
 		throw new Error(
-			`stash ${located.id} has a header longer than the ${HEADER_SCAN_BYTES}-byte scan window; its state cannot be verified for rotation`,
+			prefix.truncated
+				? `stash ${located.id} has a header longer than the ${HEADER_SCAN_BYTES}-byte scan window; its state cannot be verified for rotation`
+				: `stash ${located.id} has a header that never closes; its state cannot be verified for rotation`,
 		);
 	}
 	const state = currentState(parseFrontmatter(prefix.text).meta);
