@@ -44,17 +44,21 @@ Manual names stay authoritative:
 
 ### Sidebar tokens
 
-The `model` token reports the current model.
-
-Add it under `[ui.sidebar.agents.rows_by_agent]` so only pi panes show it:
+The `model` token reports the current model. Put it on its own row and give the
+tab label the full first row by dropping the `workspace` token: herdr already
+shows the workspace on the sidebar's workspace header, so repeating it per agent
+only steals width from the session label.
 
 ```toml
 [ui.sidebar.agents.rows_by_agent]
 pi = [
-  ["state_icon", "workspace", "tab"],
+  ["state_icon", "tab"],
   ["$model"],
 ]
 ```
+
+The `model` row also tells apart two agents that share a split tab (their tab
+label is the same); keep it when you run multi-agent splits.
 
 ### Tools
 
