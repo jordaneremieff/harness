@@ -188,14 +188,19 @@ function managerDeps(overrides: Partial<ConstructorParameters<typeof AttentionMa
 	const statuses: (string | undefined)[] = [];
 	const stream = fakeStream();
 	const calls: { method: string; params: Record<string, unknown> }[] = [];
+	const panes: { pane_id: string; workspace_id: string }[] = [
+		{ pane_id: "w1:p2", workspace_id: "w1" },
+		{ pane_id: "w1:p1", workspace_id: "w1" },
+	];
 	const client = {
 		async request(method: string, params: Record<string, unknown>) {
 			calls.push({ method, params });
-			return { panes: [{ pane_id: "w1:p2", workspace_id: "w1" }, { pane_id: "w1:p1", workspace_id: "w1" }] };
+			return { panes };
 		},
 		async send() {},
 		nextSeq: () => 1,
 	};
+	const timers: (() => void)[] = [];
 	const deps: ConstructorParameters<typeof AttentionManager>[0] = {
 		client: client as never,
 		endpoint: "/tmp/x.sock",
@@ -206,9 +211,22 @@ function managerDeps(overrides: Partial<ConstructorParameters<typeof AttentionMa
 		setStatus: (text) => statuses.push(text),
 		now: () => 0,
 		transport: stream.transport,
+		setTimer: (fn) => {
+			timers.push(fn);
+			return () => {};
+		},
+		refreshDelayMs: 1,
 		...overrides,
 	};
-	return { deps, notified, statuses, stream, calls };
+	return { deps, notified, statuses, stream, calls, panes, timers };
+}
+
+/** Fire every coalesced refresh and let the pane.list round trip settle. */
+async function fireRefreshes(timers: (() => void)[]): Promise<void> {
+	while (timers.length > 0) {
+		timers.shift()!();
+		await new Promise((resolve) => setImmediate(resolve));
+	}
 }
 
 describe("AttentionManager", () => {
@@ -239,11 +257,13 @@ describe("AttentionManager", () => {
 	});
 
 	it("widens the probe set when a new pane appears", async () => {
-		const { deps, stream } = managerDeps();
+		const { deps, stream, panes, timers } = managerDeps();
 		const manager = new AttentionManager(deps);
 		await manager.start();
 		stream.ack();
+		panes.push({ pane_id: "w1:p3", workspace_id: "w1" });
 		stream.line(0, createdEvent("w1:p3"));
+		await fireRefreshes(timers);
 		assert.deepEqual(manager.watchedPanes(), ["w1:p2", "w1:p3"]);
 		const second = JSON.parse(stream.connections[1].payload);
 		assert.ok(second.params.subscriptions.some((s: { pane_id?: string }) => s.pane_id === "w1:p3"));
@@ -251,48 +271,82 @@ describe("AttentionManager", () => {
 	});
 
 	it("narrows the probe set when a pane closes", async () => {
-		const { deps, stream } = managerDeps();
+		const { deps, stream, panes, timers } = managerDeps();
 		const manager = new AttentionManager(deps);
 		await manager.start();
 		stream.ack();
+		panes.push({ pane_id: "w1:p3", workspace_id: "w1" });
 		stream.line(0, createdEvent("w1:p3"));
+		await fireRefreshes(timers);
+		assert.equal(stream.connections.length, 2);
 		stream.ack(1);
+		panes.pop();
 		stream.line(1, closedEvent("w1:p3"));
-		await new Promise((resolve) => setImmediate(resolve));
+		await fireRefreshes(timers);
 		assert.deepEqual(manager.watchedPanes(), ["w1:p2"]);
 		manager.close();
 	});
 
 	it("ignores a pane created in another workspace", async () => {
-		const { deps, stream } = managerDeps();
+		const { deps, stream, timers } = managerDeps();
 		const manager = new AttentionManager(deps);
 		await manager.start();
 		stream.ack();
 		stream.line(0, createdEvent("w2:p1", "w2"));
+		await fireRefreshes(timers);
 		assert.deepEqual(manager.watchedPanes(), ["w1:p2"]);
 		assert.equal(stream.connections.length, 1, "no resubscribe for a foreign pane");
 		manager.close();
 	});
 
-	it("does not resubscribe when the same pane is reported twice", async () => {
-		const { deps, stream } = managerDeps();
+	it("does not resubscribe when the pane set did not change", async () => {
+		const { deps, stream, timers } = managerDeps();
 		const manager = new AttentionManager(deps);
 		await manager.start();
 		stream.ack();
 		stream.line(0, createdEvent("w1:p2"));
+		await fireRefreshes(timers);
 		assert.equal(stream.connections.length, 1);
 		manager.close();
 	});
 
-	it("still starts when pane.list fails", async () => {
-		const { deps, stream } = managerDeps({
-			client: { request: async () => Promise.reject(new Error("down")), send: async () => {}, nextSeq: () => 1 } as never,
+	it("converges when the subscribe replay echoes stale pane events", async () => {
+		const { deps, stream, timers } = managerDeps();
+		const manager = new AttentionManager(deps);
+		await manager.start();
+		stream.ack();
+		// Every connect replays recent history: a pane long closed appears
+		// as created, closed, and created again in one burst.
+		stream.line(0, createdEvent("w1:p9"));
+		stream.line(0, closedEvent("w1:p9"));
+		stream.line(0, createdEvent("w1:p9"));
+		await fireRefreshes(timers);
+		assert.deepEqual(manager.watchedPanes(), ["w1:p2"], "the live pane list wins over the replay");
+		assert.equal(stream.connections.length, 1, "one burst schedules one refresh and no resubscribe");
+		manager.close();
+	});
+
+	it("heals an empty seed when pane.list recovers", async () => {
+		let fail = true;
+		const { deps, stream, timers } = managerDeps({
+			client: {
+				async request(_method: string, _params: Record<string, unknown>) {
+					if (fail) {
+						fail = false;
+						throw new Error("down");
+					}
+					return { panes: [{ pane_id: "w1:p2", workspace_id: "w1" }] };
+				},
+				send: async () => {},
+				nextSeq: () => 1,
+			} as never,
 		});
 		const manager = new AttentionManager(deps);
 		await manager.start();
 		stream.ack();
 		assert.deepEqual(manager.watchedPanes(), []);
 		stream.line(0, createdEvent("w1:p2"));
+		await fireRefreshes(timers);
 		assert.deepEqual(manager.watchedPanes(), ["w1:p2"]);
 		manager.close();
 	});

@@ -85,8 +85,14 @@ screen (full-screen TUI) whose `pane read` output is not the file contents.
 ## Safety
 
 - Never close a pane, tab, or workspace you did not create in this session.
-- Never run `herdr server stop` or `herdr session close` from an active session.
-- Run experiments in a named session: `herdr session create smoke`, and tear it
-  down when finished.
+- Never run `herdr server stop` while the server is in use.
+- Run experiments in a separate named session, and stop and delete it when finished:
+
+  ```bash
+  herdr --session smoke
+  herdr session stop smoke
+  herdr session delete smoke
+  ```
+
 - Confirm a target pane or agent exists with a fresh `pane list` or `agent list`
   before sending input, so the input never lands in the wrong pane.

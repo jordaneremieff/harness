@@ -278,6 +278,9 @@ export function netStreamTransport(endpoint: string, payload: string, hooks: Str
 			if (closed) return;
 			closed = true;
 			socket.destroy();
+			// A local close and a remote close follow the same path, so a
+			// resubscribe can reopen the stream immediately.
+			hooks.onClose();
 		},
 	};
 }

@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import net from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
 	HerdrClient,
 	HerdrError,
 	LineSplitter,
+	netStreamTransport,
 	parseResponse,
 	socketEndpoint,
 	type StreamHooks,
@@ -281,6 +286,102 @@ function fakeStream() {
 	};
 	return { connections, transport, ack };
 }
+
+describe("netStreamTransport", () => {
+	it("reports a local close through hooks.onClose", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "herdr-socket-"));
+		const socketPath = join(dir, "x.sock");
+		const server = net.createServer((socket) => {
+			socket.on("error", () => {});
+			socket.on("data", (chunk) => {
+				const payload = JSON.parse(chunk.toString());
+				socket.write(`${JSON.stringify({ id: payload.id, result: { type: "subscription_started" } })}\n`);
+			});
+		});
+		await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+		try {
+			const closes: (Error | undefined)[] = [];
+			const handle = netStreamTransport(
+				socketPath,
+				`${JSON.stringify({ id: "t1", method: "events.subscribe", params: {} })}\n`,
+				{
+					onLine: () => {},
+					onClose: (err) => closes.push(err),
+				},
+			);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			handle.close();
+			assert.equal(closes.length, 1, "a local close must reach the hooks");
+			handle.close();
+			assert.equal(closes.length, 1, "a second close stays silent");
+		} finally {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("reports a remote close through hooks.onClose", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "herdr-socket-"));
+		const socketPath = join(dir, "x.sock");
+		const server = net.createServer((socket) => {
+			socket.on("error", () => {});
+			socket.on("data", (chunk) => {
+				const payload = JSON.parse(chunk.toString());
+				socket.write(`${JSON.stringify({ id: payload.id, result: { type: "subscription_started" } })}\n`);
+				setTimeout(() => socket.end(), 20);
+			});
+		});
+		await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+		try {
+			const closes: (Error | undefined)[] = [];
+			netStreamTransport(
+				socketPath,
+				`${JSON.stringify({ id: "t1", method: "events.subscribe", params: {} })}\n`,
+				{
+					onLine: () => {},
+					onClose: (err) => closes.push(err),
+				},
+			);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			assert.equal(closes.length, 1, "a server end must reach the hooks");
+		} finally {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("reopens the subscription after a resubscribe", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "herdr-socket-"));
+		const socketPath = join(dir, "x.sock");
+		let connections = 0;
+		const server = net.createServer((socket) => {
+			connections += 1;
+			socket.on("error", () => {});
+			socket.on("data", (chunk) => {
+				const payload = JSON.parse(chunk.toString());
+				socket.write(`${JSON.stringify({ id: payload.id, result: { type: "subscription_started" } })}\n`);
+			});
+		});
+		await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+		try {
+			const client = new SubscriptionClient({
+				endpoint: socketPath,
+				source: "custom:test",
+				onEvent: () => {},
+				transport: netStreamTransport,
+			});
+			client.start();
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			client.resubscribe();
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.equal(connections, 2, "a resubscribe opens a second connection");
+			client.close();
+		} finally {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
 
 describe("SubscriptionClient", () => {
 	it("subscribes with the requested filters and reports readiness", async () => {

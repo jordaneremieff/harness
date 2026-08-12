@@ -124,26 +124,31 @@ export interface AttentionManagerDeps extends AttentionDeps {
 	source: string;
 	transport?: ConstructorParameters<typeof SubscriptionClient>[0]["transport"];
 	setTimer?: ConstructorParameters<typeof SubscriptionClient>[0]["setTimer"];
+	/** Coalescing window for pane create and close events, in milliseconds. */
+	refreshDelayMs?: number;
 }
 
 /**
  * Owns the subscription connection and the sibling pane set.
  *
  * One `events.subscribe` connection carries a `pane.created` and `pane.closed`
- * watcher plus one `pane.agent_status_changed` probe per sibling pane. When a
- * pane appears or disappears the connection reopens with the new probe set; the
- * per-pane probes each echo the pane's current status, so the loop reconverges
- * after every change without polling.
+ * watcher plus one `pane.agent_status_changed` probe per sibling pane. Herdr
+ * replays recent history on every subscribe, so create and close events are
+ * coalesced into a fresh `pane.list` read instead of being applied one by one;
+ * the live list is the source of truth and the probe set converges to it.
  */
 export class AttentionManager {
 	private readonly deps: AttentionManagerDeps;
 	private readonly loop: AttentionLoop;
 	private readonly siblings = new Set<string>();
 	private readonly subscription: SubscriptionClient;
+	private readonly refreshDelayMs: number;
+	private refreshTimer: (() => void) | undefined;
 
 	constructor(deps: AttentionManagerDeps) {
 		this.deps = deps;
 		this.loop = new AttentionLoop(deps);
+		this.refreshDelayMs = deps.refreshDelayMs ?? 250;
 		this.subscription = new SubscriptionClient({
 			endpoint: deps.endpoint,
 			source: deps.source,
@@ -161,8 +166,10 @@ export class AttentionManager {
 		this.subscription.start();
 	}
 
-	/** Tear down the subscription. */
+	/** Tear down the subscription and cancel any pending refresh. */
 	close(): void {
+		this.refreshTimer?.();
+		this.refreshTimer = undefined;
 		this.subscription.close();
 		this.siblings.clear();
 	}
@@ -184,6 +191,27 @@ export class AttentionManager {
 		return [...this.siblings];
 	}
 
+	/** Coalesce a burst of pane events into one fresh pane.list read. */
+	private scheduleRefresh(): void {
+		if (this.refreshTimer) return;
+		const setTimer = this.deps.setTimer ?? ((fn: () => void, ms: number) => {
+			const timer = setTimeout(fn, ms);
+			timer.unref?.();
+			return () => clearTimeout(timer);
+		});
+		this.refreshTimer = setTimer(() => {
+			this.refreshTimer = undefined;
+			void this.refreshSiblings();
+		}, this.refreshDelayMs);
+	}
+
+	/**
+	 * Re-read the live pane list and resubscribe only when the set changed.
+	 *
+	 * Every subscribe replays recent create and close history, so a
+	 * create-or-close event only schedules this read; applying the events
+	 * themselves would churn the connection over the replay.
+	 */
 	private async refreshSiblings(): Promise<void> {
 		try {
 			const response = (await this.deps.client.request(
@@ -191,37 +219,27 @@ export class AttentionManager {
 				this.deps.workspaceId ? { workspace_id: this.deps.workspaceId } : {},
 				{ timeoutMs: SEED_TIMEOUT_MS, idempotent: true },
 			)) as { panes?: PaneRecord[] };
-			this.siblings.clear();
+			const next = new Set<string>();
 			for (const pane of response.panes ?? []) {
 				if (pane.pane_id === this.deps.paneId) continue;
 				if (this.deps.workspaceId && pane.workspace_id !== this.deps.workspaceId) continue;
-				this.siblings.add(pane.pane_id);
+				next.add(pane.pane_id);
 			}
+			const changed =
+				next.size !== this.siblings.size || [...next].some((paneId) => !this.siblings.has(paneId));
+			this.siblings.clear();
+			for (const paneId of next) this.siblings.add(paneId);
+			if (changed) this.subscription.resubscribe();
 		} catch {
-			// No seed yet; pane.created will still widen the set as panes appear.
+			// No fresh list; keep the current set and wait for the next event.
 		}
 	}
 
 	private dispatch(event: SubscriptionEvent): void {
-		if (event.event === CREATED_EVENT) {
-			const pane = (event.payload.data as { pane?: PaneRecord } | undefined)?.pane;
-			if (pane && this.track(pane)) this.subscription.resubscribe();
-			return;
-		}
-		if (event.event === CLOSED_EVENT) {
-			const data = event.payload.data as { pane_id?: string } | undefined;
-			if (data?.pane_id && this.siblings.delete(data.pane_id)) this.subscription.resubscribe();
+		if (event.event === CREATED_EVENT || event.event === CLOSED_EVENT) {
+			this.scheduleRefresh();
 			return;
 		}
 		this.loop.handle(event);
-	}
-
-	/** Add a pane to the sibling set when it belongs to this workspace. */
-	private track(pane: PaneRecord): boolean {
-		if (pane.pane_id === this.deps.paneId) return false;
-		if (this.deps.workspaceId && pane.workspace_id !== this.deps.workspaceId) return false;
-		if (this.siblings.has(pane.pane_id)) return false;
-		this.siblings.add(pane.pane_id);
-		return true;
 	}
 }
