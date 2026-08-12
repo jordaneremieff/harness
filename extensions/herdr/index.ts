@@ -16,8 +16,22 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { capName, decideTabAction, sanitizeName, type ListedTab } from "./naming.ts";
+import {
+	capName,
+	classifyFallbackLabel,
+	decideTabAction,
+	firstUserMessage,
+	type LabelEntry,
+	type ListedTab,
+	sanitizeName,
+} from "./naming.ts";
+import { registerHerdrCommand } from "./command.ts";
+import { registerSubagentSlot } from "./sidebar.ts";
 import { HerdrClient, socketEndpoint } from "./socket.ts";
+import { AttentionManager } from "./subscribe.ts";
+import { createHerdrTools, type ToolDeps } from "./tools.ts";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 const SOURCE = "custom:pi-identity";
 const AGENT = "pi";
@@ -34,6 +48,11 @@ export interface SyncDeps {
 	tabId: string | undefined;
 	workspaceId: string | undefined;
 	maxName: number;
+}
+
+/** Resolve the skill directory packaged beside this module. */
+function skillDir(): string {
+	return join(dirname(fileURLToPath(import.meta.url)), "skill", "herdr");
 }
 
 interface TabListResult {
@@ -74,7 +93,7 @@ async function readTabs(deps: SyncDeps): Promise<ListedTab[] | undefined> {
 export async function syncIdentity(
 	deps: SyncDeps,
 	state: SyncState,
-	input: { name?: string; model?: string },
+	input: { name?: string; model?: string; firstMessage?: string },
 ): Promise<void> {
 	const name = capName(sanitizeName(input.name ?? ""), deps.maxName) || undefined;
 	const model = sanitizeName(input.model ?? "") || undefined;
@@ -90,8 +109,9 @@ export async function syncIdentity(
 	if (deps.tabId) {
 		const tabs = await readTabs(deps);
 		if (tabs) {
+			const label = name ?? fallbackLabel(deps, tabs, input.firstMessage);
 			const action = decideTabAction({
-				name,
+				name: label,
 				tabId: deps.tabId,
 				tabs,
 				registryLabel: state.registryLabel,
@@ -102,6 +122,18 @@ export async function syncIdentity(
 			state.registryLabel = action.registry;
 		}
 	}
+}
+
+/**
+ * The guarded first-message label, when the session has no explicit name.
+ *
+ * Labels of the other tabs in the workspace decide the collision guard, so two
+ * sessions that open with the same words keep their numbers instead.
+ */
+function fallbackLabel(deps: SyncDeps, tabs: ListedTab[], firstMessage: string | undefined): string | undefined {
+	if (!firstMessage) return undefined;
+	const taken = tabs.filter((tab) => tab.tabId !== deps.tabId).map((tab) => tab.label);
+	return classifyFallbackLabel(firstMessage, { maxName: deps.maxName, taken });
 }
 
 /** Withdraw the model token and restore a tab this extension named. */
@@ -131,11 +163,21 @@ export async function clearIdentity(deps: SyncDeps, state: SyncState): Promise<v
 	}
 }
 
+/** Rebuild the first user message from the session entries after a resume or reload. */
+function readFirstMessage(ctx: ExtensionContext): string | undefined {
+	try {
+		return firstUserMessage(ctx.sessionManager.getEntries() as unknown as LabelEntry[]);
+	} catch {
+		return undefined;
+	}
+}
+
 /** Wire the pi events to the identity sync. Exported for tests. */
 export function registerHerdrWithDeps(pi: ExtensionAPI, deps: SyncDeps): SyncState {
 	const state: SyncState = { registryLabel: undefined };
 
 	let rootSession = false;
+	let firstMessage: string | undefined;
 	let chain: Promise<void> = Promise.resolve();
 	/** Serialize reports so herdr never receives them out of order. */
 	const enqueue = (job: () => Promise<void>): Promise<void> => {
@@ -143,17 +185,26 @@ export function registerHerdrWithDeps(pi: ExtensionAPI, deps: SyncDeps): SyncSta
 		return chain;
 	};
 
+	/** Label inputs are captured here, so a late job cannot overwrite a newer name. */
 	const sync = (ctx: ExtensionContext, eventName?: string): Promise<void> => {
 		const name = eventName ?? pi.getSessionName();
 		const model = ctx.model?.name;
-		return enqueue(() => syncIdentity(deps, state, { name, model }));
+		const captured = firstMessage;
+		return enqueue(() => syncIdentity(deps, state, { name, model, firstMessage: captured }));
 	};
 
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		rootSession = true;
 		state.registryLabel = undefined;
+		firstMessage = readFirstMessage(ctx);
 		return sync(ctx);
+	});
+	pi.on("before_agent_start", (event, ctx) => {
+		if (!rootSession || firstMessage !== undefined) return;
+		firstMessage = event.prompt;
+		// The tab label must never delay the agent request.
+		void sync(ctx);
 	});
 	pi.on("session_info_changed", (event, ctx) => {
 		if (!rootSession) return;
@@ -179,11 +230,49 @@ export default function registerHerdr(pi: ExtensionAPI): void {
 	if (!socketPath || !paneId) return;
 
 	const client = new HerdrClient({ endpoint: socketEndpoint(socketPath), source: SOURCE });
-	registerHerdrWithDeps(pi, {
+	const deps: SyncDeps = {
 		client,
 		paneId,
 		tabId: process.env.HERDR_TAB_ID || undefined,
 		workspaceId: process.env.HERDR_WORKSPACE_ID || undefined,
 		maxName: readMaxName(),
+	};
+	const toolDeps: ToolDeps = {
+		client,
+		paneId,
+		tabId: deps.tabId,
+		workspaceId: deps.workspaceId,
+	};
+
+	registerHerdrWithDeps(pi, deps);
+
+	// Skill assets ship beside this module; the host discovers them on load.
+	pi.on("resources_discover", () => ({ skillPaths: [skillDir()] }));
+
+	// Agent-facing tools and the operator command register once per process.
+	for (const tool of createHerdrTools(toolDeps)) pi.registerTool(tool);
+	registerHerdrCommand(pi, toolDeps);
+
+	// Subagent activity feeds the `$subagents` sidebar token.
+	registerSubagentSlot(pi, { client, paneId });
+
+	// The attention loop runs only for the TUI session that owns this pane.
+	let attention: AttentionManager | undefined;
+	pi.on("session_start", (_event, ctx) => {
+		if (ctx.mode !== "tui") return;
+		attention = new AttentionManager({
+			client,
+			endpoint: socketEndpoint(socketPath),
+			source: SOURCE,
+			paneId,
+			workspaceId: deps.workspaceId,
+			notify: (message) => ctx.ui.notify(message),
+			setStatus: (text) => ctx.ui.setStatus("herdr", text),
+		});
+		void attention.start();
+	});
+	pi.on("session_shutdown", () => {
+		attention?.close();
+		attention = undefined;
 	});
 }

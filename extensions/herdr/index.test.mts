@@ -32,12 +32,18 @@ function fakeClient(responses: Record<string, unknown> = {}) {
 
 interface FakePi {
 	handlers: Map<string, (event: any, ctx: any) => unknown>;
+	tools: unknown[];
+	commands: string[];
+	eventBusOn: number;
 	sessionName: string | undefined;
 }
 
 function fakePi(name: string | undefined): FakePi {
 	return {
 		handlers: new Map(),
+		tools: [],
+		commands: [],
+		eventBusOn: 0,
 		sessionName: name,
 	};
 }
@@ -50,11 +56,31 @@ function piApi(fake: FakePi): ExtensionAPI {
 		getSessionName() {
 			return fake.sessionName;
 		},
+		registerTool(tool: unknown) {
+			fake.tools.push(tool);
+		},
+		registerCommand(name: string) {
+			fake.commands.push(name);
+		},
+		events: {
+			on: () => {
+				fake.eventBusOn += 1;
+				return () => {};
+			},
+		},
 	} as unknown as ExtensionAPI;
 }
 
-function ctx(model?: string, mode = "tui"): ExtensionContext {
-	return { mode, model: model ? { name: model } : undefined } as unknown as ExtensionContext;
+function ctx(model?: string, mode = "tui", entries: unknown[] = []): ExtensionContext {
+	return {
+		mode,
+		model: model ? { name: model } : undefined,
+		sessionManager: { getEntries: () => entries },
+	} as unknown as ExtensionContext;
+}
+
+function userEntry(text: string): unknown {
+	return { type: "message", message: { role: "user", content: text } };
 }
 
 function depsWith(client: HerdrClient): SyncDeps {
@@ -98,18 +124,18 @@ describe("registerHerdr gating", () => {
 		assert.equal(fake.handlers.size, 0);
 	});
 
-	it("registers all four handlers inside herdr", () => {
+	it("wires the identity, skill, tool, and command surfaces inside herdr", () => {
 		process.env.HERDR_ENV = "1";
 		process.env.HERDR_SOCKET_PATH = "/nonexistent/herdr.sock";
 		process.env.HERDR_PANE_ID = "w1:p1";
 		const fake = fakePi("alpha");
 		registerHerdr(piApi(fake));
-		assert.deepEqual([...fake.handlers.keys()].sort(), [
-			"model_select",
-			"session_info_changed",
-			"session_shutdown",
-			"session_start",
-		]);
+		const identityEvents = ["session_start", "session_info_changed", "model_select", "before_agent_start", "session_shutdown"];
+		for (const event of identityEvents) assert.ok(fake.handlers.has(event), `registers ${event}`);
+		assert.ok(fake.handlers.has("resources_discover"), "discovers skill assets");
+		assert.ok(fake.tools.length > 0, "registers agent-facing tools");
+		assert.deepEqual(fake.commands, ["herdr"]);
+		assert.equal(fake.eventBusOn, 1, "listens for subagent activity");
 	});
 });
 
@@ -234,6 +260,94 @@ describe("identity sync", () => {
 		assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b));
 		const rename = calls.filter((c) => c.method === "tab.rename").at(-1);
 		assert.deepEqual(rename?.params, { tab_id: "w1:t1", label: "gamma" });
+	});
+
+	it("labels an unnamed tab from the first typed prompt", async () => {
+		const { client, calls } = fakeClient({ "tab.list": autoTabs });
+		const fake = fakePi(undefined);
+		registerHerdrWithDeps(piApi(fake), depsWith(client));
+
+		await fire(fake, "session_start", { reason: "startup" }, ctx("Opus"));
+		assert.equal(calls.some((c) => c.method === "tab.rename"), false);
+
+		const handler = fake.handlers.get("before_agent_start");
+		assert.ok(handler);
+		const immediate = handler({ prompt: "Objective: harden the socket client" }, ctx("Opus"));
+		assert.equal(immediate, undefined, "the agent request is never delayed by socket traffic");
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const rename = calls.filter((c) => c.method === "tab.rename").at(-1);
+		assert.deepEqual(rename?.params, { tab_id: "w1:t1", label: "harden the socket client" });
+	});
+
+	it("keeps the numeric label for a rejected opener", async () => {
+		const { client, calls } = fakeClient({ "tab.list": autoTabs });
+		const fake = fakePi(undefined);
+		registerHerdrWithDeps(piApi(fake), depsWith(client));
+
+		await fire(fake, "session_start", { reason: "startup" }, ctx("Opus"));
+		await fire(fake, "before_agent_start", { prompt: "/stash new herdr" }, ctx("Opus"));
+		await new Promise((resolve) => setImmediate(resolve));
+
+		assert.equal(calls.some((c) => c.method === "tab.rename"), false);
+	});
+
+	it("keeps the numeric label when a sibling tab already shows the opener", async () => {
+		const siblingTabs = {
+			tabs: [
+				{ tab_id: "w1:t1", label: "1" },
+				{ tab_id: "w1:t2", label: "harden the socket client" },
+			],
+		};
+		const { client, calls } = fakeClient({ "tab.list": siblingTabs });
+		const fake = fakePi(undefined);
+		registerHerdrWithDeps(piApi(fake), depsWith(client));
+
+		await fire(fake, "session_start", { reason: "startup" }, ctx("Opus"));
+		await fire(fake, "before_agent_start", { prompt: "Objective: harden the socket client" }, ctx("Opus"));
+		await new Promise((resolve) => setImmediate(resolve));
+
+		assert.equal(calls.some((c) => c.method === "tab.rename"), false);
+	});
+
+	it("prefers the explicit session name over the first prompt", async () => {
+		const { client, calls } = fakeClient({ "tab.list": autoTabs });
+		const fake = fakePi("alpha");
+		registerHerdrWithDeps(piApi(fake), depsWith(client));
+
+		await fire(fake, "session_start", { reason: "startup" }, ctx("Opus"));
+		await fire(fake, "before_agent_start", { prompt: "Objective: harden the socket client" }, ctx("Opus"));
+		await new Promise((resolve) => setImmediate(resolve));
+
+		for (const call of calls.filter((c) => c.method === "tab.rename")) {
+			assert.equal(call.params.label, "alpha");
+		}
+	});
+
+	it("reconstructs the first prompt of a resumed session from its entries", async () => {
+		const { client, calls } = fakeClient({ "tab.list": autoTabs });
+		const fake = fakePi(undefined);
+		registerHerdrWithDeps(piApi(fake), depsWith(client));
+
+		await fire(fake, "session_start", { reason: "resume" }, ctx("Opus", "tui", [userEntry("rebuild the tab index")]));
+
+		const rename = calls.filter((c) => c.method === "tab.rename").at(-1);
+		assert.deepEqual(rename?.params, { tab_id: "w1:t1", label: "rebuild the tab index" });
+	});
+
+	it("lets a later name replace a first-prompt label", async () => {
+		const { client, calls } = fakeClient({ "tab.list": autoTabs });
+		const fake = fakePi(undefined);
+		registerHerdrWithDeps(piApi(fake), depsWith(client));
+
+		await fire(fake, "session_start", { reason: "startup" }, ctx("Opus"));
+		await fire(fake, "before_agent_start", { prompt: "rebuild the tab index" }, ctx("Opus"));
+		fake.sessionName = "beta";
+		await fire(fake, "session_info_changed", { name: "beta" }, ctx("Opus"));
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const rename = calls.filter((c) => c.method === "tab.rename").at(-1);
+		assert.deepEqual(rename?.params, { tab_id: "w1:t1", label: "beta" });
 	});
 
 	it("survives a dead socket", async () => {
