@@ -24,13 +24,17 @@ Skip broad research for a tiny mechanical correction whose intent and compatibil
 
 **Complete when:** the design decision rests on inspected sources and a bounded search record rather than model memory.
 
-### 3. Establish the baseline or explicit override
+### 3. Establish the skill warrant
 
-For a new or behavior-shaping skill, observe the task without the candidate, compare with the previous version, or cite an already-observed failure. Classify the baseline as failure, partial success, or success. Read [skill-evaluation.md](skill-evaluation.md) before constructing trigger or output checks.
+Under "Establish the warrant when required" in [the main harness skill](../SKILL.md), a new skill's evidence warrant needs no observed failure — a usefulness rationale (the capability it provides and why it is worth having) is sufficient on its own. Creation still follows "New surfaces require approval" there. A skill that is activated frequently, injects substantial context on activation, or becomes a standing dependency of the workflow follows the caliber rule — "Caliber for repeated or hard-to-remove mechanisms", within "Establish the warrant when required" — for recurring or hard-to-remove mechanisms.
+
+A baseline (observing the task without the candidate, or citing an already-observed failure) strengthens the case and gives later evaluation something to measure against, but its absence never blocks a new skill.
+
+For a behavior-shaping change to an existing skill, compare with the previous version and classify the baseline as failure, partial success, or success — changing behavior needs evidence the change improves it. Read [skill evaluation](skill-evaluation.md) before constructing trigger or output checks.
 
 An explicit operator decision can waive a comparative baseline, trial, or replacement proof. Record the override and its reason in the session, then continue. Do not preserve the waived gate through a pilot, compatibility wrapper, hidden blocker, or renamed requirement.
 
-**Complete when:** the candidate targets an observed gap, measured benefit, fixed operator choice, or explicit override.
+**Complete when:** a new skill carries its usefulness rationale, with or without a baseline; a behavior-shaping change carries a classified baseline or a recorded override.
 
 ### 4. Design the smallest coherent skill
 

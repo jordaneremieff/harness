@@ -41,7 +41,7 @@ When the intended change adds a new surface:
 
 1. **Stop.** Do not create the directory, file, or package field.
 2. **Propose in chat:** name each new surface against the enumeration; state the warrant (step 3); name the nearest existing surface and why it cannot absorb the change; state the lowest sufficient layer; list out-of-scope items you will not add.
-3. **Wait for explicit operator approval** of that proposal. Gate-clearing analysis is not permission to ship. Self-approval is a violation.
+3. **Wait for explicit operator approval** of that proposal. An operator request that already names the surface supplies the approval; do not ask again. When the agent chooses a new surface as the means to an operator outcome, the operator must approve the surface itself, not only the outcome. Gate-clearing analysis is not permission to ship. Self-approval is a violation.
 4. **Implement only the approved scope.**
 
 If an unapproved new surface is already present in the tree when you notice it, stop, report what is present, and hold for operator disposition. Do not silently keep expanding it or silently revert concurrent work you did not author.
@@ -88,26 +88,43 @@ Read [surface-selection.md](references/surface-selection.md) when the artifact t
 
 ### 3. Establish the warrant when required
 
-If the change adds anything on the **New surfaces require approval** enumeration, complete that hard stop first: warrant and design in chat, then explicit operator approval, before any write. The warrant below is the content of that proposal; it does not replace the approval step.
+A suggestion is not a surface. Naming a useful tool, skill, or integration in chat is always free — no warrant, no approval.
 
-Apply this warrant to an agent-proposed new persistent surface, recurring mechanism, guard, or high-frequency context producer. Establish at least one admissible basis:
+Warrant and approval are separate. The warrant is the content of a proposal; it does not grant write authority. New-surface approval is governed by the approval section above.
 
-- an observed failure with meaningful cost;
-- a reproducible local omission or measured opportunity;
-- direct structural evidence of a missing capability or inaccessible information; or
-- a binding security, privacy, current-host compatibility, or platform requirement.
+#### Evidence warrant
 
-Then identify the nearest existing surface, explain why it cannot absorb the change, and state the lowest sufficient layer. For a recurring mechanism, estimate its normal fire rate and operating or context cost, state the observable behavior it changes, name an owner and evaluation point, and define removal conditions.
+Correct capability classification decides which case applies; authority exemptions remain separate. Choose one case.
 
-Do not require this warrant for a fixed repair, an operator-selected outcome or architecture, ordinary maintenance, a removal, or a documentation/test correction that preserves an established contract. Those changes still require surface classification and proportionate verification. An operator-selected outcome authorizes work inside its stated scope; if realizing it still needs a new enumerated surface the operator has not named, propose that surface and obtain approval before creating it.
+- **Correctly classified agent-proposed skill.** A usefulness rationale — the capability it provides and why it is worth having — is sufficient. No observed failure, measured omission, structural evidence, or binding requirement is needed.
+- **Any other agent-proposed new persistent surface, recurring mechanism, guard, high-frequency context producer, or shared service.** A grounded basis is required: an observed failure with meaningful cost; a reproducible local omission or measured opportunity; direct structural evidence of a missing capability or inaccessible information; or a binding security, privacy, current-host compatibility, or platform requirement.
 
-**Complete when:** discretionary infrastructure has independent evidence and an exit, or the task has a named reason the warrant does not apply; and any new enumerated surface has explicit operator approval before implementation.
+#### Caliber for repeated or hard-to-remove mechanisms
+
+Applies in addition to whichever evidence case governs, for any agent-proposed mechanism paid repeatedly or hard to remove, regardless of the surface it is implemented through. A recurring skill carries both the skill evidence case and this overlay.
+
+The proposal also carries the caliber fields: estimate its normal fire rate and operating or context cost, state the observable behavior it changes, name an owner and evaluation point, define removal conditions, and explain why the expected cost is proportionate and how the intervention is bounded or reversible.
+
+Every required warrant states its capability, the nearest existing surface and why it cannot absorb the change, and the lowest sufficient layer. Caliber facts inform the operator when approval is required and guide proportional design in all cases; they do not recreate an evidence prerequisite or create a separate approval gate. Caliber alone is not an independent refusal gate. The agent recommends the lowest-cost coherent design.
+
+Classification cannot be changed to obtain the skill rule. A capability that requires scheduling, event interception, or deterministic enforcement is not a skill and takes the non-skill rule regardless of what it is called.
+
+No warrant is needed for a fixed repair, an operator-selected outcome or architecture, ordinary maintenance, a removal, or a documentation/test correction that preserves an established contract; those still require surface classification and proportionate verification.
+
+*Rationale (auditability, not operative):* the skill rule is a bounded, operator-approved exception to the general rule that new infrastructure is grounded in an observed failure, measured omission, or binding requirement (the Harness Over Architecture pillar). The exception is evidentiary only; the retained requirements above implement the pillar's nearest-surface, reversibility, and skill-sprawl guidance, against which the exception remains auditable.
+
+**Complete when** (warrant classification/content only; approval is gated by the approval section, not retested here):
+- no suggestion was mistaken for a surface;
+- no agent-proposed skill was withheld for lack of an incident, measured omission, structural evidence, or binding requirement;
+- every warrant-required non-skill surface or mechanism carries a grounded basis;
+- every agent-proposed mechanism paid repeatedly or hard to remove carries the caliber fields;
+- every required warrant states its capability, nearest existing surface, and lowest sufficient layer.
 
 ### 4. Load one implementation lane
 
-- **Agent Skill:** read [skills.md](references/skills.md). For a new skill or substantial redesign, also read [skill-research.md](references/skill-research.md), [skill-design.md](references/skill-design.md), and [skill-evaluation.md](references/skill-evaluation.md) only as their gates require.
+- **Agent Skill:** read [the Agent Skill lane](references/skills.md). For a new skill or substantial redesign, also read [skill-research.md](references/skill-research.md), [skill-design.md](references/skill-design.md), and [skill-evaluation.md](references/skill-evaluation.md) only as their gates require.
 - **Extension or extension-owned surface:** read [extensions.md](references/extensions.md). Pull [extension-engineering.md](references/extension-engineering.md), [pi-grounding.md](references/pi-grounding.md), and [extension-research.md](references/extension-research.md) only for the implicated design questions.
-- **Prompt template, theme, package, settings, SDK/RPC/JSON integration, or standalone CLI:** use [surface-selection.md](references/surface-selection.md), then read the current installed Pi document for the selected surface. Use [extensions.md](references/extensions.md) when extension code or an extension boundary participates.
+- **Prompt template, theme, package, settings, SDK/RPC/JSON integration, or standalone CLI:** use [surface selection](references/surface-selection.md), then read the current installed Pi document for the selected surface. Use [extensions.md](references/extensions.md) when extension code or an extension boundary participates.
 - **Usage, utility, retention, removal, or incident decision for an extension:** read [extension-audit.md](references/extension-audit.md).
 
 **Complete when:** every loaded reference serves a live decision or verification claim.
@@ -128,9 +145,9 @@ Follow repository sequencing rules for manual review and broad suites. Do not su
 
 ### 7. Apply authority once
 
-An explicit operator request authorizes work inside its stated scope. Do not ask again for approval already supplied. Obtain explicit approval before placing any agent-proposed new surface on the enumeration in **New surfaces require approval**, including when the operator asked for an outcome and the agent chose a new surface as the means. The operator must approve the surface itself, not only the outcome. Treat destructive state changes, publication, and credential use under their separate authority rules.
+Confirm execution stays within granted authority and does not transfer a settled decision back to the operator. Treat destructive state changes, publication, and credential use under their separate authority rules.
 
-**Complete when:** execution neither exceeds authority nor transfers an already-settled decision back to the operator, and no new enumerated surface is created without explicit approval.
+**Complete when:** execution neither exceeds granted authority nor transfers a settled decision back to the operator.
 
 ## Closure
 
