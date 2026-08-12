@@ -34,7 +34,6 @@ interface FakePi {
 	handlers: Map<string, (event: any, ctx: any) => unknown>;
 	tools: unknown[];
 	commands: string[];
-	eventBusOn: number;
 	sessionName: string | undefined;
 }
 
@@ -43,7 +42,6 @@ function fakePi(name: string | undefined): FakePi {
 		handlers: new Map(),
 		tools: [],
 		commands: [],
-		eventBusOn: 0,
 		sessionName: name,
 	};
 }
@@ -61,12 +59,6 @@ function piApi(fake: FakePi): ExtensionAPI {
 		},
 		registerCommand(name: string) {
 			fake.commands.push(name);
-		},
-		events: {
-			on: () => {
-				fake.eventBusOn += 1;
-				return () => {};
-			},
 		},
 	} as unknown as ExtensionAPI;
 }
@@ -135,7 +127,6 @@ describe("registerHerdr gating", () => {
 		assert.ok(fake.handlers.has("resources_discover"), "discovers skill assets");
 		assert.ok(fake.tools.length > 0, "registers agent-facing tools");
 		assert.deepEqual(fake.commands, ["herdr"]);
-		assert.equal(fake.eventBusOn, 1, "listens for subagent activity");
 	});
 });
 

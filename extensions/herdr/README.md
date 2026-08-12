@@ -12,7 +12,6 @@ session references, and it loads as a no-op outside herdr.
 |---|---|---|
 | Tab bar | `tab.rename` to the session name on `/name`; a guarded first-message label when no name is set | none |
 | Sidebar token `model` | Current model, rendered as `$model` | one `rows_by_agent.pi` row |
-| Sidebar token `subagents` | This session's subagent activity, fed by the `subagent` extension over `pi.events` | one `rows_by_agent.pi` row |
 | Agent tools | Inspection and coordination tools over panes and agents, active only inside herdr | none |
 | Attention loop | Notifies when a sibling agent blocks or finishes | none |
 | Skill `herdr` | Herdr discovery and coordination recipes, distributed through `resources_discover` | none |
@@ -45,21 +44,15 @@ Manual names stay authoritative:
 
 ### Sidebar tokens
 
-The `model` token reports the current model. The `subagents` token reports this
-session's subagent activity as `active · $spend`, matching the status line. The
-`subagent` extension emits structured `{ active, cost }` on the
-`harness:subagent:activity` channel (documented in
-`docs/conventions/status-keys.md`); this extension listens and reports the token.
-A quiet session clears the token after its bounded lifetime.
+The `model` token reports the current model.
 
-Add the tokens under `[ui.sidebar.agents.rows_by_agent]` so only pi panes show
-them:
+Add it under `[ui.sidebar.agents.rows_by_agent]` so only pi panes show it:
 
 ```toml
 [ui.sidebar.agents.rows_by_agent]
 pi = [
   ["state_icon", "workspace", "tab"],
-  ["$model", "$subagents"],
+  ["$model"],
 ]
 ```
 

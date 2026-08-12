@@ -26,7 +26,6 @@ import {
 	sanitizeName,
 } from "./naming.ts";
 import { registerHerdrCommand } from "./command.ts";
-import { registerSubagentSlot } from "./sidebar.ts";
 import { HerdrClient, socketEndpoint } from "./socket.ts";
 import { AttentionManager } from "./subscribe.ts";
 import { createHerdrTools, type ToolDeps } from "./tools.ts";
@@ -252,9 +251,6 @@ export default function registerHerdr(pi: ExtensionAPI): void {
 	// Agent-facing tools and the operator command register once per process.
 	for (const tool of createHerdrTools(toolDeps)) pi.registerTool(tool);
 	registerHerdrCommand(pi, toolDeps);
-
-	// Subagent activity feeds the `$subagents` sidebar token.
-	registerSubagentSlot(pi, { client, paneId });
 
 	// The attention loop runs only for the TUI session that owns this pane.
 	let attention: AttentionManager | undefined;
