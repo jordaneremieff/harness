@@ -61,7 +61,7 @@ Portable design doctrine for agent-assisted work. Three document types:
 ## Related Files
 
 - [AGENTS.md](AGENTS.md) — operating reference and contradiction handling.
-- Derivation method: the pillars skill at `../../skills/pillars/references/derivation.md` (authoring workflow; the corpus holds doctrine only).
+- Derivation method: the pillars skill at `../skills/pillars/references/derivation.md` (authoring workflow; the corpus holds doctrine only).
 
 ## Provenance Policy
 

@@ -1,0 +1,45 @@
+# Canonical Herdr configuration for this harness baseline.
+#
+# Activate on a machine by pointing Herdr at this file:
+#   export HERDR_CONFIG_PATH=<harness-repo>/config/herdr/config.toml
+# Herdr reads its config from this path; runtime state (socket, session
+# history) still lives under the OS config dir. Editing settings through
+# Herdr writes back here, so the repo stays the single source of truth.
+
+onboarding = false
+
+# Splits and pane focus stay on Herdr's default prefix bindings
+# (prefix = ctrl+b; -/v split, h/j/k/l focus). Ghostty translates the
+# command chords into those prefix keystrokes.
+
+[ui]
+agent_panel_sort = "spaces"
+copy_on_select = false
+show_agent_labels_on_pane_borders = true
+
+[ui.sound]
+enabled = false
+
+[ui.toast]
+delivery = "off"
+
+[ui.toast.clipboard]
+# Separate from [ui.toast] delivery: the clipboard-copy toast has its own
+# enable flag (default true). Disabling it suppresses the "Copied to
+# clipboard" popup even when a copy does occur.
+enabled = false
+
+[ui.sidebar.agents.rows_by_agent]
+# pi panes: line 1 is the state icon plus the tab name (the session label
+# the herdr extension reports); workspace is omitted because Herdr already
+# shows it on the workspace header, so it only stole width from the label.
+# Line 2 is the model token the herdr extension reports; it also tells two
+# agents that share a split tab apart.
+pi = [
+  ["state_icon", "tab"],
+  ["$model"],
+]
+
+[experimental]
+pane_history = true
+switch_ascii_input_source_in_prefix = true

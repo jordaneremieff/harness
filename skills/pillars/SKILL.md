@@ -11,20 +11,20 @@ description: >
   pillars", "what do the pillars say", "apply pillars", or asks for a decision to
   be evaluated against principles, patterns, or heuristics. Also use when the
   operator proposes, derives, revises, or challenges corpus entries.
-compatibility: Requires the sibling package corpus at ../../docs/pillars relative to this skill directory.
+compatibility: Requires the sibling package corpus at ../../pillars relative to this skill directory.
 ---
 
 # Pillars consultation
 
 The pillars are portable, defeasible doctrine for agent judgment in this environment.
-The canonical corpus is the package-level `../../docs/pillars/` directory, resolved
+The canonical corpus is the package-level `../../pillars/` directory, resolved
 relative to this skill directory. It is a sibling package dependency rather than
 content owned by this delivery adapter. A matching pillar governs the decision
 procedure; it does not override facts, permissions, or explicit higher authority.
 
 ## How to consult
 
-1. Read `../../docs/pillars/README.md` first. It is the inventory: every principle,
+1. Read `../../pillars/README.md` first. It is the inventory: every principle,
    pattern, and heuristic with a one-line trigger. Match the current judgment moment
    against those recognition conditions.
 2. Load only the few documents whose conditions plausibly match. Each doc is
@@ -69,7 +69,7 @@ source authority, recognition scope, and explicit carve-outs—not by type.
 - System and safety instructions, law, permissions, and explicit operator authority
   remain separate higher constraints.
 - The corpus is doctrine, not scripture: when facts or reality contradict a pillar,
-  use the full classification in `../../docs/pillars/AGENTS.md` rather than forcing compliance.
+  use the full classification in `../../pillars/AGENTS.md` rather than forcing compliance.
   If consequential guidance still conflicts, record the ambiguity and obtain the
   appropriate authority instead of inventing precedence.
 - Consult the smallest relevant set. Full-corpus recital is not compliance.

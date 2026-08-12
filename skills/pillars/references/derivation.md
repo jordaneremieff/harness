@@ -1,6 +1,6 @@
 # Pillars — Derivation Method
 
-How to propose, derive, validate, and document principles, patterns, and heuristics. This method is the authoring workflow for the corpus at `../../docs/pillars/`. The corpus holds doctrine only; the workflow lives in this skill. The operating reference is `../../docs/pillars/AGENTS.md`.
+How to propose, derive, validate, and document principles, patterns, and heuristics. This method is the authoring workflow for the corpus at `../../pillars/`. The corpus holds doctrine only; the workflow lives in this skill. The operating reference is `../../pillars/AGENTS.md`.
 
 ## Contents
 
@@ -36,7 +36,7 @@ New entries must clear a high bar. Most candidates are subsumed by existing pill
 
 Before proposing anything new:
 
-1. Read the inventory in `../../docs/pillars/README.md` and the likely related pillars.
+1. Read the inventory in `../../pillars/README.md` and the likely related pillars.
 2. Ask whether an existing pillar owns the concern.
 3. Ask whether the candidate changes decisions or merely describes an implementation.
 4. Ask whether the candidate is specific to agent reasoning, knowledge architecture, or epistemic work rather than generic programming advice.

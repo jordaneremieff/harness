@@ -37,6 +37,20 @@ The harness is a Pi package. `package.json` declares the resources under the
 - Every change is validated against the installed Pi declarations, not only
   against the tests.
 
+The manifest activates only Pi resources. Other tracked package content has
+explicit consumers:
+
+- `pillars/` is the doctrine corpus that skills read by package-relative path.
+- `config/` mirrors application-owned config paths. Machines point Pi and Herdr
+  at the files under their application directories; no package manifest entry
+  activates them.
+- `docs/` explains this repository and owns repository conventions.
+- `scripts/` contains repository automation.
+
+The root `AGENTS.md` governs work on this repository. The separate
+`config/pi/agent/AGENTS.md` file is the machine-independent global Pi rules
+source and is symlinked to `~/.pi/agent/AGENTS.md` on each machine.
+
 ## Extension anatomy
 
 Each extension is an independent vertical slice under `extensions/<name>/`.

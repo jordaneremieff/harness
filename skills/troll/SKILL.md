@@ -14,7 +14,7 @@ description: >
   reviewing the operator's own code, dispatching an in-session checker,
   neutral fact-checks against the codebase, or any request for a neutral
   verdict.
-compatibility: Uses the sibling package corpus at ../../docs/pillars relative to this skill directory when present; without it the armory in references/pillar-armory.md carries the mapping and the confirmation states the mode. The clipboard handoff uses the harness clipboard extension.
+compatibility: Uses the sibling package corpus at ../../pillars relative to this skill directory when present; without it the armory in references/pillar-armory.md carries the mapping and the confirmation states the mode. The clipboard handoff uses the harness clipboard extension.
 ---
 
 # Troll
@@ -150,7 +150,7 @@ A target that recognizes the exercise produces a performance, not self-examinati
 
 The full armory — both tables, the recognition conditions, and why each pillar binds — lives in `references/pillar-armory.md`. It is an index, not the whole taxonomy: a frame absent from both tables is a derivation candidate, and the confirmation names the frame's actual source. Trigger: name the failure mode → consult `references/pillar-armory.md`; load only the few documents whose recognition conditions match; apply the match or name the fact that defeats it. Name the governing pillar in the confirmation. When the armory does not select a pillar, the confirmation states that absence and names the derivation candidate; do not force a pillar name.
 
-The corpus is a sibling package, not a distribution assumption: check once at intake whether `../../docs/pillars/README.md` exists, and run the mode that fits.
+The corpus is a sibling package, not a distribution assumption: check once at intake whether `../../pillars/README.md` exists, and run the mode that fits.
 
 - **Present** — the corpus is the governing source. Load the few matching documents via the armory's paths; apply the match or name the fact that defeats it. The confirmation names the pillar with corpus grounding.
 - **Absent** — the armory is the binding account for the rows it holds, and no more: its coverage of the practiced frames is a fact, not a promise. A frame outside the armory comes from the model's own knowledge of the doctrine; name that source in the confirmation and flag the frame as a derivation candidate. Argue from the armory and first principles; never load corpus paths, never invent pillar content. The confirmation names the pillar and states that the corpus was absent, so the mapping reads as armory-grounded, memory-grounded, or both.

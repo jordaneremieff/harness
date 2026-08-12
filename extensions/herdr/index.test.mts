@@ -116,7 +116,7 @@ describe("registerHerdr gating", () => {
 		assert.equal(fake.handlers.size, 0);
 	});
 
-	it("wires the identity, skill, tool, and command surfaces inside herdr", () => {
+	it("wires the identity, tool, and command surfaces inside herdr", () => {
 		process.env.HERDR_ENV = "1";
 		process.env.HERDR_SOCKET_PATH = "/nonexistent/herdr.sock";
 		process.env.HERDR_PANE_ID = "w1:p1";
@@ -124,7 +124,6 @@ describe("registerHerdr gating", () => {
 		registerHerdr(piApi(fake));
 		const identityEvents = ["session_start", "session_info_changed", "model_select", "before_agent_start", "session_shutdown"];
 		for (const event of identityEvents) assert.ok(fake.handlers.has(event), `registers ${event}`);
-		assert.ok(fake.handlers.has("resources_discover"), "discovers skill assets");
 		assert.ok(fake.tools.length > 0, "registers agent-facing tools");
 		assert.deepEqual(fake.commands, ["herdr"]);
 	});

@@ -1,8 +1,8 @@
 # herdr: pi session identity and herd control inside herdr
 
 Reports the pi session to herdr's UI, gives the model read-only and coordination
-tools over the surrounding herd, watches sibling agents, and ships a herdr skill
-and a `/herdr` jump command. The extension is a presentation and coordination
+tools over the surrounding herd, watches sibling agents, and provides a `/herdr`
+jump command. The extension is a presentation and coordination
 complement to herdr's own pi integration; it never reports lifecycle state or
 session references, and it loads as a no-op outside herdr.
 
@@ -11,10 +11,9 @@ session references, and it loads as a no-op outside herdr.
 | Surface | Effect | Config |
 |---|---|---|
 | Tab bar | `tab.rename` to the session name on `/name`; a guarded first-message label when no name is set | none |
-| Sidebar token `model` | Current model, rendered as `$model` | one `rows_by_agent.pi` row |
+| Sidebar token `model` | Current model, rendered as `$model` | baseline `rows_by_agent.pi` layout |
 | Agent tools | Inspection and coordination tools over panes and agents, active only inside herdr | none |
 | Attention loop | Notifies when a sibling agent blocks or finishes | none |
-| Skill `herdr` | Herdr discovery and coordination recipes, distributed through `resources_discover` | none |
 | `/herdr` command | Operator picker that focuses a sibling pane or agent | none |
 
 ## Behavior
@@ -44,21 +43,12 @@ Manual names stay authoritative:
 
 ### Sidebar tokens
 
-The `model` token reports the current model. Put it on its own row and give the
-tab label the full first row by dropping the `workspace` token: herdr already
-shows the workspace on the sidebar's workspace header, so repeating it per agent
-only steals width from the session label.
-
-```toml
-[ui.sidebar.agents.rows_by_agent]
-pi = [
-  ["state_icon", "tab"],
-  ["$model"],
-]
-```
-
-The `model` row also tells apart two agents that share a split tab (their tab
-label is the same); keep it when you run multi-agent splits.
+The `model` token reports the current model. The recommended layout — `pi`
+row 1 as `state_icon` + `tab`, row 2 as `$model` — ships in the baseline config
+at `config/herdr/config.toml`; see the top-level README for how to activate it.
+Drop the `workspace` token from the row: Herdr already shows the workspace on
+the sidebar's workspace header, so it only stole width from the session label.
+Keep `$model` on row two to tell apart two agents that share a split tab.
 
 ### Tools
 

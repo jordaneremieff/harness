@@ -1,8 +1,8 @@
-# Core operating rules
+# Global operating rules
 
-Shared base instructions for every session on every machine that runs this
-harness. This file stays identical across machines; machine, workspace, and
-project rules layer on top through Pi's other context files.
+Shared instructions for every session on every machine that runs this harness.
+This file stays identical across machines; machine, workspace, and project rules
+layer on top through Pi's other context files.
 
 ## Precedence
 
@@ -11,8 +11,8 @@ When rules conflict, apply the highest source that speaks and stop:
 1. Safety, legal, and policy constraints.
 2. The operator's instruction in this session.
 3. The most specific loaded context file that covers the working tree
-   (project, then workspace, then machine, then this core).
-4. These core rules.
+   (project, then workspace, then machine, then this global file).
+4. These global rules.
 5. Model defaults and training habits.
 
 More specific beats more general at the same level. If a genuine conflict
@@ -61,7 +61,7 @@ or rule tensions unless asked.
 
 ## Where the rest lives
 
-Only these core rules are always present. Everything else is retrievable:
+Only these global rules are always present. Everything else is retrievable:
 
 - **Skills** carry domain workflows. When a task matches a skill's stated
   trigger, load that skill file before proceeding.

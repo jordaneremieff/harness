@@ -29,8 +29,6 @@ import { registerHerdrCommand } from "./command.ts";
 import { HerdrClient, socketEndpoint } from "./socket.ts";
 import { AttentionManager } from "./subscribe.ts";
 import { createHerdrTools, type ToolDeps } from "./tools.ts";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 
 const SOURCE = "custom:pi-identity";
 const AGENT = "pi";
@@ -47,11 +45,6 @@ export interface SyncDeps {
 	tabId: string | undefined;
 	workspaceId: string | undefined;
 	maxName: number;
-}
-
-/** Resolve the skill directory packaged beside this module. */
-function skillDir(): string {
-	return join(dirname(fileURLToPath(import.meta.url)), "skill", "herdr");
 }
 
 interface TabListResult {
@@ -244,9 +237,6 @@ export default function registerHerdr(pi: ExtensionAPI): void {
 	};
 
 	registerHerdrWithDeps(pi, deps);
-
-	// Skill assets ship beside this module; the host discovers them on load.
-	pi.on("resources_discover", () => ({ skillPaths: [skillDir()] }));
 
 	// Agent-facing tools and the operator command register once per process.
 	for (const tool of createHerdrTools(toolDeps)) pi.registerTool(tool);

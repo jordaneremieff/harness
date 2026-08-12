@@ -28,7 +28,7 @@ A change adds a **new surface** when it introduces any of the following that do 
 3. A new skill directory under `skills/`.
 4. A new prompt template file under `prompts/`.
 5. A new theme file under `themes/`.
-6. A new instructions file under `instructions/`.
+6. A new application directory under `config/`.
 7. A new non-test script under `scripts/`.
 8. A new `package.json` `scripts` entry.
 9. A new key under `package.json` `pi` (for example `pi.prompts`).
