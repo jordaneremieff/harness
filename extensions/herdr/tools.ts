@@ -46,8 +46,11 @@ const READ_SOURCES = ["visible", "recent", "recent_unwrapped"] as const;
 /**
  * Methods the tool layer refuses to send.
  *
- * They close, replace, or reconfigure state the model did not create, or they
- * belong to herdr's own integration and plugin channels.
+ * The list covers the destructive surface — methods that close, stop, reset,
+ * remove, attach, or hand off state the model did not create — plus herdr's
+ * own integration and plugin channels. Rearrangement and rename methods are
+ * absent from this list because the tools never send them; adding such a tool
+ * requires adding the method here deliberately.
  */
 export const FORBIDDEN_METHODS: ReadonlySet<string> = new Set([
 	"agent.attach",
