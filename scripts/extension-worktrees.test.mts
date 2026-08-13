@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
   classifyCommitFiles,
   cleanGitEnvironment,
+  hookIsManaged,
   isDevRecordPath,
   parsePromoteArguments,
   parseWorktreePorcelain,
@@ -61,6 +62,24 @@ function reconcile(packages: readonly unknown[], options: ReconcileOverrides = {
     ...options,
   });
 }
+
+describe("hook ownership", () => {
+  it("recognizes the current managed marker", () => {
+    assert.equal(hookIsManaged("#!/bin/sh\n# managed by scripts/extension-worktrees.mts\n"), true);
+  });
+
+  it("recognizes hooks installed by the pre-rename script", () => {
+    assert.equal(hookIsManaged("#!/bin/sh\n# managed by scripts/extension-worktrees.mjs\n"), true);
+  });
+
+  it("rejects hooks the installer did not write", () => {
+    assert.equal(hookIsManaged("#!/bin/sh\n# my own hook\n"), false);
+  });
+
+  it("rejects an empty hook file", () => {
+    assert.equal(hookIsManaged(""), false);
+  });
+});
 
 describe("extension worktree parsing", () => {
   it("removes repository-local variables inherited from Git hooks", () => {

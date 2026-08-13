@@ -118,6 +118,12 @@ interface PromotionReport {
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = resolve(dirname(scriptPath), "..");
 const hookMarker = "# managed by scripts/extension-worktrees.mts";
+const legacyHookMarker = "# managed by scripts/extension-worktrees.mjs";
+
+/** True when a hook file is this installer's own output, current or prior. */
+export function hookIsManaged(content: string): boolean {
+	return content.includes(hookMarker) || content.includes(legacyHookMarker);
+}
 const localGitEnvironmentKeys = [
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
   "GIT_COMMON_DIR",
@@ -869,7 +875,7 @@ function installHooks(context: HarnessContext): void {
     const path = join(hooksDir, event);
     if (existsSync(path)) {
       const current = readFileSync(path, "utf8");
-      if (!current.includes(hookMarker) && current !== content) {
+      if (!hookIsManaged(current)) {
         throw new Error(`Refusing to replace an unmanaged hook: ${path}`);
       }
     }
