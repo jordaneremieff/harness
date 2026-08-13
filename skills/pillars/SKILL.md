@@ -2,15 +2,14 @@
 name: pillars
 description: >
   Consult and apply the pillars: the doctrine corpus (principles, patterns,
-  heuristics) that governs agent judgment in this environment. Use when making
-  architectural or design decisions, evaluating trade-offs, constructing or
-  accepting option menus, presenting comparisons, deciding whether infrastructure
-  is warranted, choosing where information belongs, judging how much verification
-  a claim needs, flagging or repairing prose tells, or any judgment moment where
-  a governing principle might bind. Also use when the operator says "check
-  pillars", "what do the pillars say", "apply pillars", or asks for a decision to
-  be evaluated against principles, patterns, or heuristics. Also use when the
-  operator proposes, derives, revises, or challenges corpus entries.
+  heuristics) that governs agent judgment in this environment. Use at any
+  judgment moment where a governing principle might bind, for example:
+  architectural or design decisions, trade-offs, option menus and
+  comparisons, whether infrastructure is warranted, where information belongs,
+  how much verification a claim needs, flagging or repairing prose tells. Also
+  use when the operator says "check pillars", "what do the pillars say", "apply
+  pillars", asks for a decision to be evaluated against principles, patterns, or
+  heuristics, or proposes, derives, revises, or challenges corpus entries.
 compatibility: Requires the sibling package corpus at ../../pillars relative to this skill directory.
 ---
 

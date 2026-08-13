@@ -1,7 +1,16 @@
 ---
 name: harness
 description: >
-  Use when adding, changing, removing, testing, packaging, or evaluating any surface of the Pi agent harness; when a requested capability needs classification among an Agent Skill, extension-owned tool or command, provider, lifecycle hook, TUI, prompt template, theme, package, SDK/RPC integration, or standalone CLI; or when changing harness rules and shared contracts. Select the lowest sufficient surface, preserve fixed operator intent, load only the matching reference, and verify claims at the layer that owns them. New enumerated surfaces require a proposal and explicit operator approval before any write; reclassifying them as part of the requested outcome does not exempt them. Do not use for invoking or installing an unchanged resource, ordinary application code, unrelated uses of "tool", "skill", or "extension", or Pi core development.
+  Use when adding, changing, removing, testing, packaging, or evaluating any
+  surface of the Pi agent harness — Agent Skill, extension-owned tool or
+  command, provider, lifecycle hook, TUI, prompt template, theme, package,
+  SDK/RPC integration, standalone CLI — when a requested capability needs
+  classification among them, or when changing harness rules and shared
+  contracts. New enumerated surfaces require a proposal and explicit operator
+  approval before any write; reclassifying them as part of the requested
+  outcome does not exempt them. Do not use for invoking or installing an unchanged
+  resource, ordinary application code, unrelated uses of "tool", "skill", or
+  "extension", or Pi core development.
 compatibility: Pi-specific workflow. The bundled skill validator is dependency-free Node.js and supports Node.js 18 or newer; verify Pi-sensitive behavior against the active Pi installation.
 ---
 

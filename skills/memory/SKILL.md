@@ -1,7 +1,15 @@
 ---
 name: memory
 description: >
-  Manage durable operator memory as curated plain Markdown under the corpus root configured by PI_MEMORY_DIR. Use when the operator invokes the standalone term "memo" to create or update memory. Also use whenever the operator states information intended to remain true after the current session, even without mentioning memory. This includes preferences, corrections to durable assumptions, standing rules, approved decisions, verified environment facts, and reusable lessons; signals include "from now on," "always," "I prefer," and "for future sessions." Also use to remember, recall, update, or forget prior knowledge. Do not use for information scoped to the current task or next session, handovers, TODOs, logs, repository-defined facts, secrets, or speculation.
+  Use when the operator invokes the standalone term "memo", or states
+  information intended to remain true after the current session, even without
+  mentioning memory: preferences,
+  corrections to durable assumptions, standing rules, approved decisions,
+  verified environment facts, and reusable lessons. Signals include "from now
+  on," "always," "I prefer," and "for future sessions." Also use to remember,
+  recall, update, or forget prior knowledge. Do not use for information scoped
+  to the current task or next session, handovers, TODOs, logs,
+  repository-defined facts, secrets, or speculation.
 compatibility: Requires PI_MEMORY_DIR to contain an absolute path to the operator-local memory corpus, plus ordinary file search, read, and write tools.
 ---
 

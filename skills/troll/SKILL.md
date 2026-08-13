@@ -5,15 +5,10 @@ description: >
   this", "troll that claim", "realign this", "challenge that claim",
   "test this point", "this smells off", "is the session degrading",
   "steelman my angle", "set the other session back on track", "forge a
-  redirect". The operator's input may be an explicit angle or a bare instinct
-  that something is off. Construct the strongest challenge the operator's
-  angle supports from real facts and valid steps, defeatable by evidence;
-  with no angle, derive the strongest challenge the material supports. Name
-  the target's failure mode and map it to a pillar; the operator directs how
-  the challenge is delivered. Do not use for
-  reviewing the operator's own code, dispatching an in-session checker,
-  neutral fact-checks against the codebase, or any request for a neutral
-  verdict.
+  redirect". Fires on an explicit angle or on a bare instinct that something
+  is off, never on your own initiative. Do not use for reviewing the
+  operator's own code, dispatching an in-session checker, neutral fact-checks
+  against the codebase, or any request for a neutral verdict.
 compatibility: Uses the sibling package corpus at ../../pillars relative to this skill directory when present; without it the armory in references/pillar-armory.md carries the mapping and the confirmation states the mode. The clipboard handoff uses the harness clipboard extension.
 ---
 

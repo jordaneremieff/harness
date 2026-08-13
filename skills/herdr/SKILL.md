@@ -3,10 +3,9 @@ name: herdr
 description: >
   Use only when the user explicitly mentions Herdr or asks to use Herdr to
   drive sibling panes, agents, workspaces, or tabs from inside a Herdr-managed
-  terminal. Requires HERDR_ENV=1; stop if that variable is unset. Covers Herdr
-  socket ID rules, pane and agent primitives, and coordination recipes such as
-  splitting a sibling pane, prompting another agent, and waiting for output.
-  Do not use for ordinary shell or tmux work, or when Herdr is not running.
+  terminal: splitting a pane, prompting another agent, waiting for its output.
+  Requires HERDR_ENV=1; stop if that variable is unset. Do not use for ordinary
+  shell or tmux work, or when Herdr is not running.
 compatibility: Requires Herdr 0.8 or newer and a Herdr-managed pane (HERDR_ENV=1, HERDR_SOCKET_PATH, HERDR_PANE_ID set). The socket API is newline-delimited JSON over a Unix socket or Windows named pipe.
 ---
 

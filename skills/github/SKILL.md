@@ -1,13 +1,12 @@
 ---
 name: github
 description: >
-  Use only when the requested GitHub outcome is read-only: repository metadata,
-  code search, exact files at branches, tags, or commits, history and diffs,
-  issues, pull requests, checks, and releases. Optimizes bounded retrieval,
-  source extraction, immutable evidence links, and local analysis through gh.
-  Never use for requests to create, edit, delete, merge, review, rerun, follow,
-  subscribe, star, unstar, or otherwise change GitHub state. Do not use for
-  ordinary local Git work.
+  Use only for read-only GitHub outcomes through gh: repository metadata,
+  code search, exact files at a branch, tag, or commit, history and diffs,
+  issues, pull requests, checks, and releases, with immutable evidence links.
+  Never use for requests that
+  change GitHub state — create, edit, delete, merge, review, rerun, follow,
+  subscribe, star, unstar. Do not use for ordinary local Git work.
 compatibility: Requires GitHub CLI gh and network access. The local git CLI supports isolated analysis of multiple refs. Authentication is required for private data.
 ---
 
