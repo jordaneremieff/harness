@@ -14,9 +14,11 @@ The agent distills an effort into a durable Markdown handover. The extension own
 | `/stash` | command | Browse and pick up efforts (TUI overlay); bare invocation opens the browser. |
 | `/stash new <hint>` | command | Dispatch a separate agent to distill the live session plus the hint into a new stash. |
 | `/stash get <id>` | command | Pick up a stash by full id or unique prefix. |
+| `/stash get <id> <note>` | command | Pick up with an operator note: material recalled after the stash was written, delivered ahead of the artifact and authoritative on conflict. The artifact itself is never rewritten. |
+| `/stash release <id>` | command | Return an active stash to open (dead-session cleanup). |
 | `/stash abort` | command | Cancel the in-flight creation job. |
 
-Pickup is one system action. The command reads the selected artifact and sends it as the next user message through `pi.sendUserMessage()`. The agent does not need to orchestrate a second `stash_read` call. The current working directory is never changed implicitly; the pickup message names both the current workspace and the recorded project, and calls out a mismatch before edits begin. `stash_write` emits the equivalent fresh-session shortcut:
+Pickup is one system action. The command reads the selected artifact and sends it as the next user message through `pi.sendUserMessage()`. The agent does not need to orchestrate a second `stash_read` call. The current working directory is never changed implicitly; the pickup message names both the current workspace and the recorded project, and calls out a mismatch before edits begin. An optional operator note (`/stash get <id> <note…>`, or the browser's `a` key) rides along in the same message as a distinct amendment block placed ahead of the artifact, marked newer than it and authoritative on conflict; the note is trusted operator input, terminal-sanitized, capped at 20,000 characters, and never persisted — the stashed core material stays byte-identical. `stash_write` emits the equivalent fresh-session shortcut:
 
 ```bash
 pi "/stash get <id>"
@@ -26,7 +28,13 @@ pi "/stash get <id>"
 
 New artifacts begin `open`. Pickup atomically changes an open artifact to `active`
 before injecting its full handover; repeated pickup of an active artifact is
-idempotent. The pickup message names `stash_complete` and the exact id so the resumed
+idempotent, and the pickup message then disowns the earlier activation: it names
+the recorded activation time and states that any prior session's claim is
+superseded, so a fresh session never wastes effort reconciling a phantom
+predecessor. `release` returns an active artifact to pristine `open` — the
+operator-initiated inverse of pickup for a session that died or polluted its
+context; it keeps every durable byte and clears the activation claim. The
+pickup message names `stash_complete` and the exact id so the resumed
 agent has a deterministic closure path. `stash_complete` accepts only active artifacts,
 requires an outcome, and records `closed`, `closedAt`, and the outcome. A closed effort
 cannot be picked up until the operator deliberately reopens it.
@@ -42,8 +50,9 @@ Command forms are:
 /stash                         browse & pick up (TUI overlay)
 /stash new <hint>              distill the live session into a new stash
 /stash abort                   cancel an in-flight creation
-/stash get <id>                pick up a stash
+/stash get <id> [note]         pick up a stash, optionally with an operator note
 /stash complete <id> <outcome> close an active stash with a concrete outcome
+/stash release <id>            return an active stash to open
 /stash reopen <id>             return a closed stash to open
 /stash rotate <id>             archive a stale stash (recoverable)
 /stash help                    show usage
@@ -64,8 +73,9 @@ Rotation is the operator-initiated archive path for stale efforts: an open or
 closed artifact moves atomically into the store's dot-hidden `.trash` directory
 (see Storage), where it no longer appears in listings, pickup, or lifecycle
 changes. Active artifacts cannot be rotated while a session owns them;
-completion remains the only close path for an active effort. The file is
-retained byte-for-byte and restoring it is a plain move back into the store.
+completion remains the only close path for an active effort, and release the
+only way back to open. The file is retained byte-for-byte and restoring it is
+a plain move back into the store.
 
 ## Background distillation
 
@@ -173,9 +183,9 @@ The overlay loads the newest 200 artifacts and marks the count with `+` when old
 
 `/` enters filter mode. Typing filters across id, title, tags, project, branch, lifecycle state/timestamps/outcome, and preview text; Up/Down still selects matches, and Enter or Escape returns to browsing with the query intact. The browser preserves the query and selected stash across outcome or action-dialog round trips.
 
-Up/Down selects artifacts, `b`/Space pages the preview, Enter picks up, `c` copies the resume command with an in-footer success or failure flash, and `o` closes an active effort after the operator supplies its required outcome. `h` opens a self-contained explanation of the browser, its lifecycle effects, and the safe-close contract; Up/Down and `b`/Space scroll it, and `h` or Escape returns. Tab remains the discovery and uncommon-action path. Its dialog offers pick up or rotate (open), close with outcome (active), and reopen or rotate (closed); rotation asks for explicit confirmation and notes that the artifact remains recoverable.
+Up/Down selects artifacts, `b`/Space pages the preview, Enter picks up, `a` picks up with an operator note collected in the host (an empty note degrades to a plain pickup), `c` copies the resume command with an in-footer success or failure flash, and `o` closes an active effort after the operator supplies its required outcome. `h` opens a self-contained explanation of the browser, its lifecycle effects, and the safe-close contract; Up/Down and `b`/Space scroll it, and `h` or Escape returns. Tab remains the discovery and uncommon-action path. Its dialog offers pick up or rotate (open), close with outcome or release back to open (active), and reopen or rotate (closed); rotation asks for explicit confirmation and notes that the artifact remains recoverable.
 
-The browser does not provide mechanical state cycling. Copy is the only safe lifecycle-independent mutation that can remain inside the overlay. Pickup must inject the handover, completion must collect an outcome, and reopen or rotation requires deliberate confirmation, so those paths resolve to the host and reopen with refreshed store data.
+The browser does not provide mechanical state cycling. Copy is the only safe lifecycle-independent mutation that can remain inside the overlay. Pickup must inject the handover (plain or with a note — the note needs the host's input dialog), completion must collect an outcome, and reopen or rotation requires deliberate confirmation; release is reachable only through the actions dialog, where it sits behind an explicit choice and loses nothing durable, so those paths resolve to the host and reopen with refreshed store data.
 
 The component derives its row budget from the host TUI and the overlay's height margin. Every framed line paints the full overlay width, the key footer sits above a closing border, and very narrow or short terminals fall back to a bounded list with an explicit close line. Stored terminal and bidi controls are rendered as inert escape text.
 
@@ -185,7 +195,7 @@ The component derives its row budget from the host TUI and the overlay's height 
 - `store.ts`: private, collision-safe filesystem store, atomic lifecycle transitions, and the rotation archive.
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.
 - `panel.ts`: interactive browser state and rendering.
-- `pickup.ts`: self-contained pickup message.
+- `pickup.ts`: self-contained pickup message, operator amendment block, and already-active ownership handoff.
 - `distill.ts`: transcript capture, prompt building, payload validation, and the bounded SDK session seam.
 - `redact.ts`: deterministic credential redaction for transcript, references, payloads, and lifecycle outcomes.
 - `text.ts`: terminal-safe text and output bounds local to this extension.

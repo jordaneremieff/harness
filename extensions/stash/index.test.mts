@@ -282,6 +282,74 @@ describe("stash entrypoint", () => {
 		assert.equal(sent.length, 1, "a closed effort must not inject a pickup message");
 	});
 
+	it("delivers an operator note at pickup and disowns a phantom predecessor", async () => {
+		const { record } = await writeStash(
+			dir,
+			{ title: "Noted pickup target", summary: "NOTED_PICKUP_BODY" },
+			new Date("2025-07-26T10:00:00Z"),
+		);
+		const { commands, sent } = registry();
+		const ctx: any = {
+			mode: "rpc",
+			hasUI: true,
+			cwd: "/workspace",
+			isIdle: () => true,
+			ui: { notify: () => {} },
+		};
+
+		await commands.get("stash").handler(`get ${record.id}`, ctx);
+		assert.equal(sent.length, 1);
+		assert.doesNotMatch(sent[0].content, /Operator amendment/);
+		assert.doesNotMatch(sent[0].content, /already active/);
+
+		// A repickup from a fresh session carries the note and supersedes the dead one.
+		await commands.get("stash").handler(`get ${record.id} The migration landed; re-verify assumptions.`, ctx);
+		assert.equal(sent.length, 2);
+		assert.match(sent[1].content, /Operator amendment/);
+		assert.match(sent[1].content, /The migration landed/);
+		assert.match(sent[1].content, /already active/);
+		assert.match(sent[1].content, /superseded/);
+		assert.match(sent[1].content, /NOTED_PICKUP_BODY/);
+
+		const notifications: string[] = [];
+		await commands.get("stash").handler("get", {
+			mode: "rpc",
+			hasUI: true,
+			ui: { notify: (message: string) => notifications.push(message) },
+		});
+		assert.match(notifications.join("\n"), /Usage: \/stash get <id> \[note\]/);
+	});
+
+	it("releases an active stash back to open through the verb and refuses other states", async () => {
+		const { record } = await writeStash(
+			dir,
+			{ title: "Release verb target", summary: "phantom cleanup" },
+			new Date("2025-07-27T10:00:00Z"),
+		);
+		const { commands } = registry();
+		const notifications: string[] = [];
+		const ctx: any = {
+			mode: "rpc",
+			hasUI: true,
+			ui: { notify: (message: string) => notifications.push(message) },
+		};
+
+		await commands.get("stash").handler(`release ${record.id}`, ctx);
+		assert.match(notifications.join("\n"), /released only from active/i);
+
+		await transitionStash(dir, record.id, { action: "activate" });
+		notifications.length = 0;
+		await commands.get("stash").handler(`release ${record.id}`, ctx);
+		assert.match(notifications.join("\n"), /Released stash .* back to open/);
+		const target = (await listStashes(dir, { limit: 50 })).find((entry) => entry.meta.id === record.id);
+		assert.equal(target?.meta.state, "open");
+		assert.equal(target?.meta.activatedAt, undefined);
+
+		notifications.length = 0;
+		await commands.get("stash").handler("release", ctx);
+		assert.match(notifications.join("\n"), /Usage: \/stash release/);
+	});
+
 	it("serializes competing completions so one outcome cannot overwrite the other", async () => {
 		const { record } = await writeStash(
 			dir,
@@ -916,7 +984,7 @@ describe("stash command grammar", () => {
 		const actions = await complete("");
 		assert.deepEqual(
 			actions.map((item: any) => item.value),
-			["new", "get", "complete", "reopen", "rotate", "abort", "help"],
+			["new", "get", "complete", "release", "reopen", "rotate", "abort", "help"],
 		);
 		assert.equal(await complete("20270724"), null, "bare ids must not autocomplete as actions");
 		const ids = await complete("get 20270724");
@@ -991,15 +1059,11 @@ describe("stash command grammar", () => {
 		assert.match(notifications.join("\n"), /Create:[\s\S]*\/stash new <hint>[\s\S]*\/stash get/);
 	});
 
-	it("requires one id for /stash get", async () => {
+	it("requires an id for /stash get", async () => {
 		const { commands } = registry();
 		await assert.rejects(
 			commands.get("stash").handler("get", { mode: "json", hasUI: false, ui: {} }),
-			/Usage: \/stash get/,
-		);
-		await assert.rejects(
-			commands.get("stash").handler("get pickup target", { mode: "json", hasUI: false, ui: {} }),
-			/Usage: \/stash get/,
+			/Usage: \/stash get <id> \[note\]/,
 		);
 	});
 
@@ -1098,4 +1162,81 @@ describe("unknown and unread lifecycle states", () => {
 		assert.ok(items?.some((item: any) => item.description.includes("unknown (mystery)")));
 		assert.ok(!items?.some((item: any) => item.description.includes("open ·")));
 	});
+	it("collects an operator note from the browser a key and delivers it with pickup", async () => {
+		const { record } = await writeStash(
+			dir,
+			{ title: "Browser note target", summary: "BROWSER_NOTE_BODY" },
+			new Date("2027-07-26T10:00:00Z"),
+		);
+		const { commands, sent } = registry();
+		const inputs: string[] = [];
+		const ctx: any = {
+			mode: "tui",
+			hasUI: true,
+			isIdle: () => true,
+			cwd: "/workspace",
+			ui: {
+				notify: () => {},
+				input: async (prompt: string) => {
+					inputs.push(prompt);
+					return "Thursday landed the migration.";
+				},
+				custom: async (factory: any) => {
+					return new Promise((resolve) => {
+						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
+						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component: any) =>
+							component.handleInput("a"),
+						);
+					});
+				},
+			},
+		};
+		await commands.get("stash").handler("", ctx);
+		assert.deepEqual(inputs, ["Operator note for this pickup (empty for none):"]);
+		assert.equal(sent.length, 1);
+		assert.match(sent[0].content, /Operator amendment/);
+		assert.match(sent[0].content, /Thursday landed the migration/);
+		assert.match(sent[0].content, /BROWSER_NOTE_BODY/);
+		assert.ok((await listStashes(dir, { state: "active" })).some((entry) => entry.meta.id === record.id));
+	});
+
+	it("releases an active stash from the browser actions dialog", async () => {
+		const { record } = await writeStash(
+			dir,
+			{ title: "Dialog release target", summary: "phantom active" },
+			new Date("2027-07-27T10:00:00Z"),
+		);
+		await transitionStash(dir, record.id, { action: "activate" });
+		const { commands } = registry();
+		const notifications: string[] = [];
+		let rounds = 0;
+		const ctx: any = {
+			mode: "tui",
+			hasUI: true,
+			isIdle: () => true,
+			ui: {
+				notify: (message: string) => notifications.push(message),
+				custom: async (factory: any) => {
+					rounds++;
+					if (rounds > 1) return {};
+					return new Promise((resolve) => {
+						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
+						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component: any) =>
+							component.handleInput("\t"),
+						);
+					});
+				},
+				select: async () => "Release (return to open)",
+				confirm: async () => {
+					throw new Error("release must not require a separate confirmation dialog");
+				},
+			},
+		};
+		await commands.get("stash").handler("", ctx);
+		assert.match(notifications.join("\n"), /Released stash .* back to open/);
+		const target = (await listStashes(dir, { limit: 50 })).find((entry) => entry.meta.id === record.id);
+		assert.equal(target?.meta.state, "open");
+		assert.equal(target?.meta.activatedAt, undefined);
+	});
+
 });

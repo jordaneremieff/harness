@@ -373,7 +373,8 @@ export async function readStash(dir: string, idOrPrefix: string): Promise<ReadRe
 export type StashLifecycleChange =
 	| { action: "activate" }
 	| { action: "close"; outcome: string }
-	| { action: "reopen" };
+	| { action: "reopen" }
+	| { action: "release" };
 
 export interface StashRotateResult {
 	id: string;
@@ -480,6 +481,13 @@ export async function transitionStash(
 		if (outcome.length > 20_000) throw new Error("stash completion outcome exceeds 20000 characters");
 		if (state !== "active") throw new Error(`stash ${located.id} must be active before it can be closed (state: ${state})`);
 		patch = { state: "closed", closedAt: stamp, outcome };
+	} else if (change.action === "release") {
+		// The inverse of pickup: an active effort whose owning session died or
+		// polluted its context returns to pristine open, so a fresh session picks
+		// it up without reconciling a phantom predecessor. Nothing durable is
+		// lost — the artifact body is untouched and pickup is one action away.
+		if (state !== "active") throw new Error(`stash ${located.id} can be released only from active state (state: ${state})`);
+		patch = { state: "open", activatedAt: undefined };
 	} else {
 		if (state !== "closed") throw new Error(`stash ${located.id} can be reopened only from closed state (state: ${state})`);
 		patch = { state: "open", closedAt: undefined, outcome: undefined };

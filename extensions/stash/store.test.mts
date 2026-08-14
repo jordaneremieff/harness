@@ -187,6 +187,35 @@ describe("stash lifecycle transitions", () => {
 		assert.equal((await stat(path)).mode & 0o777, 0o600);
 	});
 
+	it("releases an active stash back to pristine open and refuses other states", async () => {
+		const lifecycleDir = join(dir, "release-store");
+		const { record, path } = await writeStash(
+			lifecycleDir,
+			{ title: "Release", summary: "dead-session handover" },
+			at("2026-08-13T09:00:00Z"),
+		);
+		await writeFile(path, (await readFile(path, "utf8")).replace('state: "open"', 'custom: {"keep":true}\nstate: "open"'), "utf8");
+
+		await assert.rejects(transitionStash(lifecycleDir, record.id, { action: "release" }), /released only from active/i);
+
+		await transitionStash(lifecycleDir, record.id, { action: "activate" }, at("2026-08-13T10:00:00Z"));
+		const released = await transitionStash(lifecycleDir, record.id, { action: "release" }, at("2026-08-13T11:00:00Z"));
+		assert.equal(released.meta.state, "open");
+		assert.equal(released.meta.activatedAt, undefined);
+		assert.equal(released.meta.closedAt, undefined);
+		assert.equal(released.meta.outcome, undefined);
+		assert.doesNotMatch(released.content, /^activatedAt:/m);
+		assert.match(released.content, /^custom: \{"keep":true\}$/m);
+		assert.equal((await stat(path)).mode & 0o777, 0o600);
+		assert.equal((await listStashes(lifecycleDir, { state: "open" }))[0].meta.id, record.id);
+		assert.equal((await listStashes(lifecycleDir, { state: "active" })).length, 0);
+
+		await assert.rejects(transitionStash(lifecycleDir, record.id, { action: "release" }), /released only from active/i);
+		await transitionStash(lifecycleDir, record.id, { action: "activate" }, at("2026-08-13T12:00:00Z"));
+		await transitionStash(lifecycleDir, record.id, { action: "close", outcome: "Done." }, at("2026-08-13T13:00:00Z"));
+		await assert.rejects(transitionStash(lifecycleDir, record.id, { action: "release" }), /released only from active/i);
+	});
+
 	it("normalizes metadata-less artifacts to open and filters lists by lifecycle state", async () => {
 		const lifecycleDir = join(dir, "legacy-lifecycle-store");
 		await mkdir(lifecycleDir);

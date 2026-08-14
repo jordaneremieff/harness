@@ -18,6 +18,7 @@ export interface StashPanelResult {
 	selected?: StashEntry;
 	manage?: StashEntry;
 	complete?: StashEntry;
+	note?: StashEntry;
 	filter?: string;
 	selectedId?: string;
 	selectedIndex?: number;
@@ -287,7 +288,8 @@ export class StashPanel {
 			"A two-pane browser over durable stashed work. Select an effort on the left and read its handover on the right. To create another stash, run /stash new <hint>; the hint guides what the distiller preserves.",
 		]);
 		section("What it does", [
-			"Pickup activates a stash and resumes it in this session. Active efforts can close with a concrete outcome. Copy keeps the browser open; the actions dialog exposes guarded reopen and archive operations.",
+			"Pickup activates a stash and resumes it in this session. Press a to pick up with an operator note: material you recall since the stash was written, delivered ahead of the artifact and authoritative where the two conflict.",
+			"Active efforts can close with a concrete outcome or be released back to open, for example when the session that picked them up died without completing them. Copy keeps the browser open; the actions dialog exposes guarded reopen and archive operations.",
 		]);
 		section("Closing", [
 			"Closing without pickup discards nothing. Every stash stays on disk, and no lifecycle state changes unless you choose an action.",
@@ -468,6 +470,11 @@ export class StashPanel {
 			if (this.actionable(selected) && selected.meta.state === "active") this.finish({ complete: selected });
 			return;
 		}
+		if (data === "a") {
+			const selected = this.current();
+			if (this.actionable(selected)) this.finish({ note: selected });
+			return;
+		}
 		if (data === "c") {
 			const selected = this.current();
 			if (selected) this.copy(selected);
@@ -515,7 +522,7 @@ export class StashPanel {
 			this.keyPair("/", "filter"),
 		];
 		if (actionable) {
-			parts.push(this.keyPair("tab", "actions"), this.keyPair("enter", "pick"));
+			parts.push(this.keyPair("tab", "actions"), this.keyPair("enter", "pick"), this.keyPair("a", "note"));
 		} else {
 			parts.push(this.keyPair("enter/tab", "no actions"));
 		}

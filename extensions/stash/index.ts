@@ -339,8 +339,9 @@ const rotateLifecycle = (id: string, signal?: AbortSignal) =>
 /** Reserved first-token actions exposed by `/stash` autocomplete. */
 const STASH_VERBS: ReadonlyArray<{ value: string; label: string; description: string }> = [
 	{ value: "new", label: "new", description: "<hint> · distill the live session into a new stash" },
-	{ value: "get", label: "get", description: "<id> · pick up by full id or unique prefix" },
+	{ value: "get", label: "get", description: "<id> [note] · pick up, optionally with an operator note" },
 	{ value: "complete", label: "complete", description: "<id> <outcome> · close an active stash" },
+	{ value: "release", label: "release", description: "<id> · return an active stash to open" },
 	{ value: "reopen", label: "reopen", description: "<id> · return a closed stash to open" },
 	{ value: "rotate", label: "rotate", description: "<id> · archive a stale stash (recoverable)" },
 	{ value: "abort", label: "abort", description: "cancel an in-flight stash creation" },
@@ -364,8 +365,9 @@ const STASH_USAGE = [
 	"",
 	"Retrieve & manage:",
 	"  /stash                      browse & pick up (TUI overlay)",
-	"  /stash get <id>             pick up a stash",
+	"  /stash get <id> [note]      pick up a stash; the note amends it at pickup time",
 	"  /stash complete <id> <out>  close an active stash with a concrete outcome",
+	"  /stash release <id>         return an active stash to open (dead-session cleanup)",
 	"  /stash reopen <id>          return a closed stash to open",
 	"  /stash rotate <id>          archive a stale stash (recoverable)",
 	"  /stash help                 show this usage",
@@ -410,9 +412,9 @@ async function stashArgumentCompletions(argumentText: string): Promise<StashComp
 	const verb = text.slice(0, firstSpace);
 	const tail = text.slice(firstSpace + 1);
 	// All id-bearing verbs take one id; a second token means the user is past it
-	// (for complete, that token begins the outcome).
+	// (for complete, that token begins the outcome; for get, the operator note).
 	if (tail.includes(" ")) return null;
-	if (verb === "get" || verb === "complete" || verb === "reopen" || verb === "rotate") {
+	if (verb === "get" || verb === "complete" || verb === "reopen" || verb === "release" || verb === "rotate") {
 		return stashIdCompletions(tail, (id, state, title) => ({
 			value: `${verb} ${id}`,
 			label: id,
@@ -428,6 +430,7 @@ async function deliverPickup(
 	ctx: ExtensionCommandContext,
 	id: string,
 	fail: (message: string) => void,
+	note?: string,
 ): Promise<void> {
 	let activated: Awaited<ReturnType<typeof changeLifecycle>>;
 	try {
@@ -437,7 +440,13 @@ async function deliverPickup(
 		return;
 	}
 	try {
-		const message = buildPickupMessage(activated.id, activated.content, { currentCwd: ctx.cwd });
+		const message = buildPickupMessage(activated.id, activated.content, {
+			currentCwd: ctx.cwd,
+			note,
+			// An idempotent repickup means the artifact was already active: the
+			// recorded activation belongs to a predecessor this session supersedes.
+			activatedAt: activated.changed ? undefined : activated.meta.activatedAt,
+		});
 		if (ctx.isIdle()) {
 			pi.sendUserMessage(message);
 		} else {
@@ -460,6 +469,7 @@ async function browseAndPickup(
 	let browserSelectedId: string | undefined;
 	let browserSelectedIndex: number | undefined;
 	let pickupId: string | undefined;
+	let pickupNote: string | undefined;
 
 	while (!pickupId) {
 		if (ctx.mode !== "tui") {
@@ -483,6 +493,7 @@ async function browseAndPickup(
 			selected?: (typeof entries)[number];
 			manage?: (typeof entries)[number];
 			complete?: (typeof entries)[number];
+			note?: (typeof entries)[number];
 			filter?: string;
 			selectedId?: string;
 			selectedIndex?: number;
@@ -513,6 +524,19 @@ async function browseAndPickup(
 			pickupId = result.selected.meta.id;
 			break;
 		}
+		if (result?.note) {
+			// The `a` path: collect the amendment in the host, then pick up with it.
+			// An empty answer degrades to a plain pickup, never a dead end.
+			try {
+				const answer = await ctx.ui.input("Operator note for this pickup (empty for none):");
+				pickupNote = answer?.trim() || undefined;
+			} catch (error) {
+				fail(safeLine(error instanceof Error ? error.message : String(error)));
+				return;
+			}
+			pickupId = result.note.meta.id;
+			break;
+		}
 		if (result?.complete) {
 			try {
 				const outcome = await ctx.ui.input("Concrete outcome for this stashed effort:");
@@ -541,7 +565,7 @@ async function browseAndPickup(
 		const state: StashState = result.manage.meta.state;
 		const choices =
 			state === "active"
-				? ["Close with outcome", "Back"]
+				? ["Close with outcome", "Release (return to open)", "Back"]
 				: state === "closed"
 					? ["Reopen", "Rotate (archive)", "Back"]
 					: ["Pick up", "Rotate (archive)", "Back"];
@@ -556,6 +580,11 @@ async function browseAndPickup(
 					const transitioned = await changeLifecycle(result.manage.meta.id, { action: "close", outcome });
 					ctx.ui.notify(`Closed stash ${transitioned.id}.`, "info");
 				}
+			} else if (action === "Release (return to open)") {
+				// Deliberate dialog position, no further confirm: release keeps every
+				// durable byte and pickup remains one action away.
+				const transitioned = await changeLifecycle(result.manage.meta.id, { action: "release" });
+				ctx.ui.notify(`Released stash ${transitioned.id} back to open.`, "info");
 			} else if (action === "Reopen") {
 				const confirmed = await ctx.ui.confirm(
 					"Reopen stashed effort?",
@@ -581,7 +610,7 @@ async function browseAndPickup(
 		}
 	}
 
-	if (pickupId) await deliverPickup(pi, ctx, pickupId, fail);
+	if (pickupId) await deliverPickup(pi, ctx, pickupId, fail, pickupNote);
 }
 
 export default function (
@@ -765,7 +794,7 @@ export default function (
 	});
 
 	pi.registerCommand("stash", {
-		description: "Create, browse, get, close, reopen, or rotate stashed efforts",
+		description: "Create, browse, get, complete, release, reopen, or rotate stashed efforts",
 		getArgumentCompletions: stashArgumentCompletions,
 		handler: async (args, ctx) => {
 			const raw = args.trim();
@@ -825,11 +854,14 @@ export default function (
 
 			if (verb === "get") {
 				const id = parts[1];
-				if (!id || parts.length !== 2) {
-					fail("Usage: /stash get <id>");
+				if (!id) {
+					fail("Usage: /stash get <id> [note]");
 					return;
 				}
-				await deliverPickup(pi, ctx, id, fail);
+				// Every token after the id is the operator note: material the operator
+				// recalls after the artifact was written, delivered ahead of it.
+				const note = parts.slice(2).join(" ").trim() || undefined;
+				await deliverPickup(pi, ctx, id, fail, note);
 				return;
 			}
 
@@ -843,6 +875,21 @@ export default function (
 				try {
 					const transitioned = await changeLifecycle(id, { action: "close", outcome });
 					if (ctx.hasUI) ctx.ui.notify(`Closed stash ${transitioned.id}.`, "info");
+				} catch (error) {
+					fail(safeLine(error instanceof Error ? error.message : String(error)));
+				}
+				return;
+			}
+
+			if (verb === "release") {
+				const id = parts[1];
+				if (!id || parts.length !== 2) {
+					fail("Usage: /stash release <id>");
+					return;
+				}
+				try {
+					const transitioned = await changeLifecycle(id, { action: "release" });
+					if (ctx.hasUI) ctx.ui.notify(`Released stash ${transitioned.id} back to open.`, "info");
 				} catch (error) {
 					fail(safeLine(error instanceof Error ? error.message : String(error)));
 				}

@@ -157,6 +157,19 @@ describe("StashPanel", () => {
 		assert.equal((completed.calls.done as any).complete.meta.id, samples()[1].meta.id);
 	});
 
+	it("hands the selected entry to the host for a noted pickup on a", async () => {
+		const noted = rig(samples());
+		noted.panel.handleInput("a");
+		assert.equal((noted.calls.done as any).note.meta.id, samples()[0].meta.id);
+		assert.equal((noted.calls.done as any).selected, undefined);
+
+		// An entry with an unknown state must not offer a noted pickup.
+		const invalid = rig([entry("20260724T120000Z-bad", "Broken", "body", { previewError: "unreadable header" })]);
+		invalid.panel.handleInput("a");
+		await flush();
+		assert.equal(invalid.calls.done, undefined);
+	});
+
 	it("shows clipboard failures in the footer", async () => {
 		const failed = rig(samples(), 20, "", false, async () => {
 			throw new Error("clipboard unavailable");
