@@ -1,9 +1,10 @@
 /**
  * Worker runtime adapter: presents a coding-agent AgentSession through pi's
  * PiSessionRuntime surface so a worker can be served over PiServer as a real
- * protocol session. No shipping client consumes that socket yet (see server.ts);
- * the adapter's present value is that it is the extension's ONE seam onto pi's
- * private session state, documented below.
+ * protocol session. Released Pi 0.84.2 has no client path that consumes this
+ * socket (see server.ts). Upstream development includes unreleased experimental
+ * surfaces. This extension targets released APIs and keeps this file as its ONE
+ * replaceable current-runtime seam onto pi's private session state.
  *
  * Three things AgentSession does not hand over cleanly, and how this handles them:
  *
@@ -26,13 +27,13 @@
  * state. Nothing else — not index.ts, not panel.ts — may reach through an
  * `as unknown as { agent: ... }` cast. Everything downstream consumes the
  * protocol-shaped values produced here, because `PiSessionRuntime` and protocol
- * v1 are published, versioned interfaces while `agent.state` is the private
- * interior of a runtime upstream has frozen (issues #7470, #7511: the old
- * AgentSession runtime stays as-is; AgentHarness carries the new guarantees).
- * One seam means one file to change when AgentHarness lands.
+ * v1 are released, versioned interfaces while `agent.state` is private. V2
+ * adoption starts only after an operational release; this file is the boundary
+ * to replace then. No feature detection, speculative adapter, or dual path lives
+ * here.
  *
  * The private touchpoints, each with the test that must be re-run on any Pi
- * upgrade:
+ * upgrade (verified against released Pi 0.84.2):
  *
  * | Touchpoint                     | Used by                | Upgrade test |
  * |--------------------------------|------------------------|--------------|
@@ -354,7 +355,9 @@ export class WorkerRuntime implements PiSessionRuntime {
 		this.abortRequested = false;
 		this.phase = "turn";
 		try {
-			await this.session.prompt(input.text);
+			await this.session.prompt(input.text, {
+				expandPromptTemplates: false,
+			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (/already processing|compaction/.test(message)) {

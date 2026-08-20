@@ -70,12 +70,17 @@ Per-task fields: `task` (required), `model`, `thinking`, `tools`, `cwd`,
   values — `thinking` is what ran, `thinkingRequested` is what was asked for —
   and every roster, dispatch, and result line shows the requested level when it
   differs.
-- **tools** — omitted: the worker snapshots the parent session's active tool
-  surface. Reproduction is by registration source, so it covers built-ins and
-  file-backed extension registrations, including a tool an extension registers
-  from its `session_start` handler — the worker runs that handler too (see
-  [Worker lifecycle](#worker-lifecycle)). Built-ins are rebuilt for the worker cwd, and extension registration
-  files are reloaded from their registered source paths. Provided: exactly the
+- **tools** — omitted: the worker snapshots the dispatching session's current
+  active tool surface. The dispatching session's live registry wins, and its
+  session-keyed recorded surface is the fallback for a fresh module instance.
+  A real session with neither source fails loudly and asks for explicit `tools`;
+  it never broadens to the root registry. Reproduction is by registration
+  source, so it covers built-ins and file-backed extension
+  registrations, including a tool an extension registers from its
+  `session_start` handler — the worker runs that handler too (see
+  [Worker lifecycle](#worker-lifecycle)). Built-ins are rebuilt for the worker
+  cwd, and extension registration files are reloaded from their registered
+  source paths. Provided: exactly the
   declared set plus the disclosed `submit_result` protocol tool. A declared
   tool that is not in the current registry fails the dispatch with its name. A
   registration without a loadable source fails before worker creation. The
@@ -150,16 +155,20 @@ would add them to a worker built with `noSkills`.
   batched with a sequential tool such as `subagent_steer`/`subagent_kill`, the
   sibling call can be dropped on abort, leaving an unanswered toolCall in the
   worker's session file.
-- Completion is persisted before any notification. While the parent is alive, a
-  natural completion or failure delivers a `subagent_result` message (follow-up;
-  triggers a turn when idle). Explicit cancellation returns its outcome through
+- Completion is persisted before any notification. While the owning session is
+  alive, a natural completion or failure delivers a `subagent_result` message
+  to that session (follow-up; triggers a turn when idle). For a grandchild, the
+  owning worker receives the message, resumes, and can collect the result.
+  Explicit cancellation returns its outcome through
   the cancel action and does not enqueue a duplicate follow-up.
-  `notificationQueuedAt` records when that follow-up was queued, not when the
-  operator saw it. The notification is only PRESENTED the next time the parent
-  goes idle, and a queued delivery is not consumed by
-  `subagent_status`/`subagent_collect` — if you collected a result while its
-  notification was still queued, the notification still arrives. That is a
-  display-level duplicate, not a double write; the store has one result.
+  `notificationQueuedAt` records only that the owning session's delivery API
+  accepted the synchronous `sendMessage()` call. Pi observes asynchronous
+  delivery failures internally, so the marker proves neither queue acceptance
+  nor later processing. A top-level owner displays the message when it goes
+  idle. A worker owner processes it as a follow-up turn when it goes idle.
+  `subagent_status` and `subagent_collect` do not cancel the delivery attempt.
+  If Pi processes it later, the result can repeat at the presentation or
+  follow-up level, but the store still has one result.
 - The store resyncs cumulative usage from the session's own statistics whenever
   a message ends, a compaction ends, or a branch summary finishes, so a
   replacement session sees real numbers even if this one dies mid-flight.
@@ -248,19 +257,22 @@ timer. Neither samples a clock in a loop, and neither ends a worker.
 
 ### Nested dispatch (a worker dispatching its own workers)
 
-A worker session registers the same tools, so it can dispatch its own
-subagents. Two behaviors to know before relying on that:
+A worker whose active surface includes `subagent` can dispatch its own workers.
+The same contracts apply at every depth:
 
-- The nested worker's tool surface resolves from the TOP-LEVEL parent's
-  registration (the module-global API handle is fenced to the parent during
-  worker construction), not from the dispatching worker's restricted surface.
-  A tool-restricted worker's child therefore inherits more than the worker
-  had. Dispatch children with an explicit `tools` list if the restriction
-  matters.
-- A nested worker's completion notification is delivered to the top-level
-  parent session, not to the worker that dispatched it (the parent owns the
-  message channel). The dispatching worker still gets the dispatch call's own
-  return value; only the asynchronous completion notice routes to the parent.
+- Omitted `tools` inherits the dispatching worker's current active surface,
+  exactly, plus `submit_result`. It never broadens to the root surface. The
+  worker's session-keyed recorded surface lets a fresh per-CWD module instance
+  reproduce the registry when its live API is unavailable.
+- The dispatching worker session owns its nested host, socket, timers, delivery
+  API, and workers. Its `session_shutdown` aborts and finalizes unfinished
+  grandchildren, closes the host, and removes its recorded surface. One worker
+  session cannot close another worker session's resources, even when both use
+  the same module instance.
+- A completed grandchild sends `subagent_result` to the worker that dispatched
+  it. That worker receives a follow-up turn and can call `subagent_collect`.
+  Owner shutdown removes the delivery API before aborting grandchildren, so an
+  `owner_lost` settlement never starts a new turn in a session being disposed.
 
 ## Continuing a terminal worker
 
@@ -311,20 +323,19 @@ extraction would guess which model-authored content was the deliverable.
 
 ### The socket, and what it is for
 
-Each parent session hosts a `PiServer` on a unix socket and registers every
-worker it owns as a real protocol session. Nothing in the shipping pi CLI
-consumes that socket today: the `pi server` / `pi client` commands exist
-upstream as parser composition only, and the interactive TUI drives one local
-session at a time. So the socket currently has **no operator-facing consumer**,
-and no command in this extension prints it as an attach hint.
+Each session that dispatches workers hosts a `PiServer` on its own unix socket
+and registers only the workers that session owns as real protocol sessions.
+Released Pi 0.84.2 has no CLI or TUI path that consumes this extension's socket,
+so it has **no operator-facing consumer** and the extension prints no attach
+hint.
 
-It is kept deliberately, not by accident. `PiServerService` + `PiSessionRuntime`
-is the application boundary upstream designates for exactly this case, and it is
-the single versioned seam through which the extension reads pi's session state
-(see `runtime.ts`). When upstream's TUI learns to consume a remote session, the
-work to open a worker as a real steerable console inline is already done. Until
-then the socket is exercised by the colocated conformance test, which drives a
-real protocol client across it.
+Upstream development includes unreleased experimental server, client, event,
+and TUI surfaces. This extension targets released APIs. V2 adoption starts only
+after an operational release. Until then, the released `PiServerService` and
+`PiSessionRuntime` boundary remains one replaceable current-runtime seam in
+`runtime.ts`. The extension has no unreleased adapter or dual path. The socket is
+exercised by the colocated conformance test, which drives a real protocol client
+across it.
 
 The subagent extension also publishes one ambient footer status through Pi's
 public `subagent` status key. It shows this parent session's local active count

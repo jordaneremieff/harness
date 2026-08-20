@@ -69,7 +69,11 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { StringEnum, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import {
+	StringEnum,
+	getSupportedThinkingLevels,
+	type Usage,
+} from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
 import { WorkerRuntime, transcriptFromMessages } from "./runtime.ts";
@@ -256,7 +260,8 @@ export interface WorkerRecord {
 	/** Dollars one run leg may spend before the worker is paused. Null means no
 	 * budget: budgets are opt-in per task or through the PI setting. */
 	budgetUsd: number | null;
-	/** Completion follow-up was queued; presentation may occur later. */
+	/** The owning session's delivery API accepted the synchronous send call.
+	 * Async queueing or processing may still fail inside Pi. */
 	notificationQueuedAt: number | null;
 	error: string | null;
 	stopReason: string | null;
@@ -575,6 +580,73 @@ interface ResolvedModel {
 	id: string;
 }
 
+function normalizedModelText(value: string): string {
+	return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function modelEditDistance(left: string, right: string): number {
+	const a = [...normalizedModelText(left)];
+	const b = [...normalizedModelText(right)];
+	const rows = Array.from({ length: a.length + 1 }, () =>
+		Array<number>(b.length + 1).fill(0),
+	);
+	for (let i = 0; i <= a.length; i++) rows[i][0] = i;
+	for (let j = 0; j <= b.length; j++) rows[0][j] = j;
+	for (let i = 1; i <= a.length; i++) {
+		for (let j = 1; j <= b.length; j++) {
+			const substitution = a[i - 1] === b[j - 1] ? 0 : 1;
+			rows[i][j] = Math.min(
+				rows[i - 1][j] + 1,
+				rows[i][j - 1] + 1,
+				rows[i - 1][j - 1] + substitution,
+			);
+			if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+				rows[i][j] = Math.min(rows[i][j], rows[i - 2][j - 2] + 1);
+			}
+		}
+	}
+	return rows[a.length][b.length];
+}
+
+/** Bounded, deterministic corrections for a registry miss. */
+export function suggestModels(
+	raw: string,
+	models: ReadonlyArray<{ provider: string; id: string }>,
+	limit = 3,
+): string[] {
+	const slash = raw.indexOf("/");
+	const rawProvider = slash > 0 ? raw.slice(0, slash) : "";
+	const rawId = slash > 0 ? raw.slice(slash + 1) : raw;
+	const rawProviderNormalized = normalizedModelText(rawProvider);
+	const rawIdNormalized = normalizedModelText(rawId);
+	const unique = new Map<string, { provider: string; id: string }>();
+	for (const model of models) {
+		unique.set(`${model.provider}/${model.id}`, model);
+	}
+	return [...unique.entries()]
+		.map(([full, model]) => {
+			const idNormalized = normalizedModelText(model.id);
+			const providerNormalized = normalizedModelText(model.provider);
+			const exactId = idNormalized === rawIdNormalized;
+			const exactProvider =
+				rawProviderNormalized !== "" &&
+				providerNormalized === rawProviderNormalized;
+			const score =
+				modelEditDistance(rawId, model.id) * 10 +
+				modelEditDistance(raw, full) -
+				(exactId ? 1_000 : 0) -
+				(exactProvider ? 50 : 0);
+			return { full, score };
+		})
+		.sort((left, right) =>
+			left.score === right.score
+				? left.full.localeCompare(right.full)
+				: left.score - right.score,
+		)
+		.slice(0, Math.max(0, limit))
+		.map(({ full }) => full);
+}
+
 function resolveModel(
 	ctx: ExtensionContext,
 	raw: string | undefined,
@@ -595,8 +667,16 @@ function resolveModel(
 				null;
 		}
 		if (!found) {
+			const available = registry.getAvailable();
+			const suggestions = suggestModels(raw, available);
+			const correction =
+				suggestions.length > 0
+					? ` Did you mean: ${suggestions.join(", ")}?`
+					: "";
 			return {
-				error: `model "${raw}" is not in the current registry. Check the id with: pi --list-models`,
+				error:
+					`model "${raw}" is not in the current registry (${available.length} models).` +
+					`${correction} Check the id with: pi --list-models`,
 			};
 		}
 		if (!registry.hasConfiguredAuth(found)) {
@@ -626,11 +706,28 @@ interface ResolvedTools {
 	metadata: Map<string, ToolInfo>;
 }
 
-function parentToolSurface(ctx: ExtensionContext): ParentToolSurface {
-	const api = piApi ?? (ctx as unknown as ExtensionAPI);
+export function parentToolSurface(
+	ctx: ExtensionContext,
+): ParentToolSurface | null {
+	let sessionId = "";
+	try {
+		sessionId = ctx.sessionManager.getSessionId();
+	} catch {
+		// Fall through to the root registration only when no session identity exists.
+	}
+	const sessionApi = sessionApis.get(sessionId);
+	if (sessionApi) {
+		return {
+			active: sessionApi.getActiveTools(),
+			all: sessionApi.getAllTools(),
+		};
+	}
+	const recorded = sharedWorkerState.workerSurfaces.get(sessionId);
+	if (recorded) return recorded;
+	if (sessionId !== "" || !piApi) return null;
 	return {
-		active: api.getActiveTools?.() ?? [],
-		all: api.getAllTools?.() ?? [],
+		active: piApi.getActiveTools(),
+		all: piApi.getAllTools(),
 	};
 }
 
@@ -688,7 +785,17 @@ function resolveTools(
 	ctx: ExtensionContext,
 	declared: string[] | undefined,
 ): ResolvedTools | { error: string } {
-	return resolveToolSurface(parentToolSurface(ctx), declared);
+	const surface = parentToolSurface(ctx);
+	if (!surface) {
+		if (declared === undefined) {
+			return {
+				error:
+					"cannot reproduce the parent's active tool surface for the dispatching session; pass `tools` explicitly",
+			};
+		}
+		return resolveToolSurface({ active: [], all: [] }, declared);
+	}
+	return resolveToolSurface(surface, declared);
 }
 
 function workerSystemPrompt(model: string): string {
@@ -814,6 +921,7 @@ export function finalizeWorker(
 		// Terminal evidence is written first. Cleanup then runs exactly once even
 		// if settlement, cancellation, and session shutdown converge on this id.
 		sharedWorkerState.submittedSessionIds.delete(record.sessionId ?? "");
+		sharedWorkerState.workerSurfaces.delete(record.sessionId ?? "");
 		releaseLiveWorker(id);
 	}
 }
@@ -856,11 +964,18 @@ export function completionNeedsNotification(
 	return record.state !== "cancelled" && !record.notificationQueuedAt;
 }
 
-function notifyCompletion(record: WorkerRecord): void {
+export function notifyCompletion(
+	record: WorkerRecord,
+	api: Pick<ExtensionAPI, "sendMessage"> | null | undefined = undefined,
+): boolean {
 	try {
 		// Explicit cancellation already returns its terminal outcome through the
 		// control surface. Do not trigger a duplicate parent turn for that state.
-		if (!completionNeedsNotification(record)) return;
+		const target =
+			api === undefined
+				? (sessionApis.get(record.ownerSession ?? "") ?? null)
+				: api;
+		if (!completionNeedsNotification(record) || !target) return false;
 		const files = workerFiles(record.id);
 		const hasResult = record.state === "done" && existsSync(files.result);
 		let body: string;
@@ -891,9 +1006,10 @@ function notifyCompletion(record: WorkerRecord): void {
 		// output: the worker reports, the parent decides.
 		body = markWorkerAuthored(body, record.id);
 		try {
-			// Best-effort send from the observing parent. The store is the truth;
-			// notificationQueuedAt records that the follow-up was queued.
-			piApi?.sendMessage(
+			// Best-effort send to the owning session. ExtensionAPI.sendMessage is
+			// synchronous and Pi observes async delivery failure internally, so the
+			// marker records only that this call returned without throwing.
+			target.sendMessage(
 				{
 					customType: "subagent_result",
 					content: `${header}\n\n${body}`,
@@ -915,35 +1031,34 @@ function notifyCompletion(record: WorkerRecord): void {
 			);
 			record.notificationQueuedAt = Date.now();
 			writeWorker(record);
+			return true;
 		} catch {
 			// Notification is best-effort; the store remains the truth.
+			return false;
 		}
 	} catch {
 		// Best-effort: a disk error or malformed record must not kill the parent.
+		return false;
 	}
 }
 
-/**
- * The dispatching session's own API. Worker sessions are built in this same
- * process, and pi's extension loader hands them the SAME module instance — so
- * their registration would otherwise overwrite this and every completion
- * notification would be delivered into a worker instead of to the operator.
- * Only a registration that happens outside worker construction is the parent's.
- */
+/** Root registration fallback for contexts with no session identity. Real
+ * sessions use `sessionApis`, keyed from session_start and removed before
+ * session_shutdown aborts owned workers. */
 let piApi: ExtensionAPI | null = null;
+const sessionApis = new Map<string, ExtensionAPI>();
 
 /**
  * Worker-construction state that must be visible across module instances.
  * pi's extension loader caches extension factories per cwd (loader.js
  * `useExtensionCacheCwd`) and imports a FRESH module instance when the cwd
  * changes — a custom-cwd worker therefore loads this file as a new copy with
- * its own module scope. Worker identity (the construction count) and the
- * submitted marks must live in process-global state so the fresh copy still
- * takes the worker branch and sees the marks the dispatcher's copy wrote.
- * Everything else (piApi, liveWorkers, sessionReplacing) stays module-local
- * per instance on purpose.
+ * its own module scope. Worker identity, submitted marks, and recorded fallback
+ * surfaces must live in process-global state so the fresh copy sees them.
+ * `piApi`, `sessionApis`, `liveWorkers`, `hosts`, and `replacingSessions` remain
+ * module-local; their maps and sets are keyed by owning session where needed.
  */
-const WORKER_STATE_KEY = Symbol.for("pi-subagent.worker-construction-state");
+const WORKER_STATE_KEY = Symbol.for("pi-subagent.worker-session-state");
 interface WorkerConstructionState {
 	/** Depth of in-flight worker construction; concurrent dispatches nest. */
 	constructingWorkers: number;
@@ -963,6 +1078,9 @@ interface WorkerConstructionState {
 	 * captured construction state that concurrent dispatches could race.
 	 */
 	submittedSessionIds: Set<string>;
+	/** Actual worker tool registries, keyed by worker session id. Fresh module
+	 * instances use this when they dispatch nested workers. */
+	workerSurfaces: Map<string, ParentToolSurface>;
 }
 /**
  * Process-global worker-construction state (see WORKER_STATE_KEY). Exported
@@ -975,10 +1093,23 @@ if (!stateOnGlobal) {
 	stateOnGlobal = {
 		constructingWorkers: 0,
 		submittedSessionIds: new Set<string>(),
+		workerSurfaces: new Map<string, ParentToolSurface>(),
 	};
 	sharedStateHost[WORKER_STATE_KEY] = stateOnGlobal;
 }
 export const sharedWorkerState: WorkerConstructionState = stateOnGlobal;
+
+export function recordWorkerSurface(
+	sessionId: string,
+	active: readonly string[],
+	all: readonly ToolInfo[],
+): void {
+	if (!sessionId) return;
+	sharedWorkerState.workerSurfaces.set(sessionId, {
+		active: [...active],
+		all: [...all],
+	});
+}
 
 /**
  * This module's own registration file, resolved from the source path pi
@@ -991,6 +1122,7 @@ export const sharedWorkerState: WorkerConstructionState = stateOnGlobal;
  */
 export function ownToolSourcePath(ctx: ExtensionContext): string | null {
 	const surface = parentToolSurface(ctx);
+	if (!surface) return null;
 	for (const tool of surface.all) {
 		if (tool.name !== "subagent") continue;
 		const path = tool.sourceInfo?.path;
@@ -1005,7 +1137,7 @@ export function ownToolSourcePath(ctx: ExtensionContext): string | null {
  * shutdown labels the worker owner_lost rather than failed — the abort's error
  * text is the session switch, not a worker failure.
  */
-let sessionReplacing = false;
+const replacingSessions = new Set<string>();
 
 // ---------------------------------------------------------------------------
 // Live workers
@@ -1130,7 +1262,7 @@ const DEFAULT_DEADLINE_MINUTES =
 const DEFAULT_BUDGET_USD = envNumber("PI_SUBAGENT_BUDGET_USD");
 
 const liveWorkers = new Map<string, LiveWorker>();
-let host: WorkerHost | null = null;
+const hosts = new Map<string, WorkerHost>();
 let statusContext: ExtensionContext | null = null;
 let publishedStatus: string | undefined;
 
@@ -1195,16 +1327,15 @@ function clearSubagentStatus(): void {
 	statusContext = null;
 }
 
-export function isOwned(id: string): boolean {
-	return liveWorkers.has(id);
-}
-
 /** Drop one live worker through the complete terminal cleanup path. */
 function releaseLiveWorker(id: string): void {
 	const live = liveWorkers.get(id);
 	if (!live) return;
 	clearIdleDeadline(live);
 	clearRunLimits(live);
+	if (live.record.sessionId) {
+		sharedWorkerState.workerSurfaces.delete(live.record.sessionId);
+	}
 	live.cancelResume?.();
 	live.cancelResume = null;
 	usageBaselines.delete(id);
@@ -1222,7 +1353,9 @@ function releaseLiveWorker(id: string): void {
 		// Cleanup failure must not replace persisted terminal evidence.
 	}
 	try {
-		host?.unregister(id);
+		if (live.record.ownerSession) {
+			hosts.get(live.record.ownerSession)?.unregister(id);
+		}
 	} catch {
 		// The local maps already no longer advertise this worker as live.
 	}
@@ -1456,7 +1589,7 @@ function notifyLimitPause(
 			`with subagent_steer (which grants a fresh ${allowance} allowance), ` +
 			"inspect it with subagent_status, or end it with subagent_kill. An " +
 			"unresumed worker is released by the idle deadline.";
-		piApi?.sendMessage(
+		sessionApis.get(record.ownerSession ?? "")?.sendMessage(
 			{
 				customType: "subagent_paused",
 				content,
@@ -1521,16 +1654,14 @@ function sweepStaleSockets(dir: string, ownSocketPath: string): void {
 }
 
 function ensureHost(ctx: ExtensionContext): WorkerHost {
-	if (!host) {
-		const next = new WorkerHost(
-			getAgentDir(),
-			ctx.sessionManager.getSessionId(),
-		);
-		// Constructed first so the sweep knows which bounded namespace is ours.
-		sweepStaleSockets(next.socketDirectory, next.socketPath);
-		host = next;
-	}
-	return host;
+	const ownerSession = ctx.sessionManager.getSessionId();
+	const current = hosts.get(ownerSession);
+	if (current) return current;
+	const next = new WorkerHost(getAgentDir(), ownerSession);
+	// Constructed first so the sweep knows which bounded namespace is ours.
+	sweepStaleSockets(next.socketDirectory, next.socketPath);
+	hosts.set(ownerSession, next);
+	return next;
 }
 
 /**
@@ -1670,12 +1801,12 @@ export function submitResultTool(
 }
 
 /** The cost a just-ended message carries before Pi persists it. */
-function messageCost(
-	message: { usage?: { cost?: unknown } } | undefined,
+export function messageCost(
+	message: { usage?: Pick<Usage, "cost"> } | undefined,
 ): number {
-	const cost = message?.usage?.cost;
-	return typeof cost === "number" && Number.isFinite(cost) && cost > 0
-		? cost
+	const total = message?.usage?.cost.total;
+	return typeof total === "number" && Number.isFinite(total) && total > 0
+		? total
 		: 0;
 }
 
@@ -1788,7 +1919,7 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 					content?: Array<{ type?: string; text?: string }>;
 					stopReason?: string;
 					errorMessage?: string;
-					usage?: { cost?: unknown };
+					usage?: Pick<Usage, "cost">;
 				};
 				toolName?: string;
 				toolCallId?: string;
@@ -2157,7 +2288,7 @@ export async function dispatchWorker(
 	if (missing.length > 0 || unexpected.length > 0 || mismatched.length > 0) {
 		const surface = parentToolSurface(ctx);
 		const sourceOf = new Map(
-			surface.all.map((t) => [
+			(surface?.all ?? []).map((t) => [
 				t.name,
 				(t as { sourceInfo?: { source?: string; path?: string } }).sourceInfo,
 			]),
@@ -2197,6 +2328,11 @@ export async function dispatchWorker(
 	record.sessionId = sessionManager.getSessionId();
 	record.sessionFile = sessionManager.getSessionFile() ?? null;
 	writeWorker(record);
+	recordWorkerSurface(
+		record.sessionId,
+		session.getActiveToolNames(),
+		session.getAllTools(),
+	);
 	// The transcript is pi's own session file, written at pi's default mode;
 	// tighten it so the owner-only store guarantee covers it too.
 	if (record.sessionFile) {
@@ -2244,7 +2380,7 @@ export async function dispatchWorker(
 			// the switch, not a worker failure. A stored result or explicit cancel
 			// still wins (done / cancelled), matching finalizeWorker's own triage.
 			const switching =
-				sessionReplacing &&
+				replacingSessions.has(record.ownerSession ?? "") &&
 				!record.cancelRequestedAt &&
 				!existsSync(workerFiles(id).result);
 			finalizeWorker(
@@ -2276,6 +2412,7 @@ export async function dispatchWorker(
 		untrack();
 		runtime.shutdown();
 		workerHost.unregister(id);
+		sharedWorkerState.workerSurfaces.delete(record.sessionId);
 		usageBaselines.delete(id);
 		if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
 		return fail("worker session was created without a disposal owner");
@@ -2466,14 +2603,6 @@ export function subscribeWorkerLive(
 	const live = liveWorkers.get(id);
 	if (!live) return null;
 	return live.runtime.watch(onEvent);
-}
-
-/** Queue a steering message on a live worker this session owns. No-op otherwise. */
-export function steerWorkerLive(id: string, text: string): void {
-	const live = liveWorkers.get(id);
-	if (!live) return;
-	// Fire-and-forget; a steer rejection must not surface as an unhandled rejection.
-	void live.session.steer(text).catch(() => {});
 }
 
 /** True while the worker's agent run is active (thinking, streaming, a tool, or
@@ -3493,17 +3622,60 @@ const killTool = defineTool({
 	},
 });
 
+async function shutdownOwnedSession(
+	ownerSession: string,
+	clearStatus: boolean,
+): Promise<void> {
+	// A closing session cannot accept a completion turn. Remove delivery before
+	// any abort can settle an owned worker as owner_lost.
+	sessionApis.delete(ownerSession);
+	replacingSessions.add(ownerSession);
+	try {
+		const workers = [...liveWorkers.entries()].filter(
+			([, live]) => live.record.ownerSession === ownerSession,
+		);
+		for (const [, live] of workers) clearIdleDeadline(live);
+		// Bounded: a stuck compaction or tool must not stall session teardown.
+		await Promise.allSettled(
+			workers.map(([, live]) => abortBounded(live.runtime)),
+		);
+
+		// Abort settlement normally finalizes through each run's settle handler.
+		// An already-idle interrupted worker has no active run, so finish any
+		// record that is still running with the same triage used after owner loss.
+		for (const [id] of workers) {
+			try {
+				const record = readWorker(id);
+				if (record?.state !== "running") continue;
+				if (record.cancelRequestedAt || existsSync(workerFiles(id).result)) {
+					finalizeWorker(id, {});
+				} else {
+					finalizeWorker(id, { state: "owner_lost" });
+				}
+			} catch {
+				// Best-effort during teardown; the store remains the recovery source.
+			}
+		}
+
+		try {
+			await hosts.get(ownerSession)?.close();
+		} catch {
+			// Shutting down anyway.
+		}
+		hosts.delete(ownerSession);
+		sharedWorkerState.workerSurfaces.delete(ownerSession);
+		if (clearStatus) clearSubagentStatus();
+	} finally {
+		replacingSessions.delete(ownerSession);
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	// A worker session loading this same module must not take over the parent's
 	// api or its lifecycle hook; it only contributes its own tool surface.
 	const isWorkerLoad = sharedWorkerState.constructingWorkers > 0;
 	if (!isWorkerLoad) {
 		piApi = pi;
-		// A replacement parent in this same process reuses this module, so the
-		// previous session's shutdown flag would still be set. Its workers were
-		// already drained by that shutdown; leaving it set would label THIS
-		// session's own worker failures as owner_lost.
-		sessionReplacing = false;
 		// Once per parent session: reassert the owner-only permission invariant
 		// the README promises for the current store.
 		try {
@@ -3600,57 +3772,30 @@ export default function (pi: ExtensionAPI) {
 	if (isWorkerLoad) {
 		// A worker conversation is disposable: the deliverable is result.txt.
 		// Cancel the post-submit threshold compaction that would otherwise
-		// stall the run's settle (status reads "running · now: submit_result"
-		// for the whole summarization call). The veto reads its own session id
-		// from the extension context at compaction time and fires only for the
-		// worker that actually submitted — mid-run compaction still runs, so a
-		// worker's transcript can never overflow the provider window hard.
+		// stall the run's settle. Mid-run compaction remains available.
 		registerWorkerCompactionVeto(pi);
+		pi.on("session_start", async (_event, ctx) => {
+			const sessionId = ctx.sessionManager.getSessionId();
+			sessionApis.set(sessionId, pi);
+			recordWorkerSurface(sessionId, pi.getActiveTools(), pi.getAllTools());
+		});
+		// A worker can own nested workers. Its session lifecycle owns their runs,
+		// host, socket, timers, delivery API, and recorded surfaces independently
+		// of every other worker session that loaded this module from the same cwd.
+		pi.on("session_shutdown", async (_event, ctx) => {
+			await shutdownOwnedSession(ctx.sessionManager.getSessionId(), false);
+		});
 		return;
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		sessionApis.set(ctx.sessionManager.getSessionId(), pi);
 		bindStatusContext(ctx);
 	});
 
-	pi.on("session_shutdown", async () => {
-		// /new, /resume, /fork, and /reload fire this hook without killing the
-		// process. A pid-only owner check would therefore leave unowned workers
-		// spending tokens forever. Abort every run before dropping ownership.
-		// Set BEFORE aborting: a settle racing this hook must label the worker
-		// owner_lost, not failed (the abort's error text is the switch itself).
-		sessionReplacing = true;
-		const workers = [...liveWorkers.entries()];
-		for (const [, live] of workers) clearIdleDeadline(live);
-		// Bounded: a stuck compaction or tool must not stall the session switch.
-		await Promise.allSettled(
-			workers.map(([, live]) => abortBounded(live.runtime)),
-		);
-
-		// Abort settlement normally finalizes through each run's settle handler.
-		// An already-idle interrupted worker has no active run, so finish any
-		// record that is still running with the same triage used after owner loss.
-		for (const [id] of workers) {
-			try {
-				const record = readWorker(id);
-				if (record?.state !== "running") continue;
-				if (record.cancelRequestedAt || existsSync(workerFiles(id).result)) {
-					finalizeWorker(id, {});
-				} else {
-					finalizeWorker(id, { state: "owner_lost" });
-				}
-			} catch {
-				// Best-effort during teardown; a replacement session still has the store.
-			}
-		}
-
-		try {
-			await host?.close();
-		} catch {
-			// Shutting down anyway.
-		}
-		host = null;
-		liveWorkers.clear();
-		clearSubagentStatus();
+	pi.on("session_shutdown", async (_event, ctx) => {
+		// /new, /resume, /fork, and /reload keep this process alive. Session-id
+		// ownership prevents one session from aborting another session's workers.
+		await shutdownOwnedSession(ctx.sessionManager.getSessionId(), true);
 	});
 }

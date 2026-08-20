@@ -61,7 +61,11 @@ const {
 	dispatchWorker,
 	disposeOnce,
 	finalizeWorker,
+	messageCost,
 	modelCapabilities,
+	notifyCompletion,
+	parentToolSurface,
+	recordWorkerSurface,
 	shutdownWorkerSession,
 	thinkingLabel,
 	toolErrorSummary,
@@ -83,6 +87,7 @@ const {
 	subtractUsage,
 	statusLine,
 	statusView,
+	suggestModels,
 	workerFiles,
 	workerReport,
 	workerSessionManager,
@@ -402,6 +407,86 @@ describe("worker session lifecycle", () => {
 	});
 });
 
+describe("model discoverability", () => {
+	it("ranks bounded corrections across provider and punctuation mistakes", () => {
+		const models = [
+			{ provider: "alpha", id: "text-pro-2" },
+			{ provider: "beta", id: "code-7.4-moon" },
+			{ provider: "gamma", id: "reason-v3-pro" },
+			{ provider: "delta", id: "image-2.1" },
+			{ provider: "gamma", id: "reason-v3-fast" },
+			{ provider: "other", id: "unrelated-model" },
+		];
+		for (const [raw, expected] of [
+			["wrong/text-pro-2", "alpha/text-pro-2"],
+			["beta/code-7-4-moon", "beta/code-7.4-moon"],
+			["gamma/reason-pro-v3", "gamma/reason-v3-pro"],
+			["image-2.1", "delta/image-2.1"],
+		] as const) {
+			const suggestions = suggestModels(raw, models);
+			assert.ok(suggestions.includes(expected), `${raw}: ${suggestions}`);
+			assert.ok(
+				suggestions.length <= 3,
+				`${raw}: suggestions must stay bounded`,
+			);
+			assert.ok(!suggestions.includes("other/unrelated-model"));
+		}
+	});
+
+	it("reports the rejected id, registry size, and bounded correction", async () => {
+		const models = [
+			{
+				provider: "alpha",
+				id: "text-pro-2",
+				input: ["text"],
+				reasoning: false,
+			},
+			{ provider: "beta", id: "text-pro-3", input: ["text"], reasoning: false },
+			{
+				provider: "gamma",
+				id: "text-fast-2",
+				input: ["text"],
+				reasoning: false,
+			},
+			{
+				provider: "delta",
+				id: "code-7.4-moon",
+				input: ["text"],
+				reasoning: false,
+			},
+			{
+				provider: "epsilon",
+				id: "image-2.1",
+				input: ["text"],
+				reasoning: false,
+			},
+			{
+				provider: "other",
+				id: "unrelated-model",
+				input: ["text"],
+				reasoning: false,
+			},
+		];
+		const outcome = await dispatchWorker(
+			{ task: "model lookup", model: "wrong/text-pro-2" },
+			{ cwd: agentDir },
+			{
+				cwd: agentDir,
+				modelRegistry: {
+					find: () => null,
+					getAvailable: () => models,
+					hasConfiguredAuth: () => true,
+				},
+			} as never,
+		);
+		assert.equal(outcome.id, "");
+		assert.match(outcome.error ?? "", /wrong\/text-pro-2/);
+		assert.match(outcome.error ?? "", /6 models/);
+		assert.match(outcome.error ?? "", /alpha\/text-pro-2/);
+		assert.doesNotMatch(outcome.error ?? "", /other\/unrelated-model/);
+	});
+});
+
 describe("thinking feasibility", () => {
 	it("reports the levels pi itself supports for the model", () => {
 		const reasoning = modelCapabilities(
@@ -585,6 +670,66 @@ describe("continuation session manager", () => {
 // ---------------------------------------------------------------------------
 
 describe("status and collection", () => {
+	it("marks completion only after the synchronous send call returns", () => {
+		const id = "bg-notifytruth";
+		const dir = seedWorker(
+			id,
+			runningRecord(id, {
+				state: "done",
+				exitedAt: 2,
+				resultBytes: 6,
+				resultPreview: "result",
+			}),
+		);
+		writeFileSync(join(dir, "result.txt"), "result", "utf-8");
+		let record = readWorker(id);
+		assert.ok(record);
+		assert.equal(notifyCompletion(record, null), false);
+		assert.equal(readWorker(id)?.notificationQueuedAt, null);
+
+		let attempts = 0;
+		assert.equal(
+			notifyCompletion(record, {
+				sendMessage: () => {
+					attempts++;
+					throw new Error("queue failed");
+				},
+			} as never),
+			false,
+		);
+		assert.equal(attempts, 1);
+		assert.equal(readWorker(id)?.notificationQueuedAt, null);
+
+		const sent: Array<{ message: any; options: any }> = [];
+		assert.equal(
+			notifyCompletion(record, {
+				sendMessage: (message: unknown, options: unknown) =>
+					sent.push({ message, options }),
+			} as never),
+			true,
+		);
+		record = readWorker(id);
+		assert.ok(record?.notificationQueuedAt);
+		assert.equal(sent.length, 1);
+		assert.equal(sent[0].message.customType, "subagent_result");
+		assert.equal(sent[0].message.details.id, id);
+		assert.deepEqual(sent[0].options, {
+			deliverAs: "followUp",
+			triggerTurn: true,
+		});
+		assert.equal(
+			notifyCompletion(record, {
+				sendMessage: () => sent.push({ message: null, options: null }),
+			} as never),
+			false,
+		);
+		assert.equal(
+			sent.length,
+			1,
+			"a persisted marker suppresses a duplicate send",
+		);
+	});
+
 	it("does not enqueue a duplicate follow-up for explicit cancellation", () => {
 		assert.equal(
 			completionNeedsNotification({
@@ -739,6 +884,24 @@ describe("status and collection", () => {
 
 describe("run-leg limits", () => {
 	const settings = { deadlineMinutes: 30, budgetUsd: null };
+
+	it("reads the pending cost from Pi's Usage.cost.total shape", () => {
+		assert.equal(
+			messageCost({
+				usage: {
+					cost: {
+						input: 0,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						total: 1,
+					},
+				},
+			}),
+			1,
+		);
+		assert.equal(messageCost(undefined), 0);
+	});
 
 	it("prefers the task's own limits over dispatch defaults and settings", () => {
 		assert.deepEqual(
@@ -1144,21 +1307,23 @@ describe("compaction veto", () => {
 		sharedWorkerState.submittedSessionIds.delete("sess-veto-wiring");
 	});
 
-	it("worker-load registration: full surface plus veto; the allowlist keeps it exact", () => {
+	it("worker-load registration owns nested delivery and shutdown by session", async () => {
 		// Simulate a worker load the way a jiti copy of this module would see
-		// it: the shared construction count is > 0. The worker branch must
-		// register the full tool surface (pi's per-session allowlist filters
-		// it down) and the veto, and must NOT take the parent branch.
+		// it: the shared construction count is > 0. The worker branch registers
+		// its callable definitions, compaction veto, delivery API, and cleanup.
 		const tools: Array<Record<string, any>> = [];
 		const handlers = new Map<string, unknown>();
+		const deliveries: unknown[] = [];
+		let activeNames = ["initial_tool"];
 		sharedWorkerState.constructingWorkers = 1;
 		try {
 			registerSubagent({
 				registerTool: (tool: { name: string }) => tools.push(tool),
 				registerCommand: () => undefined,
 				on: (event: string, handler: unknown) => handlers.set(event, handler),
-				getActiveTools: () => [],
+				getActiveTools: () => [...activeNames],
 				getAllTools: () => [],
+				sendMessage: (message: unknown) => deliveries.push(message),
 				appendEntry: () => undefined,
 			} as never);
 		} finally {
@@ -1175,8 +1340,73 @@ describe("compaction veto", () => {
 		);
 		assert.equal(
 			handlers.has("session_start"),
-			false,
-			"worker loads must not register parent lifecycle hooks",
+			true,
+			"worker loads bind their session-keyed delivery API",
+		);
+		assert.equal(
+			handlers.has("session_shutdown"),
+			true,
+			"worker loads own shutdown for workers they dispatch",
+		);
+
+		const sessionId = "sess-nested-owner";
+		const ctx = { sessionManager: { getSessionId: () => sessionId } };
+		await (
+			handlers.get("session_start") as (
+				event: unknown,
+				ctx: unknown,
+			) => Promise<void>
+		)({}, ctx);
+		assert.deepEqual(
+			sharedWorkerState.workerSurfaces.get(sessionId)?.active,
+			["initial_tool"],
+			"session_start records a fallback surface",
+		);
+		activeNames = ["current_tool"];
+		assert.deepEqual(
+			parentToolSurface(ctx as never)?.active,
+			["current_tool"],
+			"the live session API outranks its startup fallback",
+		);
+		const id = "bg-nesteddelivery";
+		const dir = seedWorker(
+			id,
+			runningRecord(id, {
+				state: "done",
+				exitedAt: 2,
+				ownerSession: sessionId,
+				resultBytes: 6,
+				resultPreview: "nested",
+			}),
+		);
+		writeFileSync(join(dir, "result.txt"), "nested", "utf-8");
+		assert.equal(notifyCompletion(readWorker(id) as never), true);
+		assert.equal(deliveries.length, 1);
+		assert.equal(readWorker(id)?.notificationQueuedAt !== null, true);
+
+		await (
+			handlers.get("session_shutdown") as (
+				event: unknown,
+				ctx: unknown,
+			) => Promise<void>
+		)({}, ctx);
+		const afterId = "bg-nestedaftershutdown";
+		const afterDir = seedWorker(
+			afterId,
+			runningRecord(afterId, {
+				state: "done",
+				exitedAt: 2,
+				ownerSession: sessionId,
+				resultBytes: 5,
+				resultPreview: "later",
+			}),
+		);
+		writeFileSync(join(afterDir, "result.txt"), "later", "utf-8");
+		assert.equal(notifyCompletion(readWorker(afterId) as never), false);
+		assert.equal(
+			deliveries.length,
+			1,
+			"shutdown removes only that session's API",
 		);
 	});
 
@@ -1186,13 +1416,24 @@ describe("compaction veto", () => {
 		// same counter and the same submitted set — they live on a namespaced
 		// globalThis symbol, not module scope.
 		const viaSymbol = (
-			globalThis as Record<symbol, { submittedSessionIds: Set<string> }>
-		)[Symbol.for("pi-subagent.worker-construction-state")];
+			globalThis as Record<
+				symbol,
+				{
+					submittedSessionIds: Set<string>;
+					workerSurfaces: Map<string, unknown>;
+				}
+			>
+		)[Symbol.for("pi-subagent.worker-session-state")];
 		assert.ok(viaSymbol, "shared state is registered on the process global");
 		assert.equal(
 			viaSymbol.submittedSessionIds,
 			sharedWorkerState.submittedSessionIds,
 			"the exported state IS the process-global state",
+		);
+		assert.equal(
+			viaSymbol.workerSurfaces,
+			sharedWorkerState.workerSurfaces,
+			"fresh module instances share session-keyed tool surfaces",
 		);
 	});
 
@@ -1210,6 +1451,7 @@ describe("compaction veto", () => {
 		// Mark it the way submit_result would, then finalize as if the run had
 		// settled normally.
 		sharedWorkerState.submittedSessionIds.add("sess-veto-finalize");
+		recordWorkerSurface("sess-veto-finalize", ["read"], []);
 		assert.deepEqual(compactionVeto("sess-veto-finalize", "threshold"), {
 			cancel: true,
 		});
@@ -1218,6 +1460,11 @@ describe("compaction veto", () => {
 			sharedWorkerState.submittedSessionIds.has("sess-veto-finalize"),
 			false,
 			"finalizeWorker must release the submitted mark",
+		);
+		assert.equal(
+			sharedWorkerState.workerSurfaces.has("sess-veto-finalize"),
+			false,
+			"finalizeWorker must release the recorded tool surface",
 		);
 		assert.equal(
 			readWorker(id)?.state,
@@ -1268,15 +1515,74 @@ describe("compaction veto", () => {
 		}
 	});
 
+	it("a worker session shutdown releases its nested worker and host", async () => {
+		const childPath = join(
+			dirname(fileURLToPath(import.meta.url)),
+			"owner-shutdown-child.mts",
+		);
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const run = promisify(execFile);
+		const childCoverageDir = mkdtempSync(
+			join(tmpdir(), "subagent-owner-shutdown-cov-"),
+		);
+		try {
+			const { stdout, stderr } = await run(process.execPath, [childPath], {
+				encoding: "utf-8",
+				env: { ...process.env, NODE_V8_COVERAGE: childCoverageDir },
+				timeout: 15_000,
+			});
+			assert.equal(
+				stdout.includes("owner shutdown child: PASS"),
+				true,
+				`owner shutdown child must exit naturally: ${stdout}\n${stderr}`,
+			);
+		} finally {
+			rmSync(childCoverageDir, { recursive: true, force: true });
+		}
+	});
+
+	it("delivers a grandchild result to its live worker owner for collection", async () => {
+		const childPath = join(
+			dirname(fileURLToPath(import.meta.url)),
+			"nested-delivery-child.mts",
+		);
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const run = promisify(execFile);
+		const childCoverageDir = mkdtempSync(
+			join(tmpdir(), "subagent-nested-delivery-cov-"),
+		);
+		try {
+			const { stdout, stderr } = await run(process.execPath, [childPath], {
+				encoding: "utf-8",
+				env: { ...process.env, NODE_V8_COVERAGE: childCoverageDir },
+				timeout: 20_000,
+			});
+			assert.equal(
+				stdout.includes("nested delivery child: PASS"),
+				true,
+				`nested delivery child must pass: ${stdout}\n${stderr}`,
+			);
+		} finally {
+			rmSync(childCoverageDir, { recursive: true, force: true });
+		}
+	});
+
 	it("own module path comes from the tool registration, not import.meta.url", () => {
 		// pi loads extensions through jiti, which leaves import.meta.url
 		// undefined, so the module finds itself through the source path pi
 		// records on its own tool registration.
 		const probePath = join(agentDir, "own-path-probe.ts");
 		writeFileSync(probePath, "export default function () {}\n", "utf-8");
+		const sessionId = "sess-own-path";
 		const ctx = {
-			getActiveTools: () => ["subagent"],
-			getAllTools: () => [
+			sessionManager: { getSessionId: () => sessionId },
+		};
+		recordWorkerSurface(
+			sessionId,
+			["subagent"],
+			[
 				{
 					name: "subagent",
 					description: "d",
@@ -1287,31 +1593,27 @@ describe("compaction veto", () => {
 						scope: "temporary",
 						origin: "top-level",
 					},
-				},
+				} as never,
 			],
-		};
+		);
 		assert.equal(ownToolSourcePath(ctx as never), probePath);
 		// Virtual/builtin paths and missing registrations resolve to nothing.
-		const virtual = {
-			getActiveTools: () => [],
-			getAllTools: () => [
+		recordWorkerSurface(
+			sessionId,
+			[],
+			[
 				{
 					name: "subagent",
 					sourceInfo: {
 						path: "<virtual:subagent>",
 						source: "virtual",
 					},
-				},
+				} as never,
 			],
-		};
-		assert.equal(ownToolSourcePath(virtual as never), null);
-		assert.equal(
-			ownToolSourcePath({
-				getActiveTools: () => [],
-				getAllTools: () => [],
-			} as never),
-			null,
 		);
+		assert.equal(ownToolSourcePath(ctx as never), null);
+		sharedWorkerState.workerSurfaces.delete(sessionId);
+		assert.equal(ownToolSourcePath(ctx as never), null);
 	});
 });
 
@@ -1350,7 +1652,8 @@ describe("buildTranscript", () => {
 				},
 			] as never,
 			(message) => {
-				if (typeof message.timestamp !== "number") throw new Error("message timestamp is required");
+				if (typeof message.timestamp !== "number")
+					throw new Error("message timestamp is required");
 				return `m-${message.timestamp}`;
 			},
 		) as Array<Record<string, any>>;
@@ -1458,7 +1761,8 @@ describe("buildTranscript", () => {
 				},
 			] as never,
 			(message) => {
-				if (typeof message.timestamp !== "number") throw new Error("message timestamp is required");
+				if (typeof message.timestamp !== "number")
+					throw new Error("message timestamp is required");
 				return `m-${message.timestamp}`;
 			},
 		) as Array<Record<string, any>>;
@@ -1700,6 +2004,7 @@ class FakeSession {
 	};
 	isStreaming = false;
 	steers: string[] = [];
+	promptOptions: unknown[] = [];
 	aborts = 0;
 	private listeners = new Set<(event: FakeEvent) => void>();
 
@@ -1741,7 +2046,8 @@ class FakeSession {
 		this.emit({ type: "agent_settled" });
 	}
 	/** One deterministic turn: user message, streamed assistant reply, settle. */
-	async prompt(text: string): Promise<void> {
+	async prompt(text: string, options?: unknown): Promise<void> {
+		this.promptOptions.push(options);
 		const user = {
 			role: "user",
 			content: [{ type: "text", text }],
@@ -1780,6 +2086,19 @@ const ctxShim: any = {
 };
 
 describe("WorkerRuntime regressions", () => {
+	it("passes slash-prefixed tasks with command expansion disabled", async () => {
+		const session = new FakeSession();
+		const runtime = new WorkerRuntime({
+			session: session as never,
+			id: "bg-slashprompt",
+			name: "slash worker",
+			cwd: agentDir,
+			createdAt: 1,
+		});
+		await runtime.prompt({ text: "/subagent status" } as never);
+		assert.deepEqual(session.promptOptions, [{ expandPromptTemplates: false }]);
+	});
+
 	it("abort during prompt preflight keeps the phase (does not demote to idle)", async () => {
 		const session = new FakeSession();
 		// Faithful to AgentSession.abort() during preflight: no active run, so it is
@@ -2550,9 +2869,49 @@ describe("registered tool surface", () => {
 			}) => tools.push(tool),
 			registerCommand: () => undefined,
 			on: () => undefined,
-			getActiveTools: () => [],
-			getAllTools: () => [],
+			getActiveTools: () => ["root_tool"],
+			getAllTools: () => [
+				{
+					name: "root_tool",
+					description: "root",
+					parameters: {},
+					promptGuidelines: [],
+					sourceInfo: { source: "builtin", path: "<builtin:root_tool>" },
+				},
+			],
 		} as any);
+		const keyedSession = "sess-keyed-surface";
+		recordWorkerSurface(
+			keyedSession,
+			["worker_tool"],
+			[
+				{
+					name: "worker_tool",
+					description: "worker",
+					parameters: {},
+					promptGuidelines: [],
+					sourceInfo: { source: "builtin", path: "<builtin:worker_tool>" },
+				} as never,
+			],
+		);
+		try {
+			assert.deepEqual(
+				parentToolSurface({
+					sessionManager: { getSessionId: () => keyedSession },
+				} as never)?.active,
+				["worker_tool"],
+				"a dispatching session's keyed surface outranks the root API",
+			);
+		} finally {
+			sharedWorkerState.workerSurfaces.delete(keyedSession);
+		}
+		assert.equal(
+			parentToolSurface({
+				sessionManager: { getSessionId: () => "sess-unknown-surface" },
+			} as never),
+			null,
+			"an unknown real session must not broaden to the root surface",
+		);
 		const dispatch = tools.find((tool) => tool.name === "subagent");
 		assert.ok(dispatch);
 		assert.equal("wait" in dispatch.parameters.properties, false);
