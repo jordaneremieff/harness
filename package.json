@@ -43,7 +43,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@earendil-works/pi-protocol": "^0.84.1",
-    "@earendil-works/pi-server": "^0.84.1"
+    "@earendil-works/pi-protocol": "^0.84.2",
+    "@earendil-works/pi-server": "^0.84.2"
   }
 }
