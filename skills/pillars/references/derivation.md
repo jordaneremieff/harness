@@ -228,7 +228,7 @@ Write the candidate at the smallest altitude that covers the observation without
 
 ### 4. Fresh-context Probe
 
-Use one fresh-context reviewer that has not seen the originating conversation. The reviewer may be a delegated agent when that capability is available; otherwise dispatch the probe brief in a fresh session. The probe reports findings; it does not compute the final verdict.
+Use one fresh-context reviewer that has not seen the originating conversation, dispatched as the delegated worker described under Deriving in the skill body. Where delegation is unavailable, dispatch the probe brief in a fresh session instead. The probe reports findings; it does not compute the final verdict.
 
 A fresh reader is not a stronger judge. It is a reader outside the originating conversation's framing momentum. In-context self-reflection inherits the same assumptions that produced the candidate, so a fresh reader can test the candidate without the originating conversation's social and narrative pressure. Multiple same-brief reviewers are samples from one posterior unless briefing, model family, fact base, or rubric genuinely varies.
 

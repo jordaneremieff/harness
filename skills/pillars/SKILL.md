@@ -63,6 +63,28 @@ source authority, recognition scope, and explicit carve-outs—not by type.
 | Fixing a flagged prose tell by swapping symbols | heuristic-tell-laundering |
 | Dirty state in a shared substrate, author unknown | heuristic-phantom-stewardship |
 
+## Deriving
+
+Consultation applies existing doctrine; derivation changes the corpus. Derivation is
+entered by saying so — "that's a pillar," "derive this," "should this be a pillar?",
+"challenge <pillar-name>." Challenging or withdrawing a live pillar is an entry point,
+not only proposing a new one.
+
+Derivation runs in the session that holds the observation. Nothing is convened: there is
+no separate derivation session and no reviewer panel. When the observation lives in
+another session, it travels as a stash entry read as the observation source rather than
+as a reconvened session. Exactly one step leaves the session — the fresh-context probe,
+dispatched as a delegated worker that receives the draft and the lens brief and never the
+originating conversation. Classification, subsumption testing, drafting, synthesis, and
+operator approval all happen in place.
+
+Classification comes first and sets the cost: most changes are a clause on an existing
+pillar rather than a new entry. Nothing is written until the operator approves the
+synthesis.
+
+The method is `references/derivation.md`. Read it in full when proposing, deriving,
+revising, or challenging a pillar; do not work from a summary of it.
+
 ## Rules of use
 
 - System and safety instructions, law, permissions, and explicit operator authority
@@ -76,10 +98,9 @@ source authority, recognition scope, and explicit carve-outs—not by type.
   their delivery profile explicitly supplies it.
 - Version-attributed observations and evaluations must identify the doctrine snapshot
   and actual delivery profile. Ordinary use need not log consultation.
-- New, revised, or challenged corpus entries run the derivation method in
-  `references/derivation.md` (read it when the operator proposes, derives,
-  revises, or challenges a pillar); do not invent ad-hoc "principles" in session
-  prose. Corpus mutations require the operator's explicit approval.
+- New, revised, or challenged corpus entries run the derivation method; do not invent
+  ad-hoc "principles" in session prose. Corpus mutations require the operator's
+  explicit approval.
 - When the operator asks for a Pillars evaluation, name the pillar, state its
   recognition condition, and show why it binds, is defeated, or collides—that is the
   deliverable.
