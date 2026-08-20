@@ -10,5 +10,6 @@ node_modules
 *.zip
 
 # Local dumps, scratch verification output
+.evals/
 dump/
 *.log
