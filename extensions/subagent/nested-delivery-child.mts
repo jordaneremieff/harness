@@ -87,24 +87,22 @@ try {
 		noContextFiles: true,
 		additionalExtensionPaths: [selfPath],
 	});
-	try {
-		sub.sharedWorkerState.constructingWorkers++;
-		await resourceLoader.reload();
-		const created = await createAgentSession({
-			cwd,
-			agentDir,
-			settingsManager,
-			resourceLoader,
-			sessionManager: SessionManager.inMemory(),
-			model: model as never,
-			thinkingLevel: "off",
-			tools: ["subagent", "subagent_collect"],
-		});
-		ownerSession = created.session;
-		await ownerSession.bindExtensions({});
-	} finally {
-		sub.sharedWorkerState.constructingWorkers--;
-	}
+	await resourceLoader.reload();
+	const created = await createAgentSession({
+		cwd,
+		agentDir,
+		settingsManager,
+		resourceLoader,
+		sessionManager: SessionManager.inMemory(),
+		model: model as never,
+		thinkingLevel: "off",
+		tools: ["subagent", "subagent_collect"],
+	});
+	ownerSession = created.session;
+	sub.sharedWorkerState.workerSessionIds.add(
+		ownerSession.sessionManager.getSessionId(),
+	);
+	await ownerSession.bindExtensions({});
 
 	await ownerSession.prompt("OWNER_TASK", { expandPromptTemplates: false });
 	const deadline = Date.now() + 8_000;
@@ -123,7 +121,7 @@ try {
 	while (
 		Date.now() < deadline &&
 		(grandchild?.state !== "done" ||
-			!grandchild.notificationQueuedAt ||
+			!grandchild.notificationCallReturnedAt ||
 			!hasOwnerResult())
 	) {
 		await new Promise((resolve) => setTimeout(resolve, 20));
@@ -133,8 +131,8 @@ try {
 	}
 	assert.equal(grandchild?.state, "done", JSON.stringify(grandchild));
 	assert.ok(
-		grandchild.notificationQueuedAt,
-		"the live worker owner's delivery API accepted the synchronous send call",
+		grandchild.notificationCallReturnedAt,
+		"the live worker owner's synchronous send call must return",
 	);
 	assert.equal(
 		readFileSync(sub.workerFiles(grandchild.id).result, "utf-8"),

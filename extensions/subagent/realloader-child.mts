@@ -1,25 +1,11 @@
 /**
- * Real-loader exercise for the post-submit compaction veto, run as a child
- * process by index.test.mts.
+ * Real-loader exercise for the post-submit compaction veto.
  *
- * Purpose: prove that a jiti-loaded copy of the subagent module (exactly what
- * a worker sees, including a custom-cwd worker, because pi's extension-factory
- * cache is per-cwd and re-imports the file) takes the worker branch through the
- * process-global construction state, registers the session_before_compact
- * veto, and that a real emit cancels post-submit threshold compaction.
- *
- * Why a child process: node's --experimental-test-coverage attributes the
- * jiti-transformed copy's execution to the same file URL as the direct import
- * and corrupts the coverage report for index.ts, pushing the suite below the
- * coverage gate (a measurement artifact, not a real regression). Node also
- * passes NODE_V8_COVERAGE through to every spawned child, so the parent test
- * redirects this child's coverage to a private directory; the child itself
- * runs without the coverage flags. The production loading path stays
- * exercised while the parent suite's coverage measurement stays clean.
- *
- * This is a plain script, not a node:test file: the parent spawns it with
- * `node <path>` and asserts its exit code. It deliberately does not match the
- * repo test glob for extension test files.
+ * The parent test runs this plain child script because V8 attributes a
+ * jiti-transformed copy to the direct import's source URL. A separate coverage
+ * directory keeps that measurement from merging two module instances. The
+ * script verifies that a fresh loader copy registers the veto and honors a
+ * real session_before_compact event.
  */
 import { strict as assert } from "node:assert";
 import { mkdtempSync } from "node:fs";
@@ -50,32 +36,23 @@ async function main(): Promise<void> {
 			join(dirname(fileURLToPath(import.meta.url)), "index.ts"),
 		],
 	});
-	// The dispatcher's construction count is process-global: the jiti copy
-	// must see itself as a worker load even though its own module scope
-	// starts empty.
-	sharedWorkerState.constructingWorkers = 1;
-	let session: any;
-	try {
-		await resourceLoader.reload();
-		const created = await createAgentSession({
-			cwd: agentDir,
-			agentDir,
-			settingsManager,
-			resourceLoader,
-			sessionManager: SessionManager.inMemory(),
-			tools: ["read", "bash", "submit_result"],
-			customTools: [
-				submitResultTool(
-					join(agentDir, "unused-result.txt"),
-					() => undefined,
-					() => "unused",
-				),
-			],
-		});
-		session = created.session;
-	} finally {
-		sharedWorkerState.constructingWorkers = 0;
-	}
+	await resourceLoader.reload();
+	const created = await createAgentSession({
+		cwd: agentDir,
+		agentDir,
+		settingsManager,
+		resourceLoader,
+		sessionManager: SessionManager.inMemory(),
+		tools: ["read", "bash", "submit_result"],
+		customTools: [
+			submitResultTool(
+				join(agentDir, "unused-result.txt"),
+				() => undefined,
+				() => "unused",
+			),
+		],
+	});
+	const session: any = created.session;
 
 	// The restricted allowlist keeps the callable surface exact even though
 	// the module registered its full surface.

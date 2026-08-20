@@ -3,8 +3,8 @@
  * PiSessionRuntime surface so a worker can be served over PiServer as a real
  * protocol session. Released Pi 0.84.2 has no client path that consumes this
  * socket (see server.ts). Upstream development includes unreleased experimental
- * surfaces. This extension targets released APIs and keeps this file as its ONE
- * replaceable current-runtime seam onto pi's private session state.
+ * surfaces. This extension targets released APIs and keeps this file as its one
+ * replaceable runtime-to-protocol boundary.
  *
  * Three things AgentSession does not hand over cleanly, and how this handles them:
  *
@@ -20,64 +20,80 @@
  *   worker.
  *
  * ---------------------------------------------------------------------------
- * THE SINGLE PI-INTERNALS SEAM
+ * THE SINGLE PI ADAPTER
  * ---------------------------------------------------------------------------
  *
- * This file is the ONLY place in the extension that reads private AgentSession
- * state. Nothing else — not index.ts, not panel.ts — may reach through an
- * `as unknown as { agent: ... }` cast. Everything downstream consumes the
- * protocol-shaped values produced here, because `PiSessionRuntime` and protocol
- * v1 are released, versioned interfaces while `agent.state` is private. V2
- * adoption starts only after an operational release; this file is the boundary
- * to replace then. No feature detection, speculative adapter, or dual path lives
+ * This file converts released AgentSession state and events into protocol v1.
+ * Downstream files consume protocol transcript items, not Pi message objects.
+ * Released `modelRuntime.getModel()` resolves a model without persisting an
+ * operator default. No feature probe, speculative adapter, or dual path lives
  * here.
  *
- * The private touchpoints, each with the test that must be re-run on any Pi
- * upgrade (verified against released Pi 0.84.2):
+ * Re-run these checks after a Pi upgrade:
  *
- * | Touchpoint                     | Used by                | Upgrade test |
- * |--------------------------------|------------------------|--------------|
- * | `agent.state.messages`         | buildTranscript()      | Snapshot of a worker that ran >=1 tool call shows user, assistant, and tool items in order. |
- * | `agent.state.streamingMessage` | snapshot()             | Snapshot taken mid-run contains the in-flight assistant item; it is absent when idle. |
- * | `agent.state.model`            | setModel()             | setModel changes the reported snapshot model AND leaves settings.json untouched. |
- * | `agent.state.thinkingLevel`    | setThinking()          | setThinking changes the reported thinking level AND leaves settings.json untouched. |
- * | `modelRuntime.getModel()`      | setModel()             | A known provider/id resolves; an unknown one raises PiServerError("invalid_request"). |
- * | `session.isStreaming`          | getPhase()             | Phase is "turn" during a run and "idle" after settle. |
- * | session event names            | onSessionEvent()       | A run emits agent_start, the message_ events, the tool_execution_ events, and agent_settled; the panel updates live. |
- *
- * The public surface used alongside them — `session.subscribe`, `prompt`,
- * `steer`, `abort`, `getSteeringMessages`, `setThinkingLevel`, `model`,
- * `thinkingLevel`, `getSessionStats` — is documented API and needs no cast.
+ * | Access                              | Used by           | Upgrade check |
+ * |-------------------------------------|-------------------|---------------|
+ * | `session.state.messages`            | buildTranscript() | A tool run snapshot keeps user, assistant, and tool items in order. |
+ * | `session.state.streamingMessage`    | snapshot()        | A mid-run snapshot includes the in-flight assistant item. |
+ * | `session.state.model`               | setModel()        | The snapshot model changes without a settings write. |
+ * | `session.state.thinkingLevel`       | setThinking()     | The thinking level changes without a settings write. |
+ * | `session.modelRuntime.getModel()`   | setModel()        | A known model resolves; an unknown model returns `invalid_request`. |
+ * | `session.isStreaming` and events    | getPhase()        | Turn, compaction, retry, branch-summary, and idle phases stay distinct. |
  */
 
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { Usage as AiUsage } from "@earendil-works/pi-ai";
+import type {
+	AgentSession,
+	AgentSessionEvent,
+} from "@earendil-works/pi-coding-agent";
+import type {
+	ModelRef,
+	SessionPhase,
+	SessionSnapshot,
+	ThinkingLevel,
+	ToolTranscriptItem,
+	TranscriptItem,
+} from "@earendil-works/pi-protocol";
 import {
 	PiServerError,
+	type PiSessionRuntime,
+	type PiSessionRuntimeEvent,
+	type PromptInput,
+	type SteerInput,
 	sanitizeProtocolDetails,
 	toProtocolAssistantMessage,
 	toProtocolJsonValue,
 	toProtocolToolResultMessage,
 	toProtocolUsage,
 	toProtocolUserMessage,
-	type CreateSessionOptions,
-	type PiSessionRuntime,
-	type PiSessionRuntimeEvent,
-	type PromptInput,
-	type SteerInput,
 } from "@earendil-works/pi-server";
-import type {
-	ModelRef,
-	SessionPhase,
-	SessionSnapshot,
-	ThinkingLevel,
-} from "@earendil-works/pi-protocol";
 
-type AnyMessage = {
-	role: string;
-	content: unknown;
-	toolCallId?: string;
-	[key: string]: unknown;
+type SessionMessage = AgentSession["state"]["messages"][number];
+type AssistantSessionMessage = Extract<SessionMessage, { role: "assistant" }>;
+type ToolCallPart = Extract<
+	AssistantSessionMessage["content"][number],
+	{ type: "toolCall" }
+>;
+type ToolContent = ToolTranscriptItem["content"];
+type ToolResultPayload = {
+	content?: ToolContent;
+	details?: unknown;
+	usage?: AiUsage;
 };
+type ToolItemInput = {
+	toolCallId: string;
+	toolName: string;
+	args?: unknown;
+	content?: ToolContent;
+	status: "running" | "complete" | "error";
+	details?: unknown;
+	usage?: AiUsage;
+	timestamp: number;
+};
+type ToolItemWithStatus<Status extends ToolItemInput["status"]> = Extract<
+	ToolTranscriptItem,
+	{ status: Status }
+>;
 
 /**
  * Convert pi messages to protocol-v1 transcript items. The one conversion used
@@ -94,45 +110,43 @@ type AnyMessage = {
  * box anyway, so an orphan result was never visible.
  */
 export function buildTranscript(
-	messages: AnyMessage[],
-	idFor: (message: AnyMessage) => string,
-): unknown[] {
-	const items: unknown[] = [];
-	const toolCalls = new Map<string, Record<string, unknown>>();
+	messages: SessionMessage[],
+	idFor: (message: SessionMessage) => string,
+): TranscriptItem[] {
+	const items: TranscriptItem[] = [];
+	const toolCalls = new Map<string, ToolCallPart>();
 	for (const message of messages) {
-		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-		for (const part of message.content as Array<Record<string, unknown>>) {
-			if (part.type === "toolCall" && typeof part.id === "string") {
-				toolCalls.set(part.id, part);
-			}
+		if (message.role !== "assistant") continue;
+		for (const part of message.content) {
+			if (part.type === "toolCall") toolCalls.set(part.id, part);
 		}
 	}
 	for (const message of messages) {
 		if (message.role === "user") {
 			try {
-				items.push(toProtocolUserMessage(message as never, { id: idFor(message) }));
+				items.push(toProtocolUserMessage(message, { id: idFor(message) }));
 			} catch {
 				// A malformed message is skipped, never fatal to a transcript view.
 			}
 		} else if (message.role === "assistant") {
 			try {
-				const item = toProtocolAssistantMessage(message as never, { id: idFor(message) });
-				// The mapper throws on stopReason "deferred", but its exhaustiveness
-				// default RETURNS the raw value (undefined / a bare string) for a missing
-				// or unknown stopReason. Only object items are renderable; a non-object
-				// here would crash the consumer's normalizeMessages.
+				const item = toProtocolAssistantMessage(message, {
+					id: idFor(message),
+				});
+				// The released mapper can return a non-object for an unknown stopReason
+				// despite its declared return type. Keep that boundary out of consumers.
 				if (item && typeof item === "object") items.push(item);
 			} catch {
 				// stopReason "deferred" (and error with an empty errorMessage) throw.
 			}
 		} else if (message.role === "toolResult") {
-			const call = toolCalls.get(message.toolCallId ?? "");
+			const call = toolCalls.get(message.toolCallId);
 			if (!call) continue;
 			try {
 				items.push(
-					toProtocolToolResultMessage(message as never, {
+					toProtocolToolResultMessage(message, {
 						id: idFor(message),
-						call: call as never,
+						call,
 					}),
 				);
 			} catch {
@@ -148,11 +162,12 @@ export function buildTranscript(
  * recorded session file. Same conversion as a live snapshot; ids are positional
  * because the messages are dead objects with no runtime identity.
  */
-export function transcriptFromMessages(messages: unknown[]): unknown[] {
-	const typed = messages as AnyMessage[];
-	const ids = new Map<AnyMessage, string>();
+export function transcriptFromMessages(
+	messages: SessionMessage[],
+): TranscriptItem[] {
+	const ids = new Map<SessionMessage, string>();
 	let seq = 0;
-	return buildTranscript(typed, (message) => {
+	return buildTranscript(messages, (message) => {
 		let id = ids.get(message);
 		if (!id) {
 			id = `m-${++seq}`;
@@ -184,19 +199,21 @@ export class WorkerRuntime implements PiSessionRuntime {
 
 	private readonly session: AgentSession;
 	private revision = 0;
-	private readonly listeners = new Set<(event: PiSessionRuntimeEvent) => void>();
+	private readonly listeners = new Set<
+		(event: PiSessionRuntimeEvent) => void
+	>();
 	/** In-process observers; survive dispose(), unlike `listeners`. */
 	private readonly watchers = new Set<() => void>();
 	private msgSeq = 0;
 	private readonly msgIds = new WeakMap<object, string>();
 	private readonly steerIds = new Map<string, string>();
 	private stream: StreamState | null = null;
-	private readonly toolPartials = new Map<
+	/** Live tool state. The end event omits arguments, so one keyed owner retains
+	 * the validated start arguments and any partial output. */
+	private readonly liveTools = new Map<
 		string,
-		{ toolName: string; args: unknown; content?: unknown; isError: boolean }
+		{ toolName: string; args: unknown; content?: ToolContent }
 	>();
-	/** Arguments from tool_execution_start; the end event does not carry them. */
-	private readonly toolArgs = new Map<string, unknown>();
 	private phase: SessionPhase = "idle";
 	private compactionCount = 0;
 	private retryActive = false;
@@ -219,7 +236,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 		this.createdAt = options.createdAt;
 		this.unsubscribe = this.session.subscribe((event) => {
 			try {
-				this.onSessionEvent(event as { type: string; [key: string]: unknown });
+				this.onSessionEvent(event);
 			} catch {
 				// AgentSession invokes listeners without containment. A malformed
 				// message or protocol conversion must not escape into the worker run.
@@ -229,30 +246,28 @@ export class WorkerRuntime implements PiSessionRuntime {
 
 	// ------------------------------------------------------------ PiSessionRuntime
 
-	/** The worker's live messages, private interior included. SEAM. */
-	private agentState(): { messages: AnyMessage[]; streamingMessage?: AnyMessage } {
-		return (
-			this.session as unknown as {
-				agent: { state: { messages: AnyMessage[]; streamingMessage?: AnyMessage } };
-			}
-		).agent.state;
+	/** Released AgentSession state used for transcript snapshots. */
+	private agentState(): AgentSession["state"] {
+		return this.session.state;
 	}
 
 	snapshot(): SessionSnapshot {
 		const state = this.agentState();
-		const items = buildTranscript(state.messages, (message) => this.messageId(message));
+		const items = buildTranscript(state.messages, (message) =>
+			this.messageId(message),
+		);
 		const streaming = state.streamingMessage;
-		if (streaming) {
+		if (streaming?.role === "assistant") {
 			const id = this.stream?.id ?? this.messageId(streaming);
 			try {
-				const item = toProtocolAssistantMessage(streaming as never, { id });
+				const item = toProtocolAssistantMessage(streaming, { id });
 				// The mapper returns (rather than throws) a raw stopReason when it is
 				// missing or unknown, so only object results can enter the transcript.
 				if (item && typeof item === "object") items.push(item);
 				else {
 					try {
 						const pending = toProtocolAssistantMessage(
-							{ ...(streaming as object), stopReason: "pending" } as never,
+							{ ...streaming, stopReason: "pending" },
 							{ id },
 						);
 						if (pending && typeof pending === "object") items.push(pending);
@@ -261,41 +276,32 @@ export class WorkerRuntime implements PiSessionRuntime {
 					}
 				}
 			} catch {
-				// OpenAI-completions / Bedrock emit a partial toolCall with an empty
-				// id/name for a chunk or two; identifier("") throws and would drop the
-				// whole in-flight item (text and thinking included). Drop only the
+				// A provider stream can emit a partial toolCall before its id and name.
+				// identifier("") throws and would drop the whole in-flight item.
+				// Drop only the
 				// un-addressable toolCall parts and retry so the rest still renders.
-				const content = (streaming as { content?: unknown }).content;
-				if (Array.isArray(content)) {
-					const pruned = content.filter(
-						(part) =>
-							!(part && typeof part === "object" && (part as Record<string, unknown>).type === "toolCall" &&
-								(!(part as Record<string, unknown>).id || !(part as Record<string, unknown>).name)),
-					);
-					if (pruned.length !== content.length) {
-						try {
-							const item = toProtocolAssistantMessage(
-								{ ...(streaming as object), content: pruned } as never,
-								{ id },
-							);
-							if (item && typeof item === "object") items.push(item);
-						} catch {
-							// Still unmappable (e.g. deferred, or a non-assistant streaming
-							// message); skip the in-flight item for this snapshot.
-						}
+				const content = streaming.content;
+				const pruned = content.filter(
+					(part) => part.type !== "toolCall" || Boolean(part.id && part.name),
+				);
+				if (pruned.length !== content.length) {
+					try {
+						const item = toProtocolAssistantMessage(
+							{ ...streaming, content: pruned },
+							{ id },
+						);
+						if (item && typeof item === "object") items.push(item);
+					} catch {
+						// Still unmappable; skip the in-flight item for this snapshot.
 					}
 				}
 			}
 		}
 		// Synthetic running items carry live partial output to the panel; the real
 		// toolResult replaces them at tool_execution_end.
-		for (const [toolCallId, partial] of this.toolPartials) {
+		for (const [toolCallId, partial] of this.liveTools) {
 			const hasToolResult = items.some(
-				(item) =>
-					item &&
-					typeof item === "object" &&
-					(item as Record<string, unknown>).role === "tool" &&
-					(item as Record<string, unknown>).toolCallId === toolCallId,
+				(item) => item.role === "tool" && item.toolCallId === toolCallId,
 			);
 			if (hasToolResult) continue;
 			items.push(
@@ -303,9 +309,8 @@ export class WorkerRuntime implements PiSessionRuntime {
 					toolCallId,
 					toolName: partial.toolName,
 					args: partial.args,
-					content: partial.content as Array<Record<string, unknown>> | undefined,
+					content: partial.content,
 					status: "running",
-					isError: partial.isError,
 					timestamp: Date.now(),
 				}),
 			);
@@ -328,7 +333,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 			model: model
 				? { provider: model.provider, id: model.id }
 				: { provider: "unknown", id: "unknown" },
-			thinkingLevel: (this.session.thinkingLevel ?? "off") as ThinkingLevel,
+			thinkingLevel: this.session.thinkingLevel ?? "off",
 			// PiServer overrides attached/locked/phase in its normalized snapshot.
 			attached: false,
 			locked: true,
@@ -336,15 +341,19 @@ export class WorkerRuntime implements PiSessionRuntime {
 			transcript: items,
 			queuedSteer,
 			queuedSteerCount: queuedSteer.length,
-		} as unknown as SessionSnapshot;
+		};
 	}
 
-	getPhase(): SessionPhase {
+	private currentPhase(fallback: SessionPhase): SessionPhase {
 		if (this.compactionCount > 0) return "compaction";
 		if (this.retryActive) return "retry";
 		if (this.branchSummaryActive) return "branch_summary";
 		if (this.session.isStreaming) return "turn";
-		return this.phase;
+		return fallback;
+	}
+
+	getPhase(): SessionPhase {
+		return this.currentPhase(this.phase);
 	}
 
 	async prompt(input: PromptInput): Promise<void> {
@@ -397,19 +406,17 @@ export class WorkerRuntime implements PiSessionRuntime {
 	}
 
 	async setModel(ref: ModelRef): Promise<void> {
-		const runtime = (this.session as unknown as {
-			modelRuntime: { getModel(provider: string, id: string): unknown };
-		}).modelRuntime;
-		const model = runtime.getModel(ref.provider, ref.id);
+		const model = this.session.modelRuntime.getModel(ref.provider, ref.id);
 		if (!model) {
-			throw new PiServerError("invalid_request", `unknown model ${ref.provider}/${ref.id}`);
+			throw new PiServerError(
+				"invalid_request",
+				`unknown model ${ref.provider}/${ref.id}`,
+			);
 		}
 		// Direct state assignment on purpose: AgentSession.setModel() would persist a
 		// new default into the operator's settings.json. A worker's model must never
 		// mutate the operator's defaults.
-		const state = (
-			this.session as unknown as { agent: { state: Record<string, unknown> } }
-		).agent.state;
+		const state = this.session.state;
 		state.model = model;
 		// Re-clamp the level against the NEW model by hand. AgentSession.setThinkingLevel
 		// writes the clamped level into the operator's global defaultThinkingLevel,
@@ -424,9 +431,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 
 	async setThinking(thinkingLevel: ThinkingLevel): Promise<void> {
 		// Same non-persisting rationale as setModel.
-		(
-			this.session as unknown as { agent: { state: Record<string, unknown> } }
-		).agent.state.thinkingLevel = thinkingLevel;
+		this.session.state.thinkingLevel = thinkingLevel;
 		this.emit({ type: "snapshot" });
 	}
 
@@ -467,11 +472,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 	// ------------------------------------------------------------ internals
 
 	private recomputePhase(): void {
-		if (this.compactionCount > 0) this.phase = "compaction";
-		else if (this.retryActive) this.phase = "retry";
-		else if (this.branchSummaryActive) this.phase = "branch_summary";
-		else if (this.session.isStreaming) this.phase = "turn";
-		else this.phase = "idle";
+		this.phase = this.currentPhase("idle");
 	}
 
 	private emit(event: PiSessionRuntimeEvent): void {
@@ -492,7 +493,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 		}
 	}
 
-	private messageId(message: object): string {
+	private messageId(message: SessionMessage): string {
 		let id = this.msgIds.get(message);
 		if (!id) {
 			id = `m-${++this.msgSeq}`;
@@ -510,54 +511,45 @@ export class WorkerRuntime implements PiSessionRuntime {
 		return id;
 	}
 
-
-	private toolItem(input: {
-		toolCallId: string;
-		toolName: string;
-		args?: unknown;
-		content?: Array<Record<string, unknown>>;
-		status: "running" | "complete" | "error";
-		isError: boolean;
-		details?: unknown;
-		usage?: unknown;
-		timestamp: number;
-	}): unknown {
+	private toolItem(
+		input: ToolItemInput & { status: "running" },
+	): ToolItemWithStatus<"running">;
+	private toolItem(
+		input: ToolItemInput & { status: "complete" | "error" },
+	): ToolItemWithStatus<"complete"> | ToolItemWithStatus<"error">;
+	private toolItem(input: ToolItemInput): ToolTranscriptItem;
+	private toolItem(input: ToolItemInput): ToolTranscriptItem {
 		const base = {
 			id: input.toolCallId,
 			role: "tool" as const,
 			toolCallId: input.toolCallId,
 			toolName: input.toolName,
 			input: toProtocolJsonValue(input.args ?? {}),
-			content: (input.content ?? []).map((part) => {
-				if (part.type === "text") return { type: "text", text: part.text };
-				if (part.type === "image")
-					return { type: "image", data: part.data, mimeType: part.mimeType };
-				return { type: "text", text: String(part) };
-			}),
+			content: input.content ?? [],
 			timestamp: input.timestamp,
 		};
 		if (input.status === "running") {
-			// Running items carry no details/usage in protocol v1.
 			return { ...base, status: "running", isError: false };
 		}
-		const details = sanitizeProtocolDetails(input.details as never);
-		const usage = toProtocolUsage(input.usage as never);
-		return {
-			...base,
-			status: input.status,
-			isError: input.isError,
-			...(details === undefined ? {} : { details }),
-			...(usage ? { usage } : {}),
-		};
+		const optional: {
+			details?: ReturnType<typeof sanitizeProtocolDetails>;
+			usage?: ReturnType<typeof toProtocolUsage>;
+		} = {};
+		const details = sanitizeProtocolDetails(input.details);
+		const usage = toProtocolUsage(input.usage);
+		if (details !== undefined) optional.details = details;
+		if (usage !== undefined) optional.usage = usage;
+		return input.status === "error"
+			? { ...base, ...optional, status: "error", isError: true }
+			: { ...base, ...optional, status: "complete", isError: false };
 	}
 
-	private emitAssistantDeltas(message: AnyMessage): void {
+	private emitAssistantDeltas(message: AssistantSessionMessage): void {
 		const stream = this.stream;
 		if (!stream) return;
-		(message.content as Array<Record<string, unknown>>).forEach((part, index) => {
+		message.content.forEach((part, index) => {
 			if (part.type !== "text" && part.type !== "thinking") return;
 			const text = part.type === "text" ? part.text : part.thinking;
-			if (typeof text !== "string") return;
 			const previous = stream.lens.get(index) ?? 0;
 			if (text.length > previous) {
 				this.emit({
@@ -568,44 +560,57 @@ export class WorkerRuntime implements PiSessionRuntime {
 						contentIndex: index,
 						kind: part.type,
 						delta: text.slice(previous),
-					} as never,
+					},
 				});
 				stream.lens.set(index, text.length);
 			}
 		});
 	}
 
-	private onSessionEvent(event: { type: string; [key: string]: unknown }): void {
+	private onSessionEvent(event: AgentSessionEvent): void {
 		switch (event.type) {
 			case "message_start": {
-				const message = event.message as AnyMessage;
+				const { message } = event;
 				if (message.role === "user") {
-					const item = toProtocolUserMessage(message as never, { id: this.messageId(message) });
-					this.emit({ type: "progress", progress: { type: "item_started", item } as never });
+					const item = toProtocolUserMessage(message, {
+						id: this.messageId(message),
+					});
+					this.emit({
+						type: "progress",
+						progress: { type: "item_started", item },
+					});
 				} else if (message.role === "assistant") {
 					const id = `m-${++this.msgSeq}`;
 					this.msgIds.set(message, id);
 					this.stream = { id, lens: new Map() };
-					const item = toProtocolAssistantMessage(message as never, { id });
-					this.emit({ type: "progress", progress: { type: "item_started", item } as never });
+					const item = toProtocolAssistantMessage(message, { id });
+					this.emit({
+						type: "progress",
+						progress: { type: "item_started", item },
+					});
 				}
 				break;
 			}
-			case "message_update": {
-				const message = event.message as AnyMessage;
-				if (message.role === "assistant") this.emitAssistantDeltas(message);
+			case "message_update":
+				if (event.message.role === "assistant") {
+					this.emitAssistantDeltas(event.message);
+				}
 				break;
-			}
 			case "message_end": {
-				const message = event.message as AnyMessage;
+				const { message } = event;
 				if (message.role === "assistant") {
 					const id = this.stream?.id ?? this.messageId(message);
 					this.msgIds.set(message, id);
 					try {
-						const item = toProtocolAssistantMessage(message as never, { id });
-						this.emit({ type: "progress", progress: { type: "item_finished", item } as never });
+						const item = toProtocolAssistantMessage(message, { id });
+						if (item.status !== "streaming") {
+							this.emit({
+								type: "progress",
+								progress: { type: "item_finished", item },
+							});
+						}
 					} catch {
-						// deferred stop reasons: snapshots still carry the message.
+						// Deferred stop reasons stay available through snapshots.
 					}
 					this.stream = null;
 					this.emit({ type: "snapshot" });
@@ -615,65 +620,67 @@ export class WorkerRuntime implements PiSessionRuntime {
 				break;
 			}
 			case "tool_execution_start": {
-				this.toolArgs.set(event.toolCallId as string, event.args);
+				this.liveTools.set(event.toolCallId, {
+					toolName: event.toolName,
+					args: event.args,
+				});
 				const item = this.toolItem({
-					toolCallId: event.toolCallId as string,
-					toolName: event.toolName as string,
+					toolCallId: event.toolCallId,
+					toolName: event.toolName,
 					args: event.args,
 					content: [],
 					status: "running",
-					isError: false,
 					timestamp: Date.now(),
 				});
-				this.emit({ type: "progress", progress: { type: "item_started", item } as never });
+				this.emit({
+					type: "progress",
+					progress: { type: "item_started", item },
+				});
 				break;
 			}
 			case "tool_execution_update": {
-				const partial = event.partialResult as { content?: Array<Record<string, unknown>> };
-				this.toolPartials.set(event.toolCallId as string, {
-					toolName: event.toolName as string,
+				// SAFETY: Pi 0.84.2 declares partialResult as any, while every tool
+				// update uses the public AgentToolResult content contract.
+				const partial = event.partialResult as ToolResultPayload;
+				this.liveTools.set(event.toolCallId, {
+					toolName: event.toolName,
 					args: event.args,
-					content: (event.partialResult as { content?: unknown })?.content,
-					isError: false,
+					content: partial.content,
 				});
 				const item = this.toolItem({
-					toolCallId: event.toolCallId as string,
-					toolName: event.toolName as string,
+					toolCallId: event.toolCallId,
+					toolName: event.toolName,
 					args: event.args,
-					content: partial?.content,
+					content: partial.content,
 					status: "running",
-					isError: false,
 					timestamp: Date.now(),
 				});
-				this.emit({ type: "progress", progress: { type: "item_updated", item } as never });
+				this.emit({
+					type: "progress",
+					progress: { type: "item_updated", item },
+				});
 				break;
 			}
 			case "tool_execution_end": {
-				// Pi's tool_execution_end carries no args (only start and update do),
-				// so the finished item must reuse the arguments seen earlier or it
-				// reports the call with an empty input.
-				const startedArgs =
-					this.toolArgs.get(event.toolCallId as string) ??
-					this.toolPartials.get(event.toolCallId as string)?.args;
-				this.toolPartials.delete(event.toolCallId as string);
-				this.toolArgs.delete(event.toolCallId as string);
-				const result = event.result as {
-					content?: Array<Record<string, unknown>>;
-					details?: unknown;
-					usage?: unknown;
-				};
+				const started = this.liveTools.get(event.toolCallId);
+				this.liveTools.delete(event.toolCallId);
+				// SAFETY: Pi 0.84.2 declares result as any, while tool execution
+				// supplies the public AgentToolResult content/details/usage contract.
+				const result = event.result as ToolResultPayload;
 				const item = this.toolItem({
-					toolCallId: event.toolCallId as string,
-					toolName: event.toolName as string,
-					args: event.args ?? startedArgs,
-					content: result?.content,
+					toolCallId: event.toolCallId,
+					toolName: event.toolName,
+					args: started?.args,
+					content: result.content,
 					status: event.isError ? "error" : "complete",
-					isError: Boolean(event.isError),
-					details: result?.details,
-					usage: result?.usage,
+					details: result.details,
+					usage: result.usage,
 					timestamp: Date.now(),
 				});
-				this.emit({ type: "progress", progress: { type: "item_finished", item } as never });
+				this.emit({
+					type: "progress",
+					progress: { type: "item_finished", item },
+				});
 				break;
 			}
 			case "agent_start":
@@ -741,5 +748,3 @@ export class WorkerRuntime implements PiSessionRuntime {
 		}
 	}
 }
-
-export type { CreateSessionOptions };

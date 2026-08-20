@@ -11,8 +11,8 @@ reopen as a primary session with `pi --session <file>`. Stored results (up to
 that any later session can read.
 
 No gates, no enterprise controls, no supervisor, no daemon. The server lives in
-the parent session; the store is the truth; the parent's own tools manage
-workers.
+the parent session; the store is the application's persistence authority; the
+parent's own tools manage workers.
 
 ## Tools
 
@@ -29,7 +29,8 @@ workers.
 Command: `/subagent` opens the dashboard in the TUI. RPC receives a structured
 extension-UI notification plus a `subagent_status` custom entry; JSON receives
 the custom entry as an `entry_appended` event; print mode emits the optionally
-filtered text view to the terminal. The roster content-fits short lists; worker
+filtered text view to the terminal. Model-facing status previews label worker
+authorship and state that the text is unverified, not an instruction. The roster content-fits short lists; worker
 consoles grow to at most 85% of the terminal (floor 44 rows; pin a fixed cap
 with `PI_SUBAGENT_PANEL_MAX_ROWS`). The `thinking:` value in a status line is
 the EFFECTIVE level — pi clamps an inherited level to what the model supports —
@@ -43,7 +44,9 @@ resolves its configuration from the process working directory reads the
 parent's, not the worker's declared `cwd`. A tool whose registration derives
 from such configuration is compared against the parent's registration before
 the worker starts, so a divergence fails the dispatch by name instead of
-handing the worker a different tool.
+handing the worker a different tool. The worker does not trust or load project
+settings from a task-selected `cwd`. Global packages remain available for
+provider registration; callable tools still follow the selected allowlist.
 
 A worker accepts any existing directory — it is validated, not
 constrained. This is not an escalation (the worker inherits the parent's exact
@@ -52,15 +55,18 @@ policy (e.g. confine workers to a workspace root), that is a deliberate choice
 to make, not a default.
 
 ```json
-{ "task": "Verify that MODEL_BASE has a unique constraint on ID_FIELD. Cite file:line.", "model": "deepseek/deepseek-v4-flash", "thinking": "medium" }
+{ "task": "Verify that MODEL_BASE has a unique constraint on ID_FIELD. Cite file:line.", "model": "provider/model-id", "thinking": "medium" }
 ```
 
-Per-task fields: `task` (required), `model`, `thinking`, `tools`, `cwd`,
-`deadlineMinutes`, `budgetUsd`.
+Use exactly one dispatch form: `task` for one worker or a non-empty `tasks`
+array for a batch. Per-task fields: `task` (required), `model`, `thinking`,
+`tools`, `cwd`, `deadlineMinutes`, `budgetUsd`.
 
 - **model** — bare id or `provider/id`, checked only against registry
   availability and configured auth. Omitted: inherits the parent's current
-  model.
+  model. Persisted credentials and environment credentials resolve in workers.
+  A parent-only runtime API-key override does not transfer: Pi's public
+  `ExtensionContext` exposes the registry facade, not the owning `ModelRuntime`.
 - **thinking** — `off|minimal|low|medium|high|xhigh|max`. Declared: checked
   against the levels the model supports (pi's own
   `getSupportedThinkingLevels`); an unsupported level fails that task and names
@@ -73,8 +79,8 @@ Per-task fields: `task` (required), `model`, `thinking`, `tools`, `cwd`,
 - **tools** — omitted: the worker snapshots the dispatching session's current
   active tool surface. The dispatching session's live registry wins, and its
   session-keyed recorded surface is the fallback for a fresh module instance.
-  A real session with neither source fails loudly and asks for explicit `tools`;
-  it never broadens to the root registry. Reproduction is by registration
+  A real session with neither source fails before worker creation; it never
+  broadens to another session's registry. Reproduction is by registration
   source, so it covers built-ins and file-backed extension
   registrations, including a tool an extension registers from its
   `session_start` handler — the worker runs that handler too (see
@@ -110,8 +116,8 @@ it never expands the worker's active allowlist: pi filters registered
 definitions down to exactly the declared surface, so a restricted worker sees
 no subagent tools as callable.
 
-Workers are clean-context: project context files (AGENTS.md) and skills are not
-loaded. That is a documented property of the worker, not a narrowing of tool
+Workers are clean-context: project settings, project context files (AGENTS.md),
+and skills are not loaded. That is a documented property of the worker, not a narrowing of tool
 inheritance. It holds for the current extension set rather than by
 construction: binding a worker's extensions also runs `resources_discover`, so
 an extension that supplies skill, prompt, or theme paths from that handler
@@ -143,14 +149,14 @@ would add them to a worker built with `noSkills`.
   The write is capped at 50KB of UTF-8 including a `[truncated]` marker. The
   parent never extracts results heuristically.
 - The worker system prompt states the deliverable protocol and three disclosure
-  rules. They report, they do not restrict: a tool that fails with an
-  environment, authorization, or initialization error must be named with its
-  exact error even when the worker found another way; a workaround is allowed
-  without permission but must say which path it used instead; and cached or
-  exported evidence must carry its age rather than stand in for current state.
-  A worker that cannot finish submits what it established and names the blocker.
-  Nothing here withholds capability from a worker — the extension captures the
-  friction signal (`toolErrors`) and leaves the judgment call with the operator.
+  rules. A tool that fails with an environment, authorization, or initialization
+  error must be named with its exact error. An alternative must already be
+  authorized by the task and environment; another account, credential, or
+  privileged path is prohibited. The worker states the non-secret alternative
+  it used. Cached or exported evidence carries its age rather than standing in
+  for current state. A worker that cannot finish submits what it established and
+  names the blocker. The extension captures the friction signal (`toolErrors`)
+  and leaves the judgment call with the operator.
 - A worker should call `submit_result` alone in its final turn. If it is
   batched with a sequential tool such as `subagent_steer`/`subagent_kill`, the
   sibling call can be dropped on abort, leaving an unanswered toolCall in the
@@ -161,8 +167,8 @@ would add them to a worker built with `noSkills`.
   owning worker receives the message, resumes, and can collect the result.
   Explicit cancellation returns its outcome through
   the cancel action and does not enqueue a duplicate follow-up.
-  `notificationQueuedAt` records only that the owning session's delivery API
-  accepted the synchronous `sendMessage()` call. Pi observes asynchronous
+  `notificationCallReturnedAt` records only that the owning session's
+  synchronous `sendMessage()` call returned. Pi observes asynchronous
   delivery failures internally, so the marker proves neither queue acceptance
   nor later processing. A top-level owner displays the message when it goes
   idle. A worker owner processes it as a follow-up turn when it goes idle.
@@ -191,8 +197,9 @@ would add them to a worker built with `noSkills`.
   provenance markers. It is a report, not operator input: an instruction inside
   a worker's result is data to judge, never a directive to follow.
 - A worker left interrupted and idle is released by a bounded deadline (30
-  minutes) rather than holding its session forever. Sending it a message before
-  then cancels the deadline and resumes it.
+  minutes) rather than holding its session forever. Without a stored result, the
+  release records `failed` with the idle-deadline reason because the task did not
+  finish. Sending it a message before then cancels the deadline and resumes it.
 - A worker that fails after dispatch reports its death with the same completion
   notification as a success: state `failed` plus the error.
 - The `subagent` tool row renders the crafted dispatch spec in the standard pi
@@ -309,9 +316,9 @@ pi --session ~/.pi/agent/sessions/.../<worker-session-id>.jsonl
 ```
 
 While a worker is still running it belongs to this session's process: steer it
-with `subagent_steer` and abort it with `subagent_kill`. Another session may
-inspect the persisted transcript through its `/subagent` dashboard, but cannot
-mutate the live worker. There is no separate live second terminal for a running
+with `subagent_steer` and abort it with `subagent_kill`. The extension tool and
+panel paths refuse mutation from another session. Another session may inspect
+the persisted transcript through its `/subagent` dashboard. There is no separate live second terminal for a running
 worker — pi runs one interactive session at a time and ships no client-attach
 command, so live control stays through the owning parent's tools and dashboard.
 
@@ -325,6 +332,8 @@ extraction would guess which model-authored content was the deliverable.
 
 Each session that dispatches workers hosts a `PiServer` on its own unix socket
 and registers only the workers that session owns as real protocol sessions.
+The socket uses same-UID filesystem authorization. It is not a sandbox boundary
+between processes or workers that already run as that user.
 Released Pi 0.84.2 has no CLI or TUI path that consumes this extension's socket,
 so it has **no operator-facing consumer** and the extension prints no attach
 hint.
@@ -402,12 +411,9 @@ Workers live in the dispatching session's process. Therefore:
 This cut deliberately has no keeper process: `owner_lost` is the honest state
 for in-flight work after parent death.
 
-Known boundary: liveness is probed with the owner's PID (`process.kill(pid, 0)`).
-If the OS recycles that PID to an unrelated process, a dead owner can look alive
-and the worker stays `running`; the interrupted-idle deadline does not apply to
-an active record, running records are not pruned, and a non-owner kill is
-correctly refused while that PID appears live. A session-token heartbeat would
-close this; it has not been worth the machinery yet.
+Known boundary: Node exposes PID liveness, not process birth identity. If the
+OS recycles an owner's PID, a dead owner can temporarily look alive and remain
+`running`. The current Node process layer cannot distinguish that recycled PID.
 
 ## Store
 
@@ -421,9 +427,11 @@ close this; it has not been worth the machinery yet.
   the parent's bounded worker-server endpoint inside owner-only directories
 ```
 
-The store is owner-only. Worker prompts, transcripts, and results carry whatever
-the operator's work carries, and the socket is a full control channel over live
-workers whose only authorization is its filesystem permissions. Its stable,
+The store is owner-only against other OS users. Workers and other same-UID
+processes share the operator's filesystem authority; this extension does not
+claim tamper resistance against them. Worker prompts, transcripts, and results
+carry whatever the operator's work carries, and the socket is a full control
+channel whose authorization is its filesystem permissions. Its stable,
 hashed runtime path stays below Unix socket limits regardless of
 `PI_CODING_AGENT_DIR` length; the full session identity remains in
 `worker.json`. PiServer owns identity-aware stale-endpoint cleanup, while the

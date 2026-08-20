@@ -4,12 +4,10 @@
  * protocol sessions: a client that speaks protocol v1 can list them, attach, and
  * drive the same session the parent is driving.
  *
- * No such client ships today. Pi's `server`/`client` CLI commands exist upstream
- * as parser composition that the shipping entrypoint does not call, and its TUI
- * drives one local session at a time. This surface is therefore unconsumed by
- * any operator workflow; it is covered by the colocated conformance test, and it
- * is the path an inline steerable worker console will take when upstream's TUI
- * learns to consume a remote session.
+ * Released Pi 0.84.2 ships no operator client for this socket. Unreleased
+ * upstream server and client work is experimental and does not define this
+ * extension's production contract. The socket remains unconsumed by an operator
+ * workflow and is covered by the colocated conformance test.
  *
  * There is no daemon. The host lives and dies with the parent session; a worker
  * still in flight when the parent dies is lost (owner_lost), and its completed
@@ -18,20 +16,20 @@
 
 import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, rmdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
-import {
-	PiServerError,
-	toProtocolModelMetadata,
-	type CreateSessionOptions,
-	type PiServerService,
-	type PiSessionRuntime,
-} from "@earendil-works/pi-server";
-import { createUnixServer } from "@earendil-works/pi-server/unix";
+import { dirname, join, resolve } from "node:path";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
 	ModelMetadata,
 	SessionMetadata,
 } from "@earendil-works/pi-protocol";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	type CreateSessionOptions,
+	PiServerError,
+	type PiServerService,
+	type PiSessionRuntime,
+	toProtocolModelMetadata,
+} from "@earendil-works/pi-server";
+import { createUnixServer } from "@earendil-works/pi-server/unix";
 import type { WorkerRuntime } from "./runtime.ts";
 
 const SOCKET_HASH_HEX = 24;
@@ -96,7 +94,9 @@ export class WorkerHost implements PiServerService {
 	private readonly path: string;
 	private server: ReturnType<typeof createUnixServer> | null = null;
 	private starting: Promise<void> | null = null;
+	private closing: Promise<void> | null = null;
 	private modelsFrom: ExtensionContext | null = null;
+	private closed = false;
 
 	constructor(agentDir: string, ownerSession: string, runtimeRoot?: string) {
 		const location = socketLocation(agentDir, ownerSession, runtimeRoot);
@@ -116,6 +116,7 @@ export class WorkerHost implements PiServerService {
 
 	/** Start on first dispatch; repeat calls await the same start. */
 	async ensureStarted(ctx: ExtensionContext): Promise<void> {
+		if (this.closed) throw new Error("worker host is closed");
 		this.modelsFrom = ctx;
 		if (this.server) return;
 		if (this.starting) return this.starting;
@@ -123,7 +124,10 @@ export class WorkerHost implements PiServerService {
 			// Owner-only: the socket is a full control channel over live workers and
 			// its filesystem permissions are the whole authorization story (protocol
 			// hello carries no credentials — upstream made authorization a transport
-			// responsibility). The socket file itself is created 0600 by the listener.
+			// responsibility). Secure the runtime root as well as the hashed agent
+			// directory so another user cannot replace the directory through a parent
+			// they own. The socket file is created 0600 by the listener.
+			ensureOwnerOnlyDirectory(dirname(this.socketDir));
 			ensureOwnerOnlyDirectory(this.socketDir);
 			const server = createUnixServer(this, {
 				path: this.path,
@@ -153,6 +157,7 @@ export class WorkerHost implements PiServerService {
 	}
 
 	register(runtime: WorkerRuntime): void {
+		if (this.closed) throw new Error("worker host is closed");
 		this.runtimes.set(runtime.id, runtime);
 	}
 
@@ -160,37 +165,44 @@ export class WorkerHost implements PiServerService {
 		this.runtimes.delete(id);
 	}
 
-	get(id: string): WorkerRuntime | undefined {
-		return this.runtimes.get(id);
-	}
-
-	get liveCount(): number {
-		return this.runtimes.size;
-	}
-
 	async close(): Promise<void> {
-		for (const runtime of this.runtimes.values()) {
-			try {
-				runtime.shutdown();
-			} catch {
-				// Continue closing the remaining runtime and transport owners.
+		if (this.closing) return this.closing;
+		if (this.closed) return;
+		this.closed = true;
+		this.closing = (async () => {
+			const starting = this.starting;
+			if (starting) {
+				try {
+					await starting;
+				} catch {
+					// Startup already owns its transport cleanup.
+				}
 			}
-		}
-		this.runtimes.clear();
-		const server = this.server;
-		this.server = null;
-		if (server) {
-			try {
-				await server.close();
-			} catch {
-				// Shutting down anyway.
+			for (const runtime of this.runtimes.values()) {
+				try {
+					runtime.shutdown();
+				} catch {
+					// Continue closing the remaining runtime and transport owners.
+				}
 			}
-		}
-		try {
-			rmdirSync(this.socketDir);
-		} catch {
-			// Shared agent namespace may still contain another live endpoint.
-		}
+			this.runtimes.clear();
+			const server = this.server;
+			this.server = null;
+			this.modelsFrom = null;
+			if (server) {
+				try {
+					await server.close();
+				} catch {
+					// Shutting down anyway.
+				}
+			}
+			try {
+				rmdirSync(this.socketDir);
+			} catch {
+				// Shared agent namespace may still contain another live endpoint.
+			}
+		})();
+		return this.closing;
 	}
 
 	// ------------------------------------------------------------ PiServerService
@@ -201,7 +213,7 @@ export class WorkerHost implements PiServerService {
 			createdAt: runtime.createdAt,
 			sessionName: runtime.name,
 			cwd: runtime.cwd,
-		})) as SessionMetadata[];
+		}));
 	}
 
 	async listModels(): Promise<ModelMetadata[]> {

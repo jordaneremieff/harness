@@ -22,7 +22,11 @@
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 
 export interface ConsoleTextPart {
 	type: "text";
@@ -38,7 +42,10 @@ export interface ConsoleToolCallPart {
 	name: string;
 	arguments: Record<string, unknown>;
 }
-export type ConsolePart = ConsoleTextPart | ConsoleThinkingPart | ConsoleToolCallPart;
+export type ConsolePart =
+	| ConsoleTextPart
+	| ConsoleThinkingPart
+	| ConsoleToolCallPart;
 
 export interface ConsoleUserMessage {
 	role: "user";
@@ -59,7 +66,10 @@ export interface ConsoleToolResultMessage {
 	/** Live status; "running" marks a synthetic in-flight result carrying partial content. */
 	status?: "running" | "complete" | "error";
 }
-export type ConsoleMessage = ConsoleUserMessage | ConsoleAssistantMessage | ConsoleToolResultMessage;
+export type ConsoleMessage =
+	| ConsoleUserMessage
+	| ConsoleAssistantMessage
+	| ConsoleToolResultMessage;
 
 export interface RenderOpts {
 	/** Total terminal columns; every output line MUST be exactly this many visible columns. */
@@ -69,7 +79,12 @@ export interface RenderOpts {
 }
 
 /** Background tokens this renderer paints with (subset of ThemeBg). */
-type BgToken = "userMessageBg" | "customMessageBg" | "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
+type BgToken =
+	| "userMessageBg"
+	| "customMessageBg"
+	| "toolPendingBg"
+	| "toolSuccessBg"
+	| "toolErrorBg";
 /**
  * ANSI escape sequences, applied to reduce tool output to plain text before
  * previewing. `theme.fg`/`bg` never run through this — only raw tool result
@@ -89,11 +104,21 @@ const ANSI_PASSES: RegExp[] = [
 	/\u001b[ -/]*[0-~]/g,
 ];
 
+/** Remove complete terminal escape sequences while preserving their text. */
+export function stripTerminalSequences(text: string): string {
+	let stripped = text;
+	for (const pass of ANSI_PASSES) stripped = stripped.replace(pass, "");
+	return stripped;
+}
+
 function isBlank(text: string): boolean {
 	return text.trim() === "";
 }
 
-export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts): string[] {
+export function renderConversation(
+	messages: ConsoleMessage[],
+	opts: RenderOpts,
+): string[] {
 	const { width, theme } = opts;
 
 	// Inner content width of a padded block: 1 space margin on each side.
@@ -116,7 +141,8 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 	};
 
 	/** Full-width background-only line. */
-	const bgBlank = (token: BgToken): string => theme.bg(token, " ".repeat(width));
+	const bgBlank = (token: BgToken): string =>
+		theme.bg(token, " ".repeat(width));
 
 	/**
 	 * Padded block line: `bg(" " + inner(padded to width-2) + " ")` — a 1-space
@@ -127,7 +153,10 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 	const padPaint = (token: BgToken, innerText: string): string => {
 		const inner = truncateToWidth(innerText, contentWidth, "");
 		const innerWidth = visibleWidth(inner);
-		const padded = innerWidth >= contentWidth ? inner : inner + " ".repeat(contentWidth - innerWidth);
+		const padded =
+			innerWidth >= contentWidth
+				? inner
+				: inner + " ".repeat(contentWidth - innerWidth);
 		const left = Math.max(0, Math.floor((width - contentWidth) / 2));
 		const right = Math.max(0, width - contentWidth - left);
 		return theme.bg(token, " ".repeat(left) + padded + " ".repeat(right));
@@ -146,7 +175,9 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 		pushSpacer();
 		out.push(bgBlank("userMessageBg"));
 		const text = sanitize(
-			typeof msg.content === "string" ? msg.content : msg.content.map((p) => p.text).join("\n"),
+			typeof msg.content === "string"
+				? msg.content
+				: msg.content.map((p) => p.text).join("\n"),
 		);
 		for (const line of wrapTextWithAnsi(text, wrapWidth)) {
 			out.push(padPaint("userMessageBg", theme.fg("userMessageText", line)));
@@ -159,7 +190,7 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 	const renderTextRun = (text: string): void => {
 		pushSpacer();
 		for (const line of wrapTextWithAnsi(sanitize(text), wrapWidth)) {
-			out.push(plainLine(" " + theme.fg("text", line)));
+			out.push(plainLine(` ${theme.fg("text", line)}`));
 		}
 		emitted = true;
 	};
@@ -169,7 +200,7 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 		pushSpacer();
 		const text = sanitize(parts.map((p) => p.thinking).join("\n\n"));
 		for (const line of wrapTextWithAnsi(text, wrapWidth)) {
-			out.push(plainLine(" " + theme.italic(theme.fg("thinkingText", line))));
+			out.push(plainLine(` ${theme.italic(theme.fg("thinkingText", line))}`));
 		}
 		emitted = true;
 	};
@@ -178,7 +209,7 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 	 * (a Spacer(1) then a single themed error Text). */
 	const renderErrorLine = (text: string): void => {
 		if (emitted) out.push(" ".repeat(width));
-		out.push(plainLine(" " + theme.fg("error", text)));
+		out.push(plainLine(` ${theme.fg("error", text)}`));
 		emitted = true;
 	};
 
@@ -194,7 +225,10 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 	 *   "Request was aborted", and "error" prints an "Error: " prefix with
 	 *   "Unknown error" as the fallback.
 	 */
-	const renderStopTail = (msg: ConsoleAssistantMessage, hasToolCalls: boolean): void => {
+	const renderStopTail = (
+		msg: ConsoleAssistantMessage,
+		hasToolCalls: boolean,
+	): void => {
 		if (msg.stopReason === "length") {
 			renderErrorLine("Response was truncated before completion.");
 			return;
@@ -215,23 +249,25 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 	const toolTitle = (name: string, args: Record<string, unknown>): string => {
 		switch (name) {
 			case "bash":
-				return "$ " + String(args.command ?? "");
+				return `$ ${String(args.command ?? "")}`;
 			case "read":
-				return "read " + String(args.path ?? "");
+				return `read ${String(args.path ?? "")}`;
 			case "write":
-				return "write " + String(args.path ?? "");
+				return `write ${String(args.path ?? "")}`;
 			case "edit":
-				return "edit " + String(args.path ?? "");
+				return `edit ${String(args.path ?? "")}`;
 			case "grep":
-				return "grep /" + String(args.pattern ?? "") + "/";
+				return `grep /${String(args.pattern ?? "")}/`;
 			case "find":
-				return "find " + String(args.pattern ?? "");
+				return `find ${String(args.pattern ?? "")}`;
 			case "ls":
-				return "ls " + String(args.path ?? "");
+				return `ls ${String(args.path ?? "")}`;
 			case "submit_result":
 				return "submit_result";
 			default:
-				return Object.keys(args).length > 0 ? name + " " + JSON.stringify(args) : name;
+				return Object.keys(args).length > 0
+					? `${name} ${JSON.stringify(args)}`
+					: name;
 		}
 	};
 
@@ -242,8 +278,7 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 	 * assistant, and thinking text (tool-result previews already used it).
 	 */
 	const sanitize = (text: string): string => {
-		let out = text;
-		for (const pass of ANSI_PASSES) out = out.replace(pass, "");
+		let out = stripTerminalSequences(text);
 		// Layout controls become spaces BEFORE the control sweep so words on either
 		// side of a tab or carriage return do not fuse. Mirrors cleanConsoleInput in
 		// panel.ts; \n survives because the caller splits on it.
@@ -261,21 +296,32 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 	 * the input shape carries no per-tool start timestamps, so the elapsed line
 	 * is deliberately omitted — nothing is invented.
 	 */
-	const resultPreview = (_name: string, result: ConsoleToolResultMessage): string[] => {
+	const resultPreview = (
+		_name: string,
+		result: ConsoleToolResultMessage,
+	): string[] => {
 		// A synthetic running result carries partial output: show it dimmed inside the pending box instead of nothing until completion.
 		const running = result.status === "running";
 		const style = (s: string): string =>
-			running ? theme.fg("dim", s) : result.isError ? theme.fg("error", s) : theme.fg("toolOutput", s);
+			running
+				? theme.fg("dim", s)
+				: result.isError
+					? theme.fg("error", s)
+					: theme.fg("toolOutput", s);
 		const text = sanitize(result.content.map((p) => p.text).join("\n"));
 		if (running && text === "") return [];
 		return text.split("\n").map(style);
 	};
 
-	const renderToolCall = (call: ConsoleToolCallPart, stopReason?: string): void => {
+	const renderToolCall = (
+		call: ConsoleToolCallPart,
+		stopReason?: string,
+	): void => {
 		const result = resultsById.get(call.id);
 		const running = result?.status === "running";
 		// A resultless tool call on an aborted/errored run never finished: render error-styled with a status label, never as pending.
-		const failed = !result && (stopReason === "aborted" || stopReason === "error");
+		const failed =
+			!result && (stopReason === "aborted" || stopReason === "error");
 		const bg: BgToken = failed
 			? "toolErrorBg"
 			: !result || running
@@ -286,7 +332,11 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 		pushSpacer();
 		out.push(bgBlank(bg));
 		const header = toolTitle(call.name, call.arguments);
-		const labelled = failed ? `${header} [${stopReason}]` : running ? `${header} [running]` : header;
+		const labelled = failed
+			? `${header} [${stopReason}]`
+			: running
+				? `${header} [running]`
+				: header;
 		// Wrap the header (long commands/paths) instead of truncating its tail.
 		for (const wl of wrapTextWithAnsi(labelled, contentWidth)) {
 			out.push(padPaint(bg, theme.fg("toolTitle", theme.bold(wl))));
@@ -295,7 +345,8 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 		if (preview.length > 0) {
 			out.push(bgBlank(bg));
 			for (const line of preview) {
-				for (const wl of wrapTextWithAnsi(line, contentWidth)) out.push(padPaint(bg, wl));
+				for (const wl of wrapTextWithAnsi(line, contentWidth))
+					out.push(padPaint(bg, wl));
 			}
 		}
 		out.push(bgBlank(bg));
@@ -334,7 +385,8 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 					if (next.type !== "thinking") break;
 					thinking.push(next);
 				}
-				if (thinking.some((p) => !isBlank(p.thinking))) renderThinking(thinking);
+				if (thinking.some((p) => !isBlank(p.thinking)))
+					renderThinking(thinking);
 			} else {
 				renderToolCall(part, msg.stopReason);
 				i++;

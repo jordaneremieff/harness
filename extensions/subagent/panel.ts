@@ -13,28 +13,30 @@
  */
 
 import { execFile } from "node:child_process";
-import {
-	decodeKittyPrintable,
-	Key,
-	matchesKey,
-	truncateToWidth,
-	visibleWidth,
-	type TUI,
-} from "@earendil-works/pi-tui";
 import type {
 	ExtensionCommandContext,
 	Theme,
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent";
-import type { WorkerRecord } from "./index.ts";
+import type { TranscriptItem } from "@earendil-works/pi-protocol";
 import {
-	renderConversation,
+	decodeKittyPrintable,
+	Key,
+	matchesKey,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
+import {
 	type ConsoleAssistantMessage,
 	type ConsoleMessage,
 	type ConsolePart,
 	type ConsoleTextPart,
 	type ConsoleToolResultMessage,
+	renderConversation,
+	stripTerminalSequences,
 } from "./console.ts";
+import type { WorkerRecord } from "./index.ts";
 
 export interface SubagentPanelDeps {
 	/** All store records, live first. */
@@ -51,9 +53,9 @@ export interface SubagentPanelDeps {
 	report(id: string): { label: string; text: string } | null;
 	/** Protocol-v1 transcript items for a worker (the live runtime's snapshot
 	 * when owned here, else its session file put through the same conversion),
-	 * or null when nothing is available. Never raw pi messages: runtime.ts is the
-	 * only reader of pi's private message state. */
-	conversation(id: string): unknown[] | null;
+	 * or null when nothing is available. Never raw Pi messages: runtime.ts owns
+	 * protocol conversion. */
+	conversation(id: string): TranscriptItem[] | null;
 	/** Whether this session still owns the worker as a live run. */
 	isLive(id: string): boolean;
 	/** Subscribe to a live worker's updates. Returns unsubscribe, or null. */
@@ -210,9 +212,6 @@ function footerWithEscape(
 	return plainLine(compose(), w);
 }
 
-/** Remove terminal protocol sequences without eating the pasted text between
- * bracketed-paste markers. Convert layout controls to spaces before dropping
- * the remaining C0/C1 bytes so multi-line pastes do not concatenate words. */
 /**
  * The text a keypress carries, or an empty string when it carries none.
  *
@@ -228,12 +227,9 @@ function printableKey(data: string): string {
 	return data;
 }
 
+/** Convert layout controls to spaces, then remove remaining terminal controls. */
 function cleanConsoleInput(data: string): string {
-	return data
-		.replace(/\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)/g, "")
-		.replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, "")
-		.replace(/\x1bO[ -~]/g, "")
-		.replace(/\x1b[ -/]*[0-~]/g, "")
+	return stripTerminalSequences(data)
 		.replace(/[\t\r\n]+/g, " ")
 		.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
 }
@@ -242,130 +238,78 @@ function cleanConsoleInput(data: string): string {
  * Normalize PROTOCOL-V1 transcript items into the shapes console.ts renders.
  *
  * The input comes from `workerConversation`, which produces protocol items for
- * both live and terminal workers through runtime.ts. This function deliberately
- * does NOT read pi's internal message shape: protocol v1 is a published,
- * versioned contract, while `agent.state.messages` is the private interior of a
- * runtime upstream has frozen. Reading the internals in two places meant two
- * things to fix on a pi upgrade; now the seam is runtime.ts alone.
+ * both live and terminal workers through runtime.ts. This function does not
+ * read Pi's internal message shape. Protocol v1 remains the one downstream
+ * contract.
  *
  * Field mapping (protocol -> console): a tool call part carries `toolCallId` /
- * `toolName` / `input` where pi's own message carries `id` / `name` /
- * `arguments`, and a tool result is a top-level item with role "tool" rather
- * than role "toolResult".
- *
- * Nothing renderable is lost in the move. The previous raw-message normalizer
- * already dropped every role protocol v1 drops (custom, notification,
- * bashExecution, branchSummary, compactionSummary) because it only ever handled
- * user, assistant, and toolResult. The one additional protocol drop is an
- * assistant message with stopReason "deferred", which only pi-ai's `faux` test
- * provider produces.
+ * `toolName` / `input`, and a tool result is a top-level item with role "tool".
+ * Protocol roles without terminal text stay outside this renderer.
  */
-function toTextParts(content: unknown): ConsoleTextPart[] {
-	if (!Array.isArray(content)) return [];
+function toTextParts(content: TranscriptItem["content"]): ConsoleTextPart[] {
 	const out: ConsoleTextPart[] = [];
-	for (const p of content as Array<{ type?: string; text?: unknown }>) {
-		if (p?.type === "text") {
-			if (typeof p.text === "string") out.push({ type: "text", text: p.text });
-		} else if (p?.type === "image") {
-			// Images cannot render as terminal text; leave a marker instead of dropping them.
+	for (const part of content) {
+		if (part.type === "text") {
+			out.push({ type: "text", text: part.text });
+		} else if (part.type === "image") {
 			out.push({ type: "text", text: "[image]" });
-		} else {
-			// Unrecognized part type: surface it rather than silently dropping it.
-			out.push({
-				type: "text",
-				text: `[unsupported part: ${String(p?.type)}]`,
-			});
 		}
 	}
 	return out;
 }
-function toAssistantParts(content: unknown): ConsolePart[] {
-	if (!Array.isArray(content)) return [];
+
+function toolArguments(input: unknown): Record<string, unknown> {
+	return input && typeof input === "object" && !Array.isArray(input)
+		? Object.fromEntries(Object.entries(input))
+		: { value: input };
+}
+
+function toAssistantParts(
+	content: Extract<TranscriptItem, { role: "assistant" }>["content"],
+): ConsolePart[] {
 	const out: ConsolePart[] = [];
-	for (const p of content as Array<Record<string, unknown>>) {
-		if (p?.type === "text") {
-			if (typeof p.text === "string") out.push({ type: "text", text: p.text });
-		} else if (p?.type === "thinking") {
-			if (typeof p.thinking === "string")
-				out.push({ type: "thinking", thinking: p.thinking });
-		} else if (p?.type === "toolCall") {
-			if (typeof p.toolName === "string") {
-				out.push({
-					type: "toolCall",
-					id: String(p.toolCallId ?? ""),
-					name: p.toolName,
-					arguments: (p.input ?? {}) as Record<string, unknown>,
-				});
-			}
-		} else {
-			// Unrecognized part type: surface it rather than silently dropping it.
+	for (const part of content) {
+		if (part.type === "text") {
+			out.push({ type: "text", text: part.text });
+		} else if (part.type === "thinking") {
+			out.push({ type: "thinking", thinking: part.thinking });
+		} else if (part.type === "toolCall") {
 			out.push({
-				type: "text",
-				text: `[unsupported part: ${String(p?.type)}]`,
+				type: "toolCall",
+				id: part.toolCallId,
+				name: part.toolName,
+				arguments: toolArguments(part.input),
 			});
 		}
 	}
 	return out;
 }
-function normalizeMessages(raw: unknown[]): ConsoleMessage[] {
+
+function normalizeMessages(raw: TranscriptItem[]): ConsoleMessage[] {
 	const out: ConsoleMessage[] = [];
-	for (const m of raw) {
-		// buildTranscript can surface a non-object (the protocol mapper's
-		// exhaustiveness default returns the raw stopReason for an unknown/missing
-		// value). Skip it rather than dereference — one malformed item must not
-		// collapse the whole panel via render()'s catch.
-		if (!m || typeof m !== "object") continue;
-		const item = m as {
-			role?: string;
-			content?: unknown;
-			status?: string;
-			stopReason?: string;
-			errorMessage?: string;
-			toolCallId?: unknown;
-			toolName?: unknown;
-			isError?: unknown;
-		};
+	for (const item of raw) {
 		if (item.role === "user") {
-			const c = item.content;
-			out.push({
-				role: "user",
-				content: typeof c === "string" ? c : toTextParts(c),
-			});
+			out.push({ role: "user", content: toTextParts(item.content) });
 		} else if (item.role === "assistant") {
-			const a: ConsoleAssistantMessage = {
+			const message: ConsoleAssistantMessage = {
 				role: "assistant",
 				content: toAssistantParts(item.content),
 			};
-			// A streaming item carries status "streaming" and no stopReason; the
-			// renderer's stop tail must stay silent for it.
-			if (item.stopReason) a.stopReason = item.stopReason;
-			else if (item.status === "error") a.stopReason = "error";
-			if (item.errorMessage) a.errorMessage = item.errorMessage;
-			out.push(a);
-		} else if (item.role === "tool") {
-			// malformed: a tool result needs non-empty id and name to be matched/rendered.
-			if (
-				typeof item.toolCallId !== "string" ||
-				item.toolCallId === "" ||
-				typeof item.toolName !== "string" ||
-				item.toolName === ""
-			) {
-				continue;
+			if ("stopReason" in item) message.stopReason = item.stopReason;
+			if ("errorMessage" in item && item.errorMessage) {
+				message.errorMessage = item.errorMessage;
 			}
-			const r: ConsoleToolResultMessage = {
+			out.push(message);
+		} else {
+			const result: ConsoleToolResultMessage = {
 				role: "toolResult",
 				toolCallId: item.toolCallId,
 				toolName: item.toolName,
 				content: toTextParts(item.content),
-				isError: item.isError === true,
-				status:
-					item.status === "running" ||
-					item.status === "complete" ||
-					item.status === "error"
-						? item.status
-						: undefined,
+				isError: item.isError,
+				status: item.status,
 			};
-			out.push(r);
+			out.push(result);
 		}
 	}
 	return out;
@@ -875,8 +819,8 @@ class SubagentConsole {
 				return this.renderList(width);
 			return this.renderConsole(width);
 		} catch {
-			// A malformed worker.json (M10) must not crash pi-tui's render loop
-			// and kill the process. The panel degrades to a single error line.
+			// A malformed current record must not escape Pi's render loop.
+			// The panel degrades to a single error line.
 			const w = Math.max(1, width);
 			const msg = "subagent: render error — a worker record may be malformed";
 			return [msg.slice(0, w).padEnd(w, " ")];
