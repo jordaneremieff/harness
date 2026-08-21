@@ -70,6 +70,7 @@ const {
 	shutdownWorkerSession,
 	thinkingLabel,
 	toolErrorSummary,
+	transferRegisteredProviders,
 	formatSubagentStatus,
 	listWorkers,
 	pruneTerminalWorkers,
@@ -231,7 +232,7 @@ describe("worker record normalization", () => {
 		});
 		const record = readWorker("bg-partial");
 		assert.ok(record);
-		// An unknown state is not trusted as running; it reads as failed.
+		// An unknown state is not accepted as running; it reads as failed.
 		assert.equal(record.state, "failed");
 		assert.equal(record.usage, null);
 		assert.deepEqual(record.resolvedTools, []);
@@ -239,7 +240,7 @@ describe("worker record normalization", () => {
 		assert.equal(record.model, "?");
 	});
 
-	it("zeroes non-numeric usage members rather than trusting them", () => {
+	it("zeroes non-numeric usage members rather than accepting them", () => {
 		seedWorker(
 			"bg-badusage",
 			runningRecord("bg-badusage", { usage: { input: "lots", cost: 3 } }),
@@ -405,6 +406,55 @@ describe("worker session lifecycle", () => {
 		shutdownWorkerSession(fake.session as never);
 		assert.deepEqual(fake.order, ["dispose"]);
 		assert.equal(fake.emitted, null);
+	});
+});
+
+describe("registered provider transfer", () => {
+	it("copies config and native registration forms into a worker runtime", () => {
+		const config = { api: "config-api", apiKey: "not-used" };
+		const native = { id: "native-provider" };
+		const calls: unknown[] = [];
+		const transferred = transferRegisteredProviders(
+			{
+				getRegisteredProviderIds: () => ["config-provider", "native-provider"],
+				getRegisteredProviderConfig: (providerId: string) =>
+					providerId === "config-provider" ? (config as never) : undefined,
+				getRegisteredNativeProvider: (providerId: string) =>
+					providerId === "native-provider" ? (native as never) : undefined,
+			},
+			{
+				registerProvider: (providerId: string, value: unknown) => {
+					calls.push(["config", providerId, value]);
+				},
+				registerNativeProvider: (value: unknown) => {
+					calls.push(["native", value]);
+				},
+			} as never,
+		);
+
+		assert.deepEqual(transferred, ["config-provider", "native-provider"]);
+		assert.deepEqual(calls, [
+			["config", "config-provider", config],
+			["native", native],
+		]);
+	});
+
+	it("fails when a registered id has no public registration form", () => {
+		assert.throws(
+			() =>
+				transferRegisteredProviders(
+					{
+						getRegisteredProviderIds: () => ["missing-provider"],
+						getRegisteredProviderConfig: () => undefined,
+						getRegisteredNativeProvider: () => undefined,
+					},
+					{
+						registerProvider: () => undefined,
+						registerNativeProvider: () => undefined,
+					},
+				),
+			/missing-provider.*no public registration/,
+		);
 	});
 });
 
@@ -1702,16 +1752,16 @@ describe("compaction veto", () => {
 		}
 	});
 
-	it("does not trust project extensions from a task-selected cwd", async () => {
+	it("transfers a config-form provider before the worker starts", async () => {
 		const childPath = join(
 			dirname(fileURLToPath(import.meta.url)),
-			"untrusted-cwd-child.mts",
+			"registered-provider-child.mts",
 		);
 		const { execFile } = await import("node:child_process");
 		const { promisify } = await import("node:util");
 		const run = promisify(execFile);
 		const childCoverageDir = mkdtempSync(
-			join(tmpdir(), "subagent-untrusted-cwd-cov-"),
+			join(tmpdir(), "subagent-registered-provider-cov-"),
 		);
 		try {
 			const { stdout, stderr } = await run(process.execPath, [childPath], {
@@ -1720,9 +1770,36 @@ describe("compaction veto", () => {
 				timeout: 15_000,
 			});
 			assert.equal(
-				stdout.includes("untrusted cwd child: PASS"),
+				stdout.includes("registered provider child: PASS"),
 				true,
-				`untrusted cwd child must pass: ${stdout}\n${stderr}`,
+				`registered provider child must pass: ${stdout}\n${stderr}`,
+			);
+		} finally {
+			rmSync(childCoverageDir, { recursive: true, force: true });
+		}
+	});
+
+	it("transfers a guarded native provider and ignores task-cwd project settings", async () => {
+		const childPath = join(
+			dirname(fileURLToPath(import.meta.url)),
+			"project-settings-child.mts",
+		);
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const run = promisify(execFile);
+		const childCoverageDir = mkdtempSync(
+			join(tmpdir(), "subagent-project-settings-cov-"),
+		);
+		try {
+			const { stdout, stderr } = await run(process.execPath, [childPath], {
+				encoding: "utf-8",
+				env: { ...process.env, NODE_V8_COVERAGE: childCoverageDir },
+				timeout: 15_000,
+			});
+			assert.equal(
+				stdout.includes("project settings child: PASS"),
+				true,
+				`project settings child must pass: ${stdout}\n${stderr}`,
 			);
 		} finally {
 			rmSync(childCoverageDir, { recursive: true, force: true });

@@ -44,15 +44,13 @@ resolves its configuration from the process working directory reads the
 parent's, not the worker's declared `cwd`. A tool whose registration derives
 from such configuration is compared against the parent's registration before
 the worker starts, so a divergence fails the dispatch by name instead of
-handing the worker a different tool. The worker does not trust or load project
-settings from a task-selected `cwd`. Global packages remain available for
-provider registration; callable tools still follow the selected allowlist.
+handing the worker a different tool. The worker ignores project settings from
+a task-selected `cwd`. Global packages still load for provider lifecycle hooks;
+callable tools follow the selected allowlist.
 
-A worker accepts any existing directory — it is validated, not
-constrained. This is not an escalation (the worker inherits the parent's exact
-tool surface, so the parent already had that authority), but if you want a
-policy (e.g. confine workers to a workspace root), that is a deliberate choice
-to make, not a default.
+A worker accepts any existing directory and does not confine paths to a
+workspace root. The directory sets the initial path; the selected tool surface
+determines what the worker can do there.
 
 ```json
 { "task": "Verify that MODEL_BASE has a unique constraint on ID_FIELD. Cite file:line.", "model": "provider/model-id", "thinking": "medium" }
@@ -62,11 +60,14 @@ Use exactly one dispatch form: `task` for one worker or a non-empty `tasks`
 array for a batch. Per-task fields: `task` (required), `model`, `thinking`,
 `tools`, `cwd`, `deadlineMinutes`, `budgetUsd`.
 
-- **model** — bare id or `provider/id`, checked only against registry
-  availability and configured auth. Omitted: inherits the parent's current
-  model. Persisted credentials and environment credentials resolve in workers.
-  A parent-only runtime API-key override does not transfer: Pi's public
-  `ExtensionContext` exposes the registry facade, not the owning `ModelRuntime`.
+- **model** — bare id or `provider/id`, checked against registry availability
+  and configured auth. Omitted: inherits the parent's current model. Before
+  session construction, the worker receives every config-form and native
+  provider registration exposed by the parent's public registry facade.
+  After extension binding, the worker checks the selected model against its
+  actual runtime and fails before provider work if resolution or auth changed.
+  Persisted and environment credentials resolve in workers. A parent-only
+  runtime API-key override remains local to the parent's runtime.
 - **thinking** — `off|minimal|low|medium|high|xhigh|max`. Declared: checked
   against the levels the model supports (pi's own
   `getSupportedThinkingLevels`); an unsupported level fails that task and names

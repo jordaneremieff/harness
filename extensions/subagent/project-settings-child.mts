@@ -50,8 +50,11 @@ const model = {
 writeFileSync(
 	providerPath,
 	`import { fauxAssistantMessage, fauxProvider, fauxToolCall } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
+const guard = Symbol.for("pi-subagent.test.native-provider");
 const model = ${JSON.stringify(model)};
 export default function (pi) {
+  if (globalThis[guard]) return;
+  globalThis[guard] = true;
   const faux = fauxProvider({ api: model.api, provider: model.provider, models: [model] });
   faux.setResponses([
     fauxAssistantMessage(fauxToolCall("submit_result", { content: "CWD_RESULT" }), { stopReason: "toolUse" }),
@@ -63,7 +66,10 @@ export default function (pi) {
 );
 writeFileSync(
 	join(agentDir, "settings.json"),
-	JSON.stringify({ packages: [providerPath], defaultProjectTrust: "always" }),
+	JSON.stringify({
+		packages: [providerPath],
+		defaultProjectTrust: "always",
+	}),
 	"utf8",
 );
 
@@ -73,6 +79,7 @@ try {
 	const {
 		createAgentSession,
 		DefaultResourceLoader,
+		ModelRegistry,
 		SessionManager,
 		SettingsManager,
 	} = await import("@earendil-works/pi-coding-agent");
@@ -105,8 +112,13 @@ try {
 
 	const dispatch = parentSession.extensionRunner.getToolDefinition("subagent");
 	assert.ok(dispatch);
+	const parentRegistry = new ModelRegistry(parentSession.modelRuntime);
+	assert.ok(
+		parentRegistry.getRegisteredNativeProvider(model.provider),
+		"the parent must hold the native-form provider registration",
+	);
 	const result = (await dispatch.execute(
-		"untrusted-cwd",
+		"project-settings",
 		{ task: "work in the selected directory", cwd: workerCwd, tools: [] },
 		undefined,
 		undefined,
@@ -114,12 +126,7 @@ try {
 			cwd: parentCwd,
 			thinkingLevel: "off",
 			model,
-			modelRegistry: {
-				find: (provider: string, id: string) =>
-					provider === model.provider && id === model.id ? model : null,
-				getAvailable: () => [model],
-				hasConfiguredAuth: () => true,
-			},
+			modelRegistry: parentRegistry,
 			sessionManager: { getSessionId: () => parentSessionId },
 			ui: { setStatus: () => undefined },
 		},
@@ -145,7 +152,7 @@ try {
 	if (record?.socketPath) {
 		rmSync(dirname(record.socketPath), { recursive: true, force: true });
 	}
-	console.log("untrusted cwd child: PASS");
+	console.log("project settings child: PASS");
 } finally {
 	try {
 		parentSession?.dispose();

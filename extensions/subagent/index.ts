@@ -80,6 +80,7 @@ import {
 	type ExtensionContext,
 	getAgentDir,
 	keyHint,
+	ModelRuntime,
 	SessionManager,
 	SettingsManager,
 	type ToolInfo,
@@ -748,6 +749,60 @@ function resolveModel(
 		};
 	}
 	return { provider: parent.provider, id: parent.id };
+}
+
+type ProviderRegistrationSource = Pick<
+	ExtensionContext["modelRegistry"],
+	| "getRegisteredProviderIds"
+	| "getRegisteredProviderConfig"
+	| "getRegisteredNativeProvider"
+>;
+
+type ProviderRegistrationTarget = Pick<
+	ModelRuntime,
+	"registerProvider" | "registerNativeProvider"
+>;
+
+/** Reproduce the parent's extension-registered providers in a fresh worker runtime. */
+export function transferRegisteredProviders(
+	source: ProviderRegistrationSource,
+	target: ProviderRegistrationTarget,
+): string[] {
+	const transferred: string[] = [];
+	for (const providerId of source.getRegisteredProviderIds()) {
+		const config = source.getRegisteredProviderConfig(providerId);
+		if (config) {
+			target.registerProvider(providerId, config);
+			transferred.push(providerId);
+			continue;
+		}
+		const nativeProvider = source.getRegisteredNativeProvider(providerId);
+		if (nativeProvider) {
+			target.registerNativeProvider(nativeProvider);
+			transferred.push(providerId);
+			continue;
+		}
+		throw new Error(
+			`registered provider "${providerId}" has no public registration to transfer`,
+		);
+	}
+	return transferred;
+}
+
+async function createWorkerModelRuntime(
+	ctx: ExtensionContext,
+	agentDir: string,
+): Promise<ModelRuntime> {
+	const runtime = await ModelRuntime.create({
+		authPath: join(agentDir, "auth.json"),
+		modelsPath: join(agentDir, "models.json"),
+		allowModelNetwork: false,
+	});
+	const transferred = transferRegisteredProviders(ctx.modelRegistry, runtime);
+	if (transferred.length > 0) {
+		await runtime.refresh({ providers: transferred, allowNetwork: false });
+	}
+	return runtime;
 }
 
 interface ParentToolSurface {
@@ -2197,15 +2252,24 @@ export async function dispatchWorker(
 	// avoids any process-wide construction window or cross-session load race.
 	try {
 		await workerHost.ensureStarted(ctx);
-		// A task-selected cwd is not a trust grant for that directory's .pi
-		// settings. Load global provider/package settings, but never project-local
-		// resources that the dispatching session did not select.
-		const settingsManager = SettingsManager.create(cwd, getAgentDir(), {
+		// A task-selected cwd does not enable that directory's .pi settings.
+		// Load global packages and only the project-independent resources below.
+		const workerAgentDir = getAgentDir();
+		const settingsManager = SettingsManager.create(cwd, workerAgentDir, {
 			projectTrusted: false,
 		});
+		const modelRuntime = await createWorkerModelRuntime(ctx, workerAgentDir);
+		const workerModel =
+			modelRuntime.getModel(model.provider, model.id) ??
+			ctx.modelRegistry.find(model.provider, model.id);
+		if (!workerModel) {
+			throw new Error(
+				`model "${model.provider}/${model.id}" disappeared before worker construction`,
+			);
+		}
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
-			agentDir: getAgentDir(),
+			agentDir: workerAgentDir,
 			settingsManager,
 			noSkills: true,
 			noPromptTemplates: true,
@@ -2238,11 +2302,12 @@ export async function dispatchWorker(
 			forkedSessionFile = sessionManager.getSessionFile() ?? null;
 		const created = await createAgentSession({
 			cwd,
-			agentDir: getAgentDir(),
+			agentDir: workerAgentDir,
 			settingsManager,
 			resourceLoader,
 			sessionManager,
-			model: ctx.modelRegistry.find(model.provider, model.id),
+			modelRuntime,
+			model: workerModel,
 			thinkingLevel: thinking,
 			tools: resolvedTools,
 			customTools: [
@@ -2269,6 +2334,23 @@ export async function dispatchWorker(
 		// owner is installed first, so a handler that already ran still receives
 		// session_shutdown if binding throws.
 		await session.bindExtensions({});
+		// Provider factories may register during binding. Refresh that provider
+		// before the parity check so native registrations have settled auth state.
+		await session.modelRuntime.refresh({
+			providers: [model.provider],
+			allowNetwork: false,
+		});
+		const boundModel = session.modelRuntime.getModel(model.provider, model.id);
+		if (!boundModel) {
+			throw new Error(
+				`model "${model.provider}/${model.id}" did not resolve in the worker runtime after extension binding`,
+			);
+		}
+		if (!session.modelRuntime.hasConfiguredAuth(model.provider)) {
+			throw new Error(
+				`model "${model.provider}/${model.id}" has no configured authentication in the worker runtime after extension binding`,
+			);
+		}
 	} catch (err) {
 		try {
 			disposeSession?.();
@@ -3304,7 +3386,7 @@ const subagentTool = defineTool({
 		"Dispatch isolated Pi worker sessions for independent work: verification, investigation, review, research, drafting, or bounded implementation.",
 		"Choose exactly one form. Single mode: pass `task` (plus optional model/thinking/tools/cwd). Batch mode: pass a non-empty `tasks` array for parallel dispatch; each task may carry its own fields, otherwise it inherits the top-level defaults.",
 		"Every worker runs in the BACKGROUND: the call returns immediately with stable worker ids; workers run under this session's control; a subagent_result message arrives when a worker settles without explicit cancellation (follow-up delivery, triggers a turn when idle). Explicit cancellation is acknowledged by its control response and adds no duplicate follow-up. submit_result stores at most 50KB and marks larger submissions [truncated].",
-		"Model: explicit `model` (bare id or provider/id) is checked against registry availability and configured auth only. Omitted model inherits the parent's current model. Persisted and environment auth resolve in workers; a parent-only runtime API-key override does not transfer. Omitted cwd inherits the session cwd.",
+		"Model: explicit `model` (bare id or provider/id) is checked against registry availability and configured auth only. Omitted model inherits the parent's current model. Extension-registered providers are copied into the worker through Pi's public registration facade. Persisted and environment auth resolve; a parent-only runtime API-key override does not transfer. Omitted cwd inherits the session cwd.",
 		"Thinking: an explicit level the model cannot run fails that task and names the levels the model supports. An omitted level inherits the parent's level, is clamped to the model, and reports the effective level with the requested one.",
 		"Tools: omitted `tools` reproduces this session's active tool surface exactly. Built-ins are rebuilt for the worker cwd, and extension registration files are reloaded from their registered source paths. The constructed surface is checked before provider work. Provided `tools` restricts the worker to exactly that set plus the submit_result protocol tool; a tool name that is not in the current registry fails the dispatch. `tools: []` is a declared EMPTY allowlist, not an omission: it yields a worker that has submit_result and nothing else.",
 		"Workers are clean-context: project context files (AGENTS.md) and skills are not loaded. A worker runs the normal extension lifecycle, so an extension tool that opens its resources at session_start works inside a worker; a tool that still fails is reported with its failure count when the worker finishes.",

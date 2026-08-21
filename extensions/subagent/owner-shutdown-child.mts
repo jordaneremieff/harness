@@ -53,7 +53,7 @@ export default function (pi) {
 );
 writeFileSync(
 	join(agentDir, "settings.json"),
-	JSON.stringify({ packages: [providerPath], defaultProjectTrust: "always" }),
+	JSON.stringify({ packages: [providerPath] }),
 	"utf-8",
 );
 
@@ -63,6 +63,7 @@ try {
 	const {
 		createAgentSession,
 		DefaultResourceLoader,
+		ModelRegistry,
 		SessionManager,
 		SettingsManager,
 	} = await import("@earendil-works/pi-coding-agent");
@@ -113,12 +114,7 @@ try {
 		cwd,
 		thinkingLevel: "off",
 		model,
-		modelRegistry: {
-			find: (provider: string, id: string) =>
-				provider === model.provider && id === model.id ? model : null,
-			getAvailable: () => [model],
-			hasConfiguredAuth: () => true,
-		},
+		modelRegistry: new ModelRegistry(ownerSession.modelRuntime),
 		sessionManager: { getSessionId: () => ownerSessionId },
 		ui: { setStatus: () => undefined },
 	};
@@ -241,10 +237,13 @@ try {
 	ownerSession = null;
 	const closedDeadline = Date.now() + 5_000;
 	let after = sub.readWorker(id);
+	// shutdownWorkerSession schedules its async lifecycle handler. Wait for both
+	// worker cleanup and the owning session's surface cleanup before asserting.
 	while (
 		Date.now() < closedDeadline &&
 		(after?.state === "running" ||
-			Boolean(after?.socketPath && existsSync(after.socketPath)))
+			Boolean(after?.socketPath && existsSync(after.socketPath)) ||
+			sub.sharedWorkerState.workerSurfaces.has(ownerSessionId))
 	) {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		after = sub.readWorker(id);

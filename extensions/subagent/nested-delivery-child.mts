@@ -63,7 +63,7 @@ export default function (pi) {
 );
 writeFileSync(
 	join(agentDir, "settings.json"),
-	JSON.stringify({ packages: [providerPath], defaultProjectTrust: "always" }),
+	JSON.stringify({ packages: [providerPath] }),
 	"utf-8",
 );
 
