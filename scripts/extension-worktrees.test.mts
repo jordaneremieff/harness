@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -352,6 +352,34 @@ describe("promotion against a real repository", () => {
     assert.deepEqual(report.wouldPromote[1].dropped, ["extensions/demo/PLAN.md"]);
     assert.equal(git(["rev-parse", "main"]), before);
     assert.equal(promote(["--dry-run"], demoTree).report.extension, "demo");
+  });
+
+  it("finds main from a linked worktree without root overrides", () => {
+    const linkedScript = join(demoTree, "scripts", "extension-worktrees.mts");
+    writeIn(demoTree, "scripts/extension-worktrees.mts", readFileSync(script, "utf8"));
+    const directEnv = { ...env };
+    delete directEnv.PI_HARNESS_ROOT;
+    delete directEnv.PI_EXTENSION_WORKTREE_ROOT;
+    const before = git(["rev-parse", "main"]);
+    let stdout = "";
+    try {
+      stdout = execFileSync(
+        process.execPath,
+        [linkedScript, "promote", "--dry-run", "--json"],
+        {
+          cwd: demoTree,
+          env: directEnv,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+    } finally {
+      rmSync(join(demoTree, "scripts"), { recursive: true, force: true });
+    }
+    const report: SerializedPromotionReport = JSON.parse(stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.extension, "demo");
+    assert.equal(git(["rev-parse", "main"]), before);
   });
 
   it("lands shipped code, holds development records, and pushes", () => {

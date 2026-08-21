@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 interface RunOptions {
@@ -459,6 +459,22 @@ function canonicalPath(path: string): string {
   }
 }
 
+/** Resolve the main checkout that owns a linked extension worktree. */
+export function mainCheckoutRoot(candidateRoot: string): string {
+  try {
+    const common = git(
+      candidateRoot,
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+      { accept: [0, 1, 128] },
+    );
+    if (common.status !== 0) return candidateRoot;
+    const commonDir = resolve(candidateRoot, common.stdout.trim());
+    return basename(commonDir) === ".git" ? dirname(commonDir) : candidateRoot;
+  } catch {
+    return candidateRoot;
+  }
+}
+
 export function promoteNameFromCwd(cwd: string, worktreeRoot: string): string | undefined {
   const parts = relative(worktreeRoot, cwd).split(sep);
   if (parts.length === 0 || parts[0] === "" || parts[0] === ".." || isAbsolute(parts[0])) {
@@ -886,7 +902,9 @@ function installHooks(context: HarnessContext): void {
 }
 
 function contextFromEnvironment(): HarnessContext {
-  const repoRoot = resolve(process.env.PI_HARNESS_ROOT ?? defaultRepoRoot);
+  const repoRoot = process.env.PI_HARNESS_ROOT
+    ? resolve(process.env.PI_HARNESS_ROOT)
+    : mainCheckoutRoot(defaultRepoRoot);
   const worktreeRoot = resolve(process.env.PI_EXTENSION_WORKTREE_ROOT ?? `${repoRoot}.worktrees`);
   const agentDir = resolve(process.env.PI_AGENT_DIR ?? join(homedir(), ".pi", "agent"));
   const settingsPath = resolve(process.env.PI_SETTINGS_PATH ?? join(agentDir, "settings.json"));
