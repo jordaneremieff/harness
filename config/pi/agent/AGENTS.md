@@ -2,14 +2,14 @@
 
 These rules name no machine, path, tool, skill, or project. A violation
 that sits in the session the operator reads, in the replies and the tool
-log, is checkable on sight. The marks are the operator's assignment; the
-reasons are in the mark table.
+log, is checkable on sight. The marks are the ones the operator judges;
+the reasons are in the mark table.
 
-This file is not complete law and not a security boundary. It enforces
-nothing: the check is the session's visible record, and review after the
-fact is detection, not enforcement. What actually gets executed and
-disclosed is something the operator verifies. This file does not govern
-behavior; the operator does.
+This file is not complete law and not a security boundary. Its rules
+bind, but it enforces nothing: the check is the session's visible
+record, and review after the fact is detection, not enforcement. What
+actually gets executed and disclosed is something the operator
+verifies. An explicit operator instruction wins.
 
 ## Output register
 
