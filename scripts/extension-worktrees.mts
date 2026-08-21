@@ -732,7 +732,13 @@ function promote(
       accept: [0, 1, 128],
     });
     if (pick.status !== 0) {
-      return abandon("cherry-pick", `${entry.sha} (${entry.subject}): ${(pick.stderr || pick.stdout).trim()}`);
+      const unmerged = git(context.repoRoot, ["diff", "--name-only", "--diff-filter=U", "-z"])
+        .stdout.split("\0")
+        .filter(Boolean);
+      const developmentRecords = new Set(entry.devRecords);
+      if (unmerged.length === 0 || unmerged.some((path) => !developmentRecords.has(path))) {
+        return abandon("cherry-pick", `${entry.sha} (${entry.subject}): ${(pick.stderr || pick.stdout).trim()}`);
+      }
     }
     for (const path of entry.devRecords) {
       const inHead =
@@ -740,6 +746,10 @@ function promote(
         0;
       if (inHead) git(context.repoRoot, ["checkout", "HEAD", "--", path]);
       else git(context.repoRoot, ["rm", "-f", "--quiet", "--", path], { accept: [0, 1, 128] });
+    }
+    const unresolved = git(context.repoRoot, ["diff", "--name-only", "--diff-filter=U"]).stdout.trim();
+    if (unresolved) {
+      return abandon("cherry-pick", `${entry.sha} left unresolved development records: ${unresolved}`);
     }
     const staged = git(context.repoRoot, ["diff", "--cached", "--quiet"], { accept: [0, 1] });
     if (staged.status === 0) {

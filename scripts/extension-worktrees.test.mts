@@ -336,8 +336,9 @@ describe("promotion against a real repository", () => {
     writeIn(demoTree, "extensions/demo/LOG.md", "# log\n");
     commitIn(demoTree, "docs(demo): log");
     writeIn(demoTree, "extensions/demo/panel.ts", "export const panel = 1;\n");
+    writeIn(demoTree, "extensions/demo/LOG.md", "# updated log\n");
     writeIn(demoTree, "extensions/demo/PLAN.md", "# plan\n");
-    commitIn(demoTree, "feat(demo): panel with a plan");
+    commitIn(demoTree, "feat(demo): panel with development records");
   });
 
   after(() => {
@@ -349,7 +350,10 @@ describe("promotion against a real repository", () => {
     const { report } = promote(["demo", "--dry-run"]);
     assert.equal(report.wouldPromote.length, 2);
     assert.equal(report.held.length, 1);
-    assert.deepEqual(report.wouldPromote[1].dropped, ["extensions/demo/PLAN.md"]);
+    assert.deepEqual(report.wouldPromote[1].dropped, [
+      "extensions/demo/LOG.md",
+      "extensions/demo/PLAN.md",
+    ]);
     assert.equal(git(["rev-parse", "main"]), before);
     assert.equal(promote(["--dry-run"], demoTree).report.extension, "demo");
   });
