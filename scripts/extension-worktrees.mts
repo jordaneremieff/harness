@@ -408,6 +408,7 @@ function syncBranches(
   const changed: string[] = [];
   const failures: string[] = [];
   for (const record of records) {
+    let rebasing = false;
     try {
       if (!branchHasCommonHistory(context.repoRoot, record.branch)) {
         throw new Error("branch has no common base with main");
@@ -416,13 +417,21 @@ function syncBranches(
         if (hasTrackedChanges(record.path)) {
           throw new Error("worktree has uncommitted changes and main has advanced");
         }
-        git(context.repoRoot, noHooks(["rebase", "main"]), { cwd: record.path, inherit: true });
+        rebasing = true;
+        git(context.repoRoot, noHooks(["rebase", "main"]), { cwd: record.path });
+        rebasing = false;
         changed.push(record.name);
       }
       if (!existsSync(record.entrypoint)) {
         throw new Error(`entrypoint is absent: ${record.entrypoint}`);
       }
     } catch (error) {
+      if (rebasing) {
+        git(context.repoRoot, noHooks(["rebase", "--abort"]), {
+          cwd: record.path,
+          accept: [0, 1, 128],
+        });
+      }
       const message = error instanceof Error ? error.message : undefined;
       failures.push(`${record.name}: ${message}`);
     }
@@ -449,6 +458,48 @@ export function classifyCommitFiles(files: readonly string[]): {
   if (shipped.length === 0) return { kind: "held", devRecords, shipped };
   if (devRecords.length === 0) return { kind: "ship", devRecords, shipped };
   return { kind: "filter", devRecords, shipped };
+}
+
+function devRecordPathsAt(repoRoot: string, ref: string): string[] {
+  return git(repoRoot, ["ls-tree", "-r", "--name-only", "-z", ref])
+    .stdout.split("\0")
+    .filter((path) => path !== "" && isDevRecordPath(path));
+}
+
+function rebuildPromotedBranch(
+  context: HarnessContext,
+  record: ExtensionWorktreeRecord,
+  originalHead: string,
+): void {
+  const originalPaths = devRecordPathsAt(context.repoRoot, originalHead);
+  const mainPaths = devRecordPathsAt(context.repoRoot, "main");
+  const allPaths = [...new Set([...originalPaths, ...mainPaths])].sort();
+  const originalSet = new Set(originalPaths);
+
+  git(context.repoRoot, noHooks(["reset", "--hard", "main"]), { cwd: record.path });
+  if (originalPaths.length > 0) {
+    git(context.repoRoot, ["checkout", originalHead, "--", ...originalPaths], {
+      cwd: record.path,
+    });
+  }
+  const removed = mainPaths.filter((path) => !originalSet.has(path));
+  if (removed.length > 0) {
+    git(context.repoRoot, ["rm", "-f", "--quiet", "--", ...removed], {
+      cwd: record.path,
+      accept: [0, 1, 128],
+    });
+  }
+  if (allPaths.length === 0) return;
+  const staged = git(context.repoRoot, ["diff", "--cached", "--quiet"], {
+    cwd: record.path,
+    accept: [0, 1],
+  });
+  if (staged.status === 0) return;
+  git(
+    context.repoRoot,
+    noHooks(["commit", "-m", `docs(${record.name}): retain development records`]),
+    { cwd: record.path },
+  );
 }
 
 function canonicalPath(path: string): string {
@@ -703,13 +754,28 @@ function promote(
     };
   }
 
+  const records = repositoryState(context.repoRoot, context.worktreeRoot);
+  const record = records.find((candidate) => candidate.name === name);
+  if (!record) return fail("preflight", `worktree does not exist for ${branch}`);
+  if (hasTrackedChanges(record.path)) {
+    return fail("preflight", `uncommitted tracked changes in ${record.path}`);
+  }
+  const branchBefore = git(context.repoRoot, ["rev-parse", branch]).stdout.trim();
+
+  let branchRebuilt = false;
   const rollback = () => {
     git(context.repoRoot, ["cherry-pick", "--abort"], { accept: [0, 1, 128] });
     git(context.repoRoot, ["cherry-pick", "--quit"], { accept: [0, 1, 128] });
+    const branchReset = branchRebuilt
+      ? git(context.repoRoot, noHooks(["reset", "--hard", branchBefore]), {
+          cwd: record.path,
+          accept: [0, 1, 128],
+        })
+      : { status: 0 };
     const reset = git(context.repoRoot, noHooks(["reset", "--hard", mainBefore]), {
       accept: [0, 1, 128],
     });
-    return reset.status === 0;
+    return reset.status === 0 && branchReset.status === 0;
   };
   const abandon = (
     stage: string,
@@ -765,12 +831,6 @@ function promote(
     promoted.push(entry.sha);
   }
 
-  const records = repositoryState(context.repoRoot, context.worktreeRoot);
-  const branchResult = syncBranches(context, records);
-  const targetFailure = branchResult.failures.find((failure) => failure.startsWith(`${name}:`));
-  if (targetFailure) return abandon("sync", targetFailure);
-  reconcileSettings(context, records);
-
   const boundary = git(context.repoRoot, ["diff", "--name-only", "--no-renames", "main", branch])
     .stdout.trim()
     .split("\n")
@@ -780,10 +840,9 @@ function promote(
     return abandon("verify", `${branch} still differs from main outside dev records: ${leaked.join(", ")}`);
   }
 
-  const record = records.find((candidate) => candidate.name === name);
   let gates: GateResults = {};
   if (options.gates) {
-    const outcome = promoteGates(context, record?.entrypoint ?? join(context.repoRoot, "extensions", name, "index.ts"));
+    const outcome = promoteGates(context, join(context.repoRoot, "extensions", name, "index.ts"));
     gates = outcome.results;
     if (outcome.failure) {
       return {
@@ -791,6 +850,31 @@ function promote(
         gates,
       };
     }
+  }
+
+  branchRebuilt = true;
+  try {
+    rebuildPromotedBranch(context, record, branchBefore);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return abandon("sync", `${name}: ${detail}`);
+  }
+  const rebuiltBoundary = git(context.repoRoot, [
+    "diff",
+    "--name-only",
+    "--no-renames",
+    "main",
+    branch,
+  ])
+    .stdout.trim()
+    .split("\n")
+    .filter(Boolean);
+  const rebuiltLeak = rebuiltBoundary.filter((path) => !isDevRecordPath(path));
+  if (rebuiltLeak.length > 0) {
+    return abandon(
+      "verify",
+      `${branch} still differs from main outside dev records: ${rebuiltLeak.join(", ")}`,
+    );
   }
 
   let pushed = false;
@@ -809,6 +893,9 @@ function promote(
     }
     pushed = true;
   }
+
+  const branchResult = syncBranches(context, records);
+  reconcileSettings(context, records);
 
   return {
     ok: true,

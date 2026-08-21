@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -35,6 +43,7 @@ interface SerializedPromotionReport {
   recover: string | null;
   stage: string;
   reason: string;
+  branchFailures?: string[];
 }
 
 interface PromoteResult {
@@ -255,6 +264,7 @@ describe("promotion against a real repository", () => {
   let worktrees: string;
   let origin: string;
   let demoTree: string;
+  let otherTree: string;
   let env: NodeJS.ProcessEnv;
 
   const git = (args: readonly string[], cwd: string = repo): string =>
@@ -301,6 +311,7 @@ describe("promotion against a real repository", () => {
     origin = join(root, "origin.git");
     const agent = join(root, "agent");
     demoTree = join(worktrees, "demo");
+    otherTree = join(worktrees, "other");
     env = {
       ...process.env,
       PI_HARNESS_ROOT: repo,
@@ -339,6 +350,12 @@ describe("promotion against a real repository", () => {
     writeIn(demoTree, "extensions/demo/LOG.md", "# updated log\n");
     writeIn(demoTree, "extensions/demo/PLAN.md", "# plan\n");
     commitIn(demoTree, "feat(demo): panel with development records");
+
+    git(["branch", "extension/other", "main"]);
+    git(["worktree", "add", "-q", otherTree, "extension/other"]);
+    writeIn(otherTree, "extensions/other/index.ts", "export default function other() {}\n");
+    writeIn(otherTree, "extensions/demo/index.ts", "export default function demo() { return { other: true }; }\n");
+    commitIn(otherTree, "feat(other): add conflicting extension worktree");
   });
 
   after(() => {
@@ -399,11 +416,17 @@ describe("promotion against a real repository", () => {
     assert.ok(!tracked.includes("extensions/demo/LOG.md"));
     assert.ok(!tracked.includes("extensions/demo/PLAN.md"));
     assert.equal(git(["rev-parse", "origin/main"]), git(["rev-parse", "main"]));
+    assert.equal(readFileSync(join(demoTree, "extensions/demo/LOG.md"), "utf8"), "# updated log\n");
+    assert.equal(readFileSync(join(demoTree, "extensions/demo/PLAN.md"), "utf8"), "# plan\n");
+    git(["merge-base", "--is-ancestor", "main", "extension/demo"]);
 
     const remaining = git(["diff", "--name-only", "--no-renames", "main", "extension/demo"])
       .split("\n")
       .filter(Boolean);
     assert.ok(remaining.every((path) => isDevRecordPath(path)), remaining.join(","));
+    assert.ok(report.branchFailures?.some((failure) => failure.startsWith("other:")));
+    assert.equal(git(["status", "--porcelain"], otherTree), "");
+    assert.equal(existsSync(git(["rev-parse", "--git-path", "rebase-merge"], otherTree)), false);
   });
 
   it("promotes nothing on a second run", () => {
@@ -439,6 +462,7 @@ describe("promotion against a real repository", () => {
     const beforeMain = git(["rev-parse", "main"]);
     const beforeOrigin = git(["rev-parse", "origin/main"]);
 
+    const beforeBranch = git(["rev-parse", "extension/demo"]);
     const failing = { ...env, PI_PROMOTE_GATES: JSON.stringify([{ name: "test", command: ["false"] }]) };
     const saved = env;
     env = failing;
@@ -449,6 +473,7 @@ describe("promotion against a real repository", () => {
     assert.equal(report.stage, "gates");
     assert.equal(git(["rev-parse", "main"]), beforeMain);
     assert.equal(git(["rev-parse", "origin/main"]), beforeOrigin);
+    assert.equal(git(["rev-parse", "extension/demo"]), beforeBranch);
   });
 
   it("refuses a dirty main checkout and an unknown extension", () => {
