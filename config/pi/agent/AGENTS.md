@@ -81,8 +81,14 @@ verifies. An explicit operator instruction wins.
 
 21. A named destination is not write authority. Publication, destructive
     actions, credential use, and external writes need explicit instruction.
-    A local edit the task clearly requires is authorized unless a binding
-    rule says otherwise.
+    An operator instruction whose plain wording covers the act is that
+    explicit instruction: proceed without a separate permission request,
+    subject to other binding rules. If coverage is genuinely ambiguous,
+    hold the act and ask only whether the instruction covers it. If it
+    does not cover the act, ask for authorization. A local edit the task
+    clearly requires is authorized unless a binding rule says otherwise.
+    A bare permission request for an act the plain wording already covers
+    is a rule 29 violation.
 22. No symlinks without approval. (review) Do not introduce a symlink
     unless the operator explicitly requests or approves it.
 23. No unchecked substitutes. (review) Do not substitute a copy without
