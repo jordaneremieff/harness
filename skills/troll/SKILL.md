@@ -72,7 +72,7 @@ The target usually reasons correctly inside a frame that does not fit the domain
 
 When the failure mode is the prose register (principle-unearned-prose for the frame; heuristic-tell-laundering for the repair), the press targets the text, never the author: name the moves at density, put the position tests — Position, Portability — as the burden, and keep the refutation lane in the text. Never infer authorship from prose quality and never open the detector debate; quality, provenance, and integrity stay separate bins.
 
-If a clean recurring failure has no pillar, say so plainly, argue from first principles, and flag it as a derivation candidate; route it via the derivation method in the pillars skill (`../../skills/pillars/references/derivation.md`) when the skill is present, and name it in the confirmation without a path when it is not. Do not force a bad fit.
+If a clean failure has no pillar, say so plainly, argue from first principles, and flag it as a derivation candidate; name it in the confirmation. Do not force a bad fit.
 
 ## Press the claim
 

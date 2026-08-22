@@ -1,6 +1,6 @@
 # Pillars — Operating Reference
 
-Pillars are portable doctrine for agent judgment. The corpus contains principles, patterns, and heuristics. Read [README.md](README.md) for the complete inventory; use the derivation method in the pillars skill before changing the corpus.
+Pillars are portable doctrine for agent judgment. The corpus contains principles, patterns, and heuristics. Read [README.md](README.md) for the complete inventory; follow the Mutation Rules below before changing the corpus.
 
 ## Document Types
 
@@ -105,11 +105,11 @@ When an implementation or decision appears to violate a pillar, classify the dif
 | Bug | Fix the implementation. |
 | Design drift | Realign or document an explicit decision to diverge. |
 | Missing pattern | Derive the structural rule that resolves the recurring tension. |
-| Doctrine defect | Revise the pillar through the derivation method in the pillars skill rather than rationalizing around it. |
+| Doctrine defect | Revise the pillar through operator-approved mutation rather than rationalizing around it. |
 
 ### Falsification
 
-A recorded application that contradicts a pillar's prediction defeats the pillar. The contradiction is evidence, not rationalization material: respond through the doctrine-defect row above and revise the pillar via the derivation method in the pillars skill. The corpus keeps no application-incident log; no record of pillar applications exists in this tree, so falsification evidence must come from operator-recorded applications or a named delivery profile. Doctrine is normative by operator authority; predictive verification is not yet established.
+A recorded application that contradicts a pillar's prediction defeats the pillar. The contradiction is evidence, not rationalization material: respond through the doctrine-defect row above and revise the pillar through operator-approved mutation. The corpus keeps no application-incident log; no record of pillar applications exists in this tree, so falsification evidence must come from operator-recorded applications or a named delivery profile. Doctrine is normative by operator authority; predictive verification is not yet established.
 
 ## Common Composition Paths
 
@@ -144,7 +144,6 @@ A recorded application that contradicts a pillar's prediction defeats the pillar
 ## Mutation Rules
 
 - Do not invent ad hoc pillars in task prose.
-- Use the derivation method in the pillars skill.
 - Search live entries before drafting.
 - Prefer a clause extension when an existing pillar owns the mechanism.
 - Keep raw private evidence outside this directory.

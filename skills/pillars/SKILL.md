@@ -70,20 +70,8 @@ entered by saying so — "that's a pillar," "derive this," "should this be a pil
 "challenge <pillar-name>." Challenging or withdrawing a live pillar is an entry point,
 not only proposing a new one.
 
-Derivation runs in the session that holds the observation. Nothing is convened: there is
-no separate derivation session and no reviewer panel. When the observation lives in
-another session, it travels as a stash entry read as the observation source rather than
-as a reconvened session. Exactly one step leaves the session — the fresh-context probe,
-dispatched as a delegated worker that receives the draft and the lens brief and never the
-originating conversation. Classification, subsumption testing, drafting, synthesis, and
-operator approval all happen in place.
-
-Classification comes first and sets the cost: most changes are a clause on an existing
-pillar rather than a new entry. Nothing is written until the operator approves the
-synthesis.
-
-The method is `references/derivation.md`. Read it in full when proposing, deriving,
-revising, or challenging a pillar; do not work from a summary of it.
+Follow the Mutation Rules in `../../pillars/AGENTS.md`. Nothing is written until the
+operator approves the result.
 
 ## Rules of use
 
@@ -98,9 +86,8 @@ revising, or challenging a pillar; do not work from a summary of it.
   their delivery profile explicitly supplies it.
 - Version-attributed observations and evaluations must identify the doctrine snapshot
   and actual delivery profile. Ordinary use need not log consultation.
-- New, revised, or challenged corpus entries run the derivation method; do not invent
-  ad-hoc "principles" in session prose. Corpus mutations require the operator's
-  explicit approval.
+- Do not invent ad-hoc "principles" in session prose. Corpus mutations require the
+  operator's explicit approval.
 - When the operator asks for a Pillars evaluation, name the pillar, state its
   recognition condition, and show why it binds, is defeated, or collides—that is the
   deliverable.
