@@ -10,8 +10,9 @@ act on. Rewrite the most recent reply that contains text, unless the operator's
 account identifies another one. Repair the reply without continuing the task it
 describes.
 
-If the target reply is already a /wtf rewrite, rebuild the original failed
-reply from the session. Do not compress the first rewrite again.
+If the target reply is already a /wtf rewrite, keep every successful repair.
+Use the original failed reply only to recover meaning the rewrite lost. Fix the
+remaining faults without adding repetition or dropping content.
 
 ## The operator's account
 
@@ -58,15 +59,20 @@ every surface form. Keep the diagnosis out of the delivered message.
 
 Apply corrections from the operator's account. Preserve all other facts,
 decisions, instructions, conditions, permissions, comparisons, warnings,
-limitations, and uncertainty. Keep each claim's speaker, strength, and scope.
-Preserve the answer or result and the evidence needed to understand it.
+limitations, and uncertainty. Keep each claim's speaker, strength, scope, and
+time. Keep every qualifier that limits permission, scope, certainty, or safety.
+Keep an instruction or prohibition as one. Do not replace it with a
+report about what happened. Preserve the answer or result and the evidence
+needed to understand it.
 
 Keep commands, paths, URLs, citations, code, identifiers, error text, names,
-quotations, and data exact when their wording matters. Do not keep an invented
-label only because the old reply used it. Follow the original request and every
+quotations, and data exact when their wording matters. Keep text the operator
+must copy or search as one unchanged span. Do not add formatting inside it. Do
+not keep an invented label only because the old reply used it. Follow the original request and every
 other instruction that applies, including a required output or report format.
 
-Add no fact, cause, conclusion, recommendation, plan, or action. The only
+Add no fact, cause, conclusion, recommendation, plan, or action. Do not turn a
+limitation, missing test, or unknown into a prerequisite or new action. The only
 exceptions are an operator correction and session context needed for the return
 case. If session evidence requires another factual correction, state it and its
 basis instead of changing the claim silently.
@@ -76,8 +82,10 @@ basis instead of changing the claim silently.
 Your next message contains the replacement and nothing else. Do not add a
 preface, diagnosis, fault list, or commentary about the old reply.
 
-Rebuild a sentence whose shape caused the fault. Merge repeated claims. Use
-ordinary words, direct verbs, and concrete relationships. Do not preserve the
+Rebuild a sentence whose shape caused the fault. Merge repeated claims. State
+each fact, warning, and action once. Delete sentences that only announce
+importance, summarize structure, or repeat a conclusion. Use ordinary words,
+direct verbs, and concrete relationships. Do not preserve the
 old sentence count, clause structure, rhetorical framing, or emphasis merely
 because it was there.
 
