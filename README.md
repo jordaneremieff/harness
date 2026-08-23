@@ -8,7 +8,7 @@ Extension development uses dedicated persistent worktrees. See
 ## Shared resources across machines
 
 This repository is the source of truth for the resources each machine loads.
-The Pi package manifest activates `extensions/` and `skills/`. The `pillars/`
+The Pi package manifest activates `extensions/`, `skills/`, and `prompts/`. The `pillars/`
 corpus ships beside those resources for relative access from skills. Files under
 `config/` are activated by the program-specific pointers below.
 
@@ -64,7 +64,7 @@ which Pi's ancestor walk loads for any session under the home directory, or in
 workspace and project `AGENTS.md` files. Those local files rank above the global
 rules.
 
-Prompt templates can ship through a future `pi.prompts` manifest entry; only
+Prompt templates ship through the `pi.prompts` manifest entry; only
 prompts free of machine-specific paths and model rosters belong here.
 
 Released under the MIT license. Feel free to copy anything useful or fork it for your own setup. I do not provide support or accept unsolicited contributions.
