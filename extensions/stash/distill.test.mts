@@ -8,6 +8,7 @@ import {
 	buildDistillPrompt,
 	DISTILL_SYSTEM_PROMPT,
 	entriesToTranscript,
+	escapeRawControlChars,
 	extractArtifacts,
 	isHintedDistill,
 	parseDistillPayload,
@@ -338,6 +339,44 @@ describe("payload parsing", () => {
 		assert.equal(malformed.kind, "invalid");
 		if (malformed.kind === "invalid") assert.match(malformed.error, /valid JSON/);
 	});
+
+	it("accepts literal control characters inside string values", () => {
+		// Reproduces the observed failure: a literal newline inside "summary"
+		// previously failed JSON.parse with "Bad control character in string
+		// literal" and discarded a finished distillation.
+		const payloadText = [
+			"Here is the artifact:",
+			"```json",
+			'{\n  "title": "Tool migration",',
+			'  "summary": "line one',
+			"line two after a literal newline",
+			'\tand a tab-indented line",',
+			'  "tags": ["migration"]',
+			"}",
+			"```",
+		].join("\n");
+		const result = parseDistillPayload(payloadText);
+		assert.equal(result.kind, "payload");
+		if (result.kind === "payload") {
+			assert.equal(
+				result.payload.summary,
+				"line one\nline two after a literal newline\n\tand a tab-indented line",
+			);
+		}
+	});
+
+	it("escapes control characters only inside string literals", () => {
+		const text = '{\n\t"title": "a\nb",\n\t"n": 1\n}';
+		assert.equal(escapeRawControlChars(text), '{\n\t"title": "a\\nb",\n\t"n": 1\n}');
+	});
+
+	it("leaves existing escape sequences untouched", () => {
+		const text = '{"title": "a\\nb\\u0007c", "summary": "s"}';
+		assert.equal(escapeRawControlChars(text), text);
+		const parsed = parseDistillPayload(text);
+		assert.equal(parsed.kind, "payload");
+		if (parsed.kind === "payload") assert.equal(parsed.payload.title, "a\nb\u0007c");
+	});
 });
 
 describe("payload validation", () => {
@@ -504,6 +543,40 @@ describe("distill job", () => {
 		if (outcome.ok) return;
 		assert.equal(outcome.reason, "invalid");
 		assert.match(outcome.message ?? "", /"title" must be a string/);
+	});
+
+	it("reports distiller token and cost totals on every post-prompt outcome", async () => {
+		const statsFactory = (reply: string) =>
+			async (): Promise<DistillSession> => ({
+				prompt: async () => {},
+				getLastAssistantText: () => reply,
+				abort: async () => {},
+				dispose: () => {},
+				getSessionStats: () => ({
+					tokens: { input: 1_000, output: 2_000, cacheRead: 30_000, cacheWrite: 4_000 },
+					cost: 0.123,
+				}),
+			});
+		const expected = {
+			inputTokens: 1_000,
+			outputTokens: 2_000,
+			cacheReadTokens: 30_000,
+			cacheWriteTokens: 4_000,
+			costUsd: 0.123,
+		};
+		const written = await startDistillJob(baseOptions(statsFactory(JSON.stringify(VALID_PAYLOAD)))).result;
+		assert.equal(written.ok, true);
+		if (written.ok) assert.deepEqual(written.usage, expected);
+		const invalid = await startDistillJob(baseOptions(statsFactory("not json"))).result;
+		assert.equal(invalid.ok, false);
+		if (!invalid.ok) assert.deepEqual(invalid.usage, expected);
+	});
+
+	it("omits usage when the session reports no stats", async () => {
+		const { factory } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
+		const outcome = await startDistillJob(baseOptions(factory)).result;
+		assert.equal(outcome.ok, true);
+		if (outcome.ok) assert.equal(outcome.usage, undefined);
 	});
 
 	it("reports a prompt failure without writing", async () => {

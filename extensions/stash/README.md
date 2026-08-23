@@ -92,7 +92,13 @@ results, including references outside the retained transcript window; those
 references are candidates for the hinted effort only. It returns one
 fenced JSON payload that the extension validates against the same shape and
 caps as `stash_write` before writing through the atomic store with project,
-branch, and session metadata. A `SKIP_STASH` reply writes nothing.
+branch, and session metadata. Before parsing, raw control characters inside
+JSON string literals (literal newlines and tabs that strict JSON requires
+escaped, which some models emit and `JSON.parse` rejects as "Bad control
+character in string literal") are escaped deterministically; the rewrite only
+touches characters inside string literals, so a payload that would parse is
+unchanged and the parsed value keeps the literal character. A `SKIP_STASH` reply
+writes nothing.
 
 ### Distillation model and thinking
 
@@ -115,6 +121,15 @@ providers. Distillation still has a 180-second wall-clock bound; pin
 would make the one-shot distill too slow or costly. `stash_write` is authored by
 the live agent and does not read these variables.
 
+The selected distiller identity is surfaced at both ends of the job: the start
+notification and the running footer status name the model and thinking level in
+statusline form (`claude-sonnet-4-5 [medium]`, the thinking bracket only for
+reasoning models), and the settled notification plus the `stash: done` status
+report the run's token and cost totals (`35k in · 2.0k out · ~$0.12`, with `in`
+counting input, cache-read, and cache-write tokens). Totals come from the
+distill session's own stats, so they cover exactly what that one-shot run
+billed, including provider retries.
+
 The command handler returns immediately; the live agent receives no turn. The
 job is fire-and-forget with hard bounds: zero tools, one prompt, a 180-second
 wall-clock auto-abort, and an AbortController that `/stash abort` and
@@ -123,12 +138,12 @@ creation dispatch during a run reports the in-flight creation. The result promis
 settles exactly once and never rejects, so a detached callback cannot crash
 the host session.
 
-While the job runs, the extension publishes `stash: running ⠋` under its own
-status key through `ctx.ui.setStatus` and animates it on a 120 ms interval it
-owns. On settle it holds `stash: done <id>`, `stash: skipped`, or
-`stash: failed` for three seconds, then clears the key; abort clears it
-immediately. Every terminal path stops the interval and clears pending timers.
-The statusline extension renders this text generically through
+While the job runs, the extension publishes `stash: running ⠋ · <distiller>`
+under its own status key through `ctx.ui.setStatus` and animates it on a 120 ms
+interval it owns. On settle it holds `stash: done <id> · <usage>`,
+`stash: skipped`, or `stash: failed` for three seconds, then clears the key;
+abort clears it immediately. Every terminal path stops the interval and clears
+pending timers. The statusline extension renders this text generically through
 `footerData.getExtensionStatuses()`; there is no direct code sharing between
 the two extensions, and the status also appears in Pi's default footer.
 

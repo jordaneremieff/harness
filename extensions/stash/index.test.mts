@@ -628,6 +628,36 @@ describe("stash creation", () => {
 		assert.ok((await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Distilled handover"));
 	});
 
+	it("names the distiller model and thinking level and reports usage", async () => {
+		const factory = async () => ({
+			prompt: async () => {},
+			getLastAssistantText: () => DISTILL_PAYLOAD,
+			abort: async () => {},
+			dispose: () => {},
+			getSessionStats: () => ({
+				tokens: { input: 1_000, output: 2_000, cacheRead: 30_000, cacheWrite: 4_000 },
+				cost: 0.123,
+			}),
+		});
+		const { commands } = registry({ distillSessionFactory: factory });
+		const statuses: string[] = [];
+		const notifications: string[] = [];
+		await commands.get("stash").handler("new show the distiller identity", creationCtx({
+			notify: (message: string) => notifications.push(message),
+			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
+		}));
+
+		assert.match(statuses[0] ?? "", /^stash: running .+ · test-model \[medium\]$/);
+		assert.match(notifications.join("\n"), /Stash distillation started \(test-model \[medium\]; hint: show the distiller identity\)\./);
+
+		await waitForSettle();
+		assert.ok(
+			statuses.some((text) => /^stash: done \d{8}T\d{6}Z-.*35k in · 2\.0k out · ~\$0\.12$/.test(text)),
+			"the done status must carry the token and cost totals",
+		);
+		assert.match(notifications.join("\n"), /Distilled by test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/);
+	});
+
 	it("reserves the single-flight slot before asynchronous setup", async () => {
 		type ExecResult = { code: number; stdout: string; stderr: string };
 		let releaseExec!: (result: ExecResult) => void;

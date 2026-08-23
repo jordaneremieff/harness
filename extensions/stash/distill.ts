@@ -88,8 +88,8 @@ export interface DistillPayload {
 }
 
 export type DistillOutcome =
-	| { ok: true; record: StashRecord; path: string }
-	| { ok: false; reason: "aborted" | "skip" | "invalid" | "failed"; message?: string };
+	| { ok: true; record: StashRecord; path: string; usage?: DistillUsage }
+	| { ok: false; reason: "aborted" | "skip" | "invalid" | "failed"; message?: string; usage?: DistillUsage };
 
 export interface DistillJob {
 	result: Promise<DistillOutcome>;
@@ -102,6 +102,40 @@ export interface DistillSession {
 	getLastAssistantText(): string | undefined;
 	abort(): Promise<void>;
 	dispose(): void;
+	/** Token and cost totals; optional so minimal fake sessions stay valid. */
+	getSessionStats?(): DistillSessionStats;
+}
+
+/** Structural slice of AgentSession.getSessionStats the job reads. */
+interface DistillSessionStats {
+	tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	cost: number;
+}
+
+/** Token and cost totals for one distillation run, reported on the outcome. */
+export interface DistillUsage {
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	costUsd: number;
+}
+
+function collectUsage(session: DistillSession): DistillUsage | undefined {
+	try {
+		const stats = session.getSessionStats?.();
+		if (!stats) return undefined;
+		return {
+			inputTokens: stats.tokens.input,
+			outputTokens: stats.tokens.output,
+			cacheReadTokens: stats.tokens.cacheRead,
+			cacheWriteTokens: stats.tokens.cacheWrite,
+			costUsd: stats.cost,
+		};
+	} catch {
+		// Usage visibility must never turn a finished distillation into a failure.
+		return undefined;
+	}
 }
 
 export type DistillSessionFactory = (options: {
@@ -417,6 +451,45 @@ function fencedBlock(text: string): string | undefined {
 	return match ? match[1].trim() : undefined;
 }
 
+/** Escape maps for control characters rewritten inside string literals. */
+const CONTROL_ESCAPES: Record<string, string> = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+
+/**
+ * Escape raw control characters inside JSON string literals. Distillers
+ * sometimes emit literal newlines or tabs inside string values; strict JSON
+ * requires them escaped, so JSON.parse rejects the whole payload with "Bad
+ * control character in string literal". Only characters inside string
+ * literals are rewritten: a raw control character there is never valid JSON,
+ * so the rewrite cannot alter a payload that would otherwise parse, and the
+ * parsed value keeps the literal character the model wrote. Whitespace between
+ * tokens and existing backslash escapes are left untouched.
+ */
+export function escapeRawControlChars(text: string): string {
+	let out = "";
+	let start = 0;
+	let inString = false;
+	for (let i = 0; i < text.length; i++) {
+		const ch = text[i];
+		if (inString) {
+			if (ch === "\\") {
+				i++; // the escaped character cannot close the string or be rewritten
+				continue;
+			}
+			if (ch === '"') {
+				inString = false;
+				continue;
+			}
+			if (ch >= "\u0020") continue;
+			out += text.slice(start, i);
+			out += CONTROL_ESCAPES[ch] ?? `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
+			start = i + 1;
+		} else if (ch === '"') {
+			inString = true;
+		}
+	}
+	return start === 0 ? text : out + text.slice(start);
+}
+
 /** Interpret the distiller's final text: SKIP marker, fenced JSON, or invalid. */
 export function parseDistillPayload(text: string): DistillParseResult {
 	const trimmed = text.trim();
@@ -426,7 +499,7 @@ export function parseDistillPayload(text: string): DistillParseResult {
 	if (candidate.startsWith(SKIP_MARKER)) return { kind: "skip" };
 	let value: unknown;
 	try {
-		value = JSON.parse(candidate);
+		value = JSON.parse(escapeRawControlChars(candidate));
 	} catch (error) {
 		return { kind: "invalid", error: `the distiller did not return valid JSON: ${errorMessage(error)}` };
 	}
@@ -593,12 +666,13 @@ async function runDistill(options: DistillJobOptions, signal: AbortSignal): Prom
 		}
 		if (signal.aborted) return { ok: false, reason: "aborted" };
 
+		const usage = collectUsage(session);
 		const text = session.getLastAssistantText() ?? "";
 		const parsed = parseDistillPayload(text);
 		if (parsed.kind === "skip") {
-			return { ok: false, reason: "skip", message: "the distiller found nothing worth stashing" };
+			return { ok: false, reason: "skip", message: "the distiller found nothing worth stashing", usage };
 		}
-		if (parsed.kind === "invalid") return { ok: false, reason: "invalid", message: parsed.error };
+		if (parsed.kind === "invalid") return { ok: false, reason: "invalid", message: parsed.error, usage };
 		try {
 			const payload = redactPayload(parsed.payload);
 			const { record, path } = await writeStash(
@@ -617,9 +691,9 @@ async function runDistill(options: DistillJobOptions, signal: AbortSignal): Prom
 				},
 				options.now?.() ?? new Date(),
 			);
-			return { ok: true, record, path };
+			return { ok: true, record, path, usage };
 		} catch (error) {
-			return { ok: false, reason: "failed", message: `stash write failed: ${errorMessage(error)}` };
+			return { ok: false, reason: "failed", message: `stash write failed: ${errorMessage(error)}`, usage };
 		}
 	} catch (error) {
 		return { ok: false, reason: "failed", message: errorMessage(error) };

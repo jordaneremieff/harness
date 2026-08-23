@@ -16,6 +16,7 @@ import {
 	type DistillJob,
 	type DistillOutcome,
 	type DistillSessionFactory,
+	type DistillUsage,
 } from "./distill.ts";
 import { resumeCommand, stateLabel, STASH_STATES, type StashState } from "./format.ts";
 import { redactPayload } from "./redact.ts";
@@ -30,7 +31,7 @@ import {
 	writeStash,
 	type StashLifecycleChange,
 } from "./store.ts";
-import { boundedOutput, sanitizeTerminalText } from "./text.ts";
+import { boundedOutput, formatTokenCount, sanitizeTerminalText } from "./text.ts";
 
 type StashExecutionApi = Pick<ExtensionAPI, "exec">;
 type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage">;
@@ -42,6 +43,19 @@ type StashExtensionApi = Pick<
 const storeDir = () => resolveStoreDir(process.env, getAgentDir());
 const safe = (value: string) => sanitizeTerminalText(value).text;
 const safeLine = (value: string) => safe(value).replace(/\n/g, "↵");
+
+/** Distiller identity in statusline form: model name, thinking bracketed for reasoning models. */
+function distillerLabel(model: { id: string; name?: string; reasoning?: boolean }, level: string): string {
+	const base = model.name || model.id;
+	return model.reasoning === true ? `${base} [${level}]` : base;
+}
+
+/** Compact in/out/cost summary for a finished distillation, footer style. */
+function usageLine(usage: DistillUsage | undefined): string | undefined {
+	if (!usage) return undefined;
+	const inTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+	return `${formatTokenCount(inTokens)} in · ${formatTokenCount(usage.outputTokens)} out · ~$${usage.costUsd.toFixed(2)}`;
+}
 
 // /stash new <hint> status indicator. The publishing extension owns the animation;
 // the footer and the statusline extension render the text generically.
@@ -104,16 +118,16 @@ function notify(ctx: StatusUi, message: string, level: "info" | "warning" | "err
 	}
 }
 
-function startSpinner(ctx: StatusUi): void {
+function startSpinner(ctx: StatusUi, distiller: string): void {
 	let frame = 0;
 	spinnerTimer = setInterval(() => {
 		frame = (frame + 1) % SPINNER_FRAMES.length;
-		setStatus(ctx, `stash: running ${SPINNER_FRAMES[frame]}`);
+		setStatus(ctx, `stash: running ${SPINNER_FRAMES[frame]} · ${distiller}`);
 	}, SPINNER_INTERVAL_MS);
 	spinnerTimer.unref?.();
 }
 
-function settleDistill(slot: InFlightJob, outcome: DistillOutcome, ctx: StatusUi): void {
+function settleDistill(slot: InFlightJob, outcome: DistillOutcome, ctx: StatusUi, distiller: string): void {
 	if (inFlight !== slot || slot.job === null) {
 		// The slot was released while the artifact was already committing: an abort
 		// can land after the distiller's last cancellation check. The file exists on
@@ -136,22 +150,41 @@ function settleDistill(slot: InFlightJob, outcome: DistillOutcome, ctx: StatusUi
 		resultClearTimer = setTimeout(() => setStatus(ctx, undefined), RESULT_STATUS_MS);
 		resultClearTimer.unref?.();
 	};
+	const usage = usageLine(outcome.usage);
 	if (outcome.ok === true) {
-		hold(`stash: done ${outcome.record.id}`);
+		hold(usage ? `stash: done ${outcome.record.id} · ${usage}` : `stash: done ${outcome.record.id}`);
 		notify(
 			ctx,
-			`Stashed "${safeLine(outcome.record.title)}" as ${outcome.record.id}\n${safeLine(outcome.path)}\n\nResume in a new session:\n  ${resumeCommand(outcome.record.id)}`,
+			[
+				`Stashed "${safeLine(outcome.record.title)}" as ${outcome.record.id}`,
+				safeLine(outcome.path),
+				"",
+				`Distilled by ${distiller}${usage ? ` · ${usage}` : ""}`,
+				"",
+				"Resume in a new session:",
+				`  ${resumeCommand(outcome.record.id)}`,
+			].join("\n"),
 			"info",
 		);
 		return;
 	}
 	if (outcome.reason === "skip") {
 		hold("stash: skipped");
-		notify(ctx, "Nothing worth stashing: the distiller found no content to preserve.", "info");
+		notify(
+			ctx,
+			usage
+				? `Nothing worth stashing: the distiller found no content to preserve.\n\nDistiller: ${distiller} · ${usage}`
+				: "Nothing worth stashing: the distiller found no content to preserve.",
+			"info",
+		);
 		return;
 	}
 	hold("stash: failed");
-	notify(ctx, `Stash distillation failed: ${safeLine(outcome.message ?? outcome.reason)}`, "error");
+	notify(
+		ctx,
+		`Stash distillation failed: ${safeLine(outcome.message ?? outcome.reason)}${usage ? `\n\nDistiller: ${distiller} · ${usage}` : ""}`,
+		"error",
+	);
 }
 
 /** Release only this dispatch's slot; stale setup cleanup must not clear a replacement. */
@@ -196,6 +229,7 @@ async function startCreation(
 	}
 	const model = modelResult.model;
 	const thinkingLevel = thinkingResult.level;
+	const distiller = distillerLabel(model, thinkingLevel);
 	let entries: ReturnType<typeof ctx.sessionManager.buildContextEntries>;
 	try {
 		entries = ctx.sessionManager.buildContextEntries();
@@ -250,15 +284,17 @@ async function startCreation(
 		stopSpinner();
 		clearResultStatus();
 		if (ctx.mode === "tui") {
-			setStatus(ctx, `stash: running ${SPINNER_FRAMES[0]}`);
-			startSpinner(ctx);
+			setStatus(ctx, `stash: running ${SPINNER_FRAMES[0]} · ${distiller}`);
+			startSpinner(ctx, distiller);
 		}
 		notify(
 			ctx,
-			hint.trim() ? `Stash distillation started (hint: ${safeLine(hint.trim())}).` : "Stash distillation started.",
+			hint.trim()
+				? `Stash distillation started (${distiller}; hint: ${safeLine(hint.trim())}).`
+				: `Stash distillation started (${distiller}).`,
 			"info",
 		);
-		void job.result.then((outcome) => settleDistill(slot, outcome, ctx));
+		void job.result.then((outcome) => settleDistill(slot, outcome, ctx, distiller));
 	} catch (error) {
 		controller.abort();
 		releaseSlot(slot);

@@ -21,7 +21,7 @@ key, and a consumer must not parse a sibling's status text.
 
 | Key | Publisher | Meaning | Current texts | Cleared by |
 |---|---|---|---|---|
-| `stash` | `extensions/stash` | Stash distillation progress for `/stash new <hint>`. The publisher owns the animation; the footer renders the text generically. | `stash: running <spinner frame>` while a distillation runs (TUI, 120 ms animation); then `stash: done <id>`, `stash: skipped`, or `stash: failed`. | 3 seconds after the terminal text, on `/stash abort`, and on `session_shutdown`. |
+| `stash` | `extensions/stash` | Stash distillation progress for `/stash new <hint>`. The publisher owns the animation; the footer renders the text generically. | `stash: running <spinner frame> · <distiller model [thinking]>` while a distillation runs (TUI, 120 ms animation); then `stash: done <id> · <in> in · <out> out · ~$<cost>`, `stash: skipped`, or `stash: failed`. The done totals appear when the distill session reports stats. | 3 seconds after the terminal text, on `/stash abort`, and on `session_shutdown`. |
 | `subagent` | `extensions/subagent` | Current parent session's locally owned active-worker count plus cumulative observed worker spend. Terminal spend remains visible without implying activity. | `subagents: 2 active · $0.37`; `subagents: 0 active · $0.37` after completion. | When the session has neither active workers nor observed spend, and on `session_shutdown`. |
 
 ## Rules

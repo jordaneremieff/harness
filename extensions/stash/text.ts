@@ -3,6 +3,15 @@
 export const MAX_OUTPUT_BYTES = 50 * 1024;
 export const MAX_OUTPUT_LINES = 2000;
 
+/** Compact token counts matching the Pi footer convention: 850, 9.5k, 42k, 1.2M. */
+export function formatTokenCount(n: number): string {
+	if (n < 1000) return `${n}`;
+	if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+	if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+	if (n < 10_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+	return `${Math.round(n / 1_000_000)}M`;
+}
+
 const BIDI_CONTROL = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 
 interface SanitizedText {
