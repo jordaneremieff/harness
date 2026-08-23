@@ -1,6 +1,7 @@
 # Agent operating instructions
 
-These rules name no machine, path, tool, skill, or project. A violation
+These rules name no machine, path, skill, project, or harness-specific tool
+name. A violation
 that sits in the session the operator reads, in the replies and the tool
 log, is checkable on sight. The marks are the ones the operator judges;
 the reasons are in the mark table.
@@ -126,6 +127,67 @@ verifies. An explicit operator instruction wins.
     apply before work begins belong with instructions that are always in
     view; rules that apply only when a task needs them belong with references
     loaded on demand; one rule lives in one place.
+
+## CLI tool selection
+
+This section names standard command-line tools; rule 41 gates every use of a
+legacy form, including their absence.
+
+35. Choose the bounded tool and invocation that fits the intent. The map below
+    is the policy; it is not a ban list. A legacy utility is a correct choice
+    only in the narrow roles and conditions the map names.
+
+    | Category | Preferred form | Named legacy form stays valid only when |
+    |---|---|---|
+    | File discovery | `git ls-files -- <path>` for tracked files; `rg --files <root>` or `fd . <root>`/`fdfind . <root>` elsewhere | `find <root>` only if no preferred form for the intent is available and depth, hidden and ignore exclusions, and result and output caps are explicit |
+    | Text search | `git grep -I -m <count> -e <pattern> -- <path>` for tracked text; `rg --glob '!<exclusion>' -e <pattern> <root>` for untracked or outside text; add rule 37's total-result or byte cap where the form expresses one | `grep -r` only if no preferred form for the intent is available and scope, binary and heavy-tree exclusions, and total output are explicit |
+    | File inspection | The harness native read tool, with offset and limit | Rule 40's narrow roles only: `cat`, `head`, `tail`, or `sed -n` |
+    | Git history or state | Native forms with an explicit path or revision and selected fields, plus rule 37's total-result or byte cap where the form expresses one: `git log -n <count> --format=<fields> -- <path>`, `git diff --name-only -- <path>`, `git show --format=<fields> --stat <revision> -- <path>`, `git status --short -- <path>` | A shell loop or a `git log`/`git diff`/`git show` pipeline only if no Git form expresses the operation, with the same bounds |
+    | JSON and YAML processing | `jq`/`jql` with a bounded projection; `yq` with an explicit query | Raw text matching only for invalid or literal input; Python or Perl only if no preferred form for the intent is available, with the same bounds |
+    | System inspection | A purpose-built harness or project tool; the project's own CLI with machine-readable output for project data | A scoped native command with bounded output, including `du`, `ls -R`, or `find`, only if no purpose-built tool exists and scope, depth, exclusions, and output caps are explicit; Python, Perl, or a shell composition only if the project CLI's documented interface lacks the query |
+
+36. Scope every traversal. Use the smallest root that contains the target. A
+    workspace, home directory, or filesystem root is valid only when the task
+    requires that scope, traversal depth and exclusions are explicit, the
+    walk examines a bounded number of entries (a result limit does not bound
+    a walk that yields fewer results), and total output is bounded. Output
+    truncation alone does not bound the walk. Changing the root alone never
+    fixes an unbounded traversal.
+37. Bound total output. Use explicit paths, field selections, total-result or
+    byte caps, and native read limits. A depth cap bounds traversal, not
+    output. For `rg` and `git grep`, a per-file match cap is insufficient
+    unless the file set and each emitted record are also bounded, or a
+    total-result or byte cap is applied. A result count bounds output only
+    when every emitted record has a known byte bound; otherwise apply a
+    producer-stopping byte cap. Never stream an unbounded tree, log,
+    directory listing, or followed log tail; this includes `du`, `ls -R`,
+    `find`, and `grep -r`.
+38. Prune irrelevant heavy trees. On filesystem walks, honor ignore files and
+    skip hidden paths unless they are the explicit target. On text searches,
+    skip binary content unless it is the explicit target. Exclude irrelevant
+    vendor, version-control, build, cache, and virtual-environment trees.
+39. Prefer one purpose-built command over a shell composition. Loops, `xargs`,
+    process substitution, command substitution, and pipelines are valid when
+    no available preferred form's documented interface has a form for the
+    composed operation and every stage stays scoped and bounded; they are not
+    replacements for an available bounded `git log`, `jq`, or native read. If
+    no preferred form is available, rule 41 governs the fallback.
+40. Use `cat` only to join a fixed list of inputs whose combined size you
+    already verified is small, and bounded `head`, `tail`, or `sed -n` only
+    for an explicit slice: a shell composition needs it, or the native read
+    tool is absent or lacks the slice in its documented interface. Do not use
+    these tools, or Python or Perl one-liners, when the native read tool or a
+    purpose-built CLI expresses the same operation.
+41. The exception clause is narrow: use a legacy form only when its row
+    condition in rule 35 holds and one of the following applies: no preferred
+    form listed for the intent is available; every available preferred form's
+    documented interface lacks the required operation; or rule 35 names a
+    bounded compatibility case that does not depend on absence or an
+    interface gap. State which condition applies and name the preferred forms
+    you checked. Preserve every applicable bound in the legacy command: the
+    same explicit root or file scope, depth, exclusions, and output cap. Do
+    not invent bounds that do not apply to a named file. Tool absence or a
+    documented feature gap never waives an applicable bound.
 
 ## Conflicts
 
