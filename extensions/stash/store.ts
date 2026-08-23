@@ -260,10 +260,7 @@ function normalizeMeta(name: string, parsed: Partial<StashMeta> & Record<string,
 		// An ABSENT state is legacy `open`. A present-but-unrecognized value is not:
 		// every transition rejects it, so it must not be presented as usable.
 		state: isStashState(parsed.state) ? parsed.state : "open",
-		invalidState:
-			parsed.state !== undefined && !isStashState(parsed.state)
-				? String(parsed.state)
-				: undefined,
+		invalidState: parsed.state !== undefined && !isStashState(parsed.state) ? String(parsed.state) : undefined,
 		activatedAt: typeof parsed.activatedAt === "string" ? parsed.activatedAt : undefined,
 		closedAt: typeof parsed.closedAt === "string" ? parsed.closedAt : undefined,
 		outcome: typeof parsed.outcome === "string" ? parsed.outcome : undefined,
@@ -323,9 +320,7 @@ export async function listStashes(dir: string, options: ListOptions = {}): Promi
 		// explicit state filter as if it were verified open.
 		if (
 			options.state &&
-			(previewError !== undefined ||
-				meta.invalidState !== undefined ||
-				meta.state !== options.state)
+			(previewError !== undefined || meta.invalidState !== undefined || meta.state !== options.state)
 		)
 			continue;
 		entries.push({ meta, path, preview, previewTruncated, previewError });
@@ -345,7 +340,13 @@ function locateArtifact(dir: string, dirents: Dirent[], idOrPrefix: string): Loc
 		.map((entry) => entry.name.replace(/\.md$/, ""))
 		.filter((stem) => SAFE_STEM.test(stem));
 	const exact = stems.filter((stem) => stem === idOrPrefix);
-	const matches = exact.length > 0 ? exact : stems.filter((stem) => stem.startsWith(idOrPrefix)).sort().reverse();
+	const matches =
+		exact.length > 0
+			? exact
+			: stems
+					.filter((stem) => stem.startsWith(idOrPrefix))
+					.sort()
+					.reverse();
 	if (matches.length === 0) return { ok: false, error: `no stash matches "${idOrPrefix}"` };
 	if (matches.length > 1) {
 		return { ok: false, error: `"${idOrPrefix}" is ambiguous`, candidates: matches.slice(0, 10) };
@@ -362,11 +363,17 @@ export async function readStash(dir: string, idOrPrefix: string): Promise<ReadRe
 	try {
 		const artifact = await readPrefix(located.path, MAX_STASH_BYTES);
 		if (artifact.truncated) {
-			return { ok: false, error: `stash ${located.id} is ${artifact.size} bytes; maximum readable size is ${MAX_STASH_BYTES}` };
+			return {
+				ok: false,
+				error: `stash ${located.id} is ${artifact.size} bytes; maximum readable size is ${MAX_STASH_BYTES}`,
+			};
 		}
 		return { ...located, content: artifact.text };
 	} catch (error) {
-		return { ok: false, error: `failed to read ${located.path}: ${error instanceof Error ? error.message : String(error)}` };
+		return {
+			ok: false,
+			error: `failed to read ${located.path}: ${error instanceof Error ? error.message : String(error)}`,
+		};
 	}
 }
 
@@ -455,7 +462,9 @@ export async function transitionStash(
 	// 16 KiB stays readable, while a header that never closes is UNKNOWN and
 	// must not be mutated as if it were a verified state.
 	if (headerUnclosed(source.content)) {
-		throw new Error(`stash ${located.id} has a header that never closes; its state cannot be verified for lifecycle changes`);
+		throw new Error(
+			`stash ${located.id} has a header that never closes; its state cannot be verified for lifecycle changes`,
+		);
 	}
 	const state = currentState(parsed.meta);
 	const stamp = utcTimestamp(now);
@@ -479,17 +488,20 @@ export async function transitionStash(
 		const outcome = redactSecrets(change.outcome.trim());
 		if (!outcome) throw new Error("stash completion outcome must not be empty");
 		if (outcome.length > 20_000) throw new Error("stash completion outcome exceeds 20000 characters");
-		if (state !== "active") throw new Error(`stash ${located.id} must be active before it can be closed (state: ${state})`);
+		if (state !== "active")
+			throw new Error(`stash ${located.id} must be active before it can be closed (state: ${state})`);
 		patch = { state: "closed", closedAt: stamp, outcome };
 	} else if (change.action === "release") {
 		// The inverse of pickup: an active effort whose owning session died or
 		// polluted its context returns to pristine open, so a fresh session picks
 		// it up without reconciling a phantom predecessor. Nothing durable is
 		// lost — the artifact body is untouched and pickup is one action away.
-		if (state !== "active") throw new Error(`stash ${located.id} can be released only from active state (state: ${state})`);
+		if (state !== "active")
+			throw new Error(`stash ${located.id} can be released only from active state (state: ${state})`);
 		patch = { state: "open", activatedAt: undefined };
 	} else {
-		if (state !== "closed") throw new Error(`stash ${located.id} can be reopened only from closed state (state: ${state})`);
+		if (state !== "closed")
+			throw new Error(`stash ${located.id} can be reopened only from closed state (state: ${state})`);
 		patch = { state: "open", closedAt: undefined, outcome: undefined };
 	}
 
@@ -513,7 +525,7 @@ export async function transitionStash(
 			await unlink(temporary);
 		} catch (error) {
 			// biome-ignore lint/correctness/noUnsafeFinally: guarded rethrow after publish failure
-		if (!hasCode(error, "ENOENT") && !published) throw error;
+			if (!hasCode(error, "ENOENT") && !published) throw error;
 		}
 	}
 	return {

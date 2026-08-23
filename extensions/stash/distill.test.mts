@@ -148,7 +148,10 @@ describe("transcript serialization", () => {
 				type: "message",
 				message: {
 					role: "assistant",
-					content: [{ type: "thinking", thinking: "internal reasoning" }, { type: "text", text: "Retry." }],
+					content: [
+						{ type: "thinking", thinking: "internal reasoning" },
+						{ type: "text", text: "Retry." },
+					],
 				},
 			},
 			{
@@ -229,7 +232,9 @@ describe("prompt building", () => {
 		assert.match(withArtifacts, /Observed references from tool results:/);
 		assert.ok(withArtifacts.indexOf(observedHeading) > withArtifacts.indexOf("Session transcript:"));
 		assert.ok(withArtifacts.indexOf("OUT OF SCOPE") < withArtifacts.indexOf(observedHeading));
-		assert.ok(withArtifacts.indexOf("Observed references are candidates") < withArtifacts.indexOf("Session transcript:"));
+		assert.ok(
+			withArtifacts.indexOf("Observed references are candidates") < withArtifacts.indexOf("Session transcript:"),
+		);
 	});
 
 	it("preserves concrete references from tool output after the transcript", () => {
@@ -237,11 +242,7 @@ describe("prompt building", () => {
 			"Changed /workspace/src/adapter.ts for TASK-123. See https://example.com/issues/TASK-123.",
 			"Repeated /workspace/src/adapter.ts and ignored /workspace/node_modules/pkg/index.js.",
 		]);
-		assert.deepEqual(artifacts, [
-			"https://example.com/issues/TASK-123",
-			"TASK-123",
-			"/workspace/src/adapter.ts",
-		]);
+		assert.deepEqual(artifacts, ["https://example.com/issues/TASK-123", "TASK-123", "/workspace/src/adapter.ts"]);
 		const prompt = buildDistillPrompt("", "bounded transcript", artifacts);
 		assert.match(prompt, /Observed references from tool results:/);
 		assert.match(prompt, /- \/workspace\/src\/adapter\.ts/);
@@ -276,11 +277,10 @@ describe("prompt building", () => {
 			"[ASSISTANT]\nProposal before changes; uncommitted disputed prompts remain.",
 			"[USER]\nSide note: distill only the model inheritance finding for /stash new.",
 		].join("\n\n");
-		const prompt = buildDistillPrompt(
-			"session-model inheritance and hint-scoping for /stash new",
-			transcript,
-			["/workspace/harness/prompts", "/workspace/harness/extensions/stash/distill.ts"],
-		);
+		const prompt = buildDistillPrompt("session-model inheritance and hint-scoping for /stash new", transcript, [
+			"/workspace/harness/prompts",
+			"/workspace/harness/extensions/stash/distill.ts",
+		]);
 		const transcriptAt = prompt.indexOf("Session transcript:");
 		assert.ok(transcriptAt > 0);
 		assert.ok(prompt.indexOf("OUT OF SCOPE") < transcriptAt);
@@ -358,10 +358,7 @@ describe("payload parsing", () => {
 		const result = parseDistillPayload(payloadText);
 		assert.equal(result.kind, "payload");
 		if (result.kind === "payload") {
-			assert.equal(
-				result.payload.summary,
-				"line one\nline two after a literal newline\n\tand a tab-indented line",
-			);
+			assert.equal(result.payload.summary, "line one\nline two after a literal newline\n\tand a tab-indented line");
 		}
 	});
 
@@ -417,10 +414,19 @@ describe("payload validation", () => {
 	});
 
 	it("enforces array shapes and caps", () => {
-		assert.throws(() => validatePayload({ title: "T", summary: "S", decisions: "nope" }), /"decisions" must be an array/);
+		assert.throws(
+			() => validatePayload({ title: "T", summary: "S", decisions: "nope" }),
+			/"decisions" must be an array/,
+		);
 		assert.throws(() => validatePayload({ title: "T", summary: "S", files: [1] }), /"files" entries must be strings/);
-		assert.throws(() => validatePayload({ title: "T", summary: "S", tags: ["t".repeat(81)] }), /"tags" entry exceeds 80/);
-		assert.throws(() => validatePayload({ title: "T", summary: "S", decisions: Array(201).fill("d") }), /"decisions" exceeds 200/);
+		assert.throws(
+			() => validatePayload({ title: "T", summary: "S", tags: ["t".repeat(81)] }),
+			/"tags" entry exceeds 80/,
+		);
+		assert.throws(
+			() => validatePayload({ title: "T", summary: "S", decisions: Array(201).fill("d") }),
+			/"decisions" exceeds 200/,
+		);
 	});
 });
 
@@ -502,7 +508,10 @@ describe("distill job", () => {
 		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
 		await startDistillJob(baseOptions(factory, { entries })).result;
 		assert.equal(calls.prompted.length, 1);
-		assert.ok(!calls.prompted[0].includes("longpassword"), "the password must be gone before extraction truncates the URL");
+		assert.ok(
+			!calls.prompted[0].includes("longpassword"),
+			"the password must be gone before extraction truncates the URL",
+		);
 	});
 
 	it("keeps the operator hint verbatim while redacting the transcript", async () => {
@@ -569,17 +578,16 @@ describe("distill job", () => {
 	});
 
 	it("reports distiller token and cost totals on every post-prompt outcome", async () => {
-		const statsFactory = (reply: string) =>
-			async (): Promise<DistillSession> => ({
-				prompt: async () => {},
-				getLastAssistantText: () => reply,
-				abort: async () => {},
-				dispose: () => {},
-				getSessionStats: () => ({
-					tokens: { input: 1_000, output: 2_000, cacheRead: 30_000, cacheWrite: 4_000 },
-					cost: 0.123,
-				}),
-			});
+		const statsFactory = (reply: string) => async (): Promise<DistillSession> => ({
+			prompt: async () => {},
+			getLastAssistantText: () => reply,
+			abort: async () => {},
+			dispose: () => {},
+			getSessionStats: () => ({
+				tokens: { input: 1_000, output: 2_000, cacheRead: 30_000, cacheWrite: 4_000 },
+				cost: 0.123,
+			}),
+		});
 		const expected = {
 			inputTokens: 1_000,
 			outputTokens: 2_000,

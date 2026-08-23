@@ -61,11 +61,7 @@ function assignmentRegex(keyPattern: string, quoted: boolean, spacesInValue: boo
 	// Strong labels accept YAML plain-scalar values with spaces; weak labels and
 	// quoted values keep their own shapes. `[` is excluded so a redacted
 	// placeholder is never re-matched by a later pass.
-	const value = quoted
-		? '("[^"]{8,}"|\'[^\']{8,}\')'
-		: spacesInValue
-			? "([^\"',;#\n\\[]{8,})"
-			: "([^\"'\\s,;]{8,})";
+	const value = quoted ? "(\"[^\"]{8,}\"|'[^']{8,}')" : spacesInValue ? "([^\"',;#\n\\[]{8,})" : "([^\"'\\s,;]{8,})";
 	return new RegExp(`(?<![A-Za-z0-9])(${keyPattern})(?![A-Za-z0-9])(\\s*["']?\\s*[:=]\\s*)${value}`, "gi");
 }
 

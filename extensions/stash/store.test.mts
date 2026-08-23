@@ -47,14 +47,14 @@ describe("writeStash + listStashes", () => {
 			writeStash(dir, { title: "Collision", summary: "first body" }, now),
 			writeStash(dir, { title: "Collision", summary: "second body" }, now),
 		]);
+		assert.deepEqual(writes.map((result) => result.record.id).sort(), [
+			"20260724T103000Z-collision",
+			"20260724T103000Z-collision-2",
+		]);
 		assert.deepEqual(
-			writes.map((result) => result.record.id).sort(),
-			["20260724T103000Z-collision", "20260724T103000Z-collision-2"],
-		);
-		assert.deepEqual(
-			(await Promise.all(writes.map((result) => readFile(result.path, "utf8")))).map((body) =>
-				body.includes("first body") ? "first" : "second",
-			).sort(),
+			(await Promise.all(writes.map((result) => readFile(result.path, "utf8"))))
+				.map((body) => (body.includes("first body") ? "first" : "second"))
+				.sort(),
 			["first", "second"],
 		);
 	});
@@ -76,7 +76,10 @@ describe("writeStash + listStashes", () => {
 		await writeStash(dir, { title: "Second", summary: "s2" }, at("2026-07-24T11:00:00Z"));
 		await writeStash(dir, { title: "Third", summary: "s3" }, at("2026-07-24T12:00:00Z"));
 		const all = await listStashes(dir, { limit: 10 });
-		assert.deepEqual(all.slice(0, 2).map((e) => e.meta.title), ["Third", "Second"]);
+		assert.deepEqual(
+			all.slice(0, 2).map((e) => e.meta.title),
+			["Third", "Second"],
+		);
 		assert.ok(all.some((entry) => entry.meta.title === "First Stash"));
 		const top = await listStashes(dir, { limit: 1 });
 		assert.equal(top.length, 1);
@@ -92,7 +95,11 @@ describe("writeStash + listStashes", () => {
 	});
 
 	it("still lists malformed frontmatter and keeps the filename as the authoritative id", async () => {
-		await writeFile(join(dir, "20260724T140000Z-corrupt.md"), '---\nid: "different-id"\ntitle: [broken\n---\nbody\n', "utf8");
+		await writeFile(
+			join(dir, "20260724T140000Z-corrupt.md"),
+			'---\nid: "different-id"\ntitle: [broken\n---\nbody\n',
+			"utf8",
+		);
 		const entries = await listStashes(dir, { limit: 20 });
 		const corrupt = entries.find((entry) => entry.meta.id === "20260724T140000Z-corrupt");
 		assert.ok(corrupt);
@@ -154,7 +161,11 @@ describe("stash lifecycle transitions", () => {
 			at("2026-07-26T10:00:00Z"),
 		);
 		assert.equal(record.state, "open");
-		await writeFile(path, (await readFile(path, "utf8")).replace('state: "open"', 'custom: {"keep":true}\nstate: "open"'), "utf8");
+		await writeFile(
+			path,
+			(await readFile(path, "utf8")).replace('state: "open"', 'custom: {"keep":true}\nstate: "open"'),
+			"utf8",
+		);
 
 		const active = await transitionStash(lifecycleDir, record.id, { action: "activate" }, at("2026-07-26T11:00:00Z"));
 		assert.equal(active.meta.state, "active");
@@ -194,7 +205,11 @@ describe("stash lifecycle transitions", () => {
 			{ title: "Release", summary: "dead-session handover" },
 			at("2026-08-13T09:00:00Z"),
 		);
-		await writeFile(path, (await readFile(path, "utf8")).replace('state: "open"', 'custom: {"keep":true}\nstate: "open"'), "utf8");
+		await writeFile(
+			path,
+			(await readFile(path, "utf8")).replace('state: "open"', 'custom: {"keep":true}\nstate: "open"'),
+			"utf8",
+		);
 
 		await assert.rejects(transitionStash(lifecycleDir, record.id, { action: "release" }), /released only from active/i);
 
@@ -241,7 +256,11 @@ describe("stash lifecycle transitions", () => {
 		const lifecycleDir = join(dir, "outcome-redact-store");
 		await mkdir(lifecycleDir);
 		const secret = "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz123456";
-		const { record } = await writeStash(lifecycleDir, { title: "Outcome redaction", summary: "s" }, at("2026-07-26T14:30:00Z"));
+		const { record } = await writeStash(
+			lifecycleDir,
+			{ title: "Outcome redaction", summary: "s" },
+			at("2026-07-26T14:30:00Z"),
+		);
 		await transitionStash(lifecycleDir, record.id, { action: "activate" });
 		await transitionStash(lifecycleDir, record.id, { action: "close", outcome: `done; the key was ${secret}` });
 		const read = await readStash(lifecycleDir, record.id);
@@ -300,7 +319,10 @@ describe("artifact header beyond the scan window", () => {
 		const id = "20260726T100000Z-long-header";
 		await writeLongHeader(store, id);
 		const open = await listStashes(store, { state: "open" });
-		assert.equal(open.some((entry) => entry.meta.id === id), false);
+		assert.equal(
+			open.some((entry) => entry.meta.id === id),
+			false,
+		);
 		const all = await listStashes(store, { limit: 50 });
 		const entry = all.find((item) => item.meta.id === id);
 		assert.ok(entry, "the artifact must still be listed without a state filter");
@@ -340,8 +362,14 @@ describe("unreadable and invalid lifecycle states", () => {
 		assert.match(entry?.previewError ?? "", /never closes/);
 		assert.equal(entry?.meta.state, "open", "the defaulted fallback must stay distinguishable");
 		// No state filter may satisfy it.
-		assert.equal((await listStashes(store, { state: "open" })).some((item) => item.meta.id === id), false);
-		assert.equal((await listStashes(store, { state: "active" })).some((item) => item.meta.id === id), false);
+		assert.equal(
+			(await listStashes(store, { state: "open" })).some((item) => item.meta.id === id),
+			false,
+		);
+		assert.equal(
+			(await listStashes(store, { state: "active" })).some((item) => item.meta.id === id),
+			false,
+		);
 		// Rotation and every lifecycle transition refuse it, leaving the bytes intact.
 		const before = await readFile(path, "utf8");
 		await assert.rejects(rotateStash(store, id), /state cannot be verified/);
@@ -377,7 +405,10 @@ describe("unreadable and invalid lifecycle states", () => {
 		const entry = all.find((item) => item.meta.id === id);
 		assert.ok(entry, "the artifact must still be listed without a state filter");
 		assert.ok(entry?.previewError, "a trailing-character fence must be reported as unread");
-		assert.equal((await listStashes(store, { state: "open" })).some((item) => item.meta.id === id), false);
+		assert.equal(
+			(await listStashes(store, { state: "open" })).some((item) => item.meta.id === id),
+			false,
+		);
 		const before = await readFile(path, "utf8");
 		await assert.rejects(rotateStash(store, id), /state cannot be verified/);
 		await assert.rejects(transitionStash(store, id, { action: "activate" }), /state cannot be verified/);
@@ -389,7 +420,11 @@ describe("unreadable and invalid lifecycle states", () => {
 		const store = await mkdtemp(join(tmpdir(), "stash-unclosed-body-"));
 		await chmod(store, 0o700);
 		const diffId = "20260726T190000Z-unclosed-diff";
-		await writeFile(join(store, `${diffId}.md`), '---\nstate: "active"\ntitle: "Live effort"\n\n# body\n--- a/src/foo.ts\n+++ b/src/foo.ts\n', "utf8");
+		await writeFile(
+			join(store, `${diffId}.md`),
+			'---\nstate: "active"\ntitle: "Live effort"\n\n# body\n--- a/src/foo.ts\n+++ b/src/foo.ts\n',
+			"utf8",
+		);
 		const ruleId = "20260726T191000Z-unclosed-rule";
 		await writeFile(join(store, `${ruleId}.md`), '---\nstate: "active"\n\n# body\n----\n', "utf8");
 		// Diff headers and markdown rules are ordinary body content: they must not
@@ -399,7 +434,10 @@ describe("unreadable and invalid lifecycle states", () => {
 			const entry = all.find((item) => item.meta.id === id);
 			assert.ok(entry, `${id} must still be listed`);
 			assert.ok(entry?.previewError, `${id} must be reported as unread`);
-			assert.equal((await listStashes(store, { state: "open" })).some((item) => item.meta.id === id), false);
+			assert.equal(
+				(await listStashes(store, { state: "open" })).some((item) => item.meta.id === id),
+				false,
+			);
 			await assert.rejects(rotateStash(store, id), /state cannot be verified/);
 			await assert.rejects(transitionStash(store, id, { action: "activate" }), /state cannot be verified/);
 		}
@@ -429,7 +467,10 @@ describe("unreadable and invalid lifecycle states", () => {
 		assert.ok(entry);
 		assert.equal(entry.previewError, undefined);
 		assert.equal(entry.meta.state, "active", "the real state must survive an indented close");
-		assert.equal((await listStashes(store, { state: "active" })).some((item) => item.meta.id === id), true);
+		assert.equal(
+			(await listStashes(store, { state: "active" })).some((item) => item.meta.id === id),
+			true,
+		);
 		await rm(store, { recursive: true, force: true });
 	});
 
@@ -439,7 +480,10 @@ describe("unreadable and invalid lifecycle states", () => {
 		const id = "20260726T194000Z-tag-unread";
 		await writeFile(join(store, `${id}.md`), '---\nstate: "active"\n\n# body\n', "utf8");
 		assert.ok((await listStashes(store, { limit: 50 })).some((item) => item.meta.id === id));
-		assert.equal((await listStashes(store, { tag: "continuity" })).some((item) => item.meta.id === id), false);
+		assert.equal(
+			(await listStashes(store, { tag: "continuity" })).some((item) => item.meta.id === id),
+			false,
+		);
 		await rm(store, { recursive: true, force: true });
 	});
 
@@ -454,7 +498,10 @@ describe("unreadable and invalid lifecycle states", () => {
 		const entry = all.find((item) => item.meta.id === id);
 		assert.ok(entry);
 		assert.ok(entry?.previewError);
-		assert.equal((await listStashes(store, { state: "open" })).some((item) => item.meta.id === id), false);
+		assert.equal(
+			(await listStashes(store, { state: "open" })).some((item) => item.meta.id === id),
+			false,
+		);
 		await rm(store, { recursive: true, force: true });
 	});
 
@@ -469,7 +516,10 @@ describe("unreadable and invalid lifecycle states", () => {
 		assert.equal(entry.meta.invalidState, "mystery");
 		assert.equal(entry.meta.state, "open", "the defaulted fallback must stay distinguishable");
 		assert.equal(entry.previewError, undefined);
-		assert.equal((await listStashes(store, { state: "open" })).some((item) => item.meta.id === id), false);
+		assert.equal(
+			(await listStashes(store, { state: "open" })).some((item) => item.meta.id === id),
+			false,
+		);
 		await assert.rejects(rotateStash(store, id), /invalid lifecycle state/);
 		await rm(store, { recursive: true, force: true });
 	});
@@ -489,7 +539,11 @@ describe("rotateStash", () => {
 		assert.ok(rotated.archivePath.endsWith(join(".trash", `${record.id}.md`)));
 
 		const entries = await listStashes(dir, { limit: 50 });
-		assert.equal(entries.some((entry) => entry.meta.id === record.id), false, "rotated artifacts must not be listed");
+		assert.equal(
+			entries.some((entry) => entry.meta.id === record.id),
+			false,
+			"rotated artifacts must not be listed",
+		);
 		const archived = await readFile(rotated.archivePath, "utf8");
 		assert.equal(archived, original, "content must be preserved byte-for-byte");
 		assert.equal((await stat(join(dir, ".trash"))).mode & 0o777, 0o700);
@@ -506,7 +560,11 @@ describe("rotateStash", () => {
 	});
 
 	it("refuses to rotate an active artifact owned by a live session", async () => {
-		const { record } = await writeStash(dir, { title: "Active rotation", summary: "in flight" }, at("2026-07-25T10:20:00Z"));
+		const { record } = await writeStash(
+			dir,
+			{ title: "Active rotation", summary: "in flight" },
+			at("2026-07-25T10:20:00Z"),
+		);
 		await transitionStash(dir, record.id, { action: "activate" });
 		await assert.rejects(rotateStash(dir, record.id), /is active; complete it before rotation/);
 		assert.equal((await readStash(dir, record.id)).ok, true, "the artifact must remain in the store");
@@ -524,7 +582,11 @@ describe("rotateStash", () => {
 		await rotateStash(dir, record.id);
 		await assert.rejects(rotateStash(dir, record.id), /no stash matches/);
 
-		const other = await writeStash(dir, { title: "Colliding rotation", summary: "original" }, at("2026-07-25T10:41:00Z"));
+		const other = await writeStash(
+			dir,
+			{ title: "Colliding rotation", summary: "original" },
+			at("2026-07-25T10:41:00Z"),
+		);
 		await mkdir(join(dir, ".trash"), { recursive: true });
 		await writeFile(join(dir, ".trash", `${other.record.id}.md`), "older archive");
 		await assert.rejects(rotateStash(dir, other.record.id), /already rotated/);

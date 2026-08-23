@@ -35,10 +35,7 @@ import { boundedOutput, formatTokenCount, sanitizeTerminalText } from "./text.ts
 
 type StashExecutionApi = Pick<ExtensionAPI, "exec">;
 type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage">;
-type StashExtensionApi = Pick<
-	ExtensionAPI,
-	"exec" | "on" | "registerCommand" | "registerTool" | "sendUserMessage"
->;
+type StashExtensionApi = Pick<ExtensionAPI, "exec" | "on" | "registerCommand" | "registerTool" | "sendUserMessage">;
 
 const storeDir = () => resolveStoreDir(process.env, getAgentDir());
 const safe = (value: string) => sanitizeTerminalText(value).text;
@@ -236,7 +233,10 @@ async function startCreation(
 	try {
 		entries = ctx.sessionManager.buildContextEntries();
 	} catch (error) {
-		surface(`Could not read the session transcript: ${safeLine(error instanceof Error ? error.message : String(error))}`, "error");
+		surface(
+			`Could not read the session transcript: ${safeLine(error instanceof Error ? error.message : String(error))}`,
+			"error",
+		);
 		return;
 	}
 	// Reserve the single-flight slot BEFORE any await so concurrent dispatches serialize,
@@ -324,7 +324,12 @@ const WriteParams = Type.Object({
 	openLoops: itemList("Unresolved questions, blockers, unknowns"),
 	nextActions: itemList("Ordered next steps for whoever resumes"),
 	files: itemList("Relevant file paths"),
-	tags: Type.Optional(Type.Array(Type.String({ maxLength: 80 }), { description: "Subject tags (tag by subject, not by consumer)", maxItems: 50 })),
+	tags: Type.Optional(
+		Type.Array(Type.String({ maxLength: 80 }), {
+			description: "Subject tags (tag by subject, not by consumer)",
+			maxItems: 50,
+		}),
+	),
 });
 
 const stateSchema = StringEnum(STASH_STATES, { description: "Lifecycle state: open, active, or closed" });
@@ -336,16 +341,35 @@ const ListParams = Type.Object({
 });
 
 const ReadParams = Type.Object({
-	id: Type.String({ description: "Stash id or unique id prefix (from stash_list)", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9._-]+$" }),
+	id: Type.String({
+		description: "Stash id or unique id prefix (from stash_list)",
+		minLength: 1,
+		maxLength: 200,
+		pattern: "^[A-Za-z0-9._-]+$",
+	}),
 });
 
 const CompleteParams = Type.Object({
-	id: Type.String({ description: "Active stash id or unique id prefix", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9._-]+$" }),
-	outcome: Type.String({ description: "Concrete terminal outcome of the resumed effort", minLength: 1, maxLength: 20_000 }),
+	id: Type.String({
+		description: "Active stash id or unique id prefix",
+		minLength: 1,
+		maxLength: 200,
+		pattern: "^[A-Za-z0-9._-]+$",
+	}),
+	outcome: Type.String({
+		description: "Concrete terminal outcome of the resumed effort",
+		minLength: 1,
+		maxLength: 20_000,
+	}),
 });
 
 const RotateParams = Type.Object({
-	id: Type.String({ description: "Stash id or unique id prefix (from stash_list)", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9._-]+$" }),
+	id: Type.String({
+		description: "Stash id or unique id prefix (from stash_list)",
+		minLength: 1,
+		maxLength: 200,
+		pattern: "^[A-Za-z0-9._-]+$",
+	}),
 });
 
 function readFailure(result: Extract<Awaited<ReturnType<typeof readStash>>, { ok: false }>): Error {
@@ -492,7 +516,9 @@ async function deliverPickup(
 			if (ctx.hasUI) ctx.ui.notify(`Queued stash ${activated.id} for pickup after the current turn.`, "info");
 		}
 	} catch (error) {
-		fail(`Stash ${activated.id} is active, but pickup delivery failed: ${safeLine(error instanceof Error ? error.message : String(error))}`);
+		fail(
+			`Stash ${activated.id} is active, but pickup delivery failed: ${safeLine(error instanceof Error ? error.message : String(error))}`,
+		);
 	}
 }
 
@@ -726,7 +752,11 @@ export default function (
 		parameters: ListParams,
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("stash_list cancelled");
-			const entries = await listStashes(storeDir(), { limit: params.limit ?? 10, tag: params.tag, state: params.state });
+			const entries = await listStashes(storeDir(), {
+				limit: params.limit ?? 10,
+				tag: params.tag,
+				state: params.state,
+			});
 			if (entries.length === 0) {
 				const scopes = [
 					params.tag ? `tag "${safeLine(params.tag)}"` : undefined,

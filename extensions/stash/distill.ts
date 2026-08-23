@@ -8,7 +8,13 @@
  * promise that never rejects.
  */
 
-import { createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+	createAgentSession,
+	DefaultResourceLoader,
+	getAgentDir,
+	SessionManager,
+	type SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import {
 	clampThinkingLevel,
 	getSupportedThinkingLevels,
@@ -166,13 +172,9 @@ export interface DistillModelRegistry {
 	hasConfiguredAuth(model: Model<any>): boolean;
 }
 
-export type DistillModelResolution =
-	| { ok: true; model: Model<any> }
-	| { ok: false; error: string };
+export type DistillModelResolution = { ok: true; model: Model<any> } | { ok: false; error: string };
 
-export type DistillThinkingResolution =
-	| { ok: true; level: ModelThinkingLevel }
-	| { ok: false; error: string };
+export type DistillThinkingResolution = { ok: true; level: ModelThinkingLevel } | { ok: false; error: string };
 
 /** Empty or whitespace env values count as unset (inherit). */
 export function readOptionalEnv(value: string | undefined): string | undefined {
@@ -261,8 +263,7 @@ export function resolveDistillThinking(options: {
 		return { ok: true, level: raw };
 	}
 	const parentRaw = options.parentThinking?.trim();
-	const parentLevel =
-		parentRaw && isThinkingLevel(parentRaw) ? parentRaw : DEFAULT_DISTILL_THINKING;
+	const parentLevel = parentRaw && isThinkingLevel(parentRaw) ? parentRaw : DEFAULT_DISTILL_THINKING;
 	return { ok: true, level: clampThinkingLevel(options.model, parentLevel) };
 }
 
@@ -411,9 +412,10 @@ export function boundTranscript(text: string, maxChars: number = TRANSCRIPT_MAX_
 
 /** The single user message: the framed hint first, then the transcript as context. */
 export function buildDistillPrompt(hint: string, transcript: string, artifacts: readonly string[] = []): string {
-	const observed = artifacts.length > 0
-		? ["", "Observed references from tool results:", ...artifacts.map((artifact) => `- ${artifact}`)]
-		: [];
+	const observed =
+		artifacts.length > 0
+			? ["", "Observed references from tool results:", ...artifacts.map((artifact) => `- ${artifact}`)]
+			: [];
 	const hintText = hint.trim();
 	const framing = isHintedDistill(hint)
 		? [
@@ -432,13 +434,7 @@ export function buildDistillPrompt(hint: string, transcript: string, artifacts: 
 				"No sidequest scope exclusion applies. The session transcript is the subject of this stash.",
 				"All provided active-path transcript material remains the subject; observed references are supporting evidence for that full subject.",
 			];
-	return [
-		...framing,
-		"",
-		"Session transcript:",
-		transcript,
-		...observed,
-	].join("\n");
+	return [...framing, "", "Session transcript:", transcript, ...observed].join("\n");
 }
 
 type DistillParseResult =

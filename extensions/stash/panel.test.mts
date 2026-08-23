@@ -52,9 +52,11 @@ function rig(
 		initialFilter,
 		initialSelectedId,
 		initialSelectedIndex,
-		copyResume: copyResume ?? (async (selected) => {
-			calls.copies.push(selected.meta.id);
-		}),
+		copyResume:
+			copyResume ??
+			(async (selected) => {
+				calls.copies.push(selected.meta.id);
+			}),
 		done: (result) => {
 			calls.done = result;
 		},
@@ -252,7 +254,9 @@ describe("StashPanel", () => {
 		const closed = entry("closed", "Closed work", "done", {
 			meta: { id: "closed", title: "Closed work", created: "20260723T120000Z", tags: [], state: "closed" },
 		});
-		const rendered = rig([...samples(), closed]).panel.render(104).join("\n");
+		const rendered = rig([...samples(), closed])
+			.panel.render(104)
+			.join("\n");
 		assert.match(rendered, /○ 2026-07-24 New work/);
 		assert.match(rendered, /◐ 2026-07-24 Long work/);
 		assert.match(rendered, /● 2026-07-23 Closed work/);
@@ -260,12 +264,21 @@ describe("StashPanel", () => {
 
 	it("marks unrecognized and unreadable states with the unknown glyph", () => {
 		const invalid = entry("invalid", "Invalid work", "body", {
-			meta: { id: "invalid", title: "Invalid work", created: "20260723T130000Z", tags: [], state: "open", invalidState: "mystery" },
+			meta: {
+				id: "invalid",
+				title: "Invalid work",
+				created: "20260723T130000Z",
+				tags: [],
+				state: "open",
+				invalidState: "mystery",
+			},
 		});
 		const unread = entry("unread", "Unread work", undefined, {
 			previewError: "artifact header is unreadable; its state cannot be verified",
 		});
-		const rendered = rig([...samples(), invalid, unread]).panel.render(104).join("\n");
+		const rendered = rig([...samples(), invalid, unread])
+			.panel.render(104)
+			.join("\n");
 		assert.match(rendered, /◈ 2026-07-23 Invalid work/);
 		assert.match(rendered, /◈ 2026-07-24 Unread work/);
 		assert.doesNotMatch(rendered, /○ 2026-07-23 Invalid work/);
@@ -273,7 +286,14 @@ describe("StashPanel", () => {
 
 	it("labels an unknown state in the preview header and the filter", () => {
 		const invalid = entry("invalid", "Invalid work", "body", {
-			meta: { id: "invalid", title: "Invalid work", created: "20260723T130000Z", tags: [], state: "open", invalidState: "mystery" },
+			meta: {
+				id: "invalid",
+				title: "Invalid work",
+				created: "20260723T130000Z",
+				tags: [],
+				state: "open",
+				invalidState: "mystery",
+			},
 		});
 		const unread = entry("unread", "Unread work", undefined, {
 			previewError: "artifact header is unreadable; its state cannot be verified",
@@ -294,7 +314,14 @@ describe("StashPanel", () => {
 
 	it("refuses pickup and manage on entries whose state is unknown", () => {
 		const invalid = entry("invalid", "Invalid work", "body", {
-			meta: { id: "invalid", title: "Invalid work", created: "20260723T130000Z", tags: [], state: "open", invalidState: "mystery" },
+			meta: {
+				id: "invalid",
+				title: "Invalid work",
+				created: "20260723T130000Z",
+				tags: [],
+				state: "open",
+				invalidState: "mystery",
+			},
 		});
 		const unread = entry("unread", "Unread work", undefined, {
 			previewError: "artifact header is unreadable; its state cannot be verified",

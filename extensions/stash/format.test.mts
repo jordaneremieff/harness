@@ -76,7 +76,9 @@ describe("serializeArtifact → parseFrontmatter roundtrip", () => {
 	});
 
 	it("handles titles and summaries containing colons and quotes", () => {
-		const { meta, body } = parseFrontmatter(serializeArtifact(rec({ title: 'fix: the "parser" bug', summary: "line one\nline two" })));
+		const { meta, body } = parseFrontmatter(
+			serializeArtifact(rec({ title: 'fix: the "parser" bug', summary: "line one\nline two" })),
+		);
 		assert.equal(meta.title, 'fix: the "parser" bug');
 		assert.match(body, /line one\nline two/);
 	});

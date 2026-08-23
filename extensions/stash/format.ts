@@ -219,5 +219,11 @@ export function parseFrontmatter(md: string): ParsedArtifact {
 			meta[key] = raw;
 		}
 	}
-	return { meta: meta as Partial<StashMeta> & Record<string, unknown>, body: lines.slice(end + 1).join("\n").trim() };
+	return {
+		meta: meta as Partial<StashMeta> & Record<string, unknown>,
+		body: lines
+			.slice(end + 1)
+			.join("\n")
+			.trim(),
+	};
 }

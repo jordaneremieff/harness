@@ -145,10 +145,10 @@ function markdownTheme(theme: Theme): MarkdownTheme {
 }
 
 /** The mark for one entry: an unrecognized or unreadable lifecycle state is never a state. */
-function entryMark(entry: {
-	meta: { state: string; invalidState?: string };
-	previewError?: string;
-}): { glyph: string; color: Color } {
+function entryMark(entry: { meta: { state: string; invalidState?: string }; previewError?: string }): {
+	glyph: string;
+	color: Color;
+} {
 	if (entry.meta.invalidState !== undefined || entry.previewError !== undefined) {
 		return { glyph: "◈", color: "warning" };
 	}
@@ -235,8 +235,16 @@ export class StashPanel {
 
 	private previewSource(width = this.layout().previewWidth): string[] {
 		const entry = this.current();
-		if (!entry) return [this.deps.entries.length === 0 ? "No stashes yet. Create one with stash_write." : "No matching stashes."];
-		const key = [entry.meta.id, width, entry.previewError, entry.previewTruncated, entry.preview, JSON.stringify(entry.meta)].join("\0");
+		if (!entry)
+			return [this.deps.entries.length === 0 ? "No stashes yet. Create one with stash_write." : "No matching stashes."];
+		const key = [
+			entry.meta.id,
+			width,
+			entry.previewError,
+			entry.previewTruncated,
+			entry.preview,
+			JSON.stringify(entry.meta),
+		].join("\0");
 		if (key === this.previewCacheKey) return this.previewCacheLines;
 		if (entry.previewError) {
 			this.previewCacheKey = key;
@@ -509,18 +517,18 @@ export class StashPanel {
 			return `${theme.fg("accent", "filter ")}${theme.fg("text", keepTail(`${safeLine(this.filter)}▌`, queryWidth))}${theme.fg("dim", suffix)}`;
 		}
 		if (this.help) {
-			return [this.keyPair("↑↓", "scroll"), this.keyPair("b/spc", "page"), this.keyPair("h/esc", "back")].join(theme.fg("dim", " · "));
+			return [this.keyPair("↑↓", "scroll"), this.keyPair("b/spc", "page"), this.keyPair("h/esc", "back")].join(
+				theme.fg("dim", " · "),
+			);
 		}
 		if (this.lastWidth < 104) {
-			return [this.keyPair("↑↓", "select"), this.keyPair("enter", "pick"), this.keyPair("esc", "close")].join(theme.fg("dim", " · "));
+			return [this.keyPair("↑↓", "select"), this.keyPair("enter", "pick"), this.keyPair("esc", "close")].join(
+				theme.fg("dim", " · "),
+			);
 		}
 		const selected = this.current();
 		const actionable = this.actionable(selected);
-		const parts = [
-			this.keyPair("↑↓", "select"),
-			this.keyPair("b/spc", "page"),
-			this.keyPair("/", "filter"),
-		];
+		const parts = [this.keyPair("↑↓", "select"), this.keyPair("b/spc", "page"), this.keyPair("/", "filter")];
 		if (actionable) {
 			parts.push(this.keyPair("tab", "actions"), this.keyPair("enter", "pick"), this.keyPair("a", "note"));
 		} else {
@@ -539,7 +547,8 @@ export class StashPanel {
 		}
 		const theme = this.deps.theme;
 		const entries = this.filtered;
-		const position = entries.length === 0 ? "0/0" : `${this.selected + 1}/${entries.length}${this.deps.hasMore ? "+" : ""}`;
+		const position =
+			entries.length === 0 ? "0/0" : `${this.selected + 1}/${entries.length}${this.deps.hasMore ? "+" : ""}`;
 		const paint = (text: string): string => theme.bg("customMessageBg", fit(text, width));
 		const lines: string[] = [];
 
@@ -550,12 +559,19 @@ export class StashPanel {
 			for (let slot = 0; slot < itemRows; slot++) {
 				const absolute = this.listScroll + slot;
 				const entry = entries[absolute];
-				const empty = slot === 0 && entries.length === 0
-					? this.deps.entries.length === 0
-						? "No stashes yet. Create one with stash_write."
-						: "No matching stashes."
-					: "";
-				lines.push(paint(entry ? `${absolute === this.selected ? "›" : " "} ${entryMark(entry).glyph} ${safeLine(formatDate(entry.meta.created))} ${oneLine(entry.meta.title)}` : empty));
+				const empty =
+					slot === 0 && entries.length === 0
+						? this.deps.entries.length === 0
+							? "No stashes yet. Create one with stash_write."
+							: "No matching stashes."
+						: "";
+				lines.push(
+					paint(
+						entry
+							? `${absolute === this.selected ? "›" : " "} ${entryMark(entry).glyph} ${safeLine(formatDate(entry.meta.created))} ${oneLine(entry.meta.title)}`
+							: empty,
+					),
+				);
 			}
 			lines.push(paint(this.footerText(width)));
 			this.cachedWidth = width;

@@ -99,7 +99,11 @@ describe("stash entrypoint", () => {
 	});
 
 	it("supports the /stash rotate verb and rejects a bare verb", async () => {
-		const { record } = await writeStash(dir, { title: "Verb rotation", summary: "stale verb" }, new Date("2025-07-18T10:00:00Z"));
+		const { record } = await writeStash(
+			dir,
+			{ title: "Verb rotation", summary: "stale verb" },
+			new Date("2025-07-18T10:00:00Z"),
+		);
 		const { commands } = registry();
 		const notifications: string[] = [];
 		const ctx: any = {
@@ -191,7 +195,10 @@ describe("stash entrypoint", () => {
 		assert.equal(sent.length, 1);
 		assert.match(sent[0].content, /UNIQUE_PICKUP_BODY/);
 		assert.match(sent[0].content, /stash_complete.*20270724T100000Z-pickup-target/);
-		assert.equal((await listStashes(dir, { state: "active" })).some((entry) => entry.meta.id === "20270724T100000Z-pickup-target"), true);
+		assert.equal(
+			(await listStashes(dir, { state: "active" })).some((entry) => entry.meta.id === "20270724T100000Z-pickup-target"),
+			true,
+		);
 		const listed = await tools.get("stash_list").execute("call", { state: "active" }, new AbortController().signal);
 		assert.match(listed.content[0].text, /active · Pickup target/);
 		assert.ok(listed.details.states.every((state: string) => state === "active"));
@@ -555,23 +562,22 @@ const DISTILL_PAYLOAD = JSON.stringify({
 });
 
 function creationCtx(ui: any, extra: any = {}) {
-	const parentModel = extra.model === undefined && !("model" in extra)
-		? { id: "test-model", provider: "test", reasoning: true }
-		: extra.model;
+	const parentModel =
+		extra.model === undefined && !("model" in extra)
+			? { id: "test-model", provider: "test", reasoning: true }
+			: extra.model;
 	const available = extra.registryModels ?? (parentModel ? [parentModel] : []);
-	const registry =
-		extra.modelRegistry ??
-		{
-			find(provider: string, id: string) {
-				return available.find((model: any) => model.provider === provider && model.id === id) ?? null;
-			},
-			getAvailable() {
-				return available;
-			},
-			hasConfiguredAuth(model: any) {
-				return available.includes(model);
-			},
-		};
+	const registry = extra.modelRegistry ?? {
+		find(provider: string, id: string) {
+			return available.find((model: any) => model.provider === provider && model.id === id) ?? null;
+		},
+		getAvailable() {
+			return available;
+		},
+		hasConfiguredAuth(model: any) {
+			return available.includes(model);
+		},
+	};
 	const { registryModels: _registryModels, modelRegistry: _modelRegistry, ...rest } = extra;
 	return {
 		mode: "tui",
@@ -610,10 +616,13 @@ describe("stash creation", () => {
 		const { commands, sent } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
 		const statuses: string[] = [];
 		const notifications: string[] = [];
-		await commands.get("stash").handler("new focus the harness on distillation", creationCtx({
-			notify: (message: string) => notifications.push(message),
-			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-		}));
+		await commands.get("stash").handler(
+			"new focus the harness on distillation",
+			creationCtx({
+				notify: (message: string) => notifications.push(message),
+				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
+			}),
+		);
 
 		assert.equal(sent.length, 0, "the live session must receive no turn");
 		assert.ok(statuses[0]?.startsWith("stash: running"), "a running status must appear on dispatch");
@@ -642,13 +651,19 @@ describe("stash creation", () => {
 		const { commands } = registry({ distillSessionFactory: factory });
 		const statuses: string[] = [];
 		const notifications: string[] = [];
-		await commands.get("stash").handler("new show the distiller identity", creationCtx({
-			notify: (message: string) => notifications.push(message),
-			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-		}));
+		await commands.get("stash").handler(
+			"new show the distiller identity",
+			creationCtx({
+				notify: (message: string) => notifications.push(message),
+				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
+			}),
+		);
 
 		assert.match(statuses[0] ?? "", /^stash: running .+ · test-model \[medium\]$/);
-		assert.match(notifications.join("\n"), /Stash distillation started \(test-model \[medium\]; hint: show the distiller identity\)\./);
+		assert.match(
+			notifications.join("\n"),
+			/Stash distillation started \(test-model \[medium\]; hint: show the distiller identity\)\./,
+		);
 
 		await waitForSettle();
 		assert.ok(
@@ -672,12 +687,18 @@ describe("stash creation", () => {
 		const { commands } = registry({ distillSessionFactory: factory });
 		const notifications: string[] = [];
 		const statuses: string[] = [];
-		await commands.get("stash").handler("new skip probe", creationCtx({
-			notify: (message: string) => notifications.push(message),
-			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-		}));
+		await commands.get("stash").handler(
+			"new skip probe",
+			creationCtx({
+				notify: (message: string) => notifications.push(message),
+				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
+			}),
+		);
 		await waitForSettle();
-		assert.match(notifications.join("\n"), /Nothing worth stashing.*\n\nDistiller: test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/s);
+		assert.match(
+			notifications.join("\n"),
+			/Nothing worth stashing.*\n\nDistiller: test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/s,
+		);
 		assert.ok(statuses.includes("stash: skipped"), "the skip status itself carries no usage");
 	});
 
@@ -694,10 +715,13 @@ describe("stash creation", () => {
 		});
 		const { commands } = registry({ distillSessionFactory: factory });
 		const notifications: string[] = [];
-		await commands.get("stash").handler("new failure probe", creationCtx({
-			notify: (message: string) => notifications.push(message),
-			setStatus: () => {},
-		}));
+		await commands.get("stash").handler(
+			"new failure probe",
+			creationCtx({
+				notify: (message: string) => notifications.push(message),
+				setStatus: () => {},
+			}),
+		);
 		await waitForSettle();
 		assert.match(
 			notifications.join("\n"),
@@ -726,10 +750,16 @@ describe("stash creation", () => {
 		const esc = String.fromCharCode(27);
 		const bel = String.fromCharCode(7);
 		const evil = `evil${esc}]52;c;SGVsbG8=${bel}${String.fromCharCode(8238)}\nNEXT`;
-		await commands.get("stash").handler("new hostile name", creationCtx(
-			{ notify: (message: string) => notifications.push(message), setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>") },
-			{ model: { id: "test-model", name: evil, provider: "test", reasoning: true } },
-		));
+		await commands.get("stash").handler(
+			"new hostile name",
+			creationCtx(
+				{
+					notify: (message: string) => notifications.push(message),
+					setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
+				},
+				{ model: { id: "test-model", name: evil, provider: "test", reasoning: true } },
+			),
+		);
 		const status = statuses[0] ?? "";
 		const start = notifications[0] ?? "";
 		for (const surfaced of [status, start]) {
@@ -747,7 +777,10 @@ describe("stash creation", () => {
 		const notifications: string[] = [];
 		const ctx = creationCtx({ notify: (message: string) => notifications.push(message) }, { mode: "rpc" });
 		await commands.get("stash").handler("new rpc identity", ctx);
-		assert.match(notifications.join("\n"), /Stash distillation started \(test-model \[medium\]; hint: rpc identity\)\./);
+		assert.match(
+			notifications.join("\n"),
+			/Stash distillation started \(test-model \[medium\]; hint: rpc identity\)\./,
+		);
 		await waitForSettle();
 	});
 
@@ -815,10 +848,9 @@ describe("stash creation", () => {
 	it("throws setup failures when no UI can carry the error", async () => {
 		const { commands } = registry();
 		await assert.rejects(
-			commands.get("stash").handler(
-				"new headless creation",
-				creationCtx({}, { mode: "json", hasUI: false, model: undefined }),
-			),
+			commands
+				.get("stash")
+				.handler("new headless creation", creationCtx({}, { mode: "json", hasUI: false, model: undefined })),
 			/No model is available/,
 		);
 	});
@@ -840,26 +872,30 @@ describe("stash creation", () => {
 		try {
 			process.env.PI_STASH_MODEL = "cheap/cheap-model";
 			const notifications: string[] = [];
-			await commands.get("stash").handler(
-				"new use explicit model",
-				creationCtx(
-					{ notify: (message: string) => notifications.push(message) },
-					{ model: undefined, registryModels: [override] },
-				),
-			);
+			await commands
+				.get("stash")
+				.handler(
+					"new use explicit model",
+					creationCtx(
+						{ notify: (message: string) => notifications.push(message) },
+						{ model: undefined, registryModels: [override] },
+					),
+				);
 			await waitForSettle();
 			assert.equal(factoryCalls, 1);
 			assert.match(notifications.join("\n"), /Stash distillation started/);
 
 			process.env.PI_STASH_MODEL = "missing/model";
 			notifications.length = 0;
-			await commands.get("stash").handler(
-				"new missing model",
-				creationCtx(
-					{ notify: (message: string) => notifications.push(message) },
-					{ model: undefined, registryModels: [override] },
-				),
-			);
+			await commands
+				.get("stash")
+				.handler(
+					"new missing model",
+					creationCtx(
+						{ notify: (message: string) => notifications.push(message) },
+						{ model: undefined, registryModels: [override] },
+					),
+				);
 			assert.equal(factoryCalls, 1, "a missing override must not start the distiller");
 			assert.match(notifications.join("\n"), /not in the current registry/);
 		} finally {
@@ -883,10 +919,9 @@ describe("stash creation", () => {
 		const { commands } = registry({ distillSessionFactory: factory });
 		try {
 			delete process.env.PI_STASH_THINKING;
-			await commands.get("stash").handler(
-				"new inherit thinking",
-				creationCtx({ notify: () => {} }, { thinkingLevel: "high" }),
-			);
+			await commands
+				.get("stash")
+				.handler("new inherit thinking", creationCtx({ notify: () => {} }, { thinkingLevel: "high" }));
 			await waitForSettle();
 			assert.equal(received.thinkingLevel, "high");
 
@@ -1132,10 +1167,9 @@ describe("stash command grammar", () => {
 	it("creates through /stash new and preserves an action-shaped hint", async () => {
 		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
 		const notifications: string[] = [];
-		await commands.get("stash").handler(
-			"new abort the plan",
-			creationCtx({ notify: (message: string) => notifications.push(message) }),
-		);
+		await commands
+			.get("stash")
+			.handler("new abort the plan", creationCtx({ notify: (message: string) => notifications.push(message) }));
 		assert.match(notifications.join("\n"), /hint: abort the plan/);
 		await waitForSettle();
 		assert.ok((await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Distilled handover"));
@@ -1277,8 +1311,15 @@ describe("unknown and unread lifecycle states", () => {
 		assert.equal(selects, 0, "no lifecycle menu may be offered for an unknown state");
 		assert.equal(sent.length, 0, "an unknown state must not be picked up");
 		assert.equal(notifications.length, 0);
-		assert.ok((await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.id === invalidId && entry.meta.invalidState === "mystery"));
-		assert.equal((await listStashes(dir, { state: "active" })).some((entry) => entry.meta.id === invalidId), false);
+		assert.ok(
+			(await listStashes(dir, { limit: 50 })).some(
+				(entry) => entry.meta.id === invalidId && entry.meta.invalidState === "mystery",
+			),
+		);
+		assert.equal(
+			(await listStashes(dir, { state: "active" })).some((entry) => entry.meta.id === invalidId),
+			false,
+		);
 		// Completion descriptions must not present the unknown state as open.
 		const complete = commands.get("stash").getArgumentCompletions;
 		const items = await complete("complete 20270725");
@@ -1307,9 +1348,7 @@ describe("unknown and unread lifecycle states", () => {
 				custom: async (factory: any) => {
 					return new Promise((resolve) => {
 						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
-						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component: any) =>
-							component.handleInput("a"),
-						);
+						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component: any) => component.handleInput("a"));
 					});
 				},
 			},
@@ -1361,5 +1400,4 @@ describe("unknown and unread lifecycle states", () => {
 		assert.equal(target?.meta.state, "open");
 		assert.equal(target?.meta.activatedAt, undefined);
 	});
-
 });

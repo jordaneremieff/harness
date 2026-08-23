@@ -21,7 +21,8 @@ export function buildPickupMessage(id: string, artifact: string, context: Pickup
 	const safeArtifact = sanitizeTerminalText(artifact).text;
 	const recordedProject = parseFrontmatter(artifact).meta.project;
 	const currentCwd = context.currentCwd ? sanitizeTerminalText(context.currentCwd).text.replace(/\n/g, "↵") : undefined;
-	const safeProject = typeof recordedProject === "string" ? sanitizeTerminalText(recordedProject).text.replace(/\n/g, "↵") : undefined;
+	const safeProject =
+		typeof recordedProject === "string" ? sanitizeTerminalText(recordedProject).text.replace(/\n/g, "↵") : undefined;
 	const rawNote = context.note?.trim();
 	if (rawNote !== undefined && rawNote.length > MAX_NOTE_CHARS) {
 		throw new Error(`operator note exceeds ${MAX_NOTE_CHARS} characters`);
@@ -31,7 +32,9 @@ export function buildPickupMessage(id: string, artifact: string, context: Pickup
 				`Current workspace (unchanged): ${currentCwd}`,
 				...(safeProject ? [`Recorded stash project: ${safeProject}`] : []),
 				...(safeProject && safeProject !== currentCwd
-					? ["The recorded project differs from the current workspace. Verify the intended context before editing files."]
+					? [
+							"The recorded project differs from the current workspace. Verify the intended context before editing files.",
+						]
 					: []),
 			]
 		: [];
