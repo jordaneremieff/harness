@@ -472,7 +472,15 @@ export function escapeRawControlChars(text: string): string {
 		const ch = text[i];
 		if (inString) {
 			if (ch === "\\") {
-				i++; // the escaped character cannot close the string or be rewritten
+				const next = text[i + 1];
+				if (next !== undefined && next < "\u0020") {
+					// A raw control character is not a legal escape continuation. Keep both
+					// characters the model wrote: emit an escaped literal backslash (two
+					// backslashes) plus the escaped control.
+					out += `${text.slice(start, i)}\\\\${CONTROL_ESCAPES[next] ?? `\\u${next.charCodeAt(0).toString(16).padStart(4, "0")}`}`;
+					start = i + 2;
+				}
+				i++; // skip the character after the backslash (escape continuation or rewritten pair)
 				continue;
 			}
 			if (ch === '"') {
@@ -658,7 +666,14 @@ async function runDistill(options: DistillJobOptions, signal: AbortSignal): Prom
 					message: timedOut ? `distillation timed out after ${Math.round(timeoutMs / 1000)}s` : undefined,
 				};
 			}
-			return { ok: false, reason: "failed", message: errorMessage(error) };
+			return {
+				ok: false,
+				reason: "failed",
+				message: errorMessage(error),
+				// A rejected prompt may still have billed tokens; report them when the
+				// session exists. Creation failures have no session and carry no usage.
+				usage: session ? collectUsage(session) : undefined,
+			};
 		} finally {
 			creationWindowClosed = true;
 			clearTimeout(timeout);

@@ -46,7 +46,9 @@ const safeLine = (value: string) => safe(value).replace(/\n/g, "↵");
 
 /** Distiller identity in statusline form: model name, thinking bracketed for reasoning models. */
 function distillerLabel(model: { id: string; name?: string; reasoning?: boolean }, level: string): string {
-	const base = model.name || model.id;
+	// Configured model names are free-form: keep the surfaced label single-line and
+	// control-free like every other string this module interpolates.
+	const base = safeLine(model.name || model.id);
 	return model.reasoning === true ? `${base} [${level}]` : base;
 }
 

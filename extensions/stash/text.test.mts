@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, boundedOutput, sanitizeTerminalText } from "./text.ts";
+import { MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, boundedOutput, formatTokenCount, sanitizeTerminalText } from "./text.ts";
+
+describe("formatTokenCount", () => {
+	it("formats token counts in the footer convention", () => {
+		assert.equal(formatTokenCount(0), "0");
+		assert.equal(formatTokenCount(850), "850");
+		assert.equal(formatTokenCount(9_500), "9.5k");
+		assert.equal(formatTokenCount(42_000), "42k");
+		assert.equal(formatTokenCount(1_200_000), "1.2M");
+		assert.equal(formatTokenCount(12_000_000), "12M");
+	});
+});
 
 describe("sanitizeTerminalText", () => {
 	it("renders terminal and bidi controls as inert escape text while preserving newlines", () => {

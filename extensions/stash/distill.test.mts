@@ -377,6 +377,29 @@ describe("payload parsing", () => {
 		assert.equal(parsed.kind, "payload");
 		if (parsed.kind === "payload") assert.equal(parsed.payload.title, "a\nb\u0007c");
 	});
+
+	it("repairs a raw control character immediately after a literal backslash", () => {
+		// A literal backslash ending a line followed by a raw newline: the newline is
+		// not an escape continuation, and previously the pair failed JSON.parse as
+		// "Bad escaped character", discarding a finished distillation.
+		const text = `{"title": "a\\
+b", "summary": "s"}`;
+		const result = parseDistillPayload(text);
+		assert.equal(result.kind, "payload");
+		if (result.kind === "payload") assert.equal(result.payload.title, "a\\\nb");
+	});
+
+	it("escapes other raw control characters through the unicode fallback", () => {
+		const bel = String.fromCharCode(7);
+		const cr = String.fromCharCode(13);
+		const text = `{"title": "a${bel}", "summary": "s${cr}t"}`;
+		const result = parseDistillPayload(text);
+		assert.equal(result.kind, "payload");
+		if (result.kind === "payload") {
+			assert.equal(result.payload.title, `a${bel}`);
+			assert.equal(result.payload.summary, `s${cr}t`);
+		}
+	});
 });
 
 describe("payload validation", () => {
@@ -577,6 +600,48 @@ describe("distill job", () => {
 		const outcome = await startDistillJob(baseOptions(factory)).result;
 		assert.equal(outcome.ok, true);
 		if (outcome.ok) assert.equal(outcome.usage, undefined);
+	});
+
+	it("omits usage when getSessionStats throws, without failing the run", async () => {
+		const factory = async (): Promise<DistillSession> => ({
+			prompt: async () => {},
+			getLastAssistantText: () => JSON.stringify(VALID_PAYLOAD),
+			abort: async () => {},
+			dispose: () => {},
+			getSessionStats: () => {
+				throw new Error("stats unavailable");
+			},
+		});
+		const outcome = await startDistillJob(baseOptions(factory)).result;
+		assert.equal(outcome.ok, true, "a throwing stats reader must not fail a finished distillation");
+		if (outcome.ok) assert.equal(outcome.usage, undefined);
+	});
+
+	it("reports usage when the prompt rejects after the session ran", async () => {
+		const factory = async (): Promise<DistillSession> => ({
+			prompt: async () => {
+				throw new Error("provider exploded");
+			},
+			getLastAssistantText: () => "",
+			abort: async () => {},
+			dispose: () => {},
+			getSessionStats: () => ({
+				tokens: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 },
+				cost: 0.01,
+			}),
+		});
+		const outcome = await startDistillJob(baseOptions(factory)).result;
+		assert.equal(outcome.ok, false);
+		if (!outcome.ok) {
+			assert.equal(outcome.reason, "failed");
+			assert.deepEqual(outcome.usage, {
+				inputTokens: 100,
+				outputTokens: 10,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+				costUsd: 0.01,
+			});
+		}
 	});
 
 	it("reports a prompt failure without writing", async () => {

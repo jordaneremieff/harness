@@ -93,12 +93,14 @@ references are candidates for the hinted effort only. It returns one
 fenced JSON payload that the extension validates against the same shape and
 caps as `stash_write` before writing through the atomic store with project,
 branch, and session metadata. Before parsing, raw control characters inside
-JSON string literals (literal newlines and tabs that strict JSON requires
-escaped, which some models emit and `JSON.parse` rejects as "Bad control
-character in string literal") are escaped deterministically; the rewrite only
-touches characters inside string literals, so a payload that would parse is
-unchanged and the parsed value keeps the literal character. A `SKIP_STASH` reply
-writes nothing.
+JSON string literals (literal newlines, tabs, and other control characters
+that strict JSON requires escaped, which some models emit and `JSON.parse`
+rejects as "Bad control character in string literal") are escaped
+deterministically; a raw control character directly after a literal backslash
+is repaired the same way, emitting an escaped backslash plus the escaped
+control so the parsed value keeps both. The rewrite only touches characters
+inside string literals, so a payload that would parse is unchanged and the
+parsed value keeps the literal character. A `SKIP_STASH` reply writes nothing.
 
 ### Distillation model and thinking
 
@@ -126,9 +128,13 @@ notification and the running footer status name the model and thinking level in
 statusline form (`claude-sonnet-4-5 [medium]`, the thinking bracket only for
 reasoning models), and the settled notification plus the `stash: done` status
 report the run's token and cost totals (`35k in · 2.0k out · ~$0.12`, with `in`
-counting input, cache-read, and cache-write tokens). Totals come from the
-distill session's own stats, so they cover exactly what that one-shot run
-billed, including provider retries.
+counting input, cache-read, and cache-write tokens) whenever the distill
+session reports stats. Totals come from the distill session's own stats, so
+they cover exactly what that one-shot run billed, including provider retries.
+Skip and failure notifications carry the totals too whenever usage was
+collected. The surfaced label is sanitized to a single control-free line:
+configured model names are free-form, and every string this module interpolates
+into a status or notification goes through the same sanitization.
 
 The command handler returns immediately; the live agent receives no turn. The
 job is fire-and-forget with hard bounds: zero tools, one prompt, a 180-second

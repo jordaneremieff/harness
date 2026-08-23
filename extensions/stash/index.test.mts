@@ -658,6 +658,99 @@ describe("stash creation", () => {
 		assert.match(notifications.join("\n"), /Distilled by test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/);
 	});
 
+	it("reports the distiller and usage on a skip", async () => {
+		const factory = async () => ({
+			prompt: async () => {},
+			getLastAssistantText: () => "SKIP_STASH",
+			abort: async () => {},
+			dispose: () => {},
+			getSessionStats: () => ({
+				tokens: { input: 1_000, output: 2_000, cacheRead: 30_000, cacheWrite: 4_000 },
+				cost: 0.123,
+			}),
+		});
+		const { commands } = registry({ distillSessionFactory: factory });
+		const notifications: string[] = [];
+		const statuses: string[] = [];
+		await commands.get("stash").handler("new skip probe", creationCtx({
+			notify: (message: string) => notifications.push(message),
+			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
+		}));
+		await waitForSettle();
+		assert.match(notifications.join("\n"), /Nothing worth stashing.*\n\nDistiller: test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/s);
+		assert.ok(statuses.includes("stash: skipped"), "the skip status itself carries no usage");
+	});
+
+	it("reports the distiller and usage on a distillation failure", async () => {
+		const factory = async () => ({
+			prompt: async () => {},
+			getLastAssistantText: () => "not json at all",
+			abort: async () => {},
+			dispose: () => {},
+			getSessionStats: () => ({
+				tokens: { input: 1_000, output: 2_000, cacheRead: 30_000, cacheWrite: 4_000 },
+				cost: 0.123,
+			}),
+		});
+		const { commands } = registry({ distillSessionFactory: factory });
+		const notifications: string[] = [];
+		await commands.get("stash").handler("new failure probe", creationCtx({
+			notify: (message: string) => notifications.push(message),
+			setStatus: () => {},
+		}));
+		await waitForSettle();
+		assert.match(
+			notifications.join("\n"),
+			/Stash distillation failed:.*\n\nDistiller: test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/s,
+		);
+	});
+
+	it("labels a non-reasoning model by name without a thinking bracket", async () => {
+		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
+		const notifications: string[] = [];
+		const ctx = creationCtx(
+			{ notify: (message: string) => notifications.push(message) },
+			{ model: { id: "test-model", name: "Custom Model", provider: "test", reasoning: false } },
+		);
+		await commands.get("stash").handler("new unlabeled", ctx);
+		const joined = notifications.join("\n");
+		assert.match(joined, /Stash distillation started \(Custom Model; hint: unlabeled\)\./);
+		assert.ok(!joined.includes("Custom Model ["), "a non-reasoning model must not carry a thinking bracket");
+		await waitForSettle();
+	});
+
+	it("sanitizes a hostile configured model name in status and notifications", async () => {
+		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
+		const statuses: string[] = [];
+		const notifications: string[] = [];
+		const esc = String.fromCharCode(27);
+		const bel = String.fromCharCode(7);
+		const evil = `evil${esc}]52;c;SGVsbG8=${bel}${String.fromCharCode(8238)}\nNEXT`;
+		await commands.get("stash").handler("new hostile name", creationCtx(
+			{ notify: (message: string) => notifications.push(message), setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>") },
+			{ model: { id: "test-model", name: evil, provider: "test", reasoning: true } },
+		));
+		const status = statuses[0] ?? "";
+		const start = notifications[0] ?? "";
+		for (const surfaced of [status, start]) {
+			assert.ok(!surfaced.includes(esc), "no raw ESC may reach a status or notification");
+			assert.ok(!surfaced.includes(bel), "no raw BEL may reach a status or notification");
+			assert.ok(!surfaced.includes("\n"), "the label must stay single-line");
+			assert.ok(!surfaced.includes(String.fromCharCode(8238)), "no raw bidi control may surface");
+		}
+		assert.match(status, /evil\\x1b\]52;c;/);
+		await waitForSettle();
+	});
+
+	it("names the distiller in the RPC start notification", async () => {
+		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
+		const notifications: string[] = [];
+		const ctx = creationCtx({ notify: (message: string) => notifications.push(message) }, { mode: "rpc" });
+		await commands.get("stash").handler("new rpc identity", ctx);
+		assert.match(notifications.join("\n"), /Stash distillation started \(test-model \[medium\]; hint: rpc identity\)\./);
+		await waitForSettle();
+	});
+
 	it("reserves the single-flight slot before asynchronous setup", async () => {
 		type ExecResult = { code: number; stdout: string; stderr: string };
 		let releaseExec!: (result: ExecResult) => void;
