@@ -93,9 +93,14 @@ test("accepts portable optional fields and fragment/reference links", () => {
 		frontmatter: "placeholder",
 		files: { "references/guide.md": "# Part\n" },
 	});
-	// biome-ignore lint/style/useTemplate: test fixture with literal backtick sequences
-const body = "# " + basename(directory) + "\n\nSee [the guide](references/guide.md#part) and [the same guide][guide].\n\n[guide]: references/guide.md#part\n\n````markdown\n[example only](references/not-real.md)\n````\n";
-	writeFileSync(join(directory, "SKILL.md"), `---\nname: ${basename(directory)}\ndescription: >\n  Use when validating a portable\n  Agent Skill fixture. Do not use for non-fixtures.\nlicense: MIT\ncompatibility: Requires Node.js 18+\nmetadata:\n  author: example\n  version: "1.0"\nallowed-tools: Read Bash\n---\n\n${body}`);
+	const body =
+		"# " +
+		basename(directory) +
+		"\n\nSee [the guide](references/guide.md#part) and [the same guide][guide].\n\n[guide]: references/guide.md#part\n\n````markdown\n[example only](references/not-real.md)\n````\n";
+	writeFileSync(
+		join(directory, "SKILL.md"),
+		`---\nname: ${basename(directory)}\ndescription: >\n  Use when validating a portable\n  Agent Skill fixture. Do not use for non-fixtures.\nlicense: MIT\ncompatibility: Requires Node.js 18+\nmetadata:\n  author: example\n  version: "1.0"\nallowed-tools: Read Bash\n---\n\n${body}`,
+	);
 	const { status, report } = runJson(directory);
 	assert.equal(status, 0);
 	assert.deepEqual(report.counts.omitted, { fail: 0, warn: 0 });
@@ -106,7 +111,7 @@ const body = "# " + basename(directory) + "\n\nSee [the guide](references/guide.
 test("rejects invalid optional frontmatter value types", async (t) => {
 	const cases: readonly FrontmatterCase[] = [
 		["license: false", "license.type"],
-		["compatibility: \"\"", "compatibility.length"],
+		['compatibility: ""', "compatibility.length"],
 		["metadata:\n  count: 3", "metadata.value"],
 		["allowed-tools: false", "allowed-tools.type"],
 		["disable-model-invocation: nope", "frontmatter.type"],
@@ -114,10 +119,16 @@ test("rejects invalid optional frontmatter value types", async (t) => {
 	for (const [field, code] of cases) {
 		await t.test(code, () => {
 			const directory = createSkill({ frontmatter: "placeholder" });
-			writeFileSync(join(directory, "SKILL.md"), `---\n${validFrontmatter(directory, field)}\n---\n\n# ${basename(directory)}\n`);
+			writeFileSync(
+				join(directory, "SKILL.md"),
+				`---\n${validFrontmatter(directory, field)}\n---\n\n# ${basename(directory)}\n`,
+			);
 			const { status, report } = runJson(directory);
 			assert.equal(status, 1);
-			assert.ok(report.fail.some((finding) => finding.code === code), JSON.stringify(report));
+			assert.ok(
+				report.fail.some((finding) => finding.code === code),
+				JSON.stringify(report),
+			);
 		});
 	}
 });
@@ -127,28 +138,54 @@ test("rejects required-field, naming, and conservative YAML violations", async (
 		[() => "name: wrong-name\ndescription: Use when validating.", "name.directory", "directory mismatch"],
 		[(name: string) => `name: ${name}`, "frontmatter.required", "missing description"],
 		[(name: string) => `name: ${name}\ndescription: false`, "frontmatter.type", "non-string description"],
-		[(name: string) => `name: ${name}\ndescription: Use when validating.\nallowed-tools: [Read, Bash]`, "frontmatter.parse", "flow collection"],
+		[
+			(name: string) => `name: ${name}\ndescription: Use when validating.\nallowed-tools: [Read, Bash]`,
+			"frontmatter.parse",
+			"flow collection",
+		],
 		[(name: string) => `\tname: ${name}\n\tdescription: Use when validating.`, "frontmatter.parse", "tab indentation"],
-		[(name: string) => `__proto__:\n  name: ${name}\n  description: Use when validating.`, "frontmatter.parse", "unsafe mapping key"],
+		[
+			(name: string) => `__proto__:\n  name: ${name}\n  description: Use when validating.`,
+			"frontmatter.parse",
+			"unsafe mapping key",
+		],
 	];
 	for (const [makeFrontmatter, code, label] of cases) {
 		await t.test(label, () => {
 			const directory = createSkill({ frontmatter: "placeholder" });
-			writeFileSync(join(directory, "SKILL.md"), `---\n${makeFrontmatter(basename(directory))}\n---\n\n# ${basename(directory)}\n`);
+			writeFileSync(
+				join(directory, "SKILL.md"),
+				`---\n${makeFrontmatter(basename(directory))}\n---\n\n# ${basename(directory)}\n`,
+			);
 			const { status, report } = runJson(directory);
 			assert.equal(status, 1);
-			assert.ok(report.fail.some((finding) => finding.code === code), JSON.stringify(report));
+			assert.ok(
+				report.fail.some((finding) => finding.code === code),
+				JSON.stringify(report),
+			);
 		});
 	}
 });
 
 test("checks missing, escaping, absolute, fragment, and undefined reference links", () => {
 	const directory = createSkill({ frontmatter: "placeholder", files: { "references/guide.md": "# Present\n" } });
-	writeFileSync(join(directory, "SKILL.md"), `---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n[missing](references/nope.md)\n[escape](../outside.md)\n[absolute](/tmp/outside.md)\n[bad fragment](references/guide.md#absent)\n[bad local fragment](#absent)\n[undefined][unknown]\n`);
+	writeFileSync(
+		join(directory, "SKILL.md"),
+		`---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n[missing](references/nope.md)\n[escape](../outside.md)\n[absolute](/tmp/outside.md)\n[bad fragment](references/guide.md#absent)\n[bad local fragment](#absent)\n[undefined][unknown]\n`,
+	);
 	const { status, report } = runJson(directory);
 	assert.equal(status, 1);
-	for (const code of ["link.missing", "link.escape", "link.absolute", "link.fragment-missing", "link.reference-missing"]) {
-		assert.ok(report.fail.some((finding) => finding.code === code), code);
+	for (const code of [
+		"link.missing",
+		"link.escape",
+		"link.absolute",
+		"link.fragment-missing",
+		"link.reference-missing",
+	]) {
+		assert.ok(
+			report.fail.some((finding) => finding.code === code),
+			code,
+		);
 	}
 });
 
@@ -158,7 +195,10 @@ test("rejects links that escape through an in-skill symlink", () => {
 	const directory = createSkill({ frontmatter: "placeholder" });
 	mkdirSync(join(directory, "references"), { recursive: true });
 	symlinkSync(outside, join(directory, "references", "linked.md"));
-	writeFileSync(join(directory, "SKILL.md"), `---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n[outside](references/linked.md)\n`);
+	writeFileSync(
+		join(directory, "SKILL.md"),
+		`---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n[outside](references/linked.md)\n`,
+	);
 	const { status, report } = runJson(directory);
 	assert.equal(status, 1);
 	assert.ok(report.fail.some((finding) => finding.code === "link.escape"));
@@ -168,7 +208,10 @@ test("detects standalone credentials without relying on nearby keywords", () => 
 	const directory = createSkill({ frontmatter: "placeholder" });
 	const token = `ghp_${"a".repeat(30)}`;
 	const privateKeyHeader = "-----BEGIN " + "PRIVATE KEY-----";
-	writeFileSync(join(directory, "SKILL.md"), `---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n${token}\n${privateKeyHeader}\n`);
+	writeFileSync(
+		join(directory, "SKILL.md"),
+		`---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n${token}\n${privateKeyHeader}\n`,
+	);
 	const { status, report } = runJson(directory);
 	assert.equal(status, 1);
 	assert.ok(report.fail.some((finding) => finding.code === "file.secret"));
@@ -178,7 +221,10 @@ test("reports placeholder and operator-local path warnings", () => {
 	const directory = createSkill({ frontmatter: "placeholder" });
 	const marker = "TO" + "DO:";
 	const localPath = "/" + "Users/example/private";
-	writeFileSync(join(directory, "SKILL.md"), `---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n${marker} replace this\n${localPath}\n`);
+	writeFileSync(
+		join(directory, "SKILL.md"),
+		`---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n${marker} replace this\n${localPath}\n`,
+	);
 	const { status, report } = runJson(directory);
 	assert.equal(status, 0);
 	assert.ok(report.warn.some((finding) => finding.code === "file.placeholder"));
@@ -187,7 +233,10 @@ test("reports placeholder and operator-local path warnings", () => {
 
 test("bounds reads of oversized skill resources", () => {
 	const directory = createSkill({ frontmatter: "placeholder" });
-	writeFileSync(join(directory, "SKILL.md"), `---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n${"x".repeat(600 * 1024)}`);
+	writeFileSync(
+		join(directory, "SKILL.md"),
+		`---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n${"x".repeat(600 * 1024)}`,
+	);
 	mkdirSync(join(directory, "scripts"), { recursive: true });
 	mkdirSync(join(directory, "references"), { recursive: true });
 	writeFileSync(join(directory, "scripts", "large.mjs"), "x".repeat(600 * 1024));
@@ -200,8 +249,13 @@ test("bounds reads of oversized skill resources", () => {
 
 test("bounds reported findings while preserving total counts and failure status", () => {
 	const directory = createSkill({ frontmatter: "placeholder" });
-	const links = Array.from({ length: 85 }, (_, index) => `[missing ${index}](references/missing-${index}.md)`).join("\n");
-	writeFileSync(join(directory, "SKILL.md"), `---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n${links}\n`);
+	const links = Array.from({ length: 85 }, (_, index) => `[missing ${index}](references/missing-${index}.md)`).join(
+		"\n",
+	);
+	writeFileSync(
+		join(directory, "SKILL.md"),
+		`---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\n${links}\n`,
+	);
 	const result = runJson(directory);
 	assert.equal(result.status, 1);
 	assert.equal(result.report.counts.fail, 85);
@@ -213,7 +267,10 @@ test("bounds reported findings while preserving total counts and failure status"
 test("warns when the body H1 is missing or does not match the frontmatter name", async (t) => {
 	await t.test("missing H1", () => {
 		const directory = createSkill({ frontmatter: "placeholder" });
-		writeFileSync(join(directory, "SKILL.md"), `---\n${validFrontmatter(directory)}\n---\n\nIntro paragraph only, no heading.\n`);
+		writeFileSync(
+			join(directory, "SKILL.md"),
+			`---\n${validFrontmatter(directory)}\n---\n\nIntro paragraph only, no heading.\n`,
+		);
 		const { status, report } = runJson(directory);
 		assert.equal(status, 0);
 		assert.ok(report.warn.some((finding) => finding.code === "body.h1" && /no H1/.test(finding.message)));
@@ -230,7 +287,10 @@ test("warns when the body H1 is missing or does not match the frontmatter name",
 test("warns on operator-private home path forms while keeping credentials as failures", () => {
 	const directory = createSkill({ frontmatter: "placeholder" });
 	const homePath = "~" + "/private/notes";
-	writeFileSync(join(directory, "SKILL.md"), `---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\nCorpus root: \`${homePath}\`.\n`);
+	writeFileSync(
+		join(directory, "SKILL.md"),
+		`---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n\nCorpus root: \`${homePath}\`.\n`,
+	);
 	const { status, report } = runJson(directory);
 	assert.equal(status, 0);
 	assert.ok(report.warn.some((finding) => finding.code === "path.operator-home"));
@@ -243,13 +303,15 @@ test("warns when a script has no colocated test file", () => {
 	writeFileSync(join(directory, "scripts", "helper.mjs"), "export const helper = 1;\n");
 	const { status, report } = runJson(directory);
 	assert.equal(status, 0);
-	assert.ok(report.warn.some((finding) => finding.code === "script.test-missing" && /helper\.mjs/.test(finding.message)));
+	assert.ok(
+		report.warn.some((finding) => finding.code === "script.test-missing" && /helper\.mjs/.test(finding.message)),
+	);
 
 	const tested = createSkill({ frontmatter: "placeholder" });
 	writeFileSync(join(tested, "SKILL.md"), `---\n${validFrontmatter(tested)}\n---\n\n# ${basename(tested)}\n`);
 	mkdirSync(join(tested, "scripts"), { recursive: true });
 	writeFileSync(join(tested, "scripts", "helper.mjs"), "export const helper = 1;\n");
-	writeFileSync(join(tested, "scripts", "helper.test.mjs"), "import test from \"node:test\";\n");
+	writeFileSync(join(tested, "scripts", "helper.test.mjs"), 'import test from "node:test";\n');
 	const testedReport = runJson(tested);
 	assert.equal(testedReport.status, 0);
 	assert.ok(!testedReport.report.warn.some((finding) => finding.code === "script.test-missing"));
@@ -257,7 +319,10 @@ test("warns when a script has no colocated test file", () => {
 
 test("warns when the description lacks a do-not-use or boundary clause", () => {
 	const directory = createSkill({ frontmatter: "placeholder" });
-	writeFileSync(join(directory, "SKILL.md"), `---\nname: ${basename(directory)}\ndescription: Use when validating an Agent Skill fixture.\n---\n\n# ${basename(directory)}\n`);
+	writeFileSync(
+		join(directory, "SKILL.md"),
+		`---\nname: ${basename(directory)}\ndescription: Use when validating an Agent Skill fixture.\n---\n\n# ${basename(directory)}\n`,
+	);
 	const { status, report } = runJson(directory);
 	assert.equal(status, 0);
 	assert.ok(report.warn.some((finding) => finding.code === "description.boundary"));

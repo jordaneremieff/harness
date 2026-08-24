@@ -95,7 +95,9 @@ export function boundedOutput(input: string, hint?: string): BoundedOutput {
 		};
 	}
 
-	const safeHint = hint ? truncateHead(sanitizeTerminalText(hint).text, 400, 1) : "Request a narrower result to continue.";
+	const safeHint = hint
+		? truncateHead(sanitizeTerminalText(hint).text, 400, 1)
+		: "Request a narrower result to continue.";
 	const body = truncateHead(input, MAX_OUTPUT_BYTES - 1024, MAX_OUTPUT_LINES - 2);
 	const bodyBytes = Buffer.byteLength(body, "utf8");
 	const bodyLines = lineCount(body);

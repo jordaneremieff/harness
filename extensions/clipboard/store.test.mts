@@ -3,15 +3,7 @@ import { chmod, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import {
-	appendEntry,
-	fileMode,
-	localDate,
-	makeEntry,
-	makePreview,
-	readEntries,
-	resolveClipboardDir,
-} from "./store.ts";
+import { appendEntry, fileMode, localDate, makeEntry, makePreview, readEntries, resolveClipboardDir } from "./store.ts";
 
 let dir: string;
 
@@ -98,17 +90,29 @@ describe("appendEntry + readEntries", () => {
 		const shifted = await readEntries(dir);
 		assert.notEqual(shifted[0].id, target.id);
 		const resolved = await readEntries(dir, { id: target.id });
-		assert.deepEqual(resolved.map((entry) => entry.id), [target.id]);
+		assert.deepEqual(
+			resolved.map((entry) => entry.id),
+			[target.id],
+		);
 		assert.equal(resolved[0].content, target.content);
 	});
 
 	it("assigns deterministic fallback ids to older duplicate ids", async () => {
 		const duplicateDir = join(dir, "duplicate-id-store");
 		const duplicateId = "11111111-1111-4111-8111-111111111111";
-		assert.equal(await appendEntry(duplicateDir, makeEntry("older", undefined, new Date("2026-07-21T10:00:00Z"), duplicateId)), null);
-		assert.equal(await appendEntry(duplicateDir, makeEntry("newer", undefined, new Date("2026-07-21T11:00:00Z"), duplicateId)), null);
+		assert.equal(
+			await appendEntry(duplicateDir, makeEntry("older", undefined, new Date("2026-07-21T10:00:00Z"), duplicateId)),
+			null,
+		);
+		assert.equal(
+			await appendEntry(duplicateDir, makeEntry("newer", undefined, new Date("2026-07-21T11:00:00Z"), duplicateId)),
+			null,
+		);
 		const entries = await readEntries(duplicateDir);
-		assert.deepEqual(entries.map((entry) => entry.id), [duplicateId, "legacy-2026-07-21-1"]);
+		assert.deepEqual(
+			entries.map((entry) => entry.id),
+			[duplicateId, "legacy-2026-07-21-1"],
+		);
 		assert.equal((await readEntries(duplicateDir, { id: "legacy-2026-07-21-1" }))[0]?.content, "older");
 	});
 

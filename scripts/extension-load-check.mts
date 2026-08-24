@@ -6,10 +6,7 @@
 // factory throws, so it cannot be used as a load gate. This runs Pi's own
 // loader and fails on the error list the loader returns.
 
-import type {
-  ExtensionRuntime,
-  LoadExtensionsResult,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionRuntime, LoadExtensionsResult } from "@earendil-works/pi-coding-agent";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -17,92 +14,84 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = resolve(dirname(scriptPath), "..");
 interface LoaderModule {
-  createExtensionRuntime(): ExtensionRuntime;
-  loadExtensions(
-    paths: string[],
-    cwd: string,
-    eventBus: undefined,
-    runtime: ExtensionRuntime,
-  ): Promise<LoadExtensionsResult>;
+	createExtensionRuntime(): ExtensionRuntime;
+	loadExtensions(
+		paths: string[],
+		cwd: string,
+		eventBus: undefined,
+		runtime: ExtensionRuntime,
+	): Promise<LoadExtensionsResult>;
 }
 
 function errorMessage(error: unknown): string {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const message = error.message;
-    if (typeof message === "string") return message;
-  }
-  return String(error);
+	if (typeof error === "object" && error !== null && "message" in error) {
+		const message = error.message;
+		if (typeof message === "string") return message;
+	}
+	return String(error);
 }
 
-export function resolveLoaderPath(
-  repoRoot: string,
-  options: { binaryPath?: string } = {},
-) {
-  const local = join(
-    repoRoot,
-    "node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js",
-  );
-  if (existsSync(local)) return local;
-  const binary = options.binaryPath;
-  if (!binary || !existsSync(binary)) return undefined;
-  const candidate = join(dirname(realpathSync(binary)), "core", "extensions", "loader.js");
-  return existsSync(candidate) ? candidate : undefined;
+export function resolveLoaderPath(repoRoot: string, options: { binaryPath?: string } = {}) {
+	const local = join(repoRoot, "node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js");
+	if (existsSync(local)) return local;
+	const binary = options.binaryPath;
+	if (!binary || !existsSync(binary)) return undefined;
+	const candidate = join(dirname(realpathSync(binary)), "core", "extensions", "loader.js");
+	return existsSync(candidate) ? candidate : undefined;
 }
 
 export async function checkExtensionLoad(
-  entrypoints: string[],
-  options: { repoRoot?: string; cwd?: string; binaryPath?: string } = {},
+	entrypoints: string[],
+	options: { repoRoot?: string; cwd?: string; binaryPath?: string } = {},
 ) {
-  const repoRoot = options.repoRoot ?? defaultRepoRoot;
-  const loaderPath = resolveLoaderPath(repoRoot, options);
-  if (!loaderPath) {
-    return { status: "skipped", reason: "Pi extension loader not found", failures: [] };
-  }
-  const loader: LoaderModule = await import(pathToFileURL(loaderPath).href);
-  const runtime = loader.createExtensionRuntime();
-  const result = await loader.loadExtensions(
-    entrypoints,
-    options.cwd ?? repoRoot,
-    undefined,
-    runtime,
-  );
-  const failures = (result.errors ?? []).map((entry) => ({
-    path: entry.path,
-    message: errorMessage(entry.error),
-  }));
-  return {
-    status: failures.length > 0 ? "fail" : "pass",
-    loaded: (result.extensions ?? []).length,
-    failures,
-  };
+	const repoRoot = options.repoRoot ?? defaultRepoRoot;
+	const loaderPath = resolveLoaderPath(repoRoot, options);
+	if (!loaderPath) {
+		return { status: "skipped", reason: "Pi extension loader not found", failures: [] };
+	}
+	const loader: LoaderModule = await import(pathToFileURL(loaderPath).href);
+	const runtime = loader.createExtensionRuntime();
+	const result = await loader.loadExtensions(entrypoints, options.cwd ?? repoRoot, undefined, runtime);
+	const failures = (result.errors ?? []).map((entry) => ({
+		path: entry.path,
+		message: errorMessage(entry.error),
+	}));
+	return {
+		status: failures.length > 0 ? "fail" : "pass",
+		loaded: (result.extensions ?? []).length,
+		failures,
+	};
 }
 
 async function main() {
-  const entrypoints = process.argv.slice(2).filter((argument) => !argument.startsWith("--"));
-  if (entrypoints.length === 0) {
-    throw new Error("Usage: extension-load-check.mts <entrypoint> [entrypoint...]");
-  }
-  const which = process.env.PATH?.split(":")
-    .map((directory) => join(directory, "pi"))
-    .find((candidate) => existsSync(candidate));
-  const outcome = await checkExtensionLoad(entrypoints.map((path) => resolve(path)), {
-    binaryPath: which,
-  });
-  if (outcome.status === "skipped") {
-    console.error(outcome.reason);
-    return;
-  }
-  for (const failure of outcome.failures) {
-    console.error(`${failure.path}: ${failure.message}`);
-  }
-  if (outcome.status === "fail") process.exitCode = 1;
-  else console.log(`Loaded ${outcome.loaded} extension${outcome.loaded === 1 ? "" : "s"}`);
+	const entrypoints = process.argv.slice(2).filter((argument) => !argument.startsWith("--"));
+	if (entrypoints.length === 0) {
+		throw new Error("Usage: extension-load-check.mts <entrypoint> [entrypoint...]");
+	}
+	const which = process.env.PATH?.split(":")
+		.map((directory) => join(directory, "pi"))
+		.find((candidate) => existsSync(candidate));
+	const outcome = await checkExtensionLoad(
+		entrypoints.map((path) => resolve(path)),
+		{
+			binaryPath: which,
+		},
+	);
+	if (outcome.status === "skipped") {
+		console.error(outcome.reason);
+		return;
+	}
+	for (const failure of outcome.failures) {
+		console.error(`${failure.path}: ${failure.message}`);
+	}
+	if (outcome.status === "fail") process.exitCode = 1;
+	else console.log(`Loaded ${outcome.loaded} extension${outcome.loaded === 1 ? "" : "s"}`);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : undefined;
 if (invokedPath === import.meta.url) {
-  main().catch((error) => {
-    console.error(error.message);
-    process.exitCode = 1;
-  });
+	main().catch((error) => {
+		console.error(error.message);
+		process.exitCode = 1;
+	});
 }

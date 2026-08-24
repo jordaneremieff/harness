@@ -94,7 +94,8 @@ async function ensurePrivateDirectory(dir: string, create: boolean): Promise<boo
 	if (create) await mkdir(dir, { recursive: true, mode: 0o700 });
 	try {
 		const info = await lstat(dir);
-		if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`clipboard store is not a regular directory: ${dir}`);
+		if (!info.isDirectory() || info.isSymbolicLink())
+			throw new Error(`clipboard store is not a regular directory: ${dir}`);
 		await chmod(dir, 0o700);
 		return true;
 	} catch (error) {
@@ -155,7 +156,12 @@ function archiveFiles(dirents: Dirent[], date?: string): string[] {
 function normalizeEntry(value: unknown, fallbackId: string, contentChars: number): ClipboardEntry | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 	const record = value as Record<string, unknown>;
-	if (typeof record.timestamp !== "string" || record.timestamp.length > 64 || Number.isNaN(new Date(record.timestamp).getTime())) return null;
+	if (
+		typeof record.timestamp !== "string" ||
+		record.timestamp.length > 64 ||
+		Number.isNaN(new Date(record.timestamp).getTime())
+	)
+		return null;
 	if (typeof record.content !== "string") return null;
 	const id = typeof record.id === "string" && SAFE_ID.test(record.id) ? record.id : fallbackId;
 	const label = typeof record.label === "string" ? characterPrefix(record.label, MAX_LABEL_CHARS) : undefined;
@@ -273,7 +279,10 @@ export async function readEntries(dir: string, options: ReadOptions = {}): Promi
 	const requestedLimit = options.id
 		? 1
 		: Math.min(MAX_RETURNED_ENTRIES, Math.max(0, Math.floor(options.limit ?? MAX_RETURNED_ENTRIES)));
-	const contentChars = Math.max(0, options.contentChars ?? (options.id ? Number.POSITIVE_INFINITY : DEFAULT_CONTENT_CHARS));
+	const contentChars = Math.max(
+		0,
+		options.contentChars ?? (options.id ? Number.POSITIVE_INFINITY : DEFAULT_CONTENT_CHARS),
+	);
 	if (requestedLimit === 0 || (options.id !== undefined && !SAFE_ID.test(options.id))) return [];
 
 	const entries: ClipboardEntry[] = [];
@@ -302,7 +311,10 @@ export async function readEntries(dir: string, options: ReadOptions = {}): Promi
 				if (!line.text?.trim()) continue;
 				try {
 					const parsed = JSON.parse(line.text) as unknown;
-					const record = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+					const record =
+						parsed && typeof parsed === "object" && !Array.isArray(parsed)
+							? (parsed as Record<string, unknown>)
+							: undefined;
 					const needsFallback = typeof record?.id !== "string" || !SAFE_ID.test(record.id);
 					let lineNumber = needsFallback ? await numberFor(line) : 0;
 					let fallbackId = `legacy-${date}-${lineNumber}`;

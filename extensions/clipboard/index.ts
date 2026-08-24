@@ -22,27 +22,43 @@ const CopyParams = Type.Object({
 const PasteParams = Type.Object({
 	offset: Type.Optional(Type.Integer({ description: "Unicode-character offset (default 0)", minimum: 0, default: 0 })),
 	max_chars: Type.Optional(
-		Type.Integer({ description: `Maximum Unicode characters in this page (default and max ${PAGE_CHARS})`, minimum: 1, maximum: PAGE_CHARS, default: PAGE_CHARS }),
+		Type.Integer({
+			description: `Maximum Unicode characters in this page (default and max ${PAGE_CHARS})`,
+			minimum: 1,
+			maximum: PAGE_CHARS,
+			default: PAGE_CHARS,
+		}),
 	),
 });
 
 const ListParams = Type.Object({
-	limit: Type.Optional(Type.Integer({ description: "Max entries (default 10, max 50)", minimum: 1, maximum: 50, default: 10 })),
+	limit: Type.Optional(
+		Type.Integer({ description: "Max entries (default 10, max 50)", minimum: 1, maximum: 50, default: 10 }),
+	),
 	date: Type.Optional(Type.String({ description: "YYYY-MM-DD local date", pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
 });
 
 const GetParams = Type.Object({
 	id: Type.String({ description: "Stable entry id from clipboard_list", minLength: 1, maxLength: 200 }),
-	date: Type.Optional(Type.String({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
+	date: Type.Optional(
+		Type.String({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+	),
 	offset: Type.Optional(Type.Integer({ description: "Unicode-character offset (default 0)", minimum: 0, default: 0 })),
 	max_chars: Type.Optional(
-		Type.Integer({ description: `Maximum Unicode characters in this page (default and max ${PAGE_CHARS})`, minimum: 1, maximum: PAGE_CHARS, default: PAGE_CHARS }),
+		Type.Integer({
+			description: `Maximum Unicode characters in this page (default and max ${PAGE_CHARS})`,
+			minimum: 1,
+			maximum: PAGE_CHARS,
+			default: PAGE_CHARS,
+		}),
 	),
 });
 
 const RestoreParams = Type.Object({
 	id: Type.String({ description: "Stable entry id from clipboard_list", minLength: 1, maxLength: 200 }),
-	date: Type.Optional(Type.String({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
+	date: Type.Optional(
+		Type.String({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+	),
 });
 
 interface Page {
@@ -86,7 +102,10 @@ function pageResult(
 	const page = pageText(content, offset, maxChars, totalChars);
 	const sanitized = sanitizeTerminalText(page.text);
 	const more = page.nextOffset === undefined ? "" : `\n\n[More content available. ${continuation(page.nextOffset)}]`;
-	const bounded = boundedOutput(`${prefix}\n\n${sanitized.text}${more}`, page.nextOffset === undefined ? undefined : continuation(page.nextOffset));
+	const bounded = boundedOutput(
+		`${prefix}\n\n${sanitized.text}${more}`,
+		page.nextOffset === undefined ? undefined : continuation(page.nextOffset),
+	);
 	return { page, sanitized, bounded };
 }
 
@@ -122,7 +141,13 @@ export default function (pi: ExtensionAPI) {
 						text: `Copied to clipboard${label} (${entry.lines} lines, ${entry.chars} chars)${warning}\nPreview: ${preview}${previewTruncated ? "…" : ""}`,
 					},
 				],
-				details: { id: entry.id, lines: entry.lines, chars: entry.chars, label: params.label, archiveError: archiveError ?? undefined },
+				details: {
+					id: entry.id,
+					lines: entry.lines,
+					chars: entry.chars,
+					label: params.label,
+					archiveError: archiveError ?? undefined,
+				},
 			};
 		},
 	});
@@ -147,7 +172,8 @@ export default function (pi: ExtensionAPI) {
 			}
 			const offset = params.offset ?? 0;
 			const totalCharacters = countCharacters(content);
-			if (offset >= totalCharacters) throw new Error(`clipboard offset ${offset} is outside ${totalCharacters} characters`);
+			if (offset >= totalCharacters)
+				throw new Error(`clipboard offset ${offset} is outside ${totalCharacters} characters`);
 			const lines = content.split("\n").length;
 			const result = pageResult(
 				`Clipboard contents (${lines} lines, ${totalCharacters} characters):`,
@@ -196,7 +222,10 @@ export default function (pi: ExtensionAPI) {
 			const hasMore = entries.length > limit;
 			const shown = entries.slice(0, limit);
 			if (shown.length === 0) {
-				return { content: [{ type: "text" as const, text: `Clipboard history${scope} is empty.` }], details: { count: 0, hasMore: false } };
+				return {
+					content: [{ type: "text" as const, text: `Clipboard history${scope} is empty.` }],
+					details: { count: 0, hasMore: false },
+				};
 			}
 			const rows = shown.map((entry) => {
 				const timestamp = safeLine(entry.timestamp.replace("T", " ").substring(0, 19));
@@ -276,7 +305,10 @@ export default function (pi: ExtensionAPI) {
 			} catch (error) {
 				throw new Error(`pbcopy failed: ${error instanceof Error ? error.message : String(error)}`);
 			}
-			const archiveError = await appendEntry(storeDir(), makeEntry(entry.content, entry.label ? `${entry.label} (restored)` : "restored"));
+			const archiveError = await appendEntry(
+				storeDir(),
+				makeEntry(entry.content, entry.label ? `${entry.label} (restored)` : "restored"),
+			);
 			const warning = archiveError ? ` Warning: archive write failed: ${safeLine(archiveError)}` : "";
 			return {
 				content: [
@@ -303,7 +335,10 @@ export default function (pi: ExtensionAPI) {
 						"info",
 					);
 				} catch (error) {
-					ctx.ui.notify(`Could not open clipboard history: ${safeLine(error instanceof Error ? error.message : String(error))}`, "error");
+					ctx.ui.notify(
+						`Could not open clipboard history: ${safeLine(error instanceof Error ? error.message : String(error))}`,
+						"error",
+					);
 				}
 				return;
 			}
@@ -314,7 +349,10 @@ export default function (pi: ExtensionAPI) {
 				hasMore = loaded.length > 200;
 				entries = loaded.slice(0, 200);
 			} catch (error) {
-				ctx.ui.notify(`Could not open clipboard history: ${safeLine(error instanceof Error ? error.message : String(error))}`, "error");
+				ctx.ui.notify(
+					`Could not open clipboard history: ${safeLine(error instanceof Error ? error.message : String(error))}`,
+					"error",
+				);
 				return;
 			}
 			const result = await ctx.ui.custom<{ restored?: ClipboardEntry; warning?: string }>(

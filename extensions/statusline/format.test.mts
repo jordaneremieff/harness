@@ -73,10 +73,7 @@ describe("buildBar", () => {
 		const bar = buildBar(50, fg);
 		assert.equal(visibleWidth(bar), 14); // 10 cells + space + "50%"
 		// The space between bar and label sits outside the colored spans.
-		assert.deepEqual(
-			calls.map((c) => c.text).join(""),
-			"█████░░░░░50%",
-		);
+		assert.deepEqual(calls.map((c) => c.text).join(""), "█████░░░░░50%");
 		assert.equal(calls[0].color, "success");
 		assert.equal(calls[1].color, "dim");
 	});
@@ -243,14 +240,8 @@ describe("composeLine1", () => {
 describe("composeLine2", () => {
 	it("drops statuses from the right and keeps the project label", () => {
 		const statuses = ["one", "two", "three"];
-		assert.equal(
-			composeLine2("~/app (main)", statuses, " | ", 200, visibleWidth),
-			"~/app (main) | one | two | three",
-		);
-		assert.equal(
-			composeLine2("~/app (main)", statuses, " | ", 31, visibleWidth),
-			"~/app (main) | one | two",
-		);
+		assert.equal(composeLine2("~/app (main)", statuses, " | ", 200, visibleWidth), "~/app (main) | one | two | three");
+		assert.equal(composeLine2("~/app (main)", statuses, " | ", 31, visibleWidth), "~/app (main) | one | two");
 		assert.equal(composeLine2("~/app (main)", statuses, " | ", 15, visibleWidth), "~/app (main)");
 		assert.equal(composeLine2("~/app (main)", [], " | ", 200, visibleWidth), "~/app (main)");
 	});

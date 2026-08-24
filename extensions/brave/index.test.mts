@@ -39,9 +39,7 @@ describe("Brave Search extension entrypoint", () => {
 				JSON.stringify({
 					query: { original: "current pi", more_results_available: true },
 					web: {
-						results: [
-							{ title: "Pi", url: "https://example.com/pi", description: "Current information" },
-						],
+						results: [{ title: "Pi", url: "https://example.com/pi", description: "Current information" }],
 					},
 				}),
 				{ status: 200 },

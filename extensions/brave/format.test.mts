@@ -71,10 +71,11 @@ describe("Brave Search result formatting", () => {
 			age: "today",
 			extraSnippets: Array.from({ length: 5 }, () => huge),
 		}));
-		const formatted = formatSearchResults(
-			response({ results, moreResultsAvailable: true }),
-			{ query: "large", count: 20, extra_snippets: true },
-		);
+		const formatted = formatSearchResults(response({ results, moreResultsAvailable: true }), {
+			query: "large",
+			count: 20,
+			extra_snippets: true,
+		});
 		assert.ok(Buffer.byteLength(formatted.text, "utf8") <= 50 * 1024);
 		assert.equal(formatted.outputTruncated, true);
 		assert.equal(formatted.fieldsShortened, true);

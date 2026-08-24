@@ -29,14 +29,19 @@ export async function pbCopy(content: string, signal?: AbortSignal): Promise<voi
 
 export async function pbPaste(signal?: AbortSignal): Promise<string> {
 	return new Promise<string>((resolve, reject) => {
-		execFile("pbpaste", [], {
-			encoding: "utf8",
-			maxBuffer: 64 * 1024 * 1024,
-			timeout: PB_TIMEOUT_MS,
-			signal,
-		}, (error, captured) => {
-			if (error) return reject(error);
-			resolve(captured);
-		});
+		execFile(
+			"pbpaste",
+			[],
+			{
+				encoding: "utf8",
+				maxBuffer: 64 * 1024 * 1024,
+				timeout: PB_TIMEOUT_MS,
+				signal,
+			},
+			(error, captured) => {
+				if (error) return reject(error);
+				resolve(captured);
+			},
+		);
 	});
 }

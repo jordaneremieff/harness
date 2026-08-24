@@ -39,15 +39,11 @@ for (const entry of readdirSync(extensionsRoot, { withFileTypes: true })) {
 	} else {
 		const source = readFileSync(indexFile, "utf8");
 		if (!/\bexport\s+default\b/.test(source)) {
-			fail(
-				`${label}: index.ts has no default export (the Pi factory contract)`,
-			);
+			fail(`${label}: index.ts has no default export (the Pi factory contract)`);
 		}
 	}
 	if (!existsSync(join(slice, "README.md"))) {
-		fail(
-			`${label}: missing README.md (every extension documents its own surface)`,
-		);
+		fail(`${label}: missing README.md (every extension documents its own surface)`);
 	}
 	const tests = readdirSync(slice).filter((name) => name.endsWith(".test.mts"));
 	if (tests.length === 0) {
@@ -63,8 +59,7 @@ const walk = (dir: string) => {
 		if (entry.name.startsWith(".")) continue;
 		const path = join(dir, entry.name);
 		if (entry.isDirectory()) walk(path);
-		else if (entry.isFile() && /\.(ts|mts)$/.test(entry.name))
-			sourceFiles.push(path);
+		else if (entry.isFile() && /\.(ts|mts)$/.test(entry.name)) sourceFiles.push(path);
 	}
 };
 if (existsSync(extensionsRoot)) walk(extensionsRoot);
@@ -86,9 +81,7 @@ for (const file of sourceFiles) {
 		} else {
 			const cross = specifier.match(/\/extensions\/([^/]+)\//);
 			if (cross && cross[1] !== sliceName) {
-				fail(
-					`${rel}: import "${specifier}" reaches into extension "${cross[1]}"`,
-				);
+				fail(`${rel}: import "${specifier}" reaches into extension "${cross[1]}"`);
 			}
 		}
 	}
@@ -120,6 +113,4 @@ if (failures.length > 0) {
 	for (const failure of failures) console.error(`  - ${failure}`);
 	process.exit(1);
 }
-console.log(
-	"check-slices: ok — extension anatomy, slice isolation, doc counts",
-);
+console.log("check-slices: ok — extension anatomy, slice isolation, doc counts");

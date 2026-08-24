@@ -61,7 +61,7 @@ function makeCtx(over: Record<string, any> = {}) {
 	delete ctx.branch;
 	delete ctx.usage;
 	const footerData: any = {
-		getGitBranch: () => over.gitBranch === undefined ? "main" : over.gitBranch,
+		getGitBranch: () => (over.gitBranch === undefined ? "main" : over.gitBranch),
 		getExtensionStatuses: () => over.statuses ?? new Map(),
 		onBranchChange: (cb: () => void) => {
 			branchChangeCbs.push(cb);
@@ -69,7 +69,12 @@ function makeCtx(over: Record<string, any> = {}) {
 		},
 	};
 	const theme: any = { fg: (_c: string, t: string) => t };
-	const tui: any = { renders: 0, requestRender() { this.renders++; } };
+	const tui: any = {
+		renders: 0,
+		requestRender() {
+			this.renders++;
+		},
+	};
 	return { ctx, footerCalls, notifications, footerData, theme, tui, branchChangeCbs };
 }
 
@@ -137,7 +142,12 @@ describe("footer render", () => {
 
 	it("bounds both lines on narrow terminals by shedding then truncating", async () => {
 		const { handlers } = makePi();
-		const mocks = makeCtx({ statuses: new Map([["a", "status-alpha"], ["b", "status-beta"]]) });
+		const mocks = makeCtx({
+			statuses: new Map([
+				["a", "status-alpha"],
+				["b", "status-beta"],
+			]),
+		});
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks);
 		for (const width of [80, 55, 40, 24, 10]) {

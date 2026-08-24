@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-	BRAVE_WEB_SEARCH_URL,
-	resolveApiKey,
-	searchBraveWeb,
-	type FetchLike,
-} from "./client.ts";
+import { BRAVE_WEB_SEARCH_URL, resolveApiKey, searchBraveWeb, type FetchLike } from "./client.ts";
 
 const success = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
 
@@ -37,10 +32,7 @@ describe("Brave Search configuration", () => {
 	it("honors cancellation before configuration reads", async () => {
 		const controller = new AbortController();
 		controller.abort();
-		await assert.rejects(
-			resolveApiKey({ env: { PI_BRAVE_API_KEY: "key" } }, controller.signal),
-			/cancelled/,
-		);
+		await assert.rejects(resolveApiKey({ env: { PI_BRAVE_API_KEY: "key" } }, controller.signal), /cancelled/);
 	});
 
 	it("fails clearly when no key is configured", async () => {
@@ -125,11 +117,13 @@ describe("Brave Search client", () => {
 	it("rejects an empty query before reading credentials or making a request", async () => {
 		let called = false;
 		await assert.rejects(
-			searchBraveWeb(
-				{ query: "   " },
-				undefined,
-				{ env: {}, fetch: async () => { called = true; return success({}); } },
-			),
+			searchBraveWeb({ query: "   " }, undefined, {
+				env: {},
+				fetch: async () => {
+					called = true;
+					return success({});
+				},
+			}),
 			/query cannot be empty/,
 		);
 		assert.equal(called, false);
@@ -137,10 +131,7 @@ describe("Brave Search client", () => {
 
 	it("maps structured API errors without exposing the credential", async () => {
 		const fetch: FetchLike = async () =>
-			new Response(
-				JSON.stringify({ error: { code: "RATE_LIMITED", detail: "Too many requests" } }),
-				{ status: 429 },
-			);
+			new Response(JSON.stringify({ error: { code: "RATE_LIMITED", detail: "Too many requests" } }), { status: 429 });
 		await assert.rejects(
 			searchBraveWeb({ query: "test" }, undefined, { apiKey: "never-print-this", fetch }),
 			(error: Error) => {
@@ -153,11 +144,10 @@ describe("Brave Search client", () => {
 
 	it("rejects invalid JSON and oversized responses", async () => {
 		await assert.rejects(
-			searchBraveWeb(
-				{ query: "test" },
-				undefined,
-				{ apiKey: "key", fetch: async () => new Response("not-json", { status: 200 }) },
-			),
+			searchBraveWeb({ query: "test" }, undefined, {
+				apiKey: "key",
+				fetch: async () => new Response("not-json", { status: 200 }),
+			}),
 			/invalid JSON/,
 		);
 		let cancelled = false;
@@ -167,18 +157,14 @@ describe("Brave Search client", () => {
 			},
 		});
 		await assert.rejects(
-			searchBraveWeb(
-				{ query: "test" },
-				undefined,
-				{
-					apiKey: "key",
-					fetch: async () =>
-						new Response(oversizedBody, {
-							status: 200,
-							headers: { "content-length": String(6 * 1024 * 1024) },
-						}),
-				},
-			),
+			searchBraveWeb({ query: "test" }, undefined, {
+				apiKey: "key",
+				fetch: async () =>
+					new Response(oversizedBody, {
+						status: 200,
+						headers: { "content-length": String(6 * 1024 * 1024) },
+					}),
+			}),
 			/safety limit/,
 		);
 		assert.equal(cancelled, true);
@@ -197,11 +183,10 @@ describe("Brave Search client", () => {
 			},
 		});
 		await assert.rejects(
-			searchBraveWeb(
-				{ query: "test" },
-				undefined,
-				{ apiKey: "key", fetch: async () => new Response(body, { status: 200 }) },
-			),
+			searchBraveWeb({ query: "test" }, undefined, {
+				apiKey: "key",
+				fetch: async () => new Response(body, { status: 200 }),
+			}),
 			/safety limit/,
 		);
 		assert.ok(chunks >= 6 && chunks <= 7, `expected at most one prefetched chunk, got ${chunks}`);

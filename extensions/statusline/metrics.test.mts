@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { emptyMetrics, scanSession, type BranchEntryLike } from "./metrics.ts";
 
-function assistant(
-	usage: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: number },
-): BranchEntryLike {
+function assistant(usage: {
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	cost?: number;
+}): BranchEntryLike {
 	return {
 		type: "message",
 		message: {
@@ -52,15 +56,9 @@ describe("scanSession", () => {
 	});
 
 	it("tracks the last cache-active turn's hit outcome, unaffected by cache-free turns", () => {
-		const hitThenIdle = scanSession([
-			assistant({ cacheRead: 5 }),
-			assistant({ input: 5 }),
-		]);
+		const hitThenIdle = scanSession([assistant({ cacheRead: 5 }), assistant({ input: 5 })]);
 		assert.equal(hitThenIdle.lastTurnCacheHit, true);
-		const writeOnlyLast = scanSession([
-			assistant({ cacheRead: 5 }),
-			assistant({ cacheWrite: 5 }),
-		]);
+		const writeOnlyLast = scanSession([assistant({ cacheRead: 5 }), assistant({ cacheWrite: 5 })]);
 		assert.equal(writeOnlyLast.lastTurnCacheHit, false);
 		const none = scanSession([assistant({ input: 5 })]);
 		assert.equal(none.sawCacheUsage, false);

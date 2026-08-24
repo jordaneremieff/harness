@@ -11,21 +11,37 @@ const FreshnessPattern = "^(pd|pw|pm|py|\\d{4}-\\d{2}-\\d{2}to\\d{4}-\\d{2}-\\d{
 const BraveWebSearchParams = Type.Object(
 	{
 		query: Type.String({
-			description: "Search query (maximum 400 characters). Supports Brave search operators such as site: and filetype:.",
+			description:
+				"Search query (maximum 400 characters). Supports Brave search operators such as site: and filetype:.",
 			minLength: 1,
 			maxLength: 400,
 		}),
 		count: Type.Optional(
-			Type.Integer({ description: "Web results per page (default 10, maximum 20)", minimum: 1, maximum: 20, default: 10 }),
+			Type.Integer({
+				description: "Web results per page (default 10, maximum 20)",
+				minimum: 1,
+				maximum: 20,
+				default: 10,
+			}),
 		),
 		offset: Type.Optional(
-			Type.Integer({ description: "Zero-based result page to skip (default 0, maximum 9)", minimum: 0, maximum: 9, default: 0 }),
+			Type.Integer({
+				description: "Zero-based result page to skip (default 0, maximum 9)",
+				minimum: 0,
+				maximum: 9,
+				default: 0,
+			}),
 		),
 		country: Type.Optional(
 			Type.String({ description: "Two-letter result country code, for example AU or US", pattern: "^[A-Za-z]{2}$" }),
 		),
 		search_lang: Type.Optional(
-			Type.String({ description: "Result language code, for example en or de", minLength: 2, maxLength: 10, pattern: "^[A-Za-z][A-Za-z-]+$" }),
+			Type.String({
+				description: "Result language code, for example en or de",
+				minLength: 2,
+				maxLength: 10,
+				pattern: "^[A-Za-z][A-Za-z-]+$",
+			}),
 		),
 		freshness: Type.Optional(
 			Type.String({
@@ -40,7 +56,10 @@ const BraveWebSearchParams = Type.Object(
 			}),
 		),
 		extra_snippets: Type.Optional(
-			Type.Boolean({ description: "Include up to five additional excerpts per result (default false)", default: false }),
+			Type.Boolean({
+				description: "Include up to five additional excerpts per result (default false)",
+				default: false,
+			}),
 		),
 		spellcheck: Type.Optional(
 			Type.Boolean({ description: "Allow Brave to correct the query (default true)", default: true }),

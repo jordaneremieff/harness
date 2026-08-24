@@ -76,9 +76,7 @@ export function hasUserMessageAfter(
 	const path = activePath(entries, leafId);
 	const forkIndex = path.findIndex((entry) => entry.id === forkPointLeafId);
 	if (forkIndex === -1) return false;
-	return path
-		.slice(forkIndex + 1)
-		.some((entry) => entry.type === "message" && entry.message?.role === "user");
+	return path.slice(forkIndex + 1).some((entry) => entry.type === "message" && entry.message?.role === "user");
 }
 
 /**

@@ -191,7 +191,9 @@ export class ClipboardPanel {
 					this.bump();
 					return;
 				}
-				this.deps.done(outcome.warning === undefined ? { restored: entry } : { restored: entry, warning: outcome.warning });
+				this.deps.done(
+					outcome.warning === undefined ? { restored: entry } : { restored: entry, warning: outcome.warning },
+				);
 			})();
 			return;
 		}
@@ -211,11 +213,7 @@ export class ClipboardPanel {
 	render(width: number): string[] {
 		this.lastWidth = width;
 		const layout = this.layout(width);
-		if (
-			this.cachedWidth === width &&
-			this.cachedRows === layout.total &&
-			this.cachedVersion === this.version
-		) {
+		if (this.cachedWidth === width && this.cachedRows === layout.total && this.cachedVersion === this.version) {
 			return this.cachedLines;
 		}
 		this.previewScroll = Math.min(this.previewScroll, this.previewMaxScroll());
@@ -260,7 +258,9 @@ export class ClipboardPanel {
 				: ` — ${loadedTotal} entries`;
 			lines.push(row(` Clipboard history ${filterNote}`, "accent", true));
 			if (layout.filter) {
-				lines.push(row(this.filter ? ` filter: ${safeLine(this.filter)}▌` : " type to filter", this.filter ? "muted" : "dim"));
+				lines.push(
+					row(this.filter ? ` filter: ${safeLine(this.filter)}▌` : " type to filter", this.filter ? "muted" : "dim"),
+				);
 			}
 
 			if (this.selected < this.listScroll) this.listScroll = this.selected;
@@ -293,7 +293,8 @@ export class ClipboardPanel {
 				lines.push(row(text, "muted"));
 			}
 
-			const position = entries.length > 0 ? `${this.selected + 1}/${entries.length}${this.deps.hasMore ? "+" : ""}` : "0/0";
+			const position =
+				entries.length > 0 ? `${this.selected + 1}/${entries.length}${this.deps.hasMore ? "+" : ""}` : "0/0";
 			const hint = this.restoring
 				? " restoring…"
 				: this.flash

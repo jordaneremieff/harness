@@ -60,7 +60,8 @@ describe("ClipboardPanel", () => {
 		const lines = panel.render(72);
 		assert.match(lines.join("\n"), /Clipboard history\s+— 3 entries/);
 		assert.match(lines.join("\n"), /› .*latest copy/);
-		for (const line of lines) assert.equal(visibleWidth(line), 72, `line does not paint width: ${JSON.stringify(line)}`);
+		for (const line of lines)
+			assert.equal(visibleWidth(line), 72, `line does not paint width: ${JSON.stringify(line)}`);
 		assert.match(rig(sampleEntries(), undefined, 20, true).panel.render(72).join("\n"), /3\+ entries/);
 	});
 

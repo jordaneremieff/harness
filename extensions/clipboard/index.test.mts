@@ -106,19 +106,10 @@ describe("clipboard entrypoint", () => {
 		process.env.FAKE_PBCOPY_SLOW = "1";
 		const started = Date.now();
 		try {
-			const pending = restore.execute(
-				"call",
-				{ id: target },
-				controller.signal,
-				undefined,
-				{},
-			);
+			const pending = restore.execute("call", { id: target }, controller.signal, undefined, {});
 			setTimeout(() => controller.abort(), 50);
 			await assert.rejects(pending, /pbcopy failed/);
-			assert.ok(
-				Date.now() - started < 5_000,
-				"the abort must reach the child, not wait for the 30s timeout",
-			);
+			assert.ok(Date.now() - started < 5_000, "the abort must reach the child, not wait for the 30s timeout");
 		} finally {
 			delete process.env.FAKE_PBCOPY_SLOW;
 		}

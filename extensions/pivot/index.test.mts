@@ -19,12 +19,17 @@ function registry() {
 		sendMessage: (...args: unknown[]) => calls.push({ kind: "sendMessage", args }),
 	};
 	registerPivot(pi);
-	return { commands, handlers, calls, emit: (name: string, event: any, ctx: any) => {
-		const list = handlers.get(name) ?? [];
-		let result: any;
-		for (const handler of list) result = handler(event, ctx);
-		return result;
-	} };
+	return {
+		commands,
+		handlers,
+		calls,
+		emit: (name: string, event: any, ctx: any) => {
+			const list = handlers.get(name) ?? [];
+			let result: any;
+			for (const handler of list) result = handler(event, ctx);
+			return result;
+		},
+	};
 }
 
 function sessionCtx(overrides: Record<string, unknown> = {}, ui?: Record<string, unknown>) {
@@ -57,9 +62,10 @@ describe("pivot entrypoint", () => {
 		const statuses: string[] = [];
 		const ctx = sessionCtx({}, { setStatus: (_key: string, value?: string) => statuses.push(value ?? "<clear>") });
 		emit("session_start", { type: "session_start", reason: "startup" }, ctx);
-		assert.deepEqual(calls.filter((call) => call.kind === "appendEntry").map((call) => call.args), [
-			[PIVOT_CUSTOM_TYPE, { sessionId: "s1", forkPointLeafId: "a1" }],
-		]);
+		assert.deepEqual(
+			calls.filter((call) => call.kind === "appendEntry").map((call) => call.args),
+			[[PIVOT_CUSTOM_TYPE, { sessionId: "s1", forkPointLeafId: "a1" }]],
+		);
 		assert.ok(statuses.includes("fork boundary armed — next message will be framed"));
 	});
 
@@ -110,7 +116,16 @@ describe("pivot entrypoint", () => {
 		emit("session_start", { type: "session_start", reason: "startup" }, ctx);
 		emit("input", { type: "input", text: "  ", source: "interactive" }, ctx);
 		assert.equal(calls.filter((call) => call.kind === "sendMessage").length, 0);
-		emit("input", { type: "input", text: "", images: [{ type: "image", data: "abc", mimeType: "image/png" }], source: "interactive" }, ctx);
+		emit(
+			"input",
+			{
+				type: "input",
+				text: "",
+				images: [{ type: "image", data: "abc", mimeType: "image/png" }],
+				source: "interactive",
+			},
+			ctx,
+		);
 		assert.equal(calls.filter((call) => call.kind === "sendMessage").length, 1);
 	});
 

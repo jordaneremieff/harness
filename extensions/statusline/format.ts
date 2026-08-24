@@ -213,18 +213,13 @@ export function composeLine1(
 	width: number,
 	visibleWidth: (s: string) => number,
 ): string {
-	const shedOrder: (keyof Line1Parts)[] = [
-		"cacheRate",
-		"cacheDot",
-		"duration",
-		"tokens",
-		"cost",
-	];
+	const shedOrder: (keyof Line1Parts)[] = ["cacheRate", "cacheDot", "duration", "tokens", "cost"];
 	const current: Line1Parts = { ...parts };
 	for (;;) {
 		const cache = [current.cacheDot, current.cacheRate].filter(Boolean).join(" ");
-		const segs = [current.model, current.contextBar, current.tokens, current.cost, current.duration, cache]
-			.filter((s): s is string => !!s);
+		const segs = [current.model, current.contextBar, current.tokens, current.cost, current.duration, cache].filter(
+			(s): s is string => !!s,
+		);
 		const line = segs.join(sep);
 		if (visibleWidth(line) <= width) return line;
 		const next = shedOrder.find((k) => current[k] !== undefined);

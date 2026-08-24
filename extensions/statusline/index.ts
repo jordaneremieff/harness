@@ -10,7 +10,12 @@
  * with /statusline.
  */
 
-import type { ExtensionAPI, ExtensionContext, ReadonlyFooterDataProvider, ThemeColor } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ReadonlyFooterDataProvider,
+	ThemeColor,
+} from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	buildBar,
@@ -154,10 +159,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 				else ctx.ui.setFooter(undefined);
 			}
 			if (ctx.hasUI) {
-				ctx.ui.notify(
-					enabled ? "Statusline enabled" : "Statusline disabled (default footer restored)",
-					"info",
-				);
+				ctx.ui.notify(enabled ? "Statusline enabled" : "Statusline disabled (default footer restored)", "info");
 			}
 		},
 	});

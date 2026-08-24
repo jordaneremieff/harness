@@ -32,19 +32,21 @@ const arm = (input: Parameters<typeof shouldArm>[0]) => shouldArm(input);
 
 describe("pivot arming gates", () => {
 	it("never arms without a parent header", () => {
-		assert.deepEqual(
-			arm({ hasParent: false, entries: COPIED, leafId: "a2", sessionId: "s1" }),
-			{ arm: false, record: false, forkPointLeafId: null },
-		);
+		assert.deepEqual(arm({ hasParent: false, entries: COPIED, leafId: "a2", sessionId: "s1" }), {
+			arm: false,
+			record: false,
+			forkPointLeafId: null,
+		});
 	});
 
 	it("never arms a lineage-only session with no copied transcript", () => {
 		// /new with a parentSession header writes no message entries.
 		const entries = [other("x1", null, "session_info")];
-		assert.deepEqual(
-			arm({ hasParent: true, entries, leafId: "x1", sessionId: "s1" }),
-			{ arm: false, record: false, forkPointLeafId: null },
-		);
+		assert.deepEqual(arm({ hasParent: true, entries, leafId: "x1", sessionId: "s1" }), {
+			arm: false,
+			record: false,
+			forkPointLeafId: null,
+		});
 	});
 
 	it("arms and records the fork point on first start of a fresh fork", () => {
@@ -72,17 +74,10 @@ describe("pivot arming gates", () => {
 	it("ignores a copied leaf that is itself a user message (interrupted parent redo)", () => {
 		// Parent ended with an unanswered user message u3; the fork copies it
 		// as its leaf and records it as the fork point. It must not block.
-		const entries = [
-			message("u1", null),
-			message("a1", "u1", "assistant"),
-			message("u3", "a1"),
-		];
+		const entries = [message("u1", null), message("a1", "u1", "assistant"), message("u3", "a1")];
 		const result = arm({ hasParent: true, entries, leafId: "u3", sessionId: "s1" });
 		assert.deepEqual(result, { arm: true, record: true, forkPointLeafId: "u3" });
-		const withEntry = [
-			...entries,
-			custom("p1", "u3", PIVOT_CUSTOM_TYPE, { sessionId: "s1", forkPointLeafId: "u3" }),
-		];
+		const withEntry = [...entries, custom("p1", "u3", PIVOT_CUSTOM_TYPE, { sessionId: "s1", forkPointLeafId: "u3" })];
 		assert.equal(arm({ hasParent: true, entries: withEntry, leafId: "u3", sessionId: "s1" }).arm, true);
 	});
 

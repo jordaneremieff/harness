@@ -17,10 +17,7 @@ type YamlScalar = string | number | boolean | null;
 type YamlMapping = { [key: string]: YamlValue };
 type YamlValue = YamlScalar | YamlMapping;
 type BlockScalar = { style: "|" | ">"; chomping: "+" | "-" | "clip" };
-type ScalarResult =
-	| { value: YamlScalar }
-	| { value: string; block: BlockScalar }
-	| { error: string };
+type ScalarResult = { value: YamlScalar } | { value: string; block: BlockScalar } | { error: string };
 type Frontmatter = { yaml: string; body: string };
 type BoundedText = { text: string; size: number; truncated: boolean };
 type Finding = { code: string; message: string };
@@ -70,8 +67,9 @@ let warningCount = 0;
 let skill: Skill;
 
 function boundedDiagnostic(message: unknown): string {
-	const safe = String(message).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (character: string) =>
-		`\\u${(character.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`,
+	const safe = String(message).replace(
+		/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,
+		(character: string) => `\\u${(character.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`,
 	);
 	return safe.length <= MAX_DIAGNOSTIC_LENGTH ? safe : `${safe.slice(0, MAX_DIAGNOSTIC_LENGTH - 1)}…`;
 }
@@ -130,13 +128,15 @@ function parseArgs(argv: string[]): ParseOptions {
 		if (arg === "--help" || arg === "-h") return { help: true };
 		if (arg === "--format") {
 			const requested = argv[++index] ?? "";
-			if (requested !== "text" && requested !== "json") throw new Error(`--format must be text or json, received: ${requested}`);
+			if (requested !== "text" && requested !== "json")
+				throw new Error(`--format must be text or json, received: ${requested}`);
 			format = requested;
 			continue;
 		}
 		if (arg.startsWith("--format=")) {
 			const requested = arg.slice("--format=".length);
-			if (requested !== "text" && requested !== "json") throw new Error(`--format must be text or json, received: ${requested}`);
+			if (requested !== "text" && requested !== "json")
+				throw new Error(`--format must be text or json, received: ${requested}`);
 			format = requested;
 			continue;
 		}
@@ -297,7 +297,8 @@ function parseSimpleYaml(source: string): { value: YamlMapping } | { error: stri
 		const indentMatch = line.match(/^ */);
 		const indent = indentMatch ? indentMatch[0].length : 0;
 		const trimmed = line.trimEnd().slice(indent);
-		if (trimmed.startsWith("-")) return { error: `line ${index + 1}: sequences are outside this conservative validator` };
+		if (trimmed.startsWith("-"))
+			return { error: `line ${index + 1}: sequences are outside this conservative validator` };
 		const match = trimmed.match(/^([^:]+):(.*)$/);
 		if (!match) return { error: `line ${index + 1}: expected a YAML mapping entry` };
 		const key = match[1].trim();
@@ -331,7 +332,7 @@ function parseSimpleYaml(source: string): { value: YamlMapping } | { error: stri
 					return blockIndentMatch ? blockIndentMatch[0].length : 0;
 				});
 			const contentIndent = contentIndents.length > 0 ? Math.min(...contentIndents) : indent + 1;
-			const blockLines = rawBlockLines.map((blockLine) => blockLine.trim() ? blockLine.slice(contentIndent) : "");
+			const blockLines = rawBlockLines.map((blockLine) => (blockLine.trim() ? blockLine.slice(contentIndent) : ""));
 			index = cursor - 1;
 			setNested(root, path, finishBlockScalar(blockLines, scalar.block));
 			continue;
@@ -370,8 +371,10 @@ function checkName(): void {
 		fail("name.empty", "frontmatter.name must not be empty");
 		return;
 	}
-	if (value.length > MAX_NAME_LENGTH) fail("name.length", `name is ${value.length} characters; maximum is ${MAX_NAME_LENGTH}`);
-	if (!/^[a-z0-9-]+$/.test(value)) fail("name.characters", "name must contain only lowercase letters, digits, and hyphens");
+	if (value.length > MAX_NAME_LENGTH)
+		fail("name.length", `name is ${value.length} characters; maximum is ${MAX_NAME_LENGTH}`);
+	if (!/^[a-z0-9-]+$/.test(value))
+		fail("name.characters", "name must contain only lowercase letters, digits, and hyphens");
 	if (value.startsWith("-") || value.endsWith("-")) fail("name.edges", "name must not start or end with a hyphen");
 	if (value.includes("--")) fail("name.consecutive", "name must not contain consecutive hyphens");
 	const parent = basename(skill.directory);
@@ -412,9 +415,11 @@ function checkDescription(): void {
 		fail("description.empty", "description must not be empty");
 		return;
 	}
-	if (value.length > MAX_DESCRIPTION_LENGTH) fail("description.length", `description is ${value.length} characters; maximum is ${MAX_DESCRIPTION_LENGTH}`);
+	if (value.length > MAX_DESCRIPTION_LENGTH)
+		fail("description.length", `description is ${value.length} characters; maximum is ${MAX_DESCRIPTION_LENGTH}`);
 	if (!/\buse\b|\bwhen\b/i.test(value)) warn("description.trigger", "description should state when to use the skill");
-	if (!/\bdo not use\b/i.test(value)) warn("description.boundary", "description should state a do-not-use or boundary clause");
+	if (!/\bdo not use\b/i.test(value))
+		warn("description.boundary", "description should state a do-not-use or boundary clause");
 }
 
 function checkFields(): void {
@@ -472,19 +477,22 @@ function decodeLink(link: string): string {
 
 function markdownWithoutCode(text: string): string {
 	let fence: CodeFence | undefined;
-	return text.split(/\r?\n/).map((line) => {
-		if (fence) {
-			const close = line.match(/^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/);
-			if (close && close[1][0] === fence.character && close[1].length >= fence.length) fence = undefined;
-			return "";
-		}
-		const open = line.match(/^[ \t]{0,3}(`{3,}|~{3,})/);
-		if (open) {
-			fence = { character: open[1][0], length: open[1].length };
-			return "";
-		}
-		return line.replace(/(`+)[^`\n]*?\1/g, "");
-	}).join("\n");
+	return text
+		.split(/\r?\n/)
+		.map((line) => {
+			if (fence) {
+				const close = line.match(/^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/);
+				if (close && close[1][0] === fence.character && close[1].length >= fence.length) fence = undefined;
+				return "";
+			}
+			const open = line.match(/^[ \t]{0,3}(`{3,}|~{3,})/);
+			if (open) {
+				fence = { character: open[1][0], length: open[1].length };
+				return "";
+			}
+			return line.replace(/(`+)[^`\n]*?\1/g, "");
+		})
+		.join("\n");
 }
 
 function referenceId(value: string): string {
@@ -606,7 +614,8 @@ function checkLinks(): void {
 		}
 		for (const match of markdown.matchAll(referenceUse)) {
 			const id = referenceId(match[2] || match[1]);
-			if (!definitions.has(id)) fail("link.reference-missing", `${candidate.source}: reference link definition is missing: ${id}`);
+			if (!definitions.has(id))
+				fail("link.reference-missing", `${candidate.source}: reference link definition is missing: ${id}`);
 		}
 	}
 }
@@ -636,14 +645,20 @@ function checkFiles(): void {
 	for (const file of skill.files) {
 		const rel = relative(skill.directory, file);
 		const extension = extname(file).toLowerCase();
-		if (![".md", ".py", ".js", ".mjs", ".cjs", ".ts", ".mts", ".sh", ".json", ".yaml", ".yml", ".txt"].includes(extension)) continue;
+		if (
+			![".md", ".py", ".js", ".mjs", ".cjs", ".ts", ".mts", ".sh", ".json", ".yaml", ".yml", ".txt"].includes(extension)
+		)
+			continue;
 		const size = statSync(file).size;
 		if (size > MAX_FILE_BYTES) {
 			warn("file.large", `${rel} is ${size} bytes; not scanned for placeholder/security markers`);
 			continue;
 		}
 		const text = readBoundedText(file).text;
-		const placeholderPattern = new RegExp(`\\b(?:${["TO" + "DO:", "FIX" + "ME:", "<replace-" + "me>"].join("|")})`, "i");
+		const placeholderPattern = new RegExp(
+			`\\b(?:${["TO" + "DO:", "FIX" + "ME:", "<replace-" + "me>"].join("|")})`,
+			"i",
+		);
 		if (placeholderPattern.test(text)) warn("file.placeholder", `${rel} contains a task marker or replacement token`);
 		if (/(?:^|[\s"'(])(?:[A-Za-z]:[\\/]|\/Users\/|\/home\/)/m.test(text)) {
 			warn("file.absolute-path", `${rel} contains an operator-local absolute path`);
@@ -657,7 +672,8 @@ function checkFiles(): void {
 		if (statSync(file).size > MAX_FILE_BYTES) continue;
 		const rel = relative(skill.directory, file);
 		const text = readBoundedText(file).text;
-		if (!text.includes("--help") && !text.includes("usage")) warn("script.help", `${rel} does not visibly document --help or usage`);
+		if (!text.includes("--help") && !text.includes("usage"))
+			warn("script.help", `${rel} does not visibly document --help or usage`);
 	}
 }
 
@@ -673,7 +689,10 @@ function checkScriptTests(): void {
 		const stem = name.slice(0, name.lastIndexOf("."));
 		const extension = name.slice(name.lastIndexOf("."));
 		if (names.has(`${stem}.test${extension}`) || names.has(`test-${name}`)) continue;
-		warn("script.test-missing", `${relative(skill.directory, file)} has no colocated test file (expected ${stem}.test${extension} or test-${name})`);
+		warn(
+			"script.test-missing",
+			`${relative(skill.directory, file)} has no colocated test file (expected ${stem}.test${extension} or test-${name})`,
+		);
 	}
 }
 
