@@ -1,3 +1,8 @@
+---
+title: "Tell Laundering"
+index: "A flagged prose move receives a surface-only substitute → repair above the form and preserve claims."
+---
+
 # Heuristic: Tell Laundering
 
 ## Recognition

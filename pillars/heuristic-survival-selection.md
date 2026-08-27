@@ -1,3 +1,8 @@
+---
+title: "Survival Selection"
+index: "Rebuilding after a transition → treat repeated survival as selection evidence and build around demonstrated jobs."
+---
+
 # Heuristic: Survival Selection
 
 ## Recognition

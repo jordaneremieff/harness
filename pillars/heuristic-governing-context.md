@@ -1,3 +1,8 @@
+---
+title: "Governing Context"
+index: "Understanding has been decomposed into sub-tasks → preserve the frame needed to evaluate their outputs."
+---
+
 # Heuristic: Governing Context
 
 ## Recognition

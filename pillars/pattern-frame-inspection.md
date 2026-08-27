@@ -1,3 +1,8 @@
+---
+title: "Frame Inspection"
+index: "At an option set, comparison, third-or-later proposal, or post-rejection revision, name the frame, test whether it binds, step out if not."
+---
+
 # Pattern: Frame Inspection
 
 ## Problem

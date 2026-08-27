@@ -1,3 +1,8 @@
+---
+title: "Circular Grounding"
+index: "A design is justified by the implementation that embodies it → state and verify the independent domain constraint."
+---
+
 # Heuristic: Circular Grounding
 
 ## Recognition

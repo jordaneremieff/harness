@@ -1,3 +1,8 @@
+---
+title: "Unearned Prose"
+index: "Prose must carry a position that selects its wording and its place."
+---
+
 # Principle: Unearned Prose
 
 ## Statement

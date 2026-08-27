@@ -1,3 +1,8 @@
+---
+title: "Committed Contribution"
+index: "Knowledge advances through clear, checkable claims that can be corrected."
+---
+
 # Principle: Committed Contribution
 
 ## Statement

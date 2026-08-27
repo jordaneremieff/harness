@@ -1,3 +1,8 @@
+---
+title: "State as Variable"
+index: "Constraints are inferred from current arrangement rather than declared → reorganize existing pieces."
+---
+
 # Heuristic: State as Variable
 
 ## Recognition

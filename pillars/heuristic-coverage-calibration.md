@@ -1,3 +1,8 @@
+---
+title: "Coverage Calibration"
+index: "Confidence exceeds the examined share of a search space → count coverage and calibrate the claim."
+---
+
 # Heuristic: Coverage Calibration
 
 ## Recognition

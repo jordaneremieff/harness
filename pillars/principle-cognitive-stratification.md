@@ -1,3 +1,8 @@
+---
+title: "Cognitive Stratification"
+index: "Information with different lifecycles and authority belongs in layers stratified by function."
+---
+
 # Principle: Cognitive Stratification
 
 ## Statement

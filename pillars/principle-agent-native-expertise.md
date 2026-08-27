@@ -1,3 +1,8 @@
+---
+title: "Agent-Native Expertise"
+index: "Achieve expertise through agent-native mechanisms rather than simulated human experience."
+---
+
 # Principle: Agent-Native Expertise
 
 ## Statement

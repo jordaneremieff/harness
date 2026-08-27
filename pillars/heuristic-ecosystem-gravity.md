@@ -1,3 +1,8 @@
+---
+title: "Ecosystem Gravity"
+index: "A consumer depends on a system they cannot maintain → prioritize ecosystem durability."
+---
+
 # Heuristic: Ecosystem Gravity
 
 ## Recognition

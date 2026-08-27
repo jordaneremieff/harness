@@ -1,3 +1,8 @@
+---
+title: "System Autonomy"
+index: "Agents express intent; systems fulfill it autonomously."
+---
+
 # Principle: System Autonomy
 
 ## Statement

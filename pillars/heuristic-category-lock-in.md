@@ -1,3 +1,8 @@
+---
+title: "Category Lock-In"
+index: "Repeated proposals remain inside one solution category → name and question the category."
+---
+
 # Heuristic: Category Lock-In
 
 ## Recognition

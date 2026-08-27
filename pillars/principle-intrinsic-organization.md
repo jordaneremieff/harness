@@ -1,3 +1,8 @@
+---
+title: "Intrinsic Organization"
+index: "Knowledge is organized by what it describes, not what consumes it."
+---
+
 # Principle: Intrinsic Organization
 
 ## Statement

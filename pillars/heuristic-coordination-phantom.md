@@ -1,3 +1,8 @@
+---
+title: "Coordination Phantom"
+index: "A coordination convention is applied where its multi-party preconditions may not hold → test the precondition."
+---
+
 # Heuristic: Coordination Phantom
 
 ## Recognition

@@ -1,3 +1,8 @@
+---
+title: "Phantom Stewardship"
+index: "Pre-existing dirty state in a shared mutable substrate, author unknown → verify absence, read lineage, reconcile honestly."
+---
+
 # Heuristic: Phantom Stewardship
 
 ## Recognition

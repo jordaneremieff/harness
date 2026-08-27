@@ -1,3 +1,8 @@
+---
+title: "Compositional Simplicity"
+index: "Evaluate simplicity at system level, not component level."
+---
+
 # Principle: Compositional Simplicity
 
 ## Statement

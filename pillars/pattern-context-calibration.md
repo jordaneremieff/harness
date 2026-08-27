@@ -1,3 +1,8 @@
+---
+title: "Context Calibration"
+index: "At default-selection moments, test whether the origin context of an inherited default matches the current context."
+---
+
 # Pattern: Context Calibration
 
 ## Problem

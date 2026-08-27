@@ -1,3 +1,8 @@
+---
+title: "Harness Over Architecture"
+index: "Infrastructure lacks an observed incident, measured omission, or binding requirement → start at the lowest sufficient harness layer."
+---
+
 # Heuristic: Harness Over Architecture
 
 ## Recognition

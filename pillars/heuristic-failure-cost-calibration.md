@@ -1,3 +1,8 @@
+---
+title: "Failure Cost Calibration"
+index: "A high-caliber pattern is proposed without quantified failure cost → compare real failure cost with pattern cost."
+---
+
 # Heuristic: Failure Cost Calibration
 
 ## Recognition

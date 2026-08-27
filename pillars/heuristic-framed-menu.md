@@ -1,3 +1,8 @@
+---
+title: "Framed Menu"
+index: "All offered options share an unstated premise → test the premise and name the option outside it."
+---
+
 # Heuristic: Framed Menu
 
 ## Recognition

@@ -1,3 +1,8 @@
+---
+title: "Metric Reification"
+index: "An observational statistic is becoming a system property → expose conditions and defend interpretation."
+---
+
 # Heuristic: Metric Reification
 
 ## Recognition

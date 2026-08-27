@@ -1,3 +1,8 @@
+---
+title: "Grounding Preflight"
+index: "Before presenting a consequential conclusion, verify the evidence reaches the claim, covers its required facets, and leaves gaps visible."
+---
+
 # Pattern: Grounding Preflight
 
 ## Intent

@@ -1,10 +1,8 @@
 # Pillars
 
-Portable design doctrine for agent-assisted work. Three document types:
-
-- **Principles** — core beliefs about how systems and knowledge work.
-- **Patterns** — structural procedures embodying principles.
-- **Heuristics** — recognition-to-move guidance for judgment moments.
+Portable design doctrine for agent-assisted work, in three document types defined
+in [GOVERNANCE.md](GOVERNANCE.md). The tables below are verbatim quotes of each
+entry's own `index` sentence; they are not independent paraphrases.
 
 ## Current Inventory
 
@@ -37,7 +35,7 @@ Portable design doctrine for agent-assisted work. Three document types:
 | [Burden Absorption](heuristic-burden-absorption.md) | A person is waiting for an observable asynchronous process → offer to monitor it. |
 | [State as Variable](heuristic-state-as-variable.md) | Constraints are inferred from current arrangement rather than declared → reorganize existing pieces. |
 | [Frame Abandonment](heuristic-frame-abandonment.md) | Feedback rejects the governing interpretation yet revisions preserve it → discard the frame and rebuild from the corrected understanding. |
-| [Survival Selection](heuristic-survival-selection.md) | Rebuilding after a transition → build around what actually survived. |
+| [Survival Selection](heuristic-survival-selection.md) | Rebuilding after a transition → treat repeated survival as selection evidence and build around demonstrated jobs. |
 | [Harness Over Architecture](heuristic-harness-over-architecture.md) | Infrastructure lacks an observed incident, measured omission, or binding requirement → start at the lowest sufficient harness layer. |
 | [Governing Context](heuristic-governing-context.md) | Understanding has been decomposed into sub-tasks → preserve the frame needed to evaluate their outputs. |
 | [Comprehension Checkpoint](heuristic-comprehension-checkpoint.md) | Reading expands without synthesis → stop, articulate the model, and target remaining gaps. |
@@ -60,8 +58,5 @@ Portable design doctrine for agent-assisted work. Three document types:
 
 ## Related Files
 
-- [AGENTS.md](AGENTS.md)
-
-## Provenance Policy
-
-The corpus retains transferable mechanisms, not private provenance. Examples and records must omit personal names, employer context, internal project names, vendor-specific work stacks, private paths, and session identifiers. Public standards or technologies may be named only when the name is load-bearing to the doctrine rather than incidental to an originating example.
+- [GOVERNANCE.md](GOVERNANCE.md) — application contract, consultation procedure,
+  contradiction handling, composition paths, mutation rules, provenance policy.

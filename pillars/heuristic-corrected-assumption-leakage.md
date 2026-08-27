@@ -1,3 +1,8 @@
+---
+title: "Corrected-Assumption Leakage"
+index: "A correction is acknowledged but old assumptions persist downstream → audit the working model."
+---
+
 # Heuristic: Corrected-Assumption Leakage
 
 ## Recognition

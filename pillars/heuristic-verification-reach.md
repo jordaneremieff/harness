@@ -1,3 +1,8 @@
+---
+title: "Verification Reach"
+index: "Tool output is about to support a claim → verify that the evidence reached the claim's actual subject."
+---
+
 # Heuristic: Verification Reach
 
 ## Recognition

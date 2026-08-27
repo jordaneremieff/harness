@@ -1,3 +1,8 @@
+---
+title: "Frame Abandonment"
+index: "Feedback rejects the governing interpretation yet revisions preserve it → discard the frame and rebuild from the corrected understanding."
+---
+
 # Heuristic: Frame Abandonment
 
 ## Recognition

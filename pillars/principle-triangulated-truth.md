@@ -1,3 +1,8 @@
+---
+title: "Triangulated Truth"
+index: "Truth is triangulated across facets rather than located in one source."
+---
+
 # Principle: Triangulated Truth
 
 ## Statement

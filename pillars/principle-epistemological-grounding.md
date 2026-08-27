@@ -1,3 +1,8 @@
+---
+title: "Epistemological Grounding"
+index: "Some sources define truth; others claim or measure it."
+---
+
 # Principle: Epistemological Grounding
 
 ## Statement

@@ -1,3 +1,8 @@
+---
+title: "Redundant Corroboration"
+index: "Similar evaluators converge and count is cited as independence → treat them as samples from one posterior."
+---
+
 # Heuristic: Redundant Corroboration
 
 ## Recognition

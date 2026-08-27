@@ -1,3 +1,8 @@
+---
+title: "External Verification"
+index: "A claim concerns an external dependency's behavior → verify externally, qualify, or omit."
+---
+
 # Heuristic: External Verification
 
 ## Recognition

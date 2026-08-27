@@ -1,3 +1,8 @@
+---
+title: "Comprehension Checkpoint"
+index: "Reading expands without synthesis → stop, articulate the model, and target remaining gaps."
+---
+
 # Heuristic: Comprehension Checkpoint
 
 ## Recognition

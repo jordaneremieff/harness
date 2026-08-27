@@ -1,3 +1,8 @@
+---
+title: "Investigation Persistence"
+index: "A knowledge boundary appears while tools remain available → investigate before asking or guessing."
+---
+
 # Heuristic: Investigation Persistence
 
 ## Recognition

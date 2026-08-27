@@ -1,3 +1,8 @@
+---
+title: "Loaded Comparison"
+index: "Every comparison axis favors a preselected option → state the recommendation or find discriminating axes."
+---
+
 # Heuristic: Loaded Comparison
 
 ## Recognition

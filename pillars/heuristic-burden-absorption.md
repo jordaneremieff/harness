@@ -1,3 +1,8 @@
+---
+title: "Burden Absorption"
+index: "A person is waiting for an observable asynchronous process → offer to monitor it."
+---
+
 # Heuristic: Burden Absorption
 
 ## Recognition

@@ -13,81 +13,17 @@ description: >
 compatibility: Requires the sibling package corpus at ../../pillars relative to this skill directory.
 ---
 
-# Pillars consultation
+Pillars are portable, defeasible doctrine for agent judgment in this
+environment. The canonical corpus is the package-level `../../pillars/`
+directory, resolved relative to this skill directory. A matching pillar
+governs the decision procedure; it does not override facts, permissions, or
+explicit higher authority.
 
-The pillars are portable, defeasible doctrine for agent judgment in this environment.
-The canonical corpus is the package-level `../../pillars/` directory, resolved
-relative to this skill directory. It is a sibling package dependency rather than
-content owned by this delivery adapter. A matching pillar governs the decision
-procedure; it does not override facts, permissions, or explicit higher authority.
+Start at `../../pillars/README.md`: its rows quote each entry's own `index`
+sentence and are the shortlist surface. The full consultation procedure,
+application contract, contradiction handling, composition paths, subagent
+supply rules, and mutation rules live in
+`../../pillars/GOVERNANCE.md` — Consultation Procedure first.
 
-## How to consult
-
-1. Read `../../pillars/README.md` first. It is the inventory: every principle,
-   pattern, and heuristic with a one-line trigger. Match the current judgment moment
-   against those recognition conditions.
-2. Load only the few documents whose conditions plausibly match. Each doc is
-   self-contained: the belief or move, why it holds, and the failure it prevents.
-3. A match creates a rebuttable obligation in the decision procedure: apply the
-   guidance or identify the fact, hard constraint, inversion, sibling, carve-out, or
-   contradiction that defeats it.
-4. Apply the result to the artifact or decision. Application may change a choice or
-   stabilize an already-correct one; citation, naming, and retrieval alone do not prove
-   application.
-5. Routine work need not narrate doctrine. Name the governing pillar when the operator
-   requests a Pillars evaluation, when a consequential distinction needs auditability,
-   or when explaining a material override.
-
-## The three types
-
-- **Principles** (`principle-*.md`) — core beliefs about how systems work. Evergreen.
-- **Patterns** (`pattern-*.md`) — structural solutions embodying principles. Evergreen.
-- **Heuristics** (`heuristic-*.md`) — recognition → move pairs for judgment moments.
-  Situational; fire when the recognition condition matches.
-
-No document type has automatic precedence over another. Resolve collisions by facts,
-source authority, recognition scope, and explicit carve-outs—not by type.
-
-## High-value triggers (from the corpus index)
-
-| Situation | Start with |
-|---|---|
-| Proposing infrastructure without an observed incident, measured omission, or binding requirement | heuristic-harness-over-architecture |
-| Third+ proposal in the same solution category | heuristic-category-lock-in, pattern-frame-inspection |
-| About to cite tool output as evidence for a claim | heuristic-verification-reach |
-| Comparing options where one always wins | heuristic-loaded-comparison, heuristic-framed-menu |
-| Reaching for a default from training data | pattern-context-calibration |
-| Deciding where knowledge or state should live | principle-cognitive-stratification, principle-intrinsic-organization |
-| Operator corrected an assumption mid-task | heuristic-corrected-assumption-leakage |
-| Judging whether prose carries a position or is filled from no position | principle-unearned-prose |
-| Fixing a flagged prose tell by swapping symbols | heuristic-tell-laundering |
-| Dirty state in a shared mutable substrate, author unknown | heuristic-phantom-stewardship |
-
-## Deriving
-
-Consultation applies existing doctrine; derivation changes the corpus. Derivation is
-entered by saying so — "that's a pillar," "derive this," "should this be a pillar?",
-"challenge <pillar-name>." Challenging or withdrawing a live pillar is an entry point,
-not only proposing a new one.
-
-Follow the Mutation Rules in `../../pillars/AGENTS.md`. Nothing is written until the
-operator approves the result.
-
-## Rules of use
-
-- System and safety instructions, law, permissions, and explicit operator authority
-  remain separate higher constraints.
-- The corpus is doctrine, not scripture: when facts or reality contradict a pillar,
-  use the full classification in `../../pillars/AGENTS.md` rather than forcing compliance.
-  If consequential guidance still conflicts, record the ambiguity and obtain the
-  appropriate authority instead of inventing precedence.
-- Consult the smallest relevant set. Full-corpus recital is not compliance.
-- Doctrine does not inherit across sessions, processes, subagents, or graders unless
-  their delivery profile explicitly supplies it.
-- Version-attributed observations and evaluations must identify the doctrine snapshot
-  and actual delivery profile. Ordinary use need not log consultation.
-- Do not invent ad-hoc "principles" in session prose. Corpus mutations require the
-  operator's explicit approval.
-- When the operator asks for a Pillars evaluation, name the pillar, state its
-  recognition condition, and show why it binds, is defeated, or collides—that is the
-  deliverable.
+Nothing is written to the corpus until the operator approves it; corpus
+changes follow the Mutation Rules in GOVERNANCE.md.
