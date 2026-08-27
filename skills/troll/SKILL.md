@@ -143,7 +143,7 @@ A target that recognizes the exercise produces a performance, not self-examinati
 
 ## Pillar armory
 
-The full armory — both tables, the recognition conditions, and why each pillar binds — lives in `references/pillar-armory.md`. It is an index, not the whole taxonomy: a frame absent from both tables is a derivation candidate, and the confirmation names the frame's actual source. Trigger: name the failure mode → consult `references/pillar-armory.md`; load only the few documents whose recognition conditions match; apply the match or name the fact that defeats it. Name the governing pillar in the confirmation. When the armory does not select a pillar, the confirmation states that absence and names the derivation candidate; do not force a pillar name.
+The full armory — both tables, the recognition conditions, and why each pillar binds — lives in `references/pillar-armory.md`. It is an index, not the whole taxonomy: a frame absent from both tables is a derivation candidate, and the confirmation names the frame's actual provenance. Trigger: name the failure mode → consult `references/pillar-armory.md`; load only the few documents whose recognition conditions match; apply the match or name the fact that defeats it. Name the governing pillar in the confirmation. When the armory does not select a pillar, the confirmation states that absence and names the derivation candidate; do not force a pillar name.
 
 The corpus is a sibling package, not a distribution assumption: check once at intake whether `../../pillars/README.md` exists, and run the mode that fits.
 
