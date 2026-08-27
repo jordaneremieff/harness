@@ -107,8 +107,8 @@ A beautiful abstraction can still produce poor observability, migration, or fail
 
 ## Relationship to Other Pillars
 
-- **Harness Over Architecture:** supplies the evidence gate before shared infrastructure is introduced.
-- **Context Calibration:** tests whether a familiar architecture's source conditions hold.
+- **Harness Over Architecture:** provides the evidence gate before shared infrastructure is introduced.
+- **Context Calibration:** tests whether a familiar architecture's origin conditions hold.
 - **System Autonomy:** moves deterministic mechanism below a boundary only when doing so reduces total burden.
 - **Cognitive Stratification:** distinct lifecycle layers may justify distinct storage and authority models.
 - **Survival Selection:** observed persistence through transitions is evidence about what composes well.

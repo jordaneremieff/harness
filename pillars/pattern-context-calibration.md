@@ -11,11 +11,11 @@ The failure is not pattern recognition itself. It is applying the recognized def
 At a default-selection moment:
 
 1. **Name the default.** State the pattern, convention, rubric, or category being reached for.
-2. **Identify its source-context preconditions.** What made it correct where it became common?
+2. **Identify its origin-context preconditions.** What made it correct where it became common?
 3. **Check those preconditions here.** Use observable current facts rather than category resemblance.
 4. **Recalibrate.** Keep the default when its conditions hold; otherwise choose a proportional alternative and state the reason when it matters to later readers.
 
-| Default type | Typical source-context precondition |
+| Default type | Typical origin-context precondition |
 |---|---|
 | High-caliber protection mechanism | Failure is expensive, irreversible, or regulated. |
 | Collaboration convention | Multiple consumers or maintainers cannot coordinate changes cheaply. |
@@ -35,7 +35,7 @@ An agent is asked to add one local tool and reaches for a framework-style regist
 Default:
   Multi-contributor tool registry.
 
-Source-context preconditions:
+Origin-context preconditions:
   Many independent authors and consumers, versioned releases,
   compatibility obligations, and a boundary where validation protects parties.
 

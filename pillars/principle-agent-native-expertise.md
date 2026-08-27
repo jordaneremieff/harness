@@ -4,7 +4,7 @@
 
 Agents should achieve the functions of expertise through agent-native mechanisms, informed by human cognition but not constrained by human biology or social reflexes.
 
-**Parent frame, not a firing heuristic.** This principle orients design judgment when a human practice is imported into agent design; it does not fire at a decision moment. Its territory is operationalized by the heuristics that do fire — Context Calibration, Coordination Phantom, Ecosystem Gravity, Phantom Stewardship. Read it as the frame those heuristics inherit from, not as a test to apply at a judgment point.
+**Parent frame, not a firing heuristic.** This principle orients design judgment when a human practice is imported into agent design; it does not fire at a decision moment. Its territory is operationalized by the pillars that do fire — Context Calibration, Coordination Phantom, Ecosystem Gravity, Phantom Stewardship. Read it as the frame those pillars inherit from, not as a test to apply at a judgment point.
 
 ## Core
 

@@ -59,7 +59,7 @@ Explicitly naming the gap and search paths creates a stopping rule. It prevents 
 
 ## Relationship to Pillars
 
-- **Verification Reach:** governs whether each investigated source reaches the claim.
+- **Verification Reach:** checks whether each investigated source reaches the claim.
 - **Coverage Calibration:** prevents one successful path from standing in for a large universe.
 - **External Verification:** identifies when the unresolved fact belongs to a moving external dependency.
 - **Comprehension Checkpoint:** turns broad reading into a concrete gap model.

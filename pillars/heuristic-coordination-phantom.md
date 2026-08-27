@@ -51,7 +51,7 @@ The heuristic does not reject collaboration practices. It restores the missing c
 
 ## Relationship to Pillars
 
-- **Context Calibration:** tests whether the source-context precondition of a familiar convention holds now.
+- **Context Calibration:** tests whether the origin-context precondition of a familiar convention holds now.
 - **Failure Cost Calibration:** compares migration or breakage cost with the cost of compatibility machinery.
 - **Compositional Simplicity:** evaluates the duplicate paths and operational work created by speculative coordination layers.
 - **Investigation Persistence:** requires checking actual consumers before asserting that they do or do not exist.

@@ -65,7 +65,7 @@ The move is cooperative rather than contrary. It returns a better decision and g
 ## Relationship to Pillars
 
 - **Loaded Comparison:** supply-side sibling. It prevents constructing a menu whose axes launder a preference; Framed Menu prevents accepting a menu whose bound goes untested.
-- **Frame Inspection:** provides the shared name-source-binding-step-outside procedure.
+- **Frame Inspection:** the receive-side, single-turn specialization; provides the shared name-provenance-binding-step-outside procedure.
 - **Category Lock-In:** questions a solution category after repeated self-generated proposals; this heuristic can fire on the first received menu.
 - **Committed Contribution:** requires explicit framing rejection rather than a silent evasive pick.
 - **Agent-Native Expertise:** received structure is input, not authority.

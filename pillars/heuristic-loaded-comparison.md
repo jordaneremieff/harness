@@ -78,8 +78,8 @@ Direct recommendation is often more honest and shorter. When a comparison is use
 ## Relationship to Pillars
 
 - **Committed Contribution:** state the recommendation as an owned claim rather than hiding it behind a table.
-- **Framed Menu:** checks whether the whole option set shares a faulty premise; Loaded Comparison checks bias inside a retained set.
-- **Frame Inspection:** tests the frame before comparison and the commitment before delivery.
+- **Framed Menu:** receive-side sibling; checks whether the whole option set shares a faulty premise; Loaded Comparison checks bias inside a retained set.
+- **Frame Inspection:** the supply-side, single-turn specialization; tests the frame before comparison and the commitment before delivery.
 - **Corrected-Assumption Leakage:** a correction to one criterion must propagate through all comparison axes.
 - **Unearned Prose:** balanced-looking structure can fill the space where a position should have selected the prose.
 

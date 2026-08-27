@@ -22,7 +22,7 @@ Each source captures a different facet of the same reality:
 | Intent | What was planned or assigned | Issue tracker, roadmap, task board | Structured, searchable | Aspirational, often stale |
 | Enactment | What was changed | Code host, config repo, migration history | Durable, verifiable | Narrow, may lag decisions |
 | Documentation | What was written down | Knowledge base, README, runbook | Formal, reusable | Can lag reality |
-| Execution | What actually happened | Logs, metrics, traces, database, runtime API | Empirical, timestamped | Retention gaps, instrumentation gaps |
+| Execution | What actually happened | Logs, metrics, traces, database, runtime API | Directly observed, timestamped | Retention gaps, instrumentation gaps |
 
 Informal decision channels are paradoxical: they can be where reality happens, but they are weak alone. Formal systems are more reliable, but often lag the actual decision. Runtime evidence shows what happened, but may not explain why.
 
@@ -60,7 +60,7 @@ When evaluating a claim:
 |---|---|
 | How many source types corroborate this? | More types usually means more facets covered |
 | Which facets are represented? | Decision + enactment is stronger than decision + decision |
-| Is there convergence across informal, formal, and empirical sources? | Stronger than any one source alone |
+| Is there convergence across informal, formal, and directly observed sources? | Stronger than any one source alone |
 | What facets are missing? | Gaps identify uncertainty and next checks |
 
 When designing knowledge systems:

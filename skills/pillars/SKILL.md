@@ -61,7 +61,7 @@ source authority, recognition scope, and explicit carve-outs—not by type.
 | Operator corrected an assumption mid-task | heuristic-corrected-assumption-leakage |
 | Judging whether prose carries a position or is filled from no position | principle-unearned-prose |
 | Fixing a flagged prose tell by swapping symbols | heuristic-tell-laundering |
-| Dirty state in a shared substrate, author unknown | heuristic-phantom-stewardship |
+| Dirty state in a shared mutable substrate, author unknown | heuristic-phantom-stewardship |
 
 ## Deriving
 

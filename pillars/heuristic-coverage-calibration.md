@@ -67,10 +67,10 @@ Coverage is not proof by itself. Reading every file poorly can be weaker than ta
 
 ## Relationship to Pillars
 
-- **Verification Reach** checks whether evidence reaches the right layer; Coverage Calibration checks whether enough of that layer was examined.
-- **Triangulated Truth** asks whether independent facets are covered; this heuristic asks how much of one facet's universe was sampled.
-- **Comprehension Checkpoint** prevents broad reading from replacing synthesis; together they balance breadth and understanding.
-- **External Verification** may locate the right external source, after which coverage still governs broad claims within it.
+- **Verification Reach:** checks whether evidence reaches the right layer; Coverage Calibration checks whether enough of that layer was examined.
+- **Triangulated Truth:** asks whether independent facets are covered; this heuristic asks how much of one facet's universe was sampled.
+- **Comprehension Checkpoint:** prevents broad reading from replacing synthesis; together they balance breadth and understanding.
+- **External Verification:** may locate the right external source, after which coverage still governs broad claims within it.
 
 ## Summary
 

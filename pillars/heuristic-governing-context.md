@@ -2,19 +2,19 @@
 
 ## Recognition
 
-This heuristic fires when deep understanding has been decomposed into tasks, specifications, handovers, or delegated units and the source context is about to be discarded.
+This heuristic fires when deep understanding has been decomposed into tasks, specifications, handovers, or delegated units and the originating context is about to be discarded.
 
 Cues:
 
 - The units capture what to do but not how to judge their outputs.
 - Several tasks arose from one first-principles exploration and are interdependent.
 - Outputs are not yet known, so success cannot be fully encoded as local acceptance criteria.
-- The source reasoning contains rejected alternatives or conditional judgments absent from the task text.
+- The originating reasoning contains rejected alternatives or conditional judgments absent from the task text.
 - A fresh worker could execute each unit but could not integrate the results.
 
 ## Move
 
-Before discarding the source understanding, test each artifact for four properties:
+Before discarding the originating understanding, test each artifact for four properties:
 
 1. **Task specification:** what to do.
 2. **Evaluation criteria:** how to tell whether the result is good.
@@ -28,7 +28,7 @@ If any of properties 2 through 4 is missing:
 
 Then run a fresh-reader test:
 
-> Could someone with only these artifacts make the same integration and evaluation decisions the source reasoner would make?
+> Could someone with only these artifacts make the same integration and evaluation decisions the originating reasoner would make?
 
 If not, the decomposition is not yet self-sufficient.
 
@@ -40,7 +40,7 @@ If not, the decomposition is not yet self-sufficient.
 | The frame is simple and fully captured in each task | Avoid duplication. |
 | Work is sequenced or outputs alter later tasks | Preserve sibling awareness and decision points explicitly. |
 | Exploration rejected plausible alternatives | Preserve why they were rejected and what evidence would reopen them. |
-| Source context cannot persist reliably | Extract the governing frame before handoff. |
+| Originating context cannot persist reliably | Extract the governing frame before handoff. |
 | Sensitive evidence shaped the frame | Store raw evidence privately and expose only the transferable criteria needed by the receiver. |
 
 ## Why This Works
@@ -69,4 +69,4 @@ The heuristic does not require preserving an entire conversation. It requires pr
 
 ## Summary
 
-Decomposed tasks capture actions. Before discarding the source understanding, ensure they also preserve how outputs are judged, related, and integrated, or keep a durable orchestration point that does.
+Decomposed tasks capture actions. Before discarding the originating understanding, ensure they also preserve how outputs are judged, related, and integrated, or keep a durable orchestration point that does.

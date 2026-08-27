@@ -14,21 +14,21 @@ Portable design doctrine for agent-assisted work. Three document types:
 |---|---|
 | [System Autonomy](principle-system-autonomy.md) | Agents express intent; systems fulfill it autonomously. |
 | [Agent-Native Expertise](principle-agent-native-expertise.md) | Achieve expertise through agent-native mechanisms rather than simulated human experience. |
-| [Cognitive Stratification](principle-cognitive-stratification.md) | Different information has different lifecycles and authority. |
+| [Cognitive Stratification](principle-cognitive-stratification.md) | Information with different lifecycles and authority belongs in layers stratified by function. |
 | [Epistemological Grounding](principle-epistemological-grounding.md) | Some sources define truth; others claim or measure it. |
 | [Triangulated Truth](principle-triangulated-truth.md) | Truth is triangulated across facets rather than located in one source. |
 | [Intrinsic Organization](principle-intrinsic-organization.md) | Knowledge is organized by what it describes, not what consumes it. |
 | [Compositional Simplicity](principle-compositional-simplicity.md) | Evaluate simplicity at system level, not component level. |
-| [Committed Contribution](principle-committed-contribution.md) | Truth emerges through committed claims refined by correction. |
+| [Committed Contribution](principle-committed-contribution.md) | Knowledge advances through clear, checkable claims that can be corrected. |
 | [Unearned Prose](principle-unearned-prose.md) | Prose must carry a position that selects its wording and its place. |
 
 ### Patterns
 
 | Pattern | Structure |
 |---|---|
-| [Grounding Preflight](pattern-grounding-preflight.md) | Before concluding, verify facet coverage and access to defining sources. |
-| [Context Calibration](pattern-context-calibration.md) | At default-selection moments, test whether the source context of an inherited default matches the current context. |
-| [Frame Inspection](pattern-frame-inspection.md) | Before committing to an option set or repeated proposal frame, name the frame and test its premise. |
+| [Grounding Preflight](pattern-grounding-preflight.md) | Before presenting a consequential conclusion, verify the evidence reaches the claim, covers its required facets, and leaves gaps visible. |
+| [Context Calibration](pattern-context-calibration.md) | At default-selection moments, test whether the origin context of an inherited default matches the current context. |
+| [Frame Inspection](pattern-frame-inspection.md) | At an option set, comparison, third-or-later proposal, or post-rejection revision, name the frame, test whether it binds, step out if not. |
 
 ### Heuristics
 
@@ -36,7 +36,7 @@ Portable design doctrine for agent-assisted work. Three document types:
 |---|---|
 | [Burden Absorption](heuristic-burden-absorption.md) | A person is waiting for an observable asynchronous process → offer to monitor it. |
 | [State as Variable](heuristic-state-as-variable.md) | Constraints are inferred from current arrangement rather than declared → reorganize existing pieces. |
-| [Frame Abandonment](heuristic-frame-abandonment.md) | A frame has been rejected repeatedly → discard it and rebuild from the corrected understanding. |
+| [Frame Abandonment](heuristic-frame-abandonment.md) | Feedback rejects the governing interpretation yet revisions preserve it → discard the frame and rebuild from the corrected understanding. |
 | [Survival Selection](heuristic-survival-selection.md) | Rebuilding after a transition → build around what actually survived. |
 | [Harness Over Architecture](heuristic-harness-over-architecture.md) | Infrastructure lacks an observed incident, measured omission, or binding requirement → start at the lowest sufficient harness layer. |
 | [Governing Context](heuristic-governing-context.md) | Understanding has been decomposed into sub-tasks → preserve the frame needed to evaluate their outputs. |
@@ -50,7 +50,7 @@ Portable design doctrine for agent-assisted work. Three document types:
 | [Failure Cost Calibration](heuristic-failure-cost-calibration.md) | A high-caliber pattern is proposed without quantified failure cost → compare real failure cost with pattern cost. |
 | [Loaded Comparison](heuristic-loaded-comparison.md) | Every comparison axis favors a preselected option → state the recommendation or find discriminating axes. |
 | [Framed Menu](heuristic-framed-menu.md) | All offered options share an unstated premise → test the premise and name the option outside it. |
-| [Phantom Stewardship](heuristic-phantom-stewardship.md) | Shared mutable state has an absent author → verify absence, read lineage, reconcile honestly. |
+| [Phantom Stewardship](heuristic-phantom-stewardship.md) | Pre-existing dirty state in a shared mutable substrate, author unknown → verify absence, read lineage, reconcile honestly. |
 | [Redundant Corroboration](heuristic-redundant-corroboration.md) | Similar evaluators converge and count is cited as independence → treat them as samples from one posterior. |
 | [Ecosystem Gravity](heuristic-ecosystem-gravity.md) | A consumer depends on a system they cannot maintain → prioritize ecosystem durability. |
 | [Corrected-Assumption Leakage](heuristic-corrected-assumption-leakage.md) | A correction is acknowledged but old assumptions persist downstream → audit the working model. |

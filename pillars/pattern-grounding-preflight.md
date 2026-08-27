@@ -115,7 +115,7 @@ Not every claim needs every facet. A source-state question may be settled by the
 
 For low-cost reversible choices, a preliminary conclusion may be sufficient. For hard-to-reverse or high-impact decisions, close the load-bearing gaps.
 
-## Constituent Heuristics
+## Checks Within the Preflight
 
 - **Verification Reach:** checks whether a particular observation reaches the claim's subject.
 - **Coverage Calibration:** checks whether enough of the chosen source layer was examined.

@@ -40,7 +40,7 @@ that description. Fetch the target before citing it as current evidence.
 | Log or trace | Recorded event under available instrumentation | Events lost, unsampled, or uninstrumented |
 | Metadata record | The recorded metadata | The underlying object's current contents |
 
-## Negative Claims
+## Negative-Claim Standard
 
 Claims of absence require special care. Before saying something does not exist:
 

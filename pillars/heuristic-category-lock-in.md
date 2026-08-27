@@ -65,9 +65,9 @@ Naming the category converts it from an invisible search boundary into a claim. 
 ## Relationship to Pillars
 
 - **Frame Inspection:** Category Lock-In is the supply-side, multi-turn specialization.
-- **Context Calibration:** tests whether the category was inherited from a different source context.
+- **Context Calibration:** tests whether the category was inherited from a different origin context.
 - **Frame Abandonment:** fires when the underlying mental model has been rejected; Category Lock-In catches a stealthier sequence before explicit frame rejection.
-- **Failure Cost Calibration:** often supplies the category-free restatement for reliability machinery.
+- **Failure Cost Calibration:** often provides the category-free restatement for reliability machinery.
 - **Tell Laundering:** sibling mechanism at prose altitude: surface variation can preserve an unchanged underlying category.
 
 ## Summary

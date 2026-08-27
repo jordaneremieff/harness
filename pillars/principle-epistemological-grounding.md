@@ -23,7 +23,7 @@ Without grounding in defining sources:
 With grounding in defining sources:
 
 - Verification has a target.
-- Authority is learned for empirical sources by checking them against defining sources.
+- Authority is learned for claiming/interpretive sources by checking them against defining sources.
 - The system can distinguish widely believed from actually true.
 - Reality anchors the memory system against drift.
 
@@ -41,7 +41,7 @@ Defining-source layer: sources that define truth for a bounded domain
 Authority: fixed within domain
 Role: verification target
 
-Empirical layer: sources that claim, interpret, or summarize truth
+Claiming/interpretive layer: sources that claim, interpret, or summarize truth
 
 - Human statements
 - Agent inferences
@@ -63,9 +63,9 @@ When classifying a source:
 | Question | If Yes | If No |
 |---|---|---|
 | Does this source define the exact facet for this domain? | Defining source for that facet | Evaluate further |
-| Is it the designated system of record for the claim? | Defining source within its recorded scope | Empirical or proxy |
-| Does another source own the facet more directly? | Treat this source as empirical or proxy | Evaluate further |
-| Does it interpret, transform, or synthesize other sources? | Empirical unless the transformation itself is the claim | Evaluate further |
+| Is it the designated system of record for the claim? | Defining source within its recorded scope | Claiming/interpretive source or proxy |
+| Does another source own the facet more directly? | Treat this source as a claiming/interpretive source or proxy | Evaluate further |
+| Does it interpret, transform, or synthesize other sources? | A claiming/interpretive source unless the transformation itself is the claim | Evaluate further |
 
 ## Manifestations
 
@@ -104,7 +104,7 @@ The timeout claim was verified.
 | Issue tracker | Ticket/task state | Defining source | Ticket text may be stale or aspirational |
 | Documentation system | Document contents | Defining source for content | Content may be outdated or wrong |
 | Database / system API | Data state | Defining source | Snapshot scope and permissions matter |
-| Human or chat source | Context, rationale, claims | Empirical | Rich but subjective and unverifiable alone |
+| Human or chat source | Context, rationale, claims | Claiming/interpretive source | Rich but subjective and unverifiable alone |
 
 No source captures complete reality. Defining sources define truth for facets. This is why Triangulated Truth matters: single sources anchor claims but do not make them complete.
 
@@ -125,13 +125,13 @@ A stale document remains authoritative for what it says. Whether its content is 
 
 ### Derived Sources
 
-Derived dashboards, summaries, and generated reports are empirical unless their derivation is itself the claim under inspection. They inherit some trust from defining-source inputs but can introduce error through transformation.
+Derived dashboards, summaries, and generated reports are claiming/interpretive sources unless their derivation is itself the claim under inspection. They inherit some trust from defining-source inputs but can introduce error through transformation.
 
 ## Tensions
 
 ### Defining Sources vs. Learning
 
-We do not need to relearn that a designated source of record is authoritative for its own bounded facet. It can still be audited for corruption, scope, permissions, freshness, and correct operation. We learn which empirical sources are reliable, how to interpret defining-source data, and when two defining-source facets disagree.
+We do not need to relearn that a designated source of record is authoritative for its own bounded facet. It can still be audited for corruption, scope, permissions, freshness, and correct operation. We learn which claiming/interpretive sources are reliable, how to interpret defining-source data, and when two defining-source facets disagree.
 
 ### Multiple Defining Sources Disagreeing
 
@@ -166,7 +166,7 @@ Memory derives its strength from what it was checked against. The storage layer 
 
 ## Agent Practice
 
-1. Distinguish defining sources from empirical sources explicitly.
+1. Distinguish defining sources from claiming/interpretive sources explicitly.
 2. Do not subject defining sources to authority updates inside their own domain.
 3. Name the source of record in verification claims.
 4. When defining sources disagree, surface the conflict by facet.
@@ -176,4 +176,4 @@ Memory derives its strength from what it was checked against. The storage layer 
 
 Some sources define truth for a domain. Others claim it. Conflating them makes verification meaningless.
 
-Defining sources are the bedrock for their facets. Empirical sources are checked against that bedrock. Without grounding, a knowledge system is a weighted cache of opinions. With grounding, it can distinguish consensus from truth.
+Defining sources are the bedrock for their facets. Claiming/interpretive sources are checked against that bedrock. Without grounding, a knowledge system is a weighted cache of opinions. With grounding, it can distinguish consensus from truth.

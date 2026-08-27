@@ -56,15 +56,15 @@ No document type has automatic precedence over another.
 |---|---|
 | Before presenting a conclusion assembled from heterogeneous sources | Grounding Preflight |
 | Before selecting a familiar default inherited from training examples | Context Calibration |
-| Before accepting an option set or issuing another proposal in the same frame | Frame Inspection |
+| At option-set construction or acceptance, a third-or-later proposal, or post-rejection revision | Frame Inspection |
 
 ### Heuristics
 
 | Recognition cue | Start with |
 |---|---|
 | A person waits for an observable asynchronous process | Burden Absorption |
-| Current arrangement is being mistaken for a hard constraint | State as Variable |
-| Revisions keep preserving a repeatedly rejected frame | Frame Abandonment |
+| Current arrangement is being mistaken for a binding constraint | State as Variable |
+| Feedback rejects the governing frame yet revisions preserve it | Frame Abandonment |
 | A system is being rebuilt after a tool, platform, or process transition | Survival Selection |
 | New infrastructure lacks an observed incident, measured omission, or binding requirement | Harness Over Architecture |
 | Decomposition may have discarded the frame needed to judge outputs | Governing Context |

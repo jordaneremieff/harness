@@ -46,6 +46,14 @@ A useful escalation ladder:
 
 The ladder is not absolute. Skip a lower layer when it cannot satisfy a binding requirement, but state why.
 
+## Failure Modes
+
+- **Documentation theater:** adding prose when the failure is deterministic and mechanically preventable.
+- **Skill sprawl:** creating many narrow skills instead of repairing indexing or one shared procedure.
+- **Architecture laundering:** calling an unmeasured intuition a "systematic omission."
+- **Permanent experiment:** a trial gains no owner or removal condition and silently becomes infrastructure.
+- **Layer loyalty:** refusing a necessary service because the heuristic is misread as "never build architecture."
+
 ## Negotiation
 
 | Situation | Response |
@@ -73,14 +81,6 @@ The heuristic is therefore evidence-first, not incident-only.
 - The mechanism already exists and the task is ordinary maintenance rather than speculative construction.
 - A repeated or high-cost failure has demonstrated lower-layer insufficiency.
 - A Class B intervention satisfies the full gate and is explicitly experimental.
-
-## Failure Modes
-
-- **Documentation theater:** adding prose when the failure is deterministic and mechanically preventable.
-- **Skill sprawl:** creating many narrow skills instead of repairing indexing or one shared procedure.
-- **Architecture laundering:** calling an unmeasured intuition a "systematic omission."
-- **Permanent experiment:** a trial gains no owner or removal condition and silently becomes infrastructure.
-- **Layer loyalty:** refusing a necessary service because the heuristic is misread as "never build architecture."
 
 ## Relationship to Pillars
 
