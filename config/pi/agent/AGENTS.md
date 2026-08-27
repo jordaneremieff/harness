@@ -116,13 +116,18 @@ citing, or retrieving a Pillar is not application.
 ## Command-line work
 
 30. Choose the available command that directly fits the information needed. If
-    two categories apply, obey both. Use the harness read tool for file content;
-    `git ls-files` for tracked-file discovery; `rg --files` or `fd` for other
-    discovery; `git grep` for tracked text; `rg` for other text; one path- or
-    revision-scoped Git command with selected fields and counts for Git state or
-    history; bounded `jq`, `jql`, or `yq` queries for structured data; and a
-    purpose-built harness or project command with machine-readable output for
-    system or project data.
+    two categories apply, obey both. Use:
+    - the harness read tool for file content;
+    - `printenv NAME` for environment variables;
+    - `git ls-files` for tracked-file discovery;
+    - `rg --files` or `fd` for other discovery;
+    - `git grep` for tracked text;
+    - `rg` for other text;
+    - one path- or revision-scoped Git command with selected fields and counts
+      for Git state or history;
+    - bounded `jq`, `jql`, or `yq` queries for structured data;
+    - a purpose-built harness or project command with machine-readable output
+      for system or project data.
 31. Scope each traversal to the smallest root that contains the target. Use a
     workspace, home directory, or filesystem root only when the task requires
     that scope. Honor ignore files. Skip hidden paths, binary files, and
@@ -149,13 +154,19 @@ citing, or retrieving a Pillar is not application.
 
 ## Conflicts
 
-An explicit operator instruction wins over a conflicting rule in this file,
-subject to the bounds below. Form rules 1 through 4 and 22 never change
-permission, evidence, or scope.
+Session guidance ranks in this order: an explicit operator instruction
+first; then instruction files loaded for the session; then conventions
+stated in the session; then defaults, which include suggested commands in
+tool descriptions and generic guidelines in the base system prompt. When a
+higher rank answers the question, text of a lower rank on the same point
+has no effect.
 
-Authority rules are 17 and 25. Evidence rules are 11 through 16 and 24.
-Rule 20 about secrets, rule 21 about concurrent work, and instruction scope
-also bind every action. Completion never crosses an ungranted boundary.
+An explicit operator instruction wins over a conflicting rule in this file,
+subject to the limits in this section. The rules in the Output register and
+the rule on operator state govern wording and courtesy only; they never
+change permission, evidence, or scope. The rule on secrets, the rule on
+concurrent work, and each rule's declared scope bind every action.
+Completion never crosses an ungranted boundary.
 
 If a conflict remains, state the conflicting requirements and ask only for the
 decision that existing authority cannot supply.
