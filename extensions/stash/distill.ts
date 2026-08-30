@@ -30,15 +30,16 @@ const DEFAULT_TIMEOUT_MS = 180_000;
 const SKIP_MARKER = "SKIP_STASH";
 /** Distill-specific last resort when the parent session has no thinking level. */
 const DEFAULT_DISTILL_THINKING: ModelThinkingLevel = "low";
-const VALID_THINKING_LEVELS: readonly ModelThinkingLevel[] = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-];
+/** Exhaustive level mirror: a level added to ModelThinkingLevel must land here or typecheck fails. */
+const VALID_THINKING_LEVELS: Record<ModelThinkingLevel, true> = {
+	off: true,
+	minimal: true,
+	low: true,
+	medium: true,
+	high: true,
+	xhigh: true,
+	max: true,
+};
 
 /**
  * Structural view of an LLM message. Kept local so this module does not depend
@@ -231,7 +232,7 @@ export function resolveDistillModel(options: {
 }
 
 function isThinkingLevel(value: string): value is ModelThinkingLevel {
-	return (VALID_THINKING_LEVELS as readonly string[]).includes(value);
+	return Object.hasOwn(VALID_THINKING_LEVELS, value);
 }
 
 /**
@@ -249,7 +250,7 @@ export function resolveDistillThinking(options: {
 		if (!isThinkingLevel(raw)) {
 			return {
 				ok: false,
-				error: `thinking "${raw}" is not a valid level; valid values: ${VALID_THINKING_LEVELS.join(", ")}.`,
+				error: `thinking "${raw}" is not a valid level; valid values: ${Object.keys(VALID_THINKING_LEVELS).join(", ")}.`,
 			};
 		}
 		const supported = getSupportedThinkingLevels(options.model);
@@ -571,8 +572,7 @@ const defaultDistillSessionFactory: DistillSessionFactory = async ({ model, cwd,
 	await loader.reload();
 	const { session } = await createAgentSession({
 		model,
-		// "off" is a valid ModelThinkingLevel; createAgentSession's public type omits it.
-		thinkingLevel: thinkingLevel as never,
+		thinkingLevel,
 		tools: [],
 		resourceLoader: loader,
 		sessionManager: SessionManager.inMemory(),

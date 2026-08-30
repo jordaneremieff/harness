@@ -1133,6 +1133,68 @@ describe("stash creation", () => {
 		assert.equal(session.aborted, true, "session shutdown must abort the in-flight job");
 		assert.equal(statuses.at(-1), "<clear>", "session shutdown must clear the status");
 	});
+
+	it("ignores a foreign session's shutdown and aborts only for the owning session", async () => {
+		// Worker sessions share this module instance in one process, so their
+		// shutdown fires the same handler with their own context: the in-flight
+		// job belongs to the session that reserved it and must survive the foreign
+		// shutdown untouched.
+		const session: any = {};
+		const never = () => new Promise<void>(() => {});
+		const factory = async () => ({
+			prompt: never,
+			getLastAssistantText: () => "",
+			abort: async () => {
+				session.aborted = true;
+			},
+			dispose: () => {},
+		});
+		const { commands, events } = registry({ distillSessionFactory: factory });
+		const statuses: string[] = [];
+		const owner = creationCtx({
+			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
+		});
+		const foreign = creationCtx(
+			{
+				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
+			},
+			{ sessionManager: { getSessionId: () => "sess-worker", buildContextEntries: () => [] } },
+		);
+		await commands.get("stash").handler("new race probe", owner);
+		const shutdownHandler = events.get("session_shutdown");
+		await shutdownHandler({ type: "session_shutdown", reason: "quit" }, foreign);
+		assert.equal(session.aborted, undefined, "a foreign session's shutdown must not abort the job");
+		assert.ok(statuses.at(-1)?.startsWith("stash: running"), "a foreign shutdown must not clear the status");
+		await shutdownHandler({ type: "session_shutdown", reason: "quit" }, owner);
+		assert.equal(session.aborted, true, "the owning session's shutdown must abort the job");
+		assert.equal(statuses.at(-1), "<clear>", "the owning session's shutdown must clear the status");
+	});
+
+	it("notifies when session shutdown cancels a running creation", async () => {
+		// /stash abort reports itself synchronously; a shutdown does not, so the
+		// cancelled outcome is the operator's only notice that the creation died.
+		let shutdownNow: (() => void) | null = null;
+		const factory = async () => ({
+			prompt: async () => {
+				shutdownNow?.();
+			},
+			getLastAssistantText: () => "",
+			abort: async () => {},
+			dispose: () => {},
+		});
+		const { commands, events } = registry({ distillSessionFactory: factory });
+		const notifications: string[] = [];
+		const ctx = creationCtx({
+			notify: (message: string) => notifications.push(message),
+			setStatus: () => {},
+		});
+		shutdownNow = () => {
+			void events.get("session_shutdown")({ type: "session_shutdown", reason: "reload" }, ctx);
+		};
+		await commands.get("stash").handler("new shutdown notice", ctx);
+		await waitForSettle();
+		assert.match(notifications.join("\n"), /Stash creation cancelled by session shutdown/);
+	});
 });
 
 describe("stash command grammar", () => {

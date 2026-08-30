@@ -78,11 +78,22 @@ async function openRegular(path: string): Promise<{ handle: FileHandle; info: St
 	}
 }
 
+/** Store directories whose artifacts this process has already hardened. */
+const hardenedStores = new Set<string>();
+
 /**
- * Make the store private on every touch, including stores created by an older
- * version, while keeping the per-operation cost O(1) in artifact count: modes
- * are only rewritten when they differ from the expected private modes. Symlinks
- * are ignored rather than followed.
+ * Enforce the store's privacy on every touch, including stores created by an
+ * older version. The directory check itself is O(1); hardening the artifacts
+ * inside is O(n) in artifact count — each one is opened, stat'ed, and chmod'ed
+ * only when its mode differs — so the sweep runs once per process per store
+ * directory rather than on every touch. That keeps every touch O(1) beyond the
+ * readdir callers already need without a security regression: the 0700
+ * directory mode above is re-enforced on every call and already bars other
+ * users from reaching any artifact inside it, every artifact open travels
+ * through O_NOFOLLOW with a regular-file check, every read chmods the artifact
+ * it reads to 0600, and the write path publishes at 0600. The sweep only
+ * migrates stores written before artifacts were private. Symlinks are ignored
+ * rather than followed.
  */
 async function secureStore(dir: string, create: boolean): Promise<Dirent[] | null> {
 	if (create) await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -102,6 +113,7 @@ async function secureStore(dir: string, create: boolean): Promise<Dirent[] | nul
 		if (!create && hasCode(error, "ENOENT")) return null;
 		throw error;
 	}
+	if (hardenedStores.has(dir)) return dirents;
 	for (const entry of artifactDirents(dirents)) {
 		try {
 			const { handle, info } = await openRegular(join(dir, entry.name));
@@ -117,6 +129,9 @@ async function secureStore(dir: string, create: boolean): Promise<Dirent[] | nul
 			if (!hasCode(error, "ENOENT") && !hasCode(error, "ELOOP")) throw error;
 		}
 	}
+	// Mark the store hardened only after a completed sweep so an interrupted one
+	// retries on the next touch.
+	hardenedStores.add(dir);
 	return dirents;
 }
 

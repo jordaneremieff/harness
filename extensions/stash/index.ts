@@ -7,6 +7,7 @@ import {
 	withFileMutationQueue,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
+	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -68,9 +69,18 @@ interface InFlightJob {
 	job: DistillJob | null;
 	/** Aborts both the setup awaits and the running job. */
 	controller: AbortController;
+	/** True once the operator was told synchronously that this job was cancelled. */
+	cancelNoticeGiven: boolean;
 }
 
 let inFlight: InFlightJob | null = null;
+/**
+ * Session that owns the in-flight job and its status timers. Pi loads one module
+ * instance per path per process, so worker sessions in the same process share
+ * these globals: a foreign session_shutdown must not abort another session's
+ * work. Null while nothing is owned.
+ */
+let ownerSessionId: string | null = null;
 let spinnerTimer: ReturnType<typeof setInterval> | null = null;
 let resultClearTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -94,6 +104,15 @@ function clearResultStatus(): void {
 	if (resultClearTimer) {
 		clearTimeout(resultClearTimer);
 		resultClearTimer = null;
+	}
+}
+
+/** Session identity for ownership checks; empty when the runtime cannot answer. */
+function sessionKeyOf(ctx: Pick<ExtensionContext, "sessionManager">): string {
+	try {
+		return ctx.sessionManager.getSessionId();
+	} catch {
+		return process.env.PI_SESSION_ID ?? "";
 	}
 }
 
@@ -138,6 +157,13 @@ function settleDistill(slot: InFlightJob, outcome: DistillOutcome, ctx: StatusUi
 				`The stash artifact was already written when the creation was cancelled: ${outcome.record.id}\n${safeLine(outcome.path)}\n\nRotate it with /stash rotate ${outcome.record.id} if you do not want it.`,
 				"warning",
 			);
+			return;
+		}
+		// A cancelled job whose slot a session_shutdown already freed is the one
+		// cancellation path without a synchronous notice (/stash abort reports
+		// itself), so the aborted outcome is the last chance to tell the operator.
+		if (outcome.reason === "aborted" && !slot.cancelNoticeGiven) {
+			notify(ctx, "Stash creation cancelled by session shutdown.", "info");
 		}
 		return;
 	}
@@ -242,8 +268,11 @@ async function startCreation(
 	// Reserve the single-flight slot BEFORE any await so concurrent dispatches serialize,
 	// and wire one AbortController to both the setup awaits and the eventual job.
 	const controller = new AbortController();
-	const slot: InFlightJob = { job: null, controller };
+	const slot: InFlightJob = { job: null, controller, cancelNoticeGiven: false };
 	inFlight = slot;
+	// The reserving session owns the job and its status UI; only its own shutdown
+	// may abort the work, even with worker sessions sharing this module instance.
+	ownerSessionId = sessionKeyOf(ctx);
 	try {
 		let branch: string | undefined;
 		try {
@@ -682,6 +711,10 @@ export default function (
 	overrides?: { distillSessionFactory?: DistillSessionFactory; copyText?: (text: string) => Promise<void> },
 ) {
 	pi.on("session_shutdown", async (_event, ctx) => {
+		// Each session's shutdown fires this handler with that session's context,
+		// and worker sessions share this module instance: only the session that
+		// owns the in-flight work may abort it or clear its status UI.
+		if (ownerSessionId !== null && sessionKeyOf(ctx) !== ownerSessionId) return;
 		if (inFlight) {
 			inFlight.controller.abort();
 			inFlight = null;
@@ -689,6 +722,7 @@ export default function (
 		stopSpinner();
 		clearResultStatus();
 		setStatus(ctx, undefined);
+		ownerSessionId = null;
 	});
 	pi.registerTool<typeof WriteParams, Record<string, unknown>>({
 		name: "stash_write",
@@ -906,6 +940,9 @@ export default function (
 				clearResultStatus();
 				setStatus(ctx, undefined);
 				notify(ctx, "Stash creation cancelled.", "info");
+				// The synchronous notice above covers the eventual aborted outcome; the
+				// stale-slot branch must not repeat it when the job settles.
+				current.cancelNoticeGiven = true;
 				current.controller.abort();
 				return;
 			}
