@@ -76,10 +76,10 @@ An extension contains:
 - Its own state on disk under the Pi agent directory, with an environment
   variable override where a store location is configurable. Stateless
   extensions and slices whose lifecycle state lives in an external
-  integration own no disk store here (`herdr`, `statusline`).
+  integration own no disk store here.
 - Its own configuration: environment variables named `PI_*`, documented in
   the README (see `docs/conventions/extension-config.md`). Host-injected
-  discovery variables form the documented exemption (`HERDR_*`).
+  discovery variables form the documented exemption.
 - Optional footer status keys through `ctx.ui.setStatus` (see
   `docs/conventions/status-keys.md`).
 
