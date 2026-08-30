@@ -128,6 +128,24 @@ describe("promotion classification", () => {
 		}
 	});
 
+	it("treats any *FINDINGS.md basename under an extension as a dev record", () => {
+		for (const path of [
+			"extensions/demo/FINDINGS.md",
+			"extensions/demo/EDGE-FINDINGS.md",
+			"extensions/demo/reliability-FINDINGS.md",
+			"extensions/subagent/RELIABILITY-FINDINGS.md",
+		]) {
+			assert.equal(isDevRecordPath(path), true, path);
+		}
+		for (const path of [
+			"extensions/demo/findings.md",
+			"extensions/demo/FINDINGS.md.bak",
+			"docs/FINDINGS.md",
+		]) {
+			assert.equal(isDevRecordPath(path), false, path);
+		}
+	});
+
 	it("ships ordinary extension sources, tests, and READMEs", () => {
 		for (const path of [
 			"extensions/clipboard/index.ts",

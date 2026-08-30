@@ -428,7 +428,7 @@ function syncBranches(
 
 const devRecordPatterns = [
 	/^extensions\/[^/]+\/(?:AGENTS|LOG|PLAN|REWRITE-SPEC|SOLUTION)\.md$/,
-	/^extensions\/[^/]+\/[A-Z][A-Z0-9-]*FINDINGS\.md$/,
+	/^extensions\/[^/]+\/[^/]*FINDINGS\.md$/,
 ];
 
 export function isDevRecordPath(path: string): boolean {
