@@ -78,9 +78,11 @@ Keep these links separate:
 
 A passing component test proves only its tested layer. Use or invocation count does not prove utility. A sparse trial does not prove absence of need.
 
-## Audit lane
+## Audit and removal lanes
 
-For usage, utility, retention, removal, or incident disposition, read [extension-audit.md](extension-audit.md). Add engineering sources only for causal claims that require code or API conclusions.
+For usage, utility, retention, or incident disposition, including whether an extension should be removed, read [extension-audit.md](extension-audit.md). Add engineering sources only for causal claims that require code or API conclusions.
+
+After the operator settles removal, read [removal.md](removal.md) and execute the exact managed-extension procedure.
 
 ## Closure record
 

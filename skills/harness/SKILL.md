@@ -134,7 +134,8 @@ No warrant is needed for a fixed repair, an operator-selected outcome or archite
 - **Agent Skill:** read [the Agent Skill lane](references/skills.md). For a new skill or substantial redesign, also read [skill-research.md](references/skill-research.md), [skill-design.md](references/skill-design.md), and [skill-evaluation.md](references/skill-evaluation.md) only as their gates require.
 - **Extension or extension-owned surface:** read [extensions.md](references/extensions.md). Pull [extension-engineering.md](references/extension-engineering.md), [pi-grounding.md](references/pi-grounding.md), and [extension-research.md](references/extension-research.md) only for the implicated design questions.
 - **Prompt template, theme, package, settings, SDK/RPC/JSON integration, or standalone CLI:** use [surface selection](references/surface-selection.md), then read the current installed Pi document for the selected surface. Use [extensions.md](references/extensions.md) when extension code or an extension boundary participates.
-- **Usage, utility, retention, removal, or incident decision for an extension:** read [extension-audit.md](references/extension-audit.md).
+- **Managed extension removal after the disposition is settled:** read [removal.md](references/removal.md).
+- **Usage, utility, retention, removal, or incident disposition for an extension:** read [extension-audit.md](references/extension-audit.md).
 
 **Complete when:** every loaded reference serves a live decision or verification claim.
 
