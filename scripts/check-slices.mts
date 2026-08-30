@@ -336,13 +336,21 @@ export function auditPillars(root: string): { violations: string[]; readmeProjec
 		violations.push(`${skillRel}: consultation adapter is missing`);
 	}
 
+	// The armory's corpus paths resolve against the skill directory (skills/troll/),
+	// the base the SKILL.md compatibility note states — not against the armory
+	// file's own directory, and not by stripping a fixed ../../pillars/ prefix.
+	// Every relative pillars/ path the file carries is resolved that way, so a
+	// wrong number of `..` segments or a missing target is flagged rather than
+	// silently approved.
+	const armoryRel = "skills/troll/references/pillar-armory.md";
 	const armoryPath = join(root, "skills", "troll", "references", "pillar-armory.md");
+	const skillDir = join(root, "skills", "troll");
 	if (existsSync(armoryPath)) {
 		const armory = decodeFatalUtf8(readFileSync(armoryPath));
-		for (const match of armory.matchAll(/\.\.\/\.\.\/(pillars\/[a-z-]+\.md)/g)) {
-			const target = join(pillarsDir, match[1].replace(/^pillars\//, ""));
+		for (const match of armory.matchAll(/(?:\.\.\/)+pillars\/[A-Za-z0-9-]+\.md/g)) {
+			const target = resolve(skillDir, match[0]);
 			if (!existsSync(target)) {
-				violations.push(`skills/troll/references/pillar-armory.md: mapping target ../../${match[1]} does not exist`);
+				violations.push(`${armoryRel}: corpus path ${match[0]} does not resolve from the skill directory`);
 			}
 		}
 	}
