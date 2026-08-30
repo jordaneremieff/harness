@@ -74,6 +74,12 @@ After replaying, the command synchronizes every worktree, confirms that nothing
 but development records separates the branch from `main`, runs the repository
 gates plus an entrypoint load check, and pushes.
 
+`PI_PROMOTE_GATES` replaces the repository gates the command runs before the
+push: a JSON array of `{ "name": string, "command": string[] }` entries, each
+executed in the repository root and required to exit 0. Unset, the command runs
+the default gates `test`, `typecheck`, `check`, and `lint`
+(`scripts/extension-worktrees.mts`). `--no-gates` still skips them entirely.
+
 Any failure before the push restores `main` to the commit it started from and
 leaves no cherry-pick in progress, so a repeated run is always safe. A failed
 push leaves the promotion committed locally; running the command again pushes it.

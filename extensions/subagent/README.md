@@ -380,7 +380,8 @@ verbose/details mode or toggle. Escape alone returns to the list and closes the
 roster; `q` is inert as a navigation key.
 
 For a terminal worker, `c copy` writes the exact shell-safe reopen command to
-the clipboard. The transient notice shows the full command when it fits and
+the clipboard via `pbcopy` (macOS only). The transient notice shows the full
+command when it fits and
 preserves its shell-quoted tail at narrow widths. `r continue`
 opens an inline prompt; Enter starts a new linked background worker and repoints
 the console to it, while Escape cancels the prompt. Scroll controls stay at the

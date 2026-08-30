@@ -20,8 +20,9 @@ The harness is a Pi package. `package.json` declares the resources under the
 
 - Install the package with `pi install /absolute/path/to/harness`; a
   standalone development checkout runs `npm install` and `npm test`.
-- `npm run warmup:jiti` pre-transpiles every extension into jiti's on-disk
-  cache in `$TMPDIR/jiti` by loading each extension once with
+- `npm run warmup:jiti` pre-transpiles the extensions listed in that script
+  (currently `brave`, `statusline`, `clipboard`, and `stash`) into jiti's
+  on-disk cache in `$TMPDIR/jiti` by loading each extension once with
   `pi --help --offline`. It is an operator step after a reboot or fresh
   install, not a build step; the cache is content-keyed, so jiti invalidates
   stale entries automatically.
@@ -32,6 +33,10 @@ The harness is a Pi package. `package.json` declares the resources under the
   (`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`,
   `@earendil-works/pi-tui`, `typebox`) are declared as wildcard peers; Pi
   supplies them at runtime.
+- `@earendil-works/pi-protocol` and `@earendil-works/pi-server` (both
+  `^0.84.2`) are pinned direct dependencies: the subagent extension imports
+  them at runtime for its protocol server
+  (`extensions/subagent/runtime.ts`, `server.ts`).
 - `package-lock.json` pins the development dependency snapshot for reproducible
   standalone checks. Refresh it with the Pi release used to validate the harness.
 - Every change is validated against the installed Pi declarations, not only
