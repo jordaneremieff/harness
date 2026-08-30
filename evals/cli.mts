@@ -167,7 +167,7 @@ Selection options --participant, --case, and --variant are repeatable. The run c
 `;
 }
 
-function refineOperationalStatus(
+export function refineOperationalStatus(
 	directory: string,
 	status: RunState["operational"]["status"],
 ): RunState["operational"]["status"] {
@@ -181,6 +181,9 @@ function refineOperationalStatus(
 		types.map((type) => {
 			if (type === "Timeout") return "timed_out";
 			if (type === "Cancelled" || type === "CancellationError") return "cancelled";
+			// A provider rejection is an external refusal of an approved request:
+			// the harness machinery itself did not fail.
+			if (type === "AssistantError" || type === "AssistantStopReason") return "blocked";
 			if (type === "Blocked" || type === "BlockedError") return "blocked";
 			return "failed";
 		}),
