@@ -22,7 +22,6 @@ Current consumers:
 | `PI_STASH_MODEL` | stash | Optional model for `/stash new` distillation (`provider/id` or bare id). Unset inherits the parent session model. Set but missing or unauthenticated fails creation; no silent fallback. |
 | `PI_STASH_THINKING` | stash | Optional thinking level for `/stash new` distillation. Unset inherits the parent session level (default `low` when the parent has none). An explicit unsupported level fails creation; an inherited unsupported level clamps to the model. |
 | `PI_CLIPBOARD_DIR` | clipboard | Clipboard archive directory override; default `<agentDir>/clipboard`. |
-| `PI_HERDR_MAX_NAME_LENGTH` | herdr | Cap for session names reported to herdr and written as tab labels; default 60, ceiling 80. |
 | `PI_SUBAGENT_PRUNE_DAYS` | subagent | Retention window for terminal workers in the store; default 30 days, `0` disables pruning. |
 | `PI_SUBAGENT_IDLE_MINUTES` | subagent | Release deadline for an interrupted idle worker; default 30 minutes, `0` disables the deadline. |
 | `PI_SUBAGENT_DEADLINE_MINUTES` | subagent | Default run-leg deadline for a dispatch that declares none; default 30 minutes, `0` runs unbounded. |
@@ -33,7 +32,7 @@ Current consumers:
 ## Rules
 
 - Name every extension-read variable in the `PI_*` namespace. No exceptions.
-- Exemption — host-injected discovery variables: `HERDR_*` are injected into the process environment by the external herdr multiplexer for the pane it hosts, not by the operator, and are not configuration. The herdr extension no-ops unless `HERDR_ENV` is `1` (`extensions/herdr/index.ts`), so these variables gate discovery rather than tune behavior. Names: `HERDR_ENV`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`, `HERDR_TAB_ID`, `HERDR_WORKSPACE_ID`.
+- Exemption — host-injected discovery variables: `HERDR_*` are injected into the process environment by the external herdr multiplexer for the pane it hosts, not by the operator, and are not configuration. Names: `HERDR_ENV`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`, `HERDR_TAB_ID`, `HERDR_WORKSPACE_ID`.
 - Document the variable in the extension README when the extension reads it.
 - Keep defaults derivable from the Pi agent directory
   (`getAgentDir()`/`~/.pi/agent`) so tests and isolated deployments can

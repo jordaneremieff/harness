@@ -30,14 +30,11 @@ delivery = "off"
 enabled = false
 
 [ui.sidebar.agents.rows_by_agent]
-# pi panes: line 1 is the state icon plus the tab name (the session label
-# the herdr extension reports); workspace is omitted because Herdr already
-# shows it on the workspace header, so it only stole width from the label.
-# Line 2 is the model token the herdr extension reports; it also tells two
-# agents that share a split tab apart.
+# pi panes: line 1 is the state icon plus the tab name; workspace is omitted
+# because Herdr already shows it on the workspace header, so it only stole
+# width from the label.
 pi = [
   ["state_icon", "tab"],
-  ["$model"],
 ]
 
 [experimental]

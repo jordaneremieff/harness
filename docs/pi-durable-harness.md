@@ -89,8 +89,8 @@ Verified 2026-08-30.
   `packages/coding-agent/src/extensions` is `dcd46192` (2026-08-24), an ancestor
   of `v0.84.4`, so the loader this harness depends on is unchanged on `dev`.
 - Nothing in session storage. This harness reads session entries only through
-  the public `SessionManager` API (`extensions/subagent/index.ts`,
-  `extensions/herdr/index.ts`), so storage format 4 stays behind that surface.
+  the public `SessionManager` API (`extensions/subagent/index.ts`), so storage
+  format 4 stays behind that surface.
 - The subagent extension imports the published `@earendil-works/pi-server`, so
   the program's wider dependency graph arrives with a future release, not today.
 
