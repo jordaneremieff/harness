@@ -21,7 +21,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -73,17 +73,23 @@ const specifierPattern = /(?:from|import)\s*(?:\(\s*)?["']([^"']+)["']/g;
 for (const file of sourceFiles) {
 	const rel = relative(root, file);
 	const sliceName = rel.split(/[\\/]/)[1];
+	const sliceDir = join(extensionsRoot, sliceName);
 	const source = readFileSync(file, "utf8");
 	for (const match of source.matchAll(specifierPattern)) {
 		const specifier = match[1];
-		if (specifier.startsWith("../")) {
+		// Literal './' and '../' spellings are resolved against the importing
+		// file before comparison, so a './' prefix cannot dodge the escape
+		// check (e.g. './../sibling/index.ts').
+		const isRelative = specifier.startsWith("./") || specifier.startsWith("../");
+		const normalized = isRelative ? relative(sliceDir, resolve(dirname(file), specifier)) : specifier;
+		if (isRelative && normalized.startsWith("..")) {
 			fail(`${rel}: import "${specifier}" escapes the extension slice`);
 		} else if (specifier.startsWith("/")) {
 			fail(`${rel}: absolute import "${specifier}"`);
-		} else if (/^extensions\//.test(specifier)) {
+		} else if (/^extensions\//.test(normalized)) {
 			fail(`${rel}: import "${specifier}" reaches into extensions/ by path`);
 		} else {
-			const cross = specifier.match(/\/extensions\/([^/]+)\//);
+			const cross = normalized.match(/\/extensions\/([^/]+)\//);
 			if (cross && cross[1] !== sliceName) {
 				fail(`${rel}: import "${specifier}" reaches into extension "${cross[1]}"`);
 			}

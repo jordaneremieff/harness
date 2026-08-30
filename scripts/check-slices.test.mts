@@ -33,6 +33,35 @@ test("ignores a tracked document deleted from the working tree", () => {
 	}
 });
 
+test("flags dot-prefixed relative specifiers that escape the slice", () => {
+	const root = mkdtempSync(join(tmpdir(), "check-slices-escape-"));
+	try {
+		const scripts = join(root, "scripts");
+		mkdirSync(scripts, { recursive: true });
+		copyFileSync(sourceScript, join(scripts, "check-slices.mts"));
+		for (const name of ["a", "b"]) {
+			const slice = join(root, "extensions", name);
+			mkdirSync(slice, { recursive: true });
+			writeFileSync(join(slice, "index.ts"), "export default function () {}\n");
+			writeFileSync(join(slice, "README.md"), `# ${name}\n`);
+			writeFileSync(join(slice, "index.test.mts"), "// fixture\n");
+		}
+		writeFileSync(
+			join(root, "extensions", "a", "index.ts"),
+			'import { helper } from "./../b/index.ts";\nexport default function () {}\n',
+		);
+		execFileSync("git", ["init", "-q"], { cwd: root });
+		execFileSync("git", ["add", "."], { cwd: root });
+
+		const result = spawnSync(process.execPath, [join(scripts, "check-slices.mts")], { cwd: root, encoding: "utf8" });
+		assert.equal(result.status, 1, result.stderr);
+		assert.match(result.stderr, /escapes the extension slice/);
+		assert.match(result.stderr, /\.\/\.\.\/b\/index\.ts/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 import { auditPillars } from "./check-slices.mts";
 
 function pillarFixtureRoot(): string {
