@@ -2,8 +2,8 @@
 
 My personal [Pi](https://github.com/earendil-works/pi) harness and its surrounding tool configuration.
 
-Extension development uses dedicated persistent worktrees. See
-[the extension worktree convention](docs/conventions/extension-worktrees.md).
+Extensions, skills, prompts, and features use dedicated persistent worktrees. See
+[the worktree convention](docs/conventions/worktrees.md).
 
 Upstream Pi rebuilds its agent core as a durable harness. That program and its
 effect here are tracked in
@@ -27,7 +27,7 @@ pi install /absolute/path/to/harness
 Local packages do not receive update notices. During extension development,
 disable the package's extension resources in `pi config`; the persistent
 worktree entrypoints provide the active extension copies described in
-[the extension worktree convention](docs/conventions/extension-worktrees.md).
+[the worktree convention](docs/conventions/worktrees.md).
 
 ### Consumer machine
 

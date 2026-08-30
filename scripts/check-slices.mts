@@ -12,7 +12,10 @@
 //   4. pillar corpus contract: strict frontmatter on every entry, README as
 //      a verbatim-quote inventory, GOVERNANCE.md present with required
 //      sections, skill pointers intact, armory targets resolving, and no
-//      retired governance file returning.
+//      retired governance file returning;
+//   5. every tracked *.test.mts file is matched by at least one glob in the
+//      `test` script of package.json, so a slice that owns a new top-level
+//      directory cannot ship tests that `npm test` silently never runs.
 //
 // Dependency-free by design (node builtins only), mirroring the established
 // pattern of skills/harness/scripts/validate-skill.mts.
@@ -403,6 +406,35 @@ export function auditPillars(root: string): { violations: string[]; readmeProjec
 	return { violations, readmeProjection };
 }
 
+// --- rule 5: npm test globs cover every tracked test file ---------------
+
+// `*` matches any run of characters except a path separator; no other glob
+// feature is used by the test script, so none is supported here.
+const globToRegExp = (glob: string): RegExp =>
+	new RegExp(`^${glob.replace(/[.*+?^${}()|[\]\\]/g, (ch) => (ch === "*" ? "[^/]*" : `\\${ch}`))}$`);
+
+const packageJsonPath = join(root, "package.json");
+if (existsSync(packageJsonPath)) {
+	let testScript: string | undefined;
+	try {
+		const manifest = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+			scripts?: Record<string, string>;
+		};
+		const candidate = manifest.scripts?.test;
+		if (typeof candidate === "string") testScript = candidate;
+	} catch {
+		// An unparseable manifest is not this rule's business; other gates own it.
+	}
+	if (testScript !== undefined) {
+		const globs = [...testScript.matchAll(/["']([^"']*\.test\.mts)["']/g)].map((match) => globToRegExp(match[1]));
+		for (const file of tracked.split("\n")) {
+			if (!file.endsWith(".test.mts")) continue;
+			if (globs.some((pattern) => pattern.test(file))) continue;
+			fail(`${file}: no npm test glob matches it, so \`npm test\` never runs this file`);
+		}
+	}
+}
+
 const pillarAudit = auditPillars(root);
 if (pillarAudit.readmeProjection) {
 	console.log(
@@ -417,4 +449,4 @@ if (failures.length > 0) {
 	for (const failure of failures) console.error(`  - ${failure}`);
 	process.exit(1);
 }
-console.log("check-slices: ok — extension anatomy, slice isolation, doc counts");
+console.log("check-slices: ok — extension anatomy, slice isolation, doc counts, test globs");

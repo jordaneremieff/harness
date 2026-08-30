@@ -17,10 +17,10 @@
     "format": "biome format --error-on-warnings .",
     "typecheck": "tsc -p .",
     "check": "node scripts/check-slices.mts",
-    "worktrees": "node scripts/extension-worktrees.mts",
-    "worktrees:sync": "node scripts/extension-worktrees.mts sync",
-    "worktrees:status": "node scripts/extension-worktrees.mts status",
-    "worktrees:hooks": "node scripts/extension-worktrees.mts install-hooks",
+    "worktrees": "node scripts/worktrees.mts",
+    "worktrees:sync": "node scripts/worktrees.mts sync",
+    "worktrees:status": "node scripts/worktrees.mts status",
+    "worktrees:hooks": "node scripts/worktrees.mts install-hooks",
     "warmup:jiti": "pi --help --offline --extension extensions/brave/index.ts --extension extensions/statusline/index.ts --extension extensions/clipboard/index.ts --extension extensions/stash/index.ts --extension extensions/subagent/index.ts"
   },
   "peerDependencies": {

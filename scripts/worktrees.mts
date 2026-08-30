@@ -35,11 +35,25 @@ interface WorktreePorcelainRecord {
 	detached?: boolean;
 }
 
-interface ExtensionWorktreeRecord {
+type SliceKindName = "extension" | "skill" | "prompt" | "feature";
+
+interface SliceKind {
+	name: SliceKindName;
+	/** Branch prefix, including the trailing slash. */
+	branchPrefix: string;
+	/** Entrypoint path inside the worktree; null means the kind has no entrypoint. */
+	entrypoint: (worktreePath: string, name: string) => string | null;
+	/** Dev-record root relative to the repository root; null means no dev records. */
+	devRecordRoot: (name: string) => string | null;
+}
+
+interface WorktreeRecord {
+	kind: SliceKindName;
 	name: string;
 	branch: string;
 	path: string;
-	entrypoint: string;
+	entrypoint: string | null;
+	devRecordRoot: string | null;
 }
 
 interface HarnessContext {
@@ -98,7 +112,8 @@ interface HeldPlanEntry {
 
 interface PromotionReport {
 	ok: boolean;
-	extension?: string;
+	name?: string;
+	kind?: SliceKindName;
 	stage?: string;
 	reason?: string;
 	promoted?: string[];
@@ -112,18 +127,141 @@ interface PromotionReport {
 	mainAfter?: string;
 	gates?: GateResults;
 	pushed?: boolean;
+	syncOk?: boolean;
 	branchFailures?: string[];
 }
 
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = resolve(dirname(scriptPath), "..");
-const hookMarker = "# managed by scripts/extension-worktrees.mts";
-const legacyHookMarker = "# managed by scripts/extension-worktrees.mjs";
+const hookMarker = "# managed by scripts/worktrees.mts";
+const legacyHookMarkers = [
+	"# managed by scripts/extension-worktrees.mts",
+	"# managed by scripts/extension-worktrees.mjs",
+];
+
+const sliceKinds: SliceKind[] = [
+	{
+		name: "extension",
+		branchPrefix: "extension/",
+		entrypoint: (worktreePath, name) => join(worktreePath, "extensions", name, "index.ts"),
+		devRecordRoot: (name) => `extensions/${name}`,
+	},
+	{
+		name: "skill",
+		branchPrefix: "skill/",
+		entrypoint: (worktreePath, name) => join(worktreePath, "skills", name, "SKILL.md"),
+		devRecordRoot: (name) => `skills/${name}`,
+	},
+	{
+		name: "prompt",
+		branchPrefix: "prompt/",
+		entrypoint: (worktreePath, name) => join(worktreePath, "prompts", `${name}.md`),
+		devRecordRoot: () => null,
+	},
+	{
+		name: "feature",
+		branchPrefix: "feature/",
+		entrypoint: () => null,
+		devRecordRoot: (name) => name,
+	},
+];
 
 /** True when a hook file is this installer's own output, current or prior. */
 export function hookIsManaged(content: string): boolean {
-	return content.includes(hookMarker) || content.includes(legacyHookMarker);
+	return content.includes(hookMarker) || legacyHookMarkers.some((marker) => content.includes(marker));
 }
+
+function sliceKindForBranch(branch: string): SliceKind | undefined {
+	return sliceKinds.find((kind) => branch.startsWith(kind.branchPrefix));
+}
+
+function sliceKindForName(name: SliceKindName): SliceKind {
+	const kind = sliceKinds.find((candidate) => candidate.name === name);
+	if (!kind) throw new Error(`Unknown slice kind: ${name}`);
+	return kind;
+}
+
+const sliceNamePattern = /^[a-z0-9][a-z0-9-]*$/;
+
+/** Parse a `<kind>/<name>` slice reference; a bare `<name>` leaves the kind unresolved. */
+export function parseSliceReference(reference: string): { kind?: SliceKindName; name: string } {
+	const slash = reference.indexOf("/");
+	const name = slash < 0 ? reference : reference.slice(slash + 1);
+	if (!sliceNamePattern.test(name)) {
+		throw new Error(`Slice name must use lowercase letters, numbers, and hyphens: ${name}`);
+	}
+	if (slash < 0) return { name };
+	const kindName = reference.slice(0, slash);
+	const kind = sliceKinds.find((candidate) => candidate.name === kindName);
+	if (!kind) {
+		const known = sliceKinds.map((candidate) => candidate.name).join(", ");
+		throw new Error(`Unknown slice kind: ${kindName} (known kinds: ${known})`);
+	}
+	return { kind: kind.name, name };
+}
+
+/** Hook body. It resolves the main checkout at run time, so a moved repository keeps working. */
+export function hookContent(): string {
+	const branchPattern = ["main", ...sliceKinds.map((kind) => `${kind.branchPrefix}*`)].join("|");
+	return `${[
+		"#!/bin/sh",
+		hookMarker,
+		"branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)",
+		'case "$branch" in',
+		`  ${branchPattern}) ;;`,
+		"  *) exit 0 ;;",
+		"esac",
+		"common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)",
+		'case "$common" in',
+		"  */.git) ;;",
+		"  *) exit 0 ;;",
+		"esac",
+		'script="$(dirname "$common")/scripts/worktrees.mts"',
+		'[ -f "$script" ] || exit 0',
+		'exec node "$script" sync --hook',
+	].join("\n")}\n`;
+}
+
+function branchExists(repoRoot: string, branch: string): boolean {
+	return (
+		git(repoRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
+			accept: [0, 1],
+		}).status === 0
+	);
+}
+
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function devRecordPatterns(root: string): RegExp[] {
+	const base = escapeRegExp(root);
+	return [
+		new RegExp(`^${base}/(?:AGENTS|LOG|PLAN|REWRITE-SPEC|SOLUTION)\\.md$`),
+		new RegExp(`^${base}/[^/]*FINDINGS\\.md$`),
+	];
+}
+
+export function isDevRecordPath(path: string, devRecordRoot: string | null): boolean {
+	if (devRecordRoot === null) return false;
+	return devRecordPatterns(devRecordRoot).some((pattern) => pattern.test(path));
+}
+
+export function classifyCommitFiles(
+	files: readonly string[],
+	devRecordRoot: string | null,
+): {
+	kind: "held" | "ship" | "filter";
+	devRecords: string[];
+	shipped: string[];
+} {
+	const devRecords = files.filter((file) => isDevRecordPath(file, devRecordRoot));
+	const shipped = files.filter((file) => !isDevRecordPath(file, devRecordRoot));
+	if (shipped.length === 0) return { kind: "held", devRecords, shipped };
+	if (devRecords.length === 0) return { kind: "ship", devRecords, shipped };
+	return { kind: "filter", devRecords, shipped };
+}
+
 const localGitEnvironmentKeys = [
 	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
 	"GIT_COMMON_DIR",
@@ -294,34 +432,66 @@ export function reconcilePackageEntries(
 	return { packages: next, activeNames: [...active].sort() };
 }
 
-function repositoryState(repoRoot: string, worktreeRoot: string): ExtensionWorktreeRecord[] {
-	const branches = git(repoRoot, ["for-each-ref", "--format=%(refname:short)", "refs/heads/extension/*"])
-		.stdout.trim()
-		.split("\n")
-		.filter(Boolean)
-		.sort();
+function repositoryState(repoRoot: string, worktreeRoot: string): { records: WorktreeRecord[]; problems: string[] } {
+	const problems: string[] = [];
+	const branches: string[] = [];
+	for (const kind of sliceKinds) {
+		const refs = git(repoRoot, [
+			"for-each-ref",
+			"--format=%(refname:short)",
+			`refs/heads/${kind.branchPrefix}*`,
+		])
+			.stdout.trim()
+			.split("\n")
+			.filter(Boolean);
+		branches.push(...refs);
+	}
+	branches.sort();
 	const worktrees = parseWorktreePorcelain(git(repoRoot, ["worktree", "list", "--porcelain"]).stdout);
 	const byBranch = new Map<string, string>();
 	for (const entry of worktrees) {
 		if (entry.branch !== undefined) byBranch.set(entry.branch, entry.path);
 	}
-	const records: ExtensionWorktreeRecord[] = [];
+	const records: WorktreeRecord[] = [];
+	const nameOwners = new Map<string, string>();
 
 	mkdirSync(worktreeRoot, { recursive: true });
 	for (const branch of branches) {
-		const name = branch.slice("extension/".length);
-		const ref = `refs/heads/${branch}`;
-		let path = byBranch.get(ref);
-		if (!path) {
-			path = join(worktreeRoot, name);
-			if (existsSync(path) && readdirSync(path).length > 0) {
-				throw new Error(`Expected worktree path is not empty: ${path}`);
+		try {
+			const kind = sliceKindForBranch(branch);
+			if (!kind) throw new Error(`branch has no recognized slice kind: ${branch}`);
+			const name = branch.slice(kind.branchPrefix.length);
+			if (!sliceNamePattern.test(name)) {
+				throw new Error(`slice name must use lowercase letters, numbers, and hyphens: ${name}`);
 			}
-			git(repoRoot, ["-c", "core.hooksPath=/dev/null", "worktree", "add", path, branch], { inherit: true });
+			const owner = nameOwners.get(name);
+			if (owner !== undefined && owner !== branch) {
+				throw new Error(`worktree name collision across kinds: ${name} (${owner} and ${branch})`);
+			}
+			nameOwners.set(name, branch);
+			const ref = `refs/heads/${branch}`;
+			let path = byBranch.get(ref);
+			if (!path) {
+				path = join(worktreeRoot, name);
+				if (existsSync(path) && readdirSync(path).length > 0) {
+					throw new Error(`expected worktree path is not empty: ${path}`);
+				}
+				git(repoRoot, ["-c", "core.hooksPath=/dev/null", "worktree", "add", path, branch], { inherit: true });
+			}
+			records.push({
+				kind: kind.name,
+				name,
+				branch,
+				path,
+				entrypoint: kind.entrypoint(path, name),
+				devRecordRoot: kind.devRecordRoot(name),
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : undefined;
+			problems.push(`${branch}: ${message}`);
 		}
-		records.push({ name, branch, path, entrypoint: join(path, "extensions", name, "index.ts") });
 	}
-	return records;
+	return { records, problems };
 }
 
 function mainExtensionNames(repoRoot: string): string[] {
@@ -339,7 +509,7 @@ function readSettings(settingsPath: string): Settings {
 function writeSettings(settingsPath: string, settings: Settings): boolean {
 	const content = `${JSON.stringify(settings, null, 2)}\n`;
 	if (readFileSync(settingsPath, "utf8") === content) return false;
-	const temporary = `${settingsPath}.extension-worktrees-${process.pid}`;
+	const temporary = `${settingsPath}.worktrees-${process.pid}`;
 	const mode = statSync(settingsPath).mode;
 	writeFileSync(temporary, content, { mode });
 	renameSync(temporary, settingsPath);
@@ -348,12 +518,17 @@ function writeSettings(settingsPath: string, settings: Settings): boolean {
 
 function reconcileSettings(
 	context: HarnessContext,
-	records: readonly ExtensionWorktreeRecord[],
+	records: readonly WorktreeRecord[],
 	options: ReconcileSettingsOptions = {},
 ): { changed: boolean; activeNames: string[] } {
 	const settings = readSettings(context.settingsPath);
 	const entrypoints = new Map(
-		records.filter((record) => existsSync(record.entrypoint)).map((record) => [record.name, record.entrypoint]),
+		records
+			.filter(
+				(record): record is WorktreeRecord & { entrypoint: string } =>
+					record.kind === "extension" && record.entrypoint !== null && existsSync(record.entrypoint),
+			)
+			.map((record) => [record.name, record.entrypoint]),
 	);
 	const result = reconcilePackageEntries(settings.packages ?? [], {
 		settingsDir: dirname(context.settingsPath),
@@ -390,7 +565,7 @@ function hasTrackedChanges(path: string): boolean {
 
 function syncBranches(
 	context: HarnessContext,
-	records: readonly ExtensionWorktreeRecord[],
+	records: readonly WorktreeRecord[],
 ): { changed: string[]; failures: string[] } {
 	const changed: string[] = [];
 	const failures: string[] = [];
@@ -409,7 +584,7 @@ function syncBranches(
 				rebasing = false;
 				changed.push(record.name);
 			}
-			if (!existsSync(record.entrypoint)) {
+			if (record.entrypoint !== null && !existsSync(record.entrypoint)) {
 				throw new Error(`entrypoint is absent: ${record.entrypoint}`);
 			}
 		} catch (error) {
@@ -426,36 +601,16 @@ function syncBranches(
 	return { changed, failures };
 }
 
-const devRecordPatterns = [
-	/^extensions\/[^/]+\/(?:AGENTS|LOG|PLAN|REWRITE-SPEC|SOLUTION)\.md$/,
-	/^extensions\/[^/]+\/[^/]*FINDINGS\.md$/,
-];
-
-export function isDevRecordPath(path: string): boolean {
-	return devRecordPatterns.some((pattern) => pattern.test(path));
-}
-
-export function classifyCommitFiles(files: readonly string[]): {
-	kind: "held" | "ship" | "filter";
-	devRecords: string[];
-	shipped: string[];
-} {
-	const devRecords = files.filter(isDevRecordPath);
-	const shipped = files.filter((file) => !isDevRecordPath(file));
-	if (shipped.length === 0) return { kind: "held", devRecords, shipped };
-	if (devRecords.length === 0) return { kind: "ship", devRecords, shipped };
-	return { kind: "filter", devRecords, shipped };
-}
-
-function devRecordPathsAt(repoRoot: string, ref: string): string[] {
+function devRecordPathsAt(repoRoot: string, ref: string, devRecordRoot: string | null): string[] {
+	if (devRecordRoot === null) return [];
 	return git(repoRoot, ["ls-tree", "-r", "--name-only", "-z", ref])
 		.stdout.split("\0")
-		.filter((path) => path !== "" && isDevRecordPath(path));
+		.filter((path) => path !== "" && isDevRecordPath(path, devRecordRoot));
 }
 
-function rebuildPromotedBranch(context: HarnessContext, record: ExtensionWorktreeRecord, originalHead: string): void {
-	const originalPaths = devRecordPathsAt(context.repoRoot, originalHead);
-	const mainPaths = devRecordPathsAt(context.repoRoot, "main");
+function rebuildPromotedBranch(context: HarnessContext, record: WorktreeRecord, originalHead: string): void {
+	const originalPaths = devRecordPathsAt(context.repoRoot, originalHead, record.devRecordRoot);
+	const mainPaths = devRecordPathsAt(context.repoRoot, "main", record.devRecordRoot);
 	const allPaths = [...new Set([...originalPaths, ...mainPaths])].sort();
 	const originalSet = new Set(originalPaths);
 
@@ -491,7 +646,7 @@ function canonicalPath(path: string): string {
 	}
 }
 
-/** Resolve the main checkout that owns a linked extension worktree. */
+/** Resolve the main checkout that owns a linked worktree. */
 export function mainCheckoutRoot(candidateRoot: string): string {
 	try {
 		const common = git(candidateRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
@@ -564,7 +719,7 @@ function runLoadGate(repoRoot: string, entrypoint: string): { status: "pass" } |
 
 function promoteGates(
 	context: HarnessContext,
-	entrypoint: string,
+	record: WorktreeRecord,
 ): { results: GateResults; failure?: { gate: string; detail: string } } {
 	const override = process.env.PI_PROMOTE_GATES;
 	const commands: GateCommand[] = override
@@ -584,10 +739,23 @@ function promoteGates(
 			return { results, failure: { gate: entry.name, detail: (outcome.stdout + outcome.stderr).trim().slice(-2000) } };
 		}
 	}
-	const load = runLoadGate(context.repoRoot, entrypoint);
-	results.load = load.status;
-	if (load.status === "fail") {
-		return { results, failure: { gate: "load", detail: load.detail } };
+	if (record.kind === "extension") {
+		const entrypoint = join(context.repoRoot, "extensions", record.name, "index.ts");
+		const load = runLoadGate(context.repoRoot, entrypoint);
+		results.load = load.status;
+		if (load.status === "fail") {
+			return { results, failure: { gate: "load", detail: load.detail } };
+		}
+	} else if (record.kind === "skill") {
+		const validator = join(dirname(scriptPath), "..", "skills", "harness", "scripts", "validate-skill.mts");
+		const outcome = run(process.execPath, [validator, join(context.repoRoot, "skills", record.name)], {
+			cwd: context.repoRoot,
+			accept: [0, 1],
+		});
+		results.skill = outcome.status === 0 ? "pass" : "fail";
+		if (outcome.status !== 0) {
+			return { results, failure: { gate: "skill", detail: (outcome.stderr || outcome.stdout).trim().slice(-2000) } };
+		}
 	}
 	return { results };
 }
@@ -613,11 +781,30 @@ function remoteMainState(context: HarnessContext): {
 	return { present: true, behindRemote, ahead };
 }
 
-function promote(context: HarnessContext, requestedName: string | undefined, options: PromoteOptions): PromotionReport {
-	const name = requestedName ?? promoteNameFromCwd(canonicalPath(process.cwd()), canonicalPath(context.worktreeRoot));
+function resolveSliceBranch(repoRoot: string, name: string): string | undefined {
+	const matches: string[] = [];
+	for (const kind of sliceKinds) {
+		const branch = `${kind.branchPrefix}${name}`;
+		if (branchExists(repoRoot, branch)) matches.push(branch);
+	}
+	if (matches.length === 0) return undefined;
+	if (matches.length > 1) {
+		throw new Error(`Slice name is ambiguous across kinds: ${name} (${matches.join(", ")})`);
+	}
+	return matches[0];
+}
+
+function promote(
+	context: HarnessContext,
+	requestedReference: string | undefined,
+	options: PromoteOptions,
+): PromotionReport {
+	const reference =
+		requestedReference ?? promoteNameFromCwd(canonicalPath(process.cwd()), canonicalPath(context.worktreeRoot));
+	let name = reference;
 	const fail = (stage: string, reason: string, extra: Partial<PromotionReport> = {}): PromotionReport => ({
 		ok: false,
-		extension: name,
+		name,
 		stage,
 		reason,
 		promoted: [],
@@ -626,15 +813,30 @@ function promote(context: HarnessContext, requestedName: string | undefined, opt
 		...extra,
 	});
 
-	if (!name || !/^[a-z0-9][a-z0-9-]*$/.test(name)) {
-		return fail("preflight", "no extension name given and the working directory is not a worktree");
+	if (!reference) {
+		return fail("preflight", "no slice name given and the working directory is not a worktree");
 	}
-	const branch = `extension/${name}`;
-	const branchExists =
-		git(context.repoRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
-			accept: [0, 1],
-		}).status === 0;
-	if (!branchExists) return fail("preflight", `branch does not exist: ${branch}`);
+	let requested: { kind?: SliceKindName; name: string };
+	try {
+		requested = parseSliceReference(reference);
+	} catch (error) {
+		return fail("preflight", error instanceof Error ? error.message : String(error));
+	}
+	name = requested.name;
+	let branch: string | undefined;
+	try {
+		if (requested.kind) {
+			const candidate = `${sliceKindForName(requested.kind).branchPrefix}${name}`;
+			branch = branchExists(context.repoRoot, candidate) ? candidate : undefined;
+		} else {
+			branch = resolveSliceBranch(context.repoRoot, name);
+		}
+	} catch (error) {
+		return fail("preflight", error instanceof Error ? error.message : String(error));
+	}
+	if (!branch) return fail("preflight", `branch does not exist: ${reference}`);
+	const kind = sliceKindForBranch(branch);
+	if (!kind) return fail("preflight", `branch has no recognized slice kind: ${branch}`);
 
 	const head = git(context.repoRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"], {
 		accept: [0, 1],
@@ -657,13 +859,14 @@ function promote(context: HarnessContext, requestedName: string | undefined, opt
 	const merges = git(context.repoRoot, ["rev-list", "--merges", `main..${branch}`]).stdout.trim();
 	if (merges) return fail("preflight", `${branch} contains merge commits; promote cannot replay them`);
 
+	const devRecordRoot = kind.devRecordRoot(name);
 	const shas = git(context.repoRoot, ["rev-list", "--reverse", "--topo-order", `main..${branch}`])
 		.stdout.trim()
 		.split("\n")
 		.filter(Boolean);
 	const plan = shas.map((sha) => {
 		const files = commitFiles(context.repoRoot, sha);
-		const classified = classifyCommitFiles(files);
+		const classified = classifyCommitFiles(files, devRecordRoot);
 		return {
 			sha: sha.slice(0, 7),
 			full: sha,
@@ -679,7 +882,8 @@ function promote(context: HarnessContext, requestedName: string | undefined, opt
 		return {
 			ok: true,
 			dryRun: true,
-			extension: name,
+			name,
+			kind: kind.name,
 			wouldPromote: shipping.map((entry) => ({
 				sha: entry.sha,
 				subject: entry.subject,
@@ -709,7 +913,8 @@ function promote(context: HarnessContext, requestedName: string | undefined, opt
 		}
 		return {
 			ok: true,
-			extension: name,
+			name,
+			kind: kind.name,
 			promoted: [],
 			held: held.map((entry) => entry.sha),
 			mainBefore,
@@ -719,8 +924,8 @@ function promote(context: HarnessContext, requestedName: string | undefined, opt
 		};
 	}
 
-	const records = repositoryState(context.repoRoot, context.worktreeRoot);
-	const record = records.find((candidate) => candidate.name === name);
+	const records = repositoryState(context.repoRoot, context.worktreeRoot).records;
+	const record = records.find((candidate) => candidate.name === name && candidate.kind === kind.name);
 	if (!record) return fail("preflight", `worktree does not exist for ${branch}`);
 	if (hasTrackedChanges(record.path)) {
 		return fail("preflight", `uncommitted tracked changes in ${record.path}`);
@@ -746,6 +951,7 @@ function promote(context: HarnessContext, requestedName: string | undefined, opt
 		const restored = rollback();
 		return {
 			...fail(stage, reason, extra),
+			kind: kind.name,
 			held: held.map((entry) => entry.sha),
 			mainBefore,
 			mainAfter: restored ? mainBefore : git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
@@ -794,14 +1000,14 @@ function promote(context: HarnessContext, requestedName: string | undefined, opt
 		.stdout.trim()
 		.split("\n")
 		.filter(Boolean);
-	const leaked = boundary.filter((path) => !isDevRecordPath(path));
+	const leaked = boundary.filter((path) => !isDevRecordPath(path, devRecordRoot));
 	if (leaked.length > 0) {
 		return abandon("verify", `${branch} still differs from main outside dev records: ${leaked.join(", ")}`);
 	}
 
 	let gates: GateResults = {};
 	if (options.gates) {
-		const outcome = promoteGates(context, join(context.repoRoot, "extensions", name, "index.ts"));
+		const outcome = promoteGates(context, record);
 		gates = outcome.results;
 		if (outcome.failure) {
 			return {
@@ -822,7 +1028,7 @@ function promote(context: HarnessContext, requestedName: string | undefined, opt
 		.stdout.trim()
 		.split("\n")
 		.filter(Boolean);
-	const rebuiltLeak = rebuiltBoundary.filter((path) => !isDevRecordPath(path));
+	const rebuiltLeak = rebuiltBoundary.filter((path) => !isDevRecordPath(path, devRecordRoot));
 	if (rebuiltLeak.length > 0) {
 		return abandon("verify", `${branch} still differs from main outside dev records: ${rebuiltLeak.join(", ")}`);
 	}
@@ -833,6 +1039,8 @@ function promote(context: HarnessContext, requestedName: string | undefined, opt
 		if (push.status !== 0) {
 			return {
 				...fail("push", (push.stderr || push.stdout).trim()),
+				name,
+				kind: kind.name,
 				promoted,
 				held: held.map((entry) => entry.sha),
 				mainBefore,
@@ -849,24 +1057,27 @@ function promote(context: HarnessContext, requestedName: string | undefined, opt
 
 	return {
 		ok: true,
-		extension: name,
+		name,
+		kind: kind.name,
 		promoted,
 		held: held.map((entry) => entry.sha),
 		mainBefore,
 		mainAfter: git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
 		gates,
 		pushed,
+		syncOk: branchResult.failures.length === 0,
 		branchFailures: branchResult.failures,
 	};
 }
 
 function reportPromotion(report: PromotionReport, json: boolean): number {
+	const status = report.ok && report.syncOk !== false ? 0 : 1;
 	if (json) {
 		console.log(JSON.stringify(report, null, 2));
-		return report.ok ? 0 : 1;
+		return status;
 	}
 	if (report.dryRun) {
-		console.log(`promote ${report.extension} (dry run)`);
+		console.log(`promote ${report.name} (dry run)`);
 		const wouldPromote = report.wouldPromote ?? [];
 		for (const entry of wouldPromote) {
 			const dropped = entry.dropped.length > 0 ? ` (dropping ${entry.dropped.join(", ")})` : "";
@@ -880,14 +1091,14 @@ function reportPromotion(report: PromotionReport, json: boolean): number {
 		return 0;
 	}
 	if (!report.ok) {
-		console.error(`promote ${report.extension ?? ""} failed at ${report.stage}: ${report.reason}`);
+		console.error(`promote ${report.name ?? ""} failed at ${report.stage}: ${report.reason}`);
 		if (report.recover) console.error(`recover: ${report.recover}`);
 		else console.error(`main is unchanged at ${report.mainAfter ?? report.mainBefore ?? "its original commit"}`);
 		return 1;
 	}
 	const promoted = report.promoted ?? [];
 	const held = report.held ?? [];
-	if (promoted.length === 0) console.log(`Nothing to promote from extension/${report.extension}`);
+	if (promoted.length === 0) console.log(`Nothing to promote from ${report.kind ?? ""}/${report.name}`);
 	else console.log(`Promoted to main: ${promoted.join(", ")}`);
 	if (held.length > 0) console.log(`Held on the branch: ${held.join(", ")}`);
 	if (report.mainAfter && report.mainBefore && report.mainAfter !== report.mainBefore) {
@@ -895,7 +1106,10 @@ function reportPromotion(report: PromotionReport, json: boolean): number {
 	}
 	console.log(`Pushed: ${report.pushed ? "yes" : "no"}`);
 	for (const failure of report.branchFailures ?? []) console.error(failure);
-	return 0;
+	if (report.syncOk === false) {
+		console.error("Promotion landed. A sibling worktree did not update. Resolve it, then run npm run worktrees:sync.");
+	}
+	return status;
 }
 
 function activeNamesFromSettings(context: HarnessContext): Set<string> {
@@ -910,18 +1124,17 @@ function activeNamesFromSettings(context: HarnessContext): Set<string> {
 	return new Set(names);
 }
 
-function showStatus(context: HarnessContext, records: readonly ExtensionWorktreeRecord[]): void {
+function showStatus(context: HarnessContext, records: readonly WorktreeRecord[], problems: readonly string[]): void {
 	const active = activeNamesFromSettings(context);
 	for (const record of records) {
 		const base = branchHasBase(context.repoRoot, record.branch) ? "current" : "behind";
 		const tree = isDirty(record.path) ? "dirty" : "clean";
-		const load = active.has(record.name) ? "active" : "provisional";
-		console.log(`${record.name}\t${base}\t${tree}\t${load}\t${record.path}`);
+		const load = record.kind === "extension" ? (active.has(record.name) ? "active" : "provisional") : "branch";
+		console.log(`${record.kind}\t${record.name}\t${base}\t${tree}\t${load}\t${record.path}`);
 	}
-}
-
-function shellQuote(value: string): string {
-	return `'${value.replaceAll("'", `'"'"'`)}'`;
+	for (const problem of problems) {
+		console.error(`broken\t${problem}`);
+	}
 }
 
 function installHooks(context: HarnessContext): void {
@@ -930,7 +1143,7 @@ function installHooks(context: HarnessContext): void {
 	const hooksDir = join(commonDir, "hooks");
 	mkdirSync(hooksDir, { recursive: true });
 	const events = ["post-checkout", "post-commit", "post-merge", "post-rewrite"];
-	const content = `#!/bin/sh\n${hookMarker}\nbranch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)\ncase "$branch" in\n  main|extension/*) ;;\n  *) exit 0 ;;\nesac\nexec node ${shellQuote(scriptPath)} sync --hook\n`;
+	const content = hookContent();
 	for (const event of events) {
 		const path = join(hooksDir, event);
 		if (existsSync(path)) {
@@ -942,32 +1155,37 @@ function installHooks(context: HarnessContext): void {
 		writeFileSync(path, content);
 		chmodSync(path, 0o755);
 	}
-	console.log(`Installed extension worktree hooks in ${hooksDir}`);
+	console.log(`Installed worktree hooks in ${hooksDir}`);
 }
 
 function contextFromEnvironment(): HarnessContext {
+	if (process.env.PI_EXTENSION_WORKTREE_ROOT !== undefined) {
+		throw new Error(
+			"PI_EXTENSION_WORKTREE_ROOT is retired; use PI_WORKTREE_ROOT for the worktree root",
+		);
+	}
 	const repoRoot = process.env.PI_HARNESS_ROOT
 		? resolve(process.env.PI_HARNESS_ROOT)
 		: mainCheckoutRoot(defaultRepoRoot);
-	const worktreeRoot = resolve(process.env.PI_EXTENSION_WORKTREE_ROOT ?? `${repoRoot}.worktrees`);
+	const worktreeRoot = resolve(process.env.PI_WORKTREE_ROOT ?? `${repoRoot}.worktrees`);
 	const agentDir = resolve(process.env.PI_AGENT_DIR ?? join(homedir(), ".pi", "agent"));
 	const settingsPath = resolve(process.env.PI_SETTINGS_PATH ?? join(agentDir, "settings.json"));
 	return { repoRoot, worktreeRoot, settingsPath };
 }
 
-function addExtension(context: HarnessContext, name: string | undefined): void {
-	if (!/^[a-z0-9][a-z0-9-]*$/.test(name ?? "")) {
-		throw new Error("Extension name must use lowercase letters, numbers, and hyphens");
+function addSlice(context: HarnessContext, reference: string | undefined): void {
+	if (!reference) throw new Error("Slice reference is required: add <kind>/<name>");
+	const requested = parseSliceReference(reference);
+	if (!requested.kind) throw new Error(`Slice kind is required: add <kind>/${requested.name}`);
+	const kind = sliceKindForName(requested.kind);
+	const branch = `${kind.branchPrefix}${requested.name}`;
+	if (!branchExists(context.repoRoot, branch)) git(context.repoRoot, ["branch", branch, "main"]);
+	const state = repositoryState(context.repoRoot, context.worktreeRoot);
+	const record = state.records.find((candidate) => candidate.branch === branch);
+	if (record === undefined) {
+		const problem = state.problems.find((entry) => entry.startsWith(`${branch}:`));
+		throw new Error(problem ?? `Worktree was not created for slice: ${branch}`);
 	}
-	const branch = `extension/${name}`;
-	const exists =
-		git(context.repoRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
-			accept: [0, 1],
-		}).status === 0;
-	if (!exists) git(context.repoRoot, ["branch", branch, "main"]);
-	const records = repositoryState(context.repoRoot, context.worktreeRoot);
-	const record = records.find((candidate) => candidate.name === name);
-	if (record === undefined) throw new Error(`Worktree was not created for extension: ${name}`);
 	console.log(record.path);
 }
 
@@ -980,7 +1198,7 @@ function main(): void {
 	const quiet = args.includes("--hook");
 
 	if (command === "add") {
-		addExtension(context, name);
+		addSlice(context, name);
 		return;
 	}
 	if (command === "install-hooks") {
@@ -994,14 +1212,24 @@ function main(): void {
 		return;
 	}
 
-	const records = repositoryState(context.repoRoot, context.worktreeRoot);
+	const state = repositoryState(context.repoRoot, context.worktreeRoot);
+	const records = state.records;
+	const problems = state.problems;
 	if (command === "status") {
-		showStatus(context, records);
+		showStatus(context, records, problems);
+		if (problems.length > 0) process.exitCode = 1;
 		return;
 	}
 	if (command === "activate" || command === "deactivate") {
-		if (!name) throw new Error(`${command} requires an extension name`);
-		const _result = reconcileSettings(context, records, {
+		if (!name) throw new Error(`${command} requires a slice name`);
+		const record = records.find((candidate) => candidate.name === name);
+		if (!record) throw new Error(`No slice worktree is named ${name}`);
+		if (record.kind !== "extension") {
+			throw new Error(
+				`${command} applies to extensions only; ${name} is a ${record.kind} slice that Pi loads from main after promotion`,
+			);
+		}
+		reconcileSettings(context, records, {
 			forceActive: command === "activate" ? [name] : [],
 			forceInactive: command === "deactivate" ? [name] : [],
 		});
@@ -1024,8 +1252,9 @@ function main(): void {
 		}
 		console.log(`Active worktree extensions: ${settingsResult.activeNames.join(", ") || "none"}`);
 	}
-	if (branchResult.failures.length > 0) {
-		for (const failure of branchResult.failures) console.error(failure);
+	const allFailures = [...branchResult.failures, ...problems];
+	if (allFailures.length > 0) {
+		for (const failure of allFailures) console.error(failure);
 		process.exitCode = 1;
 	}
 }

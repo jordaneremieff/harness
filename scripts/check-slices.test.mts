@@ -62,6 +62,58 @@ test("flags dot-prefixed relative specifiers that escape the slice", () => {
 	}
 });
 
+function testGlobFixtureRoot(globs: string[]): string {
+	const root = mkdtempSync(join(tmpdir(), "check-slices-globs-"));
+	const scripts = join(root, "scripts");
+	const extension = join(root, "extensions", "example");
+	mkdirSync(scripts, { recursive: true });
+	mkdirSync(extension, { recursive: true });
+	mkdirSync(join(root, "feature"), { recursive: true });
+	copyFileSync(sourceScript, join(scripts, "check-slices.mts"));
+	writeFileSync(join(extension, "index.ts"), "export default function () {}\n");
+	writeFileSync(join(extension, "README.md"), "# Example\n");
+	writeFileSync(join(extension, "index.test.mts"), "// fixture\n");
+	writeFileSync(join(root, "feature", "thing.test.mts"), "// fixture\n");
+	writeFileSync(
+		join(root, "package.json"),
+		`${JSON.stringify({ name: "fixture", scripts: { test: `node --test ${globs.map((g) => `"${g}"`).join(" ")}` } }, null, 2)}\n`,
+	);
+	execFileSync("git", ["init", "-q"], { cwd: root });
+	execFileSync("git", ["add", "."], { cwd: root });
+	return root;
+}
+
+test("flags a tracked test file that no npm test glob matches", () => {
+	const root = testGlobFixtureRoot(["extensions/*/*.test.mts"]);
+	try {
+		const result = spawnSync(process.execPath, [join(root, "scripts", "check-slices.mts")], {
+			cwd: root,
+			encoding: "utf8",
+		});
+		assert.equal(result.status, 1, result.stdout + result.stderr);
+		assert.match(result.stderr, /feature\/thing\.test\.mts/);
+		assert.match(result.stderr, /no npm test glob matches it/);
+		// The covered file must not be reported.
+		assert.doesNotMatch(result.stderr, /extensions\/example\/index\.test\.mts/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("accepts tracked test files once a glob covers them", () => {
+	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+	try {
+		const result = spawnSync(process.execPath, [join(root, "scripts", "check-slices.mts")], {
+			cwd: root,
+			encoding: "utf8",
+		});
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /check-slices: ok/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 import { auditPillars } from "./check-slices.mts";
 
 function pillarFixtureRoot(): string {

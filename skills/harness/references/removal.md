@@ -36,7 +36,7 @@ extension-configuration rows, and architecture references for target-owned
 integration. Verify that each local `extension/*` branch already has its
 registered worktree. Inspect Pi settings without changing them. Require the
 package list to match the canonical routing from
-`docs/conventions/extension-worktrees.md`: the main package has extensions
+`docs/conventions/worktrees.md`: the main package has extensions
 disabled, and each active extension uses its exact worktree entrypoint. Require
 the target local branch and its registered worktree. Stop when an invariant
 fails.
