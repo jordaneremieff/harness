@@ -50,6 +50,12 @@
   or installed package) as the durable record.
 - Verify claims about Pi or pi-tui behavior against the installed package sources
   before acting on them, including claims from reviewers and delegated agents.
+- Upstream Pi rebuilds its agent core as a durable harness ("AgentHarness", also
+  "harness v2"). `docs/pi-durable-harness.md` tracks that program and what this
+  repository does when each piece arrives. Read it before a version-sensitive or
+  surface-selection decision. Refresh it with read-only checks after each Pi
+  upgrade and after each review of the program, and keep every verification date
+  current. A stale entry is not evidence.
 - Durable source is independent of the session that produced it. Comments, test
   headings, names, and durable documentation describe behaviour, invariants,
   external contracts, security constraints, or non-obvious rationale. They must not

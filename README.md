@@ -5,6 +5,10 @@ My personal [Pi](https://github.com/earendil-works/pi) harness and its surroundi
 Extension development uses dedicated persistent worktrees. See
 [the extension worktree convention](docs/conventions/extension-worktrees.md).
 
+Upstream Pi rebuilds its agent core as a durable harness. That program and its
+effect here are tracked in
+[the Pi durable-harness track](docs/pi-durable-harness.md).
+
 ## Shared resources across machines
 
 This repository is the source of truth for the resources each machine loads.
