@@ -85,7 +85,7 @@ function warn(code: string, message: string) {
 }
 
 function usage() {
-	return `Usage: node scripts/validate-skill.mts [OPTIONS] [SKILL_DIR]
+	return `Usage: node skills/harness/scripts/validate-skill.mts [OPTIONS] [SKILL_DIR]
 
 Validate a portable Agent Skills directory using dependency-free Node.
 

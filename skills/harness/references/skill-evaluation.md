@@ -107,10 +107,10 @@ Before behavior evals, verify the artifact mechanically:
 - no secrets, credentials, private absolute paths, or surprising network or
   destructive behavior are embedded.
 
-Run the bundled structural validator from the skill directory:
+Run the bundled structural validator from the repository root:
 
 ```bash
-node scripts/validate-skill.mts <skill-directory> --format json
+node skills/harness/scripts/validate-skill.mts <skill-directory> --format json
 ```
 
 In Pi, also verify discovery from the intended source: package `pi.skills`,

@@ -10,8 +10,12 @@ description: >
   use when the operator says "check pillars", "what do the pillars say", "apply
   pillars", asks for a decision to be evaluated against principles, patterns, or
   heuristics, or proposes, derives, revises, or challenges corpus entries.
+  Do not use for routine execution that requires no doctrine judgment or
+  corpus consultation.
 compatibility: Requires the sibling package corpus at ../../pillars relative to this skill directory.
 ---
+
+# Pillars
 
 Pillars are portable, defeasible doctrine for agent judgment in this
 environment. The canonical corpus is the package-level `../../pillars/`
