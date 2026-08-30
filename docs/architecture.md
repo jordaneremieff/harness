@@ -74,9 +74,12 @@ An extension contains:
 - A `README.md` — the surface, configuration, boundaries, and verification
   for the slice.
 - Its own state on disk under the Pi agent directory, with an environment
-  variable override where a store location is configurable.
+  variable override where a store location is configurable. Stateless
+  extensions and slices whose lifecycle state lives in an external
+  integration own no disk store here (`herdr`, `statusline`).
 - Its own configuration: environment variables named `PI_*`, documented in
-  the README (see `docs/conventions/extension-config.md`).
+  the README (see `docs/conventions/extension-config.md`). Host-injected
+  discovery variables form the documented exemption (`HERDR_*`).
 - Optional footer status keys through `ctx.ui.setStatus` (see
   `docs/conventions/status-keys.md`).
 
