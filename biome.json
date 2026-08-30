@@ -17,7 +17,14 @@
 		}
 	},
 	"files": {
-		"includes": ["extensions/**/*.ts", "extensions/**/*.mts", "scripts/**/*.mts", "skills/**/*.mts"]
+		"includes": [
+			"evals/**/*.mts",
+			"extensions/**/*.ts",
+			"extensions/**/*.mts",
+			"prompts/*.eval.mts",
+			"scripts/**/*.mts",
+			"skills/**/*.mts"
+		]
 	},
 	"formatter": {
 		"enabled": true,

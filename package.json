@@ -12,7 +12,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test --experimental-test-coverage --test-coverage-lines=60 --test-coverage-functions=60 --test-coverage-branches=50 \"extensions/*/*.test.mts\" \"scripts/*.test.mts\" \"skills/*/scripts/*.test.mts\"",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=60 --test-coverage-functions=60 --test-coverage-branches=50 \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"scripts/*.test.mts\" \"skills/*/scripts/*.test.mts\"",
+    "evals": "node evals/cli.mts",
     "lint": "biome lint --error-on-warnings .",
     "format": "biome format --error-on-warnings .",
     "typecheck": "tsc -p .",
@@ -43,7 +44,10 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.7",
     "@types/node": "^22.19.0",
-    "typescript": "^5.9.3"
+    "tinyrainbow": "3.1.1",
+    "typescript": "^5.9.3",
+    "vitest": "4.1.11",
+    "vitest-evals": "0.16.1"
   },
   "dependencies": {
     "@earendil-works/pi-protocol": "^0.84.2",

@@ -10,6 +10,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["extensions/**/*.ts", "extensions/**/*.mts", "scripts/**/*.mts", "skills/**/*.mts"],
+  "include": ["evals/**/*.mts", "extensions/**/*.ts", "extensions/**/*.mts", "prompts/*.eval.mts", "scripts/**/*.mts", "skills/**/*.mts"],
   "exclude": ["node_modules"]
 }

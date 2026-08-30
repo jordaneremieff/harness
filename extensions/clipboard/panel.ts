@@ -41,7 +41,7 @@ function localTime(iso: string): string {
 	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-function fit(text: string, width: number): string {
+function fitText(text: string, width: number): string {
 	if (width <= 0) return "";
 	// Input is plain, sanitized text. Strip SGR resets the width helper may add
 	// around a Unicode ellipsis before applying the panel's own styling.
@@ -223,7 +223,7 @@ export class ClipboardPanel {
 		const innerWidth = layout.framed ? Math.max(0, width - 2) : width;
 		type Color = Parameters<Theme["fg"]>[0];
 		const styled = (text: string, targetWidth: number, color?: Color, bold = false): string => {
-			let result = fit(text, targetWidth); // truncate before styling so resets cannot punch through the panel background
+			let result = fitText(text, targetWidth); // truncate before styling so resets cannot punch through the panel background
 			if (bold) result = theme.bold(result);
 			if (color) result = theme.fg(color, result);
 			return result;

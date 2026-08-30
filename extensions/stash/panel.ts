@@ -70,7 +70,7 @@ function oneLine(value: string): string {
 	return safeLine(value).replace(/\s+/g, " ").trim();
 }
 
-function fit(text: string, width: number): string {
+function fitText(text: string, width: number): string {
 	if (width <= 0) return "";
 	const hadAnsi = text.includes("\x1b");
 	let truncated = truncateToWidth(text, width);
@@ -549,7 +549,7 @@ export class StashPanel {
 		const entries = this.filtered;
 		const position =
 			entries.length === 0 ? "0/0" : `${this.selected + 1}/${entries.length}${this.deps.hasMore ? "+" : ""}`;
-		const paint = (text: string): string => theme.bg("customMessageBg", fit(text, width));
+		const paint = (text: string): string => theme.bg("customMessageBg", fitText(text, width));
 		const lines: string[] = [];
 
 		if (!layout.framed) {
@@ -590,7 +590,7 @@ export class StashPanel {
 				lines.push(
 					theme.bg(
 						"customMessageBg",
-						`${theme.fg("borderMuted", "│ ")}${fit(page[index] ?? "", layout.innerWidth)}${theme.fg("borderMuted", " │")}`,
+						`${theme.fg("borderMuted", "│ ")}${fitText(page[index] ?? "", layout.innerWidth)}${theme.fg("borderMuted", " │")}`,
 					),
 				);
 			}
@@ -612,7 +612,7 @@ export class StashPanel {
 				lines.push(
 					theme.bg(
 						"customMessageBg",
-						`${theme.fg("borderMuted", "│ ")}${fit(listCell, layout.listWidth)}${theme.fg("borderMuted", " │ ")}${fit(previewPage[index] ?? "", layout.previewWidth)}${theme.fg("borderMuted", " │")}`,
+						`${theme.fg("borderMuted", "│ ")}${fitText(listCell, layout.listWidth)}${theme.fg("borderMuted", " │ ")}${fitText(previewPage[index] ?? "", layout.previewWidth)}${theme.fg("borderMuted", " │")}`,
 					),
 				);
 			}
@@ -622,7 +622,7 @@ export class StashPanel {
 		lines.push(
 			theme.bg(
 				"customMessageBg",
-				`${theme.fg("borderMuted", "│ ")}${fit(this.footerText(layout.innerWidth), layout.innerWidth)}${theme.fg("borderMuted", " │")}`,
+				`${theme.fg("borderMuted", "│ ")}${fitText(this.footerText(layout.innerWidth), layout.innerWidth)}${theme.fg("borderMuted", " │")}`,
 			),
 		);
 		lines.push(theme.bg("customMessageBg", theme.fg("borderMuted", `└${"─".repeat(Math.max(0, width - 2))}┘`)));
