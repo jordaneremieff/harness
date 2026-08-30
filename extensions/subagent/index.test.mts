@@ -57,6 +57,7 @@ const {
 	compactionVeto,
 	currentToolLabel,
 	completionNeedsNotification,
+	continueWorker,
 	dispatchWorker,
 	disposeOnce,
 	finalizeWorker,
@@ -84,6 +85,7 @@ const {
 	ownToolSourcePath,
 	sharedWorkerState,
 	submitResultTool,
+	clearQueueBeforeAbort,
 	subtractUsage,
 	statusLine,
 	statusView,
@@ -138,6 +140,7 @@ function runningRecord(id: string, extra: Record<string, unknown> = {}): Record<
 		lastOutput: null,
 		currentTool: null,
 		resolvedTools: [],
+		droppedTools: [],
 		sessionId: "s-1",
 		sessionFile: null,
 		socketPath: "/nonexistent.sock",
@@ -620,6 +623,26 @@ describe("pruneTerminalWorkers", () => {
 		assert.ok(ids.includes("bg-prune3"), "the ancient running worker stays");
 	});
 
+	it("warns and prunes an old corrupt worker directory", () => {
+		const id = "bg-prunecorrupt";
+		const dir = seedWorker(id, runningRecord(id));
+		writeFileSync(join(dir, "worker.json"), "{not valid json", "utf-8");
+		const old = new Date(Date.now() - 45 * 86_400_000);
+		utimesSync(dir, old, old);
+		const warnings: string[] = [];
+		const warn = console.warn;
+		console.warn = (message: unknown) => warnings.push(String(message));
+		try {
+			pruneTerminalWorkers();
+		} finally {
+			console.warn = warn;
+		}
+		assert.ok(
+			warnings.some((warning) => /bg-prunecorrupt.*worker\.json/.test(warning)),
+		);
+		assert.equal(existsSync(dir), false);
+	});
+
 	it("sweeps stray temp files older than an hour but keeps fresh ones", () => {
 		const dir = seedWorker("bg-tmp1", runningRecord("bg-tmp1"));
 		const stale = join(dir, "worker.json.deadbeef.tmp");
@@ -642,6 +665,38 @@ describe("pruneTerminalWorkers", () => {
 // ---------------------------------------------------------------------------
 
 describe("continuation session manager", () => {
+	it("reports the recorded tool gap when no continuation tool survives", async () => {
+		const id = "bg-contgap";
+		const sessionId = "sess-continuation-gap";
+		const sessionFile = join(agentDir, "continuation-gap.jsonl");
+		writeFileSync(sessionFile, "{}\n", "utf-8");
+		seedWorker(
+			id,
+			runningRecord(id, {
+				state: "done",
+				exitedAt: Date.now(),
+				sessionFile,
+				resolvedTools: ["missing_tool", "submit_result"],
+			}),
+		);
+		recordWorkerSurface(sessionId, ["current_tool"], []);
+		try {
+			const outcome = await continueWorker(
+				id,
+				"continue the task",
+				{
+					sessionManager: { getSessionId: () => sessionId },
+				} as never,
+			);
+			assert.equal(outcome.id, "");
+			assert.equal(outcome.state, "failed");
+			assert.match(outcome.error ?? "", /missing_tool/);
+			assert.match(outcome.error ?? "", /none of its recorded tools/);
+		} finally {
+			sharedWorkerState.workerSurfaces.delete(sessionId);
+		}
+	});
+
 	it("forks to a new session file without changing the terminal source", () => {
 		const sourceFile = join(agentDir, "source-session.jsonl");
 		const sourceBody = `${JSON.stringify({
@@ -880,6 +935,21 @@ describe("status and collection", () => {
 			label: "worker report · unverified · 13 bytes",
 			text: "stored result",
 		});
+	});
+
+	it("caps retained no-result output when collecting a corruptly large record", () => {
+		const id = "bg-oversizedoutput";
+		seedWorker(
+			id,
+			runningRecord(id, {
+				state: "no_result_submitted",
+				exitedAt: Date.now(),
+				lastOutput: "x".repeat(100_000),
+			}),
+		);
+		const collected = collectWorker(id);
+		assert.match(collected.text, /\[truncated\]/);
+		assert.ok(collected.text.length < 100_000);
 	});
 
 	it("points every terminal no-result path to transcript inspection", () => {
@@ -1195,6 +1265,17 @@ describe("finalizeWorker triage", () => {
 		assert.equal(finalizeWorker(id, { state: "done" })?.state, "failed");
 	});
 
+	it("replaces a corrupt worker record during finalization", () => {
+		const id = "bg-corruptfinalize";
+		const dir = seedWorker(id, runningRecord(id));
+		writeFileSync(join(dir, "worker.json"), "{not valid json", "utf-8");
+		const finalized = finalizeWorker(id);
+		assert.equal(finalized?.state, "failed");
+		assert.match(finalized?.error ?? "", /unreadable worker record/);
+		assert.equal(readWorker(id)?.state, "failed");
+		assert.equal(readWorker(id)?.exitedAt, finalized?.exitedAt);
+	});
+
 	it("exposes the result path for a worker that has one", () => {
 		const files = workerFiles("bg-raced1");
 		assert.ok(files.result.endsWith(join("bg-raced1", "result.txt")));
@@ -1250,6 +1331,76 @@ describe("compaction veto", () => {
 		assert.deepEqual(compactionVeto("sess-veto-marks", "threshold"), {
 			cancel: true,
 		});
+	});
+
+	it("clears queued messages before submit_result aborts the worker", async () => {
+		const session = new FakeSession();
+		await session.steer("queued steer");
+		await session.followUp("queued follow-up");
+		const dir = join(storeDir, "w-clear-submit");
+		mkdirSync(dir, { recursive: true });
+		const tool = submitResultTool(
+			join(dir, "result.txt"),
+			() => clearQueueBeforeAbort(session as never),
+			() => "sess-clear-submit",
+		);
+		await tool.execute(
+			"call-clear-submit",
+			{ content: "the deliverable" },
+			undefined,
+			undefined,
+			undefined as never,
+		);
+		assert.deepEqual(session.abortQueueSnapshots, [
+			{ steering: [], followUp: [] },
+		]);
+		assert.deepEqual(session.getSteeringMessages(), []);
+		assert.deepEqual(session.getFollowUpMessages(), []);
+	});
+
+	it("clears queued messages before the abort used by kill", async () => {
+		const session = new FakeSession();
+		const runtime = new WorkerRuntime({
+			session: session as never,
+			id: "bg-clear-kill",
+			name: "kill queue worker",
+			cwd: agentDir,
+			createdAt: 1,
+		});
+		session.isStreaming = true;
+		session.emit({ type: "agent_start" });
+		await session.steer("queued steer");
+		await session.followUp("queued follow-up");
+		await runtime.abort();
+		assert.deepEqual(session.abortQueueSnapshots.at(-1), {
+			steering: [],
+			followUp: [],
+		});
+		runtime.shutdown();
+	});
+
+	it("clears queued messages before interruption leaves the worker idle", async () => {
+		const session = new FakeSession();
+		const runtime = new WorkerRuntime({
+			session: session as never,
+			id: "bg-clear-interrupt",
+			name: "interrupt queue worker",
+			cwd: agentDir,
+			createdAt: 1,
+		});
+		session.isStreaming = true;
+		session.emit({ type: "agent_start" });
+		await session.steer("queued steer");
+		await session.followUp("queued follow-up");
+		await runtime.abort();
+		assert.equal(runtime.getPhase(), "idle");
+		assert.deepEqual(session.getSteeringMessages(), []);
+		assert.deepEqual(session.getFollowUpMessages(), []);
+		assert.deepEqual(session.abortQueueSnapshots.at(-1), {
+			steering: [],
+			followUp: [],
+		});
+		runtime.shutdown();
 	});
 
 	it("worker load wiring: the registered veto reads the session id from the context", () => {
@@ -1994,6 +2145,10 @@ class FakeSession {
 	};
 	isStreaming = false;
 	steers: string[] = [];
+	queuedSteers: string[] = [];
+	queuedFollowUps: string[] = [];
+	queueClears: Array<{ steering: string[]; followUp: string[] }> = [];
+	abortQueueSnapshots: Array<{ steering: string[]; followUp: string[] }> = [];
 	promptOptions: unknown[] = [];
 	aborts = 0;
 	private listeners = new Set<(event: FakeEvent) => void>();
@@ -2021,16 +2176,37 @@ class FakeSession {
 		return () => this.listeners.delete(listener);
 	}
 	getSteeringMessages(): string[] {
-		return [...this.steers];
+		return [...this.queuedSteers];
+	}
+	getFollowUpMessages(): string[] {
+		return [...this.queuedFollowUps];
+	}
+	clearQueue(): { steering: string[]; followUp: string[] } {
+		const queued = {
+			steering: [...this.queuedSteers],
+			followUp: [...this.queuedFollowUps],
+		};
+		this.queueClears.push(queued);
+		this.queuedSteers = [];
+		this.queuedFollowUps = [];
+		return queued;
 	}
 	emit(event: FakeEvent): void {
 		for (const listener of [...this.listeners]) listener(event);
 	}
 	async steer(text: string): Promise<void> {
 		this.steers.push(text);
+		this.queuedSteers.push(text);
+	}
+	async followUp(text: string): Promise<void> {
+		this.queuedFollowUps.push(text);
 	}
 	async abort(): Promise<void> {
 		this.aborts++;
+		this.abortQueueSnapshots.push({
+			steering: [...this.queuedSteers],
+			followUp: [...this.queuedFollowUps],
+		});
 		this.isStreaming = false;
 		this.emit({ type: "agent_settled" });
 	}

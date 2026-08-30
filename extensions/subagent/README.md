@@ -320,8 +320,9 @@ While a worker is still running it belongs to this session's process: steer it
 with `subagent_steer` and abort it with `subagent_kill`. The extension tool and
 panel paths refuse mutation from another session. Another session may inspect
 the persisted transcript through its `/subagent` dashboard. There is no separate live second terminal for a running
-worker — pi runs one interactive session at a time and ships no client-attach
-command, so live control stays through the owning parent's tools and dashboard.
+worker — pi runs one interactive session at a time, and its public CLI/TUI has
+no command to discover or attach to this extension's per-session socket. Live
+control stays through the owning parent's tools and dashboard.
 
 Before continuing a terminal worker that has no submitted result, inspect the
 full transcript first. A completed draft can survive inside assistant text or a
@@ -335,17 +336,13 @@ Each session that dispatches workers hosts a `PiServer` on its own unix socket
 and registers only the workers that session owns as real protocol sessions.
 The socket uses same-UID filesystem authorization. It is not a sandbox boundary
 between processes or workers that already run as that user.
-Released Pi 0.84.2 has no CLI or TUI path that consumes this extension's socket,
-so it has **no operator-facing consumer** and the extension prints no attach
-hint.
+Pi ships experimental remote-session client APIs, but its public CLI/TUI has no
+command to discover or attach to this extension's per-session socket; therefore
+the extension has no supported operator-facing attach workflow.
 
-Upstream development includes unreleased experimental server, client, event,
-and TUI surfaces. This extension targets released APIs. V2 adoption starts only
-after an operational release. Until then, the released `PiServerService` and
-`PiSessionRuntime` boundary remains one replaceable current-runtime seam in
-`runtime.ts`. The extension has no unreleased adapter or dual path. The socket is
-exercised by the colocated conformance test, which drives a real protocol client
-across it.
+The extension uses the released `PiServerService` and `PiSessionRuntime` surfaces
+as one replaceable current-runtime seam in `runtime.ts`. The socket is exercised
+by the colocated conformance test, which drives a real protocol client across it.
 
 The subagent extension also publishes one ambient footer status through Pi's
 public `subagent` status key. It shows this parent session's local active count

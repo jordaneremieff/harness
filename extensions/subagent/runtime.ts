@@ -1,10 +1,11 @@
 /**
  * Worker runtime adapter: presents a coding-agent AgentSession through pi's
  * PiSessionRuntime surface so a worker can be served over PiServer as a real
- * protocol session. Released Pi 0.84.2 has no client path that consumes this
- * socket (see server.ts). Upstream development includes unreleased experimental
- * surfaces. This extension targets released APIs and keeps this file as its one
- * replaceable runtime-to-protocol boundary.
+ * protocol session. Pi ships experimental remote-session client APIs, but its
+ * public CLI/TUI has no command to discover or attach to this extension's
+ * per-session socket; therefore the extension has no supported operator-facing
+ * attach workflow. This extension keeps this file as its one replaceable
+ * runtime-to-protocol boundary.
  *
  * Three things AgentSession does not hand over cleanly, and how this handles them:
  *
@@ -360,6 +361,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 	}
 
 	async abort(): Promise<void> {
+		this.session.clearQueue();
 		if (this.getPhase() === "idle") return;
 		// Recorded before the call: if this lands during prompt preflight there is
 		// no run to abort yet, and session.abort() returns having done nothing.
@@ -654,6 +656,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 					// An abort landed during preflight and found nothing to cancel.
 					// The run is real now; kill it rather than let a ghost run to
 					// completion spending tokens nobody will collect.
+					this.session.clearQueue();
 					this.session.abort().catch(() => {
 						// Best-effort; the settle path records the outcome either way.
 					});

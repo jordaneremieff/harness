@@ -10,10 +10,12 @@
  *     drives it directly — prompt, steer, abort — and reads live status from
  *     the session's own events, not from scraped output.
  *   - Every worker is also served over a unix socket by a PiServer hosted in
- *     its owning session. Released Pi 0.84.2 has no operator client for this
- *     socket. The host remains a released protocol boundary and keeps private
- *     AgentSession access inside runtime.ts. A colocated conformance test
- *     exercises it; no operator workflow depends on it.
+ *     its owning session. Pi ships experimental remote-session client APIs, but
+ *     its public CLI/TUI has no command to discover or attach to this
+ *     extension's per-session socket; therefore the extension has no supported
+ *     operator-facing attach workflow. The host remains a protocol boundary
+ *     and keeps private AgentSession access inside runtime.ts. A colocated
+ *     conformance test exercises it; no operator workflow depends on it.
  *   - The store under `<agentDir>/subagent/workers/<id>/` holds the accepted
  *     worker, the stored result (`result.txt`, capped at 50KB), the worker's system
  *     prompt, and the terminal record. A replacement session lists and
@@ -149,15 +151,29 @@ export function pruneTerminalWorkers(): void {
 		try {
 			record = readWorker(name);
 		} catch {
+			record = null;
+		}
+		const dir = join(STORE_DIR, name);
+		const recordPath = join(dir, "worker.json");
+		if (!record && existsSync(recordPath)) {
+			console.warn(`[subagent] corrupt worker record: ${recordPath}`);
+			try {
+				if (statSync(dir).mtimeMs <= cutoff) {
+					rmSync(dir, { recursive: true, force: true });
+					statusRecordCache.delete(name);
+				}
+			} catch {
+				// Best-effort; the store stays usable.
+			}
 			continue;
 		}
 		// Sweep stray temp files (crash orphans from a write/rename) left inside
 		// the worker dirs this loop already scans: any `*.tmp` older than an hour.
 		const tmpCutoff = Date.now() - 3_600_000;
 		try {
-			for (const entry of readdirSync(join(STORE_DIR, name))) {
+			for (const entry of readdirSync(dir)) {
 				if (!entry.endsWith(".tmp")) continue;
-				const tmpPath = join(STORE_DIR, name, entry);
+				const tmpPath = join(dir, entry);
 				try {
 					if (statSync(tmpPath).mtimeMs < tmpCutoff)
 						rmSync(tmpPath, { force: true });
@@ -172,7 +188,7 @@ export function pruneTerminalWorkers(): void {
 		const end = record.exitedAt ?? record.startedAt;
 		if (end > cutoff) continue;
 		try {
-			rmSync(join(STORE_DIR, name), { recursive: true, force: true });
+			rmSync(dir, { recursive: true, force: true });
 			statusRecordCache.delete(name);
 		} catch {
 			// Best-effort; the store stays usable.
@@ -288,6 +304,8 @@ export interface WorkerRecord {
 	toolErrors: Record<string, number>;
 	/** Exact tool surface the worker was built with (declared or inherited). */
 	resolvedTools: string[];
+	/** Tool names omitted when a continuation degraded against the current surface. */
+	droppedTools: string[];
 	/** The worker's own session id — attach with this, and read its transcript. */
 	sessionId: string;
 	/** The worker's session file, for transcripts after the worker is gone. */
@@ -517,6 +535,7 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 		currentTool: asStrOrNull(o.currentTool),
 		toolErrors: validateToolErrors(o.toolErrors),
 		resolvedTools: asStrArray(o.resolvedTools),
+		droppedTools: asStrArray(o.droppedTools),
 		sessionId: asString(o.sessionId),
 		sessionFile: asStrOrNull(o.sessionFile),
 		socketPath: asString(o.socketPath),
@@ -969,8 +988,27 @@ export function finalizeWorker(
 ): WorkerRecord | null {
 	const record = readWorker(id);
 	if (!record) {
+		let replacement: WorkerRecord | null = null;
+		if (WORKER_ID_RE.test(id)) {
+			const recordPath = join(workerDir(id), "worker.json");
+			if (existsSync(recordPath)) {
+				const exitedAt = Date.now();
+				try {
+					atomicWriteJson(recordPath, {
+						id,
+						state: opts?.state ?? "failed",
+						error: `unreadable worker record: ${recordPath}`,
+						exitedAt,
+					});
+					replacement = readWorker(id);
+					if (replacement) statusRecordCache.set(id, replacement);
+				} catch {
+					// Cleanup still runs when a corrupt record cannot be replaced.
+				}
+			}
+		}
 		releaseLiveWorker(id);
-		return null;
+		return replacement;
 	}
 
 	try {
@@ -1006,7 +1044,12 @@ export function finalizeWorker(
 		record.state = finalState;
 		record.exitedAt = Date.now();
 		if (opts?.usage) record.usage = opts.usage;
-		if (opts?.lastOutput !== undefined) record.lastOutput = opts.lastOutput;
+		if (opts?.lastOutput !== undefined) {
+			record.lastOutput =
+				opts.lastOutput === null
+					? null
+					: capUtf8(opts.lastOutput, RESULT_BODY_CAP_BYTES).text;
+		}
 		record.currentTool = null;
 		if (opts?.error) record.error = opts.error;
 		if (finalState === "done") {
@@ -1800,6 +1843,13 @@ export function registerWorkerCompactionVeto(pi: ExtensionAPI): void {
 	);
 }
 
+export function clearQueueBeforeAbort(
+	session: Pick<AgentSession, "clearQueue" | "abort">,
+): void {
+	session.clearQueue();
+	void session.abort().catch(() => {});
+}
+
 export function submitResultTool(
 	resultPath: string,
 	endRun: () => void,
@@ -1853,8 +1903,8 @@ export function submitResultTool(
 			//    from the finalized batch (shouldTerminateToolBatch) and leaves the
 			//    inner loop WITHOUT issuing another provider request — a clean end,
 			//    with no aborted assistant message in the worker's session file.
-			// 2. A synchronous abort, which also covers the case where a steer queued
-			//    during this call would otherwise drive one more turn.
+			// 2. A synchronous queue clear and abort, so a queued steer cannot drive
+			//    one more turn.
 			//
 			// The abort must not be deferred with setImmediate: a macrotask can land
 			// after the loop opens the next provider request. Calling it here sets the run's
@@ -2013,7 +2063,10 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 						.filter((part) => part.type === "text")
 						.map((part) => part.text);
 					if (textParts.length > 0 && textParts.some((t) => t.trim())) {
-						record.lastOutput = textParts.join("\n");
+						record.lastOutput = capUtf8(
+							textParts.join("\n"),
+							RESULT_BODY_CAP_BYTES,
+						).text;
 					}
 				}
 				// Persist cumulative usage so a replacement session sees real numbers
@@ -2123,6 +2176,7 @@ export async function dispatchWorker(
 	},
 	ctx: ExtensionContext,
 	continuation?: WorkerRecord,
+	droppedTools: string[] = [],
 ): Promise<DispatchOutcome> {
 	const model = resolveModel(ctx, task.model ?? defaults.model);
 	if ("error" in model) {
@@ -2212,6 +2266,7 @@ export async function dispatchWorker(
 		currentTool: null,
 		toolErrors: {},
 		resolvedTools,
+		droppedTools,
 		sessionId: "",
 		sessionFile: null,
 		socketPath: workerHost.socketPath,
@@ -2245,7 +2300,9 @@ export async function dispatchWorker(
 		// cannot finish until submit_result's execute() returns. Awaiting here would
 		// deadlock the worker permanently. The .catch swallows a waitForIdle
 		// rejection so it can never surface as an unhandled rejection in the parent.
-		void live.session?.abort()?.catch(() => {});
+		const workerSession = live.session;
+		if (!workerSession) return;
+		clearQueueBeforeAbort(workerSession);
 	};
 	// Every extension factory registers the same handlers. The session id marks
 	// this session as a worker before bindExtensions emits session_start, which
@@ -2978,10 +3035,40 @@ export async function continueWorker(
 			record: null,
 		};
 	}
-	const tools =
+	const surface = parentToolSurface(ctx);
+	const recordedTools =
 		terminal.resolvedTools.length > 0
 			? terminal.resolvedTools
-			: (terminal.tools ?? undefined);
+			: (terminal.tools ?? []);
+	const recordedCallableTools = [
+		...new Set(recordedTools.filter((name) => name !== "submit_result")),
+	];
+	if (!surface) {
+		return {
+			id: "",
+			state: "failed",
+			error:
+				`Worker ${id} cannot continue: the current parent tool registry is unavailable; the recorded tool gap is ${recordedCallableTools.join(", ") || "the current registry"}.`,
+			record: null,
+		};
+	}
+	const currentNames = new Set([
+		...surface.active,
+		...surface.all.map((tool) => tool.name),
+	]);
+	const tools = recordedCallableTools.filter((name) => currentNames.has(name));
+	const droppedTools = recordedCallableTools.filter(
+		(name) => !currentNames.has(name),
+	);
+	if (recordedCallableTools.length > 0 && tools.length === 0) {
+		return {
+			id: "",
+			state: "failed",
+			error:
+				`Worker ${id} cannot continue: none of its recorded tools are in the current parent registry; unavailable: ${droppedTools.join(", ")}.`,
+			record: null,
+		};
+	}
 	return dispatchWorker(
 		{
 			task: message.trim(),
@@ -3001,6 +3088,7 @@ export async function continueWorker(
 		},
 		ctx,
 		terminal,
+		droppedTools,
 	);
 }
 
@@ -3202,7 +3290,10 @@ export function collectWorker(id?: string): {
 		// unprotocolled — never presented as the result. The worker's session
 		// file holds the full record for long deliverables.
 		if (worker.state === "no_result_submitted" && worker.lastOutput) {
-			const body = `${markWorkerAuthored(worker.lastOutput, id)}\n\n[transcript: ${transcript}]`;
+			const body = `${markWorkerAuthored(
+				capUtf8(worker.lastOutput, RESULT_BODY_CAP_BYTES).text,
+				id,
+			)}\n\n[transcript: ${transcript}]`;
 			return {
 				text: `Worker ${id} (${worker.model}) · ${worker.state}${worker.error ? ` · ${worker.error}` : ""}\n\n════════════════════════════════════════\nUNPROTOCOLLED OUTPUT — the worker finished without calling submit_result; this final message is NOT the result.\n════════════════════════════════════════\n\n${body}`,
 				workers: [
@@ -3787,11 +3878,16 @@ const continueTool = defineTool({
 				`Failed to continue ${params.id}${linked}: ${outcome.error}`,
 			);
 		}
+		const dropped = outcome.record?.droppedTools ?? [];
+		const degradation =
+			dropped.length > 0
+				? ` Dropped unavailable tools: ${dropped.join(", ")}.`
+				: "";
 		return {
 			content: [
 				{
 					type: "text",
-					text: `Continued ${params.id} as ${outcome.id}. The new worker is running in the background and will notify on completion.`,
+					text: `Continued ${params.id} as ${outcome.id}.${degradation} The new worker is running in the background and will notify on completion.`,
 				},
 			],
 			details: { sourceId: params.id, worker: outcome.record },
@@ -3919,7 +4015,7 @@ export default function (pi: ExtensionAPI) {
 								id: outcome.error ? null : outcome.id || null,
 								text: outcome.error
 									? `Failed to continue ${id}${outcome.id ? ` as ${outcome.id}` : ""}: ${outcome.error}`
-									: `Continued ${id} as ${outcome.id}`,
+									: `Continued ${id} as ${outcome.id}${outcome.record?.droppedTools.length ? `. Dropped unavailable tools: ${outcome.record.droppedTools.join(", ")}.` : ""}`,
 							};
 						},
 						report: workerReport,

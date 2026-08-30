@@ -4,10 +4,11 @@
  * protocol sessions: a client that speaks protocol v1 can list them, attach, and
  * drive the same session the parent is driving.
  *
- * Released Pi 0.84.2 ships no operator client for this socket. Unreleased
- * upstream server and client work is experimental and does not define this
- * extension's production contract. The socket remains unconsumed by an operator
- * workflow and is covered by the colocated conformance test.
+ * Pi ships experimental remote-session client APIs, but its public CLI/TUI has
+ * no command to discover or attach to this extension's per-session socket;
+ * therefore the extension has no supported operator-facing attach workflow.
+ * The socket remains unconsumed by an operator workflow and is covered by the
+ * colocated conformance test.
  *
  * There is no daemon. The host lives and dies with the parent session; a worker
  * still in flight when the parent dies is lost (owner_lost), and its completed
