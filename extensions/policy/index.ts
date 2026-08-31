@@ -66,6 +66,8 @@ interface ObservedCall extends PendingCall {
 	sessionFacts: SessionFacts;
 	/** The call was blocked at the tool boundary. */
 	blocked?: boolean;
+	/** The reason returned with the block, used to confirm Pi applied it. */
+	blockReason?: string;
 }
 
 interface Annotation {
@@ -100,6 +102,9 @@ export default function registerPolicy(pi: ExtensionAPI) {
 			if (Buffer.byteLength(candidate, "utf8") > MAX_GUIDANCE_BYTES) break;
 			text = candidate;
 			included.add(note);
+		}
+		if (text === POLICY_PREFIX) {
+			throw new Error("policy rules matched but no guidance exists for the matched classes");
 		}
 		return text;
 	};
@@ -167,7 +172,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 			truncated: readTruncated(details),
 			tokens: readTokens(usage),
 		};
-		return recordWriter().enqueue(finishCall(call, result, call.sessionFacts, mode, effects));
+		return recordWriter().enqueue(finishCall(call, result, call.sessionFacts, mode, effects), call.blocked === true);
 	};
 
 	/** Rule ids already annotated in one session, created on first use. */
@@ -223,8 +228,15 @@ export default function registerPolicy(pi: ExtensionAPI) {
 			};
 			trackPending(pending, call);
 			if (mode === "enforce" && call.classes.length > 0) {
+				const reason = guidanceFor(call.tool, call.classes);
+				// A block is never returned without capacity for its record.
+				if (!recordWriter().tryReserve()) {
+					stop(new Error("policy writer cannot admit a block record"));
+					return;
+				}
 				call.blocked = true;
-				return { block: true, reason: guidanceFor(call.tool, call.classes) };
+				call.blockReason = reason;
+				return { block: true, reason };
 			}
 		} catch (error) {
 			stop(error);
@@ -278,8 +290,12 @@ export default function registerPolicy(pi: ExtensionAPI) {
 				event.result && typeof event.result === "object"
 					? (event.result as { content?: ContentLike[]; details?: unknown; usage?: unknown })
 					: {};
+			// A block is recorded only when Pi applied it: the finalized result
+			// text is the exact reason. An abort that pre-empted the block leaves
+			// the call recorded as an error without the blocked flag.
+			const outcomeText = (outcome.content ?? []).map((part) => part.text ?? "").join("");
 			writeRecord(call, outcome.content, event.isError, outcome.details, outcome.usage, {
-				blocked: call.blocked === true,
+				blocked: call.blocked === true && call.blockReason !== undefined && outcomeText === call.blockReason,
 			});
 		} catch (error) {
 			stop(error);

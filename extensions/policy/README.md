@@ -4,8 +4,8 @@ Records paired, completed tool calls and their outcomes against declarative
 rules, and runs the one mechanism the active mode selects.
 
 The records support comparison of command classes by duration, output size,
-truncation, and failure. No mode blocks a call, changes a tool input, or adds a
-rule language.
+truncation, and failure. No mode changes a tool input or adds a rule language;
+only `enforce` blocks a flagged call.
 
 ## Modes
 
@@ -33,6 +33,15 @@ notice reaches nobody. It never patches the tool result.
 The extension appends one line to the result content of a flagged call. The line
 carries the guidance the matched rules declare, prefixed with `[policy]` so the
 model does not read it as tool output.
+
+Bounds on the line:
+
+- One rule id reaches the model at most once per session, so a repeated command
+  class costs nothing after its first flag.
+- Rules that share wording contribute one line.
+- The line has a fixed byte cap. Ids left outside the cap stay unannotated and
+  remain available to a later call.
+- A failed call receives no line, because its error text already carries signal.
 
 ### enforce
 
@@ -62,14 +71,16 @@ still matches `form.du-traversal` and blocks; the block reason states the
 preferred form, and the model's reissued command is what the telemetry
 compares.
 
-Bounds on the line:
+The block reason is unconditional per attempt: every flagged call is blocked
+with the capped, note-deduped `[policy]` line for that call's classes, with no
+per-session filter. A block is returned only after the writer reserves the
+record slot for it, so a block never exists without its record; a full or
+closed writer makes the slice stop and lets the call run unblocked instead.
 
-- One rule id reaches the model at most once per session, so a repeated command
-  class costs nothing after its first flag.
-- Rules that share wording contribute one line.
-- The line has a fixed byte cap. Ids left outside the cap stay unannotated and
-  remain available to a later call.
-- A failed call receives no line, because its error text already carries signal.
+Pi runs `tool_call` handlers in extension load order and lets a later handler
+mutate `event.input` without re-validation. This slice classifies the input
+once, at its own handler position, so it must load after every extension that
+mutates a tool input.
 
 ## Records
 
@@ -111,8 +122,13 @@ mode, directory, and context facts bind to `tool_call`, so a later session
 change cannot relabel a call in flight.
 
 A blocked call lacks `tool_result`, so `tool_execution_end` supplies its fallback
-outcome. That path runs no mechanism: the call never reached the model, and the
-result patch surface does not exist there.
+outcome. That path runs no mechanism: the tool did not run, and the result
+patch surface does not exist there. The `blocked` flag is recorded only when
+Pi applied the exact returned reason; an abort that pre-empted the block is
+recorded as an error without the flag. A blocked call records `errorKind`
+`other` with `error` true, and the flag disambiguates it from a tool failure.
+A call blocked by an extension loaded before this slice never reaches this
+slice's handler and leaves no record.
 
 A call whose result never arrives is dropped at a fixed age bound, and the
 pending map itself has a fixed size bound, so a run with many concurrent calls
@@ -196,7 +212,7 @@ path, or result content reaches the model through an annotation.
 | Variable | Purpose |
 |---|---|
 | `PI_POLICY_DIR` | Record directory override; default `<agentDir>/policy` |
-| `PI_POLICY_MODE` | Active mechanism: `observe` (default), `notice`, or `annotate` |
+| `PI_POLICY_MODE` | Active mechanism: `observe` (default), `notice`, `annotate`, or `enforce` |
 
 The directory override must name a trusted private directory. The extension
 creates its own directory with mode `0700`, or accepts an existing directory
@@ -223,7 +239,9 @@ mechanism effect, admits the record, and returns without waiting for
 filesystem work. A bounded serial writer owns the append order and catches every
 background rejection. Admission is synchronous: when the queue is full or closed,
 the record is not accepted, and the notice and annotation for that call are
-withheld with it. A store failure that surfaces during a background write
+withheld with it. A block reserves its record slot before the block is
+returned, so the reserved call's admission cannot be refused by a queue that
+filled in the meantime. A store failure that surfaces during a background write
 discards remaining queued records because the destination is unavailable; a
 decision already returned before that failure keeps its record's fate tied to
 the writer's. `session_shutdown` first closes queue admission and
@@ -234,9 +252,10 @@ model turn do not.
 
 The extension has no input mutation, no rule language, no configuration
 schema, and no predicate engine. It defines no rules outside the shell domain.
-`annotate` is the only path that adds model-visible text. A successful flagged
-call receives at most one capped line, and only for rule ids this session has
-not already annotated. `enforce` is the only path that blocks a call, and it
-blocks only in enforce mode. No mode changes a tool input: every flagged form
-blocks rather than rewrites, because no rewrite is provably
-semantics-preserving and Pi does not re-validate a mutated input.
+`annotate` is the only path that appends text to a tool result. `enforce` is
+the only path that returns model-visible text as a block reason. A successful
+flagged call receives at most one capped line, and only for rule ids this
+session has not already annotated. `enforce` blocks only in enforce mode. No
+mode changes a tool input: every flagged form blocks rather than rewrites,
+because no rewrite is provably semantics-preserving and Pi does not
+re-validate a mutated input.

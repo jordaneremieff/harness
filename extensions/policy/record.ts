@@ -7,7 +7,7 @@
  * carries an exit code or a timeout flag.
  */
 
-import { captureFor, classify, redactFor } from "./classify.ts";
+import { captureFor, classifyCaptured, redactFor } from "./classify.ts";
 import type { PolicyMode } from "./mode.ts";
 
 /** Upper bound on unresolved calls held in memory. */
@@ -93,14 +93,16 @@ export function startCall(
 	now: Date = new Date(),
 	monotonic: number = performance.now(),
 ): PendingCall {
+	// The input is captured once, and the classes and the recorded text derive
+	// from that same value, so the two cannot disagree on a later read.
+	const text = captureFor(tool, input);
 	const pending: PendingCall = {
 		tool,
 		callId,
 		at: now.toISOString(),
 		startedAt: monotonic,
-		classes: classify(tool, input),
+		classes: text === undefined ? [] : classifyCaptured(tool, text),
 	};
-	const text = captureFor(tool, input);
 	if (text !== undefined) pending.captured = redactFor(tool, text);
 	return pending;
 }

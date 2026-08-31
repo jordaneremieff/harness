@@ -13,7 +13,7 @@ export interface Rule<TContext> {
 	id: string;
 	/** Whether this context matches the observation. */
 	matches(context: TContext): boolean;
-	/** One line of guidance, emitted only in annotate mode. */
+	/** One line of guidance, used by annotate and by the enforce block reason. */
 	note: string;
 }
 

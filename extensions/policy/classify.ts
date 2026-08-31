@@ -31,12 +31,21 @@ export function redactFor(tool: string, captured: string): string {
 	return domainFor(tool)?.redact?.(captured) ?? captured;
 }
 
-/** Rule ids a call matches, sorted and deduplicated. */
+/** Rule ids the captured text matches, sorted and deduplicated. */
+export function classifyCaptured(tool: string, captured: string): string[] {
+	return domainFor(tool)?.classify(captured) ?? [];
+}
+
+/**
+ * Rule ids a call matches, read from the tool input.
+ *
+ * The input is captured once; a caller that needs both the classes and the
+ * recorded text should capture once and use `classifyCaptured`, so a later
+ * mutation or accessor cannot make the two disagree.
+ */
 export function classify(tool: string, input: Record<string, unknown>): string[] {
-	const domain = domainFor(tool);
-	const captured = domain?.capture(input);
-	if (domain === undefined || captured === undefined) return [];
-	return domain.classify(captured);
+	const captured = captureFor(tool, input);
+	return captured === undefined ? [] : classifyCaptured(tool, captured);
 }
 
 /** Guidance for the given rule ids, in the order given, without repeats. */

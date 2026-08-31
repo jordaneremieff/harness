@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerPolicy from "./index.ts";
 import type { PolicyRecord } from "./record.ts";
+import { MAX_QUEUED_RECORDS } from "./store.ts";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => Promise<unknown>;
 
@@ -475,6 +476,7 @@ describe("enforce mode", () => {
 
 	it("records the block from the execution-end outcome", async () => {
 		const run = harness({ policyMode: "enforce" });
+		const reason = "[policy] Bound the output with a cap that stops the producer. Use rg for text search, or git grep for tracked text.";
 		await run.handlers.get("tool_call")!(
 			{ toolName: "bash", toolCallId: "c1", input: { command: "grep -rn tarnvel-417 ." } },
 			run.ctx,
@@ -483,7 +485,7 @@ describe("enforce mode", () => {
 			{
 				toolName: "bash",
 				toolCallId: "c1",
-				result: { content: [{ type: "text", text: "[policy] Use rg for text search." }] },
+				result: { content: [{ type: "text", text: reason }] },
 				isError: true,
 			},
 			run.ctx,
@@ -495,6 +497,58 @@ describe("enforce mode", () => {
 		assert.equal(written[0].error, true);
 		assert.equal(written[0].policyMode, "enforce");
 		assert.deepEqual(written[0].classes, ["bounds.grep-recursive-uncapped", "form.grep-file"]);
+	});
+
+	it("records an abort that pre-empted the block without the blocked flag", async () => {
+		const run = harness({ policyMode: "enforce" });
+		await run.handlers.get("tool_call")!(
+			{ toolName: "bash", toolCallId: "c1", input: { command: "grep -rn tarnvel-417 ." } },
+			run.ctx,
+		);
+		await run.handlers.get("tool_execution_end")!(
+			{
+				toolName: "bash",
+				toolCallId: "c1",
+				result: { content: [{ type: "text", text: "Operation aborted" }] },
+				isError: true,
+			},
+			run.ctx,
+		);
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		const written = await records(dir);
+		assert.equal(written.length, 1);
+		assert.equal(written[0].blocked, undefined);
+		assert.equal(written[0].error, true);
+		assert.equal(written[0].errorKind, "aborted");
+	});
+
+	it("fails open when the writer cannot admit a block record", async () => {
+		const run = harness({ policyMode: "enforce" });
+		const warnings: string[] = [];
+		const original = console.warn;
+		console.warn = (message: string) => warnings.push(message);
+		try {
+			for (let index = 0; index < MAX_QUEUED_RECORDS; index++) {
+				const id = `f${index}`;
+				void run.handlers.get("tool_call")!(
+					{ toolName: "bash", toolCallId: id, input: { command: "rg -n x src/" } },
+					run.ctx,
+				);
+				void run.handlers.get("tool_result")!(
+					{ toolName: "bash", toolCallId: id, content: [], isError: false },
+					run.ctx,
+				);
+			}
+			const result = await run.handlers.get("tool_call")!(
+				{ toolName: "bash", toolCallId: "blocked", input: { command: "cat notes.md" } },
+				run.ctx,
+			);
+			assert.equal(result, undefined, "a full writer fails open instead of blocking without a record");
+		} finally {
+			console.warn = original;
+		}
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /cannot admit a block record/);
 	});
 
 	it("does not block an unflagged call", async () => {

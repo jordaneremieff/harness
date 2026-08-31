@@ -159,6 +159,69 @@ describe("PolicyWriter", () => {
 		assert.equal(writes, 1);
 	});
 
+	describe("reservations", () => {
+		it("reserves a slot that the reserved enqueue consumes", async () => {
+			let writes = 0;
+			const writer = new PolicyWriter("/unused", assert.fail, async () => {
+				writes++;
+				return null;
+			});
+			assert.equal(writer.tryReserve(), true);
+			assert.equal(writer.enqueue(record(new Date().toISOString()), true), true);
+			await writer.close();
+			assert.equal(writes, 1);
+		});
+
+		it("holds a reserved slot against the queue bound", async () => {
+			let release = () => {};
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const writer = new PolicyWriter("/unused", assert.fail, async () => {
+				await gate;
+				return null;
+			});
+			const entry = record(new Date().toISOString());
+			assert.equal(writer.tryReserve(), true);
+			for (let index = 0; index < MAX_QUEUED_RECORDS - 1; index++) {
+				assert.equal(writer.enqueue(entry), true);
+			}
+			assert.equal(writer.enqueue(entry), false, "the reserved slot is not free for another record");
+			assert.equal(writer.enqueue(entry, true), true, "the reserved call still admits its record");
+			release();
+			await writer.close();
+		});
+
+		it("refuses a reservation when full or closed", async () => {
+			let release = () => {};
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const writer = new PolicyWriter("/unused", assert.fail, async () => {
+				await gate;
+				return null;
+			});
+			const entry = record(new Date().toISOString());
+			for (let index = 0; index < MAX_QUEUED_RECORDS; index++) writer.enqueue(entry);
+			assert.equal(writer.tryReserve(), false);
+			release();
+			await writer.close();
+			assert.equal(writer.tryReserve(), false);
+		});
+
+		it("releases reservations at close", async () => {
+			let writes = 0;
+			const writer = new PolicyWriter("/unused", assert.fail, async () => {
+				writes++;
+				return null;
+			});
+			assert.equal(writer.tryReserve(), true);
+			await writer.close();
+			assert.equal(writer.enqueue(record(new Date().toISOString()), true), false);
+			assert.equal(writes, 0);
+		});
+	});
+
 	it("discards queued records after a store failure", async () => {
 		const failures: string[] = [];
 		let writes = 0;
