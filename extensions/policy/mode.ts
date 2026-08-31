@@ -2,17 +2,18 @@
  * Active mechanism selection.
  *
  * The mode names which mechanism acts on a matched call. Every mode records.
- * `observe` acts on nothing, `notice` shows the operator a flag, and `annotate`
- * appends one line of guidance to the flagged tool result. The modes are
- * exclusive so a recorded effect belongs to one mechanism.
+ * `observe` acts on nothing, `notice` shows the operator a flag, `annotate`
+ * appends one line of guidance to the flagged tool result, and `enforce`
+ * blocks the flagged call with a reason that names the preferred form. The
+ * modes are exclusive so a recorded effect belongs to one mechanism.
  *
  * An unrecognized value is a configuration error, not a reason to guess. The
  * caller reports it once and stops recording for the session.
  */
 
-export type PolicyMode = "observe" | "notice" | "annotate";
+export type PolicyMode = "observe" | "notice" | "annotate" | "enforce";
 
-export const POLICY_MODES: readonly PolicyMode[] = ["observe", "notice", "annotate"];
+export const POLICY_MODES: readonly PolicyMode[] = ["observe", "notice", "annotate", "enforce"];
 
 const DEFAULT_MODE: PolicyMode = "observe";
 

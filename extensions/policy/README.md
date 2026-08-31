@@ -17,6 +17,7 @@ exclusive, so a recorded effect belongs to one mechanism.
 | `observe` (default) | none | no | no |
 | `notice` | a terminal flag on each flagged call | no | yes, in TUI mode |
 | `annotate` | one guidance line on a successful flagged call with remaining ids | yes | no |
+| `enforce` | block the flagged call with a reason that names the preferred form | yes, as the block result | no |
 
 An unrecognized value is a configuration error. The extension reports it once
 and stops recording for the session.
@@ -32,6 +33,34 @@ notice reaches nobody. It never patches the tool result.
 The extension appends one line to the result content of a flagged call. The line
 carries the guidance the matched rules declare, prefixed with `[policy]` so the
 model does not read it as tool output.
+
+### enforce
+
+The extension blocks a flagged call at the `tool_call` boundary. The block
+result carries a reason that names the preferred form: the same `[policy]`
+guidance line the annotation uses, so both mechanisms say the same thing. The
+model receives the reason as the call's error result and can reissue the
+command in the preferred form.
+
+Every flagged class blocks. No class rewrites in place, because Pi performs no
+re-validation after a handler mutates `event.input`, and no rewrite of a
+flagged form is provably semantics-preserving:
+
+| Class | Disposition | Why no rewrite |
+|---|---|---|
+| `routing.cat-read`, `routing.sed-slice`, `routing.head-slice`, `routing.tail-slice`, `routing.inline-script-read` | block | the preferred form is the read tool; no bash form exists, and an inline script may do arbitrary work beyond the read |
+| `routing.cat-pipe` | block | the downstream command decides semantics; `cmd a b` differs from `cat a b \| cmd` for whole-input tools such as `wc` |
+| `routing.grep-pipe`, `form.grep-file` | block | grep and rg differ in regex dialect, binary handling, hidden-file rules, and defaults |
+| `form.find-discovery`, `form.ls-recursive` | block | find and rg/fd differ on ignore files, hidden entries, and depth semantics; `ls -R` output shape has no equivalent |
+| `form.du-traversal` | block | no preferred-form bash rewrite; the class fires on every `du`, scoped or not |
+| `form.env-grep` | block | a pattern can match several variables (`PATH`, `MANPATH`); `printenv` prints one |
+| `bounds.find-output-uncapped`, `bounds.grep-recursive-uncapped`, `bounds.ls-recursive-uncapped`, `bounds.du-uncapped`, `bounds.false-cap` | block | adding or moving a cap changes the command's output, which is not semantics-preserving |
+
+A rule id records a predicate match, not a final verdict, so enforcement
+inherits the classifier's command-shape model. A scoped `du -sh node_modules`
+still matches `form.du-traversal` and blocks; the block reason states the
+preferred form, and the model's reissued command is what the telemetry
+compares.
 
 Bounds on the line:
 
@@ -64,6 +93,7 @@ writer:
 | `captured` | Redacted input text, present only when a domain declares a capture |
 | `notified` | Present when the operator saw a notice for this call |
 | `annotated`, `annotationBytes` | Present when guidance reached the model |
+| `blocked` | Present when the call was blocked at the tool boundary |
 
 `mode` holds the Pi run mode and separates the session kinds: a worker records
 `print`, an interactive session records `tui`. `policyMode` holds the mechanism.
@@ -181,8 +211,10 @@ file offset or silently accept a partial record.
 
 Every handler body catches its own failures. Failure reporting also catches
 hostile thrown values and a failing console. The first internal failure stops
-recording for the session and attempts one `console.warn`; it does not escape
-the handler. Store failures return data to this boundary instead of throwing. A
+every mechanism for the session, enforcement included, and attempts one
+`console.warn`; it does not escape the handler. A failed slice therefore lets
+calls through unblocked: the extension fails open, and the single warning is
+the signal that enforcement is off. Store failures return data to this boundary instead of throwing. A
 failure inside a mechanism therefore stops the slice and leaves the tool result
 unchanged; it never reaches the tool call.
 
@@ -200,8 +232,11 @@ model turn do not.
 
 ## Boundaries
 
-The extension has no block, no input mutation, no rule language, no
-configuration schema, and no predicate engine. It defines no rules outside the
-shell domain. `annotate` is the only path that adds model-visible text. A successful flagged
+The extension has no input mutation, no rule language, no configuration
+schema, and no predicate engine. It defines no rules outside the shell domain.
+`annotate` is the only path that adds model-visible text. A successful flagged
 call receives at most one capped line, and only for rule ids this session has
-not already annotated.
+not already annotated. `enforce` is the only path that blocks a call, and it
+blocks only in enforce mode. No mode changes a tool input: every flagged form
+blocks rather than rewrites, because no rewrite is provably
+semantics-preserving and Pi does not re-validate a mutated input.

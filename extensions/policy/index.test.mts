@@ -448,3 +448,87 @@ describe("mode configuration", () => {
 		await assert.rejects(() => readdir(dir));
 	});
 });
+
+describe("enforce mode", () => {
+	it("blocks a flagged call with a reason that names the preferred form", async () => {
+		const run = harness({ policyMode: "enforce" });
+		const result = await run.handlers.get("tool_call")!(
+			{ toolName: "bash", toolCallId: "c1", input: { command: "find . -name '*.ts'" } },
+			run.ctx,
+		);
+		assert.deepEqual(Object.keys(result as Record<string, unknown>).sort(), ["block", "reason"]);
+		assert.equal((result as { block: boolean }).block, true);
+		assert.match((result as { reason: string }).reason, /^\[policy\] /);
+		assert.match((result as { reason: string }).reason, /rg --files or fd/);
+	});
+
+	it("blocks with deduplicated guidance for a multi-class command", async () => {
+		const run = harness({ policyMode: "enforce" });
+		const result = (await run.handlers.get("tool_call")!(
+			{ toolName: "bash", toolCallId: "c1", input: { command: "find . -name '*.ts'" } },
+			run.ctx,
+		)) as { reason: string };
+		const reason = result.reason;
+		assert.equal(reason.split("Bound the output").length - 1, 1, "the shared bound note appears once");
+		assert.ok(Buffer.byteLength(reason, "utf8") <= 512, "the reason respects the byte cap");
+	});
+
+	it("records the block from the execution-end outcome", async () => {
+		const run = harness({ policyMode: "enforce" });
+		await run.handlers.get("tool_call")!(
+			{ toolName: "bash", toolCallId: "c1", input: { command: "grep -rn tarnvel-417 ." } },
+			run.ctx,
+		);
+		await run.handlers.get("tool_execution_end")!(
+			{
+				toolName: "bash",
+				toolCallId: "c1",
+				result: { content: [{ type: "text", text: "[policy] Use rg for text search." }] },
+				isError: true,
+			},
+			run.ctx,
+		);
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		const written = await records(dir);
+		assert.equal(written.length, 1);
+		assert.equal(written[0].blocked, true);
+		assert.equal(written[0].error, true);
+		assert.equal(written[0].policyMode, "enforce");
+		assert.deepEqual(written[0].classes, ["bounds.grep-recursive-uncapped", "form.grep-file"]);
+	});
+
+	it("does not block an unflagged call", async () => {
+		const run = harness({ policyMode: "enforce" });
+		assert.equal(
+			await run.handlers.get("tool_call")!({ toolName: "bash", toolCallId: "c1", input: { command: "rg -n x src/" } }, run.ctx),
+			undefined,
+		);
+		assert.equal(
+			await run.handlers.get("tool_call")!({ toolName: "read", toolCallId: "c2", input: { path: "/tmp/x" } }, run.ctx),
+			undefined,
+		);
+	});
+
+	it("blocks no call outside enforce mode", async () => {
+		for (const policyMode of ["observe", "notice", "annotate"]) {
+			const run = harness({ policyMode });
+			assert.equal(
+				await run.handlers.get("tool_call")!(
+					{ toolName: "bash", toolCallId: "c1", input: { command: "cat notes.md" } },
+					run.ctx,
+				),
+				undefined,
+				`${policyMode} must not block`,
+			);
+		}
+	});
+
+	it("shows the operator nothing", async () => {
+		const run = harness({ policyMode: "enforce" });
+		await run.handlers.get("tool_call")!(
+			{ toolName: "bash", toolCallId: "c1", input: { command: "cat notes.md" } },
+			run.ctx,
+		);
+		assert.deepEqual(run.notifications, []);
+	});
+});

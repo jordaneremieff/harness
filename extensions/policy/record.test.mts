@@ -88,6 +88,12 @@ describe("finishCall", () => {
 		assert.equal(record.annotated, undefined);
 		assert.equal(record.annotationBytes, undefined);
 	});
+
+	it("records a block only when the call was blocked", () => {
+		assert.equal(finishCall(pending(), {}, facts, "enforce", { blocked: true }, 1001).blocked, true);
+		assert.equal(finishCall(pending(), {}, facts, "enforce", { blocked: false }, 1001).blocked, undefined);
+		assert.equal(finishCall(pending(), {}, facts, "observe", {}, 1001).blocked, undefined);
+	});
 });
 
 describe("trackPending", () => {

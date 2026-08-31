@@ -5,14 +5,17 @@
  * Every mode records. `observe` acts on nothing. `notice` shows the operator a
  * flag in the terminal and adds no model-visible text. `annotate` appends one
  * capped line of guidance to a flagged result, at most once per rule id per
- * session. No mode blocks a call or changes a tool input.
+ * session. `enforce` blocks a flagged call with a reason that names the
+ * preferred form. No mode changes a tool input: every flagged form blocks
+ * rather than rewrites, because no rewrite is provably semantics-preserving
+ * and Pi does not re-validate a mutated input.
  *
  * Duration is measured here because no event carries it: `tool_call` and
  * `tool_result` are paired by call id and stamped on arrival.
  *
  * The slice sits in the path of every tool call, so a defect in it must never
  * reach that call. Every handler body runs inside a boundary that reports the
- * first failure once and then stops recording for the rest of the session.
+ * first failure once and then stops acting for the rest of the session.
  */
 
 import {
@@ -40,8 +43,8 @@ const PROJECT_CONTEXT_MARKER = "<project_context>";
 /** Prefix that marks harness guidance so it is not read as tool output. */
 const POLICY_PREFIX = "[policy]";
 
-/** Upper bound on one appended guidance line. */
-const MAX_ANNOTATION_BYTES = 512;
+/** Upper bound on one appended or returned guidance line. */
+const MAX_GUIDANCE_BYTES = 512;
 
 /** Sessions whose annotated rule ids are still tracked. */
 const MAX_ANNOTATED_SESSIONS = 16;
@@ -61,6 +64,8 @@ function readTokens(usage: unknown): number | null {
 
 interface ObservedCall extends PendingCall {
 	sessionFacts: SessionFacts;
+	/** The call was blocked at the tool boundary. */
+	blocked?: boolean;
 }
 
 interface Annotation {
@@ -78,6 +83,26 @@ export default function registerPolicy(pi: ExtensionAPI) {
 
 	/** Rule ids already annotated, per session, so history survives a session round-trip. */
 	const annotatedBySession = new Map<string, Set<string>>();
+
+	/**
+	 * One guidance line for the rule ids a call matched: the prefix plus the
+	 * rules' notes in match order, deduplicated and byte-capped. The same text
+	 * serves the annotation and the enforcement block reason, so the model sees
+	 * one consistent instruction from both mechanisms.
+	 */
+	const guidanceFor = (tool: string, classes: readonly string[]): string => {
+		let text = POLICY_PREFIX;
+		const included = new Set<string>();
+		for (const id of classes) {
+			const [note] = notesFor(tool, [id]);
+			if (note === undefined || included.has(note)) continue;
+			const candidate = `${text} ${note}`;
+			if (Buffer.byteLength(candidate, "utf8") > MAX_GUIDANCE_BYTES) break;
+			text = candidate;
+			included.add(note);
+		}
+		return text;
+	};
 
 	/** Bind mutable context facts to the call that observed them. */
 	const sessionFacts = (ctx: ExtensionContext): SessionFacts => ({
@@ -180,7 +205,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 				continue;
 			}
 			const candidate = `${text} ${note}`;
-			if (Buffer.byteLength(candidate, "utf8") > MAX_ANNOTATION_BYTES) break;
+			if (Buffer.byteLength(candidate, "utf8") > MAX_GUIDANCE_BYTES) break;
 			text = candidate;
 			included.add(note);
 			ids.push(id);
@@ -197,6 +222,10 @@ export default function registerPolicy(pi: ExtensionAPI) {
 				sessionFacts: sessionFacts(ctx),
 			};
 			trackPending(pending, call);
+			if (mode === "enforce" && call.classes.length > 0) {
+				call.blocked = true;
+				return { block: true, reason: guidanceFor(call.tool, call.classes) };
+			}
 		} catch (error) {
 			stop(error);
 		}
@@ -249,7 +278,9 @@ export default function registerPolicy(pi: ExtensionAPI) {
 				event.result && typeof event.result === "object"
 					? (event.result as { content?: ContentLike[]; details?: unknown; usage?: unknown })
 					: {};
-			writeRecord(call, outcome.content, event.isError, outcome.details, outcome.usage, {});
+			writeRecord(call, outcome.content, event.isError, outcome.details, outcome.usage, {
+				blocked: call.blocked === true,
+			});
 		} catch (error) {
 			stop(error);
 		}

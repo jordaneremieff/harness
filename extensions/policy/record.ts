@@ -50,12 +50,15 @@ export interface PolicyRecord extends SessionFacts {
 	annotated?: true;
 	/** Bytes of guidance appended to this call's result. */
 	annotationBytes?: number;
+	/** The call was blocked at the tool boundary. */
+	blocked?: true;
 }
 
 /** What a mechanism did to one call. */
 export interface CallEffects {
 	notified?: boolean;
 	annotationBytes?: number;
+	blocked?: boolean;
 }
 
 export interface PendingCall {
@@ -149,6 +152,7 @@ export function finishCall(
 		record.annotated = true;
 		record.annotationBytes = effects.annotationBytes;
 	}
+	if (effects.blocked === true) record.blocked = true;
 	return record;
 }
 

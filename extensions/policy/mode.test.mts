@@ -17,7 +17,7 @@ describe("resolvePolicyMode", () => {
 	});
 
 	it("refuses an unrecognized value and names the accepted set", () => {
-		assert.throws(() => resolvePolicyMode({ PI_POLICY_MODE: "block" }), /observe, notice, annotate/);
+		assert.throws(() => resolvePolicyMode({ PI_POLICY_MODE: "rewrite" }), /observe, notice, annotate, enforce/);
 		assert.throws(() => resolvePolicyMode({ PI_POLICY_MODE: "Observe" }), /received "Observe"/);
 	});
 });
