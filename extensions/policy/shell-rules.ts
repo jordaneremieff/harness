@@ -7,10 +7,8 @@
  */
 
 import type { Domain, Rule } from "./rule.ts";
+import { redactCommand } from "./redact.ts";
 import { parseStatements, type Stage, type Statement } from "./shell.ts";
-
-/** Class groups derived from the harness command-line rules. */
-export type ClassGroup = "routing" | "form" | "bounds";
 
 export interface RuleContext {
 	statement: Statement;
@@ -18,9 +16,7 @@ export interface RuleContext {
 	index: number;
 }
 
-export interface ShellRule extends Rule<RuleContext> {
-	group: ClassGroup;
-}
+export interface ShellRule extends Rule<RuleContext> {}
 
 const READ_TOOL_NOTE = "Use the read tool for file contents.";
 const READ_SLICE_NOTE = "Use the read tool with offset and limit for a file slice.";
@@ -216,68 +212,57 @@ function isUncapped(statement: Statement, index: number): boolean {
 export const RULES: ShellRule[] = [
 	{
 		id: "routing.cat-read",
-		group: "routing",
 		note: READ_TOOL_NOTE,
 		matches: ({ stage }) => isCatRead(stage) && !stage.toPipe,
 	},
 	{
 		id: "routing.cat-pipe",
-		group: "routing",
 		note: "Give the file to the next command directly instead of a cat pipe.",
 		matches: ({ stage }) => isCatPipe(stage),
 	},
-	{ id: "routing.sed-slice", group: "routing", note: READ_SLICE_NOTE, matches: ({ stage }) => isSedSlice(stage) },
+	{ id: "routing.sed-slice", note: READ_SLICE_NOTE, matches: ({ stage }) => isSedSlice(stage) },
 	{
 		id: "routing.head-slice",
-		group: "routing",
 		note: READ_SLICE_NOTE,
 		matches: ({ stage }) => isFileSlice(stage, "head"),
 	},
 	{
 		id: "routing.tail-slice",
-		group: "routing",
 		note: READ_SLICE_NOTE,
 		matches: ({ stage }) => isFileSlice(stage, "tail"),
 	},
 	{
 		id: "routing.inline-script-read",
-		group: "routing",
 		note: READ_TOOL_NOTE,
 		matches: ({ stage }) => isInlineScriptRead(stage),
 	},
 	{
 		id: "routing.grep-pipe",
-		group: "routing",
 		note: "Filter with rg, or narrow the command that produces the output.",
 		matches: ({ stage }) => GREP_COMMANDS.has(stage.command) && stage.fromPipe && !hasFlag(stage, "q", "quiet", "silent"),
 	},
 	{
 		id: "form.grep-file",
-		group: "form",
 		note: "Use rg for text search, or git grep for tracked text.",
 		matches: ({ stage }) => isGrepFile(stage),
 	},
 	{
 		id: "form.find-discovery",
-		group: "form",
 		note: "Use rg --files or fd for discovery, and git ls-files for tracked files.",
 		matches: ({ stage }) => stage.command === "find",
 	},
 	{
 		id: "form.ls-recursive",
-		group: "form",
 		note: "Use rg --files or fd for a recursive listing.",
 		matches: ({ stage }) => isRecursiveLs(stage),
 	},
 	{
 		id: "form.du-traversal",
-		group: "form",
 		note: "Scope the traversal to the smallest root that holds the target.",
 		matches: ({ stage }) => isDu(stage),
 	},
 	{
 		id: "form.env-grep",
-		group: "form",
 		note: "Use printenv NAME for one environment variable.",
 		matches: ({ statement, stage, index }) => {
 			const dumpsEnvironment =
@@ -289,32 +274,27 @@ export const RULES: ShellRule[] = [
 	},
 	{
 		id: "bounds.find-output-uncapped",
-		group: "bounds",
 		note: OUTPUT_BOUND_NOTE,
 		matches: ({ statement, stage, index }) =>
 			stage.command === "find" && !stage.args.includes("-quit") && isUncapped(statement, index),
 	},
 	{
 		id: "bounds.grep-recursive-uncapped",
-		group: "bounds",
 		note: OUTPUT_BOUND_NOTE,
 		matches: ({ statement, stage, index }) => isRecursiveGrep(stage) && isUncapped(statement, index),
 	},
 	{
 		id: "bounds.ls-recursive-uncapped",
-		group: "bounds",
 		note: OUTPUT_BOUND_NOTE,
 		matches: ({ statement, stage, index }) => isRecursiveLs(stage) && isUncapped(statement, index),
 	},
 	{
 		id: "bounds.du-uncapped",
-		group: "bounds",
 		note: OUTPUT_BOUND_NOTE,
 		matches: ({ statement, stage, index }) => isDu(stage) && isUncapped(statement, index),
 	},
 	{
 		id: "bounds.false-cap",
-		group: "bounds",
 		note: "This cap does not stop its producer. Bound the producer itself.",
 		matches: ({ statement, stage, index }) =>
 			(stage.command === "find" || isRecursiveGrep(stage) || isRecursiveLs(stage) || isDu(stage)) &&
@@ -328,6 +308,7 @@ const NOTES = new Map(RULES.map((rule) => [rule.id, rule.note]));
 export const shellDomain: Domain = {
 	tool: "bash",
 	capture: (input) => (typeof input.command === "string" ? input.command : undefined),
+	redact: redactCommand,
 	classify(command) {
 		const matched = new Set<string>();
 		for (const statement of parseStatements(command)) {

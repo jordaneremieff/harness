@@ -19,7 +19,6 @@ import {
 	getAgentDir,
 	type ExtensionAPI,
 	type ExtensionContext,
-	type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
 import { notesFor } from "./classify.ts";
 import { resolvePolicyMode, type PolicyMode } from "./mode.ts";
@@ -44,6 +43,9 @@ const POLICY_PREFIX = "[policy]";
 /** Upper bound on one appended guidance line. */
 const MAX_ANNOTATION_BYTES = 512;
 
+/** Sessions whose annotated rule ids are still tracked. */
+const MAX_ANNOTATED_SESSIONS = 16;
+
 function readTruncated(details: unknown): boolean {
 	if (!details || typeof details !== "object") return false;
 	const truncation = (details as { truncation?: unknown }).truncation;
@@ -67,9 +69,6 @@ interface Annotation {
 	ids: string[];
 }
 
-/** The one patch this slice returns: the tool's own content plus guidance. */
-type ResultPatch = { content: ToolResultEvent["content"] };
-
 export default function registerPolicy(pi: ExtensionAPI) {
 	const pending = new Map<string, ObservedCall>();
 	let stopped = false;
@@ -77,9 +76,8 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	let writer: PolicyWriter | null = null;
 	let mode: PolicyMode = "observe";
 
-	/** Rule ids already annotated, and the session that saw them. */
-	const annotatedIds = new Set<string>();
-	let annotatedSession: string | null = null;
+	/** Rule ids already annotated, per session, so history survives a session round-trip. */
+	const annotatedBySession = new Map<string, Set<string>>();
 
 	/** Bind mutable context facts to the call that observed them. */
 	const sessionFacts = (ctx: ExtensionContext): SessionFacts => ({
@@ -137,14 +135,27 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		details: unknown,
 		usage: unknown,
 		effects: CallEffects,
-	): void => {
+	): boolean => {
 		const result: ResultFacts = {
 			content,
 			isError,
 			truncated: readTruncated(details),
 			tokens: readTokens(usage),
 		};
-		recordWriter().enqueue(finishCall(call, result, call.sessionFacts, mode, effects));
+		return recordWriter().enqueue(finishCall(call, result, call.sessionFacts, mode, effects));
+	};
+
+	/** Rule ids already annotated in one session, created on first use. */
+	const annotatedIdsFor = (session: string): Set<string> => {
+		let ids = annotatedBySession.get(session);
+		if (ids) return ids;
+		if (annotatedBySession.size >= MAX_ANNOTATED_SESSIONS) {
+			const oldest = annotatedBySession.keys().next();
+			if (!oldest.done) annotatedBySession.delete(oldest.value);
+		}
+		ids = new Set();
+		annotatedBySession.set(session, ids);
+		return ids;
 	};
 
 	/**
@@ -156,15 +167,12 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	 * the cap stays unmarked for a later call.
 	 */
 	const annotationFor = (tool: string, classes: string[], session: string): Annotation | undefined => {
-		if (session !== annotatedSession) {
-			annotatedSession = session;
-			annotatedIds.clear();
-		}
+		const annotated = annotatedIdsFor(session);
 		let text = POLICY_PREFIX;
 		const ids: string[] = [];
 		const included = new Set<string>();
 		for (const id of classes) {
-			if (annotatedIds.has(id)) continue;
+			if (annotated.has(id)) continue;
 			const [note] = notesFor(tool, [id]);
 			if (note === undefined) continue;
 			if (included.has(note)) {
@@ -200,32 +208,33 @@ export default function registerPolicy(pi: ExtensionAPI) {
 			const call = takeCall(event.toolCallId);
 			if (!call) return;
 			const effects: CallEffects = {};
-			let patch: ResultPatch | undefined;
+			let annotation: Annotation | undefined;
 			if (call.classes.length > 0) {
-				if (mode === "notice" && ctx.mode === "tui") {
-					ctx.ui.notify(`${POLICY_PREFIX} ${call.classes.join(", ")}`, "warning");
-					effects.notified = true;
-				}
+				if (mode === "notice" && ctx.mode === "tui") effects.notified = true;
 				if (mode === "annotate" && event.isError !== true) {
-					const annotation = annotationFor(call.tool, call.classes, call.sessionFacts.session);
-					if (annotation) {
-						for (const id of annotation.ids) annotatedIds.add(id);
-						effects.annotationBytes = Buffer.byteLength(annotation.text, "utf8");
-						patch = {
-							content: [...(event.content ?? []), { type: "text", text: annotation.text }],
-						};
-					}
+					annotation = annotationFor(call.tool, call.classes, call.sessionFacts.session);
+					if (annotation) effects.annotationBytes = Buffer.byteLength(annotation.text, "utf8");
 				}
 			}
-			writeRecord(
+			// Admission gates the visible effects: no notice or annotation without its record.
+			if (!writeRecord(
 				call,
 				event.content as ContentLike[] | undefined,
 				event.isError,
 				(event as { details?: unknown }).details,
 				event.usage,
 				effects,
-			);
-			return patch;
+			)) return;
+			if (effects.notified === true) {
+				ctx.ui.notify(`${POLICY_PREFIX} ${call.classes.join(", ")}`, "warning");
+			}
+			if (annotation) {
+				const annotated = annotatedIdsFor(call.sessionFacts.session);
+				for (const id of annotation.ids) annotated.add(id);
+				return {
+					content: [...(event.content ?? []), { type: "text", text: annotation.text }],
+				};
+			}
 		} catch (error) {
 			stop(error);
 		}

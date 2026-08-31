@@ -16,7 +16,7 @@ exclusive, so a recorded effect belongs to one mechanism.
 |---|---|---|---|
 | `observe` (default) | none | no | no |
 | `notice` | a terminal flag on each flagged call | no | yes, in TUI mode |
-| `annotate` | one guidance line appended to a flagged result | yes | no |
+| `annotate` | one guidance line on a successful flagged call with remaining ids | yes | no |
 
 An unrecognized value is a configuration error. The extension reports it once
 and stops recording for the session.
@@ -61,7 +61,7 @@ writer:
 | `tokens` | Tokens the tool reported, or `null` |
 | `policyMode` | Mechanism active for this call |
 | `classes` | Matched rule ids, empty when no rule matched |
-| `command` | Redacted input, present only when a domain declares input capture |
+| `captured` | Redacted input text, present only when a domain declares a capture |
 | `notified` | Present when the operator saw a notice for this call |
 | `annotated`, `annotationBytes` | Present when guidance reached the model |
 
@@ -82,10 +82,14 @@ change cannot relabel a call in flight.
 
 A blocked call lacks `tool_result`, so `tool_execution_end` supplies its fallback
 outcome. That path runs no mechanism: the call never reached the model, and the
-result patch surface does not exist there. Any call that receives neither event
-expires and also has a fixed memory bound. Concurrent calls can append in
-completion order rather than call order; use `at` and `callId`, not JSONL line
-position, for correlation.
+result patch surface does not exist there.
+
+A call whose result never arrives is dropped at a fixed age bound, and the
+pending map itself has a fixed size bound, so a run with many concurrent calls
+cannot hold unbounded memory. A call dropped this way leaves no record even if
+its result arrives later: the bound trades completeness for a fixed memory
+ceiling. Concurrent calls can append in completion order rather than call
+order; use `at` and `callId`, not JSONL line position, for correlation.
 
 ## Domains and rules
 
@@ -134,6 +138,11 @@ Because a rule id is an observation rather than a verdict, `annotate` guidance
 is advice attached to a shape match. It states the preferred form; it does not
 assert that the flagged call was wrong.
 
+The `[policy]` prefix marks the line as harness guidance. It is not an
+authenticity proof: tool output can forge the same prefix. The fixed sentence
+list is the defense, so a line outside that list is not genuine policy
+guidance.
+
 ## Input privacy
 
 Only the shell domain declares input capture, and it captures `input.command`.
@@ -178,11 +187,14 @@ failure inside a mechanism therefore stops the slice and leaves the tool result
 unchanged; it never reaches the tool call.
 
 Pi awaits `tool_result` handlers. The handler derives the record, decides the
-mechanism effect, enqueues the record, and returns without waiting for
+mechanism effect, admits the record, and returns without waiting for
 filesystem work. A bounded serial writer owns the append order and catches every
-background rejection. A full queue stops new recording and preserves records
-already accepted. A store failure discards remaining queued records because the
-destination is unavailable. `session_shutdown` first closes queue admission and
+background rejection. Admission is synchronous: when the queue is full or closed,
+the record is not accepted, and the notice and annotation for that call are
+withheld with it. A store failure that surfaces during a background write
+discards remaining queued records because the destination is unavailable; a
+decision already returned before that failure keeps its record's fate tied to
+the writer's. `session_shutdown` first closes queue admission and
 then waits for the final accepted write; an active tool result and the next
 model turn do not.
 
@@ -190,5 +202,6 @@ model turn do not.
 
 The extension has no block, no input mutation, no rule language, no
 configuration schema, and no predicate engine. It defines no rules outside the
-shell domain. `annotate` is the only path that adds model-visible text, and it
-adds one capped line per flagged call under the per-session bound above.
+shell domain. `annotate` is the only path that adds model-visible text. A successful flagged
+call receives at most one capped line, and only for rule ids this session has
+not already annotated.

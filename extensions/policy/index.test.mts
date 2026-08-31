@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -124,7 +124,7 @@ describe("policy extension", () => {
 		assert.equal(written[0].session, "session-1");
 		assert.equal(written[0].projectContext, true);
 		assert.deepEqual(written[0].classes, ["routing.cat-read"]);
-		assert.equal(written[0].command, "cat notes.md");
+		assert.equal(written[0].captured, "cat notes.md");
 		assert.equal(written[0].outputBytes, 5);
 		assert.equal(written[0].truncated, true);
 		assert.equal(written[0].tokens, 7);
@@ -171,7 +171,7 @@ describe("policy extension", () => {
 		await handlers.get("session_shutdown")!({}, ctx);
 		const written = await records(dir);
 		assert.equal(written.length, 1);
-		assert.equal(written[0].command, undefined);
+		assert.equal(written[0].captured, undefined);
 		assert.equal(JSON.stringify(written[0]).includes("/secret/file"), false);
 	});
 
@@ -340,6 +340,58 @@ describe("annotate mode", () => {
 			next,
 		);
 		assert.notEqual(patch, undefined);
+	});
+
+	it("keeps annotation history when a session returns after another session", async () => {
+		const run = harness({ policyMode: "annotate" });
+		const first = run.ctx;
+		const second = { ...run.ctx, sessionManager: { getSessionId: () => "session-2" } };
+		assert.notEqual(await runBash(run, "c1", "cat notes.md"), undefined);
+		await run.handlers.get("tool_call")!(
+			{ toolName: "bash", toolCallId: "c2", input: { command: "cat notes.md" } },
+			second,
+		);
+		assert.notEqual(
+			await run.handlers.get("tool_result")!(
+				{ toolName: "bash", toolCallId: "c2", content: [], isError: false },
+				second,
+			),
+			undefined,
+		);
+		await run.handlers.get("tool_call")!(
+			{ toolName: "bash", toolCallId: "c3", input: { command: "cat notes.md" } },
+			first,
+		);
+		assert.equal(
+			await run.handlers.get("tool_result")!(
+				{ toolName: "bash", toolCallId: "c3", content: [], isError: false },
+				first,
+			),
+			undefined,
+			"session-1 history survives the session-2 visit",
+		);
+	});
+
+	it("withholds the mechanism effect when record admission fails", async () => {
+		await writeFile(dir, "");
+		const warnings: string[] = [];
+		const original = console.warn;
+		console.warn = (message: string) => warnings.push(message);
+		try {
+			const run = harness({ policyMode: "annotate" });
+			assert.notEqual(
+				await runBash(run, "c1", "cat notes.md"),
+				undefined,
+				"the first patch is decided before the async store failure",
+			);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			assert.equal(await runBash(run, "c2", "cat notes.md"), undefined, "no effect without its record");
+			assert.deepEqual(run.notifications, []);
+		} finally {
+			console.warn = original;
+		}
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /recording stopped for this session/);
 	});
 
 	it("leaves a failed call unchanged", async () => {

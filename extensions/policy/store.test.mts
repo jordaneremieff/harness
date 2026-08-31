@@ -22,7 +22,7 @@ const record = (at: string): PolicyRecord => ({
 	errorKind: null,
 	tokens: null,
 	classes: ["routing.cat-read"],
-	command: "cat a",
+	captured: "cat a",
 });
 
 describe("resolvePolicyDir", () => {
@@ -128,7 +128,7 @@ describe("PolicyWriter", () => {
 		assert.equal(flushed, true);
 	});
 
-	it("stops accepting at the queue bound and preserves accepted writes", async () => {
+	it("stops accepting at the queue bound, reports once, and returns false", async () => {
 		const failures: string[] = [];
 		let writes = 0;
 		const writer = new PolicyWriter("/unused", (reason) => failures.push(reason), async () => {
@@ -136,7 +136,9 @@ describe("PolicyWriter", () => {
 			return null;
 		});
 		const entry = record(new Date().toISOString());
-		for (let index = 0; index <= MAX_QUEUED_RECORDS; index++) writer.enqueue(entry);
+		let accepted = true;
+		for (let index = 0; index <= MAX_QUEUED_RECORDS; index++) accepted = writer.enqueue(entry);
+		assert.equal(accepted, false, "the record past the bound is not accepted");
 		await writer.close();
 		assert.equal(failures.length, 1);
 		assert.match(failures[0], /queue reached/);
@@ -150,9 +152,9 @@ describe("PolicyWriter", () => {
 			return null;
 		});
 		const entry = record(new Date().toISOString());
-		writer.enqueue(entry);
+		assert.equal(writer.enqueue(entry), true);
 		const closing = writer.close();
-		writer.enqueue(entry);
+		assert.equal(writer.enqueue(entry), false);
 		await closing;
 		assert.equal(writes, 1);
 	});

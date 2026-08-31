@@ -1,15 +1,14 @@
 /**
  * Record shape and derivation.
  *
- * The shape is tool-agnostic: every field except `classes` and `command`
+ * The shape is tool-agnostic: every field except `classes` and `captured`
  * describes a call and its outcome, whatever tool ran. Outcome facts are
  * measured or read; `errorKind` is inferred from error text, because no event
  * carries an exit code or a timeout flag.
  */
 
-import { captureFor, classify } from "./classify.ts";
+import { captureFor, classify, redactFor } from "./classify.ts";
 import type { PolicyMode } from "./mode.ts";
-import { redactCommand } from "./redact.ts";
 
 /** Upper bound on unresolved calls held in memory. */
 export const MAX_PENDING = 512;
@@ -43,8 +42,8 @@ export interface PolicyRecord extends SessionFacts {
 	policyMode: PolicyMode;
 	/** Matched rule ids, empty when the call matched no rule. */
 	classes: string[];
-	/** Redacted input, present only for a tool whose rules declare a capture. */
-	command?: string;
+	/** Redacted input text, present only when a domain declared a capture. */
+	captured?: string;
 	/** The operator saw a notice for this call. */
 	notified?: true;
 	/** Guidance was appended to this call's result. */
@@ -65,7 +64,7 @@ export interface PendingCall {
 	at: string;
 	startedAt: number;
 	classes: string[];
-	command?: string;
+	captured?: string;
 }
 
 export interface ContentLike {
@@ -98,8 +97,8 @@ export function startCall(
 		startedAt: monotonic,
 		classes: classify(tool, input),
 	};
-	const captured = captureFor(tool, input);
-	if (captured !== undefined) pending.command = redactCommand(captured);
+	const text = captureFor(tool, input);
+	if (text !== undefined) pending.captured = redactFor(tool, text);
 	return pending;
 }
 
@@ -144,7 +143,7 @@ export function finishCall(
 		policyMode: mode,
 		classes: pending.classes,
 	};
-	if (pending.command !== undefined) record.command = pending.command;
+	if (pending.captured !== undefined) record.captured = pending.captured;
 	if (effects.notified === true) record.notified = true;
 	if (effects.annotationBytes !== undefined && effects.annotationBytes > 0) {
 		record.annotated = true;

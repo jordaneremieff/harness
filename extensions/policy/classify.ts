@@ -21,6 +21,16 @@ export function captureFor(tool: string, input: Record<string, unknown>): string
 	return domainFor(tool)?.capture(input);
 }
 
+/**
+ * Redaction the owning domain applies to captured text before persistence.
+ *
+ * A domain without a redaction keeps its capture unchanged. The neutral path
+ * never applies one domain's redaction to another domain's capture.
+ */
+export function redactFor(tool: string, captured: string): string {
+	return domainFor(tool)?.redact?.(captured) ?? captured;
+}
+
 /** Rule ids a call matches, sorted and deduplicated. */
 export function classify(tool: string, input: Record<string, unknown>): string[] {
 	const domain = domainFor(tool);

@@ -10,10 +10,6 @@ describe("rule set", () => {
 		assert.equal(new Set(RULES.map((rule) => rule.id)).size, RULES.length);
 	});
 
-	it("prefixes every id with its own group", () => {
-		for (const rule of RULES) assert.ok(rule.id.startsWith(`${rule.group}.`), rule.id);
-	});
-
 	it("carries one line of guidance for every rule", () => {
 		for (const rule of RULES) {
 			assert.ok(rule.note.length > 0, rule.id);

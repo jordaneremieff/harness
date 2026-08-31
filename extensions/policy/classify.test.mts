@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { captureFor, classify, notesFor } from "./classify.ts";
+import { captureFor, classify, notesFor, redactFor } from "./classify.ts";
 
 describe("captureFor", () => {
 	it("returns the text the owning domain declares", () => {
@@ -28,6 +28,17 @@ describe("classify", () => {
 
 	it("returns no class when the domain captures nothing", () => {
 		assert.deepEqual(classify("bash", { timeout: 5 }), []);
+	});
+});
+
+describe("redactFor", () => {
+	it("applies the owning domain's redaction", () => {
+		assert.equal(redactFor("bash", "TOKEN=abcdef cat x"), "TOKEN=[redacted] cat x");
+	});
+
+	it("keeps an unowned tool's capture unchanged", () => {
+		const opaque = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.signature";
+		assert.equal(redactFor("read", opaque), opaque);
 	});
 });
 

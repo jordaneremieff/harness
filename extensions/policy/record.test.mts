@@ -16,13 +16,13 @@ describe("startCall", () => {
 	it("classifies the call and stores redacted command text", () => {
 		const call = startCall("bash", "c1", { command: "TOKEN=abcdef cat notes.md" }, new Date("2026-09-01T10:00:00Z"), 1000);
 		assert.deepEqual(call.classes, ["routing.cat-read"]);
-		assert.equal(call.command, "TOKEN=[redacted] cat notes.md");
+		assert.equal(call.captured, "TOKEN=[redacted] cat notes.md");
 		assert.equal(call.at, "2026-09-01T10:00:00.000Z");
 	});
 
 	it("stores no input for a tool without a declared capture", () => {
 		const call = startCall("read", "c2", { path: "/etc/hosts" });
-		assert.equal(call.command, undefined);
+		assert.equal(call.captured, undefined);
 		assert.deepEqual(call.classes, []);
 	});
 });

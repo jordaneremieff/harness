@@ -112,12 +112,17 @@ export class PolicyWriter {
 		}
 	}
 
-	/** Queue one record and return without waiting for disk I/O. */
-	enqueue(record: PolicyRecord): void {
-		if (!this.accepting) return;
+	/**
+	 * Queue one record and return without waiting for disk I/O.
+	 *
+	 * Returns false when admission failed, so the caller can withhold any
+	 * mechanism effect that would otherwise exist without its record.
+	 */
+	enqueue(record: PolicyRecord): boolean {
+		if (!this.accepting) return false;
 		if (this.queued >= MAX_QUEUED_RECORDS) {
 			this.fail(`policy writer queue reached ${MAX_QUEUED_RECORDS} records`, false);
-			return;
+			return false;
 		}
 		this.queued++;
 		this.tail = this.tail
@@ -130,6 +135,7 @@ export class PolicyWriter {
 			.finally(() => {
 				this.queued--;
 			});
+		return true;
 	}
 
 	/** Stop admission and wait for the final accepted write. */
