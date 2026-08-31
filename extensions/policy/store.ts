@@ -137,7 +137,10 @@ export class PolicyWriter {
 	 */
 	enqueue(record: PolicyRecord, reserved = false): boolean {
 		if (reserved) {
-			if (this.reserved === 0) return false;
+			// A discarded queue cannot honor the reservation: the queued write
+			// would be skipped. Capacity-only failures keep the queue valid,
+			// so reservations still drain after those.
+			if (this.reserved === 0 || this.discardQueued) return false;
 			this.reserved--;
 		} else {
 			if (!this.accepting) return false;

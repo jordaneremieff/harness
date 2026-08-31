@@ -25,6 +25,20 @@ describe("startCall", () => {
 		assert.equal(call.captured, undefined);
 		assert.deepEqual(call.classes, []);
 	});
+
+	it("reads the captured input exactly once", () => {
+		let reads = 0;
+		const input = {
+			get command() {
+				reads++;
+				return reads === 1 ? "cat notes.md" : "rg -n x src/";
+			},
+		};
+		const call = startCall("bash", "c1", input);
+		assert.equal(reads, 1);
+		assert.deepEqual(call.classes, ["routing.cat-read"]);
+		assert.equal(call.captured, "cat notes.md");
+	});
 });
 
 describe("finishCall", () => {

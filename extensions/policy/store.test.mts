@@ -220,6 +220,16 @@ describe("PolicyWriter", () => {
 			assert.equal(writer.enqueue(record(new Date().toISOString()), true), false);
 			assert.equal(writes, 0);
 		});
+
+		it("refuses a reserved enqueue after a discard-mode failure", async () => {
+			const failures: string[] = [];
+			const writer = new PolicyWriter("/unused", (reason) => failures.push(reason), async () => "store failed");
+			assert.equal(writer.tryReserve(), true);
+			assert.equal(writer.enqueue(record(new Date().toISOString())), true);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			assert.equal(writer.enqueue(record(new Date().toISOString()), true), false);
+			assert.deepEqual(failures, ["store failed"]);
+		});
 	});
 
 	it("discards queued records after a store failure", async () => {

@@ -74,8 +74,13 @@ compares.
 The block reason is unconditional per attempt: every flagged call is blocked
 with the capped, note-deduped `[policy]` line for that call's classes, with no
 per-session filter. A block is returned only after the writer reserves the
-record slot for it, so a block never exists without its record; a full or
-closed writer makes the slice stop and lets the call run unblocked instead.
+record slot for it, so a queue that fills in the meantime cannot refuse the
+block's record; a full or closed writer makes the slice stop and lets the call
+run unblocked instead. A blocked call's execution-end event arrives in the
+same preflight iteration as the block, so its pending entry cannot age or size
+out before the record is admitted. Session teardown and store failure follow
+the failure contract: a block returned before such a failure can still lose
+its record.
 
 Pi runs `tool_call` handlers in extension load order and lets a later handler
 mutate `event.input` without re-validation. This slice classifies the input

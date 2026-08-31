@@ -307,7 +307,12 @@ const NOTES = new Map(RULES.map((rule) => [rule.id, rule.note]));
 /** The shell domain: `bash` command text, its rules, and their guidance. */
 export const shellDomain: Domain = {
 	tool: "bash",
-	capture: (input) => (typeof input.command === "string" ? input.command : undefined),
+	capture: (input) => {
+		// One read, so an accessor-backed input cannot yield two different
+		// commands to the classifier and the recorded text.
+		const command = input.command;
+		return typeof command === "string" ? command : undefined;
+	},
 	redact: redactCommand,
 	classify(command) {
 		const matched = new Set<string>();
