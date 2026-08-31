@@ -7,7 +7,8 @@
  * carries an exit code or a timeout flag.
  */
 
-import { classify, INPUT_CAPTURE } from "./rules.ts";
+import { captureFor, classify } from "./classify.ts";
+import type { PolicyMode } from "./mode.ts";
 import { redactCommand } from "./redact.ts";
 
 /** Upper bound on unresolved calls held in memory. */
@@ -38,10 +39,24 @@ export interface PolicyRecord extends SessionFacts {
 	errorKind: "timeout" | "aborted" | "other" | null;
 	/** Tokens the tool itself reported, when it reported any. */
 	tokens: number | null;
+	/** Mechanism active for this call. */
+	policyMode: PolicyMode;
 	/** Matched rule ids, empty when the call matched no rule. */
 	classes: string[];
 	/** Redacted input, present only for a tool whose rules declare a capture. */
 	command?: string;
+	/** The operator saw a notice for this call. */
+	notified?: true;
+	/** Guidance was appended to this call's result. */
+	annotated?: true;
+	/** Bytes of guidance appended to this call's result. */
+	annotationBytes?: number;
+}
+
+/** What a mechanism did to one call. */
+export interface CallEffects {
+	notified?: boolean;
+	annotationBytes?: number;
 }
 
 export interface PendingCall {
@@ -83,7 +98,7 @@ export function startCall(
 		startedAt: monotonic,
 		classes: classify(tool, input),
 	};
-	const captured = INPUT_CAPTURE[tool]?.(input);
+	const captured = captureFor(tool, input);
 	if (captured !== undefined) pending.command = redactCommand(captured);
 	return pending;
 }
@@ -110,6 +125,8 @@ export function finishCall(
 	pending: PendingCall,
 	facts: ResultFacts,
 	session: SessionFacts,
+	mode: PolicyMode,
+	effects: CallEffects = {},
 	monotonic: number = performance.now(),
 ): PolicyRecord {
 	const isError = facts.isError === true;
@@ -124,9 +141,15 @@ export function finishCall(
 		error: isError,
 		errorKind: errorKind(facts.content, isError),
 		tokens: facts.tokens ?? null,
+		policyMode: mode,
 		classes: pending.classes,
 	};
 	if (pending.command !== undefined) record.command = pending.command;
+	if (effects.notified === true) record.notified = true;
+	if (effects.annotationBytes !== undefined && effects.annotationBytes > 0) {
+		record.annotated = true;
+		record.annotationBytes = effects.annotationBytes;
+	}
 	return record;
 }
 

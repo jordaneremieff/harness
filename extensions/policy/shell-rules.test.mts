@@ -1,12 +1,24 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { classify, RULES } from "./rules.ts";
+import { classify } from "./classify.ts";
+import { RULES } from "./shell-rules.ts";
 
 const bash = (command: string) => classify("bash", { command });
 
 describe("rule set", () => {
 	it("declares unique ids", () => {
 		assert.equal(new Set(RULES.map((rule) => rule.id)).size, RULES.length);
+	});
+
+	it("prefixes every id with its own group", () => {
+		for (const rule of RULES) assert.ok(rule.id.startsWith(`${rule.group}.`), rule.id);
+	});
+
+	it("carries one line of guidance for every rule", () => {
+		for (const rule of RULES) {
+			assert.ok(rule.note.length > 0, rule.id);
+			assert.equal(rule.note.includes("\n"), false, rule.id);
+		}
 	});
 
 	it("records nothing for a tool without a declared input capture", () => {

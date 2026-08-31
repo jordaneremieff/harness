@@ -9,22 +9,56 @@ import type { PolicyRecord } from "./record.ts";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => Promise<unknown>;
 
-function harness(overrides: { systemPrompt?: string; sessionId?: string } = {}) {
+interface Notification {
+	message: string;
+	type?: string;
+}
+
+function harness(
+	overrides: { systemPrompt?: string; sessionId?: string; policyMode?: string; ctxMode?: string } = {},
+) {
 	const handlers = new Map<string, Handler>();
 	const pi = {
 		on(event: string, handler: Handler) {
 			handlers.set(event, handler);
 		},
 	};
+	const notifications: Notification[] = [];
 	const ctx = {
-		mode: "tui",
+		mode: overrides.ctxMode ?? "tui",
 		cwd: "/work",
+		ui: {
+			notify: (message: string, type?: string) => notifications.push({ message, type }),
+		},
 		sessionManager: { getSessionId: () => overrides.sessionId ?? "session-1" },
 		getSystemPrompt: () => overrides.systemPrompt ?? "base prompt\n\n<project_context>\n\n",
 	};
+	if (overrides.policyMode === undefined) delete process.env.PI_POLICY_MODE;
+	else process.env.PI_POLICY_MODE = overrides.policyMode;
 	// The fake supplies only the surface the slice uses.
 	registerPolicy(pi as unknown as ExtensionAPI);
-	return { handlers, ctx };
+	return { handlers, ctx, notifications };
+}
+
+/** One completed bash call through the tool_call and tool_result pair. */
+async function runBash(
+	harnessed: { handlers: Map<string, Handler>; ctx: unknown },
+	callId: string,
+	command: string,
+	result: { content?: unknown[]; isError?: boolean } = {},
+): Promise<unknown> {
+	const { handlers, ctx } = harnessed;
+	await handlers.get("tool_call")!({ toolName: "bash", toolCallId: callId, input: { command } }, ctx);
+	return handlers.get("tool_result")!(
+		{
+			toolName: "bash",
+			toolCallId: callId,
+			input: { command },
+			content: result.content ?? [{ type: "text", text: "out" }],
+			isError: result.isError ?? false,
+		},
+		ctx,
+	);
 }
 
 async function records(dir: string): Promise<PolicyRecord[]> {
@@ -40,20 +74,24 @@ async function records(dir: string): Promise<PolicyRecord[]> {
 }
 
 let dir: string;
-const previous = process.env.PI_POLICY_DIR;
+const previousDir = process.env.PI_POLICY_DIR;
+const previousMode = process.env.PI_POLICY_MODE;
 
 beforeEach(async () => {
 	dir = join(await mkdtemp(join(tmpdir(), "policy-index-")), "store");
 	process.env.PI_POLICY_DIR = dir;
+	delete process.env.PI_POLICY_MODE;
 });
 
 afterEach(() => {
-	if (previous === undefined) delete process.env.PI_POLICY_DIR;
-	else process.env.PI_POLICY_DIR = previous;
+	if (previousDir === undefined) delete process.env.PI_POLICY_DIR;
+	else process.env.PI_POLICY_DIR = previousDir;
+	if (previousMode === undefined) delete process.env.PI_POLICY_MODE;
+	else process.env.PI_POLICY_MODE = previousMode;
 });
 
 describe("policy extension", () => {
-	it("registers only observing handlers", () => {
+	it("registers the tool and session handlers", () => {
 		const { handlers } = harness();
 		assert.deepEqual([...handlers.keys()].sort(), ["session_shutdown", "tool_call", "tool_execution_end", "tool_result"]);
 	});
@@ -208,5 +246,153 @@ describe("policy extension", () => {
 		} finally {
 			console.warn = original;
 		}
+	});
+});
+
+describe("notice mode", () => {
+	it("shows one flag per flagged call, records it, and returns nothing", async () => {
+		const run = harness({ policyMode: "notice" });
+		const result = await runBash(run, "c1", "cat notes.md");
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		assert.equal(result, undefined, "notice mode must not patch the tool result");
+		assert.equal(run.notifications.length, 1);
+		assert.match(run.notifications[0].message, /^\[policy\] routing\.cat-read$/);
+		assert.equal(run.notifications[0].type, "warning");
+		const written = await records(dir);
+		assert.equal(written[0].policyMode, "notice");
+		assert.equal(written[0].notified, true);
+		assert.equal(written[0].annotated, undefined);
+	});
+
+	it("shows nothing for a call that matched no rule", async () => {
+		const run = harness({ policyMode: "notice" });
+		await runBash(run, "c1", "rg -n pattern src/");
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		assert.deepEqual(run.notifications, []);
+		assert.equal((await records(dir))[0].notified, undefined);
+	});
+
+	it("shows nothing outside the terminal, where the notice reaches nobody", async () => {
+		const run = harness({ policyMode: "notice", ctxMode: "print" });
+		await runBash(run, "c1", "cat notes.md");
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		assert.deepEqual(run.notifications, []);
+		const written = await records(dir);
+		assert.equal(written[0].policyMode, "notice");
+		assert.equal(written[0].notified, undefined);
+	});
+});
+
+describe("annotate mode", () => {
+	const MANY = [
+		"cat a.txt",
+		"cat b.json | jq .",
+		"sed -n '1,2p' f.ts",
+		'python3 -c "open(\'x\').read()"',
+		"ls | grep x",
+		"grep -n p f.ts",
+		"find .",
+		"ls -R .",
+		"du -sh x",
+		"env | grep P",
+		"find . | sort | head -2",
+	].join("; ");
+
+	it("appends one guidance line after the tool output", async () => {
+		const run = harness({ policyMode: "annotate" });
+		const patch = (await runBash(run, "c1", "cat notes.md", {
+			content: [{ type: "text", text: "file body" }],
+		})) as { content: { type: string; text: string }[] };
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		assert.equal(patch.content.length, 2);
+		assert.deepEqual(patch.content[0], { type: "text", text: "file body" });
+		assert.equal(patch.content[1].text, "[policy] Use the read tool for file contents.");
+		const written = await records(dir);
+		assert.equal(written[0].policyMode, "annotate");
+		assert.equal(written[0].annotated, true);
+		assert.equal(written[0].annotationBytes, patch.content[1].text.length);
+		assert.equal(written[0].notified, undefined);
+		assert.equal(written[0].outputBytes, 9, "the appended line is not tool output");
+	});
+
+	it("annotates one rule id once per session", async () => {
+		const run = harness({ policyMode: "annotate" });
+		assert.notEqual(await runBash(run, "c1", "cat notes.md"), undefined);
+		assert.equal(await runBash(run, "c2", "cat other.md"), undefined);
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		const written = await records(dir);
+		assert.deepEqual(
+			written.map((entry) => entry.annotated),
+			[true, undefined],
+		);
+	});
+
+	it("annotates the same rule id again in a later session", async () => {
+		const run = harness({ policyMode: "annotate" });
+		const next = { ...run.ctx, sessionManager: { getSessionId: () => "session-2" } };
+		assert.notEqual(await runBash(run, "c1", "cat notes.md"), undefined);
+		await run.handlers.get("tool_call")!(
+			{ toolName: "bash", toolCallId: "c2", input: { command: "cat notes.md" } },
+			next,
+		);
+		const patch = await run.handlers.get("tool_result")!(
+			{ toolName: "bash", toolCallId: "c2", content: [], isError: false },
+			next,
+		);
+		assert.notEqual(patch, undefined);
+	});
+
+	it("leaves a failed call unchanged", async () => {
+		const run = harness({ policyMode: "annotate" });
+		const patch = await runBash(run, "c1", "cat missing.md", {
+			content: [{ type: "text", text: "No such file" }],
+			isError: true,
+		});
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		assert.equal(patch, undefined);
+		const written = await records(dir);
+		assert.equal(written[0].error, true);
+		assert.equal(written[0].annotated, undefined);
+	});
+
+	it("leaves a call that matched no rule unchanged", async () => {
+		const run = harness({ policyMode: "annotate" });
+		assert.equal(await runBash(run, "c1", "rg -n pattern src/"), undefined);
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		assert.equal((await records(dir))[0].annotated, undefined);
+	});
+
+	it("keeps one annotation inside the byte cap and defers the rest", async () => {
+		const run = harness({ policyMode: "annotate" });
+		const first = (await runBash(run, "c1", MANY)) as { content: { text: string }[] };
+		const text = first.content.at(-1)!.text;
+		assert.ok(Buffer.byteLength(text, "utf8") <= 512, `annotation was ${text.length} bytes`);
+		const second = await runBash(run, "c2", MANY);
+		assert.notEqual(second, undefined, "ids left outside the cap stay available");
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+	});
+
+	it("shows the operator nothing", async () => {
+		const run = harness({ policyMode: "annotate" });
+		await runBash(run, "c1", "cat notes.md");
+		assert.deepEqual(run.notifications, []);
+	});
+});
+
+describe("mode configuration", () => {
+	it("stops recording once on an unrecognized mode and never throws", async () => {
+		const warnings: string[] = [];
+		const original = console.warn;
+		console.warn = (message: string) => warnings.push(message);
+		let run: ReturnType<typeof harness>;
+		try {
+			run = harness({ policyMode: "block" });
+			assert.equal(await runBash(run, "c1", "cat notes.md"), undefined);
+		} finally {
+			console.warn = original;
+		}
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /PI_POLICY_MODE must be one of observe, notice, annotate/);
+		await assert.rejects(() => readdir(dir));
 	});
 });

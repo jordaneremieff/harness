@@ -1,11 +1,11 @@
 /**
  * Policy: records paired tool calls and their outcomes against declarative
- * rules.
+ * rules, and runs the one mechanism the active mode selects.
  *
- * The slice observes and nothing else. It returns no handler result, so it
- * blocks no call and changes no input, and it emits no model-visible text, so
- * it adds no context. Rules classify a call; the record carries every class the
- * call matched, its measured duration, and its outcome.
+ * Every mode records. `observe` acts on nothing. `notice` shows the operator a
+ * flag in the terminal and adds no model-visible text. `annotate` appends one
+ * capped line of guidance to a flagged result, at most once per rule id per
+ * session. No mode blocks a call or changes a tool input.
  *
  * Duration is measured here because no event carries it: `tool_call` and
  * `tool_result` are paired by call id and stamped on arrival.
@@ -15,11 +15,19 @@
  * first failure once and then stops recording for the rest of the session.
  */
 
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	getAgentDir,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type ToolResultEvent,
+} from "@earendil-works/pi-coding-agent";
+import { notesFor } from "./classify.ts";
+import { resolvePolicyMode, type PolicyMode } from "./mode.ts";
 import {
 	finishCall,
 	startCall,
 	trackPending,
+	type CallEffects,
 	type ContentLike,
 	type PendingCall,
 	type ResultFacts,
@@ -29,6 +37,12 @@ import { PolicyWriter, resolvePolicyDir } from "./store.ts";
 
 /** Marker Pi writes into the system prompt when project context files are loaded. */
 const PROJECT_CONTEXT_MARKER = "<project_context>";
+
+/** Prefix that marks harness guidance so it is not read as tool output. */
+const POLICY_PREFIX = "[policy]";
+
+/** Upper bound on one appended guidance line. */
+const MAX_ANNOTATION_BYTES = 512;
 
 function readTruncated(details: unknown): boolean {
 	if (!details || typeof details !== "object") return false;
@@ -47,11 +61,25 @@ interface ObservedCall extends PendingCall {
 	sessionFacts: SessionFacts;
 }
 
+interface Annotation {
+	text: string;
+	/** Rule ids whose guidance this text carries. */
+	ids: string[];
+}
+
+/** The one patch this slice returns: the tool's own content plus guidance. */
+type ResultPatch = { content: ToolResultEvent["content"] };
+
 export default function registerPolicy(pi: ExtensionAPI) {
 	const pending = new Map<string, ObservedCall>();
 	let stopped = false;
 	let failureReported = false;
 	let writer: PolicyWriter | null = null;
+	let mode: PolicyMode = "observe";
+
+	/** Rule ids already annotated, and the session that saw them. */
+	const annotatedIds = new Set<string>();
+	let annotatedSession: string | null = null;
 
 	/** Bind mutable context facts to the call that observed them. */
 	const sessionFacts = (ctx: ExtensionContext): SessionFacts => ({
@@ -85,28 +113,72 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		}
 	};
 
+	try {
+		mode = resolvePolicyMode(process.env);
+	} catch (error) {
+		stop(error);
+	}
+
 	const recordWriter = (): PolicyWriter => {
 		writer ??= new PolicyWriter(resolvePolicyDir(process.env, getAgentDir()), stop);
 		return writer;
 	};
 
-	const complete = (
-		callId: string,
+	const takeCall = (callId: string): ObservedCall | undefined => {
+		const call = pending.get(callId);
+		if (call) pending.delete(callId);
+		return call;
+	};
+
+	const writeRecord = (
+		call: ObservedCall,
 		content: ContentLike[] | undefined,
 		isError: boolean | undefined,
 		details: unknown,
 		usage: unknown,
+		effects: CallEffects,
 	): void => {
-		const call = pending.get(callId);
-		if (!call) return;
-		pending.delete(callId);
 		const result: ResultFacts = {
 			content,
 			isError,
 			truncated: readTruncated(details),
 			tokens: readTokens(usage),
 		};
-		recordWriter().enqueue(finishCall(call, result, call.sessionFacts));
+		recordWriter().enqueue(finishCall(call, result, call.sessionFacts, mode, effects));
+	};
+
+	/**
+	 * Build guidance for the rule ids this session has not annotated yet.
+	 *
+	 * One rule id reaches the model once per session, so a repeated command
+	 * class costs nothing after its first flag. Rules that share wording
+	 * contribute one line. The byte cap stops the text, and any id left outside
+	 * the cap stays unmarked for a later call.
+	 */
+	const annotationFor = (tool: string, classes: string[], session: string): Annotation | undefined => {
+		if (session !== annotatedSession) {
+			annotatedSession = session;
+			annotatedIds.clear();
+		}
+		let text = POLICY_PREFIX;
+		const ids: string[] = [];
+		const included = new Set<string>();
+		for (const id of classes) {
+			if (annotatedIds.has(id)) continue;
+			const [note] = notesFor(tool, [id]);
+			if (note === undefined) continue;
+			if (included.has(note)) {
+				ids.push(id);
+				continue;
+			}
+			const candidate = `${text} ${note}`;
+			if (Buffer.byteLength(candidate, "utf8") > MAX_ANNOTATION_BYTES) break;
+			text = candidate;
+			included.add(note);
+			ids.push(id);
+		}
+		if (included.size === 0) return undefined;
+		return { text, ids };
 	};
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -122,16 +194,38 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("tool_result", async (event, _ctx) => {
+	pi.on("tool_result", async (event, ctx) => {
 		if (stopped) return;
 		try {
-			complete(
-				event.toolCallId,
+			const call = takeCall(event.toolCallId);
+			if (!call) return;
+			const effects: CallEffects = {};
+			let patch: ResultPatch | undefined;
+			if (call.classes.length > 0) {
+				if (mode === "notice" && ctx.mode === "tui") {
+					ctx.ui.notify(`${POLICY_PREFIX} ${call.classes.join(", ")}`, "warning");
+					effects.notified = true;
+				}
+				if (mode === "annotate" && event.isError !== true) {
+					const annotation = annotationFor(call.tool, call.classes, call.sessionFacts.session);
+					if (annotation) {
+						for (const id of annotation.ids) annotatedIds.add(id);
+						effects.annotationBytes = Buffer.byteLength(annotation.text, "utf8");
+						patch = {
+							content: [...(event.content ?? []), { type: "text", text: annotation.text }],
+						};
+					}
+				}
+			}
+			writeRecord(
+				call,
 				event.content as ContentLike[] | undefined,
 				event.isError,
 				(event as { details?: unknown }).details,
 				event.usage,
+				effects,
 			);
+			return patch;
 		} catch (error) {
 			stop(error);
 		}
@@ -140,11 +234,13 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	pi.on("tool_execution_end", async (event) => {
 		if (stopped) return;
 		try {
+			const call = takeCall(event.toolCallId);
+			if (!call) return;
 			const outcome =
 				event.result && typeof event.result === "object"
 					? (event.result as { content?: ContentLike[]; details?: unknown; usage?: unknown })
 					: {};
-			complete(event.toolCallId, outcome.content, event.isError, outcome.details, outcome.usage);
+			writeRecord(call, outcome.content, event.isError, outcome.details, outcome.usage, {});
 		} catch (error) {
 			stop(error);
 		}

@@ -1,11 +1,12 @@
 /*
- * Declarative shell-policy rules and the classifier that applies them.
+ * The shell policy domain: declarative rules over `bash` command text.
  *
- * Each code-level rule names a tool, class group, id, and predicate. Rules add
- * observations only. A call carries every matched id because co-occurrence is
- * evidence needed by later analysis.
+ * Each rule names a class group, an id, a predicate over one pipeline stage,
+ * and one line of guidance. Rules add observations only. A call carries every
+ * matched id because co-occurrence is evidence needed by later analysis.
  */
 
+import type { Domain, Rule } from "./rule.ts";
 import { parseStatements, type Stage, type Statement } from "./shell.ts";
 
 /** Class groups derived from the harness command-line rules. */
@@ -17,13 +18,13 @@ export interface RuleContext {
 	index: number;
 }
 
-export interface Rule {
-	id: string;
+export interface ShellRule extends Rule<RuleContext> {
 	group: ClassGroup;
-	/** Tool whose calls this rule reads. */
-	tool: "bash";
-	matches(context: RuleContext): boolean;
 }
+
+const READ_TOOL_NOTE = "Use the read tool for file contents.";
+const READ_SLICE_NOTE = "Use the read tool with offset and limit for a file slice.";
+const OUTPUT_BOUND_NOTE = "Bound the output with a cap that stops the producer.";
 
 const GREP_COMMANDS = new Set(["grep", "egrep", "fgrep"]);
 const TEXT_FILTERS = new Set([...GREP_COMMANDS, "rg", "ripgrep", "ag", "ack"]);
@@ -212,27 +213,72 @@ function isUncapped(statement: Statement, index: number): boolean {
 	return !producerStoppedByHead(statement, index);
 }
 
-export const RULES: Rule[] = [
-	{ id: "routing.cat-read", group: "routing", tool: "bash", matches: ({ stage }) => isCatRead(stage) && !stage.toPipe },
-	{ id: "routing.cat-pipe", group: "routing", tool: "bash", matches: ({ stage }) => isCatPipe(stage) },
-	{ id: "routing.sed-slice", group: "routing", tool: "bash", matches: ({ stage }) => isSedSlice(stage) },
-	{ id: "routing.head-slice", group: "routing", tool: "bash", matches: ({ stage }) => isFileSlice(stage, "head") },
-	{ id: "routing.tail-slice", group: "routing", tool: "bash", matches: ({ stage }) => isFileSlice(stage, "tail") },
-	{ id: "routing.inline-script-read", group: "routing", tool: "bash", matches: ({ stage }) => isInlineScriptRead(stage) },
+export const RULES: ShellRule[] = [
+	{
+		id: "routing.cat-read",
+		group: "routing",
+		note: READ_TOOL_NOTE,
+		matches: ({ stage }) => isCatRead(stage) && !stage.toPipe,
+	},
+	{
+		id: "routing.cat-pipe",
+		group: "routing",
+		note: "Give the file to the next command directly instead of a cat pipe.",
+		matches: ({ stage }) => isCatPipe(stage),
+	},
+	{ id: "routing.sed-slice", group: "routing", note: READ_SLICE_NOTE, matches: ({ stage }) => isSedSlice(stage) },
+	{
+		id: "routing.head-slice",
+		group: "routing",
+		note: READ_SLICE_NOTE,
+		matches: ({ stage }) => isFileSlice(stage, "head"),
+	},
+	{
+		id: "routing.tail-slice",
+		group: "routing",
+		note: READ_SLICE_NOTE,
+		matches: ({ stage }) => isFileSlice(stage, "tail"),
+	},
+	{
+		id: "routing.inline-script-read",
+		group: "routing",
+		note: READ_TOOL_NOTE,
+		matches: ({ stage }) => isInlineScriptRead(stage),
+	},
 	{
 		id: "routing.grep-pipe",
 		group: "routing",
-		tool: "bash",
+		note: "Filter with rg, or narrow the command that produces the output.",
 		matches: ({ stage }) => GREP_COMMANDS.has(stage.command) && stage.fromPipe && !hasFlag(stage, "q", "quiet", "silent"),
 	},
-	{ id: "form.grep-file", group: "form", tool: "bash", matches: ({ stage }) => isGrepFile(stage) },
-	{ id: "form.find-discovery", group: "form", tool: "bash", matches: ({ stage }) => stage.command === "find" },
-	{ id: "form.ls-recursive", group: "form", tool: "bash", matches: ({ stage }) => isRecursiveLs(stage) },
-	{ id: "form.du-traversal", group: "form", tool: "bash", matches: ({ stage }) => isDu(stage) },
+	{
+		id: "form.grep-file",
+		group: "form",
+		note: "Use rg for text search, or git grep for tracked text.",
+		matches: ({ stage }) => isGrepFile(stage),
+	},
+	{
+		id: "form.find-discovery",
+		group: "form",
+		note: "Use rg --files or fd for discovery, and git ls-files for tracked files.",
+		matches: ({ stage }) => stage.command === "find",
+	},
+	{
+		id: "form.ls-recursive",
+		group: "form",
+		note: "Use rg --files or fd for a recursive listing.",
+		matches: ({ stage }) => isRecursiveLs(stage),
+	},
+	{
+		id: "form.du-traversal",
+		group: "form",
+		note: "Scope the traversal to the smallest root that holds the target.",
+		matches: ({ stage }) => isDu(stage),
+	},
 	{
 		id: "form.env-grep",
 		group: "form",
-		tool: "bash",
+		note: "Use printenv NAME for one environment variable.",
 		matches: ({ statement, stage, index }) => {
 			const dumpsEnvironment =
 				stage.command === "env"
@@ -244,55 +290,53 @@ export const RULES: Rule[] = [
 	{
 		id: "bounds.find-output-uncapped",
 		group: "bounds",
-		tool: "bash",
+		note: OUTPUT_BOUND_NOTE,
 		matches: ({ statement, stage, index }) =>
 			stage.command === "find" && !stage.args.includes("-quit") && isUncapped(statement, index),
 	},
 	{
 		id: "bounds.grep-recursive-uncapped",
 		group: "bounds",
-		tool: "bash",
+		note: OUTPUT_BOUND_NOTE,
 		matches: ({ statement, stage, index }) => isRecursiveGrep(stage) && isUncapped(statement, index),
 	},
 	{
 		id: "bounds.ls-recursive-uncapped",
 		group: "bounds",
-		tool: "bash",
+		note: OUTPUT_BOUND_NOTE,
 		matches: ({ statement, stage, index }) => isRecursiveLs(stage) && isUncapped(statement, index),
 	},
 	{
 		id: "bounds.du-uncapped",
 		group: "bounds",
-		tool: "bash",
+		note: OUTPUT_BOUND_NOTE,
 		matches: ({ statement, stage, index }) => isDu(stage) && isUncapped(statement, index),
 	},
 	{
 		id: "bounds.false-cap",
 		group: "bounds",
-		tool: "bash",
+		note: "This cap does not stop its producer. Bound the producer itself.",
 		matches: ({ statement, stage, index }) =>
 			(stage.command === "find" || isRecursiveGrep(stage) || isRecursiveLs(stage) || isDu(stage)) &&
 			falseCap(statement, index),
 	},
 ];
 
-/** Tools whose input a rule reads. Only these tools have input recorded. */
-export const INPUT_CAPTURE: Record<string, (input: Record<string, unknown>) => string | undefined> = {
-	bash: (input) => (typeof input.command === "string" ? input.command : undefined),
-};
+const NOTES = new Map(RULES.map((rule) => [rule.id, rule.note]));
 
-/** Rule ids a call matches, sorted and deduplicated. */
-export function classify(tool: string, input: Record<string, unknown>): string[] {
-	const capture = INPUT_CAPTURE[tool];
-	const command = capture?.(input);
-	if (command === undefined) return [];
-	const rules = RULES.filter((rule) => rule.tool === tool);
-	const matched = new Set<string>();
-	for (const statement of parseStatements(command)) {
-		for (let index = 0; index < statement.length; index++) {
-			const context: RuleContext = { statement, stage: statement[index], index };
-			for (const rule of rules) if (rule.matches(context)) matched.add(rule.id);
+/** The shell domain: `bash` command text, its rules, and their guidance. */
+export const shellDomain: Domain = {
+	tool: "bash",
+	capture: (input) => (typeof input.command === "string" ? input.command : undefined),
+	classify(command) {
+		const matched = new Set<string>();
+		for (const statement of parseStatements(command)) {
+			for (let index = 0; index < statement.length; index++) {
+				const context: RuleContext = { statement, stage: statement[index], index };
+				for (const rule of RULES) if (rule.matches(context)) matched.add(rule.id);
+			}
 		}
-	}
-	return [...matched].sort();
-}
+		return [...matched].sort();
+	},
+	note: (ruleId) => NOTES.get(ruleId),
+};

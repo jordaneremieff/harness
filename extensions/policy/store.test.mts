@@ -16,6 +16,7 @@ const record = (at: string): PolicyRecord => ({
 	callId: "c1",
 	durationMs: 12,
 	outputBytes: 34,
+	policyMode: "observe",
 	truncated: false,
 	error: false,
 	errorKind: null,
