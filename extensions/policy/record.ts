@@ -13,6 +13,9 @@ import { redactCommand } from "./redact.ts";
 /** Upper bound on unresolved calls held in memory. */
 export const MAX_PENDING = 512;
 
+/** Age after which an unresolved call is dropped. */
+export const MAX_PENDING_AGE_MS = 10 * 60 * 1000;
+
 export interface SessionFacts {
 	session: string;
 	mode: string;
@@ -71,7 +74,7 @@ export function startCall(
 	callId: string,
 	input: Record<string, unknown>,
 	now: Date = new Date(),
-	monotonic: number = Date.now(),
+	monotonic: number = performance.now(),
 ): PendingCall {
 	const pending: PendingCall = {
 		tool,
@@ -107,7 +110,7 @@ export function finishCall(
 	pending: PendingCall,
 	facts: ResultFacts,
 	session: SessionFacts,
-	monotonic: number = Date.now(),
+	monotonic: number = performance.now(),
 ): PolicyRecord {
 	const isError = facts.isError === true;
 	const record: PolicyRecord = {
@@ -128,11 +131,24 @@ export function finishCall(
 }
 
 /**
- * Insert one pending call, evicting the oldest when the map is full.
- * A call whose result never arrives, because the run was aborted, would
- * otherwise hold memory for the life of the session.
+ * Insert one pending call, first dropping stale entries and then the oldest
+ * entry when the map is still full.
+ *
+ * Not every call produces a result: another extension can block a call before
+ * it runs, and an aborted run ends without one. Insertion order is
+ * chronological, so the scan stops at the first entry still inside the age
+ * bound. Without both bounds, unresolved calls would hold memory for the life
+ * of the session and could evict entries that are still live.
  */
-export function trackPending(pending: Map<string, PendingCall>, call: PendingCall): void {
+export function trackPending<T extends PendingCall>(
+	pending: Map<string, T>,
+	call: T,
+	monotonic: number = performance.now(),
+): void {
+	for (const [id, entry] of pending) {
+		if (monotonic - entry.startedAt < MAX_PENDING_AGE_MS) break;
+		pending.delete(id);
+	}
 	if (pending.size >= MAX_PENDING) {
 		const oldest = pending.keys().next();
 		if (!oldest.done) pending.delete(oldest.value);

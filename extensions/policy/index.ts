@@ -1,6 +1,6 @@
 /**
- * Policy: records what every tool call did and what it cost, against
- * declarative rules.
+ * Policy: records paired tool calls and their outcomes against declarative
+ * rules.
  *
  * The slice observes and nothing else. It returns no handler result, so it
  * blocks no call and changes no input, and it emits no model-visible text, so
@@ -25,7 +25,7 @@ import {
 	type ResultFacts,
 	type SessionFacts,
 } from "./record.ts";
-import { appendRecord, resolvePolicyDir } from "./store.ts";
+import { PolicyWriter, resolvePolicyDir } from "./store.ts";
 
 /** Marker Pi writes into the system prompt when project context files are loaded. */
 const PROJECT_CONTEXT_MARKER = "<project_context>";
@@ -43,65 +43,120 @@ function readTokens(usage: unknown): number | null {
 	return typeof total === "number" ? total : null;
 }
 
+interface ObservedCall extends PendingCall {
+	sessionFacts: SessionFacts;
+}
+
 export default function registerPolicy(pi: ExtensionAPI) {
-	const pending = new Map<string, PendingCall>();
-	let facts: SessionFacts | null = null;
+	const pending = new Map<string, ObservedCall>();
 	let stopped = false;
+	let failureReported = false;
+	let writer: PolicyWriter | null = null;
 
-	/** Session facts are read once: the system prompt is rebuilt on demand. */
-	const sessionFacts = (ctx: ExtensionContext): SessionFacts => {
-		if (facts) return facts;
-		facts = {
-			session: ctx.sessionManager.getSessionId(),
-			mode: ctx.mode,
-			cwd: ctx.cwd,
-			projectContext: ctx.getSystemPrompt().includes(PROJECT_CONTEXT_MARKER),
-		};
-		return facts;
-	};
+	/** Bind mutable context facts to the call that observed them. */
+	const sessionFacts = (ctx: ExtensionContext): SessionFacts => ({
+		session: ctx.sessionManager.getSessionId(),
+		mode: ctx.mode,
+		cwd: ctx.cwd,
+		projectContext: ctx.getSystemPrompt().includes(PROJECT_CONTEXT_MARKER),
+	});
 
+	/**
+	 * Stop recording and report once. This runs inside the handler's own catch,
+	 * so it must not throw: a thrown value can carry a failing `message` getter
+	 * or primitive conversion, and a throw out of a `tool_call` handler makes Pi
+	 * replace the call with an error result instead of running the tool.
+	 */
 	const stop = (error: unknown): void => {
-		if (stopped) return;
 		stopped = true;
 		pending.clear();
-		const reason = error instanceof Error ? error.message : String(error);
-		console.warn(`[policy] recording stopped for this session: ${reason}`);
+		if (failureReported) return;
+		failureReported = true;
+		let reason = "reason unavailable";
+		try {
+			reason = error instanceof Error ? error.message : String(error);
+		} catch {
+			// A thrown value that cannot describe itself still stops recording.
+		}
+		try {
+			console.warn(`[policy] recording stopped for this session: ${reason}`);
+		} catch {
+			// A failing console leaves no channel to report through.
+		}
+	};
+
+	const recordWriter = (): PolicyWriter => {
+		writer ??= new PolicyWriter(resolvePolicyDir(process.env, getAgentDir()), stop);
+		return writer;
+	};
+
+	const complete = (
+		callId: string,
+		content: ContentLike[] | undefined,
+		isError: boolean | undefined,
+		details: unknown,
+		usage: unknown,
+	): void => {
+		const call = pending.get(callId);
+		if (!call) return;
+		pending.delete(callId);
+		const result: ResultFacts = {
+			content,
+			isError,
+			truncated: readTruncated(details),
+			tokens: readTokens(usage),
+		};
+		recordWriter().enqueue(finishCall(call, result, call.sessionFacts));
 	};
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (stopped) return;
 		try {
-			sessionFacts(ctx);
-			trackPending(
-				pending,
-				startCall(event.toolName, event.toolCallId, event.input as Record<string, unknown>),
+			const call: ObservedCall = {
+				...startCall(event.toolName, event.toolCallId, event.input as Record<string, unknown>),
+				sessionFacts: sessionFacts(ctx),
+			};
+			trackPending(pending, call);
+		} catch (error) {
+			stop(error);
+		}
+	});
+
+	pi.on("tool_result", async (event, _ctx) => {
+		if (stopped) return;
+		try {
+			complete(
+				event.toolCallId,
+				event.content as ContentLike[] | undefined,
+				event.isError,
+				(event as { details?: unknown }).details,
+				event.usage,
 			);
 		} catch (error) {
 			stop(error);
 		}
 	});
 
-	pi.on("tool_result", async (event, ctx) => {
+	pi.on("tool_execution_end", async (event) => {
 		if (stopped) return;
 		try {
-			const call = pending.get(event.toolCallId);
-			if (!call) return;
-			pending.delete(event.toolCallId);
-			const result: ResultFacts = {
-				content: event.content as ContentLike[] | undefined,
-				isError: event.isError,
-				truncated: readTruncated((event as { details?: unknown }).details),
-				tokens: readTokens(event.usage),
-			};
-			const record = finishCall(call, result, sessionFacts(ctx));
-			const failure = await appendRecord(resolvePolicyDir(process.env, getAgentDir()), record);
-			if (failure) stop(failure);
+			const outcome =
+				event.result && typeof event.result === "object"
+					? (event.result as { content?: ContentLike[]; details?: unknown; usage?: unknown })
+					: {};
+			complete(event.toolCallId, outcome.content, event.isError, outcome.details, outcome.usage);
 		} catch (error) {
 			stop(error);
 		}
 	});
 
 	pi.on("session_shutdown", async () => {
-		pending.clear();
+		try {
+			stopped = true;
+			pending.clear();
+			await writer?.close();
+		} catch (error) {
+			stop(error);
+		}
 	});
 }

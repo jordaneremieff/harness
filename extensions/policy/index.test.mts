@@ -55,7 +55,7 @@ afterEach(() => {
 describe("policy extension", () => {
 	it("registers only observing handlers", () => {
 		const { handlers } = harness();
-		assert.deepEqual([...handlers.keys()].sort(), ["session_shutdown", "tool_call", "tool_result"]);
+		assert.deepEqual([...handlers.keys()].sort(), ["session_shutdown", "tool_call", "tool_execution_end", "tool_result"]);
 	});
 
 	it("writes one record per completed call and returns nothing", async () => {
@@ -78,6 +78,7 @@ describe("policy extension", () => {
 		);
 		assert.equal(call, undefined, "tool_call must not return a result object");
 		assert.equal(result, undefined, "tool_result must not return a result object");
+		await handlers.get("session_shutdown")!({}, ctx);
 
 		const written = await records(dir);
 		assert.equal(written.length, 1);
@@ -96,19 +97,73 @@ describe("policy extension", () => {
 		const { handlers, ctx } = harness({ systemPrompt: "worker prompt without context files" });
 		await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "c1", input: { command: "ls -R ." } }, ctx);
 		await handlers.get("tool_result")!({ toolName: "bash", toolCallId: "c1", content: [], isError: false }, ctx);
+		await handlers.get("session_shutdown")!({}, ctx);
 		const written = await records(dir);
 		assert.equal(written[0].projectContext, false);
-		assert.deepEqual(written[0].classes, ["form.ls-recursive"]);
+		assert.deepEqual(written[0].classes, ["bounds.ls-recursive-uncapped", "form.ls-recursive"]);
+	});
+
+	it("binds session facts to each call when the live context changes", async () => {
+		const { handlers, ctx } = harness({ sessionId: "session-1" });
+		const next = {
+			...ctx,
+			cwd: "/other",
+			sessionManager: { getSessionId: () => "session-2" },
+			getSystemPrompt: () => "prompt without project context",
+		};
+		await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "c1", input: { command: "ls" } }, ctx);
+		await handlers.get("tool_result")!({ toolName: "bash", toolCallId: "c1", content: [], isError: false }, next);
+		await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "c2", input: { command: "ls" } }, next);
+		await handlers.get("tool_result")!({ toolName: "bash", toolCallId: "c2", content: [], isError: false }, next);
+		await handlers.get("session_shutdown")!({}, next);
+		const written = await records(dir);
+		assert.deepEqual(
+			written.map((entry) => [entry.session, entry.cwd, entry.projectContext]),
+			[
+				["session-1", "/work", true],
+				["session-2", "/other", false],
+			],
+		);
 	});
 
 	it("stores no input for a tool without a declared capture", async () => {
 		const { handlers, ctx } = harness();
 		await handlers.get("tool_call")!({ toolName: "read", toolCallId: "c9", input: { path: "/secret/file" } }, ctx);
 		await handlers.get("tool_result")!({ toolName: "read", toolCallId: "c9", content: [], isError: false }, ctx);
+		await handlers.get("session_shutdown")!({}, ctx);
 		const written = await records(dir);
 		assert.equal(written.length, 1);
 		assert.equal(written[0].command, undefined);
 		assert.equal(JSON.stringify(written[0]).includes("/secret/file"), false);
+	});
+
+	it("records a blocked call from its execution-end outcome", async () => {
+		const { handlers, ctx } = harness();
+		await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "blocked", input: { command: "cat notes.md" } }, ctx);
+		await handlers.get("tool_execution_end")!(
+			{
+				toolName: "bash",
+				toolCallId: "blocked",
+				result: { content: [{ type: "text", text: "blocked by policy" }] },
+				isError: true,
+			},
+			ctx,
+		);
+		await handlers.get("session_shutdown")!({}, ctx);
+		const written = await records(dir);
+		assert.equal(written.length, 1);
+		assert.equal(written[0].callId, "blocked");
+		assert.equal(written[0].error, true);
+		assert.equal(written[0].outputBytes, 17);
+		assert.equal(JSON.stringify(written[0]).includes("blocked by policy"), false);
+	});
+
+	it("accepts no calls after session shutdown closes observation", async () => {
+		const { handlers, ctx } = harness();
+		await handlers.get("session_shutdown")!({}, ctx);
+		await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "late", input: { command: "cat notes.md" } }, ctx);
+		await handlers.get("tool_result")!({ toolName: "bash", toolCallId: "late", content: [], isError: false }, ctx);
+		await assert.rejects(() => readdir(dir));
 	});
 
 	it("ignores a result whose call was never seen", async () => {
@@ -136,5 +191,22 @@ describe("policy extension", () => {
 		assert.equal(warnings.length, 1);
 		assert.match(warnings[0], /\[policy\] recording stopped/);
 		await assert.rejects(() => readdir(dir));
+	});
+
+	it("contains a thrown value and a warning channel that both throw", async () => {
+		const { handlers, ctx } = harness();
+		const hostile = Object.create(null);
+		Object.defineProperty(hostile, Symbol.toPrimitive, { value: () => { throw new Error("conversion failed"); } });
+		const broken = { ...ctx, sessionManager: { getSessionId: () => { throw hostile; } } };
+		const original = console.warn;
+		console.warn = () => { throw new Error("warning failed"); };
+		try {
+			assert.equal(
+				await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "c1", input: { command: "ls" } }, broken),
+				undefined,
+			);
+		} finally {
+			console.warn = original;
+		}
 	});
 });

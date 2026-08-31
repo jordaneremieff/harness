@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { finishCall, MAX_PENDING, startCall, trackPending, type PendingCall, type SessionFacts } from "./record.ts";
+import {
+	finishCall,
+	MAX_PENDING,
+	MAX_PENDING_AGE_MS,
+	startCall,
+	trackPending,
+	type PendingCall,
+	type SessionFacts,
+} from "./record.ts";
 
 const facts: SessionFacts = { session: "s1", mode: "tui", cwd: "/work", projectContext: true };
 
@@ -59,10 +67,22 @@ describe("trackPending", () => {
 	it("evicts the oldest call when the map is full", () => {
 		const map = new Map<string, PendingCall>();
 		for (let index = 0; index < MAX_PENDING + 5; index++) {
-			trackPending(map, startCall("bash", `c${index}`, { command: "ls" }));
+			trackPending(map, startCall("bash", `c${index}`, { command: "ls" }, new Date(), index), index);
 		}
 		assert.equal(map.size, MAX_PENDING);
 		assert.equal(map.has("c0"), false);
 		assert.equal(map.has(`c${MAX_PENDING + 4}`), true);
+	});
+
+	it("drops unresolved calls after the age bound", () => {
+		const map = new Map<string, PendingCall>();
+		trackPending(map, startCall("bash", "stale", { command: "ls" }, new Date(), 0), 0);
+		trackPending(
+			map,
+			startCall("bash", "live", { command: "ls" }, new Date(), MAX_PENDING_AGE_MS + 1),
+			MAX_PENDING_AGE_MS + 1,
+		);
+		assert.equal(map.has("stale"), false);
+		assert.equal(map.has("live"), true);
 	});
 });
