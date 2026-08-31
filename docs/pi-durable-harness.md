@@ -15,7 +15,7 @@ Its working vocabulary does: the branch `harness-v2/j4` and the pull requests
 the program removes is "runtime1" (work package WP00). Treat "AgentHarness",
 "harness v2", and "the durable-harness line" as one subject. This file avoids the
 version label as its own name because the label stops identifying the program
-once it ships. Verified 2026-08-30.
+once it ships. Verified 2026-08-31.
 
 ## How this file is kept
 
@@ -39,11 +39,11 @@ risk to it. For any harness surface decision:
 
 ## What the program contains
 
-Verified 2026-08-30 at `dev` commit `0252dff8`.
+Verified 2026-08-31 at `dev` commit `ba74f038`.
 
 - `packages/agent/docs/harness.md` is the normative specification. Its
-  work-package table records WP00 through WP06 complete and WP07 (SQLite
-  ownership fencing) planned.
+  work-package table records WP00 through WP07 complete and WP08 (named-branch
+  and tree forks with streaming copies) actionable, not implemented.
 - Concepts the specification fixes: bound values and lists over an immutable
   entry tree with a usage ledger; lanes with a single ordered inbox; result
   records that embed no entries and delimit a transcript segment by pointer;
@@ -64,13 +64,13 @@ Verified 2026-08-30 at `dev` commit `0252dff8`.
 
 ## How far the program is from this harness
 
-Verified 2026-08-30.
+Verified 2026-08-31.
 
 | Field | Value |
 |---|---|
 | Latest published release | `v0.84.4`, tag commit `b79e4cc8`, published 2026-08-28; the npm `latest` dist-tag for `@earendil-works/pi-coding-agent` is 0.84.4 |
-| Development branch | `dev` at `0252dff8` (2026-08-30), 338 commits ahead of `v0.84.4` and 0 behind |
-| `main` | 337 commits behind `dev`; the program lands on `dev` first |
+| Development branch | `dev` at `ba74f038` (2026-08-31), 358 commits ahead of `v0.84.4` and 0 behind |
+| `main` | 357 commits behind `dev`; the program lands on `dev` first |
 | This checkout | `node_modules` carries the Pi packages at 0.84.2; `@earendil-works/pi-protocol` and `@earendil-works/pi-server` are pinned `^0.84.2` |
 | Reachable today | Nothing. The published `pi-agent-core` 0.84.4 exports only `.`, `./node`, `./package.json`, and `./session/testing`, and the published `pi-server` 0.84.4 depends on `pi-ai` and `pi-protocol`, not on `chord` |
 
@@ -83,7 +83,7 @@ Re-verify with `gh api repos/earendil-works/pi/releases/latest`,
 
 ## What the program disturbs here today
 
-Verified 2026-08-30.
+Verified 2026-08-31.
 
 - Nothing in the extension surface. The last commit touching
   `packages/coding-agent/src/extensions` is `dcd46192` (2026-08-24), an ancestor
@@ -96,7 +96,7 @@ Verified 2026-08-30.
 
 ## Convergence map
 
-Verified 2026-08-30 at `dev` commit `0252dff8`.
+Verified 2026-08-31 at `dev` commit `ba74f038`.
 
 | Harness concept | Counterpart in the program | State |
 |---|---|---|
@@ -109,7 +109,7 @@ Verified 2026-08-30 at `dev` commit `0252dff8`.
 
 ## Action triggers
 
-Verified 2026-08-30 at `dev` commit `0252dff8`.
+Verified 2026-08-31 at `dev` commit `ba74f038`.
 
 | Trigger | Action |
 |---|---|
