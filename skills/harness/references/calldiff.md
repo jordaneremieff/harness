@@ -23,7 +23,14 @@ It does not resolve:
 
 - dynamic dispatch, or method calls on a receiver resolved only at runtime;
 - calls into `node_modules` or across packages (in-tree analysis only);
-- type-level, generic, or signature changes that leave the call graph the same.
+- type-level, generic, or signature changes that leave the call graph the same;
+- name collisions. Resolution is by name, so a call can bind to a same-named
+  function in an unrelated slice and show a subtree that the caller never
+  reaches. Confirm an unexpected subtree against the importing module's own
+  imports before reading it as a dependency.
+
+Handlers registered as closures through a host API are not expanded from the
+registering function; their bodies need their own entrypoint or a source read.
 
 Reach for it when the claim is about call structure: "session creation now goes
 through getServices," "the init path no longer reads the config file." Do not
@@ -32,27 +39,31 @@ still resolves.
 
 ## Invocation
 
-calldiff follows git-diff ref semantics:
+calldiff takes a subcommand. `diff` compares two trees, `tree` renders one tree
+without a diff, and `reach` finds call paths to a target symbol. The `diff`
+subcommand follows git-diff ref semantics:
 
 | Command | From | To |
 |---|---|---|
-| `calldiff` | HEAD | working tree |
-| `calldiff <from>` | `<from>` | working tree |
-| `calldiff <from> <to>` | `<from>` | `<to>` |
+| `calldiff diff` | HEAD | working tree |
+| `calldiff diff <from>` | `<from>` | working tree |
+| `calldiff diff <from> <to>` | `<from>` | `<to>` |
 
-Re-check `npx calldiff --help` against the installed version for the current
-flag set. Typical flags:
+Re-check `npx calldiff --help` and `npx calldiff diff --help` against the
+installed version for the current interface. Typical flags:
 
 - `--from <ref>`, `--to <ref>` — explicit left and right trees.
 - `-e, --entry <name>` — force an entrypoint. A free function name or
   `ClassName.method`. Repeatable.
+- `-F, --file <path>` — use every export in that file as an entrypoint.
 - `--max-depth <n>` — cap call-tree depth.
-- Trailing `-- <paths>` — limit analysis to paths.
+- `--locs` — show call-site source locations.
+- Trailing path arguments — limit analysis to those path prefixes.
 
 For branch or worktree work, the base ref is the stable branch, or
 `git merge-base <stable-branch> HEAD` to isolate only the branch commits.
 
-Run it with `npx calldiff` (fetches the published package; no local install
+Run it with `npx calldiff diff` (fetches the published package; no local install
 needed). Pin the package version when reproducibility matters.
 
 ## Entry selection
