@@ -20,7 +20,14 @@
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	copyToClipboard,
+	getAgentDir,
+	type ExtensionAPI,
+	type ExtensionCommandContext,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	agentClass,
@@ -42,6 +49,19 @@ import {
 import { bindAgentRules, notesFor } from "./classify.ts";
 import { resolvePolicyMode, type PolicyMode } from "./mode.ts";
 import {
+	draftRuleMessage,
+	formatPolicyList,
+	formatPolicyShow,
+	PolicyPanel,
+	readRecentActivity,
+	terminalSafe,
+	type BuiltinGroup,
+	type BuiltinRuleInfo,
+	type PolicyPanelData,
+	type PolicyPanelResult,
+	type PolicyView,
+} from "./panel.ts";
+import {
 	finishCall,
 	startCall,
 	trackPending,
@@ -51,6 +71,7 @@ import {
 	type ResultFacts,
 	type SessionFacts,
 } from "./record.ts";
+import { RULES } from "./shell-rules.ts";
 import { PolicyWriter, resolvePolicyDir } from "./store.ts";
 
 /** Marker Pi writes into the system prompt when project context files are loaded. */
@@ -67,6 +88,35 @@ const MAX_ANNOTATED_SESSIONS = 16;
 
 /** Maximum model-visible output from a rule registry listing. */
 const MAX_RULE_LIST_BYTES = 50 * 1024;
+
+const POLICY_USAGE = [
+	"Usage:",
+	"  /policy                         Open the Rules and Activity panel (TUI only)",
+	"  /policy list                    Print agent rules and built-in groups",
+	"  /policy show <slug-or-id>       Print full rule detail and fires by model",
+	"  /policy state <slug> <state>    Set active, promoted, disabled, or discarded",
+	"  /policy mode                    Report this session's policy mode",
+	"  /policy help                    Show this usage",
+].join("\n");
+
+const POLICY_VERBS: AutocompleteItem[] = [
+	{ value: "list", label: "list", description: "Print agent rules and built-in groups" },
+	{ value: "show", label: "show", description: "Show one rule with fires by model" },
+	{ value: "state", label: "state", description: "Change an agent rule state" },
+	{ value: "mode", label: "mode", description: "Report the active session mode" },
+	{ value: "help", label: "help", description: "Show /policy usage" },
+];
+
+const POLICY_STATES: readonly AgentState[] = ["active", "promoted", "disabled", "discarded"];
+
+const MODE_EFFECT: Readonly<Record<PolicyMode, string>> = {
+	observe: "Records every tool call and applies no mechanism.",
+	notice: "Records every tool call and shows a terminal warning for each flagged call in TUI mode.",
+	annotate: "Records every tool call and appends bounded guidance to eligible flagged results.",
+	enforce: "Records every tool call, blocks built-ins and in-scope promoted agent rules, and steers with active rules.",
+};
+
+const BUILTIN_RULE_INFOS: BuiltinRuleInfo[] = RULES.map(({ id, note }) => ({ id, note }));
 
 const NonEmptyString = Type.String({ minLength: 1 });
 const StringChoice = Type.Union([NonEmptyString, Type.Array(NonEmptyString, { minItems: 1 })]);
@@ -195,6 +245,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	let failureReported = false;
 	let writer: PolicyWriter | null = null;
 	let mode: PolicyMode = "observe";
+	const modeSetting = process.env.PI_POLICY_MODE?.trim() ?? "";
 
 	/** Rule ids already annotated, per session, so history survives a session round-trip. */
 	const annotatedBySession = new Map<string, Set<string>>();
@@ -268,6 +319,221 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	const rulesDir = resolvePolicyDir(process.env, getAgentDir());
 	const rules = AgentRules.load(rulesDir);
 	bindAgentRules(rules);
+
+	const commandText = (ctx: ExtensionCommandContext, text: string): void => {
+		if (ctx.hasUI) {
+			ctx.ui.notify(text, "info");
+			return;
+		}
+		if (ctx.mode === "json") {
+			pi.appendEntry("policy_command", { text });
+			return;
+		}
+		process.stdout.write(`${text}\n`);
+	};
+
+	const commandFailure = (ctx: ExtensionCommandContext, message: string): void => {
+		const safe = terminalSafe(message);
+		if (ctx.hasUI) {
+			ctx.ui.notify(safe, "error");
+			return;
+		}
+		throw new Error(safe);
+	};
+
+	const confirmationFor = (
+		current: AgentRule,
+		requested: AgentState,
+	): { title: string; message: string } | undefined => {
+		if (requested === "discarded") {
+			return {
+				title: `Discard policy rule ${current.slug}?`,
+				message: `Rule "${current.slug}" would change from ${current.state} to discarded and cannot be restored.\n\nNote: ${current.note}`,
+			};
+		}
+		if (!needsOperatorConfirm(current.state, requested)) return undefined;
+		return {
+			title:
+				requested === "active"
+					? `Demote promoted policy rule ${current.slug}?`
+					: `Lower promoted policy rule ${current.slug}?`,
+			message: `Rule "${current.slug}" would change from ${current.state} to ${requested}.\n\nNote: ${current.note}`,
+		};
+	};
+
+	const changeAgentState = async (
+		slug: string,
+		requested: AgentState,
+		ctx: ExtensionCommandContext,
+	): Promise<{ text: string; failed: boolean }> => {
+		const current = rules.get(slug);
+		if (!current) return { text: `unknown agent rule "${slug}"`, failed: true };
+		if (current.state === requested) {
+			return { text: `Policy class ${agentClass(current.slug)} is already ${requested}.`, failed: false };
+		}
+		const confirmation = confirmationFor(current, requested);
+		if (confirmation) {
+			if (!ctx.hasUI) {
+				return {
+					text: `cannot change rule "${current.slug}" from ${current.state} to ${requested} without operator confirmation`,
+					failed: true,
+				};
+			}
+			if (!(await ctx.ui.confirm(confirmation.title, confirmation.message))) {
+				return { text: "state change declined by the operator", failed: false };
+			}
+		}
+		const author = modelName(ctx);
+		if (author === null) return { text: "cannot attribute a rule state change without a model", failed: true };
+		const failure = await rules.setState(
+			current.slug,
+			requested,
+			author,
+			ctx.sessionManager.getSessionId(),
+			new Date().toISOString(),
+		);
+		return failure
+			? { text: failure, failed: true }
+			: { text: `Set policy class ${agentClass(current.slug)} to ${requested}.`, failed: false };
+	};
+
+	const loadRuleData = async (): Promise<Pick<PolicyPanelData, "agentRules" | "builtins" | "fireSummary">> => {
+		const counts = await countFires(rulesDir);
+		return {
+			agentRules: rules.list(),
+			builtins: BUILTIN_RULE_INFOS,
+			fireSummary: {
+				fires: counts.allFires,
+				firesByModel: counts.firesByModel,
+				partial: counts.partial,
+			},
+		};
+	};
+
+	const loadPanelData = async (): Promise<PolicyPanelData> => {
+		const [ruleData, activity] = await Promise.all([loadRuleData(), readRecentActivity(rulesDir)]);
+		return { ...ruleData, activity };
+	};
+
+	const argumentCompletions = (text: string): AutocompleteItem[] | null => {
+		if (!text.includes(" ")) {
+			const matches = POLICY_VERBS.filter((verb) => verb.value.startsWith(text));
+			return matches.length > 0 ? matches : null;
+		}
+		const firstSpace = text.indexOf(" ");
+		const verb = text.slice(0, firstSpace);
+		const tail = text.slice(firstSpace + 1);
+		if (verb === "show" && !tail.includes(" ")) {
+			const candidates: AutocompleteItem[] = [
+				...rules.list().map((rule) => ({
+					value: `show ${rule.slug}`,
+					label: rule.slug,
+					description: `${rule.state} · ${terminalSafe(rule.note)}`,
+				})),
+				...BUILTIN_RULE_INFOS.map((rule) => ({
+					value: `show ${rule.id}`,
+					label: rule.id,
+					description: terminalSafe(rule.note),
+				})),
+			];
+			const matches = candidates.filter((item) => item.label?.startsWith(tail));
+			return matches.length > 0 ? matches : null;
+		}
+		if (verb !== "state") return null;
+		const stateMatch = tail.match(/^(\S*)(?:\s+(\S*))?$/);
+		if (!stateMatch) return null;
+		const slug = stateMatch[1];
+		const statePrefix = stateMatch[2];
+		if (statePrefix === undefined) {
+			const matches = rules
+				.list()
+				.filter((rule) => rule.slug.startsWith(slug))
+				.map((rule) => ({
+					value: `state ${rule.slug}`,
+					label: rule.slug,
+					description: `${rule.state} · ${terminalSafe(rule.note)}`,
+				}));
+			return matches.length > 0 ? matches : null;
+		}
+		if (!rules.get(slug)) return null;
+		const matches = POLICY_STATES.filter((state) => state.startsWith(statePrefix)).map((state) => ({
+			value: `state ${slug} ${state}`,
+			label: state,
+			description: `Set ${slug} to ${state}`,
+		}));
+		return matches.length > 0 ? matches : null;
+	};
+
+	const openPanel = async (ctx: ExtensionCommandContext): Promise<void> => {
+		let data: PolicyPanelData;
+		try {
+			data = await loadPanelData();
+		} catch (error) {
+			commandFailure(ctx, `Could not load policy data: ${toolFailure(error)}`);
+			return;
+		}
+		let view: PolicyView = "rules";
+		let filter = "";
+		let expandedGroups: BuiltinGroup[] = [];
+		let selectedRuleKey: string | undefined;
+		let selectedActivityKey: string | undefined;
+		for (;;) {
+			data = { ...data, agentRules: rules.list() };
+			let result: PolicyPanelResult | undefined;
+			try {
+				result = await ctx.ui.custom<PolicyPanelResult>(
+					(tui, theme, _keybindings, done) =>
+						new PolicyPanel({
+							data,
+							theme,
+							tui,
+							getMaxRows: () => Math.max(1, tui.terminal.rows - 6),
+							initialView: view,
+							initialFilter: filter,
+							initialExpandedGroups: expandedGroups,
+							initialSelectedRuleKey: selectedRuleKey,
+							initialSelectedActivityKey: selectedActivityKey,
+							copyRule: async (rule) => copyToClipboard(JSON.stringify(rule, null, 2)),
+							done,
+						}),
+					{
+						overlay: true,
+						overlayOptions: { width: "94%", minWidth: 112, maxHeight: "92%", anchor: "center", margin: 1 },
+					},
+				);
+			} catch (error) {
+				commandFailure(ctx, `Policy panel failed: ${toolFailure(error)}`);
+				return;
+			}
+			if (!result) return;
+			view = result.view;
+			filter = result.filter;
+			expandedGroups = result.expandedGroups;
+			selectedRuleKey = result.selectedRuleKey;
+			selectedActivityKey = result.selectedActivityKey;
+			if (!result.action) return;
+			if (result.action.kind === "state") {
+				try {
+					const changed = await changeAgentState(result.action.slug, result.action.state, ctx);
+					ctx.ui.notify(changed.text, changed.failed ? "error" : "info");
+				} catch (error) {
+					commandFailure(ctx, `Policy state change failed: ${toolFailure(error)}`);
+				}
+				continue;
+			}
+			const message = draftRuleMessage(result.action.record);
+			try {
+				if (ctx.isIdle()) pi.sendUserMessage(message);
+				else {
+					pi.sendUserMessage(message, { deliverAs: "followUp" });
+					ctx.ui.notify("Queued the policy-rule draft request after the current turn.", "info");
+				}
+			} catch (error) {
+				commandFailure(ctx, `Could not send the policy-rule draft request: ${toolFailure(error)}`);
+			}
+			return;
+		}
+	};
 
 	const recordWriter = (): PolicyWriter => {
 		writer ??= new PolicyWriter(resolvePolicyDir(process.env, getAgentDir()), stop);
@@ -450,6 +716,106 @@ export default function registerPolicy(pi: ExtensionAPI) {
 			} catch (error) {
 				return toolText(toolFailure(error));
 			}
+		},
+	});
+
+	pi.registerCommand("policy", {
+		description: "Browse policy rules and activity, inspect evidence, change agent-rule state, or report mode",
+		getArgumentCompletions: argumentCompletions,
+		handler: async (args, ctx) => {
+			const raw = args.trim();
+			const parts = raw.split(/\s+/).filter(Boolean);
+			const verb = parts[0];
+
+			if (!verb) {
+				if (ctx.mode !== "tui" || !ctx.hasUI) {
+					commandFailure(
+						ctx,
+						"The interactive policy panel requires TUI mode. Use /policy list, /policy show <slug-or-id>, /policy state <slug> <state>, /policy mode, or /policy help.",
+					);
+					return;
+				}
+				await openPanel(ctx);
+				return;
+			}
+
+			if (verb === "help") {
+				if (parts.length !== 1) {
+					commandFailure(ctx, "Usage: /policy help");
+					return;
+				}
+				commandText(ctx, POLICY_USAGE);
+				return;
+			}
+
+			if (verb === "mode") {
+				if (parts.length !== 1) {
+					commandFailure(ctx, "Usage: /policy mode");
+					return;
+				}
+				const source = modeSetting
+					? `PI_POLICY_MODE=${terminalSafe(modeSetting)}`
+					: "PI_POLICY_MODE is unset; observe is the default";
+				commandText(
+					ctx,
+					[
+						`active mode: ${mode}`,
+						`source: ${source}`,
+						`effect: ${MODE_EFFECT[mode]}`,
+						"Sessions started before PI_POLICY_MODE changed continue running their original mode.",
+					].join("\n"),
+				);
+				return;
+			}
+
+			if (verb === "list") {
+				if (parts.length !== 1) {
+					commandFailure(ctx, "Usage: /policy list");
+					return;
+				}
+				commandText(ctx, formatPolicyList(await loadRuleData()));
+				return;
+			}
+
+			if (verb === "show") {
+				if (parts.length !== 2) {
+					commandFailure(ctx, "Usage: /policy show <slug-or-id>");
+					return;
+				}
+				let data = await loadRuleData();
+				const requested = parts[1];
+				const slug = requested.startsWith("agent.") ? requested.slice("agent.".length) : requested;
+				const direct = rules.get(slug);
+				if (direct && !data.agentRules.some((rule) => rule.slug === direct.slug)) {
+					data = { ...data, agentRules: [...data.agentRules, direct] };
+				}
+				const shown = formatPolicyShow(data, requested);
+				if (shown === undefined) {
+					commandFailure(ctx, `unknown policy rule "${requested}"`);
+					return;
+				}
+				commandText(ctx, shown);
+				return;
+			}
+
+			if (verb === "state") {
+				if (parts.length !== 3 || !POLICY_STATES.includes(parts[2] as AgentState)) {
+					commandFailure(ctx, "Usage: /policy state <slug> <active|promoted|disabled|discarded>");
+					return;
+				}
+				let changed: Awaited<ReturnType<typeof changeAgentState>>;
+				try {
+					changed = await changeAgentState(parts[1], parts[2] as AgentState, ctx);
+				} catch (error) {
+					commandFailure(ctx, `Policy state change failed: ${toolFailure(error)}`);
+					return;
+				}
+				if (changed.failed) commandFailure(ctx, changed.text);
+				else commandText(ctx, changed.text);
+				return;
+			}
+
+			commandFailure(ctx, `Unknown /policy action "${terminalSafe(verb)}". Use /policy help.`);
 		},
 	});
 

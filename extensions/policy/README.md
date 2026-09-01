@@ -22,6 +22,95 @@ Scoped-out agent classes still record.
 | `annotate` | one guidance line on a successful flagged call with remaining ids | yes | no |
 | `enforce` | block built-ins and in-scope promoted agent classes; annotate successful calls with in-scope active agent guidance when no class blocks | yes | no |
 
+## Operator command
+
+`/policy` opens an operator-only overlay in TUI mode. The overlay starts in the
+Rules view and toggles between Rules and Activity with `v`. It reads policy
+state and telemetry; it does not sit inside the per-call recording boundary, so
+a browser or command failure cannot stop recording or enforcement.
+
+### Rules view
+
+Agent rules appear first. Their columns show origin, slug, registry state,
+effective posture (`steer`, `block`, or `off`), scope summary, total fires,
+author model, and age. Selecting one shows its complete note, structured match,
+optional suggested form, optional scope, author attribution, total fires, and a
+fire breakdown by recorded model. The breakdown comes from the `model` field on
+each bounded-store record carrying the class id; a missing model has its own
+bucket.
+
+Built-ins appear as collapsed `routing`, `form`, and `bounds` summary rows. A
+summary shows its live rule count from `shell-rules.ts` and the sum of its
+members' fire counts. `g` expands or collapses the selected group in place.
+Expanded members show id, note, and individual fires; their detail pane includes
+the same per-model evidence as agent rules. With no agent rules, the group rows
+still render and a short hint points to Activity's draft action.
+
+Rules-view keys:
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Move selection |
+| `b` / `space` | Page the detail pane backward / forward |
+| `v` | Toggle Rules and Activity |
+| `g` | Expand or collapse the selected built-in group |
+| `/` | Enter the text filter; `Enter` or `Escape` leaves filter entry |
+| `p` | Promote the selected agent rule |
+| `m` | Demote the selected agent rule to active |
+| `x` | Disable the selected agent rule |
+| `a` | Enable the selected agent rule as active |
+| `d` | Discard the selected agent rule |
+| `c` | Copy the complete selected agent rule as formatted JSON |
+| `Escape` | Close the overlay |
+
+Demotion and discard ask for operator confirmation. Any other action that lowers
+a promoted rule retains the registry's existing lowering confirmation gate.
+Every accepted change calls `AgentRules.setState`; the panel never appends or
+rewrites the registry itself. Discard remains terminal. A state key on an
+expanded built-in member stays visible but reports that built-ins are code and
+change by commit.
+
+The totals and per-model breakdown reuse the registry fire scan and its
+`MAX_FIRE_SCAN_BYTES` bound (32 MiB across daily store data). A partial scan is
+marked in the title and detail pane rather than presented as complete.
+
+### Activity view
+
+Activity shows recent records with non-empty `classes`, newest by `at`. Columns
+show time, recorded model, rule ids, blocked status, and the stored redacted
+command. The extension never rereads or reconstructs the original command for
+this view.
+
+The Activity reader examines daily JSONL tails newest-first. It reads at most
+4 MiB and returns at most 200 matching records. Reaching either limit is marked
+as partial in the view. Press `d` on a record to close the panel and send a user
+message asking the active model to author a focused rule with `policy_rule_add`.
+That message includes the stored redacted command as a JSON string, the matched
+rule ids, and the recorded model, and warns against reconstructing redacted
+values. It uses `sendUserMessage` immediately when idle or as a `followUp` when
+a turn is active.
+
+### Text verbs
+
+The text surface works without a TUI:
+
+- `/policy list` prints agent columns plus every built-in group and member.
+- `/policy show <slug-or-id>` prints complete agent or built-in detail, including
+  the per-model fire breakdown and any partial marker. Agent class ids with the
+  `agent.` prefix are accepted as well as bare slugs.
+- `/policy state <slug> <active|promoted|disabled|discarded>` uses the same
+  confirmation and `AgentRules.setState` path as panel actions. A transition
+  requiring confirmation is refused when no dialog-capable UI exists.
+- `/policy mode` prints the active mode, its `PI_POLICY_MODE` source, one-line
+  behavior, and a reminder that an already-started session keeps the mode it
+  resolved at startup.
+- `/policy help` prints command usage.
+
+Bare `/policy` outside TUI mode reports that the interactive panel is
+unavailable and names the text verbs. RPC receives command text through its UI
+notification channel, JSON mode receives a non-context custom entry, and print
+mode writes text to standard output.
+
 An unrecognized value is a configuration error. The extension reports it once
 and stops recording for the session.
 

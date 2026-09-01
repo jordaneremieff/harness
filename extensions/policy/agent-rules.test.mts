@@ -706,7 +706,15 @@ describe("agent rule file", () => {
 });
 
 describe("firing counts", () => {
-	it("counts only agent classes in daily store files", async () => {
+	it("treats a missing store directory as a complete empty history", async () => {
+		const root = await mkdtemp(join(tmpdir(), "policy-agent-fires-"));
+		const result = await countFires(join(root, "missing"));
+		assert.equal(result.partial, false);
+		assert.equal(result.allFires.size, 0);
+		assert.equal(result.firesByModel.size, 0);
+	});
+
+	it("retains agent-only totals while also counting built-ins by model", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "policy-agent-fires-"));
 		await writeFile(
 			join(dir, "2026-08-31.jsonl"),
@@ -727,6 +735,8 @@ describe("firing counts", () => {
 			["agent.beta", 1],
 			["agent.gamma", 1],
 		]);
+		assert.equal(result.allFires.get("routing.cat-read"), 1);
+		assert.equal(result.firesByModel.get("agent.alpha")?.get(null), 3);
 	});
 
 	it("returns counts through the byte bound and marks them partial", async () => {

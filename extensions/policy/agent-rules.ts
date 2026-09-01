@@ -490,14 +490,41 @@ function warnLoad(error: unknown): void {
 const DAILY_STORE_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 const FIRE_SCAN_CHUNK_BYTES = 64 * 1024;
 
-function countFireRecord(line: Buffer, fires: Map<string, number>): void {
+export interface FireCounts {
+	/** Agent-class counts retained for the model-facing registry tool. */
+	fires: Map<string, number>;
+	/** Counts for every class id, including built-ins, from the same scan. */
+	allFires: Map<string, number>;
+	/** Per-model counts for every class id, derived from each record's model field. */
+	firesByModel: Map<string, Map<string | null, number>>;
+	partial: boolean;
+}
+
+function incrementCount<Key>(counts: Map<Key, number>, key: Key): void {
+	counts.set(key, (counts.get(key) ?? 0) + 1);
+}
+
+function countFireRecord(
+	line: Buffer,
+	fires: Map<string, number>,
+	allFires: Map<string, number>,
+	firesByModel: Map<string, Map<string | null, number>>,
+): void {
 	if (line.length === 0) return;
 	try {
 		const value: unknown = JSON.parse(line.toString("utf8"));
 		if (!isObject(value) || !Array.isArray(value.classes)) return;
+		const model = typeof value.model === "string" ? value.model : null;
 		for (const classId of value.classes) {
-			if (typeof classId !== "string" || !isAgentClass(classId)) continue;
-			fires.set(classId, (fires.get(classId) ?? 0) + 1);
+			if (typeof classId !== "string") continue;
+			incrementCount(allFires, classId);
+			let modelCounts = firesByModel.get(classId);
+			if (!modelCounts) {
+				modelCounts = new Map();
+				firesByModel.set(classId, modelCounts);
+			}
+			incrementCount(modelCounts, model);
+			if (isAgentClass(classId)) incrementCount(fires, classId);
 		}
 	} catch {
 		// One malformed store record does not hide counts from other records.
@@ -508,6 +535,8 @@ async function scanFireFile(
 	path: string,
 	byteBound: number,
 	fires: Map<string, number>,
+	allFires: Map<string, number>,
+	firesByModel: Map<string, Map<string | null, number>>,
 ): Promise<{ bytesRead: number; complete: boolean }> {
 	let handle: Awaited<ReturnType<typeof open>> | undefined;
 	let bytesReadTotal = 0;
@@ -528,7 +557,7 @@ async function scanFireFile(
 					if (tail.length > 0) fragments.push(tail);
 					line = Buffer.concat(fragments, fragmentBytes + tail.length);
 				}
-				countFireRecord(line, fires);
+				countFireRecord(line, fires, allFires, firesByModel);
 				fragments = [];
 				fragmentBytes = 0;
 				start = index + 1;
@@ -552,7 +581,12 @@ async function scanFireFile(
 		}
 		complete = position >= size;
 		if (complete && fragmentBytes > 0) {
-			countFireRecord(fragments.length === 1 ? fragments[0] : Buffer.concat(fragments, fragmentBytes), fires);
+			countFireRecord(
+				fragments.length === 1 ? fragments[0] : Buffer.concat(fragments, fragmentBytes),
+				fires,
+				allFires,
+				firesByModel,
+			);
 		}
 	} catch {
 		complete = false;
@@ -568,24 +602,28 @@ async function scanFireFile(
 	return { bytesRead: bytesReadTotal, complete };
 }
 
-/** Count recorded agent classes through a bounded scan of daily store files. */
-export async function countFires(
-	dir: string,
-	byteBound: number = MAX_FIRE_SCAN_BYTES,
-): Promise<{ fires: Map<string, number>; partial: boolean }> {
+/** Count agent and built-in classes through one bounded scan of daily store files. */
+export async function countFires(dir: string, byteBound: number = MAX_FIRE_SCAN_BYTES): Promise<FireCounts> {
 	const fires = new Map<string, number>();
+	const allFires = new Map<string, number>();
+	const firesByModel = new Map<string, Map<string | null, number>>();
 	try {
 		const files = (await readdir(dir)).filter((name) => DAILY_STORE_FILE.test(name)).sort();
 		const normalizedBound = Number.isFinite(byteBound) ? Math.max(0, Math.floor(byteBound)) : MAX_FIRE_SCAN_BYTES;
 		let remaining = normalizedBound;
 		for (const file of files) {
-			const scanned = await scanFireFile(join(dir, file), remaining, fires);
+			const scanned = await scanFireFile(join(dir, file), remaining, fires, allFires, firesByModel);
 			remaining -= scanned.bytesRead;
-			if (!scanned.complete) return { fires, partial: true };
+			if (!scanned.complete) return { fires, allFires, firesByModel, partial: true };
 		}
-		return { fires, partial: false };
-	} catch {
-		return { fires, partial: true };
+		return { fires, allFires, firesByModel, partial: false };
+	} catch (error) {
+		return {
+			fires,
+			allFires,
+			firesByModel,
+			partial: (error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT",
+		};
 	}
 }
 

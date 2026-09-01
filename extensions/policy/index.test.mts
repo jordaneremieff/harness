@@ -21,6 +21,11 @@ interface RegisteredTool {
 	) => Promise<ToolResult>;
 }
 
+interface RegisteredCommand {
+	handler: (args: string, ctx: unknown) => Promise<void>;
+	getArgumentCompletions?: (text: string) => Array<{ value: string; label?: string }> | null;
+}
+
 interface HarnessOverrides {
 	systemPrompt?: string;
 	sessionId?: string;
@@ -30,6 +35,8 @@ interface HarnessOverrides {
 	thinkingLevel?: string | undefined;
 	hasUI?: boolean;
 	confirm?: (title: string, message: string) => boolean | Promise<boolean>;
+	customResults?: unknown[];
+	isIdle?: boolean;
 }
 
 interface Notification {
@@ -40,6 +47,9 @@ interface Notification {
 function harness(overrides: HarnessOverrides = {}) {
 	const handlers = new Map<string, Handler>();
 	const tools = new Map<string, RegisteredTool>();
+	const commands = new Map<string, RegisteredCommand>();
+	const messages: Array<{ content: string; options?: Record<string, unknown> }> = [];
+	const entries: Array<{ type: string; data: unknown }> = [];
 	const pi = {
 		on(event: string, handler: Handler) {
 			handlers.set(event, handler);
@@ -47,9 +57,19 @@ function harness(overrides: HarnessOverrides = {}) {
 		registerTool(tool: RegisteredTool & { name: string }) {
 			tools.set(tool.name, tool);
 		},
+		registerCommand(name: string, command: RegisteredCommand) {
+			commands.set(name, command);
+		},
+		appendEntry(type: string, data: unknown) {
+			entries.push({ type, data });
+		},
+		sendUserMessage(content: string, options?: Record<string, unknown>) {
+			messages.push({ content, options });
+		},
 	};
 	const notifications: Notification[] = [];
 	const confirmations: Array<{ title: string; message: string }> = [];
+	const customResults = [...(overrides.customResults ?? [])];
 	const ctx = {
 		mode: overrides.ctxMode ?? "tui",
 		hasUI: overrides.hasUI ?? true,
@@ -62,7 +82,9 @@ function harness(overrides: HarnessOverrides = {}) {
 				confirmations.push({ title, message });
 				return (await overrides.confirm?.(title, message)) ?? true;
 			},
+			custom: async () => customResults.shift(),
 		},
+		isIdle: () => overrides.isIdle ?? true,
 		sessionManager: { getSessionId: () => overrides.sessionId ?? "session-1" },
 		getSystemPrompt: () => overrides.systemPrompt ?? "base prompt\n\n<project_context>\n\n",
 	};
@@ -70,7 +92,7 @@ function harness(overrides: HarnessOverrides = {}) {
 	else process.env.PI_POLICY_MODE = overrides.policyMode;
 	// The fake supplies only the surface the slice uses.
 	registerPolicy(pi as unknown as Parameters<typeof registerPolicy>[0]);
-	return { handlers, tools, ctx, notifications, confirmations };
+	return { handlers, tools, commands, ctx, notifications, confirmations, messages, entries };
 }
 
 /** One completed bash call through the tool_call and tool_result pair. */
@@ -138,6 +160,10 @@ async function callTool(
 	return result.content.map((part) => part.text ?? "").join("");
 }
 
+async function callCommand(run: ReturnType<typeof harness>, args: string, ctx: unknown = run.ctx): Promise<void> {
+	await run.commands.get("policy")!.handler(args, ctx);
+}
+
 let dir: string;
 const previousDir = process.env.PI_POLICY_DIR;
 const previousMode = process.env.PI_POLICY_MODE;
@@ -156,8 +182,8 @@ afterEach(() => {
 });
 
 describe("policy extension", () => {
-	it("registers the policy tools and session handlers", () => {
-		const { handlers, tools } = harness();
+	it("registers the policy tools, command, and session handlers", () => {
+		const { handlers, tools, commands } = harness();
 		assert.deepEqual([...handlers.keys()].sort(), [
 			"session_shutdown",
 			"tool_call",
@@ -165,6 +191,7 @@ describe("policy extension", () => {
 			"tool_result",
 		]);
 		assert.deepEqual([...tools.keys()].sort(), ["policy_rule_add", "policy_rule_list", "policy_rule_set_state"]);
+		assert.deepEqual([...commands.keys()], ["policy"]);
 	});
 
 	it("writes one record per completed call and returns nothing", async () => {
@@ -801,6 +828,146 @@ describe("agent rule tools", () => {
 			/declined by the operator/,
 		);
 		assert.equal(AgentRules.load(dir).get(seeded.slug)?.state, "promoted");
+	});
+});
+
+describe("/policy command", () => {
+	it("completes verbs, agent slugs, built-in ids, and states", async () => {
+		await seedRule();
+		const run = harness();
+		const complete = run.commands.get("policy")!.getArgumentCompletions!;
+		assert.deepEqual(
+			complete("")?.map((item) => item.value),
+			["list", "show", "state", "mode", "help"],
+		);
+		assert.deepEqual(
+			complete("show no-")?.map((item) => item.value),
+			["show no-force-push"],
+		);
+		assert.deepEqual(
+			complete("show routing.cat-")?.map((item) => item.value),
+			["show routing.cat-read", "show routing.cat-pipe"],
+		);
+		assert.deepEqual(
+			complete("state no-force-push ")?.map((item) => item.value),
+			[
+				"state no-force-push active",
+				"state no-force-push promoted",
+				"state no-force-push disabled",
+				"state no-force-push discarded",
+			],
+		);
+	});
+
+	it("lists and shows rules with built-in groups and per-model fire evidence", async () => {
+		await seedRule();
+		await writeFile(
+			join(dir, "2026-09-03.jsonl"),
+			`${JSON.stringify({ model: "openai/gpt-5", classes: ["agent.no-force-push", "routing.cat-read"] })}\n${JSON.stringify({ model: "anthropic/claude-opus", classes: ["agent.no-force-push"] })}\n`,
+		);
+		const run = harness();
+		await callCommand(run, "list");
+		assert.match(run.notifications.at(-1)?.message ?? "", /BUILT-IN GROUPS/);
+		for (const group of ["routing", "form", "bounds"]) {
+			assert.match(run.notifications.at(-1)?.message ?? "", new RegExp(`^${group} \\|`, "m"));
+		}
+		await callCommand(run, "show no-force-push");
+		const agentText = run.notifications.at(-1)?.message ?? "";
+		assert.match(agentText, /fires by model:/);
+		assert.match(agentText, /openai\/gpt-5: 1/);
+		assert.match(agentText, /anthropic\/claude-opus: 1/);
+		await callCommand(run, "show routing.cat-read");
+		assert.match(run.notifications.at(-1)?.message ?? "", /Use the read tool for file contents/);
+		assert.match(run.notifications.at(-1)?.message ?? "", /openai\/gpt-5: 1/);
+	});
+
+	it("routes direct state changes through the registry and confirms demote and discard", async () => {
+		await seedRule();
+		const run = harness({ confirm: () => true });
+		await callCommand(run, "state no-force-push promoted");
+		assert.equal(AgentRules.load(dir).get("no-force-push")?.state, "promoted");
+		assert.equal(run.confirmations.length, 0);
+		await callCommand(run, "state no-force-push active");
+		assert.match(run.confirmations.at(-1)?.title ?? "", /Demote promoted policy rule/);
+		assert.equal(AgentRules.load(dir).get("no-force-push")?.state, "active");
+		await callCommand(run, "state no-force-push discarded");
+		assert.match(run.confirmations.at(-1)?.title ?? "", /Discard policy rule/);
+		assert.equal(AgentRules.load(dir).get("no-force-push")?.state, "discarded");
+	});
+
+	it("supports every text verb with no UI and refuses confirmation-gated changes", async () => {
+		await seedRule();
+		const run = harness({ hasUI: false, ctxMode: "json", policyMode: "notice" });
+		await callCommand(run, "list");
+		await callCommand(run, "show no-force-push");
+		await callCommand(run, "mode");
+		await callCommand(run, "help");
+		await callCommand(run, "state no-force-push promoted");
+		assert.equal(run.entries.length, 5);
+		assert.match(JSON.stringify(run.entries[0].data), /BUILT-IN GROUPS/);
+		assert.match(JSON.stringify(run.entries[1].data), /fires by model/);
+		assert.match(JSON.stringify(run.entries[2].data), /PI_POLICY_MODE=notice/);
+		assert.match(JSON.stringify(run.entries[2].data), /original mode/);
+		assert.match(JSON.stringify(run.entries[3].data), /\/policy list/);
+		assert.match(JSON.stringify(run.entries[4].data), /to promoted/);
+		await assert.rejects(() => callCommand(run, "state no-force-push discarded"), /operator confirmation/);
+		assert.equal(AgentRules.load(dir).get("no-force-push")?.state, "promoted");
+	});
+
+	it("fails bare invocation without a dialog-capable TUI and names all text verbs", async () => {
+		for (const ctxMode of ["print", "tui"]) {
+			const run = harness({ hasUI: false, ctxMode });
+			await assert.rejects(
+				() => callCommand(run, ""),
+				(error: Error) => {
+					for (const verb of ["list", "show", "state", "mode", "help"]) {
+						assert.match(error.message, new RegExp(`/policy ${verb}`));
+					}
+					return true;
+				},
+			);
+		}
+	});
+
+	it("keeps command failures outside the per-call fail-open boundary", async () => {
+		const run = harness();
+		await callCommand(run, "show missing-rule");
+		assert.equal(run.notifications.at(-1)?.type, "error");
+		await runBash(run, "after-command-error", "cat notes.md");
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		assert.equal((await records(dir)).length, 1);
+	});
+
+	it("drafts from Activity through sendUserMessage with only the redacted command", async () => {
+		const selected = {
+			at: "2026-09-03T12:00:00.000Z",
+			model: "openai/gpt-5",
+			thinkingLevel: "high",
+			tool: "bash",
+			classes: ["bounds.false-cap"],
+			blocked: true,
+			error: true,
+			captured: "find [REDACTED] | sort | head",
+			policyMode: "enforce",
+			session: "observed-session",
+		};
+		const result = {
+			view: "activity",
+			filter: "",
+			expandedGroups: [],
+			action: { kind: "draft", record: selected },
+		};
+		const idle = harness({ customResults: [result] });
+		await callCommand(idle, "");
+		assert.equal(idle.messages.length, 1);
+		assert.equal(idle.messages[0].options, undefined);
+		assert.match(idle.messages[0].content, /policy_rule_add/);
+		assert.match(idle.messages[0].content, /find \[REDACTED\] \| sort \| head/);
+
+		const busy = harness({ customResults: [result], isIdle: false });
+		await callCommand(busy, "");
+		assert.deepEqual(busy.messages[0].options, { deliverAs: "followUp" });
+		assert.match(busy.notifications.at(-1)?.message ?? "", /Queued/);
 	});
 });
 
