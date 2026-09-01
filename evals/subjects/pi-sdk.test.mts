@@ -5,6 +5,7 @@ import type { Message, Model } from "@earendil-works/pi-ai";
 import type { TranscriptEvent } from "vitest-evals";
 import type { EvaluationCase } from "../types.mts";
 import {
+	collectPiExecutionErrors,
 	isAssistantFailureStopReason,
 	limitModelOutput,
 	normalizePiTranscript,
@@ -145,6 +146,31 @@ describe("Pi session plan fidelity", () => {
 		);
 		assert.throws(() => parseExtensionFlagValues([], "malformed"), /variant malformed.*must be an object/);
 		assert.throws(() => parseExtensionFlagValues({ "": true }, "malformed"), /variant malformed.*non-empty/);
+	});
+});
+
+describe("Pi provider evidence conversion", () => {
+	it("records a provider rejection fixture as assistant error evidence", () => {
+		const rejected = assistantMessage([{ type: "text", text: "" }], 1);
+		rejected.errorMessage = "Provider refused the approved request.";
+		rejected.stopReason = "error";
+		assert.deepEqual(collectPiExecutionErrors([rejected], summarizeUsage([rejected], participant), 10), [
+			{ type: "AssistantError", message: "Provider refused the approved request." },
+			{ type: "AssistantStopReason", message: "Assistant stopped with error." },
+		]);
+	});
+
+	it("records a provider output-token overrun fixture", () => {
+		const overrun = assistantMessage([{ type: "text", text: "too long" }], 1);
+		overrun.usage = { ...overrun.usage, output: 12, totalTokens: 25 };
+		assert.deepEqual(collectPiExecutionErrors([overrun], summarizeUsage([overrun], participant), 10), [
+			{ type: "OutputTokenLimitExceeded", message: "Output token usage exceeded 10" },
+		]);
+	});
+
+	it("keeps a successful in-limit fixture free of adapter errors", () => {
+		const successful = assistantMessage([{ type: "text", text: "ok" }], 1);
+		assert.deepEqual(collectPiExecutionErrors([successful], summarizeUsage([successful], participant), 4), []);
 	});
 });
 

@@ -60,14 +60,33 @@ describe("Vitest child boundary", () => {
 		const directory = mkdtempSync(join(tmpdir(), "eval-report-"));
 		try {
 			const suitePath = join(directory, "suite.eval.mts");
+			const otherPath = join(directory, "other.eval.mts");
 			const reportPath = join(directory, "report.json");
 			writeFileSync(suitePath, "export default {};\n");
-			writeFileSync(
-				reportPath,
-				JSON.stringify({ success: true, numTotalTests: 1, testResults: [{ name: suitePath, assertionResults: [{}] }] }),
-			);
+			writeFileSync(otherPath, "export default {};\n");
+			const writeReport = (name: string, total: number, assertions: unknown[]): void => {
+				writeFileSync(
+					reportPath,
+					JSON.stringify({
+						success: true,
+						numTotalTests: total,
+						testResults: [{ name, assertionResults: assertions }],
+					}),
+				);
+			};
+
+			writeReport(suitePath, 1, [{}]);
 			assert.equal(validateVitestReport(reportPath, suitePath, 1, 0).status, "completed");
-			assert.equal(validateVitestReport(reportPath, suitePath, 1, 1).status, "failed");
+			assert.match(validateVitestReport(reportPath, suitePath, 1, 1).error ?? "", /exited with code 1/);
+
+			writeReport(otherPath, 1, [{}]);
+			assert.match(validateVitestReport(reportPath, suitePath, 1, 0).error ?? "", /unexpected file set/);
+
+			writeReport(suitePath, 2, [{}]);
+			assert.match(validateVitestReport(reportPath, suitePath, 1, 0).error ?? "", /reported 2\/1 tests; expected 1/);
+			writeReport(suitePath, 1, []);
+			assert.match(validateVitestReport(reportPath, suitePath, 1, 0).error ?? "", /reported 1\/0 tests; expected 1/);
+
 			writeFileSync(reportPath, "null");
 			assert.match(validateVitestReport(reportPath, suitePath, 1, 0).error ?? "", /must be a JSON object/);
 		} finally {

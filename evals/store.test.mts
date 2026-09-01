@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { adjudicateRun, buildReviewArtifact, buildRunCoverage, prepareRun, readJson, writeJson } from "./store.mts";
+import {
+	adjudicateRun,
+	buildReviewArtifact,
+	buildRunCoverage,
+	deleteRun,
+	inspectRun,
+	listExecutionEvidence,
+	prepareRun,
+	readJson,
+	writeJson,
+} from "./store.mts";
 import type {
 	AdjudicationRecord,
 	EvaluationPlan,
@@ -149,6 +159,91 @@ const providerError = [
 	{ type: "AssistantStopReason", message: "Assistant stopped with error." },
 ];
 
+describe("store lifecycle and corruption", () => {
+	it("rejects invalid JSON and malformed execution manifests", () => {
+		const root = mkdtempSync(join(tmpdir(), "evals-store-manifest-"));
+		try {
+			const manifestPath = join(root, "execution-files.json");
+			writeFileSync(manifestPath, "{not-json");
+			assert.throws(() => listExecutionEvidence(root), SyntaxError);
+
+			writeJson(manifestPath, { files: "execution.json" });
+			assert.throws(() => listExecutionEvidence(root), /Execution evidence manifest must contain a files array/);
+			writeJson(manifestPath, { files: ["../execution.json"] });
+			assert.throws(() => listExecutionEvidence(root), /Invalid execution evidence path/);
+
+			writeJson(manifestPath, { files: [] });
+			assert.deepEqual(listExecutionEvidence(root), []);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("requires a readable state file when inspecting a run", () => {
+		const root = mkdtempSync(join(tmpdir(), "evals-store-state-"));
+		try {
+			const prepared = prepareRun(root, plan(root));
+			const statePath = join(prepared.directory, "state.json");
+			rmSync(statePath);
+			assert.throws(() => inspectRun(root, prepared.runId, false), /state\.json/);
+			writeFileSync(statePath, "{not-json");
+			assert.throws(() => inspectRun(root, prepared.runId, false), SyntaxError);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("allows a missing review before terminalization but rejects a corrupt review", () => {
+		const root = mkdtempSync(join(tmpdir(), "evals-store-review-"));
+		try {
+			const prepared = prepareRun(root, plan(root));
+			const inspected = inspectRun(root, prepared.runId, false);
+			assert.deepEqual(inspected.state, prepared.state);
+			assert.equal(Object.hasOwn(inspected, "review"), false);
+
+			const reviewPath = join(prepared.directory, "review.json");
+			writeFileSync(reviewPath, "{not-json");
+			assert.throws(() => inspectRun(root, prepared.runId, false), SyntaxError);
+			writeJson(reviewPath, { status: "reviewable" });
+			assert.deepEqual(inspectRun(root, prepared.runId, false).review, { status: "reviewable" });
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps a run intact when delete approval and root guards reject it", () => {
+		const root = mkdtempSync(join(tmpdir(), "evals-store-delete-"));
+		const outside = mkdtempSync(join(tmpdir(), "evals-store-outside-"));
+		try {
+			const prepared = prepareRun(root, plan(root));
+			assert.throws(() => deleteRun(root, prepared.runId, "wrong-approval"), /exactly match the run id/);
+			assert.throws(() => deleteRun(root, "../outside", "../outside"), /Invalid run id/);
+			assert.equal(existsSync(prepared.directory), true);
+
+			const linkedRunId = "20260101T000000Z-00000000";
+			symlinkSync(outside, join(root, linkedRunId), "dir");
+			assert.throws(() => deleteRun(root, linkedRunId, linkedRunId), /outside the evidence root/);
+			assert.equal(existsSync(outside), true);
+			assert.equal(existsSync(prepared.directory), true);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	it("deletes an existing run only with exact approval", () => {
+		const root = mkdtempSync(join(tmpdir(), "evals-store-delete-success-"));
+		try {
+			const prepared = prepareRun(root, plan(root));
+			deleteRun(root, prepared.runId, prepared.runId);
+			assert.equal(existsSync(prepared.directory), false);
+			assert.throws(() => deleteRun(root, prepared.runId, prepared.runId), /Run does not exist/);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("run coverage and review evidence", () => {
 	it("persists partial coverage and removes excluded checks from review evidence", () => {
 		const fixture = createFixture("partial", [[], providerError]);
@@ -188,6 +283,32 @@ describe("run coverage and review evidence", () => {
 			});
 		} finally {
 			removeFixture(fixture);
+		}
+	});
+
+	it("classifies an interrupted manifest as usable evidence plus a missing exclusion", () => {
+		const root = mkdtempSync(join(tmpdir(), "evals-store-interrupted-"));
+		try {
+			const evaluationPlan = plan(root);
+			const prepared = prepareRun(root, evaluationPlan);
+			const usableId = executionId(participants[0]);
+			const missingId = executionId(participants[1]);
+			const file = `${usableId}.json`;
+			writeJson(join(prepared.directory, "executions", file), {
+				execution: { executionId: usableId },
+				result: { errors: [] },
+			});
+			writeJson(join(prepared.directory, "execution-files.json"), { files: [file] });
+
+			assert.deepEqual(buildRunCoverage(prepared.directory, evaluationPlan), {
+				plannedExecutions: 2,
+				usableExecutions: 1,
+				excludedExecutions: 1,
+				usableExecutionIds: [usableId],
+				exclusions: [{ executionId: missingId, errorTypes: ["MissingExecutionEvidence"] }],
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 

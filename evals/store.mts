@@ -9,7 +9,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import type {
 	AdjudicationRecord,
@@ -83,9 +83,19 @@ export function prepareRun(
 export function listExecutionEvidence(directory: string): Array<Record<string, unknown>> {
 	const manifestPath = join(directory, "execution-files.json");
 	if (!existsSync(manifestPath)) return [];
-	const manifest = readJson<{ files: string[] }>(manifestPath);
-	return manifest.files.map((file) => {
-		if (basename(file) !== file || !file.endsWith(".json")) throw new Error(`Invalid execution evidence path: ${file}`);
+	const manifest = readJson<unknown>(manifestPath);
+	if (
+		!manifest ||
+		typeof manifest !== "object" ||
+		Array.isArray(manifest) ||
+		!Array.isArray((manifest as { files?: unknown }).files)
+	) {
+		throw new Error("Execution evidence manifest must contain a files array");
+	}
+	return (manifest as { files: unknown[] }).files.map((file) => {
+		if (typeof file !== "string" || basename(file) !== file || !file.endsWith(".json")) {
+			throw new Error(`Invalid execution evidence path: ${String(file)}`);
+		}
 		return readJson<Record<string, unknown>>(join(directory, "executions", file));
 	});
 }
@@ -286,6 +296,6 @@ export function deleteRun(evidenceRoot: string, runId: string, approval: string)
 	const directory = runDirectory(evidenceRoot, runId);
 	if (!existsSync(directory)) throw new Error(`Run does not exist: ${runId}`);
 	const root = existsSync(evidenceRoot) ? realpathSync(evidenceRoot) : resolve(evidenceRoot);
-	if (resolve(directory, "..") !== root) throw new Error("Refusing to delete outside the evidence root");
+	if (dirname(realpathSync(directory)) !== root) throw new Error("Refusing to delete outside the evidence root");
 	rmSync(directory, { recursive: true, force: false });
 }

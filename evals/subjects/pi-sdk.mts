@@ -517,6 +517,29 @@ export function isAssistantFailureStopReason(stopReason: StopReason): boolean {
 	return stopReason === "length" || stopReason === "error" || stopReason === "aborted";
 }
 
+export function collectPiExecutionErrors(
+	messages: Message[],
+	usage: UsageSummary,
+	maximumOutputTokens: number,
+): Array<Record<string, JsonValue>> {
+	const errors: Array<Record<string, JsonValue>> = [];
+	for (const message of messages) {
+		if (message.role === "assistant" && message.errorMessage) {
+			errors.push({ type: "AssistantError", message: message.errorMessage });
+		}
+		if (message.role === "assistant" && isAssistantFailureStopReason(message.stopReason)) {
+			errors.push({ type: "AssistantStopReason", message: `Assistant stopped with ${message.stopReason}.` });
+		}
+	}
+	if ((usage.outputTokens ?? 0) > maximumOutputTokens) {
+		errors.push({
+			type: "OutputTokenLimitExceeded",
+			message: `Output token usage exceeded ${maximumOutputTokens}`,
+		});
+	}
+	return errors;
+}
+
 function validatePiCases({
 	cases,
 }: {
@@ -738,25 +761,11 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 			evaluationCase.id,
 		);
 		const { newMessages, assistant, output } = scoredTranscript;
-		let usage = summarizeUsage(newMessages, participant);
 		if (termination === "timeout") errors.push({ type: "Timeout", message: "The execution wall-time limit expired." });
 		if (termination === "cancelled") errors.push({ type: "Cancelled", message: "The caller cancelled the execution." });
-		for (const message of newMessages) {
-			if (message.role === "assistant" && message.errorMessage) {
-				errors.push({ type: "AssistantError", message: message.errorMessage });
-			}
-			if (message.role === "assistant" && isAssistantFailureStopReason(message.stopReason)) {
-				errors.push({ type: "AssistantStopReason", message: `Assistant stopped with ${message.stopReason}.` });
-			}
-		}
 		const runEntryRecords = sessionManager.getEntries().slice(seedEntryCount);
-		usage = summarizeRunEntryUsage(runEntryRecords, participant);
-		if ((usage.outputTokens ?? 0) > limits.execution.maxOutputTokensEach) {
-			errors.push({
-				type: "OutputTokenLimitExceeded",
-				message: `Output token usage exceeded ${limits.execution.maxOutputTokensEach}`,
-			});
-		}
+		const usage = summarizeRunEntryUsage(runEntryRecords, participant);
+		errors.push(...collectPiExecutionErrors(newMessages, usage, limits.execution.maxOutputTokensEach));
 		const modelChanges = runEntryRecords.flatMap((entry) =>
 			entry.type === "model_change" ? [{ provider: entry.provider, model: entry.modelId }] : [],
 		);
