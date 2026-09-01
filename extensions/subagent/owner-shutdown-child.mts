@@ -1,11 +1,5 @@
 import { strict as assert } from "node:assert";
-import {
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,22 +45,14 @@ export default function (pi) {
 `,
 	"utf-8",
 );
-writeFileSync(
-	join(agentDir, "settings.json"),
-	JSON.stringify({ packages: [providerPath] }),
-	"utf-8",
-);
+writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [providerPath] }), "utf-8");
 
 let ownerSession: any = null;
 try {
 	const sub = await import("./index.ts");
-	const {
-		createAgentSession,
-		DefaultResourceLoader,
-		ModelRegistry,
-		SessionManager,
-		SettingsManager,
-	} = await import("@earendil-works/pi-coding-agent");
+	const { createAgentSession, DefaultResourceLoader, ModelRegistry, SessionManager, SettingsManager } = await import(
+		"@earendil-works/pi-coding-agent"
+	);
 	const selfPath = join(dirname(fileURLToPath(import.meta.url)), "index.ts");
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	const resourceLoader = new DefaultResourceLoader({
@@ -87,27 +73,16 @@ try {
 		sessionManager: SessionManager.inMemory(),
 		model: model as never,
 		thinkingLevel: "off",
-		tools: [
-			"subagent",
-			"subagent_steer",
-			"subagent_interrupt",
-			"subagent_kill",
-			"submit_result",
-		],
+		tools: ["subagent", "subagent_steer", "subagent_interrupt", "subagent_kill", "submit_result"],
 	});
 	ownerSession = created.session;
-	sub.sharedWorkerState.workerSessionIds.add(
-		ownerSession.sessionManager.getSessionId(),
-	);
+	sub.sharedWorkerState.workerSessionIds.add(ownerSession.sessionManager.getSessionId());
 	await ownerSession.bindExtensions({});
 
 	const tool = ownerSession.extensionRunner.getToolDefinition("subagent");
-	const steerTool =
-		ownerSession.extensionRunner.getToolDefinition("subagent_steer");
-	const interruptTool =
-		ownerSession.extensionRunner.getToolDefinition("subagent_interrupt");
-	const killTool =
-		ownerSession.extensionRunner.getToolDefinition("subagent_kill");
+	const steerTool = ownerSession.extensionRunner.getToolDefinition("subagent_steer");
+	const interruptTool = ownerSession.extensionRunner.getToolDefinition("subagent_interrupt");
+	const killTool = ownerSession.extensionRunner.getToolDefinition("subagent_kill");
 	assert.ok(tool && steerTool && interruptTool && killTool);
 	const ownerSessionId = ownerSession.sessionManager.getSessionId();
 	const ctx = {
@@ -139,9 +114,7 @@ try {
 	assert.equal(before?.ownerSession, ownerSessionId);
 	assert.deepEqual(
 		[...(before?.resolvedTools ?? [])].sort(),
-		[
-			...new Set([...ownerSession.getActiveToolNames(), "submit_result"]),
-		].sort(),
+		[...new Set([...ownerSession.getActiveToolNames(), "submit_result"])].sort(),
 		"nested dispatch must inherit the owner session's exact active surface",
 	);
 	assert.equal(
@@ -149,10 +122,7 @@ try {
 		true,
 		"dispatch must publish the nested worker's actual surface",
 	);
-	assert.equal(
-		Boolean(before?.socketPath && existsSync(before.socketPath)),
-		true,
-	);
+	assert.equal(Boolean(before?.socketPath && existsSync(before.socketPath)), true);
 
 	const foreignCtx = {
 		...ctx,
@@ -173,30 +143,15 @@ try {
 		undefined,
 		foreignCtx,
 	)) as any;
-	assert.match(
-		JSON.stringify(refusedInterrupt.content),
-		/another live session/,
-	);
-	const refusedKill = (await killTool.execute(
-		"foreign-kill",
-		{ id },
-		undefined,
-		undefined,
-		foreignCtx,
-	)) as any;
+	assert.match(JSON.stringify(refusedInterrupt.content), /another live session/);
+	const refusedKill = (await killTool.execute("foreign-kill", { id }, undefined, undefined, foreignCtx)) as any;
 	assert.match(JSON.stringify(refusedKill.content), /another live session/);
 	assert.equal(sub.readWorker(id)?.state, "running");
 	assert.equal(sub.readWorker(id)?.interruptedAt, null);
 
 	// A second steer during the abort window must not queue a second resumed
 	// prompt over the same run leg.
-	const interrupting = interruptTool.execute(
-		"owner-interrupt",
-		{ id },
-		undefined,
-		undefined,
-		ctx,
-	) as Promise<any>;
+	const interrupting = interruptTool.execute("owner-interrupt", { id }, undefined, undefined, ctx) as Promise<any>;
 	const interruptDeadline = Date.now() + 2_000;
 	while (Date.now() < interruptDeadline && !sub.readWorker(id)?.interruptedAt) {
 		await new Promise((resolve) => setTimeout(resolve, 5));
@@ -221,10 +176,7 @@ try {
 	assert.match(JSON.stringify(duplicateResume.content), /already queued/);
 	await interrupting;
 	const resumedDeadline = Date.now() + 2_000;
-	while (
-		Date.now() < resumedDeadline &&
-		readFileSync(marker, "utf-8").trim().split("\n").length < 2
-	) {
+	while (Date.now() < resumedDeadline && readFileSync(marker, "utf-8").trim().split("\n").length < 2) {
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 	assert.equal(
@@ -249,20 +201,14 @@ try {
 		after = sub.readWorker(id);
 	}
 	assert.equal(after?.state, "owner_lost", JSON.stringify(after));
-	assert.equal(
-		Boolean(after?.socketPath && existsSync(after.socketPath)),
-		false,
-	);
+	assert.equal(Boolean(after?.socketPath && existsSync(after.socketPath)), false);
 	assert.equal(
 		readFileSync(marker, "utf-8").trim().split("\n").length,
 		2,
 		"owner shutdown must not start another turn in the closing session",
 	);
 	assert.equal(sub.sharedWorkerState.workerSurfaces.has(ownerSessionId), false);
-	assert.equal(
-		sub.sharedWorkerState.workerSurfaces.has(after?.sessionId ?? ""),
-		false,
-	);
+	assert.equal(sub.sharedWorkerState.workerSurfaces.has(after?.sessionId ?? ""), false);
 	if (after?.socketPath) {
 		rmSync(dirname(after.socketPath), { recursive: true, force: true });
 	}

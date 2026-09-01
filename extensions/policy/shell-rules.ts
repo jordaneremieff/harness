@@ -114,7 +114,24 @@ function isStreamingTail(stage: Stage): boolean {
 
 function xargsChild(stage: Stage): string | undefined {
 	if (stage.command !== "xargs") return undefined;
-	const values = new Set(["a", "arg-file", "d", "delimiter", "E", "eof", "I", "replace", "L", "max-lines", "n", "max-args", "P", "max-procs", "s", "max-chars"]);
+	const values = new Set([
+		"a",
+		"arg-file",
+		"d",
+		"delimiter",
+		"E",
+		"eof",
+		"I",
+		"replace",
+		"L",
+		"max-lines",
+		"n",
+		"max-args",
+		"P",
+		"max-procs",
+		"s",
+		"max-chars",
+	]);
 	return operands(stage, values)[0];
 }
 
@@ -165,7 +182,8 @@ function isCatPipe(stage: Stage): boolean {
 }
 
 function isSedSlice(stage: Stage): boolean {
-	if (stage.command !== "sed" || !hasFlag(stage, "n") || stage.fromPipe || stage.fromRedirect || stage.toRedirect) return false;
+	if (stage.command !== "sed" || !hasFlag(stage, "n") || stage.fromPipe || stage.fromRedirect || stage.toRedirect)
+		return false;
 	const script = stage.args.find((arg) => /^\d+\s*,\s*\d+\s*p$/.test(arg) || /^\d+p$/.test(arg));
 	return script !== undefined && operands(stage, new Set(["e", "f", "expression", "file"])).length > 1;
 }
@@ -272,7 +290,18 @@ function isSingleVariablePattern(pattern: string): boolean {
 function isGrepFile(stage: Stage): boolean {
 	if (!GREP_COMMANDS.has(stage.command) || stage.fromPipe) return false;
 	const values = new Set([
-		"e", "regexp", "f", "file", "m", "max-count", "A", "after-context", "B", "before-context", "C", "context",
+		"e",
+		"regexp",
+		"f",
+		"file",
+		"m",
+		"max-count",
+		"A",
+		"after-context",
+		"B",
+		"before-context",
+		"C",
+		"context",
 	]);
 	const files = operands(stage, values);
 	return hasFlag(stage, "e", "regexp", "f", "file") ? files.length > 0 : files.length > 1;
@@ -312,7 +341,8 @@ export const RULES: ShellRule[] = [
 	{
 		id: "routing.grep-pipe",
 		note: "Filter with rg, or narrow the command that produces the output.",
-		matches: ({ stage }) => GREP_COMMANDS.has(stage.command) && stage.fromPipe && !hasFlag(stage, "q", "quiet", "silent"),
+		matches: ({ stage }) =>
+			GREP_COMMANDS.has(stage.command) && stage.fromPipe && !hasFlag(stage, "q", "quiet", "silent"),
 	},
 	{
 		id: "form.grep-file",

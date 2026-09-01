@@ -1,11 +1,5 @@
 import { strict as assert } from "node:assert";
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,11 +22,7 @@ export default function (pi) {
 	"utf8",
 );
 mkdirSync(join(workerCwd, ".pi"), { recursive: true });
-writeFileSync(
-	join(workerCwd, ".pi", "settings.json"),
-	JSON.stringify({ packages: [projectExtension] }),
-	"utf8",
-);
+writeFileSync(join(workerCwd, ".pi", "settings.json"), JSON.stringify({ packages: [projectExtension] }), "utf8");
 
 const providerPath = join(agentDir, "cwd-provider.mjs");
 const model = {
@@ -76,13 +66,9 @@ writeFileSync(
 let parentSession: any = null;
 try {
 	const sub = await import("./index.ts");
-	const {
-		createAgentSession,
-		DefaultResourceLoader,
-		ModelRegistry,
-		SessionManager,
-		SettingsManager,
-	} = await import("@earendil-works/pi-coding-agent");
+	const { createAgentSession, DefaultResourceLoader, ModelRegistry, SessionManager, SettingsManager } = await import(
+		"@earendil-works/pi-coding-agent"
+	);
 	const selfPath = join(dirname(fileURLToPath(import.meta.url)), "index.ts");
 	const settingsManager = SettingsManager.create(parentCwd, agentDir);
 	const resourceLoader = new DefaultResourceLoader({
@@ -141,11 +127,7 @@ try {
 		record = sub.readWorker(id);
 	}
 	assert.equal(record?.state, "done", JSON.stringify(record));
-	assert.equal(
-		existsSync(projectMarker),
-		false,
-		"a task-selected cwd must not load its project extension",
-	);
+	assert.equal(existsSync(projectMarker), false, "a task-selected cwd must not load its project extension");
 
 	sub.shutdownWorkerSession(parentSession);
 	parentSession = null;

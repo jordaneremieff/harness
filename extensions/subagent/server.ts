@@ -18,10 +18,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, rmdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type {
-	ModelMetadata,
-	SessionMetadata,
-} from "@earendil-works/pi-protocol";
+import type { ModelMetadata, SessionMetadata } from "@earendil-works/pi-protocol";
 import {
 	type CreateSessionOptions,
 	PiServerError,
@@ -44,8 +41,7 @@ function shortHash(kind: "agent" | "session", value: string): string {
 
 function productionRuntimeRoot(): string {
 	const uid = process.getuid?.();
-	if (uid === undefined)
-		throw new Error("subagent worker sockets require a unix effective uid");
+	if (uid === undefined) throw new Error("subagent worker sockets require a unix effective uid");
 	// Do not use os.tmpdir(): its macOS /var/folders path can consume almost half
 	// of sockaddr_un before the bounded socket name is added.
 	return join("/tmp", `pi-${uid}`);
@@ -59,9 +55,7 @@ function ensureOwnerOnlyDirectory(path: string): void {
 	}
 	const uid = process.getuid?.();
 	if (uid !== undefined && before.uid !== uid) {
-		throw new Error(
-			`worker socket directory is not owned by the current user: ${path}`,
-		);
+		throw new Error(`worker socket directory is not owned by the current user: ${path}`);
 	}
 	chmodSync(path, 0o700);
 	const after = statSync(path);
@@ -75,15 +69,10 @@ export function socketLocation(
 	ownerSession: string,
 	runtimeRoot = productionRuntimeRoot(),
 ): { socketDir: string; path: string } {
-	const socketDir = join(
-		runtimeRoot,
-		`a-${shortHash("agent", resolve(agentDir))}`,
-	);
+	const socketDir = join(runtimeRoot, `a-${shortHash("agent", resolve(agentDir))}`);
 	const path = join(socketDir, `s-${shortHash("session", ownerSession)}.sock`);
 	if (Buffer.byteLength(path, "utf-8") > SOCKET_PATH_LIMIT) {
-		throw new Error(
-			`worker socket path exceeds the platform limit of ${SOCKET_PATH_LIMIT} UTF-8 bytes`,
-		);
+		throw new Error(`worker socket path exceeds the platform limit of ${SOCKET_PATH_LIMIT} UTF-8 bytes`);
 	}
 	return { socketDir, path };
 }
@@ -221,17 +210,10 @@ export class WorkerHost implements PiServerService {
 		if (!ctx) return [];
 		return ctx.modelRegistry
 			.getAvailable()
-			.map((model) =>
-				toProtocolModelMetadata(
-					model,
-					ctx.modelRegistry.hasConfiguredAuth(model),
-				),
-			);
+			.map((model) => toProtocolModelMetadata(model, ctx.modelRegistry.hasConfiguredAuth(model)));
 	}
 
-	async createSession(
-		_options: CreateSessionOptions,
-	): Promise<PiSessionRuntime> {
+	async createSession(_options: CreateSessionOptions): Promise<PiSessionRuntime> {
 		// Workers are dispatched by the parent, never created by an observer. An
 		// attaching client can list and attach; it cannot open new work.
 		throw new PiServerError(
@@ -243,10 +225,7 @@ export class WorkerHost implements PiServerService {
 	async openSession(sessionId: string): Promise<PiSessionRuntime> {
 		const runtime = this.runtimes.get(sessionId);
 		if (!runtime) {
-			throw new PiServerError(
-				"not_found",
-				`no live worker with id ${sessionId}`,
-			);
+			throw new PiServerError("not_found", `no live worker with id ${sessionId}`);
 		}
 		return runtime;
 	}

@@ -28,7 +28,10 @@ describe("parseStatements", () => {
 			],
 		);
 		const [combined] = parseStatements("echo ok 2>&1 |& grep failed");
-		assert.deepEqual(combined.map((stage) => stage.command), ["echo", "grep"]);
+		assert.deepEqual(
+			combined.map((stage) => stage.command),
+			["echo", "grep"],
+		);
 	});
 
 	it("does not split a pipe inside quotes", () => {
@@ -38,7 +41,7 @@ describe("parseStatements", () => {
 	});
 
 	it("keeps substitution stages out of the parent pipeline and reads their bodies separately", () => {
-		const statements = parseStatements('echo $(ls | wc -l)');
+		const statements = parseStatements("echo $(ls | wc -l)");
 		assert.deepEqual(
 			statements.map((statement) => statement.map((stage) => stage.command)),
 			[["echo"], ["ls", "wc"]],
@@ -49,7 +52,10 @@ describe("parseStatements", () => {
 		const statements = parseStatements("find . | grep -vf <(git ls-files | sort) | head -5");
 		assert.deepEqual(
 			statements.map((statement) => statement.map((stage) => stage.command)),
-			[["find", "grep", "head"], ["git", "sort"]],
+			[
+				["find", "grep", "head"],
+				["git", "sort"],
+			],
 		);
 	});
 
@@ -119,24 +125,42 @@ describe("parseStatements", () => {
 		const [statement] = parseStatements(`cat ${expansion}`);
 		assert.deepEqual(statement[0].args, [expansion]);
 		const arithmetic = parseStatements("echo $(( cat n ))");
-		assert.deepEqual(arithmetic.map((entry) => entry[0].command), ["echo"]);
+		assert.deepEqual(
+			arithmetic.map((entry) => entry[0].command),
+			["echo"],
+		);
 		const nested = parseStatements("echo $(( $(cat n) + 1 ))");
-		assert.deepEqual(nested.map((entry) => entry[0].command), ["echo", "cat"]);
+		assert.deepEqual(
+			nested.map((entry) => entry[0].command),
+			["echo", "cat"],
+		);
 		const parameterExpansion = ["$", "{var/)/x}"].join("");
 		const parameter = parseStatements(`echo $(echo ${parameterExpansion})`);
-		assert.deepEqual(parameter.map((entry) => entry[0].args), [[`$(echo ${parameterExpansion})`], [parameterExpansion]]);
+		assert.deepEqual(
+			parameter.map((entry) => entry[0].args),
+			[[`$(echo ${parameterExpansion})`], [parameterExpansion]],
+		);
 	});
 
 	it("separates grouping and case-pattern boundaries", () => {
 		const grouped = parseStatements("(cat f); { grep x f; }");
-		assert.deepEqual(grouped.map((statement) => statement[0].command), ["cat", "grep"]);
+		assert.deepEqual(
+			grouped.map((statement) => statement[0].command),
+			["cat", "grep"],
+		);
 		const selected = parseStatements('case "$x" in yes) cat f;; esac');
-		assert.equal(selected.some((statement) => statement[0].command === "cat"), true);
+		assert.equal(
+			selected.some((statement) => statement[0].command === "cat"),
+			true,
+		);
 	});
 
 	it("ignores comments", () => {
 		const statements = parseStatements("ls; # find . -type f\ncat f");
-		assert.deepEqual(statements.map((statement) => statement[0].command), ["ls", "cat"]);
+		assert.deepEqual(
+			statements.map((statement) => statement[0].command),
+			["ls", "cat"],
+		);
 	});
 
 	it("returns no statement for empty text", () => {

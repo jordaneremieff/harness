@@ -1,11 +1,5 @@
 import { strict as assert } from "node:assert";
-import {
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,21 +55,14 @@ export default function (pi) {
 `,
 	"utf-8",
 );
-writeFileSync(
-	join(agentDir, "settings.json"),
-	JSON.stringify({ packages: [providerPath] }),
-	"utf-8",
-);
+writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [providerPath] }), "utf-8");
 
 let ownerSession: any = null;
 try {
 	const sub = await import("./index.ts");
-	const {
-		createAgentSession,
-		DefaultResourceLoader,
-		SessionManager,
-		SettingsManager,
-	} = await import("@earendil-works/pi-coding-agent");
+	const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import(
+		"@earendil-works/pi-coding-agent"
+	);
 	const selfPath = join(dirname(fileURLToPath(import.meta.url)), "index.ts");
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	const resourceLoader = new DefaultResourceLoader({
@@ -99,45 +86,28 @@ try {
 		tools: ["subagent", "subagent_collect"],
 	});
 	ownerSession = created.session;
-	sub.sharedWorkerState.workerSessionIds.add(
-		ownerSession.sessionManager.getSessionId(),
-	);
+	sub.sharedWorkerState.workerSessionIds.add(ownerSession.sessionManager.getSessionId());
 	await ownerSession.bindExtensions({});
 
 	await ownerSession.prompt("OWNER_TASK", { expandPromptTemplates: false });
 	const deadline = Date.now() + 8_000;
-	let grandchild = sub
-		.listWorkers()
-		.find((record) => record.task === "GRANDCHILD_TASK");
+	let grandchild = sub.listWorkers().find((record) => record.task === "GRANDCHILD_TASK");
 	const hasOwnerResult = () =>
 		ownerSession.messages.some(
 			(message: any) =>
 				message.role === "assistant" &&
-				message.content?.some(
-					(part: any) =>
-						part.type === "text" && part.text === "OWNER_COLLECTED",
-				),
+				message.content?.some((part: any) => part.type === "text" && part.text === "OWNER_COLLECTED"),
 		);
 	while (
 		Date.now() < deadline &&
-		(grandchild?.state !== "done" ||
-			!grandchild.notificationCallReturnedAt ||
-			!hasOwnerResult())
+		(grandchild?.state !== "done" || !grandchild.notificationCallReturnedAt || !hasOwnerResult())
 	) {
 		await new Promise((resolve) => setTimeout(resolve, 20));
-		grandchild = sub
-			.listWorkers()
-			.find((record) => record.task === "GRANDCHILD_TASK");
+		grandchild = sub.listWorkers().find((record) => record.task === "GRANDCHILD_TASK");
 	}
 	assert.equal(grandchild?.state, "done", JSON.stringify(grandchild));
-	assert.ok(
-		grandchild.notificationCallReturnedAt,
-		"the live worker owner's synchronous send call must return",
-	);
-	assert.equal(
-		readFileSync(sub.workerFiles(grandchild.id).result, "utf-8"),
-		"GRANDCHILD_RESULT",
-	);
+	assert.ok(grandchild.notificationCallReturnedAt, "the live worker owner's synchronous send call must return");
+	assert.equal(readFileSync(sub.workerFiles(grandchild.id).result, "utf-8"), "GRANDCHILD_RESULT");
 	assert.equal(hasOwnerResult(), true, JSON.stringify(ownerSession.messages));
 	assert.equal(
 		ownerSession.messages.some(
@@ -155,10 +125,7 @@ try {
 	sub.shutdownWorkerSession(ownerSession);
 	ownerSession = null;
 	const cleanupDeadline = Date.now() + 5_000;
-	while (
-		Date.now() < cleanupDeadline &&
-		sub.sharedWorkerState.workerSurfaces.has(ownerSessionId)
-	) {
+	while (Date.now() < cleanupDeadline && sub.sharedWorkerState.workerSurfaces.has(ownerSessionId)) {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 	assert.equal(sub.sharedWorkerState.workerSurfaces.has(ownerSessionId), false);

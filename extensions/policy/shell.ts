@@ -524,9 +524,7 @@ function parse(command: string, depth: number): Statement[] {
 
 	const close = (): void => {
 		if (stages.length === 0) return;
-		const statement = stages.map((words, position) =>
-			toStage(words, position > 0, position < stages.length - 1),
-		);
+		const statement = stages.map((words, position) => toStage(words, position > 0, position < stages.length - 1));
 		if (statement.some((stage) => stage.command !== "")) statements.push(statement);
 		stages = [];
 	};

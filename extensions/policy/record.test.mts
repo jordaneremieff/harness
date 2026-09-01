@@ -83,8 +83,7 @@ describe("finishCall", () => {
 
 	it("infers the error kind from error text", () => {
 		const kind = (text: string) =>
-			finishCall(pending(), { isError: true, content: [{ type: "text", text }] }, facts, "observe", {}, 1001)
-				.errorKind;
+			finishCall(pending(), { isError: true, content: [{ type: "text", text }] }, facts, "observe", {}, 1001).errorKind;
 		assert.equal(kind("Command timed out after 120s"), "timeout");
 		assert.equal(kind("aborted"), "aborted");
 		assert.equal(kind("No such file or directory"), "other");

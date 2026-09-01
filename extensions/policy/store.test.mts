@@ -66,10 +66,16 @@ describe("appendRecord", () => {
 		const dir = join(await mkdtemp(join(tmpdir(), "policy-store-")), "store");
 		const at = new Date(2026, 8, 3, 12).toISOString();
 		const entries = Array.from({ length: 64 }, (_, index) => ({ ...record(at), callId: `c${index}` }));
-		assert.deepEqual(await Promise.all(entries.map((entry) => appendRecord(dir, entry))), entries.map(() => null));
+		assert.deepEqual(
+			await Promise.all(entries.map((entry) => appendRecord(dir, entry))),
+			entries.map(() => null),
+		);
 		const lines = (await readFile(join(dir, "2026-09-03.jsonl"), "utf8")).trim().split("\n");
 		assert.equal(lines.length, entries.length);
-		assert.deepEqual(new Set(lines.map((line) => JSON.parse(line).callId)), new Set(entries.map((entry) => entry.callId)));
+		assert.deepEqual(
+			new Set(lines.map((line) => JSON.parse(line).callId)),
+			new Set(entries.map((entry) => entry.callId)),
+		);
 	});
 
 	it("returns the failure instead of throwing when the store is not a directory", async () => {
@@ -133,10 +139,14 @@ describe("PolicyWriter", () => {
 	it("stops accepting at the queue bound, reports once, and returns false", async () => {
 		const failures: string[] = [];
 		let writes = 0;
-		const writer = new PolicyWriter("/unused", (reason) => failures.push(reason), async () => {
-			writes++;
-			return null;
-		});
+		const writer = new PolicyWriter(
+			"/unused",
+			(reason) => failures.push(reason),
+			async () => {
+				writes++;
+				return null;
+			},
+		);
 		const entry = record(new Date().toISOString());
 		let accepted = true;
 		for (let index = 0; index <= MAX_QUEUED_RECORDS; index++) accepted = writer.enqueue(entry);
@@ -225,7 +235,11 @@ describe("PolicyWriter", () => {
 
 		it("refuses a reserved enqueue after a discard-mode failure", async () => {
 			const failures: string[] = [];
-			const writer = new PolicyWriter("/unused", (reason) => failures.push(reason), async () => "store failed");
+			const writer = new PolicyWriter(
+				"/unused",
+				(reason) => failures.push(reason),
+				async () => "store failed",
+			);
 			assert.equal(writer.tryReserve(), true);
 			assert.equal(writer.enqueue(record(new Date().toISOString())), true);
 			await new Promise((resolve) => setTimeout(resolve, 10));
@@ -237,10 +251,14 @@ describe("PolicyWriter", () => {
 	it("discards queued records after a store failure", async () => {
 		const failures: string[] = [];
 		let writes = 0;
-		const writer = new PolicyWriter("/unused", (reason) => failures.push(reason), async () => {
-			writes++;
-			return "store failed";
-		});
+		const writer = new PolicyWriter(
+			"/unused",
+			(reason) => failures.push(reason),
+			async () => {
+				writes++;
+				return "store failed";
+			},
+		);
 		const entry = record(new Date().toISOString());
 		writer.enqueue(entry);
 		writer.enqueue(entry);

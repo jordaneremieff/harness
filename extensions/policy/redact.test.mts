@@ -21,11 +21,11 @@ describe("redactCommand", () => {
 	});
 
 	it("redacts sensitive assignments without swallowing later query fields or quotes", () => {
-		assert.equal(redactCommand("API_TOKEN=fake-value curl https://host/x"), `API_TOKEN=${REDACTED} curl https://host/x`);
 		assert.equal(
-			redactCommand("curl 'https://x?a=1&token=fake-value'"),
-			`curl 'https://x?a=1&token=${REDACTED}'`,
+			redactCommand("API_TOKEN=fake-value curl https://host/x"),
+			`API_TOKEN=${REDACTED} curl https://host/x`,
 		);
+		assert.equal(redactCommand("curl 'https://x?a=1&token=fake-value'"), `curl 'https://x?a=1&token=${REDACTED}'`);
 		assert.equal(
 			redactCommand("curl -d 'a=1&api_key=fake-value' https://x"),
 			`curl -d 'a=1&api_key=${REDACTED}' https://x`,
@@ -37,7 +37,10 @@ describe("redactCommand", () => {
 			redactCommand(`curl -d '{"api_key":"fake-value","secret":"fake-secret"}' https://x`),
 			`curl -d '{"api_key":${REDACTED},"secret":${REDACTED}}' https://x`,
 		);
-		assert.equal(redactCommand("password: fake-value\napi_key: fake-value"), `password: ${REDACTED}\napi_key: ${REDACTED}`);
+		assert.equal(
+			redactCommand("password: fake-value\napi_key: fake-value"),
+			`password: ${REDACTED}\napi_key: ${REDACTED}`,
+		);
 	});
 
 	it("redacts sensitive long and tool-specific short flags", () => {
@@ -79,12 +82,12 @@ describe("redactCommand", () => {
 		// Key-shaped fixtures are built at runtime so the committed text carries
 		// no literal that external secret scanners match; the redactor still
 		// receives the full shape.
-		const stripeShape = `sk_live_${'51HZxabcdefghijklmnopqrstuvwxyz'}`;
-		const slackShape = `xoxc-${'123456789012'}-${'123456789012'}`;
-		const githubShape = `ghp_${'ABCDEFGHIJKLMNOPQRST'}`;
-		const awsAccessShape = `AKIA${'IOSFODNN7EXAMPLE'}`;
-		const joseShape = `eyJ${'abcdefghijk'}.${'abcdefghijkl'}.${'abcdefghijk'}`;
-		const awsSecretShape = `wJalrXUtnFEMI/${'K7MDENG/bPxRfiCY'}${'EXAMPLEKEY'}`;
+		const stripeShape = `sk_live_${"51HZxabcdefghijklmnopqrstuvwxyz"}`;
+		const slackShape = `xoxc-${"123456789012"}-${"123456789012"}`;
+		const githubShape = `ghp_${"ABCDEFGHIJKLMNOPQRST"}`;
+		const awsAccessShape = `AKIA${"IOSFODNN7EXAMPLE"}`;
+		const joseShape = `eyJ${"abcdefghijk"}.${"abcdefghijkl"}.${"abcdefghijk"}`;
+		const awsSecretShape = `wJalrXUtnFEMI/${"K7MDENG/bPxRfiCY"}${"EXAMPLEKEY"}`;
 		const commands = [
 			"echo '-----BEGIN PRIVATE KEY-----\nfake-body\n-----END PRIVATE KEY-----'",
 			`echo ${stripeShape}`,
@@ -93,10 +96,10 @@ describe("redactCommand", () => {
 			`AWS_ACCESS_KEY_ID=${awsAccessShape}`,
 			`echo ${joseShape}`,
 			`echo ${awsSecretShape}`,
-			`echo AIza${'A'.repeat(35)}`,
+			`echo AIza${"A".repeat(35)}`,
 		];
 		for (const command of commands) assert.match(redactCommand(command), /\[redacted\]/);
-		const opaqueShape = `YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo6${'MTIzNDU2Nzg5MDo='}`;
+		const opaqueShape = `YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo6${"MTIzNDU2Nzg5MDo="}`;
 		assert.equal(redactCommand(`echo ${opaqueShape}`), `echo ${REDACTED}`);
 	});
 

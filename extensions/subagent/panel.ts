@@ -13,20 +13,9 @@
  */
 
 import { execFile } from "node:child_process";
-import type {
-	ExtensionCommandContext,
-	Theme,
-	ThemeColor,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { TranscriptItem } from "@earendil-works/pi-protocol";
-import {
-	decodeKittyPrintable,
-	Key,
-	matchesKey,
-	type TUI,
-	truncateToWidth,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import { decodeKittyPrintable, Key, matchesKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	type ConsoleAssistantMessage,
 	type ConsoleMessage,
@@ -45,10 +34,7 @@ export interface SubagentPanelDeps {
 	/** Request cancellation through the existing kill path. */
 	kill(id: string): Promise<string>;
 	/** Fork a terminal session into a new linked background worker. */
-	continueWorker(
-		id: string,
-		message: string,
-	): Promise<{ id: string | null; text: string }>;
+	continueWorker(id: string, message: string): Promise<{ id: string | null; text: string }>;
 	/** Compact terminal report preview, separate from the transcript. */
 	report(id: string): { label: string; text: string } | null;
 	/** Protocol-v1 transcript items for a worker (the live runtime's snapshot
@@ -86,11 +72,7 @@ function statusGlyph(state: string): string {
 function statusColor(state: string): ThemeColor {
 	if (state === "done") return "success";
 	if (state === "failed") return "error";
-	if (
-		state === "cancelled" ||
-		state === "owner_lost" ||
-		state === "no_result_submitted"
-	) {
+	if (state === "cancelled" || state === "owner_lost" || state === "no_result_submitted") {
 		return "warning";
 	}
 	return "accent";
@@ -117,8 +99,7 @@ export function formatPanelElapsed(seconds: number): string {
 /** Worker-authored content for the flexible roster field; never the dispatch instruction. */
 export function rosterOutputPreview(worker: WorkerRecord): string {
 	const source = worker.resultPreview ?? worker.lastOutput ?? worker.error;
-	if (!source)
-		return worker.state === "running" ? "(no output yet)" : "(no output)";
+	if (!source) return worker.state === "running" ? "(no output yet)" : "(no output)";
 	return cleanConsoleInput(source).replace(/\s+/g, " ").trim() || "(no output)";
 }
 
@@ -129,10 +110,7 @@ function fixedField(text: string, width: number): string {
 
 // Panel height cap. Default grows with the terminal (85% of rows, floored at
 // 44); PI_SUBAGENT_PANEL_MAX_ROWS pins a fixed cap.
-const PANEL_MAX_ROWS_OVERRIDE = Number.parseInt(
-	process.env.PI_SUBAGENT_PANEL_MAX_ROWS ?? "0",
-	10,
-);
+const PANEL_MAX_ROWS_OVERRIDE = Number.parseInt(process.env.PI_SUBAGENT_PANEL_MAX_ROWS ?? "0", 10);
 
 /**
  * Best-effort clipboard write via pbcopy (stdin-fed, no shell, async so the
@@ -140,11 +118,8 @@ const PANEL_MAX_ROWS_OVERRIDE = Number.parseInt(
  */
 function copyToClipboard(text: string, done: (error?: string) => void): void {
 	try {
-		const child = execFile(
-			"pbcopy",
-			[],
-			{ encoding: "utf8", timeout: 3_000 },
-			(error) => done(error ? error.message : undefined),
+		const child = execFile("pbcopy", [], { encoding: "utf8", timeout: 3_000 }, (error) =>
+			done(error ? error.message : undefined),
 		);
 		child.stdin?.end(text);
 	} catch (err) {
@@ -182,27 +157,14 @@ function truncateFromLeft(text: string, width: number): string {
 
 /** Compose a footer that sheds optional actions before its sole Escape
  * affordance. Notices keep their useful tail but never replace back/close. */
-function footerWithEscape(
-	width: number,
-	leading: string[],
-	escapeLabel: string,
-	notice?: string,
-): string {
+function footerWithEscape(width: number, leading: string[], escapeLabel: string, notice?: string): string {
 	const w = Math.max(1, width);
-	const escapeHint =
-		visibleWidth(escapeLabel) <= w
-			? escapeLabel
-			: w >= 3
-				? "esc"
-				: "esc".slice(0, w);
+	const escapeHint = visibleWidth(escapeLabel) <= w ? escapeLabel : w >= 3 ? "esc" : "esc".slice(0, w);
 	if (notice) {
 		const separator = " · ";
 		const budget = w - visibleWidth(escapeHint) - visibleWidth(separator);
 		if (budget <= 0) return plainLine(escapeHint, w);
-		return plainLine(
-			`${truncateFromLeft(notice, budget)}${separator}${escapeHint}`,
-			w,
-		);
+		return plainLine(`${truncateFromLeft(notice, budget)}${separator}${escapeHint}`, w);
 	}
 
 	const kept = [...leading];
@@ -264,9 +226,7 @@ function toolArguments(input: unknown): Record<string, unknown> {
 		: { value: input };
 }
 
-function toAssistantParts(
-	content: Extract<TranscriptItem, { role: "assistant" }>["content"],
-): ConsolePart[] {
+function toAssistantParts(content: Extract<TranscriptItem, { role: "assistant" }>["content"]): ConsolePart[] {
 	const out: ConsolePart[] = [];
 	for (const part of content) {
 		if (part.type === "text") {
@@ -346,13 +306,7 @@ class SubagentConsole {
 	private readonly theme: Theme;
 	private readonly close: () => void;
 
-	constructor(
-		deps: SubagentPanelDeps,
-		tui: TUI,
-		theme: Theme,
-		done: () => void,
-		initialFilter?: string,
-	) {
+	constructor(deps: SubagentPanelDeps, tui: TUI, theme: Theme, done: () => void, initialFilter?: string) {
 		this.deps = deps;
 		this.tui = tui;
 		this.theme = theme;
@@ -388,9 +342,7 @@ class SubagentConsole {
 			return 0;
 		}
 		if (this.rosterSelectedId) {
-			const found = workers.findIndex(
-				(worker) => worker.id === this.rosterSelectedId,
-			);
+			const found = workers.findIndex((worker) => worker.id === this.rosterSelectedId);
 			if (found >= 0) this.selected = found;
 		}
 		this.selected = Math.max(0, Math.min(workers.length - 1, this.selected));
@@ -520,11 +472,7 @@ class SubagentConsole {
 		const typed = printableKey(data);
 		if (matchesKey(data, Key.backspace)) {
 			this.filter = this.filter.slice(0, -1);
-		} else if (
-			typed.length === 1 &&
-			typed.charCodeAt(0) >= 32 &&
-			typed.charCodeAt(0) < 127
-		) {
+		} else if (typed.length === 1 && typed.charCodeAt(0) >= 32 && typed.charCodeAt(0) < 127) {
 			this.filter += typed;
 		}
 		this.selected = 0;
@@ -541,20 +489,11 @@ class SubagentConsole {
 			this.close();
 			return;
 		}
-		if (matchesKey(data, Key.up))
-			this.selected = Math.max(0, this.selected - 1);
-		else if (matchesKey(data, Key.down))
-			this.selected = Math.min(
-				Math.max(0, workers.length - 1),
-				this.selected + 1,
-			);
-		else if (matchesKey(data, Key.pageUp))
-			this.selected = Math.max(0, this.selected - 10);
+		if (matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
+		else if (matchesKey(data, Key.down)) this.selected = Math.min(Math.max(0, workers.length - 1), this.selected + 1);
+		else if (matchesKey(data, Key.pageUp)) this.selected = Math.max(0, this.selected - 10);
 		else if (matchesKey(data, Key.pageDown))
-			this.selected = Math.min(
-				Math.max(0, workers.length - 1),
-				this.selected + 10,
-			);
+			this.selected = Math.min(Math.max(0, workers.length - 1), this.selected + 10);
 		else if (matchesKey(data, Key.enter)) {
 			if (workers[this.selected]) this.openConsole();
 		} else if (key === "/") {
@@ -570,9 +509,7 @@ class SubagentConsole {
 				void this.deps
 					.kill(worker.id)
 					.then((message) => this.setNotice(message))
-					.catch((err: unknown) =>
-						this.setNotice(`cancel failed: ${errText(err)}`),
-					);
+					.catch((err: unknown) => this.setNotice(`cancel failed: ${errText(err)}`));
 			}
 		}
 		if (key !== "a" && key !== "A") {
@@ -582,19 +519,13 @@ class SubagentConsole {
 	}
 
 	private scrollBy(delta: number): void {
-		const max = Math.max(
-			0,
-			this.transcriptLines().length - this.windowHeight(),
-		);
+		const max = Math.max(0, this.transcriptLines().length - this.windowHeight());
 		this.scroll = Math.max(0, Math.min(max, this.scroll + delta));
 		this.followTail = this.scroll >= max;
 		this.bump();
 	}
 	private jumpTail(): void {
-		const max = Math.max(
-			0,
-			this.transcriptLines().length - this.windowHeight(),
-		);
+		const max = Math.max(0, this.transcriptLines().length - this.windowHeight());
 		this.scroll = max;
 		this.followTail = true;
 		this.bump();
@@ -624,38 +555,22 @@ class SubagentConsole {
 				void this.deps
 					.interrupt(id)
 					.then((message) => this.setNotice(message))
-					.catch((err: unknown) =>
-						this.setNotice(`interrupt failed: ${errText(err)}`),
-					);
+					.catch((err: unknown) => this.setNotice(`interrupt failed: ${errText(err)}`));
 			} else if (live && id) {
 				void this.deps
 					.kill(id)
 					.then((message) => this.setNotice(message))
-					.catch((err: unknown) =>
-						this.setNotice(`cancel failed: ${errText(err)}`),
-					);
+					.catch((err: unknown) => this.setNotice(`cancel failed: ${errText(err)}`));
 			}
 			return;
 		}
-		if (
-			!this.continuing &&
-			(consoleKey === "c" || consoleKey === "C") &&
-			terminal &&
-			record?.sessionFile
-		) {
+		if (!this.continuing && (consoleKey === "c" || consoleKey === "C") && terminal && record?.sessionFile) {
 			const command = reopenCommand(record.sessionFile);
 			const copyText = this.deps.copyText ?? copyToClipboard;
-			copyText(command, (error) =>
-				this.setNotice(error ? `copy failed: ${error}` : `copied: ${command}`),
-			);
+			copyText(command, (error) => this.setNotice(error ? `copy failed: ${error}` : `copied: ${command}`));
 			return;
 		}
-		if (
-			!this.continuing &&
-			(consoleKey === "r" || consoleKey === "R") &&
-			terminal &&
-			record?.sessionFile
-		) {
+		if (!this.continuing && (consoleKey === "r" || consoleKey === "R") && terminal && record?.sessionFile) {
 			this.continuing = true;
 			this.input = "";
 			this.inputCursor = 0;
@@ -716,9 +631,7 @@ class SubagentConsole {
 					void this.deps
 						.sendLive(id, text)
 						.then((message) => this.setNotice(message))
-						.catch((err: unknown) =>
-							this.setNotice(`send failed: ${errText(err)}`),
-						);
+						.catch((err: unknown) => this.setNotice(`send failed: ${errText(err)}`));
 					this.input = "";
 					this.inputCursor = 0;
 				}
@@ -780,9 +693,7 @@ class SubagentConsole {
 		// pi-tui reserves one row for the transcript's minimum and one for its
 		// own footer, so the editorContainer receives terminal.rows - 2.
 		const cap =
-			PANEL_MAX_ROWS_OVERRIDE > 0
-				? PANEL_MAX_ROWS_OVERRIDE
-				: Math.max(44, Math.floor(this.tui.terminal.rows * 0.85));
+			PANEL_MAX_ROWS_OVERRIDE > 0 ? PANEL_MAX_ROWS_OVERRIDE : Math.max(44, Math.floor(this.tui.terminal.rows * 0.85));
 		return Math.max(1, Math.min(this.tui.terminal.rows - 2, cap));
 	}
 
@@ -807,16 +718,11 @@ class SubagentConsole {
 			// A pinned worker can disappear under the console: pruning or another
 			// session may remove its record. Return to the roster rather than hold a
 			// console over a worker that no longer exists.
-			if (
-				this.view === "console" &&
-				this.pinnedId &&
-				!this.deps.readWorker(this.pinnedId)
-			) {
+			if (this.view === "console" && this.pinnedId && !this.deps.readWorker(this.pinnedId)) {
 				this.setNotice(`worker ${this.pinnedId} is no longer in the store`);
 				this.closeConsole();
 			}
-			if (this.view === "list" || this.view === "filter")
-				return this.renderList(width);
+			if (this.view === "list" || this.view === "filter") return this.renderList(width);
 			return this.renderConsole(width);
 		} catch {
 			// A malformed current record must not escape Pi's render loop.
@@ -833,19 +739,14 @@ class SubagentConsole {
 		const workers = this.workers;
 		const selected = this.reconcileSelection(workers);
 		const lines: string[] = [];
-		const liveCount = workers.filter(
-			(worker) => worker.state === "running",
-		).length;
+		const liveCount = workers.filter((worker) => worker.state === "running").length;
 		const head = `workers · ${workers.length} · ${liveCount} active · ${this.scope}${
 			this.filter ? ` · /${this.filter}` : ""
 		}`;
 		lines.push(plainLine(theme.fg("accent", theme.bold(head)), width));
 
 		const viewport = Math.max(1, rows - 2);
-		const start = Math.max(
-			0,
-			Math.min(selected - viewport + 1, workers.length - viewport),
-		);
+		const start = Math.max(0, Math.min(selected - viewport + 1, workers.length - viewport));
 		const visible = workers.slice(start, start + viewport);
 		if (visible.length === 0) {
 			lines.push(
@@ -868,31 +769,20 @@ class SubagentConsole {
 			const isSelected = absolute === selected;
 			const state = displayState(worker);
 			const marker = isSelected ? "›" : " ";
-			const elapsed = formatPanelElapsed(
-				((worker.exitedAt ?? Date.now()) - worker.startedAt) / 1000,
-			);
+			const elapsed = formatPanelElapsed(((worker.exitedAt ?? Date.now()) - worker.startedAt) / 1000);
 			const cost =
 				worker.usage && worker.usage.cost > 0
 					? `$${worker.usage.cost < 0.01 ? worker.usage.cost.toFixed(4) : worker.usage.cost.toFixed(2)}`
 					: "–";
-			const tool =
-				worker.state === "running" && worker.currentTool
-					? `now:${worker.currentTool}`
-					: "";
+			const tool = worker.state === "running" && worker.currentTool ? `now:${worker.currentTool}` : "";
 			const statusText = `${statusGlyph(worker.state)} ${state.padEnd(12)}`;
 			const fullMeta = `${fixedField(modelShort(worker.model), 20)}  ${elapsed.padStart(7)}  ${cost.padStart(8)}${tool ? `  ${truncateToWidth(tool, 16, "…")}` : ""}`;
 			const compactMeta = `${modelShort(worker.model)} ${elapsed} ${cost}${tool ? ` ${tool}` : ""}`;
-			const fullPrefixWidth = visibleWidth(
-				`${marker} ${statusText}  ${fullMeta}`,
-			);
+			const fullPrefixWidth = visibleWidth(`${marker} ${statusText}  ${fullMeta}`);
 			const meta = width - fullPrefixWidth >= 12 ? fullMeta : compactMeta;
 			const prefixPlain = `${marker} ${statusText}  ${meta}`;
 			const previewWidth = Math.max(0, width - visibleWidth(prefixPlain) - 2);
-			const preview = truncateToWidth(
-				rosterOutputPreview(worker),
-				previewWidth,
-				"…",
-			);
+			const preview = truncateToWidth(rosterOutputPreview(worker), previewWidth, "…");
 			const status = theme.fg(statusColor(worker.state), statusText);
 			let line = plainLine(
 				`${marker} ${status}  ${theme.fg("dim", meta)}${previewWidth > 0 ? `  ${theme.fg("text", preview)}` : ""}`,
@@ -904,10 +794,7 @@ class SubagentConsole {
 		while (lines.length < rows - 1) lines.push(plainLine("", width));
 
 		const selectedWorker = workers[selected];
-		const canCancel = Boolean(
-			selectedWorker?.state === "running" &&
-				this.deps.isLive(selectedWorker.id),
-		);
+		const canCancel = Boolean(selectedWorker?.state === "running" && this.deps.isLive(selectedWorker.id));
 		const noticeUp = Boolean(this.notice && Date.now() < this.noticeUntil);
 		if (this.notice && !noticeUp) this.notice = undefined;
 		const leading = ["↑↓ select", "enter open", "/ filter", "a scope"];
@@ -936,9 +823,7 @@ class SubagentConsole {
 		// Compact status header: identity, state, model, elapsed, cost, and the
 		// live tool when running. Notices never append here (they would be
 		// clipped); they take the footer line instead.
-		const elapsed = record
-			? Math.round(((record.exitedAt ?? Date.now()) - record.startedAt) / 1000)
-			: 0;
+		const elapsed = record ? Math.round(((record.exitedAt ?? Date.now()) - record.startedAt) / 1000) : 0;
 		const cost = record?.usage ? `$${record.usage.cost.toFixed(4)}` : "—";
 		const state = record ? displayState(record) : "unknown";
 		const head = record
@@ -946,12 +831,7 @@ class SubagentConsole {
 					running && record.currentTool ? ` · now:${record.currentTool}` : ""
 				}${record.continuedFrom ? ` · ↳ from ${record.continuedFrom}` : ""}`
 			: "(no worker)";
-		lines.push(
-			plainLine(
-				theme.fg("accent", theme.bold(truncateToWidth(head, width, ""))),
-				width,
-			),
-		);
+		lines.push(plainLine(theme.fg("accent", theme.bold(truncateToWidth(head, width, ""))), width));
 
 		// Transcript window (auto-follow when at tail).
 		const all = this.transcriptLines();
@@ -968,9 +848,7 @@ class SubagentConsole {
 		// based and windowed so the cursor never runs off-screen.
 		if (live || this.continuing) {
 			if (this.continuationPending) {
-				lines.push(
-					plainLine(theme.fg("accent", "continue › starting…"), width),
-				);
+				lines.push(plainLine(theme.fg("accent", "continue › starting…"), width));
 			} else {
 				const chars = [...this.input];
 				const cursor = Math.min(this.inputCursor, chars.length);
@@ -978,30 +856,17 @@ class SubagentConsole {
 				const budget = Math.max(1, width - visibleWidth(label) - 1);
 				const beforeChars = chars.slice(0, cursor);
 				const beforeShown =
-					beforeChars.length > budget
-						? ["…", ...beforeChars.slice(beforeChars.length - (budget - 1))]
-						: beforeChars;
+					beforeChars.length > budget ? ["…", ...beforeChars.slice(beforeChars.length - (budget - 1))] : beforeChars;
 				const afterCount = Math.max(0, budget - beforeShown.length);
 				const at = chars[cursor] ?? " ";
 				const after = chars.slice(cursor + 1, cursor + 1 + afterCount).join("");
-				const prompt =
-					theme.fg("accent", label) +
-					beforeShown.join("") +
-					theme.inverse(at) +
-					after;
+				const prompt = theme.fg("accent", label) + beforeShown.join("") + theme.inverse(at) + after;
 				lines.push(plainLine(prompt, width));
 			}
 		} else if (running) {
 			lines.push(
 				plainLine(
-					theme.fg(
-						"warning",
-						truncateToWidth(
-							"running in another session — steer/abort unavailable here",
-							width,
-							"",
-						),
-					),
+					theme.fg("warning", truncateToWidth("running in another session — steer/abort unavailable here", width, "")),
 					width,
 				),
 			);
@@ -1014,9 +879,7 @@ class SubagentConsole {
 		let escapeLabel: string;
 		if (this.continuing) {
 			// A pending dispatch rejects another Enter; do not advertise one.
-			actions = this.continuationPending
-				? ["↑↓ scroll", "starting…"]
-				: ["↑↓ scroll", "enter start"];
+			actions = this.continuationPending ? ["↑↓ scroll", "starting…"] : ["↑↓ scroll", "enter start"];
 			escapeLabel = "esc cancel";
 		} else if (running && active) {
 			actions = ["↑↓ scroll", "enter steer", "ctrl+c interrupt"];
@@ -1036,12 +899,7 @@ class SubagentConsole {
 		lines.push(
 			theme.fg(
 				noticeUp ? "warning" : "dim",
-				footerWithEscape(
-					width,
-					actions,
-					escapeLabel,
-					noticeUp ? this.notice : undefined,
-				),
+				footerWithEscape(width, actions, escapeLabel, noticeUp ? this.notice : undefined),
 			),
 		);
 		return lines;
@@ -1055,13 +913,7 @@ export function openSubagentPanel(
 ): Promise<void> {
 	return ctx.ui
 		.custom<void>((tui: TUI, theme: Theme, _keybindings, done) => {
-			const panel = new SubagentConsole(
-				deps,
-				tui,
-				theme,
-				() => done(undefined),
-				initialFilter,
-			);
+			const panel = new SubagentConsole(deps, tui, theme, () => done(undefined), initialFilter);
 			const timer = setInterval(() => {
 				panel.invalidate();
 			}, 1_000);

@@ -169,11 +169,7 @@ describe("development record classification", () => {
 			assert.equal(isDevRecordPath(path, "extensions/demo"), true, path);
 		}
 		assert.equal(isDevRecordPath("extensions/subagent/RELIABILITY-FINDINGS.md", "extensions/subagent"), true);
-		for (const path of [
-			"extensions/demo/findings.md",
-			"extensions/demo/FINDINGS.md.bak",
-			"docs/FINDINGS.md",
-		]) {
+		for (const path of ["extensions/demo/findings.md", "extensions/demo/FINDINGS.md.bak", "docs/FINDINGS.md"]) {
 			assert.equal(isDevRecordPath(path, "extensions/demo"), false, path);
 		}
 	});
@@ -414,7 +410,7 @@ describe("promotion against a real repository", () => {
 		git(["config", "user.name", "Fixture"]);
 		git(["config", "user.email", "fixture@example.com"]);
 		writeIn(repo, "extensions/demo/index.ts", "export default function demo() { return {}; }\n");
-		writeIn(repo, "package.json", "{\"name\":\"harness\",\"scripts\":{}}\n");
+		writeIn(repo, "package.json", '{"name":"harness","scripts":{}}\n');
 		commitIn(repo, "feat(demo): initial");
 		execFileSync("git", ["init", "-q", "--bare", origin], { env });
 		git(["remote", "add", "origin", origin]);
@@ -445,7 +441,7 @@ describe("promotion against a real repository", () => {
 		git(["worktree", "add", "-q", featureTree, "feature/reporting"]);
 		writeIn(featureTree, "reporting/cli.mts", "export const report = 1;\n");
 		writeIn(featureTree, "reporting/AGENTS.md", "# plan\n");
-		writeIn(featureTree, "package.json", "{\"name\":\"harness\",\"scripts\":{\"report\":\"node reporting/cli.mts\"}}\n");
+		writeIn(featureTree, "package.json", '{"name":"harness","scripts":{"report":"node reporting/cli.mts"}}\n');
 		commitIn(featureTree, "feat(reporting): add feature slice and script");
 
 		git(["branch", "skill/guide", "main"]);

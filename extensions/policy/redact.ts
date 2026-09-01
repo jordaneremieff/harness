@@ -46,7 +46,10 @@ const SENSITIVE_NAMES = new Set([
 
 function isSensitiveName(name: string): boolean {
 	const separated = name.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
-	const words = separated.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+	const words = separated
+		.toLowerCase()
+		.split(/[^a-z0-9]+/)
+		.filter(Boolean);
 	if (words.some((word) => SENSITIVE_WORDS.has(word))) return true;
 	return SENSITIVE_NAMES.has(words.join(""));
 }
@@ -125,7 +128,10 @@ export function redactCommand(command: string): string {
 	text = redactNamedAssignments(text);
 	text = redactLongFlags(text);
 	text = redactKnownToolFlags(text);
-	text = text.replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, (_match, scheme: string) => `${scheme} ${PLACEHOLDER}`);
+	text = text.replace(
+		/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi,
+		(_match, scheme: string) => `${scheme} ${PLACEHOLDER}`,
+	);
 	text = text.replace(
 		/\b([a-z][a-z0-9+.-]*:\/\/)([^\s:/@"']*):([^\s@"']+)@/gi,
 		(_match, scheme: string, user: string) => `${scheme}${user}:${PLACEHOLDER}@`,

@@ -436,11 +436,7 @@ function repositoryState(repoRoot: string, worktreeRoot: string): { records: Wor
 	const problems: string[] = [];
 	const branches: string[] = [];
 	for (const kind of sliceKinds) {
-		const refs = git(repoRoot, [
-			"for-each-ref",
-			"--format=%(refname:short)",
-			`refs/heads/${kind.branchPrefix}*`,
-		])
+		const refs = git(repoRoot, ["for-each-ref", "--format=%(refname:short)", `refs/heads/${kind.branchPrefix}*`])
 			.stdout.trim()
 			.split("\n")
 			.filter(Boolean);
@@ -1160,9 +1156,7 @@ function installHooks(context: HarnessContext): void {
 
 function contextFromEnvironment(): HarnessContext {
 	if (process.env.PI_EXTENSION_WORKTREE_ROOT !== undefined) {
-		throw new Error(
-			"PI_EXTENSION_WORKTREE_ROOT is retired; use PI_WORKTREE_ROOT for the worktree root",
-		);
+		throw new Error("PI_EXTENSION_WORKTREE_ROOT is retired; use PI_WORKTREE_ROOT for the worktree root");
 	}
 	const repoRoot = process.env.PI_HARNESS_ROOT
 		? resolve(process.env.PI_HARNESS_ROOT)

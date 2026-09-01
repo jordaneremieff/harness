@@ -1,11 +1,5 @@
 import { strict as assert } from "node:assert";
-import {
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,22 +44,14 @@ export default function (pi) {
 `,
 	"utf8",
 );
-writeFileSync(
-	join(agentDir, "settings.json"),
-	JSON.stringify({ packages: [providerPath] }),
-	"utf8",
-);
+writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [providerPath] }), "utf8");
 
 let parentSession: any = null;
 try {
 	const sub = await import("./index.ts");
-	const {
-		createAgentSession,
-		DefaultResourceLoader,
-		ModelRegistry,
-		SessionManager,
-		SettingsManager,
-	} = await import("@earendil-works/pi-coding-agent");
+	const { createAgentSession, DefaultResourceLoader, ModelRegistry, SessionManager, SettingsManager } = await import(
+		"@earendil-works/pi-coding-agent"
+	);
 	const selfPath = join(dirname(fileURLToPath(import.meta.url)), "index.ts");
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	const resourceLoader = new DefaultResourceLoader({

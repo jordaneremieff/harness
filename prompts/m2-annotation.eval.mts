@@ -65,7 +65,8 @@ const SCENARIOS: Scenario[] = [
 		flaggedNeedle: "find ",
 		preferredNeedle: "rg --files",
 		preferredForms: ["rg --files", "fd", "git ls-files"],
-		caveat: "The flagged needle is the command token with a space, so scoped or capped find forms still count as the family.",
+		caveat:
+			"The flagged needle is the command token with a space, so scoped or capped find forms still count as the family.",
 	},
 	{
 		id: "grep",
@@ -76,7 +77,8 @@ const SCENARIOS: Scenario[] = [
 		flaggedNeedle: "grep -r",
 		preferredNeedle: "rg ",
 		preferredForms: ["rg", "git grep"],
-		caveat: "The flagged needle misses `grep -nr` orderings and would flag a rare `git grep -r`; both are review-time signals.",
+		caveat:
+			"The flagged needle misses `grep -nr` orderings and would flag a rare `git grep -r`; both are review-time signals.",
 	},
 	{
 		id: "cat",
@@ -87,7 +89,8 @@ const SCENARIOS: Scenario[] = [
 		flaggedNeedle: "cat ",
 		preferredNeedle: "",
 		preferredForms: ["sed -n", "head", "read tool (not expressible as a command)"],
-		caveat: "The note names the read tool, which a command-only answer cannot express; the case is omit-based plus human review. A heredoc cat would be flagged even though the classifier allows it.",
+		caveat:
+			"The note names the read tool, which a command-only answer cannot express; the case is omit-based plus human review. A heredoc cat would be flagged even though the classifier allows it.",
 	},
 	{
 		id: "env",
@@ -98,7 +101,8 @@ const SCENARIOS: Scenario[] = [
 		flaggedNeedle: "env | grep PATH",
 		preferredNeedle: "printenv PATH",
 		preferredForms: ["printenv PATH"],
-		caveat: "The flagged needle is the exact flagged string; `printenv | ...` variants pass the omit but fail the preferred check, and spacing variants are review-time signals.",
+		caveat:
+			"The flagged needle is the exact flagged string; `printenv | ...` variants pass the omit but fail the preferred check, and spacing variants are review-time signals.",
 	},
 ];
 

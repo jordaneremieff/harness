@@ -42,10 +42,7 @@
  */
 
 import type { Usage as AiUsage } from "@earendil-works/pi-ai";
-import type {
-	AgentSession,
-	AgentSessionEvent,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type {
 	ModelRef,
 	SessionPhase,
@@ -70,10 +67,7 @@ import {
 
 type SessionMessage = AgentSession["state"]["messages"][number];
 type AssistantSessionMessage = Extract<SessionMessage, { role: "assistant" }>;
-type ToolCallPart = Extract<
-	AssistantSessionMessage["content"][number],
-	{ type: "toolCall" }
->;
+type ToolCallPart = Extract<AssistantSessionMessage["content"][number], { type: "toolCall" }>;
 type ToolContent = ToolTranscriptItem["content"];
 type ToolResultPayload = {
 	content?: ToolContent;
@@ -90,10 +84,7 @@ type ToolItemInput = {
 	usage?: AiUsage;
 	timestamp: number;
 };
-type ToolItemWithStatus<Status extends ToolItemInput["status"]> = Extract<
-	ToolTranscriptItem,
-	{ status: Status }
->;
+type ToolItemWithStatus<Status extends ToolItemInput["status"]> = Extract<ToolTranscriptItem, { status: Status }>;
 
 /**
  * Convert pi messages to protocol-v1 transcript items. The one conversion used
@@ -162,9 +153,7 @@ export function buildTranscript(
  * recorded session file. Same conversion as a live snapshot; ids are positional
  * because the messages are dead objects with no runtime identity.
  */
-export function transcriptFromMessages(
-	messages: SessionMessage[],
-): TranscriptItem[] {
+export function transcriptFromMessages(messages: SessionMessage[]): TranscriptItem[] {
 	const ids = new Map<SessionMessage, string>();
 	let seq = 0;
 	return buildTranscript(messages, (message) => {
@@ -199,9 +188,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 
 	private readonly session: AgentSession;
 	private revision = 0;
-	private readonly listeners = new Set<
-		(event: PiSessionRuntimeEvent) => void
-	>();
+	private readonly listeners = new Set<(event: PiSessionRuntimeEvent) => void>();
 	/** In-process observers; survive dispose(), unlike `listeners`. */
 	private readonly watchers = new Set<() => void>();
 	private msgSeq = 0;
@@ -210,10 +197,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 	private stream: StreamState | null = null;
 	/** Live tool state. The end event omits arguments, so one keyed owner retains
 	 * the validated start arguments and any partial output. */
-	private readonly liveTools = new Map<
-		string,
-		{ toolName: string; args: unknown; content?: ToolContent }
-	>();
+	private readonly liveTools = new Map<string, { toolName: string; args: unknown; content?: ToolContent }>();
 	private phase: SessionPhase = "idle";
 	private compactionCount = 0;
 	private retryActive = false;
@@ -253,9 +237,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 
 	snapshot(): SessionSnapshot {
 		const state = this.agentState();
-		const items = buildTranscript(state.messages, (message) =>
-			this.messageId(message),
-		);
+		const items = buildTranscript(state.messages, (message) => this.messageId(message));
 		const streaming = state.streamingMessage;
 		if (streaming?.role === "assistant") {
 			const id = this.stream?.id ?? this.messageId(streaming);
@@ -266,10 +248,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 				if (item && typeof item === "object") items.push(item);
 				else {
 					try {
-						const pending = toProtocolAssistantMessage(
-							{ ...streaming, stopReason: "pending" },
-							{ id },
-						);
+						const pending = toProtocolAssistantMessage({ ...streaming, stopReason: "pending" }, { id });
 						if (pending && typeof pending === "object") items.push(pending);
 					} catch {
 						// A missing/unknown stopReason fallback can still be unmappable.
@@ -281,15 +260,10 @@ export class WorkerRuntime implements PiSessionRuntime {
 				// Drop only the
 				// un-addressable toolCall parts and retry so the rest still renders.
 				const content = streaming.content;
-				const pruned = content.filter(
-					(part) => part.type !== "toolCall" || Boolean(part.id && part.name),
-				);
+				const pruned = content.filter((part) => part.type !== "toolCall" || Boolean(part.id && part.name));
 				if (pruned.length !== content.length) {
 					try {
-						const item = toProtocolAssistantMessage(
-							{ ...streaming, content: pruned },
-							{ id },
-						);
+						const item = toProtocolAssistantMessage({ ...streaming, content: pruned }, { id });
 						if (item && typeof item === "object") items.push(item);
 					} catch {
 						// Still unmappable; skip the in-flight item for this snapshot.
@@ -300,9 +274,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 		// Synthetic running items carry live partial output to the panel; the real
 		// toolResult replaces them at tool_execution_end.
 		for (const [toolCallId, partial] of this.liveTools) {
-			const hasToolResult = items.some(
-				(item) => item.role === "tool" && item.toolCallId === toolCallId,
-			);
+			const hasToolResult = items.some((item) => item.role === "tool" && item.toolCallId === toolCallId);
 			if (hasToolResult) continue;
 			items.push(
 				this.toolItem({
@@ -330,9 +302,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 			createdAt: this.createdAt,
 			updatedAt: Date.now(),
 			phase: this.getPhase(),
-			model: model
-				? { provider: model.provider, id: model.id }
-				: { provider: "unknown", id: "unknown" },
+			model: model ? { provider: model.provider, id: model.id } : { provider: "unknown", id: "unknown" },
 			thinkingLevel: this.session.thinkingLevel ?? "off",
 			// PiServer overrides attached/locked/phase in its normalized snapshot.
 			attached: false,
@@ -408,10 +378,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 	async setModel(ref: ModelRef): Promise<void> {
 		const model = this.session.modelRuntime.getModel(ref.provider, ref.id);
 		if (!model) {
-			throw new PiServerError(
-				"invalid_request",
-				`unknown model ${ref.provider}/${ref.id}`,
-			);
+			throw new PiServerError("invalid_request", `unknown model ${ref.provider}/${ref.id}`);
 		}
 		// Direct state assignment on purpose: AgentSession.setModel() would persist a
 		// new default into the operator's settings.json. A worker's model must never
@@ -511,9 +478,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 		return id;
 	}
 
-	private toolItem(
-		input: ToolItemInput & { status: "running" },
-	): ToolItemWithStatus<"running">;
+	private toolItem(input: ToolItemInput & { status: "running" }): ToolItemWithStatus<"running">;
 	private toolItem(
 		input: ToolItemInput & { status: "complete" | "error" },
 	): ToolItemWithStatus<"complete"> | ToolItemWithStatus<"error">;

@@ -15,12 +15,9 @@ import { fileURLToPath } from "node:url";
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-realloader-"));
 
-const {
-	createAgentSession,
-	DefaultResourceLoader,
-	SessionManager,
-	SettingsManager,
-} = await import("@earendil-works/pi-coding-agent");
+const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import(
+	"@earendil-works/pi-coding-agent"
+);
 const { sharedWorkerState, submitResultTool } = await import("./index.ts");
 
 async function main(): Promise<void> {
@@ -32,9 +29,7 @@ async function main(): Promise<void> {
 		noSkills: true,
 		noPromptTemplates: true,
 		noContextFiles: true,
-		additionalExtensionPaths: [
-			join(dirname(fileURLToPath(import.meta.url)), "index.ts"),
-		],
+		additionalExtensionPaths: [join(dirname(fileURLToPath(import.meta.url)), "index.ts")],
 	});
 	await resourceLoader.reload();
 	const created = await createAgentSession({
@@ -56,11 +51,7 @@ async function main(): Promise<void> {
 
 	// The restricted allowlist keeps the callable surface exact even though
 	// the module registered its full surface.
-	assert.deepEqual(session.getActiveToolNames().sort(), [
-		"bash",
-		"read",
-		"submit_result",
-	]);
+	assert.deepEqual(session.getActiveToolNames().sort(), ["bash", "read", "submit_result"]);
 	// The fresh jiti copy registered the veto on this session's runner.
 	assert.equal(
 		session.extensionRunner.hasHandlers("session_before_compact"),
