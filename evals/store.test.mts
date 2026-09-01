@@ -90,6 +90,13 @@ function executionId(participant: Participant): string {
 	return `case--${participant.provider}--${participant.model}--${participant.thinking}--1--variant`;
 }
 
+function transcriptEvents(index: number) {
+	return [
+		{ type: "tool_call", id: `call-${index}`, name: "fixture-tool", arguments: { index } },
+		{ type: "tool_result", toolCallId: `call-${index}`, name: "fixture-tool", content: `result-${index}` },
+	];
+}
+
 function createFixture(status: OperationalStatus, errorSets: Array<Array<{ type: string; message: string }>>): Fixture {
 	assert.equal(errorSets.length, participants.length);
 	const root = mkdtempSync(join(tmpdir(), "evals-store-test-"));
@@ -116,6 +123,7 @@ function createFixture(status: OperationalStatus, errorSets: Array<Array<{ type:
 					effective: { provider: participant.provider, model: participant.model },
 					checks: [{ checkId: "check", type: "contains-exact", passed: true, message: "ok" }],
 				},
+				events: transcriptEvents(index),
 				usage: { provider: participant.provider, model: participant.model },
 				errors: errorSets[index],
 			},
@@ -178,6 +186,21 @@ describe("run coverage and review evidence", () => {
 				executionId: excludedId,
 				errorTypes: ["AssistantError", "AssistantStopReason"],
 			});
+		} finally {
+			removeFixture(fixture);
+		}
+	});
+
+	it("includes transcript events in usable and excluded review entries", () => {
+		const fixture = createFixture("partial", [[], providerError]);
+		try {
+			const review = readJson<{
+				cases: Array<{ entries: Array<{ executionId: string; events: unknown }> }>;
+			}>(join(fixture.directory, "review.json"));
+			const usable = review.cases[0].entries.find((entry) => entry.executionId === executionId(participants[0]))!;
+			const excluded = review.cases[0].entries.find((entry) => entry.executionId === executionId(participants[1]))!;
+			assert.deepEqual(usable.events, transcriptEvents(0));
+			assert.deepEqual(excluded.events, transcriptEvents(1));
 		} finally {
 			removeFixture(fixture);
 		}

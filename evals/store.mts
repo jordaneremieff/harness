@@ -96,6 +96,7 @@ interface StoredExecutionEvidence {
 	participant: unknown;
 	result: {
 		output: { value: unknown; effective: unknown; checks: unknown };
+		events: unknown;
 		usage: unknown;
 		errors: unknown;
 	};
@@ -177,7 +178,7 @@ export function buildReviewArtifact(
 		...(state.coverage ? { coverage: state.coverage } : {}),
 		quality: state.quality,
 		adjudication: suite.adjudication,
-		note: "Deterministic checks are lexical floors. A passing floor does not establish semantic quality.",
+		note: "Deterministic checks are structural or lexical floors. A passing floor does not establish semantic quality.",
 		cases: suite.cases.map((evaluationCase) => ({
 			id: evaluationCase.id,
 			title: evaluationCase.title,
@@ -197,6 +198,7 @@ export function buildReviewArtifact(
 						participant: entry.participant,
 						output: entry.result.output.value,
 						effective: entry.result.output.effective,
+						events: entry.result.events,
 						...(usable
 							? { checks: entry.result.output.checks }
 							: {

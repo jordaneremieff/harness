@@ -262,6 +262,20 @@ function checkConfig(check: EvaluationCheck): Record<string, JsonValue> {
 	return asRecord(check.config, `check ${check.id}.config`);
 }
 
+function optionalStringArray(check: EvaluationCheck, config: Record<string, JsonValue>, field: string): string[] {
+	const values = config[field];
+	if (values === undefined) return [];
+	if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {
+		throw new Error(`check ${check.id} needs string ${field} values`);
+	}
+	return values as string[];
+}
+
+function serializedTranscriptValue(value: JsonValue | undefined): string {
+	if (typeof value === "string") return value;
+	return JSON.stringify(value ?? null) ?? "null";
+}
+
 type PiSessionEntry = ReturnType<SessionManager["getEntries"]>[number];
 
 function summarizeRunEntryUsage(entries: PiSessionEntry[], participant: Participant): UsageSummary {
@@ -304,7 +318,11 @@ function summarizeRunEntryUsage(entries: PiSessionEntry[], participant: Particip
 	};
 }
 
-export function runDeterministicChecks(output: string, checks: EvaluationCheck[]): CheckResult[] {
+export function runDeterministicChecks(
+	output: string,
+	checks: EvaluationCheck[],
+	events: TranscriptEvent[],
+): CheckResult[] {
 	return checks.map((check) => {
 		const config = checkConfig(check);
 		if (check.type === "contains-exact") {
@@ -344,6 +362,66 @@ export function runDeterministicChecks(output: string, checks: EvaluationCheck[]
 				message: `Output has ${output.length} characters; the lexical ceiling is ${maximum}.`,
 			};
 		}
+		if (check.type === "tool-call") {
+			const name = config.name;
+			if (typeof name !== "string" || name === "") throw new Error(`check ${check.id} needs a tool name`);
+			const expectedPresent = config.present;
+			if (expectedPresent !== undefined && typeof expectedPresent !== "boolean") {
+				throw new Error(`check ${check.id} needs a boolean present value`);
+			}
+			const argumentsContain = optionalStringArray(check, config, "argumentsContain");
+			const matchingCallAppears = events.some((event) => {
+				if (event.type !== "tool_call" || event.name !== name) return false;
+				const serializedArguments = serializedTranscriptValue(event.arguments ?? {});
+				return argumentsContain.every((value) => serializedArguments.includes(value));
+			});
+			const shouldBePresent = expectedPresent ?? true;
+			const passed = shouldBePresent ? matchingCallAppears : !matchingCallAppears;
+			return {
+				checkId: check.id,
+				type: check.type,
+				passed,
+				message: shouldBePresent
+					? matchingCallAppears
+						? `A matching tool call to ${JSON.stringify(name)} appears.`
+						: `No matching tool call to ${JSON.stringify(name)} appears.`
+					: matchingCallAppears
+						? `A forbidden matching tool call to ${JSON.stringify(name)} appears.`
+						: `No matching tool call to ${JSON.stringify(name)} appears.`,
+			};
+		}
+		if (check.type === "tool-result") {
+			const name = config.name;
+			if (typeof name !== "string" || name === "") throw new Error(`check ${check.id} needs a tool name`);
+			const isError = config.isError;
+			if (isError !== undefined && typeof isError !== "boolean") {
+				throw new Error(`check ${check.id} needs a boolean isError value`);
+			}
+			const contentContains = optionalStringArray(check, config, "contentContains");
+			const contentOmits = optionalStringArray(check, config, "contentOmits");
+			const callsById = new Map(
+				events.flatMap((event) => (event.type === "tool_call" ? [[event.id, event] as const] : [])),
+			);
+			const matchingResultAppears = events.some((event) => {
+				if (event.type !== "tool_result") return false;
+				const originatingCall = callsById.get(event.toolCallId);
+				if ((originatingCall?.name ?? event.name) !== name) return false;
+				if (isError !== undefined && (event.error !== undefined) !== isError) return false;
+				const content = serializedTranscriptValue(event.content);
+				return (
+					contentContains.every((value) => content.includes(value)) &&
+					contentOmits.every((value) => !content.includes(value))
+				);
+			});
+			return {
+				checkId: check.id,
+				type: check.type,
+				passed: matchingResultAppears,
+				message: matchingResultAppears
+					? `A matching tool result for ${JSON.stringify(name)} appears.`
+					: `No tool result for ${JSON.stringify(name)} matches the configured constraints.`,
+			};
+		}
 		throw new Error(`Pi adapter does not support check type ${check.type}`);
 	});
 }
@@ -354,6 +432,14 @@ function lastAssistant(messages: Message[]): Extract<Message, { role: "assistant
 		if (message.role === "assistant") return message;
 	}
 	return undefined;
+}
+
+export function scorePostSeedPiTranscript(allMessages: Message[], seedMessageCount: number, checks: EvaluationCheck[]) {
+	const newMessages = allMessages.slice(seedMessageCount);
+	const assistant = lastAssistant(newMessages);
+	const output = assistant ? textContent(assistant.content) : "";
+	const events = normalizePiTranscript(newMessages);
+	return { newMessages, assistant, output, checks: runDeterministicChecks(output, checks, events) };
 }
 
 async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
@@ -540,9 +626,8 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 			(message): message is Message =>
 				message.role === "user" || message.role === "assistant" || message.role === "toolResult",
 		);
-		const newMessages = allMessages.slice(seedMessageCount);
-		const assistant = lastAssistant(newMessages);
-		const output = assistant ? textContent(assistant.content) : "";
+		const scoredTranscript = scorePostSeedPiTranscript(allMessages, seedMessageCount, evaluationCase.checks);
+		const { newMessages, assistant, output } = scoredTranscript;
 		let usage = summarizeUsage(newMessages, participant);
 		if (termination === "timeout") errors.push({ type: "Timeout", message: "The execution wall-time limit expired." });
 		if (termination === "cancelled") errors.push({ type: "Cancelled", message: "The caller cancelled the execution." });
@@ -604,7 +689,7 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 					thinking: session.thinkingLevel as ThinkingLevel,
 					responseModel: assistant?.responseModel ?? null,
 				},
-				checks: runDeterministicChecks(output, evaluationCase.checks),
+				checks: scoredTranscript.checks,
 			},
 			events: normalizePiTranscript(allMessages),
 			usage,

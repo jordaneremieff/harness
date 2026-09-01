@@ -55,15 +55,34 @@ Quality states are `pass`, `fail`, `inconclusive`, and `not_assessed`. Operation
 
 Each run writes private, ignored evidence under `.evals/<run-id>/`. Evidence includes the exact plan, state, generated Vitest config, bounded child logs, Vitest JSON, normalized executions, usage, errors, effective model data, and a review artifact. Terminal state and `review.json` both record coverage as `plannedExecutions`, `usableExecutions`, `excludedExecutions`, `usableExecutionIds`, and `exclusions`. Every exclusion carries its `executionId` and `errorTypes`; missing planned evidence is identified as `MissingExecutionEvidence`.
 
-`review.json` uses blinded variant labels and includes full synthetic fixture context. Entries with errors remain visible as `excluded`, including their outputs, usage, errors, and exclusion reason, but omit `checks` so those results cannot be treated as scored evidence. `variant-map.json` remains separate and appears only through `inspect --reveal`.
+`review.json` uses blinded variant labels and includes full synthetic fixture context. Entries with errors remain visible as `excluded`, including their outputs, normalized transcript events, usage, errors, and exclusion reason, but omit `checks` so those results cannot be treated as scored evidence. `variant-map.json` remains separate and appears only through `inspect --reveal`.
 
-Deterministic checks are lexical floors. Passing them does not establish semantic quality.
+Deterministic checks are structural or lexical floors. Passing them does not establish semantic quality.
 
 ## Pi adapter
 
 The Pi adapter uses public SDK services and `AgentSessionRuntime`. It creates an empty per-execution working directory and resource directory, disables discovered resources, and permits only explicit suite resources. It seeds an in-memory `SessionManager` before session creation, resolves the exact provider and model through `ModelRuntime`, checks approved authentication, binds explicit extensions, aborts on limits, and disposes the runtime.
 
-The adapter supports prompt, skill, extension, and ad hoc subjects through JSON Pi configuration. It records the full normalized transcript, public run-entry usage, loader diagnostics, requested and effective provider/model/thinking values, response model, checks, and errors.
+The adapter supports prompt, skill, extension, and ad hoc subjects through JSON Pi configuration. It records the full normalized transcript, public run-entry usage, loader diagnostics, requested and effective provider/model/thinking values, response model, checks, and errors. Persisted and review events retain the full transcript, including seeded fixtures. Deterministic transcript checks observe only post-seed events from the current execution.
+
+### Transcript check types
+
+A `tool-call` check has config `{ name: string, argumentsContain?: string[], present?: boolean }`. It matches the exact tool name and requires every `argumentsContain` substring in the JSON-serialized call arguments. `present` defaults to `true`; set it to `false` to assert that no matching call occurred.
+
+```ts
+{ id: "read-live", type: "tool-call", config: { name: "read", argumentsContain: ['"path":"input.md"'] } }
+{ id: "no-shell", type: "tool-call", config: { name: "bash", present: false } }
+```
+
+A `tool-result` check has config `{ name: string, isError?: boolean, contentContains?: string[], contentOmits?: string[] }`. It requires a matching result, optionally constrains whether the result has a normalized error, requires every `contentContains` substring, and rejects content containing any `contentOmits` substring. When the transcript contains the originating call, the check resolves `toolCallId` and matches that call's name instead of trusting the result name alone.
+
+```ts
+{
+  id: "policy-blocked",
+  type: "tool-result",
+  config: { name: "read", isError: true, contentContains: ["Blocked"], contentOmits: ["approved"] },
+}
+```
 
 ## Deterministic development checks
 
