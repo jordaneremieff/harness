@@ -22,6 +22,7 @@
 			"extensions/**/*.ts",
 			"extensions/**/*.mts",
 			"prompts/*.eval.mts",
+			"prompts/*.test.mts",
 			"scripts/**/*.mts",
 			"skills/**/*.mts"
 		]

@@ -10,6 +10,7 @@ Run all commands from the repository root:
 
 ```bash
 npm run evals -- validate prompts/wtf.eval.mts
+npm run evals -- validate prompts/policy-enforce.eval.mts
 
 npm run evals -- plan prompts/wtf.eval.mts \
   --participant anthropic/claude-model:high \
@@ -86,12 +87,27 @@ A `tool-result` check has config `{ name: string, isError?: boolean, contentCont
 }
 ```
 
+### Policy enforcement suite
+
+`prompts/policy-enforce.eval.mts` loads the policy extension and exposes `bash`
+in both variants. The `enforce` variant sets the extension's `policy-mode` flag
+to `enforce`; `observe-baseline` omits the flag and therefore keeps the default
+`observe` mode. Both variants must attempt the exact governed call. Only the
+enforce variant can satisfy `policy-block-returned`, which requires an error
+result containing the built-in `routing.cat-read` guidance. The observe variant
+is an intentional negative control and must fail that check, making the suite
+deterministically falsifiable rather than an always-green policy signal.
+
+The colocated test drives the real extension hooks without a provider, converts
+the outcomes with the Pi adapter's transcript normalizer, and runs the suite's
+own checks against both variants.
+
 ## Deterministic development checks
 
 These commands do not call a model:
 
 ```bash
-node --test "evals/*.test.mts" "evals/subjects/*.test.mts"
+node --test "evals/*.test.mts" "evals/subjects/*.test.mts" "prompts/*.test.mts"
 npm run typecheck
 npm run lint
 npm run check
