@@ -282,17 +282,95 @@ export function summarizeUsage(messages: Message[], participant: Participant): U
 	};
 }
 
-function checkConfig(check: EvaluationCheck): Record<string, JsonValue> {
-	return asRecord(check.config, `check ${check.id}.config`);
+type ParsedPiCheck =
+	| { id: string; type: "contains-exact"; values: string[] }
+	| { id: string; type: "omits-exact"; values: string[] }
+	| { id: string; type: "max-characters"; maximum: number }
+	| { id: string; type: "tool-call"; name: string; argumentsContain: string[]; present?: boolean }
+	| {
+			id: string;
+			type: "tool-result";
+			name: string;
+			isError?: boolean;
+			contentContains: string[];
+			contentOmits: string[];
+	  };
+
+function assertCheckConfigFields(
+	caseId: string,
+	check: EvaluationCheck,
+	config: Record<string, JsonValue>,
+	allowed: string[],
+): void {
+	for (const field of Object.keys(config)) {
+		if (!allowed.includes(field)) {
+			throw new Error(`case ${caseId} check ${check.id}.config has unsupported field ${field}`);
+		}
+	}
 }
 
-function optionalStringArray(check: EvaluationCheck, config: Record<string, JsonValue>, field: string): string[] {
+function checkStringArray(
+	caseId: string,
+	check: EvaluationCheck,
+	config: Record<string, JsonValue>,
+	field: string,
+	optional = false,
+): string[] {
 	const values = config[field];
-	if (values === undefined) return [];
+	if (values === undefined && optional) return [];
 	if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {
-		throw new Error(`check ${check.id} needs string ${field} values`);
+		throw new Error(`case ${caseId} check ${check.id} needs string ${field} values`);
 	}
 	return values as string[];
+}
+
+function parseCheck(caseId: string, check: EvaluationCheck): ParsedPiCheck {
+	const config = asRecord(check.config, `case ${caseId} check ${check.id}.config`);
+	if (check.type === "contains-exact" || check.type === "omits-exact") {
+		assertCheckConfigFields(caseId, check, config, ["values"]);
+		return { id: check.id, type: check.type, values: checkStringArray(caseId, check, config, "values") };
+	}
+	if (check.type === "max-characters") {
+		assertCheckConfigFields(caseId, check, config, ["maximum"]);
+		if (typeof config.maximum !== "number") {
+			throw new Error(`case ${caseId} check ${check.id} needs a numeric maximum`);
+		}
+		return { id: check.id, type: check.type, maximum: config.maximum };
+	}
+	if (check.type === "tool-call") {
+		assertCheckConfigFields(caseId, check, config, ["name", "argumentsContain", "present"]);
+		if (typeof config.name !== "string" || config.name === "") {
+			throw new Error(`case ${caseId} check ${check.id} needs a tool name`);
+		}
+		if (config.present !== undefined && typeof config.present !== "boolean") {
+			throw new Error(`case ${caseId} check ${check.id} needs a boolean present value`);
+		}
+		return {
+			id: check.id,
+			type: check.type,
+			name: config.name,
+			argumentsContain: checkStringArray(caseId, check, config, "argumentsContain", true),
+			...(config.present === undefined ? {} : { present: config.present }),
+		};
+	}
+	if (check.type === "tool-result") {
+		assertCheckConfigFields(caseId, check, config, ["name", "isError", "contentContains", "contentOmits"]);
+		if (typeof config.name !== "string" || config.name === "") {
+			throw new Error(`case ${caseId} check ${check.id} needs a tool name`);
+		}
+		if (config.isError !== undefined && typeof config.isError !== "boolean") {
+			throw new Error(`case ${caseId} check ${check.id} needs a boolean isError value`);
+		}
+		return {
+			id: check.id,
+			type: check.type,
+			name: config.name,
+			...(config.isError === undefined ? {} : { isError: config.isError }),
+			contentContains: checkStringArray(caseId, check, config, "contentContains", true),
+			contentOmits: checkStringArray(caseId, check, config, "contentOmits", true),
+		};
+	}
+	throw new Error(`case ${caseId} check ${check.id} uses unsupported Pi check type ${check.type}`);
 }
 
 function serializedTranscriptValue(value: JsonValue | undefined): string {
@@ -346,15 +424,12 @@ export function runDeterministicChecks(
 	output: string,
 	checks: EvaluationCheck[],
 	events: TranscriptEvent[],
+	caseId = "unscoped",
 ): CheckResult[] {
-	return checks.map((check) => {
-		const config = checkConfig(check);
+	return checks.map((candidate) => {
+		const check = parseCheck(caseId, candidate);
 		if (check.type === "contains-exact") {
-			const values = config.values;
-			if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {
-				throw new Error(`check ${check.id} needs string values`);
-			}
-			const missing = values.filter((value) => !output.includes(value as string));
+			const missing = check.values.filter((value) => !output.includes(value));
 			return {
 				checkId: check.id,
 				type: check.type,
@@ -364,11 +439,7 @@ export function runDeterministicChecks(
 			};
 		}
 		if (check.type === "omits-exact") {
-			const values = config.values;
-			if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {
-				throw new Error(`check ${check.id} needs string values`);
-			}
-			const present = values.filter((value) => output.includes(value as string));
+			const present = check.values.filter((value) => output.includes(value));
 			return {
 				checkId: check.id,
 				type: check.type,
@@ -377,29 +448,20 @@ export function runDeterministicChecks(
 			};
 		}
 		if (check.type === "max-characters") {
-			const maximum = config.maximum;
-			if (typeof maximum !== "number") throw new Error(`check ${check.id} needs a numeric maximum`);
 			return {
 				checkId: check.id,
 				type: check.type,
-				passed: output.length <= maximum,
-				message: `Output has ${output.length} characters; the lexical ceiling is ${maximum}.`,
+				passed: output.length <= check.maximum,
+				message: `Output has ${output.length} characters; the lexical ceiling is ${check.maximum}.`,
 			};
 		}
 		if (check.type === "tool-call") {
-			const name = config.name;
-			if (typeof name !== "string" || name === "") throw new Error(`check ${check.id} needs a tool name`);
-			const expectedPresent = config.present;
-			if (expectedPresent !== undefined && typeof expectedPresent !== "boolean") {
-				throw new Error(`check ${check.id} needs a boolean present value`);
-			}
-			const argumentsContain = optionalStringArray(check, config, "argumentsContain");
 			const matchingCallAppears = events.some((event) => {
-				if (event.type !== "tool_call" || event.name !== name) return false;
+				if (event.type !== "tool_call" || event.name !== check.name) return false;
 				const serializedArguments = serializedTranscriptValue(event.arguments ?? {});
-				return argumentsContain.every((value) => serializedArguments.includes(value));
+				return check.argumentsContain.every((value) => serializedArguments.includes(value));
 			});
-			const shouldBePresent = expectedPresent ?? true;
+			const shouldBePresent = check.present ?? true;
 			const passed = shouldBePresent ? matchingCallAppears : !matchingCallAppears;
 			return {
 				checkId: check.id,
@@ -407,46 +469,35 @@ export function runDeterministicChecks(
 				passed,
 				message: shouldBePresent
 					? matchingCallAppears
-						? `A matching tool call to ${JSON.stringify(name)} appears.`
-						: `No matching tool call to ${JSON.stringify(name)} appears.`
+						? `A matching tool call to ${JSON.stringify(check.name)} appears.`
+						: `No matching tool call to ${JSON.stringify(check.name)} appears.`
 					: matchingCallAppears
-						? `A forbidden matching tool call to ${JSON.stringify(name)} appears.`
-						: `No matching tool call to ${JSON.stringify(name)} appears.`,
+						? `A forbidden matching tool call to ${JSON.stringify(check.name)} appears.`
+						: `No matching tool call to ${JSON.stringify(check.name)} appears.`,
 			};
 		}
-		if (check.type === "tool-result") {
-			const name = config.name;
-			if (typeof name !== "string" || name === "") throw new Error(`check ${check.id} needs a tool name`);
-			const isError = config.isError;
-			if (isError !== undefined && typeof isError !== "boolean") {
-				throw new Error(`check ${check.id} needs a boolean isError value`);
-			}
-			const contentContains = optionalStringArray(check, config, "contentContains");
-			const contentOmits = optionalStringArray(check, config, "contentOmits");
-			const callsById = new Map(
-				events.flatMap((event) => (event.type === "tool_call" ? [[event.id, event] as const] : [])),
+		const callsById = new Map(
+			events.flatMap((event) => (event.type === "tool_call" ? [[event.id, event] as const] : [])),
+		);
+		const matchingResultAppears = events.some((event) => {
+			if (event.type !== "tool_result") return false;
+			const originatingCall = callsById.get(event.toolCallId);
+			if ((originatingCall?.name ?? event.name) !== check.name) return false;
+			if (check.isError !== undefined && (event.error !== undefined) !== check.isError) return false;
+			const content = serializedTranscriptValue(event.content);
+			return (
+				check.contentContains.every((value) => content.includes(value)) &&
+				check.contentOmits.every((value) => !content.includes(value))
 			);
-			const matchingResultAppears = events.some((event) => {
-				if (event.type !== "tool_result") return false;
-				const originatingCall = callsById.get(event.toolCallId);
-				if ((originatingCall?.name ?? event.name) !== name) return false;
-				if (isError !== undefined && (event.error !== undefined) !== isError) return false;
-				const content = serializedTranscriptValue(event.content);
-				return (
-					contentContains.every((value) => content.includes(value)) &&
-					contentOmits.every((value) => !content.includes(value))
-				);
-			});
-			return {
-				checkId: check.id,
-				type: check.type,
-				passed: matchingResultAppears,
-				message: matchingResultAppears
-					? `A matching tool result for ${JSON.stringify(name)} appears.`
-					: `No tool result for ${JSON.stringify(name)} matches the configured constraints.`,
-			};
-		}
-		throw new Error(`Pi adapter does not support check type ${check.type}`);
+		});
+		return {
+			checkId: check.id,
+			type: check.type,
+			passed: matchingResultAppears,
+			message: matchingResultAppears
+				? `A matching tool result for ${JSON.stringify(check.name)} appears.`
+				: `No tool result for ${JSON.stringify(check.name)} matches the configured constraints.`,
+		};
 	});
 }
 
@@ -466,12 +517,31 @@ export function isAssistantFailureStopReason(stopReason: StopReason): boolean {
 	return stopReason === "length" || stopReason === "error" || stopReason === "aborted";
 }
 
-export function scorePostSeedPiTranscript(allMessages: Message[], seedMessageCount: number, checks: EvaluationCheck[]) {
+function validatePiCases({
+	cases,
+}: {
+	suitePath: string;
+	subjectKind: string;
+	subjectConfig: JsonValue;
+	cases: EvaluationCase[];
+}): void {
+	for (const evaluationCase of cases) {
+		parseCase(evaluationCase);
+		for (const check of evaluationCase.checks) parseCheck(evaluationCase.id, check);
+	}
+}
+
+export function scorePostSeedPiTranscript(
+	allMessages: Message[],
+	seedMessageCount: number,
+	checks: EvaluationCheck[],
+	caseId = "unscoped",
+) {
 	const newMessages = allMessages.slice(seedMessageCount);
 	const assistant = lastAssistant(newMessages);
 	const output = assistant ? textContent(assistant.content) : "";
 	const events = normalizePiTranscript(newMessages);
-	return { newMessages, assistant, output, checks: runDeterministicChecks(output, checks, events) };
+	return { newMessages, assistant, output, checks: runDeterministicChecks(output, checks, events, caseId) };
 }
 
 async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
@@ -661,7 +731,12 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 			(message): message is Message =>
 				message.role === "user" || message.role === "assistant" || message.role === "toolResult",
 		);
-		const scoredTranscript = scorePostSeedPiTranscript(allMessages, seedMessageCount, evaluationCase.checks);
+		const scoredTranscript = scorePostSeedPiTranscript(
+			allMessages,
+			seedMessageCount,
+			evaluationCase.checks,
+			evaluationCase.id,
+		);
 		const { newMessages, assistant, output } = scoredTranscript;
 		let usage = summarizeUsage(newMessages, participant);
 		if (termination === "timeout") errors.push({ type: "Timeout", message: "The execution wall-time limit expired." });
@@ -741,6 +816,7 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 
 export const piSdkAdapter: SubjectAdapter = {
 	id: "pi-sdk",
+	validate: validatePiCases,
 	resolve: resolvePiSubject,
 	run: runPiSubject,
 };

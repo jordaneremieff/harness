@@ -222,6 +222,12 @@ export function createPlan(
 	if (!isAbsolute(suitePath)) fail("suite path must be absolute before plan creation");
 	const resolvedSuitePath = realpathSync(suitePath);
 	if (adapter.id !== suite.subject.adapter) fail(`subject adapter ${suite.subject.adapter} is not registered`);
+	adapter.validate?.({
+		suitePath: resolvedSuitePath,
+		subjectKind: suite.subject.kind,
+		subjectConfig: suite.subject.config,
+		cases: suite.cases,
+	});
 	if (participants.length < 1) fail("at least one caller-selected participant is required");
 	assertPositiveInteger(repetitions, "repetitions");
 	if (grant.providerNetwork !== "approved-effects-only")

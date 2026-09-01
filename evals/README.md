@@ -41,6 +41,8 @@ npm run evals -- delete <run-id> --approve <run-id>
 
 Repeat `--participant`, `--case`, `--variant`, `--credential-env`, and `--grant-effect` where needed. Suite paths and run IDs are positional arguments; there are no `--suite` or `--run` aliases. Plan and run arguments must match. The run command recomputes the plan and requires its exact digest.
 
+`validate` resolves declared resources and runs the subject adapter's case and check parsing without creating a model runtime or performing inference. Plan creation repeats adapter validation across the complete suite before producing an approval digest, including cases omitted by a selection.
+
 `--allow-home-credentials` explicitly exposes `HOME` to the controlled child. `--credential-env NAME` exposes only that named variable. The child receives no general copy of the parent environment. The approved digest covers the participant roster, repetition count, credential sources, granted effects, cases, selected variants and their complete configuration, subject resolution, and limits. This includes extension flag values declared by a variant.
 
 ## Limits and states
@@ -63,7 +65,7 @@ Deterministic checks are structural or lexical floors. Passing them does not est
 
 The Pi adapter uses public SDK services and `AgentSessionRuntime`. It creates an empty per-execution working directory and resource directory, disables discovered resources, and permits only explicit suite resources. It seeds an in-memory `SessionManager` before session creation, resolves the exact provider and model through `ModelRuntime`, checks approved authentication, binds explicit extensions, aborts on limits, and disposes the runtime.
 
-The adapter supports prompt, skill, extension, and ad hoc subjects through JSON Pi configuration. Variant configuration may include `extensionFlags`, an object whose values are booleans or strings. The adapter passes those entries to Pi as `extensionFlagValues` when constructing session services; omitted flags preserve Pi's defaults. It records the full normalized transcript, public run-entry usage, loader diagnostics, requested and effective provider/model/thinking values, response model, checks, and errors. Persisted and review events retain the full transcript, including seeded fixtures. Deterministic transcript checks observe only post-seed events from the current execution.
+The adapter supports prompt, skill, extension, and ad hoc subjects through JSON Pi configuration. Its preflight parser requires each case to have valid user or assistant seed messages and a non-empty prompt. Check configuration accepts only the fields documented below; unsupported check types, misspelled fields, and malformed values are rejected with the case and check identifiers before planning. Variant configuration may include `extensionFlags`, an object whose values are booleans or strings. The adapter passes those entries to Pi as `extensionFlagValues` when constructing session services; omitted flags preserve Pi's defaults. It records the full normalized transcript, public run-entry usage, loader diagnostics, requested and effective provider/model/thinking values, response model, checks, and errors. Persisted and review events retain the full transcript, including seeded fixtures. Deterministic transcript checks observe only post-seed events from the current execution.
 
 ### Transcript check types
 

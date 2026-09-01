@@ -267,6 +267,12 @@ export async function runCli(args = process.argv.slice(2)): Promise<number> {
 				assertAllowed(parsed, [], []);
 				const loaded = await loadSuite(positional(parsed, "suite"), REPOSITORY_ROOT);
 				const adapter = getSubjectAdapter(loaded.suite.subject.adapter);
+				adapter.validate?.({
+					suitePath: loaded.path,
+					subjectKind: loaded.suite.subject.kind,
+					subjectConfig: loaded.suite.subject.config,
+					cases: loaded.suite.cases,
+				});
 				for (const variant of loaded.suite.subject.variants) {
 					adapter.resolve({
 						suitePath: loaded.path,

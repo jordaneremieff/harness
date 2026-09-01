@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import type { Message, Model } from "@earendil-works/pi-ai";
 import type { TranscriptEvent } from "vitest-evals";
+import type { EvaluationCase } from "../types.mts";
 import {
 	isAssistantFailureStopReason,
 	limitModelOutput,
@@ -144,6 +145,86 @@ describe("Pi session plan fidelity", () => {
 		);
 		assert.throws(() => parseExtensionFlagValues([], "malformed"), /variant malformed.*must be an object/);
 		assert.throws(() => parseExtensionFlagValues({ "": true }, "malformed"), /variant malformed.*non-empty/);
+	});
+});
+
+describe("Pi case preflight validation", () => {
+	const validateCases = (cases: EvaluationCase[]): void => {
+		piSdkAdapter.validate?.({
+			suitePath: import.meta.filename,
+			subjectKind: "adhoc",
+			subjectConfig: {},
+			cases,
+		});
+	};
+	const evaluationCase = (checks: EvaluationCase["checks"]): EvaluationCase => ({
+		id: "case-fixture",
+		title: "Case fixture",
+		input: {
+			seed: [
+				{ role: "user", content: "seed question" },
+				{ role: "assistant", content: "seed answer" },
+			],
+			prompt: "live prompt",
+		},
+		checks,
+	});
+
+	it("validates supported case and check configurations without a runtime", () => {
+		assert.doesNotThrow(() =>
+			validateCases([
+				evaluationCase([
+					{ id: "contains", type: "contains-exact", config: { values: ["required"] } },
+					{ id: "omits", type: "omits-exact", config: { values: ["forbidden"] } },
+					{ id: "length", type: "max-characters", config: { maximum: 80 } },
+					{
+						id: "call",
+						type: "tool-call",
+						config: { name: "read", argumentsContain: ["fixture"], present: true },
+					},
+					{
+						id: "result",
+						type: "tool-result",
+						config: {
+							name: "read",
+							isError: false,
+							contentContains: ["done"],
+							contentOmits: ["failed"],
+						},
+					},
+				]),
+			]),
+		);
+	});
+
+	it("rejects malformed case input with the case id before execution", () => {
+		const malformed = evaluationCase([{ id: "contains", type: "contains-exact", config: { values: ["x"] } }]);
+		malformed.id = "bad-seed";
+		malformed.input = { seed: [{ role: "system", content: "not supported" }], prompt: "live prompt" };
+		assert.throws(() => validateCases([malformed]), /case bad-seed has an invalid seed message/);
+	});
+
+	it("rejects unsupported and malformed checks with case and check ids", () => {
+		assert.throws(
+			() => validateCases([evaluationCase([{ id: "unknown-check", type: "unknown", config: {} }])]),
+			/case case-fixture check unknown-check uses unsupported Pi check type unknown/,
+		);
+		assert.throws(
+			() =>
+				validateCases([
+					evaluationCase([
+						{ id: "misspelled-field", type: "tool-call", config: { name: "read", argumentContains: ["x"] } },
+					]),
+				]),
+			/case case-fixture check misspelled-field\.config has unsupported field argumentContains/,
+		);
+		assert.throws(
+			() =>
+				validateCases([
+					evaluationCase([{ id: "wrong-value", type: "tool-result", config: { name: "read", isError: "yes" } }]),
+				]),
+			/case case-fixture check wrong-value needs a boolean isError value/,
+		);
 	});
 });
 

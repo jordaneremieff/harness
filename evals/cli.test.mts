@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { refineOperationalStatus, runCli, runExitCode } from "./cli.mts";
-import type { OperationalStatus, RunState } from "./types.mts";
+import type { EvaluationSuite, OperationalStatus, RunState } from "./types.mts";
 
 async function captureCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
 	const originalStdout = process.stdout.write;
@@ -27,6 +27,32 @@ async function captureCli(args: string[]): Promise<{ code: number; stdout: strin
 		process.stdout.write = originalStdout;
 		process.stderr.write = originalStderr;
 	}
+}
+
+function writePiSuite(directory: string, evaluationCase: EvaluationSuite["cases"][number]): string {
+	const path = join(directory, "fixture.eval.mts");
+	const suite: EvaluationSuite = {
+		schemaVersion: 1,
+		id: "preflight-fixture",
+		title: "Preflight fixture",
+		subject: {
+			adapter: "pi-sdk",
+			kind: "adhoc",
+			description: "Preflight fixture",
+			config: {},
+			variants: [{ id: "baseline", description: "Baseline", config: {} }],
+		},
+		cases: [evaluationCase],
+		limits: {
+			wall: { runTimeoutMs: 10_000, executionTimeoutMs: 1_000 },
+			execution: { maxTotal: 1, maxTurnsEach: 1, maxOutputTokensEach: 32 },
+			cost: { currency: "USD", maxObserved: 0, enforcement: "observed-after-each-execution", hardCap: false },
+		},
+		authority: { requestedEffects: { providerNetwork: [], credentials: [], subject: [] } },
+		adjudication: { policy: "deterministic-only", criteria: [] },
+	};
+	writeFileSync(path, `export default ${JSON.stringify(suite)};\n`);
+	return path;
 }
 
 function evidenceDirectory(errors: Array<Array<{ type: string; message: string }>>): string {
@@ -69,6 +95,24 @@ describe("CLI argument grammar", () => {
 		const run = await captureCli(["inspect", "missing"]);
 		assert.equal(run.code, 1);
 		assert.equal(run.stderr, "evals: Invalid run id: missing\n");
+	});
+
+	it("rejects adapter-invalid checks during validate with case and check ids", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "evals-cli-validation-"));
+		try {
+			const suitePath = writePiSuite(directory, {
+				id: "bad-case",
+				title: "Bad case",
+				input: { seed: [], prompt: "prompt" },
+				checks: [{ id: "bad-check", type: "tool-call", config: { name: "read", argumentContains: ["x"] } }],
+			});
+			const result = await captureCli(["validate", suitePath]);
+			assert.equal(result.code, 1);
+			assert.equal(result.stdout, "");
+			assert.match(result.stderr, /case bad-case check bad-check\.config has unsupported field argumentContains/);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 });
 

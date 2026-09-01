@@ -67,6 +67,42 @@ describe("neutral suite contract", () => {
 		}
 	});
 
+	it("runs adapter case validation before subject resolution", () => {
+		const directory = mkdtempSync(join(tmpdir(), "eval-core-validation-"));
+		try {
+			const suitePath = join(directory, "suite.eval.mts");
+			writeFileSync(suitePath, "export default {};\n");
+			const participant = parseParticipant("anthropic/claude-example:off");
+			const calls: string[] = [];
+			const validatingAdapter: SubjectAdapter = {
+				id: "test-adapter",
+				validate: ({ cases }) => {
+					calls.push(`validate:${cases[0]?.id}`);
+					throw new Error(`case ${cases[0]?.id} check ${cases[0]?.checks[0]?.id} is invalid`);
+				},
+				resolve: () => {
+					calls.push("resolve");
+					return {};
+				},
+				run: async () => {
+					throw new Error("not used");
+				},
+			};
+			assert.throws(
+				() =>
+					createPlan(neutralSuite(), suitePath, [participant], 1, validatingAdapter, {
+						providerNetwork: "approved-effects-only",
+						credentialSources: { home: true, environment: [] },
+						grantedEffects: ["effect"],
+					}),
+				/case case-one check present is invalid/,
+			);
+			assert.deepEqual(calls, ["validate:case-one"]);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("covers variant extension flags in the approved plan digest", () => {
 		const directory = mkdtempSync(join(tmpdir(), "eval-core-flags-"));
 		try {

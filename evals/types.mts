@@ -149,6 +149,7 @@ export interface SubjectRunResult {
 
 export interface SubjectAdapter {
 	id: string;
+	validate?(args: { suitePath: string; subjectKind: string; subjectConfig: JsonValue; cases: EvaluationCase[] }): void;
 	resolve(args: {
 		suitePath: string;
 		subjectKind: string;
