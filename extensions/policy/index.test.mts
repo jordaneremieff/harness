@@ -563,6 +563,17 @@ describe("agent rule mechanisms", () => {
 		assert.equal(written.annotated, true);
 	});
 
+	it("does not annotate a scoped-out active rule but still records its class", async () => {
+		await seedRule({ scope: { providers: ["anthropic"] } });
+		const run = harness({ policyMode: "annotate" });
+		assert.equal(await runBash(run, "c1", "git push --force origin main"), undefined);
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		const [written] = await records(dir);
+		assert.deepEqual(written.classes, ["agent.no-force-push"]);
+		assert.equal(written.annotated, undefined);
+		assert.equal(written.blocked, undefined);
+	});
+
 	it("blocks a promoted agent rule with its note", async () => {
 		await seedRule({ state: "promoted" });
 		const run = harness({ policyMode: "enforce" });
@@ -583,6 +594,28 @@ describe("agent rule mechanisms", () => {
 		);
 		await run.handlers.get("session_shutdown")!({}, run.ctx);
 		assert.equal((await records(dir))[0].blocked, true);
+	});
+
+	it("does not block a scoped-out promoted rule but still records its class", async () => {
+		await seedRule({ state: "promoted", scope: { providers: ["anthropic"] } });
+		const run = harness({ policyMode: "enforce" });
+		const preflight = await run.handlers.get("tool_call")!(
+			{ toolName: "bash", toolCallId: "c1", input: { command: "git push --force origin main" } },
+			run.ctx,
+		);
+		assert.equal(preflight, undefined);
+		assert.equal(
+			await run.handlers.get("tool_result")!(
+				{ toolName: "bash", toolCallId: "c1", content: [{ type: "text", text: "ok" }], isError: false },
+				run.ctx,
+			),
+			undefined,
+		);
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		const [written] = await records(dir);
+		assert.deepEqual(written.classes, ["agent.no-force-push"]);
+		assert.equal(written.blocked, undefined);
+		assert.equal(written.annotated, undefined);
 	});
 
 	it("still blocks a built-in class alongside an active agent class", async () => {

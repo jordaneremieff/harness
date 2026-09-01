@@ -11,15 +11,16 @@ No mode changes a tool input.
 ## Modes
 
 `PI_POLICY_MODE` selects the session mechanism and every mode records. Rule
-posture refines enforce mode: built-in classes and promoted agent rules block,
-while active agent rules steer by annotation instead.
+posture and scope refine enforce mode: built-in classes and in-scope promoted
+agent rules block, while in-scope active agent rules steer by annotation instead.
+Scoped-out agent classes still record.
 
 | Mode | Mechanism | Model-visible | Operator-visible |
 |---|---|---|---|
 | `observe` (default) | none | no | no |
 | `notice` | a terminal flag on each flagged call | no | yes, in TUI mode |
 | `annotate` | one guidance line on a successful flagged call with remaining ids | yes | no |
-| `enforce` | block built-in and promoted agent classes; annotate successful calls that match only active agent rules | yes | no |
+| `enforce` | block built-ins and in-scope promoted agent classes; annotate successful calls with in-scope active agent guidance when no class blocks | yes | no |
 
 An unrecognized value is a configuration error. The extension reports it once
 and stops recording for the session.
@@ -53,11 +54,13 @@ guidance line the annotation uses, so both mechanisms say the same thing. The
 model receives the reason as the call's error result and can reissue the
 command in the preferred form.
 
-Every built-in class and every promoted agent class blocks. An active agent
-class records and steers: when no blocking class co-occurs, a successful call
-receives the normal capped annotation. No class rewrites in place, because Pi
-performs no re-validation after a handler mutates `event.input`, and no rewrite
-of a flagged form is provably semantics-preserving:
+Every built-in class blocks. A promoted agent class blocks only when its scope
+allows the current model. An active agent class always records and, when its
+scope allows the model, steers: if no blocking class co-occurs, a successful
+call receives the normal capped annotation. A scoped-out class neither blocks
+nor contributes guidance. No class rewrites in place, because Pi performs no
+re-validation after a handler mutates `event.input`, and no rewrite of a
+flagged form is provably semantics-preserving:
 
 | Class | Disposition | Why no rewrite |
 |---|---|---|
@@ -71,7 +74,7 @@ of a flagged form is provably semantics-preserving:
 | `form.env-grep` | block | an `env` dump is steerable to `printenv`; a `printenv` dump blocks only when the filter names one variable, which `printenv NAME` covers; a bounded pattern over `printenv` output has no preferred-form equivalent, so the command-line rules permit it |
 | `bounds.find-output-uncapped`, `bounds.grep-recursive-uncapped`, `bounds.ls-recursive-uncapped`, `bounds.du-uncapped`, `bounds.rg-files-uncapped`, `bounds.fd-uncapped`, `bounds.false-cap` | block | adding or moving a cap changes the command's output, which is not semantics-preserving |
 | `bounds.rg-search-uncapped`, `bounds.git-grep-uncapped` | block | an unscoped search's result set is unbounded; a scoped root or a result cap changes that set, which is not semantics-preserving |
-| `agent.<slug>` | block only when promoted | active rules annotate, disabled rules do not classify, and discarded rules are also hidden from listings |
+| `agent.<slug>` | block only when promoted and in scope | active rules annotate only in scope; scoped-out classes still record, disabled rules do not classify, and discarded rules are also hidden from listings |
 
 A rule id records a predicate match, not a final verdict, so enforcement
 inherits the classifier's command-shape model. A scoped `du -sh node_modules`
@@ -81,8 +84,9 @@ compares.
 
 The block reason is unconditional per attempt for blocking classes: each such
 call is blocked with the capped, note-deduped `[policy]` line for those classes,
-with no per-session filter. Active agent notes are omitted when a co-occurring
-built-in or promoted class blocks. A block is returned only after the writer
+with no per-session filter. Scoped-out agent notes are always omitted, and
+active in-scope agent notes are omitted when a co-occurring built-in or
+promoted class blocks. A block is returned only after the writer
 reserves the record slot for it, so a queue that fills in the meantime cannot
 refuse the block's record; a full or closed writer makes the slice stop and lets
 the call run unblocked instead. A blocked call's execution-end event arrives in the
@@ -220,18 +224,27 @@ negation, or free-form composition. Unknown keys and wrong types are rejected
 at every level. Everything outside this vocabulary is a code change with a
 test, not data accepted by the registry.
 
-Scope is also closed. Omitting scope applies a rule everywhere. An `exclude`
-list denies either a provider or an exact `provider/id`. Alternatively,
-`providers` is an allow-list and optional `models` refines it to exact
-`provider/id` values. Provider allow-list scope survives a model bump, so new
-models inherit a rule by default; only an exact model exclusion or `models`
-refinement drops a specific model. A call without a model can use only an
-unscoped rule.
+Scope is also closed, but it never participates in classification. Every
+matching active or promoted rule classifies and records against every model.
+Scope gates only what the model hears: whether the rule supplies a note,
+contributes an annotation, or blocks. A scoped-out class therefore remains in
+the record as evidence without nagging or blocking that model.
+
+Omitting scope makes those model-visible mechanisms available everywhere. An
+`exclude` list denies either a provider or an exact `provider/id`.
+Alternatively, `providers` is an allow-list and optional `models` refines it to
+exact `provider/id` values. Provider allow-list scope survives a model bump, so
+new models inherit the rule's mechanisms by default; only an exact model
+exclusion or `models` refinement drops them for a specific model. A call
+without a model records every matching class but hears only from unscoped
+rules.
 
 Each rule has one posture:
 
-- `active` records and steers through notice or annotation, but never blocks.
-- `promoted` blocks in enforce mode.
+- `active` always records, can raise the operator-visible notice, and when in
+  scope can annotate, but never blocks.
+- `promoted` always records, can raise the notice, and blocks in enforce mode
+  only when in scope.
 - `disabled` stays listed but does not classify.
 - `discarded` stays in the append-only file but neither classifies nor appears
   in listings; it cannot return to another posture.

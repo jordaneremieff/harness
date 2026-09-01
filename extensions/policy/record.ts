@@ -94,7 +94,6 @@ export function startCall(
 	tool: string,
 	callId: string,
 	input: Record<string, unknown>,
-	model: string | null = null,
 	now: Date = new Date(),
 	monotonic: number = performance.now(),
 ): PendingCall {
@@ -106,7 +105,7 @@ export function startCall(
 		callId,
 		at: now.toISOString(),
 		startedAt: monotonic,
-		classes: text === undefined ? [] : classifyCaptured(tool, text, model),
+		classes: text === undefined ? [] : classifyCaptured(tool, text),
 	};
 	if (text !== undefined) pending.captured = redactFor(tool, text);
 	return pending;

@@ -5,8 +5,9 @@
  * Every mode records. `observe` acts on nothing. `notice` shows the operator a
  * flag in the terminal and adds no model-visible text. `annotate` appends one
  * capped line of guidance to a flagged result, at most once per rule id per
- * session. `enforce` blocks built-in and promoted agent classes while active
- * agent classes receive annotation guidance. No mode changes a tool input,
+ * session. `enforce` blocks built-ins and in-scope promoted agent classes;
+ * in-scope active agent classes receive annotation guidance, while scoped-out
+ * agent classes only record. No mode changes a tool input,
  * because no rewrite is provably semantics-preserving and Pi does not
  * re-validate a mutated input.
  *
@@ -189,11 +190,11 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	 * serves the annotation and the enforcement block reason, so the model sees
 	 * one consistent instruction from both mechanisms.
 	 */
-	const guidanceFor = (tool: string, classes: readonly string[]): string => {
+	const guidanceFor = (tool: string, classes: readonly string[], model: string | null): string => {
 		let text = POLICY_PREFIX;
 		const included = new Set<string>();
 		for (const id of classes) {
-			const [note] = notesFor(tool, [id]);
+			const [note] = notesFor(tool, [id], model);
 			if (note === undefined || included.has(note)) continue;
 			const candidate = `${text} ${note}`;
 			if (Buffer.byteLength(candidate, "utf8") > MAX_GUIDANCE_BYTES) break;
@@ -301,14 +302,19 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	 * contribute one line. The byte cap stops the text, and any id left outside
 	 * the cap stays unmarked for a later call.
 	 */
-	const annotationFor = (tool: string, classes: string[], session: string): Annotation | undefined => {
+	const annotationFor = (
+		tool: string,
+		classes: string[],
+		session: string,
+		model: string | null,
+	): Annotation | undefined => {
 		const annotated = annotatedIdsFor(session);
 		let text = POLICY_PREFIX;
 		const ids: string[] = [];
 		const included = new Set<string>();
 		for (const id of classes) {
 			if (annotated.has(id)) continue;
-			const [note] = notesFor(tool, [id]);
+			const [note] = notesFor(tool, [id], model);
 			if (note === undefined) continue;
 			if (included.has(note)) {
 				ids.push(id);
@@ -431,13 +437,13 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		try {
 			const facts = sessionFacts(ctx);
 			const call: ObservedCall = {
-				...startCall(event.toolName, event.toolCallId, event.input as Record<string, unknown>, facts.model),
+				...startCall(event.toolName, event.toolCallId, event.input as Record<string, unknown>),
 				sessionFacts: facts,
 			};
 			trackPending(pending, call);
-			const blocking = call.classes.filter((id) => !isAgentClass(id) || rules.isBlocking(id));
+			const blocking = call.classes.filter((id) => !isAgentClass(id) || rules.isBlocking(id, facts.model));
 			if (mode === "enforce" && blocking.length > 0) {
-				const reason = guidanceFor(call.tool, blocking);
+				const reason = guidanceFor(call.tool, blocking, facts.model);
 				// A block is never returned without capacity for its record.
 				if (!recordWriter().tryReserve()) {
 					stop(new Error("policy writer cannot admit a block record"));
@@ -462,7 +468,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 			if (call.classes.length > 0) {
 				if (mode === "notice" && ctx.mode === "tui") effects.notified = true;
 				if ((mode === "annotate" || mode === "enforce") && call.blocked !== true && event.isError !== true) {
-					annotation = annotationFor(call.tool, call.classes, call.sessionFacts.session);
+					annotation = annotationFor(call.tool, call.classes, call.sessionFacts.session, call.sessionFacts.model);
 					if (annotation) effects.annotationBytes = Buffer.byteLength(annotation.text, "utf8");
 				}
 			}

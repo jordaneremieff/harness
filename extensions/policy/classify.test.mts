@@ -49,7 +49,7 @@ describe("redactFor", () => {
 });
 
 describe("agent rule composition", () => {
-	it("merges agent classes with built-in classes and passes the model to scope", async () => {
+	it("merges scoped agent classes with built-ins without consulting the model", async () => {
 		const rules = new AgentRules(await mkdtemp(join(tmpdir(), "policy-classify-")));
 		assert.equal(
 			await rules.add({
@@ -65,11 +65,10 @@ describe("agent rule composition", () => {
 			null,
 		);
 		bindAgentRules(rules);
-		assert.deepEqual(classifyCaptured("bash", "cat notes.md", "xai/grok-4.6"), [
-			"agent.scoped-cat",
-			"routing.cat-read",
-		]);
-		assert.deepEqual(classifyCaptured("bash", "cat notes.md", "anthropic/claude"), ["routing.cat-read"]);
+		const expected = ["agent.scoped-cat", "routing.cat-read"];
+		for (const model of ["xai/grok-4.6", "anthropic/claude"]) {
+			assert.deepEqual(classifyCaptured("bash", "cat notes.md"), expected, `classification for ${model}`);
+		}
 	});
 
 	it("falls back to agent guidance when the domain has no built-in note", async () => {
@@ -84,16 +83,33 @@ describe("agent rule composition", () => {
 			at: "2026-09-01T07:00:00Z",
 		});
 		bindAgentRules(rules);
-		assert.deepEqual(notesFor("bash", ["routing.cat-read", "agent.custom"]), [
+		assert.deepEqual(notesFor("bash", ["routing.cat-read", "agent.custom"], "xai/grok-4.6"), [
 			"Use the read tool for file contents.",
 			"Use the reviewed form.",
 		]);
+	});
+
+	it("omits an agent note when the current model is outside its scope", async () => {
+		const rules = new AgentRules(await mkdtemp(join(tmpdir(), "policy-classify-")));
+		await rules.add({
+			slug: "scoped",
+			note: "Only xAI should hear this.",
+			match: { tool: "bash", command: "git" },
+			scope: { providers: ["xai"] },
+			state: "active",
+			model: "xai/grok-4.6",
+			session: "s1",
+			at: "2026-09-01T07:00:00Z",
+		});
+		bindAgentRules(rules);
+		assert.deepEqual(notesFor("bash", ["agent.scoped"], "xai/grok-4.6"), ["Only xAI should hear this."]);
+		assert.deepEqual(notesFor("bash", ["agent.scoped"], "anthropic/claude"), []);
 	});
 });
 
 describe("notesFor", () => {
 	it("returns guidance in the order the ids are given", () => {
-		const notes = notesFor("bash", ["form.env-grep", "routing.cat-read"]);
+		const notes = notesFor("bash", ["form.env-grep", "routing.cat-read"], null);
 		assert.equal(notes.length, 2);
 		assert.match(notes[0], /printenv/);
 		assert.match(notes[1], /read tool/);
@@ -101,13 +117,13 @@ describe("notesFor", () => {
 
 	it("returns one line for ids that share wording", () => {
 		assert.deepEqual(
-			notesFor("bash", ["bounds.du-uncapped", "bounds.find-output-uncapped"]),
-			notesFor("bash", ["bounds.du-uncapped"]),
+			notesFor("bash", ["bounds.du-uncapped", "bounds.find-output-uncapped"], null),
+			notesFor("bash", ["bounds.du-uncapped"], null),
 		);
 	});
 
 	it("skips an unknown id and an unowned tool", () => {
-		assert.deepEqual(notesFor("bash", ["routing.no-such-rule"]), []);
-		assert.deepEqual(notesFor("read", ["routing.cat-read"]), []);
+		assert.deepEqual(notesFor("bash", ["routing.no-such-rule"], null), []);
+		assert.deepEqual(notesFor("read", ["routing.cat-read"], null), []);
 	});
 });

@@ -462,24 +462,26 @@ export class AgentRules {
 		return rule && copyRule(rule);
 	}
 
-	/** Resolve model-visible guidance for an agent class. */
-	noteFor(classId: string): string | undefined {
+	/** Resolve model-visible guidance for an in-scope agent class. */
+	noteFor(classId: string, model: string | null): string | undefined {
 		if (!isAgentClass(classId)) return undefined;
-		return this.rules.get(classId.slice(AGENT_PREFIX.length))?.note;
+		const rule = this.rules.get(classId.slice(AGENT_PREFIX.length));
+		return rule && scopeAllows(rule.scope, model) ? rule.note : undefined;
 	}
 
-	/** Whether an agent class has blocking posture. */
-	isBlocking(classId: string): boolean {
+	/** Whether an agent class has blocking, in-scope posture. */
+	isBlocking(classId: string, model: string | null): boolean {
 		if (!isAgentClass(classId)) return false;
-		return this.rules.get(classId.slice(AGENT_PREFIX.length))?.state === "promoted";
+		const rule = this.rules.get(classId.slice(AGENT_PREFIX.length));
+		return rule?.state === "promoted" && scopeAllows(rule.scope, model);
 	}
 
-	/** Classify captured shell text under enabled, in-scope rules. */
-	classify(captured: string, model: string | null): string[] {
+	/** Classify captured shell text under every enabled rule, independent of scope. */
+	classify(captured: string): string[] {
 		const matched = new Set<string>();
 		const statements = parseStatements(captured);
 		for (const rule of this.rules.values()) {
-			if ((rule.state !== "active" && rule.state !== "promoted") || !scopeAllows(rule.scope, model)) continue;
+			if (rule.state !== "active" && rule.state !== "promoted") continue;
 			for (const statement of statements) {
 				if (statement.some((_stage, index) => stageMatches(rule.match, statement, index))) {
 					matched.add(agentClass(rule.slug));

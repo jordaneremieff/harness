@@ -174,19 +174,19 @@ describe("agent rule validators", () => {
 describe("agent match evaluation", () => {
 	it("matches exact and any-of commands", async () => {
 		const exact = await classifier({ tool: "bash", command: "git" });
-		assert.deepEqual(exact.classify("git status", "xai/grok-4.6"), ["agent.test"]);
-		assert.deepEqual(exact.classify("gitu status", "xai/grok-4.6"), []);
+		assert.deepEqual(exact.classify("git status"), ["agent.test"]);
+		assert.deepEqual(exact.classify("gitu status"), []);
 		const any = await classifier({ tool: "bash", command: ["git", "hg"] });
-		assert.deepEqual(any.classify("hg status", "xai/grok-4.6"), ["agent.test"]);
+		assert.deepEqual(any.classify("hg status"), ["agent.test"]);
 	});
 
 	it("requires present flags, rejects absent flags, and reads combined shorts", async () => {
 		const required = await classifier({ tool: "bash", command: "git", flags: ["f", "v"] });
-		assert.deepEqual(required.classify("git -fv push", "xai/grok-4.6"), ["agent.test"]);
-		assert.deepEqual(required.classify("git -f push", "xai/grok-4.6"), []);
+		assert.deepEqual(required.classify("git -fv push"), ["agent.test"]);
+		assert.deepEqual(required.classify("git -f push"), []);
 		const absent = await classifier({ tool: "bash", command: "git", absentFlags: ["force", "f"] });
-		assert.deepEqual(absent.classify("git push", "xai/grok-4.6"), ["agent.test"]);
-		assert.deepEqual(absent.classify("git push --force", "xai/grok-4.6"), []);
+		assert.deepEqual(absent.classify("git push"), ["agent.test"]);
+		assert.deepEqual(absent.classify("git push --force"), []);
 	});
 
 	it("matches operand min, max, any, and positional any-of constraints", async () => {
@@ -195,35 +195,35 @@ describe("agent match evaluation", () => {
 			command: "git",
 			operands: { min: 1, max: 2, any: ["push", "fetch"], at: { "0": ["push", "fetch"] } },
 		});
-		assert.deepEqual(rules.classify("git push --force", "xai/grok-4.6"), ["agent.test"]);
-		assert.deepEqual(rules.classify("git fetch origin", "xai/grok-4.6"), ["agent.test"]);
-		assert.deepEqual(rules.classify("git", "xai/grok-4.6"), []);
-		assert.deepEqual(rules.classify("git push origin main", "xai/grok-4.6"), []);
-		assert.deepEqual(rules.classify("git status", "xai/grok-4.6"), []);
+		assert.deepEqual(rules.classify("git push --force"), ["agent.test"]);
+		assert.deepEqual(rules.classify("git fetch origin"), ["agent.test"]);
+		assert.deepEqual(rules.classify("git"), []);
+		assert.deepEqual(rules.classify("git push origin main"), []);
+		assert.deepEqual(rules.classify("git status"), []);
 	});
 
 	it("matches pipeline direction and redirect booleans", async () => {
 		const producer = await classifier({ tool: "bash", command: "printf", pipe: { from: false, to: true } });
-		assert.deepEqual(producer.classify("printf x | grep x", "xai/grok-4.6"), ["agent.test"]);
-		assert.deepEqual(producer.classify("printf x", "xai/grok-4.6"), []);
+		assert.deepEqual(producer.classify("printf x | grep x"), ["agent.test"]);
+		assert.deepEqual(producer.classify("printf x"), []);
 		const consumer = await classifier({ tool: "bash", command: "grep", pipe: { from: true, to: false } });
-		assert.deepEqual(consumer.classify("printf x | grep x", "xai/grok-4.6"), ["agent.test"]);
+		assert.deepEqual(consumer.classify("printf x | grep x"), ["agent.test"]);
 		const redirects = await classifier({
 			tool: "bash",
 			command: "cat",
 			pipe: { fromRedirect: true, toRedirect: true },
 		});
-		assert.deepEqual(redirects.classify("cat < input > output", "xai/grok-4.6"), ["agent.test"]);
-		assert.deepEqual(redirects.classify("cat input", "xai/grok-4.6"), []);
+		assert.deepEqual(redirects.classify("cat < input > output"), ["agent.test"]);
+		assert.deepEqual(redirects.classify("cat input"), []);
 	});
 
 	it("matches immediate and any later pipeline commands", async () => {
 		const next = await classifier({ tool: "bash", command: "find", pipe: { next: ["sort", "head"] } });
-		assert.deepEqual(next.classify("find . | sort | head", "xai/grok-4.6"), ["agent.test"]);
-		assert.deepEqual(next.classify("find . | uniq | sort", "xai/grok-4.6"), []);
+		assert.deepEqual(next.classify("find . | sort | head"), ["agent.test"]);
+		assert.deepEqual(next.classify("find . | uniq | sort"), []);
 		const later = await classifier({ tool: "bash", command: "find", pipe: { later: ["head", "tail"] } });
-		assert.deepEqual(later.classify("find . | sort | head", "xai/grok-4.6"), ["agent.test"]);
-		assert.deepEqual(later.classify("find . | sort | uniq", "xai/grok-4.6"), []);
+		assert.deepEqual(later.classify("find . | sort | head"), ["agent.test"]);
+		assert.deepEqual(later.classify("find . | sort | uniq"), []);
 	});
 
 	it("fires on any matching stage or statement and returns sorted classes", async () => {
@@ -231,8 +231,8 @@ describe("agent match evaluation", () => {
 			{ kind: "rule", ...rule("z-last", { match: { tool: "bash", command: "git" } }) },
 			{ kind: "rule", ...rule("a-first", { match: { tool: "bash", command: "rm" } }) },
 		]);
-		assert.deepEqual(rules.classify("echo ok; git status; rm file", "xai/grok-4.6"), ["agent.a-first", "agent.z-last"]);
-		assert.deepEqual(rules.classify("echo safe", "xai/grok-4.6"), []);
+		assert.deepEqual(rules.classify("echo ok; git status; rm file"), ["agent.a-first", "agent.z-last"]);
+		assert.deepEqual(rules.classify("echo safe"), []);
 	});
 });
 
@@ -252,11 +252,54 @@ describe("agent rule scope and posture", () => {
 		assert.equal(scopeAllows({ exclude: ["anthropic"] }, null), false);
 	});
 
-	it("passes the current model into classification scope", async () => {
-		const rules = await classifier({ tool: "bash", command: "git" }, { providers: ["xai"] });
-		assert.deepEqual(rules.classify("git status", "xai/grok-4.6"), ["agent.test"]);
-		assert.deepEqual(rules.classify("git status", "anthropic/claude"), []);
-		assert.deepEqual(rules.classify("git status", null), []);
+	it("classifies every scope while scope gates notes and blocking", async () => {
+		const matrix: Array<{
+			slug: string;
+			scope?: AgentRule["scope"];
+			allowed: Array<string | null>;
+		}> = [
+			{
+				slug: "unscoped",
+				allowed: [null, "anthropic/claude", "xai/grok-4.5", "xai/grok-4.6"],
+			},
+			{ slug: "exclude-provider", scope: { exclude: ["xai"] }, allowed: ["anthropic/claude"] },
+			{
+				slug: "exclude-model",
+				scope: { exclude: ["xai/grok-4.5"] },
+				allowed: ["anthropic/claude", "xai/grok-4.6"],
+			},
+			{
+				slug: "provider",
+				scope: { providers: ["xai"] },
+				allowed: ["xai/grok-4.5", "xai/grok-4.6"],
+			},
+			{
+				slug: "model",
+				scope: { providers: ["xai"], models: ["xai/grok-4.6"] },
+				allowed: ["xai/grok-4.6"],
+			},
+		];
+		const lines: unknown[] = [];
+		for (const entry of matrix) {
+			lines.push({ kind: "rule", ...rule(entry.slug, { scope: entry.scope }) });
+			lines.push({
+				kind: "state",
+				slug: entry.slug,
+				state: "promoted",
+				model: "xai/grok-4.6",
+				session: "session-2",
+				at: timestamp,
+			});
+		}
+		const { rules } = await loadLines(lines);
+		assert.deepEqual(rules.classify("git status"), matrix.map((entry) => agentClass(entry.slug)).sort());
+		for (const entry of matrix) {
+			for (const model of [null, "anthropic/claude", "xai/grok-4.5", "xai/grok-4.6"] as const) {
+				const allowed = entry.allowed.includes(model);
+				assert.equal(rules.noteFor(agentClass(entry.slug), model), allowed ? `Guidance for ${entry.slug}.` : undefined);
+				assert.equal(rules.isBlocking(agentClass(entry.slug), model), allowed);
+			}
+		}
 	});
 
 	it("requires confirmation exactly when a promoted posture is lowered", () => {
@@ -297,19 +340,19 @@ describe("AgentRules registry", () => {
 			rules.list().map((entry) => entry.slug),
 			["a-rule", "z-rule"],
 		);
-		assert.equal(rules.noteFor("agent.a-rule"), "Use a safer command.");
-		assert.equal(rules.noteFor("routing.cat-read"), undefined);
-		assert.equal(rules.isBlocking("agent.a-rule"), false);
+		assert.equal(rules.noteFor("agent.a-rule", null), "Use a safer command.");
+		assert.equal(rules.noteFor("routing.cat-read", "xai/grok-4.6"), undefined);
+		assert.equal(rules.isBlocking("agent.a-rule", "xai/grok-4.6"), false);
 		assert.equal(await rules.setState("a-rule", "promoted", "xai/grok-4.6", "s2", timestamp), null);
-		assert.equal(rules.isBlocking("agent.a-rule"), true);
+		assert.equal(rules.isBlocking("agent.a-rule", "xai/grok-4.6"), true);
 		assert.equal(await rules.setState("a-rule", "disabled", "xai/grok-4.6", "s2", timestamp), null);
-		assert.deepEqual(rules.classify("git status", "xai/grok-4.6"), ["agent.z-rule"]);
+		assert.deepEqual(rules.classify("git status"), ["agent.z-rule"]);
 		assert.equal(await rules.setState("a-rule", "discarded", "xai/grok-4.6", "s2", timestamp), null);
 		assert.deepEqual(
 			rules.list().map((entry) => entry.slug),
 			["z-rule"],
 		);
-		assert.equal(rules.noteFor("agent.a-rule"), "Use a safer command.");
+		assert.equal(rules.noteFor("agent.a-rule", null), "Use a safer command.");
 		assert.match((await rules.setState("a-rule", "active", "xai/grok-4.6", "s2", timestamp)) ?? "", /cannot/);
 		assert.match((await rules.setState("unknown", "active", "xai/grok-4.6", "s2", timestamp)) ?? "", /unknown/);
 	});
@@ -360,7 +403,7 @@ describe("agent rule file", () => {
 			loaded.list().map((entry) => [entry.slug, entry.state]),
 			[["persisted", "disabled"]],
 		);
-		assert.equal(loaded.noteFor("agent.bad-match"), undefined);
+		assert.equal(loaded.noteFor("agent.bad-match", "xai/grok-4.6"), undefined);
 		assert.equal((await stat(join(dir, RULES_FILE))).mode & 0o777, 0o600);
 	});
 
@@ -368,7 +411,7 @@ describe("agent rule file", () => {
 		const first = { kind: "rule", ...rule("same", { note: "First note." }) };
 		const second = { kind: "rule", ...rule("same", { note: "Last note." }) };
 		const { rules } = await loadLines([first, second]);
-		assert.equal(rules.noteFor("agent.same"), "Last note.");
+		assert.equal(rules.noteFor("agent.same", null), "Last note.");
 		assert.equal(rules.get("same")?.state, "active");
 	});
 

@@ -39,13 +39,13 @@ export function redactFor(tool: string, captured: string): string {
 	return domainFor(tool)?.redact?.(captured) ?? captured;
 }
 
-/** Rule ids the captured text matches, sorted and deduplicated. */
-export function classifyCaptured(tool: string, captured: string, model: string | null = null): string[] {
+/** Rule ids the captured text matches, sorted and deduplicated without a scope check. */
+export function classifyCaptured(tool: string, captured: string): string[] {
 	const domain = domainFor(tool);
 	if (!domain) return [];
 	const matched = domain.classify(captured);
 	if (!agentRules) return matched;
-	return [...new Set([...matched, ...agentRules.classify(captured, model)])].sort();
+	return [...new Set([...matched, ...agentRules.classify(captured)])].sort();
 }
 
 /**
@@ -60,13 +60,13 @@ export function classify(tool: string, input: Record<string, unknown>): string[]
 	return captured === undefined ? [] : classifyCaptured(tool, captured);
 }
 
-/** Guidance for the given rule ids, in the order given, without repeats. */
-export function notesFor(tool: string, ruleIds: readonly string[]): string[] {
+/** In-scope guidance for the given rule ids, in order and without repeats. */
+export function notesFor(tool: string, ruleIds: readonly string[], model: string | null): string[] {
 	const domain = domainFor(tool);
 	if (!domain) return [];
 	const notes: string[] = [];
 	for (const id of ruleIds) {
-		const note = domain.note(id) ?? agentRules?.noteFor(id);
+		const note = domain.note(id) ?? agentRules?.noteFor(id, model);
 		if (note !== undefined && !notes.includes(note)) notes.push(note);
 	}
 	return notes;

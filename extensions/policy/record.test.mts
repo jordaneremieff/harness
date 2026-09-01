@@ -25,7 +25,6 @@ describe("startCall", () => {
 			"bash",
 			"c1",
 			{ command: "TOKEN=abcdef cat notes.md" },
-			"xai/grok-4.6",
 			new Date("2026-09-01T10:00:00Z"),
 			1000,
 		);
@@ -57,7 +56,7 @@ describe("startCall", () => {
 
 describe("finishCall", () => {
 	const pending = (): PendingCall =>
-		startCall("bash", "c1", { command: "cat a" }, facts.model, new Date("2026-09-01T10:00:00Z"), 1000);
+		startCall("bash", "c1", { command: "cat a" }, new Date("2026-09-01T10:00:00Z"), 1000);
 
 	it("measures duration and output size", () => {
 		const record = finishCall(pending(), { content: [{ type: "text", text: "abcd" }] }, facts, "observe", {}, 1250);
@@ -138,7 +137,7 @@ describe("trackPending", () => {
 	it("evicts the oldest call when the map is full", () => {
 		const map = new Map<string, PendingCall>();
 		for (let index = 0; index < MAX_PENDING + 5; index++) {
-			trackPending(map, startCall("bash", `c${index}`, { command: "ls" }, null, new Date(), index), index);
+			trackPending(map, startCall("bash", `c${index}`, { command: "ls" }, new Date(), index), index);
 		}
 		assert.equal(map.size, MAX_PENDING);
 		assert.equal(map.has("c0"), false);
@@ -147,10 +146,10 @@ describe("trackPending", () => {
 
 	it("drops unresolved calls after the age bound", () => {
 		const map = new Map<string, PendingCall>();
-		trackPending(map, startCall("bash", "stale", { command: "ls" }, null, new Date(), 0), 0);
+		trackPending(map, startCall("bash", "stale", { command: "ls" }, new Date(), 0), 0);
 		trackPending(
 			map,
-			startCall("bash", "live", { command: "ls" }, null, new Date(), MAX_PENDING_AGE_MS + 1),
+			startCall("bash", "live", { command: "ls" }, new Date(), MAX_PENDING_AGE_MS + 1),
 			MAX_PENDING_AGE_MS + 1,
 		);
 		assert.equal(map.has("stale"), false);
