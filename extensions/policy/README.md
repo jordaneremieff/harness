@@ -65,7 +65,8 @@ flagged form is provably semantics-preserving:
 | `form.find-discovery`, `form.ls-recursive` | block | find and rg/fd differ on ignore files, hidden entries, and depth semantics; `ls -R` output shape has no equivalent |
 | `form.du-traversal` | block | no preferred-form bash rewrite; the class fires on every `du`, scoped or not |
 | `form.env-grep` | block | an `env` dump is steerable to `printenv`; a `printenv` dump blocks only when the filter names one variable, which `printenv NAME` covers; a bounded pattern over `printenv` output has no preferred-form equivalent, so the command-line rules permit it |
-| `bounds.find-output-uncapped`, `bounds.grep-recursive-uncapped`, `bounds.ls-recursive-uncapped`, `bounds.du-uncapped`, `bounds.false-cap` | block | adding or moving a cap changes the command's output, which is not semantics-preserving |
+| `bounds.find-output-uncapped`, `bounds.grep-recursive-uncapped`, `bounds.ls-recursive-uncapped`, `bounds.du-uncapped`, `bounds.rg-files-uncapped`, `bounds.fd-uncapped`, `bounds.false-cap` | block | adding or moving a cap changes the command's output, which is not semantics-preserving |
+| `bounds.rg-search-uncapped`, `bounds.git-grep-uncapped` | block | an unscoped search's result set is unbounded; a scoped root or a result cap changes that set, which is not semantics-preserving |
 
 A rule id records a predicate match, not a final verdict, so enforcement
 inherits the classifier's command-shape model. A scoped `du -sh node_modules`
@@ -164,7 +165,9 @@ Class groups follow the harness command-line rules:
   `form.ls-recursive`, `form.du-traversal`, `form.env-grep`.
 - **bounds**: `bounds.find-output-uncapped`,
   `bounds.grep-recursive-uncapped`, `bounds.ls-recursive-uncapped`,
-  `bounds.du-uncapped`, `bounds.false-cap`.
+  `bounds.du-uncapped`, `bounds.rg-files-uncapped`, `bounds.fd-uncapped`,
+  `bounds.rg-search-uncapped`, `bounds.git-grep-uncapped`,
+  `bounds.false-cap`.
 
 `bounds.false-cap` identifies a downstream cap that cannot stop its producer. A
 streaming `head` stops a producer through streaming stages. It does not stop a
@@ -173,6 +176,12 @@ not stop its producer. Thus, `find … | head` is capped, while
 `find … | sort | head` and `find … | tail` are not. A traversal-depth flag does
 not clear an output-bound class because traversal and output have separate
 bounds.
+
+`rg --files` and `fd` traverse like `find`, so they join the same classes
+without a scope exemption. `rg` and `git grep` search the tree recursively; an
+unscoped search joins the classes unless a result cap bounds it, while a search
+scoped to a named path operand stays clean, because scoping is the output bound
+the harness command-line rules prescribe.
 
 ### Classification limits
 

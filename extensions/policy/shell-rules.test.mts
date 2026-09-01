@@ -182,6 +182,31 @@ describe("bounds rules", () => {
 			"form.du-traversal",
 		]);
 	});
+
+	it("applies output bounds to discovery traversals", () => {
+		assert.deepEqual(bash("rg --files -g '*.ts' | wc -l"), ["bounds.rg-files-uncapped"]);
+		assert.deepEqual(bash("fd -e ts | wc -l"), ["bounds.fd-uncapped"]);
+		assert.deepEqual(bash("rg --files -g '*.ts' | cut -d/ -f2 | sort | uniq -c | sort -rn | head -20"), [
+			"bounds.false-cap",
+			"bounds.rg-files-uncapped",
+		]);
+		assert.deepEqual(bash("fd -e ts | sort | head -10"), ["bounds.false-cap", "bounds.fd-uncapped"]);
+		assert.deepEqual(bash("rg --files | head -20"), []);
+		assert.deepEqual(bash("fd -e ts | head -10"), []);
+	});
+
+	it("flags only an unscoped uncapped recursive search", () => {
+		assert.deepEqual(bash("rg -n pattern ."), ["bounds.rg-search-uncapped"]);
+		assert.deepEqual(bash("rg -n pattern"), ["bounds.rg-search-uncapped"]);
+		assert.deepEqual(bash("git grep -n pattern"), ["bounds.git-grep-uncapped"]);
+		assert.deepEqual(bash("rg -n pattern src/"), []);
+		assert.deepEqual(bash("git grep -n pattern src/"), []);
+		assert.deepEqual(bash("git grep -n pattern -- src/"), []);
+		assert.deepEqual(bash("rg -m 20 -n pattern ."), []);
+		assert.deepEqual(bash("rg --max-count 20 -n pattern ."), []);
+		assert.deepEqual(bash("git grep -m 20 -n pattern"), []);
+		assert.deepEqual(bash("rg -n pattern . | head -20"), []);
+	});
 });
 
 describe("classification across shell structure", () => {

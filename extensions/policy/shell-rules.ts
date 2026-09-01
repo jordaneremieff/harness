@@ -219,6 +219,46 @@ function isDu(stage: Stage): boolean {
 	return stage.command === "du" || stage.command === "gdu";
 }
 
+/** `rg --files` or `fd`: a discovery traversal of the tree, like `find`. */
+function isDiscoveryTraversal(stage: Stage): boolean {
+	return (stage.command === "rg" && hasFlag(stage, "files")) || stage.command === "fd";
+}
+
+/** `git grep`: a recursive search over the worktree by default. */
+function isGitGrep(stage: Stage): boolean {
+	return stage.command === "git" && operands(stage)[0] === "grep";
+}
+
+/** `rg` in search mode or `git grep`: a recursive text search. */
+function isRecursiveSearch(stage: Stage): boolean {
+	if (stage.command === "rg") {
+		// With a pipe or redirect, rg reads standard input and does not
+		// traverse the tree, so it is a filter, not a producer.
+		return !hasFlag(stage, "files") && !stage.fromPipe && !stage.fromRedirect;
+	}
+	return isGitGrep(stage);
+}
+
+/**
+ * A path operand that scopes a search: a named path, not the current or
+ * parent directory, and not a glob.
+ */
+function isScopingPath(path: string): boolean {
+	const trimmed = path.replace(/\/+$/, "");
+	return trimmed !== "" && trimmed !== "." && trimmed !== ".." && !/[*?[]/.test(trimmed);
+}
+
+/** A search operand after the pattern that names a scope. */
+function hasScopingPath(stage: Stage): boolean {
+	const patternSlots = stage.command === "rg" ? 1 : 2;
+	return operands(stage).slice(patternSlots).some(isScopingPath);
+}
+
+/** A flag that caps the producer's own result count. */
+function hasResultCap(stage: Stage): boolean {
+	return hasFlag(stage, "m", "max-count");
+}
+
 /**
  * A filter pattern that names one variable: a bare identifier or a fully
  * anchored identifier. An open-ended pattern (prefix, alternation, or
@@ -331,10 +371,42 @@ export const RULES: ShellRule[] = [
 		matches: ({ statement, stage, index }) => isDu(stage) && isUncapped(statement, index),
 	},
 	{
+		id: "bounds.rg-files-uncapped",
+		note: OUTPUT_BOUND_NOTE,
+		matches: ({ statement, stage, index }) =>
+			stage.command === "rg" && hasFlag(stage, "files") && isUncapped(statement, index),
+	},
+	{
+		id: "bounds.fd-uncapped",
+		note: OUTPUT_BOUND_NOTE,
+		matches: ({ statement, stage, index }) => stage.command === "fd" && isUncapped(statement, index),
+	},
+	{
+		id: "bounds.rg-search-uncapped",
+		note: "Scope the search to a path, or cap the results.",
+		matches: ({ statement, stage, index }) =>
+			stage.command === "rg" &&
+			isRecursiveSearch(stage) &&
+			!hasScopingPath(stage) &&
+			!hasResultCap(stage) &&
+			isUncapped(statement, index),
+	},
+	{
+		id: "bounds.git-grep-uncapped",
+		note: "Scope the search to a path, or cap the results.",
+		matches: ({ statement, stage, index }) =>
+			isGitGrep(stage) && !hasScopingPath(stage) && !hasResultCap(stage) && isUncapped(statement, index),
+	},
+	{
 		id: "bounds.false-cap",
 		note: "This cap does not stop its producer. Bound the producer itself.",
 		matches: ({ statement, stage, index }) =>
-			(stage.command === "find" || isRecursiveGrep(stage) || isRecursiveLs(stage) || isDu(stage)) &&
+			(stage.command === "find" ||
+				isRecursiveGrep(stage) ||
+				isRecursiveLs(stage) ||
+				isDu(stage) ||
+				isDiscoveryTraversal(stage) ||
+				(isRecursiveSearch(stage) && !hasScopingPath(stage) && !hasResultCap(stage))) &&
 			falseCap(statement, index),
 	},
 ];
