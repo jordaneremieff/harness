@@ -26,10 +26,17 @@ interface RegisteredCommand {
 	getArgumentCompletions?: (text: string) => Array<{ value: string; label?: string }> | null;
 }
 
+interface RegisteredFlag {
+	type: "boolean" | "string";
+	description?: string;
+	default?: boolean | string;
+}
+
 interface HarnessOverrides {
 	systemPrompt?: string;
 	sessionId?: string;
 	policyMode?: string;
+	policyModeFlag?: boolean | string;
 	ctxMode?: string;
 	model?: { provider: string; id: string } | undefined;
 	thinkingLevel?: string | undefined;
@@ -48,6 +55,9 @@ function harness(overrides: HarnessOverrides = {}) {
 	const handlers = new Map<string, Handler>();
 	const tools = new Map<string, RegisteredTool>();
 	const commands = new Map<string, RegisteredCommand>();
+	const flags = new Map<string, RegisteredFlag>();
+	const flagValues = new Map<string, boolean | string>();
+	if (overrides.policyModeFlag !== undefined) flagValues.set("policy-mode", overrides.policyModeFlag);
 	const messages: Array<{ content: string; options?: Record<string, unknown> }> = [];
 	const entries: Array<{ type: string; data: unknown }> = [];
 	const pi = {
@@ -59,6 +69,13 @@ function harness(overrides: HarnessOverrides = {}) {
 		},
 		registerCommand(name: string, command: RegisteredCommand) {
 			commands.set(name, command);
+		},
+		registerFlag(name: string, options: RegisteredFlag) {
+			flags.set(name, options);
+			if (options.default !== undefined && !flagValues.has(name)) flagValues.set(name, options.default);
+		},
+		getFlag(name: string) {
+			return flags.has(name) ? flagValues.get(name) : undefined;
 		},
 		appendEntry(type: string, data: unknown) {
 			entries.push({ type, data });
@@ -92,7 +109,7 @@ function harness(overrides: HarnessOverrides = {}) {
 	else process.env.PI_POLICY_MODE = overrides.policyMode;
 	// The fake supplies only the surface the slice uses.
 	registerPolicy(pi as unknown as Parameters<typeof registerPolicy>[0]);
-	return { handlers, tools, commands, ctx, notifications, confirmations, messages, entries };
+	return { handlers, tools, commands, flags, ctx, notifications, confirmations, messages, entries };
 }
 
 /** One completed bash call through the tool_call and tool_result pair. */
@@ -182,16 +199,29 @@ afterEach(() => {
 });
 
 describe("policy extension", () => {
-	it("registers the policy tools, command, and session handlers", () => {
-		const { handlers, tools, commands } = harness();
+	it("registers the policy flag, tools, command, and session handlers", () => {
+		const { handlers, tools, commands, flags } = harness();
 		assert.deepEqual([...handlers.keys()].sort(), [
 			"session_shutdown",
+			"session_start",
 			"tool_call",
 			"tool_execution_end",
 			"tool_result",
 		]);
 		assert.deepEqual([...tools.keys()].sort(), ["policy_rule_add", "policy_rule_list", "policy_rule_set_state"]);
 		assert.deepEqual([...commands.keys()], ["policy"]);
+		assert.deepEqual(
+			[...flags],
+			[
+				[
+					"policy-mode",
+					{
+						type: "string",
+						description: "Policy mode (observe, notice, annotate, enforce); overrides PI_POLICY_MODE",
+					},
+				],
+			],
+		);
 	});
 
 	it("writes one record per completed call and returns nothing", async () => {
@@ -972,6 +1002,70 @@ describe("/policy command", () => {
 });
 
 describe("mode configuration", () => {
+	it("uses the session flag instead of the environment in both directions", async () => {
+		const enforcing = harness({ policyMode: "observe", policyModeFlag: "enforce" });
+		const blocked = (await enforcing.handlers.get("tool_call")!(
+			{ toolName: "bash", toolCallId: "enforce", input: { command: "cat notes.md" } },
+			enforcing.ctx,
+		)) as { block: boolean; reason: string };
+		assert.equal(blocked.block, true);
+		assert.equal(blocked.reason, "[policy] Use the read tool for file contents.");
+		await enforcing.handlers.get("session_shutdown")!({}, enforcing.ctx);
+
+		const observing = harness({ policyMode: "enforce", policyModeFlag: "observe" });
+		assert.equal(
+			await observing.handlers.get("tool_call")!(
+				{ toolName: "bash", toolCallId: "observe", input: { command: "cat notes.md" } },
+				observing.ctx,
+			),
+			undefined,
+		);
+		await observing.handlers.get("session_shutdown")!({}, observing.ctx);
+	});
+
+	it("falls back to the environment and then to observe when the flag is absent", async () => {
+		const environment = harness({ policyMode: "enforce" });
+		await callCommand(environment, "mode");
+		assert.match(environment.notifications.at(-1)?.message ?? "", /active mode: enforce/);
+		assert.match(environment.notifications.at(-1)?.message ?? "", /source: PI_POLICY_MODE=enforce/);
+
+		const defaulted = harness();
+		await callCommand(defaulted, "mode");
+		assert.match(defaulted.notifications.at(-1)?.message ?? "", /active mode: observe/);
+		assert.match(defaulted.notifications.at(-1)?.message ?? "", /PI_POLICY_MODE is unset/);
+	});
+
+	it("lets a valid flag override an invalid environment value", async () => {
+		const warnings: string[] = [];
+		const original = console.warn;
+		console.warn = (message: string) => warnings.push(message);
+		try {
+			const run = harness({ policyMode: "block", policyModeFlag: "notice" });
+			await callCommand(run, "mode");
+			assert.match(run.notifications.at(-1)?.message ?? "", /active mode: notice/);
+			assert.match(run.notifications.at(-1)?.message ?? "", /source: --policy-mode=notice/);
+		} finally {
+			console.warn = original;
+		}
+		assert.deepEqual(warnings, []);
+	});
+
+	it("stops recording once on an unrecognized flag value and never throws", async () => {
+		const warnings: string[] = [];
+		const original = console.warn;
+		console.warn = (message: string) => warnings.push(message);
+		let run: ReturnType<typeof harness>;
+		try {
+			run = harness({ policyMode: "enforce", policyModeFlag: "block" });
+			assert.equal(await runBash(run, "c1", "cat notes.md"), undefined);
+		} finally {
+			console.warn = original;
+		}
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /--policy-mode must be one of observe, notice, annotate, enforce; received "block"/);
+		await assert.rejects(() => readdir(dir));
+	});
+
 	it("stops recording once on an unrecognized mode and never throws", async () => {
 		const warnings: string[] = [];
 		const original = console.warn;

@@ -21,12 +21,18 @@ function isPolicyMode(value: string): value is PolicyMode {
 	return (POLICY_MODES as readonly string[]).includes(value);
 }
 
+/** Resolve one explicit setting, rejecting empty and unrecognized values. */
+export function resolvePolicyModeValue(value: string, source: string): PolicyMode {
+	const raw = value.trim();
+	if (!isPolicyMode(raw)) {
+		throw new Error(`${source} must be one of ${POLICY_MODES.join(", ")}; received "${raw}"`);
+	}
+	return raw;
+}
+
 /** Mode from `PI_POLICY_MODE`; `observe` when the variable is unset or empty. */
 export function resolvePolicyMode(env: NodeJS.ProcessEnv = process.env): PolicyMode {
 	const raw = env.PI_POLICY_MODE?.trim();
 	if (raw === undefined || raw === "") return DEFAULT_MODE;
-	if (!isPolicyMode(raw)) {
-		throw new Error(`PI_POLICY_MODE must be one of ${POLICY_MODES.join(", ")}; received "${raw}"`);
-	}
-	return raw;
+	return resolvePolicyModeValue(raw, "PI_POLICY_MODE");
 }

@@ -47,7 +47,7 @@ import {
 	validateSuggestion,
 } from "./agent-rules.ts";
 import { bindAgentRules, notesFor } from "./classify.ts";
-import { resolvePolicyMode, type PolicyMode } from "./mode.ts";
+import { POLICY_MODES, resolvePolicyMode, resolvePolicyModeValue, type PolicyMode } from "./mode.ts";
 import {
 	draftRuleMessage,
 	formatPolicyList,
@@ -73,6 +73,9 @@ import {
 } from "./record.ts";
 import { RULES } from "./shell-rules.ts";
 import { PolicyWriter, resolvePolicyDir } from "./store.ts";
+
+/** Per-session override for the policy mechanism. */
+const POLICY_MODE_FLAG = "policy-mode";
 
 /** Marker Pi writes into the system prompt when project context files are loaded. */
 const PROJECT_CONTEXT_MARKER = "<project_context>";
@@ -240,12 +243,18 @@ interface Annotation {
 }
 
 export default function registerPolicy(pi: ExtensionAPI) {
+	pi.registerFlag(POLICY_MODE_FLAG, {
+		type: "string",
+		description: `Policy mode (${POLICY_MODES.join(", ")}); overrides PI_POLICY_MODE`,
+	});
+
 	const pending = new Map<string, ObservedCall>();
 	let stopped = false;
 	let failureReported = false;
 	let writer: PolicyWriter | null = null;
 	let mode: PolicyMode = "observe";
-	const modeSetting = process.env.PI_POLICY_MODE?.trim() ?? "";
+	let modeResolved = false;
+	let modeSource = "PI_POLICY_MODE is unset; observe is the default";
 
 	/** Rule ids already annotated, per session, so history survives a session round-trip. */
 	const annotatedBySession = new Map<string, Set<string>>();
@@ -310,11 +319,29 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		}
 	};
 
-	try {
-		mode = resolvePolicyMode(process.env);
-	} catch (error) {
-		stop(error);
-	}
+	const ensureMode = (): boolean => {
+		if (modeResolved || stopped) return !stopped;
+		modeResolved = true;
+		try {
+			const flagValue = pi.getFlag(POLICY_MODE_FLAG);
+			if (flagValue !== undefined) {
+				const setting = typeof flagValue === "string" ? flagValue : String(flagValue);
+				mode = resolvePolicyModeValue(setting, `--${POLICY_MODE_FLAG}`);
+				modeSource = `--${POLICY_MODE_FLAG}=${setting.trim()}`;
+			} else {
+				mode = resolvePolicyMode(process.env);
+				const setting = process.env.PI_POLICY_MODE?.trim() ?? "";
+				modeSource = setting ? `PI_POLICY_MODE=${setting}` : "PI_POLICY_MODE is unset; observe is the default";
+			}
+		} catch (error) {
+			stop(error);
+		}
+		return !stopped;
+	};
+
+	pi.on("session_start", () => {
+		ensureMode();
+	});
 
 	const rulesDir = resolvePolicyDir(process.env, getAgentDir());
 	const rules = AgentRules.load(rulesDir);
@@ -723,6 +750,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		description: "Browse policy rules and activity, inspect evidence, change agent-rule state, or report mode",
 		getArgumentCompletions: argumentCompletions,
 		handler: async (args, ctx) => {
+			ensureMode();
 			const raw = args.trim();
 			const parts = raw.split(/\s+/).filter(Boolean);
 			const verb = parts[0];
@@ -753,16 +781,13 @@ export default function registerPolicy(pi: ExtensionAPI) {
 					commandFailure(ctx, "Usage: /policy mode");
 					return;
 				}
-				const source = modeSetting
-					? `PI_POLICY_MODE=${terminalSafe(modeSetting)}`
-					: "PI_POLICY_MODE is unset; observe is the default";
 				commandText(
 					ctx,
 					[
 						`active mode: ${mode}`,
-						`source: ${source}`,
+						`source: ${terminalSafe(modeSource)}`,
 						`effect: ${MODE_EFFECT[mode]}`,
-						"Sessions started before PI_POLICY_MODE changed continue running their original mode.",
+						"A session keeps its original mode after --policy-mode or PI_POLICY_MODE changes.",
 					].join("\n"),
 				);
 				return;
@@ -820,7 +845,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (stopped) return;
+		if (!ensureMode()) return;
 		try {
 			const facts = sessionFacts(ctx);
 			const call: ObservedCall = {

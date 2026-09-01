@@ -10,10 +10,13 @@ form, and an explicit per-rule posture. No mode changes a tool input.
 
 ## Modes
 
-`PI_POLICY_MODE` selects the session mechanism and every mode records. Rule
-posture and scope refine enforce mode: built-in classes and in-scope promoted
-agent rules block, while in-scope active agent rules steer by annotation instead.
-Scoped-out agent classes still record.
+The string extension flag `--policy-mode` selects the session mechanism. Its
+accepted values are `observe`, `notice`, `annotate`, and `enforce`. When the flag
+is omitted, `PI_POLICY_MODE` selects the mechanism; when both are set, the flag
+takes precedence. An omitted or blank environment value defaults to `observe`.
+Every mode records. Rule posture and scope refine enforce mode: built-in classes
+and in-scope promoted agent rules block, while in-scope active agent rules steer
+by annotation instead. Scoped-out agent classes still record.
 
 | Mode | Mechanism | Model-visible | Operator-visible |
 |---|---|---|---|
@@ -101,9 +104,9 @@ The text surface works without a TUI:
 - `/policy state <slug> <active|promoted|disabled|discarded>` uses the same
   confirmation and `AgentRules.setState` path as panel actions. A transition
   requiring confirmation is refused when no dialog-capable UI exists.
-- `/policy mode` prints the active mode, its `PI_POLICY_MODE` source, one-line
-  behavior, and a reminder that an already-started session keeps the mode it
-  resolved at startup.
+- `/policy mode` prints the active mode, whether it came from `--policy-mode`,
+  `PI_POLICY_MODE`, or the default, its one-line behavior, and a reminder that an
+  already-started session keeps the mode it resolved at startup.
 - `/policy help` prints command usage.
 
 Bare `/policy` outside TUI mode reports that the interactive panel is
@@ -111,8 +114,9 @@ unavailable and names the text verbs. RPC receives command text through its UI
 notification channel, JSON mode receives a non-context custom entry, and print
 mode writes text to standard output.
 
-An unrecognized value is a configuration error. The extension reports it once
-and stops recording for the session.
+An unrecognized flag or environment value is a configuration error. The
+extension reports it once, names the accepted set and invalid source, and stops
+recording for the session.
 
 ### notice
 
