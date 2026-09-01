@@ -219,6 +219,16 @@ function isDu(stage: Stage): boolean {
 	return stage.command === "du" || stage.command === "gdu";
 }
 
+/**
+ * A filter pattern that names one variable: a bare identifier or a fully
+ * anchored identifier. An open-ended pattern (prefix, alternation, or
+ * inversion) selects several variables, so naming one variable cannot serve
+ * that intent.
+ */
+function isSingleVariablePattern(pattern: string): boolean {
+	return /^[A-Za-z_][A-Za-z0-9_]*$/.test(pattern) || /^\^[A-Za-z_][A-Za-z0-9_]*\$$/.test(pattern);
+}
+
 function isGrepFile(stage: Stage): boolean {
 	if (!GREP_COMMANDS.has(stage.command) || stage.fromPipe) return false;
 	const values = new Set([
@@ -288,11 +298,15 @@ export const RULES: ShellRule[] = [
 		id: "form.env-grep",
 		note: "Use printenv NAME for one environment variable.",
 		matches: ({ statement, stage, index }) => {
-			const dumpsEnvironment =
-				stage.command === "env"
-					? !hasFlag(stage, "a", "argv0", "S", "split-string", "help", "version")
-					: stage.command === "printenv" && operands(stage).length === 0;
-			return dumpsEnvironment && statement.slice(index + 1).some((later) => TEXT_FILTERS.has(later.command));
+			const later = statement.slice(index + 1);
+			if (stage.command === "env" && !hasFlag(stage, "a", "argv0", "S", "split-string", "help", "version")) {
+				return later.some((candidate) => TEXT_FILTERS.has(candidate.command));
+			}
+			if (stage.command !== "printenv" || operands(stage).length !== 0) return false;
+			const filter = later.find((candidate) => TEXT_FILTERS.has(candidate.command));
+			if (filter === undefined || hasFlag(filter, "v", "invert-match")) return false;
+			const pattern = operands(filter)[0];
+			return pattern !== undefined && isSingleVariablePattern(pattern);
 		},
 	},
 	{

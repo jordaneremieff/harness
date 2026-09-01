@@ -99,6 +99,13 @@ describe("form rules", () => {
 		assert.deepEqual(bash("printenv | rg PATH"), ["form.env-grep"]);
 	});
 
+	it("leaves a bounded pattern over printenv output clean", () => {
+		assert.deepEqual(bash("printenv | rg '^PATH$'"), ["form.env-grep"]);
+		assert.deepEqual(bash("printenv | rg -v KEY"), []);
+		assert.deepEqual(bash("printenv | rg '^PI_' | rg -v 'KEY|TOKEN|SECRET' | head -20"), []);
+		assert.deepEqual(bash("env | rg '^PI_'"), ["form.env-grep"]);
+	});
+
 	it("classifies commands behind transparent prefixes and shell keywords", () => {
 		assert.deepEqual(bash("sudo find / -name core"), ["bounds.find-output-uncapped", "form.find-discovery"]);
 		assert.deepEqual(bash("command cat notes.md"), ["routing.cat-read"]);

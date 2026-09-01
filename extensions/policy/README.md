@@ -64,7 +64,7 @@ flagged form is provably semantics-preserving:
 | `routing.grep-pipe`, `form.grep-file` | block | grep and rg differ in regex dialect, binary handling, hidden-file rules, and defaults |
 | `form.find-discovery`, `form.ls-recursive` | block | find and rg/fd differ on ignore files, hidden entries, and depth semantics; `ls -R` output shape has no equivalent |
 | `form.du-traversal` | block | no preferred-form bash rewrite; the class fires on every `du`, scoped or not |
-| `form.env-grep` | block | a pattern can match several variables (`PATH`, `MANPATH`); `printenv` prints one |
+| `form.env-grep` | block | an `env` dump is steerable to `printenv`; a `printenv` dump blocks only when the filter names one variable, which `printenv NAME` covers; a bounded pattern over `printenv` output has no preferred-form equivalent, so the command-line rules permit it |
 | `bounds.find-output-uncapped`, `bounds.grep-recursive-uncapped`, `bounds.ls-recursive-uncapped`, `bounds.du-uncapped`, `bounds.false-cap` | block | adding or moving a cap changes the command's output, which is not semantics-preserving |
 
 A rule id records a predicate match, not a final verdict, so enforcement
