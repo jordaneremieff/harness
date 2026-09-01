@@ -35,6 +35,7 @@ npm run evals -- run prompts/wtf.eval.mts \
 npm run evals -- inspect <run-id>
 npm run evals -- inspect <run-id> --reveal
 npm run evals -- adjudicate <run-id> --verdict pass --preferred A --notes "Human review notes"
+npm run evals -- adjudicate <partial-run-id> --verdict pass --scope usable-executions --notes "Scoped human review notes"
 npm run evals -- delete <run-id> --approve <run-id>
 ```
 
@@ -46,11 +47,15 @@ Repeat `--participant`, `--case`, `--variant`, `--credential-env`, and `--grant-
 
 A plan records wall-time limits, execution limits, and an observed cost limit. Cost enforcement occurs after each execution. It is not a hard spend cap because one execution can cross the observed limit.
 
-Operational terminal states are `completed`, `blocked`, `cancelled`, `timed_out`, and `failed`. Quality states are `pass`, `fail`, `inconclusive`, and `not_assessed`. Operational success does not imply quality success. Human-required suites remain `not_assessed` until `adjudicate` records an immutable verdict.
+Operational terminal states are `completed`, `partial`, `blocked`, `cancelled`, `timed_out`, and `failed`. A run is `partial` only when its child outcome is not clean and its recorded evidence contains both an execution with no errors and an execution with errors. When every recorded execution errors, the existing cause classification remains `blocked`, `cancelled`, `timed_out`, or `failed`. A `partial` run is operationally incomplete, and `run` exits nonzero for it.
+
+Quality states are `pass`, `fail`, `inconclusive`, and `not_assessed`. Operational success does not imply quality success. Human-required suites remain `not_assessed` until `adjudicate` records an immutable verdict. A `partial` run permits a human `pass` or `fail` only with `--scope usable-executions`; the adjudication records the exact usable execution identifiers covered by that verdict. An unscoped partial adjudication and any conclusive adjudication of a `blocked`, `cancelled`, `timed_out`, or `failed` run are rejected. Deterministic quality assignment remains limited to `completed` runs.
 
 ## Evidence and review
 
-Each run writes private, ignored evidence under `.evals/<run-id>/`. Evidence includes the exact plan, state, generated Vitest config, bounded child logs, Vitest JSON, normalized executions, usage, errors, effective model data, and a review artifact. `review.json` uses blinded variant labels and includes full synthetic fixture context. `variant-map.json` remains separate and appears only through `inspect --reveal`.
+Each run writes private, ignored evidence under `.evals/<run-id>/`. Evidence includes the exact plan, state, generated Vitest config, bounded child logs, Vitest JSON, normalized executions, usage, errors, effective model data, and a review artifact. Terminal state and `review.json` both record coverage as `plannedExecutions`, `usableExecutions`, `excludedExecutions`, `usableExecutionIds`, and `exclusions`. Every exclusion carries its `executionId` and `errorTypes`; missing planned evidence is identified as `MissingExecutionEvidence`.
+
+`review.json` uses blinded variant labels and includes full synthetic fixture context. Entries with errors remain visible as `excluded`, including their outputs, usage, errors, and exclusion reason, but omit `checks` so those results cannot be treated as scored evidence. `variant-map.json` remains separate and appears only through `inspect --reveal`.
 
 Deterministic checks are lexical floors. Passing them does not establish semantic quality.
 

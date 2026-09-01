@@ -8,6 +8,7 @@ import { REPOSITORY_ROOT, runVitestChild } from "./runner.mts";
 import {
 	adjudicateRun,
 	buildReviewArtifact,
+	buildRunCoverage,
 	deleteRun,
 	inspectRun,
 	listExecutionEvidence,
@@ -36,6 +37,7 @@ const VALUE_OPTIONS = new Set([
 	"verdict",
 	"notes",
 	"preferred",
+	"scope",
 ]);
 const FLAG_OPTIONS = new Set(["allow-home-credentials", "reveal"]);
 const EVIDENCE_ROOT = join(REPOSITORY_ROOT, ".evals");
@@ -155,7 +157,7 @@ Commands:
   plan       <suite> --participant <provider/model:thinking> --repetitions <n> <authority options>
   run        <suite> <plan options> --approve <sha256:digest>
   inspect    <run-id> [--reveal]
-  adjudicate <run-id> --verdict <pass|fail|inconclusive> --notes <text> [--preferred <label>]
+  adjudicate <run-id> --verdict <pass|fail|inconclusive> --notes <text> [--preferred <label>] [--scope usable-executions]
   delete     <run-id> --approve <run-id>
 
 Authority options:
@@ -171,10 +173,18 @@ export function refineOperationalStatus(
 	directory: string,
 	status: RunState["operational"]["status"],
 ): RunState["operational"]["status"] {
-	if (status !== "failed") return status;
+	if (!status || status === "completed") return status;
 	const evidence = listExecutionEvidence(directory) as Array<{
 		result?: { errors?: Array<{ type?: string }> };
 	}>;
+	const hasUsableExecution = evidence.some(
+		(entry) => Array.isArray(entry.result?.errors) && entry.result.errors.length === 0,
+	);
+	const hasErroredExecution = evidence.some(
+		(entry) => Array.isArray(entry.result?.errors) && entry.result.errors.length > 0,
+	);
+	if (hasUsableExecution && hasErroredExecution) return "partial";
+	if (status !== "failed") return status;
 	const types = evidence.flatMap((entry) => entry.result?.errors?.map((error) => error.type ?? "Error") ?? []);
 	if (types.length === 0) return "failed";
 	const groups = new Set(
@@ -213,6 +223,8 @@ async function executeRun(parsed: ParsedArguments): Promise<Record<string, unkno
 		};
 	}
 	state.phase = "terminal";
+	const coverage = buildRunCoverage(prepared.directory, plan);
+	state.coverage = coverage;
 	const operationalStatus = refineOperationalStatus(prepared.directory, outcome.status);
 	state.operational = {
 		...state.operational,
@@ -223,14 +235,26 @@ async function executeRun(parsed: ParsedArguments): Promise<Record<string, unkno
 	};
 	if (suite.adjudication.policy === "deterministic-only" && outcome.status === "completed") {
 		const evidence = listExecutionEvidence(prepared.directory) as Array<{
+			execution?: { executionId?: string };
 			result?: { output?: { checks?: Array<{ passed?: boolean }> } };
 		}>;
-		const passed = evidence.every((entry) => entry.result?.output?.checks?.every((check) => check.passed) === true);
+		const usableIds = new Set(coverage.usableExecutionIds);
+		const usableEvidence = evidence.filter(
+			(entry) => entry.execution?.executionId !== undefined && usableIds.has(entry.execution.executionId),
+		);
+		const passed =
+			coverage.usableExecutions === coverage.plannedExecutions &&
+			usableEvidence.length === coverage.usableExecutions &&
+			usableEvidence.every((entry) => entry.result?.output?.checks?.every((check) => check.passed) === true);
 		state.quality.status = passed ? "pass" : "fail";
 	}
 	writeJson(join(prepared.directory, "state.json"), state);
 	writeJson(join(prepared.directory, "review.json"), buildReviewArtifact(prepared.directory, suite, state));
 	return { runId: prepared.runId, directory: prepared.directory, planDigest: plan.digest, state };
+}
+
+export function runExitCode(state: RunState): number {
+	return state.operational.status !== "completed" || state.quality.status === "fail" ? 1 : 0;
 }
 
 export async function runCli(args = process.argv.slice(2)): Promise<number> {
@@ -267,8 +291,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<number> {
 				const result = await executeRun(parsed);
 				process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 				const state = result.state as RunState;
-				if (state.operational.status !== "completed" || state.quality.status === "fail") return 1;
-				return 0;
+				return runExitCode(state);
 			}
 			case "inspect":
 				assertAllowed(parsed, [], ["reveal"]);
@@ -277,10 +300,14 @@ export async function runCli(args = process.argv.slice(2)): Promise<number> {
 				);
 				return 0;
 			case "adjudicate": {
-				assertAllowed(parsed, ["verdict", "notes", "preferred"], []);
+				assertAllowed(parsed, ["verdict", "notes", "preferred", "scope"], []);
 				const verdict = one(parsed, "verdict") as QualityStatus;
 				if (verdict !== "pass" && verdict !== "fail" && verdict !== "inconclusive") {
 					throw new Error("--verdict must be pass, fail, or inconclusive");
+				}
+				const scope = one(parsed, "scope", false);
+				if (scope !== undefined && scope !== "usable-executions") {
+					throw new Error("--scope must be usable-executions");
 				}
 				const state = adjudicateRun(
 					EVIDENCE_ROOT,
@@ -288,6 +315,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<number> {
 					verdict,
 					one(parsed, "notes")!,
 					one(parsed, "preferred", false),
+					scope,
 				);
 				process.stdout.write(`${JSON.stringify(state, null, 2)}\n`);
 				return 0;

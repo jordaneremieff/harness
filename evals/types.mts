@@ -171,8 +171,32 @@ export interface SubjectAdapter {
 	}): Promise<SubjectRunResult>;
 }
 
-export type OperationalStatus = "completed" | "blocked" | "cancelled" | "timed_out" | "failed";
+export type OperationalStatus = "completed" | "partial" | "blocked" | "cancelled" | "timed_out" | "failed";
 export type QualityStatus = "pass" | "fail" | "inconclusive" | "not_assessed";
+
+export interface ExecutionExclusion {
+	executionId: string;
+	errorTypes: string[];
+}
+
+export interface RunCoverage {
+	plannedExecutions: number;
+	usableExecutions: number;
+	excludedExecutions: number;
+	usableExecutionIds: string[];
+	exclusions: ExecutionExclusion[];
+}
+
+export interface AdjudicationRecord {
+	adjudicatedAt: string;
+	verdict: Exclude<QualityStatus, "not_assessed">;
+	notes: string;
+	preferredLabel?: string;
+	scope?: {
+		type: "usable-executions";
+		executionIds: string[];
+	};
+}
 
 export interface RunState {
 	schemaVersion: typeof EVALUATION_SCHEMA_VERSION;
@@ -186,6 +210,7 @@ export interface RunState {
 		exitCode?: number | null;
 		error?: string;
 	};
+	coverage?: RunCoverage;
 	quality: {
 		status: QualityStatus;
 		adjudicationFile?: string;
