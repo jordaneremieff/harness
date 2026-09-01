@@ -206,7 +206,9 @@ it("passes both checks in enforce and fails policy-block-returned in observe", a
 		["policy-block-returned"],
 	);
 
-	t.diagnostic(`enforce checks: ${enforceChecks.map((check) => `${check.checkId}=pass`).join(", ")}`);
+	t.diagnostic(
+		`enforce checks: ${enforceChecks.map((check) => `${check.checkId}=${check.passed ? "pass" : "fail"}`).join(", ")}`,
+	);
 	t.diagnostic(
 		`observe checks: ${observeChecks.map((check) => `${check.checkId}=${check.passed ? "pass" : "fail"}`).join(", ")}`,
 	);
