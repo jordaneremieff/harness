@@ -57,7 +57,9 @@ flagged form is provably semantics-preserving:
 
 | Class | Disposition | Why no rewrite |
 |---|---|---|
-| `routing.cat-read`, `routing.sed-slice`, `routing.head-slice`, `routing.tail-slice`, `routing.inline-script-read` | block | the preferred form is the read tool; no bash form exists, and an inline script may do arbitrary work beyond the read |
+| `routing.cat-read`, `routing.sed-slice`, `routing.inline-script-read` | block | the preferred form is the read tool; no bash form exists, and an inline script may do arbitrary work beyond the read |
+| `routing.head-slice` | block | only line slices the read tool covers block; byte and all-but-last forms are slices the read tool cannot give, so the command-line rules permit them |
+| `routing.tail-slice` | block | only from-start line slices block; a from-end or byte slice is one the read tool cannot give, so the command-line rules permit it |
 | `routing.cat-pipe` | block | the downstream command decides semantics; `cmd a b` differs from `cat a b \| cmd` for whole-input tools such as `wc` |
 | `routing.grep-pipe`, `form.grep-file` | block | grep and rg differ in regex dialect, binary handling, hidden-file rules, and defaults |
 | `form.find-discovery`, `form.ls-recursive` | block | find and rg/fd differ on ignore files, hidden entries, and depth semantics; `ls -R` output shape has no equivalent |

@@ -175,6 +175,29 @@ function isFileSlice(stage: Stage, command: "head" | "tail"): boolean {
 	return operands(stage, new Set(["n", "c", "lines", "bytes"])).length > 0;
 }
 
+/**
+ * A tail file slice that starts at an offset line: the shape the read tool
+ * covers. A from-end slice (last N lines or bytes) is a slice the read tool
+ * cannot give, so the harness command-line rules permit it.
+ */
+function isTailSliceFromStart(stage: Stage): boolean {
+	if (commandName(stage) !== "tail") return false;
+	const lines = optionValue(stage, "n", "lines");
+	if (lines?.startsWith("+") === true) return true;
+	return stage.args.some((arg) => /^\+\d+$/.test(arg));
+}
+
+/**
+ * A head file slice the read tool covers: a positive line count. Byte slices
+ * and all-but-last counts are slices the read tool cannot give, so the harness
+ * command-line rules permit them.
+ */
+function isHeadSliceReadable(stage: Stage): boolean {
+	if (hasFlag(stage, "c", "bytes")) return false;
+	const lines = optionValue(stage, "n", "lines");
+	return !(lines?.startsWith("-") === true);
+}
+
 function isInlineScriptRead(stage: Stage): boolean {
 	const flag = INLINE_SCRIPT.get(stage.command);
 	if (!flag) return false;
@@ -224,12 +247,12 @@ export const RULES: ShellRule[] = [
 	{
 		id: "routing.head-slice",
 		note: READ_SLICE_NOTE,
-		matches: ({ stage }) => isFileSlice(stage, "head"),
+		matches: ({ stage }) => isFileSlice(stage, "head") && isHeadSliceReadable(stage),
 	},
 	{
 		id: "routing.tail-slice",
 		note: READ_SLICE_NOTE,
-		matches: ({ stage }) => isFileSlice(stage, "tail"),
+		matches: ({ stage }) => isFileSlice(stage, "tail") && isTailSliceFromStart(stage),
 	},
 	{
 		id: "routing.inline-script-read",

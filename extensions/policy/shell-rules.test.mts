@@ -48,8 +48,18 @@ describe("routing rules", () => {
 		assert.deepEqual(bash("ghead -50 src/index.ts"), ["routing.head-slice"]);
 		assert.deepEqual(bash("head -50 src/index.ts 2>/dev/null"), ["routing.head-slice"]);
 		assert.deepEqual(bash("sed -n '1,40p' src/index.ts 2>/dev/null"), ["routing.sed-slice"]);
-		assert.deepEqual(bash("tail -100 system.log"), ["routing.tail-slice"]);
+		assert.deepEqual(bash("tail -n +100 system.log"), ["routing.tail-slice"]);
+		assert.deepEqual(bash("tail +100 system.log"), ["routing.tail-slice"]);
 		assert.deepEqual(bash("rg -n x src/ | sed -n '1,5p' 2>/dev/null"), []);
+	});
+
+	it("permits the slices the read tool cannot give", () => {
+		assert.deepEqual(bash("tail -100 system.log"), []);
+		assert.deepEqual(bash("tail -n 20 system.log"), []);
+		assert.deepEqual(bash("tail -c 12000 system.log"), []);
+		assert.deepEqual(bash("tail system.log"), []);
+		assert.deepEqual(bash("head -c 12000 src/index.ts"), []);
+		assert.deepEqual(bash("head -n -5 src/index.ts"), []);
 	});
 
 	it("flags an inline script that reads a file", () => {
