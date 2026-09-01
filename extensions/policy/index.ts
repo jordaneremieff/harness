@@ -5,10 +5,10 @@
  * Every mode records. `observe` acts on nothing. `notice` shows the operator a
  * flag in the terminal and adds no model-visible text. `annotate` appends one
  * capped line of guidance to a flagged result, at most once per rule id per
- * session. `enforce` blocks a flagged call with a reason that names the
- * preferred form. No mode changes a tool input: every flagged form blocks
- * rather than rewrites, because no rewrite is provably semantics-preserving
- * and Pi does not re-validate a mutated input.
+ * session. `enforce` blocks built-in and promoted agent classes while active
+ * agent classes receive annotation guidance. No mode changes a tool input,
+ * because no rewrite is provably semantics-preserving and Pi does not
+ * re-validate a mutated input.
  *
  * Duration is measured here because no event carries it: `tool_call` and
  * `tool_result` are paired by call id and stamped on arrival.
@@ -18,12 +18,24 @@
  * first failure once and then stops acting for the rest of the session.
  */
 
+import { StringEnum } from "@earendil-works/pi-ai";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import {
-	getAgentDir,
-	type ExtensionAPI,
-	type ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
-import { notesFor } from "./classify.ts";
+	agentClass,
+	type AgentMatch,
+	AgentRules,
+	type AgentRule,
+	type AgentScope,
+	type AgentState,
+	isAgentClass,
+	needsOperatorConfirm,
+	validateMatch,
+	validateNote,
+	validateScope,
+	validateSlug,
+} from "./agent-rules.ts";
+import { bindAgentRules, notesFor } from "./classify.ts";
 import { resolvePolicyMode, type PolicyMode } from "./mode.ts";
 import {
 	finishCall,
@@ -49,6 +61,52 @@ const MAX_GUIDANCE_BYTES = 512;
 /** Sessions whose annotated rule ids are still tracked. */
 const MAX_ANNOTATED_SESSIONS = 16;
 
+/** Maximum model-visible output from a rule registry listing. */
+const MAX_RULE_LIST_BYTES = 50 * 1024;
+
+const NonEmptyString = Type.String({ minLength: 1 });
+const StringChoice = Type.Union([NonEmptyString, Type.Array(NonEmptyString, { minItems: 1 })]);
+const OperandsMatchSchema = Type.Object(
+	{
+		min: Type.Optional(Type.Integer({ minimum: 0 })),
+		max: Type.Optional(Type.Integer({ minimum: 0 })),
+		any: Type.Optional(Type.Array(NonEmptyString, { minItems: 1 })),
+		at: Type.Optional(Type.Record(Type.String({ pattern: "^\\d+$" }), StringChoice, { additionalProperties: false })),
+	},
+	{ additionalProperties: false },
+);
+const PipeMatchSchema = Type.Object(
+	{
+		from: Type.Optional(Type.Boolean()),
+		to: Type.Optional(Type.Boolean()),
+		fromRedirect: Type.Optional(Type.Boolean()),
+		toRedirect: Type.Optional(Type.Boolean()),
+		next: Type.Optional(StringChoice),
+		later: Type.Optional(Type.Array(NonEmptyString, { minItems: 1 })),
+	},
+	{ additionalProperties: false },
+);
+const MatchSchema = Type.Object(
+	{
+		tool: Type.Literal("bash"),
+		command: StringChoice,
+		flags: Type.Optional(Type.Array(NonEmptyString, { minItems: 1 })),
+		absentFlags: Type.Optional(Type.Array(NonEmptyString, { minItems: 1 })),
+		operands: Type.Optional(OperandsMatchSchema),
+		pipe: Type.Optional(PipeMatchSchema),
+	},
+	{ additionalProperties: false },
+);
+const ScopeSchema = Type.Object(
+	{
+		exclude: Type.Optional(Type.Array(NonEmptyString, { minItems: 1 })),
+		providers: Type.Optional(Type.Array(NonEmptyString, { minItems: 1 })),
+		models: Type.Optional(Type.Array(NonEmptyString, { minItems: 1 })),
+	},
+	{ additionalProperties: false },
+);
+const AgentStateSchema = StringEnum(["active", "promoted", "disabled", "discarded"] as const);
+
 function readTruncated(details: unknown): boolean {
 	if (!details || typeof details !== "object") return false;
 	const truncation = (details as { truncation?: unknown }).truncation;
@@ -60,6 +118,45 @@ function readTokens(usage: unknown): number | null {
 	if (!usage || typeof usage !== "object") return null;
 	const total = (usage as { totalTokens?: unknown }).totalTokens;
 	return typeof total === "number" ? total : null;
+}
+
+function modelName(ctx: ExtensionContext): string | null {
+	const model = ctx.model;
+	return model ? `${model.provider}/${model.id}` : null;
+}
+
+function toolText(text: string) {
+	return { content: [{ type: "text" as const, text }], details: {} };
+}
+
+function toolFailure(error: unknown): string {
+	try {
+		return error instanceof Error ? error.message : String(error);
+	} catch {
+		return "unknown policy rule tool failure";
+	}
+}
+
+function rulesText(entries: readonly AgentRule[]): string {
+	if (entries.length === 0) return "No agent rules.";
+	const marker = "\n\n[agent rule list truncated]";
+	let text = "";
+	for (const rule of entries) {
+		const block = [
+			`slug: ${rule.slug}`,
+			`state: ${rule.state}`,
+			`note: ${rule.note}`,
+			`match: ${JSON.stringify(rule.match)}`,
+			`scope: ${rule.scope === undefined ? "everywhere" : JSON.stringify(rule.scope)}`,
+			`model: ${rule.model}`,
+			`session: ${rule.session}`,
+			`at: ${rule.at}`,
+		].join("\n");
+		const candidate = text.length === 0 ? block : `${text}\n\n${block}`;
+		if (Buffer.byteLength(`${candidate}${marker}`, "utf8") > MAX_RULE_LIST_BYTES) return `${text}${marker}`;
+		text = candidate;
+	}
+	return text;
 }
 
 interface ObservedCall extends PendingCall {
@@ -110,12 +207,17 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	};
 
 	/** Bind mutable context facts to the call that observed them. */
-	const sessionFacts = (ctx: ExtensionContext): SessionFacts => ({
-		session: ctx.sessionManager.getSessionId(),
-		mode: ctx.mode,
-		cwd: ctx.cwd,
-		projectContext: ctx.getSystemPrompt().includes(PROJECT_CONTEXT_MARKER),
-	});
+	const sessionFacts = (ctx: ExtensionContext): SessionFacts => {
+		const model = ctx.model;
+		return {
+			session: ctx.sessionManager.getSessionId(),
+			mode: ctx.mode,
+			cwd: ctx.cwd,
+			model: model ? `${model.provider}/${model.id}` : null,
+			thinkingLevel: ctx.thinkingLevel ?? null,
+			projectContext: ctx.getSystemPrompt().includes(PROJECT_CONTEXT_MARKER),
+		};
+	};
 
 	/**
 	 * Stop recording and report once. This runs inside the handler's own catch,
@@ -146,6 +248,9 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	} catch (error) {
 		stop(error);
 	}
+
+	const rules = AgentRules.load(resolvePolicyDir(process.env, getAgentDir()));
+	bindAgentRules(rules);
 
 	const recordWriter = (): PolicyWriter => {
 		writer ??= new PolicyWriter(resolvePolicyDir(process.env, getAgentDir()), stop);
@@ -219,16 +324,120 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		return { text, ids };
 	};
 
+	pi.registerTool({
+		name: "policy_rule_add",
+		label: "Add Policy Rule",
+		description: "Add an active agent-authored shell policy rule to the append-only policy registry.",
+		executionMode: "sequential",
+		parameters: Type.Object(
+			{
+				slug: Type.String(),
+				note: Type.String(),
+				match: MatchSchema,
+				scope: Type.Optional(ScopeSchema),
+			},
+			{ additionalProperties: false },
+		),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				const validation =
+					validateSlug(params.slug) ??
+					validateNote(params.note) ??
+					validateMatch(params.match) ??
+					validateScope(params.scope);
+				if (validation) return toolText(validation);
+				const model = modelName(ctx);
+				if (model === null) return toolText("cannot attribute a rule without a model");
+				const rule: AgentRule = {
+					slug: params.slug,
+					note: params.note,
+					match: params.match as AgentMatch,
+					state: "active",
+					model,
+					session: ctx.sessionManager.getSessionId(),
+					at: new Date().toISOString(),
+				};
+				if (params.scope !== undefined) rule.scope = params.scope as AgentScope;
+				const failure = await rules.add(rule);
+				return toolText(failure ?? `Added policy class ${agentClass(rule.slug)} in active state.`);
+			} catch (error) {
+				return toolText(toolFailure(error));
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "policy_rule_list",
+		label: "List Policy Rules",
+		description: "List non-discarded agent-authored policy rules and their posture, match, scope, and attribution.",
+		executionMode: "sequential",
+		parameters: Type.Object({}, { additionalProperties: false }),
+		async execute() {
+			try {
+				return toolText(rulesText(rules.list()));
+			} catch (error) {
+				return toolText(toolFailure(error));
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "policy_rule_set_state",
+		label: "Set Policy Rule State",
+		description: "Change an agent-authored policy rule between active, promoted, disabled, and discarded posture.",
+		executionMode: "sequential",
+		parameters: Type.Object(
+			{
+				slug: Type.String(),
+				state: AgentStateSchema,
+			},
+			{ additionalProperties: false },
+		),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				const current = rules.get(params.slug);
+				if (!current) return toolText(`unknown agent rule "${params.slug}"`);
+				const requested = params.state as AgentState;
+				if (needsOperatorConfirm(current.state, requested)) {
+					if (!ctx.hasUI) {
+						return toolText(
+							`cannot lower promoted rule "${current.slug}" in ${ctx.mode} mode: lowering a promoted rule requires operator confirmation`,
+						);
+					}
+					const ok = await ctx.ui.confirm(
+						`Lower promoted policy rule ${current.slug}?`,
+						`Rule "${current.slug}" would change from ${current.state} to ${requested}.\n\nNote: ${current.note}`,
+					);
+					if (!ok) return toolText("state change declined by the operator");
+				}
+				const model = modelName(ctx);
+				if (model === null) return toolText("cannot attribute a rule state change without a model");
+				const failure = await rules.setState(
+					current.slug,
+					requested,
+					model,
+					ctx.sessionManager.getSessionId(),
+					new Date().toISOString(),
+				);
+				return toolText(failure ?? `Set policy class ${agentClass(current.slug)} to ${requested}.`);
+			} catch (error) {
+				return toolText(toolFailure(error));
+			}
+		},
+	});
+
 	pi.on("tool_call", async (event, ctx) => {
 		if (stopped) return;
 		try {
+			const facts = sessionFacts(ctx);
 			const call: ObservedCall = {
-				...startCall(event.toolName, event.toolCallId, event.input as Record<string, unknown>),
-				sessionFacts: sessionFacts(ctx),
+				...startCall(event.toolName, event.toolCallId, event.input as Record<string, unknown>, facts.model),
+				sessionFacts: facts,
 			};
 			trackPending(pending, call);
-			if (mode === "enforce" && call.classes.length > 0) {
-				const reason = guidanceFor(call.tool, call.classes);
+			const blocking = call.classes.filter((id) => !isAgentClass(id) || rules.isBlocking(id));
+			if (mode === "enforce" && blocking.length > 0) {
+				const reason = guidanceFor(call.tool, blocking);
 				// A block is never returned without capacity for its record.
 				if (!recordWriter().tryReserve()) {
 					stop(new Error("policy writer cannot admit a block record"));
@@ -252,20 +461,23 @@ export default function registerPolicy(pi: ExtensionAPI) {
 			let annotation: Annotation | undefined;
 			if (call.classes.length > 0) {
 				if (mode === "notice" && ctx.mode === "tui") effects.notified = true;
-				if (mode === "annotate" && event.isError !== true) {
+				if ((mode === "annotate" || mode === "enforce") && call.blocked !== true && event.isError !== true) {
 					annotation = annotationFor(call.tool, call.classes, call.sessionFacts.session);
 					if (annotation) effects.annotationBytes = Buffer.byteLength(annotation.text, "utf8");
 				}
 			}
 			// Admission gates the visible effects: no notice or annotation without its record.
-			if (!writeRecord(
-				call,
-				event.content as ContentLike[] | undefined,
-				event.isError,
-				(event as { details?: unknown }).details,
-				event.usage,
-				effects,
-			)) return;
+			if (
+				!writeRecord(
+					call,
+					event.content as ContentLike[] | undefined,
+					event.isError,
+					(event as { details?: unknown }).details,
+					event.usage,
+					effects,
+				)
+			)
+				return;
 			if (effects.notified === true) {
 				ctx.ui.notify(`${POLICY_PREFIX} ${call.classes.join(", ")}`, "warning");
 			}

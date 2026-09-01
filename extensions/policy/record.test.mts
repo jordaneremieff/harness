@@ -10,11 +10,25 @@ import {
 	type SessionFacts,
 } from "./record.ts";
 
-const facts: SessionFacts = { session: "s1", mode: "tui", cwd: "/work", projectContext: true };
+const facts: SessionFacts = {
+	session: "s1",
+	mode: "tui",
+	cwd: "/work",
+	model: "xai/grok-4.6",
+	thinkingLevel: "high",
+	projectContext: true,
+};
 
 describe("startCall", () => {
 	it("classifies the call and stores redacted command text", () => {
-		const call = startCall("bash", "c1", { command: "TOKEN=abcdef cat notes.md" }, new Date("2026-09-01T10:00:00Z"), 1000);
+		const call = startCall(
+			"bash",
+			"c1",
+			{ command: "TOKEN=abcdef cat notes.md" },
+			"xai/grok-4.6",
+			new Date("2026-09-01T10:00:00Z"),
+			1000,
+		);
 		assert.deepEqual(call.classes, ["routing.cat-read"]);
 		assert.equal(call.captured, "TOKEN=[redacted] cat notes.md");
 		assert.equal(call.at, "2026-09-01T10:00:00.000Z");
@@ -42,7 +56,8 @@ describe("startCall", () => {
 });
 
 describe("finishCall", () => {
-	const pending = (): PendingCall => startCall("bash", "c1", { command: "cat a" }, new Date("2026-09-01T10:00:00Z"), 1000);
+	const pending = (): PendingCall =>
+		startCall("bash", "c1", { command: "cat a" }, facts.model, new Date("2026-09-01T10:00:00Z"), 1000);
 
 	it("measures duration and output size", () => {
 		const record = finishCall(pending(), { content: [{ type: "text", text: "abcd" }] }, facts, "observe", {}, 1250);
@@ -51,7 +66,16 @@ describe("finishCall", () => {
 		assert.equal(record.error, false);
 		assert.equal(record.errorKind, null);
 		assert.equal(record.session, "s1");
+		assert.equal(record.model, "xai/grok-4.6");
+		assert.equal(record.thinkingLevel, "high");
 		assert.equal(record.projectContext, true);
+	});
+
+	it("records null model and thinking level when they are absent", () => {
+		const absent: SessionFacts = { ...facts, model: null, thinkingLevel: null };
+		const record = finishCall(startCall("bash", "c1", { command: "cat a" }), {}, absent, "observe", {}, 1001);
+		assert.equal(record.model, null);
+		assert.equal(record.thinkingLevel, null);
 	});
 
 	it("never reports a negative duration", () => {
@@ -114,7 +138,7 @@ describe("trackPending", () => {
 	it("evicts the oldest call when the map is full", () => {
 		const map = new Map<string, PendingCall>();
 		for (let index = 0; index < MAX_PENDING + 5; index++) {
-			trackPending(map, startCall("bash", `c${index}`, { command: "ls" }, new Date(), index), index);
+			trackPending(map, startCall("bash", `c${index}`, { command: "ls" }, null, new Date(), index), index);
 		}
 		assert.equal(map.size, MAX_PENDING);
 		assert.equal(map.has("c0"), false);
@@ -123,10 +147,10 @@ describe("trackPending", () => {
 
 	it("drops unresolved calls after the age bound", () => {
 		const map = new Map<string, PendingCall>();
-		trackPending(map, startCall("bash", "stale", { command: "ls" }, new Date(), 0), 0);
+		trackPending(map, startCall("bash", "stale", { command: "ls" }, null, new Date(), 0), 0);
 		trackPending(
 			map,
-			startCall("bash", "live", { command: "ls" }, new Date(), MAX_PENDING_AGE_MS + 1),
+			startCall("bash", "live", { command: "ls" }, null, new Date(), MAX_PENDING_AGE_MS + 1),
 			MAX_PENDING_AGE_MS + 1,
 		);
 		assert.equal(map.has("stale"), false);

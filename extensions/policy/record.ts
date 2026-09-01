@@ -20,6 +20,10 @@ export interface SessionFacts {
 	session: string;
 	mode: string;
 	cwd: string;
+	/** Provider and model id active for the call. */
+	model: string | null;
+	/** Thinking level active for the call. */
+	thinkingLevel: string | null;
 	/** The effective system prompt carries project context files. */
 	projectContext: boolean;
 }
@@ -90,6 +94,7 @@ export function startCall(
 	tool: string,
 	callId: string,
 	input: Record<string, unknown>,
+	model: string | null = null,
 	now: Date = new Date(),
 	monotonic: number = performance.now(),
 ): PendingCall {
@@ -101,7 +106,7 @@ export function startCall(
 		callId,
 		at: now.toISOString(),
 		startedAt: monotonic,
-		classes: text === undefined ? [] : classifyCaptured(tool, text),
+		classes: text === undefined ? [] : classifyCaptured(tool, text, model),
 	};
 	if (text !== undefined) pending.captured = redactFor(tool, text);
 	return pending;

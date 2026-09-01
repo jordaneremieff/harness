@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { captureFor, classify, notesFor, redactFor } from "./classify.ts";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, it } from "node:test";
+import { AgentRules } from "./agent-rules.ts";
+import { bindAgentRules, captureFor, classify, classifyCaptured, notesFor, redactFor } from "./classify.ts";
+
+afterEach(() => bindAgentRules(null));
 
 describe("captureFor", () => {
 	it("returns the text the owning domain declares", () => {
@@ -39,6 +45,49 @@ describe("redactFor", () => {
 	it("keeps an unowned tool's capture unchanged", () => {
 		const opaque = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.signature";
 		assert.equal(redactFor("read", opaque), opaque);
+	});
+});
+
+describe("agent rule composition", () => {
+	it("merges agent classes with built-in classes and passes the model to scope", async () => {
+		const rules = new AgentRules(await mkdtemp(join(tmpdir(), "policy-classify-")));
+		assert.equal(
+			await rules.add({
+				slug: "scoped-cat",
+				note: "Avoid this cat shape.",
+				match: { tool: "bash", command: "cat" },
+				scope: { providers: ["xai"] },
+				state: "active",
+				model: "xai/grok-4.6",
+				session: "s1",
+				at: "2026-09-01T07:00:00Z",
+			}),
+			null,
+		);
+		bindAgentRules(rules);
+		assert.deepEqual(classifyCaptured("bash", "cat notes.md", "xai/grok-4.6"), [
+			"agent.scoped-cat",
+			"routing.cat-read",
+		]);
+		assert.deepEqual(classifyCaptured("bash", "cat notes.md", "anthropic/claude"), ["routing.cat-read"]);
+	});
+
+	it("falls back to agent guidance when the domain has no built-in note", async () => {
+		const rules = new AgentRules(await mkdtemp(join(tmpdir(), "policy-classify-")));
+		await rules.add({
+			slug: "custom",
+			note: "Use the reviewed form.",
+			match: { tool: "bash", command: "git" },
+			state: "active",
+			model: "xai/grok-4.6",
+			session: "s1",
+			at: "2026-09-01T07:00:00Z",
+		});
+		bindAgentRules(rules);
+		assert.deepEqual(notesFor("bash", ["routing.cat-read", "agent.custom"]), [
+			"Use the read tool for file contents.",
+			"Use the reviewed form.",
+		]);
 	});
 });
 

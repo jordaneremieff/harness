@@ -22,7 +22,7 @@ export function localDate(date: Date): string {
 	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-async function ensurePrivateDirectory(dir: string): Promise<void> {
+export async function ensurePrivateDirectory(dir: string): Promise<void> {
 	const created = await mkdir(dir, { recursive: true, mode: 0o700 });
 	const info = await lstat(dir);
 	if (!info.isDirectory() || info.isSymbolicLink()) {

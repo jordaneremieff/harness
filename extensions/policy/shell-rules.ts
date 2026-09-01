@@ -39,7 +39,7 @@ function commandName(stage: Stage): string {
 	return command;
 }
 
-function flags(stage: Stage): string[] {
+export function flags(stage: Stage): string[] {
 	const present: string[] = [];
 	for (const arg of stage.args) {
 		if (arg === "--") break;
@@ -58,7 +58,7 @@ function hasFlag(stage: Stage, ...names: string[]): boolean {
 }
 
 /** Operands that are neither flags nor values consumed by named flags. */
-function operands(stage: Stage, flagsWithValue: Set<string> = new Set()): string[] {
+export function operands(stage: Stage, flagsWithValue: Set<string> = new Set()): string[] {
 	const result: string[] = [];
 	let skipNext = false;
 	let literal = false;

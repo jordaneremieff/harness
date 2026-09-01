@@ -10,6 +10,8 @@ const record = (at: string): PolicyRecord => ({
 	session: "s1",
 	mode: "tui",
 	cwd: "/work",
+	model: "xai/grok-4.6",
+	thinkingLevel: "high",
 	projectContext: false,
 	at,
 	tool: "bash",
