@@ -25,7 +25,6 @@ interface ParsedArguments {
 }
 
 const VALUE_OPTIONS = new Set([
-	"suite",
 	"participant",
 	"repetitions",
 	"case",
@@ -33,7 +32,6 @@ const VALUE_OPTIONS = new Set([
 	"approve",
 	"credential-env",
 	"grant-effect",
-	"run",
 	"verdict",
 	"notes",
 	"preferred",

@@ -5,8 +5,29 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { refineOperationalStatus, runExitCode } from "./cli.mts";
+import { refineOperationalStatus, runCli, runExitCode } from "./cli.mts";
 import type { OperationalStatus, RunState } from "./types.mts";
+
+async function captureCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+	const originalStdout = process.stdout.write;
+	const originalStderr = process.stderr.write;
+	let stdout = "";
+	let stderr = "";
+	process.stdout.write = ((chunk: string | Uint8Array) => {
+		stdout += String(chunk);
+		return true;
+	}) as typeof process.stdout.write;
+	process.stderr.write = ((chunk: string | Uint8Array) => {
+		stderr += String(chunk);
+		return true;
+	}) as typeof process.stderr.write;
+	try {
+		return { code: await runCli(args), stdout, stderr };
+	} finally {
+		process.stdout.write = originalStdout;
+		process.stderr.write = originalStderr;
+	}
+}
 
 function evidenceDirectory(errors: Array<Array<{ type: string; message: string }>>): string {
 	const directory = mkdtempSync(join(tmpdir(), "evals-cli-test-"));
@@ -29,6 +50,27 @@ function classify(errors: Array<Array<{ type: string; message: string }>>): Oper
 		rmSync(directory, { recursive: true, force: true });
 	}
 }
+
+describe("CLI argument grammar", () => {
+	it("rejects retired suite and run value options", async () => {
+		const suite = await captureCli(["validate", "prompts/wtf.eval.mts", "--suite", "prompts/wtf.eval.mts"]);
+		assert.equal(suite.code, 1);
+		assert.equal(suite.stderr, "evals: Unknown option: --suite\n");
+		const run = await captureCli(["inspect", "missing", "--run", "missing"]);
+		assert.equal(run.code, 1);
+		assert.equal(run.stderr, "evals: Unknown option: --run\n");
+	});
+
+	it("keeps suite paths and run IDs positional", async () => {
+		const suite = await captureCli(["validate", "prompts/wtf.eval.mts"]);
+		assert.equal(suite.code, 0);
+		assert.equal(suite.stderr, "");
+		assert.equal((JSON.parse(suite.stdout) as { valid?: boolean }).valid, true);
+		const run = await captureCli(["inspect", "missing"]);
+		assert.equal(run.code, 1);
+		assert.equal(run.stderr, "evals: Invalid run id: missing\n");
+	});
+});
 
 describe("refineOperationalStatus", () => {
 	it("classifies mixed usable and errored executions as partial", () => {

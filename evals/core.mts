@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -309,9 +309,4 @@ export async function loadSuite(
 	if (!("default" in module)) fail("suite module must have a default export");
 	validateSuite(module.default);
 	return { suite: module.default, path };
-}
-
-export function repositoryRelative(path: string, root: string): string {
-	const value = relative(root, path);
-	return value.startsWith("..") ? path : value;
 }

@@ -39,7 +39,7 @@ npm run evals -- adjudicate <partial-run-id> --verdict pass --scope usable-execu
 npm run evals -- delete <run-id> --approve <run-id>
 ```
 
-Repeat `--participant`, `--case`, `--variant`, `--credential-env`, and `--grant-effect` where needed. Plan and run arguments must match. The run command recomputes the plan and requires its exact digest.
+Repeat `--participant`, `--case`, `--variant`, `--credential-env`, and `--grant-effect` where needed. Suite paths and run IDs are positional arguments; there are no `--suite` or `--run` aliases. Plan and run arguments must match. The run command recomputes the plan and requires its exact digest.
 
 `--allow-home-credentials` explicitly exposes `HOME` to the controlled child. `--credential-env NAME` exposes only that named variable. The child receives no general copy of the parent environment. The approved digest covers the participant roster, repetition count, credential sources, granted effects, cases, selected variants and their complete configuration, subject resolution, and limits. This includes extension flag values declared by a variant.
 
