@@ -67,6 +67,34 @@ describe("neutral suite contract", () => {
 		}
 	});
 
+	it("covers variant extension flags in the approved plan digest", () => {
+		const directory = mkdtempSync(join(tmpdir(), "eval-core-flags-"));
+		try {
+			const suitePath = join(directory, "suite.eval.mts");
+			writeFileSync(suitePath, "export default {};\n");
+			const participant = parseParticipant("anthropic/claude-example:off");
+			const grant = {
+				providerNetwork: "approved-effects-only" as const,
+				credentialSources: { home: true, environment: [] },
+				grantedEffects: ["effect"],
+			};
+			const suite = neutralSuite();
+			suite.subject.variants[0]!.config = { extensionFlags: { enabled: true, mode: "strict" } };
+			const equivalent = neutralSuite();
+			equivalent.subject.variants[0]!.config = { extensionFlags: { mode: "strict", enabled: true } };
+			const changed = neutralSuite();
+			changed.subject.variants[0]!.config = { extensionFlags: { enabled: true, mode: "advisory" } };
+			const planned = createPlan(suite, suitePath, [participant], 1, adapter, grant);
+			const equivalentPlan = createPlan(equivalent, suitePath, [participant], 1, adapter, grant);
+			const changedPlan = createPlan(changed, suitePath, [participant], 1, adapter, grant);
+			assert.equal(planned.digest, equivalentPlan.digest);
+			assert.notEqual(planned.digest, changedPlan.digest);
+			assert.deepEqual(planned.variants[0]?.config, suite.subject.variants[0]?.config);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects data that JSON.stringify would silently alter", () => {
 		for (const invalid of [undefined, Number.NaN, Number.POSITIVE_INFINITY, () => undefined, 1n]) {
 			const suite = neutralSuite() as unknown as Record<string, unknown>;

@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message, Model } from "@earendil-works/pi-ai";
 import type { TranscriptEvent } from "vitest-evals";
-import { normalizePiTranscript, runDeterministicChecks, scorePostSeedPiTranscript, summarizeUsage } from "./pi-sdk.mts";
+import {
+	isAssistantFailureStopReason,
+	limitModelOutput,
+	normalizePiTranscript,
+	parseExtensionFlagValues,
+	piSdkAdapter,
+	runDeterministicChecks,
+	scorePostSeedPiTranscript,
+	summarizeUsage,
+} from "./pi-sdk.mts";
 
 const participant = { id: "test/model:off", provider: "test", model: "model", thinking: "off" as const };
 const usage = {
@@ -14,6 +23,21 @@ const usage = {
 	totalTokens: 17,
 	cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.01, total: 0.32 },
 };
+
+function inferenceModel(maxTokens: number): Model<"openai-completions"> {
+	return {
+		id: "model",
+		name: "Model",
+		api: "openai-completions",
+		provider: "test",
+		baseUrl: "https://provider.invalid",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 16_384,
+		maxTokens,
+	};
+}
 
 function assistantMessage(
 	content: Extract<Message, { role: "assistant" }>["content"],
@@ -60,6 +84,68 @@ const toolEvents: TranscriptEvent[] = [
 		content: "Wrote safe output.",
 	},
 ];
+
+describe("Pi session plan fidelity", () => {
+	it("caps a copied inference model at the execution output ceiling", () => {
+		const resolved = inferenceModel(4_096);
+		const limited = limitModelOutput(resolved, 1_024);
+		assert.notEqual(limited, resolved);
+		assert.equal(limited.maxTokens, 1_024);
+		assert.equal(resolved.maxTokens, 4_096);
+		assert.equal(limited.cost, resolved.cost);
+	});
+
+	it("preserves a model's lower output ceiling without mutating it", () => {
+		const resolved = inferenceModel(512);
+		const limited = limitModelOutput(resolved, 1_024);
+		assert.equal(limited.maxTokens, 512);
+		assert.equal(resolved.maxTokens, 512);
+		assert.notEqual(limited, resolved);
+	});
+
+	it("treats a length stop as an assistant failure", () => {
+		assert.equal(isAssistantFailureStopReason("length"), true);
+	});
+
+	it("preserves existing stop failure and success classifications", () => {
+		assert.equal(isAssistantFailureStopReason("error"), true);
+		assert.equal(isAssistantFailureStopReason("aborted"), true);
+		for (const reason of ["pending", "stop", "toolUse", "deferred"] as const) {
+			assert.equal(isAssistantFailureStopReason(reason), false);
+		}
+	});
+
+	it("converts declared extension flags to session-service values", () => {
+		const values = parseExtensionFlagValues({ enabled: false, mode: "strict" }, "configured");
+		assert.deepEqual(values ? [...values] : values, [
+			["enabled", false],
+			["mode", "strict"],
+		]);
+	});
+
+	it("leaves session extension flag values absent when not configured", () => {
+		assert.equal(parseExtensionFlagValues(undefined, "default"), undefined);
+	});
+
+	it("rejects malformed extension flags with the variant id", () => {
+		assert.throws(
+			() =>
+				piSdkAdapter.resolve({
+					suitePath: import.meta.filename,
+					subjectKind: "adhoc",
+					subjectConfig: {},
+					variant: {
+						id: "malformed",
+						description: "Malformed",
+						config: { extensionFlags: { mode: 3 } },
+					},
+				}),
+			/variant malformed\.config\.extensionFlags\.mode must be a boolean or string/,
+		);
+		assert.throws(() => parseExtensionFlagValues([], "malformed"), /variant malformed.*must be an object/);
+		assert.throws(() => parseExtensionFlagValues({ "": true }, "malformed"), /variant malformed.*non-empty/);
+	});
+});
 
 describe("Pi evidence normalization", () => {
 	it("keeps transcript order and provider usage metadata", () => {

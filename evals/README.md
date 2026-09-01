@@ -41,11 +41,11 @@ npm run evals -- delete <run-id> --approve <run-id>
 
 Repeat `--participant`, `--case`, `--variant`, `--credential-env`, and `--grant-effect` where needed. Plan and run arguments must match. The run command recomputes the plan and requires its exact digest.
 
-`--allow-home-credentials` explicitly exposes `HOME` to the controlled child. `--credential-env NAME` exposes only that named variable. The child receives no general copy of the parent environment. The approved digest covers the participant roster, repetition count, credential sources, granted effects, cases, variants, subject resolution, and limits.
+`--allow-home-credentials` explicitly exposes `HOME` to the controlled child. `--credential-env NAME` exposes only that named variable. The child receives no general copy of the parent environment. The approved digest covers the participant roster, repetition count, credential sources, granted effects, cases, selected variants and their complete configuration, subject resolution, and limits. This includes extension flag values declared by a variant.
 
 ## Limits and states
 
-A plan records wall-time limits, execution limits, and an observed cost limit. Cost enforcement occurs after each execution. It is not a hard spend cap because one execution can cross the observed limit.
+A plan records wall-time limits, execution limits, and an observed cost limit. For each execution, the Pi adapter gives the session a shallow copy of the resolved model whose `maxTokens` is the lower of the model ceiling and `maxOutputTokensEach`. Provider-reported output usage is still checked after execution as a backstop, and a provider `length` stop is recorded as limit exhaustion. Cost enforcement occurs after each execution. It is not a hard spend cap because one execution can cross the observed limit.
 
 Operational terminal states are `completed`, `partial`, `blocked`, `cancelled`, `timed_out`, and `failed`. A run is `partial` only when its child outcome is not clean and its recorded evidence contains both an execution with no errors and an execution with errors. When every recorded execution errors, the existing cause classification remains `blocked`, `cancelled`, `timed_out`, or `failed`. A `partial` run is operationally incomplete, and `run` exits nonzero for it.
 
@@ -63,7 +63,7 @@ Deterministic checks are structural or lexical floors. Passing them does not est
 
 The Pi adapter uses public SDK services and `AgentSessionRuntime`. It creates an empty per-execution working directory and resource directory, disables discovered resources, and permits only explicit suite resources. It seeds an in-memory `SessionManager` before session creation, resolves the exact provider and model through `ModelRuntime`, checks approved authentication, binds explicit extensions, aborts on limits, and disposes the runtime.
 
-The adapter supports prompt, skill, extension, and ad hoc subjects through JSON Pi configuration. It records the full normalized transcript, public run-entry usage, loader diagnostics, requested and effective provider/model/thinking values, response model, checks, and errors. Persisted and review events retain the full transcript, including seeded fixtures. Deterministic transcript checks observe only post-seed events from the current execution.
+The adapter supports prompt, skill, extension, and ad hoc subjects through JSON Pi configuration. Variant configuration may include `extensionFlags`, an object whose values are booleans or strings. The adapter passes those entries to Pi as `extensionFlagValues` when constructing session services; omitted flags preserve Pi's defaults. It records the full normalized transcript, public run-entry usage, loader diagnostics, requested and effective provider/model/thinking values, response model, checks, and errors. Persisted and review events retain the full transcript, including seeded fixtures. Deterministic transcript checks observe only post-seed events from the current execution.
 
 ### Transcript check types
 

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-import type { Api, Message, Usage } from "@earendil-works/pi-ai";
+import type { Api, Message, Model, StopReason, Usage } from "@earendil-works/pi-ai";
 import {
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
@@ -42,6 +42,7 @@ interface PiVariantConfig {
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
 	tools?: string[];
+	extensionFlags?: Record<string, boolean | string>;
 }
 
 interface PiCaseInput {
@@ -57,6 +58,28 @@ function jsonValue(value: unknown): JsonValue {
 function asRecord(value: JsonValue, field: string): Record<string, JsonValue> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} must be an object`);
 	return value;
+}
+
+export function parseExtensionFlagValues(value: unknown, variantId: string): Map<string, boolean | string> | undefined {
+	if (value === undefined) return undefined;
+	const field = `variant ${variantId}.config.extensionFlags`;
+	if (
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		(Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)
+	) {
+		throw new Error(`${field} must be an object`);
+	}
+	const result = new Map<string, boolean | string>();
+	for (const [name, flagValue] of Object.entries(value)) {
+		if (name === "") throw new Error(`${field} keys must be non-empty`);
+		if (typeof flagValue !== "boolean" && typeof flagValue !== "string") {
+			throw new Error(`${field}.${name} must be a boolean or string`);
+		}
+		result.set(name, flagValue);
+	}
+	return result;
 }
 
 function parseVariant(variant: SubjectVariant): PiVariantConfig {
@@ -86,6 +109,7 @@ function resourcePath(path: string, suitePath: string): string {
 
 function resolvePiSubject({ suitePath, variant }: { suitePath: string; variant: SubjectVariant }): JsonValue {
 	const config = parseVariant(variant);
+	parseExtensionFlagValues(config.extensionFlags, variant.id);
 	const resources: JsonValue[] = [];
 	for (const prompt of config.promptTemplates ?? []) {
 		if ("path" in prompt.source) {
@@ -434,6 +458,14 @@ function lastAssistant(messages: Message[]): Extract<Message, { role: "assistant
 	return undefined;
 }
 
+export function limitModelOutput<TApi extends Api>(model: Model<TApi>, maximum: number): Model<TApi> {
+	return { ...model, maxTokens: Math.min(model.maxTokens, maximum) };
+}
+
+export function isAssistantFailureStopReason(stopReason: StopReason): boolean {
+	return stopReason === "length" || stopReason === "error" || stopReason === "aborted";
+}
+
 export function scorePostSeedPiTranscript(allMessages: Message[], seedMessageCount: number, checks: EvaluationCheck[]) {
 	const newMessages = allMessages.slice(seedMessageCount);
 	const assistant = lastAssistant(newMessages);
@@ -450,6 +482,7 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 	}
 	const { suitePath, variant, evaluationCase, participant, limits, signal } = args;
 	const config = parseVariant(variant);
+	const extensionFlagValues = parseExtensionFlagValues(config.extensionFlags, variant.id);
 	const input = parseCase(evaluationCase);
 	const errors: Array<Record<string, JsonValue>> = [];
 	const sandboxParent = resolve(args.runDirectory, "sandboxes");
@@ -488,6 +521,7 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 				agentDir: isolatedAgentDir,
 				settingsManager,
 				modelRuntime,
+				extensionFlagValues,
 				resourceLoaderOptions: {
 					additionalSkillPaths,
 					additionalExtensionPaths,
@@ -504,12 +538,12 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 					appendSystemPromptOverride: () => config.appendSystemPrompt ?? [],
 				},
 			});
-			const model = services.modelRuntime.getModel(participant.provider, participant.model);
-			if (!model || model.provider !== participant.provider || model.id !== participant.model) {
+			const resolvedModel = services.modelRuntime.getModel(participant.provider, participant.model);
+			if (!resolvedModel || resolvedModel.provider !== participant.provider || resolvedModel.id !== participant.model) {
 				throw blocked(`ModelRuntime did not resolve exact model ${participant.provider}/${participant.model}`);
 			}
 			try {
-				const auth = await services.modelRuntime.getAuth(model);
+				const auth = await services.modelRuntime.getAuth(resolvedModel);
 				if (!auth) throw blocked(`No approved credential resolved for ${participant.provider}/${participant.model}`);
 			} catch (error) {
 				if (error instanceof Error && error.name === "BlockedError") throw error;
@@ -517,6 +551,7 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 					cause: error,
 				});
 			}
+			const model = limitModelOutput(resolvedModel, limits.execution.maxOutputTokensEach);
 			const loader = services.resourceLoader;
 			const actual = {
 				extensions: loader.getExtensions().extensions.length,
@@ -635,7 +670,7 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 			if (message.role === "assistant" && message.errorMessage) {
 				errors.push({ type: "AssistantError", message: message.errorMessage });
 			}
-			if (message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
+			if (message.role === "assistant" && isAssistantFailureStopReason(message.stopReason)) {
 				errors.push({ type: "AssistantStopReason", message: `Assistant stopped with ${message.stopReason}.` });
 			}
 		}
