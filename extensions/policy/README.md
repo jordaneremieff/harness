@@ -5,8 +5,8 @@ rules, and runs the one mechanism the active mode selects.
 
 The records support comparison of command classes by duration, output size,
 truncation, and failure. Built-in classes are fixed in code; agent-authored
-classes use a closed shell-stage vocabulary and an explicit per-rule posture.
-No mode changes a tool input.
+classes use a closed shell-stage vocabulary, an optional structured suggested
+form, and an explicit per-rule posture. No mode changes a tool input.
 
 ## Modes
 
@@ -203,7 +203,7 @@ the daily record store: `<dir>/agent-rules.jsonl`, where `<dir>` follows
 It uses the same private-directory, no-follow, `0600`, checked-append discipline
 as records and has a fixed file byte cap. Rule and state records replay in line
 order at extension registration. Every rule record carries the current
-match-schema version; a missing or different version is skipped with one
+rule-schema version; a missing or different version is skipped with one
 warning, so widening the vocabulary never silently extends an old rule. State
 records carry no schema version.
 
@@ -226,6 +226,33 @@ rule. Values and lists compare exact strings. There is no regex, glob, arbitrary
 negation, or free-form composition. Unknown keys and wrong types are rejected
 at every level. Everything outside this vocabulary is a code change with a
 test, not data accepted by the registry.
+
+The optional `suggest` object names one machine-checkable preferred shell form.
+Its required `command` is one exact, slash-free command name. Its only optional
+field is a non-empty `flags` list of exact normalized short or long flag names,
+without leading hyphens or attached values. The form is a standalone stage
+containing that command and those flags, with no operands,
+redirects, or pipeline. Required flags are included because both agent matches
+and built-in predicates distinguish forms such as `ls` from `ls -R`; operands,
+patterns, regex, and free-form shell text are deliberately not accepted.
+
+At add time, a declared form is evaluated with the same built-in predicates and
+agent match evaluator used for calls. The prospective active rule participates
+in that check, so a rule cannot suggest a form it flags itself. Every other
+currently active or promoted agent rule participates, as do all built-in shell
+rules. Disabled and discarded rules do not. Before any transition to
+`promoted`, the target's form is checked against the full prospective registry,
+and every form declared by another currently active or promoted rule is checked
+against the target's prospective match. This catches both a target whose
+suggestion became flagged after authoring and a target that would newly block
+another rule's suggestion, without making unrelated conflicts reject the
+transition. A match refuses the append and names every class conflicting with
+the target's form, or names the target when it conflicts with another form; the
+in-memory posture therefore stays unchanged. These checks are independent of
+scope:
+scope still gates only what a model hears, not classification or registry-wide
+form safety. A rule may omit `suggest` for guidance outside this deliberately
+small shell vocabulary; its prose `note` is never parsed to infer a form.
 
 Scope is also closed, but it never participates in classification. Every
 matching active or promoted rule classifies and records against every model.
@@ -259,13 +286,16 @@ Other allowed transitions do not prompt.
 
 The model-facing management surface is:
 
-- `policy_rule_add` validates and appends a model-attributed active rule.
-- `policy_rule_list` returns bounded text for every non-discarded rule and its
-  firing count from the daily record store. If the bounded store scan cannot
-  finish, the output ends with `firing counts partial: store scan exceeded the
-  byte bound`.
-- `policy_rule_set_state` appends an attributed posture transition and applies
-  the promoted-rule confirmation gate.
+- `policy_rule_add` validates the match, optional suggested form, and scope,
+  refuses a suggested form matched by an enabled or built-in class, and appends
+  a model-attributed active rule.
+- `policy_rule_list` returns bounded text for every non-discarded rule,
+  including its optional suggested form and firing count from the daily record
+  store. If the bounded store scan cannot finish, the output ends with `firing
+  counts partial: store scan exceeded the byte bound`.
+- `policy_rule_set_state` rechecks declared suggested forms against the
+  prospective registry before promotion, then appends an attributed posture
+  transition and applies the promoted-rule confirmation gate.
 
 A missing rules file is an empty registry. An unreadable or unparseable file
 warns once and leaves built-in classification and recording untouched.
@@ -362,10 +392,11 @@ model turn do not.
 ## Boundaries
 
 The extension has no input mutation and accepts no predicates beyond the closed
-agent match and scope schemas. Agent-rule notes are prose, and the vocabulary
-carries no structured suggested form, so a rule's note is not parsed or checked
-against any other rule. Agent rules apply only to the existing shell domain and
-use the same parser, flag reader, and operand reader as built-ins.
+agent match, suggested-form, and scope schemas. Agent-rule notes remain prose
+and are never parsed; only an explicitly declared `suggest` form is checked
+against built-in and enabled agent rules. Agent rules apply only to the existing
+shell domain and use the same parser, flag reader, and operand reader as
+built-ins.
 `annotate` mode and active-only matches in `enforce` mode can append guidance to
 a successful tool result. `enforce` is the only mode that returns model-visible
 text as a block reason. A successful flagged call receives at most one capped

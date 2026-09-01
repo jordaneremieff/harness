@@ -30,12 +30,14 @@ import {
 	type AgentRule,
 	type AgentScope,
 	type AgentState,
+	type AgentSuggestion,
 	isAgentClass,
 	needsOperatorConfirm,
 	validateMatch,
 	validateNote,
 	validateScope,
 	validateSlug,
+	validateSuggestion,
 } from "./agent-rules.ts";
 import { bindAgentRules, notesFor } from "./classify.ts";
 import { resolvePolicyMode, type PolicyMode } from "./mode.ts";
@@ -99,6 +101,13 @@ const MatchSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+const SuggestionSchema = Type.Object(
+	{
+		command: NonEmptyString,
+		flags: Type.Optional(Type.Array(NonEmptyString, { minItems: 1 })),
+	},
+	{ additionalProperties: false },
+);
 const ScopeSchema = Type.Object(
 	{
 		exclude: Type.Optional(Type.Array(NonEmptyString, { minItems: 1 })),
@@ -150,6 +159,7 @@ function rulesText(entries: readonly AgentRule[], fires: ReadonlyMap<string, num
 			`state: ${rule.state}`,
 			`note: ${rule.note}`,
 			`match: ${JSON.stringify(rule.match)}`,
+			`suggest: ${rule.suggest === undefined ? "none" : JSON.stringify(rule.suggest)}`,
 			`scope: ${rule.scope === undefined ? "everywhere" : JSON.stringify(rule.scope)}`,
 			`model: ${rule.model}`,
 			`session: ${rule.session}`,
@@ -339,13 +349,14 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "policy_rule_add",
 		label: "Add Policy Rule",
-		description: "Add an active agent-authored shell policy rule to the append-only policy registry.",
+		description: "Add an active agent-authored shell policy rule with an optional checked suggested form.",
 		executionMode: "sequential",
 		parameters: Type.Object(
 			{
 				slug: Type.String(),
 				note: Type.String(),
 				match: MatchSchema,
+				suggest: Type.Optional(SuggestionSchema),
 				scope: Type.Optional(ScopeSchema),
 			},
 			{ additionalProperties: false },
@@ -356,6 +367,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 					validateSlug(params.slug) ??
 					validateNote(params.note) ??
 					validateMatch(params.match) ??
+					validateSuggestion(params.suggest) ??
 					validateScope(params.scope);
 				if (validation) return toolText(validation);
 				const model = modelName(ctx);
@@ -369,6 +381,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 					session: ctx.sessionManager.getSessionId(),
 					at: new Date().toISOString(),
 				};
+				if (params.suggest !== undefined) rule.suggest = params.suggest as AgentSuggestion;
 				if (params.scope !== undefined) rule.scope = params.scope as AgentScope;
 				const failure = await rules.add(rule);
 				return toolText(failure ?? `Added policy class ${agentClass(rule.slug)} in active state.`);
@@ -381,7 +394,8 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "policy_rule_list",
 		label: "List Policy Rules",
-		description: "List non-discarded agent-authored policy rules and their posture, match, scope, and attribution.",
+		description:
+			"List non-discarded agent-authored policy rules and their match, suggested form, scope, posture, and attribution.",
 		executionMode: "sequential",
 		parameters: Type.Object({}, { additionalProperties: false }),
 		async execute() {
@@ -397,7 +411,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "policy_rule_set_state",
 		label: "Set Policy Rule State",
-		description: "Change an agent-authored policy rule between active, promoted, disabled, and discarded posture.",
+		description: "Change an agent-authored policy rule posture, rechecking declared suggested forms before promotion.",
 		executionMode: "sequential",
 		parameters: Type.Object(
 			{

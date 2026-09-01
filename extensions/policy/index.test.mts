@@ -643,17 +643,51 @@ describe("agent rule tools", () => {
 			slug: "review-force",
 			note: "Use a reviewed push.",
 			match: { tool: "bash", command: "git", flags: ["force"] },
+			suggest: { command: "git", flags: ["force-with-lease"] },
 		};
 		assert.match(await callTool(run, "policy_rule_add", params), /agent\.review-force/);
 		assert.match(await callTool(run, "policy_rule_add", params), /already exists/);
 		const [added] = AgentRules.load(dir).list();
 		assert.equal(added.version, SCHEMA_VERSION);
 		assert.equal(added.state, "active");
+		assert.deepEqual(added.suggest, params.suggest);
 		assert.equal(added.model, "xai/grok-4.6");
 		assert.equal(added.session, "session-1");
 	});
 
-	it("refuses a bad match and a missing model", async () => {
+	it("refuses a suggested form matched by an active rule and allows an unflagged form", async () => {
+		const run = harness();
+		assert.match(
+			await callTool(run, "policy_rule_add", {
+				slug: "flag-unsafe",
+				note: "Use another form.",
+				match: { tool: "bash", command: "unsafe" },
+			}),
+			/agent\.flag-unsafe/,
+		);
+		assert.match(
+			await callTool(run, "policy_rule_add", {
+				slug: "bad-suggestion",
+				note: "Use unsafe instead.",
+				match: { tool: "bash", command: "danger" },
+				suggest: { command: "unsafe" },
+			}),
+			/agent\.flag-unsafe/,
+		);
+		assert.match(
+			await callTool(run, "policy_rule_add", {
+				slug: "good-suggestion",
+				note: "Use safe instead.",
+				match: { tool: "bash", command: "danger" },
+				suggest: { command: "safe" },
+			}),
+			/agent\.good-suggestion/,
+		);
+		assert.equal(AgentRules.load(dir).get("bad-suggestion"), undefined);
+		assert.deepEqual(AgentRules.load(dir).get("good-suggestion")?.suggest, { command: "safe" });
+	});
+
+	it("refuses bad rule shapes and a missing model", async () => {
 		const run = harness();
 		assert.match(
 			await callTool(run, "policy_rule_add", {
@@ -662,6 +696,15 @@ describe("agent rule tools", () => {
 				match: { tool: "bash", command: "git", regex: "push" },
 			}),
 			/unknown key/,
+		);
+		assert.match(
+			await callTool(run, "policy_rule_add", {
+				slug: "bad-suggest",
+				note: "Bad suggestion should fail.",
+				match: { tool: "bash", command: "git" },
+				suggest: { command: "safe", operands: ["path"] },
+			}),
+			/suggest has unknown key/,
 		);
 		const noModel = { ...run.ctx, model: undefined };
 		assert.equal(
@@ -676,7 +719,7 @@ describe("agent rule tools", () => {
 	});
 
 	it("lists every seeded field in bounded text", async () => {
-		const seeded = await seedRule({ scope: { providers: ["xai"] } });
+		const seeded = await seedRule({ suggest: { command: "printf" }, scope: { providers: ["xai"] } });
 		const run = harness();
 		const text = await callTool(run, "policy_rule_list", {});
 		for (const value of [
@@ -684,6 +727,7 @@ describe("agent rule tools", () => {
 			seeded.state,
 			seeded.note,
 			JSON.stringify(seeded.match),
+			JSON.stringify(seeded.suggest),
 			JSON.stringify(seeded.scope),
 			seeded.model,
 			seeded.session,
@@ -712,6 +756,19 @@ describe("agent rule tools", () => {
 		const run = harness();
 		const text = await callTool(run, "policy_rule_list", {});
 		assert.ok(text.endsWith("firing counts partial: store scan exceeded the byte bound"));
+	});
+
+	it("rechecks the suggested form before promotion and preserves active posture on refusal", async () => {
+		await seedRule({
+			slug: "candidate",
+			match: { tool: "bash", command: "danger" },
+			suggest: { command: "later-safe" },
+		});
+		await seedRule({ slug: "later-rule", match: { tool: "bash", command: "later-safe" } });
+		const run = harness();
+		const text = await callTool(run, "policy_rule_set_state", { slug: "candidate", state: "promoted" });
+		assert.match(text, /agent\.later-rule/);
+		assert.equal(AgentRules.load(dir).get("candidate")?.state, "active");
 	});
 
 	it("lowers a promoted rule only after operator confirmation", async () => {

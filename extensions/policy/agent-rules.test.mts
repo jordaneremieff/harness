@@ -23,6 +23,7 @@ import {
 	validateNote,
 	validateScope,
 	validateSlug,
+	validateSuggestion,
 } from "./agent-rules.ts";
 
 const timestamp = "2026-09-01T07:00:00Z";
@@ -78,6 +79,22 @@ describe("agent rule validators", () => {
 		assert.equal(Buffer.byteLength("é".repeat(MAX_NOTE_BYTES / 2), "utf8"), MAX_NOTE_BYTES);
 		assert.equal(validateNote("é".repeat(MAX_NOTE_BYTES / 2)), null);
 		assert.match(validateNote(`a${"é".repeat(MAX_NOTE_BYTES / 2)}`) ?? "", /exceeds/);
+	});
+
+	it("closes and validates the suggested command form", () => {
+		assert.equal(validateSuggestion(undefined), null);
+		assert.equal(validateSuggestion({ command: "rg" }), null);
+		assert.equal(validateSuggestion({ command: "rg", flags: ["files", "hidden"] }), null);
+		assert.match(validateSuggestion(null) ?? "", /must be an object/);
+		assert.match(validateSuggestion({ command: "rg", operands: ["src"] }) ?? "", /unknown key/);
+		assert.match(validateSuggestion({}) ?? "", /non-empty string/);
+		assert.match(validateSuggestion({ command: "" }) ?? "", /non-empty string/);
+		assert.match(validateSuggestion({ command: ["rg", "fd"] }) ?? "", /non-empty string/);
+		assert.match(validateSuggestion({ command: "/usr/bin/rg" }) ?? "", /without \/$/);
+		assert.match(validateSuggestion({ command: "rg", flags: [] }) ?? "", /non-empty string array/);
+		assert.match(validateSuggestion({ command: "rg", flags: [""] }) ?? "", /entries/);
+		assert.match(validateSuggestion({ command: "rg", flags: ["--files"] }) ?? "", /normalized/);
+		assert.match(validateSuggestion({ command: "rg", flags: ["max-count=1"] }) ?? "", /normalized/);
 	});
 
 	it("rejects unknown match keys and invalid required fields", () => {
@@ -337,6 +354,126 @@ describe("AgentRules registry", () => {
 		assert.match((await rules.add(rule("overflow"))) ?? "", /full/);
 	});
 
+	it("refuses self-flagging and enabled-rule suggestions while allowing clean forms", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
+		const rules = new AgentRules(dir);
+		assert.match(
+			(await rules.add(
+				rule("self-flagging", {
+					match: { tool: "bash", command: "git" },
+					suggest: { command: "git" },
+				}),
+			)) ?? "",
+			/agent\.self-flagging/,
+		);
+		assert.equal(rules.get("self-flagging"), undefined);
+
+		assert.equal(
+			await rules.add(
+				rule("force-form", {
+					match: { tool: "bash", command: "git", flags: ["force"] },
+					scope: { providers: ["anthropic"] },
+				}),
+			),
+			null,
+		);
+		assert.match(
+			(await rules.add(
+				rule("suggest-force", {
+					match: { tool: "bash", command: "danger" },
+					suggest: { command: "git", flags: ["force"] },
+				}),
+			)) ?? "",
+			/agent\.force-form/,
+		);
+		assert.equal(await rules.setState("force-form", "promoted", "xai/grok-4.6", "s2", timestamp), null);
+		assert.match(
+			(await rules.add(
+				rule("suggest-promoted-force", {
+					match: { tool: "bash", command: "other-danger" },
+					suggest: { command: "git", flags: ["force"] },
+				}),
+			)) ?? "",
+			/agent\.force-form/,
+		);
+		assert.equal(
+			await rules.add(
+				rule("suggest-lease", {
+					match: { tool: "bash", command: "danger" },
+					suggest: { command: "git", flags: ["force-with-lease"] },
+				}),
+			),
+			null,
+		);
+		assert.equal(
+			await rules.add(
+				rule("suggest-ls", {
+					match: { tool: "bash", command: "other-danger" },
+					suggest: { command: "ls" },
+				}),
+			),
+			null,
+		);
+		assert.match(
+			(await rules.add(
+				rule("suggest-recursive-ls", {
+					match: { tool: "bash", command: "third-danger" },
+					suggest: { command: "ls", flags: ["R"] },
+				}),
+			)) ?? "",
+			/bounds\.ls-recursive-uncapped|form\.ls-recursive/,
+		);
+	});
+
+	it("rechecks suggestions before promotion and leaves refused rules active", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
+		const rules = new AgentRules(dir);
+		assert.equal(
+			await rules.add(
+				rule("candidate", {
+					match: { tool: "bash", command: "danger" },
+					suggest: { command: "safe-command" },
+				}),
+			),
+			null,
+		);
+		assert.equal(await rules.add(rule("later-rule", { match: { tool: "bash", command: "safe-command" } })), null);
+		assert.match(
+			(await rules.setState("candidate", "promoted", "xai/grok-4.6", "s2", timestamp)) ?? "",
+			/agent\.later-rule/,
+		);
+		assert.equal(rules.get("candidate")?.state, "active");
+		assert.equal(await rules.setState("later-rule", "disabled", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(await rules.setState("candidate", "promoted", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(rules.get("candidate")?.state, "promoted");
+	});
+
+	it("refuses promotion when the target would flag another enabled rule's suggestion", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
+		const rules = new AgentRules(dir);
+		assert.equal(
+			await rules.add(
+				rule("first-rule", {
+					match: { tool: "bash", command: "danger" },
+					suggest: { command: "later-safe" },
+				}),
+			),
+			null,
+		);
+		assert.equal(await rules.setState("first-rule", "promoted", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(await rules.add(rule("later-rule", { match: { tool: "bash", command: "later-safe" } })), null);
+		assert.equal(await rules.add(rule("unrelated", { match: { tool: "bash", command: "unrelated" } })), null);
+		assert.equal(await rules.setState("unrelated", "promoted", "xai/grok-4.6", "s2", timestamp), null);
+		assert.match(
+			(await rules.setState("later-rule", "promoted", "xai/grok-4.6", "s2", timestamp)) ?? "",
+			/rule "first-rule"[\s\S]*agent\.later-rule/,
+		);
+		assert.equal(rules.get("later-rule")?.state, "active");
+		assert.equal(await rules.setState("first-rule", "disabled", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(await rules.setState("later-rule", "promoted", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(rules.get("later-rule")?.state, "promoted");
+	});
+
 	it("changes posture, hides discarded rules, and resolves notes and blocking", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
 		const rules = new AgentRules(dir);
@@ -377,7 +514,7 @@ describe("agent rule file", () => {
 	it("round-trips appends, replays the last state, and skips invalid records", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
 		const rules = new AgentRules(dir);
-		assert.equal(await rules.add(rule("persisted")), null);
+		assert.equal(await rules.add(rule("persisted", { suggest: { command: "printf" } })), null);
 		assert.equal(await rules.setState("persisted", "promoted", "anthropic/claude", "s2", timestamp), null);
 		assert.equal(await rules.setState("persisted", "disabled", "xai/grok-4.6", "s3", timestamp), null);
 		assert.equal(
@@ -409,8 +546,46 @@ describe("agent rule file", () => {
 			loaded.list().map((entry) => [entry.slug, entry.state]),
 			[["persisted", "disabled"]],
 		);
+		assert.deepEqual(loaded.get("persisted")?.suggest, { command: "printf" });
 		assert.equal(loaded.noteFor("agent.bad-match", "xai/grok-4.6"), undefined);
 		assert.equal((await stat(join(dir, RULES_FILE))).mode & 0o777, 0o600);
+	});
+
+	it("skips version-1 rules after the schema bump and ignores their state records", async () => {
+		assert.equal(SCHEMA_VERSION, 2);
+		const oldRule = { kind: "rule", ...rule("version-one"), version: 1 };
+		const oldState = {
+			kind: "state",
+			slug: "version-one",
+			state: "promoted",
+			model: "xai/grok-4.6",
+			session: "session-2",
+			at: timestamp,
+		};
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
+		await writeFile(
+			join(dir, RULES_FILE),
+			`${JSON.stringify(oldRule)}\n${JSON.stringify(oldState)}\n${JSON.stringify({ kind: "rule", ...rule("current") })}\n`,
+			"utf8",
+		);
+		const warnings: string[] = [];
+		const original = console.warn;
+		console.warn = (message: string) => warnings.push(message);
+		let loaded: AgentRules;
+		try {
+			loaded = AgentRules.load(dir);
+		} finally {
+			console.warn = original;
+		}
+		assert.deepEqual(
+			loaded.list().map((entry) => entry.slug),
+			["current"],
+		);
+		assert.equal(loaded.get("version-one"), undefined);
+		assert.deepEqual(loaded.classify("git status"), ["agent.current"]);
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /skipped 1 rule record/);
+		assert.match(warnings[0], /expected 2/);
 	});
 
 	it("warns once and ignores version-mismatched rules and their state records", async () => {

@@ -7,7 +7,7 @@ import { flags, operands, RULES } from "./shell-rules.ts";
 import { parseStatements, type Stage, type Statement } from "./shell.ts";
 import { ensurePrivateDirectory } from "./store.ts";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 export const MAX_AGENT_RULES = 64;
 export const MAX_NOTE_BYTES = 200;
 export const MAX_MATCH_BYTES = 4096;
@@ -48,11 +48,17 @@ export interface AgentScope {
 	models?: string[];
 }
 
+export interface AgentSuggestion {
+	command: string;
+	flags?: string[];
+}
+
 export interface AgentRule {
 	version: number;
 	slug: string;
 	note: string;
 	match: AgentMatch;
+	suggest?: AgentSuggestion;
 	scope?: AgentScope;
 	state: AgentState;
 	model: string;
@@ -214,6 +220,26 @@ export function validateMatch(match: unknown): string | null {
 	return null;
 }
 
+/** Validate the closed suggested-command vocabulary. */
+export function validateSuggestion(suggest: unknown): string | null {
+	if (suggest === undefined) return null;
+	if (!isObject(suggest)) return "suggest must be an object";
+	const keyFailure = unknownKey(suggest, ["command", "flags"], "suggest");
+	if (keyFailure) return keyFailure;
+	if (typeof suggest.command !== "string" || suggest.command.length === 0) {
+		return "suggest.command must be a non-empty string";
+	}
+	if (suggest.command.includes("/")) return "suggest.command must be a command name without /";
+	if (hasOwn(suggest, "flags")) {
+		const failure = validateStringArray(suggest.flags, "suggest.flags");
+		if (failure) return failure;
+		if ((suggest.flags as string[]).some((flag) => flag.startsWith("-") || flag.includes("="))) {
+			return "suggest.flags entries must be normalized names without a leading - or = value";
+		}
+	}
+	return null;
+}
+
 /** Validate the closed provider/model scope vocabulary. */
 export function validateScope(scope: unknown): string | null {
 	if (scope === undefined) return null;
@@ -303,6 +329,19 @@ function stageMatches(match: AgentMatch, statement: Statement, index: number): b
 	return true;
 }
 
+function suggestionStatement(suggest: AgentSuggestion): Statement {
+	return [
+		{
+			command: suggest.command,
+			args: (suggest.flags ?? []).map((flag) => (flag.length === 1 ? `-${flag}` : `--${flag}`)),
+			fromPipe: false,
+			toPipe: false,
+			fromRedirect: false,
+			toRedirect: false,
+		},
+	];
+}
+
 function errorMessage(error: unknown): string {
 	try {
 		return error instanceof Error ? error.message : String(error);
@@ -354,7 +393,11 @@ function validateAttribution(model: unknown, session: unknown, at: unknown): str
 function validateRule(rule: AgentRule): string | null {
 	if (rule.version !== SCHEMA_VERSION) return `rule version must equal ${SCHEMA_VERSION}`;
 	const shapeFailure =
-		validateSlug(rule.slug) ?? validateNote(rule.note) ?? validateMatch(rule.match) ?? validateScope(rule.scope);
+		validateSlug(rule.slug) ??
+		validateNote(rule.note) ??
+		validateMatch(rule.match) ??
+		validateSuggestion(rule.suggest) ??
+		validateScope(rule.scope);
 	if (shapeFailure) return shapeFailure;
 	if (rule.state !== "active") return 'new rules must have state "active"';
 	return validateAttribution(rule.model, rule.session, rule.at);
@@ -376,6 +419,7 @@ function readRule(value: Record<string, unknown>): AgentRule | undefined {
 		session: value.session as string,
 		at: value.at as string,
 	};
+	if (hasOwn(value, "suggest")) candidate.suggest = value.suggest as AgentSuggestion;
 	if (hasOwn(value, "scope")) candidate.scope = value.scope as AgentScope;
 	return validateRule(candidate) === null ? candidate : undefined;
 }
@@ -609,7 +653,49 @@ export class AgentRules {
 		return [...matched].sort();
 	}
 
-	/** Append and install a new active rule at the current match-schema version. */
+	private suggestedFormFailure(owner: AgentRule, prospectiveRule: AgentRule = owner): string | null {
+		if (owner.suggest === undefined) return null;
+		const statement = suggestionStatement(owner.suggest);
+		const stage = statement[0];
+		const matched = new Set<string>();
+		const context = { statement, stage, index: 0 };
+		for (const builtin of RULES) if (builtin.matches(context)) matched.add(builtin.id);
+
+		let includedProspectiveRule = false;
+		for (const stored of this.rules.values()) {
+			const candidate = stored.slug === prospectiveRule.slug ? prospectiveRule : stored;
+			if (stored.slug === prospectiveRule.slug) includedProspectiveRule = true;
+			if (candidate.state !== "active" && candidate.state !== "promoted") continue;
+			if (stageMatches(candidate.match, statement, 0)) matched.add(agentClass(candidate.slug));
+		}
+		if (
+			!includedProspectiveRule &&
+			(prospectiveRule.state === "active" || prospectiveRule.state === "promoted") &&
+			stageMatches(prospectiveRule.match, statement, 0)
+		) {
+			matched.add(agentClass(prospectiveRule.slug));
+		}
+		if (matched.size === 0) return null;
+		return `rule "${owner.slug}" suggests a command form matched by ${[...matched].sort().join(", ")}`;
+	}
+
+	private promotionFailure(prospectiveRule: AgentRule): string | null {
+		const targetFailure = this.suggestedFormFailure(prospectiveRule, prospectiveRule);
+		if (targetFailure) return targetFailure;
+		const owners = [...this.rules.values()]
+			.filter((rule) => rule.slug !== prospectiveRule.slug && (rule.state === "active" || rule.state === "promoted"))
+			.sort((left, right) => (left.slug < right.slug ? -1 : left.slug > right.slug ? 1 : 0));
+		for (const owner of owners) {
+			if (owner.suggest === undefined) continue;
+			const statement = suggestionStatement(owner.suggest);
+			if (stageMatches(prospectiveRule.match, statement, 0)) {
+				return `rule "${owner.slug}" suggests a command form matched by ${agentClass(prospectiveRule.slug)}`;
+			}
+		}
+		return null;
+	}
+
+	/** Append and install a new active rule at the current rule-schema version. */
 	async add(rule: Omit<AgentRule, "version">): Promise<string | null> {
 		return this.serialize(async () => {
 			const versioned: AgentRule = { ...rule, version: SCHEMA_VERSION };
@@ -617,6 +703,8 @@ export class AgentRules {
 			if (this.rules.size >= MAX_AGENT_RULES) return `agent rule registry is full at ${MAX_AGENT_RULES} rules`;
 			const validation = validateRule(versioned);
 			if (validation) return validation;
+			const suggestedFormFailure = this.suggestedFormFailure(versioned);
+			if (suggestedFormFailure) return suggestedFormFailure;
 			let line: string;
 			try {
 				line = JSON.stringify({ kind: "rule", ...versioned });
@@ -639,6 +727,10 @@ export class AgentRules {
 			if (!canTransition(rule.state, state)) return `discarded agent rule "${slug}" cannot change state`;
 			const attributionFailure = validateAttribution(model, session, at);
 			if (attributionFailure) return attributionFailure;
+			if (state === "promoted") {
+				const promotionFailure = this.promotionFailure({ ...rule, state });
+				if (promotionFailure) return promotionFailure;
+			}
 			const line = JSON.stringify({ kind: "state", slug, state, model, session, at });
 			const failure = await appendLine(this.dir, line);
 			if (failure) return failure;
