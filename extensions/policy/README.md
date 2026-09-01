@@ -202,10 +202,17 @@ the daily record store: `<dir>/agent-rules.jsonl`, where `<dir>` follows
 `PI_POLICY_DIR` or the default agent policy directory. The file does not rotate.
 It uses the same private-directory, no-follow, `0600`, checked-append discipline
 as records and has a fixed file byte cap. Rule and state records replay in line
-order at extension registration. Every rule record carries the current
-rule-schema version; a missing or different version is skipped with one
-warning, so widening the vocabulary never silently extends an old rule. State
-records carry no schema version.
+order at extension registration. Every rule record carries the rule-schema
+version that wrote it. Schema transitions are declared additive or breaking in
+source. Current-version records load directly; older records load only when
+every intervening transition is additive. The transition from version 1 to 2 is
+additive because it added only the optional `suggest` field. Loading preserves
+the record's version and leaves the append-only file byte-stable. A missing
+version, a version newer than this build, or an older version crossing a
+breaking transition is skipped with one warning; a newer-version warning names
+both the record and build versions. Every version after the first requires a
+transition declaration, and breaking transitions require an explicit migration
+before older records can load. State records carry no schema version.
 
 The match shape is closed and applies only to `bash` stages:
 

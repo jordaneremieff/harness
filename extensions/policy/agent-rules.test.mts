@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
-	agentClass,
 	type AgentMatch,
 	type AgentRule,
 	AgentRules,
+	agentClass,
 	appendLine,
 	countFires,
+	defineRuleSchema,
 	isAgentClass,
 	MAX_AGENT_RULES,
 	MAX_MATCH_BYTES,
@@ -58,6 +59,24 @@ async function classifier(match: AgentMatch, scope?: AgentRule["scope"]): Promis
 function expectInvalid(value: unknown, pattern: RegExp): void {
 	assert.match(validateMatch(value) ?? "", pattern);
 }
+
+describe("agent rule schema", () => {
+	it("accepts additive paths and requires migration across breaking transitions", () => {
+		const additive = defineRuleSchema(3, { 2: "additive", 3: "additive" });
+		assert.deepEqual(additive(1), { load: true, version: 1 });
+		assert.deepEqual(additive(3), { load: true, version: 3 });
+
+		const breaking = defineRuleSchema(3, { 2: "additive", 3: "breaking" });
+		const rejected = breaking(1);
+		assert.equal(rejected.load, false);
+		if (!rejected.load) assert.match(rejected.reason, /breaking transition 2 to 3.*explicit migration/);
+		assert.deepEqual(breaking(3), { load: true, version: 3 });
+	});
+
+	it("fails loudly when the current schema has an undeclared transition", () => {
+		assert.throws(() => defineRuleSchema(3, { 2: "additive" }), /schema transition 2 to 3 is undeclared/);
+	});
+});
 
 describe("agent rule validators", () => {
 	it("accepts valid slugs and rejects every slug boundary", () => {
@@ -551,7 +570,7 @@ describe("agent rule file", () => {
 		assert.equal((await stat(join(dir, RULES_FILE))).mode & 0o777, 0o600);
 	});
 
-	it("skips version-1 rules after the schema bump and ignores their state records", async () => {
+	it("loads additive version-1 rules, classifies them, and applies their state records", async () => {
 		assert.equal(SCHEMA_VERSION, 2);
 		const oldRule = { kind: "rule", ...rule("version-one"), version: 1 };
 		const oldState = {
@@ -562,12 +581,10 @@ describe("agent rule file", () => {
 			session: "session-2",
 			at: timestamp,
 		};
+		const text = `${JSON.stringify(oldRule)}\n${JSON.stringify(oldState)}\n${JSON.stringify({ kind: "rule", ...rule("current") })}\n`;
 		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
-		await writeFile(
-			join(dir, RULES_FILE),
-			`${JSON.stringify(oldRule)}\n${JSON.stringify(oldState)}\n${JSON.stringify({ kind: "rule", ...rule("current") })}\n`,
-			"utf8",
-		);
+		const path = join(dir, RULES_FILE);
+		await writeFile(path, text, "utf8");
 		const warnings: string[] = [];
 		const original = console.warn;
 		console.warn = (message: string) => warnings.push(message);
@@ -578,17 +595,21 @@ describe("agent rule file", () => {
 			console.warn = original;
 		}
 		assert.deepEqual(
-			loaded.list().map((entry) => entry.slug),
-			["current"],
+			loaded.list().map((entry) => [entry.slug, entry.version, entry.state]),
+			[
+				["current", 2, "active"],
+				["version-one", 1, "promoted"],
+			],
 		);
-		assert.equal(loaded.get("version-one"), undefined);
-		assert.deepEqual(loaded.classify("git status"), ["agent.current"]);
-		assert.equal(warnings.length, 1);
-		assert.match(warnings[0], /skipped 1 rule record/);
-		assert.match(warnings[0], /expected 2/);
+		assert.equal(loaded.get("version-one")?.suggest, undefined);
+		assert.deepEqual(loaded.classify("git status"), ["agent.current", "agent.version-one"]);
+		assert.equal(loaded.isBlocking("agent.version-one", "xai/grok-4.6"), true);
+		assert.deepEqual(warnings, []);
+		assert.equal(await readFile(path, "utf8"), text);
 	});
 
-	it("warns once and ignores version-mismatched rules and their state records", async () => {
+	it("warns once and ignores missing and newer rule versions and their state records", async () => {
+		assert.equal(SCHEMA_VERSION, 2);
 		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
 		const versionless: Record<string, unknown> = { kind: "rule", ...rule("versionless") };
 		delete versionless.version;
@@ -605,8 +626,8 @@ describe("agent rule file", () => {
 			`${[
 				versionless,
 				state("versionless"),
-				{ kind: "rule", ...rule("wrong-version"), version: SCHEMA_VERSION + 1 },
-				state("wrong-version"),
+				{ kind: "rule", ...rule("version-three"), version: 3 },
+				state("version-three"),
 				{ kind: "rule", ...rule("current") },
 			]
 				.map((entry) => JSON.stringify(entry))
@@ -627,10 +648,11 @@ describe("agent rule file", () => {
 			["current"],
 		);
 		assert.equal(loaded.get("versionless"), undefined);
-		assert.equal(loaded.get("wrong-version"), undefined);
+		assert.equal(loaded.get("version-three"), undefined);
 		assert.equal(warnings.length, 1);
 		assert.match(warnings[0], /skipped 2 rule records/);
-		assert.match(warnings[0], /schema version/);
+		assert.match(warnings[0], /missing or invalid schema version/);
+		assert.match(warnings[0], /record schema version 3.*build's schema version 2/);
 	});
 
 	it("upserts valid rule records in line order", async () => {

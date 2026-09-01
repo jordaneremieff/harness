@@ -3,11 +3,62 @@
 import { constants, readFileSync } from "node:fs";
 import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { flags, operands, RULES } from "./shell-rules.ts";
 import { parseStatements, type Stage, type Statement } from "./shell.ts";
+import { flags, operands, RULES } from "./shell-rules.ts";
 import { ensurePrivateDirectory } from "./store.ts";
 
+const FIRST_SCHEMA_VERSION = 1;
+
+type SchemaTransitionKind = "additive" | "breaking";
+type SchemaVersionDecision = { load: true; version: number } | { load: false; reason: string };
+
+/** Build a version gate from transitions keyed by the version each enters. */
+export function defineRuleSchema(
+	currentVersion: number,
+	transitions: Readonly<Record<number, SchemaTransitionKind>>,
+): (version: unknown) => SchemaVersionDecision {
+	if (!Number.isSafeInteger(currentVersion) || currentVersion < FIRST_SCHEMA_VERSION) {
+		throw new Error(`invalid current rule schema version ${currentVersion}`);
+	}
+	for (let target = FIRST_SCHEMA_VERSION + 1; target <= currentVersion; target++) {
+		const kind = transitions[target];
+		if (kind === undefined) throw new Error(`rule schema transition ${target - 1} to ${target} is undeclared`);
+		if (kind !== "additive" && kind !== "breaking") {
+			throw new Error(`invalid rule schema transition kind for version ${target}`);
+		}
+	}
+
+	return (version: unknown): SchemaVersionDecision => {
+		if (typeof version !== "number" || !Number.isSafeInteger(version) || version < FIRST_SCHEMA_VERSION) {
+			return {
+				load: false,
+				reason: `record has a missing or invalid schema version; this build uses schema version ${currentVersion}`,
+			};
+		}
+		if (version > currentVersion) {
+			return {
+				load: false,
+				reason: `record schema version ${version} is newer than this build's schema version ${currentVersion}`,
+			};
+		}
+		for (let target = version + 1; target <= currentVersion; target++) {
+			if (transitions[target] === "breaking") {
+				return {
+					load: false,
+					reason: `record schema version ${version} crosses breaking transition ${target - 1} to ${target}, which requires an explicit migration`,
+				};
+			}
+		}
+		return { load: true, version };
+	};
+}
+
 export const SCHEMA_VERSION = 2;
+const SCHEMA_TRANSITIONS = {
+	// Version 2 adds only the optional `suggest` field.
+	2: "additive",
+} as const satisfies Readonly<Record<number, SchemaTransitionKind>>;
+const checkSchemaVersion = defineRuleSchema(SCHEMA_VERSION, SCHEMA_TRANSITIONS);
 export const MAX_AGENT_RULES = 64;
 export const MAX_NOTE_BYTES = 200;
 export const MAX_MATCH_BYTES = 4096;
@@ -390,8 +441,8 @@ function validateAttribution(model: unknown, session: unknown, at: unknown): str
 	return null;
 }
 
-function validateRule(rule: AgentRule): string | null {
-	if (rule.version !== SCHEMA_VERSION) return `rule version must equal ${SCHEMA_VERSION}`;
+function validateRule(rule: AgentRule, expectedVersion: number = SCHEMA_VERSION): string | null {
+	if (rule.version !== expectedVersion) return `rule version must equal ${expectedVersion}`;
 	const shapeFailure =
 		validateSlug(rule.slug) ??
 		validateNote(rule.note) ??
@@ -407,7 +458,7 @@ function copyRule(rule: AgentRule): AgentRule {
 	return JSON.parse(JSON.stringify(rule)) as AgentRule;
 }
 
-function readRule(value: Record<string, unknown>): AgentRule | undefined {
+function readRule(value: Record<string, unknown>, version: number): AgentRule | undefined {
 	if (value.kind !== "rule" || value.state !== "active") return undefined;
 	const candidate: AgentRule = {
 		version: value.version as number,
@@ -419,9 +470,9 @@ function readRule(value: Record<string, unknown>): AgentRule | undefined {
 		session: value.session as string,
 		at: value.at as string,
 	};
-	if (hasOwn(value, "suggest")) candidate.suggest = value.suggest as AgentSuggestion;
+	if (version >= 2 && hasOwn(value, "suggest")) candidate.suggest = value.suggest as AgentSuggestion;
 	if (hasOwn(value, "scope")) candidate.scope = value.scope as AgentScope;
-	return validateRule(candidate) === null ? candidate : undefined;
+	return validateRule(candidate, version) === null ? candidate : undefined;
 }
 
 function canTransition(from: AgentState, to: AgentState): boolean {
@@ -562,6 +613,7 @@ export class AgentRules {
 
 		try {
 			let versionMismatches = 0;
+			const versionFailures = new Set<string>();
 			for (const [index, line] of text.split(/\r?\n/).entries()) {
 				if (line.length === 0) continue;
 				let value: unknown;
@@ -572,11 +624,13 @@ export class AgentRules {
 				}
 				if (!isObject(value)) continue;
 				if (value.kind === "rule") {
-					if (value.version !== SCHEMA_VERSION) {
+					const version = checkSchemaVersion(value.version);
+					if (!version.load) {
 						versionMismatches++;
+						versionFailures.add(version.reason);
 						continue;
 					}
-					const rule = readRule(value);
+					const rule = readRule(value, version.version);
 					if (!rule) continue;
 					if (!loaded.rules.has(rule.slug) && loaded.rules.size >= MAX_AGENT_RULES) continue;
 					loaded.rules.set(rule.slug, rule);
@@ -590,7 +644,7 @@ export class AgentRules {
 			}
 			if (versionMismatches > 0) {
 				warnLoad(
-					`skipped ${versionMismatches} rule record${versionMismatches === 1 ? "" : "s"} with a missing or unsupported schema version (expected ${SCHEMA_VERSION})`,
+					`skipped ${versionMismatches} rule record${versionMismatches === 1 ? "" : "s"}: ${[...versionFailures].join("; ")}`,
 				);
 			}
 			return loaded;
