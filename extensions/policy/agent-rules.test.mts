@@ -9,6 +9,7 @@ import {
 	type AgentRule,
 	AgentRules,
 	appendLine,
+	countFires,
 	isAgentClass,
 	MAX_AGENT_RULES,
 	MAX_MATCH_BYTES,
@@ -16,6 +17,7 @@ import {
 	MAX_RULES_FILE_BYTES,
 	needsOperatorConfirm,
 	RULES_FILE,
+	SCHEMA_VERSION,
 	scopeAllows,
 	validateMatch,
 	validateNote,
@@ -28,6 +30,7 @@ const basicMatch: AgentMatch = { tool: "bash", command: "git" };
 
 function rule(slug: string, overrides: Partial<AgentRule> = {}): AgentRule {
 	return {
+		version: SCHEMA_VERSION,
 		slug,
 		note: `Guidance for ${slug}.`,
 		match: basicMatch,
@@ -319,10 +322,13 @@ describe("AgentRules registry", () => {
 		assert.equal(isAgentClass("routing.cat-read"), false);
 	});
 
-	it("adds rules, refuses duplicates, and enforces the registry cap", async () => {
+	it("adds current-version rules, refuses duplicates, and enforces the registry cap", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
 		const rules = new AgentRules(dir);
-		assert.equal(await rules.add(rule("same")), null);
+		const { version: suppliedVersion, ...same } = rule("same");
+		assert.equal(suppliedVersion, SCHEMA_VERSION);
+		assert.equal(await rules.add(same), null);
+		assert.equal(rules.get("same")?.version, SCHEMA_VERSION);
 		assert.match((await rules.add(rule("same"))) ?? "", /already exists/);
 		for (let index = 1; index < MAX_AGENT_RULES; index++) {
 			assert.equal(await rules.add(rule(`rule-${index}`)), null);
@@ -407,6 +413,51 @@ describe("agent rule file", () => {
 		assert.equal((await stat(join(dir, RULES_FILE))).mode & 0o777, 0o600);
 	});
 
+	it("warns once and ignores version-mismatched rules and their state records", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
+		const versionless: Record<string, unknown> = { kind: "rule", ...rule("versionless") };
+		delete versionless.version;
+		const state = (slug: string) => ({
+			kind: "state",
+			slug,
+			state: "promoted",
+			model: "xai/grok-4.6",
+			session: "session-2",
+			at: timestamp,
+		});
+		await writeFile(
+			join(dir, RULES_FILE),
+			`${[
+				versionless,
+				state("versionless"),
+				{ kind: "rule", ...rule("wrong-version"), version: SCHEMA_VERSION + 1 },
+				state("wrong-version"),
+				{ kind: "rule", ...rule("current") },
+			]
+				.map((entry) => JSON.stringify(entry))
+				.join("\n")}\n`,
+			"utf8",
+		);
+		const warnings: string[] = [];
+		const original = console.warn;
+		console.warn = (message: string) => warnings.push(message);
+		let loaded: AgentRules;
+		try {
+			loaded = AgentRules.load(dir);
+		} finally {
+			console.warn = original;
+		}
+		assert.deepEqual(
+			loaded.list().map((entry) => entry.slug),
+			["current"],
+		);
+		assert.equal(loaded.get("versionless"), undefined);
+		assert.equal(loaded.get("wrong-version"), undefined);
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /skipped 2 rule records/);
+		assert.match(warnings[0], /schema version/);
+	});
+
 	it("upserts valid rule records in line order", async () => {
 		const first = { kind: "rule", ...rule("same", { note: "First note." }) };
 		const second = { kind: "rule", ...rule("same", { note: "Last note." }) };
@@ -454,5 +505,41 @@ describe("agent rule file", () => {
 		assert.equal(await appendLine(dir, '{"kind":"one"}'), null);
 		assert.equal(await appendLine(dir, '{"kind":"two"}'), null);
 		assert.equal(await readFile(join(dir, RULES_FILE), "utf8"), '{"kind":"one"}\n{"kind":"two"}\n');
+	});
+});
+
+describe("firing counts", () => {
+	it("counts only agent classes in daily store files", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-fires-"));
+		await writeFile(
+			join(dir, "2026-08-31.jsonl"),
+			`${JSON.stringify({ classes: ["agent.alpha", "routing.cat-read", "agent.alpha"] })}\n${JSON.stringify({ classes: ["agent.beta", 7] })}\n`,
+			"utf8",
+		);
+		await writeFile(
+			join(dir, "2026-09-01.jsonl"),
+			`${JSON.stringify({ classes: ["agent.alpha", "agent.gamma"] })}\n`,
+			"utf8",
+		);
+		await writeFile(join(dir, RULES_FILE), `${JSON.stringify({ classes: ["agent.from-rules-file"] })}\n`, "utf8");
+		await writeFile(join(dir, "notes.jsonl"), `${JSON.stringify({ classes: ["agent.from-other-file"] })}\n`, "utf8");
+		const result = await countFires(dir);
+		assert.equal(result.partial, false);
+		assert.deepEqual([...result.fires.entries()].sort(), [
+			["agent.alpha", 3],
+			["agent.beta", 1],
+			["agent.gamma", 1],
+		]);
+	});
+
+	it("returns counts through the byte bound and marks them partial", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-fires-"));
+		const first = `${JSON.stringify({ classes: ["agent.first"] })}\n`;
+		const second = `${JSON.stringify({ classes: ["agent.second"] })}\n`;
+		await writeFile(join(dir, "2026-09-01.jsonl"), `${first}${second}`, "utf8");
+		const result = await countFires(dir, Buffer.byteLength(first, "utf8"));
+		assert.equal(result.partial, true);
+		assert.equal(result.fires.get("agent.first"), 1);
+		assert.equal(result.fires.has("agent.second"), false);
 	});
 });

@@ -26,6 +26,7 @@ import {
 	agentClass,
 	type AgentMatch,
 	AgentRules,
+	countFires,
 	type AgentRule,
 	type AgentScope,
 	type AgentState,
@@ -138,9 +139,10 @@ function toolFailure(error: unknown): string {
 	}
 }
 
-function rulesText(entries: readonly AgentRule[]): string {
-	if (entries.length === 0) return "No agent rules.";
-	const marker = "\n\n[agent rule list truncated]";
+function rulesText(entries: readonly AgentRule[], fires: ReadonlyMap<string, number>, partial: boolean): string {
+	const partialMarker = partial ? "\n\nfiring counts partial: store scan exceeded the byte bound" : "";
+	if (entries.length === 0) return `No agent rules.${partialMarker}`;
+	const truncatedMarker = "\n\n[agent rule list truncated]";
 	let text = "";
 	for (const rule of entries) {
 		const block = [
@@ -152,12 +154,15 @@ function rulesText(entries: readonly AgentRule[]): string {
 			`model: ${rule.model}`,
 			`session: ${rule.session}`,
 			`at: ${rule.at}`,
+			`fires: ${fires.get(agentClass(rule.slug)) ?? 0}`,
 		].join("\n");
 		const candidate = text.length === 0 ? block : `${text}\n\n${block}`;
-		if (Buffer.byteLength(`${candidate}${marker}`, "utf8") > MAX_RULE_LIST_BYTES) return `${text}${marker}`;
+		if (Buffer.byteLength(`${candidate}${truncatedMarker}${partialMarker}`, "utf8") > MAX_RULE_LIST_BYTES) {
+			return `${text}${truncatedMarker}${partialMarker}`;
+		}
 		text = candidate;
 	}
-	return text;
+	return `${text}${partialMarker}`;
 }
 
 interface ObservedCall extends PendingCall {
@@ -250,7 +255,8 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		stop(error);
 	}
 
-	const rules = AgentRules.load(resolvePolicyDir(process.env, getAgentDir()));
+	const rulesDir = resolvePolicyDir(process.env, getAgentDir());
+	const rules = AgentRules.load(rulesDir);
 	bindAgentRules(rules);
 
 	const recordWriter = (): PolicyWriter => {
@@ -354,7 +360,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 				if (validation) return toolText(validation);
 				const model = modelName(ctx);
 				if (model === null) return toolText("cannot attribute a rule without a model");
-				const rule: AgentRule = {
+				const rule: Omit<AgentRule, "version"> = {
 					slug: params.slug,
 					note: params.note,
 					match: params.match as AgentMatch,
@@ -380,7 +386,8 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		parameters: Type.Object({}, { additionalProperties: false }),
 		async execute() {
 			try {
-				return toolText(rulesText(rules.list()));
+				const counts = await countFires(rulesDir);
+				return toolText(rulesText(rules.list(), counts.fires, counts.partial));
 			} catch (error) {
 				return toolText(toolFailure(error));
 			}

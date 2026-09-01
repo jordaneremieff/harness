@@ -1,16 +1,18 @@
 /** Agent-authored shell policy rules and their append-only registry. */
 
 import { constants, readFileSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { flags, operands, RULES } from "./shell-rules.ts";
 import { parseStatements, type Stage, type Statement } from "./shell.ts";
 import { ensurePrivateDirectory } from "./store.ts";
 
+export const SCHEMA_VERSION = 1;
 export const MAX_AGENT_RULES = 64;
 export const MAX_NOTE_BYTES = 200;
 export const MAX_MATCH_BYTES = 4096;
 export const MAX_RULES_FILE_BYTES = 256 * 1024;
+export const MAX_FIRE_SCAN_BYTES = 32 * 1024 * 1024;
 export const RULES_FILE = "agent-rules.jsonl";
 
 export type AgentState = "active" | "promoted" | "disabled" | "discarded";
@@ -47,6 +49,7 @@ export interface AgentScope {
 }
 
 export interface AgentRule {
+	version: number;
 	slug: string;
 	note: string;
 	match: AgentMatch;
@@ -349,6 +352,7 @@ function validateAttribution(model: unknown, session: unknown, at: unknown): str
 }
 
 function validateRule(rule: AgentRule): string | null {
+	if (rule.version !== SCHEMA_VERSION) return `rule version must equal ${SCHEMA_VERSION}`;
 	const shapeFailure =
 		validateSlug(rule.slug) ?? validateNote(rule.note) ?? validateMatch(rule.match) ?? validateScope(rule.scope);
 	if (shapeFailure) return shapeFailure;
@@ -363,6 +367,7 @@ function copyRule(rule: AgentRule): AgentRule {
 function readRule(value: Record<string, unknown>): AgentRule | undefined {
 	if (value.kind !== "rule" || value.state !== "active") return undefined;
 	const candidate: AgentRule = {
+		version: value.version as number,
 		slug: value.slug as string,
 		note: value.note as string,
 		match: value.match as AgentMatch,
@@ -384,6 +389,108 @@ function warnLoad(error: unknown): void {
 		console.warn(`[policy] agent rules ignored: ${errorMessage(error)}`);
 	} catch {
 		// A failing warning channel cannot make registration fail.
+	}
+}
+
+const DAILY_STORE_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
+const FIRE_SCAN_CHUNK_BYTES = 64 * 1024;
+
+function countFireRecord(line: Buffer, fires: Map<string, number>): void {
+	if (line.length === 0) return;
+	try {
+		const value: unknown = JSON.parse(line.toString("utf8"));
+		if (!isObject(value) || !Array.isArray(value.classes)) return;
+		for (const classId of value.classes) {
+			if (typeof classId !== "string" || !isAgentClass(classId)) continue;
+			fires.set(classId, (fires.get(classId) ?? 0) + 1);
+		}
+	} catch {
+		// One malformed store record does not hide counts from other records.
+	}
+}
+
+async function scanFireFile(
+	path: string,
+	byteBound: number,
+	fires: Map<string, number>,
+): Promise<{ bytesRead: number; complete: boolean }> {
+	let handle: Awaited<ReturnType<typeof open>> | undefined;
+	let bytesReadTotal = 0;
+	let complete = false;
+	try {
+		handle = await open(path, constants.O_RDONLY);
+		const size = (await handle.stat()).size;
+		let position = 0;
+		let fragments: Buffer[] = [];
+		let fragmentBytes = 0;
+		const consume = (chunk: Buffer): void => {
+			let start = 0;
+			for (let index = 0; index < chunk.length; index++) {
+				if (chunk[index] !== 0x0a) continue;
+				const tail = chunk.subarray(start, index);
+				let line = tail;
+				if (fragments.length > 0) {
+					if (tail.length > 0) fragments.push(tail);
+					line = Buffer.concat(fragments, fragmentBytes + tail.length);
+				}
+				countFireRecord(line, fires);
+				fragments = [];
+				fragmentBytes = 0;
+				start = index + 1;
+			}
+			if (start < chunk.length) {
+				const tail = chunk.subarray(start);
+				fragments.push(tail);
+				fragmentBytes += tail.length;
+			}
+		};
+
+		while (position < size && bytesReadTotal < byteBound) {
+			const length = Math.min(FIRE_SCAN_CHUNK_BYTES, size - position, byteBound - bytesReadTotal);
+			const chunk = Buffer.allocUnsafe(length);
+			const result = await handle.read(chunk, 0, length, position);
+			if (result.bytesRead === 0) break;
+			const read = chunk.subarray(0, result.bytesRead);
+			consume(read);
+			position += result.bytesRead;
+			bytesReadTotal += result.bytesRead;
+		}
+		complete = position >= size;
+		if (complete && fragmentBytes > 0) {
+			countFireRecord(fragments.length === 1 ? fragments[0] : Buffer.concat(fragments, fragmentBytes), fires);
+		}
+	} catch {
+		complete = false;
+	} finally {
+		if (handle) {
+			try {
+				await handle.close();
+			} catch {
+				complete = false;
+			}
+		}
+	}
+	return { bytesRead: bytesReadTotal, complete };
+}
+
+/** Count recorded agent classes through a bounded scan of daily store files. */
+export async function countFires(
+	dir: string,
+	byteBound: number = MAX_FIRE_SCAN_BYTES,
+): Promise<{ fires: Map<string, number>; partial: boolean }> {
+	const fires = new Map<string, number>();
+	try {
+		const files = (await readdir(dir)).filter((name) => DAILY_STORE_FILE.test(name)).sort();
+		const normalizedBound = Number.isFinite(byteBound) ? Math.max(0, Math.floor(byteBound)) : MAX_FIRE_SCAN_BYTES;
+		let remaining = normalizedBound;
+		for (const file of files) {
+			const scanned = await scanFireFile(join(dir, file), remaining, fires);
+			remaining -= scanned.bytesRead;
+			if (!scanned.complete) return { fires, partial: true };
+		}
+		return { fires, partial: false };
+	} catch {
+		return { fires, partial: true };
 	}
 }
 
@@ -410,6 +517,7 @@ export class AgentRules {
 		}
 
 		try {
+			let versionMismatches = 0;
 			for (const [index, line] of text.split(/\r?\n/).entries()) {
 				if (line.length === 0) continue;
 				let value: unknown;
@@ -420,6 +528,10 @@ export class AgentRules {
 				}
 				if (!isObject(value)) continue;
 				if (value.kind === "rule") {
+					if (value.version !== SCHEMA_VERSION) {
+						versionMismatches++;
+						continue;
+					}
 					const rule = readRule(value);
 					if (!rule) continue;
 					if (!loaded.rules.has(rule.slug) && loaded.rules.size >= MAX_AGENT_RULES) continue;
@@ -431,6 +543,11 @@ export class AgentRules {
 				const rule = loaded.rules.get(value.slug);
 				if (!rule || !canTransition(rule.state, value.state)) continue;
 				rule.state = value.state;
+			}
+			if (versionMismatches > 0) {
+				warnLoad(
+					`skipped ${versionMismatches} rule record${versionMismatches === 1 ? "" : "s"} with a missing or unsupported schema version (expected ${SCHEMA_VERSION})`,
+				);
 			}
 			return loaded;
 		} catch (error) {
@@ -492,22 +609,23 @@ export class AgentRules {
 		return [...matched].sort();
 	}
 
-	/** Append and install a new active rule. */
-	async add(rule: AgentRule): Promise<string | null> {
+	/** Append and install a new active rule at the current match-schema version. */
+	async add(rule: Omit<AgentRule, "version">): Promise<string | null> {
 		return this.serialize(async () => {
-			if (this.rules.has(rule.slug)) return `rule "${rule.slug}" already exists`;
+			const versioned: AgentRule = { ...rule, version: SCHEMA_VERSION };
+			if (this.rules.has(versioned.slug)) return `rule "${versioned.slug}" already exists`;
 			if (this.rules.size >= MAX_AGENT_RULES) return `agent rule registry is full at ${MAX_AGENT_RULES} rules`;
-			const validation = validateRule(rule);
+			const validation = validateRule(versioned);
 			if (validation) return validation;
 			let line: string;
 			try {
-				line = JSON.stringify({ kind: "rule", ...rule });
+				line = JSON.stringify({ kind: "rule", ...versioned });
 			} catch (error) {
 				return errorMessage(error);
 			}
 			const failure = await appendLine(this.dir, line);
 			if (failure) return failure;
-			this.rules.set(rule.slug, copyRule(rule));
+			this.rules.set(versioned.slug, copyRule(versioned));
 			return null;
 		});
 	}

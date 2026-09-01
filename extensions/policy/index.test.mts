@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { AgentRules, type AgentRule, RULES_FILE } from "./agent-rules.ts";
+import { AgentRules, type AgentRule, MAX_FIRE_SCAN_BYTES, RULES_FILE, SCHEMA_VERSION } from "./agent-rules.ts";
 import registerPolicy from "./index.ts";
 import type { PolicyRecord } from "./record.ts";
 import { MAX_QUEUED_RECORDS } from "./store.ts";
@@ -109,6 +109,7 @@ async function records(dir: string): Promise<PolicyRecord[]> {
 async function seedRule(overrides: Partial<AgentRule> = {}): Promise<AgentRule> {
 	const requestedState = overrides.state;
 	const rule: AgentRule = {
+		version: SCHEMA_VERSION,
 		slug: "no-force-push",
 		note: "Do not force push this branch.",
 		match: { tool: "bash", command: "git", flags: ["force"], operands: { at: { "0": "push" } } },
@@ -646,6 +647,7 @@ describe("agent rule tools", () => {
 		assert.match(await callTool(run, "policy_rule_add", params), /agent\.review-force/);
 		assert.match(await callTool(run, "policy_rule_add", params), /already exists/);
 		const [added] = AgentRules.load(dir).list();
+		assert.equal(added.version, SCHEMA_VERSION);
 		assert.equal(added.state, "active");
 		assert.equal(added.model, "xai/grok-4.6");
 		assert.equal(added.session, "session-1");
@@ -689,7 +691,27 @@ describe("agent rule tools", () => {
 		]) {
 			assert.ok(text.includes(value));
 		}
+		assert.match(text, /fires: 0/);
 		assert.ok(Buffer.byteLength(text, "utf8") <= 50 * 1024);
+	});
+
+	it("lists a firing after its matching record lands in the store", async () => {
+		await seedRule();
+		const run = harness();
+		await runBash(run, "c1", "git push --force origin main");
+		await run.handlers.get("session_shutdown")!({}, run.ctx);
+		const text = await callTool(run, "policy_rule_list", {});
+		assert.match(text, /slug: no-force-push[\s\S]*fires: 1/);
+	});
+
+	it("marks firing counts partial when the store scan reaches its byte bound", async () => {
+		await seedRule();
+		const daily = join(dir, "2026-01-01.jsonl");
+		await writeFile(daily, "{}\n", "utf8");
+		await truncate(daily, MAX_FIRE_SCAN_BYTES + 1);
+		const run = harness();
+		const text = await callTool(run, "policy_rule_list", {});
+		assert.ok(text.endsWith("firing counts partial: store scan exceeded the byte bound"));
 	});
 
 	it("lowers a promoted rule only after operator confirmation", async () => {

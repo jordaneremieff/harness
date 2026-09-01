@@ -202,7 +202,10 @@ the daily record store: `<dir>/agent-rules.jsonl`, where `<dir>` follows
 `PI_POLICY_DIR` or the default agent policy directory. The file does not rotate.
 It uses the same private-directory, no-follow, `0600`, checked-append discipline
 as records and has a fixed file byte cap. Rule and state records replay in line
-order at extension registration.
+order at extension registration. Every rule record carries the current
+match-schema version; a missing or different version is skipped with one
+warning, so widening the vocabulary never silently extends an old rule. State
+records carry no schema version.
 
 The match shape is closed and applies only to `bash` stages:
 
@@ -257,7 +260,10 @@ Other allowed transitions do not prompt.
 The model-facing management surface is:
 
 - `policy_rule_add` validates and appends a model-attributed active rule.
-- `policy_rule_list` returns bounded text for every non-discarded rule.
+- `policy_rule_list` returns bounded text for every non-discarded rule and its
+  firing count from the daily record store. If the bounded store scan cannot
+  finish, the output ends with `firing counts partial: store scan exceeded the
+  byte bound`.
 - `policy_rule_set_state` appends an attributed posture transition and applies
   the promoted-rule confirmation gate.
 
@@ -356,8 +362,10 @@ model turn do not.
 ## Boundaries
 
 The extension has no input mutation and accepts no predicates beyond the closed
-agent match and scope schemas. Agent rules apply only to the existing shell
-domain and use the same parser, flag reader, and operand reader as built-ins.
+agent match and scope schemas. Agent-rule notes are prose, and the vocabulary
+carries no structured suggested form, so a rule's note is not parsed or checked
+against any other rule. Agent rules apply only to the existing shell domain and
+use the same parser, flag reader, and operand reader as built-ins.
 `annotate` mode and active-only matches in `enforce` mode can append guidance to
 a successful tool result. `enforce` is the only mode that returns model-visible
 text as a block reason. A successful flagged call receives at most one capped
