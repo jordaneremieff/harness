@@ -1,4 +1,4 @@
-import { defineSuite, type EvaluationSuite } from "../evals/vitest-evals.mts";
+import { defineSuite, type EvaluationCheck, type EvaluationSuite } from "../evals/vitest-evals.mts";
 
 /**
  * M2 annotation effect on the next command choice.
@@ -133,7 +133,7 @@ function caseInput(scenario: Scenario, arm: "baseline" | "annotated") {
 }
 
 function checksFor(scenario: Scenario) {
-	const checks: Array<Record<string, unknown>> = [
+	const checks: EvaluationCheck[] = [
 		{
 			id: "flagged-form-absent",
 			type: "omits-exact",
