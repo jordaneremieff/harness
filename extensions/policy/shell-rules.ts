@@ -18,9 +18,12 @@ export interface RuleContext {
 
 export interface ShellRule extends Rule<RuleContext> {}
 
-const READ_TOOL_NOTE = "Use the read tool for file contents.";
-const READ_SLICE_NOTE = "Use the read tool with offset and limit for a file slice.";
-const OUTPUT_BOUND_NOTE = "Bound the output with a cap that stops the producer.";
+const READ_TOOL_NOTE = "Use the read tool for file contents, one call per file: read path=README.md.";
+const READ_SLICE_NOTE = "Use the read tool for a file slice, one call per file: read path=src/index.ts offset=40 limit=20.";
+const OUTPUT_BOUND_NOTE = "Bound the output with a cap that stops the producer: | head -n 50.";
+const FD_BOUND_NOTE = "Bound fd with its own result cap: fd --max-results 50, or | head -n 50.";
+const RG_FILES_BOUND_NOTE = "Bound rg --files with | head -n 50; --max-count does not bound a file listing.";
+const SEARCH_SCOPE_NOTE = "Scope the search to a path, or cap the results: rg -n pattern src/, or rg -m 20 -n pattern.";
 
 const GREP_COMMANDS = new Set(["grep", "egrep", "fgrep"]);
 const TEXT_FILTERS = new Set([...GREP_COMMANDS, "rg", "ripgrep", "ag", "ack"]);
@@ -31,6 +34,16 @@ const INLINE_SCRIPT = new Map([
 	["node", "-e"],
 ]);
 const READ_MARKERS = [/\bopen\s*\(/, /\bread_text\b/, /\breadFile/, /\bjson\.load/, /\bPath\s*\(/];
+/*
+ * Script shapes that compute rather than read: a loop, a definition, a context
+ * manager, an error handler, or an imported module. A `require` call is not one
+ * of these, because a bare file read in Node needs it.
+ */
+const SCRIPT_PROCESSING = /(^|[\s;:({[])(for|while|def|class|try|with|import)\b/;
+const MAX_READ_SCRIPT_BYTES = 200;
+const MAX_READ_SCRIPT_LINES = 2;
+const AWK_COMMANDS = new Set(["awk", "gawk", "mawk", "nawk"]);
+const HELP_FLAGS = ["help", "version", "V"];
 const WHOLE_INPUT_STAGES = new Set(["sort", "wc", "tac", "shuf", "sponge", "column", "datamash"]);
 
 function commandName(stage: Stage): string {
@@ -106,6 +119,19 @@ function isStoppingHead(stage: Stage): boolean {
 	return value === undefined || !/^[+-]/.test(value);
 }
 
+/**
+ * An awk stage that leaves its script early. It stops an upstream producer the
+ * way a streaming `head` does; an awk range test without `exit` reads all input.
+ */
+function isStoppingAwk(stage: Stage): boolean {
+	return AWK_COMMANDS.has(commandName(stage)) && stage.args.some((arg) => /(^|[\s;{])exit\b/.test(arg));
+}
+
+/** A command asked for its own usage or version, so it does not read the tree. */
+function isHelpInvocation(stage: Stage): boolean {
+	return hasFlag(stage, ...HELP_FLAGS);
+}
+
 function isStreamingTail(stage: Stage): boolean {
 	if (commandName(stage) !== "tail") return false;
 	const value = optionValue(stage, "n", "lines") ?? optionValue(stage, "c", "bytes");
@@ -148,11 +174,12 @@ function isWholeInputStage(stage: Stage): boolean {
 	return WHOLE_INPUT_STAGES.has(normalizedChild) || normalizedChild === "tail";
 }
 
-/** A downstream streaming head stops the producer unless a full-input stage intervenes. */
-function producerStoppedByHead(statement: Statement, index: number): boolean {
+/** A downstream stage that stops the producer, unless a full-input stage intervenes. */
+function producerStopped(statement: Statement, index: number): boolean {
 	for (let position = index + 1; position < statement.length; position++) {
 		const stage = statement[position];
 		if (commandName(stage) === "head") return isStoppingHead(stage);
+		if (isStoppingAwk(stage)) return true;
 		if (isWholeInputStage(stage)) return false;
 	}
 	return false;
@@ -166,6 +193,7 @@ function falseCap(statement: Statement, index: number): boolean {
 		const command = commandName(stage);
 		if (command === "tail" && !isStreamingTail(stage)) return true;
 		if (command === "head") return !isStoppingHead(stage) || blocked;
+		if (isStoppingAwk(stage)) return blocked;
 		if (isWholeInputStage(stage)) blocked = true;
 	}
 	return false;
@@ -216,13 +244,21 @@ function isHeadSliceReadable(stage: Stage): boolean {
 	return !(lines?.startsWith("-") === true);
 }
 
+/**
+ * An inline script that only reads a file: the work the read tool performs. A
+ * longer, multi-line, or computing script does work the read tool cannot do, so
+ * the command-line rules permit it.
+ */
 function isInlineScriptRead(stage: Stage): boolean {
 	const flag = INLINE_SCRIPT.get(stage.command);
 	if (!flag) return false;
 	const position = stage.args.indexOf(flag);
 	if (position === -1) return false;
-	const script = stage.args[position + 1] ?? "";
-	return READ_MARKERS.some((marker) => marker.test(script));
+	const script = (stage.args[position + 1] ?? "").trim();
+	if (!READ_MARKERS.some((marker) => marker.test(script))) return false;
+	if (Buffer.byteLength(script, "utf8") > MAX_READ_SCRIPT_BYTES) return false;
+	if (script.split("\n").length > MAX_READ_SCRIPT_LINES) return false;
+	return !SCRIPT_PROCESSING.test(script);
 }
 
 function isRecursiveGrep(stage: Stage): boolean {
@@ -278,6 +314,16 @@ function hasResultCap(stage: Stage): boolean {
 }
 
 /**
+ * A discovery traversal that stops itself at a result count. `fd` quits at
+ * `--max-results` (`-1` is its one-result alias), so the traversal bounds its
+ * own output. `rg --files` has no such flag: `--max-count` bounds matches per
+ * file and a file listing matches nothing.
+ */
+function hasTraversalResultCap(stage: Stage): boolean {
+	return stage.command === "fd" && hasFlag(stage, "max-results", "1");
+}
+
+/**
  * A filter pattern that names one variable: a bare identifier or a fully
  * anchored identifier. An open-ended pattern (prefix, alternation, or
  * inversion) selects several variables, so naming one variable cannot serve
@@ -308,7 +354,7 @@ function isGrepFile(stage: Stage): boolean {
 }
 
 function isUncapped(statement: Statement, index: number): boolean {
-	return !producerStoppedByHead(statement, index);
+	return !producerStopped(statement, index);
 }
 
 export const RULES: ShellRule[] = [
@@ -319,7 +365,7 @@ export const RULES: ShellRule[] = [
 	},
 	{
 		id: "routing.cat-pipe",
-		note: "Give the file to the next command directly instead of a cat pipe.",
+		note: "Give the file to the next command directly: jq . data.json.",
 		matches: ({ stage }) => isCatPipe(stage),
 	},
 	{ id: "routing.sed-slice", note: READ_SLICE_NOTE, matches: ({ stage }) => isSedSlice(stage) },
@@ -340,33 +386,33 @@ export const RULES: ShellRule[] = [
 	},
 	{
 		id: "routing.grep-pipe",
-		note: "Filter with rg, or narrow the command that produces the output.",
+		note: "Filter with rg, or narrow the producing command: git config -l | rg hook.",
 		matches: ({ stage }) =>
 			GREP_COMMANDS.has(stage.command) && stage.fromPipe && !hasFlag(stage, "q", "quiet", "silent"),
 	},
 	{
 		id: "form.grep-file",
-		note: "Use rg for text search, or git grep for tracked text.",
+		note: "Use rg for text search, or git grep for tracked text: rg -n pattern src/.",
 		matches: ({ stage }) => isGrepFile(stage),
 	},
 	{
 		id: "form.find-discovery",
-		note: "Use rg --files or fd for discovery, and git ls-files for tracked files.",
+		note: "Use rg --files, fd, or git ls-files for discovery: fd --max-results 50 -e ts src/.",
 		matches: ({ stage }) => stage.command === "find",
 	},
 	{
 		id: "form.ls-recursive",
-		note: "Use rg --files or fd for a recursive listing.",
+		note: "Use rg --files or fd for a recursive listing: fd --max-results 50 . src/.",
 		matches: ({ stage }) => isRecursiveLs(stage),
 	},
 	{
 		id: "form.du-traversal",
-		note: "Scope the traversal to the smallest root that holds the target.",
+		note: "Scope the traversal to the smallest root that holds the target: du -sh dist.",
 		matches: ({ stage }) => isDu(stage),
 	},
 	{
 		id: "form.env-grep",
-		note: "Use printenv NAME for one environment variable.",
+		note: "Use printenv NAME for one environment variable: printenv PATH.",
 		matches: ({ statement, stage, index }) => {
 			const later = statement.slice(index + 1);
 			if (stage.command === "env" && !hasFlag(stage, "a", "argv0", "S", "split-string", "help", "version")) {
@@ -402,18 +448,19 @@ export const RULES: ShellRule[] = [
 	},
 	{
 		id: "bounds.rg-files-uncapped",
-		note: OUTPUT_BOUND_NOTE,
+		note: RG_FILES_BOUND_NOTE,
 		matches: ({ statement, stage, index }) =>
 			stage.command === "rg" && hasFlag(stage, "files") && isUncapped(statement, index),
 	},
 	{
 		id: "bounds.fd-uncapped",
-		note: OUTPUT_BOUND_NOTE,
-		matches: ({ statement, stage, index }) => stage.command === "fd" && isUncapped(statement, index),
+		note: FD_BOUND_NOTE,
+		matches: ({ statement, stage, index }) =>
+			stage.command === "fd" && !hasTraversalResultCap(stage) && isUncapped(statement, index),
 	},
 	{
 		id: "bounds.rg-search-uncapped",
-		note: "Scope the search to a path, or cap the results.",
+		note: SEARCH_SCOPE_NOTE,
 		matches: ({ statement, stage, index }) =>
 			stage.command === "rg" &&
 			isRecursiveSearch(stage) &&
@@ -423,19 +470,19 @@ export const RULES: ShellRule[] = [
 	},
 	{
 		id: "bounds.git-grep-uncapped",
-		note: "Scope the search to a path, or cap the results.",
+		note: SEARCH_SCOPE_NOTE,
 		matches: ({ statement, stage, index }) =>
 			isGitGrep(stage) && !hasScopingPath(stage) && !hasResultCap(stage) && isUncapped(statement, index),
 	},
 	{
 		id: "bounds.false-cap",
-		note: "This cap does not stop its producer. Bound the producer itself.",
+		note: "This cap does not stop its producer. Bound the producer itself: head -n 50 before sort.",
 		matches: ({ statement, stage, index }) =>
 			(stage.command === "find" ||
 				isRecursiveGrep(stage) ||
 				isRecursiveLs(stage) ||
 				isDu(stage) ||
-				isDiscoveryTraversal(stage) ||
+				(isDiscoveryTraversal(stage) && !hasTraversalResultCap(stage)) ||
 				(isRecursiveSearch(stage) && !hasScopingPath(stage) && !hasResultCap(stage))) &&
 			falseCap(statement, index),
 	},
@@ -457,7 +504,10 @@ export const shellDomain: Domain = {
 		const matched = new Set<string>();
 		for (const statement of parseStatements(command)) {
 			for (let index = 0; index < statement.length; index++) {
-				const context: RuleContext = { statement, stage: statement[index], index };
+				const stage = statement[index];
+				// A stage that prints its own usage reads no file and walks no tree.
+				if (isHelpInvocation(stage)) continue;
+				const context: RuleContext = { statement, stage, index };
 				for (const rule of RULES) if (rule.matches(context)) matched.add(rule.id);
 			}
 		}

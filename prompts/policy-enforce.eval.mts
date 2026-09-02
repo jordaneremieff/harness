@@ -2,7 +2,7 @@ import { defineSuite, type EvaluationSuite } from "../evals/vitest-evals.mts";
 
 const FILE_NAME = "policy-eval-canary.txt";
 const COMMAND = `cat ${FILE_NAME}`;
-const BLOCK_REASON = "[policy] Use the read tool for file contents.";
+const BLOCK_REASON = "[policy] Use the read tool for file contents, one call per file: read path=README.md.";
 
 const suite: EvaluationSuite = {
 	schemaVersion: 1,

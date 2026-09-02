@@ -78,6 +78,8 @@ export interface StateLine {
 	at: string;
 	origin: StateOrigin | "unknown";
 	warrant?: PromotionWarrant;
+	/** A warrant is present on the line but does not satisfy the warrant shape. */
+	warrantUnreadable?: true;
 }
 
 interface AgentOperandsMatch {
@@ -703,6 +705,9 @@ export async function scanWarrantEvidence(
 		try {
 			const value: unknown = JSON.parse(line.toString("utf8"));
 			if (!isObject(value) || !Array.isArray(value.classes) || !value.classes.includes(classId)) return;
+			// A blocked call never ran, so it is evidence of enforcement, not of the
+			// pattern failing. Counting it would let a rule's own blocks warrant it.
+			if (value.blocked === true) return;
 			evidence.fires++;
 			if (value.error === true) {
 				evidence.errors++;
@@ -757,21 +762,20 @@ export function readStateLines(dir: string): StateLine[] {
 				continue;
 			}
 			if (validateAttribution(value.model, value.session, value.at)) continue;
-			let origin: StateLine["origin"] = "unknown";
-			if (hasOwn(value, "origin")) {
-				if (value.origin !== "tool" && value.origin !== "command") continue;
-				origin = value.origin;
-			}
-			if (hasOwn(value, "warrant") && validatePromotionWarrant(value.warrant)) continue;
+			// Replay reads neither field, so neither may hide a transition it applied:
+			// an unrecognized origin reads as unknown and an invalid warrant is marked.
 			const line: StateLine = {
 				slug: value.slug,
 				state: value.state,
 				model: value.model as string,
 				session: value.session as string,
 				at: value.at as string,
-				origin,
+				origin: value.origin === "tool" || value.origin === "command" ? value.origin : "unknown",
 			};
-			if (hasOwn(value, "warrant")) line.warrant = value.warrant as unknown as PromotionWarrant;
+			if (hasOwn(value, "warrant")) {
+				if (validatePromotionWarrant(value.warrant)) line.warrantUnreadable = true;
+				else line.warrant = value.warrant as unknown as PromotionWarrant;
+			}
 			lines.push(line);
 		}
 		return lines;

@@ -65,6 +65,17 @@ describe("routing rules", () => {
 	it("flags an inline script that reads a file", () => {
 		assert.deepEqual(bash("python3 -c \"print(open('/var/data/a').read())\""), ["routing.inline-script-read"]);
 		assert.deepEqual(bash('node -e "console.log(1+1)"'), []);
+		assert.deepEqual(bash('node -e \'console.log(require("fs").readFileSync("a.txt", "utf8"))\''), [
+			"routing.inline-script-read",
+		]);
+	});
+
+	it("permits an inline script that processes data instead of reading a file", () => {
+		assert.deepEqual(bash("python3 -c \"import json; print(len(json.load(open('a.json'))))\""), []);
+		assert.deepEqual(bash("python3 -c 'for line in open(\"a.csv\"): print(line)'"), []);
+		assert.deepEqual(bash(`python3 -c 'with open("a.csv") as f:\n    print(f.read())'`), []);
+		assert.deepEqual(bash(`python3 -c '${`print(open("a").read())\n`.repeat(3)}'`), []);
+		assert.deepEqual(bash(`python3 -c "print(open('${"a".repeat(200)}').read())"`), []);
 	});
 
 	it("flags grep filtering piped output but not a quiet predicate", () => {
@@ -181,6 +192,40 @@ describe("bounds rules", () => {
 			"bounds.false-cap",
 			"form.du-traversal",
 		]);
+	});
+
+	it("treats an fd result cap as a producer bound and a depth flag as none", () => {
+		assert.deepEqual(bash("fd --max-results 50 -e ts src/"), []);
+		assert.deepEqual(bash("fd --max-results=50 -e ts src/"), []);
+		assert.deepEqual(bash("fd -1 config ."), []);
+		assert.deepEqual(bash("fd --max-results 50 . | sort | head -5"), []);
+		assert.deepEqual(bash("fd --max-depth 2 -e ts src/"), ["bounds.fd-uncapped"]);
+		assert.deepEqual(bash("fd -m 50 -e ts src/"), ["bounds.fd-uncapped"]);
+		assert.deepEqual(bash("rg --files -m 50 src/"), ["bounds.rg-files-uncapped"]);
+	});
+
+	it("treats an awk that exits as a producer cap and one without exit as none", () => {
+		assert.deepEqual(bash("git grep -n pattern | awk 'NR<=300 {print} NR==301 {exit}'"), []);
+		assert.deepEqual(bash("find . -type f | awk 'NR<=300 {print} NR==301 {exit}'"), ["form.find-discovery"]);
+		assert.deepEqual(bash("find . -type f | awk 'NR<=300 {print}'"), [
+			"bounds.find-output-uncapped",
+			"form.find-discovery",
+		]);
+		assert.deepEqual(bash("find . -type f | sort | awk 'NR<=5 {print} NR==6 {exit}'"), [
+			"bounds.false-cap",
+			"bounds.find-output-uncapped",
+			"form.find-discovery",
+		]);
+	});
+
+	it("leaves a usage or version request unclassified", () => {
+		assert.deepEqual(bash("fd --help"), []);
+		assert.deepEqual(bash("fd --version"), []);
+		assert.deepEqual(bash("fd -V"), []);
+		assert.deepEqual(bash("find --help"), []);
+		assert.deepEqual(bash("du --help"), []);
+		assert.deepEqual(bash("rg --files --help"), []);
+		assert.deepEqual(bash("fd --help | rg max-results"), []);
 	});
 
 	it("applies output bounds to discovery traversals", () => {

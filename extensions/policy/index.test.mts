@@ -567,7 +567,10 @@ describe("annotate mode", () => {
 		await run.handlers.get("session_shutdown")!({}, run.ctx);
 		assert.equal(patch.content.length, 2);
 		assert.deepEqual(patch.content[0], { type: "text", text: "file body" });
-		assert.equal(patch.content[1].text, "[policy] Use the read tool for file contents.");
+		assert.equal(
+			patch.content[1].text,
+			"[policy] Use the read tool for file contents, one call per file: read path=README.md.",
+		);
 		const written = await records(dir);
 		assert.equal(written[0].policyMode, "annotate");
 		assert.equal(written[0].annotated, true);
@@ -1077,7 +1080,7 @@ describe("/policy command", () => {
 		assert.match(agentText, /openai\/gpt-5: 1/);
 		assert.match(agentText, /anthropic\/claude-opus: 1/);
 		await callCommand(run, "show routing.cat-read");
-		assert.match(run.notifications.at(-1)?.message ?? "", /Use the read tool for file contents/);
+		assert.match(run.notifications.at(-1)?.message ?? "", /Use the read tool for file contents, one call per file/);
 		assert.match(run.notifications.at(-1)?.message ?? "", /openai\/gpt-5: 1/);
 	});
 
@@ -1285,7 +1288,10 @@ describe("mode configuration", () => {
 			enforcing.ctx,
 		)) as { block: boolean; reason: string };
 		assert.equal(blocked.block, true);
-		assert.equal(blocked.reason, "[policy] Use the read tool for file contents.");
+		assert.equal(
+			blocked.reason,
+			"[policy] Use the read tool for file contents, one call per file: read path=README.md.",
+		);
 		await enforcing.handlers.get("session_shutdown")!({}, enforcing.ctx);
 
 		const observing = harness({ policyMode: "enforce", policyModeFlag: "observe" });
@@ -1384,7 +1390,7 @@ describe("enforce mode", () => {
 		assert.deepEqual(Object.keys(result as Record<string, unknown>).sort(), ["block", "reason"]);
 		assert.equal((result as { block: boolean }).block, true);
 		assert.match((result as { reason: string }).reason, /^\[policy\] /);
-		assert.match((result as { reason: string }).reason, /rg --files or fd/);
+		assert.match((result as { reason: string }).reason, /Use rg --files, fd, or git ls-files for discovery/);
 	});
 
 	it("blocks with deduplicated guidance for a multi-class command", async () => {
@@ -1400,8 +1406,10 @@ describe("enforce mode", () => {
 
 	it("records the block from the execution-end outcome", async () => {
 		const run = harness({ policyMode: "enforce" });
-		const reason =
-			"[policy] Bound the output with a cap that stops the producer. Use rg for text search, or git grep for tracked text.";
+		const reason = [
+			"[policy] Bound the output with a cap that stops the producer: | head -n 50.",
+			"Use rg for text search, or git grep for tracked text: rg -n pattern src/.",
+		].join(" ");
 		await run.handlers.get("tool_call")!(
 			{ toolName: "bash", toolCallId: "c1", input: { command: "grep -rn tarnvel-417 ." } },
 			run.ctx,

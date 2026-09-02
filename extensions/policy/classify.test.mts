@@ -84,7 +84,7 @@ describe("agent rule composition", () => {
 		});
 		bindAgentRules(rules);
 		assert.deepEqual(notesFor("bash", ["routing.cat-read", "agent.custom"], "xai/grok-4.6"), [
-			"Use the read tool for file contents.",
+			"Use the read tool for file contents, one call per file: read path=README.md.",
 			"Use the reviewed form.",
 		]);
 	});

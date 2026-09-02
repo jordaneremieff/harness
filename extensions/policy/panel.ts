@@ -661,6 +661,8 @@ export function formatPolicyHistory(lines: StateLine[]): string {
 			section.push(
 				`warrant: criteria v${line.warrant.criteria} ${line.warrant.pass ? "pass" : "fail"} · ${line.warrant.fires} fires · ${line.warrant.errors} errors · ${line.warrant.truncated} truncated · scan ${line.warrant.partial ? "partial" : "complete"}`,
 			);
+		} else if (line.warrantUnreadable) {
+			section.push("warrant: unreadable");
 		}
 		return section.map(terminalSafe).join("\n");
 	});

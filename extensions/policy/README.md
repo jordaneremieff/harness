@@ -186,7 +186,7 @@ flagged form is provably semantics-preserving:
 
 | Class | Disposition | Why no rewrite |
 |---|---|---|
-| `routing.cat-read`, `routing.sed-slice`, `routing.inline-script-read` | block | the preferred form is the read tool; no bash form exists, and an inline script may do arbitrary work beyond the read |
+| `routing.cat-read`, `routing.sed-slice`, `routing.inline-script-read` | block | the preferred form is the read tool; no bash form exists, and a bare inline read has no bash equivalent the rules prefer |
 | `routing.head-slice` | block | only line slices the read tool covers block; byte and all-but-last forms are slices the read tool cannot give, so the command-line rules permit them |
 | `routing.tail-slice` | block | only from-start line slices block; a from-end or byte slice is one the read tool cannot give, so the command-line rules permit it |
 | `routing.cat-pipe` | block | the downstream command decides semantics; `cmd a b` differs from `cat a b \| cmd` for whole-input tools such as `wc` |
@@ -304,18 +304,34 @@ Class groups follow the harness command-line rules:
   `bounds.false-cap`.
 
 `bounds.false-cap` identifies a downstream cap that cannot stop its producer. A
-streaming `head` stops a producer through streaming stages. It does not stop a
-producer after a stage that consumes all input first. A normal `tail` also does
-not stop its producer. Thus, `find … | head` is capped, while
-`find … | sort | head` and `find … | tail` are not. A traversal-depth flag does
-not clear an output-bound class because traversal and output have separate
+streaming `head` stops a producer through streaming stages, and so does an `awk`
+stage whose script leaves early through `exit`. Neither stops a producer after a
+stage that consumes all input first. A normal `tail` also does not stop its
+producer, and an `awk` range test without `exit` reads all of its input. Thus,
+`find … | head` and `find … | awk 'NR<=50 {print} NR==51 {exit}'` are capped,
+while `find … | sort | head` and `find … | tail` are not. A traversal-depth flag
+does not clear an output-bound class because traversal and output have separate
 bounds.
 
 `rg --files` and `fd` traverse like `find`, so they join the same classes
-without a scope exemption. `rg` and `git grep` search the tree recursively; an
-unscoped search joins the classes unless a result cap bounds it, while a search
-scoped to a named path operand stays clean, because scoping is the output bound
-the harness command-line rules prescribe.
+without a scope exemption. A traversal that stops itself at a result count is
+bounded: `fd --max-results 50` and its `-1` alias quit at the count, so they
+clear `bounds.fd-uncapped`. `rg --files` has no such flag, because `--max-count`
+bounds matches per file and a file listing matches nothing. `rg` and `git grep`
+search the tree recursively; an unscoped search joins the classes unless a result
+cap bounds it, while a search scoped to a named path operand stays clean, because
+scoping is the output bound the harness command-line rules prescribe.
+
+`routing.inline-script-read` names an inline script that only reads a file: the
+work the read tool performs. A script longer than 200 bytes, longer than two
+lines, or holding a loop, definition, context manager, error handler, or import
+does work the read tool cannot do, so the command-line rules permit it. A
+`require` call does not make a script a computation, because a bare file read in
+Node needs one.
+
+A stage that requests its own usage or version carries no traversal, read, or
+search, so `--help`, `--version`, and `-V` leave the stage unclassified. Later
+stages of the same pipeline still classify normally.
 
 ## Agent rules
 
@@ -344,10 +360,21 @@ a warrant also keep replaying, and history leaves their warrant absent.
 `/policy history <slug>` is the audit surface for these transitions. It shows
 origin, model, session, timestamp, and any promotion warrant and verdict.
 
+History never hides a transition that replay applied. Replay reads neither the
+origin nor the warrant, so an unrecognized origin value displays as `unknown`
+and a warrant that fails the warrant shape displays as `warrant: unreadable`.
+Both surfaces drop the same lines: a line whose slug, state, or attribution is
+invalid.
+
 Promotion requires a recorded warrant. The plain-language source lives in
 `PROMOTION_CRITERIA_SOURCE` at criteria version 1 and is:
 
 > Promote a rule only when the recorded history of its matching calls shows the pattern the rule blocks actually fails. The history must hold enough matching calls to rule out chance, and failures must outnumber successes among those calls. A rule whose matching calls mostly succeed must not promote. A promotion without recorded evidence must be refused. Record the measured evidence, the criteria version, and the judgment with every promotion.
+
+The evidence scan reads the daily records of the rule's matching calls and skips
+every blocked call. A block prevents execution, so it reports enforcement rather
+than the outcome of the pattern; counting blocks would let a promoted rule's own
+blocks warrant it.
 
 The implemented evidence check requires at least 5 matching calls, failures to
 strictly outnumber successes, and a complete bounded scan. Exactly half failures

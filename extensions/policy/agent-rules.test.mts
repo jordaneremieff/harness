@@ -697,7 +697,7 @@ describe("agent rule file", () => {
 		assert.equal((await stat(join(dir, RULES_FILE))).mode & 0o777, 0o600);
 	});
 
-	it("reads state history origins and warrants while rejecting malformed current lines", async () => {
+	it("reads state history without hiding a line that replay applies", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
 		const legacy = {
 			kind: "state",
@@ -743,6 +743,24 @@ describe("agent rule file", () => {
 				origin: "unknown",
 			},
 			{
+				slug: "bad-origin",
+				state: "promoted",
+				model: "xai/grok-4.6",
+				session: "new-session",
+				at: "2026-09-02T07:00:00.000Z",
+				origin: "unknown",
+				warrant: passingWarrant,
+			},
+			{
+				slug: "bad-warrant",
+				state: "promoted",
+				model: "xai/grok-4.6",
+				session: "new-session",
+				at: "2026-09-02T07:00:00.000Z",
+				origin: "command",
+				warrantUnreadable: true,
+			},
+			{
 				slug: "current",
 				state: "promoted",
 				model: "xai/grok-4.6",
@@ -753,6 +771,32 @@ describe("agent rule file", () => {
 			},
 		]);
 		assert.deepEqual(readStateLines(join(dir, "missing")), []);
+	});
+
+	it("shows the history of a transition that replay applied from a malformed line", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
+		const rules = new AgentRules(dir);
+		assert.equal(await rules.add(rule("tampered")), null);
+		assert.equal(
+			await appendLine(
+				dir,
+				JSON.stringify({
+					kind: "state",
+					slug: "tampered",
+					state: "promoted",
+					model: "xai/grok-4.6",
+					session: "s2",
+					at: timestamp,
+					origin: "model",
+				}),
+			),
+			null,
+		);
+		assert.equal(AgentRules.load(dir).get("tampered")?.state, "promoted");
+		assert.deepEqual(
+			readStateLines(dir).map((line) => [line.slug, line.state, line.origin]),
+			[["tampered", "promoted", "unknown"]],
+		);
 	});
 
 	it("keeps replaying promoted legacy state lines without origin or warrant", async () => {
@@ -928,6 +972,23 @@ describe("warrant evidence", () => {
 			fires: 0,
 			errors: 0,
 			errorKinds: { timeout: 0, aborted: 0, other: 0 },
+			truncated: 0,
+			partial: false,
+		});
+	});
+
+	it("excludes blocked calls, because a block is enforcement and not an outcome", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-warrant-"));
+		const seeded = [
+			policyRecord({ callId: "blocked-1", error: true, errorKind: "other", blocked: true }),
+			policyRecord({ callId: "blocked-2", error: true, errorKind: "other", blocked: true, truncated: true }),
+			policyRecord({ callId: "ran", error: true, errorKind: "timeout" }),
+		];
+		for (const record of seeded) assert.equal(await appendRecord(dir, record), null);
+		assert.deepEqual(await scanWarrantEvidence(dir, "warranted"), {
+			fires: 1,
+			errors: 1,
+			errorKinds: { timeout: 1, aborted: 0, other: 0 },
 			truncated: 0,
 			partial: false,
 		});

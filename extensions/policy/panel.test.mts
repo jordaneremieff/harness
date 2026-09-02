@@ -229,6 +229,22 @@ describe("policy rule formatting", () => {
 		assert.equal(formatPolicyHistory([]), "No state transitions were recorded.");
 	});
 
+	it("marks a promotion whose recorded warrant does not read", () => {
+		const formatted = formatPolicyHistory([
+			{
+				slug: "no-force-push",
+				state: "promoted",
+				model: "model/new",
+				session: "session-new",
+				at: "2026-09-02T07:00:00.000Z",
+				origin: "unknown",
+				warrantUnreadable: true,
+			},
+		]);
+		assert.match(formatted, /origin: unknown/);
+		assert.match(formatted, /warrant: unreadable/);
+	});
+
 	it("keeps equal-timestamp history entries stable", () => {
 		const common = {
 			slug: "same-time",
@@ -278,7 +294,9 @@ describe("PolicyPanel", () => {
 	it("expands and collapses a selected group in place with g", () => {
 		const { panel } = rig(data({ agentRules: [] }));
 		panel.handleInput("g");
-		assert.match(panel.render(140).join("\n"), /routing\.cat-read · Use the read tool.*3 fires/);
+		const expanded = panel.render(140).join("\n");
+		assert.match(expanded, /routing\.cat-read · Use the read tool/);
+		assert.match(expanded, /▾ routing · 7 rules · 3 fires/);
 		panel.handleInput("g");
 		assert.doesNotMatch(panel.render(140).join("\n"), /routing\.cat-read ·/);
 	});
