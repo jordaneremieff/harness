@@ -28,13 +28,28 @@ import {
 	validateSlug,
 	validateSuggestion,
 } from "./agent-rules.ts";
-import type { PromotionWarrant } from "./promotion.ts";
+import {
+	HARMFUL_DURATION_MS,
+	HARMFUL_OUTPUT_BYTES,
+	emptyEvidence,
+	type LegacyPromotionWarrant,
+	type PromotionWarrant,
+} from "./promotion.ts";
 import type { PolicyRecord } from "./record.ts";
 import { appendRecord } from "./store.ts";
 
 const timestamp = "2026-09-01T07:00:00Z";
 const basicMatch: AgentMatch = { tool: "bash", command: "git" };
 const passingWarrant: PromotionWarrant = {
+	criteria: 2,
+	fires: 5,
+	harmful: 3,
+	harmKinds: { error: 2, truncated: 1, output: 0, duration: 0 },
+	errorKinds: { timeout: 0, aborted: 0, other: 2 },
+	partial: false,
+	pass: true,
+};
+const legacyWarrant: LegacyPromotionWarrant = {
 	criteria: 1,
 	fires: 5,
 	errors: 3,
@@ -587,11 +602,11 @@ describe("AgentRules registry", () => {
 		assert.equal(await rules.add(rule("warranted")), null);
 		assert.equal(
 			await rules.setState("warranted", "disabled", "xai/grok-4.6", "s2", timestamp, undefined as never),
-			"state origin must be one of tool, command",
+			"state origin must be one of tool, command, mechanism",
 		);
 		assert.equal(
 			await rules.setState("warranted", "disabled", "xai/grok-4.6", "s2", timestamp, "other" as never),
-			"state origin must be one of tool, command",
+			"state origin must be one of tool, command, mechanism",
 		);
 		assert.equal(
 			await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "command"),
@@ -604,16 +619,27 @@ describe("AgentRules registry", () => {
 		assert.match(
 			(await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "command", {
 				...passingWarrant,
-				errors: 4,
+				harmful: 4,
 			})) ?? "",
-			/errorKinds.*sum.*errors/,
+			/harmKinds must sum to warrant\.harmful/,
+		);
+		assert.match(
+			(await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "command", {
+				...passingWarrant,
+				errorKinds: { timeout: 1, aborted: 0, other: 2 },
+			})) ?? "",
+			/errorKinds must sum to the recorded failure count/,
 		);
 		assert.match(
 			(await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "command", {
 				...passingWarrant,
 				fires: 2,
 			})) ?? "",
-			/errors.*must not exceed.*fires/,
+			/harmful.*must not exceed.*fires/,
+		);
+		assert.equal(
+			await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "model" as never, passingWarrant),
+			"state origin must be one of tool, command, mechanism",
 		);
 		assert.match(
 			(await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "command", {
@@ -623,7 +649,7 @@ describe("AgentRules registry", () => {
 			/warrant\.fires.*non-negative integer/,
 		);
 		assert.equal(
-			await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "tool", passingWarrant),
+			await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "mechanism", passingWarrant),
 			null,
 		);
 		const state = (await readFile(join(dir, RULES_FILE), "utf8"))
@@ -638,7 +664,7 @@ describe("AgentRules registry", () => {
 			model: "xai/grok-4.6",
 			session: "s2",
 			at: timestamp,
-			origin: "tool",
+			origin: "mechanism",
 			warrant: passingWarrant,
 		});
 	});
@@ -725,8 +751,9 @@ describe("agent rule file", () => {
 				{
 					...valid,
 					slug: "bad-warrant",
-					warrant: { ...passingWarrant, errorKinds: { timeout: 0, aborted: 0, other: 2 } },
+					warrant: { ...passingWarrant, harmKinds: { error: 2, truncated: 2, output: 0, duration: 0 } },
 				},
+				{ ...valid, slug: "legacy-warrant", origin: "mechanism", warrant: legacyWarrant },
 				valid,
 			]
 				.map((line) => JSON.stringify(line))
@@ -759,6 +786,15 @@ describe("agent rule file", () => {
 				at: "2026-09-02T07:00:00.000Z",
 				origin: "command",
 				warrantUnreadable: true,
+			},
+			{
+				slug: "legacy-warrant",
+				state: "promoted",
+				model: "xai/grok-4.6",
+				session: "new-session",
+				at: "2026-09-02T07:00:00.000Z",
+				origin: "mechanism",
+				warrant: legacyWarrant,
 			},
 			{
 				slug: "current",
@@ -950,31 +986,36 @@ describe("agent rule file", () => {
 });
 
 describe("warrant evidence", () => {
-	it("counts matching outcomes, error kinds, and truncation from daily records", async () => {
+	it("partitions harm by failure, truncation, output size, and duration", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "policy-agent-warrant-"));
 		const seeded = [
 			policyRecord({ callId: "timeout", error: true, errorKind: "timeout", truncated: true }),
 			policyRecord({ callId: "aborted", error: true, errorKind: "aborted" }),
 			policyRecord({ callId: "other-1", error: true, errorKind: "other" }),
-			policyRecord({ callId: "other-2", error: true, errorKind: "other" }),
-			policyRecord({ callId: "success", truncated: true, classes: ["agent.warranted", "agent.warranted"] }),
-			policyRecord({ callId: "other-class", classes: ["agent.other"] }),
+			policyRecord({ callId: "truncated", truncated: true, outputBytes: HARMFUL_OUTPUT_BYTES }),
+			policyRecord({ callId: "large", outputBytes: HARMFUL_OUTPUT_BYTES, durationMs: HARMFUL_DURATION_MS }),
+			policyRecord({ callId: "slow", durationMs: HARMFUL_DURATION_MS }),
+			policyRecord({ callId: "cheap", outputBytes: HARMFUL_OUTPUT_BYTES - 1, durationMs: HARMFUL_DURATION_MS - 1 }),
+			policyRecord({ callId: "other-class", classes: ["agent.other"], error: true, errorKind: "other" }),
 		];
 		for (const record of seeded) assert.equal(await appendRecord(dir, record), null);
-		assert.deepEqual(await scanWarrantEvidence(dir, "warranted"), {
-			fires: 5,
-			errors: 4,
-			errorKinds: { timeout: 1, aborted: 1, other: 2 },
-			truncated: 2,
+		const measured = await scanWarrantEvidence(dir, ["warranted", "other", "unknown"]);
+		assert.deepEqual(measured.get("warranted"), {
+			fires: 7,
+			harmful: 6,
+			harmKinds: { error: 3, truncated: 1, output: 1, duration: 1 },
+			errorKinds: { timeout: 1, aborted: 1, other: 1 },
 			partial: false,
 		});
-		assert.deepEqual(await scanWarrantEvidence(dir, "unknown"), {
-			fires: 0,
-			errors: 0,
-			errorKinds: { timeout: 0, aborted: 0, other: 0 },
-			truncated: 0,
+		assert.deepEqual(measured.get("other"), {
+			fires: 1,
+			harmful: 1,
+			harmKinds: { error: 1, truncated: 0, output: 0, duration: 0 },
+			errorKinds: { timeout: 0, aborted: 0, other: 1 },
 			partial: false,
 		});
+		assert.deepEqual(measured.get("unknown"), emptyEvidence());
+		assert.deepEqual([...(await scanWarrantEvidence(dir, [])).keys()], []);
 	});
 
 	it("excludes blocked calls, because a block is enforcement and not an outcome", async () => {
@@ -985,11 +1026,11 @@ describe("warrant evidence", () => {
 			policyRecord({ callId: "ran", error: true, errorKind: "timeout" }),
 		];
 		for (const record of seeded) assert.equal(await appendRecord(dir, record), null);
-		assert.deepEqual(await scanWarrantEvidence(dir, "warranted"), {
+		assert.deepEqual((await scanWarrantEvidence(dir, ["warranted"])).get("warranted"), {
 			fires: 1,
-			errors: 1,
+			harmful: 1,
+			harmKinds: { error: 1, truncated: 0, output: 0, duration: 0 },
 			errorKinds: { timeout: 1, aborted: 0, other: 0 },
-			truncated: 0,
 			partial: false,
 		});
 	});
@@ -1001,19 +1042,13 @@ describe("warrant evidence", () => {
 		assert.equal(await appendRecord(dir, first), null);
 		assert.equal(await appendRecord(dir, second), null);
 		const bound = Buffer.byteLength(`${JSON.stringify(first)}\n`, "utf8");
-		const partial = await scanWarrantEvidence(dir, "warranted", bound);
-		assert.equal(partial.partial, true);
-		assert.equal(partial.fires, 1);
-		assert.equal(partial.errors, 1);
+		const partial = (await scanWarrantEvidence(dir, ["warranted"], bound)).get("warranted");
+		assert.equal(partial?.partial, true);
+		assert.equal(partial?.fires, 1);
+		assert.equal(partial?.harmful, 1);
 
 		const root = await mkdtemp(join(tmpdir(), "policy-agent-warrant-"));
-		assert.deepEqual(await scanWarrantEvidence(join(root, "missing"), "warranted"), {
-			fires: 0,
-			errors: 0,
-			errorKinds: { timeout: 0, aborted: 0, other: 0 },
-			truncated: 0,
-			partial: false,
-		});
+		assert.deepEqual((await scanWarrantEvidence(join(root, "missing"), ["warranted"])).get("warranted"), emptyEvidence());
 	});
 });
 

@@ -67,14 +67,18 @@ import {
 	type PolicyView,
 } from "./panel.ts";
 import {
+	MIN_WARRANT_FIRES,
 	PROMOTION_CRITERIA_VERSION,
 	PROMOTION_MODES,
+	describeEvidence,
+	emptyEvidence,
 	evaluateWarrant,
 	formatPromotionCriteria,
 	resolvePromotionMode,
 	resolvePromotionModeValue,
 	type PromotionMode,
 	type PromotionWarrant,
+	type WarrantEvidence,
 } from "./promotion.ts";
 import {
 	finishCall,
@@ -193,7 +197,12 @@ const ScopeSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-const AgentStateSchema = StringEnum(["active", "promoted", "disabled", "discarded"] as const);
+/**
+ * States the agent tool sets. Promotion is a mechanism action on measured
+ * evidence, and lowering a promoted rule stays with the operator, so neither
+ * reaches the model-facing surface.
+ */
+const ToolStateSchema = StringEnum(["active", "disabled", "discarded"] as const);
 
 function readTruncated(details: unknown): boolean {
 	if (!details || typeof details !== "object") return false;
@@ -381,13 +390,92 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		return !stopped;
 	};
 
-	pi.on("session_start", () => {
-		ensureMode();
-	});
-
 	const rulesDir = resolvePolicyDir(process.env, getAgentDir());
 	const rules = AgentRules.load(rulesDir);
 	bindAgentRules(rules);
+
+	/** Measured evidence for one rule, or empty evidence when the scan omits it. */
+	const evidenceFor = async (slug: string): Promise<WarrantEvidence> =>
+		(await scanWarrantEvidence(rulesDir, [slug])).get(slug) ?? emptyEvidence();
+
+	/**
+	 * Apply the promotion criteria to every active rule from one bounded scan and
+	 * report the outcome. The mechanism promotes without a decision in the loop;
+	 * a rule that crosses the threshold mid-session promotes at the next start.
+	 */
+	const applyPromotionCriteria = async (ctx: ExtensionContext): Promise<void> => {
+		const active = rules.list().filter((rule) => rule.state === "active");
+		if (active.length === 0) return;
+		const model = modelName(ctx);
+		if (model === null) return;
+		const session = ctx.sessionManager.getSessionId();
+		const measured = await scanWarrantEvidence(
+			rulesDir,
+			active.map((rule) => rule.slug),
+		);
+		const promoted: string[] = [];
+		const passedInOperatorMode: string[] = [];
+		const near: string[] = [];
+		for (const rule of active) {
+			const evidence = measured.get(rule.slug) ?? emptyEvidence();
+			const verdict = evaluateWarrant(evidence);
+			if (!verdict.pass) {
+				// At the threshold: the harmful majority holds and only volume is missing.
+				if (evidence.fires > 0 && evidence.harmful > evidence.fires - evidence.harmful && !evidence.partial) {
+					near.push(
+						`${agentClass(rule.slug)} (${evidence.fires} of ${MIN_WARRANT_FIRES} calls, ${evidence.harmful} harmful)`,
+					);
+				}
+				continue;
+			}
+			if (promotionMode === "operator") {
+				passedInOperatorMode.push(`${agentClass(rule.slug)} (${describeEvidence(evidence)})`);
+				continue;
+			}
+			const warrant: PromotionWarrant = { criteria: PROMOTION_CRITERIA_VERSION, ...evidence, pass: true };
+			const failure = await rules.setState(
+				rule.slug,
+				"promoted",
+				model,
+				session,
+				new Date().toISOString(),
+				"mechanism",
+				warrant,
+			);
+			if (failure) {
+				near.push(`${agentClass(rule.slug)} (promotion refused: ${failure})`);
+				continue;
+			}
+			promoted.push(`${agentClass(rule.slug)} (${describeEvidence(evidence)})`);
+		}
+		const report: string[] = [];
+		if (promoted.length > 0) report.push(`Promoted on recorded evidence: ${promoted.join("; ")}.`);
+		if (passedInOperatorMode.length > 0) {
+			report.push(
+				`Evidence passes for: ${passedInOperatorMode.join("; ")}. Promotion mode operator holds them; promote with /policy state <slug> promoted.`,
+			);
+		}
+		if (near.length > 0) report.push(`At the threshold: ${near.join("; ")}.`);
+		if (report.length === 0) return;
+		pi.sendMessage(
+			{
+				customType: "policy-promotion",
+				content: [`${POLICY_PREFIX} promotion criteria v${PROMOTION_CRITERIA_VERSION}`, ...report].join("\n"),
+				display: true,
+				details: { promoted, passedInOperatorMode, near, criteria: PROMOTION_CRITERIA_VERSION },
+			},
+			{ deliverAs: "nextTurn" },
+		);
+	};
+
+	pi.on("session_start", async (_event, ctx) => {
+		if (!ensureMode()) return;
+		try {
+			await applyPromotionCriteria(ctx);
+		} catch (error) {
+			stop(error);
+		}
+	});
 
 	const commandText = (ctx: ExtensionCommandContext, text: string): void => {
 		if (ctx.hasUI) {
@@ -456,7 +544,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		if (author === null) return { text: "cannot attribute a rule state change without a model", failed: true };
 		let warrant: PromotionWarrant | undefined;
 		if (requested === "promoted") {
-			const evidence = await scanWarrantEvidence(rulesDir, current.slug);
+			const evidence = await evidenceFor(current.slug);
 			const verdict = evaluateWarrant(evidence);
 			warrant = { criteria: PROMOTION_CRITERIA_VERSION, ...evidence, pass: verdict.pass };
 		}
@@ -760,12 +848,13 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "policy_rule_set_state",
 		label: "Set Policy Rule State",
-		description: "Change an agent-authored policy rule posture, rechecking declared suggested forms before promotion.",
+		description:
+			"Set an agent-authored policy rule to active, disabled, or discarded. Promotion follows recorded evidence, and lowering a promoted rule is operator-only.",
 		executionMode: "sequential",
 		parameters: Type.Object(
 			{
 				slug: Type.String(),
-				state: AgentStateSchema,
+				state: ToolStateSchema,
 			},
 			{ additionalProperties: false },
 		),
@@ -775,33 +864,15 @@ export default function registerPolicy(pi: ExtensionAPI) {
 				const current = rules.get(params.slug);
 				if (!current) return toolText(`unknown agent rule "${params.slug}"`);
 				const requested = params.state as AgentState;
-				if (needsOperatorConfirm(current.state, requested)) {
-					if (!ctx.hasUI) {
-						return toolText(
-							`cannot lower promoted rule "${current.slug}" in ${ctx.mode} mode: lowering a promoted rule requires operator confirmation`,
-						);
-					}
-					const ok = await ctx.ui.confirm(
-						`Lower promoted policy rule ${current.slug}?`,
-						`Rule "${current.slug}" would change from ${current.state} to ${requested}.\n\nNote: ${current.note}`,
-					);
-					if (!ok) return toolText("state change declined by the operator");
-				}
-				let warrant: PromotionWarrant | undefined;
 				if (requested === "promoted") {
-					if (promotionMode === "operator") {
-						return toolText(
-							`promotion of policy rule "${current.slug}" is restricted to operator action in promotion mode "operator"; promote with /policy state ${current.slug} promoted`,
-						);
-					}
-					const evidence = await scanWarrantEvidence(rulesDir, current.slug);
-					const verdict = evaluateWarrant(evidence);
-					if (!verdict.pass) {
-						return toolText(
-							`promotion of "${current.slug}" refused: warrant fails criteria v${PROMOTION_CRITERIA_VERSION}: ${verdict.reasons.join("; ")}. Measured: ${evidence.fires} matching calls, ${evidence.errors} failures, ${evidence.truncated} truncated, scan ${evidence.partial ? "partial" : "complete"}. Run /policy criteria for the criteria source.`,
-						);
-					}
-					warrant = { criteria: PROMOTION_CRITERIA_VERSION, ...evidence, pass: true };
+					return toolText(
+						`promotion of policy rule "${current.slug}" is not a tool action: the mechanism promotes a rule whose recorded evidence passes criteria v${PROMOTION_CRITERIA_VERSION}. Run /policy criteria for the criteria source.`,
+					);
+				}
+				if (needsOperatorConfirm(current.state, requested)) {
+					return toolText(
+						`lowering promoted policy rule "${current.slug}" is operator-only; the operator runs /policy state ${current.slug} ${requested}`,
+					);
 				}
 				const model = modelName(ctx);
 				if (model === null) return toolText("cannot attribute a rule state change without a model");
@@ -812,7 +883,6 @@ export default function registerPolicy(pi: ExtensionAPI) {
 					ctx.sessionManager.getSessionId(),
 					new Date().toISOString(),
 					"tool",
-					warrant,
 				);
 				return toolText(failure ?? `Set policy class ${agentClass(current.slug)} to ${requested}.`);
 			} catch (error) {

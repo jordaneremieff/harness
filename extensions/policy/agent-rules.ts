@@ -5,7 +5,14 @@ import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parseStatements, type Stage, type Statement } from "./shell.ts";
 import { flags, operands, RULES } from "./shell-rules.ts";
-import type { PromotionWarrant, WarrantEvidence } from "./promotion.ts";
+import {
+	HARMFUL_DURATION_MS,
+	HARMFUL_OUTPUT_BYTES,
+	emptyEvidence,
+	type PromotionWarrant,
+	type RecordedWarrant,
+	type WarrantEvidence,
+} from "./promotion.ts";
 import { ensurePrivateDirectory } from "./store.ts";
 
 const FIRST_SCHEMA_VERSION = 1;
@@ -68,7 +75,14 @@ export const MAX_FIRE_SCAN_BYTES = 32 * 1024 * 1024;
 export const RULES_FILE = "agent-rules.jsonl";
 
 export type AgentState = "active" | "promoted" | "disabled" | "discarded";
-export type StateOrigin = "tool" | "command";
+
+/**
+ * Who wrote a state transition: the agent tool, an operator command or panel
+ * action, or the promotion mechanism that applies the criteria by itself.
+ */
+export type StateOrigin = "tool" | "command" | "mechanism";
+
+export const STATE_ORIGINS: readonly StateOrigin[] = ["tool", "command", "mechanism"];
 
 export interface StateLine {
 	slug: string;
@@ -77,8 +91,8 @@ export interface StateLine {
 	session: string;
 	at: string;
 	origin: StateOrigin | "unknown";
-	warrant?: PromotionWarrant;
-	/** A warrant is present on the line but does not satisfy the warrant shape. */
+	warrant?: RecordedWarrant;
+	/** A warrant is present on the line but does not satisfy any warrant shape. */
 	warrantUnreadable?: true;
 }
 
@@ -455,19 +469,29 @@ function validateAttribution(model: unknown, session: unknown, at: unknown): str
 	return null;
 }
 
-function validatePromotionWarrant(warrant: unknown): string | null {
-	if (!isObject(warrant)) return "warrant must be an object";
+function validateErrorKinds(value: unknown, total: number): string | null {
+	if (!isObject(value)) return "warrant.errorKinds must be an object";
+	const kindKeys = Object.keys(value).sort();
+	if (kindKeys.length !== 3 || kindKeys.join(",") !== "aborted,other,timeout") {
+		return "warrant.errorKinds must contain exactly timeout, aborted, other";
+	}
+	for (const kind of ["timeout", "aborted", "other"] as const) {
+		const kindFailure = validateNonNegativeInteger(value[kind], `warrant.errorKinds.${kind}`);
+		if (kindFailure) return kindFailure;
+	}
+	if ((value.timeout as number) + (value.aborted as number) + (value.other as number) !== total) {
+		return "warrant.errorKinds must sum to the recorded failure count";
+	}
+	return null;
+}
+
+function validateLegacyWarrant(warrant: Record<string, unknown>): string | null {
 	const keyFailure = unknownKey(
 		warrant,
 		["criteria", "fires", "errors", "errorKinds", "truncated", "partial", "pass"],
 		"warrant",
 	);
 	if (keyFailure) return keyFailure;
-	if (typeof warrant.criteria !== "number" || !Number.isInteger(warrant.criteria) || warrant.criteria <= 0) {
-		return "warrant.criteria must be a positive integer";
-	}
-	const firesFailure = validateNonNegativeInteger(warrant.fires, "warrant.fires");
-	if (firesFailure) return firesFailure;
 	const errorsFailure = validateNonNegativeInteger(warrant.errors, "warrant.errors");
 	if (errorsFailure) return errorsFailure;
 	if ((warrant.errors as number) > (warrant.fires as number)) {
@@ -475,26 +499,47 @@ function validatePromotionWarrant(warrant: unknown): string | null {
 	}
 	const truncatedFailure = validateNonNegativeInteger(warrant.truncated, "warrant.truncated");
 	if (truncatedFailure) return truncatedFailure;
-	if (!isObject(warrant.errorKinds)) return "warrant.errorKinds must be an object";
-	const kindKeys = Object.keys(warrant.errorKinds).sort();
-	if (kindKeys.length !== 3 || kindKeys.join(",") !== "aborted,other,timeout") {
-		return "warrant.errorKinds must contain exactly timeout, aborted, other";
+	return validateErrorKinds(warrant.errorKinds, warrant.errors as number);
+}
+
+function validateCurrentWarrant(warrant: Record<string, unknown>): string | null {
+	const keyFailure = unknownKey(
+		warrant,
+		["criteria", "fires", "harmful", "harmKinds", "errorKinds", "partial", "pass"],
+		"warrant",
+	);
+	if (keyFailure) return keyFailure;
+	const harmfulFailure = validateNonNegativeInteger(warrant.harmful, "warrant.harmful");
+	if (harmfulFailure) return harmfulFailure;
+	if ((warrant.harmful as number) > (warrant.fires as number)) {
+		return "warrant.harmful must not exceed warrant.fires";
 	}
-	for (const kind of ["timeout", "aborted", "other"] as const) {
-		const kindFailure = validateNonNegativeInteger(warrant.errorKinds[kind], `warrant.errorKinds.${kind}`);
+	if (!isObject(warrant.harmKinds)) return "warrant.harmKinds must be an object";
+	const harmKeys = Object.keys(warrant.harmKinds).sort();
+	if (harmKeys.length !== 4 || harmKeys.join(",") !== "duration,error,output,truncated") {
+		return "warrant.harmKinds must contain exactly error, truncated, output, duration";
+	}
+	let harmTotal = 0;
+	for (const kind of ["error", "truncated", "output", "duration"] as const) {
+		const kindFailure = validateNonNegativeInteger(warrant.harmKinds[kind], `warrant.harmKinds.${kind}`);
 		if (kindFailure) return kindFailure;
+		harmTotal += warrant.harmKinds[kind] as number;
 	}
-	if (
-		(warrant.errorKinds.timeout as number) +
-			(warrant.errorKinds.aborted as number) +
-			(warrant.errorKinds.other as number) !==
-		(warrant.errors as number)
-	) {
-		return "warrant.errorKinds must sum to warrant.errors";
+	if (harmTotal !== (warrant.harmful as number)) return "warrant.harmKinds must sum to warrant.harmful";
+	return validateErrorKinds(warrant.errorKinds, warrant.harmKinds.error as number);
+}
+
+/** Validate either recorded warrant shape, chosen by the criteria version. */
+function validatePromotionWarrant(warrant: unknown): string | null {
+	if (!isObject(warrant)) return "warrant must be an object";
+	if (typeof warrant.criteria !== "number" || !Number.isInteger(warrant.criteria) || warrant.criteria <= 0) {
+		return "warrant.criteria must be a positive integer";
 	}
+	const firesFailure = validateNonNegativeInteger(warrant.fires, "warrant.fires");
+	if (firesFailure) return firesFailure;
 	if (typeof warrant.partial !== "boolean") return "warrant.partial must be a boolean";
 	if (typeof warrant.pass !== "boolean") return "warrant.pass must be a boolean";
-	return null;
+	return hasOwn(warrant, "harmful") ? validateCurrentWarrant(warrant) : validateLegacyWarrant(warrant);
 }
 
 function validateRule(rule: AgentRule, expectedVersion: number = SCHEMA_VERSION): string | null {
@@ -686,35 +731,58 @@ export async function countFires(dir: string, byteBound: number = MAX_FIRE_SCAN_
 	}
 }
 
-/** Scan bounded daily records for the measured evidence behind one agent rule. */
+/**
+ * Scan bounded daily records once for the measured evidence behind every named
+ * rule. Promotion reads the whole registry at session start, so one pass serves
+ * all of it; a per-rule pass would reread the same store for each rule.
+ */
 export async function scanWarrantEvidence(
 	dir: string,
-	slug: string,
+	slugs: readonly string[],
 	byteBound: number = MAX_FIRE_SCAN_BYTES,
-): Promise<WarrantEvidence> {
-	const evidence: WarrantEvidence = {
-		fires: 0,
-		errors: 0,
-		errorKinds: { timeout: 0, aborted: 0, other: 0 },
-		truncated: 0,
-		partial: false,
+): Promise<Map<string, WarrantEvidence>> {
+	const evidence = new Map<string, WarrantEvidence>();
+	const byClass = new Map<string, WarrantEvidence>();
+	for (const slug of slugs) {
+		const measured = emptyEvidence();
+		evidence.set(slug, measured);
+		byClass.set(agentClass(slug), measured);
+	}
+	const markPartial = (): Map<string, WarrantEvidence> => {
+		for (const measured of evidence.values()) measured.partial = true;
+		return evidence;
 	};
-	const classId = agentClass(slug);
+	if (evidence.size === 0) return evidence;
+
 	const countRecord = (line: Buffer): void => {
 		if (line.length === 0) return;
 		try {
 			const value: unknown = JSON.parse(line.toString("utf8"));
-			if (!isObject(value) || !Array.isArray(value.classes) || !value.classes.includes(classId)) return;
-			// A blocked call never ran, so it is evidence of enforcement, not of the
-			// pattern failing. Counting it would let a rule's own blocks warrant it.
+			if (!isObject(value) || !Array.isArray(value.classes)) return;
+			// A blocked call never ran, so it reports enforcement, not the outcome of
+			// the pattern. Counting it would let a rule's own blocks warrant it.
 			if (value.blocked === true) return;
-			evidence.fires++;
-			if (value.error === true) {
-				evidence.errors++;
-				const kind = value.errorKind === "timeout" || value.errorKind === "aborted" ? value.errorKind : "other";
-				evidence.errorKinds[kind]++;
+			for (const classId of value.classes) {
+				const measured = typeof classId === "string" ? byClass.get(classId) : undefined;
+				if (!measured) continue;
+				measured.fires++;
+				// One harmful call counts under one reason, so the kinds stay a partition.
+				if (value.error === true) {
+					measured.harmful++;
+					measured.harmKinds.error++;
+					const kind = value.errorKind === "timeout" || value.errorKind === "aborted" ? value.errorKind : "other";
+					measured.errorKinds[kind]++;
+				} else if (value.truncated === true) {
+					measured.harmful++;
+					measured.harmKinds.truncated++;
+				} else if (typeof value.outputBytes === "number" && value.outputBytes >= HARMFUL_OUTPUT_BYTES) {
+					measured.harmful++;
+					measured.harmKinds.output++;
+				} else if (typeof value.durationMs === "number" && value.durationMs >= HARMFUL_DURATION_MS) {
+					measured.harmful++;
+					measured.harmKinds.duration++;
+				}
 			}
-			if (value.truncated === true) evidence.truncated++;
 		} catch {
 			// One malformed store record does not hide evidence from other records.
 		}
@@ -727,14 +795,11 @@ export async function scanWarrantEvidence(
 		for (const file of files) {
 			const scanned = await scanJsonlFile(join(dir, file), remaining, countRecord);
 			remaining -= scanned.bytesRead;
-			if (!scanned.complete) return { ...evidence, partial: true };
+			if (!scanned.complete) return markPartial();
 		}
 		return evidence;
 	} catch (error) {
-		return {
-			...evidence,
-			partial: (error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT",
-		};
+		return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT" ? evidence : markPartial();
 	}
 }
 
@@ -770,11 +835,11 @@ export function readStateLines(dir: string): StateLine[] {
 				model: value.model as string,
 				session: value.session as string,
 				at: value.at as string,
-				origin: value.origin === "tool" || value.origin === "command" ? value.origin : "unknown",
+				origin: STATE_ORIGINS.includes(value.origin as StateOrigin) ? (value.origin as StateOrigin) : "unknown",
 			};
 			if (hasOwn(value, "warrant")) {
 				if (validatePromotionWarrant(value.warrant)) line.warrantUnreadable = true;
-				else line.warrant = value.warrant as unknown as PromotionWarrant;
+				else line.warrant = value.warrant as unknown as RecordedWarrant;
 			}
 			lines.push(line);
 		}
@@ -985,7 +1050,7 @@ export class AgentRules {
 			if (!canTransition(rule.state, state)) return `discarded agent rule "${slug}" cannot change state`;
 			const attributionFailure = validateAttribution(model, session, at);
 			if (attributionFailure) return attributionFailure;
-			if (origin !== "tool" && origin !== "command") return "state origin must be one of tool, command";
+			if (!STATE_ORIGINS.includes(origin)) return `state origin must be one of ${STATE_ORIGINS.join(", ")}`;
 			if (state === "promoted" && warrant === undefined) return "promotion requires a recorded warrant";
 			if (warrant !== undefined && state !== "promoted") return "a warrant applies only to promotion";
 			if (warrant !== undefined) {

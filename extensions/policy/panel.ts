@@ -12,6 +12,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { agentClass, type AgentRule, type AgentState, MAX_FIRE_SCAN_BYTES, type StateLine } from "./agent-rules.ts";
+import { isCurrentWarrant, type RecordedWarrant } from "./promotion.ts";
 
 export const MAX_ACTIVITY_SCAN_BYTES = 4 * 1024 * 1024;
 export const MAX_ACTIVITY_RECORDS = 200;
@@ -643,6 +644,18 @@ export function formatPolicyShow(
 	return builtin ? capText(builtinDetailLines(builtin, data.fireSummary).map(terminalSafe).join("\n")) : undefined;
 }
 
+/** One warrant line for either recorded shape, named by its criteria version. */
+function warrantLine(warrant: RecordedWarrant): string {
+	const head = `warrant: criteria v${warrant.criteria} ${warrant.pass ? "pass" : "fail"} · ${warrant.fires} fires`;
+	const scan = `scan ${warrant.partial ? "partial" : "complete"}`;
+	if (!isCurrentWarrant(warrant)) {
+		return `${head} · ${warrant.errors} errors · ${warrant.truncated} truncated · ${scan}`;
+	}
+	const { harmKinds } = warrant;
+	const kinds = `${harmKinds.error} failed, ${harmKinds.truncated} truncated, ${harmKinds.output} over the output bound, ${harmKinds.duration} over the duration bound`;
+	return `${head} · ${warrant.harmful} harmful (${kinds}) · ${scan}`;
+}
+
 /** Append-only state history ordered newest first without disturbing equal timestamps. */
 export function formatPolicyHistory(lines: StateLine[]): string {
 	if (lines.length === 0) return "No state transitions were recorded.";
@@ -658,9 +671,7 @@ export function formatPolicyHistory(lines: StateLine[]): string {
 			`session: ${line.session}`,
 		];
 		if (line.warrant) {
-			section.push(
-				`warrant: criteria v${line.warrant.criteria} ${line.warrant.pass ? "pass" : "fail"} · ${line.warrant.fires} fires · ${line.warrant.errors} errors · ${line.warrant.truncated} truncated · scan ${line.warrant.partial ? "partial" : "complete"}`,
-			);
+			section.push(warrantLine(line.warrant));
 		} else if (line.warrantUnreadable) {
 			section.push("warrant: unreadable");
 		}

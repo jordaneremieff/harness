@@ -12,8 +12,12 @@ import {
 	SCHEMA_VERSION,
 } from "./agent-rules.ts";
 import registerPolicy from "./index.ts";
-import type { PromotionWarrant } from "./promotion.ts";
-import { PROMOTION_CRITERIA_SOURCE } from "./promotion.ts";
+import {
+	HARMFUL_DURATION_MS,
+	HARMFUL_OUTPUT_BYTES,
+	PROMOTION_CRITERIA_SOURCE,
+	type PromotionWarrant,
+} from "./promotion.ts";
 import type { PolicyRecord } from "./record.ts";
 import { appendRecord, MAX_QUEUED_RECORDS } from "./store.ts";
 
@@ -146,11 +150,11 @@ function harness(overrides: HarnessOverrides = {}) {
 }
 
 const passingWarrant: PromotionWarrant = {
-	criteria: 1,
+	criteria: 2,
 	fires: 5,
-	errors: 3,
+	harmful: 3,
+	harmKinds: { error: 3, truncated: 0, output: 0, duration: 0 },
 	errorKinds: { timeout: 0, aborted: 0, other: 3 },
-	truncated: 0,
 	partial: false,
 	pass: true,
 };
@@ -185,9 +189,15 @@ async function registryLines(): Promise<Array<Record<string, unknown>>> {
 		.map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
-async function seedEvidence(slug: string, fires: number, errors: number): Promise<void> {
+async function seedEvidence(
+	slug: string,
+	fires: number,
+	harmful: number,
+	kind: "error" | "output" | "duration" | "blocked" = "error",
+): Promise<void> {
 	for (let index = 0; index < fires; index++) {
-		const failed = index < errors;
+		const harms = index < harmful;
+		const failed = harms && (kind === "error" || kind === "blocked");
 		const record: PolicyRecord = {
 			session: "evidence-session",
 			mode: "print",
@@ -198,8 +208,8 @@ async function seedEvidence(slug: string, fires: number, errors: number): Promis
 			at: `2026-09-03T12:00:${String(index).padStart(2, "0")}.000Z`,
 			tool: "bash",
 			callId: `evidence-${slug}-${index}`,
-			durationMs: 1,
-			outputBytes: 0,
+			durationMs: harms && kind === "duration" ? HARMFUL_DURATION_MS : 1,
+			outputBytes: harms && kind === "output" ? HARMFUL_OUTPUT_BYTES : 0,
 			truncated: false,
 			error: failed,
 			errorKind: failed ? "other" : null,
@@ -207,6 +217,7 @@ async function seedEvidence(slug: string, fires: number, errors: number): Promis
 			policyMode: "observe",
 			classes: [`agent.${slug}`],
 		};
+		if (harms && kind === "blocked") record.blocked = true;
 		assert.equal(await appendRecord(dir, record), null);
 	}
 }
@@ -918,7 +929,31 @@ describe("agent rule tools", () => {
 		assert.ok(text.endsWith("firing counts partial: store scan exceeded the byte bound"));
 	});
 
-	it("rechecks the suggested form before promotion and preserves active posture on refusal", async () => {
+	it("refuses a promotion request and names the mechanism that promotes", async () => {
+		await seedRule({ slug: "warrant-pass", match: { tool: "bash", command: "danger" } });
+		await seedEvidence("warrant-pass", 5, 3);
+		const run = harness();
+		const text = await callTool(run, "policy_rule_set_state", { slug: "warrant-pass", state: "promoted" });
+		assert.match(text, /not a tool action/);
+		assert.match(text, /criteria v2/);
+		assert.match(text, /\/policy criteria/);
+		assert.equal(AgentRules.load(dir).get("warrant-pass")?.state, "active");
+		assert.deepEqual((await registryLines()).filter((line) => line.kind === "state"), []);
+	});
+
+	it("refuses to lower a promoted rule and sends the operator to the command", async () => {
+		const seeded = await seedRule({ state: "promoted" });
+		const run = harness({ confirm: () => true });
+		for (const state of ["active", "disabled", "discarded"]) {
+			const text = await callTool(run, "policy_rule_set_state", { slug: seeded.slug, state });
+			assert.match(text, /operator-only/);
+			assert.match(text, new RegExp(`/policy state ${seeded.slug} ${state}`));
+		}
+		assert.deepEqual(run.confirmations, []);
+		assert.equal(AgentRules.load(dir).get(seeded.slug)?.state, "promoted");
+	});
+
+	it("rechecks the suggested form before an operator promotion and preserves active posture", async () => {
 		await seedRule({
 			slug: "candidate",
 			match: { tool: "bash", command: "danger" },
@@ -927,59 +962,18 @@ describe("agent rule tools", () => {
 		await seedRule({ slug: "later-rule", match: { tool: "bash", command: "later-safe" } });
 		await seedEvidence("candidate", 5, 3);
 		const run = harness();
-		const text = await callTool(run, "policy_rule_set_state", { slug: "candidate", state: "promoted" });
-		assert.match(text, /agent\.later-rule/);
+		await run.commands.get("policy")!.handler("state candidate promoted", run.ctx);
+		assert.match(run.notifications.at(-1)?.message ?? "", /agent\.later-rule/);
 		assert.equal(AgentRules.load(dir).get("candidate")?.state, "active");
-	});
-
-	it("promotes with a passing measured warrant and records tool origin", async () => {
-		await seedRule({ slug: "warrant-pass", match: { tool: "bash", command: "danger" } });
-		await seedEvidence("warrant-pass", 5, 3);
-		const run = harness();
-		assert.match(
-			await callTool(run, "policy_rule_set_state", { slug: "warrant-pass", state: "promoted" }),
-			/to promoted/,
-		);
-		const state = (await registryLines()).find((line) => line.kind === "state" && line.slug === "warrant-pass");
-		assert.equal(state?.origin, "tool");
-		assert.deepEqual(state?.warrant, passingWarrant);
-		assert.equal(AgentRules.load(dir).get("warrant-pass")?.state, "promoted");
-	});
-
-	it("refuses promotion without evidence and reports the measured zeroes", async () => {
-		await seedRule({ slug: "no-evidence" });
-		const run = harness();
-		const text = await callTool(run, "policy_rule_set_state", { slug: "no-evidence", state: "promoted" });
-		assert.match(text, /warrant fails criteria v1/);
-		assert.match(text, /fewer than 5 matching calls \(0\)/);
-		assert.match(text, /Measured: 0 matching calls, 0 failures, 0 truncated, scan complete/);
-		assert.match(text, /\/policy criteria/);
-		assert.equal(AgentRules.load(dir).get("no-evidence")?.state, "active");
 	});
 
 	it("refuses a mostly successful 90/10 evidence history", async () => {
 		await seedRule({ slug: "mostly-successful" });
 		await seedEvidence("mostly-successful", 10, 1);
 		const run = harness();
-		const text = await callTool(run, "policy_rule_set_state", {
-			slug: "mostly-successful",
-			state: "promoted",
-		});
-		assert.match(text, /failures do not outnumber successes \(1 of 10\)/);
-		assert.match(text, /Measured: 10 matching calls, 1 failures/);
+		await run.handlers.get("session_start")!({}, run.ctx);
 		assert.equal(AgentRules.load(dir).get("mostly-successful")?.state, "active");
-	});
-
-	it("restricts tool promotion in operator mode from either configuration source", async () => {
-		const exact =
-			'promotion of policy rule "operator-only" is restricted to operator action in promotion mode "operator"; promote with /policy state operator-only promoted';
-		for (const overrides of [{ promotionMode: "operator" }, { promotionModeFlag: "operator" }]) {
-			await seedRule({ slug: "operator-only" });
-			const run = harness(overrides);
-			assert.equal(await callTool(run, "policy_rule_set_state", { slug: "operator-only", state: "promoted" }), exact);
-			assert.equal(AgentRules.load(dir).get("operator-only")?.state, "active");
-			await writeFile(join(dir, RULES_FILE), "", "utf8");
-		}
+		assert.deepEqual(run.messages, []);
 	});
 
 	it("records tool origin for a non-promotion state change", async () => {
@@ -994,10 +988,10 @@ describe("agent rule tools", () => {
 		assert.equal(state?.warrant, undefined);
 	});
 
-	it("lowers a promoted rule only after operator confirmation", async () => {
+	it("lowers a promoted rule through the operator command only", async () => {
 		const seeded = await seedRule({ state: "promoted" });
 		const run = harness({ confirm: () => true });
-		assert.match(await callTool(run, "policy_rule_set_state", { slug: seeded.slug, state: "active" }), /to active/);
+		await run.commands.get("policy")!.handler(`state ${seeded.slug} active`, run.ctx);
 		assert.equal(run.confirmations.length, 1);
 		assert.match(run.confirmations[0].title, new RegExp(seeded.slug));
 		for (const value of [seeded.slug, "promoted", "active", seeded.note]) {
@@ -1006,24 +1000,107 @@ describe("agent rule tools", () => {
 		assert.equal(AgentRules.load(dir).get(seeded.slug)?.state, "active");
 	});
 
-	it("refuses to lower a promoted rule without dialog-capable UI", async () => {
-		const seeded = await seedRule({ state: "promoted" });
-		const run = harness({ hasUI: false, ctxMode: "print" });
-		const text = await callTool(run, "policy_rule_set_state", { slug: seeded.slug, state: "disabled" });
-		assert.match(text, /print mode/);
-		assert.match(text, /requires operator confirmation/);
-		assert.deepEqual(run.confirmations, []);
-		assert.equal(AgentRules.load(dir).get(seeded.slug)?.state, "promoted");
-	});
-
-	it("reports an operator-declined lowering without changing state", async () => {
+	it("reports an operator-declined lowering through the command without changing state", async () => {
 		const seeded = await seedRule({ state: "promoted" });
 		const run = harness({ confirm: () => false });
-		assert.match(
-			await callTool(run, "policy_rule_set_state", { slug: seeded.slug, state: "discarded" }),
-			/declined by the operator/,
-		);
+		await run.commands.get("policy")!.handler(`state ${seeded.slug} discarded`, run.ctx);
+		assert.match(run.notifications.at(-1)?.message ?? "", /declined by the operator/);
 		assert.equal(AgentRules.load(dir).get(seeded.slug)?.state, "promoted");
+	});
+});
+
+describe("promotion mechanism", () => {
+	it("promotes every passing rule from one session-start scan and records mechanism origin", async () => {
+		await seedRule({ slug: "failing-pattern", match: { tool: "bash", command: "danger" } });
+		await seedRule({ slug: "costly-pattern", match: { tool: "bash", command: "costly" } });
+		await seedRule({ slug: "cheap-pattern", match: { tool: "bash", command: "cheap" } });
+		await seedEvidence("failing-pattern", 5, 3);
+		await seedEvidence("costly-pattern", 6, 4, "output");
+		await seedEvidence("cheap-pattern", 9, 2, "duration");
+		const run = harness();
+		await run.handlers.get("session_start")!({}, run.ctx);
+
+		const loaded = AgentRules.load(dir);
+		assert.equal(loaded.get("failing-pattern")?.state, "promoted");
+		assert.equal(loaded.get("costly-pattern")?.state, "promoted");
+		assert.equal(loaded.get("cheap-pattern")?.state, "active");
+
+		const states = (await registryLines()).filter((line) => line.kind === "state");
+		assert.deepEqual(
+			states.map((line) => [line.slug, line.state, line.origin]),
+			[
+				["costly-pattern", "promoted", "mechanism"],
+				["failing-pattern", "promoted", "mechanism"],
+			],
+		);
+		assert.deepEqual(states[0].warrant, {
+			criteria: 2,
+			fires: 6,
+			harmful: 4,
+			harmKinds: { error: 0, truncated: 0, output: 4, duration: 0 },
+			errorKinds: { timeout: 0, aborted: 0, other: 0 },
+			partial: false,
+			pass: true,
+		});
+	});
+
+	it("reports promotions and rules at the threshold in one readiness message", async () => {
+		await seedRule({ slug: "passing", match: { tool: "bash", command: "danger" } });
+		await seedRule({ slug: "nearly", match: { tool: "bash", command: "nearly" } });
+		await seedRule({ slug: "quiet", match: { tool: "bash", command: "quiet" } });
+		await seedEvidence("passing", 5, 4);
+		await seedEvidence("nearly", 3, 2);
+		await seedEvidence("quiet", 4, 1);
+		const run = harness();
+		await run.handlers.get("session_start")!({}, run.ctx);
+
+		assert.equal(run.messages.length, 1);
+		const sent = run.messages[0] as {
+			customType: string;
+			content: string;
+			display?: boolean;
+			options?: { deliverAs?: string; triggerTurn?: boolean };
+		};
+		assert.equal(sent.customType, "policy-promotion");
+		assert.equal(sent.display, true);
+		assert.equal(sent.options?.deliverAs, "nextTurn");
+		assert.equal(sent.options?.triggerTurn, undefined);
+		assert.match(sent.content, /promotion criteria v2/);
+		assert.match(sent.content, /Promoted on recorded evidence: agent\.passing \(5 matching calls that ran/);
+		assert.match(sent.content, /At the threshold: agent\.nearly \(3 of 5 calls, 2 harmful\)/);
+		assert.doesNotMatch(sent.content, /agent\.quiet/);
+	});
+
+	it("holds promotion in operator mode and names the command instead", async () => {
+		for (const overrides of [{ promotionMode: "operator" }, { promotionModeFlag: "operator" }]) {
+			await seedRule({ slug: "operator-only", match: { tool: "bash", command: "danger" } });
+			await seedEvidence("operator-only", 5, 3);
+			const run = harness(overrides);
+			await run.handlers.get("session_start")!({}, run.ctx);
+			assert.equal(AgentRules.load(dir).get("operator-only")?.state, "active");
+			const sent = run.messages[0] as { content: string };
+			assert.match(sent.content, /Evidence passes for: agent\.operator-only/);
+			assert.match(sent.content, /\/policy state <slug> promoted/);
+			await writeFile(join(dir, RULES_FILE), "", "utf8");
+		}
+	});
+
+	it("never promotes on the rule's own blocked calls", async () => {
+		await seedRule({ slug: "blocked-only", match: { tool: "bash", command: "danger" } });
+		await seedEvidence("blocked-only", 8, 8, "blocked");
+		const run = harness();
+		await run.handlers.get("session_start")!({}, run.ctx);
+		assert.equal(AgentRules.load(dir).get("blocked-only")?.state, "active");
+		assert.deepEqual(run.messages, []);
+	});
+
+	it("skips the evaluation when the session carries no model to attribute", async () => {
+		await seedRule({ slug: "unattributed", match: { tool: "bash", command: "danger" } });
+		await seedEvidence("unattributed", 5, 4);
+		const run = harness({ model: undefined });
+		await run.handlers.get("session_start")!({}, run.ctx);
+		assert.equal(AgentRules.load(dir).get("unattributed")?.state, "active");
+		assert.deepEqual(run.messages, []);
 	});
 });
 
@@ -1106,11 +1183,11 @@ describe("/policy command", () => {
 		const state = (await registryLines()).find((line) => line.kind === "state" && line.slug === "operator-promote");
 		assert.equal(state?.origin, "command");
 		assert.deepEqual(state?.warrant, {
-			criteria: 1,
+			criteria: 2,
 			fires: 0,
-			errors: 0,
+			harmful: 0,
+			harmKinds: { error: 0, truncated: 0, output: 0, duration: 0 },
 			errorKinds: { timeout: 0, aborted: 0, other: 0 },
-			truncated: 0,
 			partial: false,
 			pass: false,
 		});
@@ -1196,6 +1273,16 @@ describe("/policy command", () => {
 		assert.match(history, /origin: unknown/);
 		assert.match(history, /origin: command/);
 		assert.match(history, /warrant: criteria v1 fail · 0 fires · 0 errors · 0 truncated · scan complete/);
+	});
+
+	it("prints the implemented checks beside the criteria source", async () => {
+		const run = harness();
+		await callCommand(run, "criteria");
+		const text = run.notifications.at(-1)?.message ?? "";
+		assert.match(text, /version: 2/);
+		assert.match(text, /output reaches 16384 bytes/);
+		assert.match(text, /runs for 10000 milliseconds or more/);
+		assert.match(text, /blocked call is excluded from the tally/);
 	});
 
 	it("supports every text verb with no UI and refuses confirmation-gated changes", async () => {

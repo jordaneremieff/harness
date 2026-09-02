@@ -353,7 +353,8 @@ transition declaration, and breaking transitions require an explicit migration
 before older records can load. State records carry no schema version.
 
 Every newly written state line records its origin: `tool` for
-`policy_rule_set_state`, and `command` for `/policy state` and panel actions.
+`policy_rule_set_state`, `command` for `/policy state` and panel actions, and
+`mechanism` for the session-start promotion the criteria apply on their own.
 Lines written before origin tracking existed remain valid on replay and display
 as `unknown`; replay does not invent attribution. Legacy promoted lines without
 a warrant also keep replaying, and history leaves their warrant absent.
@@ -366,26 +367,39 @@ and a warrant that fails the warrant shape displays as `warrant: unreadable`.
 Both surfaces drop the same lines: a line whose slug, state, or attribution is
 invalid.
 
-Promotion requires a recorded warrant. The plain-language source lives in
-`PROMOTION_CRITERIA_SOURCE` at criteria version 1 and is:
+Promotion is a mechanism action, not a tool action. At session start the
+extension scans the daily store once for every active agent rule, applies the
+promotion criteria, and promotes every rule whose warrant passes. The state
+line records origin `mechanism`, the warrant, and the criteria version. A rule
+that crosses the threshold mid-session promotes at the next session start. A
+session whose context carries no model to attribute skips the evaluation and
+promotes nothing. One readiness message reports what promoted; in promotion
+mode `operator` it names each rule whose evidence passes and holds promotion
+for `/policy state <slug> promoted`.
 
-> Promote a rule only when the recorded history of its matching calls shows the pattern the rule blocks actually fails. The history must hold enough matching calls to rule out chance, and failures must outnumber successes among those calls. A rule whose matching calls mostly succeed must not promote. A promotion without recorded evidence must be refused. Record the measured evidence, the criteria version, and the judgment with every promotion.
+Promotion requires a recorded warrant. The plain-language source lives in
+`PROMOTION_CRITERIA_SOURCE` at criteria version 2 and is:
+
+> Promote a rule only when the recorded history of its matching calls shows that the pattern the rule blocks actually costs. A matching call is harmful when it fails, when its result is truncated, when its output reaches 16 KiB, or when it runs for 10 seconds or more. A call that the policy blocked never ran, so it is not evidence and does not count. The history must hold at least five matching calls that ran, and the harmful calls must outnumber the calls that ran without harm. A rule whose matching calls are mostly cheap and successful must not promote. A promotion without recorded evidence must be refused. The mechanism applies these criteria without a decision in the loop and promotes every rule that passes. It records the measured evidence, the criteria version, and the judgment with every promotion. Lowering a promoted rule stays with the operator.
 
 The evidence scan reads the daily records of the rule's matching calls and skips
 every blocked call. A block prevents execution, so it reports enforcement rather
 than the outcome of the pattern; counting blocks would let a promoted rule's own
 blocks warrant it.
 
-The implemented evidence check requires at least 5 matching calls, failures to
-strictly outnumber successes, and a complete bounded scan. Exactly half failures
-does not pass, and a partial scan refuses. A warrant records fires, failures by
-error kind, truncation, scan completeness, the criteria version, and the
-judgment. In promotion mode `agent`, the agent state tool requires a passing
-warrant and refuses with the measured facts and failed checks. In promotion mode
-`operator`, that tool directs promotion to `/policy state`. The operator command
-and panel always measure and record the warrant and its verdict but never block
-promotion on the verdict. The registry's suggested-form collision check still
-applies to every promotion path.
+The implemented evidence check requires at least 5 matching calls that ran,
+harmful calls to strictly outnumber the rest, and a complete bounded scan.
+Exactly half harmful does not pass, and a partial scan refuses. A call is
+harmful when it fails, when its result is truncated, when its output reaches
+16,384 bytes, or when it runs for 10,000 milliseconds or more; `/policy
+criteria` prints these numbers beside the source. A version-2 warrant records
+fires, harmful calls, the harm partition by failure, truncation, output, and
+duration, the error partition by error kind, scan completeness, the criteria
+version, and the judgment. Version-1 warrants keep their recorded shape and
+display with their own line format. The operator command and panel always
+measure and record the warrant and its verdict but never block promotion on the
+verdict. The registry's suggested-form collision check still applies to every
+promotion path.
 
 The match shape is closed and applies only to `bash` stages:
 
@@ -473,10 +487,11 @@ The model-facing management surface is:
   including its optional suggested form and firing count from the daily record
   store. If the bounded store scan cannot finish, the output ends with `firing
   counts partial: store scan exceeded the byte bound`.
-- `policy_rule_set_state` requires a passing measured warrant for promotion in
-  `agent` promotion mode, refuses tool promotion in `operator` promotion mode,
-  rechecks declared suggested forms, and records tool origin on accepted state
-  transitions. The promoted-rule lowering confirmation gate still applies.
+- `policy_rule_set_state` sets `active`, `disabled`, or `discarded`. It refuses
+  `promoted`, because promotion is a mechanism action on measured evidence, and
+  it refuses to lower a promoted rule, because that decision stays with the
+  operator through `/policy state`. It records tool origin on accepted state
+  transitions.
 
 A missing rules file is an empty registry. An unreadable or unparseable file
 warns once and leaves built-in classification and recording untouched.

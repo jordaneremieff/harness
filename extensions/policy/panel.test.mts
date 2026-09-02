@@ -212,6 +212,36 @@ describe("policy rule formatting", () => {
 				at: "2026-09-02T07:00:00.000Z",
 				origin: "command",
 				warrant: {
+					criteria: 2,
+					fires: 6,
+					harmful: 4,
+					harmKinds: { error: 1, truncated: 1, output: 1, duration: 1 },
+					errorKinds: { timeout: 0, aborted: 0, other: 1 },
+					partial: false,
+					pass: true,
+				},
+			},
+		];
+		const formatted = formatPolicyHistory(lines);
+		assert.ok(formatted.indexOf("model/new") < formatted.indexOf("model/old"));
+		assert.match(formatted, /origin: unknown/);
+		assert.match(
+			formatted,
+			/warrant: criteria v2 pass · 6 fires · 4 harmful \(1 failed, 1 truncated, 1 over the output bound, 1 over the duration bound\) · scan complete/,
+		);
+		assert.equal(formatPolicyHistory([]), "No state transitions were recorded.");
+	});
+
+	it("renders a version-1 warrant line in its recorded shape", () => {
+		const formatted = formatPolicyHistory([
+			{
+				slug: "legacy-rule",
+				state: "promoted",
+				model: "model/old",
+				session: "session-old",
+				at: "2026-09-01T07:00:00.000Z",
+				origin: "mechanism",
+				warrant: {
 					criteria: 1,
 					fires: 5,
 					errors: 3,
@@ -221,12 +251,9 @@ describe("policy rule formatting", () => {
 					pass: true,
 				},
 			},
-		];
-		const formatted = formatPolicyHistory(lines);
-		assert.ok(formatted.indexOf("model/new") < formatted.indexOf("model/old"));
-		assert.match(formatted, /origin: unknown/);
+		]);
+		assert.match(formatted, /origin: mechanism/);
 		assert.match(formatted, /warrant: criteria v1 pass · 5 fires · 3 errors · 2 truncated · scan complete/);
-		assert.equal(formatPolicyHistory([]), "No state transitions were recorded.");
 	});
 
 	it("marks a promotion whose recorded warrant does not read", () => {
