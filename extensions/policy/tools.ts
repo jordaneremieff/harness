@@ -69,7 +69,7 @@ const SuggestSchema = Type.Object(
 
 const ScopeSchema = Type.Object(
 	{
-		providers: Type.Optional(StringList),
+		modelProviders: Type.Optional(StringList),
 		models: Type.Optional(ModelList),
 		cwdPrefixes: Type.Optional(
 			Type.Array(Type.String({ minLength: 1, maxLength: MAX_CWD_PREFIX_LENGTH, pattern: "^(?:/|[A-Za-z]:[\\\\/])" }), {
@@ -144,7 +144,7 @@ export function registerLocalRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 		name: "policy_propose",
 		label: "Policy propose",
 		description:
-			"Submit one inert local-rule proposal for operator review. upsert requires slug, reason, note, and match; discard permits only slug and reason. Match grammar: command exact; flags all present; absentFlags none present; operands min/max count non-flag args, any accepts one listed operand, at maps zero-based operand indexes to allowed values; pipe from/to/fromRedirect/toRedirect are exact booleans, next lists the immediate next command, later lists any later command. Optional suggest has command and flags. Optional scope has exact providers, exact provider/id models, and absolute cwdPrefixes. This tool cannot approve, reject, set state, or set effect.",
+			"Submit one inert local-rule proposal for operator review. upsert requires slug, reason, note, and match; discard permits only slug and reason. Match grammar: command exact; flags all present; absentFlags none present; operands min/max count non-flag args, any accepts one listed operand, at maps zero-based operand indexes to allowed values; pipe from/to/fromRedirect/toRedirect are exact booleans, next lists the immediate next command, later lists any later command. Optional suggest has command and flags. Optional scope restricts session context: modelProviders holds exact model provider identifiers (for example, openai-codex); models holds exact provider/id strings (for example, openai-codex/gpt-5.6-sol); cwdPrefixes holds absolute directory paths used as prefixes. Scope does not select which command or tool the rule matches; match.command does that. This tool cannot approve, reject, set state, or set effect.",
 		promptSnippet: "Propose an inert local policy rule for operator review",
 		promptGuidelines: [
 			"Use policy_propose only when the operator asks for a local policy rule. A proposal is inert until the operator approves it.",

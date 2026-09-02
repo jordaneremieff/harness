@@ -11,12 +11,14 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import type {
-	LocalRule,
-	LocalRuleEffect,
-	LocalRuleSnapshot,
-	LocalRuleState,
-	PendingProposal,
+import {
+	localRuleScopeVisibility,
+	type LocalRule,
+	type LocalRuleEffect,
+	type LocalRuleSnapshot,
+	type LocalRuleState,
+	type PendingProposal,
+	type RuleMatchContext,
 } from "./local-rules.ts";
 
 export const MAX_FIRE_SCAN_BYTES = 4 * 1024 * 1024;
@@ -98,6 +100,7 @@ export interface LocalPanelActionHost {
 
 interface PolicyPanelDeps {
 	data: PolicyPanelData;
+	scopeContext: RuleMatchContext;
 	theme: Theme;
 	tui: { requestRender(): void };
 	getMaxRows: () => number;
@@ -277,7 +280,7 @@ function jsonField(value: unknown): string {
 	return JSON.stringify(value) ?? "(none)";
 }
 
-export function localRuleDetailLines(rule: LocalRule): string[] {
+export function localRuleDetailLines(rule: LocalRule, context: RuleMatchContext): string[] {
 	return [
 		`slug: ${rule.slug}`,
 		`state: ${rule.state}`,
@@ -286,6 +289,7 @@ export function localRuleDetailLines(rule: LocalRule): string[] {
 		`match: ${jsonField(rule.match)}`,
 		`suggest: ${rule.suggest ? jsonField(rule.suggest) : "(none)"}`,
 		`scope: ${rule.scope ? jsonField(rule.scope) : "(none)"}`,
+		localRuleScopeVisibility(rule, context),
 		`proposal id: ${rule.proposalId}`,
 		...auditLines("proposed audit", rule.proposedAudit),
 		...auditLines("approved audit", rule.approvedAudit),
@@ -686,11 +690,12 @@ export function formatPolicyList(
 export function formatPolicyShow(
 	data: Pick<PolicyPanelData, "builtins" | "fireSummary" | "local" | "registryError">,
 	ref: string,
+	context: RuleMatchContext,
 ): string | undefined {
 	const builtin = data.builtins.find((rule) => rule.id === ref);
 	if (builtin) return capText(builtinDetailLines(builtin, data.fireSummary).map(terminalSafe).join("\n"));
 	const local = [...data.local.rules, ...data.local.discarded].find((rule) => rule.slug === ref);
-	if (local) return capText(localRuleDetailLines(local).map(terminalSafe).join("\n"));
+	if (local) return capText(localRuleDetailLines(local, context).map(terminalSafe).join("\n"));
 	const proposal = data.local.pending.find((entry) => entry.id === ref);
 	if (proposal) return capText(pendingProposalDetailLines(proposal).map(terminalSafe).join("\n"));
 	return undefined;
@@ -790,7 +795,10 @@ export class PolicyPanel {
 					width,
 				);
 			}
-			const detail = row.kind === "pending" ? pendingProposalDetailLines(row.proposal) : localRuleDetailLines(row.rule);
+			const detail =
+				row.kind === "pending"
+					? pendingProposalDetailLines(row.proposal)
+					: localRuleDetailLines(row.rule, this.deps.scopeContext);
 			return wrapDetail([...status, ...detail], width);
 		}
 		const row = this.currentRule();

@@ -26,6 +26,7 @@ interface Notification {
 
 interface FakeTool {
 	name: string;
+	description: string;
 	parameters: Record<string, unknown>;
 	execute: (...args: unknown[]) => Promise<{
 		content: Array<{ text: string }>;
@@ -604,6 +605,16 @@ describe("/policy command", () => {
 		assert.match(run.notifications[3].message, /\/policy show <ref>/);
 	});
 
+	it("shows whether a retained rule scope matches the current session", async () => {
+		await installLocalRule(localCandidate({ scope: { modelProviders: ["other-provider"] } }));
+		const run = harness();
+		await run.commands.get("policy")!.handler("show shell.scan", run.ctx);
+		assert.match(
+			run.notifications.at(-1)?.message ?? "",
+			/scope matches this session: no \(modelProviders\)/,
+		);
+	});
+
 	it("rejects unknown command verbs", async () => {
 		for (const verb of ["introduce request", "remove old", "change old active"]) {
 			const run = harness();
@@ -627,8 +638,20 @@ describe("local rule agent tools", () => {
 		assert.ok(upsert.required.includes("match"));
 		assert.deepEqual(discard.required.sort(), ["operation", "reason", "slug"]);
 		assert.equal((run.tools.get("policy_rules")!.parameters as { additionalProperties: boolean }).additionalProperties, false);
+		const scope = upsert.properties.scope as {
+			properties: Record<string, unknown>;
+			additionalProperties: boolean;
+		};
+		assert.deepEqual(Object.keys(scope.properties).sort(), ["cwdPrefixes", "modelProviders", "models"]);
+		assert.equal(scope.additionalProperties, false);
+		assert.equal("providers" in scope.properties, false);
 		const propertyNames = new Set(proposalSchema.anyOf.flatMap((arm) => Object.keys(arm.properties)));
 		for (const forbidden of ["approve", "reject", "decision", "state", "effect"]) assert.equal(propertyNames.has(forbidden), false);
+		const description = run.tools.get("policy_propose")!.description;
+		assert.match(description, /modelProviders.*openai-codex/);
+		assert.match(description, /models.*openai-codex\/gpt-5\.6-sol/);
+		assert.match(description, /cwdPrefixes holds absolute directory paths/);
+		assert.match(description, /Scope does not select which command or tool.*match\.command/);
 	});
 
 	it("writes an inert proposal with agent-tool audit and lists it with registry health", async () => {

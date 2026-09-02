@@ -6,10 +6,12 @@ import { describe, it } from "node:test";
 import {
 	LocalRuleRegistry,
 	LOCAL_RULES_FILE,
+	localRuleScopeVisibility,
 	makeRuleAudit,
 	matchLocalRules,
 	MAX_REGISTRY_BYTES,
 	reduceLocalRuleEvents,
+	validateCandidate,
 	validateLocalRuleEvent,
 	type LocalRule,
 	type LocalRuleCandidate,
@@ -206,6 +208,24 @@ describe("LocalRuleRegistry lifecycle and store", () => {
 		assert.equal((await readFile(join(dir, LOCAL_RULES_FILE), "utf8")).trim().split("\n").length, 1);
 	});
 
+	it("accepts modelProviders scope and rejects providers as unknown", () => {
+		assert.deepEqual(
+			validateCandidate({
+				...candidate(),
+				scope: { modelProviders: ["openai-codex"] },
+			}).scope,
+			{ modelProviders: ["openai-codex"] },
+		);
+		assert.throws(
+			() =>
+				validateCandidate({
+					...candidate(),
+					scope: { providers: ["bash"] },
+				}),
+			/unknown field "providers"/,
+		);
+	});
+
 	it("validates slugs, built-in namespace collisions, and audit construction", async () => {
 		const { registry } = await tempRegistry();
 		await assert.rejects(
@@ -279,10 +299,10 @@ describe("local rule matching", () => {
 		);
 	});
 
-	it("applies provider, model, and cwd prefix scope and sorts slugs", () => {
+	it("applies model provider, model, and cwd prefix scope and sorts slugs", () => {
 		const scoped = rule({
 			slug: "z.scoped",
-			scope: { providers: ["provider"], models: ["provider/model"], cwdPrefixes: ["/work/project"] },
+			scope: { modelProviders: ["provider"], models: ["provider/model"], cwdPrefixes: ["/work/project"] },
 		});
 		const first = rule({ slug: "a.first" });
 		assert.deepEqual(
@@ -298,6 +318,39 @@ describe("local rule matching", () => {
 			{ provider: "provider", model: "provider/other", cwd: "/work/project" },
 			{ provider: "provider", model: "provider/model", cwd: "/elsewhere" },
 		]) assert.deepEqual(matchLocalRules("scan", [scoped], context), []);
+	});
+
+	it("reports whether each scope field admits the current session", () => {
+		const context = {
+			provider: "openai-codex",
+			model: "openai-codex/gpt-5.6-sol",
+			cwd: "/work/project/src",
+		};
+		assert.equal(
+			localRuleScopeVisibility(
+				rule({
+					scope: {
+						modelProviders: ["openai-codex"],
+						models: ["openai-codex/gpt-5.6-sol"],
+						cwdPrefixes: ["/work/project"],
+					},
+				}),
+				context,
+			),
+			"scope matches this session: yes",
+		);
+		assert.equal(
+			localRuleScopeVisibility(rule({ scope: { modelProviders: ["anthropic"] } }), context),
+			"scope matches this session: no (modelProviders)",
+		);
+		assert.equal(
+			localRuleScopeVisibility(rule({ scope: { models: ["openai-codex/gpt-5.5"] } }), context),
+			"scope matches this session: no (models)",
+		);
+		assert.equal(
+			localRuleScopeVisibility(rule({ scope: { cwdPrefixes: ["/elsewhere"] } }), context),
+			"scope matches this session: no (cwdPrefixes)",
+		);
 	});
 
 	it("matches only active entries and does not expand variables or comments", () => {

@@ -75,7 +75,7 @@ export interface LocalRuleSuggestion {
 }
 
 export interface LocalRuleScope {
-	providers?: string[];
+	modelProviders?: string[];
 	models?: string[];
 	cwdPrefixes?: string[];
 }
@@ -272,9 +272,11 @@ function validateSuggestion(value: unknown): LocalRuleSuggestion {
 
 function validateScope(value: unknown): LocalRuleScope {
 	if (!object(value)) throw new Error("scope must be an object");
-	exact(value, [], ["providers", "models", "cwdPrefixes"]);
+	exact(value, [], ["modelProviders", "models", "cwdPrefixes"]);
 	const scope: LocalRuleScope = {};
-	if (value.providers !== undefined) scope.providers = stringList(value.providers, "scope.providers");
+	if (value.modelProviders !== undefined) {
+		scope.modelProviders = stringList(value.modelProviders, "scope.modelProviders");
+	}
 	if (value.models !== undefined) {
 		scope.models = stringList(value.models, "scope.models");
 		for (const model of scope.models) {
@@ -709,12 +711,22 @@ export function makeRuleAudit(ctx: AuditContextLike, surface: AuditSurface, now:
 	return validateAudit({ at: now.toISOString(), session: ctx.sessionManager.getSessionId(), model, surface });
 }
 
+function excludingScopeField(scope: LocalRuleScope | undefined, context: RuleMatchContext): keyof LocalRuleScope | undefined {
+	if (!scope) return undefined;
+	if (scope.modelProviders && !scope.modelProviders.includes(context.provider ?? "")) return "modelProviders";
+	if (scope.models && !scope.models.includes(context.model ?? "")) return "models";
+	if (scope.cwdPrefixes && !scope.cwdPrefixes.some((prefix) => context.cwd.startsWith(prefix))) return "cwdPrefixes";
+	return undefined;
+}
+
 function scopeMatches(scope: LocalRuleScope | undefined, context: RuleMatchContext): boolean {
-	if (!scope) return true;
-	if (scope.providers && !scope.providers.includes(context.provider ?? "")) return false;
-	if (scope.models && !scope.models.includes(context.model ?? "")) return false;
-	if (scope.cwdPrefixes && !scope.cwdPrefixes.some((prefix) => context.cwd.startsWith(prefix))) return false;
-	return true;
+	return excludingScopeField(scope, context) === undefined;
+}
+
+/** Describe whether one rule's scope admits the supplied session context. */
+export function localRuleScopeVisibility(rule: Pick<LocalRule, "scope">, context: RuleMatchContext): string {
+	const excludingField = excludingScopeField(rule.scope, context);
+	return `scope matches this session: ${excludingField ? `no (${excludingField})` : "yes"}`;
 }
 
 function stageMatches(stage: Stage, position: number, statement: readonly Stage[], match: LocalRuleMatch): boolean {

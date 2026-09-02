@@ -157,12 +157,16 @@ nested command substitutions are their own statements and can match by shape.
 Optional scope is:
 
 ```text
-scope {providers?, models?, cwdPrefixes?}
+scope {modelProviders?, models?, cwdPrefixes?}
 ```
 
-Providers match exactly. Models match exact `provider/id` strings.
-`cwdPrefixes` uses string prefix matching against the call's working directory.
-Missing scope or missing fields are unconstrained.
+`modelProviders` matches exact model provider identifiers such as
+`openai-codex`. `models` matches exact `provider/id` strings such as
+`openai-codex/gpt-5.6-sol`. `cwdPrefixes` contains absolute directory paths and
+uses string prefix matching against the call's working directory. Scope only
+restricts the session context; it does not select a command or tool.
+`match.command` selects the command. Missing scope or missing fields are
+unconstrained.
 
 ## Agent tools
 
@@ -200,9 +204,10 @@ other modes:
 - `/policy list` prints built-in groups, local retained rules, pending
   proposals, and registry health.
 - `/policy show <ref>` resolves a built-in id, local slug, or pending proposal
-  id. Local detail includes content, state/effect, proposal id, and proposed,
-  approved, and updated audit fields. Pending detail includes reason, audit, and
-  the upsert candidate.
+  id. Local detail includes content, state/effect, whether scope matches the
+  current session (and the first excluding field when it does not), proposal id,
+  and proposed, approved, and updated audit fields. Pending detail includes
+  reason, audit, and the upsert candidate.
 - `/policy approve <proposal-id> <steer|block>` approves an upsert.
 - `/policy approve <proposal-id>` approves a discard.
 - `/policy reject <proposal-id>` rejects a pending proposal.
@@ -219,8 +224,9 @@ snapshot.
 
 `v` cycles **Rules → Local → Activity**. Rules and Activity retain their prior
 rendering and bounded readers. The Local view lists pending proposals first,
-then retained rules, with a full detail pane. Registry errors are shown in that
-view.
+then retained rules, with a full detail pane. Retained detail reports whether
+scope matches the current session and names the first excluding field. Registry
+errors are shown in that view.
 
 | Key | View | Action |
 |---|---|---|

@@ -22,7 +22,7 @@ import {
 	type PolicyPanelData,
 	type PolicyView,
 } from "./panel.ts";
-import type { LocalRule, LocalRuleSnapshot, PendingProposal, RuleAudit } from "./local-rules.ts";
+import type { LocalRule, LocalRuleSnapshot, PendingProposal, RuleAudit, RuleMatchContext } from "./local-rules.ts";
 import { RULES } from "./shell-rules.ts";
 
 const theme: never = {
@@ -35,6 +35,11 @@ const theme: never = {
 } as never;
 
 const builtins: BuiltinRuleInfo[] = RULES.map(({ id, note }) => ({ id, note }));
+const scopeContext: RuleMatchContext = {
+	provider: "openai-codex",
+	model: "openai-codex/gpt-5.6-sol",
+	cwd: "/work/project",
+};
 
 function activity(overrides: Partial<PolicyActivityRecord> = {}): PolicyActivityRecord {
 	return {
@@ -87,11 +92,12 @@ function data(overrides: Partial<PolicyPanelData> = {}): PolicyPanelData {
 function rig(
 	panelData = data(),
 	rows = 24,
-	options: { actionHost?: LocalPanelActionHost; initialView?: PolicyView } = {},
+	options: { actionHost?: LocalPanelActionHost; initialView?: PolicyView; scopeContext?: RuleMatchContext } = {},
 ) {
 	const calls = { renders: 0, done: undefined as unknown };
 	const panel = new PolicyPanel({
 		data: panelData,
+		scopeContext: options.scopeContext ?? scopeContext,
 		theme,
 		tui: { requestRender: () => calls.renders++ },
 		getMaxRows: () => rows,
@@ -159,11 +165,11 @@ describe("built-in policy formatting", () => {
 	it("prints built-in groups, full detail, and per-model fire evidence", () => {
 		const listed = formatPolicyList(data());
 		assert.match(listed, /^BUILT-IN GROUPS/m);
-		const shown = formatPolicyShow(data(), "routing.cat-read") ?? "";
+		const shown = formatPolicyShow(data(), "routing.cat-read", scopeContext) ?? "";
 		assert.match(shown, /id: routing\.cat-read/);
 		assert.match(shown, /openai-codex\/gpt-5\.6-sol: 2/);
 		assert.match(shown, /\(no model\): 1/);
-		assert.equal(formatPolicyShow(data(), "agent.retired"), undefined);
+		assert.equal(formatPolicyShow(data(), "agent.retired", scopeContext), undefined);
 	});
 
 	it("surfaces the fire-scan bound and keeps terminal output safe", () => {
@@ -205,14 +211,19 @@ describe("PolicyPanel", () => {
 	});
 
 	it("renders pending proposals and retained rules with full local detail", () => {
-		const snapshot: LocalRuleSnapshot = { rules: [localRule()], discarded: [], pending: [pendingProposal()] };
+		const snapshot: LocalRuleSnapshot = {
+			rules: [localRule({ scope: { modelProviders: ["other-provider"] } })],
+			discarded: [],
+			pending: [pendingProposal()],
+		};
 		const { panel } = rig(data({ local: snapshot }), 24, { initialView: "local" });
 		let rendered = panel.render(116).join("\n");
 		assert.match(rendered, /pending · upsert · shell\.scan/);
 		assert.match(rendered, /candidate\.match/);
 		panel.handleInput("\x1b[B");
-		rendered = panel.render(116).join("\n");
+		rendered = panel.render(200).join("\n");
 		assert.match(rendered, /shell\.scan · active · block/);
+		assert.match(rendered, /scope matches this session: no \(modelProviders\)/);
 		assert.match(rendered, /approved audit/);
 	});
 

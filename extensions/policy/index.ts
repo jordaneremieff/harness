@@ -33,6 +33,7 @@ import {
 	type LocalRuleEffect,
 	type LocalRuleSnapshot,
 	type LocalRuleState,
+	type RuleMatchContext,
 } from "./local-rules.ts";
 import { POLICY_MODES, resolvePolicyMode, resolvePolicyModeValue, type PolicyMode } from "./mode.ts";
 import {
@@ -316,6 +317,15 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		throw new Error(safe);
 	};
 
+	const currentRuleMatchContext = (ctx: ExtensionCommandContext): RuleMatchContext => {
+		const model = ctx.model;
+		return {
+			provider: model?.provider,
+			model: model ? `${model.provider}/${model.id}` : null,
+			cwd: ctx.cwd,
+		};
+	};
+
 	const loadRuleData = async (): Promise<Pick<PolicyPanelData, "builtins" | "fireSummary" | "local" | "registryError">> => {
 		const [fireSummary, loaded] = await Promise.all([readFireSummary(rulesDir), readLocal()]);
 		return {
@@ -408,6 +418,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 				(tui, theme, _keybindings, done) =>
 					new PolicyPanel({
 						data,
+						scopeContext: currentRuleMatchContext(ctx),
 						theme,
 						tui,
 						actionHost,
@@ -470,7 +481,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 			if (verb === "show") {
 				if (parts.length !== 2) return commandFailure(ctx, "Usage: /policy show <ref>");
 				const data = await loadRuleData();
-				const shown = formatPolicyShow(data, parts[1]);
+				const shown = formatPolicyShow(data, parts[1], currentRuleMatchContext(ctx));
 				if (shown === undefined && data.registryError) {
 					return commandFailure(ctx, `local rule registry is unreadable: ${data.registryError}`);
 				}
