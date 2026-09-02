@@ -1,6 +1,6 @@
 /** Agent proposal and read-only local-rule tools. */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
 	makeRuleAudit,
@@ -124,8 +124,20 @@ function line(value: string): string {
 	return terminalSafe(value).replace(/[\r\n]+/g, "↵").replace(/\s+/g, " ").trim();
 }
 
-export function formatLocalRulesTool(snapshot: LocalRuleSnapshot, error?: string): string {
-	const lines = ["LOCAL RULES"];
+export function formatLocalRulesTool(
+	snapshot: LocalRuleSnapshot,
+	context: Pick<ExtensionContext, "cwd" | "model">,
+	error?: string,
+): string {
+	const model = context.model;
+	const lines = [
+		"SESSION CONTEXT",
+		`model provider: ${model ? line(model.provider) : "(none)"}`,
+		`model: ${model ? line(`${model.provider}/${model.id}`) : "(none)"}`,
+		`cwd: ${line(context.cwd)}`,
+		"",
+		"LOCAL RULES",
+	];
 	if (snapshot.rules.length === 0) lines.push("(none)");
 	else for (const rule of snapshot.rules) lines.push(`${line(rule.slug)} | ${rule.state} | ${rule.effect} | ${line(rule.note)}`);
 	lines.push("", "PENDING PROPOSALS");
@@ -144,7 +156,7 @@ export function registerLocalRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 		name: "policy_propose",
 		label: "Policy propose",
 		description:
-			"Submit one inert local-rule proposal for operator review. upsert requires slug, reason, note, and match; discard permits only slug and reason. Match grammar: command exact; flags all present; absentFlags none present; operands min/max count non-flag args, any accepts one listed operand, at maps zero-based operand indexes to allowed values; pipe from/to/fromRedirect/toRedirect are exact booleans, next lists the immediate next command, later lists any later command. Optional suggest has command and flags. Optional scope restricts session context: modelProviders holds exact model provider identifiers (for example, openai-codex); models holds exact provider/id strings (for example, openai-codex/gpt-5.6-sol); cwdPrefixes holds absolute directory paths used as prefixes. Scope does not select which command or tool the rule matches; match.command does that. This tool cannot approve, reject, set state, or set effect.",
+			"Submit one inert local-rule proposal for operator review. upsert requires slug, reason, note, and match; discard permits only slug and reason. Match grammar: command exact; flags all present; absentFlags none present; operands min/max count non-flag args, any accepts one listed operand, at maps zero-based operand indexes to allowed values; pipe from/to/fromRedirect/toRedirect are exact booleans, next lists the immediate next command, later lists any later command. Optional suggest has command and flags. Optional scope restricts session context: modelProviders holds exact model provider identifiers (for example, openai-codex); models holds exact provider/id strings (for example, openai-codex/gpt-5.6-sol); cwdPrefixes holds absolute directory paths used as prefixes. Before authoring scope, call policy_rules for the exact current provider, provider/id model string, and working directory values. Scope does not select which command or tool the rule matches; match.command does that. This tool cannot approve, reject, set state, or set effect.",
 		promptSnippet: "Propose an inert local policy rule for operator review",
 		promptGuidelines: [
 			"Use policy_propose only when the operator asks for a local policy rule. A proposal is inert until the operator approves it.",
@@ -189,14 +201,14 @@ export function registerLocalRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 		name: "policy_rules",
 		label: "Policy rules",
 		description:
-			"Read retained local rules and inert pending proposals. Rows include rule state/effect/note or proposal id/operation/slug/reason, followed by registry health. This tool is read-only and has no operator-gate parameters.",
+			"Read retained local rules, inert pending proposals, and the current session context for scope authoring. Session context reports the exact model provider, provider/id model string, and working directory. Rows include rule state/effect/note or proposal id/operation/slug/reason, followed by registry health. This tool is read-only and has no operator-gate parameters.",
 		promptSnippet: "Inspect local policy rules and pending proposals",
 		parameters: PolicyRulesParams,
-		async execute(_toolCallId, _params, signal) {
+		async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("policy_rules cancelled");
 			const loaded = await deps.readRegistry();
 			return {
-				content: [{ type: "text" as const, text: formatLocalRulesTool(loaded.snapshot, loaded.error) }],
+				content: [{ type: "text" as const, text: formatLocalRulesTool(loaded.snapshot, ctx, loaded.error) }],
 				details: {
 					rules: loaded.snapshot.rules.length,
 					pending: loaded.snapshot.pending.length,

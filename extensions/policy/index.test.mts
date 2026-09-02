@@ -41,6 +41,8 @@ function harness(
 		policyMode?: string;
 		policyModeFlag?: string;
 		ctxMode?: string;
+		cwd?: string;
+		model?: { provider: string; id: string };
 	} = {},
 ) {
 	const handlers = new Map<string, Handler>();
@@ -84,8 +86,8 @@ function harness(
 	const ctx = {
 		mode: overrides.ctxMode ?? "tui",
 		hasUI: true,
-		cwd: "/work",
-		model: { provider: "test", id: "model" },
+		cwd: overrides.cwd ?? "/work",
+		model: Object.hasOwn(overrides, "model") ? overrides.model : { provider: "test", id: "model" },
 		thinkingLevel: "medium",
 		ui: {
 			notify: (message: string, type?: string) => notifications.push({ message, type }),
@@ -647,11 +649,44 @@ describe("local rule agent tools", () => {
 		assert.equal("providers" in scope.properties, false);
 		const propertyNames = new Set(proposalSchema.anyOf.flatMap((arm) => Object.keys(arm.properties)));
 		for (const forbidden of ["approve", "reject", "decision", "state", "effect"]) assert.equal(propertyNames.has(forbidden), false);
-		const description = run.tools.get("policy_propose")!.description;
-		assert.match(description, /modelProviders.*openai-codex/);
-		assert.match(description, /models.*openai-codex\/gpt-5\.6-sol/);
-		assert.match(description, /cwdPrefixes holds absolute directory paths/);
-		assert.match(description, /Scope does not select which command or tool.*match\.command/);
+		const proposeDescription = run.tools.get("policy_propose")!.description;
+		assert.match(proposeDescription, /modelProviders.*openai-codex/);
+		assert.match(proposeDescription, /models.*openai-codex\/gpt-5\.6-sol/);
+		assert.match(proposeDescription, /cwdPrefixes holds absolute directory paths/);
+		assert.match(proposeDescription, /call policy_rules for the exact current provider, provider\/id model string, and working directory/);
+		assert.match(proposeDescription, /Scope does not select which command or tool.*match\.command/);
+		assert.match(run.tools.get("policy_rules")!.description, /current session context for scope authoring/);
+	});
+
+	it("lists exact session context while preserving the registry sections and health format", async () => {
+		const run = harness({
+			cwd: "/workspace/provider-rule",
+			model: { provider: "fake-provider", id: "fake-model" },
+		});
+		const listed = await executeTool(run, "policy_rules", {});
+		assert.equal(
+			listed.content[0].text,
+			[
+				"SESSION CONTEXT",
+				"model provider: fake-provider",
+				"model: fake-provider/fake-model",
+				"cwd: /workspace/provider-rule",
+				"",
+				"LOCAL RULES",
+				"(none)",
+				"",
+				"PENDING PROPOSALS",
+				"(none)",
+				"",
+				"registry health: ok",
+			].join("\n"),
+		);
+	});
+
+	it("prints an explicit none marker when the session has no model", async () => {
+		const run = harness({ cwd: "/workspace/no-model", model: undefined });
+		const listed = await executeTool(run, "policy_rules", {});
+		assert.match(listed.content[0].text, /^SESSION CONTEXT\nmodel provider: \(none\)\nmodel: \(none\)\ncwd: \/workspace\/no-model\n/);
 	});
 
 	it("writes an inert proposal with agent-tool audit and lists it with registry health", async () => {

@@ -186,15 +186,28 @@ and return an actionable error.
 
 ### `policy_rules`
 
-Read-only. It prints bounded terminal-safe rows:
+Read-only. It prints the current session context followed by bounded,
+terminal-safe registry rows:
 
 ```text
+SESSION CONTEXT
+model provider: openai-codex
+model: openai-codex/gpt-5.6-sol
+cwd: /absolute/current/working/directory
+
+LOCAL RULES
 slug | state | effect | note
+
+PENDING PROPOSALS
 proposal-id | operation | slug | reason
-registry health: ok | unreadable: reason
+
+registry health: ok
 ```
 
-It writes no audit event.
+When the session has no model, both `model provider` and `model` print
+`(none)`. Empty local-rule or pending-proposal sections also print `(none)`. An
+unreadable registry prints `registry health: unreadable: reason` in the existing
+health-line format. It writes no audit event.
 
 ## Operator gates
 
