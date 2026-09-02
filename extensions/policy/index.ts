@@ -33,13 +33,17 @@ import {
 	agentClass,
 	type AgentMatch,
 	AgentRules,
+	appendLine,
 	countFires,
 	type AgentRule,
 	type AgentScope,
 	type AgentState,
 	type AgentSuggestion,
 	isAgentClass,
+	MAX_NOTE_BYTES,
 	needsOperatorConfirm,
+	readStateLines,
+	scanWarrantEvidence,
 	validateMatch,
 	validateNote,
 	validateScope,
@@ -50,6 +54,7 @@ import { bindAgentRules, notesFor } from "./classify.ts";
 import { POLICY_MODES, resolvePolicyMode, resolvePolicyModeValue, type PolicyMode } from "./mode.ts";
 import {
 	draftRuleMessage,
+	formatPolicyHistory,
 	formatPolicyList,
 	formatPolicyShow,
 	PolicyPanel,
@@ -61,6 +66,16 @@ import {
 	type PolicyPanelResult,
 	type PolicyView,
 } from "./panel.ts";
+import {
+	PROMOTION_CRITERIA_VERSION,
+	PROMOTION_MODES,
+	evaluateWarrant,
+	formatPromotionCriteria,
+	resolvePromotionMode,
+	resolvePromotionModeValue,
+	type PromotionMode,
+	type PromotionWarrant,
+} from "./promotion.ts";
 import {
 	finishCall,
 	startCall,
@@ -76,6 +91,9 @@ import { PolicyWriter, resolvePolicyDir } from "./store.ts";
 
 /** Per-session override for the policy mechanism. */
 const POLICY_MODE_FLAG = "policy-mode";
+
+/** Per-session override for who may promote through the agent tool. */
+const PROMOTION_MODE_FLAG = "policy-promotion-mode";
 
 /** Marker Pi writes into the system prompt when project context files are loaded. */
 const PROJECT_CONTEXT_MARKER = "<project_context>";
@@ -97,7 +115,10 @@ const POLICY_USAGE = [
 	"  /policy                         Open the Rules and Activity panel (TUI only)",
 	"  /policy list                    Print agent rules and built-in groups",
 	"  /policy show <slug-or-id>       Print full rule detail and fires by model",
+	"  /policy history <slug>          Print state-transition history",
 	"  /policy state <slug> <state>    Set active, promoted, disabled, or discarded",
+	"  /policy capture <hint...>       Capture an in-session rule-authoring request",
+	"  /policy criteria                Print the promotion criteria",
 	"  /policy mode                    Report this session's policy mode",
 	"  /policy help                    Show this usage",
 ].join("\n");
@@ -105,7 +126,10 @@ const POLICY_USAGE = [
 const POLICY_VERBS: AutocompleteItem[] = [
 	{ value: "list", label: "list", description: "Print agent rules and built-in groups" },
 	{ value: "show", label: "show", description: "Show one rule with fires by model" },
+	{ value: "history", label: "history", description: "Show an agent rule's state history" },
 	{ value: "state", label: "state", description: "Change an agent rule state" },
+	{ value: "capture", label: "capture", description: "Capture a rule-authoring request" },
+	{ value: "criteria", label: "criteria", description: "Print the promotion criteria" },
 	{ value: "mode", label: "mode", description: "Report the active session mode" },
 	{ value: "help", label: "help", description: "Show /policy usage" },
 ];
@@ -247,14 +271,20 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		type: "string",
 		description: `Policy mode (${POLICY_MODES.join(", ")}); overrides PI_POLICY_MODE`,
 	});
+	pi.registerFlag(PROMOTION_MODE_FLAG, {
+		type: "string",
+		description: `Policy promotion mode (${PROMOTION_MODES.join(", ")}); overrides PI_POLICY_PROMOTION_MODE`,
+	});
 
 	const pending = new Map<string, ObservedCall>();
 	let stopped = false;
 	let failureReported = false;
 	let writer: PolicyWriter | null = null;
 	let mode: PolicyMode = "observe";
+	let promotionMode: PromotionMode = "agent";
 	let modeResolved = false;
 	let modeSource = "PI_POLICY_MODE is unset; observe is the default";
+	let promotionModeSource = "PI_POLICY_PROMOTION_MODE is unset; agent is the default";
 
 	/** Rule ids already annotated, per session, so history survives a session round-trip. */
 	const annotatedBySession = new Map<string, Set<string>>();
@@ -332,6 +362,18 @@ export default function registerPolicy(pi: ExtensionAPI) {
 				mode = resolvePolicyMode(process.env);
 				const setting = process.env.PI_POLICY_MODE?.trim() ?? "";
 				modeSource = setting ? `PI_POLICY_MODE=${setting}` : "PI_POLICY_MODE is unset; observe is the default";
+			}
+			const promotionFlagValue = pi.getFlag(PROMOTION_MODE_FLAG);
+			if (promotionFlagValue !== undefined) {
+				const setting = typeof promotionFlagValue === "string" ? promotionFlagValue : String(promotionFlagValue);
+				promotionMode = resolvePromotionModeValue(setting, `--${PROMOTION_MODE_FLAG}`);
+				promotionModeSource = `--${PROMOTION_MODE_FLAG}=${setting.trim()}`;
+			} else {
+				promotionMode = resolvePromotionMode(process.env);
+				const setting = process.env.PI_POLICY_PROMOTION_MODE?.trim() ?? "";
+				promotionModeSource = setting
+					? `PI_POLICY_PROMOTION_MODE=${setting}`
+					: "PI_POLICY_PROMOTION_MODE is unset; agent is the default";
 			}
 		} catch (error) {
 			stop(error);
@@ -412,12 +454,20 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		}
 		const author = modelName(ctx);
 		if (author === null) return { text: "cannot attribute a rule state change without a model", failed: true };
+		let warrant: PromotionWarrant | undefined;
+		if (requested === "promoted") {
+			const evidence = await scanWarrantEvidence(rulesDir, current.slug);
+			const verdict = evaluateWarrant(evidence);
+			warrant = { criteria: PROMOTION_CRITERIA_VERSION, ...evidence, pass: verdict.pass };
+		}
 		const failure = await rules.setState(
 			current.slug,
 			requested,
 			author,
 			ctx.sessionManager.getSessionId(),
 			new Date().toISOString(),
+			"command",
+			warrant,
 		);
 		return failure
 			? { text: failure, failed: true }
@@ -442,6 +492,13 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		return { ...ruleData, activity };
 	};
 
+	const agentSlugCandidates = (verb: "show" | "history"): AutocompleteItem[] =>
+		rules.list().map((rule) => ({
+			value: `${verb} ${rule.slug}`,
+			label: rule.slug,
+			description: `${rule.state} · ${terminalSafe(rule.note)}`,
+		}));
+
 	const argumentCompletions = (text: string): AutocompleteItem[] | null => {
 		if (!text.includes(" ")) {
 			const matches = POLICY_VERBS.filter((verb) => verb.value.startsWith(text));
@@ -450,22 +507,21 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		const firstSpace = text.indexOf(" ");
 		const verb = text.slice(0, firstSpace);
 		const tail = text.slice(firstSpace + 1);
-		if (verb === "show" && !tail.includes(" ")) {
+		if ((verb === "show" || verb === "history") && !tail.includes(" ")) {
 			const candidates: AutocompleteItem[] = [
-				...rules.list().map((rule) => ({
-					value: `show ${rule.slug}`,
-					label: rule.slug,
-					description: `${rule.state} · ${terminalSafe(rule.note)}`,
-				})),
-				...BUILTIN_RULE_INFOS.map((rule) => ({
-					value: `show ${rule.id}`,
-					label: rule.id,
-					description: terminalSafe(rule.note),
-				})),
+				...agentSlugCandidates(verb),
+				...(verb === "show"
+					? BUILTIN_RULE_INFOS.map((rule) => ({
+							value: `show ${rule.id}`,
+							label: rule.id,
+							description: terminalSafe(rule.note),
+						}))
+					: []),
 			];
 			const matches = candidates.filter((item) => item.label?.startsWith(tail));
 			return matches.length > 0 ? matches : null;
 		}
+		if (verb === "capture" || verb === "criteria") return null;
 		if (verb !== "state") return null;
 		const stateMatch = tail.match(/^(\S*)(?:\s+(\S*))?$/);
 		if (!stateMatch) return null;
@@ -715,6 +771,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
+				ensureMode();
 				const current = rules.get(params.slug);
 				if (!current) return toolText(`unknown agent rule "${params.slug}"`);
 				const requested = params.state as AgentState;
@@ -730,6 +787,22 @@ export default function registerPolicy(pi: ExtensionAPI) {
 					);
 					if (!ok) return toolText("state change declined by the operator");
 				}
+				let warrant: PromotionWarrant | undefined;
+				if (requested === "promoted") {
+					if (promotionMode === "operator") {
+						return toolText(
+							`promotion of policy rule "${current.slug}" is restricted to operator action in promotion mode "operator"; promote with /policy state ${current.slug} promoted`,
+						);
+					}
+					const evidence = await scanWarrantEvidence(rulesDir, current.slug);
+					const verdict = evaluateWarrant(evidence);
+					if (!verdict.pass) {
+						return toolText(
+							`promotion of "${current.slug}" refused: warrant fails criteria v${PROMOTION_CRITERIA_VERSION}: ${verdict.reasons.join("; ")}. Measured: ${evidence.fires} matching calls, ${evidence.errors} failures, ${evidence.truncated} truncated, scan ${evidence.partial ? "partial" : "complete"}. Run /policy criteria for the criteria source.`,
+						);
+					}
+					warrant = { criteria: PROMOTION_CRITERIA_VERSION, ...evidence, pass: true };
+				}
 				const model = modelName(ctx);
 				if (model === null) return toolText("cannot attribute a rule state change without a model");
 				const failure = await rules.setState(
@@ -738,6 +811,8 @@ export default function registerPolicy(pi: ExtensionAPI) {
 					model,
 					ctx.sessionManager.getSessionId(),
 					new Date().toISOString(),
+					"tool",
+					warrant,
 				);
 				return toolText(failure ?? `Set policy class ${agentClass(current.slug)} to ${requested}.`);
 			} catch (error) {
@@ -747,7 +822,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("policy", {
-		description: "Browse policy rules and activity, inspect evidence, change agent-rule state, or report mode",
+		description: "Browse policy rules and activity, capture requests, inspect evidence, or change state",
 		getArgumentCompletions: argumentCompletions,
 		handler: async (args, ctx) => {
 			ensureMode();
@@ -759,7 +834,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 				if (ctx.mode !== "tui" || !ctx.hasUI) {
 					commandFailure(
 						ctx,
-						"The interactive policy panel requires TUI mode. Use /policy list, /policy show <slug-or-id>, /policy state <slug> <state>, /policy mode, or /policy help.",
+						"The interactive policy panel requires TUI mode. Use /policy list, /policy show <slug-or-id>, /policy history <slug>, /policy state <slug> <state>, /policy capture <hint...>, /policy criteria, /policy mode, or /policy help.",
 					);
 					return;
 				}
@@ -786,10 +861,21 @@ export default function registerPolicy(pi: ExtensionAPI) {
 					[
 						`active mode: ${mode}`,
 						`source: ${terminalSafe(modeSource)}`,
+						`promotion mode: ${promotionMode}`,
+						`promotion source: ${terminalSafe(promotionModeSource)}`,
 						`effect: ${MODE_EFFECT[mode]}`,
 						"A session keeps its original mode after --policy-mode or PI_POLICY_MODE changes.",
 					].join("\n"),
 				);
+				return;
+			}
+
+			if (verb === "criteria") {
+				if (parts.length !== 1) {
+					commandFailure(ctx, "Usage: /policy criteria");
+					return;
+				}
+				commandText(ctx, formatPromotionCriteria());
 				return;
 			}
 
@@ -820,6 +906,65 @@ export default function registerPolicy(pi: ExtensionAPI) {
 					return;
 				}
 				commandText(ctx, shown);
+				return;
+			}
+
+			if (verb === "history") {
+				if (parts.length !== 2) {
+					commandFailure(ctx, "Usage: /policy history <slug>");
+					return;
+				}
+				const requested = parts[1];
+				const slug = requested.startsWith("agent.") ? requested.slice("agent.".length) : requested;
+				const lines = readStateLines(rulesDir).filter((line) => line.slug === slug);
+				if (lines.length === 0) {
+					commandFailure(ctx, `no state transitions recorded for ${slug}`);
+					return;
+				}
+				commandText(ctx, formatPolicyHistory(lines));
+				return;
+			}
+
+			if (verb === "capture") {
+				const hint = parts.slice(1).join(" ");
+				if (parts.length < 2 || hint.length === 0) {
+					commandFailure(ctx, "Usage: /policy capture <hint...>");
+					return;
+				}
+				if (/[\r\n]/.test(args)) {
+					commandFailure(ctx, "capture hint must not contain a newline");
+					return;
+				}
+				if (Buffer.byteLength(hint, "utf8") > MAX_NOTE_BYTES) {
+					commandFailure(ctx, `capture hint exceeds ${MAX_NOTE_BYTES} UTF-8 bytes`);
+					return;
+				}
+				const session = ctx.sessionManager.getSessionId();
+				const at = new Date().toISOString();
+				const failure = await appendLine(rulesDir, JSON.stringify({ kind: "capture", hint, session, at }));
+				if (failure) {
+					commandFailure(ctx, failure);
+					return;
+				}
+				commandText(ctx, `captured: ${terminalSafe(hint)}\nsession: ${terminalSafe(session)} · timestamp: ${at}`);
+				if (ctx.hasUI) {
+					pi.sendMessage(
+						{
+							customType: "policy-capture",
+							content: [
+								"A policy capture was recorded.",
+								`Session: ${session}`,
+								`Timestamp: ${at}`,
+								`Hint: ${hint}`,
+								"The current agent must now orchestrate rule authoring: package a bounded, redacted excerpt of the session context at the invocation point, dispatch authoring to a separate clean-context worker using the authoring contract in the Capture section of the policy README, apply the returned rule with policy_rule_add, and report the applied rule.",
+								"The authoring agent is never the current session agent. Promotion follows the warrant mechanism.",
+							].join("\n"),
+							display: true,
+							details: { hint, session, at },
+						},
+						{ triggerTurn: true, deliverAs: "steer" },
+					);
+				}
 				return;
 			}
 

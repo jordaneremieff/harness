@@ -17,7 +17,9 @@ import {
 	MAX_NOTE_BYTES,
 	MAX_RULES_FILE_BYTES,
 	needsOperatorConfirm,
+	readStateLines,
 	RULES_FILE,
+	scanWarrantEvidence,
 	SCHEMA_VERSION,
 	scopeAllows,
 	validateMatch,
@@ -26,9 +28,21 @@ import {
 	validateSlug,
 	validateSuggestion,
 } from "./agent-rules.ts";
+import type { PromotionWarrant } from "./promotion.ts";
+import type { PolicyRecord } from "./record.ts";
+import { appendRecord } from "./store.ts";
 
 const timestamp = "2026-09-01T07:00:00Z";
 const basicMatch: AgentMatch = { tool: "bash", command: "git" };
+const passingWarrant: PromotionWarrant = {
+	criteria: 1,
+	fires: 5,
+	errors: 3,
+	errorKinds: { timeout: 0, aborted: 0, other: 3 },
+	truncated: 0,
+	partial: false,
+	pass: true,
+};
 
 function rule(slug: string, overrides: Partial<AgentRule> = {}): AgentRule {
 	return {
@@ -58,6 +72,29 @@ async function classifier(match: AgentMatch, scope?: AgentRule["scope"]): Promis
 
 function expectInvalid(value: unknown, pattern: RegExp): void {
 	assert.match(validateMatch(value) ?? "", pattern);
+}
+
+function policyRecord(overrides: Partial<PolicyRecord> = {}): PolicyRecord {
+	return {
+		session: "evidence-session",
+		mode: "print",
+		cwd: "/work",
+		model: "xai/grok-4.6",
+		thinkingLevel: "high",
+		projectContext: true,
+		at: "2026-09-01T12:00:00.000Z",
+		tool: "bash",
+		callId: "evidence-call",
+		durationMs: 1,
+		outputBytes: 0,
+		truncated: false,
+		error: false,
+		errorKind: null,
+		tokens: null,
+		policyMode: "observe",
+		classes: ["agent.warranted"],
+		...overrides,
+	};
 }
 
 describe("agent rule schema", () => {
@@ -405,7 +442,10 @@ describe("AgentRules registry", () => {
 			)) ?? "",
 			/agent\.force-form/,
 		);
-		assert.equal(await rules.setState("force-form", "promoted", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(
+			await rules.setState("force-form", "promoted", "xai/grok-4.6", "s2", timestamp, "command", passingWarrant),
+			null,
+		);
 		assert.match(
 			(await rules.add(
 				rule("suggest-promoted-force", {
@@ -458,12 +498,15 @@ describe("AgentRules registry", () => {
 		);
 		assert.equal(await rules.add(rule("later-rule", { match: { tool: "bash", command: "safe-command" } })), null);
 		assert.match(
-			(await rules.setState("candidate", "promoted", "xai/grok-4.6", "s2", timestamp)) ?? "",
+			(await rules.setState("candidate", "promoted", "xai/grok-4.6", "s2", timestamp, "command", passingWarrant)) ?? "",
 			/agent\.later-rule/,
 		);
 		assert.equal(rules.get("candidate")?.state, "active");
-		assert.equal(await rules.setState("later-rule", "disabled", "xai/grok-4.6", "s2", timestamp), null);
-		assert.equal(await rules.setState("candidate", "promoted", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(await rules.setState("later-rule", "disabled", "xai/grok-4.6", "s2", timestamp, "command"), null);
+		assert.equal(
+			await rules.setState("candidate", "promoted", "xai/grok-4.6", "s2", timestamp, "command", passingWarrant),
+			null,
+		);
 		assert.equal(rules.get("candidate")?.state, "promoted");
 	});
 
@@ -479,17 +522,27 @@ describe("AgentRules registry", () => {
 			),
 			null,
 		);
-		assert.equal(await rules.setState("first-rule", "promoted", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(
+			await rules.setState("first-rule", "promoted", "xai/grok-4.6", "s2", timestamp, "command", passingWarrant),
+			null,
+		);
 		assert.equal(await rules.add(rule("later-rule", { match: { tool: "bash", command: "later-safe" } })), null);
 		assert.equal(await rules.add(rule("unrelated", { match: { tool: "bash", command: "unrelated" } })), null);
-		assert.equal(await rules.setState("unrelated", "promoted", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(
+			await rules.setState("unrelated", "promoted", "xai/grok-4.6", "s2", timestamp, "command", passingWarrant),
+			null,
+		);
 		assert.match(
-			(await rules.setState("later-rule", "promoted", "xai/grok-4.6", "s2", timestamp)) ?? "",
+			(await rules.setState("later-rule", "promoted", "xai/grok-4.6", "s2", timestamp, "command", passingWarrant)) ??
+				"",
 			/rule "first-rule"[\s\S]*agent\.later-rule/,
 		);
 		assert.equal(rules.get("later-rule")?.state, "active");
-		assert.equal(await rules.setState("first-rule", "disabled", "xai/grok-4.6", "s2", timestamp), null);
-		assert.equal(await rules.setState("later-rule", "promoted", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(await rules.setState("first-rule", "disabled", "xai/grok-4.6", "s2", timestamp, "command"), null);
+		assert.equal(
+			await rules.setState("later-rule", "promoted", "xai/grok-4.6", "s2", timestamp, "command", passingWarrant),
+			null,
+		);
 		assert.equal(rules.get("later-rule")?.state, "promoted");
 	});
 
@@ -505,18 +558,89 @@ describe("AgentRules registry", () => {
 		assert.equal(rules.noteFor("agent.a-rule", null), "Use a safer command.");
 		assert.equal(rules.noteFor("routing.cat-read", "xai/grok-4.6"), undefined);
 		assert.equal(rules.isBlocking("agent.a-rule", "xai/grok-4.6"), false);
-		assert.equal(await rules.setState("a-rule", "promoted", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(
+			await rules.setState("a-rule", "promoted", "xai/grok-4.6", "s2", timestamp, "command", passingWarrant),
+			null,
+		);
 		assert.equal(rules.isBlocking("agent.a-rule", "xai/grok-4.6"), true);
-		assert.equal(await rules.setState("a-rule", "disabled", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(await rules.setState("a-rule", "disabled", "xai/grok-4.6", "s2", timestamp, "command"), null);
 		assert.deepEqual(rules.classify("git status"), ["agent.z-rule"]);
-		assert.equal(await rules.setState("a-rule", "discarded", "xai/grok-4.6", "s2", timestamp), null);
+		assert.equal(await rules.setState("a-rule", "discarded", "xai/grok-4.6", "s2", timestamp, "command"), null);
 		assert.deepEqual(
 			rules.list().map((entry) => entry.slug),
 			["z-rule"],
 		);
 		assert.equal(rules.noteFor("agent.a-rule", null), "Use a safer command.");
-		assert.match((await rules.setState("a-rule", "active", "xai/grok-4.6", "s2", timestamp)) ?? "", /cannot/);
-		assert.match((await rules.setState("unknown", "active", "xai/grok-4.6", "s2", timestamp)) ?? "", /unknown/);
+		assert.match(
+			(await rules.setState("a-rule", "active", "xai/grok-4.6", "s2", timestamp, "command")) ?? "",
+			/cannot/,
+		);
+		assert.match(
+			(await rules.setState("unknown", "active", "xai/grok-4.6", "s2", timestamp, "command")) ?? "",
+			/unknown/,
+		);
+	});
+
+	it("validates state origin and promotion warrants before writing them", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
+		const rules = new AgentRules(dir);
+		assert.equal(await rules.add(rule("warranted")), null);
+		assert.equal(
+			await rules.setState("warranted", "disabled", "xai/grok-4.6", "s2", timestamp, undefined as never),
+			"state origin must be one of tool, command",
+		);
+		assert.equal(
+			await rules.setState("warranted", "disabled", "xai/grok-4.6", "s2", timestamp, "other" as never),
+			"state origin must be one of tool, command",
+		);
+		assert.equal(
+			await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "command"),
+			"promotion requires a recorded warrant",
+		);
+		assert.equal(
+			await rules.setState("warranted", "disabled", "xai/grok-4.6", "s2", timestamp, "command", passingWarrant),
+			"a warrant applies only to promotion",
+		);
+		assert.match(
+			(await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "command", {
+				...passingWarrant,
+				errors: 4,
+			})) ?? "",
+			/errorKinds.*sum.*errors/,
+		);
+		assert.match(
+			(await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "command", {
+				...passingWarrant,
+				fires: 2,
+			})) ?? "",
+			/errors.*must not exceed.*fires/,
+		);
+		assert.match(
+			(await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "command", {
+				...passingWarrant,
+				fires: "5",
+			} as unknown as PromotionWarrant)) ?? "",
+			/warrant\.fires.*non-negative integer/,
+		);
+		assert.equal(
+			await rules.setState("warranted", "promoted", "xai/grok-4.6", "s2", timestamp, "tool", passingWarrant),
+			null,
+		);
+		const state = (await readFile(join(dir, RULES_FILE), "utf8"))
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as Record<string, unknown>)
+			.at(-1);
+		assert.deepEqual(state, {
+			kind: "state",
+			slug: "warranted",
+			state: "promoted",
+			model: "xai/grok-4.6",
+			session: "s2",
+			at: timestamp,
+			origin: "tool",
+			warrant: passingWarrant,
+		});
 	});
 
 	it("updates memory only after a successful append", async () => {
@@ -534,8 +658,11 @@ describe("agent rule file", () => {
 		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
 		const rules = new AgentRules(dir);
 		assert.equal(await rules.add(rule("persisted", { suggest: { command: "printf" } })), null);
-		assert.equal(await rules.setState("persisted", "promoted", "anthropic/claude", "s2", timestamp), null);
-		assert.equal(await rules.setState("persisted", "disabled", "xai/grok-4.6", "s3", timestamp), null);
+		assert.equal(
+			await rules.setState("persisted", "promoted", "anthropic/claude", "s2", timestamp, "command", passingWarrant),
+			null,
+		);
+		assert.equal(await rules.setState("persisted", "disabled", "xai/grok-4.6", "s3", timestamp, "command"), null);
 		assert.equal(
 			await appendLine(
 				dir,
@@ -568,6 +695,79 @@ describe("agent rule file", () => {
 		assert.deepEqual(loaded.get("persisted")?.suggest, { command: "printf" });
 		assert.equal(loaded.noteFor("agent.bad-match", "xai/grok-4.6"), undefined);
 		assert.equal((await stat(join(dir, RULES_FILE))).mode & 0o777, 0o600);
+	});
+
+	it("reads state history origins and warrants while rejecting malformed current lines", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-rules-"));
+		const legacy = {
+			kind: "state",
+			slug: "legacy",
+			state: "promoted",
+			model: "xai/grok-4.6",
+			session: "old-session",
+			at: "2026-09-01T07:00:00.000Z",
+		};
+		const valid = {
+			kind: "state",
+			slug: "current",
+			state: "promoted",
+			model: "xai/grok-4.6",
+			session: "new-session",
+			at: "2026-09-02T07:00:00.000Z",
+			origin: "command",
+			warrant: passingWarrant,
+		};
+		await writeFile(
+			join(dir, RULES_FILE),
+			`${[
+				legacy,
+				{ ...valid, slug: "bad-origin", origin: "model" },
+				{
+					...valid,
+					slug: "bad-warrant",
+					warrant: { ...passingWarrant, errorKinds: { timeout: 0, aborted: 0, other: 2 } },
+				},
+				valid,
+			]
+				.map((line) => JSON.stringify(line))
+				.join("\n")}\n`,
+			"utf8",
+		);
+		assert.deepEqual(readStateLines(dir), [
+			{
+				slug: "legacy",
+				state: "promoted",
+				model: "xai/grok-4.6",
+				session: "old-session",
+				at: "2026-09-01T07:00:00.000Z",
+				origin: "unknown",
+			},
+			{
+				slug: "current",
+				state: "promoted",
+				model: "xai/grok-4.6",
+				session: "new-session",
+				at: "2026-09-02T07:00:00.000Z",
+				origin: "command",
+				warrant: passingWarrant,
+			},
+		]);
+		assert.deepEqual(readStateLines(join(dir, "missing")), []);
+	});
+
+	it("keeps replaying promoted legacy state lines without origin or warrant", async () => {
+		const { rules } = await loadLines([
+			{ kind: "rule", ...rule("legacy-promoted") },
+			{
+				kind: "state",
+				slug: "legacy-promoted",
+				state: "promoted",
+				model: "xai/grok-4.6",
+				session: "session-2",
+				at: timestamp,
+			},
+		]);
+		assert.equal(rules.get("legacy-promoted")?.state, "promoted");
 	});
 
 	it("loads additive version-1 rules, classifies them, and applies their state records", async () => {
@@ -702,6 +902,57 @@ describe("agent rule file", () => {
 		assert.equal(await appendLine(dir, '{"kind":"one"}'), null);
 		assert.equal(await appendLine(dir, '{"kind":"two"}'), null);
 		assert.equal(await readFile(join(dir, RULES_FILE), "utf8"), '{"kind":"one"}\n{"kind":"two"}\n');
+	});
+});
+
+describe("warrant evidence", () => {
+	it("counts matching outcomes, error kinds, and truncation from daily records", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-warrant-"));
+		const seeded = [
+			policyRecord({ callId: "timeout", error: true, errorKind: "timeout", truncated: true }),
+			policyRecord({ callId: "aborted", error: true, errorKind: "aborted" }),
+			policyRecord({ callId: "other-1", error: true, errorKind: "other" }),
+			policyRecord({ callId: "other-2", error: true, errorKind: "other" }),
+			policyRecord({ callId: "success", truncated: true, classes: ["agent.warranted", "agent.warranted"] }),
+			policyRecord({ callId: "other-class", classes: ["agent.other"] }),
+		];
+		for (const record of seeded) assert.equal(await appendRecord(dir, record), null);
+		assert.deepEqual(await scanWarrantEvidence(dir, "warranted"), {
+			fires: 5,
+			errors: 4,
+			errorKinds: { timeout: 1, aborted: 1, other: 2 },
+			truncated: 2,
+			partial: false,
+		});
+		assert.deepEqual(await scanWarrantEvidence(dir, "unknown"), {
+			fires: 0,
+			errors: 0,
+			errorKinds: { timeout: 0, aborted: 0, other: 0 },
+			truncated: 0,
+			partial: false,
+		});
+	});
+
+	it("marks a byte-bounded scan partial and treats a missing store as complete", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-agent-warrant-"));
+		const first = policyRecord({ callId: "first", error: true, errorKind: "other" });
+		const second = policyRecord({ callId: "second" });
+		assert.equal(await appendRecord(dir, first), null);
+		assert.equal(await appendRecord(dir, second), null);
+		const bound = Buffer.byteLength(`${JSON.stringify(first)}\n`, "utf8");
+		const partial = await scanWarrantEvidence(dir, "warranted", bound);
+		assert.equal(partial.partial, true);
+		assert.equal(partial.fires, 1);
+		assert.equal(partial.errors, 1);
+
+		const root = await mkdtemp(join(tmpdir(), "policy-agent-warrant-"));
+		assert.deepEqual(await scanWarrantEvidence(join(root, "missing"), "warranted"), {
+			fires: 0,
+			errors: 0,
+			errorKinds: { timeout: 0, aborted: 0, other: 0 },
+			truncated: 0,
+			partial: false,
+		});
 	});
 });
 

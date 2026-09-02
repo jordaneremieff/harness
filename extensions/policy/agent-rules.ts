@@ -5,6 +5,7 @@ import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parseStatements, type Stage, type Statement } from "./shell.ts";
 import { flags, operands, RULES } from "./shell-rules.ts";
+import type { PromotionWarrant, WarrantEvidence } from "./promotion.ts";
 import { ensurePrivateDirectory } from "./store.ts";
 
 const FIRST_SCHEMA_VERSION = 1;
@@ -67,6 +68,17 @@ export const MAX_FIRE_SCAN_BYTES = 32 * 1024 * 1024;
 export const RULES_FILE = "agent-rules.jsonl";
 
 export type AgentState = "active" | "promoted" | "disabled" | "discarded";
+export type StateOrigin = "tool" | "command";
+
+export interface StateLine {
+	slug: string;
+	state: AgentState;
+	model: string;
+	session: string;
+	at: string;
+	origin: StateOrigin | "unknown";
+	warrant?: PromotionWarrant;
+}
 
 interface AgentOperandsMatch {
 	min?: number;
@@ -441,6 +453,48 @@ function validateAttribution(model: unknown, session: unknown, at: unknown): str
 	return null;
 }
 
+function validatePromotionWarrant(warrant: unknown): string | null {
+	if (!isObject(warrant)) return "warrant must be an object";
+	const keyFailure = unknownKey(
+		warrant,
+		["criteria", "fires", "errors", "errorKinds", "truncated", "partial", "pass"],
+		"warrant",
+	);
+	if (keyFailure) return keyFailure;
+	if (typeof warrant.criteria !== "number" || !Number.isInteger(warrant.criteria) || warrant.criteria <= 0) {
+		return "warrant.criteria must be a positive integer";
+	}
+	const firesFailure = validateNonNegativeInteger(warrant.fires, "warrant.fires");
+	if (firesFailure) return firesFailure;
+	const errorsFailure = validateNonNegativeInteger(warrant.errors, "warrant.errors");
+	if (errorsFailure) return errorsFailure;
+	if ((warrant.errors as number) > (warrant.fires as number)) {
+		return "warrant.errors must not exceed warrant.fires";
+	}
+	const truncatedFailure = validateNonNegativeInteger(warrant.truncated, "warrant.truncated");
+	if (truncatedFailure) return truncatedFailure;
+	if (!isObject(warrant.errorKinds)) return "warrant.errorKinds must be an object";
+	const kindKeys = Object.keys(warrant.errorKinds).sort();
+	if (kindKeys.length !== 3 || kindKeys.join(",") !== "aborted,other,timeout") {
+		return "warrant.errorKinds must contain exactly timeout, aborted, other";
+	}
+	for (const kind of ["timeout", "aborted", "other"] as const) {
+		const kindFailure = validateNonNegativeInteger(warrant.errorKinds[kind], `warrant.errorKinds.${kind}`);
+		if (kindFailure) return kindFailure;
+	}
+	if (
+		(warrant.errorKinds.timeout as number) +
+			(warrant.errorKinds.aborted as number) +
+			(warrant.errorKinds.other as number) !==
+		(warrant.errors as number)
+	) {
+		return "warrant.errorKinds must sum to warrant.errors";
+	}
+	if (typeof warrant.partial !== "boolean") return "warrant.partial must be a boolean";
+	if (typeof warrant.pass !== "boolean") return "warrant.pass must be a boolean";
+	return null;
+}
+
 function validateRule(rule: AgentRule, expectedVersion: number = SCHEMA_VERSION): string | null {
 	if (rule.version !== expectedVersion) return `rule version must equal ${expectedVersion}`;
 	const shapeFailure =
@@ -531,12 +585,10 @@ function countFireRecord(
 	}
 }
 
-async function scanFireFile(
+async function scanJsonlFile(
 	path: string,
 	byteBound: number,
-	fires: Map<string, number>,
-	allFires: Map<string, number>,
-	firesByModel: Map<string, Map<string | null, number>>,
+	consumeLine: (line: Buffer) => void,
 ): Promise<{ bytesRead: number; complete: boolean }> {
 	let handle: Awaited<ReturnType<typeof open>> | undefined;
 	let bytesReadTotal = 0;
@@ -557,7 +609,7 @@ async function scanFireFile(
 					if (tail.length > 0) fragments.push(tail);
 					line = Buffer.concat(fragments, fragmentBytes + tail.length);
 				}
-				countFireRecord(line, fires, allFires, firesByModel);
+				consumeLine(line);
 				fragments = [];
 				fragmentBytes = 0;
 				start = index + 1;
@@ -581,12 +633,7 @@ async function scanFireFile(
 		}
 		complete = position >= size;
 		if (complete && fragmentBytes > 0) {
-			countFireRecord(
-				fragments.length === 1 ? fragments[0] : Buffer.concat(fragments, fragmentBytes),
-				fires,
-				allFires,
-				firesByModel,
-			);
+			consumeLine(fragments.length === 1 ? fragments[0] : Buffer.concat(fragments, fragmentBytes));
 		}
 	} catch {
 		complete = false;
@@ -600,6 +647,16 @@ async function scanFireFile(
 		}
 	}
 	return { bytesRead: bytesReadTotal, complete };
+}
+
+async function scanFireFile(
+	path: string,
+	byteBound: number,
+	fires: Map<string, number>,
+	allFires: Map<string, number>,
+	firesByModel: Map<string, Map<string | null, number>>,
+): Promise<{ bytesRead: number; complete: boolean }> {
+	return scanJsonlFile(path, byteBound, (line) => countFireRecord(line, fires, allFires, firesByModel));
 }
 
 /** Count agent and built-in classes through one bounded scan of daily store files. */
@@ -624,6 +681,103 @@ export async function countFires(dir: string, byteBound: number = MAX_FIRE_SCAN_
 			firesByModel,
 			partial: (error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT",
 		};
+	}
+}
+
+/** Scan bounded daily records for the measured evidence behind one agent rule. */
+export async function scanWarrantEvidence(
+	dir: string,
+	slug: string,
+	byteBound: number = MAX_FIRE_SCAN_BYTES,
+): Promise<WarrantEvidence> {
+	const evidence: WarrantEvidence = {
+		fires: 0,
+		errors: 0,
+		errorKinds: { timeout: 0, aborted: 0, other: 0 },
+		truncated: 0,
+		partial: false,
+	};
+	const classId = agentClass(slug);
+	const countRecord = (line: Buffer): void => {
+		if (line.length === 0) return;
+		try {
+			const value: unknown = JSON.parse(line.toString("utf8"));
+			if (!isObject(value) || !Array.isArray(value.classes) || !value.classes.includes(classId)) return;
+			evidence.fires++;
+			if (value.error === true) {
+				evidence.errors++;
+				const kind = value.errorKind === "timeout" || value.errorKind === "aborted" ? value.errorKind : "other";
+				evidence.errorKinds[kind]++;
+			}
+			if (value.truncated === true) evidence.truncated++;
+		} catch {
+			// One malformed store record does not hide evidence from other records.
+		}
+	};
+
+	try {
+		const files = (await readdir(dir)).filter((name) => DAILY_STORE_FILE.test(name)).sort();
+		const normalizedBound = Number.isFinite(byteBound) ? Math.max(0, Math.floor(byteBound)) : MAX_FIRE_SCAN_BYTES;
+		let remaining = normalizedBound;
+		for (const file of files) {
+			const scanned = await scanJsonlFile(join(dir, file), remaining, countRecord);
+			remaining -= scanned.bytesRead;
+			if (!scanned.complete) return { ...evidence, partial: true };
+		}
+		return evidence;
+	} catch (error) {
+		return {
+			...evidence,
+			partial: (error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT",
+		};
+	}
+}
+
+/** Read attributed state transitions without changing registry replay behavior. */
+export function readStateLines(dir: string): StateLine[] {
+	let text: string;
+	try {
+		text = readFileSync(join(dir, RULES_FILE), "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") warnLoad(error);
+		return [];
+	}
+
+	try {
+		const lines: StateLine[] = [];
+		for (const [index, source] of text.split(/\r?\n/).entries()) {
+			if (source.length === 0) continue;
+			let value: unknown;
+			try {
+				value = JSON.parse(source);
+			} catch (error) {
+				throw new Error(`cannot parse ${RULES_FILE} line ${index + 1}: ${errorMessage(error)}`);
+			}
+			if (!isObject(value) || value.kind !== "state" || typeof value.slug !== "string" || !isState(value.state)) {
+				continue;
+			}
+			if (validateAttribution(value.model, value.session, value.at)) continue;
+			let origin: StateLine["origin"] = "unknown";
+			if (hasOwn(value, "origin")) {
+				if (value.origin !== "tool" && value.origin !== "command") continue;
+				origin = value.origin;
+			}
+			if (hasOwn(value, "warrant") && validatePromotionWarrant(value.warrant)) continue;
+			const line: StateLine = {
+				slug: value.slug,
+				state: value.state,
+				model: value.model as string,
+				session: value.session as string,
+				at: value.at as string,
+				origin,
+			};
+			if (hasOwn(value, "warrant")) line.warrant = value.warrant as unknown as PromotionWarrant;
+			lines.push(line);
+		}
+		return lines;
+	} catch (error) {
+		warnLoad(error);
+		return [];
 	}
 }
 
@@ -811,7 +965,15 @@ export class AgentRules {
 	}
 
 	/** Append and apply one valid state transition. */
-	async setState(slug: string, state: AgentState, model: string, session: string, at: string): Promise<string | null> {
+	async setState(
+		slug: string,
+		state: AgentState,
+		model: string,
+		session: string,
+		at: string,
+		origin: StateOrigin,
+		warrant?: PromotionWarrant,
+	): Promise<string | null> {
 		return this.serialize(async () => {
 			const rule = this.rules.get(slug);
 			if (!rule) return `unknown agent rule "${slug}"`;
@@ -819,11 +981,22 @@ export class AgentRules {
 			if (!canTransition(rule.state, state)) return `discarded agent rule "${slug}" cannot change state`;
 			const attributionFailure = validateAttribution(model, session, at);
 			if (attributionFailure) return attributionFailure;
+			if (origin !== "tool" && origin !== "command") return "state origin must be one of tool, command";
+			if (state === "promoted" && warrant === undefined) return "promotion requires a recorded warrant";
+			if (warrant !== undefined && state !== "promoted") return "a warrant applies only to promotion";
+			if (warrant !== undefined) {
+				const warrantFailure = validatePromotionWarrant(warrant);
+				if (warrantFailure) return warrantFailure;
+			}
 			if (state === "promoted") {
 				const promotionFailure = this.promotionFailure({ ...rule, state });
 				if (promotionFailure) return promotionFailure;
 			}
-			const line = JSON.stringify({ kind: "state", slug, state, model, session, at });
+			const line = JSON.stringify(
+				warrant === undefined
+					? { kind: "state", slug, state, model, session, at, origin }
+					: { kind: "state", slug, state, model, session, at, origin, warrant },
+			);
 			const failure = await appendLine(this.dir, line);
 			if (failure) return failure;
 			rule.state = state;

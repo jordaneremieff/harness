@@ -3,10 +3,19 @@ import { mkdtemp, readFile, readdir, truncate, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { AgentRules, type AgentRule, MAX_FIRE_SCAN_BYTES, RULES_FILE, SCHEMA_VERSION } from "./agent-rules.ts";
+import {
+	type AgentRule,
+	AgentRules,
+	appendLine,
+	MAX_FIRE_SCAN_BYTES,
+	RULES_FILE,
+	SCHEMA_VERSION,
+} from "./agent-rules.ts";
 import registerPolicy from "./index.ts";
+import type { PromotionWarrant } from "./promotion.ts";
+import { PROMOTION_CRITERIA_SOURCE } from "./promotion.ts";
 import type { PolicyRecord } from "./record.ts";
-import { MAX_QUEUED_RECORDS } from "./store.ts";
+import { appendRecord, MAX_QUEUED_RECORDS } from "./store.ts";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => Promise<unknown>;
 
@@ -37,6 +46,8 @@ interface HarnessOverrides {
 	sessionId?: string;
 	policyMode?: string;
 	policyModeFlag?: boolean | string;
+	promotionMode?: string;
+	promotionModeFlag?: boolean | string;
 	ctxMode?: string;
 	model?: { provider: string; id: string } | undefined;
 	thinkingLevel?: string | undefined;
@@ -58,7 +69,16 @@ function harness(overrides: HarnessOverrides = {}) {
 	const flags = new Map<string, RegisteredFlag>();
 	const flagValues = new Map<string, boolean | string>();
 	if (overrides.policyModeFlag !== undefined) flagValues.set("policy-mode", overrides.policyModeFlag);
-	const messages: Array<{ content: string; options?: Record<string, unknown> }> = [];
+	if (overrides.promotionModeFlag !== undefined) {
+		flagValues.set("policy-promotion-mode", overrides.promotionModeFlag);
+	}
+	const messages: Array<{
+		content: string;
+		options?: Record<string, unknown>;
+		customType?: string;
+		display?: boolean;
+		details?: Record<string, unknown>;
+	}> = [];
 	const entries: Array<{ type: string; data: unknown }> = [];
 	const pi = {
 		on(event: string, handler: Handler) {
@@ -82,6 +102,17 @@ function harness(overrides: HarnessOverrides = {}) {
 		},
 		sendUserMessage(content: string, options?: Record<string, unknown>) {
 			messages.push({ content, options });
+		},
+		sendMessage(
+			message: {
+				customType: string;
+				content: string;
+				display?: boolean;
+				details?: Record<string, unknown>;
+			},
+			options?: Record<string, unknown>,
+		) {
+			messages.push({ ...message, options });
 		},
 	};
 	const notifications: Notification[] = [];
@@ -107,10 +138,22 @@ function harness(overrides: HarnessOverrides = {}) {
 	};
 	if (overrides.policyMode === undefined) delete process.env.PI_POLICY_MODE;
 	else process.env.PI_POLICY_MODE = overrides.policyMode;
+	if (overrides.promotionMode === undefined) delete process.env.PI_POLICY_PROMOTION_MODE;
+	else process.env.PI_POLICY_PROMOTION_MODE = overrides.promotionMode;
 	// The fake supplies only the surface the slice uses.
 	registerPolicy(pi as unknown as Parameters<typeof registerPolicy>[0]);
 	return { handlers, tools, commands, flags, ctx, notifications, confirmations, messages, entries };
 }
+
+const passingWarrant: PromotionWarrant = {
+	criteria: 1,
+	fires: 5,
+	errors: 3,
+	errorKinds: { timeout: 0, aborted: 0, other: 3 },
+	truncated: 0,
+	partial: false,
+	pass: true,
+};
 
 /** One completed bash call through the tool_call and tool_result pair. */
 async function runBash(
@@ -131,6 +174,41 @@ async function runBash(
 		},
 		ctx,
 	);
+}
+
+async function registryLines(): Promise<Array<Record<string, unknown>>> {
+	const text = await readFile(join(dir, RULES_FILE), "utf8");
+	return text
+		.trim()
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+async function seedEvidence(slug: string, fires: number, errors: number): Promise<void> {
+	for (let index = 0; index < fires; index++) {
+		const failed = index < errors;
+		const record: PolicyRecord = {
+			session: "evidence-session",
+			mode: "print",
+			cwd: "/work",
+			model: "xai/grok-4.6",
+			thinkingLevel: "high",
+			projectContext: true,
+			at: `2026-09-03T12:00:${String(index).padStart(2, "0")}.000Z`,
+			tool: "bash",
+			callId: `evidence-${slug}-${index}`,
+			durationMs: 1,
+			outputBytes: 0,
+			truncated: false,
+			error: failed,
+			errorKind: failed ? "other" : null,
+			tokens: null,
+			policyMode: "observe",
+			classes: [`agent.${slug}`],
+		};
+		assert.equal(await appendRecord(dir, record), null);
+	}
 }
 
 async function records(dir: string): Promise<PolicyRecord[]> {
@@ -161,7 +239,18 @@ async function seedRule(overrides: Partial<AgentRule> = {}): Promise<AgentRule> 
 	const rules = new AgentRules(dir);
 	assert.equal(await rules.add(rule), null);
 	if (requestedState && requestedState !== "active") {
-		assert.equal(await rules.setState(rule.slug, requestedState, rule.model, rule.session, rule.at), null);
+		assert.equal(
+			await rules.setState(
+				rule.slug,
+				requestedState,
+				rule.model,
+				rule.session,
+				rule.at,
+				"command",
+				requestedState === "promoted" ? passingWarrant : undefined,
+			),
+			null,
+		);
 		rule.state = requestedState;
 	}
 	return rule;
@@ -184,11 +273,13 @@ async function callCommand(run: ReturnType<typeof harness>, args: string, ctx: u
 let dir: string;
 const previousDir = process.env.PI_POLICY_DIR;
 const previousMode = process.env.PI_POLICY_MODE;
+const previousPromotionMode = process.env.PI_POLICY_PROMOTION_MODE;
 
 beforeEach(async () => {
 	dir = join(await mkdtemp(join(tmpdir(), "policy-index-")), "store");
 	process.env.PI_POLICY_DIR = dir;
 	delete process.env.PI_POLICY_MODE;
+	delete process.env.PI_POLICY_PROMOTION_MODE;
 });
 
 afterEach(() => {
@@ -196,6 +287,8 @@ afterEach(() => {
 	else process.env.PI_POLICY_DIR = previousDir;
 	if (previousMode === undefined) delete process.env.PI_POLICY_MODE;
 	else process.env.PI_POLICY_MODE = previousMode;
+	if (previousPromotionMode === undefined) delete process.env.PI_POLICY_PROMOTION_MODE;
+	else process.env.PI_POLICY_PROMOTION_MODE = previousPromotionMode;
 });
 
 describe("policy extension", () => {
@@ -218,6 +311,13 @@ describe("policy extension", () => {
 					{
 						type: "string",
 						description: "Policy mode (observe, notice, annotate, enforce); overrides PI_POLICY_MODE",
+					},
+				],
+				[
+					"policy-promotion-mode",
+					{
+						type: "string",
+						description: "Policy promotion mode (agent, operator); overrides PI_POLICY_PROMOTION_MODE",
 					},
 				],
 			],
@@ -822,10 +922,73 @@ describe("agent rule tools", () => {
 			suggest: { command: "later-safe" },
 		});
 		await seedRule({ slug: "later-rule", match: { tool: "bash", command: "later-safe" } });
+		await seedEvidence("candidate", 5, 3);
 		const run = harness();
 		const text = await callTool(run, "policy_rule_set_state", { slug: "candidate", state: "promoted" });
 		assert.match(text, /agent\.later-rule/);
 		assert.equal(AgentRules.load(dir).get("candidate")?.state, "active");
+	});
+
+	it("promotes with a passing measured warrant and records tool origin", async () => {
+		await seedRule({ slug: "warrant-pass", match: { tool: "bash", command: "danger" } });
+		await seedEvidence("warrant-pass", 5, 3);
+		const run = harness();
+		assert.match(
+			await callTool(run, "policy_rule_set_state", { slug: "warrant-pass", state: "promoted" }),
+			/to promoted/,
+		);
+		const state = (await registryLines()).find((line) => line.kind === "state" && line.slug === "warrant-pass");
+		assert.equal(state?.origin, "tool");
+		assert.deepEqual(state?.warrant, passingWarrant);
+		assert.equal(AgentRules.load(dir).get("warrant-pass")?.state, "promoted");
+	});
+
+	it("refuses promotion without evidence and reports the measured zeroes", async () => {
+		await seedRule({ slug: "no-evidence" });
+		const run = harness();
+		const text = await callTool(run, "policy_rule_set_state", { slug: "no-evidence", state: "promoted" });
+		assert.match(text, /warrant fails criteria v1/);
+		assert.match(text, /fewer than 5 matching calls \(0\)/);
+		assert.match(text, /Measured: 0 matching calls, 0 failures, 0 truncated, scan complete/);
+		assert.match(text, /\/policy criteria/);
+		assert.equal(AgentRules.load(dir).get("no-evidence")?.state, "active");
+	});
+
+	it("refuses a mostly successful 90/10 evidence history", async () => {
+		await seedRule({ slug: "mostly-successful" });
+		await seedEvidence("mostly-successful", 10, 1);
+		const run = harness();
+		const text = await callTool(run, "policy_rule_set_state", {
+			slug: "mostly-successful",
+			state: "promoted",
+		});
+		assert.match(text, /failures do not outnumber successes \(1 of 10\)/);
+		assert.match(text, /Measured: 10 matching calls, 1 failures/);
+		assert.equal(AgentRules.load(dir).get("mostly-successful")?.state, "active");
+	});
+
+	it("restricts tool promotion in operator mode from either configuration source", async () => {
+		const exact =
+			'promotion of policy rule "operator-only" is restricted to operator action in promotion mode "operator"; promote with /policy state operator-only promoted';
+		for (const overrides of [{ promotionMode: "operator" }, { promotionModeFlag: "operator" }]) {
+			await seedRule({ slug: "operator-only" });
+			const run = harness(overrides);
+			assert.equal(await callTool(run, "policy_rule_set_state", { slug: "operator-only", state: "promoted" }), exact);
+			assert.equal(AgentRules.load(dir).get("operator-only")?.state, "active");
+			await writeFile(join(dir, RULES_FILE), "", "utf8");
+		}
+	});
+
+	it("records tool origin for a non-promotion state change", async () => {
+		await seedRule({ slug: "tool-disable" });
+		const run = harness();
+		assert.match(
+			await callTool(run, "policy_rule_set_state", { slug: "tool-disable", state: "disabled" }),
+			/to disabled/,
+		);
+		const state = (await registryLines()).find((line) => line.kind === "state" && line.slug === "tool-disable");
+		assert.equal(state?.origin, "tool");
+		assert.equal(state?.warrant, undefined);
 	});
 
 	it("lowers a promoted rule only after operator confirmation", async () => {
@@ -868,7 +1031,7 @@ describe("/policy command", () => {
 		const complete = run.commands.get("policy")!.getArgumentCompletions!;
 		assert.deepEqual(
 			complete("")?.map((item) => item.value),
-			["list", "show", "state", "mode", "help"],
+			["list", "show", "history", "state", "capture", "criteria", "mode", "help"],
 		);
 		assert.deepEqual(
 			complete("show no-")?.map((item) => item.value),
@@ -878,6 +1041,13 @@ describe("/policy command", () => {
 			complete("show routing.cat-")?.map((item) => item.value),
 			["show routing.cat-read", "show routing.cat-pipe"],
 		);
+		assert.deepEqual(
+			complete("history no-")?.map((item) => item.value),
+			["history no-force-push"],
+		);
+		assert.equal(complete("history routing.cat-"), null);
+		assert.equal(complete("capture "), null);
+		assert.equal(complete("criteria "), null);
 		assert.deepEqual(
 			complete("state no-force-push ")?.map((item) => item.value),
 			[
@@ -925,6 +1095,106 @@ describe("/policy command", () => {
 		assert.equal(AgentRules.load(dir).get("no-force-push")?.state, "discarded");
 	});
 
+	it("lets the operator promote with a failing warrant and records command origin", async () => {
+		await seedRule({ slug: "operator-promote" });
+		const run = harness({ promotionMode: "operator" });
+		await callCommand(run, "state operator-promote promoted");
+		assert.match(run.notifications.at(-1)?.message ?? "", /to promoted/);
+		const state = (await registryLines()).find((line) => line.kind === "state" && line.slug === "operator-promote");
+		assert.equal(state?.origin, "command");
+		assert.deepEqual(state?.warrant, {
+			criteria: 1,
+			fires: 0,
+			errors: 0,
+			errorKinds: { timeout: 0, aborted: 0, other: 0 },
+			truncated: 0,
+			partial: false,
+			pass: false,
+		});
+		assert.equal(AgentRules.load(dir).get("operator-promote")?.state, "promoted");
+	});
+
+	it("captures a durable hint and sends its orchestration entry in UI mode", async () => {
+		const run = harness({ sessionId: "capture-session" });
+		await callCommand(run, "capture prefer bounded repository searches");
+		const capture = (await registryLines()).find((line) => line.kind === "capture");
+		assert.equal(capture?.hint, "prefer bounded repository searches");
+		assert.equal(capture?.session, "capture-session");
+		assert.equal(typeof capture?.at, "string");
+		assert.match(run.notifications[0]?.message ?? "", /^captured: prefer bounded repository searches/m);
+		assert.equal(run.messages.length, 1);
+		assert.equal(run.messages[0].customType, "policy-capture");
+		assert.equal(run.messages[0].display, true);
+		assert.deepEqual(run.messages[0].options, { triggerTurn: true, deliverAs: "steer" });
+		assert.deepEqual(run.messages[0].details, {
+			hint: capture?.hint,
+			session: capture?.session,
+			at: capture?.at,
+		});
+		assert.match(run.messages[0].content, /policy_rule_add/);
+		assert.match(run.messages[0].content, /separate clean-context worker/);
+	});
+
+	it("rejects empty, overlong, and multiline capture hints", async () => {
+		const run = harness();
+		await callCommand(run, "capture");
+		await callCommand(run, `capture ${"x".repeat(201)}`);
+		await callCommand(run, "capture first\nsecond");
+		assert.deepEqual(
+			run.notifications.map((notification) => notification.type),
+			["error", "error", "error"],
+		);
+		assert.match(run.notifications[0].message, /Usage: \/policy capture/);
+		assert.match(run.notifications[1].message, /exceeds 200 UTF-8 bytes/);
+		assert.match(run.notifications[2].message, /must not contain a newline/);
+		await assert.rejects(() => readFile(join(dir, RULES_FILE), "utf8"));
+	});
+
+	it("prints the criteria source and state history audit details", async () => {
+		const legacy = {
+			kind: "state",
+			slug: "history-rule",
+			state: "active",
+			model: "xai/grok-4.6",
+			session: "legacy-session",
+			at: "2026-09-01T07:00:00.000Z",
+		};
+		const failedWarrant = {
+			criteria: 1,
+			fires: 0,
+			errors: 0,
+			errorKinds: { timeout: 0, aborted: 0, other: 0 },
+			truncated: 0,
+			partial: false,
+			pass: false,
+		};
+		assert.equal(await appendLine(dir, JSON.stringify(legacy)), null);
+		assert.equal(
+			await appendLine(
+				dir,
+				JSON.stringify({
+					kind: "state",
+					slug: "history-rule",
+					state: "promoted",
+					model: "xai/grok-4.6",
+					session: "current-session",
+					at: "2026-09-02T07:00:00.000Z",
+					origin: "command",
+					warrant: failedWarrant,
+				}),
+			),
+			null,
+		);
+		const run = harness();
+		await callCommand(run, "criteria");
+		assert.ok((run.notifications.at(-1)?.message ?? "").includes(PROMOTION_CRITERIA_SOURCE));
+		await callCommand(run, "history agent.history-rule");
+		const history = run.notifications.at(-1)?.message ?? "";
+		assert.match(history, /origin: unknown/);
+		assert.match(history, /origin: command/);
+		assert.match(history, /warrant: criteria v1 fail · 0 fires · 0 errors · 0 truncated · scan complete/);
+	});
+
 	it("supports every text verb with no UI and refuses confirmation-gated changes", async () => {
 		await seedRule();
 		const run = harness({ hasUI: false, ctxMode: "json", policyMode: "notice" });
@@ -933,13 +1203,19 @@ describe("/policy command", () => {
 		await callCommand(run, "mode");
 		await callCommand(run, "help");
 		await callCommand(run, "state no-force-push promoted");
-		assert.equal(run.entries.length, 5);
+		await callCommand(run, "history no-force-push");
+		await callCommand(run, "criteria");
+		await callCommand(run, "capture remember this command shape");
+		assert.equal(run.entries.length, 8);
 		assert.match(JSON.stringify(run.entries[0].data), /BUILT-IN GROUPS/);
 		assert.match(JSON.stringify(run.entries[1].data), /fires by model/);
 		assert.match(JSON.stringify(run.entries[2].data), /PI_POLICY_MODE=notice/);
 		assert.match(JSON.stringify(run.entries[2].data), /original mode/);
 		assert.match(JSON.stringify(run.entries[3].data), /\/policy list/);
 		assert.match(JSON.stringify(run.entries[4].data), /to promoted/);
+		assert.match(JSON.stringify(run.entries[5].data), /origin: command/);
+		assert.ok(JSON.stringify(run.entries[6].data).includes(PROMOTION_CRITERIA_SOURCE));
+		assert.match(JSON.stringify(run.entries[7].data), /captured: remember this command shape/);
 		await assert.rejects(() => callCommand(run, "state no-force-push discarded"), /operator confirmation/);
 		assert.equal(AgentRules.load(dir).get("no-force-push")?.state, "promoted");
 	});
@@ -950,7 +1226,7 @@ describe("/policy command", () => {
 			await assert.rejects(
 				() => callCommand(run, ""),
 				(error: Error) => {
-					for (const verb of ["list", "show", "state", "mode", "help"]) {
+					for (const verb of ["list", "show", "history", "state", "capture", "criteria", "mode", "help"]) {
 						assert.match(error.message, new RegExp(`/policy ${verb}`));
 					}
 					return true;
@@ -1033,6 +1309,21 @@ describe("mode configuration", () => {
 		await callCommand(defaulted, "mode");
 		assert.match(defaulted.notifications.at(-1)?.message ?? "", /active mode: observe/);
 		assert.match(defaulted.notifications.at(-1)?.message ?? "", /PI_POLICY_MODE is unset/);
+	});
+
+	it("reports promotion mode and its environment or flag source", async () => {
+		const environment = harness({ promotionMode: "operator" });
+		await callCommand(environment, "mode");
+		assert.match(environment.notifications.at(-1)?.message ?? "", /promotion mode: operator/);
+		assert.match(
+			environment.notifications.at(-1)?.message ?? "",
+			/promotion source: PI_POLICY_PROMOTION_MODE=operator/,
+		);
+
+		const flag = harness({ promotionMode: "agent", promotionModeFlag: "operator" });
+		await callCommand(flag, "mode");
+		assert.match(flag.notifications.at(-1)?.message ?? "", /promotion mode: operator/);
+		assert.match(flag.notifications.at(-1)?.message ?? "", /promotion source: --policy-promotion-mode=operator/);
 	});
 
 	it("lets a valid flag override an invalid environment value", async () => {

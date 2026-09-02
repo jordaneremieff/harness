@@ -11,7 +11,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { agentClass, type AgentRule, type AgentState, MAX_FIRE_SCAN_BYTES } from "./agent-rules.ts";
+import { agentClass, type AgentRule, type AgentState, MAX_FIRE_SCAN_BYTES, type StateLine } from "./agent-rules.ts";
 
 export const MAX_ACTIVITY_SCAN_BYTES = 4 * 1024 * 1024;
 export const MAX_ACTIVITY_RECORDS = 200;
@@ -641,6 +641,30 @@ export function formatPolicyShow(
 	if (agent) return capText(agentDetailLines(agent, data.fireSummary).map(terminalSafe).join("\n"));
 	const builtin = data.builtins.find((rule) => rule.id === slugOrId);
 	return builtin ? capText(builtinDetailLines(builtin, data.fireSummary).map(terminalSafe).join("\n")) : undefined;
+}
+
+/** Append-only state history ordered newest first without disturbing equal timestamps. */
+export function formatPolicyHistory(lines: StateLine[]): string {
+	if (lines.length === 0) return "No state transitions were recorded.";
+	const ordered = lines
+		.map((line, index) => ({ line, index }))
+		.sort((left, right) => Date.parse(right.line.at) - Date.parse(left.line.at) || left.index - right.index);
+	const sections = ordered.map(({ line }) => {
+		const section = [
+			`timestamp: ${line.at}`,
+			`state: ${line.state}`,
+			`origin: ${line.origin}`,
+			`model: ${line.model}`,
+			`session: ${line.session}`,
+		];
+		if (line.warrant) {
+			section.push(
+				`warrant: criteria v${line.warrant.criteria} ${line.warrant.pass ? "pass" : "fail"} · ${line.warrant.fires} fires · ${line.warrant.errors} errors · ${line.warrant.truncated} truncated · scan ${line.warrant.partial ? "partial" : "complete"}`,
+			);
+		}
+		return section.map(terminalSafe).join("\n");
+	});
+	return capText(sections.join("\n\n"));
 }
 
 export class PolicyPanel {

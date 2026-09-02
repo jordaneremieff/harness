@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { type AgentRule, MAX_FIRE_SCAN_BYTES, SCHEMA_VERSION } from "./agent-rules.ts";
+import { type AgentRule, MAX_FIRE_SCAN_BYTES, SCHEMA_VERSION, type StateLine } from "./agent-rules.ts";
 import {
 	agentDetailLines,
 	buildRuleRows,
 	computePolicyPanes,
 	draftRuleMessage,
 	fireBreakdownLines,
+	formatPolicyHistory,
 	formatPolicyList,
 	formatPolicyShow,
 	MAX_ACTIVITY_RECORDS,
@@ -191,6 +192,56 @@ describe("policy rule formatting", () => {
 		assert.match(shown, /fires by model:/);
 		assert.match(shown, /openai-codex\/gpt-5\.6-sol: 3/);
 		assert.match(formatPolicyShow(panelData, "routing.cat-read") ?? "", /Use the read tool/);
+	});
+
+	it("formats state history newest first with legacy origins and warrant evidence", () => {
+		const lines: StateLine[] = [
+			{
+				slug: "no-force-push",
+				state: "active",
+				model: "model/old",
+				session: "session-old",
+				at: "2026-09-01T07:00:00.000Z",
+				origin: "unknown",
+			},
+			{
+				slug: "no-force-push",
+				state: "promoted",
+				model: "model/new",
+				session: "session-new",
+				at: "2026-09-02T07:00:00.000Z",
+				origin: "command",
+				warrant: {
+					criteria: 1,
+					fires: 5,
+					errors: 3,
+					errorKinds: { timeout: 1, aborted: 1, other: 1 },
+					truncated: 2,
+					partial: false,
+					pass: true,
+				},
+			},
+		];
+		const formatted = formatPolicyHistory(lines);
+		assert.ok(formatted.indexOf("model/new") < formatted.indexOf("model/old"));
+		assert.match(formatted, /origin: unknown/);
+		assert.match(formatted, /warrant: criteria v1 pass · 5 fires · 3 errors · 2 truncated · scan complete/);
+		assert.equal(formatPolicyHistory([]), "No state transitions were recorded.");
+	});
+
+	it("keeps equal-timestamp history entries stable", () => {
+		const common = {
+			slug: "same-time",
+			state: "active" as const,
+			model: "model/id",
+			at: "2026-09-01T07:00:00.000Z",
+			origin: "tool" as const,
+		};
+		const formatted = formatPolicyHistory([
+			{ ...common, session: "first" },
+			{ ...common, session: "second" },
+		]);
+		assert.ok(formatted.indexOf("session: first") < formatted.indexOf("session: second"));
 	});
 
 	it("surfaces the shared fire-scan byte bound when counts are partial", () => {

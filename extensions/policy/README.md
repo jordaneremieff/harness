@@ -101,12 +101,18 @@ The text surface works without a TUI:
 - `/policy show <slug-or-id>` prints complete agent or built-in detail, including
   the per-model fire breakdown and any partial marker. Agent class ids with the
   `agent.` prefix are accepted as well as bare slugs.
+- `/policy history <slug>` prints the append-only state-transition audit history
+  for an agent rule, newest first.
 - `/policy state <slug> <active|promoted|disabled|discarded>` uses the same
   confirmation and `AgentRules.setState` path as panel actions. A transition
   requiring confirmation is refused when no dialog-capable UI exists.
-- `/policy mode` prints the active mode, whether it came from `--policy-mode`,
-  `PI_POLICY_MODE`, or the default, its one-line behavior, and a reminder that an
-  already-started session keeps the mode it resolved at startup.
+- `/policy capture <hint...>` records an in-session rule-authoring request and
+  starts the capture orchestration described below.
+- `/policy criteria` prints the versioned promotion criteria source and its
+  implemented checks.
+- `/policy mode` prints the active policy and promotion modes, their flag,
+  environment, or default sources, the policy mode's one-line behavior, and a
+  reminder that a session keeps the modes it resolved at startup.
 - `/policy help` prints command usage.
 
 Bare `/policy` outside TUI mode reports that the interactive panel is
@@ -117,6 +123,29 @@ mode writes text to standard output.
 An unrecognized flag or environment value is a configuration error. The
 extension reports it once, names the accepted set and invalid source, and stops
 recording for the session.
+
+### Capture
+
+The operator invokes `/policy capture <hint>` at the moment behavior should
+become a candidate rule. The command records the hint, session, and timestamp in
+the append-only registry and appends a visible in-session entry. The operator's
+invocation is the approval; there is no later approval gate.
+
+The current agent's only job is orchestration. It packages a bounded, redacted
+excerpt of session context at the invocation point, dispatches authoring to a
+separate clean-context worker using the worker model required by the delegation
+contract, applies the returned rule through `policy_rule_add`, and reports the
+applied rule. The authoring agent is never the current session agent: the agent
+whose behavior is regulated cannot author the rule about itself.
+
+The authoring worker interprets the hint and supplied context into an agent rule
+within the current registry vocabulary: the closed shell-match schema documented
+in Agent rules. It keeps the plain-language source with the rule as its `note`
+and returns the proposed rule. If the hint targets a surface outside the shell
+vocabulary, the worker reports it as out-of-vocabulary and names that surface;
+it never stretches the hint into a rule that means something else. A candidate
+lands in `active` state through the existing add path. Promotion then follows
+the warrant mechanism.
 
 ### notice
 
@@ -307,6 +336,30 @@ both the record and build versions. Every version after the first requires a
 transition declaration, and breaking transitions require an explicit migration
 before older records can load. State records carry no schema version.
 
+Every newly written state line records its origin: `tool` for
+`policy_rule_set_state`, and `command` for `/policy state` and panel actions.
+Lines written before origin tracking existed remain valid on replay and display
+as `unknown`; replay does not invent attribution. Legacy promoted lines without
+a warrant also keep replaying, and history leaves their warrant absent.
+`/policy history <slug>` is the audit surface for these transitions. It shows
+origin, model, session, timestamp, and any promotion warrant and verdict.
+
+Promotion requires a recorded warrant. The plain-language source lives in
+`PROMOTION_CRITERIA_SOURCE` at criteria version 1 and is:
+
+> Promote a rule only when the recorded history of its matching calls shows the pattern the rule blocks actually fails. The history must hold enough matching calls to rule out chance, and failures must outnumber successes among those calls. A rule whose matching calls mostly succeed must not promote. A promotion without recorded evidence must be refused. Record the measured evidence, the criteria version, and the judgment with every promotion.
+
+The implemented evidence check requires at least 5 matching calls, failures to
+strictly outnumber successes, and a complete bounded scan. Exactly half failures
+does not pass, and a partial scan refuses. A warrant records fires, failures by
+error kind, truncation, scan completeness, the criteria version, and the
+judgment. In promotion mode `agent`, the agent state tool requires a passing
+warrant and refuses with the measured facts and failed checks. In promotion mode
+`operator`, that tool directs promotion to `/policy state`. The operator command
+and panel always measure and record the warrant and its verdict but never block
+promotion on the verdict. The registry's suggested-form collision check still
+applies to every promotion path.
+
 The match shape is closed and applies only to `bash` stages:
 
 - `tool` is required and is exactly `bash`; `command` is a required exact
@@ -393,9 +446,10 @@ The model-facing management surface is:
   including its optional suggested form and firing count from the daily record
   store. If the bounded store scan cannot finish, the output ends with `firing
   counts partial: store scan exceeded the byte bound`.
-- `policy_rule_set_state` rechecks declared suggested forms against the
-  prospective registry before promotion, then appends an attributed posture
-  transition and applies the promoted-rule confirmation gate.
+- `policy_rule_set_state` requires a passing measured warrant for promotion in
+  `agent` promotion mode, refuses tool promotion in `operator` promotion mode,
+  rechecks declared suggested forms, and records tool origin on accepted state
+  transitions. The promoted-rule lowering confirmation gate still applies.
 
 A missing rules file is an empty registry. An unreadable or unparseable file
 warns once and leaves built-in classification and recording untouched.
@@ -448,10 +502,13 @@ path, or result content reaches the model through an annotation.
 
 ## Configuration
 
-| Variable | Purpose |
+| Setting | Purpose |
 |---|---|
 | `PI_POLICY_DIR` | Record directory override; default `<agentDir>/policy` |
+| `--policy-mode` | Session mechanism flag; overrides `PI_POLICY_MODE` |
 | `PI_POLICY_MODE` | Active mechanism: `observe` (default), `notice`, `annotate`, or `enforce` |
+| `--policy-promotion-mode` | Session promotion flag; overrides `PI_POLICY_PROMOTION_MODE` |
+| `PI_POLICY_PROMOTION_MODE` | Promotion authority: `agent` (default) or `operator` |
 
 The directory override must name a trusted private directory. The extension
 creates its own directory with mode `0700`, or accepts an existing directory
