@@ -1,12 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, it } from "node:test";
-import { AgentRules } from "./agent-rules.ts";
-import { bindAgentRules, captureFor, classify, classifyCaptured, notesFor, redactFor } from "./classify.ts";
-
-afterEach(() => bindAgentRules(null));
+import { describe, it } from "node:test";
+import { captureFor, classify, notesFor, redactFor } from "./classify.ts";
 
 describe("captureFor", () => {
 	it("returns the text the owning domain declares", () => {
@@ -48,68 +42,9 @@ describe("redactFor", () => {
 	});
 });
 
-describe("agent rule composition", () => {
-	it("merges scoped agent classes with built-ins without consulting the model", async () => {
-		const rules = new AgentRules(await mkdtemp(join(tmpdir(), "policy-classify-")));
-		assert.equal(
-			await rules.add({
-				slug: "scoped-cat",
-				note: "Avoid this cat shape.",
-				match: { tool: "bash", command: "cat" },
-				scope: { providers: ["xai"] },
-				state: "active",
-				model: "xai/grok-4.6",
-				session: "s1",
-				at: "2026-09-01T07:00:00Z",
-			}),
-			null,
-		);
-		bindAgentRules(rules);
-		const expected = ["agent.scoped-cat", "routing.cat-read"];
-		for (const model of ["xai/grok-4.6", "anthropic/claude"]) {
-			assert.deepEqual(classifyCaptured("bash", "cat notes.md"), expected, `classification for ${model}`);
-		}
-	});
-
-	it("falls back to agent guidance when the domain has no built-in note", async () => {
-		const rules = new AgentRules(await mkdtemp(join(tmpdir(), "policy-classify-")));
-		await rules.add({
-			slug: "custom",
-			note: "Use the reviewed form.",
-			match: { tool: "bash", command: "git" },
-			state: "active",
-			model: "xai/grok-4.6",
-			session: "s1",
-			at: "2026-09-01T07:00:00Z",
-		});
-		bindAgentRules(rules);
-		assert.deepEqual(notesFor("bash", ["routing.cat-read", "agent.custom"], "xai/grok-4.6"), [
-			"Use the read tool for file contents, one call per file: read path=README.md.",
-			"Use the reviewed form.",
-		]);
-	});
-
-	it("omits an agent note when the current model is outside its scope", async () => {
-		const rules = new AgentRules(await mkdtemp(join(tmpdir(), "policy-classify-")));
-		await rules.add({
-			slug: "scoped",
-			note: "Only xAI should hear this.",
-			match: { tool: "bash", command: "git" },
-			scope: { providers: ["xai"] },
-			state: "active",
-			model: "xai/grok-4.6",
-			session: "s1",
-			at: "2026-09-01T07:00:00Z",
-		});
-		bindAgentRules(rules);
-		assert.deepEqual(notesFor("bash", ["agent.scoped"], "xai/grok-4.6"), ["Only xAI should hear this."]);
-		assert.deepEqual(notesFor("bash", ["agent.scoped"], "anthropic/claude"), []);
-	});
-});
-
 describe("notesFor", () => {
 	it("returns guidance in the order the ids are given", () => {
-		const notes = notesFor("bash", ["form.env-grep", "routing.cat-read"], null);
+		const notes = notesFor("bash", ["form.env-grep", "routing.cat-read"]);
 		assert.equal(notes.length, 2);
 		assert.match(notes[0], /printenv/);
 		assert.match(notes[1], /read tool/);
@@ -117,13 +52,13 @@ describe("notesFor", () => {
 
 	it("returns one line for ids that share wording", () => {
 		assert.deepEqual(
-			notesFor("bash", ["bounds.du-uncapped", "bounds.find-output-uncapped"], null),
-			notesFor("bash", ["bounds.du-uncapped"], null),
+			notesFor("bash", ["bounds.du-uncapped", "bounds.find-output-uncapped"]),
+			notesFor("bash", ["bounds.du-uncapped"]),
 		);
 	});
 
 	it("skips an unknown id and an unowned tool", () => {
-		assert.deepEqual(notesFor("bash", ["routing.no-such-rule"], null), []);
-		assert.deepEqual(notesFor("read", ["routing.cat-read"], null), []);
+		assert.deepEqual(notesFor("bash", ["routing.no-such-rule"]), []);
+		assert.deepEqual(notesFor("read", ["routing.cat-read"]), []);
 	});
 });

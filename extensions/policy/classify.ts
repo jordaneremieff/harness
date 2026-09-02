@@ -6,19 +6,11 @@
  * changes only the list below.
  */
 
-import type { AgentRules } from "./agent-rules.ts";
 import type { Domain } from "./rule.ts";
 import { shellDomain } from "./shell-rules.ts";
 
 /** Every domain this slice applies. One domain owns one tool. */
 const DOMAINS: readonly Domain[] = [shellDomain];
-
-let agentRules: AgentRules | null = null;
-
-/** Bind the registry used to extend domain classification and guidance. */
-export function bindAgentRules(rules: AgentRules | null): void {
-	agentRules = rules;
-}
 
 function domainFor(tool: string): Domain | undefined {
 	return DOMAINS.find((domain) => domain.tool === tool);
@@ -39,13 +31,9 @@ export function redactFor(tool: string, captured: string): string {
 	return domainFor(tool)?.redact?.(captured) ?? captured;
 }
 
-/** Rule ids the captured text matches, sorted and deduplicated without a scope check. */
+/** Rule ids the captured text matches, sorted and deduplicated. */
 export function classifyCaptured(tool: string, captured: string): string[] {
-	const domain = domainFor(tool);
-	if (!domain) return [];
-	const matched = domain.classify(captured);
-	if (!agentRules) return matched;
-	return [...new Set([...matched, ...agentRules.classify(captured)])].sort();
+	return domainFor(tool)?.classify(captured) ?? [];
 }
 
 /**
@@ -60,13 +48,13 @@ export function classify(tool: string, input: Record<string, unknown>): string[]
 	return captured === undefined ? [] : classifyCaptured(tool, captured);
 }
 
-/** In-scope guidance for the given rule ids, in order and without repeats. */
-export function notesFor(tool: string, ruleIds: readonly string[], model: string | null): string[] {
+/** Guidance for the given rule ids, in the order given, without repeats. */
+export function notesFor(tool: string, ruleIds: readonly string[]): string[] {
 	const domain = domainFor(tool);
 	if (!domain) return [];
 	const notes: string[] = [];
 	for (const id of ruleIds) {
-		const note = domain.note(id) ?? agentRules?.noteFor(id, model);
+		const note = domain.note(id);
 		if (note !== undefined && !notes.includes(note)) notes.push(note);
 	}
 	return notes;

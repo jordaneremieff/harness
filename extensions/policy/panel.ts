@@ -1,4 +1,4 @@
-/** Interactive /policy browser plus bounded activity-tail loading and pure formatting helpers. */
+/** Interactive /policy browser plus bounded telemetry readers and pure formatting helpers. */
 
 import { constants } from "node:fs";
 import { open, readdir } from "node:fs/promises";
@@ -11,13 +11,12 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { agentClass, type AgentRule, type AgentState, MAX_FIRE_SCAN_BYTES, type StateLine } from "./agent-rules.ts";
-import { isCurrentWarrant, type RecordedWarrant } from "./promotion.ts";
 
+export const MAX_FIRE_SCAN_BYTES = 4 * 1024 * 1024;
 export const MAX_ACTIVITY_SCAN_BYTES = 4 * 1024 * 1024;
 export const MAX_ACTIVITY_RECORDS = 200;
 const MAX_PANEL_ROWS = 46;
-const ACTIVITY_READ_CHUNK_BYTES = 64 * 1024;
+const READ_CHUNK_BYTES = 64 * 1024;
 const DAILY_STORE_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 const BUILTIN_GROUPS = ["routing", "form", "bounds"] as const;
 
@@ -27,9 +26,7 @@ export type PolicyView = "rules" | "activity";
 type ModelFireMap = ReadonlyMap<string | null, number>;
 
 export interface RuleFireSummary {
-	/** Counts for every class id observed by the bounded fire scan. */
 	fires: ReadonlyMap<string, number>;
-	/** Counts by record model for every class id observed by the same scan. */
 	firesByModel: ReadonlyMap<string, ModelFireMap>;
 	partial: boolean;
 }
@@ -62,18 +59,12 @@ export interface ActivityReadResult {
 }
 
 export interface PolicyPanelData {
-	agentRules: AgentRule[];
 	builtins: BuiltinRuleInfo[];
 	fireSummary: RuleFireSummary;
 	activity: ActivityReadResult;
 }
 
-export type PolicyPanelAction =
-	| { kind: "state"; slug: string; state: AgentState }
-	| { kind: "draft"; record: PolicyActivityRecord };
-
 export interface PolicyPanelResult {
-	action?: PolicyPanelAction;
 	view: PolicyView;
 	filter: string;
 	expandedGroups: BuiltinGroup[];
@@ -87,17 +78,14 @@ interface PolicyPanelDeps {
 	tui: { requestRender(): void };
 	getMaxRows: () => number;
 	done: (result: PolicyPanelResult) => void;
-	copyRule: (rule: AgentRule) => Promise<void>;
 	initialView?: PolicyView;
 	initialFilter?: string;
 	initialExpandedGroups?: readonly BuiltinGroup[];
 	initialSelectedRuleKey?: string;
 	initialSelectedActivityKey?: string;
-	now?: Date;
 }
 
 export type RuleListRow =
-	| { kind: "agent"; key: string; rule: AgentRule }
 	| { kind: "group"; key: string; group: BuiltinGroup; rules: BuiltinRuleInfo[]; fires: number }
 	| { kind: "builtin"; key: string; group: BuiltinGroup; rule: BuiltinRuleInfo; fires: number };
 
@@ -190,42 +178,6 @@ function computeLayout(maxRows: number, width: number): Layout {
 	};
 }
 
-export function formatAge(at: string, now: Date = new Date()): string {
-	const timestamp = Date.parse(at);
-	if (Number.isNaN(timestamp)) return "?";
-	const elapsed = Math.max(0, now.getTime() - timestamp);
-	const minute = 60_000;
-	const hour = 60 * minute;
-	const day = 24 * hour;
-	if (elapsed < minute) return "<1m";
-	if (elapsed < hour) return `${Math.floor(elapsed / minute)}m`;
-	if (elapsed < day) return `${Math.floor(elapsed / hour)}h`;
-	if (elapsed < 30 * day) return `${Math.floor(elapsed / day)}d`;
-	if (elapsed < 365 * day) return `${Math.floor(elapsed / (30 * day))}mo`;
-	return `${Math.floor(elapsed / (365 * day))}y`;
-}
-
-export function agentPosture(state: AgentState): string {
-	switch (state) {
-		case "active":
-			return "steer";
-		case "promoted":
-			return "block";
-		case "disabled":
-			return "off";
-		case "discarded":
-			return "gone";
-	}
-}
-
-export function formatScope(rule: Pick<AgentRule, "scope">): string {
-	const scope = rule.scope;
-	if (scope === undefined) return "all";
-	if (scope.exclude) return `except:${scope.exclude.length}`;
-	if (scope.models) return `models:${scope.models.length}`;
-	return `providers:${scope.providers?.length ?? 0}`;
-}
-
 function builtinGroup(id: string): BuiltinGroup | undefined {
 	const namespace = id.split(".", 1)[0];
 	return BUILTIN_GROUPS.find((group) => group === namespace);
@@ -247,36 +199,14 @@ function matchesFilter(fields: readonly string[], filter: string): boolean {
 	return fields.some((field) => field.toLocaleLowerCase().includes(needle));
 }
 
-/** Agent rows followed by exactly the routing, form, and bounds group rows. */
+/** Exactly the routing, form, and bounds group rows, with expanded members in place. */
 export function buildRuleRows(
-	agentRules: readonly AgentRule[],
 	builtins: readonly BuiltinRuleInfo[],
 	fires: ReadonlyMap<string, number>,
 	expandedGroups: ReadonlySet<BuiltinGroup>,
 	filter = "",
 ): RuleListRow[] {
 	const rows: RuleListRow[] = [];
-	for (const rule of agentRules) {
-		if (
-			!matchesFilter(
-				[
-					"agent",
-					rule.slug,
-					rule.state,
-					agentPosture(rule.state),
-					formatScope(rule),
-					rule.note,
-					rule.model,
-					JSON.stringify(rule.match),
-					JSON.stringify(rule.scope ?? "all"),
-				],
-				filter,
-			)
-		)
-			continue;
-		rows.push({ kind: "agent", key: `agent:${rule.slug}`, rule });
-	}
-
 	const groups = groupBuiltins(builtins);
 	for (const group of BUILTIN_GROUPS) {
 		const allRules = groups.get(group) ?? [];
@@ -294,8 +224,7 @@ export function buildRuleRows(
 
 function allocateColumns(columns: readonly Column[], width: number): number[] {
 	if (columns.length === 0) return [];
-	const separators = columns.length - 1;
-	const available = Math.max(columns.length, width - separators);
+	const available = Math.max(columns.length, width - (columns.length - 1));
 	const widths = columns.map((column) => Math.max(1, column.minimum));
 	let remaining = available - widths.reduce((sum, value) => sum + value, 0);
 	while (remaining > 0) {
@@ -330,19 +259,6 @@ function renderColumns(columns: readonly Column[], width: number, header: boolea
 	return columns.map((column, index) => fitText(header ? column.label : column.value, widths[index])).join(" ");
 }
 
-function agentColumns(rule: AgentRule, fires: number, now: Date): Column[] {
-	return [
-		{ label: "origin", value: "agent", minimum: 6, weight: 1 },
-		{ label: "slug", value: oneLine(rule.slug), minimum: 9, weight: 3 },
-		{ label: "state", value: rule.state, minimum: 5, weight: 2 },
-		{ label: "posture", value: agentPosture(rule.state), minimum: 7, weight: 1 },
-		{ label: "scope", value: formatScope(rule), minimum: 5, weight: 2 },
-		{ label: "fires", value: String(fires), minimum: 5, weight: 1 },
-		{ label: "author model", value: oneLine(rule.model), minimum: 10, weight: 3 },
-		{ label: "age", value: formatAge(rule.at, now), minimum: 4, weight: 1 },
-	];
-}
-
 function activityColumns(record: PolicyActivityRecord): Column[] {
 	const time = record.at.match(/T(\d{2}:\d{2}:\d{2})/)?.[1] ?? oneLine(record.at);
 	return [
@@ -360,7 +276,6 @@ function modelFireEntries(summary: RuleFireSummary, classId: string): Array<[str
 	);
 }
 
-/** Text lines for the required per-model fire evidence. */
 export function fireBreakdownLines(summary: RuleFireSummary, classId: string): string[] {
 	const entries = modelFireEntries(summary, classId);
 	if (entries.length === 0) return ["  (none)"];
@@ -370,42 +285,12 @@ export function fireBreakdownLines(summary: RuleFireSummary, classId: string): s
 function wrapDetail(lines: readonly string[], width: number): string[] {
 	const wrapped: string[] = [];
 	for (const source of lines) {
-		const safe = terminalSafe(source);
-		const parts = safe.split("\n");
-		for (const part of parts) {
+		for (const part of terminalSafe(source).split("\n")) {
 			const rendered = wrapTextWithAnsi(part, Math.max(8, width));
 			wrapped.push(...(rendered.length > 0 ? rendered : [""]));
 		}
 	}
 	return wrapped;
-}
-
-function jsonLines(label: string, value: unknown): string[] {
-	const serialized = JSON.stringify(value, null, 2) ?? "none";
-	const lines = serialized.split("\n");
-	return [`${label}: ${lines[0]}`, ...lines.slice(1)];
-}
-
-export function agentDetailLines(rule: AgentRule, summary: RuleFireSummary): string[] {
-	const classId = agentClass(rule.slug);
-	return [
-		classId,
-		`state: ${rule.state}`,
-		`posture: ${agentPosture(rule.state)}`,
-		"",
-		`note: ${rule.note}`,
-		...jsonLines("match", rule.match),
-		...jsonLines("suggested form", rule.suggest ?? "none"),
-		...jsonLines("scope", rule.scope ?? "everywhere"),
-		"",
-		`author model: ${rule.model}`,
-		`session: ${rule.session}`,
-		`timestamp: ${rule.at}`,
-		`total fires: ${summary.fires.get(classId) ?? 0}`,
-		"fires by model:",
-		...fireBreakdownLines(summary, classId),
-		...(summary.partial ? ["", `[fire counts partial: ${MAX_FIRE_SCAN_BYTES} byte scan bound reached]`] : []),
-	];
 }
 
 export function builtinDetailLines(rule: BuiltinRuleInfo, summary: RuleFireSummary): string[] {
@@ -476,7 +361,6 @@ async function readFileTail(
 ): Promise<{ buffer: Buffer; bytesRead: number; complete: boolean }> {
 	let handle: Awaited<ReturnType<typeof open>> | undefined;
 	let bytesRead = 0;
-	let complete = false;
 	try {
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 		handle = await open(path, constants.O_RDONLY | noFollow);
@@ -485,13 +369,12 @@ async function readFileTail(
 		const start = size - length;
 		const buffer = Buffer.alloc(length);
 		while (bytesRead < length) {
-			const chunkLength = Math.min(ACTIVITY_READ_CHUNK_BYTES, length - bytesRead);
+			const chunkLength = Math.min(READ_CHUNK_BYTES, length - bytesRead);
 			const result = await handle.read(buffer, bytesRead, chunkLength, start + bytesRead);
 			if (result.bytesRead === 0) break;
 			bytesRead += result.bytesRead;
 		}
-		complete = start === 0 && bytesRead === length;
-		return { buffer: buffer.subarray(0, bytesRead), bytesRead, complete };
+		return { buffer: buffer.subarray(0, bytesRead), bytesRead, complete: start === 0 && bytesRead === length };
 	} finally {
 		await handle?.close();
 	}
@@ -573,17 +456,109 @@ export async function readRecentActivity(
 	};
 }
 
-/** Model request drafted from only the redacted command held by a selected record. */
-export function draftRuleMessage(record: PolicyActivityRecord): string {
-	return [
-		"Author a focused shell policy rule for the recorded command below if the visible evidence warrants one.",
-		"Use policy_rule_add so the match, note, optional suggested form, and optional scope stay in the closed policy schema.",
-		"The command is redacted telemetry. Use only the visible shape and do not reconstruct or guess redacted values.",
-		"",
-		`Redacted command (JSON string): ${JSON.stringify(record.captured ?? "(not captured)")}`,
-		`Matched rule ids: ${record.classes.join(", ")}`,
-		`Observed model: ${record.model ?? "(none)"}`,
-	].join("\n");
+async function scanJsonlPrefix(
+	path: string,
+	byteBound: number,
+	consumeLine: (line: Buffer) => void,
+): Promise<{ bytesRead: number; complete: boolean }> {
+	let handle: Awaited<ReturnType<typeof open>> | undefined;
+	let bytesRead = 0;
+	let complete = false;
+	try {
+		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+		handle = await open(path, constants.O_RDONLY | noFollow);
+		const size = (await handle.stat()).size;
+		let position = 0;
+		let fragments: Buffer[] = [];
+		let fragmentBytes = 0;
+		while (position < size && bytesRead < byteBound) {
+			const length = Math.min(READ_CHUNK_BYTES, size - position, byteBound - bytesRead);
+			const buffer = Buffer.allocUnsafe(length);
+			const result = await handle.read(buffer, 0, length, position);
+			if (result.bytesRead === 0) break;
+			const chunk = buffer.subarray(0, result.bytesRead);
+			let start = 0;
+			for (let index = 0; index < chunk.length; index++) {
+				if (chunk[index] !== 0x0a) continue;
+				const tail = chunk.subarray(start, index);
+				let line = tail;
+				if (fragments.length > 0) {
+					if (tail.length > 0) fragments.push(tail);
+					line = Buffer.concat(fragments, fragmentBytes + tail.length);
+				}
+				consumeLine(line);
+				fragments = [];
+				fragmentBytes = 0;
+				start = index + 1;
+			}
+			if (start < chunk.length) {
+				const tail = chunk.subarray(start);
+				fragments.push(tail);
+				fragmentBytes += tail.length;
+			}
+			position += result.bytesRead;
+			bytesRead += result.bytesRead;
+		}
+		complete = position >= size;
+		if (complete && fragmentBytes > 0) {
+			consumeLine(fragments.length === 1 ? fragments[0] : Buffer.concat(fragments, fragmentBytes));
+		}
+	} catch {
+		complete = false;
+	} finally {
+		try {
+			await handle?.close();
+		} catch {
+			complete = false;
+		}
+	}
+	return { bytesRead, complete };
+}
+
+/** Count built-in rule firings through one bounded scan of daily store files. */
+export async function readFireSummary(
+	dir: string,
+	byteBound: number = MAX_FIRE_SCAN_BYTES,
+): Promise<RuleFireSummary> {
+	const fires = new Map<string, number>();
+	const firesByModel = new Map<string, Map<string | null, number>>();
+	const countLine = (line: Buffer): void => {
+		if (line.length === 0) return;
+		try {
+			const value: unknown = JSON.parse(line.toString("utf8"));
+			if (!isObject(value) || !Array.isArray(value.classes)) return;
+			const model = typeof value.model === "string" ? value.model : null;
+			for (const classId of value.classes) {
+				if (typeof classId !== "string") continue;
+				fires.set(classId, (fires.get(classId) ?? 0) + 1);
+				let models = firesByModel.get(classId);
+				if (!models) {
+					models = new Map();
+					firesByModel.set(classId, models);
+				}
+				models.set(model, (models.get(model) ?? 0) + 1);
+			}
+		} catch {
+			// One malformed store record does not hide valid counts around it.
+		}
+	};
+
+	try {
+		const files = (await readdir(dir)).filter((name) => DAILY_STORE_FILE.test(name)).sort();
+		let remaining = Number.isFinite(byteBound) ? Math.max(0, Math.floor(byteBound)) : MAX_FIRE_SCAN_BYTES;
+		for (const file of files) {
+			const scanned = await scanJsonlPrefix(join(dir, file), remaining, countLine);
+			remaining -= scanned.bytesRead;
+			if (!scanned.complete) return { fires, firesByModel, partial: true };
+		}
+		return { fires, firesByModel, partial: false };
+	} catch (error) {
+		return {
+			fires,
+			firesByModel,
+			partial: (error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT",
+		};
+	}
 }
 
 function capText(text: string, maxBytes = 50 * 1024): string {
@@ -596,27 +571,8 @@ function capText(text: string, maxBytes = 50 * 1024): string {
 }
 
 /** Text equivalent of the Rules view, including expanded built-in group members. */
-export function formatPolicyList(
-	data: Pick<PolicyPanelData, "agentRules" | "builtins" | "fireSummary">,
-	now = new Date(),
-): string {
-	const lines = ["AGENT RULES", "origin | slug | state | posture | scope | fires | author model | age"];
-	if (data.agentRules.length === 0) lines.push("(none; use the Activity view to draft a first rule)");
-	for (const rule of data.agentRules) {
-		lines.push(
-			[
-				"agent",
-				rule.slug,
-				rule.state,
-				agentPosture(rule.state),
-				formatScope(rule),
-				String(data.fireSummary.fires.get(agentClass(rule.slug)) ?? 0),
-				rule.model,
-				formatAge(rule.at, now),
-			].join(" | "),
-		);
-	}
-	lines.push("", "BUILT-IN GROUPS");
+export function formatPolicyList(data: Pick<PolicyPanelData, "builtins" | "fireSummary">): string {
+	const lines = ["BUILT-IN GROUPS"];
 	const groups = groupBuiltins(data.builtins);
 	for (const group of BUILTIN_GROUPS) {
 		const rules = groups.get(group) ?? [];
@@ -632,52 +588,13 @@ export function formatPolicyList(
 	return capText(lines.map(terminalSafe).join("\n"));
 }
 
-/** Full text detail for an agent slug or built-in id. */
+/** Full text detail for a built-in rule id. */
 export function formatPolicyShow(
-	data: Pick<PolicyPanelData, "agentRules" | "builtins" | "fireSummary">,
-	slugOrId: string,
+	data: Pick<PolicyPanelData, "builtins" | "fireSummary">,
+	id: string,
 ): string | undefined {
-	const agentSlug = slugOrId.startsWith("agent.") ? slugOrId.slice("agent.".length) : slugOrId;
-	const agent = data.agentRules.find((rule) => rule.slug === agentSlug);
-	if (agent) return capText(agentDetailLines(agent, data.fireSummary).map(terminalSafe).join("\n"));
-	const builtin = data.builtins.find((rule) => rule.id === slugOrId);
+	const builtin = data.builtins.find((rule) => rule.id === id);
 	return builtin ? capText(builtinDetailLines(builtin, data.fireSummary).map(terminalSafe).join("\n")) : undefined;
-}
-
-/** One warrant line for either recorded shape, named by its criteria version. */
-function warrantLine(warrant: RecordedWarrant): string {
-	const head = `warrant: criteria v${warrant.criteria} ${warrant.pass ? "pass" : "fail"} · ${warrant.fires} fires`;
-	const scan = `scan ${warrant.partial ? "partial" : "complete"}`;
-	if (!isCurrentWarrant(warrant)) {
-		return `${head} · ${warrant.errors} errors · ${warrant.truncated} truncated · ${scan}`;
-	}
-	const { harmKinds } = warrant;
-	const kinds = `${harmKinds.error} failed, ${harmKinds.truncated} truncated, ${harmKinds.output} over the output bound, ${harmKinds.duration} over the duration bound`;
-	return `${head} · ${warrant.harmful} harmful (${kinds}) · ${scan}`;
-}
-
-/** Append-only state history ordered newest first without disturbing equal timestamps. */
-export function formatPolicyHistory(lines: StateLine[]): string {
-	if (lines.length === 0) return "No state transitions were recorded.";
-	const ordered = lines
-		.map((line, index) => ({ line, index }))
-		.sort((left, right) => Date.parse(right.line.at) - Date.parse(left.line.at) || left.index - right.index);
-	const sections = ordered.map(({ line }) => {
-		const section = [
-			`timestamp: ${line.at}`,
-			`state: ${line.state}`,
-			`origin: ${line.origin}`,
-			`model: ${line.model}`,
-			`session: ${line.session}`,
-		];
-		if (line.warrant) {
-			section.push(warrantLine(line.warrant));
-		} else if (line.warrantUnreadable) {
-			section.push("warrant: unreadable");
-		}
-		return section.map(terminalSafe).join("\n");
-	});
-	return capText(sections.join("\n\n"));
 }
 
 export class PolicyPanel {
@@ -691,23 +608,18 @@ export class PolicyPanel {
 	private ruleScroll = 0;
 	private activityScroll = 0;
 	private detailScroll = 0;
-	private notice: string | undefined;
-	private copying = false;
-	private finished = false;
 	private version = 0;
 	private lastWidth = 112;
 	private cachedWidth = -1;
 	private cachedRows = -1;
 	private cachedVersion = -1;
 	private cachedLines: string[] = [];
-	private readonly now: Date;
 
 	constructor(deps: PolicyPanelDeps) {
 		this.deps = deps;
 		this.view = deps.initialView ?? "rules";
 		this.filter = deps.initialFilter ?? "";
 		this.expandedGroups = new Set(deps.initialExpandedGroups ?? []);
-		this.now = deps.now ?? new Date();
 		if (deps.initialSelectedRuleKey) {
 			const selected = this.ruleRows.findIndex((row) => row.key === deps.initialSelectedRuleKey);
 			if (selected >= 0) this.selectedRule = selected;
@@ -721,13 +633,7 @@ export class PolicyPanel {
 	}
 
 	private get ruleRows(): RuleListRow[] {
-		return buildRuleRows(
-			this.deps.data.agentRules,
-			this.deps.data.builtins,
-			this.deps.data.fireSummary.fires,
-			this.expandedGroups,
-			this.filter,
-		);
+		return buildRuleRows(this.deps.data.builtins, this.deps.data.fireSummary.fires, this.expandedGroups, this.filter);
 	}
 
 	private currentRule(): RuleListRow | undefined {
@@ -758,8 +664,7 @@ export class PolicyPanel {
 			return wrapDetail(activityDetailLines(record, this.deps.data.activity), width);
 		}
 		const row = this.currentRule();
-		if (!row) return [this.filter ? "No rules match the filter." : "No policy rules are available."];
-		if (row.kind === "agent") return wrapDetail(agentDetailLines(row.rule, this.deps.data.fireSummary), width);
+		if (!row) return [this.filter ? "No rules match the filter." : "No built-in policy rules are available."];
 		if (row.kind === "builtin") return wrapDetail(builtinDetailLines(row.rule, this.deps.data.fireSummary), width);
 		return wrapDetail(
 			[
@@ -787,14 +692,11 @@ export class PolicyPanel {
 	}
 
 	private clearTransient(): void {
-		this.notice = undefined;
 		this.detailScroll = 0;
 	}
 
-	private finish(action?: PolicyPanelAction): void {
-		this.finished = true;
+	private finish(): void {
 		this.deps.done({
-			action,
 			view: this.view,
 			filter: this.filter,
 			expandedGroups: [...this.expandedGroups],
@@ -816,10 +718,7 @@ export class PolicyPanel {
 
 	private toggleGroup(): void {
 		const row = this.currentRule();
-		if (row?.kind !== "group") {
-			this.notice = "Select a built-in group row to expand or collapse it.";
-			return;
-		}
+		if (row?.kind !== "group") return;
 		if (this.expandedGroups.has(row.group)) this.expandedGroups.delete(row.group);
 		else this.expandedGroups.add(row.group);
 		const selected = this.ruleRows.findIndex((candidate) => candidate.key === row.key);
@@ -827,154 +726,45 @@ export class PolicyPanel {
 		this.clearTransient();
 	}
 
-	private requestState(state: AgentState): void {
-		const row = this.currentRule();
-		if (row?.kind === "builtin") {
-			this.notice = "Built-in rules are code and change by commit.";
-			this.bump();
-			return;
-		}
-		if (row?.kind !== "agent") {
-			this.notice = "Select an agent rule for a state action.";
-			this.bump();
-			return;
-		}
-		if (row.rule.state === state) {
-			this.notice = `Rule ${row.rule.slug} is already ${state}.`;
-			this.bump();
-			return;
-		}
-		this.finish({ kind: "state", slug: row.rule.slug, state });
-	}
-
-	private copySelectedRule(): void {
-		const row = this.currentRule();
-		if (row?.kind !== "agent") {
-			this.notice = "Select an agent rule to copy its JSON.";
-			this.bump();
-			return;
-		}
-		if (this.copying) return;
-		this.copying = true;
-		this.notice = "copying…";
-		this.bump();
-		void this.deps.copyRule(row.rule).then(
-			() => {
-				if (this.finished) return;
-				this.copying = false;
-				this.notice = "Rule JSON copied.";
-				this.bump();
-			},
-			() => {
-				if (this.finished) return;
-				this.copying = false;
-				this.notice = "Could not copy rule JSON.";
-				this.bump();
-			},
-		);
-	}
-
 	handleInput(raw: string): void {
 		const decoded = decodeKittyPrintable(raw);
 		const data = decoded ?? raw;
 		if (this.filtering) {
-			if (matchesKey(raw, "escape") || matchesKey(raw, "enter")) {
-				this.filtering = false;
-			} else if (matchesKey(raw, "backspace")) {
+			if (matchesKey(raw, "escape") || matchesKey(raw, "enter")) this.filtering = false;
+			else if (matchesKey(raw, "backspace")) {
 				this.filter = Array.from(this.filter).slice(0, -1).join("");
 				this.selectedRule = 0;
 				this.ruleScroll = 0;
 				this.clearTransient();
-			} else if (matchesKey(raw, "up")) {
-				this.move(-1);
-			} else if (matchesKey(raw, "down")) {
-				this.move(1);
-			} else if (data.length > 0 && !matchesKey(raw, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(data)) {
+			} else if (matchesKey(raw, "up")) this.move(-1);
+			else if (matchesKey(raw, "down")) this.move(1);
+			else if (data.length > 0 && !matchesKey(raw, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(data)) {
 				this.filter += data;
 				this.selectedRule = 0;
 				this.ruleScroll = 0;
 				this.clearTransient();
-			} else {
-				return;
-			}
+			} else return;
 			this.bump();
 			return;
 		}
-
 		if (matchesKey(raw, "escape")) {
 			this.finish();
 			return;
 		}
-		if (matchesKey(raw, "up")) {
-			this.move(-1);
-			this.bump();
-			return;
-		}
-		if (matchesKey(raw, "down")) {
-			this.move(1);
-			this.bump();
-			return;
-		}
-		if (data === "v") {
+		if (matchesKey(raw, "up")) this.move(-1);
+		else if (matchesKey(raw, "down")) this.move(1);
+		else if (data === "v") {
 			this.view = this.view === "rules" ? "activity" : "rules";
 			this.clearTransient();
-			this.bump();
-			return;
-		}
-		if (data === "b") {
-			this.detailScroll = Math.max(0, this.detailScroll - this.pageSize());
-			this.bump();
-			return;
-		}
-		if (matchesKey(raw, "space")) {
+		} else if (data === "b") this.detailScroll = Math.max(0, this.detailScroll - this.pageSize());
+		else if (matchesKey(raw, "space")) {
 			this.detailScroll = Math.min(this.detailMaxScroll(), this.detailScroll + this.pageSize());
-			this.bump();
-			return;
-		}
-		if (this.view === "activity") {
-			if (data === "d") {
-				const record = this.currentActivity();
-				if (record?.captured === undefined) {
-					this.notice = "The selected record has no captured redacted command.";
-					this.bump();
-					return;
-				}
-				if (record) this.finish({ kind: "draft", record });
-			}
-			return;
-		}
-		if (data === "/") {
+		} else if (this.view === "rules" && data === "/") {
 			this.filtering = true;
 			this.clearTransient();
-			this.bump();
-			return;
-		}
-		if (data === "g") {
-			this.toggleGroup();
-			this.bump();
-			return;
-		}
-		if (data === "p") {
-			this.requestState("promoted");
-			return;
-		}
-		if (data === "m") {
-			this.requestState("active");
-			return;
-		}
-		if (data === "x") {
-			this.requestState("disabled");
-			return;
-		}
-		if (data === "a") {
-			this.requestState("active");
-			return;
-		}
-		if (data === "d") {
-			this.requestState("discarded");
-			return;
-		}
-		if (data === "c") this.copySelectedRule();
+		} else if (this.view === "rules" && data === "g") this.toggleGroup();
+		else return;
+		this.bump();
 	}
 
 	private keyPair(key: string, label: string): string {
@@ -983,27 +773,15 @@ export class PolicyPanel {
 
 	private footerText(innerWidth: number): string {
 		const theme = this.deps.theme;
-		if (this.notice) return theme.fg(this.notice.includes("Could not") ? "error" : "warning", this.notice);
 		if (this.filtering) {
 			const suffix = ` · ↑↓ select · enter/esc done · ${this.ruleRows.length} match`;
 			const queryWidth = Math.max(1, innerWidth - visibleWidth("filter ") - visibleWidth(suffix));
 			return `${theme.fg("accent", "filter ")}${theme.fg("text", keepTail(`${oneLine(this.filter)}▌`, queryWidth))}${theme.fg("dim", suffix)}`;
 		}
-		const common = [this.keyPair("↑↓", "select"), this.keyPair("b/spc", "detail"), this.keyPair("v", "view")];
-		if (this.view === "activity") {
-			common.push(this.keyPair("d", "draft rule"), this.keyPair("esc", "close"));
-			return common.join(theme.fg("dim", " · "));
-		}
-		common.push(
-			this.keyPair("g", "group"),
-			this.keyPair("/", "filter"),
-			this.keyPair("p/m", "promote/demote"),
-			this.keyPair("x/a", "disable/enable"),
-			this.keyPair("d", "discard"),
-			this.keyPair("c", "copy"),
-			this.keyPair("esc", "close"),
-		);
-		return common.join(theme.fg("dim", " · "));
+		const keys = [this.keyPair("↑↓", "select"), this.keyPair("b/spc", "detail"), this.keyPair("v", "view")];
+		if (this.view === "rules") keys.push(this.keyPair("g", "group"), this.keyPair("/", "filter"));
+		keys.push(this.keyPair("esc", "close"));
+		return keys.join(theme.fg("dim", " · "));
 	}
 
 	private titleBorder(width: number, position: string): string {
@@ -1022,31 +800,19 @@ export class PolicyPanel {
 	}
 
 	private listHeader(width: number): string {
-		if (this.view === "activity") {
-			const sample: PolicyActivityRecord = {
-				at: "00:00:00",
-				model: "model",
-				thinkingLevel: null,
-				tool: "bash",
-				classes: ["rule ids"],
-				blocked: false,
-				error: false,
-				policyMode: "observe",
-				session: "session",
-			};
-			return renderColumns(activityColumns(sample), width, true);
-		}
-		const sample: AgentRule = {
-			version: 1,
-			slug: "slug",
-			note: "note",
-			match: { tool: "bash", command: "command" },
-			state: "active",
-			model: "author model",
+		if (this.view === "rules") return fitText("built-in group or rule · fires", width);
+		const sample: PolicyActivityRecord = {
+			at: "00:00:00",
+			model: "model",
+			thinkingLevel: null,
+			tool: "bash",
+			classes: ["rule ids"],
+			blocked: false,
+			error: false,
+			policyMode: "observe",
 			session: "session",
-			at: this.now.toISOString(),
 		};
-		return renderColumns(agentColumns(sample, 0, this.now), width, true);
+		return renderColumns(activityColumns(sample), width, true);
 	}
 
 	private listRow(rowIndex: number, width: number): string {
@@ -1059,13 +825,6 @@ export class PolicyPanel {
 		const row = this.ruleRows[rowIndex];
 		if (!row) return "";
 		const prefix = rowIndex === this.selectedRule ? "› " : "  ";
-		if (row.kind === "agent") {
-			return `${prefix}${renderColumns(
-				agentColumns(row.rule, this.deps.data.fireSummary.fires.get(agentClass(row.rule.slug)) ?? 0, this.now),
-				Math.max(1, width - 2),
-				false,
-			)}`;
-		}
 		if (row.kind === "group") {
 			const mark = this.expandedGroups.has(row.group) ? "▾" : "▸";
 			return `${prefix}${mark} ${row.group} · ${row.rules.length} rules · ${row.fires} fires`;
@@ -1085,23 +844,14 @@ export class PolicyPanel {
 		const position = itemCount === 0 ? "0/0" : `${selected + 1}/${itemCount}`;
 		const paint = (text: string): string => theme.bg("customMessageBg", fitText(text, width));
 		const lines: string[] = [];
-		const noAgentsHint =
-			this.view === "rules" && this.filter === "" && this.deps.data.agentRules.length === 0
-				? "No agent rules; press v, select activity, then d to draft one."
-				: undefined;
-
 		if (!layout.framed) {
 			if (layout.total > 1) lines.push(paint(`Policy · ${this.view === "rules" ? "Rules" : "Activity"} · ${position}`));
 			if (layout.bodyRows > 0) lines.push(paint(this.listHeader(width)));
-			const hintRows = noAgentsHint && layout.bodyRows > 1 ? 1 : 0;
-			if (hintRows) lines.push(paint(noAgentsHint!));
-			const available = Math.max(0, layout.bodyRows - 1 - hintRows);
+			const available = Math.max(0, layout.bodyRows - 1);
 			if (available > 0) {
 				if (this.view === "rules") {
 					if (this.selectedRule < this.ruleScroll) this.ruleScroll = this.selectedRule;
-					if (this.selectedRule >= this.ruleScroll + available) {
-						this.ruleScroll = this.selectedRule - available + 1;
-					}
+					if (this.selectedRule >= this.ruleScroll + available) this.ruleScroll = this.selectedRule - available + 1;
 				} else {
 					if (this.selectedActivity < this.activityScroll) this.activityScroll = this.selectedActivity;
 					if (this.selectedActivity >= this.activityScroll + available) {
@@ -1120,8 +870,7 @@ export class PolicyPanel {
 		}
 
 		lines.push(this.titleBorder(width, position));
-		const hintRows = noAgentsHint ? 1 : 0;
-		const listItemRows = Math.max(0, layout.bodyRows - 1 - hintRows);
+		const listItemRows = Math.max(0, layout.bodyRows - 1);
 		if (this.view === "rules") {
 			if (this.selectedRule < this.ruleScroll) this.ruleScroll = this.selectedRule;
 			if (this.selectedRule >= this.ruleScroll + listItemRows) {
@@ -1139,15 +888,10 @@ export class PolicyPanel {
 		for (let bodyIndex = 0; bodyIndex < layout.bodyRows; bodyIndex++) {
 			let listCell = "";
 			if (bodyIndex === 0) listCell = theme.bold(theme.fg("dim", this.listHeader(layout.listWidth)));
-			else if (noAgentsHint && bodyIndex === 1) listCell = theme.fg("warning", noAgentsHint);
 			else {
-				const rowSlot = bodyIndex - 1 - hintRows;
-				if (rowSlot >= 0) {
-					const absolute = scroll + rowSlot;
-					const row = this.listRow(absolute, layout.listWidth);
-					const isSelected = absolute === selected;
-					listCell = theme.fg(isSelected ? "accent" : "text", row);
-				}
+				const absolute = scroll + bodyIndex - 1;
+				const row = this.listRow(absolute, layout.listWidth);
+				listCell = theme.fg(absolute === selected ? "accent" : "text", row);
 			}
 			lines.push(
 				theme.bg(
@@ -1164,7 +908,6 @@ export class PolicyPanel {
 			),
 		);
 		lines.push(theme.bg("customMessageBg", theme.fg("borderMuted", `└${"─".repeat(Math.max(0, width - 2))}┘`)));
-
 		this.cachedWidth = width;
 		this.cachedRows = layout.total;
 		this.cachedVersion = this.version;
@@ -1172,9 +915,7 @@ export class PolicyPanel {
 		return this.cachedLines;
 	}
 
-	dispose(): void {
-		this.finished = true;
-	}
+	dispose(): void {}
 
 	invalidate(): void {
 		this.cachedWidth = -1;
