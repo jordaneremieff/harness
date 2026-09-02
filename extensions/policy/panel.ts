@@ -11,6 +11,13 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import type {
+	LocalRule,
+	LocalRuleEffect,
+	LocalRuleSnapshot,
+	LocalRuleState,
+	PendingProposal,
+} from "./local-rules.ts";
 
 export const MAX_FIRE_SCAN_BYTES = 4 * 1024 * 1024;
 export const MAX_ACTIVITY_SCAN_BYTES = 4 * 1024 * 1024;
@@ -21,7 +28,7 @@ const DAILY_STORE_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 const BUILTIN_GROUPS = ["routing", "form", "bounds"] as const;
 
 export type BuiltinGroup = (typeof BUILTIN_GROUPS)[number];
-export type PolicyView = "rules" | "activity";
+export type PolicyView = "rules" | "local" | "activity";
 
 type ModelFireMap = ReadonlyMap<string | null, number>;
 
@@ -61,6 +68,8 @@ export interface ActivityReadResult {
 export interface PolicyPanelData {
 	builtins: BuiltinRuleInfo[];
 	fireSummary: RuleFireSummary;
+	local: LocalRuleSnapshot;
+	registryError?: string;
 	activity: ActivityReadResult;
 }
 
@@ -69,7 +78,22 @@ export interface PolicyPanelResult {
 	filter: string;
 	expandedGroups: BuiltinGroup[];
 	selectedRuleKey?: string;
+	selectedLocalKey?: string;
 	selectedActivityKey?: string;
+}
+
+export interface LocalPanelActionResult {
+	snapshot: LocalRuleSnapshot;
+	outcome: string;
+}
+
+export interface LocalPanelActionHost {
+	select(title: string, options: string[]): Promise<string | undefined>;
+	confirm(title: string, message: string): Promise<boolean>;
+	approve(proposalId: string, effect?: LocalRuleEffect): Promise<LocalPanelActionResult>;
+	reject(proposalId: string): Promise<LocalPanelActionResult>;
+	setState(slug: string, state: LocalRuleState): Promise<LocalPanelActionResult>;
+	setEffect(slug: string, effect: LocalRuleEffect): Promise<LocalPanelActionResult>;
 }
 
 interface PolicyPanelDeps {
@@ -78,16 +102,22 @@ interface PolicyPanelDeps {
 	tui: { requestRender(): void };
 	getMaxRows: () => number;
 	done: (result: PolicyPanelResult) => void;
+	actionHost?: LocalPanelActionHost;
 	initialView?: PolicyView;
 	initialFilter?: string;
 	initialExpandedGroups?: readonly BuiltinGroup[];
 	initialSelectedRuleKey?: string;
+	initialSelectedLocalKey?: string;
 	initialSelectedActivityKey?: string;
 }
 
 export type RuleListRow =
 	| { kind: "group"; key: string; group: BuiltinGroup; rules: BuiltinRuleInfo[]; fires: number }
 	| { kind: "builtin"; key: string; group: BuiltinGroup; rule: BuiltinRuleInfo; fires: number };
+
+export type LocalListRow =
+	| { kind: "pending"; key: string; proposal: PendingProposal }
+	| { kind: "local"; key: string; rule: LocalRule };
 
 interface Layout {
 	total: number;
@@ -220,6 +250,65 @@ export function buildRuleRows(
 		}
 	}
 	return rows;
+}
+
+export function buildLocalRows(snapshot: LocalRuleSnapshot, filter = ""): LocalListRow[] {
+	const pending: LocalListRow[] = snapshot.pending
+		.filter((proposal) => matchesFilter([proposal.id, proposal.operation, proposal.slug, proposal.reason], filter))
+		.map((proposal) => ({ kind: "pending", key: `pending:${proposal.id}`, proposal }));
+	const rules: LocalListRow[] = snapshot.rules
+		.filter((rule) => matchesFilter([rule.slug, rule.state, rule.effect, rule.note], filter))
+		.map((rule) => ({ kind: "local", key: `local:${rule.slug}`, rule }));
+	return [...pending, ...rules];
+}
+
+function auditLines(label: string, audit: LocalRule["proposedAudit"] | undefined): string[] {
+	if (!audit) return [`${label}: (none)`];
+	return [
+		`${label}:`,
+		`  at: ${audit.at}`,
+		`  session: ${audit.session}`,
+		`  model: ${audit.model ?? "(none)"}`,
+		`  surface: ${audit.surface}`,
+	];
+}
+
+function jsonField(value: unknown): string {
+	return JSON.stringify(value) ?? "(none)";
+}
+
+export function localRuleDetailLines(rule: LocalRule): string[] {
+	return [
+		`slug: ${rule.slug}`,
+		`state: ${rule.state}`,
+		`effect: ${rule.effect}`,
+		`note: ${rule.note}`,
+		`match: ${jsonField(rule.match)}`,
+		`suggest: ${rule.suggest ? jsonField(rule.suggest) : "(none)"}`,
+		`scope: ${rule.scope ? jsonField(rule.scope) : "(none)"}`,
+		`proposal id: ${rule.proposalId}`,
+		...auditLines("proposed audit", rule.proposedAudit),
+		...auditLines("approved audit", rule.approvedAudit),
+		...auditLines("updated audit", rule.updatedAudit),
+	];
+}
+
+export function pendingProposalDetailLines(proposal: PendingProposal): string[] {
+	return [
+		`id: ${proposal.id}`,
+		`operation: ${proposal.operation}`,
+		`slug: ${proposal.slug}`,
+		`reason: ${proposal.reason}`,
+		...auditLines("audit", proposal.audit),
+		...(proposal.candidate
+			? [
+					`candidate.note: ${proposal.candidate.note}`,
+					`candidate.match: ${jsonField(proposal.candidate.match)}`,
+					`candidate.suggest: ${proposal.candidate.suggest ? jsonField(proposal.candidate.suggest) : "(none)"}`,
+					`candidate.scope: ${proposal.candidate.scope ? jsonField(proposal.candidate.scope) : "(none)"}`,
+				]
+			: []),
+	];
 }
 
 function allocateColumns(columns: readonly Column[], width: number): number[] {
@@ -561,7 +650,7 @@ export async function readFireSummary(
 	}
 }
 
-function capText(text: string, maxBytes = 50 * 1024): string {
+export function capText(text: string, maxBytes = 50 * 1024): string {
 	if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
 	const marker = "\n[policy text truncated]";
 	const budget = Math.max(0, maxBytes - Buffer.byteLength(marker, "utf8"));
@@ -570,31 +659,41 @@ function capText(text: string, maxBytes = 50 * 1024): string {
 	return `${prefix}${marker}`;
 }
 
-/** Text equivalent of the Rules view, including expanded built-in group members. */
-export function formatPolicyList(data: Pick<PolicyPanelData, "builtins" | "fireSummary">): string {
+/** Text equivalent of the Rules and Local views. */
+export function formatPolicyList(
+	data: Pick<PolicyPanelData, "builtins" | "fireSummary" | "local" | "registryError">,
+): string {
 	const lines = ["BUILT-IN GROUPS"];
 	const groups = groupBuiltins(data.builtins);
 	for (const group of BUILTIN_GROUPS) {
 		const rules = groups.get(group) ?? [];
 		const total = rules.reduce((sum, rule) => sum + (data.fireSummary.fires.get(rule.id) ?? 0), 0);
 		lines.push(`${group} | rules: ${rules.length} | fires: ${total}`);
-		for (const rule of rules) {
-			lines.push(`  ${rule.id} | fires: ${data.fireSummary.fires.get(rule.id) ?? 0} | ${rule.note}`);
-		}
+		for (const rule of rules) lines.push(`  ${rule.id} | fires: ${data.fireSummary.fires.get(rule.id) ?? 0} | ${rule.note}`);
 	}
-	if (data.fireSummary.partial) {
-		lines.push("", `firing counts partial: store scan exceeded ${MAX_FIRE_SCAN_BYTES} bytes`);
-	}
+	lines.push("", "LOCAL RULES");
+	if (data.local.rules.length === 0) lines.push("(none)");
+	else for (const rule of data.local.rules) lines.push(`${rule.slug} | ${rule.state} | ${rule.effect} | ${rule.note}`);
+	lines.push("", "PENDING PROPOSALS");
+	if (data.local.pending.length === 0) lines.push("(none)");
+	else for (const proposal of data.local.pending) lines.push(`${proposal.id} | ${proposal.operation} | ${proposal.slug} | ${proposal.reason}`);
+	lines.push("", `registry health: ${data.registryError ? `unreadable: ${data.registryError}` : "ok"}`);
+	if (data.fireSummary.partial) lines.push("", `firing counts partial: store scan exceeded ${MAX_FIRE_SCAN_BYTES} bytes`);
 	return capText(lines.map(terminalSafe).join("\n"));
 }
 
-/** Full text detail for a built-in rule id. */
+/** Full text detail for a built-in id, local slug, or pending proposal id. */
 export function formatPolicyShow(
-	data: Pick<PolicyPanelData, "builtins" | "fireSummary">,
-	id: string,
+	data: Pick<PolicyPanelData, "builtins" | "fireSummary" | "local" | "registryError">,
+	ref: string,
 ): string | undefined {
-	const builtin = data.builtins.find((rule) => rule.id === id);
-	return builtin ? capText(builtinDetailLines(builtin, data.fireSummary).map(terminalSafe).join("\n")) : undefined;
+	const builtin = data.builtins.find((rule) => rule.id === ref);
+	if (builtin) return capText(builtinDetailLines(builtin, data.fireSummary).map(terminalSafe).join("\n"));
+	const local = [...data.local.rules, ...data.local.discarded].find((rule) => rule.slug === ref);
+	if (local) return capText(localRuleDetailLines(local).map(terminalSafe).join("\n"));
+	const proposal = data.local.pending.find((entry) => entry.id === ref);
+	if (proposal) return capText(pendingProposalDetailLines(proposal).map(terminalSafe).join("\n"));
+	return undefined;
 }
 
 export class PolicyPanel {
@@ -604,10 +703,14 @@ export class PolicyPanel {
 	private filtering = false;
 	private readonly expandedGroups: Set<BuiltinGroup>;
 	private selectedRule = 0;
+	private selectedLocal = 0;
 	private selectedActivity = 0;
 	private ruleScroll = 0;
+	private localScroll = 0;
 	private activityScroll = 0;
 	private detailScroll = 0;
+	private outcome = "";
+	private actionPending = false;
 	private version = 0;
 	private lastWidth = 112;
 	private cachedWidth = -1;
@@ -624,6 +727,10 @@ export class PolicyPanel {
 			const selected = this.ruleRows.findIndex((row) => row.key === deps.initialSelectedRuleKey);
 			if (selected >= 0) this.selectedRule = selected;
 		}
+		if (deps.initialSelectedLocalKey) {
+			const selected = this.localRows.findIndex((row) => row.key === deps.initialSelectedLocalKey);
+			if (selected >= 0) this.selectedLocal = selected;
+		}
 		if (deps.initialSelectedActivityKey) {
 			const selected = deps.data.activity.records.findIndex(
 				(record) => activityKey(record) === deps.initialSelectedActivityKey,
@@ -636,8 +743,16 @@ export class PolicyPanel {
 		return buildRuleRows(this.deps.data.builtins, this.deps.data.fireSummary.fires, this.expandedGroups, this.filter);
 	}
 
+	private get localRows(): LocalListRow[] {
+		return buildLocalRows(this.deps.data.local, this.filter);
+	}
+
 	private currentRule(): RuleListRow | undefined {
 		return this.ruleRows[this.selectedRule];
+	}
+
+	private currentLocal(): LocalListRow | undefined {
+		return this.localRows[this.selectedLocal];
 	}
 
 	private currentActivity(): PolicyActivityRecord | undefined {
@@ -662,6 +777,21 @@ export class PolicyPanel {
 				];
 			}
 			return wrapDetail(activityDetailLines(record, this.deps.data.activity), width);
+		}
+		if (this.view === "local") {
+			const row = this.currentLocal();
+			const status = this.outcome ? ["", this.outcome] : [];
+			if (!row) {
+				return wrapDetail(
+					[
+						this.deps.data.registryError ? `Registry unreadable: ${this.deps.data.registryError}` : "No local rules or pending proposals.",
+						...status,
+					],
+					width,
+				);
+			}
+			const detail = row.kind === "pending" ? pendingProposalDetailLines(row.proposal) : localRuleDetailLines(row.rule);
+			return wrapDetail([...status, ...detail], width);
 		}
 		const row = this.currentRule();
 		if (!row) return [this.filter ? "No rules match the filter." : "No built-in policy rules are available."];
@@ -696,19 +826,25 @@ export class PolicyPanel {
 	}
 
 	private finish(): void {
-		this.deps.done({
+		const result: PolicyPanelResult = {
 			view: this.view,
 			filter: this.filter,
 			expandedGroups: [...this.expandedGroups],
 			selectedRuleKey: this.currentRule()?.key,
 			selectedActivityKey: this.currentActivity() ? activityKey(this.currentActivity()!) : undefined,
-		});
+		};
+		const local = this.currentLocal();
+		if (local) result.selectedLocalKey = local.key;
+		this.deps.done(result);
 	}
 
 	private move(delta: number): void {
 		if (this.view === "rules") {
 			const rows = this.ruleRows;
 			this.selectedRule = Math.max(0, Math.min(Math.max(0, rows.length - 1), this.selectedRule + delta));
+		} else if (this.view === "local") {
+			const rows = this.localRows;
+			this.selectedLocal = Math.max(0, Math.min(Math.max(0, rows.length - 1), this.selectedLocal + delta));
 		} else {
 			const records = this.deps.data.activity.records;
 			this.selectedActivity = Math.max(0, Math.min(Math.max(0, records.length - 1), this.selectedActivity + delta));
@@ -726,6 +862,55 @@ export class PolicyPanel {
 		this.clearTransient();
 	}
 
+	private async runLocalAction(action: "approve" | "reject" | "state" | "effect"): Promise<void> {
+		const host = this.deps.actionHost;
+		const row = this.currentLocal();
+		if (!host || !row || this.actionPending) return;
+		this.actionPending = true;
+		this.outcome = "working…";
+		this.bump();
+		try {
+			let result: LocalPanelActionResult | undefined;
+			if (row.kind === "pending") {
+				if (action === "approve") {
+					let effect: LocalRuleEffect | undefined;
+					if (row.proposal.operation === "upsert") {
+						const selected = await host.select("Choose rule effect", ["steer", "block"]);
+						if (selected !== "steer" && selected !== "block") return;
+						effect = selected;
+					}
+					if (!(await host.confirm("Approve proposal", `${row.proposal.operation} ${row.proposal.slug}?`))) return;
+					result = await host.approve(row.proposal.id, effect);
+				} else if (action === "reject") {
+					if (!(await host.confirm("Reject proposal", `Reject ${row.proposal.slug}?`))) return;
+					result = await host.reject(row.proposal.id);
+				}
+			} else if (action === "state") {
+				const selected = await host.select("Choose rule state", ["active", "disabled", "discarded"]);
+				if (selected !== "active" && selected !== "disabled" && selected !== "discarded") return;
+				if (selected === "discarded" && !(await host.confirm("Discard rule", `${row.rule.slug} cannot be restored.`))) return;
+				result = await host.setState(row.rule.slug, selected);
+			} else if (action === "effect") {
+				const selected = await host.select("Choose rule effect", ["steer", "block"]);
+				if (selected !== "steer" && selected !== "block") return;
+				result = await host.setEffect(row.rule.slug, selected);
+			}
+			if (result) {
+				this.deps.data.local = result.snapshot;
+				this.deps.data.registryError = undefined;
+				this.outcome = terminalSafe(result.outcome);
+				this.selectedLocal = Math.min(this.selectedLocal, Math.max(0, this.localRows.length - 1));
+			}
+		} catch (error) {
+			this.outcome = `Action failed: ${terminalSafe(error instanceof Error ? error.message : String(error))}`;
+		} finally {
+			if (this.outcome === "working…") this.outcome = "Action cancelled.";
+			this.actionPending = false;
+			this.clearTransient();
+			this.bump();
+		}
+	}
+
 	handleInput(raw: string): void {
 		const decoded = decodeKittyPrintable(raw);
 		const data = decoded ?? raw;
@@ -734,14 +919,18 @@ export class PolicyPanel {
 			else if (matchesKey(raw, "backspace")) {
 				this.filter = Array.from(this.filter).slice(0, -1).join("");
 				this.selectedRule = 0;
+				this.selectedLocal = 0;
 				this.ruleScroll = 0;
+				this.localScroll = 0;
 				this.clearTransient();
 			} else if (matchesKey(raw, "up")) this.move(-1);
 			else if (matchesKey(raw, "down")) this.move(1);
 			else if (data.length > 0 && !matchesKey(raw, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(data)) {
 				this.filter += data;
 				this.selectedRule = 0;
+				this.selectedLocal = 0;
 				this.ruleScroll = 0;
+				this.localScroll = 0;
 				this.clearTransient();
 			} else return;
 			this.bump();
@@ -754,15 +943,19 @@ export class PolicyPanel {
 		if (matchesKey(raw, "up")) this.move(-1);
 		else if (matchesKey(raw, "down")) this.move(1);
 		else if (data === "v") {
-			this.view = this.view === "rules" ? "activity" : "rules";
+			this.view = this.view === "rules" ? "local" : this.view === "local" ? "activity" : "rules";
 			this.clearTransient();
 		} else if (data === "b") this.detailScroll = Math.max(0, this.detailScroll - this.pageSize());
 		else if (matchesKey(raw, "space")) {
 			this.detailScroll = Math.min(this.detailMaxScroll(), this.detailScroll + this.pageSize());
-		} else if (this.view === "rules" && data === "/") {
+		} else if ((this.view === "rules" || this.view === "local") && data === "/") {
 			this.filtering = true;
 			this.clearTransient();
 		} else if (this.view === "rules" && data === "g") this.toggleGroup();
+		else if (this.view === "local" && data === "a") void this.runLocalAction("approve");
+		else if (this.view === "local" && data === "x") void this.runLocalAction("reject");
+		else if (this.view === "local" && data === "s") void this.runLocalAction("state");
+		else if (this.view === "local" && data === "e") void this.runLocalAction("effect");
 		else return;
 		this.bump();
 	}
@@ -774,20 +967,33 @@ export class PolicyPanel {
 	private footerText(innerWidth: number): string {
 		const theme = this.deps.theme;
 		if (this.filtering) {
-			const suffix = ` · ↑↓ select · enter/esc done · ${this.ruleRows.length} match`;
+			const matches = this.view === "local" ? this.localRows.length : this.ruleRows.length;
+			const suffix = ` · ↑↓ select · enter/esc done · ${matches} match`;
 			const queryWidth = Math.max(1, innerWidth - visibleWidth("filter ") - visibleWidth(suffix));
 			return `${theme.fg("accent", "filter ")}${theme.fg("text", keepTail(`${oneLine(this.filter)}▌`, queryWidth))}${theme.fg("dim", suffix)}`;
 		}
 		const keys = [this.keyPair("↑↓", "select"), this.keyPair("b/spc", "detail"), this.keyPair("v", "view")];
 		if (this.view === "rules") keys.push(this.keyPair("g", "group"), this.keyPair("/", "filter"));
+		if (this.view === "local") {
+			const row = this.currentLocal();
+			if (row?.kind === "pending") keys.push(this.keyPair("a/x", "approve/reject"));
+			if (row?.kind === "local") keys.push(this.keyPair("s/e", "state/effect"));
+			keys.push(this.keyPair("/", "filter"));
+		}
 		keys.push(this.keyPair("esc", "close"));
 		return keys.join(theme.fg("dim", " · "));
 	}
 
 	private titleBorder(width: number, position: string): string {
 		const theme = this.deps.theme;
-		const partial = this.view === "rules" ? this.deps.data.fireSummary.partial : this.deps.data.activity.partial;
-		const title = `◆ Policy · ${this.view === "rules" ? "Rules" : "Activity"}${partial ? " · partial" : ""}`;
+		const partial =
+			this.view === "rules"
+				? this.deps.data.fireSummary.partial
+				: this.view === "local"
+					? this.deps.data.registryError !== undefined
+					: this.deps.data.activity.partial;
+		const label = this.view === "rules" ? "Rules" : this.view === "local" ? "Local" : "Activity";
+		const title = `◆ Policy · ${label}${partial ? " · partial" : ""}`;
 		const right = ` ${position} ─┐`;
 		const leftBudget = Math.max(1, width - visibleWidth(right) - 4);
 		const shown = truncateToWidth(title, leftBudget);
@@ -801,6 +1007,7 @@ export class PolicyPanel {
 
 	private listHeader(width: number): string {
 		if (this.view === "rules") return fitText("built-in group or rule · fires", width);
+		if (this.view === "local") return fitText("pending proposals · local rules", width);
 		const sample: PolicyActivityRecord = {
 			at: "00:00:00",
 			model: "model",
@@ -822,6 +1029,14 @@ export class PolicyPanel {
 			const body = renderColumns(activityColumns(record), Math.max(1, width - 2), false);
 			return `${rowIndex === this.selectedActivity ? "› " : "  "}${body}`;
 		}
+		if (this.view === "local") {
+			const row = this.localRows[rowIndex];
+			if (!row) return "";
+			const prefix = rowIndex === this.selectedLocal ? "› " : "  ";
+			return row.kind === "pending"
+				? `${prefix}pending · ${row.proposal.operation} · ${row.proposal.slug} · ${oneLine(row.proposal.reason)}`
+				: `${prefix}${row.rule.slug} · ${row.rule.state} · ${row.rule.effect} · ${oneLine(row.rule.note)}`;
+		}
 		const row = this.ruleRows[rowIndex];
 		if (!row) return "";
 		const prefix = rowIndex === this.selectedRule ? "› " : "  ";
@@ -839,27 +1054,32 @@ export class PolicyPanel {
 			return this.cachedLines;
 		}
 		const theme = this.deps.theme;
-		const itemCount = this.view === "rules" ? this.ruleRows.length : this.deps.data.activity.records.length;
-		const selected = this.view === "rules" ? this.selectedRule : this.selectedActivity;
+		const itemCount =
+			this.view === "rules" ? this.ruleRows.length : this.view === "local" ? this.localRows.length : this.deps.data.activity.records.length;
+		const selected = this.view === "rules" ? this.selectedRule : this.view === "local" ? this.selectedLocal : this.selectedActivity;
 		const position = itemCount === 0 ? "0/0" : `${selected + 1}/${itemCount}`;
 		const paint = (text: string): string => theme.bg("customMessageBg", fitText(text, width));
 		const lines: string[] = [];
 		if (!layout.framed) {
-			if (layout.total > 1) lines.push(paint(`Policy · ${this.view === "rules" ? "Rules" : "Activity"} · ${position}`));
+			if (layout.total > 1) {
+				const label = this.view === "rules" ? "Rules" : this.view === "local" ? "Local" : "Activity";
+				lines.push(paint(`Policy · ${label} · ${position}`));
+			}
 			if (layout.bodyRows > 0) lines.push(paint(this.listHeader(width)));
 			const available = Math.max(0, layout.bodyRows - 1);
 			if (available > 0) {
 				if (this.view === "rules") {
 					if (this.selectedRule < this.ruleScroll) this.ruleScroll = this.selectedRule;
 					if (this.selectedRule >= this.ruleScroll + available) this.ruleScroll = this.selectedRule - available + 1;
+				} else if (this.view === "local") {
+					if (this.selectedLocal < this.localScroll) this.localScroll = this.selectedLocal;
+					if (this.selectedLocal >= this.localScroll + available) this.localScroll = this.selectedLocal - available + 1;
 				} else {
 					if (this.selectedActivity < this.activityScroll) this.activityScroll = this.selectedActivity;
-					if (this.selectedActivity >= this.activityScroll + available) {
-						this.activityScroll = this.selectedActivity - available + 1;
-					}
+					if (this.selectedActivity >= this.activityScroll + available) this.activityScroll = this.selectedActivity - available + 1;
 				}
 			}
-			const scroll = this.view === "rules" ? this.ruleScroll : this.activityScroll;
+			const scroll = this.view === "rules" ? this.ruleScroll : this.view === "local" ? this.localScroll : this.activityScroll;
 			for (let slot = 0; slot < available; slot++) lines.push(paint(this.listRow(scroll + slot, width)));
 			lines.push(paint(this.footerText(width)));
 			this.cachedWidth = width;
@@ -873,18 +1093,17 @@ export class PolicyPanel {
 		const listItemRows = Math.max(0, layout.bodyRows - 1);
 		if (this.view === "rules") {
 			if (this.selectedRule < this.ruleScroll) this.ruleScroll = this.selectedRule;
-			if (this.selectedRule >= this.ruleScroll + listItemRows) {
-				this.ruleScroll = Math.max(0, this.selectedRule - listItemRows + 1);
-			}
+			if (this.selectedRule >= this.ruleScroll + listItemRows) this.ruleScroll = Math.max(0, this.selectedRule - listItemRows + 1);
+		} else if (this.view === "local") {
+			if (this.selectedLocal < this.localScroll) this.localScroll = this.selectedLocal;
+			if (this.selectedLocal >= this.localScroll + listItemRows) this.localScroll = Math.max(0, this.selectedLocal - listItemRows + 1);
 		} else {
 			if (this.selectedActivity < this.activityScroll) this.activityScroll = this.selectedActivity;
-			if (this.selectedActivity >= this.activityScroll + listItemRows) {
-				this.activityScroll = Math.max(0, this.selectedActivity - listItemRows + 1);
-			}
+			if (this.selectedActivity >= this.activityScroll + listItemRows) this.activityScroll = Math.max(0, this.selectedActivity - listItemRows + 1);
 		}
 		this.detailScroll = Math.min(this.detailScroll, this.detailMaxScroll());
 		const detail = this.detailSource(layout.detailWidth).slice(this.detailScroll, this.detailScroll + layout.bodyRows);
-		const scroll = this.view === "rules" ? this.ruleScroll : this.activityScroll;
+		const scroll = this.view === "rules" ? this.ruleScroll : this.view === "local" ? this.localScroll : this.activityScroll;
 		for (let bodyIndex = 0; bodyIndex < layout.bodyRows; bodyIndex++) {
 			let listCell = "";
 			if (bodyIndex === 0) listCell = theme.bold(theme.fg("dim", this.listHeader(layout.listWidth)));

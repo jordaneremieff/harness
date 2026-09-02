@@ -24,8 +24,19 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { notesFor } from "./classify.ts";
+import {
+	LocalRuleRegistry,
+	localRuleGuidance,
+	makeRuleAudit,
+	matchLocalRules,
+	type LocalRule,
+	type LocalRuleEffect,
+	type LocalRuleSnapshot,
+	type LocalRuleState,
+} from "./local-rules.ts";
 import { POLICY_MODES, resolvePolicyMode, resolvePolicyModeValue, type PolicyMode } from "./mode.ts";
 import {
+	capText,
 	formatPolicyList,
 	formatPolicyShow,
 	PolicyPanel,
@@ -33,6 +44,7 @@ import {
 	readRecentActivity,
 	terminalSafe,
 	type BuiltinRuleInfo,
+	type LocalPanelActionHost,
 	type PolicyPanelData,
 	type PolicyPanelResult,
 } from "./panel.ts";
@@ -48,6 +60,7 @@ import {
 } from "./record.ts";
 import { RULES } from "./shell-rules.ts";
 import { PolicyWriter, resolvePolicyDir } from "./store.ts";
+import { registerLocalRuleTools } from "./tools.ts";
 
 /** Per-session override for the policy mechanism. */
 const POLICY_MODE_FLAG = "policy-mode";
@@ -66,16 +79,24 @@ const MAX_ANNOTATED_SESSIONS = 16;
 
 const POLICY_USAGE = [
 	"Usage:",
-	"  /policy                         Open the Rules and Activity panel (TUI only)",
-	"  /policy list                    Print built-in rule groups",
-	"  /policy show <id>               Print full built-in rule detail and fires by model",
-	"  /policy mode                    Report this session's policy mode",
-	"  /policy help                    Show this usage",
+	"  /policy                                  Open the Rules, Local, and Activity panel (TUI only)",
+	"  /policy list                             Print built-ins, local rules, and pending proposals",
+	"  /policy show <ref>                       Show a built-in id, local slug, or proposal id",
+	"  /policy approve <proposal-id> [effect]   Approve; upsert requires steer|block, discard forbids it",
+	"  /policy reject <proposal-id>             Reject a pending proposal",
+	"  /policy state <slug> <state>             Set active|disabled|discarded",
+	"  /policy effect <slug> <effect>           Set steer|block",
+	"  /policy mode                             Report this session's policy mode",
+	"  /policy help                             Show this usage",
 ].join("\n");
 
 const POLICY_VERBS: AutocompleteItem[] = [
-	{ value: "list", label: "list", description: "Print built-in rule groups" },
-	{ value: "show", label: "show", description: "Show one built-in rule with fires by model" },
+	{ value: "list", label: "list", description: "Print built-ins, local rules, and pending proposals" },
+	{ value: "show", label: "show", description: "Show one built-in, local rule, or pending proposal" },
+	{ value: "approve", label: "approve", description: "Approve a pending proposal" },
+	{ value: "reject", label: "reject", description: "Reject a pending proposal" },
+	{ value: "state", label: "state", description: "Set a retained rule state" },
+	{ value: "effect", label: "effect", description: "Set a retained rule effect" },
 	{ value: "mode", label: "mode", description: "Report the active session mode" },
 	{ value: "help", label: "help", description: "Show /policy usage" },
 ];
@@ -84,7 +105,7 @@ const MODE_EFFECT: Readonly<Record<PolicyMode, string>> = {
 	observe: "Records every tool call and applies no mechanism.",
 	notice: "Records every tool call and shows a terminal warning for each flagged call in TUI mode.",
 	annotate: "Records every tool call and appends bounded guidance to eligible flagged results.",
-	enforce: "Records every tool call and blocks calls matched by built-in rules.",
+	enforce: "Records every tool call, blocks built-ins and active local block rules, and annotates local steer rules.",
 };
 
 const BUILTIN_RULE_INFOS: BuiltinRuleInfo[] = RULES.map(({ id, note }) => ({ id, note }));
@@ -112,6 +133,10 @@ function toolFailure(error: unknown): string {
 
 interface ObservedCall extends PendingCall {
 	sessionFacts: SessionFacts;
+	/** Guidance bound to matched ids at tool_call time. */
+	guidance: Map<string, string>;
+	/** Active local entries matched at tool_call time. */
+	localMatches: LocalRule[];
 	/** The call was blocked at the tool boundary. */
 	blocked?: boolean;
 	/** The reason returned with the block, used to confirm Pi applied it. */
@@ -137,16 +162,22 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	let mode: PolicyMode = "observe";
 	let modeResolved = false;
 	let modeSource = "PI_POLICY_MODE is unset; observe is the default";
+	const rulesDir = resolvePolicyDir(process.env, getAgentDir());
+	const localRegistry = new LocalRuleRegistry(rulesDir);
+	let localMatchingStopped = false;
+	let localFailureReported = false;
+	let completionSnapshot: LocalRuleSnapshot | undefined;
+	const emptyLocal = (): LocalRuleSnapshot => ({ rules: [], discarded: [], pending: [] });
 
 	/** Rule ids already annotated, per session, so history survives a session round-trip. */
 	const annotatedBySession = new Map<string, Set<string>>();
 
-	/** One bounded guidance line for the matched built-in rule ids. */
-	const guidanceFor = (tool: string, classes: readonly string[]): string => {
+	/** One bounded guidance line for matched ids, deduplicated by wording. */
+	const guidanceFor = (classes: readonly string[], guidance: ReadonlyMap<string, string>): string => {
 		let text = POLICY_PREFIX;
 		const included = new Set<string>();
 		for (const id of classes) {
-			const [note] = notesFor(tool, [id]);
+			const note = guidance.get(id);
 			if (note === undefined || included.has(note)) continue;
 			const candidate = `${text} ${note}`;
 			if (Buffer.byteLength(candidate, "utf8") > MAX_GUIDANCE_BYTES) break;
@@ -188,6 +219,57 @@ export default function registerPolicy(pi: ExtensionAPI) {
 			// A failing console leaves no channel to report through.
 		}
 	};
+
+	const localFailure = (error: unknown): string => {
+		localMatchingStopped = true;
+		const reason = toolFailure(error);
+		if (!localFailureReported) {
+			localFailureReported = true;
+			try {
+				console.warn(`[policy] local rule matching disabled for this session: ${reason}`);
+			} catch {
+				// A failing console leaves no warning channel.
+			}
+		}
+		return reason;
+	};
+
+	const loadLocal = async (): Promise<LocalRuleSnapshot> => {
+		try {
+			const snapshot = await localRegistry.snapshot();
+			completionSnapshot = snapshot;
+			return snapshot;
+		} catch (error) {
+			localFailure(error);
+			throw error;
+		}
+	};
+
+	const readLocal = async (): Promise<{ snapshot: LocalRuleSnapshot; error?: string }> => {
+		try {
+			return { snapshot: await loadLocal() };
+		} catch (error) {
+			return { snapshot: emptyLocal(), error: toolFailure(error) };
+		}
+	};
+
+	const localForMatching = async (): Promise<LocalRuleSnapshot> => {
+		if (localMatchingStopped) return emptyLocal();
+		try {
+			return await loadLocal();
+		} catch {
+			return emptyLocal();
+		}
+	};
+
+	registerLocalRuleTools(pi, {
+		registry: localRegistry,
+		loadRegistry: loadLocal,
+		readRegistry: readLocal,
+		refreshAfterWrite: () => {
+			void loadLocal().catch(() => {});
+		},
+	});
 
 	const ensureMode = (): boolean => {
 		if (modeResolved || stopped) return !stopped;
@@ -234,12 +316,15 @@ export default function registerPolicy(pi: ExtensionAPI) {
 		throw new Error(safe);
 	};
 
-	const rulesDir = resolvePolicyDir(process.env, getAgentDir());
-
-	const loadRuleData = async (): Promise<Pick<PolicyPanelData, "builtins" | "fireSummary">> => ({
-		builtins: BUILTIN_RULE_INFOS,
-		fireSummary: await readFireSummary(rulesDir),
-	});
+	const loadRuleData = async (): Promise<Pick<PolicyPanelData, "builtins" | "fireSummary" | "local" | "registryError">> => {
+		const [fireSummary, loaded] = await Promise.all([readFireSummary(rulesDir), readLocal()]);
+		return {
+			builtins: BUILTIN_RULE_INFOS,
+			fireSummary,
+			local: loaded.snapshot,
+			registryError: loaded.error,
+		};
+	};
 
 	const loadPanelData = async (): Promise<PolicyPanelData> => {
 		const [ruleData, activity] = await Promise.all([loadRuleData(), readRecentActivity(rulesDir)]);
@@ -247,19 +332,44 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	};
 
 	const argumentCompletions = (text: string): AutocompleteItem[] | null => {
+		// The completion API is synchronous; begin a lazy refresh and use the
+		// latest completed snapshot for this invocation.
+		void loadLocal().catch(() => {});
 		if (!text.includes(" ")) {
 			const matches = POLICY_VERBS.filter((verb) => verb.value.startsWith(text));
 			return matches.length > 0 ? matches : null;
 		}
-		const firstSpace = text.indexOf(" ");
-		const verb = text.slice(0, firstSpace);
-		const tail = text.slice(firstSpace + 1);
-		if (verb !== "show" || tail.includes(" ")) return null;
-		const matches = BUILTIN_RULE_INFOS.filter((rule) => rule.id.startsWith(tail)).map((rule) => ({
-			value: `show ${rule.id}`,
-			label: rule.id,
-			description: terminalSafe(rule.note),
-		}));
+		const parts = text.split(" ");
+		const verb = parts[0];
+		const tail = parts.at(-1) ?? "";
+		const local = completionSnapshot ?? emptyLocal();
+		let values: Array<{ value: string; description: string }> = [];
+		if (verb === "show" && parts.length === 2) {
+			values = [
+				...BUILTIN_RULE_INFOS.map((rule) => ({ value: rule.id, description: rule.note })),
+				...local.rules.map((rule) => ({ value: rule.slug, description: `${rule.state} ${rule.effect}: ${rule.note}` })),
+				...local.pending.map((proposal) => ({ value: proposal.id, description: `${proposal.operation} ${proposal.slug}` })),
+			];
+		} else if ((verb === "approve" || verb === "reject") && parts.length === 2) {
+			values = local.pending.map((proposal) => ({ value: proposal.id, description: `${proposal.operation} ${proposal.slug}` }));
+		} else if (verb === "state" && parts.length === 2) {
+			values = local.rules.map((rule) => ({ value: rule.slug, description: `${rule.state} ${rule.effect}` }));
+		} else if (verb === "state" && parts.length === 3) {
+			values = ["active", "disabled", "discarded"].map((value) => ({ value, description: `Set state ${value}` }));
+		} else if (verb === "effect" && parts.length === 2) {
+			values = local.rules.map((rule) => ({ value: rule.slug, description: `${rule.state} ${rule.effect}` }));
+		} else if ((verb === "effect" || verb === "approve") && parts.length === 3) {
+			values = ["steer", "block"].map((value) => ({ value, description: `Set effect ${value}` }));
+		} else return null;
+		const prefix = parts.slice(0, -1).join(" ");
+		const matches = values
+			.filter((entry) => entry.value.startsWith(tail))
+			.slice(0, 256)
+			.map((entry) => ({
+				value: `${prefix} ${entry.value}`,
+				label: terminalSafe(entry.value),
+				description: terminalSafe(entry.description),
+			}));
 		return matches.length > 0 ? matches : null;
 	};
 
@@ -271,6 +381,27 @@ export default function registerPolicy(pi: ExtensionAPI) {
 			commandFailure(ctx, `Could not load policy data: ${toolFailure(error)}`);
 			return;
 		}
+		const refresh = async (outcome: string) => ({ snapshot: await loadLocal(), outcome });
+		const actionHost: LocalPanelActionHost = {
+			select: (title, options) => ctx.ui.select(title, options),
+			confirm: (title, message) => ctx.ui.confirm(title, message),
+			approve: async (proposalId, effect) => {
+				await localRegistry.decide(proposalId, "approved", effect, makeRuleAudit(ctx, "panel"));
+				return refresh(`Approved proposal ${proposalId}.`);
+			},
+			reject: async (proposalId) => {
+				await localRegistry.decide(proposalId, "rejected", undefined, makeRuleAudit(ctx, "panel"));
+				return refresh(`Rejected proposal ${proposalId}.`);
+			},
+			setState: async (slug, state) => {
+				await localRegistry.setState(slug, state, makeRuleAudit(ctx, "panel"));
+				return refresh(`Set ${slug} state to ${state}.`);
+			},
+			setEffect: async (slug, effect) => {
+				await localRegistry.setEffect(slug, effect, makeRuleAudit(ctx, "panel"));
+				return refresh(`Set ${slug} effect to ${effect}.`);
+			},
+		};
 		let result: PolicyPanelResult | undefined;
 		try {
 			result = await ctx.ui.custom<PolicyPanelResult>(
@@ -279,6 +410,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 						data,
 						theme,
 						tui,
+						actionHost,
 						getMaxRows: () => Math.max(1, tui.terminal.rows - 6),
 						done,
 					}),
@@ -295,7 +427,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("policy", {
-		description: "Browse built-in policy rules and recorded activity",
+		description: "Browse policy rules, gate local proposals, and inspect recorded activity",
 		getArgumentCompletions: argumentCompletions,
 		handler: async (args, ctx) => {
 			ensureMode();
@@ -305,7 +437,7 @@ export default function registerPolicy(pi: ExtensionAPI) {
 				if (ctx.mode !== "tui" || !ctx.hasUI) {
 					commandFailure(
 						ctx,
-						"The interactive policy panel requires TUI mode. Use /policy list, /policy show <id>, /policy mode, or /policy help.",
+						"The interactive policy panel requires TUI mode. Use /policy list, /policy show <ref>, a gate verb, /policy mode, or /policy help.",
 					);
 					return;
 				}
@@ -336,11 +468,65 @@ export default function registerPolicy(pi: ExtensionAPI) {
 				return;
 			}
 			if (verb === "show") {
-				if (parts.length !== 2) return commandFailure(ctx, "Usage: /policy show <id>");
-				const shown = formatPolicyShow(await loadRuleData(), parts[1]);
-				if (shown === undefined) return commandFailure(ctx, `unknown policy rule "${parts[1]}"`);
+				if (parts.length !== 2) return commandFailure(ctx, "Usage: /policy show <ref>");
+				const data = await loadRuleData();
+				const shown = formatPolicyShow(data, parts[1]);
+				if (shown === undefined && data.registryError) {
+					return commandFailure(ctx, `local rule registry is unreadable: ${data.registryError}`);
+				}
+				if (shown === undefined) return commandFailure(ctx, `unknown policy reference "${parts[1]}"`);
 				commandText(ctx, shown);
 				return;
+			}
+			try {
+				if (verb === "approve") {
+					if (parts.length < 2 || parts.length > 3) {
+						return commandFailure(ctx, "Usage: /policy approve <proposal-id> [steer|block]");
+					}
+					const snapshot = await loadLocal();
+					const proposal = snapshot.pending.find((entry) => entry.id === parts[1]);
+					if (!proposal) return commandFailure(ctx, `no pending proposal with id "${parts[1]}"`);
+					let effect: LocalRuleEffect | undefined;
+					if (proposal.operation === "upsert") {
+						if (parts.length !== 3 || (parts[2] !== "steer" && parts[2] !== "block")) {
+							return commandFailure(ctx, "Approving an upsert requires: /policy approve <proposal-id> <steer|block>");
+						}
+						effect = parts[2];
+					} else if (parts.length !== 2) {
+						return commandFailure(ctx, "Approving a discard forbids an effect: /policy approve <proposal-id>");
+					}
+					await localRegistry.decide(parts[1], "approved", effect, makeRuleAudit(ctx, "command"));
+					void loadLocal().catch(() => {});
+					commandText(ctx, capText(terminalSafe(`Approved ${proposal.operation} proposal ${proposal.id} for ${proposal.slug}.`), 2048));
+					return;
+				}
+				if (verb === "reject") {
+					if (parts.length !== 2) return commandFailure(ctx, "Usage: /policy reject <proposal-id>");
+					await localRegistry.decide(parts[1], "rejected", undefined, makeRuleAudit(ctx, "command"));
+					void loadLocal().catch(() => {});
+					commandText(ctx, capText(terminalSafe(`Rejected proposal ${parts[1]}.`), 2048));
+					return;
+				}
+				if (verb === "state") {
+					if (parts.length !== 3 || !(["active", "disabled", "discarded"] as string[]).includes(parts[2])) {
+						return commandFailure(ctx, "Usage: /policy state <slug> <active|disabled|discarded>");
+					}
+					await localRegistry.setState(parts[1], parts[2] as LocalRuleState, makeRuleAudit(ctx, "command"));
+					void loadLocal().catch(() => {});
+					commandText(ctx, capText(terminalSafe(`Set ${parts[1]} state to ${parts[2]}.`), 2048));
+					return;
+				}
+				if (verb === "effect") {
+					if (parts.length !== 3 || (parts[2] !== "steer" && parts[2] !== "block")) {
+						return commandFailure(ctx, "Usage: /policy effect <slug> <steer|block>");
+					}
+					await localRegistry.setEffect(parts[1], parts[2], makeRuleAudit(ctx, "command"));
+					void loadLocal().catch(() => {});
+					commandText(ctx, capText(terminalSafe(`Set ${parts[1]} effect to ${parts[2]}.`), 2048));
+					return;
+				}
+			} catch (error) {
+				return commandFailure(ctx, `Policy registry action failed: ${toolFailure(error)}`);
 			}
 			commandFailure(ctx, `Unknown /policy action "${terminalSafe(verb)}". Use /policy help.`);
 		},
@@ -388,14 +574,18 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	};
 
 	/** Build guidance for the rule ids this session has not annotated yet. */
-	const annotationFor = (tool: string, classes: string[], session: string): Annotation | undefined => {
+	const annotationFor = (
+		classes: string[],
+		guidance: ReadonlyMap<string, string>,
+		session: string,
+	): Annotation | undefined => {
 		const annotated = annotatedIdsFor(session);
 		let text = POLICY_PREFIX;
 		const ids: string[] = [];
 		const included = new Set<string>();
 		for (const id of classes) {
 			if (annotated.has(id)) continue;
-			const [note] = notesFor(tool, [id]);
+			const note = guidance.get(id);
 			if (note === undefined) continue;
 			if (included.has(note)) {
 				ids.push(id);
@@ -414,13 +604,38 @@ export default function registerPolicy(pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		if (!ensureMode()) return;
 		try {
+			const base = startCall(event.toolName, event.toolCallId, event.input as Record<string, unknown>);
+			const builtinClasses = [...base.classes];
+			const snapshot = await localForMatching();
+			const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+			const localMatches =
+				event.toolName === "bash" && base.sourceText !== undefined
+					? matchLocalRules(base.sourceText, snapshot.rules, {
+							provider: ctx.model?.provider,
+							model,
+							cwd: ctx.cwd,
+						})
+					: [];
+			const guidance = new Map<string, string>();
+			for (const id of builtinClasses) {
+				const [note] = notesFor(base.tool, [id]);
+				if (note !== undefined) guidance.set(id, note);
+			}
+			for (const rule of localMatches) guidance.set(rule.slug, localRuleGuidance(rule));
 			const call: ObservedCall = {
-				...startCall(event.toolName, event.toolCallId, event.input as Record<string, unknown>),
+				...base,
+				classes: [...builtinClasses, ...localMatches.map((rule) => rule.slug)],
+				guidance,
+				localMatches,
 				sessionFacts: sessionFacts(ctx),
 			};
 			trackPending(pending, call);
-			if (mode === "enforce" && call.classes.length > 0) {
-				const reason = guidanceFor(call.tool, call.classes);
+			const blockClasses = [
+				...builtinClasses,
+				...localMatches.filter((rule) => rule.effect === "block").map((rule) => rule.slug),
+			];
+			if (mode === "enforce" && blockClasses.length > 0) {
+				const reason = guidanceFor(blockClasses, guidance);
 				if (!recordWriter().tryReserve()) {
 					stop(new Error("policy writer cannot admit a block record"));
 					return;
@@ -443,8 +658,14 @@ export default function registerPolicy(pi: ExtensionAPI) {
 			let annotation: Annotation | undefined;
 			if (call.classes.length > 0) {
 				if (mode === "notice" && ctx.mode === "tui") effects.notified = true;
-				if (mode === "annotate" && event.isError !== true) {
-					annotation = annotationFor(call.tool, call.classes, call.sessionFacts.session);
+				const annotationClasses =
+					mode === "annotate"
+						? call.classes
+						: mode === "enforce"
+							? call.localMatches.filter((rule) => rule.effect === "steer").map((rule) => rule.slug)
+							: [];
+				if (annotationClasses.length > 0 && event.isError !== true) {
+					annotation = annotationFor(annotationClasses, call.guidance, call.sessionFacts.session);
 					if (annotation) effects.annotationBytes = Buffer.byteLength(annotation.text, "utf8");
 				}
 			}

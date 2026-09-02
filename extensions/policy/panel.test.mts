@@ -17,9 +17,12 @@ import {
 	readRecentActivity,
 	terminalSafe,
 	type BuiltinRuleInfo,
+	type LocalPanelActionHost,
 	type PolicyActivityRecord,
 	type PolicyPanelData,
+	type PolicyView,
 } from "./panel.ts";
+import type { LocalRule, LocalRuleSnapshot, PendingProposal, RuleAudit } from "./local-rules.ts";
 import { RULES } from "./shell-rules.ts";
 
 const theme: never = {
@@ -69,6 +72,7 @@ function data(overrides: Partial<PolicyPanelData> = {}): PolicyPanelData {
 			]),
 			partial: false,
 		},
+		local: { rules: [], discarded: [], pending: [] },
 		activity: {
 			records: [activity()],
 			partial: false,
@@ -80,7 +84,11 @@ function data(overrides: Partial<PolicyPanelData> = {}): PolicyPanelData {
 	};
 }
 
-function rig(panelData = data(), rows = 24) {
+function rig(
+	panelData = data(),
+	rows = 24,
+	options: { actionHost?: LocalPanelActionHost; initialView?: PolicyView } = {},
+) {
 	const calls = { renders: 0, done: undefined as unknown };
 	const panel = new PolicyPanel({
 		data: panelData,
@@ -90,8 +98,47 @@ function rig(panelData = data(), rows = 24) {
 		done: (result) => {
 			calls.done = result;
 		},
+		actionHost: options.actionHost,
+		initialView: options.initialView,
 	});
 	return { panel, calls };
+}
+
+const audit = (surface: RuleAudit["surface"] = "agent-tool"): RuleAudit => ({
+	at: "2026-09-03T12:00:00.000Z",
+	session: "session-local",
+	model: "provider/model",
+	surface,
+});
+
+function localRule(overrides: Partial<LocalRule> = {}): LocalRule {
+	return {
+		slug: "shell.scan",
+		note: "Bound scan output.",
+		match: { command: "scan" },
+		state: "active",
+		effect: "block",
+		proposalId: "00000000-0000-4000-8000-000000000001",
+		proposedAudit: audit(),
+		approvedAudit: audit("command"),
+		...overrides,
+	};
+}
+
+function pendingProposal(): PendingProposal {
+	return {
+		kind: "proposal",
+		id: "00000000-0000-4000-8000-000000000001",
+		operation: "upsert",
+		slug: "shell.scan",
+		reason: "Bound scans.",
+		candidate: {
+			slug: "shell.scan",
+			note: "Bound scan output.",
+			match: { command: "scan" },
+		},
+		audit: audit(),
+	};
 }
 
 function recordLine(record: PolicyActivityRecord): string {
@@ -129,12 +176,12 @@ describe("built-in policy formatting", () => {
 });
 
 describe("PolicyPanel", () => {
-	it("renders only built-in controls and ignores retired authoring keys", () => {
+	it("renders the built-in controls and ignores unrelated keys", () => {
 		const { panel, calls } = rig();
 		const lines = panel.render(116);
 		assert.ok(lines.every((line) => visibleWidth(line) <= 116));
 		assert.match(lines.join("\n"), /g group/);
-		assert.doesNotMatch(lines.join("\n"), /draft|promote|demote|discard|copy/);
+		assert.doesNotMatch(lines.join("\n"), /approve|reject|state|effect/);
 		panel.handleInput("d");
 		assert.equal(calls.done, undefined);
 		panel.handleInput("\x1b");
@@ -147,12 +194,96 @@ describe("PolicyPanel", () => {
 		});
 	});
 
-	it("toggles Rules and Activity and expands the selected group", () => {
+	it("cycles Rules, Local, and Activity and expands the selected group", () => {
 		const { panel } = rig();
 		panel.handleInput("g");
 		assert.match(panel.render(116).join("\n"), /routing\.cat-read/);
 		panel.handleInput("v");
+		assert.match(panel.render(116).join("\n"), /No local rules/);
+		panel.handleInput("v");
 		assert.match(panel.render(116).join("\n"), /cat \[REDACTED\]/);
+	});
+
+	it("renders pending proposals and retained rules with full local detail", () => {
+		const snapshot: LocalRuleSnapshot = { rules: [localRule()], discarded: [], pending: [pendingProposal()] };
+		const { panel } = rig(data({ local: snapshot }), 24, { initialView: "local" });
+		let rendered = panel.render(116).join("\n");
+		assert.match(rendered, /pending · upsert · shell\.scan/);
+		assert.match(rendered, /candidate\.match/);
+		panel.handleInput("\x1b[B");
+		rendered = panel.render(116).join("\n");
+		assert.match(rendered, /shell\.scan · active · block/);
+		assert.match(rendered, /approved audit/);
+	});
+
+	it("runs local actions through the host and refreshes data", async () => {
+		const proposal = pendingProposal();
+		const calls: string[] = [];
+		const refreshed: LocalRuleSnapshot = { rules: [localRule()], discarded: [], pending: [] };
+		const host: LocalPanelActionHost = {
+			select: async (_title, options) => {
+				calls.push(`select:${options.join(",")}`);
+				return "block";
+			},
+			confirm: async () => {
+				calls.push("confirm");
+				return true;
+			},
+			approve: async (id, effect) => {
+				calls.push(`approve:${id}:${effect}`);
+				return { snapshot: refreshed, outcome: "Approved and refreshed." };
+			},
+			reject: async () => assert.fail("reject was not selected"),
+			setState: async () => assert.fail("state was not selected"),
+			setEffect: async () => assert.fail("effect was not selected"),
+		};
+		const { panel } = rig(data({ local: { rules: [], discarded: [], pending: [proposal] } }), 24, {
+			actionHost: host,
+			initialView: "local",
+		});
+		panel.handleInput("a");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const rendered = panel.render(116).join("\n");
+		assert.deepEqual(calls, [
+			"select:steer,block",
+			"confirm",
+			`approve:${proposal.id}:block`,
+		]);
+		assert.match(rendered, /shell\.scan · active · block/);
+		assert.match(rendered, /Approved and refreshed/);
+	});
+
+	it("routes retained state and effect choices through the host", async () => {
+		const calls: string[] = [];
+		let current: LocalRuleSnapshot = { rules: [localRule()], discarded: [], pending: [] };
+		const host: LocalPanelActionHost = {
+			select: async (_title, options) => (options.includes("disabled") ? "disabled" : "steer"),
+			confirm: async () => true,
+			approve: async () => assert.fail("approve was not selected"),
+			reject: async () => assert.fail("reject was not selected"),
+			setState: async (slug, state) => {
+				calls.push(`state:${slug}:${state}`);
+				current = { ...current, rules: [{ ...current.rules[0], state }] };
+				return { snapshot: current, outcome: "State refreshed." };
+			},
+			setEffect: async (slug, effect) => {
+				calls.push(`effect:${slug}:${effect}`);
+				current = { ...current, rules: [{ ...current.rules[0], effect }] };
+				return { snapshot: current, outcome: "Effect refreshed." };
+			},
+		};
+		const { panel } = rig(data({ local: current }), 24, { actionHost: host, initialView: "local" });
+		panel.handleInput("s");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		panel.handleInput("e");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.deepEqual(calls, ["state:shell.scan:disabled", "effect:shell.scan:steer"]);
+		assert.match(panel.render(116).join("\n"), /shell\.scan · disabled · steer/);
+	});
+
+	it("shows a registry error in the Local view", () => {
+		const { panel } = rig(data({ registryError: "invalid line" }), 24, { initialView: "local" });
+		assert.match(panel.render(116).join("\n"), /Registry unreadable: invalid line/);
 	});
 });
 

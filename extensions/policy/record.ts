@@ -71,6 +71,8 @@ export interface PendingCall {
 	at: string;
 	startedAt: number;
 	classes: string[];
+	/** Raw domain text retained only until the result, so all classifiers see the same capture. */
+	sourceText?: string;
 	captured?: string;
 }
 
@@ -107,7 +109,10 @@ export function startCall(
 		startedAt: monotonic,
 		classes: text === undefined ? [] : classifyCaptured(tool, text),
 	};
-	if (text !== undefined) pending.captured = redactFor(tool, text);
+	if (text !== undefined) {
+		pending.sourceText = text;
+		pending.captured = redactFor(tool, text);
+	}
 	return pending;
 }
 

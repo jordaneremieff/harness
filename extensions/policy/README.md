@@ -1,294 +1,311 @@
 # policy
 
-Records paired, completed tool calls and their outcomes against declarative
-built-in rules, and runs the one mechanism the active mode selects.
+The policy extension records paired tool calls and outcomes against fixed
+built-in shell rules and operator-approved local rules. It also runs the one
+mechanism selected for the session.
 
-The records support comparison of command classes by duration, output size,
-truncation, and failure. Built-in classes are fixed in code. No mode changes a
-tool input.
+Built-ins remain fixed in code. Local rules are stored on the machine, but an
+entry affects no call until the operator approves it. The agent-facing tools can
+only submit an inert proposal or read the registry. Only `/policy` command and
+panel actions can approve, reject, change state, or change effect.
+
+No mode changes a tool input. Every mode records.
 
 ## Modes
 
-The string extension flag `--policy-mode` selects the session mechanism. Its
-accepted values are `observe`, `notice`, `annotate`, and `enforce`. When the flag
-is omitted, `PI_POLICY_MODE` selects the mechanism. The flag takes precedence
-when both are set. An omitted or blank environment value defaults to `observe`.
-Every mode records.
+`--policy-mode` accepts `observe`, `notice`, `annotate`, and `enforce`. It
+overrides `PI_POLICY_MODE`; an omitted or blank environment value defaults to
+`observe`. The session resolves its mode once and keeps it.
 
-| Mode | Mechanism | Model-visible | Operator-visible |
-|---|---|---|---|
-| `observe` (default) | none | no | no |
-| `notice` | a terminal flag on each flagged call | no | yes, in TUI mode |
-| `annotate` | one guidance line on a successful flagged call with remaining ids | yes | no |
-| `enforce` | block every call matched by a built-in rule | yes | no |
-
-An unrecognized flag or environment value is a configuration error. The
-extension reports it once, names the accepted set and invalid source, and stops
-recording for the session.
-
-### notice
-
-The extension calls `ui.notify` once per flagged call with the matched rule ids.
-It shows nothing when no rule matched, and nothing outside TUI mode. It never
-patches the tool result.
-
-### annotate
-
-The extension appends one line to the result content of a successful flagged
-call. The line carries the guidance the matched rules declare, prefixed with
-`[policy]` so the model does not read it as tool output.
-
-Bounds on the line:
-
-- One rule id reaches the model at most once per session.
-- Rules that share wording contribute one line.
-- The line has a fixed byte cap. Ids outside the cap remain available later.
-- A failed call receives no line because its error text already carries signal.
-
-### enforce
-
-The extension blocks a flagged call at the `tool_call` boundary. The block
-result carries the same capped `[policy]` guidance line used by annotation. The
-model receives the reason as the call's error result and can issue the preferred
-form.
-
-No class rewrites in place. Pi performs no re-validation after a handler mutates
-`event.input`, and no rewrite of a flagged form is provably
-semantics-preserving:
-
-| Class | Why no rewrite |
+| Mode | Built-in and local behavior |
 |---|---|
-| `routing.cat-read`, `routing.sed-slice`, `routing.inline-script-read` | The preferred form is the read tool, not a bash command. |
-| `routing.head-slice`, `routing.tail-slice` | Only slices the read tool supports block; other slice forms remain permitted. |
-| `routing.cat-pipe` | The downstream command decides semantics. |
-| `routing.grep-pipe`, `form.grep-file` | grep and rg differ in regex dialect, binary handling, hidden-file rules, and defaults. |
-| `form.find-discovery`, `form.ls-recursive` | find, rg, fd, and ls differ in ignore rules, hidden entries, depth, and output shape. |
-| `form.du-traversal` | No preferred-form bash rewrite exists. |
-| `form.env-grep` | A safe replacement depends on whether the filter names one variable. |
-| `bounds.*` | Adding or moving a cap changes the command output. |
+| `observe` | Record matched ids and apply no mechanism. |
+| `notice` | Record, then show a TUI warning containing all matched ids. No model-visible text is added. |
+| `annotate` | Record, then append guidance for matched built-ins and active local rules to a successful result. |
+| `enforce` | Block every built-in match and every active local rule whose effect is `block`. An active local `steer` match never blocks and is annotated after a successful call. |
 
-A rule id records a predicate match, not a final verdict. Enforcement therefore
-inherits the classifier's command-shape model.
+A call matching both blocking and steering local rules is blocked. Its reason is
+assembled from the blocking built-ins first and blocking local entries second.
+Local slugs are sorted before they join the built-in ids in `classes`.
 
-A block is returned only after the writer reserves its record slot. A full or
-closed writer stops the slice and lets the call run unblocked. A block returned
-before a later store failure can still lose its record.
+Guidance is prefixed with `[policy]`, deduplicated by text, terminal-safe, and
+limited to 512 UTF-8 bytes. Only complete guidance notes are included; when the
+next note does not fit, it remains available for a later result. One rule id is
+annotated at most once per session. Failed calls are not annotated. In `enforce`, a block is returned only after the
+record writer reserves a queue slot.
 
-Pi runs `tool_call` handlers in extension load order and lets a later handler
-mutate `event.input` without re-validation. This slice classifies the input once
-at its own handler position. Load it after every extension that mutates a tool
-input.
+An unknown mode reports one configuration failure and stops the policy slice for
+the session.
 
-## Operator command
+## Local registry
 
-`/policy` opens an operator-only overlay in TUI mode. The overlay starts in the
-Rules view and toggles between Rules and Activity with `v`. It reads built-in
-policy definitions and telemetry. Browser failures do not stop recording or
-enforcement.
+The registry is `<policy-dir>/rules.jsonl`, beside daily telemetry files. It is
+append-only JSONL: no action rewrites or removes an earlier line. A later valid
+event supersedes earlier content during reduction.
 
-### Rules view
+Filesystem contract:
 
-Built-ins appear as collapsed `routing`, `form`, and `bounds` summary rows. A
-summary shows its live rule count and the sum of its members' fire counts. `g`
-expands or collapses the selected group. Expanded members show id, note, and
-individual fires. The detail pane includes the per-model fire evidence.
+- policy directory mode `0700`, owned by the current user, and not a symbolic
+  link;
+- registry file mode `0600`, owned by the current user, regular, and opened with
+  `O_NOFOLLOW` where available;
+- one checked `O_APPEND` write per event;
+- registry size at most 4 MiB;
+- one event line at most 64 KiB;
+- reduced snapshot at most 256 rules and 256 pending proposals.
 
-The fire scan reads at most 4 MiB across daily store data. A partial scan is
-marked in the title and detail pane.
+The reader caches a snapshot until `dev:ino:size:mtimeMs` changes. A missing file
+is an empty healthy registry. Every nonempty line must be the current event
+shape. A malformed JSON line, unknown event kind, invalid field, non-private
+path, foreign owner, incomplete final line, or exceeded bound invalidates the
+whole snapshot. There are no older-shape readers.
 
-Rules-view keys:
+No registry I/O runs at `session_start`. The first tool call, `/policy` command,
+agent tool, or panel use loads it lazily.
 
-| Key | Action |
-|---|---|
-| `↑` / `↓` | Move selection |
-| `b` / `space` | Page the detail pane backward / forward |
-| `v` | Toggle Rules and Activity |
-| `g` | Expand or collapse the selected built-in group |
-| `/` | Enter the text filter; `Enter` or `Escape` leaves filter entry |
-| `Escape` | Close the overlay |
+### Event schema
 
-### Activity view
+```text
+proposal {kind:"proposal", id:uuid, operation:"upsert"|"discard",
+          slug, reason, candidate?, audit}
+decision {kind:"decision", id:uuid, proposalId,
+          decision:"approved"|"rejected", effect?:"steer"|"block", audit}
+state    {kind:"state", id:uuid, slug,
+          state:"active"|"disabled"|"discarded", audit}
+effect   {kind:"effect", id:uuid, slug, effect:"steer"|"block", audit}
 
-Activity shows recent records with non-empty `classes`, newest by `at`. Columns
-show time, recorded model, rule ids, blocked status, and the stored redacted
-command. The extension never reconstructs the original command.
+audit    {at:ISO-8601, session, model:"provider/id"|null,
+          surface:"agent-tool"|"command"|"panel"}
+```
 
-The Activity reader examines daily JSONL tails newest-first. It reads at most
-4 MiB and returns at most 200 matching records. Reaching either limit marks the
-view as partial.
+An upsert proposal carries:
 
-### Text verbs
+```text
+candidate {slug, note, match, suggest?, scope?}
+```
 
-The text surface works without a TUI:
+`note` is required plain-language guidance. `suggest`, when present, is rendered
+as `Suggested form: <command> <flags>.` after the note.
 
-- `/policy list` prints every built-in group and member.
-- `/policy show <id>` prints complete built-in detail and per-model fires.
-- `/policy mode` prints the active mode, its source, and its behavior.
-- `/policy help` prints command usage.
+Slugs are at most 80 characters and match
+`^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$`. They cannot begin with `routing.`,
+`form.`, or `bounds.`, which are reserved for telemetry ids built into the
+extension. Notes are at most 2000 characters; reasons at most 1000; commands at
+most 200; lists at most 64 entries; and absolute working-directory prefixes at
+most 500 characters. The rendered local guidance (note plus suggested form) is
+also limited to 400 UTF-8 bytes. An upsert exceeding that rendered bound is
+rejected before its proposal is appended, with the actual size and bound in the
+error.
 
-Bare `/policy` outside TUI mode reports that the panel is unavailable and names
-the text verbs. RPC receives command text through its UI notification channel.
-JSON mode receives a non-context custom entry. Print mode writes text to
-standard output.
+### Reduction and authority
 
-## Records
+- A proposal creates one pending entry. A slug can have only one pending
+  proposal at a time. Pending entries never match.
+- Approval of an upsert requires the operator to choose `steer` or `block`. It
+  creates a new active rule or replaces an existing active/disabled rule's
+  candidate content. Content does not change before approval.
+- Rejection removes the pending entry and changes no rule.
+- Approval of a discard accepts no effect and marks the rule discarded.
+- A direct operator state event can set active, disabled, or discarded. An
+  operator effect event can set steer or block. Direct discard is refused while
+  that slug has a pending proposal; resolve the proposal first.
+- Disabled and discarded entries never match. Discarded is terminal: state and
+  effect cannot change, and its slug cannot be reused.
+- Decisions with no pending proposal and state/effect events with no retained
+  rule are ignored by reduction and rejected before write by the registry API.
+- Decision, state, and effect events from `agent-tool` do not apply.
 
-Each paired `tool_call` and `tool_result` builds one record for the active
-writer:
+Only active rules enter matching and telemetry. Operator lists show active and
+disabled retained rules; the terminal marker remains in the reduced registry so
+the slug cannot return. `/policy show <slug>` can still show that marker when the
+slug is supplied directly.
 
-| Field | Meaning |
-|---|---|
-| `at` | ISO 8601 timestamp of the call |
-| `session`, `mode`, `cwd` | Session identity and Pi run mode |
-| `model` | Active `provider/id`, or `null` when no model is available |
-| `thinkingLevel` | Active thinking level, or `null` when none is available |
-| `projectContext` | The effective system prompt contains project context |
-| `tool`, `callId` | Tool name and call id |
-| `durationMs` | Milliseconds between call and result arrival |
-| `outputBytes` | Bytes of returned text content, excluding appended guidance |
-| `truncated` | The tool reported truncation |
-| `error` | The tool reported failure |
-| `errorKind` | `timeout`, `aborted`, `other`, or `null` |
-| `tokens` | Tokens the tool reported, or `null` |
-| `policyMode` | Mechanism active for this call |
-| `classes` | Matched built-in rule ids |
-| `captured` | Redacted input text when the domain declares a capture |
-| `notified` | Present when the operator saw a notice |
-| `annotated`, `annotationBytes` | Present when guidance reached the model |
-| `blocked` | Present when this extension blocked the call |
+## Match grammar
 
-Pi does not provide a duration, exit code, or timeout flag in these events. The
-extension measures duration on event arrival and infers the error kind from
-result text. It stores the bash truncation fact, not the full-output path.
+Local matching applies only to the `bash` tool and uses the same unmodified
+`input.command` text read once for built-in classification. It calls the shell
+shape parser; it does not expand variables, aliases, globs, generated words, or
+shell data.
 
-`projectContext` detects the `<project_context>` section in the effective system
-prompt. Mutable session, mode, directory, model, thinking level, and context
-facts bind to `tool_call`, so a later context change cannot relabel a call.
+```text
+match {
+  command,
+  flags?,
+  absentFlags?,
+  operands?: {min?, max?, any?, at?: {index: [allowed values]}},
+  pipe?: {from?, to?, fromRedirect?, toRedirect?, next?, later?}
+}
+```
 
-A blocked call lacks `tool_result`, so `tool_execution_end` supplies its
-fallback outcome. The `blocked` flag is recorded only when Pi applied the exact
-returned reason. An abort that pre-empted the block records an error without the
-flag. A call blocked by an earlier extension leaves no record here.
+A statement matches when any stage satisfies every supplied constraint:
 
-A call whose result never arrives is dropped at a fixed age bound. The pending
-map also has a fixed size bound. Concurrent calls can append in completion
-order. Use `at` and `callId`, not JSONL line position, for correlation.
+- `command` equals the stage command basename.
+- Every `flags` entry occurs exactly in stage arguments.
+- No `absentFlags` entry occurs in stage arguments.
+- Operands are stage arguments not beginning with `-`. `min` and `max` bound
+  their count, `any` requires one listed value, and `at` maps zero-based operand
+  indexes to allowed values.
+- `from`, `to`, `fromRedirect`, and `toRedirect` must equal the parser's boolean
+  for that stage.
+- `next` requires the immediately following stage in the same statement to have
+  a listed command.
+- `later` requires any later stage in that statement to have a listed command.
 
-## Domains and rules
+A command name only inside a variable value or comment does not match. Parsed
+nested command substitutions are their own statements and can match by shape.
 
-A domain owns one tool. It declares the text it reads, the context shape its
-rules inspect, its rules, and each rule's guidance. `rule.ts` states that
-contract. `classify.ts` names the active domains. `shell-rules.ts` owns the shell
-domain.
+Optional scope is:
 
-A rule has an id, a class group, a predicate, and one guidance line. A call
-carries every matched id. No priority collapses co-occurring observations.
+```text
+scope {providers?, models?, cwdPrefixes?}
+```
 
-Class groups follow the harness command-line rules:
+Providers match exactly. Models match exact `provider/id` strings.
+`cwdPrefixes` uses string prefix matching against the call's working directory.
+Missing scope or missing fields are unconstrained.
 
-- **routing**: `routing.cat-read`, `routing.cat-pipe`,
-  `routing.sed-slice`, `routing.head-slice`, `routing.tail-slice`,
-  `routing.inline-script-read`, `routing.grep-pipe`.
-- **form**: `form.grep-file`, `form.find-discovery`,
-  `form.ls-recursive`, `form.du-traversal`, `form.env-grep`.
-- **bounds**: `bounds.find-output-uncapped`,
-  `bounds.grep-recursive-uncapped`, `bounds.ls-recursive-uncapped`,
-  `bounds.du-uncapped`, `bounds.rg-files-uncapped`, `bounds.fd-uncapped`,
-  `bounds.rg-search-uncapped`, `bounds.git-grep-uncapped`,
-  `bounds.false-cap`.
+## Agent tools
 
-`bounds.false-cap` identifies a downstream cap that cannot stop its producer. A
-streaming `head` stops a producer through streaming stages. An `awk` stage also
-stops it when the script exits early. A sort, normal tail, or range-only awk
-stage consumes all input first and does not cap the producer. A traversal-depth
-flag does not clear an output-bound class.
+### `policy_propose`
 
-`fd --max-results N` and `fd -N` stop traversal at the count and clear the fd
-bound class. `rg --files` has no equivalent result flag. `rg --max-count` bounds
-matches per file and does not bound file discovery.
+Submits one pending proposal with audit surface `agent-tool`.
 
-An unscoped `rg` or `git grep` search joins its search-bound class unless a
-result cap bounds it. A search scoped to a named path operand remains clean.
+- `operation:"upsert"` requires `slug`, `reason`, `note`, and `match`; optional
+  `suggest` and `scope` use the grammar above.
+- `operation:"discard"` permits only `slug` and `reason`.
 
-`routing.inline-script-read` names a short inline script that only reads a file.
-A script longer than 200 bytes or two lines remains permitted. A script with a
-loop, definition, context manager, error handler, or import also remains
-permitted.
+Every object schema rejects unknown properties. The tool has no approval,
+rejection, state, or effect parameter. Success returns the pending proposal id
+and explicitly states that the proposal is inert. Validation, including the
+400-byte rendered-guidance check, and registry failures leave the file unchanged
+and return an actionable error.
 
-A stage that requests its own usage or version carries no traversal, read, or
-search. `--help`, `--version`, and `-V` leave that stage unclassified. Later
-stages of the same pipeline still classify normally.
+### `policy_rules`
 
-### Classification limits
+Read-only. It prints bounded terminal-safe rows:
 
-- The shell reader resolves top-level statements, pipelines, quotes, escapes,
-  redirects, heredocs, and nested command or process substitutions.
-- Nested command bodies classify separately to a fixed depth.
-- The reader expands no variables, globs, aliases, or generated command words.
-- Streaming behavior is a maintained command-shape model, not a runtime trace.
-- Composition alone is not a class.
+```text
+slug | state | effect | note
+proposal-id | operation | slug | reason
+registry health: ok | unreadable: reason
+```
 
-Because a rule id is an observation rather than a verdict, `annotate` guidance
-states the preferred form. It does not assert that the call was wrong.
+It writes no audit event.
 
-The `[policy]` prefix marks harness guidance. It is not an authenticity proof.
-The fixed built-in sentence list is the authenticity defense.
+## Operator gates
 
-## Input privacy
+`/policy` without arguments opens the panel in TUI mode. Text verbs work in
+other modes:
 
-Only the shell domain declares input capture, and it captures `input.command`.
-Every other tool contributes outcome facts without its input. Result content
-contributes a byte count and error classification, never stored text.
+- `/policy list` prints built-in groups, local retained rules, pending
+  proposals, and registry health.
+- `/policy show <ref>` resolves a built-in id, local slug, or pending proposal
+  id. Local detail includes content, state/effect, proposal id, and proposed,
+  approved, and updated audit fields. Pending detail includes reason, audit, and
+  the upsert candidate.
+- `/policy approve <proposal-id> <steer|block>` approves an upsert.
+- `/policy approve <proposal-id>` approves a discard.
+- `/policy reject <proposal-id>` rejects a pending proposal.
+- `/policy state <slug> <active|disabled|discarded>` changes retained state.
+- `/policy effect <slug> <steer|block>` changes retained effect.
+- `/policy mode` reports the session mode and source.
+- `/policy help` prints usage.
 
-Command redaction is best effort. It removes recognized credentials, headers,
-secret flags, URL credentials, private keys, bearer values, signed parameters,
-known key shapes, JWTs, and long opaque base64 shapes. It preserves ordinary
-similarly named values and commit hashes. The extension bounds commands before
-pattern work and persistence.
+Command writes carry audit surface `command`. Completion includes bounded verb,
+reference, proposal, slug, state, and effect choices from the latest loaded
+snapshot.
 
-Built-in guidance text is fixed in the rule that declares it. No captured
-command, path, or result content reaches the model through annotation.
+### Panel
+
+`v` cycles **Rules → Local → Activity**. Rules and Activity retain their prior
+rendering and bounded readers. The Local view lists pending proposals first,
+then retained rules, with a full detail pane. Registry errors are shown in that
+view.
+
+| Key | View | Action |
+|---|---|---|
+| `↑` / `↓` | all | Move selection |
+| `b` / `space` | all | Page detail backward / forward |
+| `v` | all | Cycle view |
+| `g` | Rules | Expand/collapse a built-in group |
+| `/` | Rules, Local | Filter rows; Enter or Escape leaves entry |
+| `a` / `x` | Local pending row | Approve / reject |
+| `s` / `e` | Local retained row | Set state / effect |
+| `Escape` | all | Close |
+
+For an upsert approval the host first selects steer/block, then confirms. A
+discard approval confirms without an effect. Rejection confirms. State selection
+offers active/disabled/discarded and confirms the terminal choice. Effect
+selection offers steer/block. Actions use an injected host outside rendering,
+write audit surface `panel` at action time, reload the snapshot after success,
+and show a one-line outcome or failure.
+
+## Rule composition procedure
+
+This is an operator-directed procedure, not an automatic lifecycle:
+
+1. The operator provides the rule hint and decides that a local rule should be
+   considered.
+2. The current session packages only bounded, redacted context needed to express
+   the command shape and desired plain-language note.
+3. A clean-context agent composes the candidate and calls `policy_propose`.
+4. The entry remains pending and inert.
+5. The operator inspects it and uses a command or panel gate. Only approval
+   introduces or changes behavior, and the operator chooses steer or block.
+
+There are no automatic state changes at session start or elsewhere. Repeated
+observations never change authority.
+
+## Telemetry and built-ins
+
+Every completed call writes the existing daily
+`<policy-dir>/YYYY-MM-DD.jsonl` record. Local slugs follow built-in ids in the
+`classes` array, so existing fire summaries and Activity rows count them without
+a second telemetry format. Daily readers only accept the daily filename regex;
+`rules.jsonl` is invisible to them.
+
+Records retain the existing fields for timestamps, session facts, model,
+thinking level, project context, tool/call identity, duration, output bytes,
+truncation, error kind, tokens, policy mode, classes, redacted shell text, and
+mechanism effects. Result text is never stored.
+
+The shell built-ins remain the `routing.*`, `form.*`, and `bounds.*` definitions
+in `shell-rules.ts`. Their parser and enforcement behavior are unchanged. The
+shell reader handles statements, pipelines, quotes, redirects, heredocs, and
+nested substitutions to a fixed depth. Built-in guidance remains fixed in code.
+
+## Privacy, bounds, and failures
+
+Only the shell domain reads an input field, `input.command`. Stored command text
+uses the existing bounded best-effort redactor for recognized credentials,
+headers, secret flags, URL credentials, private keys, bearer values, signed
+parameters, known key shapes, JWTs, and opaque base64 shapes. Local matching
+uses the same transient pre-redaction string as built-in classification; it is
+not copied into `rules.jsonl`.
+
+Registry output, command output, tool output, and panel fields are terminal-safe
+and bounded. Guidance remains capped at 512 bytes. Telemetry fire scans read at
+most 4 MiB. Activity reads at most 4 MiB and returns at most 200 matched records.
+The record queue remains bounded at 512 entries.
+
+A local registry read failure disables local matching for the rest of the
+session and emits one warning with the reason. Built-in recording and mechanisms
+continue. `policy_rules`, `/policy`, and the panel expose registry health;
+`policy_propose` cannot write through an unreadable snapshot. Missing registry
+files are healthy and empty.
+
+Telemetry writer failures keep their existing behavior: the first failure stops
+recording and all mechanisms for the session, reports once, and fails open at a
+tool boundary. Browser failures do not stop telemetry. A block already returned
+before a later disk failure can still lose its record.
 
 ## Configuration
 
 | Setting | Purpose |
 |---|---|
-| `PI_POLICY_DIR` | Record directory override; default `<agentDir>/policy` |
-| `--policy-mode` | Session mechanism flag; overrides `PI_POLICY_MODE` |
-| `PI_POLICY_MODE` | Active mechanism: `observe` (default), `notice`, `annotate`, or `enforce` |
+| `PI_POLICY_DIR` | Shared record/registry directory; default `<agentDir>/policy` |
+| `--policy-mode` | Session mechanism; overrides `PI_POLICY_MODE` |
+| `PI_POLICY_MODE` | `observe` (default), `notice`, `annotate`, or `enforce` |
 
-The directory override must name a trusted private directory. The extension
-creates its directory with mode `0700`, or accepts an existing directory only
-when group and other users have no access. The current user must own it on
-platforms with numeric user IDs. The extension refuses a symbolic-link
-directory.
-
-Each daily `<dir>/YYYY-MM-DD.jsonl` file uses mode `0600` and refuses a
-symbolic-link final path where `O_NOFOLLOW` exists. Each record uses one checked
-`O_APPEND` write so concurrent sessions cannot share a file offset or silently
-accept a partial record.
-
-## Failure and latency contract
-
-Every event-handler body catches its own failures. Failure reporting also
-catches hostile thrown values and a failing console. The first recording or
-mechanism failure stops the slice for the session, including enforcement, and
-attempts one `console.warn`. It does not escape the handler. The extension fails
-open, and the warning signals that enforcement is off.
-
-Pi awaits `tool_result` handlers. The handler derives the record, decides the
-mechanism effect, admits the record, and returns without waiting for filesystem
-work. A bounded serial writer owns append order and catches every background
-rejection.
-
-Admission is synchronous. When the queue is full or closed, the record is not
-accepted, and the notice or annotation is withheld. A block reserves its slot
-before return. `session_shutdown` closes queue admission and waits for the final
-accepted write.
-
-## Boundaries
-
-The extension accepts no runtime policy definitions. All predicates and
-guidance are fixed in the built-in shell domain. `annotate` is the only mode
-that appends guidance to a successful tool result. `enforce` is the only mode
-that returns a block reason. No mode changes a tool input.
+The directory override must name a trusted private directory. No other path or
+credential setting is used.

@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { classifyCaptured, notesFor } from "./classify.ts";
 import registerPolicy from "./index.ts";
+import {
+	LocalRuleRegistry,
+	localRuleGuidance,
+	MAX_GUIDANCE_TEXT_BYTES,
+	type LocalRuleCandidate,
+	type RuleAudit,
+} from "./local-rules.ts";
 import type { PolicyRecord } from "./record.ts";
 import { MAX_QUEUED_RECORDS } from "./store.ts";
 
@@ -13,6 +22,15 @@ type Handler = (event: Record<string, unknown>, ctx: unknown) => Promise<unknown
 interface Notification {
 	message: string;
 	type?: string;
+}
+
+interface FakeTool {
+	name: string;
+	parameters: Record<string, unknown>;
+	execute: (...args: unknown[]) => Promise<{
+		content: Array<{ text: string }>;
+		details?: Record<string, unknown>;
+	}>;
 }
 
 function harness(
@@ -25,10 +43,17 @@ function harness(
 	} = {},
 ) {
 	const handlers = new Map<string, Handler>();
-	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+	const commands = new Map<
+		string,
+		{
+			handler: (args: string, ctx: unknown) => Promise<void>;
+			getArgumentCompletions?: (text: string) => AutocompleteItem[] | null;
+		}
+	>();
 	const flags = new Map<string, unknown>();
 	const registeredFlags: string[] = [];
 	const registeredTools: string[] = [];
+	const tools = new Map<string, FakeTool>();
 	const pi = {
 		on(event: string, handler: Handler) {
 			handlers.set(event, handler);
@@ -39,11 +64,18 @@ function harness(
 		getFlag(name: string) {
 			return flags.get(name);
 		},
-		registerCommand(name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) {
+		registerCommand(
+			name: string,
+			command: {
+				handler: (args: string, ctx: unknown) => Promise<void>;
+				getArgumentCompletions?: (text: string) => AutocompleteItem[] | null;
+			},
+		) {
 			commands.set(name, command);
 		},
-		registerTool(tool: { name: string }) {
+		registerTool(tool: FakeTool) {
 			registeredTools.push(tool.name);
+			tools.set(tool.name, tool);
 		},
 	};
 	if (overrides.policyModeFlag !== undefined) flags.set("policy-mode", overrides.policyModeFlag);
@@ -56,6 +88,8 @@ function harness(
 		thinkingLevel: "medium",
 		ui: {
 			notify: (message: string, type?: string) => notifications.push({ message, type }),
+			select: async (_title: string, options: string[]) => options[0],
+			confirm: async () => true,
 		},
 		sessionManager: { getSessionId: () => overrides.sessionId ?? "session-1" },
 		getSystemPrompt: () => overrides.systemPrompt ?? "base prompt\n\n<project_context>\n\n",
@@ -63,7 +97,7 @@ function harness(
 	if (overrides.policyMode === undefined) delete process.env.PI_POLICY_MODE;
 	else process.env.PI_POLICY_MODE = overrides.policyMode;
 	registerPolicy(pi as unknown as ExtensionAPI);
-	return { handlers, commands, registeredFlags, registeredTools, ctx, notifications };
+	return { handlers, commands, registeredFlags, registeredTools, tools, ctx, notifications };
 }
 
 /** One completed bash call through the tool_call and tool_result pair. */
@@ -88,7 +122,7 @@ async function runBash(
 }
 
 async function records(dir: string): Promise<PolicyRecord[]> {
-	const files = await readdir(dir);
+	const files = (await readdir(dir)).filter((file) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(file));
 	const lines: PolicyRecord[] = [];
 	for (const file of files.sort()) {
 		const text = await readFile(join(dir, file), "utf8");
@@ -102,6 +136,34 @@ async function records(dir: string): Promise<PolicyRecord[]> {
 let dir: string;
 const previousDir = process.env.PI_POLICY_DIR;
 const previousMode = process.env.PI_POLICY_MODE;
+
+const localCandidate = (overrides: Partial<LocalRuleCandidate> = {}): LocalRuleCandidate => ({
+	slug: "shell.scan",
+	note: "Bound scan output.",
+	match: { command: "scan" },
+	suggest: { command: "scan", flags: ["--limit", "50"] },
+	...overrides,
+});
+const localAudit = (surface: RuleAudit["surface"]): RuleAudit => ({
+	at: "2026-09-03T12:00:00.000Z",
+	session: "setup-session",
+	model: "test/model",
+	surface,
+});
+
+async function installLocalRule(
+	candidate: LocalRuleCandidate = localCandidate(),
+	effect: "steer" | "block" = "block",
+): Promise<LocalRuleRegistry> {
+	const registry = new LocalRuleRegistry(dir);
+	const proposal = await registry.proposeUpsert(candidate, "Requested by the operator.", localAudit("agent-tool"));
+	await registry.decide(proposal.id, "approved", effect, localAudit("command"));
+	return registry;
+}
+
+async function executeTool(run: ReturnType<typeof harness>, name: string, params: Record<string, unknown>) {
+	return run.tools.get(name)!.execute("tool-1", params, undefined, undefined, run.ctx);
+}
 
 beforeEach(async () => {
 	dir = join(await mkdtemp(join(tmpdir(), "policy-index-")), "store");
@@ -117,10 +179,10 @@ afterEach(() => {
 });
 
 describe("policy extension", () => {
-	it("registers only the mode flag, built-in browser, and session handlers", () => {
+	it("registers the mode flag, browser, local-rule tools, and session handlers", () => {
 		const { commands, handlers, registeredFlags, registeredTools } = harness();
 		assert.deepEqual(registeredFlags, ["policy-mode"]);
-		assert.deepEqual(registeredTools, []);
+		assert.deepEqual(registeredTools, ["policy_propose", "policy_rules"]);
 		assert.deepEqual([...commands.keys()], ["policy"]);
 		assert.deepEqual([...handlers.keys()].sort(), [
 			"session_shutdown",
@@ -129,6 +191,21 @@ describe("policy extension", () => {
 			"tool_execution_end",
 			"tool_result",
 		]);
+	});
+
+	it("does no registry work at session start", async () => {
+		await mkdir(dir, { recursive: true, mode: 0o700 });
+		await writeFile(join(dir, "rules.jsonl"), "broken\n", { mode: 0o600 });
+		const warnings: string[] = [];
+		const original = console.warn;
+		console.warn = (message: string) => warnings.push(message);
+		try {
+			const run = harness();
+			await run.handlers.get("session_start")!({}, run.ctx);
+		} finally {
+			console.warn = original;
+		}
+		assert.deepEqual(warnings, []);
 	});
 
 	it("writes one record per completed call and returns nothing", async () => {
@@ -428,8 +505,9 @@ describe("annotate mode", () => {
 		} finally {
 			console.warn = original;
 		}
-		assert.equal(warnings.length, 1);
-		assert.match(warnings[0], /recording stopped for this session/);
+		assert.equal(warnings.length, 2);
+		assert.ok(warnings.some((warning) => /local rule matching disabled/.test(warning)));
+		assert.ok(warnings.some((warning) => /recording stopped for this session/.test(warning)));
 	});
 
 	it("leaves a failed call unchanged", async () => {
@@ -460,6 +538,21 @@ describe("annotate mode", () => {
 		const second = await runBash(run, "c2", MANY);
 		assert.notEqual(second, undefined, "ids left outside the cap stay available");
 		await run.handlers.get("session_shutdown")!({}, run.ctx);
+	});
+
+	it("includes only complete built-in notes at the aggregate byte bound", async () => {
+		const run = harness({ policyMode: "annotate" });
+		const patch = (await runBash(run, "complete-notes", MANY)) as { content: { text: string }[] };
+		const annotation = patch.content.at(-1)!.text;
+		let remainder = annotation.slice("[policy] ".length);
+		let included = 0;
+		for (const note of notesFor("bash", classifyCaptured("bash", MANY))) {
+			if (!remainder.startsWith(note)) break;
+			remainder = remainder.slice(note.length).trimStart();
+			included++;
+		}
+		assert.ok(included > 0);
+		assert.equal(remainder, "", "the aggregate line must not contain a partial built-in note");
 	});
 
 	it("shows the operator nothing", async () => {
@@ -508,17 +601,327 @@ describe("/policy command", () => {
 		assert.match(run.notifications[1].message, /id: routing\.cat-read/);
 		assert.match(run.notifications[2].message, /active mode: notice/);
 		assert.match(run.notifications[2].message, /--policy-mode=notice/);
-		assert.match(run.notifications[3].message, /\/policy show <id>/);
-		assert.doesNotMatch(run.notifications.map((entry) => entry.message).join("\n"), /capture|criteria|history|state/);
+		assert.match(run.notifications[3].message, /\/policy show <ref>/);
 	});
 
-	it("rejects every retired authoring and promotion verb", async () => {
-		for (const verb of ["capture request", "criteria", "history old", "state old active"]) {
+	it("rejects unknown command verbs", async () => {
+		for (const verb of ["introduce request", "remove old", "change old active"]) {
 			const run = harness();
 			await run.commands.get("policy")!.handler(verb, run.ctx);
 			assert.equal(run.notifications.at(-1)?.type, "error");
 			assert.match(run.notifications.at(-1)?.message ?? "", /Unknown \/policy action/);
 		}
+	});
+});
+
+describe("local rule agent tools", () => {
+	it("registers closed schemas with no operator-gate parameters", () => {
+		const run = harness();
+		const proposalSchema = run.tools.get("policy_propose")!.parameters as {
+			anyOf: Array<{ required: string[]; properties: Record<string, unknown>; additionalProperties: boolean }>;
+		};
+		assert.equal(proposalSchema.anyOf.length, 2);
+		for (const arm of proposalSchema.anyOf) assert.equal(arm.additionalProperties, false);
+		const upsert = proposalSchema.anyOf.find((arm) => arm.required.includes("note"))!;
+		const discard = proposalSchema.anyOf.find((arm) => !arm.required.includes("note"))!;
+		assert.ok(upsert.required.includes("match"));
+		assert.deepEqual(discard.required.sort(), ["operation", "reason", "slug"]);
+		assert.equal((run.tools.get("policy_rules")!.parameters as { additionalProperties: boolean }).additionalProperties, false);
+		const propertyNames = new Set(proposalSchema.anyOf.flatMap((arm) => Object.keys(arm.properties)));
+		for (const forbidden of ["approve", "reject", "decision", "state", "effect"]) assert.equal(propertyNames.has(forbidden), false);
+	});
+
+	it("writes an inert proposal with agent-tool audit and lists it with registry health", async () => {
+		const run = harness();
+		const result = await executeTool(run, "policy_propose", {
+			operation: "upsert",
+			slug: "shell.scan",
+			reason: "Bound large scans.",
+			note: "Bound scan output.",
+			match: { command: "scan" },
+		});
+		assert.match(result.content[0].text, /Pending proposal [0-9a-f-]+/);
+		const snapshot = await new LocalRuleRegistry(dir).snapshot();
+		assert.equal(snapshot.rules.length, 0);
+		assert.equal(snapshot.pending[0].audit.surface, "agent-tool");
+		const listed = await executeTool(run, "policy_rules", {});
+		assert.match(listed.content[0].text, /shell\.scan/);
+		assert.match(listed.content[0].text, /registry health: ok/);
+	});
+
+	it("rejects oversized rendered guidance before appending a proposal", async () => {
+		const run = harness();
+		const oversized = localCandidate({
+			note: "x".repeat(390),
+			suggest: { command: "scan", flags: ["--some-long-option"] },
+		});
+		const actualBytes = Buffer.byteLength(localRuleGuidance(oversized), "utf8");
+		assert.ok(actualBytes > MAX_GUIDANCE_TEXT_BYTES);
+		await assert.rejects(
+			executeTool(run, "policy_propose", {
+				operation: "upsert",
+				slug: oversized.slug,
+				reason: "Test rendered guidance validation.",
+				note: oversized.note,
+				match: oversized.match,
+				suggest: oversized.suggest,
+			}),
+			new RegExp(`rendered guidance is ${actualBytes} UTF-8 bytes.*${MAX_GUIDANCE_TEXT_BYTES} bytes`),
+		);
+		await assert.rejects(() => readdir(dir), /ENOENT/);
+	});
+
+	it("returns actionable validation and registry failures", async () => {
+		const run = harness();
+		await assert.rejects(
+			executeTool(run, "policy_propose", {
+				operation: "discard",
+				slug: "missing.rule",
+				reason: "Not needed.",
+			}),
+			/no retained rule/,
+		);
+		await mkdir(dir, { recursive: true, mode: 0o700 });
+		await writeFile(join(dir, "rules.jsonl"), "broken\n", { mode: 0o600 });
+		const broken = harness();
+		const listed = await executeTool(broken, "policy_rules", {});
+		assert.match(listed.content[0].text, /registry health: unreadable/);
+		await assert.rejects(
+			executeTool(broken, "policy_propose", {
+				operation: "upsert",
+				slug: "shell.other",
+				reason: "Use a bound.",
+				note: "Use a bound.",
+				match: { command: "other" },
+			}),
+			/invalid local rule registry line/,
+		);
+	});
+});
+
+describe("operator command gates", () => {
+	it("approves, updates state/effect, rejects, and writes command audit", async () => {
+		const run = harness();
+		await executeTool(run, "policy_propose", {
+			operation: "upsert",
+			slug: "shell.scan",
+			reason: "Bound scans.",
+			note: "Bound scan output.",
+			match: { command: "scan" },
+		});
+		let snapshot = await new LocalRuleRegistry(dir).snapshot();
+		const proposalId = snapshot.pending[0].id;
+		await run.commands.get("policy")!.handler(`show ${proposalId}`, run.ctx);
+		assert.match(run.notifications.at(-1)?.message ?? "", /candidate\.match/);
+		await run.commands.get("policy")!.handler(`approve ${proposalId}`, run.ctx);
+		assert.match(run.notifications.at(-1)?.message ?? "", /requires/);
+		await run.commands.get("policy")!.handler(`approve ${proposalId} steer`, run.ctx);
+		await run.commands.get("policy")!.handler("state shell.scan disabled", run.ctx);
+		await run.commands.get("policy")!.handler("effect shell.scan block", run.ctx);
+		snapshot = await new LocalRuleRegistry(dir).snapshot();
+		assert.equal(snapshot.rules[0].state, "disabled");
+		assert.equal(snapshot.rules[0].effect, "block");
+		assert.equal(snapshot.rules[0].approvedAudit.surface, "command");
+		assert.equal(snapshot.rules[0].updatedAudit?.surface, "command");
+		await run.commands.get("policy")!.handler("show shell.scan", run.ctx);
+		assert.match(run.notifications.at(-1)?.message ?? "", /proposed audit:/);
+		assert.match(run.notifications.at(-1)?.message ?? "", /effect: block/);
+		const completions = run.commands.get("policy")!.getArgumentCompletions?.("state shell.") ?? [];
+		assert.ok(completions.some((item) => item.value === "state shell.scan"));
+
+		await executeTool(run, "policy_propose", {
+			operation: "upsert",
+			slug: "shell.second",
+			reason: "Try another rule.",
+			note: "Use another form.",
+			match: { command: "second" },
+		});
+		const second = (await new LocalRuleRegistry(dir).snapshot()).pending[0];
+		await run.commands.get("policy")!.handler(`reject ${second.id}`, run.ctx);
+		assert.equal((await new LocalRuleRegistry(dir).snapshot()).pending.length, 0);
+	});
+
+	it("writes panel audit at action time and refreshes through the panel host", async () => {
+		const run = harness();
+		await executeTool(run, "policy_propose", {
+			operation: "upsert",
+			slug: "shell.scan",
+			reason: "Bound scans.",
+			note: "Bound scan output.",
+			match: { command: "scan" },
+		});
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as never;
+		type Factory = (
+			tui: { terminal: { rows: number }; requestRender(): void },
+			themeValue: never,
+			keybindings: unknown,
+			done: (value: unknown) => void,
+		) => { handleInput(data: string): void };
+		Object.assign(run.ctx.ui, {
+			custom: async (factory: Factory) => {
+				let result: unknown;
+				const component = factory(
+					{ terminal: { rows: 30 }, requestRender() {} },
+					theme,
+					{},
+					(value) => {
+						result = value;
+					},
+				);
+				component.handleInput("v");
+				component.handleInput("a");
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				component.handleInput("\x1b");
+				return result;
+			},
+		});
+		await run.commands.get("policy")!.handler("", run.ctx);
+		const snapshot = await new LocalRuleRegistry(dir).snapshot();
+		assert.equal(snapshot.rules[0].effect, "steer");
+		assert.equal(snapshot.rules[0].approvedAudit.surface, "panel");
+	});
+
+	it("enforces discard approval syntax and actionable unknown/usage errors", async () => {
+		await installLocalRule();
+		const run = harness();
+		await executeTool(run, "policy_propose", {
+			operation: "discard",
+			slug: "shell.scan",
+			reason: "No longer useful.",
+		});
+		const proposal = (await new LocalRuleRegistry(dir).snapshot()).pending[0];
+		await run.commands.get("policy")!.handler(`approve ${proposal.id} block`, run.ctx);
+		assert.match(run.notifications.at(-1)?.message ?? "", /forbids an effect/);
+		await run.commands.get("policy")!.handler(`approve ${proposal.id}`, run.ctx);
+		assert.equal((await new LocalRuleRegistry(dir).snapshot()).discarded[0].state, "discarded");
+		await run.commands.get("policy")!.handler("reject 00000000-0000-4000-8000-000000000001", run.ctx);
+		assert.match(run.notifications.at(-1)?.message ?? "", /no pending proposal/);
+		await run.commands.get("policy")!.handler("effect only-one-arg", run.ctx);
+		assert.match(run.notifications.at(-1)?.message ?? "", /Usage:/);
+	});
+});
+
+describe("local rule mode integration", () => {
+	it("records local slugs in observe and flags them in notice", async () => {
+		await installLocalRule();
+		const observed = harness({ policyMode: "observe" });
+		await runBash(observed, "observe-local", "scan src");
+		await observed.handlers.get("session_shutdown")!({}, observed.ctx);
+		assert.deepEqual((await records(dir)).at(-1)?.classes, ["shell.scan"]);
+
+		const noticed = harness({ policyMode: "notice" });
+		await runBash(noticed, "notice-local", "scan src");
+		assert.match(noticed.notifications[0].message, /shell\.scan/);
+	});
+
+	it("annotates local guidance once per session", async () => {
+		await installLocalRule(localCandidate(), "steer");
+		const run = harness({ policyMode: "annotate" });
+		const first = (await runBash(run, "local-1", "scan src")) as { content: Array<{ text: string }> };
+		assert.match(first.content.at(-1)!.text, /Bound scan output\. Suggested form: scan --limit 50\./);
+		assert.equal(await runBash(run, "local-2", "scan tests"), undefined);
+	});
+
+	it("delivers complete local guidance just inside the proposal bound", async () => {
+		const suffix = localRuleGuidance({ note: "", suggest: { command: "scan" } });
+		const note = "x".repeat(MAX_GUIDANCE_TEXT_BYTES - Buffer.byteLength(suffix, "utf8"));
+		const edge = localCandidate({
+			slug: "shell.edge",
+			note,
+			match: { command: "edge" },
+			suggest: { command: "scan" },
+		});
+		const guidance = localRuleGuidance(edge);
+		assert.equal(Buffer.byteLength(guidance, "utf8"), MAX_GUIDANCE_TEXT_BYTES);
+		await installLocalRule(edge, "block");
+
+		const enforcing = harness({ policyMode: "enforce" });
+		const blocked = (await enforcing.handlers.get("tool_call")!(
+			{ toolName: "bash", toolCallId: "edge-block", input: { command: "edge" } },
+			enforcing.ctx,
+		)) as { block: boolean; reason: string };
+		assert.equal(blocked.block, true);
+		assert.equal(blocked.reason, `[policy] ${guidance}`);
+		await enforcing.handlers.get("session_shutdown")!({}, enforcing.ctx);
+
+		const annotating = harness({ policyMode: "annotate" });
+		const patch = (await runBash(annotating, "edge-annotate", "edge")) as { content: Array<{ text: string }> };
+		assert.equal(patch.content.at(-1)?.text, `[policy] ${guidance}`);
+	});
+
+	it("blocks local block rules but annotates and never blocks steer rules in enforce", async () => {
+		await installLocalRule();
+		const blocked = harness({ policyMode: "enforce" });
+		const result = (await blocked.handlers.get("tool_call")!(
+			{ toolName: "bash", toolCallId: "local-block", input: { command: "scan src" } },
+			blocked.ctx,
+		)) as { block: boolean; reason: string };
+		assert.equal(result.block, true);
+		assert.match(result.reason, /Bound scan output/);
+		await blocked.handlers.get("tool_execution_end")!(
+			{ toolCallId: "local-block", result: { content: [{ type: "text", text: result.reason }] }, isError: true },
+			blocked.ctx,
+		);
+		await blocked.handlers.get("session_shutdown")!({}, blocked.ctx);
+		assert.equal((await records(dir)).at(-1)?.blocked, true);
+
+		const registry = new LocalRuleRegistry(dir);
+		await registry.setEffect("shell.scan", "steer", localAudit("command"));
+		const steering = harness({ policyMode: "enforce" });
+		assert.equal(
+			await steering.handlers.get("tool_call")!(
+				{ toolName: "bash", toolCallId: "local-steer", input: { command: "scan src" } },
+				steering.ctx,
+			),
+			undefined,
+		);
+		const patch = (await steering.handlers.get("tool_result")!(
+			{ toolName: "bash", toolCallId: "local-steer", content: [], isError: false },
+			steering.ctx,
+		)) as { content: Array<{ text: string }> };
+		assert.match(patch.content[0].text, /Bound scan output/);
+	});
+
+	it("keeps pending, disabled, and discarded entries inert", async () => {
+		const registry = new LocalRuleRegistry(dir);
+		await registry.proposeUpsert(localCandidate(), "Pending only.", localAudit("agent-tool"));
+		let run = harness({ policyMode: "enforce" });
+		assert.equal(await runBash(run, "pending", "scan src"), undefined);
+		const proposal = (await registry.snapshot()).pending[0];
+		await registry.decide(proposal.id, "approved", "block", localAudit("command"));
+		await registry.setState("shell.scan", "disabled", localAudit("command"));
+		run = harness({ policyMode: "annotate" });
+		assert.equal(await runBash(run, "disabled", "scan src"), undefined);
+		await registry.setState("shell.scan", "discarded", localAudit("command"));
+		run = harness({ policyMode: "enforce" });
+		assert.equal(await runBash(run, "discarded", "scan src"), undefined);
+	});
+
+	it("continues built-in enforcement after one local registry warning", async () => {
+		await mkdir(dir, { recursive: true, mode: 0o700 });
+		await writeFile(join(dir, "rules.jsonl"), "broken\n", { mode: 0o600 });
+		const warnings: string[] = [];
+		const original = console.warn;
+		console.warn = (message: string) => warnings.push(message);
+		try {
+			const run = harness({ policyMode: "enforce" });
+			const first = (await run.handlers.get("tool_call")!(
+				{ toolName: "bash", toolCallId: "builtin-1", input: { command: "cat notes.md" } },
+				run.ctx,
+			)) as { block: boolean };
+			assert.equal(first.block, true);
+			await run.handlers.get("tool_call")!(
+				{ toolName: "bash", toolCallId: "builtin-2", input: { command: "cat other.md" } },
+				run.ctx,
+			);
+		} finally {
+			console.warn = original;
+		}
+		assert.equal(warnings.filter((warning) => /local rule matching disabled/.test(warning)).length, 1);
 	});
 });
 
@@ -600,17 +1003,23 @@ describe("enforce mode", () => {
 		const original = console.warn;
 		console.warn = (message: string) => warnings.push(message);
 		try {
-			for (let index = 0; index < MAX_QUEUED_RECORDS; index++) {
-				const id = `f${index}`;
-				void run.handlers.get("tool_call")!(
-					{ toolName: "bash", toolCallId: id, input: { command: "rg -n x src/" } },
-					run.ctx,
-				);
-				void run.handlers.get("tool_result")!(
-					{ toolName: "bash", toolCallId: id, content: [], isError: false },
-					run.ctx,
-				);
-			}
+			const calls = Array.from({ length: MAX_QUEUED_RECORDS }, (_, index) => `f${index}`);
+			await Promise.all(
+				calls.map((id) =>
+					run.handlers.get("tool_call")!(
+						{ toolName: "bash", toolCallId: id, input: { command: "rg -n x src/" } },
+						run.ctx,
+					),
+				),
+			);
+			await Promise.all(
+				calls.map((id) =>
+					run.handlers.get("tool_result")!(
+						{ toolName: "bash", toolCallId: id, content: [], isError: false },
+						run.ctx,
+					),
+				),
+			);
 			const result = await run.handlers.get("tool_call")!(
 				{ toolName: "bash", toolCallId: "blocked", input: { command: "cat notes.md" } },
 				run.ctx,
