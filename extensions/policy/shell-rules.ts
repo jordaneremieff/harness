@@ -6,9 +6,9 @@
  * matched id because co-occurrence is evidence needed by later analysis.
  */
 
-import type { Domain, Rule } from "./rule.ts";
+import { packageRowRevision, POLICY_DOMAIN, type PackageDefinitionRow, type RuleEffect } from "./rule.ts";
 import { redactCommand } from "./redact.ts";
-import { parseStatements, type Stage, type Statement } from "./shell.ts";
+import type { Stage, Statement } from "./shell.ts";
 
 export interface RuleContext {
 	statement: Statement;
@@ -16,10 +16,23 @@ export interface RuleContext {
 	index: number;
 }
 
-export interface ShellRule extends Rule<RuleContext> {}
+export type CodeMatcher = (context: RuleContext) => boolean;
+
+interface PredicateRule {
+	id: string;
+	note: string;
+	matches: CodeMatcher;
+}
+
+export interface ShellRule extends PredicateRule {
+	domain: typeof POLICY_DOMAIN;
+	key: string;
+	effect: RuleEffect;
+}
 
 const READ_TOOL_NOTE = "Use the read tool for file contents, one call per file: read path=README.md.";
-const READ_SLICE_NOTE = "Use the read tool for a file slice, one call per file: read path=src/index.ts offset=40 limit=20.";
+const READ_SLICE_NOTE =
+	"Use the read tool for a file slice, one call per file: read path=src/index.ts offset=40 limit=20.";
 const OUTPUT_BOUND_NOTE = "Bound the output with a cap that stops the producer: | head -n 50.";
 const FD_BOUND_NOTE = "Bound fd with its own result cap: fd --max-results 50, or | head -n 50.";
 const RG_FILES_BOUND_NOTE = "Bound rg --files with | head -n 50; --max-count does not bound a file listing.";
@@ -357,7 +370,7 @@ function isUncapped(statement: Statement, index: number): boolean {
 	return !producerStopped(statement, index);
 }
 
-export const RULES: ShellRule[] = [
+const PREDICATE_RULES: PredicateRule[] = [
 	{
 		id: "routing.cat-read",
 		note: READ_TOOL_NOTE,
@@ -488,30 +501,47 @@ export const RULES: ShellRule[] = [
 	},
 ];
 
-const NOTES = new Map(RULES.map((rule) => [rule.id, rule.note]));
+export const RULES: ShellRule[] = PREDICATE_RULES.map((rule) => ({
+	...rule,
+	domain: POLICY_DOMAIN,
+	key: rule.id,
+	effect: "block",
+}));
 
-/** The shell domain: `bash` command text, its rules, and their guidance. */
-export const shellDomain: Domain = {
-	tool: "bash",
-	capture: (input) => {
-		// One read, so an accessor-backed input cannot yield two different
-		// commands to the classifier and the recorded text.
-		const command = input.command;
-		return typeof command === "string" ? command : undefined;
-	},
-	redact: redactCommand,
-	classify(command) {
-		const matched = new Set<string>();
-		for (const statement of parseStatements(command)) {
-			for (let index = 0; index < statement.length; index++) {
-				const stage = statement[index];
-				// A stage that prints its own usage reads no file and walks no tree.
-				if (isHelpInvocation(stage)) continue;
-				const context: RuleContext = { statement, stage, index };
-				for (const rule of RULES) if (rule.matches(context)) matched.add(rule.id);
-			}
-		}
-		return [...matched].sort();
-	},
-	note: (ruleId) => NOTES.get(ruleId),
-};
+export const PACKAGE_CATALOG: PackageDefinitionRow[] = RULES.map((rule) => {
+	const row = {
+		id: rule.id,
+		domain: rule.domain,
+		matcher: { kind: "code" as const, key: rule.key },
+		effect: rule.effect,
+		note: rule.note,
+	};
+	return { ...row, revision: packageRowRevision(row) };
+});
+
+const CODE_MATCHERS = new Map(RULES.map((rule) => [`${rule.domain}\0${rule.key}`, rule.matches]));
+
+/** Resolve only predicates shipped by this installed package. */
+export function resolveCodeMatcher(domain: string, key: string): CodeMatcher | undefined {
+	return CODE_MATCHERS.get(`${domain}\0${key}`);
+}
+
+export function hasCodeMatcher(domain: string, key: string): boolean {
+	return CODE_MATCHERS.has(`${domain}\0${key}`);
+}
+
+/** Code rules keep the established exemption for usage and version stages. */
+export function codeMatcherStageEligible(stage: Stage): boolean {
+	return !isHelpInvocation(stage);
+}
+
+/** Capture shell text once; no other tool currently has a policy capture. */
+export function captureShell(tool: string, input: Record<string, unknown>): string | undefined {
+	if (tool !== "bash") return undefined;
+	const command = input.command;
+	return typeof command === "string" ? command : undefined;
+}
+
+export function redactShell(tool: string, captured: string): string {
+	return tool === "bash" ? redactCommand(captured) : captured;
+}

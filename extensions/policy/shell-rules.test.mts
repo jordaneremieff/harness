@@ -96,15 +96,15 @@ describe("form rules", () => {
 	});
 
 	it("flags the named discovery and traversal forms", () => {
-		assert.deepEqual(bash("find src -name '*.ts'"), ["bounds.find-output-uncapped", "form.find-discovery"]);
-		assert.deepEqual(bash("ls -R extensions"), ["bounds.ls-recursive-uncapped", "form.ls-recursive"]);
-		assert.deepEqual(bash("du -sh node_modules"), ["bounds.du-uncapped", "form.du-traversal"]);
+		assert.deepEqual(bash("find src -name '*.ts'"), ["form.find-discovery", "bounds.find-output-uncapped"]);
+		assert.deepEqual(bash("ls -R extensions"), ["form.ls-recursive", "bounds.ls-recursive-uncapped"]);
+		assert.deepEqual(bash("du -sh node_modules"), ["form.du-traversal", "bounds.du-uncapped"]);
 	});
 
 	it("flags whole-environment filtering", () => {
-		assert.deepEqual(bash("env | grep -i path"), ["form.env-grep", "routing.grep-pipe"]);
-		assert.deepEqual(bash("env FOO=1 | grep x"), ["form.env-grep", "routing.grep-pipe"]);
-		assert.deepEqual(bash("env -u FOO | grep PATH"), ["form.env-grep", "routing.grep-pipe"]);
+		assert.deepEqual(bash("env | grep -i path"), ["routing.grep-pipe", "form.env-grep"]);
+		assert.deepEqual(bash("env FOO=1 | grep x"), ["routing.grep-pipe", "form.env-grep"]);
+		assert.deepEqual(bash("env -u FOO | grep PATH"), ["routing.grep-pipe", "form.env-grep"]);
 		assert.deepEqual(bash("env --help | grep PATH"), ["routing.grep-pipe"]);
 		assert.deepEqual(bash("env -S 'printf PATH' | grep PATH"), ["routing.grep-pipe"]);
 		assert.deepEqual(bash("printenv | rg PATH"), ["form.env-grep"]);
@@ -118,9 +118,9 @@ describe("form rules", () => {
 	});
 
 	it("classifies commands behind transparent prefixes and shell keywords", () => {
-		assert.deepEqual(bash("sudo find / -name core"), ["bounds.find-output-uncapped", "form.find-discovery"]);
+		assert.deepEqual(bash("sudo find / -name core"), ["form.find-discovery", "bounds.find-output-uncapped"]);
 		assert.deepEqual(bash("command cat notes.md"), ["routing.cat-read"]);
-		assert.deepEqual(bash("if grep -q TODO file; then cat file; fi"), ["form.grep-file", "routing.cat-read"]);
+		assert.deepEqual(bash("if grep -q TODO file; then cat file; fi"), ["routing.cat-read", "form.grep-file"]);
 	});
 });
 
@@ -133,38 +133,38 @@ describe("bounds rules", () => {
 
 	it("does not treat a head behind a full-input stage as a cap", () => {
 		assert.deepEqual(bash("find . -type f | sort | head -5"), [
-			"bounds.false-cap",
-			"bounds.find-output-uncapped",
 			"form.find-discovery",
+			"bounds.find-output-uncapped",
+			"bounds.false-cap",
 		]);
 		assert.deepEqual(bash("find . | jq -s . | head -2"), [
-			"bounds.false-cap",
-			"bounds.find-output-uncapped",
 			"form.find-discovery",
+			"bounds.find-output-uncapped",
+			"bounds.false-cap",
 		]);
 		assert.deepEqual(bash("find . | grep -c ts | head -1"), [
-			"bounds.false-cap",
-			"bounds.find-output-uncapped",
-			"form.find-discovery",
 			"routing.grep-pipe",
+			"form.find-discovery",
+			"bounds.find-output-uncapped",
+			"bounds.false-cap",
 		]);
 	});
 
 	it("does not treat tail or a buffering head as a producer cap", () => {
 		assert.deepEqual(bash("find . -type f | tail -5"), [
-			"bounds.false-cap",
-			"bounds.find-output-uncapped",
 			"form.find-discovery",
+			"bounds.find-output-uncapped",
+			"bounds.false-cap",
 		]);
 		assert.deepEqual(bash("find . | head -n -5"), [
-			"bounds.false-cap",
-			"bounds.find-output-uncapped",
 			"form.find-discovery",
+			"bounds.find-output-uncapped",
+			"bounds.false-cap",
 		]);
 		assert.deepEqual(bash("find . | head -n +5"), [
-			"bounds.false-cap",
-			"bounds.find-output-uncapped",
 			"form.find-discovery",
+			"bounds.find-output-uncapped",
+			"bounds.false-cap",
 		]);
 	});
 
@@ -172,25 +172,25 @@ describe("bounds rules", () => {
 		assert.deepEqual(bash("find . | tail -n +5 | head -20"), ["form.find-discovery"]);
 		assert.deepEqual(bash("find . | tail +5 | head -20"), ["form.find-discovery"]);
 		assert.deepEqual(bash("find . | gsort | head -5"), [
-			"bounds.false-cap",
-			"bounds.find-output-uncapped",
 			"form.find-discovery",
+			"bounds.find-output-uncapped",
+			"bounds.false-cap",
 		]);
 		assert.deepEqual(bash("find . | xargs gtail | head -2"), [
-			"bounds.false-cap",
-			"bounds.find-output-uncapped",
 			"form.find-discovery",
+			"bounds.find-output-uncapped",
+			"bounds.false-cap",
 		]);
 	});
 
 	it("applies output bounds to recursive grep, recursive ls, and du", () => {
-		assert.deepEqual(bash("grep -rn pattern ."), ["bounds.grep-recursive-uncapped", "form.grep-file"]);
+		assert.deepEqual(bash("grep -rn pattern ."), ["form.grep-file", "bounds.grep-recursive-uncapped"]);
 		assert.deepEqual(bash("grep -rn pattern . | head -10"), ["form.grep-file"]);
 		assert.deepEqual(bash("ls -R / | head -5"), ["form.ls-recursive"]);
 		assert.deepEqual(bash("du -sh x | sort | head -5"), [
+			"form.du-traversal",
 			"bounds.du-uncapped",
 			"bounds.false-cap",
-			"form.du-traversal",
 		]);
 	});
 
@@ -208,13 +208,13 @@ describe("bounds rules", () => {
 		assert.deepEqual(bash("git grep -n pattern | awk 'NR<=300 {print} NR==301 {exit}'"), []);
 		assert.deepEqual(bash("find . -type f | awk 'NR<=300 {print} NR==301 {exit}'"), ["form.find-discovery"]);
 		assert.deepEqual(bash("find . -type f | awk 'NR<=300 {print}'"), [
-			"bounds.find-output-uncapped",
 			"form.find-discovery",
+			"bounds.find-output-uncapped",
 		]);
 		assert.deepEqual(bash("find . -type f | sort | awk 'NR<=5 {print} NR==6 {exit}'"), [
-			"bounds.false-cap",
-			"bounds.find-output-uncapped",
 			"form.find-discovery",
+			"bounds.find-output-uncapped",
+			"bounds.false-cap",
 		]);
 	});
 
@@ -232,10 +232,10 @@ describe("bounds rules", () => {
 		assert.deepEqual(bash("rg --files -g '*.ts' | wc -l"), ["bounds.rg-files-uncapped"]);
 		assert.deepEqual(bash("fd -e ts | wc -l"), ["bounds.fd-uncapped"]);
 		assert.deepEqual(bash("rg --files -g '*.ts' | cut -d/ -f2 | sort | uniq -c | sort -rn | head -20"), [
-			"bounds.false-cap",
 			"bounds.rg-files-uncapped",
+			"bounds.false-cap",
 		]);
-		assert.deepEqual(bash("fd -e ts | sort | head -10"), ["bounds.false-cap", "bounds.fd-uncapped"]);
+		assert.deepEqual(bash("fd -e ts | sort | head -10"), ["bounds.fd-uncapped", "bounds.false-cap"]);
 		assert.deepEqual(bash("rg --files | head -20"), []);
 		assert.deepEqual(bash("fd -e ts | head -10"), []);
 	});
@@ -257,9 +257,9 @@ describe("bounds rules", () => {
 describe("classification across shell structure", () => {
 	it("collects and deduplicates classes from every statement", () => {
 		assert.deepEqual(bash("cat a.txt && ls -R ."), [
-			"bounds.ls-recursive-uncapped",
-			"form.ls-recursive",
 			"routing.cat-read",
+			"form.ls-recursive",
+			"bounds.ls-recursive-uncapped",
 		]);
 		assert.deepEqual(bash("cat a.txt; cat b.txt"), ["routing.cat-read"]);
 	});
@@ -270,13 +270,13 @@ describe("classification across shell structure", () => {
 		const parameterExpansion = ["$", "{var/)/x}"].join("");
 		assert.deepEqual(bash(`echo $(echo ${parameterExpansion}); cat notes.md`), ["routing.cat-read"]);
 		assert.deepEqual(bash('jq . <<< "$(cat f.json)"\ngrep -rn secret .'), [
-			"bounds.grep-recursive-uncapped",
-			"form.grep-file",
 			"routing.cat-read",
+			"form.grep-file",
+			"bounds.grep-recursive-uncapped",
 		]);
 		assert.deepEqual(bash("find . | grep -vf <(git ls-files | sort) | head -5"), [
-			"form.find-discovery",
 			"routing.grep-pipe",
+			"form.find-discovery",
 		]);
 	});
 });

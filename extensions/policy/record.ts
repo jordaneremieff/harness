@@ -7,7 +7,7 @@
  * carries an exit code or a timeout flag.
  */
 
-import { captureFor, classifyCaptured, redactFor } from "./classify.ts";
+import { captureFor, redactFor } from "./classify.ts";
 import type { PolicyMode } from "./mode.ts";
 
 /** Upper bound on unresolved calls held in memory. */
@@ -26,6 +26,8 @@ export interface SessionFacts {
 	thinkingLevel: string | null;
 	/** The effective system prompt carries project context files. */
 	projectContext: boolean;
+	/** Operator-approved rule state was unreadable, so mechanisms are capped at notice. */
+	ruleStoreDegraded: boolean;
 }
 
 export interface PolicyRecord extends SessionFacts {
@@ -91,23 +93,25 @@ export interface ResultFacts {
 const TIMEOUT = /\b(timed out|timeout|etimedout)\b/i;
 const ABORTED = /\b(abort|aborted|cancell?ed|sigint|sigterm)\b/i;
 
-/** Build the pending half of a record from a tool call. */
+/** Capture the pending half of a record after the rule snapshot has loaded. */
 export function startCall(
 	tool: string,
 	callId: string,
 	input: Record<string, unknown>,
 	now: Date = new Date(),
 	monotonic: number = performance.now(),
+	/** null means the caller already captured this input and found no domain text. */
+	captured: string | null | undefined = undefined,
 ): PendingCall {
-	// The input is captured once, and the classes and the recorded text derive
-	// from that same value, so the two cannot disagree on a later read.
-	const text = captureFor(tool, input);
+	// A caller that matches rules first passes the same captured value here, so
+	// matching and recorded text cannot disagree on an accessor's later read.
+	const text = captured === undefined ? captureFor(tool, input) : captured === null ? undefined : captured;
 	const pending: PendingCall = {
 		tool,
 		callId,
 		at: now.toISOString(),
 		startedAt: monotonic,
-		classes: text === undefined ? [] : classifyCaptured(tool, text),
+		classes: [],
 	};
 	if (text !== undefined) {
 		pending.sourceText = text;

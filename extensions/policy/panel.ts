@@ -1,4 +1,4 @@
-/** Interactive /policy browser plus bounded telemetry readers and pure formatting helpers. */
+/** Interactive unified rule browser plus bounded telemetry readers and formatters. */
 
 import { constants } from "node:fs";
 import { open, readdir } from "node:fs/promises";
@@ -11,15 +11,16 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { ruleScopeVisibility } from "./classify.ts";
+import { ruleStoreHealthLine, type PendingProposal, type RuleSnapshot } from "./local-rules.ts";
 import {
-	localRuleScopeVisibility,
-	type LocalRule,
-	type LocalRuleEffect,
-	type LocalRuleSnapshot,
-	type LocalRuleState,
-	type PendingProposal,
+	effectiveEffect,
+	effectiveState,
+	type RuleEffect,
 	type RuleMatchContext,
-} from "./local-rules.ts";
+	type RuleRecord,
+	type SessionRuleAudit,
+} from "./rule.ts";
 
 export const MAX_FIRE_SCAN_BYTES = 4 * 1024 * 1024;
 export const MAX_ACTIVITY_SCAN_BYTES = 4 * 1024 * 1024;
@@ -27,11 +28,8 @@ export const MAX_ACTIVITY_RECORDS = 200;
 const MAX_PANEL_ROWS = 46;
 const READ_CHUNK_BYTES = 64 * 1024;
 const DAILY_STORE_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
-const BUILTIN_GROUPS = ["routing", "form", "bounds"] as const;
 
-export type BuiltinGroup = (typeof BUILTIN_GROUPS)[number];
-export type PolicyView = "rules" | "local" | "activity";
-
+export type PolicyView = "rules" | "proposals" | "activity";
 type ModelFireMap = ReadonlyMap<string | null, number>;
 
 export interface RuleFireSummary {
@@ -40,12 +38,6 @@ export interface RuleFireSummary {
 	partial: boolean;
 }
 
-export interface BuiltinRuleInfo {
-	id: string;
-	note: string;
-}
-
-/** The safe subset of a stored record used by the Activity view. */
 export interface PolicyActivityRecord {
 	at: string;
 	model: string | null;
@@ -57,6 +49,7 @@ export interface PolicyActivityRecord {
 	captured?: string;
 	policyMode: string;
 	session: string;
+	ruleStoreDegraded: boolean;
 }
 
 export interface ActivityReadResult {
@@ -68,34 +61,29 @@ export interface ActivityReadResult {
 }
 
 export interface PolicyPanelData {
-	builtins: BuiltinRuleInfo[];
+	snapshot: RuleSnapshot;
 	fireSummary: RuleFireSummary;
-	local: LocalRuleSnapshot;
-	registryError?: string;
 	activity: ActivityReadResult;
 }
 
 export interface PolicyPanelResult {
 	view: PolicyView;
 	filter: string;
-	expandedGroups: BuiltinGroup[];
-	selectedRuleKey?: string;
-	selectedLocalKey?: string;
+	selectedRuleId?: string;
+	selectedProposalId?: string;
 	selectedActivityKey?: string;
 }
 
-export interface LocalPanelActionResult {
-	snapshot: LocalRuleSnapshot;
+export interface PanelActionResult {
+	snapshot: RuleSnapshot;
 	outcome: string;
 }
 
-export interface LocalPanelActionHost {
-	select(title: string, options: string[]): Promise<string | undefined>;
+export interface PolicyPanelActionHost {
 	confirm(title: string, message: string): Promise<boolean>;
-	approve(proposalId: string, effect?: LocalRuleEffect): Promise<LocalPanelActionResult>;
-	reject(proposalId: string): Promise<LocalPanelActionResult>;
-	setState(slug: string, state: LocalRuleState): Promise<LocalPanelActionResult>;
-	setEffect(slug: string, effect: LocalRuleEffect): Promise<LocalPanelActionResult>;
+	select(title: string, options: string[]): Promise<string | undefined>;
+	approve(proposalId: string, effect?: RuleEffect): Promise<PanelActionResult>;
+	reject(proposalId: string): Promise<PanelActionResult>;
 }
 
 interface PolicyPanelDeps {
@@ -105,22 +93,13 @@ interface PolicyPanelDeps {
 	tui: { requestRender(): void };
 	getMaxRows: () => number;
 	done: (result: PolicyPanelResult) => void;
-	actionHost?: LocalPanelActionHost;
+	actionHost?: PolicyPanelActionHost;
 	initialView?: PolicyView;
 	initialFilter?: string;
-	initialExpandedGroups?: readonly BuiltinGroup[];
-	initialSelectedRuleKey?: string;
-	initialSelectedLocalKey?: string;
+	initialSelectedRuleId?: string;
+	initialSelectedProposalId?: string;
 	initialSelectedActivityKey?: string;
 }
-
-export type RuleListRow =
-	| { kind: "group"; key: string; group: BuiltinGroup; rules: BuiltinRuleInfo[]; fires: number }
-	| { kind: "builtin"; key: string; group: BuiltinGroup; rule: BuiltinRuleInfo; fires: number };
-
-export type LocalListRow =
-	| { kind: "pending"; key: string; proposal: PendingProposal }
-	| { kind: "local"; key: string; rule: LocalRule };
 
 interface Layout {
 	total: number;
@@ -129,13 +108,6 @@ interface Layout {
 	innerWidth: number;
 	listWidth: number;
 	detailWidth: number;
-}
-
-interface Column {
-	label: string;
-	value: string;
-	minimum: number;
-	weight: number;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -173,13 +145,12 @@ function keepTail(text: string, width: number): string {
 	return `…${characters.join("")}`;
 }
 
-/** Side-by-side panes with enough room for the Rules-view columns. */
 export function computePolicyPanes(innerWidth: number, dividerWidth = 3): { listWidth: number; detailWidth: number } {
 	const available = Math.max(2, innerWidth - dividerWidth);
-	let listWidth = Math.max(44, Math.min(86, Math.floor(innerWidth * 0.64)));
+	let listWidth = Math.max(44, Math.min(86, Math.floor(innerWidth * 0.58)));
 	let detailWidth = available - listWidth;
-	if (detailWidth < 28) {
-		listWidth = Math.max(28, available - 28);
+	if (detailWidth < 32) {
+		listWidth = Math.max(24, available - 32);
 		detailWidth = available - listWidth;
 	}
 	if (detailWidth < 8) {
@@ -202,70 +173,10 @@ function computeLayout(maxRows: number, width: number): Layout {
 		};
 	}
 	const innerWidth = Math.max(1, width - 4);
-	return {
-		total,
-		framed: true,
-		bodyRows: Math.max(1, total - 4),
-		innerWidth,
-		...computePolicyPanes(innerWidth),
-	};
+	return { total, framed: true, bodyRows: Math.max(1, total - 4), innerWidth, ...computePolicyPanes(innerWidth) };
 }
 
-function builtinGroup(id: string): BuiltinGroup | undefined {
-	const namespace = id.split(".", 1)[0];
-	return BUILTIN_GROUPS.find((group) => group === namespace);
-}
-
-export function groupBuiltins(builtins: readonly BuiltinRuleInfo[]): Map<BuiltinGroup, BuiltinRuleInfo[]> {
-	const groups = new Map<BuiltinGroup, BuiltinRuleInfo[]>(BUILTIN_GROUPS.map((group) => [group, []]));
-	for (const rule of builtins) {
-		const group = builtinGroup(rule.id);
-		if (group) groups.get(group)!.push(rule);
-	}
-	for (const rules of groups.values()) rules.sort((left, right) => left.id.localeCompare(right.id));
-	return groups;
-}
-
-function matchesFilter(fields: readonly string[], filter: string): boolean {
-	if (!filter) return true;
-	const needle = filter.toLocaleLowerCase();
-	return fields.some((field) => field.toLocaleLowerCase().includes(needle));
-}
-
-/** Exactly the routing, form, and bounds group rows, with expanded members in place. */
-export function buildRuleRows(
-	builtins: readonly BuiltinRuleInfo[],
-	fires: ReadonlyMap<string, number>,
-	expandedGroups: ReadonlySet<BuiltinGroup>,
-	filter = "",
-): RuleListRow[] {
-	const rows: RuleListRow[] = [];
-	const groups = groupBuiltins(builtins);
-	for (const group of BUILTIN_GROUPS) {
-		const allRules = groups.get(group) ?? [];
-		const matchingRules = allRules.filter((rule) => matchesFilter([group, rule.id, rule.note], filter));
-		if (filter && matchingRules.length === 0 && !matchesFilter([group], filter)) continue;
-		const groupFires = allRules.reduce((total, rule) => total + (fires.get(rule.id) ?? 0), 0);
-		rows.push({ kind: "group", key: `group:${group}`, group, rules: allRules, fires: groupFires });
-		if (!expandedGroups.has(group)) continue;
-		for (const rule of filter ? matchingRules : allRules) {
-			rows.push({ kind: "builtin", key: `builtin:${rule.id}`, group, rule, fires: fires.get(rule.id) ?? 0 });
-		}
-	}
-	return rows;
-}
-
-export function buildLocalRows(snapshot: LocalRuleSnapshot, filter = ""): LocalListRow[] {
-	const pending: LocalListRow[] = snapshot.pending
-		.filter((proposal) => matchesFilter([proposal.id, proposal.operation, proposal.slug, proposal.reason], filter))
-		.map((proposal) => ({ kind: "pending", key: `pending:${proposal.id}`, proposal }));
-	const rules: LocalListRow[] = snapshot.rules
-		.filter((rule) => matchesFilter([rule.slug, rule.state, rule.effect, rule.note], filter))
-		.map((rule) => ({ kind: "local", key: `local:${rule.slug}`, rule }));
-	return [...pending, ...rules];
-}
-
-function auditLines(label: string, audit: LocalRule["proposedAudit"] | undefined): string[] {
+function auditLines(label: string, audit: SessionRuleAudit | undefined): string[] {
 	if (!audit) return [`${label}: (none)`];
 	return [
 		`${label}:`,
@@ -276,154 +187,186 @@ function auditLines(label: string, audit: LocalRule["proposedAudit"] | undefined
 	];
 }
 
-function jsonField(value: unknown): string {
-	return JSON.stringify(value) ?? "(none)";
+function sourceText(record: RuleRecord): string {
+	return record.source.kind === "package" ? "package" : `local (proposal ${record.source.proposalId})`;
 }
 
-export function localRuleDetailLines(rule: LocalRule, context: RuleMatchContext): string[] {
-	return [
-		`slug: ${rule.slug}`,
-		`state: ${rule.state}`,
-		`effect: ${rule.effect}`,
-		`note: ${rule.note}`,
-		`match: ${jsonField(rule.match)}`,
-		`suggest: ${rule.suggest ? jsonField(rule.suggest) : "(none)"}`,
-		`scope: ${rule.scope ? jsonField(rule.scope) : "(none)"}`,
-		localRuleScopeVisibility(rule, context),
-		`proposal id: ${rule.proposalId}`,
-		...auditLines("proposed audit", rule.proposedAudit),
-		...auditLines("approved audit", rule.approvedAudit),
-		...auditLines("updated audit", rule.updatedAudit),
+function matcherText(record: RuleRecord): string {
+	return record.matcher.kind === "code" ? `code (${record.matcher.key})` : `declarative (${record.matcher.language})`;
+}
+
+export function ruleDetailLines(
+	record: RuleRecord,
+	context: RuleMatchContext,
+	summary: RuleFireSummary,
+	catalogCollision = false,
+): string[] {
+	const lines = [
+		`id: ${record.id}`,
+		`source: ${sourceText(record)}`,
+		`matcher: ${matcherText(record)}`,
+		`effective state: ${effectiveState(record)}`,
+		`effective effect: ${effectiveEffect(record)}`,
+		`definition state: ${record.definition.state}`,
+		`definition effect: ${record.definition.effect}`,
+		`definition revision: ${record.definition.revision}`,
+		`note: ${record.definition.note}`,
+		`suggestion: ${record.definition.suggestion ? JSON.stringify(record.definition.suggestion) : "(none)"}`,
+		`scope: ${record.definition.scope ? JSON.stringify(record.definition.scope) : "(none)"}`,
+		ruleScopeVisibility(record, context),
+		`matcher available: ${record.matcherAvailable ? "yes" : "no"}`,
+		`catalog collision: ${catalogCollision ? "yes (local record retained; installed package row skipped)" : "no"}`,
+		`stale override: ${record.staleOverride ? "yes" : "no"}`,
+		`total fires: ${summary.fires.get(record.id) ?? 0}`,
+		"fires by model:",
+		...fireBreakdownLines(summary, record.id),
 	];
+	if (record.source.kind === "local") lines.push(...auditLines("approved audit", record.source.approvedAudit));
+	if (record.override) {
+		lines.push(
+			`override state: ${record.override.state ?? "(none)"}`,
+			`override effect: ${record.override.effect ?? "(none)"}`,
+			`override reason: ${record.override.reason}`,
+			`override against revision: ${record.override.againstDefinitionRevision}`,
+			...auditLines("override audit", record.override.audit),
+		);
+	} else lines.push("override: (none)");
+	if (summary.partial) lines.push("", `[fire counts partial: ${MAX_FIRE_SCAN_BYTES} byte scan bound reached]`);
+	return lines;
 }
 
-export function pendingProposalDetailLines(proposal: PendingProposal): string[] {
+export function proposalDetailLines(proposal: PendingProposal): string[] {
 	return [
-		`id: ${proposal.id}`,
+		`proposal id: ${proposal.id}`,
 		`operation: ${proposal.operation}`,
-		`slug: ${proposal.slug}`,
+		`rule id: ${proposal.ruleId}`,
 		`reason: ${proposal.reason}`,
-		...auditLines("audit", proposal.audit),
+		...auditLines("proposal audit", proposal.audit),
 		...(proposal.candidate
 			? [
-					`candidate.note: ${proposal.candidate.note}`,
-					`candidate.match: ${jsonField(proposal.candidate.match)}`,
-					`candidate.suggest: ${proposal.candidate.suggest ? jsonField(proposal.candidate.suggest) : "(none)"}`,
-					`candidate.scope: ${proposal.candidate.scope ? jsonField(proposal.candidate.scope) : "(none)"}`,
+					`candidate domain: ${proposal.candidate.domain}`,
+					`candidate matcher: ${JSON.stringify(proposal.candidate.matcher)}`,
+					`candidate note: ${proposal.candidate.note}`,
+					`candidate suggestion: ${proposal.candidate.suggestion ? JSON.stringify(proposal.candidate.suggestion) : "(none)"}`,
+					`candidate scope: ${proposal.candidate.scope ? JSON.stringify(proposal.candidate.scope) : "(none)"}`,
 				]
 			: []),
 	];
 }
 
-function allocateColumns(columns: readonly Column[], width: number): number[] {
-	if (columns.length === 0) return [];
-	const available = Math.max(columns.length, width - (columns.length - 1));
-	const widths = columns.map((column) => Math.max(1, column.minimum));
-	let remaining = available - widths.reduce((sum, value) => sum + value, 0);
-	while (remaining > 0) {
-		let changed = false;
-		for (let weight = 3; weight >= 1 && remaining > 0; weight--) {
-			for (let index = 0; index < columns.length && remaining > 0; index++) {
-				if (columns[index].weight !== weight) continue;
-				widths[index]++;
-				remaining--;
-				changed = true;
-			}
-		}
-		if (!changed) break;
-	}
-	while (remaining < 0) {
-		let changed = false;
-		for (let weight = 1; weight <= 3 && remaining < 0; weight++) {
-			for (let index = columns.length - 1; index >= 0 && remaining < 0; index--) {
-				if (columns[index].weight !== weight || widths[index] <= 1) continue;
-				widths[index]--;
-				remaining++;
-				changed = true;
-			}
-		}
-		if (!changed) break;
-	}
-	return widths;
-}
-
-function renderColumns(columns: readonly Column[], width: number, header: boolean): string {
-	const widths = allocateColumns(columns, width);
-	return columns.map((column, index) => fitText(header ? column.label : column.value, widths[index])).join(" ");
-}
-
-function activityColumns(record: PolicyActivityRecord): Column[] {
-	const time = record.at.match(/T(\d{2}:\d{2}:\d{2})/)?.[1] ?? oneLine(record.at);
-	return [
-		{ label: "time", value: time, minimum: 8, weight: 1 },
-		{ label: "model", value: oneLine(record.model ?? "(none)"), minimum: 10, weight: 2 },
-		{ label: "rule ids", value: record.classes.map(oneLine).join(","), minimum: 12, weight: 3 },
-		{ label: "blocked", value: record.blocked ? "yes" : "no", minimum: 7, weight: 1 },
-		{ label: "redacted command", value: oneLine(record.captured ?? "(not captured)"), minimum: 14, weight: 3 },
-	];
-}
-
-function modelFireEntries(summary: RuleFireSummary, classId: string): Array<[string | null, number]> {
-	return [...(summary.firesByModel.get(classId)?.entries() ?? [])].sort(
+function modelFireEntries(summary: RuleFireSummary, id: string): Array<[string | null, number]> {
+	return [...(summary.firesByModel.get(id)?.entries() ?? [])].sort(
 		(left, right) => right[1] - left[1] || (left[0] ?? "").localeCompare(right[0] ?? ""),
 	);
 }
 
-export function fireBreakdownLines(summary: RuleFireSummary, classId: string): string[] {
-	const entries = modelFireEntries(summary, classId);
-	if (entries.length === 0) return ["  (none)"];
-	return entries.map(([model, count]) => `  ${terminalSafe(model ?? "(no model)")}: ${count}`);
+export function fireBreakdownLines(summary: RuleFireSummary, id: string): string[] {
+	const entries = modelFireEntries(summary, id);
+	return entries.length === 0
+		? ["  (none)"]
+		: entries.map(([model, count]) => `  ${terminalSafe(model ?? "(no model)")}: ${count}`);
 }
 
-function wrapDetail(lines: readonly string[], width: number): string[] {
-	const wrapped: string[] = [];
-	for (const source of lines) {
-		for (const part of terminalSafe(source).split("\n")) {
-			const rendered = wrapTextWithAnsi(part, Math.max(8, width));
-			wrapped.push(...(rendered.length > 0 ? rendered : [""]));
+function matchesFilter(values: readonly string[], filter: string): boolean {
+	if (!filter) return true;
+	const needle = filter.toLocaleLowerCase();
+	return values.some((value) => value.toLocaleLowerCase().includes(needle));
+}
+
+export function filteredRecords(snapshot: RuleSnapshot, filter = ""): RuleRecord[] {
+	return [...snapshot.records.values()].filter((record) =>
+		matchesFilter(
+			[
+				record.id,
+				sourceText(record),
+				matcherText(record),
+				effectiveState(record),
+				effectiveEffect(record),
+				record.definition.note,
+				record.override?.reason ?? "",
+			],
+			filter,
+		),
+	);
+}
+
+function filteredProposals(snapshot: RuleSnapshot, filter = ""): PendingProposal[] {
+	return snapshot.pending.filter((proposal) =>
+		matchesFilter([proposal.id, proposal.operation, proposal.ruleId, proposal.reason], filter),
+	);
+}
+
+export function capText(text: string, maxBytes = 50 * 1024): string {
+	if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+	const marker = "\n[policy text truncated]";
+	const budget = Math.max(0, maxBytes - Buffer.byteLength(marker, "utf8"));
+	let prefix = Buffer.from(text, "utf8").subarray(0, budget).toString("utf8");
+	while (Buffer.byteLength(prefix, "utf8") > budget) prefix = Array.from(prefix).slice(0, -1).join("");
+	return `${prefix}${marker}`;
+}
+
+/** Text equivalent of the Rules and Proposals views. */
+export function formatPolicyList(data: Pick<PolicyPanelData, "snapshot" | "fireSummary">): string {
+	const lines = [
+		"RULES",
+		ruleStoreHealthLine(data.snapshot.health),
+		`record count: ${data.snapshot.records.size} | pending proposal count: ${data.snapshot.pending.length}`,
+		"",
+	];
+	if (data.snapshot.records.size === 0) lines.push("(none)");
+	for (const record of data.snapshot.records.values()) {
+		lines.push(
+			[
+				record.id,
+				`source: ${sourceText(record)}`,
+				`matcher: ${matcherText(record)}`,
+				`state: ${effectiveState(record)}`,
+				`effect: ${effectiveEffect(record)}`,
+				`override reason: ${record.override?.reason ?? "(none)"}`,
+				`override audit: ${record.override ? `${record.override.audit.surface} ${record.override.audit.at}` : "(none)"}`,
+				`stale override: ${record.staleOverride ? "yes" : "no"}`,
+				`available: ${record.matcherAvailable ? "yes" : "no"}`,
+				`fires: ${data.fireSummary.fires.get(record.id) ?? 0}`,
+				`note: ${record.definition.note}`,
+			].join(" | "),
+		);
+	}
+	lines.push("", "PENDING PROPOSALS");
+	if (data.snapshot.pending.length === 0) lines.push("(none)");
+	else {
+		for (const proposal of data.snapshot.pending) {
+			lines.push(`${proposal.id} | ${proposal.operation} | ${proposal.ruleId} | ${proposal.reason}`);
 		}
 	}
-	return wrapped;
+	if (data.fireSummary.partial)
+		lines.push("", `firing counts partial: store scan exceeded ${MAX_FIRE_SCAN_BYTES} bytes`);
+	return capText(lines.map(terminalSafe).join("\n"));
 }
 
-export function builtinDetailLines(rule: BuiltinRuleInfo, summary: RuleFireSummary): string[] {
-	return [
-		`id: ${rule.id}`,
-		`note: ${rule.note}`,
-		`total fires: ${summary.fires.get(rule.id) ?? 0}`,
-		"fires by model:",
-		...fireBreakdownLines(summary, rule.id),
-		...(summary.partial ? ["", `[fire counts partial: ${MAX_FIRE_SCAN_BYTES} byte scan bound reached]`] : []),
-	];
-}
-
-function activityPartialReason(activity: ActivityReadResult): string {
-	const reasons: string[] = [];
-	if (activity.byteLimited) reasons.push(`${MAX_ACTIVITY_SCAN_BYTES} byte tail bound`);
-	if (activity.recordLimited) reasons.push(`${MAX_ACTIVITY_RECORDS} record limit`);
-	return reasons.length > 0 ? reasons.join(" and ") : "read failure";
-}
-
-function activityDetailLines(record: PolicyActivityRecord, activity: ActivityReadResult): string[] {
-	return [
-		`time: ${record.at}`,
-		`model: ${record.model ?? "(none)"}`,
-		`thinking: ${record.thinkingLevel ?? "(none)"}`,
-		`rule ids: ${record.classes.join(", ")}`,
-		`blocked: ${record.blocked ? "yes" : "no"}`,
-		`error: ${record.error ? "yes" : "no"}`,
-		`tool: ${record.tool}`,
-		`policy mode: ${record.policyMode}`,
-		`session: ${record.session}`,
-		"",
-		"redacted command:",
-		record.captured ?? "(not captured)",
-		...(activity.partial ? ["", `[activity partial: ${activityPartialReason(activity)}]`] : []),
-	];
-}
-
-function activityKey(record: PolicyActivityRecord): string {
-	return `${record.at}\0${record.session}\0${record.tool}\0${record.classes.join(",")}\0${record.captured ?? ""}`;
+export function formatPolicyShow(
+	data: Pick<PolicyPanelData, "snapshot" | "fireSummary">,
+	ref: string,
+	context: RuleMatchContext,
+): string | undefined {
+	const health = [ruleStoreHealthLine(data.snapshot.health), ""];
+	const record = data.snapshot.records.get(ref);
+	if (record)
+		return capText(
+			[
+				...health,
+				...ruleDetailLines(
+					record,
+					context,
+					data.fireSummary,
+					data.snapshot.health.catalogCollisions?.includes(record.id) === true,
+				),
+			]
+				.map(terminalSafe)
+				.join("\n"),
+		);
+	const proposal = data.snapshot.pending.find((entry) => entry.id === ref);
+	if (proposal) return capText([...health, ...proposalDetailLines(proposal)].map(terminalSafe).join("\n"));
+	return undefined;
 }
 
 function readActivityRecord(value: unknown): PolicyActivityRecord | undefined {
@@ -443,6 +386,7 @@ function readActivityRecord(value: unknown): PolicyActivityRecord | undefined {
 		error: value.error === true,
 		policyMode: typeof value.policyMode === "string" ? value.policyMode : "(unknown)",
 		session: typeof value.session === "string" ? value.session : "(unknown)",
+		ruleStoreDegraded: value.ruleStoreDegraded === true,
 	};
 	if (typeof value.captured === "string") record.captured = value.captured;
 	return record;
@@ -462,8 +406,12 @@ async function readFileTail(
 		const start = size - length;
 		const buffer = Buffer.alloc(length);
 		while (bytesRead < length) {
-			const chunkLength = Math.min(READ_CHUNK_BYTES, length - bytesRead);
-			const result = await handle.read(buffer, bytesRead, chunkLength, start + bytesRead);
+			const result = await handle.read(
+				buffer,
+				bytesRead,
+				Math.min(READ_CHUNK_BYTES, length - bytesRead),
+				start + bytesRead,
+			);
 			if (result.bytesRead === 0) break;
 			bytesRead += result.bytesRead;
 		}
@@ -473,7 +421,7 @@ async function readFileTail(
 	}
 }
 
-/** Read newest daily-record tails only, then order matched records by their timestamps. */
+/** Read newest daily-record tails only, then order matched records by timestamp. */
 export async function readRecentActivity(
 	dir: string,
 	byteBound: number = MAX_ACTIVITY_SCAN_BYTES,
@@ -493,7 +441,6 @@ export async function readRecentActivity(
 		}
 		return { records: [], partial: true, byteLimited: false, recordLimited: false, bytesRead: 0 };
 	}
-
 	const matched: PolicyActivityRecord[] = [];
 	let remaining = normalizedBytes;
 	let bytesRead = 0;
@@ -531,13 +478,12 @@ export async function readRecentActivity(
 				const record = readActivityRecord(JSON.parse(line) as unknown);
 				if (record) matched.push(record);
 			} catch {
-				// One malformed record does not hide valid activity around it.
+				// One malformed telemetry record does not hide valid activity around it.
 			}
 		}
 		if (!tail.complete) break;
 		if (fileIndex < files.length - 1 && remaining === 0) byteLimited = true;
 	}
-
 	matched.sort((left, right) => Date.parse(right.at) - Date.parse(left.at));
 	const recordLimited = matched.length > normalizedRecords;
 	return {
@@ -593,9 +539,8 @@ async function scanJsonlPrefix(
 			bytesRead += result.bytesRead;
 		}
 		complete = position >= size;
-		if (complete && fragmentBytes > 0) {
+		if (complete && fragmentBytes > 0)
 			consumeLine(fragments.length === 1 ? fragments[0] : Buffer.concat(fragments, fragmentBytes));
-		}
 	} catch {
 		complete = false;
 	} finally {
@@ -608,11 +553,8 @@ async function scanJsonlPrefix(
 	return { bytesRead, complete };
 }
 
-/** Count built-in rule firings through one bounded scan of daily store files. */
-export async function readFireSummary(
-	dir: string,
-	byteBound: number = MAX_FIRE_SCAN_BYTES,
-): Promise<RuleFireSummary> {
+/** Count rule firings through one bounded scan of daily store files. */
+export async function readFireSummary(dir: string, byteBound: number = MAX_FIRE_SCAN_BYTES): Promise<RuleFireSummary> {
 	const fires = new Map<string, number>();
 	const firesByModel = new Map<string, Map<string | null, number>>();
 	const countLine = (line: Buffer): void => {
@@ -621,21 +563,20 @@ export async function readFireSummary(
 			const value: unknown = JSON.parse(line.toString("utf8"));
 			if (!isObject(value) || !Array.isArray(value.classes)) return;
 			const model = typeof value.model === "string" ? value.model : null;
-			for (const classId of value.classes) {
-				if (typeof classId !== "string") continue;
-				fires.set(classId, (fires.get(classId) ?? 0) + 1);
-				let models = firesByModel.get(classId);
+			for (const id of value.classes) {
+				if (typeof id !== "string") continue;
+				fires.set(id, (fires.get(id) ?? 0) + 1);
+				let models = firesByModel.get(id);
 				if (!models) {
 					models = new Map();
-					firesByModel.set(classId, models);
+					firesByModel.set(id, models);
 				}
 				models.set(model, (models.get(model) ?? 0) + 1);
 			}
 		} catch {
-			// One malformed store record does not hide valid counts around it.
+			// One malformed telemetry record does not hide valid counts around it.
 		}
 	};
-
 	try {
 		const files = (await readdir(dir)).filter((name) => DAILY_STORE_FILE.test(name)).sort();
 		let remaining = Number.isFinite(byteBound) ? Math.max(0, Math.floor(byteBound)) : MAX_FIRE_SCAN_BYTES;
@@ -646,59 +587,42 @@ export async function readFireSummary(
 		}
 		return { fires, firesByModel, partial: false };
 	} catch (error) {
-		return {
-			fires,
-			firesByModel,
-			partial: (error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT",
-		};
+		return { fires, firesByModel, partial: (error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT" };
 	}
 }
 
-export function capText(text: string, maxBytes = 50 * 1024): string {
-	if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
-	const marker = "\n[policy text truncated]";
-	const budget = Math.max(0, maxBytes - Buffer.byteLength(marker, "utf8"));
-	let prefix = Buffer.from(text, "utf8").subarray(0, budget).toString("utf8");
-	while (Buffer.byteLength(prefix, "utf8") > budget) prefix = Array.from(prefix).slice(0, -1).join("");
-	return `${prefix}${marker}`;
-}
-
-/** Text equivalent of the Rules and Local views. */
-export function formatPolicyList(
-	data: Pick<PolicyPanelData, "builtins" | "fireSummary" | "local" | "registryError">,
-): string {
-	const lines = ["BUILT-IN GROUPS"];
-	const groups = groupBuiltins(data.builtins);
-	for (const group of BUILTIN_GROUPS) {
-		const rules = groups.get(group) ?? [];
-		const total = rules.reduce((sum, rule) => sum + (data.fireSummary.fires.get(rule.id) ?? 0), 0);
-		lines.push(`${group} | rules: ${rules.length} | fires: ${total}`);
-		for (const rule of rules) lines.push(`  ${rule.id} | fires: ${data.fireSummary.fires.get(rule.id) ?? 0} | ${rule.note}`);
+function wrapDetail(lines: readonly string[], width: number): string[] {
+	const wrapped: string[] = [];
+	for (const source of lines) {
+		for (const part of terminalSafe(source).split("\n")) {
+			const rendered = wrapTextWithAnsi(part, Math.max(8, width));
+			wrapped.push(...(rendered.length > 0 ? rendered : [""]));
+		}
 	}
-	lines.push("", "LOCAL RULES");
-	if (data.local.rules.length === 0) lines.push("(none)");
-	else for (const rule of data.local.rules) lines.push(`${rule.slug} | ${rule.state} | ${rule.effect} | ${rule.note}`);
-	lines.push("", "PENDING PROPOSALS");
-	if (data.local.pending.length === 0) lines.push("(none)");
-	else for (const proposal of data.local.pending) lines.push(`${proposal.id} | ${proposal.operation} | ${proposal.slug} | ${proposal.reason}`);
-	lines.push("", `registry health: ${data.registryError ? `unreadable: ${data.registryError}` : "ok"}`);
-	if (data.fireSummary.partial) lines.push("", `firing counts partial: store scan exceeded ${MAX_FIRE_SCAN_BYTES} bytes`);
-	return capText(lines.map(terminalSafe).join("\n"));
+	return wrapped;
 }
 
-/** Full text detail for a built-in id, local slug, or pending proposal id. */
-export function formatPolicyShow(
-	data: Pick<PolicyPanelData, "builtins" | "fireSummary" | "local" | "registryError">,
-	ref: string,
-	context: RuleMatchContext,
-): string | undefined {
-	const builtin = data.builtins.find((rule) => rule.id === ref);
-	if (builtin) return capText(builtinDetailLines(builtin, data.fireSummary).map(terminalSafe).join("\n"));
-	const local = [...data.local.rules, ...data.local.discarded].find((rule) => rule.slug === ref);
-	if (local) return capText(localRuleDetailLines(local, context).map(terminalSafe).join("\n"));
-	const proposal = data.local.pending.find((entry) => entry.id === ref);
-	if (proposal) return capText(pendingProposalDetailLines(proposal).map(terminalSafe).join("\n"));
-	return undefined;
+function activityKey(record: PolicyActivityRecord): string {
+	return `${record.at}\0${record.session}\0${record.tool}\0${record.classes.join(",")}\0${record.captured ?? ""}`;
+}
+
+function activityDetailLines(record: PolicyActivityRecord, activity: ActivityReadResult): string[] {
+	return [
+		`time: ${record.at}`,
+		`model: ${record.model ?? "(none)"}`,
+		`thinking: ${record.thinkingLevel ?? "(none)"}`,
+		`rule ids: ${record.classes.join(", ")}`,
+		`blocked: ${record.blocked ? "yes" : "no"}`,
+		`error: ${record.error ? "yes" : "no"}`,
+		`tool: ${record.tool}`,
+		`policy mode: ${record.policyMode}`,
+		`rule store degraded: ${record.ruleStoreDegraded ? "yes" : "no"}`,
+		`session: ${record.session}`,
+		"",
+		"redacted command:",
+		record.captured ?? "(not captured)",
+		...(activity.partial ? ["", "[activity is partial because a configured scan bound was reached]"] : []),
+	];
 }
 
 export class PolicyPanel {
@@ -706,13 +630,10 @@ export class PolicyPanel {
 	private view: PolicyView;
 	private filter: string;
 	private filtering = false;
-	private readonly expandedGroups: Set<BuiltinGroup>;
 	private selectedRule = 0;
-	private selectedLocal = 0;
+	private selectedProposal = 0;
 	private selectedActivity = 0;
-	private ruleScroll = 0;
-	private localScroll = 0;
-	private activityScroll = 0;
+	private listScroll = 0;
 	private detailScroll = 0;
 	private outcome = "";
 	private actionPending = false;
@@ -727,14 +648,13 @@ export class PolicyPanel {
 		this.deps = deps;
 		this.view = deps.initialView ?? "rules";
 		this.filter = deps.initialFilter ?? "";
-		this.expandedGroups = new Set(deps.initialExpandedGroups ?? []);
-		if (deps.initialSelectedRuleKey) {
-			const selected = this.ruleRows.findIndex((row) => row.key === deps.initialSelectedRuleKey);
+		if (deps.initialSelectedRuleId) {
+			const selected = this.rules.findIndex((record) => record.id === deps.initialSelectedRuleId);
 			if (selected >= 0) this.selectedRule = selected;
 		}
-		if (deps.initialSelectedLocalKey) {
-			const selected = this.localRows.findIndex((row) => row.key === deps.initialSelectedLocalKey);
-			if (selected >= 0) this.selectedLocal = selected;
+		if (deps.initialSelectedProposalId) {
+			const selected = this.proposals.findIndex((proposal) => proposal.id === deps.initialSelectedProposalId);
+			if (selected >= 0) this.selectedProposal = selected;
 		}
 		if (deps.initialSelectedActivityKey) {
 			const selected = deps.data.activity.records.findIndex(
@@ -744,20 +664,20 @@ export class PolicyPanel {
 		}
 	}
 
-	private get ruleRows(): RuleListRow[] {
-		return buildRuleRows(this.deps.data.builtins, this.deps.data.fireSummary.fires, this.expandedGroups, this.filter);
+	private get rules(): RuleRecord[] {
+		return filteredRecords(this.deps.data.snapshot, this.filter);
 	}
 
-	private get localRows(): LocalListRow[] {
-		return buildLocalRows(this.deps.data.local, this.filter);
+	private get proposals(): PendingProposal[] {
+		return filteredProposals(this.deps.data.snapshot, this.filter);
 	}
 
-	private currentRule(): RuleListRow | undefined {
-		return this.ruleRows[this.selectedRule];
+	private currentRule(): RuleRecord | undefined {
+		return this.rules[this.selectedRule];
 	}
 
-	private currentLocal(): LocalListRow | undefined {
-		return this.localRows[this.selectedLocal];
+	private currentProposal(): PendingProposal | undefined {
+		return this.proposals[this.selectedProposal];
 	}
 
 	private currentActivity(): PolicyActivityRecord | undefined {
@@ -768,55 +688,63 @@ export class PolicyPanel {
 		return computeLayout(this.deps.getMaxRows(), width);
 	}
 
-	private pageSize(): number {
-		return Math.max(1, this.layout().bodyRows - 1);
+	private itemCount(): number {
+		return this.view === "rules"
+			? this.rules.length
+			: this.view === "proposals"
+				? this.proposals.length
+				: this.deps.data.activity.records.length;
+	}
+
+	private selectedIndex(): number {
+		return this.view === "rules"
+			? this.selectedRule
+			: this.view === "proposals"
+				? this.selectedProposal
+				: this.selectedActivity;
 	}
 
 	private detailSource(width = this.layout().detailWidth): string[] {
-		if (this.view === "activity") {
-			const record = this.currentActivity();
-			if (!record) {
-				return [
-					"No recorded activity matched a policy rule.",
-					...(this.deps.data.activity.partial ? ["The bounded tail read is partial."] : []),
-				];
-			}
-			return wrapDetail(activityDetailLines(record, this.deps.data.activity), width);
+		const status = this.outcome ? ["", this.outcome] : [];
+		const health = [ruleStoreHealthLine(this.deps.data.snapshot.health), ""];
+		if (this.view === "rules") {
+			const record = this.currentRule();
+			return wrapDetail(
+				record
+					? [
+							...status,
+							...health,
+							...ruleDetailLines(
+								record,
+								this.deps.scopeContext,
+								this.deps.data.fireSummary,
+								this.deps.data.snapshot.health.catalogCollisions?.includes(record.id) === true,
+							),
+						]
+					: [...health, "No rules match the filter.", ...status],
+				width,
+			);
 		}
-		if (this.view === "local") {
-			const row = this.currentLocal();
-			const status = this.outcome ? ["", this.outcome] : [];
-			if (!row) {
-				return wrapDetail(
-					[
-						this.deps.data.registryError ? `Registry unreadable: ${this.deps.data.registryError}` : "No local rules or pending proposals.",
-						...status,
-					],
-					width,
-				);
-			}
-			const detail =
-				row.kind === "pending"
-					? pendingProposalDetailLines(row.proposal)
-					: localRuleDetailLines(row.rule, this.deps.scopeContext);
-			return wrapDetail([...status, ...detail], width);
+		if (this.view === "proposals") {
+			const proposal = this.currentProposal();
+			return wrapDetail(
+				proposal
+					? [...status, ...health, ...proposalDetailLines(proposal)]
+					: [...health, "No pending proposals match the filter.", ...status],
+				width,
+			);
 		}
-		const row = this.currentRule();
-		if (!row) return [this.filter ? "No rules match the filter." : "No built-in policy rules are available."];
-		if (row.kind === "builtin") return wrapDetail(builtinDetailLines(row.rule, this.deps.data.fireSummary), width);
+		const record = this.currentActivity();
 		return wrapDetail(
-			[
-				`${row.group} built-ins`,
-				`rules: ${row.rules.length}`,
-				`summed fires: ${row.fires}`,
-				"",
-				`${this.expandedGroups.has(row.group) ? "Press g to collapse." : "Press g to expand in place."}`,
-				...(this.deps.data.fireSummary.partial
-					? ["", `[fire counts partial: ${MAX_FIRE_SCAN_BYTES} byte scan bound reached]`]
-					: []),
-			],
+			record
+				? [...health, ...activityDetailLines(record, this.deps.data.activity)]
+				: [...health, "No matched policy activity."],
 			width,
 		);
+	}
+
+	private pageSize(): number {
+		return Math.max(1, this.layout().bodyRows - 1);
 	}
 
 	private detailMaxScroll(): number {
@@ -829,94 +757,76 @@ export class PolicyPanel {
 		this.deps.tui.requestRender();
 	}
 
-	private clearTransient(): void {
+	private move(delta: number): void {
+		const last = Math.max(0, this.itemCount() - 1);
+		if (this.view === "rules") this.selectedRule = Math.max(0, Math.min(last, this.selectedRule + delta));
+		else if (this.view === "proposals")
+			this.selectedProposal = Math.max(0, Math.min(last, this.selectedProposal + delta));
+		else this.selectedActivity = Math.max(0, Math.min(last, this.selectedActivity + delta));
 		this.detailScroll = 0;
 	}
 
 	private finish(): void {
-		const result: PolicyPanelResult = {
+		this.deps.done({
 			view: this.view,
 			filter: this.filter,
-			expandedGroups: [...this.expandedGroups],
-			selectedRuleKey: this.currentRule()?.key,
+			selectedRuleId: this.currentRule()?.id,
+			selectedProposalId: this.currentProposal()?.id,
 			selectedActivityKey: this.currentActivity() ? activityKey(this.currentActivity()!) : undefined,
-		};
-		const local = this.currentLocal();
-		if (local) result.selectedLocalKey = local.key;
-		this.deps.done(result);
+		});
 	}
 
-	private move(delta: number): void {
-		if (this.view === "rules") {
-			const rows = this.ruleRows;
-			this.selectedRule = Math.max(0, Math.min(Math.max(0, rows.length - 1), this.selectedRule + delta));
-		} else if (this.view === "local") {
-			const rows = this.localRows;
-			this.selectedLocal = Math.max(0, Math.min(Math.max(0, rows.length - 1), this.selectedLocal + delta));
-		} else {
-			const records = this.deps.data.activity.records;
-			this.selectedActivity = Math.max(0, Math.min(Math.max(0, records.length - 1), this.selectedActivity + delta));
-		}
-		this.clearTransient();
-	}
-
-	private toggleGroup(): void {
-		const row = this.currentRule();
-		if (row?.kind !== "group") return;
-		if (this.expandedGroups.has(row.group)) this.expandedGroups.delete(row.group);
-		else this.expandedGroups.add(row.group);
-		const selected = this.ruleRows.findIndex((candidate) => candidate.key === row.key);
-		this.selectedRule = Math.max(0, selected);
-		this.clearTransient();
-	}
-
-	private async runLocalAction(action: "approve" | "reject" | "state" | "effect"): Promise<void> {
+	private async runProposalAction(action: "approve" | "reject"): Promise<void> {
 		const host = this.deps.actionHost;
-		const row = this.currentLocal();
-		if (!host || !row || this.actionPending) return;
+		const proposal = this.currentProposal();
+		if (!host || !proposal || this.actionPending) return;
 		this.actionPending = true;
 		this.outcome = "working…";
 		this.bump();
 		try {
-			let result: LocalPanelActionResult | undefined;
-			if (row.kind === "pending") {
-				if (action === "approve") {
-					let effect: LocalRuleEffect | undefined;
-					if (row.proposal.operation === "upsert") {
-						const selected = await host.select("Choose rule effect", ["steer", "block"]);
-						if (selected !== "steer" && selected !== "block") return;
-						effect = selected;
-					}
-					if (!(await host.confirm("Approve proposal", `${row.proposal.operation} ${row.proposal.slug}?`))) return;
-					result = await host.approve(row.proposal.id, effect);
-				} else if (action === "reject") {
-					if (!(await host.confirm("Reject proposal", `Reject ${row.proposal.slug}?`))) return;
-					result = await host.reject(row.proposal.id);
-				}
-			} else if (action === "state") {
-				const selected = await host.select("Choose rule state", ["active", "disabled", "discarded"]);
-				if (selected !== "active" && selected !== "disabled" && selected !== "discarded") return;
-				if (selected === "discarded" && !(await host.confirm("Discard rule", `${row.rule.slug} cannot be restored.`))) return;
-				result = await host.setState(row.rule.slug, selected);
-			} else if (action === "effect") {
-				const selected = await host.select("Choose rule effect", ["steer", "block"]);
+			let effect: RuleEffect | undefined;
+			if (action === "approve" && proposal.operation === "add") {
+				const selected = await host.select(`Choose effect for ${proposal.ruleId}`, ["steer", "block"]);
 				if (selected !== "steer" && selected !== "block") return;
-				result = await host.setEffect(row.rule.slug, selected);
+				effect = selected;
 			}
-			if (result) {
-				this.deps.data.local = result.snapshot;
-				this.deps.data.registryError = undefined;
-				this.outcome = terminalSafe(result.outcome);
-				this.selectedLocal = Math.min(this.selectedLocal, Math.max(0, this.localRows.length - 1));
-			}
+			const decision = action === "approve" ? "approve" : "reject";
+			const effectText = effect ? ` with effect ${effect}` : "";
+			const confirmed = await host.confirm(
+				`${decision === "approve" ? "Approve" : "Reject"} policy proposal`,
+				`${decision === "approve" ? "Approve" : "Reject"} ${proposal.operation} proposal ${proposal.id} for ${proposal.ruleId}${effectText}?`,
+			);
+			if (!confirmed) return;
+			const result = action === "approve" ? await host.approve(proposal.id, effect) : await host.reject(proposal.id);
+			this.applyResult(result);
 		} catch (error) {
 			this.outcome = `Action failed: ${terminalSafe(error instanceof Error ? error.message : String(error))}`;
 		} finally {
 			if (this.outcome === "working…") this.outcome = "Action cancelled.";
 			this.actionPending = false;
-			this.clearTransient();
+			this.detailScroll = 0;
 			this.bump();
 		}
+	}
+
+	private applyResult(result: PanelActionResult): void {
+		this.deps.data.snapshot = result.snapshot;
+		this.outcome = terminalSafe(result.outcome);
+		this.selectedRule = Math.min(this.selectedRule, Math.max(0, this.rules.length - 1));
+		this.selectedProposal = Math.min(this.selectedProposal, Math.max(0, this.proposals.length - 1));
+	}
+
+	private showRuleActionCommand(action: "disable" | "enable" | "effect" | "retire"): void {
+		const record = this.currentRule();
+		if (!record) return;
+		if (action === "retire" && record.source.kind !== "local") {
+			this.outcome = "Only local rules can be retired.";
+		} else {
+			const tail = action === "effect" ? "<steer|block> <reason...>" : "<reason...>";
+			this.outcome = `Run: /policy ${action} ${record.id} ${tail}`;
+		}
+		this.detailScroll = 0;
+		this.bump();
 	}
 
 	handleInput(raw: string): void {
@@ -927,20 +837,17 @@ export class PolicyPanel {
 			else if (matchesKey(raw, "backspace")) {
 				this.filter = Array.from(this.filter).slice(0, -1).join("");
 				this.selectedRule = 0;
-				this.selectedLocal = 0;
-				this.ruleScroll = 0;
-				this.localScroll = 0;
-				this.clearTransient();
+				this.selectedProposal = 0;
+				this.listScroll = 0;
 			} else if (matchesKey(raw, "up")) this.move(-1);
 			else if (matchesKey(raw, "down")) this.move(1);
 			else if (data.length > 0 && !matchesKey(raw, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(data)) {
 				this.filter += data;
 				this.selectedRule = 0;
-				this.selectedLocal = 0;
-				this.ruleScroll = 0;
-				this.localScroll = 0;
-				this.clearTransient();
+				this.selectedProposal = 0;
+				this.listScroll = 0;
 			} else return;
+			this.detailScroll = 0;
 			this.bump();
 			return;
 		}
@@ -951,19 +858,19 @@ export class PolicyPanel {
 		if (matchesKey(raw, "up")) this.move(-1);
 		else if (matchesKey(raw, "down")) this.move(1);
 		else if (data === "v") {
-			this.view = this.view === "rules" ? "local" : this.view === "local" ? "activity" : "rules";
-			this.clearTransient();
+			this.view = this.view === "rules" ? "proposals" : this.view === "proposals" ? "activity" : "rules";
+			this.listScroll = 0;
+			this.detailScroll = 0;
 		} else if (data === "b") this.detailScroll = Math.max(0, this.detailScroll - this.pageSize());
-		else if (matchesKey(raw, "space")) {
+		else if (matchesKey(raw, "space"))
 			this.detailScroll = Math.min(this.detailMaxScroll(), this.detailScroll + this.pageSize());
-		} else if ((this.view === "rules" || this.view === "local") && data === "/") {
-			this.filtering = true;
-			this.clearTransient();
-		} else if (this.view === "rules" && data === "g") this.toggleGroup();
-		else if (this.view === "local" && data === "a") void this.runLocalAction("approve");
-		else if (this.view === "local" && data === "x") void this.runLocalAction("reject");
-		else if (this.view === "local" && data === "s") void this.runLocalAction("state");
-		else if (this.view === "local" && data === "e") void this.runLocalAction("effect");
+		else if ((this.view === "rules" || this.view === "proposals") && data === "/") this.filtering = true;
+		else if (this.view === "proposals" && data === "a") void this.runProposalAction("approve");
+		else if (this.view === "proposals" && data === "x") void this.runProposalAction("reject");
+		else if (this.view === "rules" && data === "d") this.showRuleActionCommand("disable");
+		else if (this.view === "rules" && data === "n") this.showRuleActionCommand("enable");
+		else if (this.view === "rules" && data === "e") this.showRuleActionCommand("effect");
+		else if (this.view === "rules" && data === "r") this.showRuleActionCommand("retire");
 		else return;
 		this.bump();
 	}
@@ -973,172 +880,126 @@ export class PolicyPanel {
 	}
 
 	private footerText(innerWidth: number): string {
-		const theme = this.deps.theme;
+		if (this.outcome.startsWith("Run: ")) {
+			return this.deps.theme.fg("accent", this.outcome);
+		}
 		if (this.filtering) {
-			const matches = this.view === "local" ? this.localRows.length : this.ruleRows.length;
-			const suffix = ` · ↑↓ select · enter/esc done · ${matches} match`;
+			const suffix = ` · ↑↓ select · enter/esc done · ${this.itemCount()} match`;
 			const queryWidth = Math.max(1, innerWidth - visibleWidth("filter ") - visibleWidth(suffix));
-			return `${theme.fg("accent", "filter ")}${theme.fg("text", keepTail(`${oneLine(this.filter)}▌`, queryWidth))}${theme.fg("dim", suffix)}`;
+			return `${this.deps.theme.fg("accent", "filter ")}${this.deps.theme.fg("text", keepTail(`${oneLine(this.filter)}▌`, queryWidth))}${this.deps.theme.fg("dim", suffix)}`;
 		}
 		const keys = [this.keyPair("↑↓", "select"), this.keyPair("b/spc", "detail"), this.keyPair("v", "view")];
-		if (this.view === "rules") keys.push(this.keyPair("g", "group"), this.keyPair("/", "filter"));
-		if (this.view === "local") {
-			const row = this.currentLocal();
-			if (row?.kind === "pending") keys.push(this.keyPair("a/x", "approve/reject"));
-			if (row?.kind === "local") keys.push(this.keyPair("s/e", "state/effect"));
-			keys.push(this.keyPair("/", "filter"));
-		}
+		if (this.view === "rules")
+			keys.push(
+				this.keyPair("d/n", "disable/enable"),
+				this.keyPair("e", "effect"),
+				this.keyPair("r", "retire"),
+				this.keyPair("/", "filter"),
+			);
+		if (this.view === "proposals") keys.push(this.keyPair("a/x", "approve/reject"), this.keyPair("/", "filter"));
 		keys.push(this.keyPair("esc", "close"));
-		return keys.join(theme.fg("dim", " · "));
-	}
-
-	private titleBorder(width: number, position: string): string {
-		const theme = this.deps.theme;
-		const partial =
-			this.view === "rules"
-				? this.deps.data.fireSummary.partial
-				: this.view === "local"
-					? this.deps.data.registryError !== undefined
-					: this.deps.data.activity.partial;
-		const label = this.view === "rules" ? "Rules" : this.view === "local" ? "Local" : "Activity";
-		const title = `◆ Policy · ${label}${partial ? " · partial" : ""}`;
-		const right = ` ${position} ─┐`;
-		const leftBudget = Math.max(1, width - visibleWidth(right) - 4);
-		const shown = truncateToWidth(title, leftBudget);
-		const left = `┌─ ${shown} `;
-		const fill = Math.max(0, width - visibleWidth(left) - visibleWidth(right));
-		return theme.bg(
-			"customMessageBg",
-			`${theme.fg("borderMuted", left.slice(0, 3))}${theme.bold(theme.fg("accent", left.slice(3)))}${theme.fg("borderMuted", "─".repeat(fill))}${theme.fg("dim", ` ${position}`)}${theme.fg("borderMuted", " ─┐")}`,
-		);
+		return keys.join(this.deps.theme.fg("dim", " · "));
 	}
 
 	private listHeader(width: number): string {
-		if (this.view === "rules") return fitText("built-in group or rule · fires", width);
-		if (this.view === "local") return fitText("pending proposals · local rules", width);
-		const sample: PolicyActivityRecord = {
-			at: "00:00:00",
-			model: "model",
-			thinkingLevel: null,
-			tool: "bash",
-			classes: ["rule ids"],
-			blocked: false,
-			error: false,
-			policyMode: "observe",
-			session: "session",
-		};
-		return renderColumns(activityColumns(sample), width, true);
+		const text =
+			this.view === "rules"
+				? "rule · source · state · effect · fires"
+				: this.view === "proposals"
+					? "proposal · operation · rule"
+					: "time · model · rule ids · degraded · command";
+		return fitText(text, width);
 	}
 
-	private listRow(rowIndex: number, width: number): string {
-		if (this.view === "activity") {
-			const record = this.deps.data.activity.records[rowIndex];
+	private listRow(index: number, _width: number): string {
+		if (this.view === "rules") {
+			const record = this.rules[index];
 			if (!record) return "";
-			const body = renderColumns(activityColumns(record), Math.max(1, width - 2), false);
-			return `${rowIndex === this.selectedActivity ? "› " : "  "}${body}`;
+			return `${index === this.selectedRule ? "› " : "  "}${record.id} · ${record.source.kind} · ${effectiveState(record)} · ${effectiveEffect(record)} · ${this.deps.data.fireSummary.fires.get(record.id) ?? 0}`;
 		}
-		if (this.view === "local") {
-			const row = this.localRows[rowIndex];
-			if (!row) return "";
-			const prefix = rowIndex === this.selectedLocal ? "› " : "  ";
-			return row.kind === "pending"
-				? `${prefix}pending · ${row.proposal.operation} · ${row.proposal.slug} · ${oneLine(row.proposal.reason)}`
-				: `${prefix}${row.rule.slug} · ${row.rule.state} · ${row.rule.effect} · ${oneLine(row.rule.note)}`;
+		if (this.view === "proposals") {
+			const proposal = this.proposals[index];
+			if (!proposal) return "";
+			return `${index === this.selectedProposal ? "› " : "  "}${proposal.id} · ${proposal.operation} · ${proposal.ruleId}`;
 		}
-		const row = this.ruleRows[rowIndex];
-		if (!row) return "";
-		const prefix = rowIndex === this.selectedRule ? "› " : "  ";
-		if (row.kind === "group") {
-			const mark = this.expandedGroups.has(row.group) ? "▾" : "▸";
-			return `${prefix}${mark} ${row.group} · ${row.rules.length} rules · ${row.fires} fires`;
-		}
-		return `${prefix}  ${row.rule.id} · ${oneLine(row.rule.note)} · ${row.fires} fires`;
+		const record = this.deps.data.activity.records[index];
+		if (!record) return "";
+		const time = record.at.match(/T(\d{2}:\d{2}:\d{2})/)?.[1] ?? record.at;
+		return `${index === this.selectedActivity ? "› " : "  "}${time} · ${record.model ?? "(none)"} · ${record.classes.join(",")} · ${record.ruleStoreDegraded ? "degraded" : "healthy"} · ${oneLine(record.captured ?? "(not captured)")}`;
 	}
 
 	render(width: number): string[] {
 		this.lastWidth = width;
 		const layout = this.layout(width);
-		if (this.cachedWidth === width && this.cachedRows === layout.total && this.cachedVersion === this.version) {
+		if (this.cachedWidth === width && this.cachedRows === layout.total && this.cachedVersion === this.version)
 			return this.cachedLines;
-		}
-		const theme = this.deps.theme;
-		const itemCount =
-			this.view === "rules" ? this.ruleRows.length : this.view === "local" ? this.localRows.length : this.deps.data.activity.records.length;
-		const selected = this.view === "rules" ? this.selectedRule : this.view === "local" ? this.selectedLocal : this.selectedActivity;
-		const position = itemCount === 0 ? "0/0" : `${selected + 1}/${itemCount}`;
-		const paint = (text: string): string => theme.bg("customMessageBg", fitText(text, width));
-		const lines: string[] = [];
+		const count = this.itemCount();
+		const selected = this.selectedIndex();
+		const position = count === 0 ? "0/0" : `${selected + 1}/${count}`;
+		const label = this.view === "rules" ? "Rules" : this.view === "proposals" ? "Proposals" : "Activity";
+		const healthLabel =
+			this.deps.data.snapshot.health.status === "degraded"
+				? "degraded"
+				: this.deps.data.snapshot.health.incompleteFinalLine !== undefined
+					? "append-in-flight"
+					: "healthy";
+		const paint = (text: string) => this.deps.theme.bg("customMessageBg", fitText(text, width));
 		if (!layout.framed) {
-			if (layout.total > 1) {
-				const label = this.view === "rules" ? "Rules" : this.view === "local" ? "Local" : "Activity";
-				lines.push(paint(`Policy · ${label} · ${position}`));
-			}
-			if (layout.bodyRows > 0) lines.push(paint(this.listHeader(width)));
-			const available = Math.max(0, layout.bodyRows - 1);
-			if (available > 0) {
-				if (this.view === "rules") {
-					if (this.selectedRule < this.ruleScroll) this.ruleScroll = this.selectedRule;
-					if (this.selectedRule >= this.ruleScroll + available) this.ruleScroll = this.selectedRule - available + 1;
-				} else if (this.view === "local") {
-					if (this.selectedLocal < this.localScroll) this.localScroll = this.selectedLocal;
-					if (this.selectedLocal >= this.localScroll + available) this.localScroll = this.selectedLocal - available + 1;
-				} else {
-					if (this.selectedActivity < this.activityScroll) this.activityScroll = this.selectedActivity;
-					if (this.selectedActivity >= this.activityScroll + available) this.activityScroll = this.selectedActivity - available + 1;
-				}
-			}
-			const scroll = this.view === "rules" ? this.ruleScroll : this.view === "local" ? this.localScroll : this.activityScroll;
-			for (let slot = 0; slot < available; slot++) lines.push(paint(this.listRow(scroll + slot, width)));
+			const lines = [paint(`Policy · ${label} · ${position} · ${healthLabel}`), paint(this.listHeader(width))];
+			const available = Math.max(0, layout.total - 3);
+			if (selected < this.listScroll) this.listScroll = selected;
+			if (selected >= this.listScroll + available) this.listScroll = Math.max(0, selected - available + 1);
+			for (let slot = 0; slot < available; slot++) lines.push(paint(this.listRow(this.listScroll + slot, width)));
 			lines.push(paint(this.footerText(width)));
-			this.cachedWidth = width;
-			this.cachedRows = layout.total;
-			this.cachedVersion = this.version;
 			this.cachedLines = lines.slice(0, layout.total);
-			return this.cachedLines;
-		}
-
-		lines.push(this.titleBorder(width, position));
-		const listItemRows = Math.max(0, layout.bodyRows - 1);
-		if (this.view === "rules") {
-			if (this.selectedRule < this.ruleScroll) this.ruleScroll = this.selectedRule;
-			if (this.selectedRule >= this.ruleScroll + listItemRows) this.ruleScroll = Math.max(0, this.selectedRule - listItemRows + 1);
-		} else if (this.view === "local") {
-			if (this.selectedLocal < this.localScroll) this.localScroll = this.selectedLocal;
-			if (this.selectedLocal >= this.localScroll + listItemRows) this.localScroll = Math.max(0, this.selectedLocal - listItemRows + 1);
 		} else {
-			if (this.selectedActivity < this.activityScroll) this.activityScroll = this.selectedActivity;
-			if (this.selectedActivity >= this.activityScroll + listItemRows) this.activityScroll = Math.max(0, this.selectedActivity - listItemRows + 1);
-		}
-		this.detailScroll = Math.min(this.detailScroll, this.detailMaxScroll());
-		const detail = this.detailSource(layout.detailWidth).slice(this.detailScroll, this.detailScroll + layout.bodyRows);
-		const scroll = this.view === "rules" ? this.ruleScroll : this.view === "local" ? this.localScroll : this.activityScroll;
-		for (let bodyIndex = 0; bodyIndex < layout.bodyRows; bodyIndex++) {
-			let listCell = "";
-			if (bodyIndex === 0) listCell = theme.bold(theme.fg("dim", this.listHeader(layout.listWidth)));
-			else {
-				const absolute = scroll + bodyIndex - 1;
-				const row = this.listRow(absolute, layout.listWidth);
-				listCell = theme.fg(absolute === selected ? "accent" : "text", row);
+			const title = `┌─ ◆ Policy · ${label} · ${position} · ${healthLabel} `;
+			const top = `${title}${"─".repeat(Math.max(0, width - visibleWidth(title) - 1))}┐`;
+			const lines = [this.deps.theme.bg("customMessageBg", this.deps.theme.fg("borderMuted", top))];
+			const listRows = Math.max(0, layout.bodyRows - 1);
+			if (selected < this.listScroll) this.listScroll = selected;
+			if (selected >= this.listScroll + listRows) this.listScroll = Math.max(0, selected - listRows + 1);
+			this.detailScroll = Math.min(this.detailScroll, this.detailMaxScroll());
+			const detail = this.detailSource(layout.detailWidth).slice(
+				this.detailScroll,
+				this.detailScroll + layout.bodyRows,
+			);
+			for (let body = 0; body < layout.bodyRows; body++) {
+				const absolute = this.listScroll + body - 1;
+				const list =
+					body === 0
+						? this.deps.theme.bold(this.deps.theme.fg("dim", this.listHeader(layout.listWidth)))
+						: this.deps.theme.fg(absolute === selected ? "accent" : "text", this.listRow(absolute, layout.listWidth));
+				lines.push(
+					this.deps.theme.bg(
+						"customMessageBg",
+						`${this.deps.theme.fg("borderMuted", "│ ")}${fitText(list, layout.listWidth)}${this.deps.theme.fg("borderMuted", " │ ")}${fitText(detail[body] ?? "", layout.detailWidth)}${this.deps.theme.fg("borderMuted", " │")}`,
+					),
+				);
 			}
 			lines.push(
-				theme.bg(
+				this.deps.theme.bg(
 					"customMessageBg",
-					`${theme.fg("borderMuted", "│ ")}${fitText(listCell, layout.listWidth)}${theme.fg("borderMuted", " │ ")}${fitText(detail[bodyIndex] ?? "", layout.detailWidth)}${theme.fg("borderMuted", " │")}`,
+					this.deps.theme.fg("borderMuted", `├${"─".repeat(Math.max(0, width - 2))}┤`),
 				),
 			);
+			lines.push(
+				this.deps.theme.bg(
+					"customMessageBg",
+					`${this.deps.theme.fg("borderMuted", "│ ")}${fitText(this.footerText(layout.innerWidth), layout.innerWidth)}${this.deps.theme.fg("borderMuted", " │")}`,
+				),
+			);
+			lines.push(
+				this.deps.theme.bg(
+					"customMessageBg",
+					this.deps.theme.fg("borderMuted", `└${"─".repeat(Math.max(0, width - 2))}┘`),
+				),
+			);
+			this.cachedLines = lines.slice(0, layout.total);
 		}
-		lines.push(theme.bg("customMessageBg", theme.fg("borderMuted", `├${"─".repeat(Math.max(0, width - 2))}┤`)));
-		lines.push(
-			theme.bg(
-				"customMessageBg",
-				`${theme.fg("borderMuted", "│ ")}${fitText(this.footerText(layout.innerWidth), layout.innerWidth)}${theme.fg("borderMuted", " │")}`,
-			),
-		);
-		lines.push(theme.bg("customMessageBg", theme.fg("borderMuted", `└${"─".repeat(Math.max(0, width - 2))}┘`)));
 		this.cachedWidth = width;
 		this.cachedRows = layout.total;
 		this.cachedVersion = this.version;
-		this.cachedLines = lines.slice(0, layout.total);
 		return this.cachedLines;
 	}
 

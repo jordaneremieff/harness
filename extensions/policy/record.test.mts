@@ -17,10 +17,11 @@ const facts: SessionFacts = {
 	model: "xai/grok-4.6",
 	thinkingLevel: "high",
 	projectContext: true,
+	ruleStoreDegraded: false,
 };
 
 describe("startCall", () => {
-	it("classifies the call and stores redacted command text", () => {
+	it("starts with no classes and stores redacted command text", () => {
 		const call = startCall(
 			"bash",
 			"c1",
@@ -28,7 +29,7 @@ describe("startCall", () => {
 			new Date("2026-09-01T10:00:00Z"),
 			1000,
 		);
-		assert.deepEqual(call.classes, ["routing.cat-read"]);
+		assert.deepEqual(call.classes, []);
 		assert.equal(call.captured, "TOKEN=[redacted] cat notes.md");
 		assert.equal(call.at, "2026-09-01T10:00:00.000Z");
 	});
@@ -49,8 +50,22 @@ describe("startCall", () => {
 		};
 		const call = startCall("bash", "c1", input);
 		assert.equal(reads, 1);
-		assert.deepEqual(call.classes, ["routing.cat-read"]);
+		assert.deepEqual(call.classes, []);
 		assert.equal(call.captured, "cat notes.md");
+	});
+
+	it("accepts a caller-owned capture without reading the input again", () => {
+		let reads = 0;
+		const input = {
+			get command() {
+				reads++;
+				return "different";
+			},
+		};
+		const call = startCall("bash", "c1", input, new Date(), 1, "TOKEN=abcdef cat notes.md");
+		assert.equal(reads, 0);
+		assert.equal(call.sourceText, "TOKEN=abcdef cat notes.md");
+		assert.equal(call.captured, "TOKEN=[redacted] cat notes.md");
 	});
 });
 
@@ -68,6 +83,7 @@ describe("finishCall", () => {
 		assert.equal(record.model, "xai/grok-4.6");
 		assert.equal(record.thinkingLevel, "high");
 		assert.equal(record.projectContext, true);
+		assert.equal(record.ruleStoreDegraded, false);
 	});
 
 	it("records null model and thinking level when they are absent", () => {

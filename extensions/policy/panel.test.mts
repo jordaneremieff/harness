@@ -5,25 +5,23 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
-	buildRuleRows,
 	computePolicyPanes,
 	fireBreakdownLines,
+	filteredRecords,
 	formatPolicyList,
 	formatPolicyShow,
 	MAX_ACTIVITY_RECORDS,
-	MAX_FIRE_SCAN_BYTES,
 	PolicyPanel,
 	readFireSummary,
 	readRecentActivity,
 	terminalSafe,
-	type BuiltinRuleInfo,
-	type LocalPanelActionHost,
 	type PolicyActivityRecord,
+	type PolicyPanelActionHost,
 	type PolicyPanelData,
 	type PolicyView,
 } from "./panel.ts";
-import type { LocalRule, LocalRuleSnapshot, PendingProposal, RuleAudit, RuleMatchContext } from "./local-rules.ts";
-import { RULES } from "./shell-rules.ts";
+import type { RuleSnapshot } from "./local-rules.ts";
+import type { RuleMatchContext, RuleRecord } from "./rule.ts";
 
 const theme: never = {
 	fg: (_color: string, text: string) => text,
@@ -34,12 +32,88 @@ const theme: never = {
 	strikethrough: (text: string) => text,
 } as never;
 
-const builtins: BuiltinRuleInfo[] = RULES.map(({ id, note }) => ({ id, note }));
+const operatorAudit = {
+	at: "2026-09-03T12:00:00.000Z",
+	session: "session-local",
+	model: "provider/model",
+	surface: "command" as const,
+};
+const agentAudit = { ...operatorAudit, surface: "agent-tool" as const };
 const scopeContext: RuleMatchContext = {
 	provider: "openai-codex",
 	model: "openai-codex/gpt-5.6-sol",
 	cwd: "/work/project",
 };
+
+function packageRule(overrides: Partial<RuleRecord> = {}): RuleRecord {
+	return {
+		id: "routing.cat-read",
+		source: { kind: "package" },
+		domain: "tool-call",
+		matcher: { kind: "code", key: "routing.cat-read" },
+		definition: {
+			revision: "111111111111",
+			state: "active",
+			effect: "block",
+			note: "Prefer the read tool for one file.",
+		},
+		matcherAvailable: true,
+		staleOverride: false,
+		...overrides,
+	};
+}
+
+function localRule(overrides: Partial<RuleRecord> = {}): RuleRecord {
+	return {
+		id: "local.scan",
+		source: {
+			kind: "local",
+			proposalId: "00000000-0000-4000-8000-000000000001",
+			approvedAudit: operatorAudit,
+		},
+		domain: "tool-call",
+		matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "scan" } },
+		definition: {
+			revision: "222222222222",
+			state: "active",
+			effect: "steer",
+			note: "Bound scan output.",
+			scope: { modelProviders: ["openai-codex"], cwdPrefixes: ["/work"] },
+		},
+		override: {
+			state: "disabled",
+			effect: "block",
+			reason: "Temporarily noisy",
+			audit: operatorAudit,
+			againstDefinitionRevision: "000000000000",
+		},
+		matcherAvailable: true,
+		staleOverride: true,
+		...overrides,
+	};
+}
+
+function snapshot(overrides: Partial<RuleSnapshot> = {}): RuleSnapshot {
+	const records = new Map<string, RuleRecord>([
+		["routing.cat-read", packageRule()],
+		["local.scan", localRule()],
+	]);
+	return {
+		records,
+		pending: [
+			{
+				kind: "proposal",
+				id: "00000000-0000-4000-8000-000000000009",
+				operation: "disable",
+				ruleId: "routing.cat-read",
+				reason: "Pause noisy guidance",
+				audit: agentAudit,
+			},
+		],
+		health: { status: "ok", path: "/agent/policy/rules.jsonl" },
+		...overrides,
+	};
+}
 
 function activity(overrides: Partial<PolicyActivityRecord> = {}): PolicyActivityRecord {
 	return {
@@ -50,21 +124,21 @@ function activity(overrides: Partial<PolicyActivityRecord> = {}): PolicyActivity
 		classes: ["routing.cat-read", "bounds.false-cap"],
 		blocked: true,
 		error: true,
-		captured: "cat [REDACTED]",
+		captured: "cat [redacted]",
 		policyMode: "enforce",
 		session: "session-observed",
+		ruleStoreDegraded: true,
 		...overrides,
 	};
 }
 
 function data(overrides: Partial<PolicyPanelData> = {}): PolicyPanelData {
 	return {
-		builtins,
+		snapshot: snapshot(),
 		fireSummary: {
 			fires: new Map([
 				["routing.cat-read", 3],
-				["form.grep-file", 2],
-				["bounds.false-cap", 5],
+				["local.scan", 2],
 			]),
 			firesByModel: new Map([
 				[
@@ -77,7 +151,6 @@ function data(overrides: Partial<PolicyPanelData> = {}): PolicyPanelData {
 			]),
 			partial: false,
 		},
-		local: { rules: [], discarded: [], pending: [] },
 		activity: {
 			records: [activity()],
 			partial: false,
@@ -92,7 +165,7 @@ function data(overrides: Partial<PolicyPanelData> = {}): PolicyPanelData {
 function rig(
 	panelData = data(),
 	rows = 24,
-	options: { actionHost?: LocalPanelActionHost; initialView?: PolicyView; scopeContext?: RuleMatchContext } = {},
+	options: { actionHost?: PolicyPanelActionHost; initialView?: PolicyView; scopeContext?: RuleMatchContext } = {},
 ) {
 	const calls = { renders: 0, done: undefined as unknown };
 	const panel = new PolicyPanel({
@@ -110,231 +183,311 @@ function rig(
 	return { panel, calls };
 }
 
-const audit = (surface: RuleAudit["surface"] = "agent-tool"): RuleAudit => ({
-	at: "2026-09-03T12:00:00.000Z",
-	session: "session-local",
-	model: "provider/model",
-	surface,
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+const recordLine = (record: PolicyActivityRecord) => `${JSON.stringify(record)}\n`;
+
+describe("unified text surfaces", () => {
+	it("shows provenance, matcher, effective fields, override audit, stale/availability, proposals, and health", () => {
+		const text = formatPolicyList(data());
+		assert.match(text, /routing\.cat-read.*source: package.*matcher: code/);
+		assert.match(text, /local\.scan.*state: disabled.*effect: block/);
+		assert.match(text, /override reason: Temporarily noisy/);
+		assert.match(text, /override audit: command/);
+		assert.match(text, /stale override: yes.*available: yes/);
+		assert.match(text, /PENDING PROPOSALS/);
+		assert.match(text, /registry health: degraded=false \| ok/);
+	});
+
+	it("show includes full audit, scope visibility, and catalog-collision status", () => {
+		const collisionData = data({
+			snapshot: snapshot({
+				health: {
+					status: "ok",
+					path: "/agent/policy/rules.jsonl",
+					catalogCollisions: ["local.scan"],
+				},
+			}),
+		});
+		const text = formatPolicyShow(collisionData, "local.scan", scopeContext) ?? "";
+		assert.match(text, /registry health: degraded=false \| catalog collision:.*"local\.scan"/);
+		assert.match(text, /definition revision: 222222222222/);
+		assert.match(text, /scope matches this session: yes/);
+		assert.match(text, /catalog collision: yes \(local record retained; installed package row skipped\)/);
+		assert.match(text, /override reason: Temporarily noisy/);
+		assert.match(text, /override audit:[\s\S]*session: session-local/);
+		assert.match(text, /stale override: yes/);
+	});
+
+	it("show accepts a proposal id and reports degraded health in list", () => {
+		assert.match(
+			formatPolicyShow(data(), "00000000-0000-4000-8000-000000000009", scopeContext) ?? "",
+			/operation: disable/,
+		);
+		const degraded = data({
+			snapshot: snapshot({
+				health: { status: "degraded", path: "/tmp/rules.jsonl", line: 2, message: "repair line 2", repair: "repair" },
+			}),
+		});
+		assert.match(formatPolicyList(degraded), /degraded=true \| repair line 2/);
+	});
+
+	it("filters across source, matcher, effect, state, note, and override reason", () => {
+		assert.deepEqual(
+			filteredRecords(snapshot(), "package").map((record) => record.id),
+			["routing.cat-read"],
+		);
+		assert.deepEqual(
+			filteredRecords(snapshot(), "declarative").map((record) => record.id),
+			["local.scan"],
+		);
+		assert.deepEqual(
+			filteredRecords(snapshot(), "block").map((record) => record.id),
+			["routing.cat-read", "local.scan"],
+		);
+		assert.deepEqual(
+			filteredRecords(snapshot(), "disabled").map((record) => record.id),
+			["local.scan"],
+		);
+		assert.deepEqual(
+			filteredRecords(snapshot(), "bound scan output").map((record) => record.id),
+			["local.scan"],
+		);
+		assert.deepEqual(
+			filteredRecords(snapshot(), "temporarily noisy").map((record) => record.id),
+			["local.scan"],
+		);
+	});
+
+	it("sorts fire model details and escapes terminal controls", () => {
+		assert.deepEqual(fireBreakdownLines(data().fireSummary, "routing.cat-read"), [
+			"  openai-codex/gpt-5.6-sol: 2",
+			"  (no model): 1",
+		]);
+		assert.equal(terminalSafe("ok\u001b[31m\u0000"), "ok\\x1b[31m\\x00");
+	});
 });
 
-function localRule(overrides: Partial<LocalRule> = {}): LocalRule {
-	return {
-		slug: "shell.scan",
-		note: "Bound scan output.",
-		match: { command: "scan" },
-		state: "active",
-		effect: "block",
-		proposalId: "00000000-0000-4000-8000-000000000001",
-		proposedAudit: audit(),
-		approvedAudit: audit("command"),
-		...overrides,
-	};
-}
-
-function pendingProposal(): PendingProposal {
-	return {
-		kind: "proposal",
-		id: "00000000-0000-4000-8000-000000000001",
-		operation: "upsert",
-		slug: "shell.scan",
-		reason: "Bound scans.",
-		candidate: {
-			slug: "shell.scan",
-			note: "Bound scan output.",
-			match: { command: "scan" },
-		},
-		audit: audit(),
-	};
-}
-
-function recordLine(record: PolicyActivityRecord): string {
-	return `${JSON.stringify(record)}\n`;
-}
-
-describe("built-in policy formatting", () => {
-	it("shows exactly three collapsed built-in groups and expands members in place", () => {
-		const collapsed = buildRuleRows(builtins, data().fireSummary.fires, new Set());
-		assert.deepEqual(
-			collapsed.map((row) => row.kind === "group" && row.group),
-			["routing", "form", "bounds"],
+describe("bounded telemetry readers", () => {
+	it("counts every unified id by model and marks a byte-bounded prefix partial", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-panel-"));
+		await writeFile(
+			join(dir, "2026-09-03.jsonl"),
+			[
+				recordLine(activity({ classes: ["routing.cat-read"], model: "p/a" })),
+				recordLine(activity({ classes: ["routing.cat-read", "local.scan"], model: null })),
+			].join(""),
 		);
-		const expanded = buildRuleRows(builtins, data().fireSummary.fires, new Set(["routing"]));
-		assert.ok(expanded.some((row) => row.kind === "builtin" && row.rule.id === "routing.cat-read"));
+		const full = await readFireSummary(dir);
+		assert.equal(full.fires.get("routing.cat-read"), 2);
+		assert.equal(full.fires.get("local.scan"), 1);
+		assert.equal(full.firesByModel.get("routing.cat-read")?.get(null), 1);
+		assert.equal(full.partial, false);
+		assert.equal((await readFireSummary(dir, 10)).partial, true);
 	});
 
-	it("prints built-in groups, full detail, and per-model fire evidence", () => {
-		const listed = formatPolicyList(data());
-		assert.match(listed, /^BUILT-IN GROUPS/m);
-		const shown = formatPolicyShow(data(), "routing.cat-read", scopeContext) ?? "";
-		assert.match(shown, /id: routing\.cat-read/);
-		assert.match(shown, /openai-codex\/gpt-5\.6-sol: 2/);
-		assert.match(shown, /\(no model\): 1/);
-		assert.equal(formatPolicyShow(data(), "agent.retired", scopeContext), undefined);
+	it("reads newest matched activity, defaults old degraded telemetry false, and enforces the record bound", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-panel-"));
+		const old = { ...activity({ at: "2026-09-01T00:00:00.000Z" }) } as Record<string, unknown>;
+		delete old.ruleStoreDegraded;
+		await writeFile(join(dir, "2026-09-01.jsonl"), `${JSON.stringify(old)}\n`);
+		await writeFile(
+			join(dir, "2026-09-02.jsonl"),
+			Array.from({ length: MAX_ACTIVITY_RECORDS + 2 }, (_, index) =>
+				recordLine(
+					activity({ at: `2026-09-02T00:${String(index % 60).padStart(2, "0")}:00.000Z`, session: `s-${index}` }),
+				),
+			).join(""),
+		);
+		const result = await readRecentActivity(dir);
+		assert.equal(result.records.length, MAX_ACTIVITY_RECORDS);
+		assert.equal(result.recordLimited, true);
+		assert.equal(result.partial, true);
+		const onlyOld = await readRecentActivity(dir, 10_000_000, MAX_ACTIVITY_RECORDS + 10);
+		assert.equal(onlyOld.records.find((entry) => entry.session === "session-observed")?.ruleStoreDegraded, false);
 	});
 
-	it("surfaces the fire-scan bound and keeps terminal output safe", () => {
-		const partial = data({ fireSummary: { ...data().fireSummary, partial: true } });
-		assert.match(formatPolicyList(partial), new RegExp(String(MAX_FIRE_SCAN_BYTES)));
-		assert.equal(terminalSafe("bad\u001bvalue"), "bad\\x1bvalue");
-		assert.deepEqual(fireBreakdownLines(data().fireSummary, "unknown"), ["  (none)"]);
-		assert.deepEqual(computePolicyPanes(116), { listWidth: 74, detailWidth: 39 });
+	it("returns empty healthy results for a missing telemetry directory", async () => {
+		const dir = join(await mkdtemp(join(tmpdir(), "policy-panel-")), "missing");
+		assert.deepEqual(await readRecentActivity(dir), {
+			records: [],
+			partial: false,
+			byteLimited: false,
+			recordLimited: false,
+			bytesRead: 0,
+		});
+		assert.equal((await readFireSummary(dir)).partial, false);
 	});
 });
 
 describe("PolicyPanel", () => {
-	it("renders the built-in controls and ignores unrelated keys", () => {
+	it("renders within row and visible-width bounds at wide and narrow sizes", () => {
+		for (const [width, rows] of [
+			[120, 24],
+			[70, 8],
+			[20, 3],
+		] as const) {
+			const lines = rig(data(), rows).panel.render(width);
+			assert.ok(lines.length <= rows);
+			for (const line of lines) assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}`);
+		}
+		assert.deepEqual(computePolicyPanes(116), computePolicyPanes(116));
+	});
+
+	it("cycles Rules, Proposals, Activity and returns stable selection state", () => {
 		const { panel, calls } = rig();
-		const lines = panel.render(116);
-		assert.ok(lines.every((line) => visibleWidth(line) <= 116));
-		assert.match(lines.join("\n"), /g group/);
-		assert.doesNotMatch(lines.join("\n"), /approve|reject|state|effect/);
-		panel.handleInput("d");
-		assert.equal(calls.done, undefined);
-		panel.handleInput("\x1b");
-		assert.deepEqual(calls.done, {
-			view: "rules",
-			filter: "",
-			expandedGroups: [],
-			selectedRuleKey: "group:routing",
-			selectedActivityKey: "2026-09-03T12:00:00.000Z\0session-observed\0bash\0routing.cat-read,bounds.false-cap\0cat [REDACTED]",
-		});
+		assert.match(panel.render(120).join("\n"), /Policy · Rules/);
+		panel.handleInput("v");
+		assert.match(panel.render(120).join("\n"), /Policy · Proposals/);
+		panel.handleInput("v");
+		const activityText = panel.render(120).join("\n");
+		assert.match(activityText, /Policy · Activity/);
+		assert.match(activityText, /rule store degraded: yes/);
+		panel.handleInput("\u001b");
+		assert.equal((calls.done as { view: string }).view, "activity");
 	});
 
-	it("cycles Rules, Local, and Activity and expands the selected group", () => {
+	it("supports filtering without exposing unmatched rows", () => {
 		const { panel } = rig();
-		panel.handleInput("g");
-		assert.match(panel.render(116).join("\n"), /routing\.cat-read/);
-		panel.handleInput("v");
-		assert.match(panel.render(116).join("\n"), /No local rules/);
-		panel.handleInput("v");
-		assert.match(panel.render(116).join("\n"), /cat \[REDACTED\]/);
+		panel.handleInput("/");
+		for (const char of "local.scan") panel.handleInput(char);
+		panel.handleInput("\r");
+		const text = panel.render(120).join("\n");
+		assert.match(text, /local\.scan/);
+		assert.doesNotMatch(text, /routing\.cat-read.*package/);
 	});
 
-	it("renders pending proposals and retained rules with full local detail", () => {
-		const snapshot: LocalRuleSnapshot = {
-			rules: [localRule({ scope: { modelProviders: ["other-provider"] } })],
-			discarded: [],
-			pending: [pendingProposal()],
-		};
-		const { panel } = rig(data({ local: snapshot }), 24, { initialView: "local" });
-		let rendered = panel.render(116).join("\n");
-		assert.match(rendered, /pending · upsert · shell\.scan/);
-		assert.match(rendered, /candidate\.match/);
-		panel.handleInput("\x1b[B");
-		rendered = panel.render(200).join("\n");
-		assert.match(rendered, /shell\.scan · active · block/);
-		assert.match(rendered, /scope matches this session: no \(modelProviders\)/);
-		assert.match(rendered, /approved audit/);
+	it("shows exact command equivalents for reason-bearing actions because nested Pi input is unsafe", () => {
+		const { panel } = rig();
+		panel.handleInput("\u001b[B");
+		const rendered = () => panel.render(120).join("\n").replace(/[│]/g, " ").replace(/\s+/g, " ");
+		panel.handleInput("d");
+		assert.match(rendered(), /Run: \/policy disable local\.scan <reason\.\.\.>/);
+		panel.handleInput("e");
+		assert.match(rendered(), /Run: \/policy effect local\.scan <steer\|block> <reason\.\.\.>/);
+		panel.handleInput("n");
+		assert.match(rendered(), /Run: \/policy enable local\.scan <reason\.\.\.>/);
+		panel.handleInput("r");
+		assert.match(rendered(), /Run: \/policy retire local\.scan <reason\.\.\.>/);
 	});
 
-	it("runs local actions through the host and refreshes data", async () => {
-		const proposal = pendingProposal();
-		const calls: string[] = [];
-		const refreshed: LocalRuleSnapshot = { rules: [localRule()], discarded: [], pending: [] };
-		const host: LocalPanelActionHost = {
-			select: async (_title, options) => {
-				calls.push(`select:${options.join(",")}`);
-				return "block";
-			},
-			confirm: async () => {
-				calls.push("confirm");
+	it("confirms panel approval and rejection before invoking the operator host", async () => {
+		const actions: string[] = [];
+		const approved: Array<[string, "steer" | "block" | undefined]> = [];
+		const rejected: string[] = [];
+		const empty = snapshot({ pending: [] });
+		const host: PolicyPanelActionHost = {
+			async confirm(title, message) {
+				actions.push(`confirm:${title}:${message}`);
 				return true;
 			},
-			approve: async (id, effect) => {
-				calls.push(`approve:${id}:${effect}`);
-				return { snapshot: refreshed, outcome: "Approved and refreshed." };
+			async select() {
+				throw new Error("disable and rejection do not select an effect");
 			},
-			reject: async () => assert.fail("reject was not selected"),
-			setState: async () => assert.fail("state was not selected"),
-			setEffect: async () => assert.fail("effect was not selected"),
+			async approve(proposalId, effect) {
+				actions.push("approve");
+				approved.push([proposalId, effect]);
+				return { snapshot: empty, outcome: "approved through panel" };
+			},
+			async reject(proposalId) {
+				actions.push("reject");
+				rejected.push(proposalId);
+				return { snapshot: empty, outcome: "rejected through panel" };
+			},
 		};
-		const { panel } = rig(data({ local: { rules: [], discarded: [], pending: [proposal] } }), 24, {
-			actionHost: host,
-			initialView: "local",
-		});
+		let panel = rig(data(), 24, { actionHost: host, initialView: "proposals" }).panel;
 		panel.handleInput("a");
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		const rendered = panel.render(116).join("\n");
-		assert.deepEqual(calls, [
-			"select:steer,block",
-			"confirm",
-			`approve:${proposal.id}:block`,
-		]);
-		assert.match(rendered, /shell\.scan · active · block/);
-		assert.match(rendered, /Approved and refreshed/);
+		await settle();
+		assert.match(actions[0] ?? "", /^confirm:Approve policy proposal:Approve disable proposal/);
+		assert.equal(actions[1], "approve");
+		assert.deepEqual(approved, [["00000000-0000-4000-8000-000000000009", undefined]]);
+		assert.match(panel.render(120).join("\n"), /approved through panel/);
+
+		actions.length = 0;
+		panel = rig(data(), 24, { actionHost: host, initialView: "proposals" }).panel;
+		panel.handleInput("x");
+		await settle();
+		assert.match(actions[0] ?? "", /^confirm:Reject policy proposal:Reject disable proposal/);
+		assert.equal(actions[1], "reject");
+		assert.deepEqual(rejected, ["00000000-0000-4000-8000-000000000009"]);
 	});
 
-	it("routes retained state and effect choices through the host", async () => {
-		const calls: string[] = [];
-		let current: LocalRuleSnapshot = { rules: [localRule()], discarded: [], pending: [] };
-		const host: LocalPanelActionHost = {
-			select: async (_title, options) => (options.includes("disabled") ? "disabled" : "steer"),
-			confirm: async () => true,
-			approve: async () => assert.fail("approve was not selected"),
-			reject: async () => assert.fail("reject was not selected"),
-			setState: async (slug, state) => {
-				calls.push(`state:${slug}:${state}`);
-				current = { ...current, rules: [{ ...current.rules[0], state }] };
-				return { snapshot: current, outcome: "State refreshed." };
+	it("does not write when panel confirmation is declined", async () => {
+		let confirmations = 0;
+		let writes = 0;
+		const host: PolicyPanelActionHost = {
+			async confirm() {
+				confirmations++;
+				return false;
 			},
-			setEffect: async (slug, effect) => {
-				calls.push(`effect:${slug}:${effect}`);
-				current = { ...current, rules: [{ ...current.rules[0], effect }] };
-				return { snapshot: current, outcome: "Effect refreshed." };
+			async select() {
+				throw new Error("disable and rejection do not select an effect");
+			},
+			async approve() {
+				writes++;
+				throw new Error("approval must not run");
+			},
+			async reject() {
+				writes++;
+				throw new Error("rejection must not run");
 			},
 		};
-		const { panel } = rig(data({ local: current }), 24, { actionHost: host, initialView: "local" });
-		panel.handleInput("s");
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		panel.handleInput("e");
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		assert.deepEqual(calls, ["state:shell.scan:disabled", "effect:shell.scan:steer"]);
-		assert.match(panel.render(116).join("\n"), /shell\.scan · disabled · steer/);
+		let panel = rig(data(), 24, { actionHost: host, initialView: "proposals" }).panel;
+		panel.handleInput("a");
+		await settle();
+		panel = rig(data(), 24, { actionHost: host, initialView: "proposals" }).panel;
+		panel.handleInput("x");
+		await settle();
+		assert.equal(confirmations, 2);
+		assert.equal(writes, 0);
 	});
 
-	it("shows a registry error in the Local view", () => {
-		const { panel } = rig(data({ registryError: "invalid line" }), 24, { initialView: "local" });
-		assert.match(panel.render(116).join("\n"), /Registry unreadable: invalid line/);
-	});
-});
-
-describe("bounded telemetry loading", () => {
-	it("counts built-in fires and models through the daily store", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "policy-fires-"));
-		await writeFile(
-			join(dir, "2026-09-03.jsonl"),
-			[
-				recordLine(activity({ model: "model/a", classes: ["routing.cat-read"] })),
-				recordLine(activity({ model: null, classes: ["routing.cat-read", "form.grep-file"] })),
-			].join(""),
-		);
-		const summary = await readFireSummary(dir);
-		assert.equal(summary.partial, false);
-		assert.equal(summary.fires.get("routing.cat-read"), 2);
-		assert.equal(summary.firesByModel.get("routing.cat-read")?.get("model/a"), 1);
-		assert.equal(summary.firesByModel.get("routing.cat-read")?.get(null), 1);
-		assert.equal((await readFireSummary(dir, 1)).partial, true);
-	});
-
-	it("reads newest daily tails and enforces byte and record bounds", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "policy-activity-"));
-		await writeFile(
-			join(dir, "2026-09-02.jsonl"),
-			recordLine(activity({ at: "2026-09-02T10:00:00.000Z", session: "old" })),
-		);
-		await writeFile(
-			join(dir, "2026-09-03.jsonl"),
-			[
-				recordLine(activity({ at: "2026-09-03T11:00:00.000Z", session: "middle" })),
-				recordLine(activity({ at: "2026-09-03T12:00:00.000Z", session: "new" })),
-			].join(""),
-		);
-		const loaded = await readRecentActivity(dir);
-		assert.deepEqual(loaded.records.map((record) => record.session), ["new", "middle", "old"]);
-		const recordLimited = await readRecentActivity(dir, 1_000_000, 1);
-		assert.equal(recordLimited.recordLimited, true);
-		assert.equal(recordLimited.records.length, 1);
-		const byteLimited = await readRecentActivity(dir, 1, MAX_ACTIVITY_RECORDS);
-		assert.equal(byteLimited.byteLimited, true);
+	it("selects an add effect, confirms it, and writes the approval", async () => {
+		const addSnapshot = snapshot({
+			pending: [
+				{
+					kind: "proposal",
+					id: "00000000-0000-4000-8000-000000000010",
+					operation: "add",
+					ruleId: "local.new",
+					reason: "Add it",
+					candidate: {
+						domain: "tool-call",
+						matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "scan" } },
+						note: "Bound scan output.",
+					},
+					audit: agentAudit,
+				},
+			],
+		});
+		const actions: string[] = [];
+		const approved: Array<[string, "steer" | "block" | undefined]> = [];
+		const host: PolicyPanelActionHost = {
+			async select(title, options) {
+				actions.push(`select:${title}:${options.join(",")}`);
+				return "block";
+			},
+			async confirm(_title, message) {
+				actions.push(`confirm:${message}`);
+				return true;
+			},
+			async approve(proposalId, effect) {
+				actions.push("approve");
+				approved.push([proposalId, effect]);
+				return { snapshot: snapshot({ pending: [] }), outcome: "add approved through panel" };
+			},
+			async reject() {
+				throw new Error("unused");
+			},
+		};
+		const panel = rig(data({ snapshot: addSnapshot }), 24, { actionHost: host, initialView: "proposals" }).panel;
+		panel.handleInput("a");
+		await settle();
+		assert.deepEqual(actions, [
+			"select:Choose effect for local.new:steer,block",
+			"confirm:Approve add proposal 00000000-0000-4000-8000-000000000010 for local.new with effect block?",
+			"approve",
+		]);
+		assert.deepEqual(approved, [["00000000-0000-4000-8000-000000000010", "block"]]);
+		assert.match(panel.render(120).join("\n"), /add approved through panel/);
 	});
 });

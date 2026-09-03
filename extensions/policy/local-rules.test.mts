@@ -1,364 +1,709 @@
 import assert from "node:assert/strict";
-import { appendFile, chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
-	LocalRuleRegistry,
-	LOCAL_RULES_FILE,
-	localRuleScopeVisibility,
+	MAX_GUIDANCE_TEXT_BYTES,
+	MAX_LOCAL_RULES,
+	MAX_PENDING_PROPOSALS,
+	MAX_RULE_ID_LENGTH,
+	RULES_FILE,
+	RuleRegistry,
 	makeRuleAudit,
-	matchLocalRules,
-	MAX_REGISTRY_BYTES,
-	reduceLocalRuleEvents,
-	validateCandidate,
-	validateLocalRuleEvent,
-	type LocalRule,
-	type LocalRuleCandidate,
-	type RuleAudit,
+	reduceRuleEvents,
+	ruleStoreHealthLine,
+	validateLocalCandidate,
+	validatePackageDefinitionRow,
+	validateRuleEvent,
+	type CatalogEvent,
+	type DecisionEvent,
+	type ProposalEvent,
+	type RuleEvent,
 } from "./local-rules.ts";
+import { matchRuleRecords } from "./classify.ts";
+import {
+	effectiveEffect,
+	effectiveState,
+	packageRowRevision,
+	type PackageDefinitionRow,
+	type SessionRuleAudit,
+} from "./rule.ts";
+import { PACKAGE_CATALOG } from "./shell-rules.ts";
 
-const agentAudit = (session = "session-a"): RuleAudit => ({
-	at: "2026-09-03T12:00:00.000Z",
-	session,
-	model: "provider/model",
-	surface: "agent-tool",
+let nextId = 1;
+const id = () => `00000000-0000-4000-8000-${String(nextId++).padStart(12, "0")}`;
+const sessionAudit = (surface: "agent-tool" | "command" | "panel" = "command"): SessionRuleAudit => ({
+	at: "2026-09-01T10:00:00.000Z",
+	session: "session-1",
+	model: "openai/gpt-5",
+	surface,
 });
-const commandAudit = (session = "session-a"): RuleAudit => ({
-	...agentAudit(session),
-	at: "2026-09-03T12:01:00.000Z",
-	surface: "command",
-});
-const candidate = (overrides: Partial<LocalRuleCandidate> = {}): LocalRuleCandidate => ({
-	slug: "shell.clean",
-	note: "Use the bounded form.",
-	match: { command: "scan" },
-	suggest: { command: "scan", flags: ["--limit", "50"] },
-	...overrides,
-});
-
-async function tempRegistry(): Promise<{ dir: string; registry: LocalRuleRegistry }> {
-	const dir = join(await mkdtemp(join(tmpdir(), "policy-local-")), "store");
-	return { dir, registry: new LocalRuleRegistry(dir) };
-}
-
-async function activeRule(
-	registry: LocalRuleRegistry,
-	value: LocalRuleCandidate = candidate(),
-	effect: "steer" | "block" = "block",
-): Promise<LocalRule> {
-	const proposal = await registry.proposeUpsert(value, "Keep this command bounded.", agentAudit());
-	await registry.decide(proposal.id, "approved", effect, commandAudit());
-	return (await registry.snapshot()).rules.find((rule) => rule.slug === value.slug)!;
-}
-
-describe("LocalRuleRegistry lifecycle and store", () => {
-	it("keeps a proposal inert until approval and records the chosen effect", async () => {
-		const { dir, registry } = await tempRegistry();
-		const proposal = await registry.proposeUpsert(candidate(), "Keep this command bounded.", agentAudit());
-		let snapshot = await registry.snapshot();
-		assert.equal(snapshot.rules.length, 0);
-		assert.equal(snapshot.pending[0].id, proposal.id);
-		await registry.decide(proposal.id, "approved", "block", commandAudit());
-		snapshot = await registry.snapshot();
-		assert.equal(snapshot.pending.length, 0);
-		assert.equal(snapshot.rules[0].state, "active");
-		assert.equal(snapshot.rules[0].effect, "block");
-		assert.equal(snapshot.rules[0].approvedAudit.surface, "command");
-		const path = join(dir, LOCAL_RULES_FILE);
-		assert.equal((await stat(dir)).mode & 0o777, 0o700);
-		assert.equal((await stat(path)).mode & 0o777, 0o600);
-		assert.equal((await readFile(path, "utf8")).trim().split("\n").length, 2);
-	});
-
-	it("rejection changes no rule and an approved update replaces content only at the gate", async () => {
-		const { registry } = await tempRegistry();
-		await activeRule(registry);
-		const rejected = await registry.proposeUpsert(candidate({ note: "Rejected wording." }), "Try wording.", agentAudit());
-		assert.equal((await registry.snapshot()).rules[0].note, "Use the bounded form.");
-		await registry.decide(rejected.id, "rejected", undefined, commandAudit());
-		assert.equal((await registry.snapshot()).rules[0].note, "Use the bounded form.");
-		const accepted = await registry.proposeUpsert(candidate({ note: "Accepted wording." }), "Use new wording.", agentAudit());
-		assert.equal((await registry.snapshot()).rules[0].note, "Use the bounded form.");
-		await registry.decide(accepted.id, "approved", "steer", commandAudit());
-		const rule = (await registry.snapshot()).rules[0];
-		assert.equal(rule.note, "Accepted wording.");
-		assert.equal(rule.effect, "steer");
-	});
-
-	it("makes discard terminal and enforces one pending proposal per slug", async () => {
-		const { registry } = await tempRegistry();
-		await activeRule(registry);
-		const pending = await registry.proposeDiscard("shell.clean", "No longer useful.", agentAudit());
-		await assert.rejects(
-			registry.proposeUpsert(candidate({ note: "Competing." }), "Competing change.", agentAudit()),
-			/already pending/,
-		);
-		await assert.rejects(registry.setState("shell.clean", "discarded", commandAudit()), /reject the pending proposal/);
-		await assert.rejects(registry.decide(pending.id, "approved", "block", commandAudit()), /does not accept an effect/);
-		await registry.decide(pending.id, "approved", undefined, commandAudit());
-		const snapshot = await registry.snapshot();
-		assert.equal(snapshot.rules.length, 0);
-		assert.equal(snapshot.discarded[0].state, "discarded");
-		await assert.rejects(registry.setState("shell.clean", "active", commandAudit()), /terminal/);
-		await assert.rejects(registry.setEffect("shell.clean", "steer", commandAudit()), /terminal/);
-		await assert.rejects(registry.proposeUpsert(candidate(), "Try again.", agentAudit()), /cannot be reused/);
-	});
-
-	it("requires the right approval effect and rejects missing targets before append", async () => {
-		const { dir, registry } = await tempRegistry();
-		const proposal = await registry.proposeUpsert(candidate(), "Bound output.", agentAudit());
-		await assert.rejects(registry.decide(proposal.id, "approved", undefined, commandAudit()), /requires effect/);
-		const before = (await readFile(join(dir, LOCAL_RULES_FILE), "utf8")).trim().split("\n").length;
-		await assert.rejects(
-			registry.decide("00000000-0000-4000-8000-000000000001", "rejected", undefined, commandAudit()),
-			/no pending proposal/,
-		);
-		await assert.rejects(registry.setState("missing.rule", "active", commandAudit()), /no retained rule/);
-		await assert.rejects(registry.setEffect("missing.rule", "block", commandAudit()), /no retained rule/);
-		assert.equal((await readFile(join(dir, LOCAL_RULES_FILE), "utf8")).trim().split("\n").length, before);
-	});
-
-	it("drops valid missing-target events during reduction and rejects agent gate events", () => {
-		const audit = commandAudit();
-		const snapshot = reduceLocalRuleEvents([
-			{
-				kind: "decision",
-				id: "00000000-0000-4000-8000-000000000001",
-				proposalId: "00000000-0000-4000-8000-000000000002",
-				decision: "approved",
-				effect: "block",
-				audit,
-			},
-			{
-				kind: "state",
-				id: "00000000-0000-4000-8000-000000000003",
-				slug: "missing.rule",
-				state: "active",
-				audit,
-			},
-		]);
-		assert.deepEqual(snapshot, { rules: [], discarded: [], pending: [] });
-		assert.throws(
-			() =>
-				validateLocalRuleEvent({
-					kind: "effect",
-					id: "00000000-0000-4000-8000-000000000004",
-					slug: "missing.rule",
-					effect: "block",
-					audit: agentAudit(),
-				}),
-			/operator surface/,
-		);
-	});
-
-	it("fails the whole snapshot on malformed, non-private, broad-directory, or oversized data", async () => {
-		const malformed = await tempRegistry();
-		await mkdir(malformed.dir, { recursive: true, mode: 0o700 });
-		await writeFile(join(malformed.dir, LOCAL_RULES_FILE), "not-json\n", { mode: 0o600 });
-		await assert.rejects(malformed.registry.snapshot(), /invalid local rule registry line 1/);
-		await writeFile(join(malformed.dir, LOCAL_RULES_FILE), '{"kind":"unknown"}\n', { mode: 0o600 });
-		await assert.rejects(malformed.registry.snapshot(), /event kind/);
-
-		const partial = await tempRegistry();
-		await partial.registry.proposeUpsert(candidate(), "Valid first line.", agentAudit());
-		await appendFile(join(partial.dir, LOCAL_RULES_FILE), "broken\n");
-		await assert.rejects(partial.registry.snapshot(), /line 2/);
-
-		const linked = await tempRegistry();
-		await mkdir(linked.dir, { recursive: true, mode: 0o700 });
-		const target = join(linked.dir, "target.jsonl");
-		await writeFile(target, "not-json\n", { mode: 0o600 });
-		await symlink(target, join(linked.dir, LOCAL_RULES_FILE));
-		await assert.rejects(linked.registry.snapshot(), /not a regular file/);
-
-		const broadFile = await tempRegistry();
-		await mkdir(broadFile.dir, { recursive: true, mode: 0o700 });
-		const broadPath = join(broadFile.dir, LOCAL_RULES_FILE);
-		await writeFile(broadPath, "not-json\n", { mode: 0o600 });
-		await chmod(broadPath, 0o644);
-		await assert.rejects(broadFile.registry.snapshot(), /permissions are not private/);
-
-		const broadDir = await tempRegistry();
-		await mkdir(broadDir.dir, { recursive: true, mode: 0o700 });
-		await writeFile(join(broadDir.dir, LOCAL_RULES_FILE), "not-json\n", { mode: 0o600 });
-		await chmod(broadDir.dir, 0o755);
-		await assert.rejects(broadDir.registry.snapshot(), /policy store permissions are not private/);
-
-		const longLine = await tempRegistry();
-		await mkdir(longLine.dir, { recursive: true, mode: 0o700 });
-		await writeFile(join(longLine.dir, LOCAL_RULES_FILE), `${" ".repeat(64 * 1024)}\n`, { mode: 0o600 });
-		await assert.rejects(longLine.registry.snapshot(), /line 1 exceeds/);
-
-		const oversized = await tempRegistry();
-		await mkdir(oversized.dir, { recursive: true, mode: 0o700 });
-		await writeFile(join(oversized.dir, LOCAL_RULES_FILE), Buffer.alloc(MAX_REGISTRY_BYTES + 1), { mode: 0o600 });
-		await assert.rejects(oversized.registry.snapshot(), /exceeds/);
-	});
-
-	it("serializes concurrent proposal checks across registry instances", async () => {
-		const { dir, registry } = await tempRegistry();
-		const other = new LocalRuleRegistry(dir);
-		const results = await Promise.allSettled([
-			registry.proposeUpsert(candidate(), "First request.", agentAudit("one")),
-			other.proposeUpsert(candidate(), "Second request.", agentAudit("two")),
-		]);
-		assert.deepEqual(results.map((result) => result.status).sort(), ["fulfilled", "rejected"]);
-		assert.equal((await registry.snapshot()).pending.length, 1);
-		assert.equal((await readFile(join(dir, LOCAL_RULES_FILE), "utf8")).trim().split("\n").length, 1);
-	});
-
-	it("accepts modelProviders scope and rejects providers as unknown", () => {
-		assert.deepEqual(
-			validateCandidate({
-				...candidate(),
-				scope: { modelProviders: ["openai-codex"] },
-			}).scope,
-			{ modelProviders: ["openai-codex"] },
-		);
-		assert.throws(
-			() =>
-				validateCandidate({
-					...candidate(),
-					scope: { providers: ["bash"] },
-				}),
-			/unknown field "providers"/,
-		);
-	});
-
-	it("validates slugs, built-in namespace collisions, and audit construction", async () => {
-		const { registry } = await tempRegistry();
-		await assert.rejects(
-			registry.proposeUpsert(candidate({ slug: "routing.local" }), "Collision.", agentAudit()),
-			/built-in rule namespace/,
-		);
-		await assert.rejects(
-			registry.proposeUpsert(candidate({ slug: "Bad_Slug" }), "Invalid.", agentAudit()),
-			/slug must start/,
-		);
-		assert.deepEqual(
-			makeRuleAudit(
-				{ sessionManager: { getSessionId: () => "s1" }, model: { provider: "provider", id: "model" } },
-				"panel",
-				new Date("2026-09-03T12:00:00.000Z"),
-			),
-			{ at: "2026-09-03T12:00:00.000Z", session: "s1", model: "provider/model", surface: "panel" },
-		);
-	});
-});
-
-function rule(overrides: Partial<LocalRule> = {}): LocalRule {
-	return {
-		...candidate(),
-		state: "active",
-		effect: "block",
-		proposalId: "00000000-0000-4000-8000-000000000001",
-		proposedAudit: agentAudit(),
-		approvedAudit: commandAudit(),
-		...overrides,
+const row = (ruleId: string, note = `Prefer ${ruleId}.`, effect: "steer" | "block" = "block"): PackageDefinitionRow => {
+	const value = {
+		id: ruleId,
+		domain: "tool-call" as const,
+		matcher: { kind: "code" as const, key: ruleId },
+		effect,
+		note,
 	};
+	return { ...value, revision: packageRowRevision(value) };
+};
+const catalog = (...rows: PackageDefinitionRow[]): CatalogEvent => ({
+	kind: "catalog",
+	rows,
+	audit: { surface: "package" },
+});
+const candidate = (ruleId = "local.prefer-rg") => ({
+	id: ruleId,
+	domain: "tool-call" as const,
+	matcher: {
+		kind: "declarative" as const,
+		language: "command-shape/v1" as const,
+		spec: { command: "grep", flags: ["-R"], operands: { min: 1 }, pipe: { to: false } },
+	},
+	note: "Prefer rg for bounded repository search.",
+	suggestion: { command: "rg", flags: ["-n"] },
+	scope: { modelProviders: ["openai"], models: ["openai/gpt-5"], cwdPrefixes: ["/work"] },
+});
+const proposal = (operation: "add" | "retire" | "disable", ruleId: string): ProposalEvent => ({
+	kind: "proposal",
+	id: id(),
+	operation,
+	ruleId,
+	reason: `Please ${operation} this rule`,
+	...(operation === "add"
+		? {
+				candidate: {
+					domain: "tool-call" as const,
+					matcher: candidate(ruleId).matcher,
+					note: candidate(ruleId).note,
+					suggestion: candidate(ruleId).suggestion,
+					scope: candidate(ruleId).scope,
+				},
+			}
+		: {}),
+	audit: sessionAudit("agent-tool") as ReturnType<typeof makeRuleAudit> & { surface: "agent-tool" },
+});
+const decision = (
+	proposalId: string,
+	decisionValue: "approved" | "rejected",
+	effect?: "steer" | "block",
+	surface: "agent-tool" | "command" | "panel" = "command",
+): DecisionEvent => ({
+	kind: "decision",
+	id: id(),
+	proposalId,
+	decision: decisionValue,
+	...(effect ? { effect } : {}),
+	audit: sessionAudit(surface),
+});
+const tempDir = async () => {
+	const dir = join(await mkdtemp(join(tmpdir(), "policy-rules-")), "store");
+	return dir;
+};
+
+async function lines(dir: string): Promise<RuleEvent[]> {
+	return (await readFile(join(dir, RULES_FILE), "utf8"))
+		.trim()
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => validateRuleEvent(JSON.parse(line)));
 }
 
-describe("local rule matching", () => {
-	it("matches command, required and absent flags, and operand constraints", () => {
-		const rules = [
-			rule({
-				slug: "shape.operands",
-				match: {
-					command: "scan",
-					flags: ["--json"],
-					absentFlags: ["--all"],
-					operands: { min: 2, max: 2, any: ["src"], at: { "0": ["src"], "1": ["tests"] } },
-				},
-			}),
-		];
-		assert.deepEqual(
-			matchLocalRules("scan --json src tests", rules, { provider: "p", model: "p/m", cwd: "/work" }).map((entry) => entry.slug),
-			["shape.operands"],
+describe("strict event model", () => {
+	it("validates closed command-shape candidates, id length, and guidance bytes", () => {
+		assert.equal(validateLocalCandidate(candidate()).id, "local.prefer-rg");
+		const maximumId = `a${"b".repeat(MAX_RULE_ID_LENGTH - 1)}`;
+		assert.equal(validateLocalCandidate(candidate(maximumId)).id, maximumId);
+		assert.throws(() => validateLocalCandidate(candidate(`${maximumId}b`)), /at most|between 1 and 80/);
+		assert.throws(() => validateLocalCandidate({ ...candidate(), extra: true }), /unknown field/);
+		assert.throws(
+			() => validateLocalCandidate({ ...candidate(), matcher: { ...candidate().matcher, language: "regex/v1" } }),
+			/command-shape\/v1/,
 		);
-		for (const command of ["other --json src tests", "scan src tests", "scan --json --all src tests", "scan --json src", "scan --json src lib"]) {
-			assert.equal(matchLocalRules(command, rules, { cwd: "/work" }).length, 0, command);
-		}
+		assert.throws(
+			() => validateLocalCandidate({ ...candidate(), note: "x".repeat(MAX_GUIDANCE_TEXT_BYTES + 1) }),
+			/guidance/,
+		);
+		assert.throws(() => validateLocalCandidate({ ...candidate(), scope: { cwdPrefixes: ["relative"] } }), /absolute/);
 	});
 
-	it("matches every pipe and redirect shape plus immediate and later commands", () => {
-		const variants: Array<[string, LocalRule["match"]]> = [
-			["printf x | scan", { command: "scan", pipe: { from: true } }],
-			["scan | head", { command: "scan", pipe: { to: true } }],
-			["scan < in", { command: "scan", pipe: { fromRedirect: true } }],
-			["scan > out", { command: "scan", pipe: { toRedirect: true } }],
-			["scan | sort | head", { command: "scan", pipe: { next: ["sort"], later: ["head"] } }],
-			["scan", { command: "scan", pipe: { from: false, to: false, fromRedirect: false, toRedirect: false } }],
-		];
-		for (const [command, match] of variants) {
-			assert.equal(matchLocalRules(command, [rule({ match })], { cwd: "/work" }).length, 1, command);
-		}
-		assert.equal(
-			matchLocalRules("scan | sort | head", [rule({ match: { command: "scan", pipe: { next: ["head"] } } })], { cwd: "/work" }).length,
-			0,
-		);
-	});
-
-	it("applies model provider, model, and cwd prefix scope and sorts slugs", () => {
-		const scoped = rule({
-			slug: "z.scoped",
-			scope: { modelProviders: ["provider"], models: ["provider/model"], cwdPrefixes: ["/work/project"] },
-		});
-		const first = rule({ slug: "a.first" });
-		assert.deepEqual(
-			matchLocalRules("scan", [scoped, first], {
-				provider: "provider",
-				model: "provider/model",
-				cwd: "/work/project/src",
-			}).map((entry) => entry.slug),
-			["a.first", "z.scoped"],
-		);
-		for (const context of [
-			{ provider: "other", model: "provider/model", cwd: "/work/project" },
-			{ provider: "provider", model: "provider/other", cwd: "/work/project" },
-			{ provider: "provider", model: "provider/model", cwd: "/elsewhere" },
-		]) assert.deepEqual(matchLocalRules("scan", [scoped], context), []);
-	});
-
-	it("reports whether each scope field admits the current session", () => {
-		const context = {
-			provider: "openai-codex",
-			model: "openai-codex/gpt-5.6-sol",
-			cwd: "/work/project/src",
-		};
-		assert.equal(
-			localRuleScopeVisibility(
-				rule({
-					scope: {
-						modelProviders: ["openai-codex"],
-						models: ["openai-codex/gpt-5.6-sol"],
-						cwdPrefixes: ["/work/project"],
-					},
+	it("rejects unknown event fields and missing mandatory reasons", () => {
+		const event = proposal("disable", "routing.cat-read");
+		assert.throws(() => validateRuleEvent({ ...event, surprise: true }), /unknown field/);
+		assert.throws(() => validateRuleEvent({ ...event, reason: "" }), /reason/);
+		assert.throws(
+			() =>
+				validateRuleEvent({
+					kind: "override",
+					id: id(),
+					ruleId: "routing.cat-read",
+					operation: "clear",
+					audit: sessionAudit(),
 				}),
-				context,
-			),
-			"scope matches this session: yes",
-		);
-		assert.equal(
-			localRuleScopeVisibility(rule({ scope: { modelProviders: ["anthropic"] } }), context),
-			"scope matches this session: no (modelProviders)",
-		);
-		assert.equal(
-			localRuleScopeVisibility(rule({ scope: { models: ["openai-codex/gpt-5.5"] } }), context),
-			"scope matches this session: no (models)",
-		);
-		assert.equal(
-			localRuleScopeVisibility(rule({ scope: { cwdPrefixes: ["/elsewhere"] } }), context),
-			"scope matches this session: no (cwdPrefixes)",
+			/missing field "reason"/,
 		);
 	});
 
-	it("matches only active entries and does not expand variables or comments", () => {
-		const active = rule({ slug: "rule.active" });
-		const disabled = rule({ slug: "rule.disabled", state: "disabled" });
-		const discarded = rule({ slug: "rule.discarded", state: "discarded" });
-		assert.deepEqual(matchLocalRules("scan", [discarded, disabled, active], { cwd: "/work" }).map((entry) => entry.slug), ["rule.active"]);
-		assert.equal(matchLocalRules('VALUE="scan"; printf "%s" "$VALUE"', [active], { cwd: "/work" }).length, 0);
-		assert.equal(matchLocalRules("printf ok # scan", [active], { cwd: "/work" }).length, 0);
+	it("enforces package id equals code matcher key", () => {
+		const valid = row("routing.example");
+		assert.equal(validatePackageDefinitionRow(valid).matcher.key, valid.id);
+		const mismatched = {
+			...valid,
+			matcher: { kind: "code" as const, key: "routing.other" },
+		};
+		const withMatchingRevision = { ...mismatched, revision: packageRowRevision(mismatched) };
+		assert.throws(() => validatePackageDefinitionRow(withMatchingRevision), /id must equal.*matcher key/);
+		for (const installed of PACKAGE_CATALOG) assert.equal(installed.id, installed.matcher.key);
+	});
+
+	it("accepts an empty complete catalog and rejects duplicate rows", () => {
+		assert.deepEqual(validateRuleEvent(catalog()), catalog());
+		assert.throws(() => validateRuleEvent(catalog(row("routing.a"), row("routing.a"))), /unique/);
+	});
+});
+
+describe("event reduction", () => {
+	it("treats each catalog as the complete installed set and preserves overrides", () => {
+		const firstA = row("routing.a", "A v1");
+		const firstB = row("routing.b", "B v1");
+		const changedA = row("routing.a", "A v2");
+		const override = {
+			kind: "override" as const,
+			id: id(),
+			ruleId: firstA.id,
+			operation: "set" as const,
+			override: {
+				effect: "steer" as const,
+				reason: "Operator calibration",
+				audit: sessionAudit("command"),
+				againstDefinitionRevision: firstA.revision,
+			},
+		};
+		const reduced = reduceRuleEvents([catalog(firstA, firstB), override, catalog(changedA)]);
+		assert.equal(reduced.records.get(firstA.id)?.definition.note, "A v2");
+		assert.equal(reduced.records.get(firstA.id)?.override?.reason, "Operator calibration");
+		assert.equal(reduced.records.get(firstA.id)?.staleOverride, true);
+		assert.equal(reduced.records.get(firstB.id)?.definition.state, "retired");
+
+		const returned = reduceRuleEvents([catalog(firstA, firstB), override, catalog(changedA), catalog(firstA, firstB)]);
+		assert.equal(returned.records.get(firstB.id)?.definition.state, "active");
+		assert.equal(returned.records.get(firstA.id)?.override?.effect, "steer");
+	});
+
+	it("requires an operator decision and keeps rejected proposals inert", () => {
+		const add = proposal("add", "local.one");
+		const agentApproval = decision(add.id, "approved", "block", "agent-tool");
+		let reduced = reduceRuleEvents([add, agentApproval]);
+		assert.equal(reduced.records.has("local.one"), false);
+		assert.equal(reduced.pending.length, 1);
+		reduced = reduceRuleEvents([add, decision(add.id, "rejected")]);
+		assert.equal(reduced.records.has("local.one"), false);
+		assert.equal(reduced.pending.length, 0);
+	});
+
+	it("creates an immutable local id only after add approval", () => {
+		const add = proposal("add", "local.one");
+		const reduced = reduceRuleEvents([add, decision(add.id, "approved", "steer")]);
+		const record = reduced.records.get("local.one");
+		assert.equal(record?.source.kind, "local");
+		assert.equal(record?.definition.effect, "steer");
+		assert.equal(record?.definition.state, "active");
+		assert.equal(record?.matcher.kind, "declarative");
+		assert.equal(reduced.pending.length, 0);
+	});
+
+	it("revises a minimal add candidate consistently when optional fields are absent", () => {
+		const add: ProposalEvent = {
+			kind: "proposal",
+			id: id(),
+			operation: "add",
+			ruleId: "local.minimal",
+			reason: "Minimal local rule",
+			candidate: {
+				domain: "tool-call",
+				matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "scan" } },
+				note: "Use scan carefully.",
+			},
+			audit: sessionAudit("agent-tool") as never,
+		};
+		const record = reduceRuleEvents([add, decision(add.id, "approved", "steer")]).records.get(add.ruleId);
+		assert.match(record?.definition.revision ?? "", /^[0-9a-f]{12}$/);
+	});
+
+	it("composes approved disable with an existing effect override", () => {
+		const installed = row("routing.a");
+		const setEffect = {
+			kind: "override" as const,
+			id: id(),
+			ruleId: installed.id,
+			operation: "set" as const,
+			override: {
+				effect: "steer" as const,
+				reason: "Lower failure cost",
+				audit: sessionAudit("command"),
+				againstDefinitionRevision: installed.revision,
+			},
+		};
+		const disable = proposal("disable", installed.id);
+		const revised = row(installed.id, "A revised before approval");
+		const reduced = reduceRuleEvents([
+			catalog(installed),
+			setEffect,
+			disable,
+			catalog(revised),
+			decision(disable.id, "approved", undefined, "panel"),
+		]);
+		const record = reduced.records.get(installed.id)!;
+		assert.equal(record.override?.state, "disabled");
+		assert.equal(record.override?.effect, "steer");
+		assert.equal(record.override?.reason, disable.reason);
+		assert.equal(record.override?.audit.surface, "panel");
+		assert.equal(record.override?.againstDefinitionRevision, revised.revision);
+		assert.equal(record.staleOverride, false);
+	});
+
+	it("ignores agent-surface override and definition events", () => {
+		const installed = row("routing.a");
+		const add = proposal("add", "local.one");
+		const events: RuleEvent[] = [
+			catalog(installed),
+			{
+				kind: "override",
+				id: id(),
+				ruleId: installed.id,
+				operation: "set",
+				override: {
+					state: "disabled",
+					reason: "Agent attempted authority",
+					audit: sessionAudit("agent-tool"),
+					againstDefinitionRevision: installed.revision,
+				},
+			},
+			add,
+			decision(add.id, "approved", "block"),
+			{
+				kind: "definition",
+				id: id(),
+				ruleId: "local.one",
+				state: "retired",
+				reason: "Agent attempted authority",
+				audit: sessionAudit("agent-tool"),
+			},
+		];
+		const reduced = reduceRuleEvents(events);
+		assert.equal(reduced.records.get(installed.id)?.override, undefined);
+		assert.equal(reduced.records.get("local.one")?.definition.state, "active");
+	});
+
+	it("does not count package rows toward the local rule cap", () => {
+		const rows = Array.from({ length: MAX_LOCAL_RULES + 10 }, (_, index) => row(`routing.package-${index}`));
+		assert.equal(reduceRuleEvents([catalog(...rows)]).records.size, MAX_LOCAL_RULES + 10);
+	});
+});
+
+describe("RuleRegistry catalog synchronization", () => {
+	it("syncs package changes as full catalog events and preserves an override across removal and return", async () => {
+		const dir = await tempDir();
+		const a1 = row("routing.a", "A v1");
+		const b = row("routing.b", "B");
+		let registry = new RuleRegistry(dir, { catalog: [a1], matcherAvailable: () => true, onNotice: assert.fail });
+		let snapshot = await registry.snapshot();
+		assert.equal(snapshot.records.get(a1.id)?.definition.note, "A v1");
+		assert.deepEqual(await lines(dir), [catalog(a1)]);
+		await registry.snapshot();
+		assert.deepEqual(await lines(dir), [catalog(a1)], "idempotent snapshot must not append a catalog event");
+
+		const a2 = row("routing.a", "A v2");
+		registry = new RuleRegistry(dir, { catalog: [a2, b], matcherAvailable: () => true, onNotice: assert.fail });
+		snapshot = await registry.snapshot();
+		assert.equal(snapshot.records.get(a2.id)?.definition.note, "A v2");
+		assert.equal(snapshot.records.get(b.id)?.definition.state, "active");
+		assert.deepEqual(await lines(dir), [catalog(a1), catalog(a2, b)]);
+
+		registry = new RuleRegistry(dir, { catalog: [b, a2], matcherAvailable: () => true, onNotice: assert.fail });
+		await registry.snapshot();
+		assert.deepEqual(await lines(dir), [catalog(a1), catalog(a2, b)], "catalog order alone must not append an event");
+		await registry.setEffect(b.id, "steer", "Keep this calibration", sessionAudit());
+
+		registry = new RuleRegistry(dir, { catalog: [a2], matcherAvailable: () => true, onNotice: assert.fail });
+		snapshot = await registry.snapshot();
+		assert.equal(snapshot.records.get(b.id)?.definition.state, "retired");
+		assert.equal(snapshot.records.get(b.id)?.override?.reason, "Keep this calibration");
+
+		registry = new RuleRegistry(dir, { catalog: [a2, b], matcherAvailable: () => true, onNotice: assert.fail });
+		snapshot = await registry.snapshot();
+		assert.equal(snapshot.records.get(b.id)?.definition.state, "active");
+		assert.equal(snapshot.records.get(b.id)?.override?.effect, "steer");
+		assert.equal(snapshot.records.get(b.id)?.override?.reason, "Keep this calibration");
+		const events = await lines(dir);
+		assert.deepEqual(
+			events.filter((event): event is CatalogEvent => event.kind === "catalog"),
+			[catalog(a1), catalog(a2, b), catalog(a2), catalog(a2, b)],
+		);
+		assert.deepEqual(
+			events.map((event) => event.kind),
+			["catalog", "catalog", "override", "catalog", "catalog"],
+		);
+	});
+
+	it("makes concurrent catalog payloads byte-identical across opposite installed row order", async () => {
+		const dir = await tempDir();
+		const a = row("routing.a");
+		const b = row("routing.b");
+		const first = { catalog: [a, b], matcherAvailable: () => true, onNotice: assert.fail };
+		const second = { catalog: [b, a], matcherAvailable: () => true, onNotice: assert.fail };
+		await Promise.all([new RuleRegistry(dir, first).snapshot(), new RuleRegistry(dir, second).snapshot()]);
+		const payloads = (await readFile(join(dir, RULES_FILE), "utf8")).trim().split("\n");
+		assert.ok(payloads.length === 1 || payloads.length === 2);
+		assert.equal(new Set(payloads).size, 1);
+		for (const payload of payloads) assert.deepEqual(validateRuleEvent(JSON.parse(payload)), catalog(a, b));
+		assert.equal((await stat(join(dir, RULES_FILE))).mode & 0o777, 0o600);
+		assert.equal((await stat(dir)).mode & 0o777, 0o700);
+	});
+
+	it("retains a colliding local record without degrading other overrides or writes", async () => {
+		const dir = await tempDir();
+		const collisionId = "routing.collision";
+		const installedCollision = row(collisionId, "Package collision must be skipped");
+		const other = row("routing.other", "Other package rule");
+		const add = proposal("add", collisionId);
+		const otherOverride: RuleEvent = {
+			kind: "override",
+			id: id(),
+			ruleId: other.id,
+			operation: "set",
+			override: {
+				effect: "steer",
+				reason: "Keep this operator calibration",
+				audit: sessionAudit(),
+				againstDefinitionRevision: other.revision,
+			},
+		};
+		await mkdir(dir, { mode: 0o700 });
+		await writeFile(
+			join(dir, RULES_FILE),
+			`${[add, decision(add.id, "approved", "steer"), catalog(installedCollision, other), otherOverride]
+				.map((event) => JSON.stringify(event))
+				.join("\n")}\n`,
+			{ mode: 0o600 },
+		);
+		const notices: string[] = [];
+		const registry = new RuleRegistry(dir, {
+			catalog: [installedCollision, other],
+			matcherAvailable: () => true,
+			onNotice: (message) => notices.push(message),
+		});
+		let snapshot = await registry.snapshot();
+		const collision = snapshot.records.get(collisionId)!;
+		assert.equal(collision.source.kind, "local");
+		assert.equal(collision.definition.note, candidate(collisionId).note);
+		assert.equal(snapshot.records.size, 2);
+		assert.equal(snapshot.records.get(other.id)?.override?.reason, "Keep this operator calibration");
+		assert.equal(snapshot.records.get(other.id)?.override?.effect, "steer");
+		assert.equal(snapshot.health.status, "ok");
+		assert.deepEqual(snapshot.health.catalogCollisions, [collisionId]);
+		assert.match(ruleStoreHealthLine(snapshot.health), /degraded=false.*routing\.collision/);
+		assert.deepEqual(
+			matchRuleRecords("bash", "grep -R needle src", [collision], {
+				cwd: "/work/project",
+				provider: "openai",
+				model: "openai/gpt-5",
+			}),
+			[collision],
+		);
+		assert.deepEqual(notices, []);
+
+		await registry.disable(other.id, "Writes remain available", sessionAudit());
+		snapshot = await registry.snapshot();
+		assert.equal(effectiveState(snapshot.records.get(other.id)!), "disabled");
+		assert.equal(snapshot.health.status, "ok");
+		assert.deepEqual(snapshot.health.catalogCollisions, [collisionId]);
+	});
+
+	it("marks a package matcher unavailable without changing its definition", async () => {
+		const installed = row("routing.unavailable");
+		const registry = new RuleRegistry(await tempDir(), {
+			catalog: [installed],
+			matcherAvailable: () => false,
+			onNotice: assert.fail,
+		});
+		const record = (await registry.snapshot()).records.get(installed.id)!;
+		assert.equal(record.definition.state, "active");
+		assert.equal(record.matcherAvailable, false);
+	});
+
+	it("performs no filesystem work in the constructor", async () => {
+		const dir = await tempDir();
+		new RuleRegistry(dir, { catalog: [row("routing.a")], matcherAvailable: () => true, onNotice: assert.fail });
+		await assert.rejects(stat(dir), /ENOENT/);
+	});
+});
+
+describe("RuleRegistry operator gates and override composition", () => {
+	it("keeps an effect override through disable and enable", async () => {
+		const dir = await tempDir();
+		const installed = row("routing.a", "A", "block");
+		const registry = new RuleRegistry(dir, {
+			catalog: [installed],
+			matcherAvailable: () => true,
+			onNotice: assert.fail,
+		});
+		await registry.setEffect(installed.id, "steer", "Calibrate effect", sessionAudit("command"));
+		await registry.disable(installed.id, "Pause this rule", sessionAudit("command"));
+		let record = (await registry.snapshot()).records.get(installed.id)!;
+		assert.equal(effectiveState(record), "disabled");
+		assert.equal(effectiveEffect(record), "steer");
+		assert.equal(record.override?.effect, "steer");
+		assert.equal(record.override?.reason, "Pause this rule");
+
+		await registry.enable(installed.id, "Resume but retain effect", sessionAudit("command"));
+		record = (await registry.snapshot()).records.get(installed.id)!;
+		assert.equal(effectiveState(record), "active");
+		assert.equal(effectiveEffect(record), "steer");
+		assert.equal(record.override?.state, undefined);
+		assert.equal(record.override?.effect, "steer");
+		assert.equal(record.override?.reason, "Resume but retain effect");
+
+		const events = await lines(dir);
+		const slots = events.filter((event) => event.kind === "override" && event.operation === "set");
+		assert.deepEqual(
+			slots.map((event) => ({
+				state: event.override.state,
+				effect: event.override.effect,
+				againstDefinitionRevision: event.override.againstDefinitionRevision,
+			})),
+			[
+				{ state: undefined, effect: "steer", againstDefinitionRevision: installed.revision },
+				{ state: "disabled", effect: "steer", againstDefinitionRevision: installed.revision },
+				{ state: undefined, effect: "steer", againstDefinitionRevision: installed.revision },
+			],
+		);
+	});
+
+	it("uses a clear when enable leaves no override fields", async () => {
+		const installed = row("routing.a");
+		const registry = new RuleRegistry(await tempDir(), {
+			catalog: [installed],
+			matcherAvailable: () => true,
+			onNotice: assert.fail,
+		});
+		await registry.disable(installed.id, "Pause", sessionAudit("panel"));
+		const clear = await registry.enable(installed.id, "Resume", sessionAudit("panel"));
+		assert.equal(clear.operation, "clear");
+		assert.equal((await registry.snapshot()).records.get(installed.id)?.override, undefined);
+	});
+
+	it("allows direct overrides for package rules but direct retirement only for local rules", async () => {
+		const registry = new RuleRegistry(await tempDir(), {
+			catalog: [row("routing.a")],
+			matcherAvailable: () => true,
+			onNotice: assert.fail,
+		});
+		await registry.disable("routing.a", "Operator pause", sessionAudit());
+		await assert.rejects(registry.retire("routing.a", "Cannot retire package", sessionAudit()), /only local rules/);
+		const add = await registry.proposeAdd(candidate("local.one"), "Add local", sessionAudit("agent-tool") as never);
+		await registry.decide(add.id, "approved", "block", sessionAudit());
+		const activeRevision = (await registry.snapshot()).records.get("local.one")?.definition.revision;
+		await registry.retire("local.one", "No longer useful", sessionAudit("panel"));
+		const retired = (await registry.snapshot()).records.get("local.one");
+		assert.equal(retired?.definition.state, "retired");
+		assert.equal(retired?.definition.revision, activeRevision);
+	});
+
+	it("refuses agent-surface decisions, overrides, and definitions at the writer", async () => {
+		const registry = new RuleRegistry(await tempDir(), {
+			catalog: [row("routing.a")],
+			matcherAvailable: () => true,
+			onNotice: assert.fail,
+		});
+		const add = await registry.proposeAdd(candidate("local.one"), "Add local", sessionAudit("agent-tool") as never);
+		await assert.rejects(registry.decide(add.id, "approved", "block", sessionAudit("agent-tool")), /operator surface/);
+		await assert.rejects(registry.disable("routing.a", "Agent pause", sessionAudit("agent-tool")), /operator surface/);
+		await registry.decide(add.id, "approved", "block", sessionAudit("command"));
+		await assert.rejects(
+			registry.retire("local.one", "Agent retirement", sessionAudit("agent-tool")),
+			/definition events require an operator surface/,
+		);
+	});
+
+	it("refuses approval when the proposal target has since retired", async () => {
+		const dir = await tempDir();
+		const installed = row("routing.a");
+		let registry = new RuleRegistry(dir, {
+			catalog: [installed],
+			matcherAvailable: () => true,
+			onNotice: assert.fail,
+		});
+		const pending = await registry.proposeDisable(
+			installed.id,
+			"Pause after review",
+			sessionAudit("agent-tool") as never,
+		);
+		registry = new RuleRegistry(dir, { catalog: [], matcherAvailable: () => true, onNotice: assert.fail });
+		assert.equal((await registry.snapshot()).records.get(installed.id)?.definition.state, "retired");
+		await assert.rejects(
+			registry.decide(pending.id, "approved", undefined, sessionAudit("panel")),
+			/cannot approve disable proposal: target "routing\.a" is retired/,
+		);
+		assert.equal((await registry.snapshot()).pending[0]?.id, pending.id);
+	});
+
+	it("approves against a changed definition revision and tracks later divergence", async () => {
+		const dir = await tempDir();
+		const first = row("routing.a", "First definition");
+		let registry = new RuleRegistry(dir, {
+			catalog: [first],
+			matcherAvailable: () => true,
+			onNotice: assert.fail,
+		});
+		const pending = await registry.proposeDisable(
+			first.id,
+			"Approve against the current definition",
+			sessionAudit("agent-tool") as never,
+		);
+		const changed = row(first.id, "Changed before approval");
+		registry = new RuleRegistry(dir, { catalog: [changed], matcherAvailable: () => true, onNotice: assert.fail });
+		await registry.decide(pending.id, "approved", undefined, sessionAudit("command"));
+		let record = (await registry.snapshot()).records.get(first.id)!;
+		assert.equal(record.override?.againstDefinitionRevision, changed.revision);
+		assert.equal(record.staleOverride, false);
+
+		const changedAgain = row(first.id, "Changed after approval");
+		registry = new RuleRegistry(dir, { catalog: [changedAgain], matcherAvailable: () => true, onNotice: assert.fail });
+		record = (await registry.snapshot()).records.get(first.id)!;
+		assert.equal(record.override?.againstDefinitionRevision, changed.revision);
+		assert.equal(record.staleOverride, true);
+	});
+
+	it("makeRuleAudit records exact surface, model, session, and time", () => {
+		const audit = makeRuleAudit(
+			{ sessionManager: { getSessionId: () => "s2" }, model: { provider: "anthropic", id: "claude" } },
+			"panel",
+			new Date("2026-10-01T00:00:00Z"),
+		);
+		assert.deepEqual(audit, {
+			at: "2026-10-01T00:00:00.000Z",
+			session: "s2",
+			model: "anthropic/claude",
+			surface: "panel",
+		});
+	});
+});
+
+describe("unreadable and append-in-flight stores", () => {
+	it("falls back to package defaults, reports a concrete line repair, and refuses writes", async () => {
+		const dir = await tempDir();
+		await mkdir(dir, { mode: 0o700 });
+		const installed = row("routing.default");
+		await writeFile(join(dir, RULES_FILE), `${JSON.stringify(catalog(installed))}\n{"kind":"broken"}\n`, {
+			mode: 0o600,
+		});
+		const notices: string[] = [];
+		const registry = new RuleRegistry(dir, {
+			catalog: [installed],
+			matcherAvailable: () => true,
+			onNotice: (message) => notices.push(message),
+		});
+		let snapshot = await registry.snapshot();
+		assert.equal(snapshot.health.status, "degraded");
+		assert.equal(snapshot.health.line, 2);
+		assert.match(snapshot.health.message ?? "", new RegExp(`${RULES_FILE}.*line 2`));
+		assert.match(
+			snapshot.health.repair ?? "",
+			/append-only JSONL with one event per line; edit or remove line 2, then start a new policy session/,
+		);
+		assert.deepEqual([...snapshot.records.keys()], [installed.id]);
+		assert.equal(notices.length, 1);
+		snapshot = await registry.snapshot();
+		assert.equal(snapshot.health.status, "degraded");
+		assert.equal(notices.length, 1);
+		await assert.rejects(registry.disable(installed.id, "Should fail", sessionAudit()), /writes are refused/);
+	});
+
+	it("attributes a reduction invariant failure to the event line that exceeded the bound", async () => {
+		const dir = await tempDir();
+		await mkdir(dir, { mode: 0o700 });
+		const events = Array.from({ length: MAX_PENDING_PROPOSALS + 1 }, (_, index) =>
+			proposal("add", `local.pending-${index}`),
+		);
+		await writeFile(join(dir, RULES_FILE), `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, {
+			mode: 0o600,
+		});
+		const registry = new RuleRegistry(dir, { catalog: [], matcherAvailable: () => true, onNotice: () => {} });
+		const snapshot = await registry.snapshot();
+		assert.equal(snapshot.health.status, "degraded");
+		assert.equal(snapshot.health.line, MAX_PENDING_PROPOSALS + 1);
+		assert.match(
+			snapshot.health.message ?? "",
+			new RegExp(`line ${MAX_PENDING_PROPOSALS + 1}: rule store exceeds ${MAX_PENDING_PROPOSALS} pending proposals`),
+		);
+		assert.match(snapshot.health.repair ?? "", new RegExp(`edit or remove line ${MAX_PENDING_PROPOSALS + 1}`));
+	});
+
+	it("reports a file-level failure as the failing property with its repair action", async () => {
+		const dir = await tempDir();
+		await mkdir(dir, { mode: 0o700 });
+		await writeFile(join(dir, RULES_FILE), "", { mode: 0o600 });
+		await chmod(join(dir, RULES_FILE), 0o644);
+		const registry = new RuleRegistry(dir, { catalog: [], matcherAvailable: () => true, onNotice: () => {} });
+		const snapshot = await registry.snapshot();
+		assert.equal(snapshot.health.status, "degraded");
+		assert.equal(snapshot.health.line, undefined);
+		assert.equal(snapshot.health.property, "file mode");
+		assert.match(snapshot.health.message ?? "", /failing property "file mode"/);
+		assert.doesNotMatch(snapshot.health.message ?? "", /line 0/);
+		assert.match(snapshot.health.repair ?? "", /set .*rules\.jsonl mode to 0600/);
+	});
+
+	it("skips only an incomplete final line, reports it once, and refuses writes until repaired", async () => {
+		const dir = await tempDir();
+		const stored = row("routing.default", "Stored v1");
+		const installed = row("routing.default", "Installed v2");
+		const completeOverride: RuleEvent = {
+			kind: "override",
+			id: id(),
+			ruleId: stored.id,
+			operation: "set",
+			override: {
+				effect: "steer",
+				reason: "Complete preceding event",
+				audit: sessionAudit(),
+				againstDefinitionRevision: stored.revision,
+			},
+		};
+		const completePrefix = `${JSON.stringify(catalog(stored))}\n${JSON.stringify(completeOverride)}\n`;
+		await mkdir(dir, { mode: 0o700 });
+		await writeFile(join(dir, RULES_FILE), `${completePrefix}{"kind":"proposal"`, { mode: 0o600 });
+		const notices: string[] = [];
+		const registry = new RuleRegistry(dir, {
+			catalog: [installed],
+			matcherAvailable: () => true,
+			onNotice: (message) => notices.push(message),
+		});
+		const snapshot = await registry.snapshot();
+		assert.equal(snapshot.health.status, "ok");
+		assert.equal(snapshot.health.incompleteFinalLine, 3);
+		assert.equal(snapshot.records.get(installed.id)?.definition.note, "Installed v2");
+		assert.equal(snapshot.records.get(installed.id)?.override?.effect, "steer");
+		await registry.snapshot();
+		assert.equal(notices.length, 1);
+		await assert.rejects(
+			registry.disable(installed.id, "Wait", sessionAudit()),
+			/append in flight.*writes are refused/i,
+		);
+
+		await writeFile(join(dir, RULES_FILE), completePrefix, { mode: 0o600 });
+		await chmod(join(dir, RULES_FILE), 0o600);
+		await registry.disable(installed.id, "Repaired", sessionAudit());
+		const repairedEvents = await lines(dir);
+		assert.equal(repairedEvents[2]?.kind, "catalog");
+		if (repairedEvents[2]?.kind === "catalog") assert.equal(repairedEvents[2].rows[0]?.revision, installed.revision);
+		assert.equal(repairedEvents[3]?.kind, "override");
+		if (repairedEvents[3]?.kind === "override" && repairedEvents[3].operation === "set") {
+			assert.equal(repairedEvents[3].override.effect, "steer");
+			assert.equal(repairedEvents[3].override.againstDefinitionRevision, installed.revision);
+		}
 	});
 });

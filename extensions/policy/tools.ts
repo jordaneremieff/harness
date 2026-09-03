@@ -1,7 +1,9 @@
-/** Agent proposal and read-only local-rule tools. */
+/** Agent proposal and read-only unified rule tools. */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { ruleScopeVisibility } from "./classify.ts";
+import { effectiveEffect, effectiveState } from "./rule.ts";
 import {
 	makeRuleAudit,
 	MAX_COMMAND_LENGTH,
@@ -10,9 +12,10 @@ import {
 	MAX_LIST_ENTRY_LENGTH,
 	MAX_NOTE_LENGTH,
 	MAX_REASON_LENGTH,
-	MAX_SLUG_LENGTH,
-	type LocalRuleRegistry,
-	type LocalRuleSnapshot,
+	MAX_RULE_ID_LENGTH,
+	ruleStoreHealthLine,
+	type RuleRegistry,
+	type RuleSnapshot,
 } from "./local-rules.ts";
 import { capText, terminalSafe } from "./panel.ts";
 
@@ -59,7 +62,7 @@ const MatchSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
-const SuggestSchema = Type.Object(
+const SuggestionSchema = Type.Object(
 	{
 		command: Type.String({ minLength: 1, maxLength: MAX_COMMAND_LENGTH }),
 		flags: Type.Optional(StringList),
@@ -80,119 +83,171 @@ const ScopeSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
-const SlugSchema = Type.String({
+const RuleIdSchema = Type.String({
 	minLength: 1,
-	maxLength: MAX_SLUG_LENGTH,
+	maxLength: MAX_RULE_ID_LENGTH,
 	pattern: "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$",
 });
 const ReasonSchema = Type.String({ minLength: 1, maxLength: MAX_REASON_LENGTH });
 
-export const PolicyProposeParams = Type.Union([
-	Type.Object(
-		{
-			operation: Type.Literal("upsert"),
-			slug: SlugSchema,
-			reason: ReasonSchema,
-			note: Type.String({ minLength: 1, maxLength: MAX_NOTE_LENGTH }),
-			match: MatchSchema,
-			suggest: Type.Optional(SuggestSchema),
-			scope: Type.Optional(ScopeSchema),
-		},
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{
-			operation: Type.Literal("discard"),
-			slug: SlugSchema,
-			reason: ReasonSchema,
-		},
-		{ additionalProperties: false },
-	),
-]);
+export const PolicyProposeParams = Type.Union(
+	[
+		Type.Object(
+			{
+				operation: Type.Literal("add"),
+				id: RuleIdSchema,
+				reason: ReasonSchema,
+				note: Type.String({ minLength: 1, maxLength: MAX_NOTE_LENGTH }),
+				match: MatchSchema,
+				suggestion: Type.Optional(SuggestionSchema),
+				scope: Type.Optional(ScopeSchema),
+			},
+			{ additionalProperties: false },
+		),
+		Type.Object(
+			{
+				operation: Type.Literal("retire"),
+				id: RuleIdSchema,
+				reason: ReasonSchema,
+			},
+			{ additionalProperties: false },
+		),
+		Type.Object(
+			{
+				operation: Type.Literal("disable"),
+				id: RuleIdSchema,
+				reason: ReasonSchema,
+			},
+			{ additionalProperties: false },
+		),
+	],
+	{ type: "object" },
+);
 
 export const PolicyRulesParams = Type.Object({}, { additionalProperties: false });
 
 interface ToolDeps {
-	registry: LocalRuleRegistry;
-	/** Loads through the session failure boundary before a tool writes. */
-	loadRegistry(): Promise<LocalRuleSnapshot>;
-	readRegistry(): Promise<{ snapshot: LocalRuleSnapshot; error?: string }>;
-	refreshAfterWrite(): void;
+	registry: RuleRegistry;
+	loadRegistry(ctx: ExtensionContext): Promise<RuleSnapshot>;
 }
 
 function line(value: string): string {
-	return terminalSafe(value).replace(/[\r\n]+/g, "↵").replace(/\s+/g, " ").trim();
+	return terminalSafe(value)
+		.replace(/[\r\n]+/g, "↵")
+		.replace(/\s+/g, " ")
+		.trim();
 }
 
-export function formatLocalRulesTool(
-	snapshot: LocalRuleSnapshot,
-	context: Pick<ExtensionContext, "cwd" | "model">,
-	error?: string,
-): string {
+function audit(value: { at: string; session: string; model: string | null; surface: string }): string {
+	return `${value.surface} ${value.at} session=${value.session} model=${value.model ?? "(none)"}`;
+}
+
+export function formatRulesTool(snapshot: RuleSnapshot, context: Pick<ExtensionContext, "cwd" | "model">): string {
 	const model = context.model;
 	const lines = [
 		"SESSION CONTEXT",
 		`model provider: ${model ? line(model.provider) : "(none)"}`,
 		`model: ${model ? line(`${model.provider}/${model.id}`) : "(none)"}`,
 		`cwd: ${line(context.cwd)}`,
+		line(ruleStoreHealthLine(snapshot.health)),
+		`record count: ${snapshot.records.size} | pending proposal count: ${snapshot.pending.length}`,
 		"",
-		"LOCAL RULES",
+		"RULES",
 	];
-	if (snapshot.rules.length === 0) lines.push("(none)");
-	else for (const rule of snapshot.rules) lines.push(`${line(rule.slug)} | ${rule.state} | ${rule.effect} | ${line(rule.note)}`);
+	if (snapshot.records.size === 0) lines.push("(none)");
+	for (const record of snapshot.records.values()) {
+		const source = record.source.kind === "package" ? "package" : `local proposal=${record.source.proposalId}`;
+		const matcher =
+			record.matcher.kind === "code" ? `code:${record.matcher.key}` : `declarative:${record.matcher.language}`;
+		lines.push(
+			[
+				line(record.id),
+				`source=${source}`,
+				`domain=${record.domain}`,
+				`matcher=${matcher}`,
+				`state=${effectiveState(record)}`,
+				`effect=${effectiveEffect(record)}`,
+				`override reason=${record.override ? line(record.override.reason) : "(none)"}`,
+				`stale=${record.staleOverride}`,
+				`available=${record.matcherAvailable}`,
+				`note=${line(record.definition.note)}`,
+			].join(" | "),
+		);
+		lines.push(
+			`  definition: revision=${record.definition.revision} state=${record.definition.state} effect=${record.definition.effect}`,
+			`  suggestion: ${record.definition.suggestion ? line(JSON.stringify(record.definition.suggestion)) : "(none)"}`,
+			`  scope: ${record.definition.scope ? line(JSON.stringify(record.definition.scope)) : "(none)"}`,
+			`  ${ruleScopeVisibility(record, {
+				cwd: context.cwd,
+				...(model ? { provider: model.provider, model: `${model.provider}/${model.id}` } : {}),
+			})}`,
+		);
+		if (record.source.kind === "local") lines.push(`  approved audit: ${line(audit(record.source.approvedAudit))}`);
+		if (record.override) {
+			lines.push(
+				`  override audit: ${line(audit(record.override.audit))}`,
+				`  override against revision: ${record.override.againstDefinitionRevision}`,
+			);
+		}
+	}
 	lines.push("", "PENDING PROPOSALS");
 	if (snapshot.pending.length === 0) lines.push("(none)");
 	else {
 		for (const proposal of snapshot.pending) {
-			lines.push(`${proposal.id} | ${proposal.operation} | ${line(proposal.slug)} | ${line(proposal.reason)}`);
+			lines.push(`${proposal.id} | ${proposal.operation} | ${line(proposal.ruleId)} | ${line(proposal.reason)}`);
 		}
 	}
-	lines.push("", `registry health: ${error ? `unreadable: ${line(error)}` : "ok"}`);
+	lines.push("", line(ruleStoreHealthLine(snapshot.health)));
 	return capText(lines.join("\n"));
 }
 
-export function registerLocalRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
+export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 	pi.registerTool<typeof PolicyProposeParams, Record<string, unknown>>({
 		name: "policy_propose",
 		label: "Policy propose",
 		description:
-			"Submit one inert local-rule proposal for operator review. upsert requires slug, reason, note, and match; discard permits only slug and reason. Match grammar: command exact; flags all present; absentFlags none present; operands min/max count non-flag args, any accepts one listed operand, at maps zero-based operand indexes to allowed values; pipe from/to/fromRedirect/toRedirect are exact booleans, next lists the immediate next command, later lists any later command. Optional suggest has command and flags. Optional scope restricts session context: modelProviders holds exact model provider identifiers (for example, openai-codex); models holds exact provider/id strings (for example, openai-codex/gpt-5.6-sol); cwdPrefixes holds absolute directory paths used as prefixes. Before authoring scope, call policy_rules for the exact current provider, provider/id model string, and working directory values. Scope does not select which command or tool the rule matches; match.command does that. This tool cannot approve, reject, set state, or set effect.",
+			"Submit one inert policy-rule proposal for operator review. add requires id, reason, note, and match; retire and disable permit only id and reason. Match grammar: command exact; flags all present; absentFlags none present; operands min/max count non-flag args, any accepts one listed operand, at maps zero-based operand indexes to allowed values; pipe from/to/fromRedirect/toRedirect are exact booleans, next lists the immediate next command, later lists any later command. Optional suggestion has command and flags. Optional scope restricts session context: modelProviders holds exact provider identifiers; models holds exact provider/id strings; cwdPrefixes holds absolute directory prefixes. Call policy_rules before authoring scope. The tool cannot choose an effect or exercise an operator gate.",
 		promptSnippet: "Propose an inert local policy rule for operator review",
 		promptGuidelines: [
-			"Use policy_propose only when the operator asks for a local policy rule. A proposal is inert until the operator approves it.",
-			"Use policy_rules to inspect retained rules and pending proposals before proposing a change.",
+			"Use policy_propose only when the operator asks for a local policy rule. A proposal is inert until operator approval.",
+			"Use policy_rules to inspect all rules, pending proposals, health, and exact session scope values before proposing a change.",
 		],
 		parameters: PolicyProposeParams,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("policy_propose cancelled");
-			await deps.loadRegistry();
-			const audit = makeRuleAudit(ctx, "agent-tool");
+			await deps.loadRegistry(ctx);
+			const operatorIndependentAudit = makeRuleAudit(ctx, "agent-tool");
 			const event =
-				params.operation === "upsert"
-					? await deps.registry.proposeUpsert(
+				params.operation === "add"
+					? await deps.registry.proposeAdd(
 							{
-								slug: params.slug,
+								id: params.id,
+								domain: "tool-call",
+								matcher: { kind: "declarative", language: "command-shape/v1", spec: params.match },
 								note: params.note,
-								match: params.match,
-								suggest: params.suggest,
+								suggestion: params.suggestion,
 								scope: params.scope,
 							},
 							params.reason,
-							audit,
+							operatorIndependentAudit,
 						)
-					: await deps.registry.proposeDiscard(params.slug, params.reason, audit);
-			deps.refreshAfterWrite();
+					: params.operation === "retire"
+						? await deps.registry.proposeRetire(params.id, params.reason, operatorIndependentAudit)
+						: await deps.registry.proposeDisable(params.id, params.reason, operatorIndependentAudit);
+			await deps.loadRegistry(ctx);
 			return {
 				content: [
 					{
 						type: "text" as const,
 						text: capText(
-							terminalSafe(`Pending proposal ${event.id}: ${event.operation} ${event.slug}. It is inert until operator approval.`),
+							terminalSafe(
+								`Pending proposal ${event.id}: ${event.operation} ${event.ruleId}. It is inert until operator approval.`,
+							),
 							2048,
 						),
 					},
 				],
-				details: { proposalId: event.id, state: "pending", operation: event.operation, slug: event.slug },
+				details: { proposalId: event.id, state: "pending", operation: event.operation, ruleId: event.ruleId },
 			};
 		},
 	});
@@ -201,18 +256,19 @@ export function registerLocalRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 		name: "policy_rules",
 		label: "Policy rules",
 		description:
-			"Read retained local rules, inert pending proposals, and the current session context for scope authoring. Session context reports the exact model provider, provider/id model string, and working directory. Rows include rule state/effect/note or proposal id/operation/slug/reason, followed by registry health. This tool is read-only and has no operator-gate parameters.",
-		promptSnippet: "Inspect local policy rules and pending proposals",
+			"Read the current session context, every package and local rule record, inert pending proposals, and rule-store health. Rows report provenance, matcher, effective state/effect, override reason, staleness, and matcher availability. This tool is read-only.",
+		promptSnippet: "Inspect unified policy rules, pending proposals, and health",
 		parameters: PolicyRulesParams,
 		async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("policy_rules cancelled");
-			const loaded = await deps.readRegistry();
+			const snapshot = await deps.loadRegistry(ctx);
 			return {
-				content: [{ type: "text" as const, text: formatLocalRulesTool(loaded.snapshot, ctx, loaded.error) }],
+				content: [{ type: "text" as const, text: formatRulesTool(snapshot, ctx) }],
 				details: {
-					rules: loaded.snapshot.rules.length,
-					pending: loaded.snapshot.pending.length,
-					registryError: loaded.error,
+					rules: snapshot.records.size,
+					pending: snapshot.pending.length,
+					ruleStoreDegraded: snapshot.health.status === "degraded",
+					ruleStorePath: snapshot.health.path,
 				},
 			};
 		},

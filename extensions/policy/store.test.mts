@@ -13,6 +13,7 @@ const record = (at: string): PolicyRecord => ({
 	model: "xai/grok-4.6",
 	thinkingLevel: "high",
 	projectContext: false,
+	ruleStoreDegraded: false,
 	at,
 	tool: "bash",
 	callId: "c1",
