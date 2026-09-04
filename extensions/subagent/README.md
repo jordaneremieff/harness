@@ -14,6 +14,22 @@ No gates, no enterprise controls, no supervisor, no daemon. The server lives in
 the parent session; the store is the application's persistence authority; the
 parent's own tools manage workers.
 
+## Version boundary
+
+Pi's loader binds this extension's imports of `@earendil-works/pi-coding-agent`,
+`@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`,
+`@earendil-works/pi-ai` and its `/compat`, `/oauth`, and `/providers/all`
+subpaths, and `typebox` to the running installation. Protocol and server resolve
+from the extension's own `node_modules`. With a newer installed Pi, workers
+therefore execute installed session code while repository tests use the pinned
+peer packages.
+
+This checkout keeps protocol and server at 0.84.2. The 0.85.0 protocol entry
+exports only its CBOR, codec, framing, and protocol-envelope names. It omits the
+transcript, session, thinking-level, model-reference, and metadata types this
+extension and server 0.84.2 import. Moving protocol alone produces type errors;
+a migration must move both packages and run every repository gate.
+
 ## Tools
 
 | Tool | Mode | Purpose |
@@ -166,8 +182,8 @@ dispatching session's own directory the session's live trust decision does
 transfer, session-only answers and overrides included. Any other directory
 resolves trust from scratch, the way a session started there does.
 
-Pi 0.84.2 does not expose a parent SDK session's `agentDir` through
-`ExtensionContext`. An SDK host that passes a custom `agentDir` must set
+Pi 0.84.2 and 0.85.0 do not expose a parent SDK session's `agentDir`
+through `ExtensionContext`. An SDK host that passes a custom `agentDir` must set
 `PI_CODING_AGENT_DIR` to the same directory before it loads this extension.
 Without that process setting, workers use Pi's process agent directory instead
 of the SDK-only value. Normal Pi CLI sessions already use the process value.
@@ -334,6 +350,9 @@ it with `subagent_steer` (a fresh allowance), or end it with `subagent_kill`. A
 pause left unresumed is released by the interrupted-idle deadline like any
 other paused worker.
 
+On Pi 0.85.0, threshold compaction can run inside one run leg before the next
+assistant response. Its summary cost counts toward that leg's budget.
+
 The budget is evaluated when the worker's usage lands (message end, compaction
 end), which is the only moment spend is knowable; the deadline runs on its own
 timer. Neither samples a clock in a loop, and neither ends a worker.
@@ -391,11 +410,16 @@ transcript items in human-readable form. It shows thinking, tool-call inputs,
 tool outcomes, and assistant errors. The transcript tail is capped at 24KB and
 32 items; older or oversized content produces an explicit truncation marker.
 Retained inspection follows the session file's active branch and excludes
-abandoned branches. Every worker-controlled line has a visible quote prefix,
-and direction controls are removed, so worker text cannot imitate the
-renderer's record headings. Redacted reasoning carries an explicit `REDACTED`
-label. Worker-authored content remains marked as unverified data, not
-instructions.
+abandoned branches. Whenever the worker is not live in this process, including a
+live worker owned by another session, the extension reads that session file
+directly. Pi 0.85.0 appends a missing final newline during such a read. If the
+owning process appends a record at that moment, the added newline splits that
+record, and later parsers skip it. The newline does not change the displayed
+transcript: the session format stays version 3 and `getBranch()` selection is
+unchanged. Every worker-controlled line has a visible quote prefix, and
+direction controls are removed, so worker text cannot imitate the renderer's
+record headings. Redacted reasoning carries an explicit `REDACTED` label.
+Worker-authored content remains marked as unverified data, not instructions.
 
 A worker runs as a real `AgentSession` inside the dispatching session's process.
 It writes an ordinary pi session file (`worker.json` records `sessionFile` and
