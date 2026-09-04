@@ -41,8 +41,10 @@
  *     declared, empty allowlist — it is truthy, so the worker is built with
  *     `submit_result` and nothing else. That is a legitimate request (a
  *     pure-reasoning worker), and it is the caller's to make deliberately.
- *   - Workers are clean-context: project context files and skills are not
- *     loaded (documented; not tool inheritance).
+ *   - A worker's context is a session's context at its working directory: the
+ *     same settings, extensions, skills, prompt templates, and context files a
+ *     session started in that directory loads, under the same project-trust
+ *     resolution. A worker adds no context rule of its own.
  *   - A worker runs the extension lifecycle a primary session runs: its
  *     extensions receive `session_start` when it is built and
  *     `session_shutdown` when it is torn down, so an extension that opens
@@ -69,16 +71,24 @@ import { join, resolve } from "node:path";
 import { getSupportedThinkingLevels, StringEnum, type Usage } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
+	type AgentSessionServices,
 	type AgentToolUpdateCallback,
-	createAgentSession,
-	DefaultResourceLoader,
+	createAgentSessionFromServices,
+	createAgentSessionServices,
 	defineTool,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
 	getAgentDir,
+	hasTrustRequiringProjectResources,
 	keyHint,
+	type LoadExtensionsResult,
 	ModelRuntime,
+	type ProjectTrustContext,
+	type ProjectTrustEvent,
+	type ProjectTrustEventResult,
+	type ProjectTrustHandler,
+	ProjectTrustStore,
 	SessionManager,
 	SettingsManager,
 	type ToolInfo,
@@ -285,6 +295,11 @@ export interface WorkerRecord {
 	resolvedTools: string[];
 	/** Tool names omitted when a continuation degraded against the current surface. */
 	droppedTools: string[];
+	/** Non-fatal problems pi reported while building the worker's services:
+	 * unreadable settings, an extension that failed to load, a provider
+	 * registration that threw. An interactive session prints these at startup;
+	 * a worker has no such surface, so the dispatch carries them to the parent. */
+	setupDiagnostics: string[];
 	/** The worker's own session id — attach with this, and read its transcript. */
 	sessionId: string;
 	/** The worker's session file, for transcripts after the worker is gone. */
@@ -509,6 +524,7 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 		toolErrors: validateToolErrors(o.toolErrors),
 		resolvedTools: asStrArray(o.resolvedTools),
 		droppedTools: asStrArray(o.droppedTools),
+		setupDiagnostics: asStrArray(o.setupDiagnostics),
 		sessionId: asString(o.sessionId),
 		sessionFile: asStrOrNull(o.sessionFile),
 		socketPath: asString(o.socketPath),
@@ -906,7 +922,6 @@ function workerSystemPrompt(model: string): string {
 		"- Your deliverable must be submitted with the submit_result tool. The parent sees ONLY what you submit — put the full deliverable in the content argument.",
 		"- submit_result stores up to 50KB; keep the deliverable within that limit or it is truncated with a [truncated] marker.",
 		"- Call submit_result exactly once when your work is complete; it ends your run. Make it the ONLY tool call of that final turn — never batch another tool call alongside it (a sibling call in the same batch can be dropped when the run aborts, leaving a corrupt transcript). Do not emit a closing message.",
-		"- You are a clean-context worker: project context files and skills are not loaded.",
 		"- A tool that fails with an environment, authorization, or initialization error is a defect the parent must see. Name the tool, quote the exact error, and say what it blocked — in your result, even when you found another way. Reporting it is what gets it fixed.",
 		"- Use only alternatives already authorized by the task and environment. Do not use another account, credential, or privileged path. State the blocked tool and the non-secret alternative you used, such as an authorized direct API or cached artifact, so the parent can judge the result.",
 		"- Date your evidence. A cached file, an exported dump, or an old transcript describes the moment it was written; give its age where you rely on it, and do not present it as the current state.",
@@ -2026,6 +2041,127 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 	});
 }
 
+/**
+ * Ask the loaded extensions to decide the project trust of `cwd`.
+ *
+ * pi gives every extension with a `project_trust` handler the first say: the
+ * first answer of yes or no decides, `undecided` falls through to the next
+ * handler, and a handler that throws is reported and skipped. A background
+ * session has no operator surface, so the context reports no UI and its dialog
+ * calls answer the way pi's own non-interactive contexts answer them.
+ */
+async function extensionProjectTrust(
+	cwd: string,
+	extensionsResult: LoadExtensionsResult,
+	onDiagnostic: (message: string) => void,
+): Promise<ProjectTrustEventResult | null> {
+	const event: ProjectTrustEvent = { type: "project_trust", cwd };
+	const trustContext: ProjectTrustContext = {
+		cwd,
+		mode: "print",
+		hasUI: false,
+		ui: {
+			select: async () => undefined,
+			confirm: async () => false,
+			input: async () => undefined,
+			// A background session owns no output stream: the parent's terminal
+			// belongs to the parent, and writing to it corrupts that display.
+			notify: () => {},
+		},
+	};
+	for (const extension of extensionsResult.extensions) {
+		const handlers = extension.handlers.get("project_trust") ?? [];
+		for (const handler of handlers) {
+			try {
+				const decision = await (handler as unknown as ProjectTrustHandler)(event, trustContext);
+				if (decision.trusted === "undecided") continue;
+				return decision;
+			} catch (err) {
+				onDiagnostic(`Extension "${extension.path}" project_trust error: ${errText(err)}`);
+			}
+		}
+	}
+	return null;
+}
+
+export interface ProjectTrustInputs {
+	settingsManager: SettingsManager;
+	reloadOptions?: {
+		resolveProjectTrust: (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean>;
+	};
+}
+
+/**
+ * Build the settings manager and resource-reload inputs a session at `cwd`
+ * needs, resolving that directory's project trust the way pi resolves it.
+ *
+ * A directory with no trust-requiring project resources is trusted outright.
+ * Any other directory starts untrusted and is decided during the resource
+ * reload, in pi's own order: the `project_trust` extension handlers, then the
+ * saved decision in the trust store, then the global `defaultProjectTrust`
+ * setting. `ask` needs an operator, and a background session has none, so an
+ * otherwise undecided directory stays untrusted — the answer pi's
+ * non-interactive modes reach.
+ */
+export function projectTrustInputs(
+	cwd: string,
+	agentDir: string,
+	onDiagnostic: (message: string) => void = () => {},
+): ProjectTrustInputs {
+	const needsTrust = hasTrustRequiringProjectResources(cwd);
+	const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: !needsTrust });
+	if (!needsTrust) return { settingsManager };
+	const trustStore = new ProjectTrustStore(agentDir);
+	const defaultProjectTrust = settingsManager.getDefaultProjectTrust();
+	return {
+		settingsManager,
+		reloadOptions: {
+			resolveProjectTrust: async ({ extensionsResult }) => {
+				const decision = await extensionProjectTrust(cwd, extensionsResult, onDiagnostic);
+				if (decision) {
+					const trusted = decision.trusted === "yes";
+					if (decision.remember === true) trustStore.set(cwd, trusted);
+					return trusted;
+				}
+				const saved = trustStore.get(cwd);
+				if (saved !== null) return saved;
+				if (defaultProjectTrust === "always") return true;
+				return false;
+			},
+		},
+	};
+}
+
+/**
+ * Name the setup problems pi reported while a worker was built, or return an
+ * empty string. Dispatch and continuation both report them: a worker that came
+ * up without a resource its directory declares is the parent's to see.
+ */
+export function setupDiagnosticsLine(record: WorkerRecord | null): string {
+	const diagnostics = record?.setupDiagnostics ?? [];
+	return diagnostics.length > 0 ? `worker setup: ${diagnostics.join(" | ")}` : "";
+}
+
+/**
+ * Collect the non-fatal setup problems pi reports for a session's services.
+ *
+ * pi returns these instead of printing them, and its startup path shows the
+ * same three sources to the operator: the service diagnostics themselves,
+ * unreadable settings files, and extensions that failed to load. A worker has
+ * no startup surface, so the dispatch reports them to the parent.
+ */
+export function serviceDiagnostics(services: AgentSessionServices): string[] {
+	return [
+		...services.diagnostics.map(({ type, message }) => `${type}: ${message}`),
+		...services.settingsManager
+			.drainErrors()
+			.map(({ scope, error }) => `warning: Invalid ${scope} settings: ${error.message}`),
+		...services.resourceLoader
+			.getExtensions()
+			.errors.map(({ path, error }) => `error: Failed to load extension "${path}": ${error}`),
+	];
+}
+
 /** Create a fresh session manager, or fork a preserved terminal transcript. */
 export function workerSessionManager(cwd: string, continuation?: WorkerRecord): SessionManager {
 	if (!continuation) return SessionManager.create(cwd);
@@ -2138,6 +2274,7 @@ export async function dispatchWorker(
 		toolErrors: {},
 		resolvedTools,
 		droppedTools,
+		setupDiagnostics: [],
 		sessionId: "",
 		sessionFile: null,
 		socketPath: workerHost.socketPath,
@@ -2155,8 +2292,8 @@ export async function dispatchWorker(
 		return { id, state: "failed", error, record };
 	};
 
-	// Build the worker session: clean context, this session's tool surface,
-	// and the model/thinking the dispatch resolved.
+	// Build the worker session: a session's own context at the worker cwd, this
+	// session's tool surface, and the model/thinking the dispatch resolved.
 	let session: AgentSession;
 	let disposeSession: (() => void) | null = null;
 	let sessionManager: SessionManager;
@@ -2180,57 +2317,56 @@ export async function dispatchWorker(
 	// avoids any process-wide construction window or cross-session load race.
 	try {
 		await workerHost.ensureStarted(ctx);
-		// A task-selected cwd does not enable that directory's .pi settings.
-		// Load global packages and only the project-independent resources below.
+		// The worker is a session at its own working directory: pi loads that
+		// directory's settings, extensions, skills, prompt templates, and context
+		// files under the trust it resolves for it, exactly as it does for a
+		// session started there.
 		const workerAgentDir = getAgentDir();
-		const settingsManager = SettingsManager.create(cwd, workerAgentDir, {
-			projectTrusted: false,
-		});
+		const setupDiagnostics: string[] = [];
+		const trust = projectTrustInputs(cwd, workerAgentDir, (message) => setupDiagnostics.push(message));
 		const modelRuntime = await createWorkerModelRuntime(ctx, workerAgentDir);
+		const services = await createAgentSessionServices({
+			cwd,
+			agentDir: workerAgentDir,
+			settingsManager: trust.settingsManager,
+			modelRuntime,
+			resourceLoaderReloadOptions: trust.reloadOptions,
+			resourceLoaderOptions: {
+				// Always load this module into the worker: its worker-load branch
+				// carries the post-submit compaction veto. Dedupe against paths the
+				// surface already produced; if the module's own source path cannot
+				// be resolved, fall back to the surface's extension paths alone.
+				additionalExtensionPaths: (() => {
+					const self = ownToolSourcePath(ctx);
+					if (!self) {
+						// Nearly unreachable (the module's own registration is the
+						// surface it is dispatching from), but never silent: without
+						// the self-load the worker gets no compaction veto.
+						setupDiagnostics.push(
+							"could not resolve this extension's own source path; the worker runs without the post-submit compaction veto",
+						);
+						return tools.extensionPaths;
+					}
+					if (tools.extensionPaths.some((p) => resolve(p) === resolve(self))) {
+						return tools.extensionPaths;
+					}
+					return [...tools.extensionPaths, self];
+				})(),
+				appendSystemPrompt: [prompt],
+			},
+		});
+		setupDiagnostics.push(...serviceDiagnostics(services));
+		record.setupDiagnostics = [...setupDiagnostics];
 		const workerModel =
-			modelRuntime.getModel(model.provider, model.id) ?? ctx.modelRegistry.find(model.provider, model.id);
+			services.modelRuntime.getModel(model.provider, model.id) ?? ctx.modelRegistry.find(model.provider, model.id);
 		if (!workerModel) {
 			throw new Error(`model "${model.provider}/${model.id}" disappeared before worker construction`);
 		}
-		const resourceLoader = new DefaultResourceLoader({
-			cwd,
-			agentDir: workerAgentDir,
-			settingsManager,
-			noSkills: true,
-			noPromptTemplates: true,
-			noContextFiles: true,
-			// Always load this module into the worker: its worker-load branch
-			// carries the post-submit compaction veto. Dedupe against paths the
-			// surface already produced; if the module's own source path cannot
-			// be resolved, fall back to the surface's extension paths alone.
-			additionalExtensionPaths: (() => {
-				const self = ownToolSourcePath(ctx);
-				if (!self) {
-					// Nearly unreachable (the module's own registration is the
-					// surface it is dispatching from), but never silent: without
-					// the self-load the worker gets no compaction veto.
-					console.warn(
-						`[subagent] could not resolve this extension's own source path; worker ${id} will run without the post-submit compaction veto`,
-					);
-					return tools.extensionPaths;
-				}
-				if (tools.extensionPaths.some((p) => resolve(p) === resolve(self))) {
-					return tools.extensionPaths;
-				}
-				return [...tools.extensionPaths, self];
-			})(),
-			appendSystemPrompt: [prompt],
-		});
-		await resourceLoader.reload();
 		sessionManager = workerSessionManager(cwd, continuation);
 		if (continuation) forkedSessionFile = sessionManager.getSessionFile() ?? null;
-		const created = await createAgentSession({
-			cwd,
-			agentDir: workerAgentDir,
-			settingsManager,
-			resourceLoader,
+		const created = await createAgentSessionFromServices({
+			services,
 			sessionManager,
-			modelRuntime,
 			model: workerModel,
 			thinkingLevel: thinking,
 			tools: resolvedTools,
@@ -3242,7 +3378,7 @@ const subagentTool = defineTool({
 		"Model: explicit `model` (bare id or provider/id) is checked against registry availability and configured auth only. Omitted model inherits the parent's current model. Extension-registered providers are copied into the worker through Pi's public registration facade. Persisted and environment auth resolve; a parent-only runtime API-key override does not transfer. Omitted cwd inherits the session cwd.",
 		"Thinking: an explicit level the model cannot run fails that task and names the levels the model supports. An omitted level inherits the parent's level, is clamped to the model, and reports the effective level with the requested one.",
 		"Tools: omitted `tools` reproduces this session's active tool surface exactly. Built-ins are rebuilt for the worker cwd, and extension registration files are reloaded from their registered source paths. The constructed surface is checked before provider work. Provided `tools` restricts the worker to exactly that set plus the submit_result protocol tool; a tool name that is not in the current registry fails the dispatch. `tools: []` is a declared EMPTY allowlist, not an omission: it yields a worker that has submit_result and nothing else.",
-		"Workers are clean-context: project context files (AGENTS.md) and skills are not loaded. A worker runs the normal extension lifecycle, so an extension tool that opens its resources at session_start works inside a worker; a tool that still fails is reported with its failure count when the worker finishes.",
+		"Context: a worker loads what a session started in its `cwd` loads — that directory's settings, extensions, skills, prompt templates, and context files (AGENTS.md), under the same project-trust resolution. A worker runs the normal extension lifecycle, so an extension tool that opens its resources at session_start works inside a worker; a tool that still fails is reported with its failure count when the worker finishes.",
 		"Live workers can be steered (subagent_steer), interrupted and resumed (subagent_interrupt), cancelled (subagent_kill), and inspected (subagent_status). A terminal worker with a retained session can continue as a new linked worker (subagent_continue); its record, result, and transcript remain unchanged. Results persist in the store and are collectable later or from a replacement session (subagent_collect).",
 		"Limits: `deadlineMinutes` is your judgment of how long the task should take (default from the PI_SUBAGENT_DEADLINE_MINUTES setting; 0 removes it), and `budgetUsd` is an optional spend allowance. Breaching either PAUSES the worker and notifies you — the session, its transcript, and its work survive, and resuming with subagent_steer grants a fresh allowance. Nothing here kills a worker.",
 		"Parent-death contract: a worker that already submitted keeps its result and remains collectable. A worker still in flight when this session ends is recorded as owner_lost by the next session — re-dispatch if the work still matters.",
@@ -3401,7 +3537,8 @@ const subagentTool = defineTool({
 				return `✗ ${worker}${outcome.state}: ${outcome.error}`;
 			}
 			const thinking = outcome.record ? thinkingLabel(outcome.record) : "thinking:?";
-			return `${outcome.id} · background · ${outcome.record?.model ?? "?"} · ${thinking} · cwd:${outcome.record?.cwd ?? "?"}`;
+			const setup = setupDiagnosticsLine(outcome.record);
+			return `${outcome.id} · background · ${outcome.record?.model ?? "?"} · ${thinking} · cwd:${outcome.record?.cwd ?? "?"}${setup ? `\n    ${setup}` : ""}`;
 		});
 		const started = outcomes.filter((outcome) => outcome.state === "running").length;
 		const guidance =
@@ -3607,11 +3744,13 @@ const continueTool = defineTool({
 		}
 		const dropped = outcome.record?.droppedTools ?? [];
 		const degradation = dropped.length > 0 ? ` Dropped unavailable tools: ${dropped.join(", ")}.` : "";
+		const setup = setupDiagnosticsLine(outcome.record);
+		const setupReport = setup ? ` ${setup}` : "";
 		return {
 			content: [
 				{
 					type: "text",
-					text: `Continued ${params.id} as ${outcome.id}.${degradation} The new worker is running in the background and will notify on completion.`,
+					text: `Continued ${params.id} as ${outcome.id}.${degradation}${setupReport} The new worker is running in the background and will notify on completion.`,
 				},
 			],
 			details: { sourceId: params.id, worker: outcome.record },

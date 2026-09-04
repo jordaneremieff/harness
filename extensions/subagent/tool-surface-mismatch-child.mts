@@ -8,6 +8,9 @@ const agentDir = mkdtempSync(join(tmpdir(), "subagent-surface-agent-"));
 const parentCwd = mkdtempSync(join(tmpdir(), "subagent-surface-parent-"));
 const differentCwd = mkdtempSync(join(tmpdir(), "subagent-surface-child-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
+// Sessions discover user resources under $HOME. An empty home keeps this
+// fixture's resource set deterministic on any machine.
+process.env.HOME = mkdtempSync(join(tmpdir(), "subagent-surface-home-"));
 
 const model = {
 	id: "surface-model",
@@ -98,9 +101,6 @@ try {
 		cwd: parentCwd,
 		agentDir,
 		settingsManager,
-		noSkills: true,
-		noPromptTemplates: true,
-		noContextFiles: true,
 		additionalExtensionPaths: [selfPath, probePath],
 	});
 	await resourceLoader.reload();

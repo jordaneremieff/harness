@@ -126,14 +126,18 @@ Verified 2026-09-05 against `main` at `9841914c` and the active WP08 branch at `
   Release 0.85.0 carries the wider dependency graph (`chord`,
   `pi-agent-core`, `pi-protocol`); it reaches this checkout when the
   `^0.84.2` pins move to the 0.85 line.
-- AgentHarness v2 defines no worker-context loading: `AgentHarnessOptions`
-  takes `resources` (skills, prompt templates), `tools`, and `systemPrompt`
-  at construction; tool and resource registries are code, not durable state;
-  forks copy entries, values, and branches, not context. Context loading
-  stays an application-layer decision, and the subagent extension's
-  `noSkills` / `noPromptTemplates` / `noContextFiles` /
-  `projectTrusted: false` construction maps onto the released loader options
-  without change.
+- AgentHarness defines no worker-context loading: `AgentHarnessOptions` takes
+  `resources` (skills, prompt templates), `tools`, and `systemPrompt` at
+  construction; tool and resource registries are code, not durable state;
+  forks copy entries, values, and branches, not context. Context loading stays
+  an application-layer decision, and this repository's decision is that a
+  worker loads what a session started in its working directory loads. The
+  subagent extension builds workers through the released
+  `createAgentSessionServices` and `createAgentSessionFromServices` path, so
+  the resources a worker gets are whatever that path resolves for its cwd. When
+  the harness surface replaces that path, the worker keeps supplying full
+  session resources through the new `resources` option; nothing here needs a
+  narrowing to carry forward.
 - Release 0.85.0 fired the harness-subpath trigger, but no repository code
   consumes lane snapshots or folds lane events today; the reduceLaneSnapshot
   action has no current consumer.

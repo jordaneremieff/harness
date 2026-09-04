@@ -14,6 +14,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-realloader-"));
+// Sessions discover user resources under $HOME. An empty home keeps this
+// exercise's resource set deterministic on any machine.
+process.env.HOME = mkdtempSync(join(tmpdir(), "subagent-realloader-home-"));
 
 const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import(
 	"@earendil-works/pi-coding-agent"
@@ -26,9 +29,6 @@ async function main(): Promise<void> {
 		cwd: agentDir,
 		agentDir,
 		settingsManager,
-		noSkills: true,
-		noPromptTemplates: true,
-		noContextFiles: true,
 		additionalExtensionPaths: [join(dirname(fileURLToPath(import.meta.url)), "index.ts")],
 	});
 	await resourceLoader.reload();

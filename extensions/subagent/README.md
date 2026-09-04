@@ -44,9 +44,9 @@ resolves its configuration from the process working directory reads the
 parent's, not the worker's declared `cwd`. A tool whose registration derives
 from such configuration is compared against the parent's registration before
 the worker starts, so a divergence fails the dispatch by name instead of
-handing the worker a different tool. The worker ignores project settings from
-a task-selected `cwd`. Global packages still load for provider lifecycle hooks;
-callable tools follow the selected allowlist.
+handing the worker a different tool. The worker loads that directory's own
+settings and resources; see [Worker context](#worker-context). Callable tools
+still follow the selected allowlist.
 
 A worker accepts any existing directory and does not confine paths to a
 workspace root. The directory sets the initial path; the selected tool surface
@@ -121,12 +121,33 @@ it never expands the worker's active allowlist: pi filters registered
 definitions down to exactly the declared surface, so a restricted worker sees
 no subagent tools as callable.
 
-Workers are clean-context: project settings, project context files (AGENTS.md),
-and skills are not loaded. That is a documented property of the worker, not a narrowing of tool
-inheritance. It holds for the current extension set rather than by
-construction: binding a worker's extensions also runs `resources_discover`, so
-an extension that supplies skill, prompt, or theme paths from that handler
-would add them to a worker built with `noSkills`.
+## Worker context
+
+A worker's context is a session's context at its working directory. Pointed at
+directory X, a worker loads what a session started in X loads: X's settings,
+extensions, skills, prompt templates, and context files (AGENTS.md), plus the
+global ones under the Pi agent directory. There is no worker-specific context
+rule, no reduced resource set, and no separate loader configuration.
+
+Project trust is resolved the way Pi resolves it. A directory with no
+trust-requiring project resources is trusted outright. Any other directory
+starts untrusted, and the decision is made while its resources load, in Pi's
+order: the `project_trust` extension handlers, then the saved decision in the
+project trust store, then the global `defaultProjectTrust` setting. `ask` needs
+an operator and a background worker has none, so its trust context reports no
+UI and an otherwise undecided directory stays untrusted — the same answer Pi's
+non-interactive modes reach. Trusting a directory once, from any session,
+trusts it for workers there too.
+
+An untrusted directory withholds exactly what Pi withholds from any session
+there: project extensions, project skills, project prompt templates and themes,
+and project settings. Context files are not trust-gated, so they still load.
+
+Pi reports non-fatal setup problems instead of printing them, and a worker has
+no startup surface of its own, so the dispatch reports them: unreadable
+settings, an extension that failed to load, and a provider registration that
+threw are listed as `worker setup:` on that worker's dispatch line, repeated on
+a continuation's result line, and kept in its record as `setupDiagnostics`.
 
 ## Worker lifecycle
 

@@ -65,7 +65,10 @@ const {
 	modelCapabilities,
 	notifyCompletion,
 	parentToolSurface,
+	projectTrustInputs,
 	recordWorkerSurface,
+	serviceDiagnostics,
+	setupDiagnosticsLine,
 	shutdownWorkerSession,
 	thinkingLabel,
 	toolErrorSummary,
@@ -345,9 +348,6 @@ describe("worker session lifecycle", () => {
 			cwd: agentDir,
 			agentDir,
 			settingsManager,
-			noSkills: true,
-			noPromptTemplates: true,
-			noContextFiles: true,
 			additionalExtensionPaths: [probePath],
 		});
 		await resourceLoader.reload();
@@ -386,6 +386,189 @@ describe("worker session lifecycle", () => {
 		shutdownWorkerSession(fake.session as never);
 		assert.deepEqual(fake.order, ["dispose"]);
 		assert.equal(fake.emitted, null);
+	});
+});
+
+describe("project trust parity", () => {
+	// A trust store and a global settings file of their own, so these cases
+	// cannot move the decision any other test sees.
+	const trustAgentDir = mkdtempSync(join(tmpdir(), "subagent-trust-agent-"));
+	after(() => rmSync(trustAgentDir, { recursive: true, force: true }));
+
+	/** A directory pi must gate: project settings make it trust-requiring. */
+	function projectDir(settings: Record<string, unknown> = {}): string {
+		const cwd = mkdtempSync(join(tmpdir(), "subagent-trust-cwd-"));
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify(settings), "utf-8");
+		return cwd;
+	}
+
+	function trustHandlers(handlers: Array<(...args: never[]) => unknown>): never {
+		return {
+			extensions: handlers.map((handler, index) => ({
+				path: `handler-${index}.ts`,
+				handlers: new Map([["project_trust", [handler]]]),
+			})),
+		} as never;
+	}
+
+	it("trusts a directory that has no trust-requiring project resources", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "subagent-trust-plain-"));
+		const inputs = projectTrustInputs(cwd, trustAgentDir);
+		assert.equal(inputs.settingsManager.isProjectTrusted(), true);
+		assert.equal(inputs.reloadOptions, undefined, "nothing needs deciding, so pi needs no trust hook");
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("starts a project directory untrusted and leaves it untrusted with nobody to ask", async () => {
+		const cwd = projectDir({ packages: [] });
+		const inputs = projectTrustInputs(cwd, trustAgentDir);
+		assert.equal(inputs.settingsManager.isProjectTrusted(), false);
+		assert.ok(inputs.reloadOptions);
+		const trusted = await inputs.reloadOptions.resolveProjectTrust({ extensionsResult: trustHandlers([]) });
+		assert.equal(trusted, false, "an unanswered `ask` is untrusted, as it is for any session without an operator");
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("applies a saved trust decision", async () => {
+		const { ProjectTrustStore } = await import("@earendil-works/pi-coding-agent");
+		const cwd = projectDir({ packages: [] });
+		const store = new ProjectTrustStore(trustAgentDir);
+		store.set(cwd, true);
+		const inputs = projectTrustInputs(cwd, trustAgentDir);
+		assert.ok(inputs.reloadOptions);
+		assert.equal(await inputs.reloadOptions.resolveProjectTrust({ extensionsResult: trustHandlers([]) }), true);
+		store.set(cwd, false);
+		const refused = projectTrustInputs(cwd, trustAgentDir);
+		assert.ok(refused.reloadOptions);
+		assert.equal(await refused.reloadOptions.resolveProjectTrust({ extensionsResult: trustHandlers([]) }), false);
+		store.set(cwd, null);
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("honors the global defaultProjectTrust setting", async () => {
+		const settingsPath = join(trustAgentDir, "settings.json");
+		const cwd = projectDir({ packages: [] });
+		try {
+			for (const [setting, expected] of [
+				["always", true],
+				["never", false],
+				["ask", false],
+			] as const) {
+				writeFileSync(settingsPath, JSON.stringify({ defaultProjectTrust: setting }), "utf-8");
+				const inputs = projectTrustInputs(cwd, trustAgentDir);
+				assert.equal(inputs.settingsManager.isProjectTrusted(), false, "the decision is made during the reload");
+				assert.ok(inputs.reloadOptions);
+				assert.equal(
+					await inputs.reloadOptions.resolveProjectTrust({ extensionsResult: trustHandlers([]) }),
+					expected,
+					`defaultProjectTrust "${setting}"`,
+				);
+			}
+		} finally {
+			rmSync(settingsPath, { force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("lets extensions decide first, skipping undecided and failing handlers", async () => {
+		const { ProjectTrustStore } = await import("@earendil-works/pi-coding-agent");
+		const cwd = projectDir({ packages: [] });
+		const diagnostics: string[] = [];
+		const inputs = projectTrustInputs(cwd, trustAgentDir, (message) => diagnostics.push(message));
+		assert.ok(inputs.reloadOptions);
+		const trusted = await inputs.reloadOptions.resolveProjectTrust({
+			extensionsResult: trustHandlers([
+				() => {
+					throw new Error("handler exploded");
+				},
+				() => ({ trusted: "undecided" }),
+				() => ({ trusted: "yes", remember: true }),
+				() => ({ trusted: "no" }),
+			]),
+		});
+		assert.equal(trusted, true);
+		assert.equal(new ProjectTrustStore(trustAgentDir).get(cwd), true, "remember persists the extension's decision");
+		assert.deepEqual(diagnostics, ['Extension "handler-0.ts" project_trust error: handler exploded']);
+		new ProjectTrustStore(trustAgentDir).set(cwd, null);
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("asks handlers with no UI, the way a session without an operator asks", async () => {
+		const cwd = projectDir({ packages: [] });
+		const seen: Array<Record<string, unknown>> = [];
+		const inputs = projectTrustInputs(cwd, trustAgentDir);
+		assert.ok(inputs.reloadOptions);
+		await inputs.reloadOptions.resolveProjectTrust({
+			extensionsResult: trustHandlers([
+				(async (event: unknown, trustCtx: any) => {
+					seen.push({
+						event,
+						mode: trustCtx.mode,
+						hasUI: trustCtx.hasUI,
+						select: await trustCtx.ui.select("pick", ["a"]),
+						confirm: await trustCtx.ui.confirm("sure", "really"),
+						input: await trustCtx.ui.input("name"),
+					});
+					trustCtx.ui.notify("nothing reads this");
+					return { trusted: "undecided" };
+				}) as never,
+			]),
+		});
+		assert.deepEqual(seen, [
+			{
+				event: { type: "project_trust", cwd },
+				mode: "print",
+				hasUI: false,
+				select: undefined,
+				confirm: false,
+				input: undefined,
+			},
+		]);
+		rmSync(cwd, { recursive: true, force: true });
+	});
+});
+
+describe("worker setup diagnostics", () => {
+	it("reports service, settings, and extension-load problems in one list", () => {
+		const services = {
+			diagnostics: [
+				{ type: "error", message: 'Extension "p.ts" error: provider blew up' },
+				{ type: "warning", message: "a warning" },
+			],
+			settingsManager: {
+				drainErrors: () => [{ scope: "project", error: new Error("bad json") }],
+			},
+			resourceLoader: {
+				getExtensions: () => ({ errors: [{ path: "broken.ts", error: "cannot resolve" }] }),
+			},
+		};
+		assert.deepEqual(serviceDiagnostics(services as never), [
+			'error: Extension "p.ts" error: provider blew up',
+			"warning: a warning",
+			"warning: Invalid project settings: bad json",
+			'error: Failed to load extension "broken.ts": cannot resolve',
+		]);
+	});
+
+	it("reports nothing when the services came up clean", () => {
+		const services = {
+			diagnostics: [],
+			settingsManager: { drainErrors: () => [] },
+			resourceLoader: { getExtensions: () => ({ errors: [] }) },
+		};
+		assert.deepEqual(serviceDiagnostics(services as never), []);
+	});
+
+	it("names recorded setup problems on one line and stays silent otherwise", () => {
+		assert.equal(
+			setupDiagnosticsLine({
+				setupDiagnostics: ['error: Failed to load extension "a.ts": boom', "warning: b"],
+			} as never),
+			'worker setup: error: Failed to load extension "a.ts": boom | warning: b',
+		);
+		assert.equal(setupDiagnosticsLine({ setupDiagnostics: [] } as never), "");
+		assert.equal(setupDiagnosticsLine(null), "");
 	});
 });
 
@@ -1686,22 +1869,22 @@ describe("compaction veto", () => {
 		}
 	});
 
-	it("transfers a guarded native provider and ignores task-cwd project settings", async () => {
-		const childPath = join(dirname(fileURLToPath(import.meta.url)), "project-settings-child.mts");
+	it("gives a worker the context a session has at its working directory", async () => {
+		const childPath = join(dirname(fileURLToPath(import.meta.url)), "worker-context-child.mts");
 		const { execFile } = await import("node:child_process");
 		const { promisify } = await import("node:util");
 		const run = promisify(execFile);
-		const childCoverageDir = mkdtempSync(join(tmpdir(), "subagent-project-settings-cov-"));
+		const childCoverageDir = mkdtempSync(join(tmpdir(), "subagent-worker-context-cov-"));
 		try {
 			const { stdout, stderr } = await run(process.execPath, [childPath], {
 				encoding: "utf-8",
 				env: { ...process.env, NODE_V8_COVERAGE: childCoverageDir },
-				timeout: 15_000,
+				timeout: 30_000,
 			});
 			assert.equal(
-				stdout.includes("project settings child: PASS"),
+				stdout.includes("worker context child: PASS"),
 				true,
-				`project settings child must pass: ${stdout}\n${stderr}`,
+				`worker context child must pass: ${stdout}\n${stderr}`,
 			);
 		} finally {
 			rmSync(childCoverageDir, { recursive: true, force: true });
