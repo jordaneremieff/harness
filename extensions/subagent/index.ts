@@ -850,6 +850,55 @@ function resolveTools(ctx: ExtensionContext, declared: string[] | undefined): Re
 	return resolveToolSurface(surface, declared);
 }
 
+type RegistrationDifference = "source" | "description" | "parameters" | "promptGuidelines";
+
+export function registrationDifferenceFields(expected: ToolInfo, actual: ToolInfo): RegistrationDifference[] {
+	const differences: RegistrationDifference[] = [];
+	const expectedPath = expected.sourceInfo.path;
+	const actualPath = actual.sourceInfo.path;
+	const sameSource =
+		expected.sourceInfo.source === "builtin"
+			? actual.sourceInfo.source === "builtin"
+			: !expectedPath.startsWith("<") && !actualPath.startsWith("<") && resolve(expectedPath) === resolve(actualPath);
+	if (!sameSource) differences.push("source");
+	if (expected.description !== actual.description) differences.push("description");
+	if (JSON.stringify(expected.parameters) !== JSON.stringify(actual.parameters)) differences.push("parameters");
+	if (JSON.stringify(expected.promptGuidelines ?? []) !== JSON.stringify(actual.promptGuidelines ?? [])) {
+		differences.push("promptGuidelines");
+	}
+	return differences;
+}
+
+interface RegistrationChange {
+	name: string;
+	fields: RegistrationDifference[];
+}
+
+export function toolSurfaceMismatchMessage(input: {
+	missing: string[];
+	unexpected: string[];
+	changed: RegistrationChange[];
+	active: string[];
+}): string {
+	const mismatch = [
+		...(input.missing.length > 0 ? [`missing: ${input.missing.join(", ")}`] : []),
+		...(input.unexpected.length > 0 ? [`unexpected: ${input.unexpected.join(", ")}`] : []),
+		...(input.changed.length > 0
+			? [
+					`registration changed: ${input.changed
+						.map(({ name, fields }) => `${name} (${fields.join(", ")})`)
+						.join(", ")}`,
+				]
+			: []),
+	].join("; ");
+	const active = input.active.length > 0 ? input.active.join(", ") : "(none)";
+	const registrationGuidance =
+		input.changed.length > 0
+			? " The worker reloaded registration source that differs from this session. Run /reload after extension source changes, then retry. If no source changed, keep registration metadata independent of cwd and configuration."
+			: "";
+	return `the worker session could not reproduce the requested tool surface; ${mismatch}. Worker active tool names: ${active}.${registrationGuidance}`;
+}
+
 function workerSystemPrompt(model: string): string {
 	return [
 		"You are a subagent worker dispatched by a parent Pi session.",
@@ -2240,25 +2289,12 @@ export async function dispatchWorker(
 	const missing = resolvedTools.filter((name) => !actualTools.has(name));
 	const unexpected = [...actualTools].filter((name) => !resolvedTools.includes(name));
 	const actualMetadata = new Map(session.getAllTools().map((tool) => [tool.name, tool]));
-	const mismatched = [...tools.metadata.entries()]
-		.filter(([name, expected]) => {
-			const actual = actualMetadata.get(name);
-			if (!actual) return false;
-			const expectedPath = expected.sourceInfo.path;
-			const actualPath = actual.sourceInfo.path;
-			const sameSource =
-				expected.sourceInfo.source === "builtin"
-					? actual.sourceInfo.source === "builtin"
-					: !expectedPath.startsWith("<") &&
-						!actualPath.startsWith("<") &&
-						resolve(expectedPath) === resolve(actualPath);
-			const sameMetadata =
-				expected.description === actual.description &&
-				JSON.stringify(expected.parameters) === JSON.stringify(actual.parameters) &&
-				JSON.stringify(expected.promptGuidelines ?? []) === JSON.stringify(actual.promptGuidelines ?? []);
-			return !sameSource || !sameMetadata;
-		})
-		.map(([name]) => name);
+	const mismatched = [...tools.metadata.entries()].flatMap(([name, expected]) => {
+		const actual = actualMetadata.get(name);
+		if (!actual) return [];
+		const fields = registrationDifferenceFields(expected, actual);
+		return fields.length > 0 ? [{ name, fields }] : [];
+	});
 	if (missing.length > 0 || unexpected.length > 0 || mismatched.length > 0) {
 		const surface = parentToolSurface(ctx);
 		const sourceOf = new Map((surface?.all ?? []).map((tool) => [tool.name, tool.sourceInfo]));
@@ -2278,13 +2314,13 @@ export async function dispatchWorker(
 		sharedWorkerState.workerSessionIds.delete(workerSessionId);
 		sharedWorkerState.workerSurfaces.delete(workerSessionId);
 		if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
-		const mismatch = [
-			...(withSource.length > 0 ? [`missing: ${withSource.join(", ")}`] : []),
-			...(unexpected.length > 0 ? [`unexpected: ${unexpected.join(", ")}`] : []),
-			...(mismatched.length > 0 ? [`registration changed: ${mismatched.join(", ")}`] : []),
-		].join("; ");
 		return fail(
-			`the worker session did not receive the requested tool surface; ${mismatch}. It has: ${[...actualTools].join(", ")}`,
+			toolSurfaceMismatchMessage({
+				missing: withSource,
+				unexpected,
+				changed: mismatched,
+				active: [...actualTools],
+			}),
 		);
 	}
 

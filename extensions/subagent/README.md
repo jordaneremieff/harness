@@ -92,7 +92,11 @@ array for a batch. Per-task fields: `task` (required), `model`, `thinking`,
   tool that is not in the current registry fails the dispatch with its name. A
   registration without a loadable source fails before worker creation. The
   worker's active names, registration sources, and public tool metadata are
-  compared with the parent snapshot before any prompt token is spent.
+  compared with the parent snapshot before any prompt token is spent. A
+  mismatch names each changed metadata field and lists active tool names as a
+  separate fact. If an extension source changed after the parent session loaded
+  it, run `/reload` and retry. If no source changed, keep public registration
+  metadata independent of the worker cwd and configuration.
 - **cwd** — worker working directory. Omitted: session cwd.
 - **deadlineMinutes** — how long this task should take, judged by the
   dispatching agent from the task it just wrote. Omitted: the

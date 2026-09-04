@@ -69,6 +69,7 @@ const {
 	shutdownWorkerSession,
 	thinkingLabel,
 	toolErrorSummary,
+	toolSurfaceMismatchMessage,
 	transferRegisteredProviders,
 	formatSubagentStatus,
 	listWorkers,
@@ -80,6 +81,7 @@ const {
 	limitPauseStillHolds,
 	resolveRunLimits,
 	resolveToolSurface,
+	registrationDifferenceFields,
 	sessionWriteAge,
 	registerWorkerCompactionVeto,
 	ownToolSourcePath,
@@ -2878,6 +2880,89 @@ describe("ambient subagent status", () => {
 });
 
 describe("registered tool surface", () => {
+	it("identifies changed registration fields", () => {
+		const sourceInfo = {
+			path: join(agentDir, "probe-extension.ts"),
+			source: "local",
+			scope: "temporary",
+			origin: "top-level",
+		};
+		const expected = {
+			name: "probe_tool",
+			description: "old description",
+			parameters: { type: "object", maxProperties: 1 },
+			promptGuidelines: ["old guideline"],
+			sourceInfo,
+		};
+		const actual = {
+			...expected,
+			description: "new description",
+			parameters: { type: "object", maxProperties: 2 },
+			promptGuidelines: ["new guideline"],
+		};
+		assert.deepEqual(registrationDifferenceFields(expected as any, actual as any), [
+			"description",
+			"parameters",
+			"promptGuidelines",
+		]);
+		assert.deepEqual(
+			registrationDifferenceFields(
+				expected as any,
+				{
+					...expected,
+					sourceInfo: { ...sourceInfo, path: join(agentDir, "other-extension.ts") },
+				} as any,
+			),
+			["source"],
+		);
+	});
+
+	it("explains registration mismatches without treating active names as matching registrations", () => {
+		assert.equal(
+			toolSurfaceMismatchMessage({
+				missing: [],
+				unexpected: [],
+				changed: [
+					{ name: "probe_tool", fields: ["description", "parameters", "promptGuidelines"] },
+					{ name: "status_tool", fields: ["description"] },
+				],
+				active: ["subagent", "probe_tool", "status_tool", "submit_result"],
+			}),
+			"the worker session could not reproduce the requested tool surface; registration changed: probe_tool (description, parameters, promptGuidelines), status_tool (description). Worker active tool names: subagent, probe_tool, status_tool, submit_result. The worker reloaded registration source that differs from this session. Run /reload after extension source changes, then retry. If no source changed, keep registration metadata independent of cwd and configuration.",
+		);
+		assert.equal(
+			toolSurfaceMismatchMessage({
+				missing: ["file_tool (from local/path/to/extension.ts)"],
+				unexpected: ["extra_tool"],
+				changed: [],
+				active: ["extra_tool"],
+			}),
+			"the worker session could not reproduce the requested tool surface; missing: file_tool (from local/path/to/extension.ts); unexpected: extra_tool. Worker active tool names: extra_tool.",
+		);
+	});
+
+	it("rejects a reloaded registration with an actionable full-dispatch error", async () => {
+		const childPath = join(dirname(fileURLToPath(import.meta.url)), "tool-surface-mismatch-child.mts");
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const run = promisify(execFile);
+		const childCoverageDir = mkdtempSync(join(tmpdir(), "subagent-surface-mismatch-cov-"));
+		try {
+			const { stdout, stderr } = await run(process.execPath, [childPath], {
+				encoding: "utf-8",
+				env: { ...process.env, NODE_V8_COVERAGE: childCoverageDir },
+				timeout: 15_000,
+			});
+			assert.equal(
+				stdout.includes("tool surface mismatch child: PASS"),
+				true,
+				`tool surface mismatch child must pass: ${stdout}\n${stderr}`,
+			);
+		} finally {
+			rmSync(childCoverageDir, { recursive: true, force: true });
+		}
+	});
+
 	it("reloads file-backed registrations from their source paths", () => {
 		const extensionPath = join(agentDir, "probe-extension.ts");
 		writeFileSync(extensionPath, "export default function () {}\n", "utf-8");
