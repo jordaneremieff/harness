@@ -66,11 +66,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import {
-	getSupportedThinkingLevels,
-	StringEnum,
-	type Usage,
-} from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, StringEnum, type Usage } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	type AgentToolUpdateCallback,
@@ -87,10 +83,7 @@ import {
 	SettingsManager,
 	type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
-import type {
-	ThinkingLevel,
-	TranscriptItem,
-} from "@earendil-works/pi-protocol";
+import type { ThinkingLevel, TranscriptItem } from "@earendil-works/pi-protocol";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
@@ -121,10 +114,7 @@ const SOCKET_NAME_RE = /^s-[0-9a-f]{24}\.sock$/;
  * ~/.pi/agent/sessions) while putting one bound on this store's growth so a
  * long-running installation does not accumulate worker directories forever.
  */
-const PRUNE_TERMINAL_AFTER_DAYS = Number.parseInt(
-	process.env.PI_SUBAGENT_PRUNE_DAYS ?? "30",
-	10,
-);
+const PRUNE_TERMINAL_AFTER_DAYS = Number.parseInt(process.env.PI_SUBAGENT_PRUNE_DAYS ?? "30", 10);
 const statusRecordCache = new Map<string, WorkerRecord>();
 const TERMINAL_STATES: ReadonlySet<WorkerState> = new Set([
 	"done",
@@ -175,8 +165,7 @@ export function pruneTerminalWorkers(): void {
 				if (!entry.endsWith(".tmp")) continue;
 				const tmpPath = join(dir, entry);
 				try {
-					if (statSync(tmpPath).mtimeMs < tmpCutoff)
-						rmSync(tmpPath, { force: true });
+					if (statSync(tmpPath).mtimeMs < tmpCutoff) rmSync(tmpPath, { force: true });
 				} catch {
 					// Best-effort per file; the store stays usable.
 				}
@@ -207,12 +196,8 @@ export function capUtf8(
 	truncated: boolean;
 } {
 	const originalBytes = Buffer.byteLength(text, "utf-8");
-	if (originalBytes <= maxBytes)
-		return { text, originalBytes, truncated: false };
-	const budget = Math.max(
-		0,
-		maxBytes - Buffer.byteLength(TRUNCATED_SUFFIX, "utf-8"),
-	);
+	if (originalBytes <= maxBytes) return { text, originalBytes, truncated: false };
+	const budget = Math.max(0, maxBytes - Buffer.byteLength(TRUNCATED_SUFFIX, "utf-8"));
 	let used = 0;
 	const chars: string[] = [];
 	for (const char of text) {
@@ -228,13 +213,7 @@ export function capUtf8(
 	};
 }
 
-export type WorkerState =
-	| "running"
-	| "done"
-	| "failed"
-	| "cancelled"
-	| "no_result_submitted"
-	| "owner_lost";
+export type WorkerState = "running" | "done" | "failed" | "cancelled" | "no_result_submitted" | "owner_lost";
 
 const THINKING_LEVELS = [
 	"off",
@@ -410,9 +389,7 @@ function tightenStorePermissions(): void {
 	}
 	const failures = tightenModeFailures - before;
 	if (failures > 0) {
-		console.warn(
-			`subagent: could not tighten store permissions on ${failures} paths — store may not be owner-only`,
-		);
+		console.warn(`subagent: could not tighten store permissions on ${failures} paths — store may not be owner-only`);
 	}
 }
 
@@ -462,14 +439,10 @@ function asStrOrNull(v: unknown): string | null {
 	return typeof v === "string" ? v : null;
 }
 function asStrArray(v: unknown): string[] {
-	return Array.isArray(v)
-		? v.filter((x): x is string => typeof x === "string")
-		: [];
+	return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 function asStrArrayOrNull(v: unknown): string[] | null {
-	return Array.isArray(v)
-		? v.filter((x): x is string => typeof x === "string")
-		: null;
+	return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -604,9 +577,7 @@ export function modelCapabilities(
 		if (slash <= 0 || slash === modelId.length - 1) return null;
 		const provider = modelId.slice(0, slash);
 		const id = modelId.slice(slash + 1);
-		const model = ctx.modelRegistry
-			.getAvailable()
-			.find((m) => m.provider === provider && m.id === id);
+		const model = ctx.modelRegistry.getAvailable().find((m) => m.provider === provider && m.id === id);
 		if (!model) return null;
 		return {
 			images: model.input.includes("image"),
@@ -656,19 +627,13 @@ function normalizedModelText(value: string): string {
 function modelEditDistance(left: string, right: string): number {
 	const a = [...left];
 	const b = [...right];
-	const rows = Array.from({ length: a.length + 1 }, () =>
-		Array<number>(b.length + 1).fill(0),
-	);
+	const rows = Array.from({ length: a.length + 1 }, () => Array<number>(b.length + 1).fill(0));
 	for (let i = 0; i <= a.length; i++) rows[i][0] = i;
 	for (let j = 0; j <= b.length; j++) rows[0][j] = j;
 	for (let i = 1; i <= a.length; i++) {
 		for (let j = 1; j <= b.length; j++) {
 			const substitution = a[i - 1] === b[j - 1] ? 0 : 1;
-			rows[i][j] = Math.min(
-				rows[i - 1][j] + 1,
-				rows[i][j - 1] + 1,
-				rows[i - 1][j - 1] + substitution,
-			);
+			rows[i][j] = Math.min(rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + substitution);
 			if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
 				rows[i][j] = Math.min(rows[i][j], rows[i - 2][j - 2] + 1);
 			}
@@ -678,10 +643,7 @@ function modelEditDistance(left: string, right: string): number {
 }
 
 /** Bounded, deterministic corrections for a registry miss. */
-export function suggestModels(
-	raw: string,
-	models: ReadonlyArray<{ provider: string; id: string }>,
-): string[] {
+export function suggestModels(raw: string, models: ReadonlyArray<{ provider: string; id: string }>): string[] {
 	if (raw.length > MODEL_INPUT_MAX_LENGTH) return [];
 	const slash = raw.indexOf("/");
 	const rawProvider = slash > 0 ? raw.slice(0, slash) : "";
@@ -698,9 +660,7 @@ export function suggestModels(
 			const idNormalized = normalizedModelText(model.id);
 			const providerNormalized = normalizedModelText(model.provider);
 			const exactId = idNormalized === rawIdNormalized;
-			const exactProvider =
-				rawProviderNormalized !== "" &&
-				providerNormalized === rawProviderNormalized;
+			const exactProvider = rawProviderNormalized !== "" && providerNormalized === rawProviderNormalized;
 			const score =
 				modelEditDistance(rawIdNormalized, idNormalized) * 10 +
 				modelEditDistance(rawNormalized, normalizedModelText(full)) -
@@ -717,10 +677,7 @@ export function suggestModels(
 		.map(({ full }) => full);
 }
 
-function resolveModel(
-	ctx: ExtensionContext,
-	raw: string | undefined,
-): ResolvedModel | { error: string } {
+function resolveModel(ctx: ExtensionContext, raw: string | undefined): ResolvedModel | { error: string } {
 	const registry = ctx.modelRegistry;
 	if (raw) {
 		if (raw.length > MODEL_INPUT_MAX_LENGTH) {
@@ -736,18 +693,12 @@ function resolveModel(
 			const matches = registry.getAvailable().filter((m) => m.id === raw);
 			// Prefer a match with configured auth over an earlier auth-less one;
 			// fall back to the first match (the auth error below then applies).
-			found =
-				matches.find((m) => registry.hasConfiguredAuth(m)) ??
-				matches[0] ??
-				null;
+			found = matches.find((m) => registry.hasConfiguredAuth(m)) ?? matches[0] ?? null;
 		}
 		if (!found) {
 			const available = registry.getAvailable();
 			const suggestions = suggestModels(raw, available);
-			const correction =
-				suggestions.length > 0
-					? ` Did you mean: ${suggestions.join(", ")}?`
-					: "";
+			const correction = suggestions.length > 0 ? ` Did you mean: ${suggestions.join(", ")}?` : "";
 			return {
 				error:
 					`model "${raw}" is not in the current registry (${available.length} models).` +
@@ -772,15 +723,10 @@ function resolveModel(
 
 type ProviderRegistrationSource = Pick<
 	ExtensionContext["modelRegistry"],
-	| "getRegisteredProviderIds"
-	| "getRegisteredProviderConfig"
-	| "getRegisteredNativeProvider"
+	"getRegisteredProviderIds" | "getRegisteredProviderConfig" | "getRegisteredNativeProvider"
 >;
 
-type ProviderRegistrationTarget = Pick<
-	ModelRuntime,
-	"registerProvider" | "registerNativeProvider"
->;
+type ProviderRegistrationTarget = Pick<ModelRuntime, "registerProvider" | "registerNativeProvider">;
 
 /** Reproduce the parent's extension-registered providers in a fresh worker runtime. */
 export function transferRegisteredProviders(
@@ -801,17 +747,12 @@ export function transferRegisteredProviders(
 			transferred.push(providerId);
 			continue;
 		}
-		throw new Error(
-			`registered provider "${providerId}" has no public registration to transfer`,
-		);
+		throw new Error(`registered provider "${providerId}" has no public registration to transfer`);
 	}
 	return transferred;
 }
 
-async function createWorkerModelRuntime(
-	ctx: ExtensionContext,
-	agentDir: string,
-): Promise<ModelRuntime> {
+async function createWorkerModelRuntime(ctx: ExtensionContext, agentDir: string): Promise<ModelRuntime> {
 	const runtime = await ModelRuntime.create({
 		authPath: join(agentDir, "auth.json"),
 		modelsPath: join(agentDir, "models.json"),
@@ -835,9 +776,7 @@ interface ResolvedTools {
 	metadata: Map<string, ToolInfo>;
 }
 
-export function parentToolSurface(
-	ctx: ExtensionContext,
-): ParentToolSurface | null {
+export function parentToolSurface(ctx: ExtensionContext): ParentToolSurface | null {
 	let sessionId = "";
 	try {
 		sessionId = ctx.sessionManager.getSessionId();
@@ -866,9 +805,7 @@ export function resolveToolSurface(
 	const declaredSet = declared ? new Set(declared) : new Set(surface.active);
 	declaredSet.add("submit_result");
 	const byName = new Map(surface.all.map((tool) => [tool.name, tool]));
-	const missing = [...declaredSet].filter(
-		(name) => name !== "submit_result" && !byName.has(name),
-	);
+	const missing = [...declaredSet].filter((name) => name !== "submit_result" && !byName.has(name));
 	if (missing.length > 0) {
 		return {
 			error: `tool(s) not in the current tool registry and cannot be reproduced in the worker: ${missing.join(", ")}. Check the tool name.`,
@@ -889,9 +826,7 @@ export function resolveToolSurface(
 			extensionPaths.add(sourcePath);
 			continue;
 		}
-		unavailable.push(
-			`${name} (${info.sourceInfo.source}/${sourcePath || "no source path"})`,
-		);
+		unavailable.push(`${name} (${info.sourceInfo.source}/${sourcePath || "no source path"})`);
 	}
 	if (unavailable.length > 0) {
 		return {
@@ -905,15 +840,11 @@ export function resolveToolSurface(
 	};
 }
 
-function resolveTools(
-	ctx: ExtensionContext,
-	declared: string[] | undefined,
-): ResolvedTools | { error: string } {
+function resolveTools(ctx: ExtensionContext, declared: string[] | undefined): ResolvedTools | { error: string } {
 	const surface = parentToolSurface(ctx);
 	if (!surface) {
 		return {
-			error:
-				"cannot inspect the dispatching session's current tool registry; no worker was created",
+			error: "cannot inspect the dispatching session's current tool registry; no worker was created",
 		};
 	}
 	return resolveToolSurface(surface, declared);
@@ -1017,10 +948,7 @@ export function finalizeWorker(
 		// terminal state. The file remains authoritative, so every later read path
 		// promotes that record to done instead of preserving a stale terminal label.
 		if (record.state !== "running") {
-			if (
-				hasResult &&
-				(record.state !== "done" || record.resultBytes === null)
-			) {
+			if (hasResult && (record.state !== "done" || record.resultBytes === null)) {
 				applyStoredResult(record);
 				writeWorker(record);
 			}
@@ -1045,10 +973,7 @@ export function finalizeWorker(
 		record.exitedAt = Date.now();
 		if (opts?.usage) record.usage = opts.usage;
 		if (opts?.lastOutput !== undefined) {
-			record.lastOutput =
-				opts.lastOutput === null
-					? null
-					: capUtf8(opts.lastOutput, RESULT_BODY_CAP_BYTES).text;
+			record.lastOutput = opts.lastOutput === null ? null : capUtf8(opts.lastOutput, RESULT_BODY_CAP_BYTES).text;
 		}
 		record.currentTool = null;
 		if (opts?.error) record.error = opts.error;
@@ -1062,8 +987,7 @@ export function finalizeWorker(
 			record.error =
 				"worker finished without calling submit_result; final message retained — subagent_collect <id> shows it flagged as unprotocolled";
 		} else if (finalState === "owner_lost" && !record.error) {
-			record.error =
-				"the dispatching session ended before this worker finished";
+			record.error = "the dispatching session ended before this worker finished";
 		}
 
 		writeWorker(record);
@@ -1095,18 +1019,14 @@ function markWorkerPreview(body: string, id: string): string {
 }
 
 /** `name ×count` for each tool that returned an error, or "" when none did. */
-export function toolErrorSummary(
-	record: Pick<WorkerRecord, "toolErrors">,
-): string {
+export function toolErrorSummary(record: Pick<WorkerRecord, "toolErrors">): string {
 	return Object.entries(record.toolErrors ?? {})
 		.map(([name, count]) => `${name} ×${count}`)
 		.join(", ");
 }
 
 /** `thinking:<effective>`, plus the requested level when pi clamped it. */
-export function thinkingLabel(
-	record: Pick<WorkerRecord, "thinking" | "thinkingRequested">,
-): string {
+export function thinkingLabel(record: Pick<WorkerRecord, "thinking" | "thinkingRequested">): string {
 	const requested = record.thinkingRequested;
 	return requested && requested !== record.thinking
 		? `thinking:${record.thinking} (requested ${requested})`
@@ -1126,10 +1046,7 @@ export function notifyCompletion(
 	try {
 		// Explicit cancellation already returns its terminal outcome through the
 		// control surface. Do not trigger a duplicate parent turn for that state.
-		const target =
-			api === undefined
-				? (sessionApis.get(record.ownerSession ?? "") ?? null)
-				: api;
+		const target = api === undefined ? (sessionApis.get(record.ownerSession ?? "") ?? null) : api;
 		if (!completionNeedsNotification(record) || !target) return false;
 		const files = workerFiles(record.id);
 		const hasResult = record.state === "done" && existsSync(files.result);
@@ -1142,18 +1059,14 @@ export function notifyCompletion(
 			body = record.error ?? "(no output)";
 		}
 		body = capUtf8(body).text;
-		const elapsed = record.exitedAt
-			? Math.round((record.exitedAt - record.startedAt) / 1000)
-			: 0;
+		const elapsed = record.exitedAt ? Math.round((record.exitedAt - record.startedAt) / 1000) : 0;
 		const cost = record.usage ? `$${record.usage.cost.toFixed(4)}` : "n/a";
 		const header =
 			`Subagent ${record.id} (${record.model}) finished: ${record.state} · ` +
 			`${elapsed}s · ${record.usage?.turns ?? 0} turns · ${cost}` +
 			// A tool that failed during the run is invisible in the deliverable, so
 			// the parent gets it here: a blocked tool changes how the result reads.
-			(toolErrorSummary(record)
-				? `\nTool failures: ${toolErrorSummary(record)}`
-				: "");
+			(toolErrorSummary(record) ? `\nTool failures: ${toolErrorSummary(record)}` : "");
 		// Provenance is load-bearing. This arrives as a follow-up with
 		// triggerTurn:true, which puts worker-authored text in the position the
 		// operator's own words occupy. The 50KB cap bounds size, not authority, so
@@ -1216,10 +1129,7 @@ interface WorkerRuntimeState {
 	workerSurfaces: Map<string, ParentToolSurface>;
 }
 // SAFETY: This Symbol.for key is extension-owned across Pi's module instances.
-const sharedStateHost = globalThis as Record<
-	symbol,
-	WorkerRuntimeState | undefined
->;
+const sharedStateHost = globalThis as Record<symbol, WorkerRuntimeState | undefined>;
 let stateOnGlobal = sharedStateHost[WORKER_STATE_KEY];
 if (!stateOnGlobal) {
 	stateOnGlobal = {
@@ -1231,11 +1141,7 @@ if (!stateOnGlobal) {
 }
 export const sharedWorkerState: WorkerRuntimeState = stateOnGlobal;
 
-export function recordWorkerSurface(
-	sessionId: string,
-	active: readonly string[],
-	all: readonly ToolInfo[],
-): void {
+export function recordWorkerSurface(sessionId: string, active: readonly string[], all: readonly ToolInfo[]): void {
 	if (!sessionId) return;
 	sharedWorkerState.workerSurfaces.set(sessionId, {
 		active: [...active],
@@ -1318,10 +1224,7 @@ interface BoundedTimer {
  */
 const MAX_TIMER_MS = 2_147_483_647;
 
-export function armBoundedTimeout(
-	delayMs: number,
-	fire: () => void,
-): BoundedTimer {
+export function armBoundedTimeout(delayMs: number, fire: () => void): BoundedTimer {
 	let timer: ReturnType<typeof setTimeout> | null = null;
 	let remaining = Number.isFinite(delayMs) ? Math.max(delayMs, 0) : 0;
 	const step = () => {
@@ -1355,14 +1258,12 @@ export function armBoundedTimeout(
  */
 // Configurable via PI_SUBAGENT_IDLE_MINUTES (minutes; default 30; 0 disables the
 // deadline so an interrupted idle worker is never auto-released).
-const INTERRUPT_IDLE_DEADLINE_MS =
-	Number.parseInt(process.env.PI_SUBAGENT_IDLE_MINUTES ?? "30", 10) * 60_000;
+const INTERRUPT_IDLE_DEADLINE_MS = Number.parseInt(process.env.PI_SUBAGENT_IDLE_MINUTES ?? "30", 10) * 60_000;
 
 /** First finite, non-negative value; null when every candidate is absent. */
 function firstNumber(values: Array<number | null | undefined>): number | null {
 	for (const value of values) {
-		if (typeof value === "number" && Number.isFinite(value) && value >= 0)
-			return value;
+		if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
 	}
 	return null;
 }
@@ -1391,28 +1292,20 @@ function envNumber(name: string): number | null {
  * alive, resumable, transcript intact) and tells the parent; resuming grants a
  * fresh leg. Nothing here ends a worker.
  */
-const DEFAULT_DEADLINE_MINUTES =
-	envNumber("PI_SUBAGENT_DEADLINE_MINUTES") ?? 30;
+const DEFAULT_DEADLINE_MINUTES = envNumber("PI_SUBAGENT_DEADLINE_MINUTES") ?? 30;
 const DEFAULT_BUDGET_USD = envNumber("PI_SUBAGENT_BUDGET_USD");
 
 const liveWorkers = new Map<string, LiveWorker>();
 const hosts = new Map<string, WorkerHost>();
-const statusBindings = new Map<
-	string,
-	{ ctx: ExtensionContext; published: string | undefined }
->();
+const statusBindings = new Map<string, { ctx: ExtensionContext; published: string | undefined }>();
 
 export function formatSubagentStatus(
 	records: WorkerRecord[],
 	ownerSession: string,
 	activeIds: ReadonlySet<string>,
 ): string | undefined {
-	const owned = records.filter(
-		(record) => record.ownerSession === ownerSession,
-	);
-	const active = owned.filter(
-		(record) => record.state === "running" && activeIds.has(record.id),
-	).length;
+	const owned = records.filter((record) => record.ownerSession === ownerSession);
+	const active = owned.filter((record) => record.state === "running" && activeIds.has(record.id)).length;
 	const cost = owned.reduce((sum, record) => {
 		const value = record.usage?.cost ?? 0;
 		return sum + (Number.isFinite(value) && value > 0 ? value : 0);
@@ -1570,16 +1463,8 @@ export function resolveRunLimits(
 		budgetUsd: DEFAULT_BUDGET_USD,
 	},
 ): { deadlineMinutes: number | null; budgetUsd: number | null } {
-	const deadline = firstNumber([
-		task.deadlineMinutes,
-		defaults.deadlineMinutes,
-		settings.deadlineMinutes,
-	]);
-	const budget = firstNumber([
-		task.budgetUsd,
-		defaults.budgetUsd,
-		settings.budgetUsd,
-	]);
+	const deadline = firstNumber([task.deadlineMinutes, defaults.deadlineMinutes, settings.deadlineMinutes]);
+	const budget = firstNumber([task.budgetUsd, defaults.budgetUsd, settings.budgetUsd]);
 	return {
 		deadlineMinutes: deadline && deadline > 0 ? deadline : null,
 		budgetUsd: budget && budget > 0 ? budget : null,
@@ -1596,9 +1481,7 @@ export function formatUsd(amount: number): string {
 	if (amount >= 0.01) return `$${amount.toFixed(2)}`;
 	const significant = amount.toPrecision(2);
 	// toPrecision switches to exponential below 1e-6; expand it back.
-	const plain = significant.includes("e")
-		? Number(significant).toFixed(20)
-		: significant;
+	const plain = significant.includes("e") ? Number(significant).toFixed(20) : significant;
 	return `$${plain.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "")}`;
 }
 
@@ -1620,11 +1503,9 @@ export function limitBreach(
 ): "deadline" | "budget" | null {
 	if (record.interruptedAt || record.cancelRequestedAt) return null;
 	if (leg.phase === "idle") return null;
-	if (typeof leg.deadlineAt === "number" && now >= leg.deadlineAt)
-		return "deadline";
+	if (typeof leg.deadlineAt === "number" && now >= leg.deadlineAt) return "deadline";
 	const cost = (record.usage?.cost ?? 0) + (leg.pendingCost ?? 0);
-	if (typeof leg.budgetCeiling === "number" && cost >= leg.budgetCeiling)
-		return "budget";
+	if (typeof leg.budgetCeiling === "number" && cost >= leg.budgetCeiling) return "budget";
 	return null;
 }
 
@@ -1649,9 +1530,7 @@ function armRunLimits(id: string): void {
 	const { deadlineMinutes, budgetUsd } = live.record;
 	const now = Date.now();
 	live.deadlineAt = deadlineMinutes ? now + deadlineMinutes * 60_000 : null;
-	live.budgetCeiling = budgetUsd
-		? (live.record.usage?.cost ?? 0) + budgetUsd
-		: null;
+	live.budgetCeiling = budgetUsd ? (live.record.usage?.cost ?? 0) + budgetUsd : null;
 	if (typeof live.deadlineAt !== "number") return;
 	let handle: BoundedTimer | null = null;
 	handle = armBoundedTimeout(live.deadlineAt - now, () => {
@@ -1701,17 +1580,11 @@ function enforceRunLimits(id: string, pendingCost = 0): void {
  * bounded wait to land, and a kill or a session switch can finalize the worker
  * inside that window — announcing a pause for an ended worker would be false.
  */
-export function limitPauseStillHolds(
-	record: Pick<WorkerRecord, "state" | "interruptedAt"> | null,
-): boolean {
+export function limitPauseStillHolds(record: Pick<WorkerRecord, "state" | "interruptedAt"> | null): boolean {
 	return Boolean(record && record.state === "running" && record.interruptedAt);
 }
 
-function notifyLimitPause(
-	record: WorkerRecord,
-	breach: "deadline" | "budget",
-	reason: string,
-): void {
+function notifyLimitPause(record: WorkerRecord, breach: "deadline" | "budget", reason: string): void {
 	try {
 		if (!limitPauseStillHolds(readWorker(record.id))) return;
 		const elapsed = Math.round((Date.now() - record.startedAt) / 1000);
@@ -1759,10 +1632,7 @@ function sweepStaleSockets(dir: string, ownSocketPath: string): void {
 	if (!existsSync(dir)) return;
 	const claimed = new Set(
 		listWorkers()
-			.filter(
-				(worker) =>
-					ownerAlive(worker) && worker.socketPath.startsWith(`${dir}/`),
-			)
+			.filter((worker) => ownerAlive(worker) && worker.socketPath.startsWith(`${dir}/`))
 			.map((worker) => worker.socketPath),
 	);
 	for (const name of readdirSync(dir)) {
@@ -1838,23 +1708,15 @@ export function compactionVeto(
  * time, so concurrent dispatches cannot race the wiring.
  */
 export function registerWorkerCompactionVeto(pi: ExtensionAPI): void {
-	pi.on("session_before_compact", (event, ctx) =>
-		compactionVeto(ctx.sessionManager.getSessionId(), event.reason),
-	);
+	pi.on("session_before_compact", (event, ctx) => compactionVeto(ctx.sessionManager.getSessionId(), event.reason));
 }
 
-export function clearQueueBeforeAbort(
-	session: Pick<AgentSession, "clearQueue" | "abort">,
-): void {
+export function clearQueueBeforeAbort(session: Pick<AgentSession, "clearQueue" | "abort">): void {
 	session.clearQueue();
 	void session.abort().catch(() => {});
 }
 
-export function submitResultTool(
-	resultPath: string,
-	endRun: () => void,
-	sessionId: () => string,
-) {
+export function submitResultTool(resultPath: string, endRun: () => void, sessionId: () => string) {
 	return defineTool({
 		name: "submit_result",
 		label: "Submit Result",
@@ -1889,9 +1751,7 @@ export function submitResultTool(
 			} catch (err) {
 				// Pi sets the error flag only when execute throws; a returned flag is
 				// ignored, and the worker would read a failed write as accepted.
-				throw new Error(
-					`submit_result FAILED to write ${resultPath}: ${errText(err)}. Retry the call.`,
-				);
+				throw new Error(`submit_result FAILED to write ${resultPath}: ${errText(err)}. Retry the call.`);
 			}
 			// End the WORKER's run. Never ctx.shutdown() here: the worker shares this
 			// process with the parent session, so a shutdown would take the operator's
@@ -1942,13 +1802,9 @@ export function submitResultTool(
 }
 
 /** The cost a just-ended message carries before Pi persists it. */
-export function messageCost(
-	message: { usage?: { cost?: Usage["cost"] } } | undefined,
-): number {
+export function messageCost(message: { usage?: { cost?: Usage["cost"] } } | undefined): number {
 	const total = message?.usage?.cost?.total;
-	return typeof total === "number" && Number.isFinite(total) && total > 0
-		? total
-		: 0;
+	return typeof total === "number" && Number.isFinite(total) && total > 0 ? total : 0;
 }
 
 /**
@@ -1976,10 +1832,7 @@ function sessionUsage(session: AgentSession): WorkerUsage {
 	};
 }
 
-export function subtractUsage(
-	total: WorkerUsage,
-	baseline: WorkerUsage | undefined,
-): WorkerUsage {
+export function subtractUsage(total: WorkerUsage, baseline: WorkerUsage | undefined): WorkerUsage {
 	if (!baseline) return total;
 	const floor = (value: number) => (value > 0 ? value : 0);
 	return {
@@ -1993,14 +1846,8 @@ export function subtractUsage(
 	};
 }
 
-function syncUsageFromSession(
-	record: WorkerRecord,
-	session: AgentSession,
-): void {
-	record.usage = subtractUsage(
-		sessionUsage(session),
-		usageBaselines.get(record.id),
-	);
+function syncUsageFromSession(record: WorkerRecord, session: AgentSession): void {
+	record.usage = subtractUsage(sessionUsage(session), usageBaselines.get(record.id));
 }
 
 /**
@@ -2016,10 +1863,7 @@ export function reconcileAssistantTurn(
 	record.stopReason = message.stopReason ?? null;
 	if (message.stopReason === "error" || message.stopReason === "aborted") {
 		record.error =
-			message.errorMessage ??
-			(message.stopReason === "error"
-				? "worker turn failed"
-				: "worker turn aborted");
+			message.errorMessage ?? (message.stopReason === "error" ? "worker turn failed" : "worker turn aborted");
 		return;
 	}
 	record.error = message.errorMessage ?? null;
@@ -2059,14 +1903,9 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 				syncUsageFromSession(record, session);
 				if (event.message.role === "assistant") {
 					reconcileAssistantTurn(record, event.message);
-					const textParts = event.message.content
-						.filter((part) => part.type === "text")
-						.map((part) => part.text);
+					const textParts = event.message.content.filter((part) => part.type === "text").map((part) => part.text);
 					if (textParts.length > 0 && textParts.some((t) => t.trim())) {
-						record.lastOutput = capUtf8(
-							textParts.join("\n"),
-							RESULT_BODY_CAP_BYTES,
-						).text;
+						record.lastOutput = capUtf8(textParts.join("\n"), RESULT_BODY_CAP_BYTES).text;
 					}
 				}
 				// Persist cumulative usage so a replacement session sees real numbers
@@ -2078,10 +1917,7 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 				// not in the statistics yet; add it here rather than deferring the
 				// check past the point where a pause could still stop the run.
 				const pendingCost =
-					event.message.role === "assistant" ||
-					event.message.role === "toolResult"
-						? messageCost(event.message)
-						: 0;
+					event.message.role === "assistant" || event.message.role === "toolResult" ? messageCost(event.message) : 0;
 				enforceRunLimits(record.id, pendingCost);
 			} else if (event.type === "compaction_end") {
 				// The compaction entry is persisted before compaction_end fires.
@@ -2096,8 +1932,7 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 				setImmediate(() => {
 					try {
 						const current = readWorker(record.id);
-						if (current?.state !== "running" || !liveWorkers.has(record.id))
-							return;
+						if (current?.state !== "running" || !liveWorkers.has(record.id)) return;
 						syncUsageFromSession(record, session);
 						writeWorker(record);
 						publishSubagentStatus();
@@ -2125,11 +1960,7 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 				}
 				writeWorker(record);
 				publishSubagentStatus();
-			} else if (
-				event.type === "agent_end" &&
-				record.interruptedAt &&
-				!record.cancelRequestedAt
-			) {
+			} else if (event.type === "agent_end" && record.interruptedAt && !record.cancelRequestedAt) {
 				// The abort's assistant message may carry "Request was aborted".
 				// Interruption is an idle, resumable state, not a worker failure.
 				record.currentTool = null;
@@ -2147,15 +1978,10 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 }
 
 /** Create a fresh session manager, or fork a preserved terminal transcript. */
-export function workerSessionManager(
-	cwd: string,
-	continuation?: WorkerRecord,
-): SessionManager {
+export function workerSessionManager(cwd: string, continuation?: WorkerRecord): SessionManager {
 	if (!continuation) return SessionManager.create(cwd);
 	if (!continuation.sessionFile || !existsSync(continuation.sessionFile)) {
-		throw new Error(
-			`source worker ${continuation.id} has no readable session file`,
-		);
+		throw new Error(`source worker ${continuation.id} has no readable session file`);
 	}
 	return SessionManager.forkFrom(continuation.sessionFile, cwd);
 }
@@ -2190,11 +2016,7 @@ export async function dispatchWorker(
 	const requestedThinking = task.thinking ?? defaults.thinking;
 	const thinking = requestedThinking ?? ctx.thinkingLevel ?? "medium";
 	const supportedThinking = modelCapabilities(ctx, modelId)?.thinkingLevels;
-	if (
-		requestedThinking &&
-		supportedThinking &&
-		!supportedThinking.includes(requestedThinking)
-	) {
+	if (requestedThinking && supportedThinking && !supportedThinking.includes(requestedThinking)) {
 		return {
 			id: "",
 			state: "failed",
@@ -2317,12 +2139,9 @@ export async function dispatchWorker(
 		});
 		const modelRuntime = await createWorkerModelRuntime(ctx, workerAgentDir);
 		const workerModel =
-			modelRuntime.getModel(model.provider, model.id) ??
-			ctx.modelRegistry.find(model.provider, model.id);
+			modelRuntime.getModel(model.provider, model.id) ?? ctx.modelRegistry.find(model.provider, model.id);
 		if (!workerModel) {
-			throw new Error(
-				`model "${model.provider}/${model.id}" disappeared before worker construction`,
-			);
+			throw new Error(`model "${model.provider}/${model.id}" disappeared before worker construction`);
 		}
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
@@ -2355,8 +2174,7 @@ export async function dispatchWorker(
 		});
 		await resourceLoader.reload();
 		sessionManager = workerSessionManager(cwd, continuation);
-		if (continuation)
-			forkedSessionFile = sessionManager.getSessionFile() ?? null;
+		if (continuation) forkedSessionFile = sessionManager.getSessionFile() ?? null;
 		const created = await createAgentSession({
 			cwd,
 			agentDir: workerAgentDir,
@@ -2367,13 +2185,7 @@ export async function dispatchWorker(
 			model: workerModel,
 			thinkingLevel: thinking,
 			tools: resolvedTools,
-			customTools: [
-				submitResultTool(
-					files.result,
-					endRun,
-					() => live.session?.sessionManager.getSessionId() ?? "",
-				),
-			],
+			customTools: [submitResultTool(files.result, endRun, () => live.session?.sessionManager.getSessionId() ?? "")],
 		});
 		session = created.session;
 		disposeSession = disposeOnce(() => shutdownWorkerSession(session));
@@ -2426,12 +2238,8 @@ export async function dispatchWorker(
 	// spent. Nothing crosses a process boundary now, so this is a direct read.
 	const actualTools = new Set(session.getActiveToolNames());
 	const missing = resolvedTools.filter((name) => !actualTools.has(name));
-	const unexpected = [...actualTools].filter(
-		(name) => !resolvedTools.includes(name),
-	);
-	const actualMetadata = new Map(
-		session.getAllTools().map((tool) => [tool.name, tool]),
-	);
+	const unexpected = [...actualTools].filter((name) => !resolvedTools.includes(name));
+	const actualMetadata = new Map(session.getAllTools().map((tool) => [tool.name, tool]));
 	const mismatched = [...tools.metadata.entries()]
 		.filter(([name, expected]) => {
 			const actual = actualMetadata.get(name);
@@ -2446,18 +2254,14 @@ export async function dispatchWorker(
 						resolve(expectedPath) === resolve(actualPath);
 			const sameMetadata =
 				expected.description === actual.description &&
-				JSON.stringify(expected.parameters) ===
-					JSON.stringify(actual.parameters) &&
-				JSON.stringify(expected.promptGuidelines ?? []) ===
-					JSON.stringify(actual.promptGuidelines ?? []);
+				JSON.stringify(expected.parameters) === JSON.stringify(actual.parameters) &&
+				JSON.stringify(expected.promptGuidelines ?? []) === JSON.stringify(actual.promptGuidelines ?? []);
 			return !sameSource || !sameMetadata;
 		})
 		.map(([name]) => name);
 	if (missing.length > 0 || unexpected.length > 0 || mismatched.length > 0) {
 		const surface = parentToolSurface(ctx);
-		const sourceOf = new Map(
-			(surface?.all ?? []).map((tool) => [tool.name, tool.sourceInfo]),
-		);
+		const sourceOf = new Map((surface?.all ?? []).map((tool) => [tool.name, tool.sourceInfo]));
 		const withSource = missing.map((name) => {
 			const src = sourceOf.get(name);
 			return src?.source && src?.path && src.source !== "builtin"
@@ -2476,12 +2280,8 @@ export async function dispatchWorker(
 		if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
 		const mismatch = [
 			...(withSource.length > 0 ? [`missing: ${withSource.join(", ")}`] : []),
-			...(unexpected.length > 0
-				? [`unexpected: ${unexpected.join(", ")}`]
-				: []),
-			...(mismatched.length > 0
-				? [`registration changed: ${mismatched.join(", ")}`]
-				: []),
+			...(unexpected.length > 0 ? [`unexpected: ${unexpected.join(", ")}`] : []),
+			...(mismatched.length > 0 ? [`registration changed: ${mismatched.join(", ")}`] : []),
 		].join("; ");
 		return fail(
 			`the worker session did not receive the requested tool surface; ${mismatch}. It has: ${[...actualTools].join(", ")}`,
@@ -2496,11 +2296,7 @@ export async function dispatchWorker(
 		record.sessionId = workerSessionId;
 		record.sessionFile = sessionManager.getSessionFile() ?? null;
 		writeWorker(record);
-		recordWorkerSurface(
-			record.sessionId,
-			session.getActiveToolNames(),
-			session.getAllTools(),
-		);
+		recordWorkerSurface(record.sessionId, session.getActiveToolNames(), session.getAllTools());
 		// Pi creates the transcript lazily. Tighten the file now when present;
 		// trackSession retries after later session events.
 		if (record.sessionFile) {
@@ -2621,10 +2417,7 @@ export async function dispatchWorker(
 // Steer / cancel / continue
 // ---------------------------------------------------------------------------
 
-function liveWorkerOwnedBy(
-	id: string,
-	requesterSession: string,
-): LiveWorker | null {
+function liveWorkerOwnedBy(id: string, requesterSession: string): LiveWorker | null {
 	const live = liveWorkers.get(id);
 	return live?.record.ownerSession === requesterSession ? live : null;
 }
@@ -2648,8 +2441,7 @@ export async function steerWorker(
 			};
 		}
 		const record = readWorker(id);
-		if (!record)
-			return { ok: false, text: `No worker with id ${id} in the store.` };
+		if (!record) return { ok: false, text: `No worker with id ${id} in the store.` };
 		if (record.state !== "running") {
 			return {
 				ok: false,
@@ -2798,11 +2590,7 @@ export function workerConversation(id: string): TranscriptItem[] | null {
  * this session does not own the worker. Uses the runtime's in-process watch
  * channel, not the raw session: watchers survive a remote observer detaching,
  * which disposes the runtime's server-facing listeners. */
-export function subscribeWorkerLive(
-	id: string,
-	onEvent: () => void,
-	requesterSession: string,
-): (() => void) | null {
+export function subscribeWorkerLive(id: string, onEvent: () => void, requesterSession: string): (() => void) | null {
 	const live = liveWorkerOwnedBy(id, requesterSession);
 	if (!live) return null;
 	return live.runtime.watch(onEvent);
@@ -2822,10 +2610,7 @@ export function isWorkerActive(id: string, requesterSession: string): boolean {
  * full settlement), so a subsequent message resumes it. No cancel intent is
  * recorded; this is distinct from kill, which finalizes the worker.
  */
-export async function interruptWorker(
-	id: string,
-	requesterSession: string,
-): Promise<string> {
+export async function interruptWorker(id: string, requesterSession: string): Promise<string> {
 	const live = liveWorkerOwnedBy(id, requesterSession);
 	if (!live) {
 		return foreignLiveOwner(id, requesterSession)
@@ -2935,13 +2720,7 @@ async function sendWorkerMessageOutcome(
 					// The worker stays interrupted; persistence is best-effort here.
 				}
 			};
-			const timer = setTimeout(
-				() =>
-					failResume(
-						"the interrupted run did not become idle within 3 seconds",
-					),
-				3_000,
-			);
+			const timer = setTimeout(() => failResume("the interrupted run did not become idle within 3 seconds"), 3_000);
 			timer.unref();
 			// One owner for the queued resume, released with the worker.
 			live.cancelResume = () => {
@@ -2987,20 +2766,12 @@ async function sendWorkerMessageOutcome(
 	}
 }
 
-export async function sendWorkerMessage(
-	id: string,
-	text: string,
-	requesterSession: string,
-): Promise<string> {
+export async function sendWorkerMessage(id: string, text: string, requesterSession: string): Promise<string> {
 	return (await sendWorkerMessageOutcome(id, text, requesterSession)).text;
 }
 
 /** Fork a terminal worker's session into a new linked background worker. */
-export async function continueWorker(
-	id: string,
-	message: string,
-	ctx: ExtensionContext,
-): Promise<DispatchOutcome> {
+export async function continueWorker(id: string, message: string, ctx: ExtensionContext): Promise<DispatchOutcome> {
 	const source = readWorker(id);
 	if (!source) {
 		return {
@@ -3036,36 +2807,24 @@ export async function continueWorker(
 		};
 	}
 	const surface = parentToolSurface(ctx);
-	const recordedTools =
-		terminal.resolvedTools.length > 0
-			? terminal.resolvedTools
-			: (terminal.tools ?? []);
-	const recordedCallableTools = [
-		...new Set(recordedTools.filter((name) => name !== "submit_result")),
-	];
+	const recordedTools = terminal.resolvedTools.length > 0 ? terminal.resolvedTools : (terminal.tools ?? []);
+	const recordedCallableTools = [...new Set(recordedTools.filter((name) => name !== "submit_result"))];
 	if (!surface) {
 		return {
 			id: "",
 			state: "failed",
-			error:
-				`Worker ${id} cannot continue: the current parent tool registry is unavailable; the recorded tool gap is ${recordedCallableTools.join(", ") || "the current registry"}.`,
+			error: `Worker ${id} cannot continue: the current parent tool registry is unavailable; the recorded tool gap is ${recordedCallableTools.join(", ") || "the current registry"}.`,
 			record: null,
 		};
 	}
-	const currentNames = new Set([
-		...surface.active,
-		...surface.all.map((tool) => tool.name),
-	]);
+	const currentNames = new Set([...surface.active, ...surface.all.map((tool) => tool.name)]);
 	const tools = recordedCallableTools.filter((name) => currentNames.has(name));
-	const droppedTools = recordedCallableTools.filter(
-		(name) => !currentNames.has(name),
-	);
+	const droppedTools = recordedCallableTools.filter((name) => !currentNames.has(name));
 	if (recordedCallableTools.length > 0 && tools.length === 0) {
 		return {
 			id: "",
 			state: "failed",
-			error:
-				`Worker ${id} cannot continue: none of its recorded tools are in the current parent registry; unavailable: ${droppedTools.join(", ")}.`,
+			error: `Worker ${id} cannot continue: none of its recorded tools are in the current parent registry; unavailable: ${droppedTools.join(", ")}.`,
 			record: null,
 		};
 	}
@@ -3107,10 +2866,7 @@ function compactAge(milliseconds: number): string {
 }
 
 /** Neutral transcript-write age for a live worker; this is not a timeout verdict. */
-export function sessionWriteAge(
-	record: WorkerRecord,
-	now = Date.now(),
-): string | null {
+export function sessionWriteAge(record: WorkerRecord, now = Date.now()): string | null {
 	if (record.state !== "running" || !record.sessionFile) return null;
 	try {
 		return compactAge(now - statSync(record.sessionFile).mtimeMs);
@@ -3120,26 +2876,15 @@ export function sessionWriteAge(
 }
 
 export function statusLine(record: WorkerRecord, now = Date.now()): string {
-	const elapsed = Math.round(
-		((record.exitedAt ?? now) - record.startedAt) / 1000,
-	);
+	const elapsed = Math.round(((record.exitedAt ?? now) - record.startedAt) / 1000);
 	const cost = record.usage ? `$${record.usage.cost.toFixed(4)}` : "—";
 	const owned = record.state === "running" && liveWorkers.has(record.id);
 	const paused = record.state === "running" && Boolean(record.interruptedAt);
 	const state =
-		paused && record.pausedReason
-			? `interrupted (${record.pausedReason})`
-			: paused
-				? "interrupted"
-				: record.state;
+		paused && record.pausedReason ? `interrupted (${record.pausedReason})` : paused ? "interrupted" : record.state;
 	const parts = [
 		record.id,
-		state +
-			(record.state === "running" && !paused
-				? owned
-					? ""
-					: " (other session)"
-				: ""),
+		state + (record.state === "running" && !paused ? (owned ? "" : " (other session)") : ""),
 		record.model,
 		thinkingLabel(record),
 		`${elapsed}s`,
@@ -3153,16 +2898,11 @@ export function statusLine(record: WorkerRecord, now = Date.now()): string {
 	if (failedTools) parts.push(`tool errors: ${failedTools}`);
 	const writeAge = sessionWriteAge(record, now);
 	if (writeAge) parts.push(`session write ${writeAge} ago`);
-	if (record.state === "running" && record.cancelRequestedAt)
-		parts.push("cancel requested");
+	if (record.state === "running" && record.cancelRequestedAt) parts.push("cancel requested");
 	parts.push(`cost ${cost}`);
 	const line = parts.join(" · ");
-	const preview = (record.resultPreview ?? record.lastOutput ?? "")
-		.slice(0, 200)
-		.replace(/\s+/g, " ");
-	const tail = preview
-		? `\n    ↳ ${markWorkerPreview(preview, record.id)}`
-		: "";
+	const preview = (record.resultPreview ?? record.lastOutput ?? "").slice(0, 200).replace(/\s+/g, " ");
+	const tail = preview ? `\n    ↳ ${markWorkerPreview(preview, record.id)}` : "";
 	const err = record.error && !paused ? `\n    ✗ ${record.error}` : "";
 	return line + tail + err;
 }
@@ -3185,8 +2925,7 @@ export function statusView(filter?: string): StatusView {
 	const live: WorkerRecord[] = [];
 	const terminal: WorkerRecord[] = [];
 	for (const worker of workers) {
-		const updated =
-			liveWorkers.get(worker.id)?.record ?? finalizeIfStale(worker);
+		const updated = liveWorkers.get(worker.id)?.record ?? finalizeIfStale(worker);
 		if (!updated) continue;
 		if (updated.state === "running") live.push(updated);
 		else terminal.push(updated);
@@ -3203,9 +2942,7 @@ export function statusView(filter?: string): StatusView {
 	}
 	const recent = terminal.slice(0, 8);
 	if (recent.length > 0) {
-		lines.push(
-			`\nRecent terminal workers (${terminal.length} total, showing ${recent.length}):`,
-		);
+		lines.push(`\nRecent terminal workers (${terminal.length} total, showing ${recent.length}):`);
 		for (const worker of recent) lines.push(statusLine(worker));
 	}
 	return { live, terminal, text: lines.join("\n") };
@@ -3246,9 +2983,7 @@ export function collectWorker(id?: string): {
 } {
 	const workers = listWorkers();
 	if (id) {
-		let worker: WorkerRecord | null | undefined = workers.find(
-			(w) => w.id === id,
-		);
+		let worker: WorkerRecord | null | undefined = workers.find((w) => w.id === id);
 		if (worker) worker = finalizeIfStale(worker);
 		if (!worker) {
 			return {
@@ -3264,15 +2999,10 @@ export function collectWorker(id?: string): {
 		}
 		// finalizeIfStale promotes any late authoritative result before collection.
 		// Read the file independently from previews so exact bytes remain primary.
-		const result = existsSync(workerFiles(id).result)
-			? readFileSync(workerFiles(id).result, "utf-8")
-			: undefined;
+		const result = existsSync(workerFiles(id).result) ? readFileSync(workerFiles(id).result, "utf-8") : undefined;
 		const transcript = worker.sessionFile ?? "(no session file retained)";
 		if (result !== undefined) {
-			const body =
-				result === ""
-					? "(empty submitted result)"
-					: markWorkerAuthored(result, id);
+			const body = result === "" ? "(empty submitted result)" : markWorkerAuthored(result, id);
 			return {
 				text: `Worker ${id} (${worker.model}) · ${worker.state}${worker.error ? ` · ${worker.error}` : ""}\n\n${body}\n\n[transcript: ${transcript}]`,
 				workers: [
@@ -3329,18 +3059,14 @@ export function collectWorker(id?: string): {
 	}
 	const terminal = workers
 		.map((worker) => finalizeIfStale(worker))
-		.filter((worker): worker is WorkerRecord =>
-			Boolean(worker && worker.state !== "running"),
-		);
+		.filter((worker): worker is WorkerRecord => Boolean(worker && worker.state !== "running"));
 	if (terminal.length === 0) {
 		return { text: "No terminal workers in the store.", workers: [] };
 	}
 	const recent = terminal.slice(0, 8);
 	const lines = recent.map((w) => {
 		const has = w.state === "done" && w.resultBytes !== null;
-		const preview = (w.resultPreview ?? w.lastOutput ?? "")
-			.slice(0, 120)
-			.replace(/\s+/g, " ");
+		const preview = (w.resultPreview ?? w.lastOutput ?? "").slice(0, 120).replace(/\s+/g, " ");
 		return `${w.id} · ${w.state} · ${w.model} · ${has ? `${w.resultBytes} bytes` : "no result"}${preview ? `\n    ↳ ${markWorkerAuthored(preview, w.id)}` : ""}`;
 	});
 	return {
@@ -3503,8 +3229,7 @@ const subagentTool = defineTool({
 		tasks: Type.Optional(
 			Type.Array(taskSchema, {
 				minItems: 1,
-				description:
-					"Batch of tasks dispatched in parallel. Each task may override model/thinking/tools/cwd.",
+				description: "Batch of tasks dispatched in parallel. Each task may override model/thinking/tools/cwd.",
 			}),
 		),
 		model: Type.Optional(modelSchema),
@@ -3521,14 +3246,9 @@ const subagentTool = defineTool({
 	renderCall(args, theme, context) {
 		// SAFETY: This renderer always returns Text, so lastComponent is its own
 		// previous Text instance or undefined.
-		const text =
-			(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+		const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 		if (!context.expanded) {
-			const spec =
-				args.task ??
-				(args.tasks?.length
-					? `batch: ${args.tasks.length} tasks`
-					: "(no task)");
+			const spec = args.task ?? (args.tasks?.length ? `batch: ${args.tasks.length} tasks` : "(no task)");
 			const snippet = spec.replace(/\s+/g, " ").slice(0, 90);
 			const tail = spec.length > 90 ? "…" : "";
 			text.setText(
@@ -3552,12 +3272,7 @@ const subagentTool = defineTool({
 				? "\n\n" +
 					theme.fg("muted", `batch: ${args.tasks.length} task(s), parallel`) +
 					"\n" +
-					args.tasks
-						.map(
-							(t, i) =>
-								`  ${i + 1}. ${t.task.replace(/\s+/g, " ").slice(0, 160)}`,
-						)
-						.join("\n")
+					args.tasks.map((t, i) => `  ${i + 1}. ${t.task.replace(/\s+/g, " ").slice(0, 160)}`).join("\n")
 				: "";
 			text.setText(
 				theme.fg("toolTitle", theme.bold("subagent dispatch")) +
@@ -3591,9 +3306,7 @@ const subagentTool = defineTool({
 		const hasTask = Boolean(params.task?.trim());
 		const hasTasks = Boolean(params.tasks?.length);
 		if (hasTask === hasTasks) {
-			throw new Error(
-				"Provide exactly one dispatch form: `task` for one worker or non-empty `tasks` for a batch.",
-			);
+			throw new Error("Provide exactly one dispatch form: `task` for one worker or non-empty `tasks` for a batch.");
 		}
 		const defaults = {
 			model: params.model,
@@ -3651,22 +3364,15 @@ const subagentTool = defineTool({
 				const worker = outcome.id ? `${outcome.id} · ` : "";
 				return `✗ ${worker}${outcome.state}: ${outcome.error}`;
 			}
-			const thinking = outcome.record
-				? thinkingLabel(outcome.record)
-				: "thinking:?";
+			const thinking = outcome.record ? thinkingLabel(outcome.record) : "thinking:?";
 			return `${outcome.id} · background · ${outcome.record?.model ?? "?"} · ${thinking} · cwd:${outcome.record?.cwd ?? "?"}`;
 		});
-		const started = outcomes.filter(
-			(outcome) => outcome.state === "running",
-		).length;
+		const started = outcomes.filter((outcome) => outcome.state === "running").length;
 		const guidance =
 			started > 0
 				? "\n\nWorkers persist in the store. Natural completion and failure notify through subagent_result; explicit cancellation reports through its control response. Steer: subagent_steer · Interrupt: subagent_interrupt · Status: subagent_status · Cancel: subagent_kill · Continue: subagent_continue · Collect: subagent_collect."
 				: "\n\nNo worker is running; correct the dispatch error before using worker controls.";
-		const text =
-			`Started ${started} of ${outcomes.length} subagent worker(s):\n` +
-			lines.join("\n") +
-			guidance;
+		const text = `Started ${started} of ${outcomes.length} subagent worker(s):\n${lines.join("\n")}${guidance}`;
 		// Pi sets the error flag only when execute throws; a dispatch that started
 		// nothing must not read as a successful tool result.
 		if (started === 0) throw new Error(text);
@@ -3700,8 +3406,7 @@ const statusTool = defineTool({
 		"Live status for workers owned by this session comes from the worker session's own events (cumulative usage, current tool); session-file write age is neutral activity evidence, not a timeout verdict.",
 		"Do not call this in a polling loop; completions arrive as subagent_result messages.",
 	].join(" "),
-	promptSnippet:
-		"Show live subagent workers with model, state, elapsed, tool activity, cost, and output previews.",
+	promptSnippet: "Show live subagent workers with model, state, elapsed, tool activity, cost, and output previews.",
 	parameters: Type.Object({ id: Type.Optional(Type.String({ minLength: 1 })) }),
 	executionMode: "parallel",
 	async execute(
@@ -3728,9 +3433,7 @@ const statusTool = defineTool({
 			}
 			record = finalizeIfStale(record) ?? record;
 			const reopen =
-				record.state !== "running" && record.sessionFile
-					? `\n    reopen: ${reopenCommand(record.sessionFile)}`
-					: "";
+				record.state !== "running" && record.sessionFile ? `\n    reopen: ${reopenCommand(record.sessionFile)}` : "";
 			return {
 				content: [{ type: "text", text: statusLine(record) + reopen }],
 				details: { worker: record },
@@ -3765,11 +3468,7 @@ const steerTool = defineTool({
 		ctx: ExtensionContext,
 	) {
 		void _onUpdate;
-		const result = await steerWorker(
-			params.id,
-			params.message,
-			ctx.sessionManager.getSessionId(),
-		);
+		const result = await steerWorker(params.id, params.message, ctx.sessionManager.getSessionId());
 		return {
 			content: [{ type: "text", text: result.text }],
 			details: { id: params.id, ok: result.ok },
@@ -3786,8 +3485,7 @@ const collectTool = defineTool({
 		"Without id: lists recent terminal workers with result sizes and previews.",
 		"Collecting never deletes anything; for a worker whose owning session died, collecting may finalize its stored record (state transition) before returning it.",
 	].join(" "),
-	promptSnippet:
-		"Collect terminal subagent results from the durable store (any session).",
+	promptSnippet: "Collect terminal subagent results from the durable store (any session).",
 	parameters: Type.Object({ id: Type.Optional(Type.String({ minLength: 1 })) }),
 	executionMode: "parallel",
 	async execute(
@@ -3828,8 +3526,7 @@ const interruptTool = defineTool({
 		"Interrupt a live subagent worker without cancelling it: the run stops but the worker stays alive, idle, and resumable. Resume it by sending a follow-up — subagent_steer on an idle worker resumes it with your message.",
 		"Distinct from subagent_kill, which ends the worker terminally. Use interrupt to pause and redirect; use kill to end. An interrupted worker that is never resumed is released by the idle deadline (default 30 minutes, PI_SUBAGENT_IDLE_MINUTES).",
 	].join(" "),
-	promptSnippet:
-		"Interrupt (pause) a live subagent worker by id; it stays resumable.",
+	promptSnippet: "Interrupt (pause) a live subagent worker by id; it stays resumable.",
 	parameters: Type.Object({ id: Type.String({ minLength: 1 }) }),
 	executionMode: "sequential",
 	async execute(
@@ -3840,10 +3537,7 @@ const interruptTool = defineTool({
 		ctx: ExtensionContext,
 	) {
 		void _onUpdate;
-		const text = await interruptWorker(
-			params.id,
-			ctx.sessionManager.getSessionId(),
-		);
+		const text = await interruptWorker(params.id, ctx.sessionManager.getSessionId());
 		return { content: [{ type: "text", text }], details: {} };
 	},
 });
@@ -3855,8 +3549,7 @@ const continueTool = defineTool({
 		"Continue a terminal subagent as a new linked background worker while preserving the source record, result, and transcript.",
 		"The new worker forks the retained Pi session, inherits the source model, thinking, tools, and cwd, and returns a new stable id immediately. Running workers must be steered or interrupted instead.",
 	].join(" "),
-	promptSnippet:
-		"Continue a terminal subagent as a new linked background worker.",
+	promptSnippet: "Continue a terminal subagent as a new linked background worker.",
 	parameters: Type.Object({
 		id: Type.String({ minLength: 1 }),
 		message: Type.String({ minLength: 1 }),
@@ -3874,15 +3567,10 @@ const continueTool = defineTool({
 		if (outcome.error) {
 			const linked = outcome.id ? ` as ${outcome.id}` : "";
 			// Pi sets the error flag only when execute throws.
-			throw new Error(
-				`Failed to continue ${params.id}${linked}: ${outcome.error}`,
-			);
+			throw new Error(`Failed to continue ${params.id}${linked}: ${outcome.error}`);
 		}
 		const dropped = outcome.record?.droppedTools ?? [];
-		const degradation =
-			dropped.length > 0
-				? ` Dropped unavailable tools: ${dropped.join(", ")}.`
-				: "";
+		const degradation = dropped.length > 0 ? ` Dropped unavailable tools: ${dropped.join(", ")}.` : "";
 		return {
 			content: [
 				{
@@ -3913,10 +3601,7 @@ const killTool = defineTool({
 		ctx: ExtensionContext,
 	) {
 		void _onUpdate;
-		const result = await cancelWorker(
-			params.id,
-			ctx.sessionManager.getSessionId(),
-		);
+		const result = await cancelWorker(params.id, ctx.sessionManager.getSessionId());
 		return {
 			content: [{ type: "text", text: result.text }],
 			details: result.record
@@ -3936,14 +3621,10 @@ async function shutdownOwnedSession(ownerSession: string): Promise<void> {
 	sessionApis.delete(ownerSession);
 	replacingSessions.add(ownerSession);
 	try {
-		const workers = [...liveWorkers.entries()].filter(
-			([, live]) => live.record.ownerSession === ownerSession,
-		);
+		const workers = [...liveWorkers.entries()].filter(([, live]) => live.record.ownerSession === ownerSession);
 		for (const [, live] of workers) clearIdleDeadline(live);
 		// Bounded: a stuck compaction or tool must not stall session teardown.
-		await Promise.allSettled(
-			workers.map(([, live]) => abortBounded(live.runtime)),
-		);
+		await Promise.allSettled(workers.map(([, live]) => abortBounded(live.runtime)));
 
 		// Abort settlement normally finalizes through each run's settle handler.
 		// An already-idle interrupted worker has no active run, so finish any
@@ -4007,8 +3688,7 @@ export default function (pi: ExtensionAPI) {
 							return [...view.live, ...view.terminal];
 						},
 						readWorker,
-						kill: async (id) =>
-							(await cancelWorker(id, ctx.sessionManager.getSessionId())).text,
+						kill: async (id) => (await cancelWorker(id, ctx.sessionManager.getSessionId())).text,
 						continueWorker: async (id, message) => {
 							const outcome = await continueWorker(id, message, ctx);
 							return {
@@ -4020,20 +3700,11 @@ export default function (pi: ExtensionAPI) {
 						},
 						report: workerReport,
 						conversation: workerConversation,
-						isLive: (id) =>
-							Boolean(liveWorkerOwnedBy(id, ctx.sessionManager.getSessionId())),
-						subscribeLive: (id, onEvent) =>
-							subscribeWorkerLive(
-								id,
-								onEvent,
-								ctx.sessionManager.getSessionId(),
-							),
-						isActive: (id) =>
-							isWorkerActive(id, ctx.sessionManager.getSessionId()),
-						interrupt: (id) =>
-							interruptWorker(id, ctx.sessionManager.getSessionId()),
-						sendLive: (id, text) =>
-							sendWorkerMessage(id, text, ctx.sessionManager.getSessionId()),
+						isLive: (id) => Boolean(liveWorkerOwnedBy(id, ctx.sessionManager.getSessionId())),
+						subscribeLive: (id, onEvent) => subscribeWorkerLive(id, onEvent, ctx.sessionManager.getSessionId()),
+						isActive: (id) => isWorkerActive(id, ctx.sessionManager.getSessionId()),
+						interrupt: (id) => interruptWorker(id, ctx.sessionManager.getSessionId()),
+						sendLive: (id, text) => sendWorkerMessage(id, text, ctx.sessionManager.getSessionId()),
 						currentSessionId: () => ctx.sessionManager.getSessionId(),
 					},
 					args.trim() || undefined,

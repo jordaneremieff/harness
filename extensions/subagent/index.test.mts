@@ -637,9 +637,7 @@ describe("pruneTerminalWorkers", () => {
 		} finally {
 			console.warn = warn;
 		}
-		assert.ok(
-			warnings.some((warning) => /bg-prunecorrupt.*worker\.json/.test(warning)),
-		);
+		assert.ok(warnings.some((warning) => /bg-prunecorrupt.*worker\.json/.test(warning)));
 		assert.equal(existsSync(dir), false);
 	});
 
@@ -681,13 +679,9 @@ describe("continuation session manager", () => {
 		);
 		recordWorkerSurface(sessionId, ["current_tool"], []);
 		try {
-			const outcome = await continueWorker(
-				id,
-				"continue the task",
-				{
-					sessionManager: { getSessionId: () => sessionId },
-				} as never,
-			);
+			const outcome = await continueWorker(id, "continue the task", {
+				sessionManager: { getSessionId: () => sessionId },
+			} as never);
 			assert.equal(outcome.id, "");
 			assert.equal(outcome.state, "failed");
 			assert.match(outcome.error ?? "", /missing_tool/);
@@ -1344,16 +1338,8 @@ describe("compaction veto", () => {
 			() => clearQueueBeforeAbort(session as never),
 			() => "sess-clear-submit",
 		);
-		await tool.execute(
-			"call-clear-submit",
-			{ content: "the deliverable" },
-			undefined,
-			undefined,
-			undefined as never,
-		);
-		assert.deepEqual(session.abortQueueSnapshots, [
-			{ steering: [], followUp: [] },
-		]);
+		await tool.execute("call-clear-submit", { content: "the deliverable" }, undefined, undefined, undefined as never);
+		assert.deepEqual(session.abortQueueSnapshots, [{ steering: [], followUp: [] }]);
 		assert.deepEqual(session.getSteeringMessages(), []);
 		assert.deepEqual(session.getFollowUpMessages(), []);
 	});
