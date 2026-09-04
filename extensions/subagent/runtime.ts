@@ -172,12 +172,43 @@ interface StreamState {
 	lens: Map<number, number>;
 }
 
+const pendingCommandTurns = new WeakMap<AgentSession, Set<Promise<void>>>();
+
+function holdCommandTurn(session: AgentSession, promise: Promise<void>): Promise<void> {
+	const pending = pendingCommandTurns.get(session);
+	if (!pending) return promise;
+	pending.add(promise);
+	void promise.then(
+		() => pending.delete(promise),
+		() => pending.delete(promise),
+	);
+	return promise;
+}
+
+/**
+ * Install before extension binding. Pi binds ExtensionAPI message methods as
+ * dynamic calls through the AgentSession instance and does not await them.
+ * Keeping the original promise lets the worker own a turn that an extension
+ * starts while preserving Pi's return value and rejection behavior.
+ */
+export function trackCommandStartedTurns(session: AgentSession): void {
+	if (pendingCommandTurns.has(session)) return;
+	pendingCommandTurns.set(session, new Set());
+	const sendUserMessage = session.sendUserMessage;
+	const sendCustomMessage = session.sendCustomMessage;
+	session.sendUserMessage = ((...args: Parameters<AgentSession["sendUserMessage"]>) =>
+		holdCommandTurn(session, sendUserMessage.apply(session, args))) as AgentSession["sendUserMessage"];
+	session.sendCustomMessage = ((...args: Parameters<AgentSession["sendCustomMessage"]>) =>
+		holdCommandTurn(session, sendCustomMessage.apply(session, args))) as AgentSession["sendCustomMessage"];
+}
+
 export interface WorkerRuntimeOptions {
 	session: AgentSession;
 	id: string;
 	name: string;
 	cwd: string;
 	createdAt: number;
+	onSessionStateChange?: (session: AgentSession) => void;
 }
 
 /** Adapts one worker AgentSession to PiSessionRuntime. */
@@ -214,6 +245,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 	 */
 	private abortRequested = false;
 	private unsubscribe: (() => void) | null = null;
+	private readonly onSessionStateChange: ((session: AgentSession) => void) | undefined;
 
 	constructor(options: WorkerRuntimeOptions) {
 		this.session = options.session;
@@ -221,6 +253,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 		this.id = options.id;
 		this.name = options.name;
 		this.createdAt = options.createdAt;
+		this.onSessionStateChange = options.onSessionStateChange;
 		this.subscribeToSession();
 	}
 
@@ -368,10 +401,22 @@ export class WorkerRuntime implements PiSessionRuntime {
 			// commands, skill commands, and prompt templates expand exactly as they
 			// do for any session input. No expansion suppression of its own.
 			await this.session.prompt(input.text);
-			// Extension commands can start a turn through pi.sendUserMessage(), whose
-			// extension API is intentionally fire-and-forget. The outer command prompt
-			// returns first; own an active turn before the worker leg can settle.
-			if (this.session.isStreaming) await this.session.waitForIdle();
+			// Extension commands can start turns through fire-and-forget ExtensionAPI
+			// messages. Drain both starts and active runs until no replacement session
+			// has more work that belongs to this prompt.
+			for (;;) {
+				const active = this.session;
+				const pending = pendingCommandTurns.get(active);
+				if (pending && pending.size > 0) {
+					await Promise.allSettled([...pending]);
+					continue;
+				}
+				if (active.isStreaming) {
+					await active.waitForIdle();
+					continue;
+				}
+				if (active === this.session && !(pendingCommandTurns.get(active)?.size ?? 0)) break;
+			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (/already processing|compaction/.test(message)) {
@@ -431,12 +476,14 @@ export class WorkerRuntime implements PiSessionRuntime {
 		if (supported.length > 0 && !supported.includes(current)) {
 			state.thinkingLevel = supported[supported.length - 1];
 		}
+		this.onSessionStateChange?.(this.session);
 		this.emit({ type: "snapshot" });
 	}
 
 	async setThinking(thinkingLevel: ThinkingLevel): Promise<void> {
 		// Same non-persisting rationale as setModel.
 		this.session.state.thinkingLevel = thinkingLevel;
+		this.onSessionStateChange?.(this.session);
 		this.emit({ type: "snapshot" });
 	}
 

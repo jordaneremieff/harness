@@ -58,6 +58,7 @@ import { randomBytes } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
+	linkSync,
 	lstatSync,
 	mkdirSync,
 	readdirSync,
@@ -68,7 +69,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { getSupportedThinkingLevels, StringEnum, type Usage } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getSupportedThinkingLevels, StringEnum, type Usage } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	type AgentSessionRuntime,
@@ -102,7 +103,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { stripTerminalSequences } from "./console.ts";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
-import { transcriptFromMessages, WorkerRuntime } from "./runtime.ts";
+import { trackCommandStartedTurns, transcriptFromMessages, WorkerRuntime } from "./runtime.ts";
 import { WorkerHost } from "./server.ts";
 
 // ---------------------------------------------------------------------------
@@ -314,6 +315,8 @@ export interface WorkerRecord {
 	 * registration that threw. An interactive session prints these at startup;
 	 * a worker has no such surface, so the dispatch carries them to the parent. */
 	setupDiagnostics: string[];
+	/** Setup diagnostics omitted after the retained entry or byte limit. */
+	setupDiagnosticsDropped: number;
 	/** The worker's own session id — attach with this, and read its transcript. */
 	sessionId: string;
 	/** The worker's session file, for transcripts after the worker is gone. */
@@ -540,6 +543,7 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 		resolvedTools: asStrArray(o.resolvedTools),
 		droppedTools: asStrArray(o.droppedTools),
 		setupDiagnostics: asStrArray(o.setupDiagnostics),
+		setupDiagnosticsDropped: asNumber(o.setupDiagnosticsDropped),
 		sessionId: asString(o.sessionId),
 		sessionFile: asStrOrNull(o.sessionFile),
 		socketPath: asString(o.socketPath),
@@ -993,6 +997,7 @@ export function finalizeWorker(
 		usage?: WorkerUsage | null;
 		lastOutput?: string | null;
 		setupDiagnostics?: string[];
+		setupDiagnosticsDropped?: number;
 		state?: WorkerState;
 	},
 ): WorkerRecord | null {
@@ -1055,6 +1060,9 @@ export function finalizeWorker(
 			record.lastOutput = opts.lastOutput === null ? null : capUtf8(opts.lastOutput, RESULT_BODY_CAP_BYTES).text;
 		}
 		if (opts?.setupDiagnostics) record.setupDiagnostics = [...opts.setupDiagnostics];
+		if (opts?.setupDiagnosticsDropped !== undefined) {
+			record.setupDiagnosticsDropped = opts.setupDiagnosticsDropped;
+		}
 		record.currentTool = null;
 		if (opts?.error) record.error = opts.error;
 		if (finalState === "done") {
@@ -1821,18 +1829,32 @@ export function submitResultTool(resultPath: string, endRun: () => void, session
 		}),
 		async execute(_toolCallId: string, params: { content: string }) {
 			const capped = capUtf8(params.content);
+			const tmp = tmpPathFor(resultPath);
+			let duplicate = false;
 			try {
-				// Temp-write + rename so a crash can never leave a torn result.
-				const tmp = tmpPathFor(resultPath);
+				// The hard-link claim is atomic and does not replace an accepted result.
+				// The complete temp inode becomes visible at resultPath in one operation.
 				writeFileSync(tmp, capped.text, {
 					encoding: "utf-8",
 					mode: STORE_FILE_MODE,
 				});
-				renameSync(tmp, resultPath);
+				try {
+					linkSync(tmp, resultPath);
+				} catch (err) {
+					if ((err as NodeJS.ErrnoException).code === "EEXIST") duplicate = true;
+					throw err;
+				}
 			} catch (err) {
 				// Pi sets the error flag only when execute throws; a returned flag is
 				// ignored, and the worker would read a failed write as accepted.
+				if (duplicate) {
+					throw new Error(
+						"submit_result rejected: this worker already has an accepted result; the first result remains authoritative.",
+					);
+				}
 				throw new Error(`submit_result FAILED to write ${resultPath}: ${errText(err)}. Retry the call.`);
+			} finally {
+				rmSync(tmp, { force: true });
 			}
 			// End the WORKER's run. Never ctx.shutdown() here: the worker shares this
 			// process with the parent session, so a shutdown would take the operator's
@@ -1947,6 +1969,18 @@ function syncUsageFromSession(record: WorkerRecord, session: AgentSession): void
 	record.usage = addUsage(usageOffsets.get(record.id), current);
 }
 
+/** Refresh mutable session identity before a live or terminal record write. */
+export function refreshActiveSessionRecord(record: WorkerRecord, session: AgentSession): void {
+	const model = session.model;
+	record.model = model ? `${model.provider}/${model.id}` : record.bootstrapModel;
+	record.thinking = session.thinkingLevel ?? record.thinking;
+}
+
+function writeActiveSessionRecord(record: WorkerRecord, session: AgentSession): void {
+	refreshActiveSessionRecord(record, session);
+	writeWorker(record);
+}
+
 /**
  * Reconcile the error marker with the most recent completed assistant turn.
  * Provider failures may be retried inside the same worker run; a later
@@ -1977,6 +2011,7 @@ export function currentToolLabel(active: Map<string, string>): string | null {
 
 function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 	const activeTools = new Map<string, string>();
+	const writeProgress = () => writeActiveSessionRecord(record, session);
 	// The session file is created lazily (pi's first flush), so the dispatch-time
 	// chmod races its creation and loses. Retry on each event until it sticks —
 	// pi's own persistence listener runs before subscribers, so by the first
@@ -2007,7 +2042,7 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 				}
 				// Persist cumulative usage so a replacement session sees real numbers
 				// even if this parent dies before the worker settles.
-				writeWorker(record);
+				writeProgress();
 				publishSubagentStatus();
 				// Spend is only knowable when usage lands. Pi appends the message to
 				// the session AFTER its subscribers run, so this message's own cost is
@@ -2019,7 +2054,7 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 			} else if (event.type === "compaction_end") {
 				// The compaction entry is persisted before compaction_end fires.
 				syncUsageFromSession(record, session);
-				writeWorker(record);
+				writeProgress();
 				publishSubagentStatus();
 				enforceRunLimits(record.id);
 			} else if (event.type === "summarization_retry_finished") {
@@ -2029,9 +2064,9 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 				setImmediate(() => {
 					try {
 						const current = readWorker(record.id);
-						if (current?.state !== "running" || !liveWorkers.has(record.id)) return;
+						if (current?.state !== "running" || liveWorkers.get(record.id)?.session !== session) return;
 						syncUsageFromSession(record, session);
-						writeWorker(record);
+						writeProgress();
 						publishSubagentStatus();
 					} catch {
 						// Best-effort accounting; the final settle performs one more sync.
@@ -2043,7 +2078,7 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 				// actually still running.
 				activeTools.set(event.toolCallId, event.toolName);
 				record.currentTool = currentToolLabel(activeTools);
-				writeWorker(record);
+				writeProgress();
 				publishSubagentStatus();
 			} else if (event.type === "tool_execution_end") {
 				activeTools.delete(event.toolCallId);
@@ -2055,7 +2090,10 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 					const name = event.toolName;
 					record.toolErrors[name] = (record.toolErrors[name] ?? 0) + 1;
 				}
-				writeWorker(record);
+				writeProgress();
+				publishSubagentStatus();
+			} else if (event.type === "thinking_level_changed") {
+				writeProgress();
 				publishSubagentStatus();
 			} else if (event.type === "agent_end" && record.interruptedAt && !record.cancelRequestedAt) {
 				// The abort's assistant message may carry "Request was aborted".
@@ -2064,7 +2102,7 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 				record.error = null;
 				record.stopReason = "interrupted";
 				syncUsageFromSession(record, session);
-				writeWorker(record);
+				writeProgress();
 				publishSubagentStatus();
 			}
 		} catch {
@@ -2197,6 +2235,42 @@ export function projectTrustInputs(
 const MAX_SETUP_DIAGNOSTICS_SHOWN = 6;
 /** Characters of one item shown on a setup line before it is cut. */
 const MAX_SETUP_DIAGNOSTIC_LENGTH = 240;
+/** Retained setup evidence stays bounded even when extensions emit unique errors. */
+const MAX_SETUP_DIAGNOSTICS_RETAINED = 128;
+const MAX_SETUP_DIAGNOSTIC_BYTES = 64 * 1024;
+
+export interface SetupDiagnosticCollector {
+	diagnostics: string[];
+	dropped: number;
+	remember: (...messages: string[]) => void;
+}
+
+/** Deduplicate and retain setup diagnostics within entry and UTF-8 byte bounds. */
+export function createSetupDiagnosticCollector(
+	entryLimit = MAX_SETUP_DIAGNOSTICS_RETAINED,
+	byteLimit = MAX_SETUP_DIAGNOSTIC_BYTES,
+): SetupDiagnosticCollector {
+	const seen = new Set<string>();
+	let retainedBytes = 0;
+	const collector: SetupDiagnosticCollector = {
+		diagnostics: [],
+		dropped: 0,
+		remember: (...messages: string[]) => {
+			for (const message of messages) {
+				if (seen.has(message)) continue;
+				const bytes = Buffer.byteLength(message, "utf-8");
+				if (collector.diagnostics.length >= entryLimit || retainedBytes + bytes > byteLimit) {
+					collector.dropped += 1;
+					continue;
+				}
+				seen.add(message);
+				collector.diagnostics.push(message);
+				retainedBytes += bytes;
+			}
+		},
+	};
+	return collector;
+}
 
 /**
  * Name the setup problems pi reported while a worker was built, or return an
@@ -2207,14 +2281,16 @@ const MAX_SETUP_DIAGNOSTIC_LENGTH = 240;
  */
 export function setupDiagnosticsLine(record: WorkerRecord | null): string {
 	const diagnostics = record?.setupDiagnostics ?? [];
-	if (diagnostics.length === 0) return "";
+	const dropped = record?.setupDiagnosticsDropped ?? 0;
+	if (diagnostics.length === 0 && dropped === 0) return "";
 	const shown: string[] = [];
 	for (const item of diagnostics.slice(0, MAX_SETUP_DIAGNOSTICS_SHOWN)) {
 		const flat = item.replace(/\s+/g, " ").trim();
 		shown.push(flat.length > MAX_SETUP_DIAGNOSTIC_LENGTH ? `${flat.slice(0, MAX_SETUP_DIAGNOSTIC_LENGTH - 1)}…` : flat);
 	}
 	const more = diagnostics.length - shown.length;
-	return `worker setup: ${shown.join(" | ")}${more > 0 ? ` (+${more} more)` : ""}`;
+	const omitted = [more > 0 ? `${more} more` : "", dropped > 0 ? `${dropped} dropped` : ""].filter(Boolean);
+	return `worker setup:${shown.length > 0 ? ` ${shown.join(" | ")}` : ""}${omitted.length > 0 ? ` (+${omitted.join("; ")})` : ""}`;
 }
 
 /** Shape of one diagnostic pi attaches to a loaded resource. */
@@ -2364,6 +2440,7 @@ export async function dispatchWorker(
 		resolvedTools,
 		droppedTools,
 		setupDiagnostics: [],
+		setupDiagnosticsDropped: 0,
 		sessionId: "",
 		sessionFile: null,
 		socketPath: workerHost.socketPath,
@@ -2409,14 +2486,12 @@ export async function dispatchWorker(
 	// Every extension factory registers the same handlers. The session id marks
 	// this session as a worker before bindExtensions emits session_start, which
 	// avoids any process-wide construction window or cross-session load race.
-	const setupDiagnostics: string[] = [];
-	const setupDiagnosticSet = new Set<string>();
-	const rememberSetupDiagnostics = (...messages: string[]): void => {
-		for (const message of messages) {
-			if (setupDiagnosticSet.has(message)) continue;
-			setupDiagnosticSet.add(message);
-			setupDiagnostics.push(message);
-		}
+	const setupDiagnosticCollector = createSetupDiagnosticCollector();
+	const setupDiagnostics = setupDiagnosticCollector.diagnostics;
+	const rememberSetupDiagnostics = setupDiagnosticCollector.remember;
+	const refreshRecordDiagnostics = (): void => {
+		record.setupDiagnostics = [...setupDiagnostics];
+		record.setupDiagnosticsDropped = setupDiagnosticCollector.dropped;
 	};
 	// The latest services object also feeds reload validation and failure paths.
 	let services: AgentSessionServices | null = null;
@@ -2492,6 +2567,9 @@ export async function dispatchWorker(
 		const createdSessionId = options.sessionManager.getSessionId();
 		constructedSessionIds.add(createdSessionId);
 		sharedWorkerState.workerSessionIds.add(createdSessionId);
+		// Pi's extension message methods dispatch through this instance. Install
+		// ownership before bindExtensions gives any hook access to those methods.
+		trackCommandStartedTurns(created.session);
 		return { ...created, services: builtServices, diagnostics: builtServices.diagnostics };
 	};
 
@@ -2511,7 +2589,7 @@ export async function dispatchWorker(
 		const actualModel = target.model;
 		record.model = actualModel ? `${actualModel.provider}/${actualModel.id}` : record.bootstrapModel;
 		if (services) rememberSetupDiagnostics(...serviceDiagnostics(services));
-		record.setupDiagnostics = [...setupDiagnostics];
+		refreshRecordDiagnostics();
 
 		const actualTools = new Set(target.getActiveToolNames());
 		const missing = resolvedTools.filter((name) => !actualTools.has(name));
@@ -2585,8 +2663,8 @@ export async function dispatchWorker(
 			onError: (err) => {
 				const diagnostic = `warning: ${err.event}: Extension "${err.extensionPath}" error: ${err.error}`;
 				rememberSetupDiagnostics(diagnostic);
-				record.setupDiagnostics = [...setupDiagnostics];
-				if (err.event.startsWith("command:")) {
+				refreshRecordDiagnostics();
+				if (err.event === "command" && err.extensionPath.startsWith("command:")) {
 					sessionControlError = `worker extension command failed: ${err.error}`;
 				}
 			},
@@ -2623,7 +2701,7 @@ export async function dispatchWorker(
 		}
 		if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
 		if (services) rememberSetupDiagnostics(...serviceDiagnostics(services));
-		record.setupDiagnostics = [...setupDiagnostics];
+		refreshRecordDiagnostics();
 		return fail(`failed to build the worker session: ${errText(err)}`);
 	}
 
@@ -2631,13 +2709,11 @@ export async function dispatchWorker(
 	let untrack: () => void = () => {};
 	refreshLiveRecord = (target: AgentSession): void => {
 		workerSessionId = target.sessionManager.getSessionId();
-		record.thinking = target.thinkingLevel ?? thinking;
+		refreshActiveSessionRecord(record, target);
 		record.cwd = target.sessionManager.getCwd();
 		record.sessionId = workerSessionId;
 		record.sessionFile = target.sessionManager.getSessionFile() ?? null;
-		const actualModel = target.model;
-		record.model = actualModel ? `${actualModel.provider}/${actualModel.id}` : record.bootstrapModel;
-		record.setupDiagnostics = [...setupDiagnostics];
+		refreshRecordDiagnostics();
 		writeWorker(record);
 		recordWorkerSurface(record.sessionId, target.getActiveToolNames(), target.getAllTools());
 		if (record.sessionFile) {
@@ -2656,6 +2732,11 @@ export async function dispatchWorker(
 			name: task.task.replace(/\s+/g, " ").slice(0, 80),
 			cwd,
 			createdAt: record.createdAt,
+			onSessionStateChange: (target) => {
+				if (liveWorkers.get(id)?.session !== target || record.state !== "running") return;
+				writeActiveSessionRecord(record, target);
+				publishSubagentStatus();
+			},
 		});
 		workerHost.register(runtime);
 		if (continuation) usageBaselines.set(id, sessionUsage(session));
@@ -2692,7 +2773,9 @@ export async function dispatchWorker(
 		try {
 			// Final reconciliation catches usage-bearing session entries that did
 			// not have a later event (especially branch summaries).
-			syncUsageFromSession(record, live.session ?? session);
+			const finalSession = live.session ?? session;
+			refreshActiveSessionRecord(record, finalSession);
+			syncUsageFromSession(record, finalSession);
 		} catch {
 			// Finalization still proceeds with the last persisted totals.
 		}
@@ -2713,12 +2796,14 @@ export async function dispatchWorker(
 							usage: record.usage,
 							lastOutput: record.lastOutput,
 							setupDiagnostics: record.setupDiagnostics,
+							setupDiagnosticsDropped: record.setupDiagnosticsDropped,
 						}
 					: {
 							error,
 							usage: record.usage,
 							lastOutput: record.lastOutput,
 							setupDiagnostics: record.setupDiagnostics,
+							setupDiagnosticsDropped: record.setupDiagnosticsDropped,
 						},
 			);
 		} catch {
@@ -2756,12 +2841,21 @@ export async function dispatchWorker(
 		disposeSession,
 		settle,
 	};
-	const adoptSession = (next: AgentSession): void => {
-		const previous = liveWorker.session;
-		if (previous === next) {
-			refreshLiveRecord(next);
-			return;
+	const ownsWorker = (): boolean => liveWorkers.get(id) === liveWorker;
+	const disposeUnownedReplacement = (next: AgentSession): void => {
+		// Once attached, the live worker's exact-once session owner already disposed
+		// the replacement during terminal cleanup. Only an unattached result needs
+		// direct disposal here.
+		if (liveWorker.session === next) return;
+		try {
+			next.dispose();
+		} catch {
+			// Terminal cleanup remains authoritative if replacement disposal fails.
 		}
+	};
+	const attachSessionOwnership = (next: AgentSession): void => {
+		const previous = liveWorker.session;
+		if (previous === next) return;
 		try {
 			syncUsageFromSession(record, previous);
 		} catch {
@@ -2782,22 +2876,31 @@ export async function dispatchWorker(
 		live.session = next;
 		liveWorker.session = next;
 		runtime.replaceSession(next);
-		refreshLiveRecord(next);
 		untrack = disposeOnce(trackSession(record, next));
 		liveWorker.untrackSession = untrack;
-		publishSubagentStatus();
 	};
 	activeHost.setRebindSession(async (next) => {
+		// AgentSessionRuntime applies a replacement before awaiting this callback.
+		// A terminal worker no longer owns that session and must not be revived.
+		if (!ownsWorker()) {
+			disposeUnownedReplacement(next);
+			return;
+		}
+		// Attach listeners and protocol ownership before bindExtensions emits
+		// session_start, because hooks can start turns during that event.
+		attachSessionOwnership(next);
 		try {
 			await bindWorkerSession(next);
 		} catch (error) {
 			sessionControlError = `worker session replacement failed: ${errText(error)}`;
 			throw error;
 		} finally {
-			// AgentSessionRuntime installs the replacement before it asks the host
-			// to bind it. Keep every worker-facing owner aligned even if binding
-			// reports an extension or surface failure.
-			adoptSession(next);
+			if (ownsWorker()) {
+				refreshLiveRecord(next);
+				publishSubagentStatus();
+			} else {
+				disposeUnownedReplacement(next);
+			}
 		}
 	});
 	liveWorkers.set(id, liveWorker);
@@ -2929,8 +3032,9 @@ export async function cancelWorker(
 	// first so a submitted deliverable is never discarded by a late kill.
 	record.cancelRequestedAt = Date.now();
 	live.record.cancelRequestedAt = record.cancelRequestedAt;
+	refreshActiveSessionRecord(live.record, live.session);
 	try {
-		writeWorker(record);
+		writeActiveSessionRecord(record, live.session);
 	} catch {
 		// A store write failure must not reject out of a fire-and-forget caller:
 		// node aborts the process on an unhandled rejection. The in-memory intent
@@ -3025,7 +3129,7 @@ export async function interruptWorker(id: string, requesterSession: string): Pro
 	// The paused worker is not spending time or money against its leg.
 	clearRunLimits(live);
 	try {
-		writeWorker(live.record);
+		writeActiveSessionRecord(live.record, live.session);
 	} catch {
 		// Same containment as cancelWorker: the in-memory flag is what the settle
 		// handler reads, and an unhandled rejection would kill the parent process.
@@ -3058,7 +3162,7 @@ function startIdleWorkerPrompt(live: LiveWorker, text: string): void {
 	live.record.error = null;
 	live.record.stopReason = null;
 	try {
-		writeWorker(live.record);
+		writeActiveSessionRecord(live.record, live.session);
 	} catch (err) {
 		live.record.interruptedAt = interruptedAt;
 		live.record.pausedReason = pausedReason;
@@ -3114,7 +3218,7 @@ async function sendWorkerMessageOutcome(
 				live.record.error = `resume failed: ${message}`;
 				if (live.record.interruptedAt) armIdleDeadline(id);
 				try {
-					writeWorker(live.record);
+					writeActiveSessionRecord(live.record, live.session);
 				} catch {
 					// The worker stays interrupted; persistence is best-effort here.
 				}
@@ -3227,11 +3331,26 @@ export async function continueWorker(id: string, message: string, ctx: Extension
 			record: null,
 		};
 	}
+	const bootstrapRef = resolveModel(ctx, terminal.bootstrapModel);
+	if ("error" in bootstrapRef) {
+		return { id: "", state: "failed", error: bootstrapRef.error, record: null };
+	}
+	const bootstrap = ctx.modelRegistry.find(bootstrapRef.provider, bootstrapRef.id);
+	if (!bootstrap) {
+		return {
+			id: "",
+			state: "failed",
+			error: `Worker ${id} cannot continue: bootstrap model ${terminal.bootstrapModel} disappeared from the current registry.`,
+			record: null,
+		};
+	}
+	const sourceThinking = asThinkingLevel(terminal.thinking);
+	const bootstrapThinking = clampThinkingLevel(bootstrap, sourceThinking);
 	return dispatchWorker(
 		{
 			task: message.trim(),
 			model: terminal.bootstrapModel,
-			thinking: asThinkingLevel(terminal.thinking),
+			thinking: bootstrapThinking,
 			tools,
 			cwd: terminal.cwd,
 			// A stored null is an explicit "no limit": carry it as 0 so the
@@ -3241,7 +3360,7 @@ export async function continueWorker(id: string, message: string, ctx: Extension
 		},
 		{
 			model: terminal.bootstrapModel,
-			thinking: asThinkingLevel(terminal.thinking),
+			thinking: bootstrapThinking,
 			cwd: terminal.cwd,
 		},
 		ctx,
@@ -3274,35 +3393,51 @@ export function sessionWriteAge(record: WorkerRecord, now = Date.now()): string 
 	}
 }
 
+function compactStatusText(value: unknown, maxBytes: number): string {
+	return inspectInline(value, maxBytes).replace(/\\n/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function compactStatusToolErrors(record: Pick<WorkerRecord, "toolErrors">): string {
+	const items = Object.entries(record.toolErrors ?? {}).map(
+		([name, count]) => `${compactStatusText(name, 256)} ×${count}`,
+	);
+	return compactStatusText(items.join(", "), 2_048);
+}
+
 export function statusLine(record: WorkerRecord, now = Date.now()): string {
 	const elapsed = Math.round(((record.exitedAt ?? now) - record.startedAt) / 1000);
 	const cost = record.usage ? `$${record.usage.cost.toFixed(4)}` : "—";
+	const safeId = compactStatusText(record.id, 256);
 	const owned = record.state === "running" && liveWorkers.has(record.id);
 	const paused = record.state === "running" && Boolean(record.interruptedAt);
 	const state =
-		paused && record.pausedReason ? `interrupted (${record.pausedReason})` : paused ? "interrupted" : record.state;
+		paused && record.pausedReason
+			? `interrupted (${compactStatusText(record.pausedReason, 512)})`
+			: paused
+				? "interrupted"
+				: record.state;
 	const parts = [
-		record.id,
+		safeId,
 		state + (record.state === "running" && !paused ? (owned ? "" : " (other session)") : ""),
-		record.model,
-		thinkingLabel(record),
+		compactStatusText(record.model, 512),
+		compactStatusText(thinkingLabel(record), 256),
 		`${elapsed}s`,
 		`${record.usage?.turns ?? 0} turns`,
 		`${record.usage?.toolCalls ?? 0} tools`,
 	];
 	if (record.state === "running" && record.currentTool) {
-		parts.push(`now: ${record.currentTool}`);
+		parts.push(`now: ${compactStatusText(record.currentTool, 512)}`);
 	}
-	const failedTools = toolErrorSummary(record);
+	const failedTools = compactStatusToolErrors(record);
 	if (failedTools) parts.push(`tool errors: ${failedTools}`);
 	const writeAge = sessionWriteAge(record, now);
 	if (writeAge) parts.push(`session write ${writeAge} ago`);
 	if (record.state === "running" && record.cancelRequestedAt) parts.push("cancel requested");
 	parts.push(`cost ${cost}`);
 	const line = parts.join(" · ");
-	const preview = (record.resultPreview ?? record.lastOutput ?? "").slice(0, 200).replace(/\s+/g, " ");
-	const tail = preview ? `\n    ↳ ${markWorkerPreview(preview, record.id)}` : "";
-	const err = record.error && !paused ? `\n    ✗ ${record.error}` : "";
+	const preview = compactStatusText(record.resultPreview ?? record.lastOutput ?? "", 200);
+	const tail = preview ? `\n    ↳ ${markWorkerPreview(preview, safeId)}` : "";
+	const err = record.error && !paused ? `\n    ✗ ${compactStatusText(record.error, 2_048)}` : "";
 	return line + tail + err;
 }
 
@@ -3558,6 +3693,7 @@ export function inspectWorker(id: string): InspectView {
 		`tool errors: ${inspectInline(toolErrorSummary(record) || "none")}`,
 		`record error: ${recordError}`,
 		`setup diagnostics: ${setup}`,
+		`setup diagnostics dropped: ${record.setupDiagnosticsDropped}`,
 		`usage: ${usage ? `${usage.turns} turns · ${usage.toolCalls} tools · $${usage.cost.toFixed(4)}` : "unavailable"}`,
 		`session id: ${inspectInline(record.sessionId || "(unknown)")}`,
 		`session file: ${inspectInline(record.sessionFile ?? "(none)")}`,

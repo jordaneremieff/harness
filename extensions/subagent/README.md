@@ -89,8 +89,10 @@ array for a batch. Per-task fields: `task` (required), `model`, `thinking`,
   switch the session model during `session_start`; the worker record then names
   the model the run actually uses. The record also keeps the parent-resolvable
   bootstrap model. A continuation uses that bootstrap model to construct its
-  target session, then lets the target's `session_start` hooks select the actual
-  model again. Persisted and environment credentials resolve in workers. A
+  target session. It keeps the source's active thinking level when the bootstrap
+  model supports it, or uses Pi's closest supported level when it does not.
+  Target `session_start` hooks can then select the actual model and thinking
+  level again. Persisted and environment credentials resolve in workers. A
   parent-only runtime API-key override remains local to the parent's runtime.
 - **thinking** — `off|minimal|low|medium|high|xhigh|max`. Declared: checked
   against the levels the model supports (pi's own
@@ -213,6 +215,8 @@ no startup surface of its own, so the dispatch reports them: unreadable
 settings, an extension that failed to load, and a provider registration that
 threw are listed as `worker setup:` on that worker's dispatch line, repeated on
 a continuation's result line, and kept in its record as `setupDiagnostics`.
+The retained list has entry and UTF-8 byte bounds. The record keeps the number
+of diagnostics omitted beyond those bounds as `setupDiagnosticsDropped`.
 
 ## Worker lifecycle
 
@@ -236,7 +240,9 @@ a continuation's result line, and kept in its record as `setupDiagnostics`.
   `AgentSession` through one exact-once owner, so Pi's per-session resources are
   released after terminal evidence is persisted.
 - The worker's deliverable is written by its `submit_result` tool to
-  `result.txt` (temp-write + rename), and the tool then ends the worker's run.
+  `result.txt` through an atomic first-writer claim, and the tool then ends the
+  worker's run. A second submission fails without replacing the accepted result,
+  and every temporary write is removed.
   The write is capped at 50KB of UTF-8 including a `[truncated]` marker. The
   parent never extracts results heuristically.
 - The worker system prompt states the deliverable protocol and three disclosure
@@ -391,10 +397,13 @@ The continuation contract is evidence-preserving:
   preserved history, with Pi's `parentSession` link to the source file;
 - the new worker gets a new `bg-*` id, result file, ownership metadata, and
   `continuedFrom` link;
-- the parent-resolvable bootstrap model, effective thinking level, tool surface,
-  and cwd inherit from the source and are revalidated against the current
-  session before provider work starts; target `session_start` hooks can select
-  the source's actual target-only model again;
+- the parent-resolvable bootstrap model, tool surface, cwd, and run limits carry
+  from the source and are revalidated against the current session before
+  provider work starts;
+- the source's active thinking level carries when the bootstrap model supports
+  it; otherwise Pi's closest supported level starts the session;
+- target `session_start` hooks can select the source's actual target-only model
+  and thinking level again;
 - the continuation message is the new worker's task, and normal notification,
   collection, cancellation, and provenance rules apply.
 
@@ -412,11 +421,14 @@ tool outcomes, and assistant errors. The transcript tail is capped at 24KB and
 Retained inspection follows the session file's active branch and excludes
 abandoned branches. Whenever the worker is not live in this process, including a
 live worker owned by another session, the extension reads that session file
-directly. Pi 0.85.0 appends a missing final newline during such a read. If the
-owning process appends a record at that moment, the added newline splits that
-record, and later parsers skip it. The newline does not change the displayed
-transcript: the session format stays version 3 and `getBranch()` selection is
-unchanged. Every worker-controlled line has a visible quote prefix, and
+directly. Pi's `SessionManager` parses every entry of that file before it
+selects a branch, so the caps above bound the rendered tail, not the read: a
+large retained session costs its full parse, and Pi publishes no bounded
+session read. Pi 0.85.0 also appends a missing final newline during such a
+read. If the owning process appends a record at that moment, the added newline
+splits that record, and later parsers skip it. The newline does not change the
+displayed transcript: the session format stays version 3 and `getBranch()`
+selection is unchanged. Every worker-controlled line has a visible quote prefix, and
 direction controls are removed, so worker text cannot imitate the renderer's
 record headings. Redacted reasoning carries an explicit `REDACTED` label.
 Worker-authored content remains marked as unverified data, not instructions.

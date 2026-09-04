@@ -57,6 +57,7 @@ const targetModel = {
 	name: "Target Model",
 	api: "target-provider-api",
 	provider: "target-provider",
+	reasoning: true,
 };
 const targetPrompt = join(agentDir, "target-worker-prompt.txt");
 const targetProviderPath = join(workerCwd, "target-provider.mjs");
@@ -84,6 +85,7 @@ export default function (pi) {
   pi.on("session_start", async (_event, ctx) => {
     const selected = ctx.modelRegistry.find(model.provider, model.id);
     if (!selected || !(await pi.setModel(selected))) throw new Error("target model selection failed");
+    pi.setThinkingLevel("high");
   });
 }
 `,
@@ -177,6 +179,7 @@ try {
 	const record = target.record;
 	assert.equal(record?.bootstrapModel, `${model.provider}/${model.id}`);
 	assert.equal(record?.model, `${targetModel.provider}/${targetModel.id}`);
+	assert.equal(record?.thinking, "high");
 	assert.equal(readFileSync(sub.workerFiles(id).result, "utf8"), "TARGET_PROVIDER_RESULT");
 	assert.doesNotMatch(readFileSync(targetPrompt, "utf8"), /model id \(authoritative/);
 
@@ -200,6 +203,7 @@ try {
 	assert.equal(continuedRecord?.state, "done", JSON.stringify(continuedRecord));
 	assert.equal(continuedRecord?.bootstrapModel, `${model.provider}/${model.id}`);
 	assert.equal(continuedRecord?.model, `${targetModel.provider}/${targetModel.id}`);
+	assert.equal(continuedRecord?.thinking, "high");
 	assert.equal(readFileSync(sub.workerFiles(continuedId).result, "utf8"), "TARGET_PROVIDER_RESULT");
 
 	sub.shutdownWorkerSession(parentSession);

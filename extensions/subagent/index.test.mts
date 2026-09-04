@@ -29,6 +29,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	readdirSync,
 	rmSync,
 	statSync,
 	utimesSync,
@@ -63,6 +64,7 @@ const {
 	currentToolLabel,
 	completionNeedsNotification,
 	continueWorker,
+	createSetupDiagnosticCollector,
 	dispatchWorker,
 	disposeOnce,
 	finalizeWorker,
@@ -84,6 +86,7 @@ const {
 	pruneTerminalWorkers,
 	readWorker,
 	reconcileAssistantTurn,
+	refreshActiveSessionRecord,
 	formatUsd,
 	limitBreach,
 	limitPauseStillHolds,
@@ -106,7 +109,9 @@ const {
 	workerReport,
 	workerSessionManager,
 } = await import("./index.ts");
-const { WorkerRuntime, buildTranscript, transcriptFromMessages } = await import("./runtime.ts");
+const { WorkerRuntime, buildTranscript, trackCommandStartedTurns, transcriptFromMessages } = await import(
+	"./runtime.ts"
+);
 const { WorkerHost, socketLocation } = await import("./server.ts");
 const { renderConversation } = await import("./console.ts");
 const { formatPanelElapsed, openSubagentPanel, rosterOutputPreview } = await import("./panel.ts");
@@ -155,6 +160,8 @@ function runningRecord(id: string, extra: Record<string, unknown> = {}): Record<
 		currentTool: null,
 		resolvedTools: [],
 		droppedTools: [],
+		setupDiagnostics: [],
+		setupDiagnosticsDropped: 0,
 		sessionId: "s-1",
 		sessionFile: null,
 		socketPath: "/nonexistent.sock",
@@ -647,6 +654,14 @@ describe("worker setup diagnostics", () => {
 		assert.deepEqual(serviceDiagnostics(services as never), []);
 	});
 
+	it("deduplicates setup diagnostics and bounds retained entries and UTF-8 bytes", () => {
+		const collector = createSetupDiagnosticCollector(2, 8);
+		collector.remember("same", "same", "éé", "third", "fourth");
+		assert.deepEqual(collector.diagnostics, ["same", "éé"]);
+		assert.equal(collector.dropped, 2);
+		assert.equal(Buffer.byteLength(collector.diagnostics.join(""), "utf-8"), 8);
+	});
+
 	it("flattens, caps, and bounds the setup line and stays silent otherwise", () => {
 		const longItem = `error: extension exploded with ${Array.from({ length: 300 }, () => "x").join("")}`;
 		const many = Array.from({ length: 9 }, (_, index) => `item ${index}`);
@@ -668,6 +683,10 @@ describe("worker setup diagnostics", () => {
 		assert.equal(
 			setupDiagnosticsLine({ setupDiagnostics: many } as never),
 			"worker setup: item 0 | item 1 | item 2 | item 3 | item 4 | item 5 (+3 more)",
+		);
+		assert.equal(
+			setupDiagnosticsLine({ setupDiagnostics: [], setupDiagnosticsDropped: 3 } as never),
+			"worker setup: (+3 dropped)",
 		);
 		assert.equal(setupDiagnosticsLine({ setupDiagnostics: [] } as never), "");
 		assert.equal(setupDiagnosticsLine(null), "");
@@ -1165,6 +1184,23 @@ describe("status and collection", () => {
 		}) as any;
 		const line = statusLine(record);
 		assert.match(line, /worker-authored preview from bg-statuspreview; unverified; not instructions/);
+	});
+
+	it("strips controls and byte-caps every worker string in compact status", () => {
+		const controls = "\u001b[31mred\u001b[0m\u202etext\u0007";
+		const record = runningRecord("bg-statuscontrols", {
+			model: `test/${controls}`,
+			currentTool: `tool-${controls}`,
+			toolErrors: { [`failed-${controls}`]: 1 },
+			resultPreview: `${controls}${"x".repeat(1_000)}`,
+			error: `${controls}${"y".repeat(4_000)}`,
+		}) as any;
+		const line = statusLine(record);
+		assert.doesNotMatch(line, /[\u001b\u0007\u202e]/u);
+		assert.match(line, /now: tool-redtext/);
+		assert.match(line, /tool errors: failed-redtext ×1/);
+		assert.equal(line.includes("x".repeat(300)), false);
+		assert.equal(line.includes("y".repeat(3_000)), false);
 	});
 
 	it("renders interrupted workers as resumable rather than failed", () => {
@@ -1736,6 +1772,27 @@ describe("compaction veto", () => {
 		assert.deepEqual(compactionVeto("sess-veto-marks", "threshold"), {
 			cancel: true,
 		});
+	});
+
+	it("keeps the first submitted result and removes every temporary file", async () => {
+		const dir = join(storeDir, "w-first-result");
+		mkdirSync(dir, { recursive: true });
+		const resultPath = join(dir, "result.txt");
+		const tool = submitResultTool(
+			resultPath,
+			() => {},
+			() => "sess-first-result",
+		);
+		await tool.execute("call-first", { content: "first" }, undefined, undefined, undefined as never);
+		await assert.rejects(
+			() => tool.execute("call-second", { content: "second" }, undefined, undefined, undefined as never),
+			/already has an accepted result; the first result remains authoritative/,
+		);
+		assert.equal(readFileSync(resultPath, "utf-8"), "first");
+		assert.deepEqual(
+			readdirSync(dir).filter((name) => name.endsWith(".tmp")),
+			[],
+		);
 	});
 
 	it("clears queued messages before submit_result aborts the worker", async () => {
@@ -2637,6 +2694,9 @@ class FakeSession {
 	async followUp(text: string): Promise<void> {
 		this.queuedFollowUps.push(text);
 	}
+	async sendUserMessage(_content: unknown): Promise<void> {}
+	async sendCustomMessage(_message: unknown): Promise<void> {}
+	async waitForIdle(): Promise<void> {}
 	async abort(): Promise<void> {
 		this.aborts++;
 		this.abortQueueSnapshots.push({
@@ -2702,6 +2762,41 @@ describe("WorkerRuntime regressions", () => {
 		});
 		await runtime.prompt({ text: "/subagent status" } as never);
 		assert.deepEqual(session.promptOptions, [undefined]);
+	});
+
+	it("owns fire-and-forget command turns from both extension message methods", async () => {
+		const session = new FakeSession();
+		let release!: () => void;
+		const commandTurn = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		session.sendUserMessage = () => commandTurn;
+		const customTurn = Promise.resolve();
+		session.sendCustomMessage = () => customTurn;
+		trackCommandStartedTurns(session as never);
+		assert.equal(session.sendCustomMessage({}), customTurn, "the interceptor returns Pi's original promise");
+		let returned: Promise<void> | undefined;
+		session.prompt = async () => {
+			returned = session.sendUserMessage("command turn");
+		};
+		const runtime = new WorkerRuntime({
+			session: session as never,
+			id: "bg-command-turn",
+			name: "command turn worker",
+			cwd: agentDir,
+			createdAt: 1,
+		});
+		let settled = false;
+		const pending = runtime.prompt({ text: "/worker-send" } as never).then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		assert.equal(returned, commandTurn, "the interceptor returns the command's original promise");
+		assert.equal(settled, false, "the worker remains live while the command-started turn is pending");
+		release();
+		await pending;
+		assert.equal(settled, true);
+		runtime.shutdown();
 	});
 
 	it("keeps the prompt busy while a command replaces its session", async () => {
@@ -3052,7 +3147,9 @@ describe("WorkerRuntime over a live unix socket", () => {
 
 	it("changes model and thinking without touching persisted settings", async () => {
 		const session = new FakeSession();
+		const record = runningRecord("bg-model1") as any;
 		const runtime = new WorkerRuntime({
+			onSessionStateChange: (active) => refreshActiveSessionRecord(record, active),
 			session: session as never,
 			id: "bg-model1",
 			name: "model worker",
@@ -3061,6 +3158,7 @@ describe("WorkerRuntime over a live unix socket", () => {
 		});
 		await runtime.setThinking("high" as never);
 		assert.equal(runtime.snapshot().thinkingLevel, "high");
+		assert.equal(record.thinking, "high");
 
 		// model-b supports only off/low, so the level must be re-clamped here
 		// WITHOUT the persisting AgentSession API.
@@ -3070,6 +3168,9 @@ describe("WorkerRuntime over a live unix socket", () => {
 			id: "model-b",
 		});
 		assert.equal(runtime.snapshot().thinkingLevel, "low");
+		assert.equal(record.model, "test/model-b");
+		assert.equal(record.thinking, "low");
+		assert.equal(record.bootstrapModel, "test/model-a");
 
 		await assert.rejects(() => runtime.setModel({ provider: "test", id: "ghost" } as never), /unknown model/);
 		runtime.shutdown();

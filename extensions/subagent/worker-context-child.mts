@@ -19,6 +19,9 @@ const skillSentinel = (label: string) => `sentinel-skill-${label}`;
 const markerPath = (label: string) => join(agentDir, `${label}-extension-ran`);
 const sessionMarkerPath = (label: string) => join(agentDir, `${label}-extension-sessions`);
 const promptPath = (label: string) => join(agentDir, `${label}-worker-prompt.txt`);
+const replacementTurnRequest = join(agentDir, "replacement-turn-request");
+const slowReplacementRequest = join(agentDir, "slow-replacement-request");
+const slowReplacementBound = join(agentDir, "slow-replacement-bound");
 
 /** Give a directory a project extension, a project skill, and a context file. */
 function seedProject(cwd: string, label: string): void {
@@ -26,12 +29,23 @@ function seedProject(cwd: string, label: string): void {
 	const extensionPath = join(cwd, "project-extension.mjs");
 	writeFileSync(
 		extensionPath,
-		`import { appendFileSync } from "node:fs";
+		`import { appendFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 export default function (pi) {
   appendFileSync(${JSON.stringify(marker)}, "factory\\n");
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     appendFileSync(${JSON.stringify(marker)}, "start\\n");
     appendFileSync(${JSON.stringify(sessionMarkerPath(label))}, ctx.sessionManager.getSessionId() + "\\n");
+    const request = ${JSON.stringify(replacementTurnRequest)};
+    if (existsSync(request)) {
+      rmSync(request, { force: true });
+      pi.sendUserMessage("replacement worker task");
+    }
+    const slowRequest = ${JSON.stringify(slowReplacementRequest)};
+    if (existsSync(slowRequest)) {
+      rmSync(slowRequest, { force: true });
+      writeFileSync(${JSON.stringify(slowReplacementBound)}, "bound", "utf8");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   });
   pi.registerCommand("worker-reload", {
     description: "Reload the worker session resources",
@@ -43,9 +57,21 @@ export default function (pi) {
   });
   pi.registerCommand("worker-new", {
     description: "Replace the worker session and continue there",
-    handler: async (_args, ctx) => ctx.newSession({
-      withSession: async (next) => next.sendUserMessage("replacement worker task"),
-    }),
+    handler: async (_args, ctx) => {
+      writeFileSync(${JSON.stringify(replacementTurnRequest)}, "start", "utf8");
+      return ctx.newSession();
+    },
+  });
+  pi.registerCommand("worker-slow-new", {
+    description: "Replace the worker session after a delayed start hook",
+    handler: async (_args, ctx) => {
+      writeFileSync(${JSON.stringify(slowReplacementRequest)}, "start", "utf8");
+      return ctx.newSession();
+    },
+  });
+  pi.registerCommand("worker-fail", {
+    description: "Fail the worker command",
+    handler: () => { throw new Error("command exploded"); },
   });
 }
 `,
@@ -117,7 +143,7 @@ export default function (pi) {
 
 seedProject(trustedCwd, "trusted");
 seedProject(untrustedCwd, "untrusted");
-const providerLabels = ["trusted", "reload", "command", "replacement", "untrusted"];
+const providerLabels = ["trusted", "reload", "command", "replacement", "slow-replacement", "failure", "untrusted"];
 const providerPaths = providerLabels.map(seedProvider);
 writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: providerPaths }), "utf8");
 
@@ -156,7 +182,9 @@ try {
 	await parentSession.bindExtensions({});
 
 	const dispatch = parentSession.extensionRunner.getToolDefinition("subagent");
+	const kill = parentSession.extensionRunner.getToolDefinition("subagent_kill");
 	assert.ok(dispatch);
+	assert.ok(kill);
 	const parentRegistry = new ModelRegistry(parentSession.modelRuntime);
 	for (const label of providerLabels) {
 		assert.ok(
@@ -165,29 +193,36 @@ try {
 		);
 	}
 
-	const runWorker = async (
-		cwd: string,
-		label: string,
-		task = "work in the selected directory",
-		expectedState = "done",
-	): Promise<any> => {
+	const startWorker = async (cwd: string, label: string, task = "work in the selected directory"): Promise<string> => {
 		const model = fauxModel(label);
+		const toolContext = {
+			cwd: parentCwd,
+			thinkingLevel: "off",
+			model,
+			modelRegistry: parentRegistry,
+			sessionManager: { getSessionId: () => parentSessionId },
+			ui: { setStatus: () => undefined },
+		};
 		const result = (await dispatch.execute(
 			"worker-context",
 			{ task, cwd, tools: ["read"], model: `${model.provider}/${model.id}` },
 			undefined,
 			undefined,
-			{
-				cwd: parentCwd,
-				thinkingLevel: "off",
-				model,
-				modelRegistry: parentRegistry,
-				sessionManager: { getSessionId: () => parentSessionId },
-				ui: { setStatus: () => undefined },
-			},
+			toolContext,
 		)) as any;
 		const id = result.details.workers[0].id as string;
 		assert.ok(id, JSON.stringify(result));
+		return id;
+	};
+
+	const runWorker = async (
+		cwd: string,
+		label: string,
+		task = "work in the selected directory",
+		expectedState = "done",
+		expectedDiagnostics: string[] = [],
+	): Promise<any> => {
+		const id = await startWorker(cwd, label, task);
 		const deadline = Date.now() + 10_000;
 		let record = sub.readWorker(id);
 		while (Date.now() < deadline && record?.state === "running") {
@@ -195,7 +230,7 @@ try {
 			record = sub.readWorker(id);
 		}
 		assert.equal(record?.state, expectedState, JSON.stringify(record));
-		assert.deepEqual(record?.setupDiagnostics, [], JSON.stringify(record?.setupDiagnostics));
+		assert.deepEqual(record?.setupDiagnostics, expectedDiagnostics, JSON.stringify(record?.setupDiagnostics));
 		return record;
 	};
 
@@ -238,6 +273,11 @@ try {
 	assert.equal(readFileSync(markerPath("trusted"), "utf8"), "factory\nstart\n");
 	assert.equal(existsSync(promptPath("command")), true);
 
+	const failedCommandRecord = await runWorker(trustedCwd, "failure", "/worker-fail", "failed", [
+		'warning: command: Extension "command:worker-fail" error: command exploded',
+	]);
+	assert.equal(failedCommandRecord.error, "worker extension command failed: command exploded");
+
 	// Session replacement rebinds resources and sends the command's work through
 	// the new live AgentSession.
 	rmSync(markerPath("trusted"), { force: true });
@@ -248,6 +288,33 @@ try {
 	assert.equal(replacementSessions.length, 2);
 	assert.notEqual(replacementSessions[0], replacementSessions[1]);
 	assert.equal(replacementRecord.sessionId, replacementSessions[1]);
+
+	// Cancellation during replacement binding owns the terminal state. The late
+	// rebind callback must not attach or rewrite the replacement session.
+	rmSync(slowReplacementBound, { force: true });
+	const slowReplacementId = await startWorker(trustedCwd, "slow-replacement", "/worker-slow-new");
+	const bindDeadline = Date.now() + 5_000;
+	while (Date.now() < bindDeadline && !existsSync(slowReplacementBound)) {
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	assert.equal(existsSync(slowReplacementBound), true, "the replacement session must enter session_start");
+	const cancelledReplacement = (await kill.execute(
+		"worker-context-kill",
+		{ id: slowReplacementId },
+		undefined,
+		undefined,
+		{
+			cwd: parentCwd,
+			model: fauxModel("trusted"),
+			modelRegistry: parentRegistry,
+			sessionManager: { getSessionId: () => parentSessionId },
+			ui: { setStatus: () => undefined },
+		},
+	)) as any;
+	assert.equal(cancelledReplacement.details.state, "cancelled", JSON.stringify(cancelledReplacement));
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	const slowReplacementRecord = sub.readWorker(slowReplacementId);
+	assert.equal(slowReplacementRecord?.state, "cancelled", JSON.stringify(slowReplacementRecord));
 
 	const untrustedRecord = await runWorker(untrustedCwd, "untrusted");
 	const untrustedPrompt = readFileSync(promptPath("untrusted"), "utf8");
@@ -273,7 +340,15 @@ try {
 
 	sub.shutdownWorkerSession(parentSession);
 	parentSession = null;
-	for (const record of [trustedRecord, reloadRecord, commandRecord, replacementRecord, untrustedRecord]) {
+	for (const record of [
+		trustedRecord,
+		reloadRecord,
+		commandRecord,
+		failedCommandRecord,
+		replacementRecord,
+		slowReplacementRecord,
+		untrustedRecord,
+	]) {
 		if (record?.socketPath) rmSync(dirname(record.socketPath), { recursive: true, force: true });
 	}
 	console.log("worker context child: PASS");
