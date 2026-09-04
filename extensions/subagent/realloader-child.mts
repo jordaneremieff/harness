@@ -8,15 +8,16 @@
  * real session_before_compact event.
  */
 import { strict as assert } from "node:assert";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-realloader-"));
+const testHome = mkdtempSync(join(tmpdir(), "subagent-realloader-home-"));
 // Sessions discover user resources under $HOME. An empty home keeps this
 // exercise's resource set deterministic on any machine.
-process.env.HOME = mkdtempSync(join(tmpdir(), "subagent-realloader-home-"));
+process.env.HOME = testHome;
 
 const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import(
 	"@earendil-works/pi-coding-agent"
@@ -24,60 +25,69 @@ const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManag
 const { sharedWorkerState, submitResultTool } = await import("./index.ts");
 
 async function main(): Promise<void> {
-	const settingsManager = SettingsManager.create(agentDir, agentDir);
-	const resourceLoader = new DefaultResourceLoader({
-		cwd: agentDir,
-		agentDir,
-		settingsManager,
-		additionalExtensionPaths: [join(dirname(fileURLToPath(import.meta.url)), "index.ts")],
-	});
-	await resourceLoader.reload();
-	const created = await createAgentSession({
-		cwd: agentDir,
-		agentDir,
-		settingsManager,
-		resourceLoader,
-		sessionManager: SessionManager.inMemory(),
-		tools: ["read", "bash", "submit_result"],
-		customTools: [
-			submitResultTool(
-				join(agentDir, "unused-result.txt"),
-				() => undefined,
-				() => "unused",
-			),
-		],
-	});
-	const session: any = created.session;
-
-	// The restricted allowlist keeps the callable surface exact even though
-	// the module registered its full surface.
-	assert.deepEqual(session.getActiveToolNames().sort(), ["bash", "read", "submit_result"]);
-	// The fresh jiti copy registered the veto on this session's runner.
-	assert.equal(
-		session.extensionRunner.hasHandlers("session_before_compact"),
-		true,
-		"a jiti copy of this module must register the veto on a worker load",
-	);
-	// Fire the real handler through the real runner: it must cancel a
-	// threshold compaction for the submitted session.
-	const sessionId = session.sessionManager.getSessionId();
-	sharedWorkerState.submittedSessionIds.add(sessionId);
+	let session: any = null;
 	try {
-		const result = await session.extensionRunner.emit({
-			type: "session_before_compact",
-			preparation: {},
-			branchEntries: [],
-			reason: "threshold",
-			willRetry: false,
-			signal: new AbortController().signal,
-		} as never);
-		assert.deepEqual(
-			(result as { cancel?: boolean } | undefined)?.cancel,
+		const settingsManager = SettingsManager.create(agentDir, agentDir);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: agentDir,
+			agentDir,
+			settingsManager,
+			additionalExtensionPaths: [join(dirname(fileURLToPath(import.meta.url)), "index.ts")],
+		});
+		await resourceLoader.reload();
+		const created = await createAgentSession({
+			cwd: agentDir,
+			agentDir,
+			settingsManager,
+			resourceLoader,
+			sessionManager: SessionManager.inMemory(),
+			tools: ["read", "bash", "submit_result"],
+			customTools: [
+				submitResultTool(
+					join(agentDir, "unused-result.txt"),
+					() => undefined,
+					() => "unused",
+				),
+			],
+		});
+		session = created.session;
+
+		// The restricted allowlist keeps the callable surface exact even though
+		// the module registered its full surface.
+		assert.deepEqual(session.getActiveToolNames().sort(), ["bash", "read", "submit_result"]);
+		// The fresh jiti copy registered the veto on this session's runner.
+		assert.equal(
+			session.extensionRunner.hasHandlers("session_before_compact"),
 			true,
-			"the veto cancels post-submit threshold compaction",
+			"a jiti copy of this module must register the veto on a worker load",
 		);
+		// Fire the real handler through the real runner: it must cancel a
+		// threshold compaction for the submitted session.
+		const sessionId = session.sessionManager.getSessionId();
+		sharedWorkerState.submittedSessionIds.add(sessionId);
+		try {
+			const result = await session.extensionRunner.emit({
+				type: "session_before_compact",
+				preparation: {},
+				branchEntries: [],
+				reason: "threshold",
+				willRetry: false,
+				signal: new AbortController().signal,
+			} as never);
+			assert.deepEqual(
+				(result as { cancel?: boolean } | undefined)?.cancel,
+				true,
+				"the veto cancels post-submit threshold compaction",
+			);
+		} finally {
+			sharedWorkerState.submittedSessionIds.delete(sessionId);
+		}
 	} finally {
-		sharedWorkerState.submittedSessionIds.delete(sessionId);
+		try {
+			session?.dispose();
+		} catch {}
+		rmSync(agentDir, { recursive: true, force: true });
+		rmSync(testHome, { recursive: true, force: true });
 	}
 }
 

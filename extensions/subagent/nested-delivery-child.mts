@@ -9,7 +9,8 @@ const cwd = mkdtempSync(join(tmpdir(), "subagent-nested-delivery-cwd-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
 // Sessions discover user resources under $HOME. An empty home keeps this
 // fixture's resource set deterministic on any machine.
-process.env.HOME = mkdtempSync(join(tmpdir(), "subagent-nested-delivery-home-"));
+const testHome = mkdtempSync(join(tmpdir(), "subagent-nested-delivery-home-"));
+process.env.HOME = testHome;
 const marker = join(agentDir, "provider-calls.log");
 const providerPath = join(agentDir, "delivery-provider.mjs");
 const model = {
@@ -142,4 +143,5 @@ try {
 	} catch {}
 	rmSync(agentDir, { recursive: true, force: true });
 	rmSync(cwd, { recursive: true, force: true });
+	rmSync(testHome, { recursive: true, force: true });
 }

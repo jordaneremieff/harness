@@ -35,12 +35,17 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-test-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
+// Real sessions discover user resources under $HOME. An empty home keeps the
+// in-process session tests deterministic on any machine, like the child
+// fixtures.
+const testHome = mkdtempSync(join(tmpdir(), "subagent-test-home-"));
+process.env.HOME = testHome;
 
 /**
  * A unix socket path may be at most 103 bytes, and macOS puts os.tmpdir() far
@@ -108,6 +113,7 @@ const { visibleWidth } = await import("@earendil-works/pi-tui");
 
 after(() => {
 	rmSync(agentDir, { recursive: true, force: true });
+	rmSync(testHome, { recursive: true, force: true });
 	rmSync(socketRoot, { recursive: true, force: true });
 });
 
@@ -489,7 +495,7 @@ describe("project trust parity", () => {
 		});
 		assert.equal(trusted, true);
 		assert.equal(new ProjectTrustStore(trustAgentDir).get(cwd), true, "remember persists the extension's decision");
-		assert.deepEqual(diagnostics, ['Extension "handler-0.ts" project_trust error: handler exploded']);
+		assert.deepEqual(diagnostics, ['warning: Extension "handler-0.ts" project_trust error: handler exploded']);
 		new ProjectTrustStore(trustAgentDir).set(cwd, null);
 		rmSync(cwd, { recursive: true, force: true });
 	});
@@ -527,10 +533,35 @@ describe("project trust parity", () => {
 		]);
 		rmSync(cwd, { recursive: true, force: true });
 	});
+
+	it("normalizes a relative working directory before trust handlers see it", async () => {
+		const cwd = projectDir({ packages: [] });
+		const rel = relative(process.cwd(), cwd);
+		const seen: string[] = [];
+		const inputs = projectTrustInputs(rel, trustAgentDir);
+		assert.ok(inputs.reloadOptions, "a relative trust-requiring directory still needs the trust hook");
+		await inputs.reloadOptions.resolveProjectTrust({
+			extensionsResult: trustHandlers([
+				(async (event: { cwd: string }) => {
+					seen.push(event.cwd);
+					return { trusted: "undecided" };
+				}) as never,
+			]),
+		});
+		assert.deepEqual(seen, [resolve(rel)], "handlers must see the resolved directory, as they do in a primary session");
+		rmSync(cwd, { recursive: true, force: true });
+	});
 });
 
 describe("worker setup diagnostics", () => {
-	it("reports service, settings, and extension-load problems in one list", () => {
+	const emptyResourceLoader = {
+		getExtensions: () => ({ errors: [] }),
+		getSkills: () => ({ skills: [], diagnostics: [] }),
+		getPrompts: () => ({ prompts: [], diagnostics: [] }),
+		getThemes: () => ({ themes: [], diagnostics: [] }),
+	};
+
+	it("reports service, settings, extension-load, and resource problems in one list", () => {
 		const services = {
 			diagnostics: [
 				{ type: "error", message: 'Extension "p.ts" error: provider blew up' },
@@ -540,7 +571,11 @@ describe("worker setup diagnostics", () => {
 				drainErrors: () => [{ scope: "project", error: new Error("bad json") }],
 			},
 			resourceLoader: {
+				...emptyResourceLoader,
 				getExtensions: () => ({ errors: [{ path: "broken.ts", error: "cannot resolve" }] }),
+				getSkills: () => ({ skills: [], diagnostics: [{ type: "warning", message: "bad frontmatter", path: "s.md" }] }),
+				getPrompts: () => ({ prompts: [], diagnostics: [{ type: "error", message: "unreadable", path: "p.md" }] }),
+				getThemes: () => ({ themes: [], diagnostics: [] }),
 			},
 		};
 		assert.deepEqual(serviceDiagnostics(services as never), [
@@ -548,6 +583,8 @@ describe("worker setup diagnostics", () => {
 			"warning: a warning",
 			"warning: Invalid project settings: bad json",
 			'error: Failed to load extension "broken.ts": cannot resolve',
+			"warning: bad frontmatter (s.md)",
+			"error: unreadable (p.md)",
 		]);
 	});
 
@@ -555,17 +592,32 @@ describe("worker setup diagnostics", () => {
 		const services = {
 			diagnostics: [],
 			settingsManager: { drainErrors: () => [] },
-			resourceLoader: { getExtensions: () => ({ errors: [] }) },
+			resourceLoader: emptyResourceLoader,
 		};
 		assert.deepEqual(serviceDiagnostics(services as never), []);
 	});
 
-	it("names recorded setup problems on one line and stays silent otherwise", () => {
+	it("flattens, caps, and bounds the setup line and stays silent otherwise", () => {
+		const longItem = `error: extension exploded with ${Array.from({ length: 300 }, () => "x").join("")}`;
+		const many = Array.from({ length: 9 }, (_, index) => `item ${index}`);
 		assert.equal(
 			setupDiagnosticsLine({
 				setupDiagnostics: ['error: Failed to load extension "a.ts": boom', "warning: b"],
 			} as never),
 			'worker setup: error: Failed to load extension "a.ts": boom | warning: b',
+		);
+		assert.equal(
+			setupDiagnosticsLine({ setupDiagnostics: ["  broken\n\ton multiple\tlines "] } as never),
+			"worker setup: broken on multiple lines",
+		);
+		assert.equal(
+			setupDiagnosticsLine({ setupDiagnostics: [longItem] } as never).length <= 300,
+			true,
+			"an oversized item must be cut to the display cap",
+		);
+		assert.equal(
+			setupDiagnosticsLine({ setupDiagnostics: many } as never),
+			"worker setup: item 0 | item 1 | item 2 | item 3 | item 4 | item 5 (+3 more)",
 		);
 		assert.equal(setupDiagnosticsLine({ setupDiagnostics: [] } as never), "");
 		assert.equal(setupDiagnosticsLine(null), "");
@@ -1869,7 +1921,7 @@ describe("compaction veto", () => {
 		}
 	});
 
-	it("gives a worker the context a session has at its working directory", async () => {
+	it("loads a working directory's project extension, skill, and context file under Pi trust", async () => {
 		const childPath = join(dirname(fileURLToPath(import.meta.url)), "worker-context-child.mts");
 		const { execFile } = await import("node:child_process");
 		const { promisify } = await import("node:util");

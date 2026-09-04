@@ -61,13 +61,18 @@ array for a batch. Per-task fields: `task` (required), `model`, `thinking`,
 `tools`, `cwd`, `deadlineMinutes`, `budgetUsd`.
 
 - **model** — bare id or `provider/id`, checked against registry availability
-  and configured auth. Omitted: inherits the parent's current model. Before
-  session construction, the worker receives every config-form and native
-  provider registration exposed by the parent's public registry facade.
-  After extension binding, the worker checks the selected model against its
-  actual runtime and fails before provider work if resolution or auth changed.
-  Persisted and environment credentials resolve in workers. A parent-only
-  runtime API-key override remains local to the parent's runtime.
+  and configured auth. Omitted: inherits the parent's current model. Model
+  selection mirrors the dispatching session's registry: a model that only the
+  working directory's own extensions provide is not selectable by name, the
+  same way a tool the parent never loaded is not inheritable. Before session
+  construction, the worker receives every config-form and native provider
+  registration exposed by the parent's public registry facade. After extension
+  binding, the worker checks the selected model against its actual runtime and
+  fails before provider work if resolution or auth changed. An extension may
+  switch the session model during `session_start`; the worker record then names
+  the model the run actually uses, and continuation follows it. Persisted and
+  environment credentials resolve in workers. A parent-only runtime API-key
+  override remains local to the parent's runtime.
 - **thinking** — `off|minimal|low|medium|high|xhigh|max`. Declared: checked
   against the levels the model supports (pi's own
   `getSupportedThinkingLevels`); an unsupported level fails that task and names
@@ -115,19 +120,35 @@ An omitted `tools` array and an empty one are different: `tools: []` is a
 declared, empty allowlist, so the worker gets `submit_result` and nothing else.
 Omit the field entirely to inherit the parent's surface.
 
-The subagent extension's own registration file is always loaded into a worker
-regardless of surface — it carries an internal post-submit compaction veto — but
+The subagent extension's own registration file is loaded into a worker whenever
+its source resolves — it carries an internal post-submit compaction veto — but
 it never expands the worker's active allowlist: pi filters registered
 definitions down to exactly the declared surface, so a restricted worker sees
-no subagent tools as callable.
+no subagent tools as callable. If the source cannot be resolved, the worker
+runs without the veto and the dispatch reports that under `worker setup:`.
 
 ## Worker context
 
 A worker's context is a session's context at its working directory. Pointed at
 directory X, a worker loads what a session started in X loads: X's settings,
 extensions, skills, prompt templates, and context files (AGENTS.md), plus the
-global ones under the Pi agent directory. There is no worker-specific context
-rule, no reduced resource set, and no separate loader configuration.
+global ones under the Pi agent directory (the agent directory itself and the
+standard user roots pi reads, such as `$HOME/.agents/skills`). There is no
+worker-specific context rule and no resource suppression; the worker does pass
+two additions of its own, its registration file and the protocol prompt it
+appends, which every session with those paths would carry.
+
+Prompt templates load with the directory like every other resource. Text a
+worker receives is never slash-expanded: dispatch and steering text is
+code-originated, and pi expands slash commands, skill commands, and prompt
+templates only for interactive input, which a worker has no surface for. That
+matches pi's code-originated send paths in every mode.
+
+Extension files the parent's tool surface inherits are loaded the way CLI
+`--extension` paths load in any session: they run in the pre-trust bootstrap,
+so their `project_trust` handlers participate in the target directory's trust
+decision, exactly as they would if that session had been started with those
+paths on the command line.
 
 Project trust is resolved the way Pi resolves it. A directory with no
 trust-requiring project resources is trusted outright. Any other directory
@@ -230,7 +251,7 @@ a continuation's result line, and kept in its record as `setupDiagnostics`.
   notification as a success: state `failed` plus the error.
 - The `subagent` tool row renders the crafted dispatch spec in the standard pi
   tool expansion (ctrl+o): task, batch summary, resolved config, and the
-  resolved worker system prompt.
+  worker protocol prompt.
 - A worker that finishes without calling `submit_result` is recorded as
   `no_result_submitted` — distinct from `failed`, because billing errors,
   thinking and tool-surface mismatches, and completed-in-substance work need
@@ -444,7 +465,7 @@ OS recycles an owner's PID, a dead owner can temporarily look alive and remain
 ```
 ~/.pi/agent/subagent/workers/<id>/        (0700)
   worker.json   spec + state (rewritten atomically on each transition)   (0600)
-  prompt.md     worker system prompt used for the run                    (0600)
+  prompt.md     the worker protocol prompt appended to the system prompt  (0600)
   result.txt    submitted deliverable (50KB maximum, marked if truncated)(0600)
 
 /tmp/pi-<uid>/a-<agent-dir-hash>/s-<parent-session-hash>.sock           (0600)

@@ -10,7 +10,8 @@ const differentCwd = mkdtempSync(join(tmpdir(), "subagent-surface-child-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
 // Sessions discover user resources under $HOME. An empty home keeps this
 // fixture's resource set deterministic on any machine.
-process.env.HOME = mkdtempSync(join(tmpdir(), "subagent-surface-home-"));
+const testHome = mkdtempSync(join(tmpdir(), "subagent-surface-home-"));
+process.env.HOME = testHome;
 
 const model = {
 	id: "surface-model",
@@ -179,4 +180,5 @@ try {
 	rmSync(agentDir, { recursive: true, force: true });
 	rmSync(parentCwd, { recursive: true, force: true });
 	rmSync(differentCwd, { recursive: true, force: true });
+	rmSync(testHome, { recursive: true, force: true });
 }

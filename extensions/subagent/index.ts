@@ -2077,7 +2077,7 @@ async function extensionProjectTrust(
 				if (decision.trusted === "undecided") continue;
 				return decision;
 			} catch (err) {
-				onDiagnostic(`Extension "${extension.path}" project_trust error: ${errText(err)}`);
+				onDiagnostic(`warning: Extension "${extension.path}" project_trust error: ${errText(err)}`);
 			}
 		}
 	}
@@ -2108,8 +2108,12 @@ export function projectTrustInputs(
 	agentDir: string,
 	onDiagnostic: (message: string) => void = () => {},
 ): ProjectTrustInputs {
-	const needsTrust = hasTrustRequiringProjectResources(cwd);
-	const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: !needsTrust });
+	// Normalize before anything handler-visible: a primary session's trust
+	// handlers receive the resolved absolute working directory, never the raw
+	// spelling a caller passed.
+	const resolvedCwd = resolve(cwd);
+	const needsTrust = hasTrustRequiringProjectResources(resolvedCwd);
+	const settingsManager = SettingsManager.create(resolvedCwd, agentDir, { projectTrusted: !needsTrust });
 	if (!needsTrust) return { settingsManager };
 	const trustStore = new ProjectTrustStore(agentDir);
 	const defaultProjectTrust = settingsManager.getDefaultProjectTrust();
@@ -2117,13 +2121,17 @@ export function projectTrustInputs(
 		settingsManager,
 		reloadOptions: {
 			resolveProjectTrust: async ({ extensionsResult }) => {
-				const decision = await extensionProjectTrust(cwd, extensionsResult, onDiagnostic);
+				const decision = await extensionProjectTrust(resolvedCwd, extensionsResult, onDiagnostic);
 				if (decision) {
+					// pi maps a decided answer the same way: yes is trusted and any
+					// other value is not (dist/core/project-trust.js). Reproduce it
+					// exactly; a stricter check would diverge from a primary session
+					// for the same handler.
 					const trusted = decision.trusted === "yes";
-					if (decision.remember === true) trustStore.set(cwd, trusted);
+					if (decision.remember === true) trustStore.set(resolvedCwd, trusted);
 					return trusted;
 				}
-				const saved = trustStore.get(cwd);
+				const saved = trustStore.get(resolvedCwd);
 				if (saved !== null) return saved;
 				if (defaultProjectTrust === "always") return true;
 				return false;
@@ -2132,25 +2140,49 @@ export function projectTrustInputs(
 	};
 }
 
+/** Items shown on one setup line before the rest are counted. */
+const MAX_SETUP_DIAGNOSTICS_SHOWN = 6;
+/** Characters of one item shown on a setup line before it is cut. */
+const MAX_SETUP_DIAGNOSTIC_LENGTH = 240;
+
 /**
  * Name the setup problems pi reported while a worker was built, or return an
  * empty string. Dispatch and continuation both report them: a worker that came
- * up without a resource its directory declares is the parent's to see.
+ * up without a resource its directory declares is the parent's to see. Each
+ * item is flattened and capped so the line stays one attributable line; the
+ * worker record keeps the full text.
  */
 export function setupDiagnosticsLine(record: WorkerRecord | null): string {
 	const diagnostics = record?.setupDiagnostics ?? [];
-	return diagnostics.length > 0 ? `worker setup: ${diagnostics.join(" | ")}` : "";
+	if (diagnostics.length === 0) return "";
+	const shown: string[] = [];
+	for (const item of diagnostics.slice(0, MAX_SETUP_DIAGNOSTICS_SHOWN)) {
+		const flat = item.replace(/\s+/g, " ").trim();
+		shown.push(flat.length > MAX_SETUP_DIAGNOSTIC_LENGTH ? `${flat.slice(0, MAX_SETUP_DIAGNOSTIC_LENGTH - 1)}…` : flat);
+	}
+	const more = diagnostics.length - shown.length;
+	return `worker setup: ${shown.join(" | ")}${more > 0 ? ` (+${more} more)` : ""}`;
+}
+
+/** Shape of one diagnostic pi attaches to a loaded resource. */
+interface LoadedResourceDiagnostic {
+	type: string;
+	message: string;
+	path?: string;
 }
 
 /**
  * Collect the non-fatal setup problems pi reports for a session's services.
  *
  * pi returns these instead of printing them, and its startup path shows the
- * same three sources to the operator: the service diagnostics themselves,
- * unreadable settings files, and extensions that failed to load. A worker has
- * no startup surface, so the dispatch reports them to the parent.
+ * same sources to the operator: the service diagnostics themselves, unreadable
+ * settings files, extensions that failed to load, and resources (skills,
+ * prompt templates, themes) with load problems. A worker has no startup
+ * surface, so the dispatch reports them to the parent.
  */
 export function serviceDiagnostics(services: AgentSessionServices): string[] {
+	const resourceProblems = (items: LoadedResourceDiagnostic[]): string[] =>
+		items.map(({ type, message, path }) => `${type}: ${message}${path ? ` (${path})` : ""}`);
 	return [
 		...services.diagnostics.map(({ type, message }) => `${type}: ${message}`),
 		...services.settingsManager
@@ -2159,6 +2191,9 @@ export function serviceDiagnostics(services: AgentSessionServices): string[] {
 		...services.resourceLoader
 			.getExtensions()
 			.errors.map(({ path, error }) => `error: Failed to load extension "${path}": ${error}`),
+		...resourceProblems(services.resourceLoader.getSkills().diagnostics),
+		...resourceProblems(services.resourceLoader.getPrompts().diagnostics),
+		...resourceProblems(services.resourceLoader.getThemes().diagnostics),
 	];
 }
 
@@ -2315,6 +2350,10 @@ export async function dispatchWorker(
 	// Every extension factory registers the same handlers. The session id marks
 	// this session as a worker before bindExtensions emits session_start, which
 	// avoids any process-wide construction window or cross-session load race.
+	const setupDiagnostics: string[] = [];
+	// The services object also feeds the failure path: a build that dies midway
+	// must persist the diagnostics it already collected.
+	let services: AgentSessionServices | null = null;
 	try {
 		await workerHost.ensureStarted(ctx);
 		// The worker is a session at its own working directory: pi loads that
@@ -2322,10 +2361,9 @@ export async function dispatchWorker(
 		// files under the trust it resolves for it, exactly as it does for a
 		// session started there.
 		const workerAgentDir = getAgentDir();
-		const setupDiagnostics: string[] = [];
 		const trust = projectTrustInputs(cwd, workerAgentDir, (message) => setupDiagnostics.push(message));
 		const modelRuntime = await createWorkerModelRuntime(ctx, workerAgentDir);
-		const services = await createAgentSessionServices({
+		services = await createAgentSessionServices({
 			cwd,
 			agentDir: workerAgentDir,
 			settingsManager: trust.settingsManager,
@@ -2343,7 +2381,7 @@ export async function dispatchWorker(
 						// surface it is dispatching from), but never silent: without
 						// the self-load the worker gets no compaction veto.
 						setupDiagnostics.push(
-							"could not resolve this extension's own source path; the worker runs without the post-submit compaction veto",
+							"warning: could not resolve this extension's own source path; the worker runs without the post-submit compaction veto",
 						);
 						return tools.extensionPaths;
 					}
@@ -2356,7 +2394,6 @@ export async function dispatchWorker(
 			},
 		});
 		setupDiagnostics.push(...serviceDiagnostics(services));
-		record.setupDiagnostics = [...setupDiagnostics];
 		const workerModel =
 			services.modelRuntime.getModel(model.provider, model.id) ?? ctx.modelRegistry.find(model.provider, model.id);
 		if (!workerModel) {
@@ -2387,7 +2424,14 @@ export async function dispatchWorker(
 		// no-op UI context and print mode are what it should see. The disposal
 		// owner is installed first, so a handler that already ran still receives
 		// session_shutdown if binding throws.
-		await session.bindExtensions({});
+		await session.bindExtensions({
+			// A handler that throws inside the worker does not fail the bind: pi
+			// routes handler errors to this listener (dist/core/extensions/runner.js
+			// emit). Without it a broken project extension would vanish silently.
+			onError: (err) => {
+				setupDiagnostics.push(`warning: ${err.event}: Extension "${err.extensionPath}" error: ${err.error}`);
+			},
+		});
 		// Provider factories may register during binding. Refresh that provider
 		// before the parity check so native registrations have settled auth state.
 		await session.modelRuntime.refresh({
@@ -2405,6 +2449,19 @@ export async function dispatchWorker(
 				`model "${model.provider}/${model.id}" has no configured authentication in the worker runtime after extension binding`,
 			);
 		}
+		// An extension may switch the session model during session_start. The
+		// record names the model the run actually uses, so continuation and
+		// reports stay truthful; the requested key stays visible in the dispatch
+		// call.
+		const actualModel = session.model;
+		if (actualModel && (actualModel.provider !== model.provider || actualModel.id !== model.id)) {
+			record.model = `${actualModel.provider}/${actualModel.id}`;
+		}
+		// Binding can add resources through resources_discover. Collect their
+		// diagnostics too, then persist the full setup report before the surface
+		// preflight can fail the dispatch.
+		setupDiagnostics.push(...serviceDiagnostics(services));
+		record.setupDiagnostics = [...new Set(setupDiagnostics)];
 	} catch (err) {
 		try {
 			disposeSession?.();
@@ -2416,6 +2473,8 @@ export async function dispatchWorker(
 			sharedWorkerState.workerSurfaces.delete(workerSessionId);
 		}
 		if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
+		if (services) setupDiagnostics.push(...serviceDiagnostics(services));
+		record.setupDiagnostics = [...new Set(setupDiagnostics)];
 		return fail(`failed to build the worker session: ${errText(err)}`);
 	}
 
@@ -3414,7 +3473,7 @@ const subagentTool = defineTool({
 	executionMode: "parallel",
 	// Standard pi tool-rendering pattern: the tool row shows the crafted
 	// dispatch spec, expandable (ctrl+o) to the full task, resolved config,
-	// and the resolved worker system prompt.
+	// and the worker protocol prompt.
 	renderCall(args, theme, context) {
 		// SAFETY: This renderer always returns Text, so lastComponent is its own
 		// previous Text instance or undefined.
@@ -3458,7 +3517,7 @@ const subagentTool = defineTool({
 					"\n" +
 					config.join("\n") +
 					"\n\n" +
-					theme.fg("muted", "worker system prompt") +
+					theme.fg("muted", "worker protocol prompt") +
 					"\n" +
 					workerSystemPrompt(args.model ?? "(inherited at dispatch)"),
 			);
@@ -3534,7 +3593,8 @@ const subagentTool = defineTool({
 		const lines = outcomes.map((outcome) => {
 			if (outcome.error) {
 				const worker = outcome.id ? `${outcome.id} · ` : "";
-				return `✗ ${worker}${outcome.state}: ${outcome.error}`;
+				const setup = setupDiagnosticsLine(outcome.record);
+				return `✗ ${worker}${outcome.state}: ${outcome.error}${setup ? ` · ${setup}` : ""}`;
 			}
 			const thinking = outcome.record ? thinkingLabel(outcome.record) : "thinking:?";
 			const setup = setupDiagnosticsLine(outcome.record);
@@ -3564,6 +3624,7 @@ const subagentTool = defineTool({
 					sessionId: outcome.record?.sessionId ?? null,
 					socketPath: outcome.record?.socketPath ?? null,
 					error: outcome.error ?? null,
+					setupDiagnostics: outcome.record?.setupDiagnostics ?? [],
 					capabilities: modelCapabilities(ctx, outcome.record?.model ?? null),
 				})),
 			},
@@ -3739,8 +3800,9 @@ const continueTool = defineTool({
 		const outcome = await continueWorker(params.id, params.message, ctx);
 		if (outcome.error) {
 			const linked = outcome.id ? ` as ${outcome.id}` : "";
+			const setup = setupDiagnosticsLine(outcome.record);
 			// Pi sets the error flag only when execute throws.
-			throw new Error(`Failed to continue ${params.id}${linked}: ${outcome.error}`);
+			throw new Error(`Failed to continue ${params.id}${linked}: ${outcome.error}${setup ? ` · ${setup}` : ""}`);
 		}
 		const dropped = outcome.record?.droppedTools ?? [];
 		const degradation = dropped.length > 0 ? ` Dropped unavailable tools: ${dropped.join(", ")}.` : "";
