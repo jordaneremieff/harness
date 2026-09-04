@@ -335,9 +335,10 @@ export class WorkerRuntime implements PiSessionRuntime {
 		this.abortRequested = false;
 		this.phase = "turn";
 		try {
-			await this.session.prompt(input.text, {
-				expandPromptTemplates: false,
-			});
+			// A worker is a full session: pi's prompt defaults apply, so extension
+			// commands, skill commands, and prompt templates expand exactly as they
+			// do for any session input. No expansion suppression of its own.
+			await this.session.prompt(input.text);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (/already processing|compaction/.test(message)) {

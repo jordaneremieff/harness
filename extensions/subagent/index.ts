@@ -96,6 +96,7 @@ import {
 import type { ThinkingLevel, TranscriptItem } from "@earendil-works/pi-protocol";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { stripTerminalSequences } from "./console.ts";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
 import { transcriptFromMessages, WorkerRuntime } from "./runtime.ts";
 import { WorkerHost } from "./server.ts";
@@ -109,6 +110,10 @@ const WORKER_ID_RE = /^bg-[a-z0-9]+$/;
 const OUTPUT_PREVIEW_BYTES = 1_500;
 /** Hard UTF-8 byte cap for persisted deliverables and notification bodies. */
 const RESULT_BODY_CAP_BYTES = 50 * 1024;
+const INSPECT_TRANSCRIPT_CAP_BYTES = 24 * 1024;
+const INSPECT_TRANSCRIPT_ITEM_LIMIT = 32;
+const INSPECT_CONTENT_CAP_BYTES = 12 * 1024;
+const INSPECT_TRUNCATION_MARKER = "[transcript truncated: older or oversized content omitted]";
 const TRUNCATED_SUFFIX = "\n\n[truncated]";
 /** Sockets younger than this are never swept: a host binds before its first
  * worker record is written, and that window must not look like debris. */
@@ -1661,7 +1666,7 @@ function notifyLimitPause(record: WorkerRecord, breach: "deadline" | "budget", r
 			"The worker is interrupted, not ended: its session and transcript are " +
 			"intact. Judge whether the task is still worth continuing. Resume it " +
 			`with subagent_steer (which grants a fresh ${allowance} allowance), ` +
-			"inspect it with subagent_status, or end it with subagent_kill. An " +
+			"inspect its content with subagent_inspect, or end it with subagent_kill. An " +
 			"unresumed worker is released by the idle deadline.";
 		sessionApis.get(record.ownerSession ?? "")?.sendMessage(
 			{
@@ -2065,8 +2070,12 @@ async function extensionProjectTrust(
 			confirm: async () => false,
 			input: async () => undefined,
 			// A background session owns no output stream: the parent's terminal
-			// belongs to the parent, and writing to it corrupts that display.
-			notify: () => {},
+			// belongs to the parent, and writing to it corrupts that display. A
+			// trust handler explains itself through notify, so the notice becomes
+			// setup diagnostics instead of disappearing.
+			notify: (message, type = "info") => {
+				onDiagnostic(`warning: project_trust ${type}: ${message}`);
+			},
 		},
 	};
 	for (const extension of extensionsResult.extensions) {
@@ -2102,16 +2111,28 @@ export interface ProjectTrustInputs {
  * setting. `ask` needs an operator, and a background session has none, so an
  * otherwise undecided directory stays untrusted — the answer pi's
  * non-interactive modes reach.
+ *
+ * When the dispatching session already resolved trust for this same directory
+ * (`sessionTrusted`), that live decision is authoritative: pi's own runtime
+ * keeps CLI overrides and session-only answers in the session's settings
+ * manager, not in the trust store, and a worker must not re-litigate them.
  */
 export function projectTrustInputs(
 	cwd: string,
 	agentDir: string,
 	onDiagnostic: (message: string) => void = () => {},
+	sessionTrusted?: boolean,
 ): ProjectTrustInputs {
 	// Normalize before anything handler-visible: a primary session's trust
 	// handlers receive the resolved absolute working directory, never the raw
 	// spelling a caller passed.
 	const resolvedCwd = resolve(cwd);
+	if (sessionTrusted !== undefined) {
+		// The decision is already made for this directory; load under it without
+		// re-running the trust ladder, the way pi does when it has a decision
+		// before the resource reload.
+		return { settingsManager: SettingsManager.create(resolvedCwd, agentDir, { projectTrusted: sessionTrusted }) };
+	}
 	const needsTrust = hasTrustRequiringProjectResources(resolvedCwd);
 	const settingsManager = SettingsManager.create(resolvedCwd, agentDir, { projectTrusted: !needsTrust });
 	if (!needsTrust) return { settingsManager };
@@ -2361,7 +2382,16 @@ export async function dispatchWorker(
 		// files under the trust it resolves for it, exactly as it does for a
 		// session started there.
 		const workerAgentDir = getAgentDir();
-		const trust = projectTrustInputs(cwd, workerAgentDir, (message) => setupDiagnostics.push(message));
+		// A worker at the dispatching session's own directory inherits that
+		// session's live trust decision, including CLI overrides and session-only
+		// answers the trust store never sees. Any other directory is resolved
+		// from scratch, as it is for a session started there.
+		const sameDirectoryAsSession = resolve(cwd) === resolve(ctx.cwd);
+		// A real pi context always reports the session trust decision; a context
+		// without it (controlled test hosts) falls back to fresh resolution, the
+		// way a session without a live decision behaves.
+		const sessionTrusted = sameDirectoryAsSession ? ctx.isProjectTrusted?.() : undefined;
+		const trust = projectTrustInputs(cwd, workerAgentDir, (message) => setupDiagnostics.push(message), sessionTrusted);
 		const modelRuntime = await createWorkerModelRuntime(ctx, workerAgentDir);
 		services = await createAgentSessionServices({
 			cwd,
@@ -3168,7 +3198,7 @@ export function statusView(filter?: string): StatusView {
 		lines.push(`Live subagent workers (${live.length}):`);
 		for (const worker of live) lines.push(statusLine(worker));
 		lines.push(
-			"Steer: subagent_steer · Interrupt: subagent_interrupt · Cancel: subagent_kill · Open the dashboard: /subagent",
+			"Inspect content: subagent_inspect · Steer: subagent_steer · Interrupt: subagent_interrupt · Cancel: subagent_kill · Open the dashboard: /subagent",
 		);
 	}
 	const recent = terminal.slice(0, 8);
@@ -3177,6 +3207,212 @@ export function statusView(filter?: string): StatusView {
 		for (const worker of recent) lines.push(statusLine(worker));
 	}
 	return { live, terminal, text: lines.join("\n") };
+}
+
+export interface TranscriptTail {
+	text: string;
+	totalItems: number;
+	selectedItems: number;
+	truncated: boolean;
+}
+
+function utf8Suffix(text: string, maxBytes: number): string {
+	if (maxBytes <= 0) return "";
+	const bytes = Buffer.from(text, "utf-8");
+	if (bytes.length <= maxBytes) return text;
+	let start = bytes.length - maxBytes;
+	while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
+	return bytes.subarray(start).toString("utf-8");
+}
+
+function inspectPlainText(text: string): string {
+	return stripTerminalSequences(text)
+		.replace(/\t/g, "   ")
+		.replace(/\r/g, "\n")
+		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+}
+
+function inspectInline(value: unknown, maxBytes = 2_048): string {
+	const inline = inspectPlainText(String(value)).replace(/\n/g, "\\n");
+	return capUtf8(inline, maxBytes).text.replace(/\n/g, " ");
+}
+
+function inspectContent(text: string): { text: string; truncated: boolean } {
+	const plain = inspectPlainText(text);
+	if (Buffer.byteLength(plain, "utf-8") <= INSPECT_CONTENT_CAP_BYTES) {
+		return { text: plain, truncated: false };
+	}
+	const marker = "[content truncated: showing latest bytes]\n";
+	return {
+		text: marker + utf8Suffix(plain, INSPECT_CONTENT_CAP_BYTES - Buffer.byteLength(marker, "utf-8")),
+		truncated: true,
+	};
+}
+
+function inspectJson(value: unknown): { text: string; truncated: boolean } {
+	let serialized: string;
+	try {
+		serialized = JSON.stringify(value, null, 2) ?? String(value);
+	} catch {
+		serialized = "[unserializable tool input]";
+	}
+	return inspectContent(serialized);
+}
+
+function inspectTimestamp(value: number): string {
+	try {
+		return new Date(value).toISOString();
+	} catch {
+		return String(value);
+	}
+}
+
+function renderTranscriptItem(item: TranscriptItem): { text: string; truncated: boolean } {
+	let truncated = false;
+	const addContent = (value: string): string => {
+		const bounded = inspectContent(value);
+		truncated ||= bounded.truncated;
+		return bounded.text;
+	};
+	const timestamp = inspectTimestamp(item.timestamp);
+	if (item.role === "user") {
+		const body = item.content.map((part) =>
+			part.type === "text" ? addContent(part.text) : `[image: ${inspectInline(part.mimeType, 256)}]`,
+		);
+		return { text: `USER · ${timestamp}\n${body.join("\n") || "(no textual content)"}`, truncated };
+	}
+	if (item.role === "assistant") {
+		const body: string[] = [];
+		for (const part of item.content) {
+			if (part.type === "text") {
+				if (part.text) body.push(addContent(part.text));
+			} else if (part.type === "thinking") {
+				body.push(`THINKING\n${addContent(part.thinking)}`);
+			} else {
+				const input = inspectJson(part.input);
+				truncated ||= input.truncated;
+				body.push(
+					`TOOL CALL · ${inspectInline(part.toolName, 512)} · ${inspectInline(part.toolCallId, 512)}\ninput: ${input.text}`,
+				);
+			}
+		}
+		if ("errorMessage" in item && item.errorMessage) body.push(`ASSISTANT ERROR: ${addContent(item.errorMessage)}`);
+		return {
+			text:
+				`ASSISTANT · ${timestamp} · ${item.status} · ${inspectInline(item.model.provider, 512)}/${inspectInline(item.model.id, 512)}\n` +
+				(body.join("\n\n") || "(no textual content)"),
+			truncated,
+		};
+	}
+	const input = inspectJson(item.input);
+	truncated ||= input.truncated;
+	const body = item.content.map((part) =>
+		part.type === "text" ? addContent(part.text) : `[image: ${inspectInline(part.mimeType, 256)}]`,
+	);
+	return {
+		text:
+			`TOOL RESULT · ${inspectInline(item.toolName, 512)} · ${inspectInline(item.toolCallId, 512)} · ${item.status}${item.isError ? " · ERROR" : ""} · ${timestamp}\n` +
+			`input: ${input.text}\n${body.join("\n") || "(no textual content)"}`,
+		truncated,
+	};
+}
+
+/** Render a bounded, human-readable tail from protocol transcript items. */
+export function renderTranscriptTail(
+	items: TranscriptItem[],
+	maxBytes = INSPECT_TRANSCRIPT_CAP_BYTES,
+	itemLimit = INSPECT_TRANSCRIPT_ITEM_LIMIT,
+): TranscriptTail {
+	const limit = Math.max(1, Math.floor(itemLimit));
+	const selected = items.slice(-limit);
+	let contentTruncated = items.length > selected.length;
+	const rendered = selected.map((item) => {
+		const output = renderTranscriptItem(item);
+		contentTruncated ||= output.truncated;
+		return output.text;
+	});
+	const body = rendered.join("\n\n");
+	const boundedMax = Math.max(128, Math.floor(maxBytes));
+	const bodyTooLarge = Buffer.byteLength(body, "utf-8") > boundedMax;
+	const truncated = contentTruncated || bodyTooLarge;
+	if (!truncated) {
+		return {
+			text: body || "(no transcript entries recorded)",
+			totalItems: items.length,
+			selectedItems: selected.length,
+			truncated: false,
+		};
+	}
+	const prefix = `${INSPECT_TRUNCATION_MARKER}\n\n`;
+	const budget = Math.max(0, boundedMax - Buffer.byteLength(prefix, "utf-8"));
+	return {
+		text: prefix + utf8Suffix(body, budget),
+		totalItems: items.length,
+		selectedItems: selected.length,
+		truncated: true,
+	};
+}
+
+export interface InspectView {
+	text: string;
+	record: WorkerRecord | null;
+	transcript: TranscriptTail | null;
+	source: "live session snapshot" | "session file" | "unavailable";
+}
+
+/** Read one worker's durable record and rendered transcript content. */
+export function inspectWorker(id: string): InspectView {
+	const safeId = inspectInline(id, 256);
+	let record = liveWorkers.get(id)?.record ?? readWorker(id);
+	if (!record) {
+		return {
+			text: `No worker with id ${safeId} in the store.`,
+			record: null,
+			transcript: null,
+			source: "unavailable",
+		};
+	}
+	record = finalizeIfStale(record) ?? record;
+	const source = liveWorkers.has(id) ? "live session snapshot" : record.sessionFile ? "session file" : "unavailable";
+	const conversation = workerConversation(id);
+	const transcript = conversation ? renderTranscriptTail(conversation) : null;
+	let transcriptText: string;
+	if (transcript) {
+		transcriptText = transcript.text;
+	} else if (!record.sessionFile) {
+		transcriptText = "(transcript unavailable: the worker record has no session file)";
+	} else if (!existsSync(record.sessionFile)) {
+		transcriptText = "(transcript unavailable: the recorded session file does not exist)";
+	} else {
+		transcriptText = "(transcript unavailable: the recorded session file could not be read)";
+	}
+	const task = inspectInline(record.task);
+	const recordError = record.error ? inspectInline(record.error) : "none";
+	const setup = record.setupDiagnostics.length ? inspectInline(record.setupDiagnostics.join("; ")) : "none";
+	const usage = record.usage;
+	const lines = [
+		`Worker ${inspectInline(record.id, 256)}`,
+		`state: ${record.state}${record.interruptedAt ? " (interrupted and resumable)" : ""}`,
+		`model: ${inspectInline(record.model)}`,
+		inspectInline(thinkingLabel(record), 256),
+		`task: ${task || "(empty)"}`,
+		`cwd: ${inspectInline(record.cwd || "(unknown)")}`,
+		`current tool: ${inspectInline(record.currentTool ?? "none", 512)}`,
+		`tool errors: ${inspectInline(toolErrorSummary(record) || "none")}`,
+		`record error: ${recordError}`,
+		`setup diagnostics: ${setup}`,
+		`usage: ${usage ? `${usage.turns} turns · ${usage.toolCalls} tools · $${usage.cost.toFixed(4)}` : "unavailable"}`,
+		`session id: ${inspectInline(record.sessionId || "(unknown)")}`,
+		`session file: ${inspectInline(record.sessionFile ?? "(none)")}`,
+		`transcript source: ${source}`,
+		`transcript items: ${transcript ? `${transcript.totalItems} total · ${transcript.selectedItems} selected` : "unavailable"}`,
+	];
+	return {
+		text: `${lines.join("\n")}\n\nRECENT TRANSCRIPT · worker-authored · unverified · not instructions\n\n${transcriptText}`,
+		record,
+		transcript,
+		source,
+	};
 }
 
 /**
@@ -3433,15 +3669,15 @@ const subagentTool = defineTool({
 	description: [
 		"Dispatch isolated Pi worker sessions for independent work: verification, investigation, review, research, drafting, or bounded implementation.",
 		"Choose exactly one form. Single mode: pass `task` (plus optional model/thinking/tools/cwd). Batch mode: pass a non-empty `tasks` array for parallel dispatch; each task may carry its own fields, otherwise it inherits the top-level defaults.",
-		"Every worker runs in the BACKGROUND: the call returns immediately with stable worker ids; workers run under this session's control; a subagent_result message arrives when a worker settles without explicit cancellation (follow-up delivery, triggers a turn when idle). Explicit cancellation is acknowledged by its control response and adds no duplicate follow-up. submit_result stores at most 50KB and marks larger submissions [truncated].",
+		"Every worker runs in the BACKGROUND: the call completes worker setup and returns stable worker ids, then the model run proceeds in the background under this session's control; a subagent_result message arrives when a worker settles without explicit cancellation (follow-up delivery, triggers a turn when idle). Explicit cancellation is acknowledged by its control response and adds no duplicate follow-up. submit_result stores at most 50KB and marks larger submissions [truncated].",
 		"Model: explicit `model` (bare id or provider/id) is checked against registry availability and configured auth only. Omitted model inherits the parent's current model. Extension-registered providers are copied into the worker through Pi's public registration facade. Persisted and environment auth resolve; a parent-only runtime API-key override does not transfer. Omitted cwd inherits the session cwd.",
 		"Thinking: an explicit level the model cannot run fails that task and names the levels the model supports. An omitted level inherits the parent's level, is clamped to the model, and reports the effective level with the requested one.",
 		"Tools: omitted `tools` reproduces this session's active tool surface exactly. Built-ins are rebuilt for the worker cwd, and extension registration files are reloaded from their registered source paths. The constructed surface is checked before provider work. Provided `tools` restricts the worker to exactly that set plus the submit_result protocol tool; a tool name that is not in the current registry fails the dispatch. `tools: []` is a declared EMPTY allowlist, not an omission: it yields a worker that has submit_result and nothing else.",
 		"Context: a worker loads what a session started in its `cwd` loads — that directory's settings, extensions, skills, prompt templates, and context files (AGENTS.md), under the same project-trust resolution. A worker runs the normal extension lifecycle, so an extension tool that opens its resources at session_start works inside a worker; a tool that still fails is reported with its failure count when the worker finishes.",
-		"Live workers can be steered (subagent_steer), interrupted and resumed (subagent_interrupt), cancelled (subagent_kill), and inspected (subagent_status). A terminal worker with a retained session can continue as a new linked worker (subagent_continue); its record, result, and transcript remain unchanged. Results persist in the store and are collectable later or from a replacement session (subagent_collect).",
+		"Live workers can be steered (subagent_steer), interrupted and resumed (subagent_interrupt), cancelled (subagent_kill), oriented (subagent_status), and content-inspected (subagent_inspect). A terminal worker with a retained session can continue as a new linked worker (subagent_continue); its record, result, and transcript remain unchanged. Results persist in the store and are collectable later or from a replacement session (subagent_collect).",
 		"Limits: `deadlineMinutes` is your judgment of how long the task should take (default from the PI_SUBAGENT_DEADLINE_MINUTES setting; 0 removes it), and `budgetUsd` is an optional spend allowance. Breaching either PAUSES the worker and notifies you — the session, its transcript, and its work survive, and resuming with subagent_steer grants a fresh allowance. Nothing here kills a worker.",
 		"Parent-death contract: a worker that already submitted keeps its result and remains collectable. A worker still in flight when this session ends is recorded as owner_lost by the next session — re-dispatch if the work still matters.",
-		"Do not poll with sleeps. Status: subagent_status. Steer: subagent_steer. Interrupt (pause, resumable): subagent_interrupt. Cancel: subagent_kill. Collect: subagent_collect.",
+		"Do not poll with sleeps. Status: subagent_status. Content inspection: subagent_inspect. Steer: subagent_steer. Interrupt (pause, resumable): subagent_interrupt. Cancel: subagent_kill. Collect: subagent_collect.",
 	].join(" "),
 	promptSnippet:
 		"Dispatch isolated Pi worker sessions (always background, tasks[] for parallel). Results steer back as subagent_result; steer/status/interrupt/kill/continue/collect tools manage workers.",
@@ -3453,7 +3689,8 @@ const subagentTool = defineTool({
 		"Provision context as pointers (file paths, URLs, query strings); the worker fetches content itself with its own tools.",
 		"If a worker's tool fails or its declared authority does not work, that is a bug to surface to the operator — do not route around it with narrower tool lists.",
 		"Workers live in this session. If work must survive your own exit, do not dispatch it in the background and end the turn.",
-		"Set `deadlineMinutes` from the task you actually wrote: a quick lookup or review is minutes, a broad investigation or implementation is longer. A paused worker is the signal that your estimate or the task was wrong — read its status and transcript, then resume, redirect, or kill it instead of blindly resuming.",
+		"When the operator asks to check on a worker, use subagent_inspect and report concrete transcript content, tool outcomes, and errors. A status row alone is only orientation.",
+		"Set `deadlineMinutes` from the task you actually wrote: a quick lookup or review is minutes, a broad investigation or implementation is longer. A paused worker is the signal that your estimate or the task was wrong — inspect its transcript, then resume, redirect, or kill it instead of blindly resuming.",
 	],
 	parameters: Type.Object({
 		task: Type.Optional(Type.String({ minLength: 1 })),
@@ -3603,7 +3840,7 @@ const subagentTool = defineTool({
 		const started = outcomes.filter((outcome) => outcome.state === "running").length;
 		const guidance =
 			started > 0
-				? "\n\nWorkers persist in the store. Natural completion and failure notify through subagent_result; explicit cancellation reports through its control response. Steer: subagent_steer · Interrupt: subagent_interrupt · Status: subagent_status · Cancel: subagent_kill · Continue: subagent_continue · Collect: subagent_collect."
+				? "\n\nWorkers persist in the store. Natural completion and failure notify through subagent_result; explicit cancellation reports through its control response. Inspect: subagent_inspect · Steer: subagent_steer · Interrupt: subagent_interrupt · Status: subagent_status · Cancel: subagent_kill · Continue: subagent_continue · Collect: subagent_collect."
 				: "\n\nNo worker is running; correct the dispatch error before using worker controls.";
 		const text = `Started ${started} of ${outcomes.length} subagent worker(s):\n${lines.join("\n")}${guidance}`;
 		// Pi sets the error flag only when execute throws; a dispatch that started
@@ -3677,6 +3914,48 @@ const statusTool = defineTool({
 		return {
 			content: [{ type: "text", text: view.text }],
 			details: { live: view.live, terminal: view.terminal.slice(0, 8) },
+		};
+	},
+});
+
+const inspectTool = defineTool({
+	name: "subagent_inspect",
+	label: "Subagent Inspect",
+	description: [
+		"Inspect one subagent worker's durable record and recent session content.",
+		"Returns worker state, session path, and a bounded human-readable transcript tail with recent turns, tool-call inputs, tool outcomes, assistant errors, and explicit truncation markers.",
+		"Works for a live worker through its in-process snapshot and for any retained worker through its session file. Use this when checking what a worker is actually doing; subagent_status is orientation only.",
+	].join(" "),
+	promptSnippet:
+		"Inspect one worker's record and bounded rendered transcript tail, including tool outcomes and errors.",
+	parameters: Type.Object({ id: Type.String({ minLength: 1 }) }),
+	executionMode: "parallel",
+	async execute(
+		_toolCallId: string,
+		params: { id: string },
+		_signal: AbortSignal | undefined,
+		_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
+		ctx: ExtensionContext,
+	) {
+		void ctx;
+		void _signal;
+		void _onUpdate;
+		const inspected = inspectWorker(params.id);
+		return {
+			content: [{ type: "text", text: inspected.text }],
+			details: inspected.record
+				? {
+						worker: inspected.record,
+						transcript: inspected.transcript
+							? {
+									totalItems: inspected.transcript.totalItems,
+									selectedItems: inspected.transcript.selectedItems,
+									truncated: inspected.transcript.truncated,
+									source: inspected.source,
+								}
+							: { totalItems: 0, selectedItems: 0, truncated: false, source: inspected.source },
+					}
+				: {},
 		};
 	},
 });
@@ -3781,7 +4060,7 @@ const continueTool = defineTool({
 	label: "Subagent Continue",
 	description: [
 		"Continue a terminal subagent as a new linked background worker while preserving the source record, result, and transcript.",
-		"The new worker forks the retained Pi session, inherits the source model, thinking, tools, and cwd, and returns a new stable id immediately. Running workers must be steered or interrupted instead.",
+		"The new worker forks the retained Pi session, inherits the source model, thinking, tools, and cwd, and returns a new stable id after setup completes. Running workers must be steered or interrupted instead.",
 	].join(" "),
 	promptSnippet: "Continue a terminal subagent as a new linked background worker.",
 	parameters: Type.Object({
@@ -3903,6 +4182,7 @@ export default function (pi: ExtensionAPI) {
 	// distinguishes workers from primary sessions without a construction race.
 	pi.registerTool(subagentTool);
 	pi.registerTool(statusTool);
+	pi.registerTool(inspectTool);
 	pi.registerTool(steerTool);
 	pi.registerTool(interruptTool);
 	pi.registerTool(continueTool);

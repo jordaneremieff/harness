@@ -87,6 +87,7 @@ const {
 	formatUsd,
 	limitBreach,
 	limitPauseStillHolds,
+	renderTranscriptTail,
 	resolveRunLimits,
 	resolveToolSurface,
 	registrationDifferenceFields,
@@ -503,7 +504,8 @@ describe("project trust parity", () => {
 	it("asks handlers with no UI, the way a session without an operator asks", async () => {
 		const cwd = projectDir({ packages: [] });
 		const seen: Array<Record<string, unknown>> = [];
-		const inputs = projectTrustInputs(cwd, trustAgentDir);
+		const diagnostics: string[] = [];
+		const inputs = projectTrustInputs(cwd, trustAgentDir, (message) => diagnostics.push(message));
 		assert.ok(inputs.reloadOptions);
 		await inputs.reloadOptions.resolveProjectTrust({
 			extensionsResult: trustHandlers([
@@ -516,7 +518,7 @@ describe("project trust parity", () => {
 						confirm: await trustCtx.ui.confirm("sure", "really"),
 						input: await trustCtx.ui.input("name"),
 					});
-					trustCtx.ui.notify("nothing reads this");
+					trustCtx.ui.notify("setup trouble", "warning");
 					return { trusted: "undecided" };
 				}) as never,
 			]),
@@ -531,6 +533,22 @@ describe("project trust parity", () => {
 				input: undefined,
 			},
 		]);
+		assert.deepEqual(
+			diagnostics,
+			["warning: project_trust warning: setup trouble"],
+			"a trust handler's notify must reach the setup report, not vanish",
+		);
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("propagates the session's own decision for the same directory", async () => {
+		const cwd = projectDir({ packages: [] });
+		const trusted = projectTrustInputs(cwd, trustAgentDir, () => {}, true);
+		assert.equal(trusted.settingsManager.isProjectTrusted(), true);
+		assert.equal(trusted.reloadOptions, undefined, "a live session decision must not re-run the trust ladder");
+		const refused = projectTrustInputs(cwd, trustAgentDir, () => {}, false);
+		assert.equal(refused.settingsManager.isProjectTrusted(), false);
+		assert.equal(refused.reloadOptions, undefined);
 		rmSync(cwd, { recursive: true, force: true });
 	});
 
@@ -1220,6 +1238,53 @@ describe("status and collection", () => {
 			text: "session setup failed",
 		});
 	});
+
+	it("renders a bounded transcript tail with tool and assistant errors", () => {
+		const old = Array.from({ length: 33 }, (_, index) => ({
+			id: `m-${index}`,
+			role: "user",
+			content: [{ type: "text", text: `old ${index}` }],
+			timestamp: index,
+		}));
+		const recent = [
+			{
+				id: "m-call",
+				role: "assistant",
+				status: "complete",
+				stopReason: "toolUse",
+				model: { provider: "test", id: "model-a" },
+				content: [{ type: "toolCall", toolCallId: "call-1", toolName: "bash", input: { command: "npm test" } }],
+				timestamp: 34,
+			},
+			{
+				id: "m-result",
+				role: "tool",
+				status: "error",
+				isError: true,
+				toolCallId: "call-1",
+				toolName: "bash",
+				input: { command: "npm test" },
+				content: [{ type: "text", text: "permission denied" }],
+				timestamp: 35,
+			},
+			{
+				id: "m-error",
+				role: "assistant",
+				status: "error",
+				stopReason: "error",
+				errorMessage: "provider unavailable",
+				model: { provider: "test", id: "model-a" },
+				content: [{ type: "text", text: "I could not finish." }],
+				timestamp: 36,
+			},
+		];
+		const tail = renderTranscriptTail([...old, ...recent] as any, 4_096, 3);
+		assert.match(tail.text, /^\[transcript truncated:/);
+		assert.match(tail.text, /TOOL CALL · bash.*TOOL RESULT · bash.*permission denied/s);
+		assert.match(tail.text, /ASSISTANT ERROR: provider unavailable/);
+		assert.doesNotMatch(tail.text, /old 0/);
+		assert.ok(Buffer.byteLength(tail.text, "utf-8") <= 4_096);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -1662,7 +1727,6 @@ describe("compaction veto", () => {
 			sendMessage: (message: unknown) => deliveries.push(message),
 			appendEntry: () => undefined,
 		} as never);
-		assert.equal(tools.length, 7);
 		assert.ok(handlers.has("session_before_compact"));
 		assert.ok(handlers.has("session_start"));
 		assert.ok(handlers.has("session_shutdown"));
@@ -1915,6 +1979,28 @@ describe("compaction veto", () => {
 				stdout.includes("registered provider child: PASS"),
 				true,
 				`registered provider child must pass: ${stdout}\n${stderr}`,
+			);
+		} finally {
+			rmSync(childCoverageDir, { recursive: true, force: true });
+		}
+	});
+
+	it("inherits the live session trust decision for a same-directory worker", async () => {
+		const childPath = join(dirname(fileURLToPath(import.meta.url)), "same-cwd-trust-child.mts");
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const run = promisify(execFile);
+		const childCoverageDir = mkdtempSync(join(tmpdir(), "subagent-same-cwd-trust-cov-"));
+		try {
+			const { stdout, stderr } = await run(process.execPath, [childPath], {
+				encoding: "utf-8",
+				env: { ...process.env, NODE_V8_COVERAGE: childCoverageDir },
+				timeout: 30_000,
+			});
+			assert.equal(
+				stdout.includes("same-cwd trust child: PASS"),
+				true,
+				`same-cwd trust child must pass: ${stdout}\n${stderr}`,
 			);
 		} finally {
 			rmSync(childCoverageDir, { recursive: true, force: true });
@@ -2474,7 +2560,11 @@ const ctxShim: any = {
 };
 
 describe("WorkerRuntime regressions", () => {
-	it("passes slash-prefixed tasks with command expansion disabled", async () => {
+	it("hands tasks to the session prompt with pi's own expansion defaults", async () => {
+		// A worker is a full session: no suppression of its own. pi's
+		// AgentSession.prompt defaults to expanding extension commands, skill
+		// commands, and prompt templates (dist/core/agent-session.d.ts
+		// PromptOptions), and the worker must not diverge from that.
 		const session = new FakeSession();
 		const runtime = new WorkerRuntime({
 			session: session as never,
@@ -2484,7 +2574,7 @@ describe("WorkerRuntime regressions", () => {
 			createdAt: 1,
 		});
 		await runtime.prompt({ text: "/subagent status" } as never);
-		assert.deepEqual(session.promptOptions, [{ expandPromptTemplates: false }]);
+		assert.deepEqual(session.promptOptions, [undefined]);
 	});
 
 	it("abort during prompt preflight keeps the phase (does not demote to idle)", async () => {
@@ -3345,6 +3435,7 @@ describe("registered tool surface", () => {
 			/Provide exactly one dispatch form/,
 		);
 		assert.ok(tools.some((tool) => tool.name === "subagent_continue"));
+		assert.ok(tools.some((tool) => tool.name === "subagent_inspect"));
 		assert.match(
 			tools.find((tool) => tool.name === "subagent_steer")?.description ?? "",
 			/idle interrupted worker.*fresh run/,

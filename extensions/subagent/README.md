@@ -18,8 +18,9 @@ parent's own tools manage workers.
 
 | Tool | Mode | Purpose |
 |---|---|---|
-| `subagent` | parallel | Dispatch one task or a `tasks[]` batch. Every worker starts in the background and returns a stable id immediately. Per-task `deadlineMinutes` (defaulted) and `budgetUsd` (opt-in) pause a worker that overruns the agent's own estimate. |
+| `subagent` | parallel | Dispatch one task or a `tasks[]` batch. The call returns a stable id after worker setup; the model run starts in the background. Per-task `deadlineMinutes` (defaulted) and `budgetUsd` (opt-in) pause a worker that overruns the agent's own estimate. |
 | `subagent_status` | parallel | Live workers + recent terminal workers: id, state, model, thinking, elapsed, turns, tool calls, current tool, session-file write age, cost, output preview, error. |
+| `subagent_inspect` | parallel | One worker's record plus a bounded, rendered transcript tail: recent turns, tool inputs and outcomes, assistant errors, session path, and explicit truncation markers. Reads a live snapshot when this session owns the worker; otherwise reads the retained session file. |
 | `subagent_steer` | sequential | Redirect a live worker: the message is delivered after the worker's current tool call, before its next model call. On an idle (interrupted) worker, steer instead resumes the run with your message. Owning session only. |
 | `subagent_interrupt` | sequential | Pause a live worker without cancelling it: the run stops, the worker stays alive and resumable. An interrupted worker that is never resumed is released by the idle deadline. |
 | `subagent_continue` | sequential | Fork a terminal worker's retained session into a new linked background worker. The source record, result, and transcript remain unchanged. |
@@ -112,9 +113,12 @@ array for a batch. Per-task fields: `task` (required), `model`, `thinking`,
   `PI_SUBAGENT_BUDGET_USD` setting, which is unset by default — a budget applies
   only when the task or the operator asks for one. `0` removes it.
 
-There is no foreground or blocking dispatch mode. Every accepted worker returns
-its id immediately, remains steerable, and reports completion through a
-`subagent_result` follow-up.
+There is no foreground run mode. The dispatch call completes worker setup
+trust resolution, resource loading, session construction, and extension start
+and then returns the worker's id; the model run happens in the background.
+Setup is awaited, so an extension whose start handlers never settle delays the
+dispatch call, as it would delay any session start. An accepted worker remains
+steerable and reports completion through a `subagent_result` follow-up.
 
 An omitted `tools` array and an empty one are different: `tools: []` is a
 declared, empty allowlist, so the worker gets `submit_result` and nothing else.
@@ -138,11 +142,22 @@ worker-specific context rule and no resource suppression; the worker does pass
 two additions of its own, its registration file and the protocol prompt it
 appends, which every session with those paths would carry.
 
-Prompt templates load with the directory like every other resource. Text a
-worker receives is never slash-expanded: dispatch and steering text is
-code-originated, and pi expands slash commands, skill commands, and prompt
-templates only for interactive input, which a worker has no surface for. That
-matches pi's code-originated send paths in every mode.
+Input uses pi's normal session methods. Dispatch and an idle resume use
+`AgentSession.prompt` with its defaults: registered extension commands run,
+loaded skill commands and prompt templates expand, and unmatched text passes
+through unchanged. Active steering uses `AgentSession.steer`: skill commands
+and prompt templates expand, while pi refuses an extension command because that
+command cannot enter the steer queue.
+
+Parity scope: a worker reproduces the working directory's own resources plus
+the resources the dispatch carries (the parent's tool-registration files and
+the worker protocol prompt). Process CLI inputs do not transfer to SDK-built
+sessions: `--approve`/`--no-approve` trust overrides, `--no-*` resource flags,
+CLI-only skill, prompt, theme, and extension paths, inline extension
+factories, and the process trust cache are not exposed to extensions. For the
+dispatching session's own directory the session's live trust decision does
+transfer, session-only answers and overrides included. Any other directory
+resolves trust from scratch, the way a session started there does.
 
 Extension files the parent's tool surface inherits are loaded the way CLI
 `--extension` paths load in any session: they run in the pre-trust bootstrap,
@@ -172,8 +187,8 @@ a continuation's result line, and kept in its record as `setupDiagnostics`.
 
 ## Worker lifecycle
 
-- Dispatch returns immediately with a stable `bg-*` worker id; workers never
-  block the parent tool call.
+- Dispatch returns a stable `bg-*` worker id once worker setup completes; the
+  model run never blocks the parent tool call.
 - A worker runs the extension lifecycle a primary session runs. pi emits
   `session_start` from `AgentSession.bindExtensions`, which only the
   interactive, print, and rpc modes call, so a session built through the SDK
@@ -258,10 +273,10 @@ a continuation's result line, and kept in its record as `setupDiagnostics`.
   different responses. The final message is retained and surfaced by
   `subagent_collect` behind an explicit UNPROTOCOLLED OUTPUT banner, never
   presented as the result, with the session file for the full record. Every
-  other terminal no-result state also points to the transcript and tells the
-  operator to inspect it before continuation: completed work may survive in
-  assistant text or tool-call arguments, but the extension never scrapes that
-  content or promotes it to a submitted result.
+  other terminal no-result state also points to `subagent_inspect` before
+  continuation: completed work may survive in assistant text or tool-call
+  arguments. Inspection renders that evidence but never promotes it to a
+  submitted result.
 - Dispatch details include the resolved model's capability metadata
   (`capabilities: {images, thinkingLevels}`), read from pi's own
   `getSupportedThinkingLevels`. Image support is informational; the thinking
@@ -301,9 +316,10 @@ On breach the worker takes the ordinary interrupt path — the run stops, the
 session stays alive, resumable, with its transcript intact — and the parent
 receives a `subagent_paused` message naming the limit, the elapsed time, the
 spend, and the last tool. The record shows `interrupted (deadline 30m reached)`
-in status. The parent then decides: resume it with `subagent_steer` (a fresh
-allowance), inspect it, or end it with `subagent_kill`. A pause left unresumed
-is released by the interrupted-idle deadline like any other paused worker.
+in status. The parent then decides: inspect it with `subagent_inspect`, resume
+it with `subagent_steer` (a fresh allowance), or end it with `subagent_kill`. A
+pause left unresumed is released by the interrupted-idle deadline like any
+other paused worker.
 
 The budget is evaluated when the worker's usage lands (message end, compaction
 end), which is the only moment spend is knowable; the deadline runs on its own
@@ -354,6 +370,13 @@ the portable fallback for a terminal worker.
 
 ## Inspecting a worker
 
+Use `subagent_inspect {"id":"bg-..."}` to check a worker's actual work. The
+result includes record state, the session path, and the most recent protocol
+transcript items in human-readable form. It shows thinking, tool-call inputs,
+tool outcomes, and assistant errors. The transcript tail is capped at 24KB and
+32 items; older or oversized content produces an explicit truncation marker.
+Worker-authored content remains marked as unverified data, not instructions.
+
 A worker runs as a real `AgentSession` inside the dispatching session's process.
 It writes an ordinary pi session file (`worker.json` records `sessionFile` and
 `sessionId`). Reopen a finished worker as a real session:
@@ -370,11 +393,12 @@ worker — pi runs one interactive session at a time, and its public CLI/TUI has
 no command to discover or attach to this extension's per-session socket. Live
 control stays through the owning parent's tools and dashboard.
 
-Before continuing a terminal worker that has no submitted result, inspect the
-full transcript first. A completed draft can survive inside assistant text or a
-tool call used for final QA even when the subsequent `submit_result` turn never
-landed. Recovery is an operator judgment over transcript evidence; automatic
-extraction would guess which model-authored content was the deliverable.
+Before continuing a terminal worker that has no submitted result, use
+`subagent_inspect` first. Reopen the session when the bounded tail omits needed
+evidence. A completed draft can survive inside assistant text or a tool call
+used for final QA even when the subsequent `submit_result` turn never landed.
+Recovery is an operator judgment over transcript evidence; inspection never
+guesses which model-authored content was the deliverable.
 
 ### The socket, and what it is for
 
