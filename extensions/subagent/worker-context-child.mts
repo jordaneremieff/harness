@@ -17,6 +17,7 @@ process.env.HOME = home;
 const contextSentinel = (label: string) => `SENTINEL_CONTEXT_FILE_${label}`;
 const skillSentinel = (label: string) => `sentinel-skill-${label}`;
 const markerPath = (label: string) => join(agentDir, `${label}-extension-ran`);
+const sessionMarkerPath = (label: string) => join(agentDir, `${label}-extension-sessions`);
 const promptPath = (label: string) => join(agentDir, `${label}-worker-prompt.txt`);
 
 /** Give a directory a project extension, a project skill, and a context file. */
@@ -28,7 +29,24 @@ function seedProject(cwd: string, label: string): void {
 		`import { appendFileSync } from "node:fs";
 export default function (pi) {
   appendFileSync(${JSON.stringify(marker)}, "factory\\n");
-  pi.on("session_start", () => appendFileSync(${JSON.stringify(marker)}, "start\\n"));
+  pi.on("session_start", (_event, ctx) => {
+    appendFileSync(${JSON.stringify(marker)}, "start\\n");
+    appendFileSync(${JSON.stringify(sessionMarkerPath(label))}, ctx.sessionManager.getSessionId() + "\\n");
+  });
+  pi.registerCommand("worker-reload", {
+    description: "Reload the worker session resources",
+    handler: async (_args, ctx) => ctx.reload(),
+  });
+  pi.registerCommand("worker-send", {
+    description: "Start worker work through the extension API",
+    handler: () => pi.sendUserMessage("command-generated worker task"),
+  });
+  pi.registerCommand("worker-new", {
+    description: "Replace the worker session and continue there",
+    handler: async (_args, ctx) => ctx.newSession({
+      withSession: async (next) => next.sendUserMessage("replacement worker task"),
+    }),
+  });
 }
 `,
 		"utf8",
@@ -99,7 +117,8 @@ export default function (pi) {
 
 seedProject(trustedCwd, "trusted");
 seedProject(untrustedCwd, "untrusted");
-const providerPaths = ["trusted", "untrusted"].map(seedProvider);
+const providerLabels = ["trusted", "reload", "command", "replacement", "untrusted"];
+const providerPaths = providerLabels.map(seedProvider);
 writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: providerPaths }), "utf8");
 
 let parentSession: any = null;
@@ -139,18 +158,23 @@ try {
 	const dispatch = parentSession.extensionRunner.getToolDefinition("subagent");
 	assert.ok(dispatch);
 	const parentRegistry = new ModelRegistry(parentSession.modelRuntime);
-	for (const label of ["trusted", "untrusted"]) {
+	for (const label of providerLabels) {
 		assert.ok(
 			parentRegistry.getRegisteredNativeProvider(`cwd-provider-${label}`),
 			`the parent must hold the native-form provider registration for ${label}`,
 		);
 	}
 
-	const runWorker = async (cwd: string, label: string): Promise<any> => {
+	const runWorker = async (
+		cwd: string,
+		label: string,
+		task = "work in the selected directory",
+		expectedState = "done",
+	): Promise<any> => {
 		const model = fauxModel(label);
 		const result = (await dispatch.execute(
 			"worker-context",
-			{ task: "work in the selected directory", cwd, tools: ["read"], model: `${model.provider}/${model.id}` },
+			{ task, cwd, tools: ["read"], model: `${model.provider}/${model.id}` },
 			undefined,
 			undefined,
 			{
@@ -170,15 +194,13 @@ try {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 			record = sub.readWorker(id);
 		}
-		assert.equal(record?.state, "done", JSON.stringify(record));
+		assert.equal(record?.state, expectedState, JSON.stringify(record));
 		assert.deepEqual(record?.setupDiagnostics, [], JSON.stringify(record?.setupDiagnostics));
 		return record;
 	};
 
 	const trustedRecord = await runWorker(trustedCwd, "trusted");
-	const untrustedRecord = await runWorker(untrustedCwd, "untrusted");
 	const trustedPrompt = readFileSync(promptPath("trusted"), "utf8");
-	const untrustedPrompt = readFileSync(promptPath("untrusted"), "utf8");
 
 	// A trusted working directory gives the worker that directory's project
 	// extension, project skill, and context file.
@@ -197,6 +219,38 @@ try {
 		true,
 		"the worker must load its working directory's context file",
 	);
+
+	// Worker command contexts use the same real session-control host as Pi's
+	// normal modes. Reload rebuilds resources, and a pure control command ends
+	// cleanly without a submitted result.
+	rmSync(markerPath("trusted"), { force: true });
+	rmSync(sessionMarkerPath("trusted"), { force: true });
+	const reloadRecord = await runWorker(trustedCwd, "reload", "/worker-reload", "no_result_submitted");
+	assert.equal(readFileSync(markerPath("trusted"), "utf8"), "factory\nstart\nfactory\nstart\n");
+	const reloadSessions = readFileSync(sessionMarkerPath("trusted"), "utf8").trim().split("\n");
+	assert.equal(reloadSessions.length, 2);
+	assert.equal(reloadSessions[0], reloadSessions[1]);
+
+	// A fire-and-forget pi.sendUserMessage() turn remains owned until it settles.
+	rmSync(markerPath("trusted"), { force: true });
+	rmSync(sessionMarkerPath("trusted"), { force: true });
+	const commandRecord = await runWorker(trustedCwd, "command", "/worker-send");
+	assert.equal(readFileSync(markerPath("trusted"), "utf8"), "factory\nstart\n");
+	assert.equal(existsSync(promptPath("command")), true);
+
+	// Session replacement rebinds resources and sends the command's work through
+	// the new live AgentSession.
+	rmSync(markerPath("trusted"), { force: true });
+	rmSync(sessionMarkerPath("trusted"), { force: true });
+	const replacementRecord = await runWorker(trustedCwd, "replacement", "/worker-new");
+	assert.equal(readFileSync(markerPath("trusted"), "utf8"), "factory\nstart\nfactory\nstart\n");
+	const replacementSessions = readFileSync(sessionMarkerPath("trusted"), "utf8").trim().split("\n");
+	assert.equal(replacementSessions.length, 2);
+	assert.notEqual(replacementSessions[0], replacementSessions[1]);
+	assert.equal(replacementRecord.sessionId, replacementSessions[1]);
+
+	const untrustedRecord = await runWorker(untrustedCwd, "untrusted");
+	const untrustedPrompt = readFileSync(promptPath("untrusted"), "utf8");
 
 	// An untrusted working directory withholds exactly what pi withholds from
 	// any session there: project extensions and project skills. Context files
@@ -219,7 +273,7 @@ try {
 
 	sub.shutdownWorkerSession(parentSession);
 	parentSession = null;
-	for (const record of [trustedRecord, untrustedRecord]) {
+	for (const record of [trustedRecord, reloadRecord, commandRecord, replacementRecord, untrustedRecord]) {
 		if (record?.socketPath) rmSync(dirname(record.socketPath), { recursive: true, force: true });
 	}
 	console.log("worker context child: PASS");

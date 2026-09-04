@@ -20,7 +20,7 @@ parent's own tools manage workers.
 |---|---|---|
 | `subagent` | parallel | Dispatch one task or a `tasks[]` batch. The call returns a stable id after worker setup; the model run starts in the background. Per-task `deadlineMinutes` (defaulted) and `budgetUsd` (opt-in) pause a worker that overruns the agent's own estimate. |
 | `subagent_status` | parallel | Live workers + recent terminal workers: id, state, model, thinking, elapsed, turns, tool calls, current tool, session-file write age, cost, output preview, error. |
-| `subagent_inspect` | parallel | One worker's record plus a bounded, rendered transcript tail: recent turns, tool inputs and outcomes, assistant errors, session path, and explicit truncation markers. Reads a live snapshot when this session owns the worker; otherwise reads the retained session file. |
+| `subagent_inspect` | parallel | One worker's record plus a bounded, rendered transcript tail: recent turns, tool inputs and outcomes, assistant errors, session path, and explicit truncation markers. Reads an in-process snapshot for any live worker in this process; otherwise reads the active branch from the retained session file. |
 | `subagent_steer` | sequential | Redirect a live worker: the message is delivered after the worker's current tool call, before its next model call. On an idle (interrupted) worker, steer instead resumes the run with your message. Owning session only. |
 | `subagent_interrupt` | sequential | Pause a live worker without cancelling it: the run stops, the worker stays alive and resumable. An interrupted worker that is never resumed is released by the idle deadline. |
 | `subagent_continue` | sequential | Fork a terminal worker's retained session into a new linked background worker. The source record, result, and transcript remain unchanged. |
@@ -71,9 +71,11 @@ array for a batch. Per-task fields: `task` (required), `model`, `thinking`,
   binding, the worker checks the selected model against its actual runtime and
   fails before provider work if resolution or auth changed. An extension may
   switch the session model during `session_start`; the worker record then names
-  the model the run actually uses, and continuation follows it. Persisted and
-  environment credentials resolve in workers. A parent-only runtime API-key
-  override remains local to the parent's runtime.
+  the model the run actually uses. The record also keeps the parent-resolvable
+  bootstrap model. A continuation uses that bootstrap model to construct its
+  target session, then lets the target's `session_start` hooks select the actual
+  model again. Persisted and environment credentials resolve in workers. A
+  parent-only runtime API-key override remains local to the parent's runtime.
 - **thinking** — `off|minimal|low|medium|high|xhigh|max`. Declared: checked
   against the levels the model supports (pi's own
   `getSupportedThinkingLevels`); an unsupported level fails that task and names
@@ -145,9 +147,14 @@ appends, which every session with those paths would carry.
 Input uses pi's normal session methods. Dispatch and an idle resume use
 `AgentSession.prompt` with its defaults: registered extension commands run,
 loaded skill commands and prompt templates expand, and unmatched text passes
-through unchanged. Active steering uses `AgentSession.steer`: skill commands
-and prompt templates expand, while pi refuses an extension command because that
-command cannot enter the steer queue.
+through unchanged. Registered commands receive print-mode UI behavior and real
+`AgentSessionRuntime` actions for reload, new session, fork, tree navigation,
+and session switch. A replacement session rebinds the worker's commands,
+protocol runtime, record, usage tracking, and lifecycle ownership. When a
+command starts a turn through `pi.sendUserMessage()`, the worker waits for that
+active turn before settlement. Active steering uses `AgentSession.steer`: skill
+commands and prompt templates expand, while pi refuses an extension command
+because that command cannot enter the steer queue.
 
 Parity scope: a worker reproduces the working directory's own resources plus
 the resources the dispatch carries (the parent's tool-registration files and
@@ -158,6 +165,12 @@ factories, and the process trust cache are not exposed to extensions. For the
 dispatching session's own directory the session's live trust decision does
 transfer, session-only answers and overrides included. Any other directory
 resolves trust from scratch, the way a session started there does.
+
+Pi 0.84.2 does not expose a parent SDK session's `agentDir` through
+`ExtensionContext`. An SDK host that passes a custom `agentDir` must set
+`PI_CODING_AGENT_DIR` to the same directory before it loads this extension.
+Without that process setting, workers use Pi's process agent directory instead
+of the SDK-only value. Normal Pi CLI sessions already use the process value.
 
 Extension files the parent's tool surface inherits are loaded the way CLI
 `--extension` paths load in any session: they run in the pre-trust bootstrap,
@@ -197,9 +210,9 @@ a continuation's result line, and kept in its record as `setupDiagnostics`.
   registered tool with nothing behind it (a gateway tool whose pool never
   opened). The dispatcher binds the worker's extensions after construction and
   emits `session_shutdown` before disposal, so those resources open and close
-  with the worker. Bindings are empty by design: a worker has no operator UI
-  and no command surface, so extensions see pi's no-op UI context and `print`
-  mode.
+  with the worker. Workers have no operator UI, so extensions see Pi's no-op UI
+  context and `print` mode. Registered commands use Pi's real
+  `AgentSessionRuntime` session-control actions.
 - Each worker is an `AgentSession` constructed in this process. Live status
   (turns, usage, cost, current tool, output) comes from the worker session's own
   events; steering and abort are direct calls on it. Nothing is scraped. Every
@@ -359,8 +372,10 @@ The continuation contract is evidence-preserving:
   preserved history, with Pi's `parentSession` link to the source file;
 - the new worker gets a new `bg-*` id, result file, ownership metadata, and
   `continuedFrom` link;
-- model, effective thinking level, tool surface, and cwd inherit from the source
-  and are revalidated against the current session before provider work starts;
+- the parent-resolvable bootstrap model, effective thinking level, tool surface,
+  and cwd inherit from the source and are revalidated against the current
+  session before provider work starts; target `session_start` hooks can select
+  the source's actual target-only model again;
 - the continuation message is the new worker's task, and normal notification,
   collection, cancellation, and provenance rules apply.
 
@@ -375,7 +390,12 @@ result includes record state, the session path, and the most recent protocol
 transcript items in human-readable form. It shows thinking, tool-call inputs,
 tool outcomes, and assistant errors. The transcript tail is capped at 24KB and
 32 items; older or oversized content produces an explicit truncation marker.
-Worker-authored content remains marked as unverified data, not instructions.
+Retained inspection follows the session file's active branch and excludes
+abandoned branches. Every worker-controlled line has a visible quote prefix,
+and direction controls are removed, so worker text cannot imitate the
+renderer's record headings. Redacted reasoning carries an explicit `REDACTED`
+label. Worker-authored content remains marked as unverified data, not
+instructions.
 
 A worker runs as a real `AgentSession` inside the dispatching session's process.
 It writes an ordinary pi session file (`worker.json` records `sessionFile` and

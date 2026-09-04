@@ -184,10 +184,10 @@ export interface WorkerRuntimeOptions {
 export class WorkerRuntime implements PiSessionRuntime {
 	readonly id: string;
 	readonly name: string;
-	readonly cwd: string;
 	readonly createdAt: number;
 
-	private readonly session: AgentSession;
+	private session: AgentSession;
+	private _cwd: string;
 	private revision = 0;
 	private readonly listeners = new Set<(event: PiSessionRuntimeEvent) => void>();
 	/** In-process observers; survive dispose(), unlike `listeners`. */
@@ -203,6 +203,8 @@ export class WorkerRuntime implements PiSessionRuntime {
 	private compactionCount = 0;
 	private retryActive = false;
 	private branchSummaryActive = false;
+	/** True while the protocol adapter owns one prompt call across replacements. */
+	private promptActive = false;
 	/**
 	 * Set by abort() and cleared by prompt(). AgentSession.prompt awaits an async
 	 * preflight (auth refresh, compaction, busy checks) before a cancellable run
@@ -215,10 +217,36 @@ export class WorkerRuntime implements PiSessionRuntime {
 
 	constructor(options: WorkerRuntimeOptions) {
 		this.session = options.session;
+		this._cwd = options.cwd;
 		this.id = options.id;
 		this.name = options.name;
-		this.cwd = options.cwd;
 		this.createdAt = options.createdAt;
+		this.subscribeToSession();
+	}
+
+	get cwd(): string {
+		return this._cwd;
+	}
+
+	/** Follow AgentSessionRuntime when a command replaces the active session. */
+	replaceSession(session: AgentSession): void {
+		this.unsubscribe?.();
+		this.unsubscribe = null;
+		this.session = session;
+		this._cwd = session.sessionManager.getCwd();
+		this.stream = null;
+		this.liveTools.clear();
+		this.steerIds.clear();
+		this.compactionCount = 0;
+		this.retryActive = false;
+		this.branchSummaryActive = false;
+		this.phase = this.promptActive ? "turn" : "idle";
+		this.subscribeToSession();
+		this.recomputePhase();
+		this.emit({ type: "snapshot" });
+	}
+
+	private subscribeToSession(): void {
 		this.unsubscribe = this.session.subscribe((event) => {
 			try {
 				this.onSessionEvent(event);
@@ -319,7 +347,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 		if (this.compactionCount > 0) return "compaction";
 		if (this.retryActive) return "retry";
 		if (this.branchSummaryActive) return "branch_summary";
-		if (this.session.isStreaming) return "turn";
+		if (this.session.isStreaming || this.promptActive) return "turn";
 		return fallback;
 	}
 
@@ -333,12 +361,17 @@ export class WorkerRuntime implements PiSessionRuntime {
 		}
 		// Optimistic: AgentSession preflight is async; events confirm the phase.
 		this.abortRequested = false;
+		this.promptActive = true;
 		this.phase = "turn";
 		try {
 			// A worker is a full session: pi's prompt defaults apply, so extension
 			// commands, skill commands, and prompt templates expand exactly as they
 			// do for any session input. No expansion suppression of its own.
 			await this.session.prompt(input.text);
+			// Extension commands can start a turn through pi.sendUserMessage(), whose
+			// extension API is intentionally fire-and-forget. The outer command prompt
+			// returns first; own an active turn before the worker leg can settle.
+			if (this.session.isStreaming) await this.session.waitForIdle();
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (/already processing|compaction/.test(message)) {
@@ -347,7 +380,9 @@ export class WorkerRuntime implements PiSessionRuntime {
 			throw error;
 		} finally {
 			this.abortRequested = false;
+			this.promptActive = false;
 			this.recomputePhase();
+			this.emit({ type: "snapshot" });
 		}
 	}
 

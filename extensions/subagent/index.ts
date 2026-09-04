@@ -71,13 +71,17 @@ import { join, resolve } from "node:path";
 import { getSupportedThinkingLevels, StringEnum, type Usage } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
+	type AgentSessionRuntime,
 	type AgentSessionServices,
 	type AgentToolUpdateCallback,
+	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
+	createAgentSessionRuntime,
 	createAgentSessionServices,
 	defineTool,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
+	type ExtensionCommandContextActions,
 	type ExtensionContext,
 	getAgentDir,
 	hasTrustRequiringProjectResources,
@@ -253,7 +257,12 @@ export interface WorkerUsage {
 export interface WorkerRecord {
 	id: string;
 	task: string;
+	/** Model the current worker session actually uses. */
 	model: string;
+	/** Parent-resolvable model that bootstraps each linked session. A target
+	 * extension can replace it during session_start without making continuation
+	 * depend on a provider that exists only inside the target directory. */
+	bootstrapModel: string;
 	/** Level the worker actually runs at, after pi's clamp. */
 	thinking: string;
 	/** Level the dispatch asked for, explicit or inherited. It differs from
@@ -504,6 +513,7 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 		id,
 		task: asString(o.task),
 		model: asString(o.model, "?"),
+		bootstrapModel: asString(o.bootstrapModel, asString(o.model, "?")),
 		thinking: asString(o.thinking, "medium"),
 		thinkingRequested: asString(o.thinkingRequested),
 		tools: asStrArrayOrNull(o.tools),
@@ -920,7 +930,7 @@ export function toolSurfaceMismatchMessage(input: {
 	return `the worker session could not reproduce the requested tool surface; ${mismatch}. Worker active tool names: ${active}.${registrationGuidance}`;
 }
 
-function workerSystemPrompt(model: string): string {
+function workerSystemPrompt(): string {
 	return [
 		"You are a subagent worker dispatched by a parent Pi session.",
 		"- You have the tool surface selected for this worker; use it as the task requires.",
@@ -931,7 +941,6 @@ function workerSystemPrompt(model: string): string {
 		"- Use only alternatives already authorized by the task and environment. Do not use another account, credential, or privileged path. State the blocked tool and the non-secret alternative you used, such as an authorized direct API or cached artifact, so the parent can judge the result.",
 		"- Date your evidence. A cached file, an exported dump, or an old transcript describes the moment it was written; give its age where you rely on it, and do not present it as the current state.",
 		"- If nothing available to you finishes the task, submit what you did establish and name the blocker. A short honest result beats a complete-looking one whose basis you cannot state.",
-		`- Your model id (authoritative, from the dispatcher): ${model}.`,
 		"",
 	].join("\n");
 }
@@ -983,6 +992,7 @@ export function finalizeWorker(
 		error?: string;
 		usage?: WorkerUsage | null;
 		lastOutput?: string | null;
+		setupDiagnostics?: string[];
 		state?: WorkerState;
 	},
 ): WorkerRecord | null {
@@ -1044,6 +1054,7 @@ export function finalizeWorker(
 		if (opts?.lastOutput !== undefined) {
 			record.lastOutput = opts.lastOutput === null ? null : capUtf8(opts.lastOutput, RESULT_BODY_CAP_BYTES).text;
 		}
+		if (opts?.setupDiagnostics) record.setupDiagnostics = [...opts.setupDiagnostics];
 		record.currentTool = null;
 		if (opts?.error) record.error = opts.error;
 		if (finalState === "done") {
@@ -1433,6 +1444,7 @@ function releaseLiveWorker(id: string): void {
 	live.cancelResume?.();
 	live.cancelResume = null;
 	usageBaselines.delete(id);
+	usageOffsets.delete(id);
 	// Remove ownership before calling cleanup hooks: a synchronous callback that
 	// re-enters finalization must not see and dispose the same session again.
 	liveWorkers.delete(id);
@@ -1885,6 +1897,8 @@ export function messageCost(message: { usage?: { cost?: Usage["cost"] } } | unde
  * twice, and a budget can pause a continuation before its first request.
  */
 const usageBaselines = new Map<string, WorkerUsage>();
+/** Usage completed in earlier AgentSession instances of the same live worker. */
+const usageOffsets = new Map<string, WorkerUsage>();
 
 function sessionUsage(session: AgentSession): WorkerUsage {
 	// Match pi's getSessionStats accounting exactly. It includes assistant and
@@ -1915,8 +1929,22 @@ export function subtractUsage(total: WorkerUsage, baseline: WorkerUsage | undefi
 	};
 }
 
+function addUsage(left: WorkerUsage | undefined, right: WorkerUsage): WorkerUsage {
+	if (!left) return right;
+	return {
+		input: left.input + right.input,
+		output: left.output + right.output,
+		cacheRead: left.cacheRead + right.cacheRead,
+		cacheWrite: left.cacheWrite + right.cacheWrite,
+		cost: left.cost + right.cost,
+		turns: left.turns + right.turns,
+		toolCalls: left.toolCalls + right.toolCalls,
+	};
+}
+
 function syncUsageFromSession(record: WorkerRecord, session: AgentSession): void {
-	record.usage = subtractUsage(sessionUsage(session), usageBaselines.get(record.id));
+	const current = subtractUsage(sessionUsage(session), usageBaselines.get(record.id));
+	record.usage = addUsage(usageOffsets.get(record.id), current);
 }
 
 /**
@@ -2051,17 +2079,18 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
  *
  * pi gives every extension with a `project_trust` handler the first say: the
  * first answer of yes or no decides, `undecided` falls through to the next
- * handler, and a handler that throws is reported and skipped. A background
- * session has no operator surface, so the context reports no UI and its dialog
- * calls answer the way pi's own non-interactive contexts answer them.
+ * handler, and a handler that throws is reported and skipped. A replacement
+ * action can supply Pi's trust context. Otherwise, a background session reports
+ * no UI and its dialog calls use Pi's non-interactive answers.
  */
 async function extensionProjectTrust(
 	cwd: string,
 	extensionsResult: LoadExtensionsResult,
 	onDiagnostic: (message: string) => void,
+	trustContextOverride?: ProjectTrustContext,
 ): Promise<ProjectTrustEventResult | null> {
 	const event: ProjectTrustEvent = { type: "project_trust", cwd };
-	const trustContext: ProjectTrustContext = {
+	const backgroundTrustContext: ProjectTrustContext = {
 		cwd,
 		mode: "print",
 		hasUI: false,
@@ -2078,6 +2107,7 @@ async function extensionProjectTrust(
 			},
 		},
 	};
+	const trustContext = trustContextOverride ?? backgroundTrustContext;
 	for (const extension of extensionsResult.extensions) {
 		const handlers = extension.handlers.get("project_trust") ?? [];
 		for (const handler of handlers) {
@@ -2115,13 +2145,15 @@ export interface ProjectTrustInputs {
  * When the dispatching session already resolved trust for this same directory
  * (`sessionTrusted`), that live decision is authoritative: pi's own runtime
  * keeps CLI overrides and session-only answers in the session's settings
- * manager, not in the trust store, and a worker must not re-litigate them.
+ * manager, not in the trust store, and a worker must not re-litigate them. A
+ * replacement action's supplied trust context reaches the target handlers.
  */
 export function projectTrustInputs(
 	cwd: string,
 	agentDir: string,
 	onDiagnostic: (message: string) => void = () => {},
 	sessionTrusted?: boolean,
+	trustContext?: ProjectTrustContext,
 ): ProjectTrustInputs {
 	// Normalize before anything handler-visible: a primary session's trust
 	// handlers receive the resolved absolute working directory, never the raw
@@ -2142,7 +2174,7 @@ export function projectTrustInputs(
 		settingsManager,
 		reloadOptions: {
 			resolveProjectTrust: async ({ extensionsResult }) => {
-				const decision = await extensionProjectTrust(resolvedCwd, extensionsResult, onDiagnostic);
+				const decision = await extensionProjectTrust(resolvedCwd, extensionsResult, onDiagnostic, trustContext);
 				if (decision) {
 					// pi maps a decided answer the same way: yes is trusted and any
 					// other value is not (dist/core/project-trust.js). Reproduce it
@@ -2293,7 +2325,7 @@ export async function dispatchWorker(
 	// root that already exists keeps its old mode until tightenStorePermissions.
 	tightenMode(dir, STORE_DIR_MODE);
 	const files = workerFiles(id);
-	const prompt = workerSystemPrompt(modelId);
+	const prompt = workerSystemPrompt();
 	writeFileSync(files.prompt, prompt, {
 		encoding: "utf-8",
 		mode: STORE_FILE_MODE,
@@ -2305,6 +2337,7 @@ export async function dispatchWorker(
 		id,
 		task: task.task,
 		model: modelId,
+		bootstrapModel: modelId,
 		thinking,
 		thinkingRequested: thinking,
 		tools: task.tools ?? null,
@@ -2348,13 +2381,18 @@ export async function dispatchWorker(
 		return { id, state: "failed", error, record };
 	};
 
-	// Build the worker session: a session's own context at the worker cwd, this
-	// session's tool surface, and the model/thinking the dispatch resolved.
+	// Build the worker session through Pi's replaceable runtime host. Extension
+	// commands can therefore reload, fork, switch, or create sessions through the
+	// same AgentSessionRuntime actions as a normal Pi mode.
 	let session: AgentSession;
+	let sessionHost: AgentSessionRuntime | null = null;
 	let disposeSession: (() => void) | null = null;
 	let sessionManager: SessionManager;
 	let workerSessionId = "";
 	let forkedSessionFile: string | null = null;
+	const constructedSessionIds = new Set<string>();
+	// Pi's runtime host keeps a session-only trust answer when it revisits a cwd.
+	const workerProjectTrustByCwd = new Map<string, boolean>();
 	// The submit tool is built before the session exists, so ending the run goes
 	// through a holder rather than a direct reference.
 	const live: { session: AgentSession | null } = { session: null };
@@ -2372,174 +2410,130 @@ export async function dispatchWorker(
 	// this session as a worker before bindExtensions emits session_start, which
 	// avoids any process-wide construction window or cross-session load race.
 	const setupDiagnostics: string[] = [];
-	// The services object also feeds the failure path: a build that dies midway
-	// must persist the diagnostics it already collected.
+	const setupDiagnosticSet = new Set<string>();
+	const rememberSetupDiagnostics = (...messages: string[]): void => {
+		for (const message of messages) {
+			if (setupDiagnosticSet.has(message)) continue;
+			setupDiagnosticSet.add(message);
+			setupDiagnostics.push(message);
+		}
+	};
+	// The latest services object also feeds reload validation and failure paths.
 	let services: AgentSessionServices | null = null;
-	try {
-		await workerHost.ensureStarted(ctx);
-		// The worker is a session at its own working directory: pi loads that
-		// directory's settings, extensions, skills, prompt templates, and context
-		// files under the trust it resolves for it, exactly as it does for a
-		// session started there.
-		const workerAgentDir = getAgentDir();
-		// A worker at the dispatching session's own directory inherits that
-		// session's live trust decision, including CLI overrides and session-only
-		// answers the trust store never sees. Any other directory is resolved
-		// from scratch, as it is for a session started there.
-		const sameDirectoryAsSession = resolve(cwd) === resolve(ctx.cwd);
-		// A real pi context always reports the session trust decision; a context
-		// without it (controlled test hosts) falls back to fresh resolution, the
-		// way a session without a live decision behaves.
-		const sessionTrusted = sameDirectoryAsSession ? ctx.isProjectTrusted?.() : undefined;
-		const trust = projectTrustInputs(cwd, workerAgentDir, (message) => setupDiagnostics.push(message), sessionTrusted);
-		const modelRuntime = await createWorkerModelRuntime(ctx, workerAgentDir);
-		services = await createAgentSessionServices({
-			cwd,
-			agentDir: workerAgentDir,
+	let sessionControlError: string | null = null;
+	let refreshLiveRecord = (_session: AgentSession): void => {};
+	const workerAgentDir = getAgentDir();
+	const currentHost = (): AgentSessionRuntime => {
+		if (!sessionHost) throw new Error("worker session runtime is not initialized");
+		return sessionHost;
+	};
+
+	const extensionPaths = (): string[] => {
+		const self = ownToolSourcePath(ctx);
+		if (!self) {
+			rememberSetupDiagnostics(
+				"warning: could not resolve this extension's own source path; the worker runs without the post-submit compaction veto",
+			);
+			return tools.extensionPaths;
+		}
+		if (tools.extensionPaths.some((path) => resolve(path) === resolve(self))) return tools.extensionPaths;
+		return [...tools.extensionPaths, self];
+	};
+
+	const createWorkerSession: CreateAgentSessionRuntimeFactory = async (options) => {
+		const targetCwd = resolve(options.cwd);
+		const sameDirectoryAsSession = targetCwd === resolve(ctx.cwd);
+		const parentTrust = sameDirectoryAsSession ? ctx.isProjectTrusted?.() : undefined;
+		const knownTrust = parentTrust ?? workerProjectTrustByCwd.get(targetCwd);
+		const trust = projectTrustInputs(
+			targetCwd,
+			options.agentDir,
+			(message) => rememberSetupDiagnostics(message),
+			knownTrust,
+			options.projectTrustContext,
+		);
+		if (knownTrust !== undefined) workerProjectTrustByCwd.set(targetCwd, knownTrust);
+		const resolveProjectTrust = trust.reloadOptions?.resolveProjectTrust;
+		if (resolveProjectTrust && trust.reloadOptions) {
+			trust.reloadOptions.resolveProjectTrust = async (input) => {
+				const trusted = await resolveProjectTrust(input);
+				workerProjectTrustByCwd.set(targetCwd, trusted);
+				return trusted;
+			};
+		}
+		const modelRuntime = await createWorkerModelRuntime(ctx, options.agentDir);
+		const builtServices = await createAgentSessionServices({
+			cwd: targetCwd,
+			agentDir: options.agentDir,
 			settingsManager: trust.settingsManager,
 			modelRuntime,
 			resourceLoaderReloadOptions: trust.reloadOptions,
 			resourceLoaderOptions: {
-				// Always load this module into the worker: its worker-load branch
-				// carries the post-submit compaction veto. Dedupe against paths the
-				// surface already produced; if the module's own source path cannot
-				// be resolved, fall back to the surface's extension paths alone.
-				additionalExtensionPaths: (() => {
-					const self = ownToolSourcePath(ctx);
-					if (!self) {
-						// Nearly unreachable (the module's own registration is the
-						// surface it is dispatching from), but never silent: without
-						// the self-load the worker gets no compaction veto.
-						setupDiagnostics.push(
-							"warning: could not resolve this extension's own source path; the worker runs without the post-submit compaction veto",
-						);
-						return tools.extensionPaths;
-					}
-					if (tools.extensionPaths.some((p) => resolve(p) === resolve(self))) {
-						return tools.extensionPaths;
-					}
-					return [...tools.extensionPaths, self];
-				})(),
+				additionalExtensionPaths: extensionPaths(),
 				appendSystemPrompt: [prompt],
 			},
 		});
-		setupDiagnostics.push(...serviceDiagnostics(services));
+		services = builtServices;
+		rememberSetupDiagnostics(...serviceDiagnostics(builtServices));
 		const workerModel =
-			services.modelRuntime.getModel(model.provider, model.id) ?? ctx.modelRegistry.find(model.provider, model.id);
+			builtServices.modelRuntime.getModel(model.provider, model.id) ?? ctx.modelRegistry.find(model.provider, model.id);
 		if (!workerModel) {
 			throw new Error(`model "${model.provider}/${model.id}" disappeared before worker construction`);
 		}
-		sessionManager = workerSessionManager(cwd, continuation);
-		if (continuation) forkedSessionFile = sessionManager.getSessionFile() ?? null;
 		const created = await createAgentSessionFromServices({
-			services,
-			sessionManager,
+			services: builtServices,
+			sessionManager: options.sessionManager,
+			sessionStartEvent: options.sessionStartEvent,
 			model: workerModel,
 			thinkingLevel: thinking,
 			tools: resolvedTools,
 			customTools: [submitResultTool(files.result, endRun, () => live.session?.sessionManager.getSessionId() ?? "")],
 		});
-		session = created.session;
-		disposeSession = disposeOnce(() => shutdownWorkerSession(session));
-		live.session = session;
-		workerSessionId = sessionManager.getSessionId();
-		sharedWorkerState.workerSessionIds.add(workerSessionId);
-		// A worker is a real pi session, so its extensions must start like one. pi
-		// emits session_start from bindExtensions only, which the interactive,
-		// print, and rpc modes call; a session built through the SDK alone never
-		// gets it. Without this call an extension that opens its session-scoped
-		// resources in the documented session_start hook hands the worker a
-		// registered tool with nothing behind it. Empty bindings are deliberate:
-		// the worker has no operator UI and no command surface, so pi's own
-		// no-op UI context and print mode are what it should see. The disposal
-		// owner is installed first, so a handler that already ran still receives
-		// session_shutdown if binding throws.
-		await session.bindExtensions({
-			// A handler that throws inside the worker does not fail the bind: pi
-			// routes handler errors to this listener (dist/core/extensions/runner.js
-			// emit). Without it a broken project extension would vanish silently.
-			onError: (err) => {
-				setupDiagnostics.push(`warning: ${err.event}: Extension "${err.extensionPath}" error: ${err.error}`);
-			},
-		});
-		// Provider factories may register during binding. Refresh that provider
-		// before the parity check so native registrations have settled auth state.
-		await session.modelRuntime.refresh({
-			providers: [model.provider],
-			allowNetwork: false,
-		});
-		const boundModel = session.modelRuntime.getModel(model.provider, model.id);
+		const createdSessionId = options.sessionManager.getSessionId();
+		constructedSessionIds.add(createdSessionId);
+		sharedWorkerState.workerSessionIds.add(createdSessionId);
+		return { ...created, services: builtServices, diagnostics: builtServices.diagnostics };
+	};
+
+	const validateBoundSession = async (target: AgentSession): Promise<void> => {
+		await target.modelRuntime.refresh({ providers: [model.provider], allowNetwork: false });
+		const boundModel = target.modelRuntime.getModel(model.provider, model.id);
 		if (!boundModel) {
 			throw new Error(
 				`model "${model.provider}/${model.id}" did not resolve in the worker runtime after extension binding`,
 			);
 		}
-		if (!session.modelRuntime.hasConfiguredAuth(model.provider)) {
+		if (!target.modelRuntime.hasConfiguredAuth(model.provider)) {
 			throw new Error(
 				`model "${model.provider}/${model.id}" has no configured authentication in the worker runtime after extension binding`,
 			);
 		}
-		// An extension may switch the session model during session_start. The
-		// record names the model the run actually uses, so continuation and
-		// reports stay truthful; the requested key stays visible in the dispatch
-		// call.
-		const actualModel = session.model;
-		if (actualModel && (actualModel.provider !== model.provider || actualModel.id !== model.id)) {
-			record.model = `${actualModel.provider}/${actualModel.id}`;
-		}
-		// Binding can add resources through resources_discover. Collect their
-		// diagnostics too, then persist the full setup report before the surface
-		// preflight can fail the dispatch.
-		setupDiagnostics.push(...serviceDiagnostics(services));
-		record.setupDiagnostics = [...new Set(setupDiagnostics)];
-	} catch (err) {
-		try {
-			disposeSession?.();
-		} catch {
-			// The dispatch failure below is what the caller acts on.
-		}
-		if (workerSessionId) {
-			sharedWorkerState.workerSessionIds.delete(workerSessionId);
-			sharedWorkerState.workerSurfaces.delete(workerSessionId);
-		}
-		if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
-		if (services) setupDiagnostics.push(...serviceDiagnostics(services));
-		record.setupDiagnostics = [...new Set(setupDiagnostics)];
-		return fail(`failed to build the worker session: ${errText(err)}`);
-	}
+		const actualModel = target.model;
+		record.model = actualModel ? `${actualModel.provider}/${actualModel.id}` : record.bootstrapModel;
+		if (services) rememberSetupDiagnostics(...serviceDiagnostics(services));
+		record.setupDiagnostics = [...setupDiagnostics];
 
-	// Verify the surface the worker actually got, before a single token is
-	// spent. Nothing crosses a process boundary now, so this is a direct read.
-	const actualTools = new Set(session.getActiveToolNames());
-	const missing = resolvedTools.filter((name) => !actualTools.has(name));
-	const unexpected = [...actualTools].filter((name) => !resolvedTools.includes(name));
-	const actualMetadata = new Map(session.getAllTools().map((tool) => [tool.name, tool]));
-	const mismatched = [...tools.metadata.entries()].flatMap(([name, expected]) => {
-		const actual = actualMetadata.get(name);
-		if (!actual) return [];
-		const fields = registrationDifferenceFields(expected, actual);
-		return fields.length > 0 ? [{ name, fields }] : [];
-	});
-	if (missing.length > 0 || unexpected.length > 0 || mismatched.length > 0) {
+		const actualTools = new Set(target.getActiveToolNames());
+		const missing = resolvedTools.filter((name) => !actualTools.has(name));
+		const unexpected = [...actualTools].filter((name) => !resolvedTools.includes(name));
+		const actualMetadata = new Map(target.getAllTools().map((tool) => [tool.name, tool]));
+		const mismatched = [...tools.metadata.entries()].flatMap(([name, expected]) => {
+			const actual = actualMetadata.get(name);
+			if (!actual) return [];
+			const fields = registrationDifferenceFields(expected, actual);
+			return fields.length > 0 ? [{ name, fields }] : [];
+		});
+		if (missing.length === 0 && unexpected.length === 0 && mismatched.length === 0) return;
+
 		const surface = parentToolSurface(ctx);
 		const sourceOf = new Map((surface?.all ?? []).map((tool) => [tool.name, tool.sourceInfo]));
 		const withSource = missing.map((name) => {
-			const src = sourceOf.get(name);
-			return src?.source && src?.path && src.source !== "builtin"
-				? `${name} (from ${src.source}${src.path ? `/${src.path}` : ""})`
+			const source = sourceOf.get(name);
+			return source?.source && source.path && source.source !== "builtin"
+				? `${name} (from ${source.source}/${source.path})`
 				: name;
 		});
-		// The created session would otherwise be orphaned: no run ever starts,
-		// so nothing settles it, and no record references it.
-		try {
-			disposeSession?.();
-		} catch {
-			// Best-effort; the failure return below is what matters.
-		}
-		sharedWorkerState.workerSessionIds.delete(workerSessionId);
-		sharedWorkerState.workerSurfaces.delete(workerSessionId);
-		if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
-		return fail(
+		throw new Error(
 			toolSurfaceMismatchMessage({
 				missing: withSource,
 				unexpected,
@@ -2547,19 +2541,105 @@ export async function dispatchWorker(
 				active: [...actualTools],
 			}),
 		);
+	};
+
+	const commandContextActions: ExtensionCommandContextActions = {
+		waitForIdle: () => currentHost().session.waitForIdle(),
+		newSession: (options) => currentHost().newSession(options),
+		fork: async (entryId, options) => {
+			const result = await currentHost().fork(entryId, options);
+			return { cancelled: result.cancelled };
+		},
+		navigateTree: async (targetId, options) => {
+			const result = await currentHost().session.navigateTree(targetId, options);
+			return { cancelled: result.cancelled };
+		},
+		switchSession: (path, options) => currentHost().switchSession(path, options),
+		reload: async () => {
+			const active = currentHost().session;
+			const activeId = active.sessionManager.getSessionId();
+			try {
+				await active.reload({
+					beforeSessionStart: () => {
+						constructedSessionIds.add(activeId);
+						sharedWorkerState.workerSessionIds.add(activeId);
+					},
+				});
+				await validateBoundSession(active);
+			} catch (error) {
+				sessionControlError = `worker session reload failed: ${errText(error)}`;
+				throw error;
+			} finally {
+				constructedSessionIds.add(activeId);
+				sharedWorkerState.workerSessionIds.add(activeId);
+				refreshLiveRecord(active);
+			}
+		},
+	};
+
+	const bindWorkerSession = async (target: AgentSession): Promise<void> => {
+		await target.bindExtensions({
+			mode: "print",
+			commandContextActions,
+			abortHandler: () => void currentHost().session.abort(),
+			onError: (err) => {
+				const diagnostic = `warning: ${err.event}: Extension "${err.extensionPath}" error: ${err.error}`;
+				rememberSetupDiagnostics(diagnostic);
+				record.setupDiagnostics = [...setupDiagnostics];
+				if (err.event.startsWith("command:")) {
+					sessionControlError = `worker extension command failed: ${err.error}`;
+				}
+			},
+		});
+		await validateBoundSession(target);
+	};
+
+	try {
+		await workerHost.ensureStarted(ctx);
+		sessionManager = workerSessionManager(cwd, continuation);
+		if (continuation) forkedSessionFile = sessionManager.getSessionFile() ?? null;
+		sessionHost = await createAgentSessionRuntime(createWorkerSession, {
+			cwd,
+			agentDir: workerAgentDir,
+			sessionManager,
+		});
+		session = sessionHost.session;
+		live.session = session;
+		workerSessionId = session.sessionManager.getSessionId();
+		disposeSession = disposeOnce(() => {
+			const ownedHost = sessionHost;
+			if (ownedHost) void ownedHost.dispose().catch(() => {});
+		});
+		await bindWorkerSession(session);
+	} catch (err) {
+		try {
+			if (sessionHost) await sessionHost.dispose();
+		} catch {
+			// The dispatch failure below is what the caller acts on.
+		}
+		for (const sessionId of constructedSessionIds) {
+			sharedWorkerState.workerSessionIds.delete(sessionId);
+			sharedWorkerState.workerSurfaces.delete(sessionId);
+		}
+		if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
+		if (services) rememberSetupDiagnostics(...serviceDiagnostics(services));
+		record.setupDiagnostics = [...setupDiagnostics];
+		return fail(`failed to build the worker session: ${errText(err)}`);
 	}
 
-	let runtime: WorkerRuntime;
+	let runtime!: WorkerRuntime;
 	let untrack: () => void = () => {};
-	try {
-		// Pi clamps an inherited thinking level to what the model supports.
-		record.thinking = session.thinkingLevel ?? thinking;
+	refreshLiveRecord = (target: AgentSession): void => {
+		workerSessionId = target.sessionManager.getSessionId();
+		record.thinking = target.thinkingLevel ?? thinking;
+		record.cwd = target.sessionManager.getCwd();
 		record.sessionId = workerSessionId;
-		record.sessionFile = sessionManager.getSessionFile() ?? null;
+		record.sessionFile = target.sessionManager.getSessionFile() ?? null;
+		const actualModel = target.model;
+		record.model = actualModel ? `${actualModel.provider}/${actualModel.id}` : record.bootstrapModel;
+		record.setupDiagnostics = [...setupDiagnostics];
 		writeWorker(record);
-		recordWorkerSurface(record.sessionId, session.getActiveToolNames(), session.getAllTools());
-		// Pi creates the transcript lazily. Tighten the file now when present;
-		// trackSession retries after later session events.
+		recordWorkerSurface(record.sessionId, target.getActiveToolNames(), target.getAllTools());
 		if (record.sessionFile) {
 			try {
 				chmodSync(record.sessionFile, STORE_FILE_MODE);
@@ -2567,6 +2647,9 @@ export async function dispatchWorker(
 				// Pi still owns lazy file creation.
 			}
 		}
+	};
+	try {
+		refreshLiveRecord(session);
 		runtime = new WorkerRuntime({
 			session,
 			id,
@@ -2579,15 +2662,18 @@ export async function dispatchWorker(
 		untrack = disposeOnce(trackSession(record, session));
 	} catch (err) {
 		untrack();
+		workerHost.unregister(id);
 		try {
-			workerHost.unregister(id);
-			disposeSession?.();
+			if (sessionHost) await sessionHost.dispose();
 		} catch {
 			// The initialization failure below remains the caller-facing error.
 		}
-		sharedWorkerState.workerSessionIds.delete(workerSessionId);
-		sharedWorkerState.workerSurfaces.delete(workerSessionId);
+		for (const sessionId of constructedSessionIds) {
+			sharedWorkerState.workerSessionIds.delete(sessionId);
+			sharedWorkerState.workerSurfaces.delete(sessionId);
+		}
 		usageBaselines.delete(id);
+		usageOffsets.delete(id);
 		if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
 		return fail(`failed to initialize the worker runtime: ${errText(err)}`);
 	}
@@ -2606,7 +2692,7 @@ export async function dispatchWorker(
 		try {
 			// Final reconciliation catches usage-bearing session entries that did
 			// not have a later event (especially branch summaries).
-			syncUsageFromSession(record, session);
+			syncUsageFromSession(record, live.session ?? session);
 		} catch {
 			// Finalization still proceeds with the last persisted totals.
 		}
@@ -2626,8 +2712,14 @@ export async function dispatchWorker(
 							state: "owner_lost",
 							usage: record.usage,
 							lastOutput: record.lastOutput,
+							setupDiagnostics: record.setupDiagnostics,
 						}
-					: { error, usage: record.usage, lastOutput: record.lastOutput },
+					: {
+							error,
+							usage: record.usage,
+							lastOutput: record.lastOutput,
+							setupDiagnostics: record.setupDiagnostics,
+						},
 			);
 		} catch {
 			// A finalize failure (disk error, write race) must not kill the
@@ -2641,7 +2733,8 @@ export async function dispatchWorker(
 		}
 	};
 
-	if (!disposeSession) {
+	const activeHost = sessionHost;
+	if (!disposeSession || !activeHost) {
 		// A returned AgentSession always installs its exact-once owner before this
 		// point. Keep the failure explicit and release every later owner if that
 		// construction invariant changes.
@@ -2651,6 +2744,7 @@ export async function dispatchWorker(
 		sharedWorkerState.workerSessionIds.delete(record.sessionId);
 		sharedWorkerState.workerSurfaces.delete(record.sessionId);
 		usageBaselines.delete(id);
+		usageOffsets.delete(id);
 		if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
 		return fail("worker session was created without a disposal owner");
 	}
@@ -2662,12 +2756,56 @@ export async function dispatchWorker(
 		disposeSession,
 		settle,
 	};
+	const adoptSession = (next: AgentSession): void => {
+		const previous = liveWorker.session;
+		if (previous === next) {
+			refreshLiveRecord(next);
+			return;
+		}
+		try {
+			syncUsageFromSession(record, previous);
+		} catch {
+			// The existing persisted totals remain the offset for the new session.
+		}
+		if (record.usage) usageOffsets.set(id, record.usage);
+		else usageOffsets.delete(id);
+		try {
+			usageBaselines.set(id, sessionUsage(next));
+		} catch {
+			usageBaselines.delete(id);
+		}
+		untrack();
+		sharedWorkerState.workerSessionIds.delete(previous.sessionManager.getSessionId());
+		sharedWorkerState.workerSurfaces.delete(previous.sessionManager.getSessionId());
+		session = next;
+		sessionManager = next.sessionManager;
+		live.session = next;
+		liveWorker.session = next;
+		runtime.replaceSession(next);
+		refreshLiveRecord(next);
+		untrack = disposeOnce(trackSession(record, next));
+		liveWorker.untrackSession = untrack;
+		publishSubagentStatus();
+	};
+	activeHost.setRebindSession(async (next) => {
+		try {
+			await bindWorkerSession(next);
+		} catch (error) {
+			sessionControlError = `worker session replacement failed: ${errText(error)}`;
+			throw error;
+		} finally {
+			// AgentSessionRuntime installs the replacement before it asks the host
+			// to bind it. Keep every worker-facing owner aligned even if binding
+			// reports an extension or surface failure.
+			adoptSession(next);
+		}
+	});
 	liveWorkers.set(id, liveWorker);
 	armRunLimits(id);
 	publishSubagentStatus();
 
 	liveWorker.leg = runtime.prompt({ text: task.task }).then(
-		() => settle(),
+		() => settle(sessionControlError ?? undefined),
 		(cause: unknown) => settle(`the worker run failed: ${errText(cause)}`),
 	);
 
@@ -2837,7 +2975,7 @@ export function workerConversation(id: string): TranscriptItem[] | null {
 	if (path && existsSync(path)) {
 		try {
 			const messages = SessionManager.open(path)
-				.getEntries()
+				.getBranch()
 				.flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
 			return transcriptFromMessages(messages);
 		} catch {
@@ -2995,9 +3133,9 @@ async function sendWorkerMessageOutcome(
 				clearTimeout(timer);
 				unwatch();
 				// Start the resumed leg only after the interrupted leg's own settle
-				// callback has run. Pi turns the phase idle before that promise
-				// resolves, and a settle that finds the interrupt flag already
-				// cleared would finalize and dispose the resumed run.
+				// callback has run. The idle snapshot arrives from prompt cleanup
+				// before this leg's promise callbacks run, and a settle that finds the
+				// interrupt flag already cleared would dispose the resumed run.
 				void (live.leg ?? Promise.resolve()).then(() => {
 					live.cancelResume = null;
 					if (!stillOurs()) return;
@@ -3092,7 +3230,7 @@ export async function continueWorker(id: string, message: string, ctx: Extension
 	return dispatchWorker(
 		{
 			task: message.trim(),
-			model: terminal.model,
+			model: terminal.bootstrapModel,
 			thinking: asThinkingLevel(terminal.thinking),
 			tools,
 			cwd: terminal.cwd,
@@ -3102,7 +3240,7 @@ export async function continueWorker(id: string, message: string, ctx: Extension
 			budgetUsd: terminal.budgetUsd ?? 0,
 		},
 		{
-			model: terminal.model,
+			model: terminal.bootstrapModel,
 			thinking: asThinkingLevel(terminal.thinking),
 			cwd: terminal.cwd,
 		},
@@ -3228,8 +3366,18 @@ function utf8Suffix(text: string, maxBytes: number): string {
 function inspectPlainText(text: string): string {
 	return stripTerminalSequences(text)
 		.replace(/\t/g, "   ")
-		.replace(/\r/g, "\n")
+		.replace(/\r\n?/g, "\n")
+		.replace(/[\u2028\u2029]/g, "\n")
+		.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
 		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+}
+
+/** Put every worker-controlled line inside one visible quote boundary. */
+function quoteInspectContent(text: string): string {
+	return text
+		.split("\n")
+		.map((line) => `│ ${line}`)
+		.join("\n");
 }
 
 function inspectInline(value: unknown, maxBytes = 2_048): string {
@@ -3272,7 +3420,7 @@ function renderTranscriptItem(item: TranscriptItem): { text: string; truncated: 
 	const addContent = (value: string): string => {
 		const bounded = inspectContent(value);
 		truncated ||= bounded.truncated;
-		return bounded.text;
+		return quoteInspectContent(bounded.text);
 	};
 	const timestamp = inspectTimestamp(item.timestamp);
 	if (item.role === "user") {
@@ -3287,16 +3435,16 @@ function renderTranscriptItem(item: TranscriptItem): { text: string; truncated: 
 			if (part.type === "text") {
 				if (part.text) body.push(addContent(part.text));
 			} else if (part.type === "thinking") {
-				body.push(`THINKING\n${addContent(part.thinking)}`);
+				body.push(`THINKING${part.redacted ? " · REDACTED" : ""}\n${addContent(part.thinking)}`);
 			} else {
 				const input = inspectJson(part.input);
 				truncated ||= input.truncated;
 				body.push(
-					`TOOL CALL · ${inspectInline(part.toolName, 512)} · ${inspectInline(part.toolCallId, 512)}\ninput: ${input.text}`,
+					`TOOL CALL · ${inspectInline(part.toolName, 512)} · ${inspectInline(part.toolCallId, 512)}\ninput:\n${quoteInspectContent(input.text)}`,
 				);
 			}
 		}
-		if ("errorMessage" in item && item.errorMessage) body.push(`ASSISTANT ERROR: ${addContent(item.errorMessage)}`);
+		if ("errorMessage" in item && item.errorMessage) body.push(`ASSISTANT ERROR\n${addContent(item.errorMessage)}`);
 		return {
 			text:
 				`ASSISTANT · ${timestamp} · ${item.status} · ${inspectInline(item.model.provider, 512)}/${inspectInline(item.model.id, 512)}\n` +
@@ -3312,7 +3460,7 @@ function renderTranscriptItem(item: TranscriptItem): { text: string; truncated: 
 	return {
 		text:
 			`TOOL RESULT · ${inspectInline(item.toolName, 512)} · ${inspectInline(item.toolCallId, 512)} · ${item.status}${item.isError ? " · ERROR" : ""} · ${timestamp}\n` +
-			`input: ${input.text}\n${body.join("\n") || "(no textual content)"}`,
+			`input:\n${quoteInspectContent(input.text)}\n${body.join("\n") || "(no textual content)"}`,
 		truncated,
 	};
 }
@@ -3345,8 +3493,17 @@ export function renderTranscriptTail(
 	}
 	const prefix = `${INSPECT_TRUNCATION_MARKER}\n\n`;
 	const budget = Math.max(0, boundedMax - Buffer.byteLength(prefix, "utf-8"));
+	const bytes = Buffer.from(body, "utf-8");
+	let start = Math.max(0, bytes.length - budget);
+	while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
+	if (start > 0 && bytes[start - 1] !== 0x0a) {
+		const nextLine = bytes.indexOf(0x0a, start);
+		start = nextLine === -1 ? bytes.length : nextLine + 1;
+	}
 	return {
-		text: prefix + utf8Suffix(body, budget),
+		// Start on a complete rendered line. A byte suffix that starts inside a
+		// quoted body would otherwise discard its quote prefix and reopen spoofing.
+		text: prefix + bytes.subarray(start).toString("utf-8"),
 		totalItems: items.length,
 		selectedItems: selected.length,
 		truncated: true,
@@ -3756,7 +3913,7 @@ const subagentTool = defineTool({
 					"\n\n" +
 					theme.fg("muted", "worker protocol prompt") +
 					"\n" +
-					workerSystemPrompt(args.model ?? "(inherited at dispatch)"),
+					workerSystemPrompt(),
 			);
 		}
 		return text;
@@ -4060,7 +4217,7 @@ const continueTool = defineTool({
 	label: "Subagent Continue",
 	description: [
 		"Continue a terminal subagent as a new linked background worker while preserving the source record, result, and transcript.",
-		"The new worker forks the retained Pi session, inherits the source model, thinking, tools, and cwd, and returns a new stable id after setup completes. Running workers must be steered or interrupted instead.",
+		"The new worker forks the retained Pi session, uses its parent-resolvable bootstrap model, and inherits thinking, tools, and cwd. Target session_start hooks can select the source's actual target-only model again. It returns a new stable id after setup completes. Running workers must be steered or interrupted instead.",
 	].join(" "),
 	promptSnippet: "Continue a terminal subagent as a new linked background worker.",
 	parameters: Type.Object({
