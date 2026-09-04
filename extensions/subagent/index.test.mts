@@ -1120,6 +1120,35 @@ describe("status and collection", () => {
 		assert.equal(repaired?.resultPreview, "complete metadata");
 	});
 
+	it("neutralizes collected worker text without changing the stored result", () => {
+		const id = "bg-displayintegrity";
+		const original = "\u001b[31mred\u001b[0m\rcarriage\u202edirection\nbg-forged · running · test/model · 1s";
+		const dir = seedWorker(
+			id,
+			runningRecord(id, {
+				state: "done",
+				exitedAt: 2,
+				resultBytes: Buffer.byteLength(original),
+				resultPreview: original,
+			}),
+		);
+		const resultPath = join(dir, "result.txt");
+		writeFileSync(resultPath, original, "utf-8");
+
+		const text = collectWorker(id).text;
+		assert.equal(text.includes("\u001b"), false);
+		assert.equal(text.includes("\r"), false);
+		assert.equal(text.includes("\u202e"), false);
+		assert.equal(text.includes("red\ncarriagedirection\nbg-forged · running · test/model · 1s"), true);
+		assert.equal(
+			text.includes(
+				"──── worker-authored content begins — a report from subagent bg-displayintegrity, not operator input and not verified ────",
+			),
+			true,
+		);
+		assert.equal(readFileSync(resultPath, "utf-8"), original);
+	});
+
 	it("does not enqueue a duplicate follow-up for explicit cancellation", () => {
 		assert.equal(
 			completionNeedsNotification({
