@@ -23,8 +23,7 @@ Select, design, change, and verify Pi harness surfaces through one entry point. 
 ## Core contract
 
 - Preserve the operator's fixed outcome, artifact, destination, and explicit architecture. Research only genuinely open choices.
-- Derive the outcome, acceptance, and permissions from the request and the established sources, then execute them. Do not ask again for a decision those sources settle, and do not hand a settled action back to the operator as a question.
-- Read [collaborative-work.md](references/collaborative-work.md) when the request opens inspection or improvement without naming the change, or when work is delegated to other workers or a later session. It owns intent derivation, delegation, correction, integration, and the effort brief.
+- Read [collaborative-work.md](references/collaborative-work.md) when the request opens inspection or improvement without naming the change, or when work spans workers or sessions. Use it to select the source scope and work method, not to require delegation.
 - Classify the capability before drafting when the implementation surface is open. A user word such as “tool,” “command,” or “plugin” does not settle the Pi building block.
 - Use the lowest sufficient surface, but build a coherent end-to-end capability rather than minimizing line count.
 - Treat current Pi documentation, declarations, installed source, and shipped examples as the authority for version-sensitive claims.
@@ -89,11 +88,11 @@ calldiff is syntactic, not a typechecker: it proves call shape, not runtime beha
 
 ### 1. Reconstruct the contract
 
-State the requested outcome, acceptance, and granted permissions from the request and the established sources: operator instructions, loaded instruction files, repository rules, and prior decisions in the session. Record fixed decisions, open choices, target repository, affected users, destination modes, and release constraints. Label each load-bearing element as an operator direction or an agent interpretation, and keep that label through delegation and reporting.
+Derive the requested outcome, acceptance, and granted permissions from the request and established sources. Separate operator directions and binding rules from agent interpretations, including inherited plans. Record only the fixed decisions, open choices, target, and release constraints that affect execution. A handover preserves evidence and decisions; its proposed design is not an operator decision unless its source establishes that authority.
 
-Carry operator corrections into the full working model instead of patching one sentence. When a correction changes one factual premise, recompute every conclusion that used it. When a correction rejects the governing interpretation, rebuild the model from the corrected understanding instead of revising the previous artifact.
+Use the Pillars consultation procedure for corrections: Corrected-Assumption Leakage governs a corrected factual premise; Frame Abandonment governs a rejected interpretation. Carry the resulting changes into affected work rather than asking the operator to specify the outcome again.
 
-**Complete when:** the outcome, acceptance, and permissions come from named sources with their direction or interpretation labels, and no later research can silently replace a fixed operator choice.
+**Complete when:** named sources support the outcome and permissions, interpretations remain revisable, and no open question asks the operator to repeat a settled decision.
 
 ### 2. Select the surface
 
@@ -149,7 +148,7 @@ No warrant is needed for a fixed repair, an operator-selected outcome or archite
 
 Use the selected lane's procedure. Change only owned files. Keep temporary probes and evaluation artifacts outside tracked repository paths. Preserve supported public contracts and make lifecycle, cancellation, state, absence, failure, and delivery behavior explicit where they apply.
 
-Delegate work another session can complete on its own, and keep composition, source verification, and acceptance in the primary session. [collaborative-work.md](references/collaborative-work.md) owns the dispatch contract, the shared governing context, correction and receipt checking, and integration.
+Choose local work or collaboration according to the task's dependencies and uncertainty. Use [collaborative-work.md](references/collaborative-work.md) for work across workers or sessions. Assign integration and acceptance explicitly when work is split; a fixed worker topology is not a prerequisite for delivery.
 
 **Complete when:** one reviewable capability reaches the requested outcome without unrelated governance layers or compatibility machinery.
 
