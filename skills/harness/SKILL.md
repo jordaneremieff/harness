@@ -6,7 +6,9 @@ description: >
   command, provider, lifecycle hook, TUI, prompt template, theme, package,
   SDK/RPC integration, standalone CLI — when a requested capability needs
   classification among them, or when changing harness rules and shared
-  contracts. New enumerated surfaces require a proposal and explicit operator
+  contracts. Also use when a request opens harness inspection or improvement
+  without naming the change, or when harness work is delegated across workers
+  or sessions. New enumerated surfaces require a proposal and explicit operator
   approval before any write; reclassifying them as part of the requested
   outcome does not exempt them. Do not use for invoking or installing an unchanged
   resource, ordinary application code, unrelated uses of "tool", "skill", or
@@ -21,6 +23,8 @@ Select, design, change, and verify Pi harness surfaces through one entry point. 
 ## Core contract
 
 - Preserve the operator's fixed outcome, artifact, destination, and explicit architecture. Research only genuinely open choices.
+- Derive the outcome, acceptance, and permissions from the request and the established sources, then execute them. Do not ask again for a decision those sources settle, and do not hand a settled action back to the operator as a question.
+- Read [collaborative-work.md](references/collaborative-work.md) when the request opens inspection or improvement without naming the change, or when work is delegated to other workers or a later session. It owns intent derivation, delegation, correction, integration, and the effort brief.
 - Classify the capability before drafting when the implementation surface is open. A user word such as “tool,” “command,” or “plugin” does not settle the Pi building block.
 - Use the lowest sufficient surface, but build a coherent end-to-end capability rather than minimizing line count.
 - Treat current Pi documentation, declarations, installed source, and shipped examples as the authority for version-sensitive claims.
@@ -85,9 +89,11 @@ calldiff is syntactic, not a typechecker: it proves call shape, not runtime beha
 
 ### 1. Reconstruct the contract
 
-Record the requested outcome, fixed decisions, open choices, target repository, affected users, destination modes, and release constraints. Carry operator corrections into the full working model instead of patching one sentence.
+State the requested outcome, acceptance, and granted permissions from the request and the established sources: operator instructions, loaded instruction files, repository rules, and prior decisions in the session. Record fixed decisions, open choices, target repository, affected users, destination modes, and release constraints. Label each load-bearing element as an operator direction or an agent interpretation, and keep that label through delegation and reporting.
 
-**Complete when:** no later research can silently replace a fixed operator choice.
+Carry operator corrections into the full working model instead of patching one sentence. When a correction changes one factual premise, recompute every conclusion that used it. When a correction rejects the governing interpretation, rebuild the model from the corrected understanding instead of revising the previous artifact.
+
+**Complete when:** the outcome, acceptance, and permissions come from named sources with their direction or interpretation labels, and no later research can silently replace a fixed operator choice.
 
 ### 2. Select the surface
 
@@ -143,6 +149,8 @@ No warrant is needed for a fixed repair, an operator-selected outcome or archite
 
 Use the selected lane's procedure. Change only owned files. Keep temporary probes and evaluation artifacts outside tracked repository paths. Preserve supported public contracts and make lifecycle, cancellation, state, absence, failure, and delivery behavior explicit where they apply.
 
+Delegate work another session can complete on its own, and keep composition, source verification, and acceptance in the primary session. [collaborative-work.md](references/collaborative-work.md) owns the dispatch contract, the shared governing context, correction and receipt checking, and integration.
+
 **Complete when:** one reviewable capability reaches the requested outcome without unrelated governance layers or compatibility machinery.
 
 ### 6. Verify by claim
@@ -155,7 +163,9 @@ Follow repository sequencing rules for manual review and broad suites. Do not su
 
 ### 7. Apply authority once
 
-Confirm execution stays within granted authority and does not transfer a settled decision back to the operator. Treat destructive state changes, publication, and credential use under their separate authority rules.
+Confirm execution stays within granted authority and does not transfer a settled decision back to the operator. Treat new surfaces, destructive state changes, publication, and credential use under their separate authority rules; those boundaries hold regardless of how the intent was derived.
+
+Stop only the actions that depend on a disputed fact or on authority you were not granted. Name that exact boundary and complete the rest of the authorized work.
 
 **Complete when:** execution neither exceeds granted authority nor transfers a settled decision back to the operator.
 
@@ -163,6 +173,6 @@ Confirm execution stays within granted authority and does not transfer a settled
 
 Lead with the resulting operator-visible state and its consequence. Name the selected surface and load-bearing files when they help the operator locate or review the result. Explain a change or relationship only when it helps the operator use, review, or decide about the result. Summarize the evidence that supports the conclusion; do not dump the claim ledger or a check transcript.
 
-Report a limitation only when it blocks the requested conclusion, materially reduces confidence in it, or requires operator action. State the affected conclusion, the impact, and the narrowest next check or action. Omit irrelevant unperformed layers and optional stronger checks that would not change the conclusion. A binding repository completion or release gate remains material until satisfied or explicitly waived. Follow the owning repository's state-report requirements; otherwise, report repository state when it changes how the operator must handle the result.
+Report any discovery that changes the operator's available choices: evidence against the request's premise, a cheaper or safer route, an unanticipated cost, or an authority the next step will need. Report a limitation only when it blocks the requested conclusion, materially reduces confidence in it, or requires operator action. State the affected conclusion, the impact, and the narrowest next check or action. Omit irrelevant unperformed layers and optional stronger checks that would not change the conclusion. A binding repository completion or release gate remains material until satisfied or explicitly waived. Follow the owning repository's state-report requirements; otherwise, report repository state when it changes how the operator must handle the result.
 
 Keep durable documentation about the current system; keep task chronology, transcripts, evaluation output, and private provenance outside the package.
