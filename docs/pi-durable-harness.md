@@ -16,7 +16,7 @@ now lives on `main`; unmerged WP08 work uses `dev-named-forks-streaming`. The
 predecessor the program removes is "runtime1" (work package WP00). Treat
 "AgentHarness", "harness v2", and "the durable-harness line" as one subject.
 This file avoids the version label as its own name because the label stops
-identifying the program once it ships. Verified 2026-09-04.
+identifying the program once it ships. Verified 2026-09-05.
 
 ## How this file is kept
 
@@ -41,20 +41,25 @@ risk to it. For any harness surface decision:
 
 ## What the program contains
 
-Verified 2026-09-04 at `main` commit `dd7e816b` (one commit past the
-`v0.85.0` tag at `107d79f1`) and WP08 branch commit `2e2805d9`.
+Verified 2026-09-05 at `main` commit `9841914c` (five commits past the
+`v0.85.0` tag at `107d79f1`) and WP08 branch commit `85186f82`. Between the
+previous `main` verification `dd7e816b` and `9841914c`, four commits touch ai
+model catalogs, coding-agent selectors and keybindings, and tui select lists;
+no `packages/agent` harness code moved.
 
 - `packages/agent/docs/harness.md` is the normative specification. Its
   work-package table records WP00 through WP07 complete, WP08 in progress on
   Slice A, and WP09 complete.
 - WP08 on `main` implements mandatory fork scope, named source branches,
   ancestry checks, configured-lane checks, and the closed scalar fork policy.
-  Lists, sequence and high-water preservation, direct Memory construction, and
-  bounded JSONL and SQLite transfer remain.
-- The unmerged `dev-named-forks-streaming` head adds direct Memory fork
-  construction and Memory-side sequence, list, and high-water preservation. It
-  remains marked as Slice A work. JSONL and SQLite streaming remain specified,
-  not implemented.
+- The unmerged `dev-named-forks-streaming` head carries the advancing WP08
+  work: direct Memory fork construction, Memory-side sequence, list, and
+  high-water preservation, expanded fork conformance on Memory and JSONL, a
+  two-pass bounded-memory JSONL fork prototype, closed legacy-v3 JSONL forks
+  through format 4, and rejection of open legacy-v3 JSONL fork sources. Its
+  WP08 document still records "in progress — implementing Slice A". SQLite
+  streaming (Slice C) remains unimplemented. Draft pull request #9152
+  "DRAFT: forks streaming" (base `main`) is the branch's open vehicle.
 - WP09 keeps settled but unplaced tool calls in
   `LaneSnapshot.operation.runningTools` with `status: "settled"`. The reducer
   removes each record only after the matching immutable `toolResult` entry is
@@ -84,16 +89,16 @@ Verified 2026-09-04 at `main` commit `dd7e816b` (one commit past the
 
 ## How far the program is from this harness
 
-Verified 2026-09-04.
+Verified 2026-09-05.
 
 | Field | Value |
 |---|---|
 | Latest published release | `v0.85.0`, tag commit `107d79f1`, published 2026-09-04; the npm `latest` dist-tag for `@earendil-works/pi-coding-agent` is 0.85.0 |
-| Canonical source | `main` at `dd7e816b` (2026-09-04), 448 commits ahead of `v0.84.4` and 1 ahead of the `v0.85.0` tag |
-| Former `dev` line | The exact `dev` ref is absent. `main` contains the former `d24c99f4` baseline and is 83 commits ahead of it |
-| Active WP08 branch | `dev-named-forks-streaming` at `2e2805d9` (2026-09-03), 1 commit ahead of and 16 behind `main`; no pull request uses this head |
-| Historical harness branch | `harness-v2/j4` at `f7f933c6` is 9 commits ahead of its merge base and 707 behind `main`; its last commit is from 2026-08-07 |
-| Local Pi packages | The active global coding agent and its agent core are 0.85.0, installed 2026-09-04. This checkout resolves the coding agent, agent core, protocol, and server at 0.84.2; `package.json` pins protocol and server at `^0.84.2` |
+| Canonical source | `main` at `9841914c` (2026-09-04), 452 commits ahead of `v0.84.4` and 5 ahead of the `v0.85.0` tag |
+| Former `dev` line | The exact `dev` ref is absent. `main` contains the former `d24c99f4` baseline and is 87 commits ahead of it |
+| Active WP08 branch | `dev-named-forks-streaming` at `85186f82` (2026-09-04), 8 commits ahead of and 3 behind `main`; draft pull request #9152 "DRAFT: forks streaming" uses this head |
+| Historical harness branch | `harness-v2/j4` at `f7f933c6` is 9 commits ahead of its merge base and 711 behind `main`; its last commit is from 2026-08-07 |
+| Local Pi packages | The active global coding agent and its agent core are 0.85.0, installed 2026-09-04. This checkout resolves the coding agent, ai, tui, protocol, and server at 0.84.2 (`npm ls`); `package.json` pins protocol and server at `^0.84.2`. The checkout tree does not contain the `pi-agent-core` package; extensions reach it through the running install |
 | Reachable today | Published `pi-agent-core` 0.85.0 exposes the harness subpath exports `./harness/context`, `./harness/session`, `./harness/session/testing`, `./harness/runtime/reducer`, and `./harness/env/nodejs`, carrying the WP00-WP09 contract; the installed dist contains `LaneSnapshot.operation.runningTools` with `status: "settled"`. Published `pi-server` 0.85.0 depends on `chord`, `pi-agent-core`, and `pi-protocol` |
 
 Re-verify with the GitHub release, branch, comparison, and pull-request APIs;
@@ -104,7 +109,7 @@ metadata; and `npm ls` in this checkout. Use comparison `ahead_by` and
 
 ## What the program disturbs here today
 
-Verified 2026-09-04 against `main` at `dd7e816b` and the active WP08 branch at `2e2805d9`.
+Verified 2026-09-05 against `main` at `9841914c` and the active WP08 branch at `85186f82`.
 
 - No extension-loader behavior change requires work. The only loader commit on
   current `main` after `v0.84.4` is `a789067a`. It moves bundled-Node detection
@@ -135,13 +140,13 @@ Verified 2026-09-04 against `main` at `dd7e816b` and the active WP08 branch at `
 
 ## Convergence map
 
-Verified 2026-09-04 at `main` commit `dd7e816b` and WP08 branch commit
-`2e2805d9`.
+Verified 2026-09-05 at `main` commit `9841914c` and WP08 branch commit
+`85186f82`.
 
 | Harness concept | Counterpart in the program | State |
 |---|---|---|
 | subagent worker records and lane observation | durable lanes, inboxes, immutable result records | lane-observation contract published in the 0.85.0 harness subpaths (`./harness/session`, `./harness/runtime/reducer`) |
-| subagent continuation forks | named-branch and tree forks through `SessionRepo` | explicit fork scope, ancestry checks, configured-lane enforcement, and the closed scalar fork policy ship in 0.85.0's harness subpaths; list and high-water preservation plus direct Memory construction stay on `dev-named-forks-streaming`; JSONL and SQLite streaming remain |
+| subagent continuation forks | named-branch and tree forks through `SessionRepo` | explicit fork scope, ancestry checks, configured-lane enforcement, and the closed scalar fork policy ship in 0.85.0's harness subpaths; direct Memory construction and Memory-side list, sequence, and high-water preservation land on `dev-named-forks-streaming` at `85186f82`, with a two-pass JSONL fork prototype; SQLite streaming remains |
 | slice isolation between extensions | per-session workers and facet boundaries | the `chord` service runtime publishes in 0.85.0 (`pi-server` depends on it); plugin composition remains a design specification |
 | extension vertical slices | facet bundles and `defineService` tokens | design specification |
 | stash prose handover | none | harness-owned |
@@ -150,8 +155,8 @@ Verified 2026-09-04 at `main` commit `dd7e816b` and WP08 branch commit
 
 ## Action triggers
 
-Verified 2026-09-04 at `main` commit `dd7e816b` and WP08 branch commit
-`2e2805d9`.
+Verified 2026-09-05 at `main` commit `9841914c` and WP08 branch commit
+`85186f82`.
 
 | Trigger | Action |
 |---|---|
@@ -160,7 +165,7 @@ Verified 2026-09-04 at `main` commit `dd7e816b` and WP08 branch commit
 | `dev-named-forks-streaming` advances, rebases, merges, or gets a pull request | Re-read WP08, compare it with `main`, and update the Memory, JSONL, and SQLite status separately |
 | `pi-server` publishes with `chord` and `pi-agent-core` | Accept the wider dependency graph and re-check the subagent extension's protocol and server imports |
 | Facets and services reach the coding agent | Map the subagent store onto `requestAbort`, result records, and `memoOnce`, and keep the content-bearing store the program does not supply |
-| The extension loader changes after `dd7e816b` | Read the change before the next upgrade; the whole extension surface rests on it |
+| The extension loader changes after `9841914c` | Read the change before the next upgrade; the whole extension surface rests on it |
 | Storage format 4 stabilizes or gains migrations | Confirm the harness still touches session files only through `SessionManager` |
 
 ## Refresh
