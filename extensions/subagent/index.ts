@@ -5,6 +5,14 @@
  *   - `subagent` dispatches one task or a `tasks[]` batch. Every worker runs
  *     in the background and may declare `model`, `thinking`, `tools`, and
  *     `cwd`; completion returns through a `subagent_result` follow-up.
+ *   - One optional top-level `sharedContext` snapshot (16KiB of UTF-8 at most)
+ *     is delivered verbatim to every worker of that dispatch, ahead of each
+ *     worker's own task. The extension records a snapshot identifier and its
+ *     size; it never parses the snapshot.
+ *   - `subagent_report` lets a running worker send one interim report to the
+ *     session that dispatched it. The report does not end the worker, does not
+ *     replace the submitted result, and grants no authority; a returned call is
+ *     `sent_unconfirmed`, not acknowledged receipt.
  *   - Each worker is a real pi session built in this process: same models,
  *     same tools, same transcript format as a primary session. The parent
  *     drives it directly — prompt, steer, abort — and reads live status from
@@ -47,8 +55,10 @@
  *     record and dispatch line report the requested and the effective level.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
+	accessSync,
+	constants,
 	chmodSync,
 	existsSync,
 	linkSync,
@@ -116,6 +126,12 @@ const INSPECT_TRANSCRIPT_ITEM_LIMIT = 32;
 const INSPECT_CONTENT_CAP_BYTES = 12 * 1024;
 const INSPECT_TRUNCATION_MARKER = "[transcript truncated: older or oversized content omitted]";
 const TRUNCATED_SUFFIX = "\n\n[truncated]";
+/** Hard UTF-8 byte cap for one dispatch's shared-context snapshot. */
+const SHARED_CONTEXT_CAP_BYTES = 16 * 1024;
+/** Hard UTF-8 byte cap for one interim report message. */
+const REPORT_MESSAGE_CAP_BYTES = 8 * 1024;
+/** Line cap for a rendered report envelope; the byte cap is RESULT_BODY_CAP_BYTES. */
+const REPORT_ENVELOPE_LINE_CAP = 2_000;
 
 /**
  * How long a TERMINAL worker record is kept before it is pruned. Workers that
@@ -225,6 +241,35 @@ export function capUtf8(
 	};
 }
 
+/**
+ * Bound a rendered body by line count. A byte cap alone still lets one worker
+ * push thousands of short lines into the parent's view, so worker-authored
+ * envelopes carry both bounds.
+ */
+export function capLines(
+	text: string,
+	maxLines = REPORT_ENVELOPE_LINE_CAP,
+): { text: string; originalLines: number; truncated: boolean } {
+	const lines = text.split("\n");
+	if (lines.length <= maxLines) return { text, originalLines: lines.length, truncated: false };
+	const kept = lines.slice(0, Math.max(0, maxLines - 1));
+	const omitted = lines.length - kept.length;
+	return {
+		text: [...kept, `[truncated: ${omitted} more line(s) omitted]`].join("\n"),
+		originalLines: lines.length,
+		truncated: true,
+	};
+}
+
+/**
+ * Stable identifier for one dispatch's shared-context snapshot. The extension
+ * transports the snapshot; it does not read it, so the identifier is a digest
+ * of the exact supplied bytes and never a parsed field from the content.
+ */
+export function sharedContextSnapshotId(text: string): string {
+	return `sc-${createHash("sha256").update(text, "utf-8").digest("hex").slice(0, 12)}`;
+}
+
 export type WorkerState = "running" | "done" | "failed" | "cancelled" | "no_result_submitted" | "owner_lost";
 
 const THINKING_LEVELS = [
@@ -300,8 +345,16 @@ export interface WorkerRecord {
 	toolErrors: Record<string, number>;
 	/** Exact tool surface the worker was built with (declared or inherited). */
 	resolvedTools: string[];
-	/** Tool names omitted when a continuation degraded against the current surface. */
-	droppedTools: string[];
+	/** Registration source (`source/path`) of each resolved tool, for the
+	 * continuation check: a tool that is gone from the current registry cannot
+	 * be described by that registry, so the source travels with the record. */
+	toolSources: Record<string, string>;
+	/** Identifier of the shared-context snapshot delivered to this worker, or
+	 * null when the dispatch supplied none. The snapshot content is not stored:
+	 * the worker's own session file holds what the worker received. */
+	sharedContextId: string | null;
+	/** UTF-8 size of that snapshot. 0 when the dispatch supplied none. */
+	sharedContextBytes: number;
 	/** Non-fatal problems pi reported while building the worker's services:
 	 * unreadable settings, an extension that failed to load, a provider
 	 * registration that threw. An interactive session prints these at startup;
@@ -481,6 +534,15 @@ function validateToolErrors(v: unknown): Record<string, number> {
 	return counts;
 }
 
+function validateToolSources(v: unknown): Record<string, string> {
+	if (!isRecord(v)) return {};
+	const sources: Record<string, string> = {};
+	for (const [name, source] of Object.entries(v)) {
+		if (typeof source === "string" && source) sources[name] = source;
+	}
+	return sources;
+}
+
 function validateWorkerUsage(v: unknown): WorkerUsage | null {
 	if (!isRecord(v)) return null;
 	const u = v;
@@ -531,7 +593,9 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 		currentTool: asStrOrNull(o.currentTool),
 		toolErrors: validateToolErrors(o.toolErrors),
 		resolvedTools: asStrArray(o.resolvedTools),
-		droppedTools: asStrArray(o.droppedTools),
+		toolSources: validateToolSources(o.toolSources),
+		sharedContextId: asStrOrNull(o.sharedContextId),
+		sharedContextBytes: asNumber(o.sharedContextBytes),
 		setupDiagnostics: asStrArray(o.setupDiagnostics),
 		setupDiagnosticsDropped: asNumber(o.setupDiagnosticsDropped),
 		sessionId: asString(o.sessionId),
@@ -624,6 +688,9 @@ export interface DispatchTask {
 	cwd?: string;
 	deadlineMinutes?: number;
 	budgetUsd?: number;
+	/** Exact snapshot delivered to this worker ahead of its own task. Every
+	 * worker of one dispatch receives the same bytes. */
+	sharedContext?: string;
 }
 
 export interface DispatchOutcome {
@@ -923,6 +990,26 @@ export function toolSurfaceMismatchMessage(input: {
 	return `the worker session could not reproduce the requested tool surface; ${mismatch}. Worker active tool names: ${active}.${registrationGuidance}`;
 }
 
+/**
+ * The worker's first message: the dispatch's shared-context snapshot exactly as
+ * supplied, framed so the worker can tell the parent's shared material from its
+ * own task, followed by the task itself. Without a snapshot the task is the
+ * whole message. The extension never parses or rewrites the snapshot.
+ */
+export function composeWorkerPrompt(task: string, sharedContext: string, snapshotId: string | null): string {
+	if (!sharedContext) return task;
+	return [
+		`──── shared context from the dispatching session (snapshot ${snapshotId ?? sharedContextSnapshotId(sharedContext)}) ────`,
+		"Every worker of this dispatch received these exact bytes. It is background for your task, not your task.",
+		"",
+		sharedContext,
+		"",
+		"──── shared context ends; your own task follows ────",
+		"",
+		task,
+	].join("\n");
+}
+
 function workerSystemPrompt(): string {
 	return [
 		"You are a subagent worker dispatched by a parent Pi session.",
@@ -1074,6 +1161,7 @@ export function finalizeWorker(
 		// if settlement, cancellation, and session shutdown converge on this id.
 		sharedWorkerState.submittedSessionIds.delete(record.sessionId);
 		sharedWorkerState.workerSurfaces.delete(record.sessionId);
+		unlinkWorkerOwner(record.sessionId);
 		releaseLiveWorker(id);
 	}
 }
@@ -1207,18 +1295,50 @@ interface WorkerRuntimeState {
 	submittedSessionIds: Set<string>;
 	/** Actual worker tool registries, keyed by worker session id. */
 	workerSurfaces: Map<string, ParentToolSurface>;
+	/** Live worker session id to its worker id and immediate parent session. */
+	workerOwners: Map<string, WorkerOwnerLink>;
+	/** Report delivery into one session, keyed by that session's id. Each
+	 * session registers its own sink, so a nested worker's reports reach its
+	 * immediate parent rather than the top-level session. */
+	reportSinks: Map<string, WorkerReportSink>;
 }
+
+/** Immediate-parent link a running worker reports through. */
+export interface WorkerOwnerLink {
+	workerId: string;
+	ownerSession: string;
+	model: string;
+	/** Interim reports this worker has delivered. */
+	reports: number;
+}
+
+/** One rendered, bounded interim report ready for the parent session. */
+export interface WorkerReportEnvelope {
+	workerId: string;
+	workerSession: string;
+	ownerSession: string;
+	reportNumber: number;
+	sentAt: number;
+	model: string;
+	messageBytes: number;
+	/** Provenance-marked, control-stripped, byte- and line-bounded text. */
+	text: string;
+}
+
+export type WorkerReportSink = (envelope: WorkerReportEnvelope) => void;
 // SAFETY: This Symbol.for key is extension-owned across Pi's module instances.
 const sharedStateHost = globalThis as Record<symbol, WorkerRuntimeState | undefined>;
-let stateOnGlobal = sharedStateHost[WORKER_STATE_KEY];
-if (!stateOnGlobal) {
-	stateOnGlobal = {
-		workerSessionIds: new Set<string>(),
-		submittedSessionIds: new Set<string>(),
-		workerSurfaces: new Map<string, ParentToolSurface>(),
-	};
-	sharedStateHost[WORKER_STATE_KEY] = stateOnGlobal;
+/** Initialize process-local slots independently: module reloads share live state. */
+export function initializeWorkerRuntimeState(state: Partial<WorkerRuntimeState> = {}): WorkerRuntimeState {
+	state.workerSessionIds ??= new Set();
+	state.submittedSessionIds ??= new Set();
+	state.workerSurfaces ??= new Map();
+	state.workerOwners ??= new Map();
+	state.reportSinks ??= new Map();
+	return state as WorkerRuntimeState;
 }
+const stateOnGlobal = initializeWorkerRuntimeState(sharedStateHost[WORKER_STATE_KEY]);
+sharedStateHost[WORKER_STATE_KEY] = stateOnGlobal;
 export const sharedWorkerState: WorkerRuntimeState = stateOnGlobal;
 
 export function recordWorkerSurface(sessionId: string, active: readonly string[], all: readonly ToolInfo[]): void {
@@ -1227,6 +1347,175 @@ export function recordWorkerSurface(sessionId: string, active: readonly string[]
 		active: [...active],
 		all: [...all],
 	});
+}
+
+/**
+ * Record which worker a live session is, and which session dispatched it, so
+ * the reporter can find the immediate parent from inside the worker. The link
+ * lives in shared state because pi loads this extension once per working
+ * directory: the worker's module instance is not the parent's.
+ */
+export function linkWorkerOwner(workerSessionId: string, link: Omit<WorkerOwnerLink, "reports">): void {
+	if (!workerSessionId || !link.ownerSession) return;
+	initializeWorkerRuntimeState(sharedWorkerState);
+	const existing = sharedWorkerState.workerOwners.get(workerSessionId);
+	sharedWorkerState.workerOwners.set(workerSessionId, {
+		...link,
+		reports: existing?.workerId === link.workerId ? existing.reports : 0,
+	});
+}
+
+/** Drop a worker session's reporting link. Safe to call repeatedly. */
+export function unlinkWorkerOwner(workerSessionId: string): void {
+	if (!workerSessionId) return;
+	sharedWorkerState.workerOwners?.delete(workerSessionId);
+}
+
+/**
+ * Render one interim report for the parent session: header facts the extension
+ * owns, then the worker's own words behind the provenance boundary every
+ * rendered worker text passes, bounded by both the 50KB and 2,000-line caps.
+ */
+export function workerReportEnvelopeText(input: {
+	workerId: string;
+	model: string;
+	reportNumber: number;
+	sentAt: number;
+	ownerSession: string;
+	message: string;
+}): string {
+	const header =
+		`Subagent ${input.workerId} (${input.model}) interim report #${input.reportNumber} · ` +
+		`${new Date(input.sentAt).toISOString()} · to session ${input.ownerSession} · ` +
+		"not a submitted result; the worker is still running";
+	const body = markWorkerAuthored(input.message, input.workerId);
+	// Reserve lines for the public message and its details. The final serialized
+	// payload receives an independent bound check before delivery.
+	return capUtf8(capLines(`${header}\n\n${body}`, REPORT_ENVELOPE_LINE_CAP - 32).text).text;
+}
+
+/** Refuse oversized metadata rather than remove the report's provenance. */
+export function assertReportPayloadBound(payload: unknown): void {
+	const serialized = JSON.stringify(payload, null, 2);
+	const bytes = Buffer.byteLength(serialized, "utf-8");
+	// Count embedded newlines too, since string fields render as text in Pi.
+	const lines = serialized.replace(/\\n/g, "\n").split("\n").length;
+	if (bytes > RESULT_BODY_CAP_BYTES || lines > REPORT_ENVELOPE_LINE_CAP) {
+		throw new Error(
+			`report envelope exceeds its bound including details (${bytes} bytes, ${lines} lines; limits ${RESULT_BODY_CAP_BYTES} bytes, ${REPORT_ENVELOPE_LINE_CAP} lines)`,
+		);
+	}
+}
+
+export function workerReportMessage(envelope: WorkerReportEnvelope) {
+	const message = {
+		customType: "subagent_report",
+		content: envelope.text,
+		display: true,
+		details: {
+			id: envelope.workerId,
+			workerSession: envelope.workerSession,
+			ownerSession: envelope.ownerSession,
+			reportNumber: envelope.reportNumber,
+			sentAt: envelope.sentAt,
+			model: envelope.model,
+			messageBytes: envelope.messageBytes,
+			status: "sent_unconfirmed",
+		},
+	};
+	assertReportPayloadBound(message);
+	return message;
+}
+
+/**
+ * Deliver one interim report from a running worker to the session that
+ * dispatched it. Every failure is explicit: a caller that is not a worker, a
+ * parent that no longer accepts messages, an oversize message, and a delivery
+ * error stay distinct. A returned send is `sent_unconfirmed` — pi observes
+ * asynchronous delivery internally, so the call proves only that it returned.
+ */
+export function sendWorkerReport(
+	workerSessionId: string,
+	message: string,
+): { ok: true; text: string; details: Record<string, unknown> } | { ok: false; error: string } {
+	const messageBytes = Buffer.byteLength(message, "utf-8");
+	if (messageBytes > REPORT_MESSAGE_CAP_BYTES) {
+		return {
+			ok: false,
+			error:
+				`subagent_report rejected: the message is ${messageBytes} bytes and the limit is ${REPORT_MESSAGE_CAP_BYTES} bytes of UTF-8. ` +
+				"Nothing was sent. Report the consequential fact or question in a shorter message; the full account belongs in submit_result.",
+		};
+	}
+	const link = workerSessionId ? sharedWorkerState.workerOwners?.get(workerSessionId) : undefined;
+	if (!link) {
+		return {
+			ok: false,
+			error:
+				"subagent_report failed: this session is not a running subagent worker, so it has no parent to report to. " +
+				"Only a worker dispatched by the subagent tool can send interim reports.",
+		};
+	}
+	const sink = sharedWorkerState.reportSinks?.get(link.ownerSession);
+	if (!sink) {
+		return {
+			ok: false,
+			error:
+				`subagent_report failed: the dispatching session ${link.ownerSession} no longer accepts messages (it ended or was replaced). ` +
+				"The report was not delivered. Keep the finding for your submitted result.",
+		};
+	}
+	const reportNumber = link.reports + 1;
+	const sentAt = Date.now();
+	const envelope: WorkerReportEnvelope = {
+		workerId: link.workerId,
+		workerSession: workerSessionId,
+		ownerSession: link.ownerSession,
+		reportNumber,
+		sentAt,
+		model: link.model,
+		messageBytes,
+		text: workerReportEnvelopeText({
+			workerId: link.workerId,
+			model: link.model,
+			reportNumber,
+			sentAt,
+			ownerSession: link.ownerSession,
+			message,
+		}),
+	};
+	const outcome = {
+		ok: true as const,
+		text:
+			`Report #${reportNumber} sent to the dispatching session (${messageBytes} bytes). Status: sent_unconfirmed — ` +
+			"the send call returned; it does not confirm receipt or processing. Your run continues, and this report does " +
+			"not replace submit_result.",
+		details: {
+			status: "sent_unconfirmed",
+			workerId: link.workerId,
+			ownerSession: link.ownerSession,
+			reportNumber,
+			messageBytes,
+			sentAt,
+		},
+	};
+	try {
+		// Include details and JSON escaping, not just the visible report text.
+		workerReportMessage(envelope);
+		assertReportPayloadBound(envelope);
+		assertReportPayloadBound({ content: [{ type: "text", text: outcome.text }], details: outcome.details });
+		sink(envelope);
+	} catch (err) {
+		return {
+			ok: false,
+			error: capUtf8(
+				capLines(`subagent_report failed to deliver: ${errText(err)}. The report was not delivered.`, 1_900).text,
+				REPORT_MESSAGE_CAP_BYTES,
+			).text,
+		};
+	}
+	link.reports = reportNumber;
+	return outcome;
 }
 
 /**
@@ -1439,6 +1728,7 @@ function releaseLiveWorker(id: string): void {
 	clearRunLimits(live);
 	if (live.record.sessionId) {
 		sharedWorkerState.workerSurfaces.delete(live.record.sessionId);
+		unlinkWorkerOwner(live.record.sessionId);
 	}
 	live.cancelResume?.();
 	live.cancelResume = null;
@@ -2287,7 +2577,6 @@ export async function dispatchWorker(
 	},
 	ctx: ExtensionContext,
 	continuation?: WorkerRecord,
-	droppedTools: string[] = [],
 ): Promise<DispatchOutcome> {
 	const model = resolveModel(ctx, task.model ?? defaults.model);
 	if ("error" in model) {
@@ -2324,6 +2613,21 @@ export async function dispatchWorker(
 	}
 	const limits = resolveRunLimits(task, defaults);
 	const resolvedTools = tools.tools;
+	const toolSources = Object.fromEntries(
+		[...tools.metadata.entries()].map(([name, info]) => [name, `${info.sourceInfo.source}/${info.sourceInfo.path}`]),
+	);
+	const sharedContext = task.sharedContext ?? "";
+	const sharedContextBytes = Buffer.byteLength(sharedContext, "utf-8");
+	if (sharedContextBytes > SHARED_CONTEXT_CAP_BYTES) {
+		// Refused before the worker directory, session, and provider work exist.
+		return {
+			id: "",
+			state: "failed",
+			error: `sharedContext is ${sharedContextBytes} bytes; the limit is ${SHARED_CONTEXT_CAP_BYTES} bytes of UTF-8.`,
+			record: null,
+		};
+	}
+	const snapshotId = sharedContext ? sharedContextSnapshotId(sharedContext) : null;
 
 	// The suffix must make a same-millisecond collision impossible: two workers
 	// that share an id share a record, a result file, and a live-map slot, and the
@@ -2372,7 +2676,9 @@ export async function dispatchWorker(
 		currentTool: null,
 		toolErrors: {},
 		resolvedTools,
-		droppedTools,
+		toolSources,
+		sharedContextId: snapshotId,
+		sharedContextBytes,
 		setupDiagnostics: [],
 		setupDiagnosticsDropped: 0,
 		sessionId: "",
@@ -2641,6 +2947,11 @@ export async function dispatchWorker(
 	let untrack: () => void = () => {};
 	refreshLiveRecord = (target: AgentSession): void => {
 		workerSessionId = target.sessionManager.getSessionId();
+		linkWorkerOwner(workerSessionId, {
+			workerId: id,
+			ownerSession: record.ownerSession ?? "",
+			model: record.model,
+		});
 		refreshActiveSessionRecord(record, target);
 		record.cwd = target.sessionManager.getCwd();
 		record.sessionId = workerSessionId;
@@ -2682,6 +2993,7 @@ export async function dispatchWorker(
 		for (const sessionId of constructedSessionIds) {
 			sharedWorkerState.workerSessionIds.delete(sessionId);
 			sharedWorkerState.workerSurfaces.delete(sessionId);
+			unlinkWorkerOwner(sessionId);
 		}
 		usageBaselines.delete(id);
 		usageOffsets.delete(id);
@@ -2757,6 +3069,7 @@ export async function dispatchWorker(
 		runtime.shutdown();
 		sharedWorkerState.workerSessionIds.delete(record.sessionId);
 		sharedWorkerState.workerSurfaces.delete(record.sessionId);
+		unlinkWorkerOwner(record.sessionId);
 		usageBaselines.delete(id);
 		usageOffsets.delete(id);
 		if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
@@ -2800,6 +3113,7 @@ export async function dispatchWorker(
 		untrack();
 		sharedWorkerState.workerSessionIds.delete(previous.sessionManager.getSessionId());
 		sharedWorkerState.workerSurfaces.delete(previous.sessionManager.getSessionId());
+		unlinkWorkerOwner(previous.sessionManager.getSessionId());
 		session = next;
 		sessionManager = next.sessionManager;
 		live.session = next;
@@ -2836,7 +3150,7 @@ export async function dispatchWorker(
 	armRunLimits(id);
 	publishSubagentStatus();
 
-	liveWorker.leg = runtime.prompt({ text: task.task }).then(
+	liveWorker.leg = runtime.prompt({ text: composeWorkerPrompt(task.task, sharedContext, snapshotId) }).then(
 		() => settle(sessionControlError ?? undefined),
 		(cause: unknown) => settle(`the worker run failed: ${errText(cause)}`),
 	);
@@ -3239,27 +3553,73 @@ export async function continueWorker(id: string, message: string, ctx: Extension
 		};
 	}
 	const surface = parentToolSurface(ctx);
-	const recordedTools = terminal.resolvedTools.length > 0 ? terminal.resolvedTools : (terminal.tools ?? []);
+	const recordedTools = terminal.resolvedTools;
+	if (recordedTools.length === 0) {
+		return {
+			id: "",
+			state: "failed",
+			error: `Worker ${id} cannot continue: its resolved tool surface was not recorded. No worker was created.`,
+			record: null,
+		};
+	}
 	const recordedCallableTools = [...new Set(recordedTools.filter((name) => name !== "submit_result"))];
+	// The continuation runs the source worker's full recorded surface or it does
+	// not run. A narrowed continuation looks like the same worker and is not: it
+	// silently changes what the work can reach after the parent already accepted
+	// the task.
+	const recordedSource = (name: string): string =>
+		`${name} (${terminal.toolSources[name] ?? "registration source not recorded"})`;
 	if (!surface) {
 		return {
 			id: "",
 			state: "failed",
-			error: `Worker ${id} cannot continue: the current parent tool registry is unavailable; the recorded tool gap is ${recordedCallableTools.join(", ") || "the current registry"}.`,
+			error:
+				`Worker ${id} cannot continue: the current parent tool registry is unavailable, so its recorded tool surface cannot be reproduced. ` +
+				`Recorded tools: ${recordedCallableTools.map(recordedSource).join(", ") || "(none)"}.`,
 			record: null,
 		};
 	}
-	const currentNames = new Set([...surface.active, ...surface.all.map((tool) => tool.name)]);
-	const tools = recordedCallableTools.filter((name) => currentNames.has(name));
-	const droppedTools = recordedCallableTools.filter((name) => !currentNames.has(name));
-	if (recordedCallableTools.length > 0 && tools.length === 0) {
+	const currentTools = new Map(surface.all.map((tool) => [tool.name, tool]));
+	const unavailable: string[] = [];
+	for (const name of recordedCallableTools) {
+		const recorded = terminal.toolSources[name];
+		const current = currentTools.get(name);
+		if (!current) {
+			unavailable.push(`${recordedSource(name)}: tool absent from current registry`);
+			continue;
+		}
+		if (!recorded) {
+			unavailable.push(`${recordedSource(name)}: no source evidence to reproduce`);
+			continue;
+		}
+		const currentSource = `${current.sourceInfo.source}/${current.sourceInfo.path}`;
+		if (recorded !== currentSource) {
+			unavailable.push(`${recordedSource(name)}: registration source changed to ${currentSource}`);
+			continue;
+		}
+		if (current.sourceInfo.source === "builtin") continue;
+		const sourcePath = current.sourceInfo.path;
+		try {
+			if (!sourcePath || sourcePath.startsWith("<") || !statSync(sourcePath).isFile()) {
+				throw new Error("registration source is not a regular file");
+			}
+			accessSync(sourcePath, constants.R_OK);
+		} catch (error) {
+			unavailable.push(`${recordedSource(name)}: registration source unreadable: ${errText(error)}`);
+		}
+	}
+	if (unavailable.length > 0) {
 		return {
 			id: "",
 			state: "failed",
-			error: `Worker ${id} cannot continue: none of its recorded tools are in the current parent registry; unavailable: ${droppedTools.join(", ")}.`,
+			error:
+				`Worker ${id} cannot continue: its recorded tool surface is not available in this session, and a continuation never runs on a narrowed surface. ` +
+				`Unavailable: ${unavailable.join("; ")}. ` +
+				"Restore those registrations (run /reload after an extension source change) and retry, or dispatch a new worker with the surface you want.",
 			record: null,
 		};
 	}
+	const tools = recordedCallableTools;
 	const bootstrapRef = resolveModel(ctx, terminal.bootstrapModel);
 	if ("error" in bootstrapRef) {
 		return { id: "", state: "failed", error: bootstrapRef.error, record: null };
@@ -3294,7 +3654,6 @@ export async function continueWorker(id: string, message: string, ctx: Extension
 		},
 		ctx,
 		terminal,
-		droppedTools,
 	);
 }
 
@@ -3617,6 +3976,7 @@ export function inspectWorker(id: string): InspectView {
 		`model: ${inspectInline(record.model)}`,
 		inspectInline(thinkingLabel(record), 256),
 		`task: ${task || "(empty)"}`,
+		`shared context: ${record.sharedContextId ? `${inspectInline(record.sharedContextId, 64)} · ${record.sharedContextBytes} bytes` : "none"}`,
 		`cwd: ${inspectInline(record.cwd || "(unknown)")}`,
 		`current tool: ${inspectInline(record.currentTool ?? "none", 512)}`,
 		`tool errors: ${inspectInline(toolErrorSummary(record) || "none")}`,
@@ -3859,7 +4219,14 @@ type SubagentParams = {
 	cwd?: string;
 	deadlineMinutes?: number;
 	budgetUsd?: number;
+	sharedContext?: string;
 };
+
+const sharedContextSchema = Type.String({
+	minLength: 1,
+	description:
+		"Optional shared snapshot delivered verbatim to every worker of this dispatch, ahead of each worker's own task. At most 16KiB of UTF-8; an oversize snapshot fails the whole dispatch before any worker starts. It does not replace each task's objective, output contract, source guidance, and boundaries.",
+});
 
 /**
  * Abort with a bounded wait. AgentSession.abort() awaits waitForIdle(), which
@@ -3928,6 +4295,7 @@ const subagentTool = defineTool({
 		cwd: Type.Optional(Type.String({ minLength: 1 })),
 		deadlineMinutes: Type.Optional(deadlineSchema),
 		budgetUsd: Type.Optional(budgetSchema),
+		sharedContext: Type.Optional(sharedContextSchema),
 	}),
 	executionMode: "parallel",
 	// Standard pi tool-rendering pattern: the tool row shows the crafted
@@ -3956,6 +4324,7 @@ const subagentTool = defineTool({
 				`cwd:      ${args.cwd ?? "inherit (session cwd)"}`,
 				`deadline: ${args.deadlineMinutes === undefined ? `default (${DEFAULT_DEADLINE_MINUTES}m)` : args.deadlineMinutes === 0 ? "none" : `${args.deadlineMinutes}m`}`,
 				`budget:   ${args.budgetUsd === undefined ? (DEFAULT_BUDGET_USD ? `default ($${DEFAULT_BUDGET_USD})` : "none") : args.budgetUsd === 0 ? "none" : `$${args.budgetUsd}`}`,
+				`shared:   ${args.sharedContext ? `${sharedContextSnapshotId(args.sharedContext)} (${Buffer.byteLength(args.sharedContext, "utf-8")} bytes, every worker)` : "none"}`,
 				"mode:     background + subagent_result notification",
 			];
 			const batch = args.tasks?.length
@@ -3998,6 +4367,15 @@ const subagentTool = defineTool({
 		if (hasTask === hasTasks) {
 			throw new Error("Provide exactly one dispatch form: `task` for one worker or non-empty `tasks` for a batch.");
 		}
+		const sharedContext = params.sharedContext ?? "";
+		const sharedContextBytes = Buffer.byteLength(sharedContext, "utf-8");
+		if (sharedContextBytes > SHARED_CONTEXT_CAP_BYTES) {
+			// The whole dispatch fails before worker setup: a batch must not run with
+			// some workers holding the snapshot and others not.
+			throw new Error(
+				`sharedContext is ${sharedContextBytes} bytes; the limit is ${SHARED_CONTEXT_CAP_BYTES} bytes of UTF-8. No worker was dispatched.`,
+			);
+		}
 		const defaults = {
 			model: params.model,
 			thinking: params.thinking,
@@ -4006,6 +4384,7 @@ const subagentTool = defineTool({
 			deadlineMinutes: params.deadlineMinutes,
 			budgetUsd: params.budgetUsd,
 		};
+		// Every worker of this dispatch receives the same snapshot bytes.
 		const tasks: DispatchTask[] = params.tasks?.length
 			? params.tasks.map((task) => ({
 					task: task.task,
@@ -4015,6 +4394,7 @@ const subagentTool = defineTool({
 					cwd: task.cwd ?? defaults.cwd,
 					deadlineMinutes: task.deadlineMinutes ?? defaults.deadlineMinutes,
 					budgetUsd: task.budgetUsd ?? defaults.budgetUsd,
+					sharedContext,
 				}))
 			: [
 					{
@@ -4025,6 +4405,7 @@ const subagentTool = defineTool({
 						cwd: defaults.cwd,
 						deadlineMinutes: defaults.deadlineMinutes,
 						budgetUsd: defaults.budgetUsd,
+						sharedContext,
 					},
 				];
 
@@ -4057,7 +4438,10 @@ const subagentTool = defineTool({
 			}
 			const thinking = outcome.record ? thinkingLabel(outcome.record) : "thinking:?";
 			const setup = setupDiagnosticsLine(outcome.record);
-			return `${outcome.id} · background · ${outcome.record?.model ?? "?"} · ${thinking} · cwd:${outcome.record?.cwd ?? "?"}${setup ? `\n    ${setup}` : ""}`;
+			const shared = outcome.record?.sharedContextId
+				? ` · shared:${outcome.record.sharedContextId} (${outcome.record.sharedContextBytes}B)`
+				: "";
+			return `${outcome.id} · background · ${outcome.record?.model ?? "?"} · ${thinking} · cwd:${outcome.record?.cwd ?? "?"}${shared}${setup ? `\n    ${setup}` : ""}`;
 		});
 		const started = outcomes.filter((outcome) => outcome.state === "running").length;
 		const guidance =
@@ -4081,12 +4465,65 @@ const subagentTool = defineTool({
 					deadlineMinutes: outcome.record?.deadlineMinutes ?? null,
 					budgetUsd: outcome.record?.budgetUsd ?? null,
 					sessionId: outcome.record?.sessionId ?? null,
+					sharedContextId: outcome.record?.sharedContextId ?? null,
+					sharedContextBytes: outcome.record?.sharedContextBytes ?? 0,
 					error: outcome.error ?? null,
 					setupDiagnostics: outcome.record?.setupDiagnostics ?? [],
 					capabilities: modelCapabilities(ctx, outcome.record?.model ?? null),
 				})),
 			},
 		};
+	},
+});
+
+const reportTool = defineTool({
+	name: "subagent_report",
+	label: "Subagent Report",
+	description: [
+		"Send one interim report from a running worker to the session that dispatched it. Only a subagent worker can use it; any other session gets an explicit failure.",
+		"The report does not end your run, does not replace submit_result, and grants no authority. Your final deliverable must still be self-contained.",
+		"Report a consequential fact, a blocking question, or a correction the parent needs before your result arrives. Do not send progress heartbeats.",
+		`The message accepts at most ${REPORT_MESSAGE_CAP_BYTES} bytes of UTF-8; a larger message is refused and nothing is sent.`,
+		"A returned call means sent_unconfirmed: the send call returned. It does not confirm that the parent received, read, or acted on the report.",
+	].join(" "),
+	promptSnippet:
+		"subagent_report(message) — worker only: send one interim report to the dispatching session. Does not end the run and does not replace submit_result.",
+	promptGuidelines: [
+		"Use subagent_report when the parent needs a fact, blocker, or question before your final result, not for progress updates.",
+		"A delivered report is sent_unconfirmed: never assume the parent has read or acted on it.",
+	],
+	parameters: Type.Object({
+		message: Type.String({
+			minLength: 1,
+			description: `The interim report, in markdown. At most ${REPORT_MESSAGE_CAP_BYTES} bytes of UTF-8. State the fact or question and what it changes for the parent.`,
+		}),
+	}),
+	executionMode: "parallel",
+	async execute(
+		_toolCallId: string,
+		params: { message: string },
+		_signal: AbortSignal | undefined,
+		_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
+		ctx: ExtensionContext,
+	) {
+		void _signal;
+		void _onUpdate;
+		let sessionId = "";
+		try {
+			sessionId = ctx.sessionManager.getSessionId();
+		} catch {
+			// An unidentifiable session cannot be a linked worker; sendWorkerReport
+			// reports that as the missing-parent failure.
+		}
+		const outcome = sendWorkerReport(sessionId, params.message);
+		// Pi sets the error flag only when execute throws.
+		if (!outcome.ok) throw new Error(capUtf8(capLines(outcome.error, 1_900).text, REPORT_MESSAGE_CAP_BYTES).text);
+		const result = {
+			content: [{ type: "text" as const, text: outcome.text }],
+			details: outcome.details,
+		};
+		assertReportPayloadBound(result);
+		return result;
 	},
 });
 
@@ -4281,7 +4718,7 @@ const continueTool = defineTool({
 	label: "Subagent Continue",
 	description: [
 		"Continue a terminal subagent as a new linked background worker while preserving the source record, result, and transcript.",
-		"The new worker forks the retained Pi session, uses its parent-resolvable bootstrap model, and inherits thinking, tools, and cwd. Target session_start hooks can select the source's actual target-only model again. It returns a new stable id after setup completes. Running workers must be steered or interrupted instead.",
+		"The new worker forks the retained Pi session, uses its parent-resolvable bootstrap model, and inherits thinking, cwd, and the source's full recorded tool surface. Missing recorded tools or source metadata, changed registration sources, and unreadable source files fail before provider work, naming each unavailable tool and source. Continuation never runs on a narrowed surface or substitutes a same-name source. Target session_start hooks can select the source's actual target-only model again. It returns a new stable id after setup completes. Running workers must be steered or interrupted instead.",
 	].join(" "),
 	promptSnippet: "Continue a terminal subagent as a new linked background worker.",
 	parameters: Type.Object({
@@ -4304,15 +4741,13 @@ const continueTool = defineTool({
 			// Pi sets the error flag only when execute throws.
 			throw new Error(`Failed to continue ${params.id}${linked}: ${outcome.error}${setup ? ` · ${setup}` : ""}`);
 		}
-		const dropped = outcome.record?.droppedTools ?? [];
-		const degradation = dropped.length > 0 ? ` Dropped unavailable tools: ${dropped.join(", ")}.` : "";
 		const setup = setupDiagnosticsLine(outcome.record);
 		const setupReport = setup ? ` ${setup}` : "";
 		return {
 			content: [
 				{
 					type: "text",
-					text: `Continued ${params.id} as ${outcome.id}.${degradation}${setupReport} The new worker is running in the background and will notify on completion.`,
+					text: `Continued ${params.id} as ${outcome.id} on its full recorded tool surface.${setupReport} The new worker is running in the background and will notify on completion.`,
 				},
 			],
 			details: { sourceId: params.id, worker: outcome.record },
@@ -4356,6 +4791,9 @@ async function shutdownOwnedSession(ownerSession: string): Promise<void> {
 	// A closing session cannot accept a completion turn. Remove delivery before
 	// any abort can settle an owned worker as owner_lost.
 	sessionApis.delete(ownerSession);
+	// A closing session stops accepting reports too; a later report fails
+	// explicitly in the worker rather than reaching a dead delivery path.
+	sharedWorkerState.reportSinks?.delete(ownerSession);
 	replacingSessions.add(ownerSession);
 	try {
 		const workers = [...liveWorkers.entries()].filter(([, live]) => live.record.ownerSession === ownerSession);
@@ -4387,6 +4825,7 @@ async function shutdownOwnedSession(ownerSession: string): Promise<void> {
 	} finally {
 		clearSubagentStatus(ownerSession);
 		sharedWorkerState.workerSessionIds.delete(ownerSession);
+		unlinkWorkerOwner(ownerSession);
 		replacingSessions.delete(ownerSession);
 	}
 }
@@ -4403,6 +4842,9 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(continueTool);
 	pi.registerTool(collectTool);
 	pi.registerTool(killTool);
+	// The reporter is a normal registration, so an inherited worker surface
+	// carries it and an explicit allowlist carries it only when it is named.
+	pi.registerTool(reportTool);
 
 	pi.registerCommand("subagent", {
 		description:
@@ -4427,7 +4869,7 @@ export default function (pi: ExtensionAPI) {
 								id: outcome.error ? null : outcome.id || null,
 								text: outcome.error
 									? `Failed to continue ${id}${outcome.id ? ` as ${outcome.id}` : ""}: ${outcome.error}`
-									: `Continued ${id} as ${outcome.id}${outcome.record?.droppedTools.length ? `. Dropped unavailable tools: ${outcome.record.droppedTools.join(", ")}.` : ""}`,
+									: `Continued ${id} as ${outcome.id} on its full recorded tool surface.`,
 							};
 						},
 						report: workerReport,
@@ -4480,7 +4922,18 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
+		initializeWorkerRuntimeState(sharedWorkerState);
 		sessionApis.set(sessionId, pi);
+		// Every session can dispatch workers, so every session owns one report sink
+		// for the workers it dispatches. A worker's own sink serves its nested
+		// workers, which keeps a report with its immediate parent.
+		sharedWorkerState.reportSinks.set(sessionId, (envelope) => {
+			pi.sendMessage(
+				workerReportMessage(envelope),
+				// Steering delivery while the parent runs; a new turn while it is idle.
+				{ deliverAs: "steer", triggerTurn: true },
+			);
+		});
 		if (sharedWorkerState.workerSessionIds.has(sessionId)) {
 			recordWorkerSurface(sessionId, pi.getActiveTools(), pi.getAllTools());
 			return;

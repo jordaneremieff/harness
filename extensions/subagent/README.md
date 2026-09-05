@@ -27,6 +27,7 @@ and the repository pins no Pi version.
 | Tool | Mode | Purpose |
 |---|---|---|
 | `subagent` | parallel | Dispatch one task or a `tasks[]` batch. The call returns a stable id after worker setup; the model run starts in the background. Per-task `deadlineMinutes` (defaulted) and `budgetUsd` (opt-in) pause a worker that overruns the agent's own estimate. |
+| `subagent_report` | parallel | Send a bounded, nonterminal report to the immediate parent. Worker-only; a returned call reports `sent_unconfirmed`, not acknowledged receipt. |
 | `subagent_status` | parallel | Live workers + recent terminal workers: id, state, model, thinking, elapsed, turns, tool calls, current tool, session-file write age, cost, output preview, error. |
 | `subagent_inspect` | parallel | One worker's record plus a bounded, rendered transcript tail: recent turns, tool inputs and outcomes, assistant errors, session path, and explicit truncation markers. Reads an in-process snapshot for any live worker in this process; otherwise reads the active branch from the retained session file. |
 | `subagent_steer` | sequential | Redirect a live worker: the message is delivered after the worker's current tool call, before its next model call. On an idle (interrupted) worker, steer instead resumes the run with your message. Owning session only. |
@@ -68,6 +69,15 @@ determines what the worker can do there.
 Use exactly one dispatch form: `task` for one worker or a non-empty `tasks`
 array for a batch. Per-task fields: `task` (required), `model`, `thinking`,
 `tools`, `cwd`, `deadlineMinutes`, `budgetUsd`.
+
+Optional top-level `sharedContext` supplies one text snapshot to the whole
+dispatch. Every worker receives the exact supplied bytes ahead of its own task.
+The limit is 16 KiB of UTF-8; oversize input rejects the whole dispatch before
+worker setup. Worker records and dispatch details retain a digest identifier
+(`sharedContextId`) and byte size (`sharedContextBytes`). The extension does not
+parse the content or replace the worker's objective, output contract, source
+guide, or task boundary. Cwd resources, tool selection, provider resolution,
+project trust, and task permissions remain unchanged.
 
 - **model** — bare id or `provider/id`, checked against registry availability
   and configured auth. Omitted: inherits the parent's current model. Model
@@ -209,6 +219,35 @@ threw are listed as `worker setup:` on that worker's dispatch line, repeated on
 a continuation's result line, and kept in its record as `setupDiagnostics`.
 The retained list has entry and UTF-8 byte bounds. The record keeps the number
 of diagnostics omitted beyond those bounds as `setupDiagnosticsDropped`.
+
+## Interim reports
+
+A worker calls `subagent_report({message})` for a consequential fact, question,
+or correction that its immediate parent needs before completion. The message
+accepts at most 8 KiB of UTF-8. A larger message fails without sending anything.
+Reports do not end the worker, replace `submit_result`, or grant authority. The
+final submission must remain self-contained for later collection.
+
+The report envelope names the worker, worker session, immediate parent session,
+report number, time, model, and worker-authored provenance. The full payload,
+including structured details and JSON escaping, stays within 50 KiB and 2,000
+lines. Visible text truncation carries a marker. Oversized metadata fails
+explicitly instead of removing provenance. Terminal and direction controls are
+removed from the displayed worker text.
+
+The owning session receives a public Pi custom message with `deliverAs: "steer"`
+and `triggerTurn: true`. It steers an active parent or starts a turn in an idle
+parent. The synchronous send returning proves only `sent_unconfirmed`, not
+receipt, processing, or action. Pi reports later asynchronous failures through
+its own extension error path. A missing parent, a nonworker caller, and a
+synchronous delivery error produce explicit tool failures.
+
+The reporter is a normal file-backed registration. Normal inheritance carries
+it when active in the parent. An explicit allowlist carries it only when
+`subagent_report` is named; `tools: []` still yields only `submit_result`.
+Process-local owner links and report sinks follow session startup and shutdown.
+Reloaded module instances initialize absent slots without replacing existing
+live maps. This state is not a persisted store or a data migration.
 
 ## Worker lifecycle
 
@@ -392,9 +431,14 @@ The continuation contract is evidence-preserving:
   preserved history, with Pi's `parentSession` link to the source file;
 - the new worker gets a new `bg-*` id, result file, ownership metadata, and
   `continuedFrom` link;
-- the parent-resolvable bootstrap model, tool surface, cwd, and run limits carry
-  from the source and are revalidated against the current session before
-  provider work starts;
+- the parent-resolvable bootstrap model, full recorded tool surface, cwd, and
+  run limits carry from the source and are revalidated before provider work;
+- every recorded tool must exist with its exact recorded registration source;
+  absent tools, changed sources, absent source metadata, and unreadable source
+  files stop continuation before setup or provider work, with each unavailable
+  tool and source named. Continuation never drops a tool or substitutes a
+  same-name registration from another source. A record without its resolved
+  surface cannot establish continuation fidelity; dispatch a new worker instead;
 - the source's active thinking level carries when the bootstrap model supports
   it; otherwise Pi's closest supported level starts the session;
 - target `session_start` hooks can select the source's actual target-only model

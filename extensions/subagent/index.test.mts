@@ -46,8 +46,13 @@ process.env.HOME = testHome;
 const {
 	default: registerSubagent,
 	armBoundedTimeout,
+	assertReportPayloadBound,
+	initializeWorkerRuntimeState,
+	workerReportMessage,
+	capLines,
 	capUtf8,
 	collectWorker,
+	composeWorkerPrompt,
 	compactionVeto,
 	currentToolLabel,
 	completionNeedsNotification,
@@ -61,8 +66,13 @@ const {
 	notifyCompletion,
 	parentToolSurface,
 	projectTrustInputs,
+	linkWorkerOwner,
 	recordWorkerSurface,
+	sendWorkerReport,
 	serviceDiagnostics,
+	sharedContextSnapshotId,
+	unlinkWorkerOwner,
+	workerReportEnvelopeText,
 	setupDiagnosticsLine,
 	shutdownWorkerSession,
 	thinkingLabel,
@@ -144,7 +154,9 @@ function runningRecord(id: string, extra: Record<string, unknown> = {}): Record<
 		lastOutput: null,
 		currentTool: null,
 		resolvedTools: [],
-		droppedTools: [],
+		toolSources: {},
+		sharedContextId: null,
+		sharedContextBytes: 0,
 		setupDiagnostics: [],
 		setupDiagnosticsDropped: 0,
 		sessionId: "s-1",
@@ -953,7 +965,7 @@ describe("pruneTerminalWorkers", () => {
 // ---------------------------------------------------------------------------
 
 describe("continuation session manager", () => {
-	it("reports the recorded tool gap when no continuation tool survives", async () => {
+	it("refuses to continue on a narrowed surface and names each unavailable tool with its recorded source", async () => {
 		const id = "bg-contgap";
 		const sessionId = "sess-continuation-gap";
 		const sessionFile = join(agentDir, "continuation-gap.jsonl");
@@ -964,18 +976,161 @@ describe("continuation session manager", () => {
 				state: "done",
 				exitedAt: Date.now(),
 				sessionFile,
-				resolvedTools: ["missing_tool", "submit_result"],
+				// One recorded tool survives and one does not: a continuation that ran
+				// the survivor alone would look like the same worker and would not be.
+				resolvedTools: ["kept_tool", "missing_tool", "submit_result"],
+				toolSources: {
+					kept_tool: "builtin/<builtin:kept_tool>",
+					missing_tool: "local/tools/missing-extension.ts",
+				},
 			}),
 		);
-		recordWorkerSurface(sessionId, ["current_tool"], []);
+		recordWorkerSurface(sessionId, ["kept_tool"], [
+			{
+				name: "kept_tool",
+				description: "kept tool",
+				parameters: {},
+				sourceInfo: { source: "builtin", path: "<builtin:kept_tool>", scope: "temporary", origin: "top-level" },
+			},
+		] as never);
 		try {
 			const outcome = await continueWorker(id, "continue the task", {
 				sessionManager: { getSessionId: () => sessionId },
 			} as never);
 			assert.equal(outcome.id, "");
 			assert.equal(outcome.state, "failed");
-			assert.match(outcome.error ?? "", /missing_tool/);
-			assert.match(outcome.error ?? "", /none of its recorded tools/);
+			assert.match(outcome.error ?? "", /Unavailable: missing_tool \(local\/tools\/missing-extension\.ts\)/);
+			assert.doesNotMatch(outcome.error ?? "", /kept_tool/);
+			assert.match(outcome.error ?? "", /never runs on a narrowed surface/);
+			assert.equal(readWorker(id)?.state, "done", "the source record stays terminal and unchanged");
+		} finally {
+			sharedWorkerState.workerSurfaces.delete(sessionId);
+		}
+	});
+
+	it("names a recorded tool without a recorded source instead of inventing one", async () => {
+		const id = "bg-contnosrc";
+		const sessionId = "sess-continuation-nosource";
+		const sessionFile = join(agentDir, "continuation-nosource.jsonl");
+		writeFileSync(sessionFile, "{}\n", "utf-8");
+		seedWorker(
+			id,
+			runningRecord(id, {
+				state: "done",
+				exitedAt: Date.now(),
+				sessionFile,
+				resolvedTools: ["gone_tool", "submit_result"],
+			}),
+		);
+		recordWorkerSurface(sessionId, ["gone_tool"], [
+			{
+				name: "gone_tool",
+				description: "tool with absent source evidence",
+				parameters: {},
+				sourceInfo: { source: "builtin", path: "<builtin:gone_tool>", scope: "temporary", origin: "top-level" },
+			},
+		] as never);
+		try {
+			const outcome = await continueWorker(id, "continue the task", {
+				sessionManager: { getSessionId: () => sessionId },
+			} as never);
+			assert.match(outcome.error ?? "", /gone_tool \(registration source not recorded\)/);
+		} finally {
+			sharedWorkerState.workerSurfaces.delete(sessionId);
+		}
+	});
+
+	for (const scenario of ["changed", "unreadable"] as const) {
+		it(`refuses a ${scenario} recorded registration source before model resolution`, async () => {
+			const id = `bg-cont${scenario}`;
+			const sessionId = `sess-cont-${scenario}`;
+			const sessionFile = join(agentDir, `${scenario}-session.jsonl`);
+			const sourcePath = join(agentDir, `${scenario}-source.ts`);
+			const replacementPath = join(agentDir, `${scenario}-replacement.ts`);
+			writeFileSync(sessionFile, "{}\n");
+			writeFileSync(replacementPath, "export default function () {}\n");
+			seedWorker(
+				id,
+				runningRecord(id, {
+					state: "done",
+					exitedAt: Date.now(),
+					sessionFile,
+					resolvedTools: ["retained_tool", "submit_result"],
+					toolSources: { retained_tool: `local/${sourcePath}` },
+				}),
+			);
+			recordWorkerSurface(sessionId, ["retained_tool"], [
+				{
+					name: "retained_tool",
+					description: "retained tool",
+					parameters: {},
+					sourceInfo: {
+						source: "local",
+						path: scenario === "changed" ? replacementPath : sourcePath,
+						scope: "temporary",
+						origin: "top-level",
+					},
+				},
+			] as never);
+			const before = listWorkers().length;
+			const sourceBefore = readFileSync(join(dirname(workerFiles(id).result), "worker.json"), "utf-8");
+			try {
+				const outcome = await continueWorker(id, "continue the task", {
+					sessionManager: { getSessionId: () => sessionId },
+					get modelRegistry() {
+						throw new Error("model resolution must not start");
+					},
+				} as never);
+				assert.equal(outcome.state, "failed");
+				assert.equal(outcome.id, "");
+				assert.ok(outcome.error?.includes(`retained_tool (local/${sourcePath})`));
+				assert.match(outcome.error ?? "", scenario === "changed" ? /source changed/ : /source unreadable.*ENOENT/);
+				assert.equal(listWorkers().length, before);
+				assert.equal(readFileSync(join(dirname(workerFiles(id).result), "worker.json"), "utf-8"), sourceBefore);
+			} finally {
+				sharedWorkerState.workerSurfaces.delete(sessionId);
+			}
+		});
+	}
+
+	it("passes the tool gate when every recorded tool is present", async () => {
+		const id = "bg-contfull";
+		const sessionId = "sess-continuation-full";
+		const sessionFile = join(agentDir, "continuation-full.jsonl");
+		writeFileSync(sessionFile, "{}\n", "utf-8");
+		seedWorker(
+			id,
+			runningRecord(id, {
+				state: "done",
+				exitedAt: Date.now(),
+				sessionFile,
+				bootstrapModel: "test/gone-model",
+				resolvedTools: ["kept_tool", "submit_result"],
+				toolSources: { kept_tool: "builtin/<builtin:kept_tool>" },
+			}),
+		);
+		recordWorkerSurface(sessionId, ["kept_tool"], [
+			{
+				name: "kept_tool",
+				description: "kept tool",
+				parameters: {},
+				sourceInfo: { source: "builtin", path: "<builtin:kept_tool>", scope: "temporary", origin: "top-level" },
+			},
+		] as never);
+		try {
+			const outcome = await continueWorker(id, "continue the task", {
+				sessionManager: { getSessionId: () => sessionId },
+				modelRegistry: {
+					find: () => null,
+					getAvailable: () => [],
+					hasConfiguredAuth: () => false,
+				},
+			} as never);
+			// The surface check passed; the next gate (the bootstrap model) is what
+			// stops this fixture, so no continuation ran on a narrowed surface.
+			assert.equal(outcome.state, "failed");
+			assert.match(outcome.error ?? "", /test\/gone-model/);
+			assert.doesNotMatch(outcome.error ?? "", /narrowed surface/);
 		} finally {
 			sharedWorkerState.workerSurfaces.delete(sessionId);
 		}
@@ -1004,6 +1159,271 @@ describe("continuation session manager", () => {
 		const header = JSON.parse(readFileSync(forkFile, "utf-8").split("\n")[0]);
 		assert.equal(header.parentSession, sourceFile);
 		rmSync(forkFile, { force: true });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Shared dispatch context — one snapshot, the same bytes for every worker
+// ---------------------------------------------------------------------------
+
+describe("shared dispatch context", () => {
+	it("identifies a snapshot by its exact bytes", () => {
+		const snapshot = "outcome: repair the stale claims\nboundary: docs only";
+		assert.equal(sharedContextSnapshotId(snapshot), sharedContextSnapshotId(snapshot));
+		assert.notEqual(sharedContextSnapshotId(snapshot), sharedContextSnapshotId(`${snapshot} `));
+		assert.match(sharedContextSnapshotId(snapshot), /^sc-[0-9a-f]{12}$/);
+	});
+
+	it("delivers the snapshot verbatim ahead of the worker's own task", () => {
+		const snapshot = "line one\n\tline two with \u00e9 and \u4e2d\u6587";
+		const id = sharedContextSnapshotId(snapshot);
+		const prompt = composeWorkerPrompt("do the third slice", snapshot, id);
+		assert.ok(prompt.includes(snapshot), "the snapshot text must appear byte for byte");
+		assert.ok(prompt.includes(id), "the worker sees which snapshot it received");
+		assert.ok(
+			prompt.indexOf(snapshot) < prompt.indexOf("do the third slice"),
+			"shared context comes first, the worker's own task second",
+		);
+		// No snapshot means no framing at all: an ordinary dispatch is unchanged.
+		assert.equal(composeWorkerPrompt("do the third slice", "", null), "do the third slice");
+	});
+
+	it("refuses an oversize snapshot before a worker exists", async () => {
+		const sessionId = "sess-shared-context-cap";
+		recordWorkerSurface(sessionId, [], []);
+		const before = listWorkers().length;
+		try {
+			const outcome = await dispatchWorker(
+				{ task: "oversize snapshot", sharedContext: "x".repeat(16 * 1024 + 1) },
+				{ cwd: agentDir },
+				{
+					...dispatchCtx(registryModel()),
+					sessionManager: { getSessionId: () => sessionId },
+				} as never,
+			);
+			assert.equal(outcome.id, "");
+			assert.equal(outcome.state, "failed");
+			assert.equal(outcome.record, null);
+			assert.match(outcome.error ?? "", /sharedContext is 16385 bytes; the limit is 16384 bytes/);
+			assert.equal(listWorkers().length, before, "no worker record may be created for a refused dispatch");
+		} finally {
+			sharedWorkerState.workerSurfaces.delete(sessionId);
+		}
+	});
+
+	it("measures the cap in UTF-8 bytes, not characters", async () => {
+		const sessionId = "sess-shared-context-bytes";
+		recordWorkerSurface(sessionId, [], []);
+		try {
+			// Four-byte characters cross the UTF-8 cap before the character count does.
+			const outcome = await dispatchWorker(
+				{ task: "multibyte snapshot", sharedContext: "\u{1f600}".repeat(4_097) },
+				{ cwd: agentDir },
+				{
+					...dispatchCtx(registryModel()),
+					sessionManager: { getSessionId: () => sessionId },
+				} as never,
+			);
+			assert.match(outcome.error ?? "", /sharedContext is 16388 bytes/);
+		} finally {
+			sharedWorkerState.workerSurfaces.delete(sessionId);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Interim reports — nonterminal, owner-routed, explicitly unconfirmed
+// ---------------------------------------------------------------------------
+
+describe("interim worker reports", () => {
+	const workerSession = "sess-report-worker";
+	const ownerSession = "sess-report-owner";
+
+	function linkedWorker(sink?: (envelope: unknown) => void): () => void {
+		linkWorkerOwner(workerSession, {
+			workerId: "bg-report1",
+			ownerSession,
+			model: "test/model-a",
+		});
+		if (sink) sharedWorkerState.reportSinks.set(ownerSession, sink as never);
+		return () => {
+			unlinkWorkerOwner(workerSession);
+			sharedWorkerState.reportSinks.delete(ownerSession);
+		};
+	}
+
+	it("refuses a session that is not a worker", () => {
+		const outcome = sendWorkerReport("sess-not-a-worker", "anything");
+		assert.equal(outcome.ok, false);
+		if (outcome.ok) return;
+		assert.match(outcome.error, /not a running subagent worker/);
+	});
+
+	it("reports a parent that no longer accepts messages instead of dropping the report", () => {
+		const cleanup = linkedWorker();
+		try {
+			const outcome = sendWorkerReport(workerSession, "the parent is gone");
+			assert.equal(outcome.ok, false);
+			if (outcome.ok) return;
+			assert.match(outcome.error, /no longer accepts messages/);
+			assert.match(outcome.error, new RegExp(ownerSession));
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("refuses an oversize message without sending anything", () => {
+		let sends = 0;
+		const cleanup = linkedWorker(() => {
+			sends++;
+		});
+		try {
+			const outcome = sendWorkerReport(workerSession, "y".repeat(8 * 1024 + 1));
+			assert.equal(outcome.ok, false);
+			if (outcome.ok) return;
+			assert.match(outcome.error, /8193 bytes and the limit is 8192 bytes/);
+			assert.equal(sends, 0, "an oversize report must not be truncated and sent");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("accepts the UTF-8 message limit with bounded lines and refuses multibyte overflow", () => {
+		const envelopes: any[] = [];
+		const cleanup = linkedWorker((envelope) => envelopes.push(envelope));
+		try {
+			const accepted = sendWorkerReport(workerSession, "x\n".repeat(4_096));
+			assert.equal(accepted.ok, true);
+			assert.equal(envelopes.length, 1);
+			assertReportPayloadBound(workerReportMessage(envelopes[0]));
+			assertReportPayloadBound(accepted);
+			assert.match(envelopes[0].text, /truncated/);
+			const refused = sendWorkerReport(workerSession, "😀".repeat(2_049));
+			assert.equal(refused.ok, false);
+			if (!refused.ok) assert.match(refused.error, /8196 bytes/);
+			assert.equal(envelopes.length, 1, "an oversize message sends nothing");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("routes a numbered, provenance-marked envelope to the immediate parent", () => {
+		const envelopes: any[] = [];
+		const cleanup = linkedWorker((envelope) => envelopes.push(envelope));
+		try {
+			const first = sendWorkerReport(workerSession, "the second document already matches its source");
+			assert.equal(first.ok, true);
+			if (!first.ok) return;
+			assert.match(first.text, /sent_unconfirmed/);
+			assert.match(first.text, /does not replace submit_result/);
+			assert.equal(first.details.status, "sent_unconfirmed");
+			assert.equal(first.details.reportNumber, 1);
+			assert.equal(first.details.ownerSession, ownerSession);
+			assert.equal(envelopes.length, 1);
+			assert.equal(envelopes[0].workerId, "bg-report1");
+			assert.equal(envelopes[0].ownerSession, ownerSession);
+			assert.match(envelopes[0].text, /interim report #1/);
+			assert.match(envelopes[0].text, /worker-authored content begins/);
+			assert.match(envelopes[0].text, /the second document already matches its source/);
+			assert.match(envelopes[0].text, /not a submitted result; the worker is still running/);
+
+			const second = sendWorkerReport(workerSession, "a second finding");
+			assert.equal(second.ok, true);
+			if (!second.ok) return;
+			assert.equal(second.details.reportNumber, 2, "reports are numbered per worker");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("neutralizes terminal control sequences in worker text", () => {
+		const envelopes: any[] = [];
+		const cleanup = linkedWorker((envelope) => envelopes.push(envelope));
+		try {
+			sendWorkerReport(workerSession, "\u001b[31mred\u001b[0m and \u202ereversed\u202c");
+			assert.ok(!envelopes[0].text.includes("\u001b[31m"), "escape sequences must not reach the parent view");
+			assert.ok(!envelopes[0].text.includes("\u202e"), "direction controls must not reach the parent view");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("keeps a failed delivery explicit and does not consume the report number", () => {
+		const cleanup = linkedWorker(() => {
+			throw new Error("queue closed");
+		});
+		try {
+			const failed = sendWorkerReport(workerSession, "undeliverable");
+			assert.equal(failed.ok, false);
+			if (failed.ok) return;
+			assert.match(failed.error, /failed to deliver/);
+			assert.match(failed.error, /queue closed/);
+			assert.equal(sharedWorkerState.workerOwners.get(workerSession)?.reports, 0);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("bounds the rendered envelope by lines as well as bytes", () => {
+		const capped = capLines("line\n".repeat(3_000), 2_000);
+		assert.equal(capped.truncated, true);
+		assert.equal(capped.text.split("\n").length, 2_000);
+		assert.match(capped.text, /\[truncated: \d+ more line\(s\) omitted\]$/);
+		assert.equal(capLines("one\ntwo", 2_000).truncated, false);
+
+		const envelope = workerReportEnvelopeText({
+			workerId: "bg-report1",
+			model: "test/model-a",
+			reportNumber: 7,
+			sentAt: 0,
+			ownerSession,
+			message: "x\n".repeat(4_000),
+		});
+		assert.ok(envelope.split("\n").length <= 2_000);
+		assert.ok(Buffer.byteLength(envelope, "utf-8") <= 50 * 1024);
+	});
+
+	it("bounds the whole public message including large details before sending", () => {
+		const envelope = {
+			workerId: "bg-bounded",
+			workerSession,
+			ownerSession,
+			reportNumber: 1,
+			sentAt: 0,
+			messageBytes: 1,
+			text: "small report",
+			model: "x".repeat(30_000),
+		};
+		const bounded = workerReportMessage(envelope);
+		assertReportPayloadBound(bounded);
+		assert.ok(Buffer.byteLength(JSON.stringify(bounded, null, 2)) <= 50 * 1024);
+		assert.throws(() => workerReportMessage({ ...envelope, model: "x".repeat(51_200) }), /including details/);
+		assert.throws(() => workerReportMessage({ ...envelope, model: "x\n".repeat(2_001) }), /including details/);
+		let sends = 0;
+		const cleanup = linkedWorker(() => {
+			sends++;
+		});
+		try {
+			linkWorkerOwner(workerSession, { workerId: "bg-report1", ownerSession, model: "x".repeat(51_200) });
+			const refused = sendWorkerReport(workerSession, "short");
+			assert.equal(refused.ok, false);
+			assert.equal(sends, 0);
+			assertReportPayloadBound(refused);
+			if (!refused.ok) assert.match(refused.error, /including details/);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("drops the reporting link when the worker session is released", () => {
+		const cleanup = linkedWorker(() => undefined);
+		unlinkWorkerOwner(workerSession);
+		try {
+			const outcome = sendWorkerReport(workerSession, "after release");
+			assert.equal(outcome.ok, false);
+		} finally {
+			cleanup();
+		}
 	});
 });
 
@@ -1892,6 +2312,54 @@ describe("compaction veto", () => {
 		sharedWorkerState.submittedSessionIds.delete("sess-veto-wiring");
 	});
 
+	it("initializes process slots without replacing existing maps", () => {
+		const surfaces = new Map();
+		const state = initializeWorkerRuntimeState({ workerSurfaces: surfaces });
+		assert.equal(state.workerSurfaces, surfaces);
+		assert.equal(initializeWorkerRuntimeState(state), state);
+		state.workerOwners.set("child", { workerId: "bg-child", ownerSession: "owner", model: "test/model", reports: 0 });
+		state.reportSinks.set("owner", () => undefined);
+		assert.equal(state.workerOwners.delete("child"), true);
+		assert.equal(state.reportSinks.delete("owner"), true);
+	});
+
+	it("starts and shuts down when shared process maps are absent", async () => {
+		const owners = sharedWorkerState.workerOwners;
+		const sinks = sharedWorkerState.reportSinks;
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
+		const sessionId = "sess-missing-maps";
+		registerSubagent({
+			registerTool: () => undefined,
+			registerCommand: () => undefined,
+			on: (name: string, handler: any) => handlers.set(name, handler),
+			getActiveTools: () => [],
+			getAllTools: () => [],
+		} as never);
+		const ctx = { sessionManager: { getSessionId: () => sessionId } };
+		try {
+			delete (sharedWorkerState as any).workerOwners;
+			delete (sharedWorkerState as any).reportSinks;
+			assert.doesNotThrow(() => unlinkWorkerOwner("absent"));
+			assert.equal(sendWorkerReport("absent", "no owner").ok, false);
+			sharedWorkerState.workerSessionIds.add(sessionId);
+			await handlers.get("session_start")?.({}, ctx);
+			assert.equal(sharedWorkerState.reportSinks.has(sessionId), true);
+			linkWorkerOwner(sessionId, { workerId: "bg-missing", ownerSession: "parent", model: "test/model" });
+			assert.equal(sharedWorkerState.workerOwners.has(sessionId), true);
+			await handlers.get("session_shutdown")?.({}, ctx);
+			assert.equal(sharedWorkerState.reportSinks.has(sessionId), false);
+			assert.equal(sharedWorkerState.workerOwners.has(sessionId), false);
+			delete (sharedWorkerState as any).workerOwners;
+			delete (sharedWorkerState as any).reportSinks;
+			await handlers.get("session_shutdown")?.({}, ctx);
+		} finally {
+			sharedWorkerState.workerOwners = owners;
+			sharedWorkerState.reportSinks = sinks;
+			sharedWorkerState.workerSessionIds.delete(sessionId);
+			sharedWorkerState.workerSurfaces.delete(sessionId);
+		}
+	});
+
 	it("worker sessions own nested delivery and shutdown by session id", async () => {
 		const tools: Array<Record<string, any>> = [];
 		const handlers = new Map<string, unknown>();
@@ -2225,6 +2693,23 @@ describe("compaction veto", () => {
 				true,
 				`nested delivery child must pass: ${stdout}\n${stderr}`,
 			);
+		} finally {
+			rmSync(childCoverageDir, { recursive: true, force: true });
+		}
+	});
+
+	it("delivers shared context and reports into a real idle parent turn", async () => {
+		const childPath = join(dirname(fileURLToPath(import.meta.url)), "report-delivery-child.mts");
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const childCoverageDir = mkdtempSync(join(tmpdir(), "subagent-report-delivery-cov-"));
+		try {
+			const { stdout, stderr } = await promisify(execFile)(process.execPath, [childPath], {
+				encoding: "utf-8",
+				env: { ...process.env, NODE_V8_COVERAGE: childCoverageDir },
+				timeout: 30_000,
+			});
+			assert.ok(stdout.includes("report delivery child: PASS"), `${stdout}\n${stderr}`);
 		} finally {
 			rmSync(childCoverageDir, { recursive: true, force: true });
 		}
@@ -3452,6 +3937,45 @@ describe("registered tool surface", () => {
 			assert.deepEqual(empty.extensionPaths, []);
 		}
 
+		// The reporter follows normal tool authority: inherited when the parent has
+		// it, present in an allowlist only when named, absent from `tools: []`.
+		const withReporter = {
+			active: ["read", "subagent_report"],
+			all: [
+				...surface.all,
+				{
+					name: "subagent_report",
+					description: "interim report",
+					parameters: {},
+					promptGuidelines: [],
+					sourceInfo: {
+						path: extensionPath,
+						source: "local",
+						scope: "temporary",
+						origin: "top-level",
+					},
+				},
+			],
+		};
+		const inheritedReporter = resolveToolSurface(withReporter as any, undefined);
+		assert.equal("error" in inheritedReporter, false);
+		if (!("error" in inheritedReporter)) {
+			assert.ok(inheritedReporter.tools.includes("subagent_report"));
+		}
+		const reporterAllowlist = resolveToolSurface(withReporter as any, ["subagent_report"]);
+		assert.equal("error" in reporterAllowlist, false);
+		if (!("error" in reporterAllowlist)) {
+			assert.deepEqual(reporterAllowlist.tools, ["subagent_report", "submit_result"]);
+		}
+		const reporterlessAllowlist = resolveToolSurface(withReporter as any, ["read"]);
+		if (!("error" in reporterlessAllowlist)) {
+			assert.deepEqual(reporterlessAllowlist.tools, ["read", "submit_result"]);
+		}
+		const emptyWithReporter = resolveToolSurface(withReporter as any, []);
+		if (!("error" in emptyWithReporter)) {
+			assert.deepEqual(emptyWithReporter.tools, ["submit_result"]);
+		}
+
 		const builtinOnly = resolveToolSurface(surface as any, ["read"]);
 		assert.equal("error" in builtinOnly, false);
 		if (!("error" in builtinOnly)) {
@@ -3555,6 +4079,27 @@ describe("registered tool surface", () => {
 		);
 		assert.ok(tools.some((tool) => tool.name === "subagent_continue"));
 		assert.ok(tools.some((tool) => tool.name === "subagent_inspect"));
+		const reporter = tools.find((tool) => tool.name === "subagent_report");
+		assert.ok(reporter, "the reporter is a normal registration, so an inherited surface carries it");
+		assert.equal(reporter.parameters.properties.message.minLength, 1);
+		assert.match(reporter.description, /does not end your run/);
+		assert.match(reporter.description, /sent_unconfirmed/);
+		assert.equal(
+			"sharedContext" in dispatch.parameters.properties.tasks.items.properties,
+			false,
+			"the snapshot is one top-level field, not a per-task field",
+		);
+		assert.ok("sharedContext" in dispatch.parameters.properties);
+		await assert.rejects(
+			dispatch.execute(
+				"oversize-shared",
+				{ tasks: [{ task: "a" }, { task: "b" }], sharedContext: "z".repeat(16 * 1024 + 1) },
+				undefined,
+				undefined,
+				executeCtx,
+			),
+			/sharedContext is 16385 bytes.*No worker was dispatched/s,
+		);
 		assert.match(
 			tools.find((tool) => tool.name === "subagent_steer")?.description ?? "",
 			/idle interrupted worker.*fresh run/,
