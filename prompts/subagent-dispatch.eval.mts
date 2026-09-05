@@ -18,7 +18,7 @@ const suite: EvaluationSuite = {
 				description: "Load the subagent extension so the model dispatches background workers through its tool.",
 				config: {
 					extensions: [{ path: "../extensions/subagent/index.ts" }],
-					tools: ["bash"],
+					tools: ["bash", "subagent", "subagent_status", "subagent_collect"],
 				},
 			},
 			{
@@ -90,7 +90,8 @@ const suite: EvaluationSuite = {
 				seed: [
 					{
 						role: "user",
-						content: "Two unrelated facts need checking, and each check stands on its own.",
+						content:
+							"Two unrelated facts need checking: the current UTC year, and the current kernel name of this machine. Each check stands on its own.",
 					},
 					{
 						role: "assistant",
@@ -98,7 +99,7 @@ const suite: EvaluationSuite = {
 					},
 				],
 				prompt:
-					"Delegate both checks at once in a single subagent call. Put both checks in one batch as separate tasks, one worker per check, each with its own complete task text. Stop after dispatching.",
+					"Delegate both checks at once in a single subagent call. The first worker must run the command date -u +%Y and submit that year alone. The second worker must run the command uname -s and submit that name alone. Put both in one batch as separate tasks, one worker per check, each with its own complete task text. Stop after dispatching.",
 				fixture: {
 					toolName: "subagent",
 					batchField: "tasks",
@@ -130,7 +131,7 @@ const suite: EvaluationSuite = {
 	],
 	limits: {
 		wall: { runTimeoutMs: 900_000, executionTimeoutMs: 120_000 },
-		execution: { maxTotal: 32, maxTurnsEach: 2, maxOutputTokensEach: 2_048 },
+		execution: { maxTotal: 32, maxTurnsEach: 2, maxOutputTokensEach: 4_096 },
 		cost: { currency: "USD", maxObserved: 5, enforcement: "observed-after-each-execution", hardCap: false },
 	},
 	authority: {
