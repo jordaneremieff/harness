@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
 import type { Message, Model } from "@earendil-works/pi-ai";
@@ -12,6 +15,7 @@ import {
 	parseExtensionFlagValues,
 	piSdkAdapter,
 	runDeterministicChecks,
+	resolvePiCwd,
 	scorePostSeedPiTranscript,
 	summarizeUsage,
 } from "./pi-sdk.mts";
@@ -88,6 +92,107 @@ const toolEvents: TranscriptEvent[] = [
 ];
 
 describe("Pi session plan fidelity", () => {
+	it("keeps an omitted cwd isolated", () => {
+		assert.equal(resolvePiCwd({ id: "isolated", description: "", config: {} }, import.meta.filename), undefined);
+	});
+
+	it("resolves an explicit cwd relative to the suite and includes it in subject evidence", () => {
+		const variant = { id: "workspace", description: "", config: { cwd: "." } };
+		const cwd = realpathSync(dirname(import.meta.filename));
+		assert.equal(resolvePiCwd(variant, import.meta.filename), cwd);
+		const resolution = piSdkAdapter.resolve({
+			suitePath: import.meta.filename,
+			subjectKind: "adhoc",
+			subjectConfig: {},
+			variant,
+		}) as { cwd: string };
+		assert.equal(resolution.cwd, cwd);
+	});
+
+	it("rejects malformed, missing, and non-directory cwd inputs before runtime creation", () => {
+		for (const cwd of ["", " ", 1, null, [], {}]) {
+			assert.throws(
+				() => resolvePiCwd({ id: "bad", description: "", config: { cwd } }, import.meta.filename),
+				/variant bad.config.cwd must be a non-empty directory path/,
+			);
+		}
+		assert.throws(
+			() => resolvePiCwd({ id: "bad", description: "", config: { cwd: import.meta.filename } }, import.meta.filename),
+			/must resolve to a directory/,
+		);
+		assert.throws(
+			() => resolvePiCwd({ id: "bad", description: "", config: { cwd: "absent-cwd-fixture" } }, import.meta.filename),
+			/ENOENT/,
+		);
+	});
+
+	it("uses the selected cwd through the real SDK lifecycle and preserves it during cleanup", async () => {
+		const root = mkdtempSync(join(tmpdir(), "eval-cwd-"));
+		const cwd = join(root, "workspace");
+		const extension = join(root, "fixture.ts");
+		mkdirSync(cwd);
+		writeFileSync(join(cwd, "sentinel.txt"), "preserved");
+		writeFileSync(
+			extension,
+			`import { writeFileSync } from "node:fs";
+export default function (pi) {
+  pi.registerProvider("cwd-fixture", {
+    api: "openai-completions", baseUrl: "https://provider.invalid", apiKey: "synthetic-not-a-credential",
+    models: [{ id: "fixture", name: "Fixture", reasoning: false, input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 16384, maxTokens: 1024 }],
+  });
+  pi.on("input", (_event, ctx) => {
+    writeFileSync(${JSON.stringify(join(root, "observed-cwd.txt"))}, ctx.cwd);
+    return { action: "handled" };
+  });
+}`,
+		);
+		try {
+			const result = await piSdkAdapter.run({
+				suitePath: join(root, "suite.mts"),
+				subjectKind: "adhoc",
+				subjectConfig: {},
+				variant: { id: "explicit", description: "", config: { cwd: "workspace", extensions: [{ path: extension }] } },
+				evaluationCase: {
+					id: "cwd",
+					title: "Cwd",
+					input: { seed: [], prompt: "Observe cwd without inference" },
+					checks: [],
+				},
+				participant: { id: "fixture", provider: "cwd-fixture", model: "fixture", thinking: "off" },
+				limits: {
+					wall: { runTimeoutMs: 30000, executionTimeoutMs: 10000 },
+					execution: { maxTotal: 1, maxTurnsEach: 1, maxOutputTokensEach: 1024 },
+					cost: { currency: "USD", maxObserved: 0, enforcement: "observed-after-each-execution", hardCap: false },
+				},
+				authority: { requestedEffects: { providerNetwork: [], credentials: [], subject: [] } },
+				grant: {
+					providerNetwork: "approved-effects-only",
+					credentialSources: { home: false, environment: [] },
+					grantedEffects: [],
+				},
+				runDirectory: join(root, "run"),
+				execution: {
+					executionId: "cwd",
+					caseId: "cwd",
+					variantId: "explicit",
+					participantId: "fixture",
+					repetition: 1,
+					blindLabel: "A",
+				},
+			});
+			assert.deepEqual(result.errors, []);
+			assert.equal(readFileSync(join(root, "observed-cwd.txt"), "utf8"), realpathSync(cwd));
+			assert.equal(readFileSync(join(cwd, "sentinel.txt"), "utf8"), "preserved");
+			assert.equal(existsSync(join(root, "run", "sandboxes")), true);
+			const value = result.output.value as { resources: { cwd: string; cwdMode: string } };
+			assert.equal(value.resources.cwd, realpathSync(cwd));
+			assert.equal(value.resources.cwdMode, "explicit");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("caps a copied inference model at the execution output ceiling", () => {
 		const resolved = inferenceModel(4_096);
 		const limited = limitModelOutput(resolved, 1_024);

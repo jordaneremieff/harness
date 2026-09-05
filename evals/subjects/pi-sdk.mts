@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import type { Api, Message, Model, StopReason, Usage } from "@earendil-works/pi-ai";
@@ -35,6 +35,7 @@ interface PiPromptResource {
 }
 
 interface PiVariantConfig {
+	cwd?: string;
 	promptTemplates?: PiPromptResource[];
 	skills?: Array<{ path: string }>;
 	extensions?: Array<{ path: string }>;
@@ -83,7 +84,19 @@ export function parseExtensionFlagValues(value: unknown, variantId: string): Map
 }
 
 function parseVariant(variant: SubjectVariant): PiVariantConfig {
-	return asRecord(variant.config, `variant ${variant.id}.config`) as unknown as PiVariantConfig;
+	const config = asRecord(variant.config, `variant ${variant.id}.config`) as unknown as PiVariantConfig;
+	if (config.cwd !== undefined && (typeof config.cwd !== "string" || config.cwd.trim() === "")) {
+		throw new Error(`variant ${variant.id}.config.cwd must be a non-empty directory path`);
+	}
+	return config;
+}
+
+export function resolvePiCwd(variant: SubjectVariant, suitePath: string): string | undefined {
+	const { cwd } = parseVariant(variant);
+	if (cwd === undefined) return undefined;
+	const path = resourcePath(cwd, suitePath);
+	if (!statSync(path).isDirectory()) throw new Error(`variant ${variant.id}.config.cwd must resolve to a directory`);
+	return path;
 }
 
 function parseCase(evaluationCase: EvaluationCase): PiCaseInput {
@@ -137,7 +150,8 @@ function resolvePiSubject({ suitePath, variant }: { suitePath: string; variant: 
 		resources.push({ type: "append-system-prompt", source: "inline", digest: digest(append) });
 	}
 	resources.push({ type: "tools", source: "inline", digest: digest(JSON.stringify(config.tools ?? [])) });
-	return { resources };
+	const cwd = resolvePiCwd(variant, suitePath);
+	return { resources, ...(cwd === undefined ? {} : { cwd }) };
 }
 
 function blocked(message: string, options?: ErrorOptions): Error {
@@ -582,9 +596,10 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 	mkdirSync(sandboxParent, { recursive: true });
 	const sandbox = mkdtempSync(resolve(sandboxParent, `${args.execution.executionId}-`));
 	const isolatedAgentDir = resolve(sandbox, "agent");
-	const cwd = resolve(sandbox, "cwd");
+	const configuredCwd = resolvePiCwd(variant, suitePath);
+	const cwd = configuredCwd ?? resolve(sandbox, "cwd");
 	mkdirSync(isolatedAgentDir, { recursive: true });
-	mkdirSync(cwd, { recursive: true });
+	if (configuredCwd === undefined) mkdirSync(cwd, { recursive: true });
 	let runtime: AgentSessionRuntime | undefined;
 
 	try {
@@ -664,6 +679,8 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 				);
 			}
 			resourceEvidence = jsonValue({
+				cwd,
+				cwdMode: configuredCwd === undefined ? "isolated" : "explicit",
 				expected,
 				actual,
 				diagnostics: {
