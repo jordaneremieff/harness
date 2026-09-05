@@ -13,6 +13,7 @@ The harness is a Pi package. `package.json` declares the resources under the
 {
   "pi": {
     "skills": ["./skills"],
+    "prompts": ["./prompts"],
     "extensions": ["./extensions"]
   }
 }
@@ -20,30 +21,31 @@ The harness is a Pi package. `package.json` declares the resources under the
 
 - Install the package with `pi install /absolute/path/to/harness`; a
   standalone development checkout runs `npm install` and `npm test`.
-- `npm run warmup:jiti` pre-transpiles the extensions listed in that script
-  (currently `brave`, `statusline`, `clipboard`, and `stash`) into jiti's
-  on-disk cache in `$TMPDIR/jiti` by loading each extension once with
-  `pi --help --offline`. It is an operator step after a reboot or fresh
-  install, not a build step; the cache is content-keyed, so jiti invalidates
-  stale entries automatically.
+- `npm run warmup:jiti` loads the extension entrypoints named in the manifest's
+  script through `pi --help --offline` to warm jiti's transpilation cache. It is
+  an optional operator step, not a build or successful-load check. Use the
+  [worktree entrypoint check](conventions/worktrees.md#entrypoint-load-checks)
+  to detect extension load errors.
 - Extensions are TypeScript sources that Pi loads through jiti. There is no
   build step. Pi requires Node 22.19 or newer; Node runs the direct TypeScript
   tests through `node --test` over the glob in the `test` script.
-- Runtime dependencies on the Pi core packages
-  (`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`,
-  `@earendil-works/pi-tui`, `typebox`) are declared as wildcard peers; Pi
-  supplies them at runtime.
-- `@earendil-works/pi-protocol` and `@earendil-works/pi-server` (both
-  `^0.84.2`) are pinned direct dependencies: the subagent extension imports
-  them at runtime for its protocol server
-  (`extensions/subagent/runtime.ts`, `server.ts`).
+- `package.json` declares wildcard peers for `@earendil-works/pi-ai`,
+  `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox`, and
+  `@earendil-works/pi-server`. It declares no direct dependencies.
+- Pi 0.85.1's extension loader binds the core AI, agent, coding-agent, TUI,
+  and typebox imports to its running installation. `pi-server` is not in that
+  bound set. The manifest still declares it as a peer, but the subagent slice
+  imports neither `pi-server` nor `pi-protocol` and exposes no worker socket.
+  A peer declaration alone does not establish a runtime dependency or loader
+  binding. See [the durable-harness track](pi-durable-harness.md) before
+  selecting a remote integration surface.
 - `package-lock.json` pins the development dependency snapshot for reproducible
   standalone checks. Refresh it with the Pi release used to validate the harness.
 - Every change is validated against the installed Pi declarations, not only
   against the tests.
 
-The manifest activates only Pi resources. Other tracked package content has
-explicit consumers:
+The manifest activates extensions, skills, and the prompt templates in
+`prompts/`. Other tracked package content has explicit consumers:
 
 - `pillars/` is the doctrine corpus that skills read by package-relative path.
 - `config/` mirrors application-owned config paths. Machines point Pi and Herdr
@@ -53,8 +55,9 @@ explicit consumers:
 - `scripts/` contains repository automation.
 
 The root `AGENTS.md` governs work on this repository. The separate
-`config/pi/agent/AGENTS.md` file is the machine-independent global Pi rules
-source and is symlinked to `~/.pi/agent/AGENTS.md` on each machine.
+`config/pi/agent/AGENTS.md` file is the machine-independent source for global
+Pi rules. Its repository location does not establish how a particular machine
+deploys or loads it.
 
 ## Extension anatomy
 
@@ -90,8 +93,10 @@ comments, tests, names, or identifiers (`AGENTS.md`).
 
 Each skill lives under `skills/<name>/`:
 
-- `SKILL.md` — the always-loaded operating procedure, with YAML frontmatter;
-  activation knowledge lives in the `description`, not in the body.
+- `SKILL.md` — the operating procedure, with YAML frontmatter. Pi includes
+  available skill names and descriptions in its startup context; the agent
+  reads the full procedure on demand. Activation knowledge belongs in the
+  `description`, not in the body.
 - One-level `references/` — conditional detail loaded on demand.
 - `scripts/` — type-checked Node (`.mts`) automation when repeated work
   justifies it; scripts are non-interactive, documented with `--help`, safe
@@ -119,22 +124,24 @@ contract, name the producer and consumers, and keep it stable.
 
 ## Adding an extension
 
-1. Create `extensions/<name>/index.ts` with a default-export factory.
-2. Add colocated tests and a README; document every configuration variable
+1. Load `skills/harness/SKILL.md`, classify the capability, and obtain the
+   required approval for a new extension surface before any write.
+2. Use the slice's persistent worktree and create
+   `extensions/<name>/index.ts` with a default-export factory.
+3. Add colocated tests and a README; document every configuration variable
    in the README.
-3. Give the slice its own state and cleanup; no sibling imports.
-4. Use `PI_*` environment variables for configuration (see
-   `docs/conventions/extension-config.md`).
-5. Run the `AGENTS.md` gates before closing: focused tests, `npm test`, a
-   TypeScript check against the installed Pi declarations, and README claims
-   that match reality in the same change.
+4. Give the slice its own state and cleanup; no sibling imports. Use `PI_*`
+   environment variables under the configuration convention.
+5. Run all completion gates in `AGENTS.md` and update README claims to match
+   the result. Keep activation separate from implementation.
 
 ## Adding a skill
 
 1. Load `skills/harness/SKILL.md`, classify the requested capability, and use
-   its Agent Skill lane when a skill is the lowest sufficient surface.
-2. Create `skills/<name>/SKILL.md` with frontmatter and one-level references;
-   add dependency-free, tested `scripts/` only when repeated work justifies
-   them.
+   its Agent Skill lane when a skill is the lowest sufficient surface. Obtain
+   the required approval for a new skill surface before any write.
+2. Use the slice's persistent worktree. Create `skills/<name>/SKILL.md` with
+   frontmatter and one-level references; add dependency-free, tested
+   `scripts/` only when repeated work justifies them.
 3. Validate the shape with `skills/harness/scripts/validate-skill.mts` and run
    the `AGENTS.md` gates before closing.
