@@ -9,13 +9,6 @@
  *     same tools, same transcript format as a primary session. The parent
  *     drives it directly — prompt, steer, abort — and reads live status from
  *     the session's own events, not from scraped output.
- *   - Every worker is also served over a unix socket by a PiServer hosted in
- *     its owning session. Pi ships experimental remote-session client APIs, but
- *     its public CLI/TUI has no command to discover or attach to this
- *     extension's per-session socket; therefore the extension has no supported
- *     operator-facing attach workflow. The host remains a protocol boundary
- *     and keeps private AgentSession access inside runtime.ts. A colocated
- *     conformance test exercises it; no operator workflow depends on it.
  *   - The store under `<agentDir>/subagent/workers/<id>/` holds the accepted
  *     worker, the stored result (`result.txt`, capped at 50KB), the worker's system
  *     prompt, and the terminal record. A replacement session lists and
@@ -59,7 +52,6 @@ import {
 	chmodSync,
 	existsSync,
 	linkSync,
-	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
@@ -98,13 +90,17 @@ import {
 	SettingsManager,
 	type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
-import type { ThinkingLevel, TranscriptItem } from "@earendil-works/pi-protocol";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { stripTerminalSequences } from "./console.ts";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
-import { trackCommandStartedTurns, transcriptFromMessages, WorkerRuntime } from "./runtime.ts";
-import { WorkerHost } from "./server.ts";
+import {
+	trackCommandStartedTurns,
+	transcriptFromMessages,
+	type ThinkingLevel,
+	type TranscriptItem,
+	WorkerRuntime,
+} from "./runtime.ts";
 
 // ---------------------------------------------------------------------------
 // Store
@@ -120,10 +116,6 @@ const INSPECT_TRANSCRIPT_ITEM_LIMIT = 32;
 const INSPECT_CONTENT_CAP_BYTES = 12 * 1024;
 const INSPECT_TRUNCATION_MARKER = "[transcript truncated: older or oversized content omitted]";
 const TRUNCATED_SUFFIX = "\n\n[truncated]";
-/** Sockets younger than this are never swept: a host binds before its first
- * worker record is written, and that window must not look like debris. */
-const SOCKET_SWEEP_GRACE_MS = 60_000;
-const SOCKET_NAME_RE = /^s-[0-9a-f]{24}\.sock$/;
 
 /**
  * How long a TERMINAL worker record is kept before it is pruned. Workers that
@@ -321,8 +313,6 @@ export interface WorkerRecord {
 	sessionId: string;
 	/** The worker's session file, for transcripts after the worker is gone. */
 	sessionFile: string | null;
-	/** Socket an observer attaches to while this parent is alive. */
-	socketPath: string;
 	/** Session that dispatched this worker (ctx.sessionManager.getSessionId()). */
 	ownerSession: string | null;
 	/** Process of the dispatching session. A worker cannot outlive it, so this
@@ -546,7 +536,6 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 		setupDiagnosticsDropped: asNumber(o.setupDiagnosticsDropped),
 		sessionId: asString(o.sessionId),
 		sessionFile: asStrOrNull(o.sessionFile),
-		socketPath: asString(o.socketPath),
 		ownerSession: asStrOrNull(o.ownerSession),
 		ownerPid: asNumber(o.ownerPid),
 	};
@@ -1340,8 +1329,8 @@ export function armBoundedTimeout(delayMs: number, fire: () => void): BoundedTim
  *
  * An interrupt deliberately keeps the worker alive so the operator can read its
  * transcript and resume it by typing. Nothing else ever ends that state: the
- * worker holds its AgentSession, its event subscription, its runtime, its host
- * registration, and a `running` store record indefinitely. One bounded deadline
+ * worker holds its AgentSession, its event subscription, its runtime, and a
+ * `running` store record indefinitely. One bounded deadline
  * closes that leak without introducing a supervisor — it is armed on interrupt
  * and cleared the moment the worker is resumed or otherwise finalized.
  *
@@ -1387,7 +1376,6 @@ const DEFAULT_DEADLINE_MINUTES = envNumber("PI_SUBAGENT_DEADLINE_MINUTES") ?? 30
 const DEFAULT_BUDGET_USD = envNumber("PI_SUBAGENT_BUDGET_USD");
 
 const liveWorkers = new Map<string, LiveWorker>();
-const hosts = new Map<string, WorkerHost>();
 const statusBindings = new Map<string, { ctx: ExtensionContext; published: string | undefined }>();
 
 export function formatSubagentStatus(
@@ -1474,13 +1462,6 @@ function releaseLiveWorker(id: string): void {
 	} catch {
 		// Cleanup failure must not replace persisted terminal evidence.
 	}
-	try {
-		if (live.record.ownerSession) {
-			hosts.get(live.record.ownerSession)?.unregister(id);
-		}
-	} catch {
-		// The local maps already no longer advertise this worker as live.
-	}
 	publishSubagentStatus();
 }
 
@@ -1523,7 +1504,7 @@ function armIdleDeadline(id: string): void {
 			return;
 		}
 		// An abort that outlives the deadline must not drop it: the worker still
-		// holds its session, runtime, and host registration. Wait for the same
+		// holds its session, runtime, and store record. Wait for the same
 		// interrupted leg to reach idle, then release it there.
 		let unwatch = () => {};
 		const onIdle = () => {
@@ -1713,54 +1694,6 @@ function notifyLimitPause(record: WorkerRecord, breach: "deadline" | "budget", r
 	} catch {
 		// Best-effort: the pause itself is persisted on the record.
 	}
-}
-
-/**
- * Remove sockets left behind by sessions that died without closing. A socket is
- * kept only while some worker record still names it and that record's owner is
- * running; everything else is debris from a crash.
- */
-function sweepStaleSockets(dir: string, ownSocketPath: string): void {
-	if (!existsSync(dir)) return;
-	const claimed = new Set(
-		listWorkers()
-			.filter((worker) => ownerAlive(worker) && worker.socketPath.startsWith(`${dir}/`))
-			.map((worker) => worker.socketPath),
-	);
-	for (const name of readdirSync(dir)) {
-		if (!SOCKET_NAME_RE.test(name)) continue;
-		const path = join(dir, name);
-		if (claimed.has(path)) continue;
-		// A live host binds its socket before its first worker record exists, so a
-		// record-less socket is not proof of debris. Two guards close that window:
-		// this process never sweeps its own path, and a socket younger than the
-		// grace period is left for its owner to claim.
-		if (path === ownSocketPath) continue;
-		try {
-			const entry = lstatSync(path);
-			if (!entry.isSocket()) continue;
-			if (Date.now() - entry.mtimeMs < SOCKET_SWEEP_GRACE_MS) continue;
-		} catch {
-			// Vanished under us; nothing to sweep.
-			continue;
-		}
-		try {
-			rmSync(path, { force: true });
-		} catch {
-			// Another session may be sweeping too; losing the race is fine.
-		}
-	}
-}
-
-function ensureHost(ctx: ExtensionContext): WorkerHost {
-	const ownerSession = ctx.sessionManager.getSessionId();
-	const current = hosts.get(ownerSession);
-	if (current) return current;
-	const next = new WorkerHost(getAgentDir(), ownerSession);
-	// Constructed first so the sweep knows which bounded namespace is ours.
-	sweepStaleSockets(next.socketDirectory, next.socketPath);
-	hosts.set(ownerSession, next);
-	return next;
 }
 
 /**
@@ -2339,9 +2272,9 @@ export function workerSessionManager(cwd: string, continuation?: WorkerRecord): 
 }
 
 /**
- * Build one background worker session, register it with the host, and start
- * its run. A continuation forks the terminal source session so prior records,
- * results, and transcript evidence remain unchanged.
+ * Build one background worker session and start its run. A continuation forks
+ * the terminal source session so prior records, results, and transcript
+ * evidence remain unchanged.
  */
 export async function dispatchWorker(
 	task: DispatchTask,
@@ -2410,8 +2343,6 @@ export async function dispatchWorker(
 		mode: STORE_FILE_MODE,
 	});
 
-	const workerHost = ensureHost(ctx);
-
 	const record: WorkerRecord = {
 		id,
 		task: task.task,
@@ -2446,7 +2377,6 @@ export async function dispatchWorker(
 		setupDiagnosticsDropped: 0,
 		sessionId: "",
 		sessionFile: null,
-		socketPath: workerHost.socketPath,
 		ownerSession: ctx.sessionManager.getSessionId(),
 		ownerPid: process.pid,
 	};
@@ -2676,7 +2606,6 @@ export async function dispatchWorker(
 	};
 
 	try {
-		await workerHost.ensureStarted(ctx);
 		sessionManager = workerSessionManager(cwd, continuation);
 		if (continuation) forkedSessionFile = sessionManager.getSessionFile() ?? null;
 		sessionHost = await createAgentSessionRuntime(createWorkerSession, {
@@ -2741,12 +2670,10 @@ export async function dispatchWorker(
 				publishSubagentStatus();
 			},
 		});
-		workerHost.register(runtime);
 		if (continuation) usageBaselines.set(id, sessionUsage(session));
 		untrack = disposeOnce(trackSession(record, session));
 	} catch (err) {
 		untrack();
-		workerHost.unregister(id);
 		try {
 			if (sessionHost) await sessionHost.dispose();
 		} catch {
@@ -2828,7 +2755,6 @@ export async function dispatchWorker(
 		// construction invariant changes.
 		untrack();
 		runtime.shutdown();
-		workerHost.unregister(id);
 		sharedWorkerState.workerSessionIds.delete(record.sessionId);
 		sharedWorkerState.workerSurfaces.delete(record.sessionId);
 		usageBaselines.delete(id);
@@ -3066,13 +2992,13 @@ export async function cancelWorker(
 // ---------------------------------------------------------------------------
 
 /**
- * The conversation to render for a worker, as protocol-v1 transcript items: the
- * live runtime's snapshot when this session owns the worker, otherwise the
- * messages recorded in its session file put through the same conversion.
- * Returns null when nothing is available.
+ * The conversation to render for a worker: the live runtime's snapshot when
+ * this session owns the worker, otherwise the messages recorded in its session
+ * file put through the same conversion. Returns null when nothing is
+ * available.
  *
- * Both paths go through runtime.ts so the extension has one protocol conversion
- * and one replacement boundary.
+ * Both paths go through runtime.ts so the extension has one message
+ * conversion.
  */
 export function workerConversation(id: string): TranscriptItem[] | null {
 	const live = liveWorkers.get(id);
@@ -3094,8 +3020,8 @@ export function workerConversation(id: string): TranscriptItem[] | null {
 
 /** Subscribe to a live worker's updates. Returns an unsubscribe, or null when
  * this session does not own the worker. Uses the runtime's in-process watch
- * channel, not the raw session: watchers survive a remote observer detaching,
- * which disposes the runtime's server-facing listeners. */
+ * channel, not the raw session: watchers outlive a control-surface observer
+ * detaching, which clears the runtime's other listeners. */
 export function subscribeWorkerLive(id: string, onEvent: () => void, requesterSession: string): (() => void) | null {
 	const live = liveWorkerOwnedBy(id, requesterSession);
 	if (!live) return null;
@@ -3603,7 +3529,7 @@ function renderTranscriptItem(item: TranscriptItem): { text: string; truncated: 
 	};
 }
 
-/** Render a bounded, human-readable tail from protocol transcript items. */
+/** Render a bounded, human-readable tail from the local transcript items. */
 export function renderTranscriptTail(
 	items: TranscriptItem[],
 	maxBytes = INSPECT_TRANSCRIPT_CAP_BYTES,
@@ -4155,7 +4081,6 @@ const subagentTool = defineTool({
 					deadlineMinutes: outcome.record?.deadlineMinutes ?? null,
 					budgetUsd: outcome.record?.budgetUsd ?? null,
 					sessionId: outcome.record?.sessionId ?? null,
-					socketPath: outcome.record?.socketPath ?? null,
 					error: outcome.error ?? null,
 					setupDiagnostics: outcome.record?.setupDiagnostics ?? [],
 					capabilities: modelCapabilities(ctx, outcome.record?.model ?? null),
@@ -4458,12 +4383,6 @@ async function shutdownOwnedSession(ownerSession: string): Promise<void> {
 			}
 		}
 
-		try {
-			await hosts.get(ownerSession)?.close();
-		} catch {
-			// Shutting down anyway.
-		}
-		hosts.delete(ownerSession);
 		sharedWorkerState.workerSurfaces.delete(ownerSession);
 	} finally {
 		clearSubagentStatus(ownerSession);

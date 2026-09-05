@@ -208,9 +208,6 @@ try {
 
 	sub.shutdownWorkerSession(parentSession);
 	parentSession = null;
-	for (const workerRecord of [bootstrap.record, record, continuedRecord]) {
-		if (workerRecord?.socketPath) rmSync(dirname(workerRecord.socketPath), { recursive: true, force: true });
-	}
 	console.log("registered provider child: PASS");
 } finally {
 	try {

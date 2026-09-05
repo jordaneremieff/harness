@@ -1,11 +1,13 @@
 /**
- * Worker runtime adapter: presents a coding-agent AgentSession through pi's
- * PiSessionRuntime surface so a worker can be served over PiServer as a real
- * protocol session. Pi ships experimental remote-session client APIs, but its
- * public CLI/TUI has no command to discover or attach to this extension's
- * per-session socket; therefore the extension has no supported operator-facing
- * attach workflow. This extension keeps this file as its one replaceable
- * runtime-to-protocol boundary.
+ * Worker runtime: the parent-side control object for one worker session.
+ *
+ * The worker is a real pi AgentSession that runs inside the dispatching
+ * session. This file adapts released AgentSession state and events into a
+ * stable local surface — phase, snapshot transcript, prompt/steer/abort/model
+ * control — that the extension's control paths and the inspection/console
+ * renderers consume. There is no wire protocol and no remote client: the
+ * transcript items declared here are the extension's own contract, produced by
+ * exactly one conversion and consumed by exactly the renderers in this slice.
  *
  * Three things AgentSession does not hand over cleanly, and how this handles them:
  *
@@ -17,18 +19,8 @@
  *   `state.streamingMessage` and is appended to snapshots explicitly.
  * - AgentSession exposes only `isStreaming`, and that stays true through post-run
  *   compaction. Phase is therefore tracked from session events, which take
- *   priority over `isStreaming`; without this the server can dispose a compacting
- *   worker.
- *
- * ---------------------------------------------------------------------------
- * THE SINGLE PI ADAPTER
- * ---------------------------------------------------------------------------
- *
- * This file converts released AgentSession state and events into protocol v1.
- * Downstream files consume protocol transcript items, not Pi message objects.
- * Released `modelRuntime.getModel()` resolves a model without persisting an
- * operator default. No feature probe, speculative adapter, or dual path lives
- * here.
+ *   priority over `isStreaming`; without this an observer could treat a
+ *   compacting worker as idle.
  *
  * Re-run these checks after a Pi upgrade:
  *
@@ -44,101 +36,344 @@
 
 import type { Usage as AiUsage } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import type {
-	ModelRef,
-	SessionPhase,
-	SessionSnapshot,
-	ThinkingLevel,
-	ToolTranscriptItem,
-	TranscriptItem,
-} from "@earendil-works/pi-protocol";
-import {
-	PiServerError,
-	type PiSessionRuntime,
-	type PiSessionRuntimeEvent,
-	type PromptInput,
-	type SteerInput,
-	sanitizeProtocolDetails,
-	toProtocolAssistantMessage,
-	toProtocolJsonValue,
-	toProtocolToolResultMessage,
-	toProtocolUsage,
-	toProtocolUserMessage,
-} from "@earendil-works/pi-server";
+
+// ---------------------------------------------------------------------------
+// Local surface types (the extension's own contract)
+// ---------------------------------------------------------------------------
+
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type SessionPhase = "idle" | "turn" | "compaction" | "branch_summary" | "retry";
+
+export type TranscriptJsonValue =
+	| null
+	| boolean
+	| number
+	| string
+	| TranscriptJsonValue[]
+	| { [key: string]: TranscriptJsonValue };
+
+export interface TranscriptTextPart {
+	type: "text";
+	text: string;
+}
+export interface TranscriptImagePart {
+	type: "image";
+	mimeType: string;
+}
+export interface TranscriptThinkingPart {
+	type: "thinking";
+	thinking: string;
+	redacted?: boolean;
+}
+export interface TranscriptToolCallPart {
+	type: "toolCall";
+	toolCallId: string;
+	toolName: string;
+	input: TranscriptJsonValue;
+}
+
+export type TranscriptContentPart = TranscriptTextPart | TranscriptImagePart;
+export type TranscriptAssistantContentPart = TranscriptTextPart | TranscriptThinkingPart | TranscriptToolCallPart;
+
+export interface TranscriptUserItem {
+	role: "user";
+	id: string;
+	content: TranscriptContentPart[];
+	timestamp: number;
+}
+export interface TranscriptAssistantItem {
+	role: "assistant";
+	id: string;
+	content: TranscriptAssistantContentPart[];
+	status: "streaming" | "completed";
+	model: { provider: string; id: string };
+	stopReason?: string;
+	errorMessage?: string;
+	timestamp: number;
+}
+export interface TranscriptToolItem {
+	role: "tool";
+	id: string;
+	toolCallId: string;
+	toolName: string;
+	input: TranscriptJsonValue;
+	content: TranscriptContentPart[];
+	status: "running" | "complete" | "error";
+	isError: boolean;
+	details?: unknown;
+	usage?: AiUsage;
+	timestamp: number;
+}
+
+export type TranscriptItem = TranscriptUserItem | TranscriptAssistantItem | TranscriptToolItem;
+
+export interface SessionSnapshot {
+	id: string;
+	name: string;
+	cwd: string;
+	createdAt: number;
+	updatedAt: number;
+	phase: SessionPhase;
+	model: { provider: string; id: string };
+	thinkingLevel: ThinkingLevel;
+	attached: boolean;
+	locked: boolean;
+	revision: number;
+	transcript: TranscriptItem[];
+	queuedSteer: TranscriptUserItem[];
+	queuedSteerCount: number;
+}
+
+export interface PromptInput {
+	text: string;
+}
+
+export interface SteerInput {
+	text: string;
+}
+
+export interface ModelRef {
+	provider: string;
+	id: string;
+}
+
+export type WorkerProgress =
+	| { type: "item_started"; item: TranscriptItem }
+	| { type: "item_updated"; item: Extract<TranscriptItem, { status: "running" }> }
+	| { type: "item_finished"; item: TranscriptItem }
+	| { type: "assistant_delta"; messageId: string; contentIndex: number; kind: "text" | "thinking"; delta: string };
+
+export type WorkerRuntimeEvent = { type: "snapshot" } | { type: "progress"; progress: WorkerProgress };
+
+/** Error from a worker-control operation, carrying a machine-readable code. */
+export class WorkerRuntimeError extends Error {
+	readonly code: string;
+	constructor(code: string, message: string) {
+		super(message);
+		this.name = "WorkerRuntimeError";
+		this.code = code;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Message shape and conversion
+// ---------------------------------------------------------------------------
 
 type SessionMessage = AgentSession["state"]["messages"][number];
 type AssistantSessionMessage = Extract<SessionMessage, { role: "assistant" }>;
-type ToolCallPart = Extract<AssistantSessionMessage["content"][number], { type: "toolCall" }>;
-type ToolContent = ToolTranscriptItem["content"];
-type ToolResultPayload = {
-	content?: ToolContent;
-	details?: unknown;
-	usage?: AiUsage;
-};
-type ToolItemInput = {
+
+interface ToolItemInput {
 	toolCallId: string;
 	toolName: string;
 	args?: unknown;
-	content?: ToolContent;
+	content?: TranscriptContentPart[];
 	status: "running" | "complete" | "error";
 	details?: unknown;
 	usage?: AiUsage;
 	timestamp: number;
-};
-type ToolItemWithStatus<Status extends ToolItemInput["status"]> = Extract<ToolTranscriptItem, { status: Status }>;
+}
+
+/** A JSON-compatible deep copy; values with no JSON form become null. */
+function transcriptJsonValue(value: unknown): TranscriptJsonValue {
+	if (value === null) return null;
+	if (value === undefined) return null;
+	if (typeof value === "string" || typeof value === "boolean") return value;
+	if (typeof value === "number") return Number.isFinite(value) ? value : null;
+	if (Array.isArray(value)) return value.map(transcriptJsonValue);
+	if (typeof value === "object") {
+		const out: { [key: string]: TranscriptJsonValue } = {};
+		for (const [key, member] of Object.entries(value as Record<string, unknown>)) {
+			out[key] = transcriptJsonValue(member);
+		}
+		return out;
+	}
+	return null;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function transcriptUserContent(content: unknown): TranscriptContentPart[] {
+	if (typeof content === "string") return content ? [{ type: "text", text: content }] : [];
+	if (!Array.isArray(content)) throw new Error("user message content is not text or parts");
+	const parts: TranscriptContentPart[] = [];
+	for (const part of content) {
+		if (!isObject(part)) continue;
+		if (part.type === "text" && typeof part.text === "string") {
+			parts.push({ type: "text", text: part.text });
+		} else if (part.type === "image" && typeof part.mimeType === "string") {
+			parts.push({ type: "image", mimeType: part.mimeType });
+		}
+	}
+	return parts;
+}
+
+function transcriptToolContent(content: unknown): TranscriptContentPart[] {
+	return transcriptUserContent(content);
+}
+
+/** One assistant content part. An unaddressable tool call (no id or name) throws
+ * so the caller can prune and retry a mid-stream partial. */
+function assistantContentPart(part: unknown): TranscriptAssistantContentPart {
+	if (!isObject(part)) throw new Error("assistant content part is not an object");
+	switch (part.type) {
+		case "text":
+			if (typeof part.text !== "string") throw new Error("assistant text part has no text");
+			return { type: "text", text: part.text };
+		case "thinking": {
+			if (typeof part.thinking !== "string") throw new Error("assistant thinking part has no thinking");
+			return part.redacted === true
+				? { type: "thinking", thinking: part.thinking, redacted: true }
+				: { type: "thinking", thinking: part.thinking };
+		}
+		case "toolCall": {
+			if (typeof part.id !== "string" || part.id === "") throw new Error("tool call has no id");
+			if (typeof part.name !== "string" || part.name === "") throw new Error("tool call has no name");
+			return {
+				type: "toolCall",
+				toolCallId: part.id,
+				toolName: part.name,
+				input: transcriptJsonValue((part as { arguments?: unknown }).arguments ?? {}),
+			};
+		}
+		default:
+			throw new Error("assistant content part has no transcript form");
+	}
+}
+
+/** Assistant messages with a mappable stop reason become transcript items;
+ * pending stays streaming. Messages the conversation cannot represent — missing,
+ * unknown, or deferred stop reasons, or an error with no message — return null
+ * so the caller drops them, exactly as a settled transcript does. */
+function assistantTranscriptItem(message: unknown, id: string): TranscriptAssistantItem | null {
+	if (!isObject(message)) return null;
+	if (message.role !== "assistant") return null;
+	if (!Array.isArray(message.content)) return null;
+	const stopReason = message.stopReason;
+	if (stopReason === "deferred") return null;
+	if (typeof stopReason !== "string") return null;
+	if (!["pending", "stop", "length", "toolUse", "error", "aborted"].includes(stopReason)) return null;
+	if (stopReason === "error" && !message.errorMessage) return null;
+	const content: TranscriptAssistantContentPart[] = [];
+	for (const part of message.content) {
+		content.push(assistantContentPart(part));
+	}
+	const model = {
+		provider: typeof message.provider === "string" ? message.provider : "unknown",
+		id: typeof message.model === "string" ? message.model : "unknown",
+	};
+	const item: TranscriptAssistantItem = {
+		role: "assistant",
+		id,
+		content,
+		status: stopReason === "pending" ? "streaming" : "completed",
+		model,
+		timestamp: typeof message.timestamp === "number" ? message.timestamp : Date.now(),
+	};
+	if (stopReason === "error" || stopReason === "aborted") {
+		if (typeof message.errorMessage === "string" && message.errorMessage) item.errorMessage = message.errorMessage;
+		else if (stopReason === "error") return null;
+	}
+	if (typeof stopReason === "string") item.stopReason = stopReason;
+	return item;
+}
+
+function toolResultTranscriptItem(
+	message: {
+		toolCallId: string;
+		toolName: string;
+		content: unknown;
+		details?: unknown;
+		usage?: AiUsage;
+		isError: boolean;
+		timestamp: number;
+	},
+	options: { id: string; arguments?: unknown },
+): TranscriptToolItem {
+	const base: TranscriptToolItem = {
+		role: "tool",
+		id: options.id,
+		toolCallId: message.toolCallId,
+		toolName: message.toolName,
+		input: transcriptJsonValue(options.arguments ?? {}),
+		content: transcriptToolContent(message.content),
+		status: message.isError ? "error" : "complete",
+		isError: message.isError,
+		timestamp: message.timestamp,
+	};
+	if (message.details !== undefined) base.details = message.details;
+	if (message.usage !== undefined) base.usage = message.usage;
+	return base;
+}
+
+function userTranscriptItem(message: unknown, id: string): TranscriptUserItem {
+	if (!isObject(message)) throw new Error("user message is not an object");
+	return {
+		role: "user",
+		id,
+		content: transcriptUserContent(message.content),
+		timestamp: typeof message.timestamp === "number" ? message.timestamp : Date.now(),
+	};
+}
 
 /**
- * Convert pi messages to protocol-v1 transcript items. The one conversion used
+ * Convert pi messages to the local transcript items. The one conversion used
  * by BOTH transcript paths — a live worker's in-memory state and a terminal
  * worker's session file — so there is exactly one reader of pi's message shape.
  *
- * Roles with no protocol-v1 representation are dropped: `custom`,
+ * Roles with no transcript representation are dropped: `custom`,
  * `bashExecution`, `branchSummary`, and `compactionSummary`, as are assistant
- * messages whose stopReason is `deferred` or `error` with an empty
- * `errorMessage` (the mapper throws on those; only pi-ai's `faux` test provider
- * ever produces one). A `toolResult`
- * with no matching call is dropped because protocol v1 has no way to express a
- * result without its call — and a console renders tool output inside the call's
- * box anyway, so an orphan result was never visible.
+ * messages whose stop reason is missing, unknown, `deferred`, or an `error`
+ * with no message. A `toolResult` with no matching call is dropped because the
+ * console renders tool output inside the call's box, so an orphan result was
+ * never visible.
  */
 export function buildTranscript(
 	messages: SessionMessage[],
 	idFor: (message: SessionMessage) => string,
 ): TranscriptItem[] {
 	const items: TranscriptItem[] = [];
-	const toolCalls = new Map<string, ToolCallPart>();
+	const toolCalls = new Map<string, unknown>();
 	for (const message of messages) {
 		if (message.role !== "assistant") continue;
 		for (const part of message.content) {
-			if (part.type === "toolCall") toolCalls.set(part.id, part);
+			if (isObject(part) && part.type === "toolCall") {
+				toolCalls.set(part.id as string, part);
+			}
 		}
 	}
 	for (const message of messages) {
 		if (message.role === "user") {
 			try {
-				items.push(toProtocolUserMessage(message, { id: idFor(message) }));
+				items.push(userTranscriptItem(message, idFor(message)));
 			} catch {
 				// A malformed message is skipped, never fatal to a transcript view.
 			}
 		} else if (message.role === "assistant") {
 			try {
-				const item = toProtocolAssistantMessage(message, {
-					id: idFor(message),
-				});
-				// The released mapper can return a non-object for an unknown stopReason
-				// despite its declared return type. Keep that boundary out of consumers.
-				if (item && typeof item === "object") items.push(item);
+				const item = assistantTranscriptItem(message, idFor(message));
+				if (item) items.push(item);
 			} catch {
-				// stopReason "deferred" (and error with an empty errorMessage) throw.
+				// A part with no transcript form skips the whole message.
 			}
 		} else if (message.role === "toolResult") {
 			const call = toolCalls.get(message.toolCallId);
 			if (!call) continue;
 			try {
+				const messageShape = {
+					toolCallId: message.toolCallId,
+					toolName: message.toolName,
+					content: message.content,
+					details: (message as { details?: unknown }).details,
+					usage: (message as { usage?: AiUsage }).usage,
+					isError: message.isError,
+					timestamp: message.timestamp,
+				};
 				items.push(
-					toProtocolToolResultMessage(message, {
+					toolResultTranscriptItem(messageShape, {
 						id: idFor(message),
-						call,
+						arguments: (call as { arguments?: unknown }).arguments,
 					}),
 				);
 			} catch {
@@ -211,8 +446,8 @@ export interface WorkerRuntimeOptions {
 	onSessionStateChange?: (session: AgentSession) => void;
 }
 
-/** Adapts one worker AgentSession to PiSessionRuntime. */
-export class WorkerRuntime implements PiSessionRuntime {
+/** Adapts one worker AgentSession to the extension's control surface. */
+export class WorkerRuntime {
 	readonly id: string;
 	readonly name: string;
 	readonly createdAt: number;
@@ -220,7 +455,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 	private session: AgentSession;
 	private _cwd: string;
 	private revision = 0;
-	private readonly listeners = new Set<(event: PiSessionRuntimeEvent) => void>();
+	private readonly listeners = new Set<(event: WorkerRuntimeEvent) => void>();
 	/** In-process observers; survive dispose(), unlike `listeners`. */
 	private readonly watchers = new Set<() => void>();
 	private msgSeq = 0;
@@ -229,12 +464,15 @@ export class WorkerRuntime implements PiSessionRuntime {
 	private stream: StreamState | null = null;
 	/** Live tool state. The end event omits arguments, so one keyed owner retains
 	 * the validated start arguments and any partial output. */
-	private readonly liveTools = new Map<string, { toolName: string; args: unknown; content?: ToolContent }>();
+	private readonly liveTools = new Map<
+		string,
+		{ toolName: string; args: unknown; content?: TranscriptContentPart[] }
+	>();
 	private phase: SessionPhase = "idle";
 	private compactionCount = 0;
 	private retryActive = false;
 	private branchSummaryActive = false;
-	/** True while the protocol adapter owns one prompt call across replacements. */
+	/** True while this control object owns one prompt call across replacements. */
 	private promptActive = false;
 	/**
 	 * Set by abort() and cleared by prompt(). AgentSession.prompt awaits an async
@@ -285,12 +523,12 @@ export class WorkerRuntime implements PiSessionRuntime {
 				this.onSessionEvent(event);
 			} catch {
 				// AgentSession invokes listeners without containment. A malformed
-				// message or protocol conversion must not escape into the worker run.
+				// message or conversion must not escape into the worker run.
 			}
 		});
 	}
 
-	// ------------------------------------------------------------ PiSessionRuntime
+	// ------------------------------------------------------------ control surface
 
 	/** Released AgentSession state used for transcript snapshots. */
 	private agentState(): AgentSession["state"] {
@@ -303,35 +541,29 @@ export class WorkerRuntime implements PiSessionRuntime {
 		const streaming = state.streamingMessage;
 		if (streaming?.role === "assistant") {
 			const id = this.stream?.id ?? this.messageId(streaming);
+			let item: TranscriptAssistantItem | null = null;
 			try {
-				const item = toProtocolAssistantMessage(streaming, { id });
-				// The mapper returns (rather than throws) a raw stopReason when it is
-				// missing or unknown, so only object results can enter the transcript.
-				if (item && typeof item === "object") items.push(item);
-				else {
-					try {
-						const pending = toProtocolAssistantMessage({ ...streaming, stopReason: "pending" }, { id });
-						if (pending && typeof pending === "object") items.push(pending);
-					} catch {
-						// A missing/unknown stopReason fallback can still be unmappable.
-					}
-				}
+				item = assistantTranscriptItem(streaming, id);
+				if (!item) item = assistantTranscriptItem({ ...streaming, stopReason: "pending" }, id);
 			} catch {
 				// A provider stream can emit a partial toolCall before its id and name.
-				// identifier("") throws and would drop the whole in-flight item.
-				// Drop only the
-				// un-addressable toolCall parts and retry so the rest still renders.
+				// Drop only the un-addressable toolCall parts and retry so the rest
+				// still renders.
 				const content = streaming.content;
-				const pruned = content.filter((part) => part.type !== "toolCall" || Boolean(part.id && part.name));
+				const pruned = content.filter((part) =>
+					isObject(part) && part.type === "toolCall" ? Boolean(part.id && part.name) : true,
+				);
 				if (pruned.length !== content.length) {
 					try {
-						const item = toProtocolAssistantMessage({ ...streaming, content: pruned }, { id });
-						if (item && typeof item === "object") items.push(item);
+						const fallback = { ...streaming, content: pruned };
+						item = assistantTranscriptItem(fallback, id);
+						if (!item) item = assistantTranscriptItem({ ...fallback, stopReason: "pending" }, id);
 					} catch {
 						// Still unmappable; skip the in-flight item for this snapshot.
 					}
 				}
 			}
+			if (item) items.push(item);
 		}
 		// Synthetic running items carry live partial output to the panel; the real
 		// toolResult replaces them at tool_execution_end.
@@ -350,10 +582,10 @@ export class WorkerRuntime implements PiSessionRuntime {
 			);
 		}
 		const steerTexts = this.session.getSteeringMessages();
-		const queuedSteer = steerTexts.map((text, index) => ({
+		const queuedSteer: TranscriptUserItem[] = steerTexts.map((text, index) => ({
 			id: this.steerId(text),
-			role: "user" as const,
-			content: [{ type: "text" as const, text }],
+			role: "user",
+			content: [{ type: "text", text }],
 			timestamp: this.createdAt + index,
 		}));
 		const model = this.session.model;
@@ -366,7 +598,6 @@ export class WorkerRuntime implements PiSessionRuntime {
 			phase: this.getPhase(),
 			model: model ? { provider: model.provider, id: model.id } : { provider: "unknown", id: "unknown" },
 			thinkingLevel: this.session.thinkingLevel ?? "off",
-			// PiServer overrides attached/locked/phase in its normalized snapshot.
 			attached: false,
 			locked: true,
 			revision: this.revision,
@@ -390,7 +621,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 
 	async prompt(input: PromptInput): Promise<void> {
 		if (this.getPhase() !== "idle") {
-			throw new PiServerError("busy", "the worker is already running a turn");
+			throw new WorkerRuntimeError("busy", "the worker is already running a turn");
 		}
 		// Optimistic: AgentSession preflight is async; events confirm the phase.
 		this.abortRequested = false;
@@ -420,7 +651,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (/already processing|compaction/.test(message)) {
-				throw new PiServerError("busy", message);
+				throw new WorkerRuntimeError("busy", message);
 			}
 			throw error;
 		} finally {
@@ -436,7 +667,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 		// the current tool batch, before the next model call; when queued during
 		// preflight or while idle, they are delivered at the start of the next run,
 		// before its first model call. That is the accepted behavior here, and it
-		// deviates from the protocol's reject-when-idle contract on purpose.
+		// deviates from a reject-when-idle control contract on purpose.
 		await this.session.steer(input.text);
 		this.emit({ type: "snapshot" });
 	}
@@ -461,7 +692,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 	async setModel(ref: ModelRef): Promise<void> {
 		const model = this.session.modelRuntime.getModel(ref.provider, ref.id);
 		if (!model) {
-			throw new PiServerError("invalid_request", `unknown model ${ref.provider}/${ref.id}`);
+			throw new WorkerRuntimeError("invalid_request", `unknown model ${ref.provider}/${ref.id}`);
 		}
 		// Direct state assignment on purpose: AgentSession.setModel() would persist a
 		// new default into the operator's settings.json. A worker's model must never
@@ -487,17 +718,16 @@ export class WorkerRuntime implements PiSessionRuntime {
 		this.emit({ type: "snapshot" });
 	}
 
-	subscribe(listener: (event: PiSessionRuntimeEvent) => void): () => void {
+	subscribe(listener: (event: WorkerRuntimeEvent) => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
 	}
 
 	/**
-	 * In-process observation (the panel). Deliberately NOT `subscribe`: PiServer
-	 * disposes a runtime when its last remote client detaches, and dispose()
-	 * clears the server-facing listeners. A watcher must outlive that — an
-	 * operator attaching and detaching a pi-client must not silently freeze the
-	 * panel. Watchers are dropped only by shutdown(), when the worker is done.
+	 * In-process observation (the panel). Deliberately NOT `subscribe`: dispose()
+	 * clears the control-surface listeners when an observer detaches, and a panel
+	 * watcher must outlive that. Watchers are dropped only by shutdown(), when the
+	 * worker is done.
 	 */
 	watch(listener: () => void): () => void {
 		this.watchers.add(listener);
@@ -505,9 +735,9 @@ export class WorkerRuntime implements PiSessionRuntime {
 	}
 
 	async dispose(): Promise<void> {
-		// PiServer disposes a runtime when the last client detaches while idle. The
-		// worker must survive that: it is running for the parent, not for the
-		// observer. Only the server-facing listeners go.
+		// An observer detaching ends its control-surface subscription; the worker
+		// itself survives: it runs for the parent, not for the observer. Only the
+		// listener set goes.
 		this.listeners.clear();
 	}
 
@@ -527,7 +757,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 		this.phase = this.currentPhase("idle");
 	}
 
-	private emit(event: PiSessionRuntimeEvent): void {
+	private emit(event: WorkerRuntimeEvent): void {
 		if (event.type === "snapshot") this.revision += 1;
 		for (const listener of [...this.listeners]) {
 			try {
@@ -563,32 +793,26 @@ export class WorkerRuntime implements PiSessionRuntime {
 		return id;
 	}
 
-	private toolItem(input: ToolItemInput & { status: "running" }): ToolItemWithStatus<"running">;
+	private toolItem(input: ToolItemInput & { status: "running" }): Extract<TranscriptToolItem, { status: "running" }>;
 	private toolItem(
 		input: ToolItemInput & { status: "complete" | "error" },
-	): ToolItemWithStatus<"complete"> | ToolItemWithStatus<"error">;
-	private toolItem(input: ToolItemInput): ToolTranscriptItem;
-	private toolItem(input: ToolItemInput): ToolTranscriptItem {
+	): Extract<TranscriptToolItem, { status: "complete" | "error" }>;
+	private toolItem(input: ToolItemInput): TranscriptToolItem {
 		const base = {
 			id: input.toolCallId,
 			role: "tool" as const,
 			toolCallId: input.toolCallId,
 			toolName: input.toolName,
-			input: toProtocolJsonValue(input.args ?? {}),
+			input: transcriptJsonValue(input.args ?? {}),
 			content: input.content ?? [],
 			timestamp: input.timestamp,
 		};
 		if (input.status === "running") {
-			return { ...base, status: "running", isError: false };
+			return { ...base, status: "running" as const, isError: false };
 		}
-		const optional: {
-			details?: ReturnType<typeof sanitizeProtocolDetails>;
-			usage?: ReturnType<typeof toProtocolUsage>;
-		} = {};
-		const details = sanitizeProtocolDetails(input.details);
-		const usage = toProtocolUsage(input.usage);
-		if (details !== undefined) optional.details = details;
-		if (usage !== undefined) optional.usage = usage;
+		const optional: { details?: unknown; usage?: AiUsage } = {};
+		if (input.details !== undefined) optional.details = input.details;
+		if (input.usage !== undefined) optional.usage = input.usage;
 		return input.status === "error"
 			? { ...base, ...optional, status: "error", isError: true }
 			: { ...base, ...optional, status: "complete", isError: false };
@@ -622,9 +846,7 @@ export class WorkerRuntime implements PiSessionRuntime {
 			case "message_start": {
 				const { message } = event;
 				if (message.role === "user") {
-					const item = toProtocolUserMessage(message, {
-						id: this.messageId(message),
-					});
+					const item = userTranscriptItem(message, this.messageId(message));
 					this.emit({
 						type: "progress",
 						progress: { type: "item_started", item },
@@ -633,11 +855,13 @@ export class WorkerRuntime implements PiSessionRuntime {
 					const id = `m-${++this.msgSeq}`;
 					this.msgIds.set(message, id);
 					this.stream = { id, lens: new Map() };
-					const item = toProtocolAssistantMessage(message, { id });
-					this.emit({
-						type: "progress",
-						progress: { type: "item_started", item },
-					});
+					const item = assistantTranscriptItem(message, id);
+					if (item) {
+						this.emit({
+							type: "progress",
+							progress: { type: "item_started", item },
+						});
+					}
 				}
 				break;
 			}
@@ -652,8 +876,8 @@ export class WorkerRuntime implements PiSessionRuntime {
 					const id = this.stream?.id ?? this.messageId(message);
 					this.msgIds.set(message, id);
 					try {
-						const item = toProtocolAssistantMessage(message, { id });
-						if (item.status !== "streaming") {
+						const item = assistantTranscriptItem(message, id);
+						if (item && item.status !== "streaming") {
 							this.emit({
 								type: "progress",
 								progress: { type: "item_finished", item },
@@ -689,19 +913,17 @@ export class WorkerRuntime implements PiSessionRuntime {
 				break;
 			}
 			case "tool_execution_update": {
-				// SAFETY: Pi 0.84.2 declares partialResult as any, while every tool
-				// update uses the public AgentToolResult content contract.
-				const partial = event.partialResult as ToolResultPayload;
+				const partial = event.partialResult as { content?: TranscriptContentPart[] } | undefined;
 				this.liveTools.set(event.toolCallId, {
 					toolName: event.toolName,
 					args: event.args,
-					content: partial.content,
+					content: partial?.content,
 				});
 				const item = this.toolItem({
 					toolCallId: event.toolCallId,
 					toolName: event.toolName,
 					args: event.args,
-					content: partial.content,
+					content: partial?.content,
 					status: "running",
 					timestamp: Date.now(),
 				});
@@ -714,17 +936,15 @@ export class WorkerRuntime implements PiSessionRuntime {
 			case "tool_execution_end": {
 				const started = this.liveTools.get(event.toolCallId);
 				this.liveTools.delete(event.toolCallId);
-				// SAFETY: Pi 0.84.2 declares result as any, while tool execution
-				// supplies the public AgentToolResult content/details/usage contract.
-				const result = event.result as ToolResultPayload;
+				const result = event.result as { content?: TranscriptContentPart[]; details?: unknown; usage?: AiUsage };
 				const item = this.toolItem({
 					toolCallId: event.toolCallId,
 					toolName: event.toolName,
 					args: started?.args,
-					content: result.content,
+					content: result?.content,
 					status: event.isError ? "error" : "complete",
-					details: result.details,
-					usage: result.usage,
+					details: result?.details,
+					usage: result?.usage,
 					timestamp: Date.now(),
 				});
 				this.emit({

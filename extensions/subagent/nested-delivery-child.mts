@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -130,12 +130,6 @@ try {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 	assert.equal(sub.sharedWorkerState.workerSurfaces.has(ownerSessionId), false);
-	if (grandchild.socketPath && existsSync(grandchild.socketPath)) {
-		throw new Error("the owner socket remained after shutdown");
-	}
-	if (grandchild.socketPath) {
-		rmSync(dirname(grandchild.socketPath), { recursive: true, force: true });
-	}
 	console.log("nested delivery child: PASS");
 } finally {
 	try {

@@ -123,7 +123,6 @@ try {
 		true,
 		"dispatch must publish the nested worker's actual surface",
 	);
-	assert.equal(Boolean(before?.socketPath && existsSync(before.socketPath)), true);
 
 	const foreignCtx = {
 		...ctx,
@@ -194,15 +193,12 @@ try {
 	// worker cleanup and the owning session's surface cleanup before asserting.
 	while (
 		Date.now() < closedDeadline &&
-		(after?.state === "running" ||
-			Boolean(after?.socketPath && existsSync(after.socketPath)) ||
-			sub.sharedWorkerState.workerSurfaces.has(ownerSessionId))
+		(after?.state === "running" || sub.sharedWorkerState.workerSurfaces.has(ownerSessionId))
 	) {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		after = sub.readWorker(id);
 	}
 	assert.equal(after?.state, "owner_lost", JSON.stringify(after));
-	assert.equal(Boolean(after?.socketPath && existsSync(after.socketPath)), false);
 	assert.equal(
 		readFileSync(marker, "utf-8").trim().split("\n").length,
 		2,
@@ -210,9 +206,6 @@ try {
 	);
 	assert.equal(sub.sharedWorkerState.workerSurfaces.has(ownerSessionId), false);
 	assert.equal(sub.sharedWorkerState.workerSurfaces.has(after?.sessionId ?? ""), false);
-	if (after?.socketPath) {
-		rmSync(dirname(after.socketPath), { recursive: true, force: true });
-	}
 	console.log("owner shutdown child: PASS");
 } finally {
 	try {

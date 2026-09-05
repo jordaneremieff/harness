@@ -98,7 +98,7 @@ Verified 2026-09-05.
 | Former `dev` line | The exact `dev` ref is absent. `main` contains the former `d24c99f4` baseline and is 87 commits ahead of it |
 | Active WP08 branch | `dev-named-forks-streaming` at `85186f82` (2026-09-04), 8 commits ahead of and 3 behind `main`; draft pull request #9152 "DRAFT: forks streaming" uses this head |
 | Historical harness branch | `harness-v2/j4` at `f7f933c6` is 9 commits ahead of its merge base and 711 behind `main`; its last commit is from 2026-08-07 |
-| Local Pi packages | The active global coding agent and its agent core are 0.85.0, installed 2026-09-04. This checkout resolves the coding agent, ai, tui, protocol, and server at 0.84.2 (`npm ls`); `package.json` pins protocol and server at `^0.84.2`. The checkout tree does not contain the `pi-agent-core` package; extensions reach it through the running install |
+| Local Pi packages | The running coding agent, agent core, TUI, and AI packages are 0.85.0. The loader binds extension imports of those packages, the AI `/compat`, `/oauth`, and `/providers/all` subpaths, and `typebox` to that running installation. This repository declares no Pi version dependency: the subagent extension imports nothing outside that bound set |
 | Reachable today | Published `pi-agent-core` 0.85.0 exposes the harness subpath exports `./harness/context`, `./harness/session`, `./harness/session/testing`, `./harness/runtime/reducer`, and `./harness/env/nodejs`, carrying the WP00-WP09 contract; the installed dist contains `LaneSnapshot.operation.runningTools` with `status: "settled"`. Published `pi-server` 0.85.0 depends on `chord`, `pi-agent-core`, and `pi-protocol` |
 
 Re-verify with the GitHub release, branch, comparison, and pull-request APIs;
@@ -122,10 +122,14 @@ Verified 2026-09-05 against `main` at `9841914c` and the active WP08 branch at `
 - WP09 changed the `pi-agent-core` lane snapshot shape and reducer, which
   release 0.85.0 publishes. The subagent extension does not import those
   surfaces, so no local code change follows.
-- The subagent extension imports the published `@earendil-works/pi-server`.
-  Release 0.85.0 carries the wider dependency graph (`chord`,
-  `pi-agent-core`, `pi-protocol`); it reaches this checkout when the
-  `^0.84.2` pins move to the 0.85 line.
+- Upstream deleted the raw Session RPC protocol and the server mutation-scope
+  manager and replaced them with attachment-fenced routed semantic services. The
+  shipped experimental `pi client` and `pi server` attach to Pi's own
+  coding-agent sessions through service contracts the coding agent owns, and no
+  shipped or planned client attaches to a session hosted by another
+  application. The subagent extension therefore removed its socket and its
+  protocol and server imports rather than rebuilding against a contract that
+  does not exist.
 - AgentHarness defines no worker-context loading: `AgentHarnessOptions` takes
   `resources` (skills, prompt templates), `tools`, and `systemPrompt` at
   construction; tool and resource registries are code, not durable state;
@@ -167,7 +171,7 @@ Verified 2026-09-05 at `main` commit `9841914c` and WP08 branch commit
 | A new Pi release installs | Re-verify this file, run the full suite, and raise the `^0.84.2` pins after the release line moves past 0.84 |
 | `pi-agent-core` publishes its harness subpaths | Consume `reduceLaneSnapshot` for lane observation instead of folding lane events by hand |
 | `dev-named-forks-streaming` advances, rebases, merges, or gets a pull request | Re-read WP08, compare it with `main`, and update the Memory, JSONL, and SQLite status separately |
-| `pi-server` publishes with `chord` and `pi-agent-core` | Accept the wider dependency graph and re-check the subagent extension's protocol and server imports |
+| Upstream resolves the "Remote Session contract contradiction" in `packages/agent/docs/post-wp05-roadmap.md`, which requires a choice between keeping Session process-local and commissioning a dedicated remote Session protocol, client, server, and worker package | If the dedicated package is commissioned, evaluate a worker socket against that contract before building anything; if process-local wins, keep the extension as it is |
 | Facets and services reach the coding agent | Map the subagent store onto `requestAbort`, result records, and `memoOnce`, and keep the content-bearing store the program does not supply |
 | The extension loader changes after `9841914c` | Read the change before the next upgrade; the whole extension surface rests on it |
 | Storage format 4 stabilizes or gains migrations | Confirm the harness still touches session files only through `SessionManager` |

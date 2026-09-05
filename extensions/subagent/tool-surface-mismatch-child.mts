@@ -169,7 +169,6 @@ try {
 	await parentSession.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 	parentSession.dispose();
 	parentSession = null;
-	if (record?.socketPath) rmSync(dirname(record.socketPath), { recursive: true, force: true });
 	console.log("tool surface mismatch child: PASS");
 } finally {
 	process.removeListener("unhandledRejection", captureUncaught);

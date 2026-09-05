@@ -14,7 +14,6 @@
 
 import { execFile } from "node:child_process";
 import type { ExtensionCommandContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import type { TranscriptItem } from "@earendil-works/pi-protocol";
 import { decodeKittyPrintable, Key, matchesKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	type ConsoleAssistantMessage,
@@ -25,6 +24,7 @@ import {
 	renderConversation,
 	stripTerminalSequences,
 } from "./console.ts";
+import type { TranscriptItem } from "./runtime.ts";
 import type { WorkerRecord } from "./index.ts";
 
 export interface SubagentPanelDeps {
@@ -37,10 +37,10 @@ export interface SubagentPanelDeps {
 	continueWorker(id: string, message: string): Promise<{ id: string | null; text: string }>;
 	/** Compact terminal report preview, separate from the transcript. */
 	report(id: string): { label: string; text: string } | null;
-	/** Protocol-v1 transcript items for a worker (the live runtime's snapshot
-	 * when owned here, else its session file put through the same conversion),
-	 * or null when nothing is available. Never raw Pi messages: runtime.ts owns
-	 * protocol conversion. */
+	/** Transcript items for a worker (the live runtime's snapshot when owned
+	 * here, else its session file put through the same conversion), or null when
+	 * nothing is available. Never raw Pi messages: runtime.ts owns the
+	 * conversion. */
 	conversation(id: string): TranscriptItem[] | null;
 	/** Whether this session still owns the worker as a live run. */
 	isLive(id: string): boolean;
@@ -197,16 +197,15 @@ function cleanConsoleInput(data: string): string {
 }
 
 /**
- * Normalize PROTOCOL-V1 transcript items into the shapes console.ts renders.
+ * Normalize the local transcript items into the shapes console.ts renders.
  *
- * The input comes from `workerConversation`, which produces protocol items for
- * both live and terminal workers through runtime.ts. This function does not
- * read Pi's internal message shape. Protocol v1 remains the one downstream
- * contract.
+ * The input comes from `workerConversation`, which produces items for both
+ * live and terminal workers through runtime.ts. This function does not read
+ * Pi's internal message shape; runtime.ts owns that conversion.
  *
- * Field mapping (protocol -> console): a tool call part carries `toolCallId` /
+ * Field mapping (item -> console): a tool call part carries `toolCallId` /
  * `toolName` / `input`, and a tool result is a top-level item with role "tool".
- * Protocol roles without terminal text stay outside this renderer.
+ * Roles without terminal text stay outside this renderer.
  */
 function toTextParts(content: TranscriptItem["content"]): ConsoleTextPart[] {
 	const out: ConsoleTextPart[] = [];

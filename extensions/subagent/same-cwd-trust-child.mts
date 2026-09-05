@@ -169,7 +169,6 @@ try {
 				"a same-directory worker must inherit the session's refusal and not load the project extension",
 			);
 		}
-		if (record?.socketPath) rmSync(dirname(record.socketPath), { recursive: true, force: true });
 	}
 
 	// Case A: session trusted at a directory the store refuses. The worker must

@@ -10,25 +10,17 @@ reopen as a primary session with `pi --session <file>`. Stored results (up to
 50KB, with larger submissions marked `[truncated]`) persist in a private store
 that any later session can read.
 
-No gates, no enterprise controls, no supervisor, no daemon. The server lives in
-the parent session; the store is the application's persistence authority; the
-parent's own tools manage workers.
+No gates, no enterprise controls, no supervisor, no daemon. The store is the
+application's persistence authority; the parent's own tools manage workers.
 
 ## Version boundary
 
 Pi's loader binds this extension's imports of `@earendil-works/pi-coding-agent`,
 `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`,
 `@earendil-works/pi-ai` and its `/compat`, `/oauth`, and `/providers/all`
-subpaths, and `typebox` to the running installation. Protocol and server resolve
-from the extension's own `node_modules`. With a newer installed Pi, workers
-therefore execute installed session code while repository tests use the pinned
-peer packages.
-
-This checkout keeps protocol and server at 0.84.2. The 0.85.0 protocol entry
-exports only its CBOR, codec, framing, and protocol-envelope names. It omits the
-transcript, session, thinking-level, model-reference, and metadata types this
-extension and server 0.84.2 import. Moving protocol alone produces type errors;
-a migration must move both packages and run every repository gate.
+subpaths, and `typebox` to the running installation. The extension imports
+nothing else from the Pi packages, so a worker runs on the installed release
+and the repository pins no Pi version.
 
 ## Tools
 
@@ -168,7 +160,7 @@ loaded skill commands and prompt templates expand, and unmatched text passes
 through unchanged. Registered commands receive print-mode UI behavior and real
 `AgentSessionRuntime` actions for reload, new session, fork, tree navigation,
 and session switch. A replacement session rebinds the worker's commands,
-protocol runtime, record, usage tracking, and lifecycle ownership. When a
+worker runtime, record, usage tracking, and lifecycle ownership. When a
 command starts a turn through `pi.sendUserMessage()`, the worker waits for that
 active turn before settlement. Active steering uses `AgentSession.steer`: skill
 commands and prompt templates expand, while pi refuses an extension command
@@ -184,8 +176,8 @@ dispatching session's own directory the session's live trust decision does
 transfer, session-only answers and overrides included. Any other directory
 resolves trust from scratch, the way a session started there does.
 
-Pi 0.84.2 and 0.85.0 do not expose a parent SDK session's `agentDir`
-through `ExtensionContext`. An SDK host that passes a custom `agentDir` must set
+Pi does not expose a parent SDK session's `agentDir` through
+`ExtensionContext`, through the installed release. An SDK host that passes a custom `agentDir` must set
 `PI_CODING_AGENT_DIR` to the same directory before it loads this extension.
 Without that process setting, workers use Pi's process agent directory instead
 of the SDK-only value. Normal Pi CLI sessions already use the process value.
@@ -236,7 +228,7 @@ of diagnostics omitted beyond those bounds as `setupDiagnosticsDropped`.
 - Each worker is an `AgentSession` constructed in this process. Live status
   (turns, usage, cost, current tool, output) comes from the worker session's own
   events; steering and abort are direct calls on it. Nothing is scraped. Every
-  terminal path shuts down the protocol runtime and disposes the underlying
+  terminal path shuts down the worker runtime and disposes the underlying
   `AgentSession` through one exact-once owner, so Pi's per-session resources are
   released after terminal evidence is persisted.
 - The worker's deliverable is written by its `submit_result` tool to
@@ -375,9 +367,9 @@ The same contracts apply at every depth:
   exactly, plus `submit_result`. It never broadens to the root surface. The
   worker's session-keyed recorded surface lets a fresh per-CWD module instance
   reproduce the registry when its live API is unavailable.
-- The dispatching worker session owns its nested host, socket, timers, delivery
-  API, and workers. Its `session_shutdown` aborts and finalizes unfinished
-  grandchildren, closes the host, and removes its recorded surface. One worker
+- The dispatching worker session owns its nested timers, delivery API, and
+  workers. Its `session_shutdown` aborts and finalizes unfinished
+  grandchildren and removes its recorded surface. One worker
   session cannot close another worker session's resources, even when both use
   the same module instance.
 - A completed grandchild sends `subagent_result` to the worker that dispatched
@@ -417,8 +409,9 @@ the portable fallback for a terminal worker.
 ## Inspecting a worker
 
 Use `subagent_inspect {"id":"bg-..."}` to check a worker's actual work. The
-result includes record state, the session path, and the most recent protocol
-transcript items in human-readable form. It shows thinking, tool-call inputs,
+result includes record state, the session path, and the most recent transcript
+items in human-readable form; the extension converts the session's messages to
+its own transcript items. It shows thinking, tool-call inputs,
 tool outcomes, and assistant errors. The transcript tail is capped at 24KB and
 32 items; older or oversized content produces an explicit truncation marker.
 Retained inspection follows the session file's active branch and excludes
@@ -448,8 +441,7 @@ While a worker is still running it belongs to this session's process: steer it
 with `subagent_steer` and abort it with `subagent_kill`. The extension tool and
 panel paths refuse mutation from another session. Another session may inspect
 the persisted transcript through its `/subagent` dashboard. There is no separate live second terminal for a running
-worker — pi runs one interactive session at a time, and its public CLI/TUI has
-no command to discover or attach to this extension's per-session socket. Live
+worker — pi runs one interactive session at a time. Live
 control stays through the owning parent's tools and dashboard.
 
 Before continuing a terminal worker that has no submitted result, use
@@ -458,20 +450,6 @@ evidence. A completed draft can survive inside assistant text or a tool call
 used for final QA even when the subsequent `submit_result` turn never landed.
 Recovery is an operator judgment over transcript evidence; inspection never
 guesses which model-authored content was the deliverable.
-
-### The socket, and what it is for
-
-Each session that dispatches workers hosts a `PiServer` on its own unix socket
-and registers only the workers that session owns as real protocol sessions.
-The socket uses same-UID filesystem authorization. It is not a sandbox boundary
-between processes or workers that already run as that user.
-Pi ships experimental remote-session client APIs, but its public CLI/TUI has no
-command to discover or attach to this extension's per-session socket; therefore
-the extension has no supported operator-facing attach workflow.
-
-The extension uses the released `PiServerService` and `PiSessionRuntime` surfaces
-as one replaceable current-runtime seam in `runtime.ts`. The socket is exercised
-by the colocated conformance test, which drives a real protocol client across it.
 
 The subagent extension also publishes one ambient footer status through Pi's
 public `subagent` status key. It shows this parent session's local active count
@@ -550,23 +528,15 @@ OS recycles an owner's PID, a dead owner can temporarily look alive and remain
   worker.json   spec + state (rewritten atomically on each transition)   (0600)
   prompt.md     the worker protocol prompt appended to the system prompt  (0600)
   result.txt    submitted deliverable (50KB maximum, marked if truncated)(0600)
-
-/tmp/pi-<uid>/a-<agent-dir-hash>/s-<parent-session-hash>.sock           (0600)
-  the parent's bounded worker-server endpoint inside owner-only directories
 ```
 
 The store is owner-only against other OS users. Workers and other same-UID
 processes share the operator's filesystem authority; this extension does not
 claim tamper resistance against them. Worker prompts, transcripts, and results
-carry whatever the operator's work carries, and the socket is a full control
-channel whose authorization is its filesystem permissions. Its stable,
-hashed runtime path stays below Unix socket limits regardless of
-`PI_CODING_AGENT_DIR` length; the full session identity remains in
-`worker.json`. PiServer owns identity-aware stale-endpoint cleanup, while the
-extension only sweeps old socket-shaped entries in its current hashed namespace.
-The extension reasserts the store permission invariant when it loads. Atomic writes go through
-process-unique temp files (not a fixed `.tmp` name), so two writers racing one
-worker record during a crash cannot tear each other's write.
+carry whatever the operator's work carries. The extension reasserts the store
+permission invariant when it loads. Atomic writes go through process-unique
+temp files (not a fixed `.tmp` name), so two writers racing one worker record
+during a crash cannot tear each other's write.
 
 A worker's full transcript is pi's own session file under
 `~/.pi/agent/sessions`, which pi writes at its default mode (0644). At dispatch
@@ -595,7 +565,3 @@ The worker's transcript is its own pi session file, referenced by
 `worker.json` (`sessionId`, `sessionFile`) rather than copied. The panel
 transcript view intentionally omits `custom`, `bashExecution`, `branchSummary`,
 and `compactionSummary` events, plus orphan tool results.
-
-The worker socket is exercised by the colocated conformance test, which
-drives a real protocol client over a real unix socket. It is not part of
-any operator workflow today.

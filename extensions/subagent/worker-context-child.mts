@@ -234,7 +234,7 @@ try {
 		return record;
 	};
 
-	const trustedRecord = await runWorker(trustedCwd, "trusted");
+	await runWorker(trustedCwd, "trusted");
 	const trustedPrompt = readFileSync(promptPath("trusted"), "utf8");
 
 	// A trusted working directory gives the worker that directory's project
@@ -260,7 +260,7 @@ try {
 	// cleanly without a submitted result.
 	rmSync(markerPath("trusted"), { force: true });
 	rmSync(sessionMarkerPath("trusted"), { force: true });
-	const reloadRecord = await runWorker(trustedCwd, "reload", "/worker-reload", "no_result_submitted");
+	await runWorker(trustedCwd, "reload", "/worker-reload", "no_result_submitted");
 	assert.equal(readFileSync(markerPath("trusted"), "utf8"), "factory\nstart\nfactory\nstart\n");
 	const reloadSessions = readFileSync(sessionMarkerPath("trusted"), "utf8").trim().split("\n");
 	assert.equal(reloadSessions.length, 2);
@@ -269,7 +269,7 @@ try {
 	// A fire-and-forget pi.sendUserMessage() turn remains owned until it settles.
 	rmSync(markerPath("trusted"), { force: true });
 	rmSync(sessionMarkerPath("trusted"), { force: true });
-	const commandRecord = await runWorker(trustedCwd, "command", "/worker-send");
+	await runWorker(trustedCwd, "command", "/worker-send");
 	assert.equal(readFileSync(markerPath("trusted"), "utf8"), "factory\nstart\n");
 	assert.equal(existsSync(promptPath("command")), true);
 
@@ -316,7 +316,7 @@ try {
 	const slowReplacementRecord = sub.readWorker(slowReplacementId);
 	assert.equal(slowReplacementRecord?.state, "cancelled", JSON.stringify(slowReplacementRecord));
 
-	const untrustedRecord = await runWorker(untrustedCwd, "untrusted");
+	await runWorker(untrustedCwd, "untrusted");
 	const untrustedPrompt = readFileSync(promptPath("untrusted"), "utf8");
 
 	// An untrusted working directory withholds exactly what pi withholds from
@@ -340,17 +340,6 @@ try {
 
 	sub.shutdownWorkerSession(parentSession);
 	parentSession = null;
-	for (const record of [
-		trustedRecord,
-		reloadRecord,
-		commandRecord,
-		failedCommandRecord,
-		replacementRecord,
-		slowReplacementRecord,
-		untrustedRecord,
-	]) {
-		if (record?.socketPath) rmSync(dirname(record.socketPath), { recursive: true, force: true });
-	}
 	console.log("worker context child: PASS");
 } finally {
 	try {

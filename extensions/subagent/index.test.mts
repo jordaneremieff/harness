@@ -1,21 +1,17 @@
 /**
  * Colocated tests for the subagent slice.
  *
- * Two kinds, deliberately:
- *
- * 1. A LIVE PROTOCOL TRANSPORT TEST over a faked session interior. `WorkerHost`
- *    serves `WorkerRuntime` over a real unix socket, and a real protocol client
- *    drives it: snapshot shape, phase transitions, steering, and abort are
- *    exercised end to end. The AgentSession underneath is a stub that mirrors
- *    the interior the adapter reads, so this catches protocol-shape and adapter
- *    regressions — it does NOT catch a pi upgrade that changes that interior.
- *    The stub is written to fail loudly where calling the real API would have a
- *    side effect the worker must never cause; interior drift is caught by
- *    re-grounding runtime.ts against the installed sources on a pi upgrade.
- *
- * 2. Focused unit cases over the pure logic that decides what the operator sees:
- *    the result cap, worker-record normalization, terminal-state triage,
- *    transcript conversion, and the console renderer's exact-width contract.
+ * Focused unit cases over the pure logic that decides what the operator sees:
+ * worker-record normalization, terminal-state triage, transcript conversion,
+ * the console renderer's exact-width contract, and worker-runtime control over
+ * a faked session interior. The AgentSession underneath is a stub that mirrors
+ * the interior the adapter reads, so this catches adapter regressions — it does
+ * NOT catch a pi upgrade that changes that interior. The stub is written to
+ * fail loudly where calling the real API would have a side effect the worker
+ * must never cause; interior drift is caught by re-grounding runtime.ts against
+ * the installed sources on a pi upgrade. Real-session behaviour is exercised
+ * end to end in child processes (realloader, owner shutdown, provider
+ * transfer, project trust, worker context, nested delivery).
  *
  * The store root is read from PI_CODING_AGENT_DIR at module load, so the env var
  * is set before the extension modules are imported. Nothing here touches the
@@ -24,7 +20,6 @@
 
 import assert from "node:assert/strict";
 import {
-	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -47,13 +42,6 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 // fixtures.
 const testHome = mkdtempSync(join(tmpdir(), "subagent-test-home-"));
 process.env.HOME = testHome;
-
-/**
- * A unix socket path may be at most 103 bytes, and macOS puts os.tmpdir() far
- * enough down /var/folders/... to blow that on its own. The socket tests get a
- * short root of their own; the store tests keep the standard temp dir.
- */
-const socketRoot = mkdtempSync(join(existsSync("/tmp") ? "/tmp" : tmpdir(), "sa-"));
 
 const {
 	default: registerSubagent,
@@ -112,16 +100,13 @@ const {
 const { WorkerRuntime, buildTranscript, trackCommandStartedTurns, transcriptFromMessages } = await import(
 	"./runtime.ts"
 );
-const { WorkerHost, socketLocation } = await import("./server.ts");
 const { renderConversation } = await import("./console.ts");
 const { formatPanelElapsed, openSubagentPanel, rosterOutputPreview } = await import("./panel.ts");
-const { connectUnixTestClient } = await import("@earendil-works/pi-server/testing");
 const { visibleWidth } = await import("@earendil-works/pi-tui");
 
 after(() => {
 	rmSync(agentDir, { recursive: true, force: true });
 	rmSync(testHome, { recursive: true, force: true });
-	rmSync(socketRoot, { recursive: true, force: true });
 });
 
 const storeDir = join(agentDir, "subagent", "workers");
@@ -164,7 +149,6 @@ function runningRecord(id: string, extra: Record<string, unknown> = {}): Record<
 		setupDiagnosticsDropped: 0,
 		sessionId: "s-1",
 		sessionFile: null,
-		socketPath: "/nonexistent.sock",
 		ownerSession: "s-1",
 		// The current process, so ownerAlive() sees a live owner where it matters.
 		ownerPid: process.pid,
@@ -2636,7 +2620,7 @@ describe("renderConversation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Live protocol conformance over a real unix socket
+// WorkerRuntime control over a faked session interior
 // ---------------------------------------------------------------------------
 
 interface FakeEvent {
@@ -2770,10 +2754,6 @@ class FakeSession {
 		this.emit({ type: "agent_settled" });
 	}
 }
-
-const ctxShim: any = {
-	modelRegistry: { getAvailable: () => [], hasConfiguredAuth: () => false },
-};
 
 describe("WorkerRuntime regressions", () => {
 	it("hands tasks to the session prompt with pi's own expansion defaults", async () => {
@@ -2999,211 +2979,60 @@ describe("WorkerRuntime regressions", () => {
 	});
 });
 
-describe("WorkerRuntime over a live unix socket", () => {
-	it("keeps the public endpoint bounded and independent of agent-dir length", () => {
-		const longAgentDir = join("/", `agent-${"a".repeat(180)}`, `nested-${"b".repeat(180)}`);
-		const first = socketLocation(longAgentDir, "../../hostile/session", socketRoot);
-		const second = socketLocation(longAgentDir, "../../hostile/session", socketRoot);
-		assert.deepEqual(first, second, "the same owner gets a stable endpoint");
-		assert.ok(first.path.startsWith(`${socketRoot}/`));
-		assert.ok(!first.path.includes("hostile"));
-		assert.ok(!first.path.includes("agent-"));
-		assert.ok(Buffer.byteLength(first.path, "utf-8") <= 103);
-		assert.match(first.path, /\/a-[0-9a-f]{24}\/s-[0-9a-f]{24}\.sock$/);
+it("keeps in-process watchers alive when a remote observer detaches", async () => {
+	const session = new FakeSession();
+	const runtime = new WorkerRuntime({
+		session: session as never,
+		id: "bg-watch1",
+		name: "watched worker",
+		cwd: agentDir,
+		createdAt: 5,
 	});
+	let watched = 0;
+	const unwatch = runtime.watch(() => watched++);
 
-	it("secures the runtime root that owns the socket namespace", async () => {
-		chmodSync(socketRoot, 0o777);
-		const host = new WorkerHost(agentDir, "owner-root-mode", socketRoot);
-		await host.ensureStarted(ctxShim);
-		try {
-			assert.equal(statSync(socketRoot).mode & 0o077, 0);
-		} finally {
-			await host.close();
-		}
+	// dispose() clears only the control-surface listeners; the panel's
+	// subscription must survive it. Only shutdown() ends a watcher.
+	await runtime.dispose();
+	session.emit({ type: "agent_settled" });
+	assert.ok(watched > 0, "watchers survive dispose");
+
+	const seen = watched;
+	runtime.shutdown();
+	session.emit({ type: "agent_settled" });
+	assert.equal(watched, seen, "shutdown ends watching");
+	unwatch();
+});
+
+it("changes model and thinking without touching persisted settings", async () => {
+	const session = new FakeSession();
+	const record = runningRecord("bg-model1") as any;
+	const runtime = new WorkerRuntime({
+		onSessionStateChange: (active) => refreshActiveSessionRecord(record, active),
+		session: session as never,
+		id: "bg-model1",
+		name: "model worker",
+		cwd: agentDir,
+		createdAt: 5,
 	});
+	await runtime.setThinking("high" as never);
+	assert.equal(runtime.snapshot().thinkingLevel, "high");
+	assert.equal(record.thinking, "high");
 
-	it("serves a worker as a real protocol session", async () => {
-		const session = new FakeSession();
-		const host = new WorkerHost(agentDir, "owner1", socketRoot);
-		const runtime = new WorkerRuntime({
-			session: session as never,
-			id: "bg-live1",
-			name: "conformance worker",
-			cwd: agentDir,
-			createdAt: 5,
-		});
-		host.register(runtime);
-		await host.ensureStarted(ctxShim);
-
-		const client = await connectUnixTestClient(host.socketPath);
-		try {
-			const hello = await client.hello();
-			assert.equal(hello.type, "hello");
-
-			const listed: any = await client.request({ command: "list" });
-			assert.equal(listed.ok, true, JSON.stringify(listed));
-			assert.deepEqual(
-				listed.result.sessions.map((s: any) => s.id),
-				["bg-live1"],
-			);
-
-			const attached: any = await client.request({
-				command: "attach",
-				sessionId: "bg-live1",
-			});
-			assert.equal(attached.ok, true, JSON.stringify(attached));
-			const snapshot = attached.result.session;
-			assert.equal(snapshot.id, "bg-live1");
-			assert.equal(snapshot.phase, "idle");
-			assert.deepEqual(snapshot.model, { provider: "test", id: "model-a" });
-			assert.equal(snapshot.thinkingLevel, "medium");
-			assert.deepEqual(snapshot.transcript, []);
-
-			// A steer while idle is accepted and surfaces in the snapshot's queue
-			// — a documented, deliberate deviation from protocol v1's
-			// reject-when-idle contract, because AgentSession queues it.
-			const steered: any = await client.request({
-				command: "steer",
-				sessionId: "bg-live1",
-				text: "focus on the first file",
-			});
-			assert.equal(steered.ok, true, JSON.stringify(steered));
-			assert.deepEqual(session.steers, ["focus on the first file"]);
-
-			const prompted: any = await client.request({
-				command: "prompt",
-				sessionId: "bg-live1",
-				text: "go",
-			});
-			assert.equal(prompted.ok, true, JSON.stringify(prompted));
-
-			// The run's transcript reaches an attached observer: a snapshot after
-			// the turn carries the user message and the finished assistant reply.
-			const after: any = await client.request({
-				command: "attach",
-				sessionId: "bg-live1",
-			});
-			const final = after.result.session;
-			assert.deepEqual(
-				final.transcript.map((i: any) => i.role),
-				["user", "assistant"],
-			);
-			assert.equal(final.transcript[1].content[0].text, "partial answer");
-			assert.equal(final.phase, "idle");
-			assert.ok(final.revision > snapshot.revision, "revision advances with content");
-
-			// Progress events were delivered live, including streaming deltas.
-			const progress = client.messages.filter(
-				(m: any) => m.type === "event" && m.event?.type === "session_progress",
-			) as any[];
-			const kinds = progress.map((m) => m.event.progress.type);
-			assert.ok(kinds.includes("item_started"), JSON.stringify(kinds));
-			assert.ok(kinds.includes("item_finished"), JSON.stringify(kinds));
-			const delta = progress.find((m) => m.event.progress.type === "assistant_delta");
-			assert.ok(delta, "assistant deltas must reach an attached client");
-			assert.equal(delta.event.progress.delta, "partial");
-
-			const aborted: any = await client.request({
-				command: "abort",
-				sessionId: "bg-live1",
-			});
-			assert.equal(aborted.ok, true, JSON.stringify(aborted));
-		} finally {
-			await client.close();
-			await host.close();
-		}
+	// model-b supports only off/low, so the level must be re-clamped here
+	// WITHOUT the persisting AgentSession API.
+	await runtime.setModel({ provider: "test", id: "model-b" } as never);
+	assert.deepEqual(runtime.snapshot().model, {
+		provider: "test",
+		id: "model-b",
 	});
+	assert.equal(runtime.snapshot().thinkingLevel, "low");
+	assert.equal(record.model, "test/model-b");
+	assert.equal(record.thinking, "low");
+	assert.equal(record.bootstrapModel, "test/model-a");
 
-	it("closes an in-flight start and refuses later reuse", async () => {
-		const host = new WorkerHost(agentDir, "owner-closing", socketRoot);
-		const starting = host.ensureStarted(ctxShim);
-		const closing = host.close();
-		const concurrentClose = host.close();
-		await concurrentClose;
-		assert.equal(existsSync(host.socketPath), false, "every close caller waits for the in-flight close");
-		await Promise.allSettled([starting, closing]);
-		await assert.rejects(host.ensureStarted(ctxShim), /worker host is closed/);
-		assert.throws(() => host.register({ id: "bg-afterclose" } as never), /worker host is closed/);
-	});
-
-	it("refuses session creation and unknown sessions", async () => {
-		const host = new WorkerHost(agentDir, "owner2", socketRoot);
-		await host.ensureStarted(ctxShim);
-		const client = await connectUnixTestClient(host.socketPath);
-		try {
-			await client.hello();
-			const created: any = await client.request({ command: "create" });
-			assert.equal(created.ok, false);
-			assert.equal(created.error.code, "invalid_request");
-
-			const missing: any = await client.request({
-				command: "attach",
-				sessionId: "bg-nope",
-			});
-			assert.equal(missing.ok, false);
-			assert.equal(missing.error.code, "not_found");
-		} finally {
-			await client.close();
-			await host.close();
-		}
-	});
-
-	it("keeps in-process watchers alive when a remote observer detaches", async () => {
-		const session = new FakeSession();
-		const runtime = new WorkerRuntime({
-			session: session as never,
-			id: "bg-watch1",
-			name: "watched worker",
-			cwd: agentDir,
-			createdAt: 5,
-		});
-		let watched = 0;
-		const unwatch = runtime.watch(() => watched++);
-
-		// dispose() is what PiServer calls when the last client detaches. The
-		// panel's subscription must survive it; only shutdown() ends a watcher.
-		await runtime.dispose();
-		session.emit({ type: "agent_settled" });
-		assert.ok(watched > 0, "watchers survive dispose");
-
-		const seen = watched;
-		runtime.shutdown();
-		session.emit({ type: "agent_settled" });
-		assert.equal(watched, seen, "shutdown ends watching");
-		unwatch();
-	});
-
-	it("changes model and thinking without touching persisted settings", async () => {
-		const session = new FakeSession();
-		const record = runningRecord("bg-model1") as any;
-		const runtime = new WorkerRuntime({
-			onSessionStateChange: (active) => refreshActiveSessionRecord(record, active),
-			session: session as never,
-			id: "bg-model1",
-			name: "model worker",
-			cwd: agentDir,
-			createdAt: 5,
-		});
-		await runtime.setThinking("high" as never);
-		assert.equal(runtime.snapshot().thinkingLevel, "high");
-		assert.equal(record.thinking, "high");
-
-		// model-b supports only off/low, so the level must be re-clamped here
-		// WITHOUT the persisting AgentSession API.
-		await runtime.setModel({ provider: "test", id: "model-b" } as never);
-		assert.deepEqual(runtime.snapshot().model, {
-			provider: "test",
-			id: "model-b",
-		});
-		assert.equal(runtime.snapshot().thinkingLevel, "low");
-		assert.equal(record.model, "test/model-b");
-		assert.equal(record.thinking, "low");
-		assert.equal(record.bootstrapModel, "test/model-a");
-
-		await assert.rejects(() => runtime.setModel({ provider: "test", id: "ghost" } as never), /unknown model/);
-		runtime.shutdown();
-	});
+	await assert.rejects(() => runtime.setModel({ provider: "test", id: "ghost" } as never), /unknown model/);
+	runtime.shutdown();
 });
 
 describe("SubagentPanel controls", () => {
