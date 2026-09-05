@@ -10,6 +10,7 @@ Run all commands from the repository root:
 
 ```bash
 npm run evals -- validate prompts/wtf.eval.mts
+npm run evals -- validate prompts/drift.eval.mts
 npm run evals -- validate prompts/policy-enforce.eval.mts
 
 npm run evals -- plan prompts/wtf.eval.mts \
@@ -86,6 +87,19 @@ A `tool-result` check has config `{ name: string, isError?: boolean, contentCont
   config: { name: "read", isError: true, contentContains: ["Blocked"], contentOmits: ["approved"] },
 }
 ```
+
+### Prompt behavior suites
+
+`prompts/drift.eval.mts` tests opening-intent reconstruction against later
+implementation, operator clarification, a changed goal, and absent opening
+context. `prompts/wtf.eval.mts` tests reply repair, including explicit selection
+of an earlier reply and an absent target. Both use human-required semantic
+review. Their empty tool lists isolate text behavior; they do not prove that a
+model declines an available tool.
+
+`prompts/templates.test.mts` checks discovery through the public Pi resource
+loader without model inference. Package discovery and an explicit candidate
+load remain separate from semantic quality and active-session readback.
 
 ### Policy enforcement suite
 

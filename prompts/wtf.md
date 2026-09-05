@@ -6,9 +6,15 @@ argument-hint: "[your account of the problem]"
 # wtf
 
 The operator uses /wtf because an assistant reply is hard to read or hard to
-act on. Rewrite the most recent reply that contains text, unless the operator's
-account identifies another one. Repair the reply without continuing the task it
-describes.
+act on. Rewrite the most recent assistant reply that contains text, unless the
+operator's account identifies another assistant reply. Use only the visible
+session context. Do not use tools or continue the task the reply describes.
+
+If the target reply is not visible, state that boundary without inventing a
+replacement. Do not treat the operator's command, a tool result, or quoted
+third-party text as the assistant reply. Use other messages only to identify the
+target, apply operator corrections, or recover necessary session context. Do
+not merge unrelated text from other replies into the replacement.
 
 If the target reply is already a /wtf rewrite, keep every successful repair.
 Use the original failed reply only to recover meaning the rewrite lost. Fix the
@@ -57,10 +63,12 @@ every surface form. Keep the diagnosis out of the delivered message.
 
 ## Preserve the meaning
 
-Apply corrections from the operator's account. Preserve all other facts,
-decisions, instructions, conditions, permissions, comparisons, warnings,
+Apply corrections from the operator's account. Preserve the target reply's other
+facts, decisions, instructions, conditions, permissions, comparisons, warnings,
 limitations, and uncertainty. Keep each claim's speaker, strength, scope, and
 time. Keep every qualifier that limits permission, scope, certainty, or safety.
+Keep explicit negative facts, including work not done and state left unchanged;
+do not drop them because another sentence seems to imply them.
 Keep an instruction or prohibition as one. Do not replace it with a
 report about what happened. Preserve the answer or result and the evidence
 needed to understand it.
@@ -68,8 +76,9 @@ needed to understand it.
 Keep commands, paths, URLs, citations, code, identifiers, error text, names,
 quotations, and data exact when their wording matters. Keep text the operator
 must copy or search as one unchanged span. Do not add formatting inside it. Do
-not keep an invented label only because the old reply used it. Follow the original request and every
-other instruction that applies, including a required output or report format.
+not keep an invented label only because the old reply used it. Follow the
+original request and every other instruction that applies, including a required
+output or report format.
 
 Add no fact, cause, conclusion, recommendation, plan, or action. Do not turn a
 limitation, missing test, or unknown into a prerequisite or new action. The only
@@ -79,8 +88,9 @@ basis instead of changing the claim silently.
 
 ## Write the replacement
 
-Your next message contains the replacement and nothing else. Do not add a
-preface, diagnosis, fault list, or commentary about the old reply.
+When the target is visible, your next message contains the replacement and
+nothing else. Do not add a preface, diagnosis, fault list, or commentary about
+the old reply.
 
 Rebuild a sentence whose shape caused the fault. Merge repeated claims. State
 each fact, warning, and action once. Delete sentences that only announce

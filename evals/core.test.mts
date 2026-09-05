@@ -149,10 +149,10 @@ describe("neutral suite contract", () => {
 });
 
 describe("maintained /wtf suite", () => {
-	it("uses only the approved fixture classes and the account-substituting ablation", () => {
+	it("covers reader context and target selection with an account-substituting ablation", () => {
 		assert.deepEqual(
 			wtfSuite.cases.map((value) => value.id),
-			["caught-up", "return", "correction"],
+			["caught-up", "return", "correction", "missing-target", "selected-earlier-reply"],
 		);
 		const ablation = wtfSuite.subject.variants.find((value) => value.id === "neutral-ablation");
 		const config = ablation?.config as { promptTemplates?: Array<{ source?: { inline?: string } }> };

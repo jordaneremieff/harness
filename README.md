@@ -68,8 +68,11 @@ which Pi's ancestor walk loads for any session under the home directory, or in
 workspace and project `AGENTS.md` files. Those local files rank above the global
 rules.
 
-Prompt templates ship through the `pi.prompts` manifest entry; only
-prompts free of machine-specific paths and model rosters belong here.
+Prompt templates ship through the `pi.prompts` manifest entry. `/drift` restores
+the session's opening intent; `/wtf` repairs a hard-to-use assistant reply.
+Neither continues the underlying task. The [prompt ownership convention](docs/conventions/prompts.md)
+defines the boundary between shared templates, local shortcuts, and other
+instruction surfaces.
 
 ## Evaluations
 

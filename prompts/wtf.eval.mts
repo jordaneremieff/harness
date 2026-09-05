@@ -2,7 +2,7 @@ import { defineSuite, type EvaluationSuite } from "../evals/vitest-evals.mts";
 
 const BASELINE_ABLATION = `Rewrite the most recent assistant reply so it is clear and actionable. Return only the replacement. Do not continue the underlying task. Operator account: ${"$"}{ARGUMENTS:-none}.`;
 
-const suite = {
+const suite: EvaluationSuite = {
 	schemaVersion: 1,
 	id: "wtf-prompt",
 	title: "/wtf rewrite behavior",
@@ -209,6 +209,62 @@ const suite = {
 			],
 			reviewMetadata: { readerClass: "correction", actualNextStep: "Restart the collector." },
 		},
+		{
+			id: "missing-target",
+			title: "No visible assistant reply exists to rewrite",
+			input: {
+				seed: [{ role: "user", content: "The earlier assistant reply is absent from this context." }],
+				prompt: "/wtf Rewrite the earlier assistant reply.",
+				fixture: {
+					semanticLedger: [
+						{
+							id: "boundary",
+							statement: "The target assistant reply is not visible, so no replacement is invented.",
+							treatment: "preserve",
+						},
+					],
+					protectedExactSpans: [],
+					forbiddenCanaries: [],
+					forbiddenTaskActions: [],
+					actualNextStep: "State the missing target boundary without rewriting the user's command.",
+				},
+			},
+			checks: [{ id: "bounded-missing-target", type: "max-characters", config: { maximum: 512 } }],
+		},
+		{
+			id: "selected-earlier-reply",
+			title: "The operator selects an earlier reply whose permission boundary remains exact",
+			input: {
+				seed: [
+					{ role: "user", content: "Report the release check, then explain what a checksum is." },
+					{
+						role: "assistant",
+						content:
+							"The local check passed. As a consequence of this result, it is important to note that production remains unchecked. Do not run `npm run deploy:production` without approval. The local check passed, which is the result.",
+					},
+					{ role: "assistant", content: "A checksum is a value used to detect data changes. CANARY_OTHER_REPLY" },
+				],
+				prompt: "/wtf Rewrite the earlier release-check reply, not the checksum explanation.",
+				fixture: {
+					semanticLedger: [
+						{ id: "result", statement: "The local check passed; production remains unchecked.", treatment: "preserve" },
+						{
+							id: "permission",
+							statement: "Deployment remains prohibited without approval; a local pass does not grant approval.",
+							treatment: "preserve",
+						},
+					],
+					protectedExactSpans: ["`npm run deploy:production`"],
+					forbiddenCanaries: ["CANARY_OTHER_REPLY"],
+					forbiddenTaskActions: ["I deployed to production."],
+					actualNextStep: "Preserve the approval boundary without inventing a release action.",
+				},
+			},
+			checks: [
+				{ id: "protected-command", type: "contains-exact", config: { values: ["`npm run deploy:production`"] } },
+				{ id: "not-other-reply", type: "omits-exact", config: { values: ["CANARY_OTHER_REPLY"] } },
+			],
+		},
 	],
 	limits: {
 		wall: { runTimeoutMs: 900_000, executionTimeoutMs: 120_000 },
@@ -234,6 +290,6 @@ const suite = {
 			note: "Passing lexical checks establishes a preservation floor only; it does not establish semantic quality.",
 		},
 	},
-} satisfies EvaluationSuite;
+};
 
 export default defineSuite(suite);

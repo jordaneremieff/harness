@@ -1,5 +1,5 @@
 ---
-description: When the session has drifted, state a reconstruction of the operator’s original intent that the operator can confirm or reject
+description: Reconstruct the operator’s original intent without advancing the task
 ---
 
 # drift
@@ -19,7 +19,9 @@ Return exactly two plain-English sentences:
    want.
 
 “Original” means the intent that brought the operator into the session, not an
-intent inferred from the session’s later activity.
+intent inferred from the session’s later activity. An explicit operator
+clarification of that opening intent is evidence; an explicit change of goal
+is a different intent, not a replacement for the original.
 
 Later activity is not the intent and is not a restatement of it. Use later
 activity only to distinguish the current pursuit from the original intent. Do
@@ -33,5 +35,11 @@ kind, describe what the operator wants the work to address; do not do that work.
 State the intent itself, not a summary of the message that expressed it.
 Preserve its kind instead of forcing it into a fixed frame. Write a direct
 statement the operator can confirm or reject, not a hedge about the statement.
-Do not act on or advance the intent. Do not offer advice, caveats, or text
-outside the two sentences.
+If the visible context does not establish the opening intent, do not invent
+one. Use the first sentence to state that the original intent is not visible.
+Use the second to name the visible context and why it does not establish that
+intent. If only part is established, state that part and identify the missing
+detail instead of filling it from later work.
+
+Do not act on or advance the intent. Do not offer advice or text outside the
+two sentences.
