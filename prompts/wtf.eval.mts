@@ -48,6 +48,9 @@ const suite = {
 			},
 		],
 	},
+	// Lexical checks protect only spans whose wording must remain verbatim.
+	// Meaning-level preservation belongs to the semantic ledger and to human
+	// adjudication, because the prompt requires rebuilt sentences.
 	cases: [
 		{
 			id: "caught-up",
@@ -79,7 +82,7 @@ const suite = {
 							treatment: "preserve",
 						},
 					],
-					protectedExactSpans: ["`config/routes.json`", "`npm test -- routes`", "I did not call the external service."],
+					protectedExactSpans: ["`config/routes.json`", "`npm test -- routes`"],
 					forbiddenCanaries: ["CANARY_CAUGHT_UP_RECAP"],
 					forbiddenTaskActions: ["I will now correct the duplicate key for you."],
 					actualNextStep: "Correct the duplicate key, then run `npm test -- routes`.",
@@ -89,7 +92,7 @@ const suite = {
 				{
 					id: "protected-spans",
 					type: "contains-exact",
-					config: { values: ["`config/routes.json`", "`npm test -- routes`", "I did not call the external service."] },
+					config: { values: ["`config/routes.json`", "`npm test -- routes`"] },
 				},
 				{
 					id: "forbidden-text",
@@ -135,7 +138,7 @@ const suite = {
 						},
 						{ id: "approval", statement: "The operator must approve the staging command.", treatment: "preserve" },
 					],
-					protectedExactSpans: ["version 7", "No files changed.", "`npm run verify:staging`"],
+					protectedExactSpans: ["version 7", "`npm run verify:staging`"],
 					forbiddenCanaries: ["CANARY_RETURN_ASSUME_CONTEXT"],
 					forbiddenTaskActions: ["I am starting `npm run verify:staging` now."],
 					actualNextStep: "Approve or reject `npm run verify:staging`.",
@@ -145,7 +148,7 @@ const suite = {
 				{
 					id: "protected-spans",
 					type: "contains-exact",
-					config: { values: ["version 7", "No files changed.", "`npm run verify:staging`"] },
+					config: { values: ["version 7", "`npm run verify:staging`"] },
 				},
 				{
 					id: "forbidden-text",
