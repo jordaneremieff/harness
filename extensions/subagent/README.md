@@ -28,6 +28,9 @@ and the repository pins no Pi version.
 |---|---|---|
 | `subagent` | parallel | Dispatch one task or a `tasks[]` batch. The call returns a stable id after worker setup; the model run starts in the background. Per-task `deadlineMinutes` (defaulted) and `budgetUsd` (opt-in) pause a worker that overruns the agent's own estimate. |
 | `subagent_report` | parallel | Send a bounded, nonterminal report to the immediate parent. Worker-only; a returned call reports `sent_unconfirmed`, not acknowledged receipt. |
+| `subagent_peers` | parallel | Discover the parent, siblings, and nested workers in this dispatch family, with exact addresses and paginated task labels. |
+| `subagent_message` | parallel | Send directly to a peer, reply to an exact message, or inspect a retained receipt. Peer messages confer no control authority. |
+| `subagent_wait` | parallel | Await peer input without polling or another provider request. The run stays active; its existing limits still apply. |
 | `subagent_status` | parallel | Live workers + recent terminal workers: id, state, model, thinking, elapsed, turns, tool calls, current tool, session-file write age, cost, output preview, error. |
 | `subagent_inspect` | parallel | One worker's record plus a bounded, rendered transcript tail: recent turns, tool inputs and outcomes, assistant errors, session path, and explicit truncation markers. Reads an in-process snapshot for any live worker in this process; otherwise reads the active branch from the retained session file. |
 | `subagent_steer` | sequential | Redirect a live worker: the message is delivered after the worker's current tool call, before its next model call. On an idle (interrupted) worker, steer instead resumes the run with your message. Owning session only. |
@@ -248,6 +251,92 @@ it when active in the parent. An explicit allowlist carries it only when
 Process-local owner links and report sinks follow session startup and shutdown.
 Reloaded module instances initialize absent slots without replacing existing
 live maps. This state is not a persisted store or a data migration.
+
+## Direct peer collaboration
+
+Workers and their parent use the same peer tools. Each remains an ordinary Pi
+session with its inherited tools, cwd resources, transcript, and lifecycle.
+Messages travel directly between sessions, not through a parent relay.
+
+1. Call `subagent_peers({})` to discover the current dispatch family. The response
+   names the caller's address, task labels, wait state, total, and `nextOffset`.
+   Pass that offset to retrieve the next page. Use exact addresses, not labels.
+2. Call `subagent_message({to, message})` to send a question, correction, or
+   evidence. `parent` resolves the immediate parent; worker and root session IDs
+   address other members of the same family.
+3. Reply with `subagent_message({to, message, replyTo})`, using the received
+   message ID. A reply must reverse the original sender and recipient.
+4. Continue independent work after a send. If progress requires future peer
+   input, call `subagent_wait({timeoutSeconds: 60})`. The maximum is 300 seconds.
+   The wait observes cancellation and session close, and performs no polling.
+   It blocks the next provider request, not other parallel tools in its batch.
+   It does not pause or renew the run deadline or budget.
+5. Submit the complete final result through `submit_result`; peer exchanges do
+   not replace that separately collectable deliverable.
+
+A message accepts at most 8192 UTF-8 bytes and 256 lines. Oversized messages fail
+rather than truncate. The envelope preserves sender, recipient, message ID,
+optional reply ID, and time. Its displayed text neutralizes terminal controls
+and marks peer authorship. Peer text is data, not operator input or new authority.
+
+A busy headless peer receives a Pi custom steering message at the normal turn
+boundary. An idle parent receives a new turn. Sending to an operator-interrupted
+or budget-paused worker fails rather than resuming it. Only the worker's owner
+retains control over interruption, cancellation, and resumption. Terminal or
+unavailable targets fail explicitly. Unrelated dispatch families are excluded.
+
+`subagent_message({id})` reads a retained receipt. These states are deliberately
+narrow:
+
+- `sent_unconfirmed`: the synchronous Pi send call returned. It does not prove
+  asynchronous acceptance, disk persistence, or recipient action.
+- `context_seen`: the receiving session's context hook observed the message ID.
+  Later hooks still affect provider input; this is not proof of model understanding.
+- `target_closed`: the target endpoint closed before this hub observed the
+  message in context.
+
+Wait resolution reports message availability, timeout, or closure. A message
+already observed in a previous context does not satisfy a later wait. Explicit
+replies provide correlation, not proof that the answer is correct.
+
+Routing and receipt bookkeeping are bounded and process-local. Pi owns the
+message transcript and its persistence. There is no second durable inbox,
+replay engine, or broker, and no communication with independent Pi processes.
+Receipt inspection is not a crash-recovery contract. Startup, replacement, and
+shutdown own endpoint and waiter cleanup; an old disposer cannot close a newer
+binding. Message capacity failures are explicit rather than silent drops.
+
+The convergence boundary is this session-message adapter. AgentHarness's ordered
+inbox and entry identities guide its evolution, including tentative upstream
+changes. Recheck and adapt this boundary as those contracts change; release
+maturity is not a prerequisite for design work or isolated experiments. The
+current executable path uses supported Pi custom messages. Replace that path
+when the full-session host supports the relevant contract rather than add a
+parallel queue or reduce worker capabilities.
+
+### Evaluations
+
+`evals/peer-collaboration.eval.mts` uses the maintained `evals/` facade for unavailable
+recipient recovery and correction of unsupported receipt and authority claims.
+Validate it with:
+
+```bash
+npm run evals -- validate evals/peer-collaboration.eval.mts
+```
+
+Use the plan/run procedure in `evals/README.md` with one participant, one
+repetition, and an explicitly approved provider credential environment variable.
+Grant the suite's declared effects, including isolated store maintenance. Do not
+use home credentials: the controlled child exclusively creates a private agent
+directory inside the run directory before loading the extension. It does not
+copy authentication into that directory.
+
+The suite exposes only discovery and message tools. The current adapter neither
+awaits a worker family nor accounts for its delegated usage, so these cases do
+not dispatch workers. Structural checks require real tool evidence and have
+negative controls; semantic quality requires human adjudication. Controlled
+full-session collaboration belongs to `peer-delivery.test.mts`. Neither layer
+alone establishes general autonomous task reliability.
 
 ## Worker lifecycle
 
