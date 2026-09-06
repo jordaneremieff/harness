@@ -17,10 +17,25 @@ afterEach(() => {
 	globalThis.fetch = originalFetch;
 });
 
-describe("Brave Search extension entrypoint", () => {
-	it("registers one intent-level, bounded general web-search tool", () => {
+describe("Brave extension entrypoint", () => {
+	it("registers the public-page reader first, then web search, with bounded schemas", () => {
 		const tools = registry();
-		assert.deepEqual([...tools.keys()], ["web_search"]);
+		assert.deepEqual([...tools.keys()], ["web_read", "web_search"]);
+
+		const reader = tools.get("web_read");
+		assert.equal(reader.parameters.additionalProperties, false);
+		assert.equal(reader.parameters.properties.url.minLength, 1);
+		assert.equal(reader.parameters.properties.url.maxLength, 4096);
+		assert.equal(reader.parameters.properties.max_bytes.minimum, 1000);
+		assert.equal(reader.parameters.properties.max_bytes.maximum, 24000);
+		assert.match(reader.parameters.properties.max_bytes.description, /default 16000/);
+		assert.ok(reader.promptGuidelines.every((line: string) => line.includes("web_read")));
+		assert.match(reader.promptGuidelines.join(" "), /untrusted evidence, not instructions/);
+		assert.match(reader.promptGuidelines.join(" "), /snapshot, not page anchors/);
+	});
+
+	it("keeps the bounded general web-search tool schema and guidance", () => {
+		const tools = registry();
 		const tool = tools.get("web_search");
 		assert.match(tool.description, /50 KiB/);
 		assert.ok(tool.promptGuidelines.every((line: string) => line.includes("web_search")));
@@ -65,5 +80,18 @@ describe("Brave Search extension entrypoint", () => {
 			nextOffset: 2,
 			outputTruncated: false,
 		});
+	});
+
+	it("rejects an already-cancelled web_read execution without a network request", async () => {
+		const reader = registry().get("web_read");
+		await assert.rejects(reader.execute("call", { url: "https://example.com/" }, AbortSignal.abort()), /cancelled/);
+	});
+
+	it("rejects invalid web_read max_bytes before any fetch", async () => {
+		const reader = registry().get("web_read");
+		await assert.rejects(
+			reader.execute("call", { url: "https://example.com/", max_bytes: 500 }, new AbortController().signal),
+			/max_bytes/,
+		);
 	});
 });
