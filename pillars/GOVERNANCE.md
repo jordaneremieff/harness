@@ -127,7 +127,7 @@ When an implementation or decision appears to violate a pillar, classify the dif
 
 ### Falsification
 
-A recorded application that contradicts a pillar's prediction defeats the pillar. The contradiction is evidence, not rationalization material: respond through the doctrine-defect row above and revise the pillar through operator-approved mutation. The corpus keeps no application-incident log; falsification evidence must come from operator-recorded applications or a named delivery profile. Doctrine is normative by operator authority; predictive verification is not yet established.
+A recorded application that contradicts a pillar's stated prediction is evidence against that claim. Determine whether the defect concerns the claimed benefit, recognition scope, or prescribed move, and revise the affected guidance through the doctrine-defect row above. Do not invent an exception merely to preserve a defeated claim. A defect does not automatically invalidate every prescription in the entry. Corpus changes require operator approval. The corpus keeps no application-incident log; use available application evidence with its source and delivery profile. Operator authority establishes doctrine, not the truth of its empirical claims.
 
 ## Common Composition Paths
 
