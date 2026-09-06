@@ -82,6 +82,8 @@ it("an explicit candidate prompt load does not discover global or package copies
 			["wtf"],
 		);
 		assert.equal(prompts[0]?.filePath, join(repositoryRoot, "prompts", "wtf.md"));
+		assert.ok(prompts[0]?.content.includes("## Select the target"));
+		assert.ok(prompts[0]?.content.includes("## The operator's account\n\n$ARGUMENTS"));
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

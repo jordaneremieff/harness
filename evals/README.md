@@ -93,7 +93,8 @@ A `tool-result` check has config `{ name: string, isError?: boolean, contentCont
 `prompts/drift.eval.mts` tests opening-intent reconstruction against later
 implementation, operator clarification, a changed goal, and absent opening
 context. `prompts/wtf.eval.mts` tests reply repair, including explicit selection
-of an earlier reply and an absent target. Both use human-required semantic
+of an earlier reply, administrative notices after substantive answers, short
+answers, unrelated context, later permission limits, and absent targets. Both use human-required semantic
 review. Their empty tool lists isolate text behavior; they do not prove that a
 model declines an available tool.
 

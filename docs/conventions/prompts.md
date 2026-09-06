@@ -43,8 +43,10 @@ of the corpus.
   context produces an explicit evidence boundary, not an invented intent.
 - `/wtf [account]` replaces a hard-to-use assistant reply without continuing
   its task. The optional account identifies the fault or target and supplies
-  corrections. The replacement preserves meaning, permissions, exact copy
-  spans, and successful earlier repairs. Missing target text produces an
+  corrections. Without an explicit target, a mere administrative notice points
+  back to the nearest visible answer for the same task. Short genuine answers
+  remain targets. The replacement preserves meaning, later same-task limits,
+  permissions, exact copy spans, and successful earlier repairs. Missing target text produces an
   explicit boundary, not a rewrite of the command or a tool result.
 
 These jobs remain separate: `/drift` restores intent; `/wtf` repairs a reply.

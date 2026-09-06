@@ -152,7 +152,19 @@ describe("maintained /wtf suite", () => {
 	it("covers reader context and target selection with an account-substituting ablation", () => {
 		assert.deepEqual(
 			wtfSuite.cases.map((value) => value.id),
-			["caught-up", "return", "correction", "missing-target", "selected-earlier-reply"],
+			[
+				"caught-up",
+				"return",
+				"correction",
+				"bookkeeping-after-result",
+				"bookkeeping-with-later-limit",
+				"short-genuine-answer",
+				"explicit-administrative-target",
+				"missing-referenced-answer",
+				"unrelated-prior-reply",
+				"missing-target",
+				"selected-earlier-reply",
+			],
 		);
 		const ablation = wtfSuite.subject.variants.find((value) => value.id === "neutral-ablation");
 		const config = ablation?.config as { promptTemplates?: Array<{ source?: { inline?: string } }> };
