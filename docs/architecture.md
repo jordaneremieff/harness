@@ -4,6 +4,72 @@ Repo-level index for the harness: the load model, what an extension must
 contain, what a skill must contain, and where cross-extension contracts live.
 Detailed rules live in `AGENTS.md`; this document is the entry point.
 
+## Setup
+
+Review the source before installation: Pi packages execute code and supply
+instructions with access to the local system.
+
+### Development checkout
+
+Register the working clone as a local Pi package:
+
+```bash
+pi install /absolute/path/to/harness
+```
+
+Pi uses the local path directly, without copying it. Update that checkout
+through Git. Install development dependencies with `npm install` in the checkout.
+
+For extension development, disable the package's extension resources in
+`pi config` and use the persistent worktree entrypoints. Follow the
+[worktree convention](conventions/worktrees.md) for synchronization,
+activation, checks, and publication.
+
+### Other machines
+
+Install the private Git repository through SSH without a ref; replace `OWNER`
+with the repository owner:
+
+```bash
+pi install git:git@github.com:OWNER/harness
+```
+
+The default branch is the release channel. Run `pi update --extensions` to
+update packages.
+When the target commit changes, Pi resets and cleans the installed clone and
+reinstalls its dependencies. Keep edits in the development checkout, not the
+installed clone.
+
+### Machine configuration
+
+The Pi package manifest does not activate application configuration. Use the
+working clone on a development machine. A global Git install places the clone
+under `~/.pi/agent/git/github.com/OWNER/harness`.
+
+To load the shared global Pi rules, point `~/.pi/agent/AGENTS.md` at
+[`config/pi/agent/AGENTS.md`](../config/pi/agent/AGENTS.md). Check any existing
+file before replacing it. For a machine without that file, create the pointer:
+
+```bash
+ln -s /absolute/path/to/harness/config/pi/agent/AGENTS.md ~/.pi/agent/AGENTS.md
+```
+
+Keep machine-local rules outside the repository, in `~/AGENTS.md` or workspace
+and project `AGENTS.md` files. Pi loads the global rules and the ancestor
+context files for the session directory.
+
+Point Herdr at the shared configuration through the shell environment:
+
+```bash
+export HERDR_CONFIG_PATH=/absolute/path/to/harness/config/herdr/config.toml
+```
+
+The [Herdr configuration reference](https://herdr.dev/docs/configuration/)
+documents this path override and the available settings. Configuration edits
+in a development checkout appear as Git diffs. Edits in a Pi-installed clone
+are not durable across package updates; make baseline edits in the development
+checkout.
+
 ## Load model
 
 The harness is a Pi package. `package.json` declares the resources under the
@@ -19,8 +85,6 @@ The harness is a Pi package. `package.json` declares the resources under the
 }
 ```
 
-- Install the package with `pi install /absolute/path/to/harness`; a
-  standalone development checkout runs `npm install` and `npm test`.
 - `npm run warmup:jiti` loads the extension entrypoints named in the manifest's
   script through `pi --help --offline` to warm jiti's transpilation cache. It is
   an optional operator step, not a build or successful-load check. Use the
@@ -53,6 +117,12 @@ The manifest activates extensions, skills, and the prompt templates in
   activates them.
 - `docs/` explains this repository and owns repository conventions.
 - `scripts/` contains repository automation.
+
+The [prompt ownership convention](conventions/prompts.md) documents the shared
+prompt commands and their use. Maintained evaluations use the explicit,
+approval-gated [evaluation application](../evals/README.md). Evaluation evidence
+stays ignored under `.evals/`; no evaluation runs automatically in CI or normal
+tests.
 
 The root `AGENTS.md` governs work on this repository. The separate
 `config/pi/agent/AGENTS.md` file is the machine-independent source for global

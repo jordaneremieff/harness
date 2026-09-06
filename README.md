@@ -1,83 +1,35 @@
 # harness
 
-My personal [Pi](https://github.com/earendil-works/pi) harness and its surrounding tool configuration.
+My personal [Pi](https://github.com/earendil-works/pi) harness and surrounding
+tool configuration. I use it to shape how the agent works across projects and
+machines, with shared instructions, reusable procedures, and extensions where
+code is needed.
 
-Extensions, skills, prompts, and features use dedicated persistent worktrees. See
-[the worktree convention](docs/conventions/worktrees.md).
+## Pillars
 
-Upstream Pi rebuilds its agent core as a durable harness. That program and its
-effect here are tracked in
-[the Pi durable-harness track](docs/pi-durable-harness.md).
+The [Pillars](pillars/README.md) are the design doctrine behind this harness:
+principles, patterns, and heuristics for agent judgment. They guide decisions
+about evidence, structure, and communication. The [Pillars skill](skills/pillars/SKILL.md)
+loads the relevant guidance for a task; the corpus owns that guidance.
 
-## Shared resources across machines
+## Structure and use
 
-This repository is the source of truth for the resources each machine loads.
-The Pi package manifest activates `extensions/`, `skills/`, and `prompts/`. The `pillars/`
-corpus ships beside those resources for relative access from skills. Files under
-`config/` are activated by the program-specific pointers below.
+Pi loads the resources declared in [package.json](package.json). Instructions
+and skills guide the agent; extensions supply executable behavior. Application
+configuration has separate setup. Each resource owns its detailed usage and
+boundaries, rather than a central feature catalog.
 
-### Developer machine
+- [Setup and load model](docs/architecture.md#setup) covers installation,
+  updates, and machine configuration.
+- [Architecture](docs/architecture.md) explains the resource boundaries and
+  repository conventions.
+- [Worktrees](docs/conventions/worktrees.md) defines the development and
+  publication workflow.
 
-Register the working clone as a local Pi package:
+The harness follows Pi's own capabilities rather than maintaining a parallel
+agent core. The [durable-harness track](docs/pi-durable-harness.md) records the
+upstream contracts and the conditions for adopting them here.
 
-```bash
-pi install /absolute/path/to/harness
-```
-
-Local packages do not receive update notices. During extension development,
-disable the package's extension resources in `pi config`; the persistent
-worktree entrypoints provide the active extension copies described in
-[the worktree convention](docs/conventions/worktrees.md).
-
-### Consumer machine
-
-Install the private Git repository through SSH without a ref:
-
-```bash
-pi install git:git@github.com:OWNER/harness
-```
-
-The default branch is the release channel. An unpinned install receives Pi's
-package-update notice; `pi update --extensions` resets the installed clone to
-the remote default branch and reinstalls dependencies.
-
-### Machine pointers
-
-Use the local clone on the developer machine. On the consumer machine, Pi's
-installed clone is under `~/.pi/agent/git/github.com/OWNER/harness`.
-
-Install the machine-independent global Pi rules by symlink:
-
-```bash
-ln -sfn /absolute/path/to/harness/config/pi/agent/AGENTS.md ~/.pi/agent/AGENTS.md
-```
-
-Point Herdr at the repository configuration in the shell environment:
-
-```bash
-export HERDR_CONFIG_PATH=/absolute/path/to/harness/config/herdr/config.toml
-```
-
-Herdr runtime state remains in the operating-system config directory. Herdr
-writes setting changes to `HERDR_CONFIG_PATH`; on the developer machine those
-changes appear as Git diffs. On the consumer machine, the next Pi package update
-discards them, so baseline edits belong on the developer machine.
-
-Machine-local rules stay out of this repository. Put them in `~/AGENTS.md`,
-which Pi's ancestor walk loads for any session under the home directory, or in
-workspace and project `AGENTS.md` files. Those local files rank above the global
-rules.
-
-Prompt templates ship through the `pi.prompts` manifest entry. `/drift` restores
-the session's opening intent; `/wtf` repairs a hard-to-use assistant reply.
-Neither continues the underlying task. The [prompt ownership convention](docs/conventions/prompts.md)
-defines the boundary between shared templates, local shortcuts, and other
-instruction surfaces.
-
-## Evaluations
-
-Maintained clean-room suites use the explicit, approval-gated application in
-[`evals/README.md`](evals/README.md). Evaluation evidence stays ignored under
-`.evals/`; no evaluation runs automatically in CI or normal tests.
-
-Released under the MIT license. Feel free to copy anything useful or fork it for your own setup. I do not provide support or accept unsolicited contributions.
+Released under the [MIT license](LICENSE). Feel free to copy anything useful or
+fork it for your own setup. I do not provide support or accept unsolicited
+contributions.
