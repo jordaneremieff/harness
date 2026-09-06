@@ -85,3 +85,13 @@ change, show that evidence instead of creating work to satisfy the plan.
 Report the actual effect and any discovery that changes the operator's next
 choice. Keep blocked actions separate from completed work. A useful candidate
 that remains unactivated is a candidate, not a change to the active harness.
+
+When the operator requests review of several outcomes, reconcile current source
+and final dispositions before delivery. Lead with what changed and what remains
+held. Separate settled authority from open choices. For each decision, show the
+complete proposal, its effect, the no-action default, and material contrary
+evidence. Make any prepared request self-contained and explicit about its
+permitted effects. Let the reader choose the depth of supporting evidence. Link
+sources without making the operator reconstruct the decision. Keep raw reports
+and control details outside the human-facing account. Do not create a recurring
+log or require operator curation.
