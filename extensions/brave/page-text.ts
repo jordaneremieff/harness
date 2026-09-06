@@ -60,6 +60,12 @@ export function cleanPageText(text: string): string {
 	return text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, " ");
 }
 
+function capText(text: string, limit: number): string {
+	const capped = text.slice(0, limit);
+	const last = capped.charCodeAt(capped.length - 1);
+	return last >= 0xd800 && last <= 0xdbff ? capped.slice(0, -1) : capped;
+}
+
 class TextBucket {
 	text = "";
 	truncated = false;
@@ -78,7 +84,7 @@ class TextBucket {
 		this.text += value.slice(0, remaining);
 	}
 	paragraphs(): string[] {
-		return cleanPageText(this.text)
+		return cleanPageText(capText(this.text, MAX_TEXT_CHARS))
 			.split(/\n+/)
 			.map((line) => line.replace(/\s+/g, " ").trim())
 			.filter(Boolean);
@@ -155,7 +161,7 @@ export async function extractPageText(body: Buffer, contentType: string, signal?
 				});
 			},
 			ontext(value) {
-				if (stack.at(-1)?.title) title += value.slice(0, Math.max(0, 300 - title.length));
+				if (stack.at(-1)?.title) title += value.slice(0, Math.max(0, 301 - title.length));
 				append(value);
 			},
 			onclosetag(name) {
@@ -177,7 +183,7 @@ export async function extractPageText(body: Buffer, contentType: string, signal?
 	const article = buckets.article.paragraphs();
 	const method = main.length ? "main" : article.length ? "article" : "body";
 	return {
-		title: cleanPageText(title).replace(/\s+/g, " ").trim(),
+		title: cleanPageText(capText(title, 300)).replace(/\s+/g, " ").trim(),
 		paragraphs: method === "main" ? main : method === "article" ? article : buckets.body.paragraphs(),
 		method,
 		truncated: buckets[method].truncated,

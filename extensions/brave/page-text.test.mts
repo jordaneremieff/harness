@@ -22,6 +22,16 @@ describe("static page extraction", () => {
 		assert.equal(page.title, "Document");
 		assert.deepEqual(page.paragraphs, ["Body"]);
 	});
+	it("keeps title and retained-text caps outside Unicode surrogate pairs", async () => {
+		const page = await html(
+			`<head><title>${"a".repeat(299)}😀</title></head><main>${"a".repeat(128 * 1024 - 1)}😀</main>`,
+		);
+		assert.equal(page.title, "a".repeat(299));
+		assert.equal(Buffer.from(page.title).toString("utf8"), page.title);
+		assert.equal(Buffer.from(page.paragraphs[0]).toString("utf8"), page.paragraphs[0]);
+		assert.equal(page.paragraphs[0], "a".repeat(128 * 1024 - 1));
+		assert.equal(page.truncated, true);
+	});
 	it("uses article or explicitly labeled body fallback and excludes hidden or executable elements", async () => {
 		const page = await html(
 			'<body>outside<article><p>Visible</p><script>bad</script><template>bad</template><iframe>bad</iframe><p hidden>bad</p><p aria-hidden="true">bad</p><p style="display:none">bad</p><noscript>bad</noscript></article></body>',
