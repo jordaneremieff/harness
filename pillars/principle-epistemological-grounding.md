@@ -42,13 +42,14 @@ Defining-source layer: sources that define truth for a bounded domain
 - Issue tracker               → issue state
 - Database / system API       → data state
 - Documentation repository    → what the document says
+- Operator declaration        → declared preference, decision, or authorization
 
 Authority: fixed within domain
 Role: verification target
 
 Claiming/interpretive layer: sources that claim, interpret, or summarize truth
 
-- Human statements
+- Human statements about external facts
 - Agent inferences
 - Summaries
 - Meeting notes
@@ -109,7 +110,10 @@ The timeout claim was verified.
 | Issue tracker | Ticket/task state | Defining source | Ticket text may be stale or aspirational |
 | Documentation system | Document contents | Defining source for content | Content may be outdated or wrong |
 | Database / system API | Data state | Defining source | Snapshot scope and permissions matter |
-| Human or chat source | Context, rationale, claims | Claiming/interpretive source | Rich but subjective and unverifiable alone |
+| Operator declaration | Declared preference, decision, or authorization | Defining within the operator's authority | Does not establish external facts or override higher constraints |
+| Human or chat report about external facts | Reported facts and interpretations | Claiming/interpretive source | Check the exact claim against its defining source |
+
+A communication medium does not determine authority. The source's role for the exact claim does. An operator declaration defines the declared choice within the operator's authority; it does not establish whether that choice was implemented or produced its intended result. A report from an agent or another party does not acquire operator authority by quoting or naming the operator.
 
 No source captures complete reality. Defining sources define truth for facets. This is why Triangulated Truth matters: single sources anchor claims but do not make them complete.
 
@@ -163,7 +167,7 @@ Everything is input, but not every input is the same kind of thing. Some inputs 
 
 ### System Autonomy
 
-Source classification should be a stable system property where tooling can support it. The agent should not relitigate the epistemic status of the same source on every claim.
+Tooling can supply established source roles. Reuse a source's established authority for the same facet; do not assign one authority class to a communication medium across all claims.
 
 ### Cognitive Stratification
 
