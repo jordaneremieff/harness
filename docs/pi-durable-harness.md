@@ -66,6 +66,27 @@ those surfaces.
 [configuration-sdk]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/coding-agent/src/core/sdk.ts#L306-L388
 [configuration-host]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/agent/src/harness/agent-harness.ts#L518-L610
 
+## Current-session evidence retrieval
+
+Verified 2026-09-06 against installed Pi 0.85.1
+`dist/core/session-manager.d.ts`, `dist/core/session-manager.js`, and
+`dist/core/extensions/types.d.ts`. This check covers ordinary-session retrieval,
+not the separately dated upstream program claims.
+
+- `ExtensionContext.sessionManager` exposes `ReadonlySessionManager`.
+  `getEntry(id)` reads the existing in-memory map; `getLeafId()` and
+  `getSessionId()` read current identifiers. No session file needs to be opened.
+- `getBranch()` follows the complete parent chain, including compaction entries.
+  `getEntries()` filters the whole session; `getTree()` builds the whole tree.
+  None accepts a visit limit. A bounded extension query must walk parents through
+  `getEntry()` and stop at its own limit, rather than truncate a complete scan.
+- Raw entries remain distinct from `buildContextEntries()`, which applies
+  compaction. Stored roles, custom types, and summaries describe recorded source
+  metadata; they do not establish human identity or fresh operator authority.
+- History retrieval uses a selected entry and its ancestry. Bounded discovery
+  of unknown alternate branches requires a host-owned paged enumeration API.
+  Do not add a parallel index or raw session-file reader to supply that API.
+
 ## Names and defining contracts
 
 The normative specification is [`packages/agent/docs/harness.md`][spec].
