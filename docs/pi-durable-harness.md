@@ -30,6 +30,42 @@ byte-identical ordinary SDK, session-services, and extension-loader modules.
 This source comparison is not a runtime regression test. Do not infer npm
 publication state from GitHub release metadata or installed behavior from `main`.
 
+## Configuration and source context
+
+Verified 2026-09-06 against installed Pi 0.85.1, checkout dependencies 0.85.0,
+and upstream `main` at
+[`9767ba27`](https://github.com/earendil-works/pi/commit/9767ba275f3e9a5ee0f5c5342249b629ab1b2282).
+This focused check covers configuration, resources, and message inputs. The
+publication, fork implementation, and other general-track checks above and
+below retain their separately stated dates; they are not current checks of
+those surfaces.
+
+- The [ordinary SDK][configuration-sdk] still constructs `Agent` and
+  `AgentSession`. Installed `dist/core/resource-loader.js` merges additional
+  skill paths into ordinary discovery. Reusable source selection does not
+  require a replacement resource loader.
+- [AgentHarness options and lanes][configuration-host] expose model, thinking,
+  tools, resources, skill/template invocation, and message insertion. These
+  primitives do not themselves define a reusable configuration-file selector
+  or the ordinary host's cwd discovery behavior.
+- Installed `dist/core/messages.js` converts custom-message content into a
+  provider message with role `user`. It omits custom metadata such as `details`
+  and `display`. Source labels and authority limits belong in the content;
+  metadata is not a separate permission boundary. Selecting cwd also selects
+  ordinary project context and trust inputs.
+- Keep reusable input resolution before ordinary session construction. Replace
+  its message adapter when the adopting host preserves model-visible delivery,
+  transcript behavior, lifecycle, and full resources. A custom metadata entry
+  alone does not establish those properties.
+- Remove local selection machinery when a host-owned selection contract supplies
+  the same job, or when ordinary dispatch and existing skills remove its need.
+  AgentHarness adoption alone does not supply file resolution, precedence, or
+  source applicability. Reusable guides retain ownership of their procedures;
+  current tasks retain their targets and permitted actions.
+
+[configuration-sdk]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/coding-agent/src/core/sdk.ts#L306-L388
+[configuration-host]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/agent/src/harness/agent-harness.ts#L518-L610
+
 ## Names and defining contracts
 
 The normative specification is [`packages/agent/docs/harness.md`][spec].
