@@ -7,6 +7,7 @@ The corpus is the governing source of what correct agent behavior looks like and
 | Applies an inherited default without checking its origin-context preconditions | `../../pillars/pattern-context-calibration.md` | The default was correct elsewhere; the target's context does not supply its conditions. |
 | Applies a collaboration convention whose multi-party precondition is absent | `../../pillars/heuristic-coordination-phantom.md` | The convention's value is conditional on consumers and coordination that do not exist here. |
 | Defends pattern caliber by label ("best practice") without a concrete failure account | `../../pillars/heuristic-failure-cost-calibration.md` | Protection caliber must match consequence; the target never priced the failure. |
+| Attaches an unattainable, disproportionate, or waived proof condition to a proposed change | `../../pillars/heuristic-proof-burden.md` | The evidence prerequisite has its own cost and authority; uncertainty alone does not justify it. |
 | Justifies a design by the implementation that embodies it | `../../pillars/heuristic-circular-grounding.md` | Description of what exists is not prescription of what the domain requires. |
 | Chooses local elegance that externalizes cost across the whole system | `../../pillars/principle-compositional-simplicity.md` | Simplicity is counted where the whole system pays it. |
 | Accepts a menu whose every option shares an unstated premise | `../../pillars/heuristic-framed-menu.md` | The bound is inherited, not binding; the option outside the menu dissolves the choice. |

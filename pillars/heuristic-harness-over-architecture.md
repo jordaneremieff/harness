@@ -92,6 +92,7 @@ The heuristic is therefore evidence-first, not incident-only.
 - **Compositional Simplicity:** evaluates whether the proposed layer reduces total system work.
 - **Context Calibration:** tests whether the architecture is inherited from a different scale or operating context.
 - **Failure Cost Calibration:** matches mechanism caliber to real consequence.
+- **Proof Burden:** examines discretionary evidence conditions without replacing the grounded-need requirement.
 - **Coordination Phantom:** removes infrastructure whose collaboration preconditions are absent.
 - **Survival Selection:** uses what persists through actual work as stronger evidence than initial architectural intent.
 - **Coverage Calibration** and **Metric Reification:** help establish a defensible Class B baseline.

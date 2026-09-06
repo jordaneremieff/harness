@@ -46,6 +46,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [Investigation Persistence](heuristic-investigation-persistence.md) | A knowledge boundary appears while tools remain available → investigate before asking or guessing. |
 | [Category Lock-In](heuristic-category-lock-in.md) | Repeated proposals remain inside one solution category → name and question the category. |
 | [Failure Cost Calibration](heuristic-failure-cost-calibration.md) | A high-caliber pattern is proposed without quantified failure cost → compare real failure cost with pattern cost. |
+| [Proof Burden](heuristic-proof-burden.md) | An agent-set evidence condition delays a change → test its necessity, feasibility, and cost without weakening binding requirements. |
 | [Loaded Comparison](heuristic-loaded-comparison.md) | Every comparison axis favors a preselected option → state the recommendation or find discriminating axes. |
 | [Framed Menu](heuristic-framed-menu.md) | All offered options share an unstated premise → test the premise and name the option outside it. |
 | [Phantom Stewardship](heuristic-phantom-stewardship.md) | Pre-existing dirty state in a shared mutable substrate, author unknown → verify absence, read lineage, reconcile honestly. |

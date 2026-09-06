@@ -84,6 +84,7 @@ Making the boundary explicit turns "verified" from a feeling into a relation bet
 ## Relationship to Pillars
 
 - **Epistemological Grounding:** classifies source authority and distinguishes defining sources from claims.
+- **Proof Burden:** distinguishes a claim boundary from a discretionary condition on action.
 - **Triangulated Truth:** adds independent facets when one source cannot represent the whole reality.
 - **External Verification:** locates current primary evidence for changeable external behavior.
 - **Coverage Calibration:** checks quantity once the correct layer is reached.

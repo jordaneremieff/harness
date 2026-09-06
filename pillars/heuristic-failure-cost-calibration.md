@@ -69,6 +69,7 @@ The heuristic is not "use simple solutions." A small-volume system can still hav
 - **Context Calibration:** this heuristic specializes calibration to protection caliber.
 - **Compositional Simplicity:** compares pattern complexity at the whole-system level.
 - **Harness Over Architecture:** both require evidence before adding machinery.
+- **Proof Burden:** applies cost calibration to an evidence prerequisite rather than protection machinery.
 - **Metric Reification:** guards against turning one observed rate into the frequency term without preserving conditions.
 - **Committed Contribution:** requires an explicit proportionality claim rather than ritual invocation of rigor.
 

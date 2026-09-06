@@ -142,7 +142,8 @@ A recorded application that contradicts a pillar's prediction defeats the pillar
 2. **Frame Inspection** tests the option frame.
 3. **Category Lock-In** fires when iteration stays inside one category.
 4. **Failure Cost Calibration** matches mechanism caliber to real consequences.
-5. **Compositional Simplicity** evaluates the whole system rather than one component.
+5. **Proof Burden** examines discretionary evidence conditions attached to the decision.
+6. **Compositional Simplicity** evaluates the whole system rather than one component.
 
 ### Prose Repair
 
