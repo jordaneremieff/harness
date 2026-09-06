@@ -29,7 +29,31 @@ export interface JobLogs {
 	end: number;
 	gap: boolean;
 	more: boolean;
+	pendingBytes: number;
 }
+
+/** A valid unfinished suffix belongs to the next stream chunk, not a replacement character. */
+function readableUtf8Length(buffer: Buffer): number {
+	let start = buffer.length - 1;
+	while (start >= Math.max(0, buffer.length - 4) && (buffer[start] & 0xc0) === 0x80) start--;
+	if (start < 0) return buffer.length;
+	const lead = buffer[start];
+	const expected =
+		lead >= 0xc2 && lead <= 0xdf ? 2 : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 1;
+	const actual = buffer.length - start;
+	if (actual >= expected) return buffer.length;
+	const second = buffer[start + 1];
+	if (
+		actual > 1 &&
+		((lead === 0xe0 && second < 0xa0) ||
+			(lead === 0xed && second > 0x9f) ||
+			(lead === 0xf0 && second < 0x90) ||
+			(lead === 0xf4 && second > 0x8f))
+	)
+		return buffer.length;
+	return start;
+}
+
 interface Job {
 	snapshot: JobSnapshot;
 	controller: AbortController;
@@ -159,7 +183,9 @@ export class JobManager {
 		const earliest = job.end - job.buffer.length;
 		const start = Math.max(cursor, earliest);
 		const offset = start - earliest;
-		let length = Math.min(job.buffer.length - offset, JOB_LIMITS.pageBytes);
+		const readable = job.snapshot.status === "running" ? readableUtf8Length(job.buffer) : job.buffer.length;
+		const pendingBytes = job.buffer.length - readable;
+		let length = Math.max(0, Math.min(readable - offset, JOB_LIMITS.pageBytes));
 		let lines = 0;
 		for (let index = 0; index < length; index++) {
 			if (job.buffer[offset + index] === 10 && ++lines === JOB_LIMITS.pageLines) {
@@ -177,10 +203,22 @@ export class JobManager {
 		let text = job.buffer.subarray(offset, offset + length).toString("utf8");
 		while (Buffer.byteLength(text) > JOB_LIMITS.pageBytes) {
 			length -= Math.max(1, Math.ceil((Buffer.byteLength(text) - JOB_LIMITS.pageBytes) / 3));
+			let boundary = length;
+			while (boundary > 0 && (job.buffer[offset + boundary] & 0xc0) === 0x80) boundary--;
+			if (boundary > 0) length = boundary;
 			text = job.buffer.subarray(offset, offset + length).toString("utf8");
 		}
 		const next = start + length;
-		return { id, text, earliest, next, end: job.end, gap: cursor < earliest, more: next < job.end };
+		return {
+			id,
+			text,
+			earliest,
+			next,
+			end: job.end,
+			gap: cursor < earliest,
+			more: next < earliest + readable,
+			pendingBytes,
+		};
 	}
 	cancel(id: string): JobSnapshot {
 		const job = this.get(id);

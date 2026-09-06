@@ -42,6 +42,14 @@ function shellOptions(ctx: ExtensionContext): BashToolOptions {
 	const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
 	if (settings.drainErrors().length > 0)
 		throw new Error("Cannot read shell settings. Repair Pi settings before command execution.");
+	for (const scope of [settings.getGlobalSettings(), settings.getProjectSettings()]) {
+		if (scope === null || typeof scope !== "object" || Array.isArray(scope))
+			throw new Error("Invalid shell settings: settings must be an object.");
+		for (const key of ["shellPath", "shellCommandPrefix"] as const) {
+			if (scope[key] !== undefined && typeof scope[key] !== "string")
+				throw new Error(`Invalid shell settings: ${key} must be a string.`);
+		}
+	}
 	return { shellPath: settings.getShellPath(), commandPrefix: settings.getShellCommandPrefix() };
 }
 

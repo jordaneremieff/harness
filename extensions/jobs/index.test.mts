@@ -153,6 +153,30 @@ describe("Command Jobs adapter", () => {
 		await assert.rejects(call("bash", { command: "printf never", background: true }), /closed/);
 	});
 
+	it("rejects invalid shell setting types before either execution path", async () => {
+		const cwd = join(root, "invalid-shell-settings");
+		await mkdir(join(cwd, ".pi"), { recursive: true });
+		const { pi, call } = setup(cwd, true);
+		try {
+			for (const settings of [
+				[],
+				{ shellPath: false },
+				{ shellPath: 3 },
+				{ shellCommandPrefix: false },
+				{ shellCommandPrefix: [] },
+				{ shellCommandPrefix: null },
+			]) {
+				await writeFile(join(cwd, ".pi", "settings.json"), JSON.stringify(settings));
+				for (const background of [false, true]) {
+					await assert.rejects(call("bash", { command: "printf never", background }), /shell settings/i);
+				}
+			}
+			assert.deepEqual((await call("jobs", { action: "list" })).details, { jobs: [] });
+		} finally {
+			await pi.shutdown!();
+		}
+	});
+
 	it("honors trusted shell settings in both paths and ignores untrusted project settings", async () => {
 		const cwd = join(root, "project");
 		await mkdir(join(cwd, ".pi"), { recursive: true });

@@ -221,6 +221,89 @@ test("UTF-8 pages preserve complete characters and error messages respect the by
 	await manager.dispose();
 });
 
+test("decoded-byte reductions preserve valid characters after invalid prefix bytes", async () => {
+	const manager = new JobManager();
+	const bytes = Buffer.concat([Buffer.alloc(3, 255), Buffer.from("😀".repeat(10000))]);
+	const job = manager.start("fixture", cwd, {
+		exec: async (_command, _cwd, { onData }) => {
+			onData(bytes);
+			return { exitCode: 0 };
+		},
+	});
+	await manager.wait(job.id);
+	let page = manager.logs(job.id);
+	let text = page.text;
+	for (let count = 0; page.more && count < 10; count++) {
+		page = manager.logs(job.id, page.next);
+		assert.ok(Buffer.byteLength(page.text) <= JOB_LIMITS.pageBytes);
+		text += page.text;
+	}
+	assert.equal(text, bytes.toString("utf8"));
+	assert.equal(page.more, false);
+	await manager.dispose();
+});
+
+test("live log reads retain incomplete UTF-8 until later chunks complete it", async () => {
+	for (const text of ["é", "€", "😀"]) {
+		const manager = new JobManager();
+		let emit!: (data: Buffer) => void;
+		let finish!: (value: { exitCode: number }) => void;
+		const job = manager.start("fixture", cwd, {
+			exec: (_command, _cwd, options) => {
+				emit = options.onData;
+				return new Promise((resolve) => {
+					finish = resolve;
+				});
+			},
+		});
+		await Promise.resolve();
+		const bytes = Buffer.from(text);
+		for (let index = 0; index < bytes.length - 1; index++) {
+			emit(bytes.subarray(index, index + 1));
+			const pending = manager.logs(job.id);
+			assert.equal(pending.text, "");
+			assert.equal(pending.next, 0);
+			assert.equal(pending.more, false);
+			assert.equal(pending.pendingBytes, index + 1);
+		}
+		emit(bytes.subarray(bytes.length - 1));
+		const complete = manager.logs(job.id);
+		assert.equal(complete.text, text);
+		assert.equal(complete.next, bytes.length);
+		assert.equal(complete.pendingBytes, 0);
+		finish({ exitCode: 0 });
+		await manager.dispose();
+	}
+});
+
+test("terminal incomplete UTF-8 and invalid live sequences remain readable", async () => {
+	const manager = new JobManager();
+	let emit!: (data: Buffer) => void;
+	let finish!: (value: { exitCode: number }) => void;
+	const job = manager.start("fixture", cwd, {
+		exec: (_command, _cwd, options) => {
+			emit = options.onData;
+			return new Promise((resolve) => {
+				finish = resolve;
+			});
+		},
+	});
+	await Promise.resolve();
+	emit(Buffer.from([0xe0, 0x80]));
+	const invalid = manager.logs(job.id);
+	assert.equal(invalid.text, "��");
+	assert.equal(invalid.pendingBytes, 0);
+	emit(Buffer.from([0xf0, 0x90]));
+	assert.equal(manager.logs(job.id, invalid.next).text, "");
+	finish({ exitCode: 0 });
+	await manager.wait(job.id);
+	const terminal = manager.logs(job.id, invalid.next);
+	assert.equal(terminal.text, "�");
+	assert.equal(terminal.pendingBytes, 0);
+	assert.equal(terminal.next, terminal.end);
+	await manager.dispose();
+});
+
 test("timeout remains a request until rejection and a later cancel does not replace it", async () => {
 	const manager = new JobManager();
 	let reject!: (error: Error) => void;
