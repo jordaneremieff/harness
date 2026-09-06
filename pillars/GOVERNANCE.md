@@ -48,8 +48,11 @@ automatic precedence over another.
 5. Apply the result to the artifact or decision. Do not stop at naming the
    doctrine.
 6. Narrate only under item 6 of the application contract.
-7. A forwarded excerpt from another conversation re-grounds deterministically:
-   exact-quote search (`rg -F`) against README.md resolves it to its live entry.
+7. Re-ground a forwarded excerpt through its supplied canonical name and path
+   first. Otherwise, use exact-quote search (`rg -F`) against README.md for an
+   index sentence or against entry bodies for other text. Search is a retrieval
+   hint, not a guaranteed identity match. Read the matched body before
+   application; unresolved or ambiguous matches remain unknown.
 8. If reality contradicts the doctrine, classify the contradiction rather than
    forcing compliance.
 
