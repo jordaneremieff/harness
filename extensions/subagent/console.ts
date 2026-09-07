@@ -59,7 +59,16 @@ export interface ConsoleToolResultMessage {
 	/** Live status; "running" marks a synthetic in-flight result carrying partial content. */
 	status?: "running" | "complete" | "error";
 }
-export type ConsoleMessage = ConsoleUserMessage | ConsoleAssistantMessage | ConsoleToolResultMessage;
+export interface ConsoleCustomMessage {
+	role: "custom";
+	customType: string;
+	content: ConsoleTextPart[];
+}
+export type ConsoleMessage =
+	| ConsoleUserMessage
+	| ConsoleAssistantMessage
+	| ConsoleToolResultMessage
+	| ConsoleCustomMessage;
 
 export interface RenderOpts {
 	/** Total terminal columns; every output line MUST be exactly this many visible columns. */
@@ -84,6 +93,7 @@ type BgToken = "userMessageBg" | "customMessageBg" | "toolPendingBg" | "toolSucc
  */
 const ANSI_PASSES: RegExp[] = [
 	/(?:\u001b\]|\u009d)(?:[^\u0007\u001b]|\u001b(?!\\))*(?:\u0007|\u001b\\)/g,
+	/\u001b[P_X^](?:[^\u001b]|\u001b(?!\\))*\u001b\\/g,
 	/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g,
 	/\u001bO[ -~]/g,
 	/\u001b[ -/]*[0-~]/g,
@@ -183,7 +193,7 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 	 * (a Spacer(1) then a single themed error Text). */
 	const renderErrorLine = (text: string): void => {
 		if (emitted) out.push(" ".repeat(width));
-		out.push(plainLine(` ${theme.fg("error", text)}`));
+		for (const line of wrapTextWithAnsi(sanitize(text), wrapWidth)) out.push(plainLine(` ${theme.fg("error", line)}`));
 		emitted = true;
 	};
 
@@ -287,7 +297,7 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 					: "toolSuccessBg";
 		pushSpacer();
 		out.push(bgBlank(bg));
-		const header = toolTitle(call.name, call.arguments);
+		const header = sanitize(toolTitle(call.name, call.arguments));
 		const labelled = failed ? `${header} [${stopReason}]` : running ? `${header} [running]` : header;
 		// Wrap the header (long commands/paths) instead of truncating its tail.
 		for (const wl of wrapTextWithAnsi(labelled, contentWidth)) {
@@ -313,6 +323,15 @@ export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts)
 		}
 		if (msg.role === "toolResult") {
 			continue; // consumed by tool boxes via resultsById; never rendered directly
+		}
+		if (msg.role === "custom") {
+			pushSpacer();
+			for (const line of wrapTextWithAnsi(sanitize(msg.customType), wrapWidth))
+				out.push(padPaint("customMessageBg", theme.fg("customMessageLabel", line)));
+			for (const line of wrapTextWithAnsi(sanitize(msg.content.map((part) => part.text).join("\n")), wrapWidth))
+				out.push(padPaint("customMessageBg", theme.fg("customMessageText", line)));
+			emitted = true;
+			continue;
 		}
 		// assistant — walk content parts in order: text runs, thinking runs, tool boxes.
 		const hasToolCalls = msg.content.some((p) => p.type === "toolCall");

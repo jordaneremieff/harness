@@ -105,7 +105,16 @@ export interface TranscriptToolItem {
 	timestamp: number;
 }
 
-export type TranscriptItem = TranscriptUserItem | TranscriptAssistantItem | TranscriptToolItem;
+export interface TranscriptCustomItem {
+	role: "custom";
+	id: string;
+	customType: string;
+	content: TranscriptContentPart[];
+	details?: unknown;
+	timestamp: number;
+}
+
+export type TranscriptItem = TranscriptUserItem | TranscriptAssistantItem | TranscriptToolItem | TranscriptCustomItem;
 
 export interface SessionSnapshot {
 	id: string;
@@ -322,8 +331,8 @@ function userTranscriptItem(message: unknown, id: string): TranscriptUserItem {
  * by BOTH transcript paths — a live worker's in-memory state and a terminal
  * worker's session file — so there is exactly one reader of pi's message shape.
  *
- * Roles with no transcript representation are dropped: `custom`,
- * `bashExecution`, `branchSummary`, and `compactionSummary`, as are assistant
+ * Roles with no transcript representation are dropped: `bashExecution`,
+ * `branchSummary`, and `compactionSummary`, as are assistant
  * messages whose stop reason is missing, unknown, `deferred`, or an `error`
  * with no message. A `toolResult` with no matching call is dropped because the
  * console renders tool output inside the call's box, so an orphan result was
@@ -356,6 +365,19 @@ export function buildTranscript(
 				if (item) items.push(item);
 			} catch {
 				// A part with no transcript form skips the whole message.
+			}
+		} else if (message.role === "custom") {
+			try {
+				items.push({
+					role: "custom",
+					id: idFor(message),
+					customType: message.customType,
+					content: transcriptUserContent(message.content),
+					details: message.details,
+					timestamp: message.timestamp,
+				});
+			} catch {
+				// A malformed custom message does not hide the rest of the transcript.
 			}
 		} else if (message.role === "toolResult") {
 			const call = toolCalls.get(message.toolCallId);
@@ -888,7 +910,7 @@ export class WorkerRuntime {
 					}
 					this.stream = null;
 					this.emit({ type: "snapshot" });
-				} else if (message.role === "user") {
+				} else if (message.role === "user" || message.role === "custom") {
 					this.emit({ type: "snapshot" });
 				}
 				break;

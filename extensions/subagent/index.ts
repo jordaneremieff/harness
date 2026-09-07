@@ -97,11 +97,13 @@ import {
 	type ProjectTrustHandler,
 	ProjectTrustStore,
 	SessionManager,
+	sessionEntryToContextMessages,
 	SettingsManager,
 	type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { COLLABORATION_LIMITS, createCollaborationReader } from "./collaboration.ts";
 import { stripTerminalSequences } from "./console.ts";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
 import { type PeerEnvelope, PeerHub } from "./peers.ts";
@@ -112,6 +114,7 @@ import {
 	transcriptFromMessages,
 	WorkerRuntime,
 } from "./runtime.ts";
+import { type EntryReader, readSelectedSession } from "./session-evidence.ts";
 
 // ---------------------------------------------------------------------------
 // Store
@@ -144,7 +147,6 @@ const REPORT_ENVELOPE_LINE_CAP = 2_000;
  * long-running installation does not accumulate worker directories forever.
  */
 const PRUNE_TERMINAL_AFTER_DAYS = Number.parseInt(process.env.PI_SUBAGENT_PRUNE_DAYS ?? "30", 10);
-const statusRecordCache = new Map<string, WorkerRecord>();
 const TERMINAL_STATES: ReadonlySet<WorkerState> = new Set([
 	"done",
 	"failed",
@@ -1308,6 +1310,8 @@ interface WorkerRuntimeState {
 	peerHub: PeerHub;
 	/** Current factory identity for each peer session, including reloads. */
 	peerSessionOwners: Map<string, symbol>;
+	/** Existing record cache shared across per-cwd instances for complete nested families. */
+	statusRecords: Map<string, WorkerRecord>;
 }
 
 /** Immediate-parent link a running worker reports through. */
@@ -1320,6 +1324,9 @@ export interface WorkerOwnerLink {
 	reports: number;
 	/** Read the owner's live state across per-cwd module instances. */
 	peerDeliveryState?: () => "active" | "paused" | "closed";
+	/** Read-only evidence handles, resolved against the current live worker. */
+	collaborationManager?: () => EntryReader | null;
+	collaborationRecord?: () => WorkerRecord | null;
 }
 
 /** One rendered, bounded interim report ready for the parent session. */
@@ -1347,11 +1354,13 @@ export function initializeWorkerRuntimeState(state: Partial<WorkerRuntimeState> 
 	state.reportSinks ??= new Map();
 	state.peerHub ??= new PeerHub();
 	state.peerSessionOwners ??= new Map();
+	state.statusRecords ??= new Map();
 	return state as WorkerRuntimeState;
 }
 const stateOnGlobal = initializeWorkerRuntimeState(sharedStateHost[WORKER_STATE_KEY]);
 sharedStateHost[WORKER_STATE_KEY] = stateOnGlobal;
 export const sharedWorkerState: WorkerRuntimeState = stateOnGlobal;
+const statusRecordCache = sharedWorkerState.statusRecords;
 
 export function recordWorkerSurface(sessionId: string, active: readonly string[], all: readonly ToolInfo[]): void {
 	if (!sessionId) return;
@@ -1374,6 +1383,8 @@ export function linkWorkerOwner(workerSessionId: string, link: Omit<WorkerOwnerL
 	sharedWorkerState.workerOwners.set(workerSessionId, {
 		...link,
 		reports: existing?.workerId === link.workerId ? existing.reports : 0,
+		collaborationManager: () => liveWorkers.get(link.workerId)?.session.sessionManager ?? null,
+		collaborationRecord: () => liveWorkers.get(link.workerId)?.record ?? null,
 		peerDeliveryState: () => {
 			const live = liveWorkers.get(link.workerId);
 			if (
@@ -3337,31 +3348,51 @@ export async function cancelWorker(
 // Panel-facing live access (an in-process console over a worker's session)
 // ---------------------------------------------------------------------------
 
-/**
- * The conversation to render for a worker: the live runtime's snapshot when
- * this session owns the worker, otherwise the messages recorded in its session
- * file put through the same conversion. Returns null when nothing is
- * available.
- *
- * Both paths go through runtime.ts so the extension has one message
- * conversion.
- */
+/** Bound dashboard work without scanning or finalizing the worker store on refresh. */
+export function* dashboardRecords(): Generator<WorkerRecord> {
+	const seen = new Set<string>();
+	let visited = 0;
+	for (const link of sharedWorkerState.workerOwners.values()) {
+		if (++visited > COLLABORATION_LIMITS.records + 1) break;
+		const record = link.collaborationRecord?.();
+		if (record && !seen.has(record.id)) {
+			seen.add(record.id);
+			yield record;
+		}
+	}
+	visited = 0;
+	for (const record of statusRecordCache.values()) {
+		if (++visited > COLLABORATION_LIMITS.records + 1) break;
+		if (!seen.has(record.id)) yield record;
+	}
+}
+
+/** Render-time metadata stays in memory; one known-path check detects a removed record. */
+export function dashboardWorker(id: string): WorkerRecord | null {
+	if (!WORKER_ID_RE.test(id)) return null;
+	const record = statusRecordCache.get(id);
+	return record && existsSync(join(workerDir(id), "worker.json")) ? record : null;
+}
+
+/** Live and retained messages share one transcript conversion; unreadable files yield a visible notice. */
 export function workerConversation(id: string): TranscriptItem[] | null {
 	const live = liveWorkers.get(id);
 	if (live) return [...live.runtime.snapshot().transcript];
 	const record = readWorker(id);
 	const path = record?.sessionFile;
-	if (path && existsSync(path)) {
-		try {
-			const messages = SessionManager.open(path)
-				.getBranch()
-				.flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
-			return transcriptFromMessages(messages);
-		} catch {
-			return null;
-		}
-	}
-	return null;
+	if (!path || !record) return null;
+	const snapshot = readSelectedSession(path, record.sessionId);
+	const messages = snapshot.entries.flatMap(sessionEntryToContextMessages);
+	const transcript = transcriptFromMessages(messages);
+	if (snapshot.notices.length > 0)
+		transcript.push({
+			role: "custom",
+			id: "session-read-notice",
+			customType: "session_read_notice",
+			content: [{ type: "text", text: snapshot.notices.join("\n") }],
+			timestamp: Date.now(),
+		});
+	return transcript;
 }
 
 /** Subscribe to a live worker's updates. Returns an unsubscribe, or null when
@@ -3454,7 +3485,7 @@ function startIdleWorkerPrompt(live: LiveWorker, text: string): void {
 	);
 }
 
-async function sendWorkerMessageOutcome(
+export async function sendWorkerMessageOutcome(
 	id: string,
 	text: string,
 	requesterSession: string,
@@ -3878,11 +3909,12 @@ function renderTranscriptItem(item: TranscriptItem): { text: string; truncated: 
 		return quoteInspectContent(bounded.text);
 	};
 	const timestamp = inspectTimestamp(item.timestamp);
-	if (item.role === "user") {
+	if (item.role === "user" || item.role === "custom") {
 		const body = item.content.map((part) =>
 			part.type === "text" ? addContent(part.text) : `[image: ${inspectInline(part.mimeType, 256)}]`,
 		);
-		return { text: `USER · ${timestamp}\n${body.join("\n") || "(no textual content)"}`, truncated };
+		const label = item.role === "custom" ? `CUSTOM · ${inspectInline(item.customType, 512)}` : "USER";
+		return { text: `${label} · ${timestamp}\n${body.join("\n") || "(no textual content)"}`, truncated };
 	}
 	if (item.role === "assistant") {
 		const body: string[] = [];
@@ -4168,7 +4200,10 @@ export interface WorkerReport {
 
 /** Compact terminal evidence for the console; full results stay collectable. */
 export function workerReport(id: string): WorkerReport | null {
-	const record = readWorker(id);
+	return workerRecordReport(readWorker(id));
+}
+
+function workerRecordReport(record: WorkerRecord | null): WorkerReport | null {
 	if (!record || record.state === "running") return null;
 	if (record.state === "done" && record.resultBytes !== null) {
 		return {
@@ -4965,7 +5000,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("subagent", {
 		description:
-			"Worker dashboard: metadata-first roster with latest output, transcript console, steer, interrupt, cancel, copy, and terminal continuation. RPC and JSON publish structured status; print emits filtered text. Optional argument: initial filter.",
+			"Collaboration dashboard: family timeline, ownership tree, message and task details, selected history, and worker consoles with steer, interrupt, cancel, copy, and continuation. RPC and JSON publish structured status; print emits filtered text. Optional argument: initial filter.",
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			bindStatusContext(ctx);
 			if (ctx.mode === "tui") {
@@ -4974,11 +5009,27 @@ export default function (pi: ExtensionAPI) {
 				await openSubagentPanel(
 					ctx,
 					{
-						readWorkers: () => {
-							const view = statusView();
-							return [...view.live, ...view.terminal];
-						},
-						readWorker,
+						collaboration: createCollaborationReader({
+							current: ctx.sessionManager,
+							records: dashboardRecords,
+							*managers() {
+								let visited = 0;
+								for (const link of sharedWorkerState.workerOwners.values()) {
+									if (++visited > COLLABORATION_LIMITS.records + 1) break;
+									const manager = link.collaborationManager?.();
+									if (manager) yield manager;
+								}
+							},
+							receipt: (sessionId, messageId) => {
+								try {
+									return sharedWorkerState.peerHub.status(sessionId, messageId);
+								} catch {
+									return null;
+								}
+							},
+						}),
+						readWorkers: () => [...dashboardRecords()].slice(0, COLLABORATION_LIMITS.records),
+						readWorker: dashboardWorker,
 						kill: async (id) => (await cancelWorker(id, ctx.sessionManager.getSessionId())).text,
 						continueWorker: async (id, message) => {
 							const outcome = await continueWorker(id, message, ctx);
@@ -4989,13 +5040,13 @@ export default function (pi: ExtensionAPI) {
 									: `Continued ${id} as ${outcome.id} on its full recorded tool surface.`,
 							};
 						},
-						report: workerReport,
+						report: (id) => workerRecordReport(statusRecordCache.get(id) ?? null),
 						conversation: workerConversation,
 						isLive: (id) => Boolean(liveWorkerOwnedBy(id, ctx.sessionManager.getSessionId())),
 						subscribeLive: (id, onEvent) => subscribeWorkerLive(id, onEvent, ctx.sessionManager.getSessionId()),
 						isActive: (id) => isWorkerActive(id, ctx.sessionManager.getSessionId()),
 						interrupt: (id) => interruptWorker(id, ctx.sessionManager.getSessionId()),
-						sendLive: (id, text) => sendWorkerMessage(id, text, ctx.sessionManager.getSessionId()),
+						sendLive: (id, text) => sendWorkerMessageOutcome(id, text, ctx.sessionManager.getSessionId()),
 						currentSessionId: () => ctx.sessionManager.getSessionId(),
 					},
 					args.trim() || undefined,

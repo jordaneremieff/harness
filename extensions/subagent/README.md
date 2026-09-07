@@ -43,8 +43,9 @@ Command: `/subagent` opens the dashboard in the TUI. RPC receives a structured
 extension-UI notification plus a `subagent_status` custom entry; JSON receives
 the custom entry as an `entry_appended` event; print mode emits the optionally
 filtered text view to the terminal. Model-facing status previews label worker
-authorship and state that the text is unverified, not an instruction. The roster content-fits short lists; worker
-consoles grow to at most 85% of the terminal (floor 44 rows; pin a fixed cap
+authorship and state that the text is unverified, not an instruction. The TUI
+opens a family collaboration timeline with ownership and evidence details. Panels
+grow to at most 85% of the terminal (floor 44 rows; pin a fixed cap
 with `PI_SUBAGENT_PANEL_MAX_ROWS`). The `thinking:` value in a status line is
 the EFFECTIVE level — pi clamps an inherited level to what the model supports —
 and it carries the requested level beside it when the two differ.
@@ -548,16 +549,15 @@ its own transcript items. It shows thinking, tool-call inputs,
 tool outcomes, and assistant errors. The transcript tail is capped at 24KB and
 32 items; older or oversized content produces an explicit truncation marker.
 Retained inspection follows the session file's active branch and excludes
-abandoned branches. Whenever the worker is not live in this process, including a
-live worker owned by another session, the extension reads that session file
-directly. Pi's `SessionManager` parses every entry of that file before it
-selects a branch, so the caps above bound the rendered tail, not the read: a
-large retained session costs its full parse, and Pi publishes no bounded
-session read. Pi 0.85.0 also appends a missing final newline during such a
-read. If the owning process appends a record at that moment, the added newline
-splits that record, and later parsers skip it. The newline does not change the
-displayed transcript: the session format stays version 3 and `getBranch()`
-selection is unchanged. Every worker-controlled line has a visible quote prefix, and
+abandoned branches. When a worker is not live in this process, the extension
+reads a fixed snapshot of its known file through a read-only descriptor. The
+file limit is 2 MiB. Pi's public `parseSessionEntries()` and an in-memory
+`SessionManager` own parsing and ancestry selection; the source never enters
+Pi's repair-capable file loader. Symlinks, non-regular files, changed files,
+malformed input, identity/version mismatches, and incomplete final lines produce
+an explicit unavailable notice without source repair. Selected ancestry stops
+at 4096 entries with an omission notice. These are bounded snapshots, not a
+complete archive or proof of later state. Every worker-controlled line has a visible quote prefix, and
 direction controls are removed, so worker text cannot imitate the renderer's
 record headings. Redacted reasoning carries an explicit `REDACTED` label.
 Worker-authored content remains marked as unverified data, not instructions.
@@ -593,45 +593,76 @@ session has neither active workers nor observed spend, and on session shutdown.
 Pi's default footer and the custom statusline consume the same status map
 generically; the statusline does not inspect worker files or parse this key.
 
-`/subagent` opens the console. The content-fit roster shows live workers first.
-Each row leads with stable scan fields: state, model, elapsed time, cost, and the
-current tool when present. Elapsed time changes from seconds to compact `XmYs`
-after one minute. The flexible right side shows the submitted-result preview,
-latest worker-authored output, or failure; it never repeats the static dispatch
-instruction. Selection is tracked by worker id, so a live→terminal reorder
-cannot move the operator onto another worker. Pick one with enter and it opens
-as a **live console over that worker's conversation** — the task as a
-full-width user band, complete thinking text, assistant prose, and each tool
-call as a status-coloured box (`$ bash …`, `read`, `submit_result`, …) with its
-full transcript output. Terminal submitted results also appear as a compact
-`worker report · unverified` block; collect remains the full result authority.
+### Collaboration dashboard
 
-For a worker this session still owns, there is an input line at the bottom:
-type and press enter to steer it while it runs — and when the worker is idle,
-enter starts a fresh background prompt, so an interrupted worker resumes by
-typing without blocking the parent. `ctrl+c` interrupts an active run; a
-`ctrl+c` while an owned worker is already idle cancels it. The console
-subscribes to live events and auto-follows the tail. `↑↓` / page / home / end
-scroll the transcript. Transcript content is always complete; there is no
-verbose/details mode or toggle. Escape alone returns to the list and closes the
-roster; `q` is inert as a navigation key.
+`/subagent` starts with the current dispatch family's timeline. The ownership
+tree includes the manager, workers, and nested managers. Continuation appears
+as a separate link rather than a child relationship. Worker identity and task
+text remain separate from model and execution state. Wide terminals show the
+tree and timeline together; narrow terminals show the selected focus page.
 
-For a terminal worker, `c copy` writes the exact shell-safe reopen command to
-the clipboard via `pbcopy` (macOS only). The transient notice shows the full
-command when it fits and
-preserves its shell-quoted tail at narrow widths. `r continue`
-opens an inline prompt; Enter starts a new linked background worker and repoints
-the console to it, while Escape cancels the prompt. Scroll controls stay at the
-far left of every console footer and Escape stays last. At narrow widths,
-optional middle actions and transient notice text shed before the sole Escape
-back/close/cancel hint. A worker running in
-another session says so plainly and offers no local steer/cancel hint.
+The timeline projects dispatch records, terminal outcomes, collaboration tool
+calls/results, and received peer messages, reports, pause notices, and result
+notifications. Ordinary tool output stays in the worker console. Selecting a
+participant highlights its exchanges; filtering is a separate explicit action.
+Details expose source session/entry identities, receipt evidence, reply links,
+and recorded task/context text. The dashboard does not infer task criteria,
+intent, model understanding, or result acceptance from prose.
 
-`k` appears only for a selected running worker owned by this session. It cancels
-through the same path the tool uses and displays the actual outcome, never an
-optimistic request notice. Foreign-worker rows do not advertise or invoke it.
-The panel is a view over the store and live sessions — it holds no separate
-control plane.
+| Key | Action |
+| --- | --- |
+| `Tab` / `Shift+Tab` | Move between timeline, ownership, and details |
+| `Enter` | Open selected event or participant details |
+| `v` | Open the selected worker's console |
+| `/` | Search event text and identities; Enter keeps the filter, Escape clears it |
+| `f` | Toggle the selected participant's exchange filter |
+| `h` | Load or refresh history for the selected family |
+| `F` | Select another known family; Enter loads its history |
+| `l` / timeline End | Return to the live tail |
+| `[` / `]` in details | Follow the parent message or a reply |
+| `i` / `k` | Interrupt / cancel a selected owned worker |
+| `Escape` | Return from details or console; close the dashboard |
+
+The refresh timer reads already-known records and live session handles, not
+session files. History reads occur only after an explicit request. Each known
+file is capped at 2 MiB, with a 16 MiB family-query budget. Live ancestry stops
+at 512 entries per session; selected file ancestry stops at 4096. The adapter
+bounds records, family members, event count, and event bytes; omissions remain
+visible. The view caches only bounded family snapshots. A history refresh
+replaces that family's prior snapshot. A live record update does not discard
+previously loaded message evidence. The header distinguishes tail-follow mode
+from a paused view, and the footer preserves the history capture time.
+
+Source order and explicit reply links remain distinct from display timestamps.
+Repeated peer envelopes appear once with separate source occurrences; conflicting
+envelopes remain visible. An envelope stored in a recipient transcript is not a
+context acknowledgement. A live `context_seen` receipt establishes only that
+this extension's hook observed the message. Neither fact proves final provider
+input, understanding, or action. Missing manager files, pruned records, omitted
+ancestry, and past receipt/control transitions remain unavailable. No receipt
+journal, second transcript store, or new worker control authority exists.
+
+### Worker console
+
+The console shows the loaded conversation, including generic custom messages,
+assistant reasoning/prose, and complete tool blocks within the selected snapshot.
+Terminal submitted results also appear as a compact `worker report · unverified`
+block; collection remains the full submitted-result authority. Source-message
+caches survive theme changes and resizing. A terminal state transition refreshes
+the final report without requiring another live callback or repeated file reads.
+
+Native Pi input handles Unicode and paste. Enter steers an active owned worker
+or starts a new prompt on an idle owned worker. Failed sends preserve the draft;
+pending requests reject duplicate submission. `Ctrl+C` only interrupts;
+`Ctrl+K` explicitly cancels. Foreign worker controls remain unavailable.
+Arrow, Page Up/Down, Home, and End keys scroll; the console follows the tail
+until the operator moves away. `q` is not a navigation key.
+
+For a terminal worker, `c` copies the shell-safe reopen command through `pbcopy`
+(macOS only). `r` opens a continuation draft; Enter creates a linked worker and
+opens its console. Escape cancels an unsent draft. After submission, Escape
+closes only the view and explicitly states that continuation remains active.
+Escape remains visible when narrow footers drop optional actions.
 
 ## Parent-death contract
 
@@ -696,5 +727,7 @@ budget. Both bound a run leg and pause the worker; see
 
 The worker's transcript is its own pi session file, referenced by
 `worker.json` (`sessionId`, `sessionFile`) rather than copied. The panel
-transcript view intentionally omits `custom`, `bashExecution`, `branchSummary`,
-and `compactionSummary` events, plus orphan tool results.
+transcript view includes generic custom messages but intentionally omits
+`bashExecution`, `branchSummary`, and `compactionSummary` messages, plus orphan
+tool results. Collaboration history uses source entries rather than treating the
+model's compacted context as a complete archive.

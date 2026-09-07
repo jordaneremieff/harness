@@ -87,6 +87,51 @@ not the separately dated upstream program claims.
   of unknown alternate branches requires a host-owned paged enumeration API.
   Do not add a parallel index or raw session-file reader to supply that API.
 
+## Collaboration observation
+
+Verified 2026-09-07 against installed Pi 0.85.1 and upstream `main` at
+[`9767ba27`](https://github.com/earendil-works/pi/commit/9767ba275f3e9a5ee0f5c5342249b629ab1b2282).
+The latest listed GitHub release remains v0.85.1. Fork pull request
+[#9152](https://github.com/earendil-works/pi/pull/9152) remains open and draft
+at `85186f823d31c6d36c135190b3c357dbb6522c81`. This focused check does not
+refresh the separately dated publication, backend, or packaging claims.
+
+- The [ordinary SDK][collaboration-sdk] still constructs `Agent` and
+  `AgentSession`. The subagent extension uses public session services and
+  ordinary sessions; its dashboard does not adopt the durable runtime.
+- [Lane observation][collaboration-lane] exposes a snapshot, event subscription,
+  and resnapshot. The upstream [`reduceLaneSnapshot`][collaboration-reducer]
+  owns event application and requests a fresh snapshot after navigation.
+  Consumers of durable lanes use that reducer instead of another event fold.
+  Installed `pi-agent-core/dist/harness/runtime/lane.js` captures ancestry only
+  back to compaction, without a count limit; a live snapshot is neither a
+  bounded history page nor a complete archive.
+- [Session-wide observation][collaboration-watch] still throws
+  `SliceNotImplemented("watchSession")`. Per-lane observation does not supply
+  a complete session inventory subscription.
+- [Durable entry queries][collaboration-entries] belong to `Session` and
+  `Branch`. Ordinary `SessionManager.open()` still reads the complete file and
+  repairs an unfinished tail. Do not pass foreign active files to that loader.
+  Installed coding-agent publicly exports the pure `parseSessionEntries()`
+  function and `SessionManager.inMemory(cwd, options, entries)`. A selected,
+  byte-bounded read-only file snapshot can therefore use Pi's parser and tree
+  traversal without a private decoder or any write to its source. This is not
+  a native paged file API: oversized files require an explicit unavailable
+  state, and snapshots do not establish current state after capture. Keep this
+  adapter limited to known session files, not whole-session discovery or a
+  parallel index.
+- Preserve source session and entry identities, per-session order, and explicit
+  reply links. Display-time ordering does not establish causality. A recorded
+  recipient message, a process-local context observation, and a reply establish
+  different facts; none establishes understanding or action. Missing historical
+  observations remain unknown rather than reconstructed from current state.
+
+[collaboration-sdk]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/coding-agent/src/core/sdk.ts#L306-L403
+[collaboration-lane]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/agent/src/harness/agent-harness.ts#L180-L250
+[collaboration-reducer]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/agent/src/harness/runtime/reducer.ts#L21-L232
+[collaboration-watch]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/agent/src/harness/runtime/harness.ts#L305-L307
+[collaboration-entries]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/agent/src/harness/session/types.ts#L520-L538
+
 ## Names and defining contracts
 
 The normative specification is [`packages/agent/docs/harness.md`][spec].

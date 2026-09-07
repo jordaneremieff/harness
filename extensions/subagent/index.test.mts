@@ -1851,6 +1851,7 @@ describe("status and collection", () => {
 				state: "failed",
 				exitedAt: Date.now(),
 				sessionFile,
+				sessionId: manager.getSessionId(),
 			}),
 		);
 
@@ -2834,7 +2835,7 @@ describe("buildTranscript", () => {
 		assert.deepEqual(items[0].content, [{ type: "thinking", thinking: "[Reasoning redacted]", redacted: true }]);
 	});
 
-	it("drops roles protocol v1 cannot express, and orphan tool results", () => {
+	it("preserves custom messages and drops unsupported roles and orphan tool results", () => {
 		const items = buildTranscript(
 			[
 				{
@@ -2869,7 +2870,16 @@ describe("buildTranscript", () => {
 			] as never,
 			() => "m-1",
 		);
-		assert.deepEqual(items, []);
+		assert.deepEqual(items, [
+			{
+				id: "m-1",
+				role: "custom",
+				customType: "note",
+				content: [{ type: "text", text: "x" }],
+				details: undefined,
+				timestamp: 1,
+			},
+		]);
 	});
 
 	it("drops an assistant message the mapper refuses instead of throwing", () => {
@@ -3558,6 +3568,24 @@ describe("SubagentPanel controls", () => {
 		const deps: PanelDeps = {
 			readWorkers: () => [record],
 			readWorker: (id) => (id === record.id ? record : null),
+			collaboration: async () => ({
+				familyId: "panel-session",
+				families: [],
+				notices: [],
+				events: [],
+				participants: [
+					{
+						id: record.id,
+						parentId: null,
+						label: record.id,
+						task: record.task,
+						model: record.model,
+						state: record.state,
+						workerId: record.id,
+						continuedFrom: null,
+					},
+				],
+			}),
 			kill: async () => "already done",
 			continueWorker: async () => ({ id: null, text: "not used" }),
 			report: () => null,
@@ -3566,7 +3594,7 @@ describe("SubagentPanel controls", () => {
 			subscribeLive: () => null,
 			isActive: () => false,
 			interrupt: async () => "interrupted",
-			sendLive: async () => "sent",
+			sendLive: async () => ({ ok: true, text: "sent" }),
 			currentSessionId: () => "panel-session",
 			copyText: (text, done) => {
 				copied = text;
@@ -3593,6 +3621,7 @@ describe("SubagentPanel controls", () => {
 						closeCalls++;
 					});
 					try {
+						await Promise.resolve();
 						const list = component.render(100);
 						assert.match(list.at(-1) ?? "", /esc close/);
 						assert.doesNotMatch(list.at(-1) ?? "", /q close/);
@@ -3602,7 +3631,7 @@ describe("SubagentPanel controls", () => {
 							assert.equal(visibleWidth(footer), width);
 						}
 
-						component.handleInput?.("\r");
+						component.handleInput?.("v");
 						const consoleLines = component.render(140);
 						const consoleText = consoleLines.join("\n");
 						assert.doesNotMatch(consoleText, /press c|copy reopen|ctrl\+v/);
@@ -3680,6 +3709,22 @@ describe("SubagentPanel controls", () => {
 		const deps: PanelDeps = {
 			readWorkers: () => roster,
 			readWorker: (id) => byId.get(id) ?? null,
+			collaboration: async () => ({
+				familyId: "panel-session",
+				families: [],
+				notices: [],
+				events: [],
+				participants: roster.map((record) => ({
+					id: record.id,
+					parentId: null,
+					label: record.id,
+					task: record.task,
+					model: record.model,
+					state: record.state,
+					workerId: record.id,
+					continuedFrom: record.continuedFrom ?? null,
+				})),
+			}),
 			kill: async (id) => {
 				killCalls++;
 				return id === next.id
@@ -3697,7 +3742,7 @@ describe("SubagentPanel controls", () => {
 			subscribeLive: () => null,
 			isActive: () => false,
 			interrupt: async () => "interrupted",
-			sendLive: async () => "sent",
+			sendLive: async () => ({ ok: true, text: "sent" }),
 			currentSessionId: () => "panel-session",
 		};
 		const theme = {
@@ -3718,12 +3763,11 @@ describe("SubagentPanel controls", () => {
 					) => TestComponent;
 					const component = make(tui, theme, undefined, () => undefined);
 					try {
+						await Promise.resolve();
 						const initial = component.render(100);
-						assert.equal(initial.length, 4, "short rosters content-fit");
-						assert.match(initial[1], /long-roster-model\s+1m30s\s+\$0\.03\s+now:bash/);
-						assert.match(initial[1], /latest worker output/);
-						assert.doesNotMatch(initial[1], /inspect stale status/);
-						assert.doesNotMatch(initial.at(-1) ?? "", /k cancel/);
+						assert.match(initial.join("\n"), /TIMELINE/);
+						component.handleInput?.("\t");
+						assert.match(component.render(200).join("\n"), /inspect stale/);
 
 						component.handleInput?.("k");
 						await Promise.resolve();
@@ -3732,7 +3776,7 @@ describe("SubagentPanel controls", () => {
 						component.handleInput?.("\x1b[B");
 						roster = [source, running];
 						component.render(100);
-						component.handleInput?.("\r");
+						component.handleInput?.("v");
 						assert.match(component.render(100)[0], new RegExp(source.id));
 
 						component.handleInput?.("r");
@@ -3752,8 +3796,7 @@ describe("SubagentPanel controls", () => {
 						assert.match(component.render(120)[0], new RegExp(next.id));
 						assert.match(component.render(120).at(-1) ?? "", /Continued .* as/);
 
-						component.handleInput?.("\x1b");
-						component.handleInput?.("k");
+						component.handleInput?.("\x0b");
 						await Promise.resolve();
 						assert.equal(killCalls, 1, "owned running worker remains cancellable");
 						assert.match(component.render(120).at(-1) ?? "", /cancelled/);
@@ -3761,7 +3804,6 @@ describe("SubagentPanel controls", () => {
 						// A pinned worker can disappear under the console (pruning, or
 						// another session removing it). The console must not hold a view
 						// over a record that no longer exists.
-						component.handleInput?.("\r");
 						assert.match(component.render(120)[0], new RegExp(next.id));
 						byId.delete(next.id);
 						roster = [source, running];
