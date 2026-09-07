@@ -9,8 +9,10 @@ code is needed.
 
 The [Pillars](pillars/README.md) are the design doctrine behind this harness:
 principles, patterns, and heuristics for agent judgment. They guide decisions
-about evidence, structure, and communication. The [Pillars skill](skills/pillars/SKILL.md)
-loads the relevant guidance for a task; the corpus owns that guidance.
+about evidence, structure, and communication. The [Pillars access
+extension](extensions/pillars/README.md) is the single consultation surface:
+its `pillars` tool carries the judgment-moment triggers and reads the corpus;
+the operator browses with `/pillars`.
 
 ## Structure and use
 

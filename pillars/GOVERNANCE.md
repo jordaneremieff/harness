@@ -174,7 +174,7 @@ A recorded application that contradicts a pillar's stated prediction is evidence
   stable section names, never personal paths or mutable line citations.
 - After adding, renaming, or removing an entry: update the filename,
   frontmatter, body heading, README row as a quote rather than a paraphrase,
-  every cross-reference, the skill pointers, and any armory mapping — together.
+  every cross-reference, the access surface's pointers, and any armory mapping — together.
 - Close every mutation by running the checker and applying its printed
   corrections.
 - Operator approval is the final mutation boundary.

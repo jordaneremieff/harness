@@ -157,19 +157,7 @@ function pillarFixtureRoot(): string {
 	const root = mkdtempSync(join(tmpdir(), "check-slices-pillars-"));
 	mkdirSync(join(root, "pillars"), { recursive: true });
 	mkdirSync(join(root, "extensions", "example"), { recursive: true });
-	mkdirSync(join(root, "skills", "pillars"), { recursive: true });
 	writeFileSync(join(root, "extensions", "example", "index.ts"), "export default function () {}\n");
-	writeFileSync(
-		join(root, "skills", "pillars", "SKILL.md"),
-		[
-			"---",
-			"name: pillars",
-			"compatibility: ../../pillars relative to this skill directory.",
-			"---",
-			"",
-			"Inventory: ../../pillars/README.md Rules: ../../pillars/GOVERNANCE.md",
-		].join("\n"),
-	);
 	writeFileSync(join(root, "pillars", "GOVERNANCE.md"), REQUIRED_HEADINGS.map((h) => `## ${h}\n`).join(""));
 	writeFileSync(
 		join(root, "pillars", "heuristic-framed-menu.md"),

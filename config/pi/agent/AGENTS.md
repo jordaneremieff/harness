@@ -15,9 +15,9 @@ beliefs, patterns describe structures, and heuristics connect cues to actions.
 placement, infrastructure, verification, or prose. Also load them when the
 operator asks to check, apply, derive, revise, or challenge the Pillars.
 
-**Find and load:** Find the skill named `pillars` in the session's available
-skills and read its `SKILL.md`. Start with the corpus inventory it names, then
-load only the few documents whose triggers match.
+**Find and load:** Call the `pillars` tool with no arguments to read the
+corpus inventory and consultation rules, then load only the few documents
+whose triggers match.
 
 **Apply:** Apply each matching Pillar to the decision or artifact, or name the
 concrete fact, constraint, exception, or contradiction that defeats it. Naming,

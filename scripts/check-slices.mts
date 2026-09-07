@@ -11,8 +11,8 @@
 //      (AGENTS.md: "Do not hardcode counts ... in durable documentation");
 //   4. pillar corpus contract: strict frontmatter on every entry, README as
 //      a verbatim-quote inventory, GOVERNANCE.md present with required
-//      sections, skill pointers intact, armory targets resolving, and no
-//      retired governance file returning;
+//      sections, armory targets resolving, and no retired governance file
+//      returning;
 //   5. every tracked *.test.mts file is matched by at least one glob in the
 //      `test` script of package.json, so a slice that owns a new top-level
 //      directory cannot ship tests that `npm test` silently never runs.
@@ -219,7 +219,7 @@ export function auditPillars(root: string): { violations: string[]; readmeProjec
 	if (existsSync(join(pillarsDir, "AGENTS.md"))) {
 		violations.push("pillars/AGENTS.md must not exist; durable rules live in pillars/GOVERNANCE.md");
 	}
-	for (const watched of [join(pillarsDir, "README.md"), join(root, "skills", "pillars", "SKILL.md")]) {
+	for (const watched of [join(pillarsDir, "README.md")]) {
 		if (existsSync(watched)) {
 			let content: string;
 			try {
@@ -335,19 +335,6 @@ export function auditPillars(root: string): { violations: string[]; readmeProjec
 				violations.push(`pillars/GOVERNANCE.md: missing required section "## ${heading}"`);
 			}
 		}
-	}
-
-	const skillRel = "skills/pillars/SKILL.md";
-	const skillPath = join(root, skillRel);
-	if (existsSync(skillPath)) {
-		const skill = decodeFatalUtf8(readFileSync(skillPath));
-		for (const pointer of ["../../pillars/README.md", "../../pillars/GOVERNANCE.md"]) {
-			if (!skill.includes(pointer)) {
-				violations.push(`${skillRel}: missing required pointer "${pointer}"`);
-			}
-		}
-	} else {
-		violations.push(`${skillRel}: consultation adapter is missing`);
 	}
 
 	// The armory's corpus paths resolve against the skill directory (skills/troll/),
