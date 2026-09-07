@@ -64,13 +64,23 @@ its schema and registered guidance without activating it.
 ## Evidence and observation
 
 - Model records project `ctx.modelRegistry.getAll()`, `getAvailable()`,
-  `hasConfiguredAuth()`, `getError()`, `ctx.model`, `ctx.thinkingLevel`, and
-  `ctx.scopedModels`. Names are canonical `provider/id`; display names are
-  separate. Records state catalog membership, selected state, cached
-  availability, configured-auth presence, reasoning capability, supported
+  `hasConfiguredAuth()`, `getError()`, `getRegisteredProviderIds()`, `ctx.model`,
+  `ctx.thinkingLevel`, and `ctx.scopedModels`. Names are canonical `provider/id`;
+  display names are separate. Records state catalog membership, selected state,
+  cached availability, configured-auth presence, reasoning capability, supported
   thinking levels, input modalities, context/output limits, and scope membership.
   Only the selected model carries the current thinking level. Scope pins remain
   separate from effective thinking. An empty scope means no restriction.
+  `scopeIndex` is the model's zero-based position in `ctx.scopedModels`; it is
+  omitted for models outside the scope and when no scope is configured. Pages
+  remain alphabetical, independent of scope order.
+  `extensionProvider` is true when `getRegisteredProviderIds()` includes the
+  model's provider, false otherwise, and null when the accessor fails. The tool
+  reads provider registration once per model snapshot.
+  Model records contain no operator preference data. Scope order describes the
+  session cycle order, with unavailable entries skipped by Pi, not operator
+  preference. When no scope is configured, scope order is absent and models
+  remain unrestricted.
 - Availability is a synchronous local snapshot, not remote health or valid
   credentials. The tool performs no refresh, credential resolution, or network
   probe. Catalog errors return only a boolean, never error text or provider
@@ -159,6 +169,8 @@ to mutate them after that validation.
   listeners close handles during active reads; final cleanup is repeatable.
 - The tool accepts no arbitrary path, crawls no directory, performs no mutation,
   activation, credential resolution, network operation, or watch.
+- The tool holds no preference data. Model scope order, when present, is the
+  session cycle order, not operator preference.
 - Source records identify registration origins, not immutable executing bytes.
   Hook-only extensions, complete settings, resource load rejection reasons, and
   built-in interactive commands are not an enumerated inventory. Theme enumeration
@@ -167,8 +179,9 @@ to mutate them after that validation.
   alone do not prove dispatch to a particular record: extension commands can
   shadow same-name prompts. The final provider payload is not visible here.
 - Cursors also detect changes to search metadata, tool schemas/guidelines,
-  active-tool state, model availability/auth configuration/selection/scope, and
-  retained context observations. Read timestamps alone do not invalidate model
+  active-tool state, model availability/auth configuration/selection/scope
+  (including scope order), extension-provider registration, and retained context
+  observations. Read timestamps alone do not invalidate model
   pages. If one required registry accessor fails, results preserve independently
   available matching registration evidence and report an incomplete inventory.
   Its displayed count and `total` describe only known matches, never the complete
@@ -196,7 +209,8 @@ bounds, argument validation, host facts, lifecycle resets, session-specific
 cursors, bounded paging, full-result limits, frontmatter semantics, literal
 search, non-regular sources, active cancellation, and explicit failure outcomes.
 Model, metadata-search, exact-schema, and context-path tests also cover safe
-field projection, selection/scope distinctions, unavailable surfaces, stale
+field projection, zero-based scope positions, scope order, extension-provider
+registration, selection/scope distinctions, unavailable surfaces, stale
 continuations, privacy, and oversized output. Search tests cover tool-guideline
 matches, field-local literal semantics, explicit negative-result boundaries,
 and continuation invalidation after usage guidance changes.

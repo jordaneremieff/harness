@@ -17,7 +17,9 @@ export interface ModelRecord {
 	supportedThinkingLevels: string[];
 	available: boolean | null;
 	configuredAuth: boolean | null;
+	extensionProvider: boolean | null;
 	inScope: boolean | null;
+	scopeIndex?: number;
 	scopeThinkingLevel?: string;
 	currentThinkingLevel?: string;
 	evidence: "registration";
@@ -30,11 +32,15 @@ export interface ModelSnapshot {
 	availableSnapshot: boolean;
 	catalogError: boolean | null;
 	scopeConfigured: boolean | null;
+	scopeOrder: string[] | null;
 }
 
 export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
+	const scopedModels = ctx.scopedModels;
+	const scopeConfigured = Array.isArray(scopedModels) ? scopedModels.length > 0 : null;
 	const result: ModelSnapshot = { records: [], catalogAvailable: false, availableSnapshot: false,
-		catalogError: null, scopeConfigured: Array.isArray(ctx.scopedModels) ? ctx.scopedModels.length > 0 : null };
+		catalogError: null, scopeConfigured,
+		scopeOrder: scopeConfigured ? scopedModels.map(({ model }) => `${model.provider}/${model.id}`) : null };
 	const registry = ctx.modelRegistry;
 	let catalog: ReturnType<typeof registry.getAll> = [];
 	try {
@@ -52,6 +58,9 @@ export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
 	} catch { /* Availability is independently unavailable. */ }
 	try { result.catalogError = registry.getError() !== undefined; }
 	catch { /* Raw errors can contain configuration values and are not returned. */ }
+	let extensionProviders: Set<string> | null = null;
+	try { extensionProviders = new Set(registry.getRegisteredProviderIds()); }
+	catch { /* Provider registration is independently unavailable. */ }
 	const all = [...catalog];
 	if (ctx.model && !all.some((model) => model.provider === ctx.model?.provider && model.id === ctx.model.id)) all.push(ctx.model);
 	for (const model of all) {
@@ -60,7 +69,8 @@ export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
 		let configuredAuth: boolean | null = null;
 		try { configuredAuth = registry.hasConfiguredAuth(model); }
 		catch { /* Configuration presence is not remote auth health. */ }
-		const scope = ctx.scopedModels?.find((entry) => entry.model.provider === model.provider && entry.model.id === model.id);
+		const scopeIndex = scopedModels?.findIndex((entry) => entry.model.provider === model.provider && entry.model.id === model.id) ?? -1;
+		const scope = scopedModels?.[scopeIndex];
 		result.records.push({
 			kind: "model", name, provider: model.provider, id: model.id, displayName: model.name,
 			catalog: catalog.includes(model), selected, reasoning: model.reasoning,
@@ -68,7 +78,9 @@ export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
 			supportedThinkingLevels: [...getSupportedThinkingLevels(model)],
 			available: result.availableSnapshot ? available.has(name) : null,
 			configuredAuth,
+			extensionProvider: extensionProviders === null ? null : extensionProviders.has(model.provider),
 			inScope: result.scopeConfigured === null ? null : !result.scopeConfigured || scope !== undefined,
+			...(scopeIndex < 0 ? {} : { scopeIndex }),
 			...(scope?.thinkingLevel === undefined ? {} : { scopeThinkingLevel: scope.thinkingLevel }),
 			...(selected && ctx.thinkingLevel !== undefined ? { currentThinkingLevel: ctx.thinkingLevel } : {}),
 			evidence: "registration", at,

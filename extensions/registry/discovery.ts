@@ -31,7 +31,7 @@ export function discoveryPage(request: DiscoveryRequest) {
 	const fingerprint = createHash("sha256").update(JSON.stringify({
 		// Model read time changes on each request; context observation time marks its source snapshot.
 		records: modelQuery ? all.map(({ at: _at, ...record }) => record) : all,
-		unavailable, partial, scopeConfigured: models?.scopeConfigured,
+		unavailable, partial, scopeConfigured: models?.scopeConfigured, scopeOrder: models?.scopeOrder ?? null,
 	})).digest("hex").slice(0, 32);
 	const stale = request.expectedFingerprint !== undefined && request.expectedFingerprint !== fingerprint;
 	const selected = all.filter((record) => {

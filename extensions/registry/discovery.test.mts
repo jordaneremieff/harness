@@ -19,7 +19,7 @@ function context() {
 	const catalog = [model("a"), model("b", false)];
 	const ctx = { model: catalog[0], thinkingLevel: "high", scopedModels: [{ model: catalog[0], thinkingLevel: "medium" }],
 		modelRegistry: { getAll: () => catalog, getAvailable: () => [catalog[0]], getError: () => undefined,
-			hasConfiguredAuth: (m: Model<Api>) => m.id === "a",
+			hasConfiguredAuth: (m: Model<Api>) => m.id === "a", getRegisteredProviderIds: () => [],
 			getProviderAuth: () => { throw new Error("must not resolve auth"); },
 			refresh: () => { throw new Error("must not refresh"); } },
 	} as unknown as ExtensionContext;
@@ -45,6 +45,8 @@ describe("model discovery", () => {
 		assert.equal(a.selected, true);
 		assert.equal(a.available, true);
 		assert.equal(a.configuredAuth, true);
+		assert.equal(a.extensionProvider, false);
+		assert.equal(a.scopeIndex, 0);
 		assert.equal(a.currentThinkingLevel, "high");
 		assert.equal(a.scopeThinkingLevel, "medium");
 		assert.equal(a.inScope, true);
@@ -83,10 +85,61 @@ describe("model discovery", () => {
 		const { ctx } = context();
 		const first = await run({ kind: "model", limit: 1 }, host(), readModels(ctx, 1));
 		const cursor = first.details.cursor as string;
-		const second = await run({ cursor }, host(), readModels(ctx, 2));
+		assert.equal(records(first)[0].at, 1);
+		const second = await run({ cursor }, { ...host(), at: 2000 }, readModels(ctx, 2));
 		assert.equal(second.outcome, "ok"); assert.equal(records(second)[0].id, "b");
+		assert.equal(records(second)[0].at, 2);
 		ctx.modelRegistry.getAvailable = () => [];
 		assert.equal((await run({ cursor }, host(), readModels(ctx, 3))).outcome, "stale_cursor");
+	});
+	it("rejects a continuation after scope reorder with identical membership", async () => {
+		const { ctx, catalog } = context();
+		ctx.scopedModels = [{ model: catalog[0], thinkingLevel: "medium" }, { model: catalog[1] }];
+		const models = readModels(ctx, 1);
+		const first = await run({ kind: "model", limit: 1 }, host(), models);
+		assert.equal(typeof first.details.cursor, "string");
+		ctx.scopedModels = [...ctx.scopedModels].reverse();
+		const reordered = readModels(ctx, 1);
+		assert.deepEqual(reordered.records.map((record) => record.name), models.records.map((record) => record.name));
+		assert.deepEqual(reordered.records.map((record) => record.inScope), [true, true]);
+		assert.deepEqual(models.records.map((record) => record.scopeIndex), [0, 1]);
+		assert.deepEqual(reordered.records.map((record) => record.scopeIndex), [1, 0]);
+		const next = await run({ cursor: first.details.cursor as string }, host(), reordered);
+		assert.equal(next.outcome, "stale_cursor");
+		assert.deepEqual(records(next), []);
+	});
+	it("hashes scope order even when scoped models have no catalog records", async () => {
+		const { ctx } = context();
+		ctx.scopedModels = [{ model: model("c") }, { model: model("d") }];
+		const models = readModels(ctx, 1);
+		const first = await run({ kind: "model", limit: 1 }, host(), models);
+		ctx.scopedModels = [...ctx.scopedModels].reverse();
+		const reordered = readModels(ctx, 1);
+		assert.deepEqual(reordered.records, models.records);
+		assert.deepEqual(models.scopeOrder, ["fixture/c", "fixture/d"]);
+		assert.deepEqual(reordered.scopeOrder, ["fixture/d", "fixture/c"]);
+		assert.equal((await run({ cursor: first.details.cursor as string }, host(), reordered)).outcome, "stale_cursor");
+	});
+	it("keeps scope positions in the hashed record metadata", async () => {
+		const { ctx } = context(); const models = readModels(ctx, 1);
+		const first = await run({ kind: "model", limit: 1 }, host(), models);
+		models.records[0].scopeIndex = 1;
+		assert.equal((await run({ cursor: first.details.cursor as string }, host(), models)).outcome, "stale_cursor");
+	});
+	it("hashes a null scope order differently from an empty scope order", async () => {
+		const { ctx } = context(); ctx.scopedModels = [];
+		const models = readModels(ctx, 1);
+		assert.equal(models.scopeOrder, null);
+		const first = await run({ kind: "model", limit: 1 }, host(), models);
+		assert.equal((await run({ cursor: first.details.cursor as string }, host(), models)).outcome, "ok");
+		const emptyOrder = { ...models, scopeOrder: [] };
+		assert.equal((await run({ cursor: first.details.cursor as string }, host(), emptyOrder)).outcome, "stale_cursor");
+	});
+	it("invalidates model cursors when extension-provider registration changes", async () => {
+		const { ctx } = context();
+		const first = await run({ kind: "model", limit: 1 }, host(), readModels(ctx, 1));
+		ctx.modelRegistry.getRegisteredProviderIds = () => ["fixture"];
+		assert.equal((await run({ cursor: first.details.cursor as string }, host(), readModels(ctx, 1))).outcome, "stale_cursor");
 	});
 	it("uses the model context through the registered tool, including cursor-only continuation", async () => {
 		let tool: ToolDefinition<typeof RegistryParams, Record<string, unknown>> | undefined;
