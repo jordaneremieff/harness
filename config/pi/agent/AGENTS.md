@@ -17,7 +17,8 @@ operator asks to check, apply, derive, revise, or challenge the Pillars.
 
 **Find and load:** Call the `pillars` tool with no arguments to read the
 corpus inventory and consultation rules, then load only the few documents
-whose triggers match.
+whose triggers match. If that tool is not available in the session, read the
+package corpus directly, starting at its `README.md` and `GOVERNANCE.md`.
 
 **Apply:** Apply each matching Pillar to the decision or artifact, or name the
 concrete fact, constraint, exception, or contradiction that defeats it. Naming,
