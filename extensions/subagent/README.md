@@ -31,7 +31,7 @@ and the repository pins no Pi version.
 | `subagent_peers` | parallel | Discover the parent, siblings, and nested workers in this dispatch family, with exact addresses and paginated task labels. |
 | `subagent_message` | parallel | Send directly to a peer, reply to an exact message, or inspect a retained receipt. Peer messages confer no control authority. |
 | `subagent_wait` | parallel | Await peer input without polling or another provider request. The run stays active; its existing limits still apply. |
-| `subagent_status` | parallel | Live workers + recent terminal workers: id, state, model, thinking, elapsed, turns, tool calls, current tool, session-file write age, cost, output preview, error. |
+| `subagent_status` | parallel | Progress and activity for live workers + recent terminal workers: id, state, model, thinking, elapsed, turns, tool calls, current tool, session-file write age, cost, output preview, error. |
 | `subagent_inspect` | parallel | One worker's record plus a bounded, rendered transcript tail: recent turns, tool inputs and outcomes, assistant errors, session path, and explicit truncation markers. Reads an in-process snapshot for any live worker in this process; otherwise reads the active branch from the retained session file. |
 | `subagent_steer` | sequential | Redirect a live worker: the message is delivered after the worker's current tool call, before its next model call. On an idle (interrupted) worker, steer instead resumes the run with your message. Owning session only. |
 | `subagent_interrupt` | sequential | Pause a live worker without cancelling it: the run stops, the worker stays alive and resumable. An interrupted worker that is never resumed is released by the idle deadline. |
@@ -262,7 +262,10 @@ Messages travel directly between sessions, not through a parent relay.
 
 1. Call `subagent_peers({})` to discover the current dispatch family. The response
    names the caller's address, task labels, wait state, total, and `nextOffset`.
-   Pass that offset to retrieve the next page. Use exact addresses, not labels.
+   Pass `{"offset": nextOffset}` to retrieve the next page when `nextOffset`
+   is not null. The offset is zero-based and defaults to zero. The tool's
+   parameter description carries these instructions for the agent.
+   Use exact addresses, not labels.
 2. Call `subagent_message({to, message})` to send a question, correction, or
    evidence. `parent` resolves the immediate parent; worker and root session IDs
    address other members of the same family.

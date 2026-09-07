@@ -4599,7 +4599,8 @@ const peersTool = defineTool({
 	description:
 		"List available collaboration peers in this session's dispatch family. Returns up to 32 entries and nextOffset. Addresses are worker ids or root session ids; parent addresses the immediate parent. Peer messages grant no worker control authority.",
 	promptSnippet: "List peers for direct collaboration inside this dispatch family.",
-	parameters: Type.Object({ offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 128 })) }),
+	parameters: Type.Object({ offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 128,
+		description: "Zero-based entry offset; default 0. Pass nextOffset from the previous result to retrieve the next page; null means no next page." })) }),
 	executionMode: "parallel",
 	async execute(_id, params, signal, _update, ctx) {
 		signal?.throwIfAborted();
@@ -4712,7 +4713,7 @@ const statusTool = defineTool({
 	name: "subagent_status",
 	label: "Subagent Status",
 	description: [
-		"Show live subagent workers and recent terminal workers in compact human-readable form: id, state, model, thinking, elapsed, turns, tool count, current tool, session-file write age, cost, last output preview, and error.",
+		"Show progress and activity for live subagent workers and recent terminal workers: id, state, model, thinking, elapsed, turns, tool count, current tool, session-file write age, cost, last output preview, and error.",
 		"Live status for workers owned by this session comes from the worker session's own events (cumulative usage, current tool); session-file write age is neutral activity evidence, not a timeout verdict.",
 		"Do not call this in a polling loop; completions arrive as subagent_result messages.",
 	].join(" "),

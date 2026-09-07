@@ -2378,6 +2378,12 @@ describe("compaction veto", () => {
 		assert.ok(handlers.has("session_before_compact"));
 		assert.ok(handlers.has("session_start"));
 		assert.ok(handlers.has("session_shutdown"));
+		const peers = tools.find((tool) => tool.name === "subagent_peers");
+		assert.ok(peers);
+		assert.match(peers.parameters.properties.offset.description, /Zero-based entry offset; default 0/);
+		assert.match(peers.parameters.properties.offset.description, /Pass nextOffset from the previous result/);
+		assert.match(peers.parameters.properties.offset.description, /null means no next page/);
+		assert.match(tools.find((tool) => tool.name === "subagent_status")?.description ?? "", /progress and activity/);
 
 		const sessionId = "sess-nested-owner";
 		const ctx = { sessionManager: { getSessionId: () => sessionId } };
