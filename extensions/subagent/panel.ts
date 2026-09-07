@@ -24,11 +24,12 @@ import {
 	renderConversation,
 	stripTerminalSequences,
 } from "./console.ts";
+import { conversationThreads } from "./conversations.ts";
 import type { WorkerRecord } from "./index.ts";
 import type { TranscriptItem } from "./runtime.ts";
 
 export interface SubagentPanelDeps {
-	readWorkers(): WorkerRecord[];
+	readWorkers(ownerSession?: string): WorkerRecord[];
 	readWorker(id: string): WorkerRecord | null;
 	/** Live queries read memory; history requires an explicit operator action. */
 	collaboration(query: CollaborationQuery): Promise<CollaborationSnapshot>;
@@ -205,6 +206,15 @@ type RetainedSnapshot = {
 
 class SubagentConsole {
 	private _focused = false;
+	private mode: "overview" | "communication" = "overview";
+	private scope: "children" | "all" = "children";
+	private roster: WorkerRecord[] = [];
+	private rosterId: string | null = null;
+	private rosterLimited = false;
+	private readonly rosterSearch = new Input({ prompt: "/ " });
+	private evidenceMode = false;
+	private threadId: string | null = null;
+	private threadFocus = false;
 	private view: "dashboard" | "search" | "families" | "console" | "report" | "help" = "dashboard";
 	private page: FocusPage = "timeline";
 	private readonly search = new Input({ prompt: "/ " });
@@ -255,8 +265,8 @@ class SubagentConsole {
 		this.tui = tui;
 		this.theme = theme;
 		this.close = close;
-		if (initialFilter) this.search.setValue(cleanLine(initialFilter));
-		void this.refresh(false);
+		if (initialFilter) this.rosterSearch.setValue(cleanLine(initialFilter));
+		this.refreshRoster();
 	}
 	get focused(): boolean {
 		return this._focused;
@@ -266,7 +276,8 @@ class SubagentConsole {
 		this.syncFocus();
 	}
 	private syncFocus(): void {
-		this.search.focused = this._focused && this.view === "search";
+		this.search.focused = this._focused && this.view === "search" && this.mode === "communication";
+		this.rosterSearch.focused = this._focused && this.view === "search" && this.mode === "overview";
 		this.composer.focused =
 			this._focused &&
 			this.view === "console" &&
@@ -292,8 +303,28 @@ class SubagentConsole {
 
 	/** Polling never requests history and never starts work from render(). */
 	tick(): void {
-		void this.refresh(false);
+		this.refreshRoster();
+		if (this.mode === "communication") void this.refresh(false);
 		this.bump();
+	}
+	private refreshRoster(): void {
+		const rows = this.deps.readWorkers(
+			this.scope === "children" ? (this.deps.currentSessionId() ?? undefined) : undefined,
+		);
+		this.rosterLimited = rows.length > 512;
+		this.roster = rows.slice(0, 512);
+		const visible = this.rosterRows();
+		if (!visible.some((record) => record.id === this.rosterId)) this.rosterId = visible[0]?.id ?? null;
+	}
+	private rosterRows(): WorkerRecord[] {
+		const query = this.rosterSearch.getValue().toLocaleLowerCase();
+		return this.roster.filter(
+			(record) =>
+				!query ||
+				[record.id, record.task, record.model, record.state, record.thinking, rosterOutputPreview(record)].some(
+					(value) => value?.toLocaleLowerCase().includes(query),
+				),
+		);
 	}
 	private async refresh(history: boolean): Promise<void> {
 		if (this.disposed || this.historyPending || (this.requestPending && !history)) return;
@@ -401,6 +432,10 @@ class SubagentConsole {
 		);
 	}
 	private event(): CollaborationEvent | undefined {
+		if (this.mode === "communication" && !this.evidenceMode && this.page !== "details") {
+			const thread = this.currentThread();
+			return thread?.events.find((event) => event.id === this.selectedEvent) ?? thread?.events.at(-1);
+		}
 		return this.snapshot?.events.find((event) => event.id === this.selectedEvent);
 	}
 	private participant(id = this.selectedParticipant): CollaborationParticipant | undefined {
@@ -411,7 +446,10 @@ class SubagentConsole {
 		const participant = this.participant(id);
 		if (participant && !participant.workerId) return participant.label;
 		if (id.length <= 14) return id;
-		const ids = this.snapshot?.participants.map((item) => item.id) ?? [];
+		const ids = [
+			...(this.snapshot?.participants.map((item) => item.id) ?? []),
+			...this.roster.flatMap((record) => [record.id, record.ownerSession ?? ""]),
+		];
 		let length = 6;
 		while (length < id.length && ids.some((other) => other !== id && other.endsWith(id.slice(-length)))) length++;
 		return `…${id.slice(-length)}`;
@@ -439,6 +477,11 @@ class SubagentConsole {
 		return out;
 	}
 	private selectedWorker(): string | null {
+		if (this.mode === "overview") return this.rosterId;
+		if (!this.evidenceMode && this.page !== "details") {
+			const event = this.event();
+			return event?.workerId ?? (event ? this.participant(event.actorId)?.workerId : null) ?? null;
+		}
 		if (this.page === "tree" || (this.page === "details" && this.detailParticipant))
 			return this.participant()?.workerId ?? null;
 		const event = this.event();
@@ -498,11 +541,13 @@ class SubagentConsole {
 			return;
 		}
 		if (this.view === "search") {
+			const input = this.mode === "overview" ? this.rosterSearch : this.search;
 			if (matchesKey(data, Key.escape)) {
-				this.search.setValue("");
+				input.setValue("");
 				this.view = "dashboard";
 			} else if (matchesKey(data, Key.enter)) this.view = "dashboard";
-			else this.inputData(this.search, data);
+			else this.inputData(input, data);
+			if (this.mode === "overview") this.rosterId = this.rosterRows()[0]?.id ?? null;
 			this.eventStart = 0;
 			this.returnLive();
 			this.bump();
@@ -533,6 +578,18 @@ class SubagentConsole {
 			this.bump();
 			return;
 		}
+		if (key === "m" && this.view === "dashboard") {
+			this.mode = this.mode === "overview" ? "communication" : "overview";
+			this.page = "timeline";
+			if (this.mode === "communication" && !this.snapshot) void this.refresh(false);
+			this.bump();
+			return;
+		}
+		if (this.mode === "overview") {
+			this.handleOverview(data);
+			this.bump();
+			return;
+		}
 		if (this.view === "families") {
 			const families = this.snapshot?.families ?? [];
 			if (matchesKey(data, Key.escape)) this.view = "dashboard";
@@ -549,6 +606,25 @@ class SubagentConsole {
 				this.dispose();
 				this.close();
 			}
+			this.bump();
+			return;
+		}
+		if (key === "e") {
+			this.evidenceMode = !this.evidenceMode;
+			this.page = "timeline";
+			this.bump();
+			return;
+		}
+		if (
+			!this.evidenceMode &&
+			this.page !== "details" &&
+			(matchesKey(data, Key.tab) ||
+				matchesKey(data, Key.shift("tab")) ||
+				matchesKey(data, Key.up) ||
+				matchesKey(data, Key.down) ||
+				matchesKey(data, Key.enter))
+		) {
+			this.navigateConversations(data);
 			this.bump();
 			return;
 		}
@@ -571,9 +647,12 @@ class SubagentConsole {
 			this.infoScroll = 0;
 		} else if (key === "l") this.returnLive();
 		else if (key === "f") {
-			this.participantFilter = this.participantFilter ? null : this.selectedParticipant;
-			this.eventStart = 0;
-			this.returnLive();
+			if (!this.evidenceMode) this.setNotice("Filtering applies to raw evidence only. Press e first.");
+			else {
+				this.participantFilter = this.participantFilter ? null : this.selectedParticipant;
+				this.eventStart = 0;
+				this.returnLive();
+			}
 		} else if (key === "v") this.openConsole(this.selectedWorker());
 		else if (key === "i" || matchesKey(data, Key.ctrl("c"))) this.control("interrupt", this.selectedWorker());
 		else if (key === "k") this.control("kill", this.selectedWorker());
@@ -585,6 +664,91 @@ class SubagentConsole {
 		} else if (this.page === "details" && (key === "[" || key === "]")) this.followReply(key === "[");
 		else this.navigate(data);
 		this.bump();
+	}
+	private handleOverview(data: string): void {
+		const key = printableKey(data);
+		if (matchesKey(data, Key.escape)) {
+			if (this.page === "details") this.page = "timeline";
+			else {
+				this.dispose();
+				this.close();
+			}
+			return;
+		}
+		if (key === "?") {
+			this.view = "help";
+			this.infoScroll = 0;
+		} else if (key === "a") {
+			this.scope = this.scope === "children" ? "all" : "children";
+			this.refreshRoster();
+		} else if (key === "/") this.view = "search";
+		else if (key === "i" || matchesKey(data, Key.ctrl("c"))) this.control("interrupt", this.rosterId);
+		else if (key === "k") this.control("kill", this.rosterId);
+		else if (matchesKey(data, Key.enter) || key === "v") this.openConsole(this.rosterId);
+		else if (key === "d") {
+			this.page = "details";
+			this.detailScroll = 0;
+		} else if (this.page === "details") this.navigate(data);
+		else {
+			const rows = this.rosterRows();
+			const index = rows.findIndex((record) => record.id === this.rosterId);
+			const delta = matchesKey(data, Key.up)
+				? -1
+				: matchesKey(data, Key.down)
+					? 1
+					: matchesKey(data, Key.pageUp)
+						? -10
+						: matchesKey(data, Key.pageDown)
+							? 10
+							: 0;
+			this.rosterId =
+				rows[
+					Math.max(
+						0,
+						Math.min(
+							rows.length - 1,
+							matchesKey(data, Key.home) ? 0 : matchesKey(data, Key.end) ? rows.length - 1 : index + delta,
+						),
+					)
+				]?.id ?? null;
+		}
+	}
+	private threads() {
+		return conversationThreads(this.events());
+	}
+	private currentThread() {
+		const threads = this.threads();
+		return threads.find((thread) => thread.id === this.threadId) ?? threads[0];
+	}
+	private navigateConversations(data: string): void {
+		const threads = this.threads();
+		const current = this.currentThread();
+		if (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab"))) this.threadFocus = !this.threadFocus;
+		else if (matchesKey(data, Key.enter)) {
+			this.selectedEvent =
+				current?.events.find((event) => event.id === this.selectedEvent)?.id ?? current?.events.at(-1)?.id ?? null;
+			this.detailParticipant = false;
+			this.page = "details";
+			this.detailScroll = 0;
+			this.followEvents = false;
+		} else if (this.threadFocus) {
+			const events = current?.events ?? [];
+			const index = Math.max(
+				0,
+				events.findIndex((event) => event.id === this.event()?.id),
+			);
+			this.selectedEvent =
+				events[Math.max(0, Math.min(events.length - 1, index + (matchesKey(data, Key.up) ? -1 : 1)))]?.id ?? null;
+			this.followEvents = false;
+		} else {
+			const index = Math.max(
+				0,
+				threads.findIndex((thread) => thread.id === current?.id),
+			);
+			const thread = threads[Math.max(0, Math.min(threads.length - 1, index + (matchesKey(data, Key.up) ? -1 : 1)))];
+			this.threadId = thread?.id ?? null;
+			this.selectedEvent = thread?.events.at(-1)?.id ?? null;
+		}
 	}
 	private navigate(data: string): void {
 		const delta = matchesKey(data, Key.up)
@@ -674,6 +838,10 @@ class SubagentConsole {
 		this.bump();
 	}
 	private closeConsole(): void {
+		if (this.mode === "overview") {
+			this.rosterId = this.pinnedId;
+			this.refreshRoster();
+		}
 		this.consoleVersion++;
 		this.unsub?.();
 		this.unsub = null;
@@ -812,6 +980,7 @@ class SubagentConsole {
 	invalidate(): void {
 		this.transcriptCache = null;
 		this.search.invalidate();
+		this.rosterSearch.invalidate();
 		this.composer.invalidate();
 	}
 	dispose(): void {
@@ -824,10 +993,36 @@ class SubagentConsole {
 	private panelHeight(): number {
 		const cap =
 			PANEL_MAX_ROWS_OVERRIDE > 0 ? PANEL_MAX_ROWS_OVERRIDE : Math.max(44, Math.floor(this.tui.terminal.rows * 0.85));
-		return Math.max(1, Math.min(this.tui.terminal.rows - 2, cap));
+		const maximum = Math.max(1, Math.min(this.tui.terminal.rows - 2, cap));
+		if (this.mode === "overview" && (this.view === "dashboard" || this.view === "search") && this.page !== "details")
+			return Math.min(maximum, Math.max(6, this.rosterRows().length + 6));
+		if (this.view === "dashboard" && this.page === "details")
+			return Math.min(
+				maximum,
+				Math.max(
+					8,
+					this.mode === "overview"
+						? this.overviewDetails(this.lastWidth).length + 5
+						: this.details(this.lastWidth).length + 4,
+				),
+			);
+		if (this.mode === "communication" && this.view === "dashboard" && !this.evidenceMode) {
+			const threads = this.threads();
+			const width =
+				this.lastWidth >= 100 ? this.lastWidth - Math.min(42, Math.floor(this.lastWidth * 0.32)) - 3 : this.lastWidth;
+			const messageRows =
+				this.currentThread()
+					?.events.slice(-3)
+					.reduce((total, event) => total + this.conversationCard(event, width, false).length, 0) ?? 0;
+			return Math.min(maximum, Math.max(8, threads.length * (this.lastWidth >= 100 ? 1 : 3) + 5, messageRows + 5));
+		}
+		return maximum;
 	}
 	private windowHeight(): number {
-		return Math.max(1, this.panelHeight() - (this.view === "console" ? 3 : 4));
+		return Math.max(
+			1,
+			this.panelHeight() - (this.view === "console" ? 3 : this.mode === "overview" && this.view !== "help" ? 5 : 4),
+		);
 	}
 	render(width: number): string[] {
 		if (width <= 0) return [];
@@ -839,25 +1034,185 @@ class SubagentConsole {
 				this.setNotice(`Worker ${id} is no longer in the store.`);
 			}
 			this.syncFocus();
-			const lines = this.view === "console" ? this.renderConsole(width) : this.renderDashboard(width);
+			const lines =
+				this.view === "console"
+					? this.renderConsole(width)
+					: this.mode === "overview" && this.view !== "help"
+						? this.renderOverview(width)
+						: this.renderDashboard(width);
 			const height = this.panelHeight();
 			return lines.length <= height ? lines : [...lines.slice(0, height - 1), lines.at(-1) ?? ""];
 		} catch (error) {
 			return [plainLine(`subagent: render error: ${cleanLine(errText(error))}`, width)];
 		}
 	}
-	private renderDashboard(width: number): string[] {
-		const retained = this.familyId ? this.retained.get(this.familyId) : null;
-		const status = retained ? `Snapshot ${new Date(retained.refreshedAt).toLocaleTimeString()}` : "Snapshot pending";
-		const familyLabel =
-			this.snapshot?.families.find((family) => family.id === this.familyId)?.label ?? "Current family";
-		const label = `SUBAGENTS · ${this.followEvents ? "FOLLOW TAIL" : `BROWSE · ${this.newEvents} new · l follow`} · ${this.page} · ${familyLabel}`;
-		const lines = [plainLine(this.theme.fg("accent", this.theme.bold(cleanLine(label))), width)];
-		lines.push(
+	private overviewDetails(width: number): string[] {
+		const record = this.roster.find((row) => row.id === this.rosterId);
+		const details = record
+			? [
+					`WORKER ${record.id}`,
+					`Model: ${record.model} [${record.thinking}]`,
+					`State: ${record.state}${record.interruptedAt ? " (paused)" : ""}`,
+					`Owner: ${record.ownerSession ?? "not recorded"}`,
+					`Current tool: ${record.currentTool ?? "none"}`,
+					`Session: ${record.sessionFile ?? "unavailable"}`,
+					"",
+					"TASK",
+					record.task,
+					"",
+					"LATEST OUTPUT (worker-authored, unverified)",
+					rosterOutputPreview(record),
+				]
+			: ["No worker selected."];
+		return details.flatMap((line) => wrapTextWithAnsi(cleanText(line), Math.max(1, width)));
+	}
+	private renderOverview(width: number): string[] {
+		const rows = this.rosterRows();
+		const selected = Math.max(
+			0,
+			rows.findIndex((record) => record.id === this.rosterId),
+		);
+		const running = this.roster.filter((record) => record.state === "running" && !record.interruptedAt).length;
+		const paused = this.roster.filter((record) => record.state === "running" && record.interruptedAt).length;
+		const scope = this.scope === "children" && this.deps.currentSessionId() ? "DIRECT CHILDREN" : "ALL SESSIONS";
+		const height = this.panelHeight();
+		const lines = [
+			plainLine(this.theme.fg("accent", this.theme.bold(`SUBAGENTS · OVERVIEW · ${scope} · m communications`)), width),
 			plainLine(
-				this.theme.fg(this.historyError || this.allNotices().length ? "warning" : "accent", this.historyStatus()),
+				`${this.rosterSearch.getValue() ? `${rows.length}/${this.roster.length} workers · /${cleanLine(this.rosterSearch.getValue())}` : `${this.roster.length} workers`} · ${running} running · ${paused} paused · ${this.roster.length - running - paused} terminal${this.rosterLimited ? " · more records outside view limit" : ""}`,
 				width,
 			),
+		];
+		const available = Math.max(0, height - 5);
+		if (this.page === "details") {
+			const wrapped = this.overviewDetails(width);
+			this.detailLength = wrapped.length;
+			this.detailScroll = Math.min(this.detailScroll, Math.max(0, wrapped.length - available));
+			lines.push(
+				...wrapped.slice(this.detailScroll, this.detailScroll + available).map((line) => plainLine(line, width)),
+			);
+		} else {
+			const wide = width >= 110;
+			lines.push(
+				plainLine(
+					this.theme.fg(
+						"muted",
+						wide
+							? `  WORKER        STATE          MODEL                 ELAPSED    COST     CURRENT TOOL      ${this.scope === "all" ? "OWNER      " : ""}LATEST OUTPUT`
+							: "  WORKER · STATE · MODEL · ACTIVITY",
+					),
+					width,
+				),
+			);
+			const capacity = Math.max(1, height - 6);
+			const start = Math.max(0, selected - capacity + 1);
+			if (!rows.length)
+				lines.push(
+					plainLine(
+						this.rosterSearch.getValue()
+							? "No matching workers. Press / then Escape to clear."
+							: this.scope === "children"
+								? "No direct children in this session. Press a for all sessions."
+								: "No known workers in the store.",
+						width,
+					),
+				);
+			for (const record of rows.slice(start, start + capacity)) {
+				const state =
+					record.state === "running" && record.interruptedAt
+						? "paused"
+						: record.state === "no_result_submitted"
+							? "no result"
+							: record.state === "owner_lost"
+								? "owner lost"
+								: record.state;
+				const model = cleanLine(record.model.split("/").at(-1) ?? record.model);
+				const elapsed = formatPanelElapsed(((record.exitedAt ?? Date.now()) - record.startedAt) / 1000);
+				const cost =
+					typeof record.usage?.cost === "number" && Number.isFinite(record.usage.cost)
+						? `$${record.usage.cost.toFixed(2)}`
+						: "?";
+				const tool = cleanLine(record.currentTool ?? "");
+				const identity = cleanLine(this.displayId(record.id));
+				const owner =
+					this.scope === "all" ? `${plainLine(cleanLine(this.displayId(record.ownerSession ?? "unknown")), 10)} ` : "";
+				const meta = wide
+					? `${plainLine(identity, 13)} ${plainLine(state, 14)} ${plainLine(model, 20)} ${plainLine(elapsed, 9)} ${plainLine(cost, 8)} ${plainLine(tool, 17)} ${owner}`
+					: `${identity} · ${state} · ${model} · ${tool || elapsed} `;
+				let line = plainLine(
+					`${record.id === this.rosterId ? "›" : " "} ${meta}${truncateToWidth(rosterOutputPreview(record), Math.max(0, width - visibleWidth(meta) - 2), "…")}`,
+					width,
+				);
+				if (record.id === this.rosterId) line = this.theme.bg("selectedBg", line);
+				lines.push(line);
+			}
+		}
+		while (lines.length < height - 2) lines.push(plainLine("", width));
+		const selectedRecord = rows[selected];
+		lines.push(
+			this.view === "search"
+				? this.rosterSearch.render(width)[0]
+				: plainLine(
+						this.theme.fg(
+							"muted",
+							selectedRecord ? `Task: ${cleanLine(selectedRecord.task)}` : "a scope · m communications",
+						),
+						width,
+					),
+		);
+		lines.push(
+			this.theme.fg(
+				"muted",
+				footerWithEscape(
+					width,
+					[
+						"a scope",
+						"m comms",
+						"enter console",
+						"↑↓ select",
+						"d details",
+						"/ search",
+						"? help",
+						"i interrupt",
+						"k cancel",
+					],
+					this.view === "search" ? "esc clear" : this.page === "details" ? "esc back" : "esc close",
+					this.currentNotice(),
+				),
+			),
+		);
+		return lines;
+	}
+	private renderDashboard(width: number): string[] {
+		const overviewHelp = this.mode === "overview";
+		const retained = overviewHelp ? null : this.familyId ? this.retained.get(this.familyId) : null;
+		const status = overviewHelp
+			? `${this.roster.length} workers · ${this.scope === "children" ? "DIRECT CHILDREN" : "ALL SESSIONS"}`
+			: retained
+				? `Snapshot ${new Date(retained.refreshedAt).toLocaleTimeString()}`
+				: "Snapshot pending";
+		const familyLabel =
+			this.snapshot?.families.find((family) => family.id === this.familyId)?.label ?? "Current family";
+		const label =
+			this.mode === "overview"
+				? "SUBAGENTS · OVERVIEW HELP"
+				: !this.evidenceMode && this.page !== "details"
+					? `SUBAGENTS · COMMUNICATIONS · ${this.threads().length} conversations · m overview · ${familyLabel}`
+					: `SUBAGENTS · ${this.evidenceMode ? "EVIDENCE" : "SOURCE DETAILS"} · ${this.followEvents ? "FOLLOW TAIL" : `BROWSE · ${this.newEvents} new · l follow`} · ${this.page} · ${familyLabel}`;
+		const lines = [plainLine(this.theme.fg("accent", this.theme.bold(cleanLine(label))), width)];
+		lines.push(
+			overviewHelp
+				? plainLine(
+						this.theme.fg(
+							"accent",
+							`${this.roster.length} worker records · ${this.scope === "children" ? "direct children · a shows all sessions" : "all sessions · a returns to direct children"}`,
+						),
+						width,
+					)
+				: plainLine(
+						this.theme.fg(this.historyError || this.allNotices().length ? "warning" : "accent", this.historyStatus()),
+						width,
+					),
 		);
 		const height = this.windowHeight();
 		if (this.view === "report" || this.view === "help") {
@@ -885,6 +1240,8 @@ class SubagentConsole {
 			this.detailLength = details.length;
 			this.detailScroll = Math.min(this.detailScroll, Math.max(0, details.length - height));
 			for (let i = 0; i < height; i++) lines.push(details[this.detailScroll + i] ?? plainLine("", width));
+		} else if (!this.evidenceMode) {
+			lines.push(...this.renderConversations(width, height));
 		} else if (width >= 100) {
 			const treeWidth = Math.min(52, Math.floor(width * 0.36)),
 				timelineWidth = width - treeWidth - 3;
@@ -899,7 +1256,7 @@ class SubagentConsole {
 						this.theme.fg(
 							"muted",
 							cleanLine(
-								`${status}${this.requestPending ? " · refresh pending" : ""}${this.participantFilter ? ` · filter ${this.displayId(this.participantFilter)}` : ""}${this.search.getValue() ? ` · /${this.search.getValue()}` : ""}${this.view === "report" || this.view === "help" ? ` · lines ${this.infoScroll + 1}-${Math.min(this.infoLength, this.infoScroll + height)}/${this.infoLength}` : ""}`,
+								`${status}${!overviewHelp && this.requestPending ? " · refresh pending" : ""}${!overviewHelp && this.participantFilter ? ` · filter ${this.displayId(this.participantFilter)}` : ""}${!overviewHelp && this.search.getValue() ? ` · /${this.search.getValue()}` : ""}${this.view === "report" || this.view === "help" ? ` · lines ${this.infoScroll + 1}-${Math.min(this.infoLength, this.infoScroll + height)}/${this.infoLength}` : ""}`,
 							),
 						),
 						width,
@@ -912,20 +1269,37 @@ class SubagentConsole {
 					? ["↑↓ family", "enter load"]
 					: this.page === "details"
 						? ["? help", "↑↓ scroll", "[ parent", "] reply", "v transcript", "tab focus", "h history", "n report"]
-						: [
-								"? help",
-								"h history",
-								"n report",
-								"tab focus",
-								"enter details",
-								"v transcript",
-								"f filter",
-								"/ search",
-								"F families",
-								"l live",
-								"i interrupt",
-								"k cancel",
-							];
+						: !this.evidenceMode
+							? [
+									"m overview",
+									"tab focus",
+									"enter source",
+									"e evidence",
+									"? help",
+									"h history",
+									"n report",
+									"v transcript",
+									"/ search",
+									"F families",
+									"i interrupt",
+									"k cancel",
+								]
+							: [
+									"m overview",
+									"tab focus",
+									"enter details",
+									"e conversations",
+									"f filter",
+									"l follow",
+									"? help",
+									"h history",
+									"n report",
+									"v transcript",
+									"/ search",
+									"F families",
+									"i interrupt",
+									"k cancel",
+								];
 		lines.push(
 			this.theme.fg(
 				this.currentNotice() ? "warning" : "dim",
@@ -942,6 +1316,112 @@ class SubagentConsole {
 			),
 		);
 		return lines;
+	}
+	/** One readable exchange card: attributed as unverified, surfacing recorded conflict observations. */
+	private conversationCard(event: CollaborationEvent, width: number, selected: boolean): string[] {
+		const conflicting = event.kind === "peer conflicting envelope";
+		const header = [
+			`${selected ? "›" : " "} ${this.displayId(event.actorId)} → ${this.displayId(event.recipientId ?? "unknown recipient")}`,
+			event.exchange?.kind ?? event.kind,
+			event.kind.startsWith("call ") ? "send attempt" : "recorded",
+			"unverified",
+			...(conflicting ? ["conflicting envelope"] : []),
+		].join(" · ");
+		const body = wrapTextWithAnsi(cleanText(event.exchange?.text ?? event.text), Math.max(1, width - 2));
+		const values = [
+			header,
+			...body.slice(0, 4).map((line) => `  ${line}`),
+			...(body.length > 4 ? ["  … Enter opens the full source"] : []),
+		];
+		return [
+			...values.map((value) => plainLine(this.theme.fg("text", truncateToWidth(value, width, "…")), width)),
+			plainLine("", width),
+		];
+	}
+	private renderConversations(width: number, height: number): string[] {
+		const threads = this.threads();
+		const thread = this.currentThread();
+		if (!thread) {
+			return [
+				plainLine(this.snapshot ? "No recorded conversations in this family." : "Loading conversations…", width),
+				plainLine("F selects a family; h reads known history; n explains source limits.", width),
+				...Array.from({ length: Math.max(0, height - 2) }, () => plainLine("", width)),
+			];
+		}
+		const wide = width >= 100;
+		const leftWidth = wide ? Math.min(42, Math.floor(width * 0.32)) : width;
+		const rightWidth = wide ? width - leftWidth - 3 : width;
+		const selected = Math.max(
+			0,
+			threads.findIndex((item) => item.id === thread.id),
+		);
+		const left = [plainLine(`CONVERSATIONS · ${threads.length}${!this.threadFocus ? " · selected" : ""}`, leftWidth)];
+		const perThread = wide ? 1 : 3;
+		const capacity = Math.max(1, wide ? height - 1 : Math.floor((height - 1) / perThread));
+		const start = Math.max(0, selected - capacity + 1);
+		for (const item of threads.slice(start, start + capacity)) {
+			const isCurrent = item.id === thread.id;
+			const count = item.events.length,
+				last = item.events.at(-1);
+			const values = wide
+				? [
+						`${isCurrent ? "›" : " "} ${item.participants.map((id) => this.displayId(id)).join(" ↔ ")} · ${count} exchange record${count === 1 ? "" : "s"} · ${last?.exchange?.kind ?? "message"}: ${cleanLine(last?.exchange?.text ?? "")}`,
+				]
+				: [
+						`${isCurrent ? "›" : " "} ${item.participants.map((id) => this.displayId(id)).join(" ↔ ")}`,
+						`  ${count} exchange record${count === 1 ? "" : "s"}`,
+						`  ${last?.exchange?.kind ?? "message"}: ${cleanLine(last?.exchange?.text ?? "")}`,
+				];
+			for (const value of values) {
+				const line = plainLine(truncateToWidth(value, leftWidth, "…"), leftWidth);
+				left.push(isCurrent ? this.theme.bg("selectedBg", line) : line);
+			}
+		}
+		const selectedEvent = thread.events.find((event) => event.id === this.selectedEvent) ?? thread.events.at(-1)!;
+		const cards: string[][] = [];
+		for (const event of thread.events.slice(0, thread.events.indexOf(selectedEvent) + 1))
+			cards.push(this.conversationCard(event, rightWidth, event.id === selectedEvent.id));
+		const available = Math.max(0, height - 1);
+		const fitCards = (room: number): { lines: string[]; hidden: number } => {
+			const lines: string[] = [];
+			for (let index = cards.length - 1; index >= 0; index--) {
+				const card = cards[index];
+				if (lines.length === 0 && card.length > room) return { lines: card.slice(0, Math.max(1, room)), hidden: index };
+				if (lines.length + card.length > room) return { lines, hidden: index + 1 };
+				lines.unshift(...card);
+			}
+			return { lines, hidden: 0 };
+		};
+		const fit = fitCards(available);
+		let kept = fit.lines;
+		if (fit.hidden > 0 && available > 1) {
+			const reduced = fitCards(available - 1);
+			kept = [
+				plainLine(
+					this.theme.fg(
+						"muted",
+						truncateToWidth(
+							`… ${reduced.hidden} earlier exchange record${reduced.hidden === 1 ? "" : "s"}`,
+							rightWidth,
+							"…",
+						),
+					),
+					rightWidth,
+				),
+				...reduced.lines,
+			];
+		}
+		const right = [
+			plainLine(`EXCHANGES · ${this.threadFocus ? "selected · " : ""}tab focus · enter source`, rightWidth),
+			...kept,
+		];
+		while (left.length < height) left.push(plainLine("", leftWidth));
+		while (right.length < height) right.push(plainLine("", rightWidth));
+		if (!wide) return this.threadFocus ? right.slice(0, height) : left.slice(0, height);
+		return Array.from(
+			{ length: height },
+			(_, index) => `${left[index]} ${this.theme.fg("borderMuted", "│")} ${right[index]}`,
+		);
 	}
 	private allNotices(): string[] {
 		const history = this.familyId ? this.retained.get(this.familyId)?.history : null;
@@ -960,24 +1440,38 @@ class SubagentConsole {
 		const history = this.familyId ? this.retained.get(this.familyId)?.history : null;
 		const fields =
 			this.view === "help"
-				? [
-						"DASHBOARD HELP",
-						"Tab / Shift+Tab: select timeline, workers, or details.",
-						"Arrows: select an event or worker. Enter: read its details.",
-						"h: load or refresh known history for this family. The top row reports the result, even when nothing changes.",
-						"n: read history results and all source notices. Escape: return without changing selection.",
-						"F: choose a known dispatch family. Enter loads its history.",
-						"l / timeline End: follow the tail. BROWSE pauses only scrolling, never workers or live refresh.",
-						"f: filter exchanges to the selected worker. Selection alone marks related exchanges with *; other events stay visible.",
-						"/: search text and full identities. Enter keeps the filter. Escape clears it while search is open.",
-						"v: open the selected worker transcript. i / Ctrl+C: interrupt. k: cancel. Only the owner controls a live worker.",
-						"[ / ] in event details: follow parent message / first reply.",
-						"Arrows / Page Up / Page Down: scroll details. b / Space also page this help and the source report.",
-						"Worker labels abbreviate long IDs. Details retain exact IDs, models, tasks, source entries, and receipt evidence.",
-						"History is bounded source evidence, not a complete archive. Recorded messages and local receipts do not prove understanding or action.",
-						"Console: Enter sends; failed sends keep the draft. Ctrl+K cancels. For terminal workers, c copies a reopen command and r drafts continuation.",
-						"Escape returns from details or console, cancels an unsent continuation draft, or closes the dashboard. A submitted continuation remains active.",
-					]
+				? this.mode === "overview"
+					? [
+							"DASHBOARD HELP",
+							"The overview lists the direct child workers of this session. a toggles every known session and adds the owner column.",
+							"Rows show worker, state, model, elapsed, cost, current tool, and the latest output. Output is worker-authored and unverified.",
+							"m switches to communications. The overview never queries collaboration data or history.",
+							"Enter or v opens the selected worker console. d opens its details with exact identities.",
+							"/ searches workers. Enter keeps the filter. Escape clears it while the search is open.",
+							"i or Ctrl+C interrupts the selected worker; k cancels it. Only the owning session controls a live worker.",
+							"Console: Enter sends; failed sends keep the draft. Ctrl+K cancels. For terminal workers, c copies a reopen command and r drafts continuation.",
+							"Worker labels abbreviate long identities. Details retain exact identities, models, and tasks.",
+							"Arrows / Page Up / Page Down scroll details and this help. b / Space also page.",
+							"Escape returns from details or the console, or closes the dashboard.",
+						]
+					: [
+							"DASHBOARD HELP",
+							"Communications groups recorded exchanges by participant pair. Management tool calls are not conversations.",
+							"Tab switches focus between the conversation list and the message records. Arrows move the focused selection.",
+							"Enter reads the selected record's exact source text, identities, and receipt evidence.",
+							"Exchange text is worker-authored and unverified. A conflicting-envelope flag marks peer identities the source observed with differing envelope evidence; both observations are shown.",
+							"m switches back to the worker overview. The overview never queries collaboration data or history.",
+							"e switches to raw source evidence; e returns. F selects a known dispatch family and loads its history.",
+							"h loads or refreshes known history for this family. n reports the result and all source notices. The top row reports the outcome, even when nothing changes.",
+							"/ searches text and full identities. Enter keeps the filter. Escape clears it while search is open.",
+							"v opens the selected exchange worker's transcript. i / Ctrl+C interrupts; k cancels. Only the owner controls a live worker.",
+							"In raw evidence only: Tab selects timeline, workers, or details; f filters exchanges to the selected worker; l or timeline End follows the tail.",
+							"[ / ] in event details: follow parent message / first reply.",
+							"Arrows / Page Up / Page Down scroll details. b / Space also page this help and the source report.",
+							"Worker labels abbreviate long identities. Details retain exact identities, models, tasks, source entries, and receipt evidence.",
+							"History is bounded source evidence, not a complete archive. Recorded messages and local receipts do not prove understanding or action.",
+							"Escape returns from details or the console, cancels an unsent continuation draft, or closes the dashboard. A submitted continuation remains active.",
+						]
 				: [
 						"HISTORY / SOURCE REPORT",
 						`Family: ${this.familyId ?? "not selected"}`,

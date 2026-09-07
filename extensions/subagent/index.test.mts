@@ -3765,8 +3765,7 @@ describe("SubagentPanel controls", () => {
 					try {
 						await Promise.resolve();
 						const initial = component.render(100);
-						assert.match(initial.join("\n"), /TIMELINE/);
-						component.handleInput?.("\t");
+						assert.match(initial.join("\n"), /OVERVIEW/);
 						assert.match(component.render(200).join("\n"), /inspect stale/);
 
 						component.handleInput?.("k");

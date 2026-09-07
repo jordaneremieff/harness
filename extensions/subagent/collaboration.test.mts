@@ -110,6 +110,20 @@ test("terminal record outcomes remain visible without the manager and distinguis
 	assert.ok(outcomes.every((event) => event.source === "worker record" && event.entryId === null));
 });
 
+test("a refused history file preserves available live peer entries without claiming file history", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "collaboration-live-history-"));
+	const live = manager(workerSession);
+	peer(live, { id: "pm-live", from: "bg-one", to: rootId }, "Live exchange remains available");
+	const query = createCollaborationReader({ current: manager(), records: () => [record("bg-one", workerSession, rootId, { sessionFile: join(dir, "missing.jsonl") })], managers: () => [live] });
+	try {
+		const snapshot = await query({ history: true });
+		assert.ok(snapshot.events.some((event) => event.exchange?.text === "Live exchange remains available" && event.source === "live session entry"));
+		assert.match(snapshot.notices.join("\n"), /History unavailable/);
+		assert.match(snapshot.notices.join("\n"), /available live entries remain visible/);
+		assert.ok(!snapshot.events.some((event) => event.source === "selected session file"));
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("live projection keeps ancestry order and source identities across compaction", async () => {
 	const current = manager();
 	const first = current.appendCustomMessageEntry("subagent_report", "first", true, { id: "bg-one" });

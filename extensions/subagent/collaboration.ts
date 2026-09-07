@@ -25,11 +25,12 @@ export const COLLABORATION_LIMITS = {
 
 export interface CollaborationSources {
 	current: EntryReader;
-	/** Already known records only. Live records precede cached records. */
-	records: () => Iterable<WorkerRecord>;
+	/** Already known records, prioritized for the requested family before the source cap. */
+	records: (preferredSession?: string) => Iterable<WorkerRecord>;
 	/** Handles already owned by live sessions, including nested workers. */
 	managers: () => Iterable<EntryReader>;
 	receipt?: (sessionId: string, messageId: string) => PeerReceipt | null;
+	messageText?: (text: string, actorId: string) => string;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -110,6 +111,33 @@ const toolNames = new Set([
 const customTypes = new Set(["subagent_peer", "subagent_report", "subagent_result", "subagent_paused"]);
 const receiptStates = new Set(["sent_unconfirmed", "context_seen", "target_closed"]);
 
+/** Walk a session's ownership ancestry (self first), cycle-safe and bounded by membership. */
+export function collaborationFamilyChain(sessionId: string, bySession: ReadonlyMap<string, WorkerRecord>): string[] {
+	const chain: string[] = [];
+	const seen = new Set<string>();
+	let id: string | null = sessionId;
+	while (id && bySession.has(id) && !seen.has(id)) {
+		seen.add(id);
+		chain.push(id);
+		id = bySession.get(id)!.ownerSession;
+	}
+	return chain;
+}
+
+/** Resolve ownership without treating continuation as parentage. */
+export function collaborationFamilyId(sessionId: string, bySession: ReadonlyMap<string, WorkerRecord>, notice: (text: string) => void = () => {}): string {
+	const chain = collaborationFamilyChain(sessionId, bySession);
+	if (chain.length === 0) return sessionId;
+	const last = chain.at(-1)!;
+	const next = bySession.get(last)!.ownerSession;
+	if (!next) return `unavailable:${bySession.get(last)!.id}`;
+	if (bySession.has(next)) {
+		notice("Worker ownership contains a cycle; its family uses an unavailable manager.");
+		return `unavailable:${[...chain].sort()[0]}`;
+	}
+	return next;
+}
+
 /** A fresh projection; the panel owns explicit history snapshots and their lifetime. */
 export function createCollaborationReader(
 	sources: CollaborationSources,
@@ -121,7 +149,7 @@ export function createCollaborationReader(
 		};
 		const records = new Map<string, WorkerRecord>();
 		let visits = 0;
-		for (const record of sources.records()) {
+		for (const record of sources.records(query.familyId ?? sources.current.getSessionId())) {
 			if (++visits > COLLABORATION_LIMITS.records) {
 				notice("The known-record limit was reached; additional families or members were omitted.");
 				break;
@@ -135,21 +163,7 @@ export function createCollaborationReader(
 		const bySession = new Map<string, WorkerRecord>();
 		for (const record of records.values()) if (record.sessionId) bySession.set(record.sessionId, record);
 		const currentId = sources.current.getSessionId();
-		function root(sessionId: string): string {
-			const seen = new Set<string>();
-			let id = sessionId;
-			while (bySession.has(id)) {
-				if (seen.has(id)) {
-					notice("Worker ownership contains a cycle; its family uses an unavailable manager.");
-					return `unavailable:${[...seen].sort()[0]}`;
-				}
-				seen.add(id);
-				const record = bySession.get(id)!;
-				if (!record.ownerSession) return `unavailable:${record.id}`;
-				id = record.ownerSession;
-			}
-			return id;
-		}
+		const root = (sessionId: string) => collaborationFamilyId(sessionId, bySession, notice);
 		const familyMap = new Map<string, string>();
 		const currentRoot = root(currentId);
 		familyMap.set(currentRoot, currentRoot === currentId ? "Current session" : "Current dispatch family");
@@ -290,6 +304,12 @@ export function createCollaborationReader(
 				);
 				historyBytes += snapshot.bytes;
 				source = "selected session file";
+				if (!snapshot.entries.length && snapshot.notices.length && manager) {
+					for (const text of snapshot.notices) notice(`${record.id}: ${text}`);
+					notice(`${record.id}: available live entries remain visible; file history is unavailable.`);
+					snapshot = selectedEntries(manager);
+					source = "live session entry";
+				}
 			} else if (manager) snapshot = selectedEntries(manager);
 			else {
 				notice(
@@ -338,6 +358,15 @@ export function createCollaborationReader(
 									args.to === "parent" ? (record?.ownerSession ?? null) : (string(args.to) ?? string(args.id)),
 								),
 								replyTo: string(args.replyTo),
+								...((call.name === "subagent_message" || call.name === "subagent_steer") &&
+								typeof args.message === "string"
+									? {
+											exchange: {
+												kind: call.name === "subagent_message" ? ("peer" as const) : ("steer" as const),
+												text: clip(args.message),
+											},
+										}
+									: {}),
 							});
 						}
 					} else if (
@@ -371,16 +400,32 @@ export function createCollaborationReader(
 					if (conflict)
 						notice("A peer message identity has conflicting envelope evidence; both observations are shown.");
 					const status = string(details.status);
+					const messageActor = address(string(peer ? details.from : details.id)) ?? actorId;
+					const displayText = sources.messageText?.(body, messageActor) ?? body;
 					add({
 						...base,
 						id: messageId && prior === undefined ? `peer:${messageId}` : `${sessionId}:${entry.id}:${entry.customType}`,
 						kind: conflict ? "peer conflicting envelope" : duplicate ? "peer occurrence" : entry.customType,
 						text: duplicate ? "The same peer envelope occurs in this session ancestry." : body,
-						actorId: address(string(peer ? details.from : details.id)) ?? actorId,
+						actorId: messageActor,
 						recipientId: address(string(peer ? details.to : details.ownerSession)) ?? actorId,
 						messageId,
 						replyTo: string(details.replyTo),
 						workerId: peer ? (record?.id ?? null) : string(details.id),
+						...(!duplicate
+							? {
+									exchange: {
+										kind: peer
+											? ("peer" as const)
+											: entry.customType === "subagent_report"
+												? ("report" as const)
+												: entry.customType === "subagent_result"
+													? ("result" as const)
+													: ("pause" as const),
+										text: displayText,
+									},
+								}
+							: {}),
 						receipt: peer
 							? "recorded envelope; no context acknowledgement"
 							: status && receiptStates.has(status)

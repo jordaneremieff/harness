@@ -120,6 +120,7 @@ async function panel(
 	dependencies: SubagentPanelDeps,
 	run: (component: Component, terminal: { rows: number }, closed: () => number) => Promise<void>,
 	panelTheme = theme,
+	start: "overview" | "communications" | "evidence" = "evidence",
 ): Promise<void> {
 	let closeCount = 0;
 	const terminal = { rows: 32 };
@@ -131,7 +132,9 @@ async function panel(
 				});
 				component.focused = true;
 				try {
+					if (start !== "overview") component.handleInput("m");
 					await flush();
+					if (start === "evidence") component.handleInput("e");
 					await run(component, terminal, () => closeCount);
 				} finally {
 					component.dispose();
@@ -152,6 +155,338 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(e
 	});
 	return { promise, resolve, reject };
 }
+
+describe("worker overview and separate communications", () => {
+	it("defaults to direct-child status without any collaboration query, and preserves all-session scope", async (context) => {
+		context.mock.timers.enable({ apis: ["setInterval"] });
+		const records = [
+			worker("bg-direct", {
+				model: "test/overview-model",
+				currentTool: "read",
+				lastOutput: "Checking exported functions",
+				usage: { cost: 1.25 } as Worker["usage"],
+			}),
+			worker("bg-nested", { ownerSession: "child-session" }),
+			worker("bg-foreign", { ownerSession: "another-manager" }),
+		];
+		let queries = 0;
+		const scopes: Array<string | undefined> = [];
+		await panel(
+			deps({
+				readWorkers: (owner) => {
+					scopes.push(owner);
+					return records.filter((record) => !owner || record.ownerSession === owner);
+				},
+				collaboration: async () => {
+					queries++;
+					return snapshot();
+				},
+			}),
+			async (component) => {
+				const output = text(component, 180);
+				assert.match(output, /OVERVIEW · DIRECT CHILDREN/);
+				assert.match(output, /1 workers · 1 running/);
+				assert.match(output, /overview-model.*\$1\.25.*read.*Checking exported functions/);
+				assert.doesNotMatch(output, /TIMELINE|HISTORY|bg-nested|bg-foreign/);
+				context.mock.timers.tick(1000);
+				await flush();
+				assert.equal(queries, 0);
+				assert.equal(scopes[0], "root");
+				component.handleInput("a");
+				assert.match(text(component), /ALL SESSIONS/);
+				assert.match(text(component), /3 workers/);
+				component.handleInput("m");
+				await flush();
+				assert.equal(queries, 1);
+				assert.match(text(component), /COMMUNICATIONS/);
+				component.handleInput("m");
+				assert.match(text(component), /OVERVIEW · ALL SESSIONS/);
+			},
+			theme,
+			"overview",
+		);
+	});
+	it("keeps an empty overview short and makes other sessions reachable", async () => {
+		await panel(
+			deps({ readWorkers: (owner) => (owner ? [] : [worker("bg-foreign", { ownerSession: "other" })]) }),
+			async (component, terminal) => {
+				terminal.rows = 80;
+				assert.ok(component.render(140).length <= 8);
+				assert.match(text(component), /No direct children.*Press a for all sessions/);
+				component.handleInput("a");
+				assert.match(text(component), /1 workers/);
+				assert.doesNotMatch(text(component), /No direct children/);
+			},
+			theme,
+			"overview",
+		);
+	});
+	it("preserves selected worker controls through live reorder and returns from its console to overview", async (context) => {
+		context.mock.timers.enable({ apis: ["setInterval"] });
+		let records = [worker("bg-first"), worker("bg-second")];
+		let interrupted = "";
+		await panel(
+			deps({
+				readWorkers: () => records,
+				interrupt: async (id) => {
+					interrupted = id;
+					return "interrupted";
+				},
+			}),
+			async (component) => {
+				component.handleInput("\x1b[B");
+				records = [records[1], records[0]];
+				context.mock.timers.tick(1000);
+				await flush();
+				component.handleInput("i");
+				await flush();
+				assert.equal(interrupted, "bg-second");
+				component.handleInput("\r");
+				assert.match(text(component), /bg-second/);
+				component.handleInput("\x1b");
+				assert.match(text(component), /OVERVIEW/);
+				component.handleInput("d");
+				assert.match(text(component), /WORKER bg-second/);
+			},
+			theme,
+			"overview",
+		);
+	});
+	it("uses native overview search and keeps all overview widths bounded", async () => {
+		await panel(
+			deps({ readWorkers: () => [worker("bg-search", { task: "資料 review" })] }),
+			async (component, terminal) => {
+				component.handleInput("/");
+				assert.ok(component.render(80).join("\n").includes(CURSOR_MARKER));
+				component.handleInput("\x1b[200~資料\x1b[201~");
+				assert.match(text(component, 80), /資料/);
+				component.handleInput("\r");
+				for (const width of [180, 100, 48, 24, 10, 3, 1])
+					for (const line of component.render(width)) assert.equal(visibleWidth(line), width);
+				terminal.rows = 4;
+				assert.ok(component.render(20).length <= 2);
+				assert.match(text(component, 20), /esc/);
+			},
+			theme,
+			"overview",
+		);
+	});
+	it("shows peer and manager conversations without management-tool noise, with a separate source view", async () => {
+		const current = snapshot();
+		current.events = [
+			event("question", "raw peer envelope", {
+				exchange: { kind: "peer", text: "Does the interface preserve the source?" },
+			}),
+			event("reply", "raw reply envelope", {
+				actorId: "worker-b",
+				recipientId: "worker-a",
+				replyTo: "message-question",
+				exchange: { kind: "peer", text: "Yes. The checked source keeps the identifier." },
+			}),
+			event("noise", "raw status payload", { kind: "call subagent_status" }),
+			event("report", "raw manager envelope", {
+				recipientId: "root",
+				exchange: { kind: "report", text: "The interface check passed." },
+			}),
+		];
+		await panel(
+			deps({ collaboration: async () => current }),
+			async (component, terminal) => {
+				assert.match(text(component, 180), /CONVERSATIONS · 2/);
+				assert.match(text(component, 180), /Does the interface preserve/);
+				assert.match(text(component, 180), /checked source keeps/);
+				assert.doesNotMatch(text(component, 180), /raw status payload|raw peer envelope|call subagent_status/);
+				component.handleInput("\x1b[B");
+				assert.match(text(component, 180), /The interface check passed/);
+				component.handleInput("\r");
+				assert.match(text(component, 180), /raw manager envelope/);
+				component.handleInput("\x1b");
+				component.handleInput("e");
+				assert.match(text(component, 180), /raw status payload/);
+				component.handleInput("e");
+				terminal.rows = 16;
+				component.handleInput("\t");
+				assert.match(text(component, 48), /EXCHANGES/);
+				assert.match(text(component, 48), /interface check passed/);
+			},
+			theme,
+			"communications",
+		);
+	});
+	it("attributes and bounds readable exchanges with whole cards and conflict flags", async () => {
+		const current = snapshot();
+		current.events = [
+			...Array.from({ length: 4 }, (_, index) =>
+				event(`m${index}`, `recorded envelope ${index} keeps readable message ${index} verbatim`, {
+					exchange: { kind: "peer", text: `readable message ${index}` },
+				}),
+			),
+			event("m4", "recorded envelope four keeps readable message four verbatim", {
+				actorId: "worker-b",
+				recipientId: "worker-a",
+				kind: "peer conflicting envelope",
+				exchange: { kind: "peer", text: "readable message four" },
+			}),
+			event("solo", "recorded manager envelope keeps the settled report", {
+				actorId: "worker-c",
+				recipientId: "root",
+				kind: "report",
+				workerId: "worker-c",
+				exchange: { kind: "report", text: "the settled report" },
+			}),
+		];
+		await panel(
+			deps({ collaboration: async () => current }),
+			async (component, terminal) => {
+				terminal.rows = 16;
+				const wide = text(component, 180);
+				assert.match(wide, /worker-a ↔ worker-b · 5 exchange record/);
+				assert.match(wide, /root ↔ worker-c · 1 exchange record/);
+				assert.doesNotMatch(wide, /1 exchange records/);
+				const lines = wide.split("\n");
+				const hint = lines.findIndex((line) => /earlier exchange records/.test(line));
+				assert.ok(hint >= 0, "hidden cards are counted");
+				assert.match(lines[hint], /… [0-9]+ earlier exchange records/);
+				assert.match(lines[hint + 1], /→ .* · peer · recorded · unverified/);
+				const matches = wide.match(/conflicting envelope/g) ?? [];
+				assert.equal(matches.length, 1);
+				assert.match(wide, /readable message four/);
+			},
+			theme,
+			"communications",
+		);
+	});
+	it("does not flag valid multiline or quoted envelope text and flags only recorded conflicts", async () => {
+		const current = snapshot();
+		current.events = [
+			event("steer-out", 'steer arguments {"message": "step one\\nthen check \\"quoted\\" text"} recorded verbatim', {
+				actorId: "root",
+				recipientId: "worker-a",
+				kind: "steer",
+				workerId: null,
+				exchange: { kind: "steer", text: 'step one then check "quoted" text' },
+			}),
+			event("peer-in", 'peer envelope body\\nwith \\"quoted\\" newline\\nrecords intact', {
+				exchange: { kind: "peer", text: 'peer envelope body with "quoted" newline records intact' },
+			}),
+		];
+		await panel(
+			deps({ collaboration: async () => current }),
+			async (component) => {
+				const output = text(component, 180);
+				assert.match(output, /step one then check "quoted" text/);
+				assert.doesNotMatch(output, /conflicting envelope/);
+				assert.match(output, /unverified/);
+				component.handleInput("\x1b[B");
+				const peer = text(component, 180);
+				assert.match(peer, /peer envelope body with "quoted" newline/);
+				assert.doesNotMatch(peer, /conflicting envelope/);
+			},
+			theme,
+			"communications",
+		);
+	});
+	it("shows Loading while the family snapshot is pending and a true empty state after load", async () => {
+		const pending = deferred<CollaborationSnapshot>();
+		await panel(
+			deps({ collaboration: () => pending.promise }),
+			async (component) => {
+				const loading = text(component, 140);
+				assert.match(loading, /Loading conversations…/);
+				assert.doesNotMatch(loading, /No recorded conversations/);
+				pending.resolve({ ...snapshot(), events: [] });
+				await flush();
+				assert.match(text(component, 140), /No recorded conversations in this family\./);
+				assert.doesNotMatch(text(component, 140), /Loading conversations/);
+			},
+			theme,
+			"communications",
+		);
+	});
+	it("keeps f filtering inside raw evidence with mode-specific footers", async () => {
+		const current = snapshot();
+		current.events = [
+			event("q", "raw peer envelope keeps the readable question", {
+				exchange: { kind: "peer", text: "the readable question" },
+			}),
+			event("r", "raw reply envelope keeps the readable answer", {
+				actorId: "worker-b",
+				recipientId: "worker-a",
+				exchange: { kind: "peer", text: "the readable answer" },
+			}),
+			event("unrelated", "raw unrelated exchange", { actorId: "root", recipientId: "worker-c", workerId: null }),
+		];
+		await panel(
+			deps({ collaboration: async () => current }),
+			async (component) => {
+				const conversations = text(component, 180);
+				assert.doesNotMatch(conversations, /f filter/);
+				component.handleInput("f");
+				assert.match(text(component, 180), /Filtering applies to raw evidence only/);
+				assert.match(text(component, 180), /readable question/);
+			},
+			theme,
+			"communications",
+		);
+		await panel(
+			deps({ collaboration: async () => current }),
+			async (component) => {
+				component.handleInput("e");
+				const evidence = text(component, 180);
+				assert.match(evidence, /f filter/);
+				assert.match(evidence, /e conversations/);
+				assert.match(evidence, /raw unrelated exchange/);
+				component.handleInput("f");
+				assert.doesNotMatch(text(component, 180), /raw unrelated exchange/);
+				assert.match(text(component, 180), /filter worker-a/);
+				component.handleInput("f");
+				assert.match(text(component, 180), /raw unrelated exchange/);
+			},
+			theme,
+			"communications",
+		);
+	});
+	it("shows mode-specific help without leaking history chrome into the overview", async () => {
+		await panel(
+			deps(),
+			async (component) => {
+				component.handleInput("?");
+				const overviewHelp = text(component, 140);
+				assert.match(overviewHelp, /DASHBOARD HELP/);
+				assert.match(overviewHelp, /never queries collaboration data or history/);
+				assert.match(overviewHelp, /a toggles every known session/);
+				assert.doesNotMatch(overviewHelp, /LIVE MEMORY|HISTORY ·|In raw evidence only/);
+				component.handleInput("\x1b");
+				assert.match(text(component, 140), /OVERVIEW · DIRECT CHILDREN/);
+			},
+			theme,
+			"overview",
+		);
+		await panel(
+			deps({
+				collaboration: async () => ({
+				...snapshot(),
+				events: [
+					event("q", "raw peer envelope keeps the readable question", {
+						exchange: { kind: "peer", text: "the readable question" },
+					}),
+				],
+			}),
+			}),
+			async (component) => {
+				component.handleInput("?");
+				const communicationsHelp = text(component, 140).replace(/\s+/g, " ");
+				assert.match(communicationsHelp, /worker-authored and unverified/);
+				assert.match(communicationsHelp, /observed with differing envelope evidence/);
+				assert.match(communicationsHelp, /In raw evidence only/);
+				component.handleInput("\x1b");
+				assert.match(text(component, 140), /CONVERSATIONS/);
+			},
+			theme,
+			"communications",
+		);
+	});
+});
 
 describe("collaboration dashboard", () => {
 	it("starts with the family timeline, nested ownership, and a separate continuation edge", async () => {

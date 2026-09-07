@@ -44,7 +44,8 @@ extension-UI notification plus a `subagent_status` custom entry; JSON receives
 the custom entry as an `entry_appended` event; print mode emits the optionally
 filtered text view to the terminal. Model-facing status previews label worker
 authorship and state that the text is unverified, not an instruction. The TUI
-opens a family collaboration timeline with ownership and evidence details. Panels
+opens a compact overview of direct child workers, with a separate communication
+mode for peer and manager exchanges. Panels
 grow to at most 85% of the terminal (floor 44 rows; pin a fixed cap
 with `PI_SUBAGENT_PANEL_MAX_ROWS`). The `thinking:` value in a status line is
 the EFFECTIVE level — pi clamps an inherited level to what the model supports —
@@ -595,13 +596,42 @@ generically; the statusline does not inspect worker files or parse this key.
 
 ### Collaboration dashboard
 
-`/subagent` starts with the current dispatch family's timeline. The ownership
-tree includes the manager, workers, and nested managers. Continuation appears
-as a separate link rather than a child relationship. Worker identity and task
-text remain separate from model and execution state. Worker rows show a short,
-unambiguous ID, model, and state above the recorded task. Details retain full
-identities. Wide terminals show the tree and timeline together; narrow terminals
-show the selected focus page.
+`/subagent` starts with a compact overview of this session's direct child workers.
+Each row leads with the worker identity and shows state, model, elapsed time,
+cost, current tool, and latest output as width permits. The all-session scope
+adds an owner column. A search shows the matched/total count beside the query.
+Worker details shrink the panel to their content. The selected worker's recorded
+task appears below the rows. The overview grows with its records rather than
+filling the screen when empty.
+`a` switches to all known sessions; an empty direct-child view names that action.
+`Enter` opens the selected console, and `d` opens full worker details. Stable
+worker IDs preserve selection through live reorder and console navigation.
+
+The overview reads cached worker metadata independently of collaboration history.
+The adapter selects owner scope before its display cap, so unrelated retained
+workers do not crowd direct children out of the overview. The cap leaves an
+explicit notice when additional records remain outside the view.
+
+`m` switches to communications. This mode groups recorded peer, report, steer,
+result, and pause exchanges by their two participants. Wide terminals show the
+conversation list beside readable exchange content; narrow terminals use `Tab`
+to select either pane. Management-tool calls do not enter this conversation list.
+Send attempts and received records remain distinct, and record counts do not
+claim distinct delivered messages. Every exchange card marks worker-authored
+text as unverified and flags records the source observed as conflicting
+envelope evidence for one peer identity. While a family snapshot is pending the pane reports loading
+instead of an empty family. Wide conversation lists use one row per
+conversation; hidden earlier cards are counted, and card headers are never cut
+at the pane start. Full event details preserve original source
+text and receipt evidence. Display-only removal of this extension's own worker
+text wrapper never changes stored evidence or grants authority.
+
+`e` selects raw evidence within communications. Its timeline and ownership tree
+retain nested ownership and separate continuation links. Short participant IDs
+serve display only; worker controls always use full identities. Footers and
+help are mode-specific: raw evidence labels its exit `e conversations` and
+holds the exchange filter and tail-follow keys; conversations list only its own
+actions.
 
 The timeline projects dispatch records, terminal outcomes, collaboration tool
 calls/results, and received peer messages, reports, pause notices, and result
@@ -614,22 +644,27 @@ intent, model understanding, or result acceptance from prose.
 
 | Key | Action |
 | --- | --- |
-| `Tab` / `Shift+Tab` | Move between timeline, ownership, and details |
-| `Enter` | Open selected event or participant details |
-| `v` | Open the selected worker's console |
-| `/` | Search event text and identities; Enter keeps the filter, Escape clears it |
-| `f` | Toggle the selected participant's exchange filter |
-| `h` | Load or refresh history for the selected family; show the result above the timeline |
-| `n` | Open the scrollable history/source report, including all retained notices |
+| `m` | Switch between the worker overview and communications |
+| `a` in overview | Switch between direct children and all known sessions |
+| `Enter` in overview / `v` | Open the selected worker's console |
+| `d` in overview | Open full worker details |
+| `Tab` / `Shift+Tab` in communications | Select the conversation list or exchange pane; raw evidence cycles timeline, ownership, and details |
+| `Enter` in communications | Open the selected exchange's exact source details |
+| `e` in communications | Switch between grouped conversations and raw evidence |
+| `/` | Search workers in overview or events in communications; Enter keeps the filter, Escape clears it |
+| `f` in raw evidence | Toggle the selected participant's exchange filter |
+| `h` in communications | Load or refresh history for the selected family; show the result in the header bar |
+| `n` in communications | Open the scrollable history/source report, including all retained notices |
 | `?` | Open keyboard help; arrows or `b` / Space scroll help and the source report |
-| `F` | Select another known family; Enter loads its history |
-| `l` / timeline End | Follow the live tail; `BROWSE` stops only automatic scrolling |
+| `F` in communications | Select another known family; Enter loads its history |
+| `l` / timeline End in raw evidence | Follow the live tail; `BROWSE` stops only automatic scrolling |
 | `[` / `]` in details | Follow the parent message or a reply |
 | `i` / `k` | Interrupt / cancel a selected owned worker |
-| `Escape` | Return from details or console; close the dashboard |
+| `Escape` | Return from details, help, source report, or console; otherwise close the dashboard |
 
-The refresh timer reads already-known records and live session handles, not
-session files. History reads occur only after an explicit request. Each known
+The refresh timer reads cached worker metadata. Communication queries start only
+in communication mode and read live session handles, not session files. History
+reads occur only after an explicit request. Each known
 file is capped at 2 MiB, with a 16 MiB family-query budget. Live ancestry stops
 at 512 entries per session; selected file ancestry stops at 4096. The adapter
 bounds records, family members, event count, and event bytes; omissions remain

@@ -24,6 +24,8 @@ export interface CollaborationEvent {
 	replyTo: string | null;
 	workerId: string | null;
 	receipt: string | null;
+	/** A communication view, separate from raw tool and source evidence. */
+	exchange?: { kind: "peer" | "report" | "steer" | "result" | "pause"; text: string };
 }
 
 export interface CollaborationSnapshot {
