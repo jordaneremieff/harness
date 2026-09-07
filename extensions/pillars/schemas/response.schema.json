@@ -1,0 +1,1082 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "pillars-usage-response"
+        },
+        "schemaVersion": {
+          "const": 2
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "fromDay": {
+              "type": "string",
+              "pattern": "^20\\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$",
+              "maxLength": 10
+            },
+            "toDay": {
+              "type": "string",
+              "pattern": "^20\\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$",
+              "maxLength": 10
+            },
+            "requestedDays": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30
+            },
+            "retentionDays": {
+              "const": 30
+            }
+          },
+          "required": [
+            "fromDay",
+            "toDay",
+            "requestedDays",
+            "retentionDays"
+          ]
+        },
+        "meaning": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "countedUnit": {
+              "const": "observed_read_event_not_session_application_or_effectiveness"
+            },
+            "observation": {
+              "const": "Request and result callbacks are independent observations. Result callbacks do not establish final provider delivery."
+            },
+            "bodyIdentity": {
+              "const": "Verified means complete returned bytes matched the reference bytes at observation. It does not establish semantic correctness, adherence, application, or effectiveness."
+            },
+            "cause": {
+              "const": "Tool-result errors and checkpoint-write failures are different observations. These counts do not identify inaccessible files, collector crashes, lost-read counts, or any causal link between those observations."
+            },
+            "coverage": {
+              "const": "Only retained persisted aggregates are described. Absent observers, refused admissions, unflushed tails, and failures unable to persist remain unknown, even when all recorded counters are zero."
+            },
+            "healthScope": {
+              "const": "Storage incidents cover detection days in all retained shards, not the selected read-event window and not live collector health. Receipt quota days count marked days, not refused observers or lost events."
+            },
+            "absentRows": {
+              "const": "An absent joint row means zero attributed events in this retained capture only. Folded dimensions do not establish zero for a concrete identity."
+            }
+          },
+          "required": [
+            "countedUnit",
+            "observation",
+            "bodyIdentity",
+            "cause",
+            "coverage",
+            "healthScope",
+            "absentRows"
+          ]
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "retainedDayShards": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 30
+            },
+            "liveCollectors": {
+              "const": "unknown"
+            },
+            "wholeWindowCoverage": {
+              "const": "unknown"
+            },
+            "unpersistedLoss": {
+              "const": "unknown"
+            },
+            "dataState": {
+              "enum": [
+                "retained_aggregates",
+                "no_persisted_aggregate"
+              ]
+            },
+            "captureScope": {
+              "const": "validated_retained_shards_not_live_observer_census"
+            },
+            "captureOmissions": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "checkpoint_write_failures_recorded",
+                  "dimensions_folded",
+                  "receipt_quota_days_recorded",
+                  "source_unresolved",
+                  "pending_events_dropped"
+                ]
+              },
+              "maxItems": 5
+            }
+          },
+          "required": [
+            "retainedDayShards",
+            "liveCollectors",
+            "wholeWindowCoverage",
+            "unpersistedLoss",
+            "dataState",
+            "captureScope",
+            "captureOmissions"
+          ]
+        },
+        "storageEvidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "scope": {
+              "const": "retained_shard_detection_days_not_selected_event_window"
+            },
+            "assessment": {
+              "enum": [
+                "no_recorded_evidence",
+                "recorded_incidents",
+                "no_incidents_recorded"
+              ]
+            },
+            "checkpointWriteFailures": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "foldedEvents": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "receiptQuotaDays": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 30
+            },
+            "unresolvedAccessEvents": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "forkResets": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "forkDroppedEvents": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "pendingDroppedEvents": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "scope",
+            "assessment",
+            "checkpointWriteFailures",
+            "foldedEvents",
+            "receiptQuotaDays",
+            "unresolvedAccessEvents",
+            "forkResets",
+            "forkDroppedEvents",
+            "pendingDroppedEvents"
+          ]
+        },
+        "totals": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "readRequests": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "readResults": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "resultComplete": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "resultPartial": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "resultError": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "resultUnknown": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "bodyVerifiedAtObservation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "bodyMismatchedAtObservation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "bodyUnverifiable": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "readRequests",
+            "readResults",
+            "resultComplete",
+            "resultPartial",
+            "resultError",
+            "resultUnknown",
+            "bodyVerifiedAtObservation",
+            "bodyMismatchedAtObservation",
+            "bodyUnverifiable"
+          ]
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "foldedResourceIdentities": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 61500
+            },
+            "revisionRows": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 61500
+            },
+            "revisionView": {
+              "const": "revisions"
+            }
+          },
+          "required": [
+            "foldedResourceIdentities",
+            "revisionRows",
+            "revisionView"
+          ]
+        },
+        "kind": {
+          "const": "page"
+        },
+        "view": {
+          "const": "overview"
+        },
+        "byResource": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "resourceClass": {
+                "enum": [
+                  "skill",
+                  "inventory",
+                  "governance",
+                  "entry",
+                  "overflow"
+                ]
+              },
+              "resourceId": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+                "maxLength": 64
+              },
+              "lastSeenDay": {
+                "type": "string",
+                "pattern": "^20\\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$",
+                "maxLength": 10
+              },
+              "counters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "readRequests": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "readResults": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "resultComplete": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "resultPartial": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "resultError": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "resultUnknown": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "bodyVerifiedAtObservation": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "bodyMismatchedAtObservation": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "bodyUnverifiable": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "readRequests",
+                  "readResults",
+                  "resultComplete",
+                  "resultPartial",
+                  "resultError",
+                  "resultUnknown",
+                  "bodyVerifiedAtObservation",
+                  "bodyMismatchedAtObservation",
+                  "bodyUnverifiable"
+                ]
+              }
+            },
+            "required": [
+              "resourceClass",
+              "resourceId",
+              "lastSeenDay",
+              "counters"
+            ]
+          },
+          "maxItems": 24
+        },
+        "pagination": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pageNumber": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2563
+                },
+                "pageCount": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2563
+                },
+                "totalRows": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 61500
+                }
+              },
+              "required": [
+                "pageNumber",
+                "pageCount",
+                "totalRows"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pageNumber": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2563
+                },
+                "pageCount": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2563
+                },
+                "totalRows": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 61500
+                },
+                "nextCursor": {
+                  "type": "string",
+                  "pattern": "^[-_A-Za-z0-9]{4,256}$",
+                  "maxLength": 256
+                },
+                "cursorExpiresAt": {
+                  "type": "string",
+                  "pattern": "^20\\d{2}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                  "maxLength": 24
+                }
+              },
+              "required": [
+                "pageNumber",
+                "pageCount",
+                "totalRows",
+                "nextCursor",
+                "cursorExpiresAt"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "schema",
+        "schemaVersion",
+        "enabled",
+        "window",
+        "meaning",
+        "coverage",
+        "storageEvidence",
+        "totals",
+        "summary",
+        "kind",
+        "view",
+        "byResource",
+        "pagination"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "pillars-usage-response"
+        },
+        "schemaVersion": {
+          "const": 2
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "fromDay": {
+              "type": "string",
+              "pattern": "^20\\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$",
+              "maxLength": 10
+            },
+            "toDay": {
+              "type": "string",
+              "pattern": "^20\\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$",
+              "maxLength": 10
+            },
+            "requestedDays": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30
+            },
+            "retentionDays": {
+              "const": 30
+            }
+          },
+          "required": [
+            "fromDay",
+            "toDay",
+            "requestedDays",
+            "retentionDays"
+          ]
+        },
+        "meaning": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "countedUnit": {
+              "const": "observed_read_event_not_session_application_or_effectiveness"
+            },
+            "observation": {
+              "const": "Request and result callbacks are independent observations. Result callbacks do not establish final provider delivery."
+            },
+            "bodyIdentity": {
+              "const": "Verified means complete returned bytes matched the reference bytes at observation. It does not establish semantic correctness, adherence, application, or effectiveness."
+            },
+            "cause": {
+              "const": "Tool-result errors and checkpoint-write failures are different observations. These counts do not identify inaccessible files, collector crashes, lost-read counts, or any causal link between those observations."
+            },
+            "coverage": {
+              "const": "Only retained persisted aggregates are described. Absent observers, refused admissions, unflushed tails, and failures unable to persist remain unknown, even when all recorded counters are zero."
+            },
+            "healthScope": {
+              "const": "Storage incidents cover detection days in all retained shards, not the selected read-event window and not live collector health. Receipt quota days count marked days, not refused observers or lost events."
+            },
+            "absentRows": {
+              "const": "An absent joint row means zero attributed events in this retained capture only. Folded dimensions do not establish zero for a concrete identity."
+            }
+          },
+          "required": [
+            "countedUnit",
+            "observation",
+            "bodyIdentity",
+            "cause",
+            "coverage",
+            "healthScope",
+            "absentRows"
+          ]
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "retainedDayShards": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 30
+            },
+            "liveCollectors": {
+              "const": "unknown"
+            },
+            "wholeWindowCoverage": {
+              "const": "unknown"
+            },
+            "unpersistedLoss": {
+              "const": "unknown"
+            },
+            "dataState": {
+              "enum": [
+                "retained_aggregates",
+                "no_persisted_aggregate"
+              ]
+            },
+            "captureScope": {
+              "const": "validated_retained_shards_not_live_observer_census"
+            },
+            "captureOmissions": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "checkpoint_write_failures_recorded",
+                  "dimensions_folded",
+                  "receipt_quota_days_recorded",
+                  "source_unresolved",
+                  "pending_events_dropped"
+                ]
+              },
+              "maxItems": 5
+            }
+          },
+          "required": [
+            "retainedDayShards",
+            "liveCollectors",
+            "wholeWindowCoverage",
+            "unpersistedLoss",
+            "dataState",
+            "captureScope",
+            "captureOmissions"
+          ]
+        },
+        "storageEvidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "scope": {
+              "const": "retained_shard_detection_days_not_selected_event_window"
+            },
+            "assessment": {
+              "enum": [
+                "no_recorded_evidence",
+                "recorded_incidents",
+                "no_incidents_recorded"
+              ]
+            },
+            "checkpointWriteFailures": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "foldedEvents": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "receiptQuotaDays": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 30
+            },
+            "unresolvedAccessEvents": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "forkResets": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "forkDroppedEvents": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "pendingDroppedEvents": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "scope",
+            "assessment",
+            "checkpointWriteFailures",
+            "foldedEvents",
+            "receiptQuotaDays",
+            "unresolvedAccessEvents",
+            "forkResets",
+            "forkDroppedEvents",
+            "pendingDroppedEvents"
+          ]
+        },
+        "totals": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "readRequests": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "readResults": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "resultComplete": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "resultPartial": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "resultError": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "resultUnknown": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "bodyVerifiedAtObservation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "bodyMismatchedAtObservation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "bodyUnverifiable": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "readRequests",
+            "readResults",
+            "resultComplete",
+            "resultPartial",
+            "resultError",
+            "resultUnknown",
+            "bodyVerifiedAtObservation",
+            "bodyMismatchedAtObservation",
+            "bodyUnverifiable"
+          ]
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "foldedResourceIdentities": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 61500
+            },
+            "revisionRows": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 61500
+            },
+            "revisionView": {
+              "const": "revisions"
+            }
+          },
+          "required": [
+            "foldedResourceIdentities",
+            "revisionRows",
+            "revisionView"
+          ]
+        },
+        "kind": {
+          "const": "page"
+        },
+        "view": {
+          "const": "revisions"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "day": {
+                "type": "string",
+                "pattern": "^20\\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$",
+                "maxLength": 10
+              },
+              "observationStage": {
+                "enum": [
+                  "tool_request",
+                  "tool_result"
+                ]
+              },
+              "resourceClass": {
+                "enum": [
+                  "skill",
+                  "inventory",
+                  "governance",
+                  "entry",
+                  "overflow"
+                ]
+              },
+              "resourceId": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+                "maxLength": 64
+              },
+              "model": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._/+:-]{0,63}$",
+                "maxLength": 64
+              },
+              "reasoning": {
+                "enum": [
+                  "off",
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "unknown"
+                ]
+              },
+              "referenceBodyDigest": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "maxLength": 64
+                  },
+                  {
+                    "const": "unresolved"
+                  },
+                  {
+                    "const": "other"
+                  }
+                ]
+              },
+              "observerVersion": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+                    "maxLength": 32
+                  },
+                  {
+                    "const": "other"
+                  }
+                ]
+              },
+              "piVersion": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+                    "maxLength": 32
+                  },
+                  {
+                    "const": "other"
+                  }
+                ]
+              },
+              "counters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "readRequests": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "readResults": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "resultComplete": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "resultPartial": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "resultError": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "resultUnknown": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "bodyVerifiedAtObservation": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "bodyMismatchedAtObservation": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "bodyUnverifiable": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "readRequests",
+                  "readResults",
+                  "resultComplete",
+                  "resultPartial",
+                  "resultError",
+                  "resultUnknown",
+                  "bodyVerifiedAtObservation",
+                  "bodyMismatchedAtObservation",
+                  "bodyUnverifiable"
+                ]
+              }
+            },
+            "required": [
+              "day",
+              "observationStage",
+              "resourceClass",
+              "resourceId",
+              "model",
+              "reasoning",
+              "referenceBodyDigest",
+              "observerVersion",
+              "piVersion",
+              "counters"
+            ]
+          },
+          "maxItems": 24
+        },
+        "pagination": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pageNumber": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2563
+                },
+                "pageCount": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2563
+                },
+                "totalRows": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 61500
+                }
+              },
+              "required": [
+                "pageNumber",
+                "pageCount",
+                "totalRows"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pageNumber": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2563
+                },
+                "pageCount": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2563
+                },
+                "totalRows": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 61500
+                },
+                "nextCursor": {
+                  "type": "string",
+                  "pattern": "^[-_A-Za-z0-9]{4,256}$",
+                  "maxLength": 256
+                },
+                "cursorExpiresAt": {
+                  "type": "string",
+                  "pattern": "^20\\d{2}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                  "maxLength": 24
+                }
+              },
+              "required": [
+                "pageNumber",
+                "pageCount",
+                "totalRows",
+                "nextCursor",
+                "cursorExpiresAt"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "schema",
+        "schemaVersion",
+        "enabled",
+        "window",
+        "meaning",
+        "coverage",
+        "storageEvidence",
+        "totals",
+        "summary",
+        "kind",
+        "view",
+        "rows",
+        "pagination"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "pillars-usage-response"
+        },
+        "schemaVersion": {
+          "const": 2
+        },
+        "kind": {
+          "const": "error"
+        },
+        "meaning": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "countedUnit": {
+              "const": "observed_read_event_not_session_application_or_effectiveness"
+            },
+            "observation": {
+              "const": "Request and result callbacks are independent observations. Result callbacks do not establish final provider delivery."
+            },
+            "bodyIdentity": {
+              "const": "Verified means complete returned bytes matched the reference bytes at observation. It does not establish semantic correctness, adherence, application, or effectiveness."
+            },
+            "cause": {
+              "const": "Tool-result errors and checkpoint-write failures are different observations. These counts do not identify inaccessible files, collector crashes, lost-read counts, or any causal link between those observations."
+            },
+            "coverage": {
+              "const": "Only retained persisted aggregates are described. Absent observers, refused admissions, unflushed tails, and failures unable to persist remain unknown, even when all recorded counters are zero."
+            },
+            "healthScope": {
+              "const": "Storage incidents cover detection days in all retained shards, not the selected read-event window and not live collector health. Receipt quota days count marked days, not refused observers or lost events."
+            },
+            "absentRows": {
+              "const": "An absent joint row means zero attributed events in this retained capture only. Folded dimensions do not establish zero for a concrete identity."
+            }
+          },
+          "required": [
+            "countedUnit",
+            "observation",
+            "bodyIdentity",
+            "cause",
+            "coverage",
+            "healthScope",
+            "absentRows"
+          ]
+        },
+        "code": {
+          "enum": [
+            "store_unreadable",
+            "store_corrupt",
+            "cursor_expired",
+            "cursor_invalid",
+            "response_overflow"
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "schema",
+        "schemaVersion",
+        "kind",
+        "meaning",
+        "code",
+        "retryable",
+        "message"
+      ]
+    }
+  ]
+}

@@ -22,6 +22,8 @@ Current consumers:
 | `PI_STASH_MODEL` | stash | Optional model for `/stash new` distillation (`provider/id` or bare id). Unset inherits the parent session model. Set but missing or unauthenticated fails creation; no silent fallback. |
 | `PI_STASH_THINKING` | stash | Optional thinking level for `/stash new` distillation. Unset inherits the parent session level (default `low` when the parent has none). An explicit unsupported level fails creation; an inherited unsupported level clamps to the model. |
 | `PI_CLIPBOARD_DIR` | clipboard | Clipboard archive directory override; default `<agentDir>/clipboard`. |
+| `PI_PILLARS_DIR` | pillars | Aggregate directory override; default `<agentDir>/pillars`. |
+| `PI_PILLARS_COLLECT` | pillars | `1` or unset enables collection; `0` disables collection while preserving source access and readback. Other values disable collection with a diagnostic. |
 | `PI_POLICY_DIR` | policy | Policy record directory override; default `<agentDir>/policy`. |
 | `PI_POLICY_MODE` | policy | Active mechanism: `observe` (default), `notice`, `annotate`, or `enforce`. An unrecognized value stops recording for the session; no silent fallback. |
 | `PI_SUBAGENT_PRUNE_DAYS` | subagent | Retention window for terminal workers in the store; default 30 days, `0` disables pruning. |
