@@ -108,6 +108,14 @@ import { stripTerminalSequences } from "./console.ts";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
 import { type PeerEnvelope, PeerHub } from "./peers.ts";
 import {
+	applyProfile,
+	deriveWorkerLabel,
+	loadProfile,
+	profileMessage,
+	profileSnapshot,
+	type ProfileSnapshot,
+} from "./profiles.ts";
+import {
 	type ThinkingLevel,
 	type TranscriptItem,
 	trackCommandStartedTurns,
@@ -297,6 +305,9 @@ export interface WorkerUsage {
 
 export interface WorkerRecord {
 	id: string;
+	/** Presentation label: a profile name or a task-derived fallback. It is
+	 * never an identity; exact ids stay in details. */
+	label: string | null;
 	task: string;
 	/** Model the current worker session actually uses. */
 	model: string;
@@ -358,6 +369,8 @@ export interface WorkerRecord {
 	sharedContextId: string | null;
 	/** UTF-8 size of that snapshot. 0 when the dispatch supplied none. */
 	sharedContextBytes: number;
+	/** Selected profile digest, resolved defaults, and source pointers. */
+	profile?: ProfileSnapshot;
 	/** Non-fatal problems pi reported while building the worker's services:
 	 * unreadable settings, an extension that failed to load, a provider
 	 * registration that threw. An interactive session prints these at startup;
@@ -569,6 +582,7 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 	const state = asString(o.state);
 	return {
 		id,
+		label: asStrOrNull(o.label),
 		task: asString(o.task),
 		model: asString(o.model, "?"),
 		bootstrapModel: asString(o.bootstrapModel, asString(o.model, "?")),
@@ -599,6 +613,7 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 		toolSources: validateToolSources(o.toolSources),
 		sharedContextId: asStrOrNull(o.sharedContextId),
 		sharedContextBytes: asNumber(o.sharedContextBytes),
+		profile: profileSnapshot(o.profile),
 		setupDiagnostics: asStrArray(o.setupDiagnostics),
 		setupDiagnosticsDropped: asNumber(o.setupDiagnosticsDropped),
 		sessionId: asString(o.sessionId),
@@ -685,6 +700,10 @@ export function modelCapabilities(
 
 export interface DispatchTask {
 	task: string;
+	/** Snapshot selected by this dispatch, or carried from a continuation. */
+	profile?: ProfileSnapshot;
+	/** Presentation label resolved by execute(); carried through continuation. */
+	label?: string;
 	model?: string;
 	thinking?: ThinkingLevel;
 	tools?: string[];
@@ -2693,6 +2712,7 @@ export async function dispatchWorker(
 
 	const record: WorkerRecord = {
 		id,
+		label: task.label ?? continuation?.label ?? null,
 		task: task.task,
 		model: modelId,
 		bootstrapModel: modelId,
@@ -2723,6 +2743,7 @@ export async function dispatchWorker(
 		toolSources,
 		sharedContextId: snapshotId,
 		sharedContextBytes,
+		profile: task.profile ?? continuation?.profile,
 		setupDiagnostics: [],
 		setupDiagnosticsDropped: 0,
 		sessionId: "",
@@ -2847,6 +2868,14 @@ export async function dispatchWorker(
 			tools: resolvedTools,
 			customTools: [submitResultTool(files.result, endRun, () => live.session?.sessionManager.getSessionId() ?? "")],
 		});
+		try {
+			if (constructedSessionIds.size === 0 && task.profile?.grounding.length) {
+				await created.session.sendCustomMessage(profileMessage(task.profile), { triggerTurn: false });
+			}
+		} catch (error) {
+			created.session.dispose();
+			throw error;
+		}
 		const createdSessionId = options.sessionManager.getSessionId();
 		constructedSessionIds.add(createdSessionId);
 		sharedWorkerState.workerSessionIds.add(createdSessionId);
@@ -3801,15 +3830,16 @@ export function statusLine(record: WorkerRecord, now = Date.now()): string {
 			: paused
 				? "interrupted"
 				: record.state;
-	const parts = [
-		safeId,
+	const parts = [safeId];
+	if (record.label && record.label !== record.id) parts.push(`label: ${compactStatusText(record.label, 256)}`);
+	parts.push(
 		state + (record.state === "running" && !paused ? (owned ? "" : " (other session)") : ""),
 		compactStatusText(record.model, 512),
 		compactStatusText(thinkingLabel(record), 256),
 		`${elapsed}s`,
 		`${record.usage?.turns ?? 0} turns`,
 		`${record.usage?.toolCalls ?? 0} tools`,
-	];
+	);
 	if (record.state === "running" && record.currentTool) {
 		parts.push(`now: ${compactStatusText(record.currentTool, 512)}`);
 	}
@@ -4074,6 +4104,7 @@ export function inspectWorker(id: string): InspectView {
 		`model: ${inspectInline(record.model)}`,
 		inspectInline(thinkingLabel(record), 256),
 		`task: ${task || "(empty)"}`,
+		`profile: ${record.profile ? `${inspectInline(record.profile.path, 512)} · sha256:${record.profile.sha256}` : "none"}`,
 		`shared context: ${record.sharedContextId ? `${inspectInline(record.sharedContextId, 64)} · ${record.sharedContextBytes} bytes` : "none"}`,
 		`cwd: ${inspectInline(record.cwd || "(unknown)")}`,
 		`current tool: ${inspectInline(record.currentTool ?? "none", 512)}`,
@@ -4291,7 +4322,15 @@ const modelSchema = Type.String({
 	maxLength: MODEL_INPUT_MAX_LENGTH,
 });
 
+const profileSchema = Type.String({
+	minLength: 1,
+	maxLength: 4096,
+	description:
+		"Explicit JSON profile path, relative to the dispatching session cwd. Defaults and source pointers only; no tool restrictions or authority.",
+});
+
 const taskSchema = Type.Object({
+	profile: Type.Optional(profileSchema),
 	task: Type.String({ minLength: 1 }),
 	model: Type.Optional(modelSchema),
 	thinking: Type.Optional(thinkingSchema),
@@ -4302,6 +4341,7 @@ const taskSchema = Type.Object({
 });
 
 type TaskParams = {
+	profile?: string;
 	task: string;
 	model?: string;
 	thinking?: ThinkingLevel;
@@ -4312,6 +4352,7 @@ type TaskParams = {
 };
 
 type SubagentParams = {
+	profile?: string;
 	task?: string;
 	tasks?: TaskParams[];
 	model?: string;
@@ -4360,8 +4401,9 @@ const subagentTool = defineTool({
 		"Dispatch isolated Pi worker sessions for independent work: verification, investigation, review, research, drafting, or bounded implementation.",
 		"Choose exactly one form. Single mode: pass `task` (plus optional model/thinking/tools/cwd). Batch mode: pass a non-empty `tasks` array for parallel dispatch; each task may carry its own fields, otherwise it inherits the top-level defaults.",
 		"Every worker runs in the BACKGROUND: the call completes worker setup and returns stable worker ids, then the model run proceeds in the background under this session's control; a subagent_result message arrives when a worker settles without explicit cancellation (follow-up delivery, triggers a turn when idle). Explicit cancellation is acknowledged by its control response and adds no duplicate follow-up. submit_result stores at most 50KB and marks larger submissions [truncated].",
-		"Model: explicit `model` (bare id or provider/id) is checked against registry availability and configured auth only. Omitted model inherits the parent's current model. Extension-registered providers are copied into the worker through Pi's public registration facade. Persisted and environment auth resolve; a parent-only runtime API-key override does not transfer. Omitted cwd inherits the session cwd.",
-		"Thinking: an explicit level the model cannot run fails that task and names the levels the model supports. An omitted level inherits the parent's level, is clamped to the model, and reports the effective level with the requested one.",
+		"Model: explicit `model` (bare id or provider/id) is checked against registry availability and configured auth only. Without an explicit or profile model, the worker inherits the parent's current model. Extension-registered providers are copied into the worker through Pi's public registration facade. Persisted and environment auth resolve; a parent-only runtime API-key override does not transfer. Without an explicit or profile cwd, the worker inherits the session cwd.",
+		"Thinking: an explicit level the model cannot run fails that task and names the levels the model supports. Without an explicit or profile level, the worker inherits the parent's level, is clamped to the model, and reports the effective level with the requested one.",
+		"Profile: optional JSON file path at top level or per task. A task profile replaces the top-level profile. Explicit task fields beat explicit top-level fields, then selected profile defaults, then ordinary session defaults. Profile model/thinking/cwd and source pointers are snapshotted; profiles never select tools or confer authority. Workers also carry a presentation label: a profile `name` or a task-derived fallback.",
 		"Tools: omitted `tools` reproduces this session's active tool surface exactly. Built-ins are rebuilt for the worker cwd, and extension registration files are reloaded from their registered source paths. The constructed surface is checked before provider work. Provided `tools` restricts the worker to exactly that set plus the submit_result protocol tool; a tool name that is not in the current registry fails the dispatch. `tools: []` is a declared EMPTY allowlist, not an omission: it yields a worker that has submit_result and nothing else.",
 		"Context: a worker loads what a session started in its `cwd` loads — that directory's settings, extensions, skills, prompt templates, and context files (AGENTS.md), under the same project-trust resolution. A worker runs the normal extension lifecycle, so an extension tool that opens its resources at session_start works inside a worker; a tool that still fails is reported with its failure count when the worker finishes.",
 		"Live workers can be steered (subagent_steer), interrupted and resumed (subagent_interrupt), cancelled (subagent_kill), oriented (subagent_status), and content-inspected (subagent_inspect). A terminal worker with a retained session can continue as a new linked worker (subagent_continue); its record, result, and transcript remain unchanged. Results persist in the store and are collectable later or from a replacement session (subagent_collect).",
@@ -4383,6 +4425,7 @@ const subagentTool = defineTool({
 		"Set `deadlineMinutes` from the task you actually wrote: a quick lookup or review is minutes, a broad investigation or implementation is longer. A paused worker is the signal that your estimate or the task was wrong — inspect its transcript, then resume, redirect, or kill it instead of blindly resuming.",
 	],
 	parameters: Type.Object({
+		profile: Type.Optional(profileSchema),
 		task: Type.Optional(Type.String({ minLength: 1 })),
 		tasks: Type.Optional(
 			Type.Array(taskSchema, {
@@ -4419,10 +4462,11 @@ const subagentTool = defineTool({
 			);
 		} else {
 			const config = [
-				`model:    ${args.model ?? "inherit (parent default)"}`,
-				`thinking: ${args.thinking ?? "inherit (parent level)"}`,
+				`profile:  ${args.profile ?? "none"} (a task profile replaces this; the result reports effective values)`,
+				`model:    ${args.model ?? "selected profile default, otherwise parent"}`,
+				`thinking: ${args.thinking ?? "selected profile default, otherwise parent"}`,
 				`tools:    ${args.tools ? (args.tools.length ? args.tools.join(", ") : "submit_result only") : "inherit (parent active surface)"}`,
-				`cwd:      ${args.cwd ?? "inherit (session cwd)"}`,
+				`cwd:      ${args.cwd ?? "selected profile default, otherwise session cwd"}`,
 				`deadline: ${args.deadlineMinutes === undefined ? `default (${DEFAULT_DEADLINE_MINUTES}m)` : args.deadlineMinutes === 0 ? "none" : `${args.deadlineMinutes}m`}`,
 				`budget:   ${args.budgetUsd === undefined ? (DEFAULT_BUDGET_USD ? `default ($${DEFAULT_BUDGET_USD})` : "none") : args.budgetUsd === 0 ? "none" : `$${args.budgetUsd}`}`,
 				`shared:   ${args.sharedContext ? `${sharedContextSnapshotId(args.sharedContext)} (${Buffer.byteLength(args.sharedContext, "utf-8")} bytes, every worker)` : "none"}`,
@@ -4481,34 +4525,40 @@ const subagentTool = defineTool({
 			model: params.model,
 			thinking: params.thinking,
 			tools: params.tools,
-			cwd: params.cwd ?? ctx.cwd,
+			// A profile cwd slots between an explicit dispatch cwd and the session cwd.
+			cwd: params.cwd,
 			deadlineMinutes: params.deadlineMinutes,
 			budgetUsd: params.budgetUsd,
 		};
-		// Every worker of this dispatch receives the same snapshot bytes.
-		const tasks: DispatchTask[] = params.tasks?.length
-			? params.tasks.map((task) => ({
-					task: task.task,
-					model: task.model ?? defaults.model,
-					thinking: task.thinking ?? defaults.thinking,
-					tools: task.tools ?? defaults.tools,
-					cwd: task.cwd ?? defaults.cwd,
-					deadlineMinutes: task.deadlineMinutes ?? defaults.deadlineMinutes,
-					budgetUsd: task.budgetUsd ?? defaults.budgetUsd,
-					sharedContext,
-				}))
-			: [
-					{
-						task: params.task ?? "",
-						model: defaults.model,
-						thinking: defaults.thinking,
-						tools: defaults.tools,
-						cwd: defaults.cwd,
-						deadlineMinutes: defaults.deadlineMinutes,
-						budgetUsd: defaults.budgetUsd,
-						sharedContext,
-					},
-				];
+		// Every worker of this dispatch receives the same snapshot bytes. Selected
+		// profiles resolve once per resolved path, before any batch worker starts.
+		const profiles = new Map<string, ProfileSnapshot>();
+		let nextLabelOrdinal = listWorkers().filter((worker) => worker.ownerSession === ctx.sessionManager.getSessionId()).length;
+		const tasks: DispatchTask[] = (params.tasks?.length ? params.tasks : [{ task: params.task ?? "" }]).map((task) => {
+			const selected = task.profile ?? params.profile;
+			let profile: ProfileSnapshot | undefined;
+			if (selected !== undefined) {
+				const path = resolve(ctx.cwd, selected);
+				profile = profiles.get(path);
+				if (!profile) {
+					profile = loadProfile(selected, ctx.cwd);
+					profiles.set(path, profile);
+				}
+			}
+			const resolved = applyProfile(task, defaults, profile);
+			nextLabelOrdinal += 1;
+			const label = profile?.name ?? deriveWorkerLabel(task.task, nextLabelOrdinal);
+			return {
+				...resolved,
+				profile,
+				label,
+				cwd: resolved.cwd ?? ctx.cwd,
+				tools: task.tools ?? defaults.tools,
+				deadlineMinutes: task.deadlineMinutes ?? defaults.deadlineMinutes,
+				budgetUsd: task.budgetUsd ?? defaults.budgetUsd,
+				sharedContext,
+			};
+		});
 
 		if (tasks.some((task) => !task.task.trim())) {
 			// Pi sets the error flag only when execute throws; a returned isError is
@@ -4523,7 +4573,7 @@ const subagentTool = defineTool({
 					{
 						model: defaults.model,
 						thinking: defaults.thinking,
-						cwd: defaults.cwd,
+						cwd: defaults.cwd ?? ctx.cwd,
 						deadlineMinutes: defaults.deadlineMinutes,
 						budgetUsd: defaults.budgetUsd,
 					},
@@ -4542,7 +4592,13 @@ const subagentTool = defineTool({
 			const shared = outcome.record?.sharedContextId
 				? ` · shared:${outcome.record.sharedContextId} (${outcome.record.sharedContextBytes}B)`
 				: "";
-			return `${outcome.id} · background · ${outcome.record?.model ?? "?"} · ${thinking} · cwd:${outcome.record?.cwd ?? "?"}${shared}${setup ? `\n    ${setup}` : ""}`;
+			const profile = outcome.record?.profile;
+			const profileLabel = profile ? ` · profile:${inspectInline(profile.path, 512)} sha256:${profile.sha256}` : "";
+			const label =
+				outcome.record?.label && outcome.record.label !== outcome.id
+					? ` · ${inspectInline(outcome.record.label, 64)}`
+					: "";
+			return `${outcome.id} · background${label}${profileLabel} · ${outcome.record?.model ?? "?"} · ${thinking} · cwd:${outcome.record?.cwd ?? "?"}${shared}${setup ? `\n    ${setup}` : ""}`;
 		});
 		const started = outcomes.filter((outcome) => outcome.state === "running").length;
 		const guidance =
@@ -4558,6 +4614,7 @@ const subagentTool = defineTool({
 			details: {
 				workers: outcomes.map((outcome) => ({
 					id: outcome.id,
+					label: outcome.record?.label ?? null,
 					state: outcome.state,
 					model: outcome.record?.model ?? null,
 					thinking: outcome.record?.thinking ?? null,
@@ -4566,6 +4623,7 @@ const subagentTool = defineTool({
 					deadlineMinutes: outcome.record?.deadlineMinutes ?? null,
 					budgetUsd: outcome.record?.budgetUsd ?? null,
 					sessionId: outcome.record?.sessionId ?? null,
+					profile: outcome.record?.profile ?? null,
 					sharedContextId: outcome.record?.sharedContextId ?? null,
 					sharedContextBytes: outcome.record?.sharedContextBytes ?? 0,
 					error: outcome.error ?? null,

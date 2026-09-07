@@ -35,6 +35,8 @@ export default function (pi) {
   pi.on("session_start", async (_event, ctx) => {
     appendFileSync(${JSON.stringify(marker)}, "start\\n");
     appendFileSync(${JSON.stringify(sessionMarkerPath(label))}, ctx.sessionManager.getSessionId() + "\\n");
+    const profileEntry = ctx.sessionManager.getBranch().find((entry) => entry.type === "custom_message" && entry.customType === "subagent_profile");
+    if (profileEntry) writeFileSync(${JSON.stringify(join(agentDir, "profile-at-session-start.json"))}, JSON.stringify(profileEntry), "utf8");
     const request = ${JSON.stringify(replacementTurnRequest)};
     if (existsSync(request)) {
       rmSync(request, { force: true });
@@ -130,6 +132,7 @@ export default function (pi) {
   const respond = (context) => {
     const path = ${JSON.stringify(promptPath(label))};
     if (!existsSync(path)) writeFileSync(path, context.systemPrompt ?? "", "utf8");
+    writeFileSync(path + ".context.json", JSON.stringify(context), "utf8");
     return fauxAssistantMessage(fauxToolCall("submit_result", { content: "CWD_RESULT" }), { stopReason: "toolUse" });
   };
   faux.setResponses(Array.from({ length: 8 }, () => respond));
@@ -143,13 +146,25 @@ export default function (pi) {
 
 seedProject(trustedCwd, "trusted");
 seedProject(untrustedCwd, "untrusted");
-const providerLabels = ["trusted", "reload", "command", "replacement", "slow-replacement", "failure", "untrusted"];
+const providerLabels = [
+	"trusted",
+	"reload",
+	"command",
+	"replacement",
+	"slow-replacement",
+	"failure",
+	"untrusted",
+	"profile",
+	"profile-override",
+	"fallback",
+];
 const providerPaths = providerLabels.map(seedProvider);
 writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: providerPaths }), "utf8");
 
 let parentSession: any = null;
 try {
 	const sub = await import("./index.ts");
+	const { deriveWorkerLabel } = await import("./profiles.ts");
 	const {
 		createAgentSessionFromServices,
 		createAgentSessionServices,
@@ -180,6 +195,9 @@ try {
 	const parentSessionId = parentSession.sessionManager.getSessionId();
 	sub.sharedWorkerState.workerSessionIds.add(parentSessionId);
 	await parentSession.bindExtensions({});
+	// Native registration refreshes availability asynchronously. Synchronous
+	// dispatch validation needs the completed public runtime snapshot.
+	await parentSession.modelRuntime.refresh({ allowNetwork: false });
 
 	const dispatch = parentSession.extensionRunner.getToolDefinition("subagent");
 	const kill = parentSession.extensionRunner.getToolDefinition("subagent_kill");
@@ -337,6 +355,145 @@ try {
 		true,
 		"context files are not trust-gated, so the worker still loads them",
 	);
+
+	const profileDir = join(parentCwd, "profiles");
+	mkdirSync(profileDir);
+	const selectedProfilePath = join(profileDir, "check.json");
+	const selectedProfile = {
+		name: "review-check",
+		model: "cwd-provider-profile/cwd-model-profile",
+		thinking: "off",
+		cwd: trustedCwd,
+		grounding: [{ name: "Check contract", path: "./contract.md" }],
+	};
+	writeFileSync(selectedProfilePath, JSON.stringify(selectedProfile));
+	const promptDir = join(trustedCwd, ".pi", "prompts");
+	mkdirSync(promptDir, { recursive: true });
+	writeFileSync(join(promptDir, "profile-check.md"), "PROFILE_TEMPLATE_EXPANDED $1");
+	const profileContext = {
+		cwd: parentCwd,
+		thinkingLevel: "off",
+		model: fauxModel("trusted"),
+		modelRegistry: parentRegistry,
+		sessionManager: { getSessionId: () => parentSessionId },
+		ui: { setStatus: () => undefined },
+	};
+	const waitForProfile = async (id: string) => {
+		const deadline = Date.now() + 10_000;
+		let record = sub.readWorker(id);
+		while (Date.now() < deadline && record?.state === "running") {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			record = sub.readWorker(id);
+		}
+		assert.equal(record?.state, "done", JSON.stringify(record));
+		return record!;
+	};
+	const profileResult = (await dispatch.execute(
+		"profile",
+		{
+			task: "/profile-check input",
+			tasks: [],
+			profile: "profiles/check.json",
+		},
+		undefined,
+		undefined,
+		profileContext,
+	)) as any;
+	const profileId = profileResult.details.workers[0].id;
+	const profileRecord = await waitForProfile(profileId);
+	assert.equal(profileRecord.cwd, trustedCwd);
+	assert.equal(profileRecord.model, selectedProfile.model);
+	assert.equal(profileRecord.thinking, "off");
+	assert.equal(profileRecord.label, "review-check");
+	assert.match(readFileSync(join(agentDir, "profile-at-session-start.json"), "utf8"), /Check contract/);
+	assert.deepEqual(profileRecord.resolvedTools.slice().sort(), ["read", "subagent", "submit_result"]);
+	assert.deepEqual(profileResult.details.workers[0].profile, profileRecord.profile);
+	assert.equal(profileResult.details.workers[0].label, "review-check");
+	const received = JSON.parse(readFileSync(`${promptPath("profile")}.context.json`, "utf8"));
+	assert.match(received.systemPrompt, /SENTINEL_CONTEXT_FILE_trusted/);
+	assert.match(received.systemPrompt, /sentinel-skill-trusted/);
+	assert.ok(!received.systemPrompt.includes("Check contract"), "profile pointers never replace system instructions");
+	const messages = JSON.stringify(received.messages);
+	assert.match(messages, /PROFILE_TEMPLATE_EXPANDED input/);
+	assert.ok(messages.includes(join(profileDir, "contract.md")));
+	assert.ok(messages.indexOf("Check contract") < messages.indexOf("PROFILE_TEMPLATE_EXPANDED"));
+
+	// A task-selected file replaces unused top-level profile input. Explicit
+	// fields still win, and an explicit empty tool list retains its meaning.
+	const overrideResult = (await dispatch.execute(
+		"profile-override",
+		{
+			profile: "does-not-exist.json",
+			model: "cwd-provider-profile-override/cwd-model-profile-override",
+			cwd: untrustedCwd,
+			tasks: [{ task: "override task", profile: "profiles/check.json", tools: [] }],
+		},
+		undefined,
+		undefined,
+		profileContext,
+	)) as any;
+	const overrideRecord = await waitForProfile(overrideResult.details.workers[0].id);
+	assert.equal(overrideRecord.model, "cwd-provider-profile-override/cwd-model-profile-override");
+	assert.equal(overrideRecord.cwd, untrustedCwd);
+	assert.deepEqual(overrideRecord.resolvedTools, ["submit_result"]);
+	assert.equal(overrideRecord.profile?.model, selectedProfile.model);
+	assert.equal(overrideRecord.label, "review-check");
+
+	// Profile preflight completes before any batch worker exists.
+	const beforeInvalid = sub.sharedWorkerState.workerSessionIds.size;
+	await assert.rejects(
+		() =>
+			dispatch.execute(
+				"profile-invalid",
+				{
+					tasks: [
+						{ task: "valid", profile: "profiles/check.json" },
+						{ task: "invalid", profile: "missing.json" },
+					],
+				},
+				undefined,
+				undefined,
+				profileContext,
+			),
+		/Profile .*ENOENT/,
+	);
+	assert.equal(sub.sharedWorkerState.workerSessionIds.size, beforeInvalid);
+
+	// Continuation retains effective settings and transcript input after the
+	// selected file disappears. It neither reloads nor reapplies profile defaults.
+	rmSync(selectedProfilePath);
+	const continuation = parentSession.extensionRunner.getToolDefinition("subagent_continue");
+	const continued = (await continuation.execute(
+		"profile-continue",
+		{ id: profileId, message: "Continue the check" },
+		undefined,
+		undefined,
+		profileContext,
+	)) as any;
+	const continuedRecord = await waitForProfile(continued.details.worker.id);
+	assert.equal(continuedRecord.cwd, trustedCwd);
+	assert.equal(continuedRecord.model, selectedProfile.model);
+	assert.deepEqual(continuedRecord.profile, profileRecord.profile);
+	assert.equal(continuedRecord.label, "review-check");
+	assert.deepEqual(continuedRecord.resolvedTools, profileRecord.resolvedTools);
+	const continuedContext = readFileSync(`${promptPath("profile")}.context.json`, "utf8");
+	assert.ok(continuedContext.includes("Check contract"));
+	assert.ok(continuedContext.includes("Continue the check"));
+
+	// A profile-less dispatch derives a task-based label with the per-owner-session
+	// dispatch ordinal, seeded from the workers this session already persisted.
+	const fallbackOrdinal = sub.listWorkers().filter((worker) => worker.ownerSession === parentSessionId).length + 1;
+	const fallbackResult = (await dispatch.execute(
+		"profile-fallback",
+		{ task: "Fallback label check", model: "cwd-provider-fallback/cwd-model-fallback" },
+		undefined,
+		undefined,
+		profileContext,
+	)) as any;
+	const fallbackRecord = await waitForProfile(fallbackResult.details.workers[0].id);
+	assert.equal(fallbackRecord.label, deriveWorkerLabel("Fallback label check", fallbackOrdinal));
+	assert.match(fallbackRecord.label ?? "", /^fallback-label-check#\d+$/);
+	assert.equal(fallbackResult.details.workers[0].label, fallbackRecord.label);
 
 	sub.shutdownWorkerSession(parentSession);
 	parentSession = null;

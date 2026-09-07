@@ -285,6 +285,60 @@ describe("worker overview and separate communications", () => {
 			"overview",
 		);
 	});
+	it("overview rows render a stored label instead of the worker id", async () => {
+		await panel(
+			deps({ readWorkers: () => [worker("bg-direct", { label: "review-check" })] }),
+			async (component) => {
+				const output = text(component, 180);
+				assert.match(output, /review-check\s+running/);
+			},
+			theme,
+			"overview",
+		);
+	});
+	it("overview rows fall back to the id when a label is null, absent, or equal to the id", async () => {
+		await panel(
+			deps({
+				readWorkers: () => [worker("bg-null", { label: null }), worker("bg-self", { label: "bg-self" }), worker("bg-plain")],
+			}),
+			async (component) => {
+				const output = text(component, 180);
+				assert.match(output, /bg-null/);
+				assert.match(output, /bg-self/);
+				assert.match(output, /bg-plain/);
+			},
+			theme,
+			"overview",
+		);
+	});
+	it("thread labels show a participant label while details keep exact ids", async () => {
+		const current = snapshot();
+		current.participants = [
+			participant("root", null),
+			participant("worker-a", "root", { label: "review-check" }),
+			participant("worker-b", "worker-a"),
+		];
+		current.events = [
+			event("peer-1", "peer body", {
+				actorId: "worker-a",
+				recipientId: "worker-b",
+				exchange: { kind: "peer", text: "peer body" },
+			}),
+		];
+		await panel(
+			deps({ collaboration: async () => current }),
+			async (component) => {
+				const output = text(component, 180);
+				assert.match(output, /review-check/);
+				component.handleInput("\r");
+				const details = text(component, 140);
+				assert.match(details, /Actor: worker-a/);
+				assert.match(details, /Recipient: worker-b/);
+			},
+			theme,
+			"communications",
+		);
+	});
 	it("shows peer and manager conversations without management-tool noise, with a separate source view", async () => {
 		const current = snapshot();
 		current.events = [
@@ -354,11 +408,12 @@ describe("worker overview and separate communications", () => {
 			async (component, terminal) => {
 				terminal.rows = 16;
 				const wide = text(component, 180);
-				assert.match(wide, /CONVERSATIONS · 2 · Manager ↔ peers/);
+				assert.match(wide, /CONVERSATIONS · 2/);
+				assert.doesNotMatch(wide, /Manager ↔ peers/);
 				assert.match(wide, /worker-a ↔ worker-b/);
 				assert.match(wide, /EXCHANGES · unverified/);
 				assert.doesNotMatch(wide, /\d+ exchange record/);
-				assert.doesNotMatch(wide, /root ↔ worker-c/);
+				assert.match(wide, /root ↔ worker-c\s+1 10:00:00 report/);
 				assert.match(wide, /worker-c/);
 				const lines = wide.split("\n");
 				const hint = lines.findIndex((line) => /earlier exchange records/.test(line));
@@ -1312,7 +1367,7 @@ describe("dashboard ergonomics", () => {
 			deps({ collaboration: async () => current }),
 			async (component) => {
 				const output = text(component, 180);
-				assert.match(output, /CONVERSATIONS · 1 · Manager ↔ peers/);
+				assert.match(output, /CONVERSATIONS · 1 · root ↔ peers/);
 				assert.match(output, /worker-a/);
 				assert.doesNotMatch(output, /exchange record/);
 				assert.match(output, /\d{2}:\d{2}:\d{2}.*root → worker-a.*steer/);

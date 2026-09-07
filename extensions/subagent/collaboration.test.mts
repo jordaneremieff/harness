@@ -366,3 +366,20 @@ test("ownership cycles and missing owners yield explicit manager placeholders", 
 	assert.equal(orphan.participants[0].state, "unavailable");
 	assert.equal(orphan.participants[1].parentId, "unavailable:bg-orphan");
 });
+
+test("worker participants carry a stored label or fall back to the record id", async () => {
+	const query = createCollaborationReader({
+		current: manager(),
+		records: () => [
+			record("bg-labeled", workerSession, rootId, { label: "review-check" }),
+			record("bg-unlabeled", otherId, rootId),
+			record("bg-self", nestedSession, rootId, { label: "bg-self" }),
+		],
+		managers: () => [],
+	});
+	const result = await query({});
+	const byId = new Map(result.participants.map((participant) => [participant.id, participant]));
+	assert.equal(byId.get("bg-labeled")?.label, "review-check");
+	assert.equal(byId.get("bg-unlabeled")?.label, "bg-unlabeled");
+	assert.equal(byId.get("bg-self")?.label, "bg-self");
+});

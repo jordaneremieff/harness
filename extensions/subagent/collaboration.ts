@@ -213,7 +213,7 @@ export function createCollaborationReader(
 			participants.push({
 				id: record.id,
 				parentId: parent ?? familyId,
-				label: record.id,
+				label: record.label ?? record.id,
 				task: clip(record.task, 2048),
 				model: clip(record.model, 256),
 				state: record.state === "running" && record.interruptedAt ? "paused" : record.state,

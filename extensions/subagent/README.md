@@ -72,8 +72,100 @@ determines what the worker can do there.
 ```
 
 Use exactly one dispatch form: `task` for one worker or a non-empty `tasks`
-array for a batch. Per-task fields: `task` (required), `model`, `thinking`,
-`tools`, `cwd`, `deadlineMinutes`, `budgetUsd`.
+array for a batch. Per-task fields: `task` (required), `profile`, `model`,
+`thinking`, `tools`, `cwd`, `deadlineMinutes`, `budgetUsd`.
+
+### Dispatch profiles
+
+A profile is an explicitly selected JSON file of reusable defaults and source
+pointers. It configures a dispatch, not a primary session, role, persona, or
+claim of expertise. No profile is discovered or selected automatically;
+omitting `profile` preserves ordinary dispatch behavior. Keep machine-specific
+profiles outside the shared package. Share only portable, repository-owned
+source paths and defaults; this extension ships no profile roster.
+
+For example, save this as `check-profile.json` at a checkout root:
+
+```json
+{
+  "name": "review-check",
+  "cwd": ".",
+  "grounding": [
+    { "name": "Repository instructions", "path": "AGENTS.md" }
+  ]
+}
+```
+
+Select the same file for independent tasks without repeating those pointers:
+
+```json
+{
+  "profile": "check-profile.json",
+  "tasks": [
+    { "task": "Review the parser. Cite checked source and submit all findings and limits." },
+    { "task": "Review the tests. Cite uncovered behavior and submit the complete result.", "cwd": "./extensions/subagent" }
+  ]
+}
+```
+
+Each real task still needs its objective, output contract, source guidance, and
+boundaries. Customize optional `model` and `thinking` using a model and level
+available in the current session. Model availability, authentication, and level
+checks remain unchanged.
+
+The file accepts only `name`, `model`, `thinking`, `cwd`, and `grounding`. Each
+grounding item accepts only `name` and `path`. Tool, system-prompt, permission,
+environment, resource-loader, inheritance, and arbitrary settings fields are
+rejected. The file and resolved snapshot each have a 16 KiB UTF-8 limit;
+grounding accepts at most 16 pointers. A profile `name` is an optional display
+label: one word or a short kebab phrase, at most 64 characters, matching
+`[a-z0-9]+(-[a-z0-9])*` case-insensitively. It is stored on the snapshot only,
+never applied as a dispatch default. Source names have a 160-character limit;
+paths have a 4096-character limit. Text fields reject controls. Invalid UTF-8,
+JSON, fields, and nonregular files fail explicitly.
+
+Resolution order is explicit task field, explicit top-level field, selected
+profile default, then ordinary session default. A task profile replaces the
+top-level profile entirely; it does not merge files. Only selected files are
+read. All selected profiles resolve before any worker in the batch starts; each
+resolved path is read once per dispatch. No persistent cache exists.
+
+The profile path is relative to the dispatching session's cwd. Cwd and source
+paths inside the file are relative to the file's directory. Explicit dispatch
+cwd retains its existing path semantics. No shell, environment, or tilde
+expansion occurs in profile paths. Referenced sources are not opened, checked
+for existence, or treated as authority. Workers read relevant sources through
+their ordinary tools. A missing source remains a worker-visible knowledge gap.
+
+Profile pointers enter the initial worker transcript through a Pi custom
+message before `session_start` hooks, not through the system prompt or a
+resource-loader override. Task command and prompt-template expansion remain
+normal. Ordinary cwd resources, project trust, tool inheritance, and explicit
+`tools: []` remain unchanged. Profiles confer no authority or tool restrictions.
+
+Dispatch details and the worker record retain `profile`: the selected absolute
+path, SHA-256 of the file bytes, resolved defaults, and source pointers. The
+record's existing model, thinking, cwd, and tool fields describe effective
+settings. The digest identifies input bytes; it does not snapshot referenced
+source contents or guarantee identical future outputs. Inspection names the
+file and digest. Keep credentials out of profile files and source names.
+
+A continuation keeps effective configuration and retained transcript context;
+it never rereads the profile. A new-session command deliberately starts new
+conversation context without replaying profile pointers. Reload retains normal
+session history. Profile metadata describes initial selection, not a persistent
+instruction layer.
+
+### Worker labels
+
+Every worker carries a presentation `label`. A profile `name` becomes the
+label without an ordinal suffix (duplicates share the label; exact ids stay in
+details). A profile-less dispatch derives a task-based label from the first
+three normalized task tokens, joined and capped, plus a per-owner-session
+dispatch ordinal, for example `review-parser#2`. The label appears in the
+dashboard overview identity column, thread labels, dispatch result lines, and
+`subagent_status`; exact worker ids stay in details, inspection, and control
+surfaces.
 
 Optional top-level `sharedContext` supplies one text snapshot to the whole
 dispatch. Every worker receives the exact supplied bytes ahead of its own task.
@@ -85,7 +177,8 @@ guide, or task boundary. Cwd resources, tool selection, provider resolution,
 project trust, and task permissions remain unchanged.
 
 - **model** — bare id or `provider/id`, checked against registry availability
-  and configured auth. Omitted: inherits the parent's current model. Model
+  and configured auth. Without an explicit or profile value: inherits the
+  parent's current model. Model
   selection mirrors the dispatching session's registry: a model that only the
   working directory's own extensions provide is not selectable by name, the
   same way a tool the parent never loaded is not inheritable. Before session
@@ -105,11 +198,12 @@ project trust, and task permissions remain unchanged.
   against the levels the model supports (pi's own
   `getSupportedThinkingLevels`); an unsupported level fails that task and names
   the supported set, because pi would otherwise clamp it silently and a model
-  without reasoning support lands on `off`. Omitted: inherits the parent's
-  current level, default `medium`, and pi clamps it. The record keeps both
+  without reasoning support lands on `off`. Without an explicit or profile
+  value: inherits the parent's current level, default `medium`, and pi clamps
+  it. The record keeps both
   values — `thinking` is what ran, `thinkingRequested` is what was asked for —
   and every roster, dispatch, and result line shows the requested level when it
-  differs.
+  differs. A profile value is a declared level, not an inherited level.
 - **tools** — omitted: the worker snapshots the dispatching session's current
   active tool surface. The dispatching session's live registry wins, and its
   session-keyed recorded surface is the fallback for a fresh module instance.
@@ -130,7 +224,8 @@ project trust, and task permissions remain unchanged.
   separate fact. If an extension source changed after the parent session loaded
   it, run `/reload` and retry. If no source changed, keep public registration
   metadata independent of the worker cwd and configuration.
-- **cwd** — worker working directory. Omitted: session cwd.
+- **cwd** — worker working directory. Without an explicit or profile value:
+  session cwd.
 - **deadlineMinutes** — how long this task should take, judged by the
   dispatching agent from the task it just wrote. Omitted: the
   `PI_SUBAGENT_DEADLINE_MINUTES` setting (default 30). `0` removes the deadline

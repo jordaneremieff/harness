@@ -198,7 +198,7 @@ function noticeFooter(width: number, escapeHint: string, notice: string): string
 
 /**
  * Grouped key hints: navigation, opening, and destructive keys stay in separate groups, and the
- * escape hint survives every width. Groups drop from the end when the row does not fit.
+ * escape hint survives every width. Single actions drop from the end when the row does not fit.
  */
 export function footerLine(
 	width: number,
@@ -211,13 +211,30 @@ export function footerLine(
 	if (notice) return noticeFooter(width, plainOf(dismiss), notice);
 	const kept = groups.filter((group) => group.length).map((group) => [...group]);
 	const plain = () =>
-		[...kept.map((group) => group.map(plainOf).join(" · ")), plainOf(dismiss)].join(" │ ");
-	while (kept.length && visibleWidth(plain()) > width) kept.pop();
+		[...kept.filter((group) => group.length).map((group) => group.map(plainOf).join(" · ")), plainOf(dismiss)].join(
+			" │ ",
+		);
+	while (visibleWidth(plain()) > width) {
+		let dropped = false;
+		for (let index = kept.length - 1; index >= 0; index--) {
+			if (kept[index].length) {
+				kept[index].pop();
+				dropped = true;
+				break;
+			}
+		}
+		if (!dropped) break;
+	}
 	if (visibleWidth(plain()) > width) return plainLine(plainOf(dismiss).slice(0, Math.max(0, width)), width);
 	const styled = (action: FooterAction) =>
 		action.key ? `${styles.key(action.key)} ${styles.label(action.label)}` : styles.label(action.label);
 	return plainLine(
-		[...kept.map((group) => group.map(styled).join(styles.rule(" · "))), styled(dismiss)].join(styles.rule(" │ ")),
+		[
+			...kept
+				.filter((group) => group.length)
+				.map((group) => group.map(styled).join(styles.rule(" · "))),
+			styled(dismiss),
+		].join(styles.rule(" │ ")),
 		width,
 	);
 }
@@ -603,6 +620,7 @@ class SubagentConsole {
 	private displayId(id: string): string {
 		const participant = this.participant(id);
 		if (participant && !participant.workerId) return participant.label;
+		if (participant?.workerId && participant.label && participant.label !== id) return participant.label;
 		if (id.length <= 14) return id;
 		const ids = [
 			...(this.snapshot?.participants.map((item) => item.id) ?? []),
@@ -616,6 +634,10 @@ class SubagentConsole {
 	private participantLabel(id: string): string {
 		return this.displayId(id);
 	}
+	/** Overview identity column: a stored label wins, otherwise the abbreviated id. */
+	private rosterLabel(record: WorkerRecord): string {
+		return record.label && record.label !== record.id ? record.label : this.displayId(record.id);
+	}
 	private managerId(): string | undefined {
 		return this.snapshot?.participants.find((participant) => !participant.workerId)?.id;
 	}
@@ -626,10 +648,10 @@ class SubagentConsole {
 		if (event.recipientId === manager) return "in";
 		return "peer";
 	}
-	private threadLabel(thread: { participants: readonly string[] }): string {
+	private threadLabel(thread: { participants: readonly string[] }, collapse = true): string {
 		const manager = this.managerId();
 		const peers = manager ? thread.participants.filter((id) => id !== manager) : [...thread.participants];
-		if (manager && peers.length && thread.participants.includes(manager))
+		if (collapse && manager && peers.length && thread.participants.includes(manager))
 			return peers.map((id) => this.participantLabel(id)).join(" ↔ ");
 		return thread.participants.map((id) => this.participantLabel(id)).join(" ↔ ");
 	}
@@ -1364,7 +1386,8 @@ class SubagentConsole {
 					headerPair(width, title, this.theme.fg("muted", "m communications")),
 					plainLine(this.theme.fg("muted", status.text), width),
 				];
-		const footerReserve = compact && this.view !== "search" ? 1 : 2;
+		const taskReserve = compact && this.view !== "search" && rows.length ? 1 : 0;
+		const footerReserve = (compact && this.view !== "search" ? 1 : 2) + taskReserve;
 		const available = Math.max(0, height - lines.length - footerReserve);
 		if (this.page === "details") {
 			const wrapped = this.overviewDetails(width);
@@ -1415,7 +1438,7 @@ class SubagentConsole {
 						? `$${record.usage.cost.toFixed(2)}`
 						: "?";
 				const tool = cleanLine(record.currentTool ?? "");
-				const identity = cleanLine(this.participantLabel(record.id));
+				const identity = cleanLine(this.rosterLabel(record));
 				const owner =
 					this.scope === "all"
 						? `${plainLine(cleanLine(this.participantLabel(record.ownerSession ?? "unknown")), 10)} `
@@ -1450,14 +1473,15 @@ class SubagentConsole {
 		} else if (this.view === "search") {
 			while (lines.length < height - 2) lines.push(plainLine("", width));
 			lines.push(this.rosterSearch.render(width)[0]);
+		} else if (selectedRecord && lines.length < height - 1) {
+			lines.push(
+				plainLine(
+					this.theme.fg("muted", truncateResidue(`Task: ${cleanLine(selectedRecord.task)}`, width)),
+					width,
+				),
+			);
+			while (lines.length < height - 1) lines.push(plainLine("", width));
 		} else {
-			if (selectedRecord && lines.length < height - 1) {
-				lines.push(plainLine(this.theme.fg("borderMuted", "─".repeat(width)), width));
-				for (const line of this.gutterWrap(`Task: ${cleanLine(selectedRecord.task)}`, width)) {
-					if (lines.length >= height - 1) break;
-					lines.push(plainLine(this.theme.fg("muted", line), width));
-				}
-			}
 			while (lines.length < height - 1) lines.push(plainLine("", width));
 		}
 		lines.push(
@@ -1465,9 +1489,9 @@ class SubagentConsole {
 				width,
 				[
 					[
-						{ key: "↑↓", label: "select" },
 						{ key: "a", label: "scope" },
 						{ key: "m", label: "comms" },
+						{ key: "↑↓", label: "select" },
 					],
 					[
 						{ key: "enter", label: "console" },
@@ -1666,9 +1690,10 @@ class SubagentConsole {
 		isCurrent: boolean,
 		width: number,
 		wide: boolean,
+		collapse = true,
 	): string[] {
 		const marker = isCurrent && !this.threadFocus ? "›" : " ";
-		const label = this.threadLabel(item);
+		const label = this.threadLabel(item, collapse);
 		const count = String(item.events.length);
 		const last = item.events.at(-1);
 		const time = last ? clockTime(last.timestamp) : "--:--:--";
@@ -1732,12 +1757,23 @@ class SubagentConsole {
 			0,
 			threads.findIndex((item) => item.id === thread.id),
 		);
-		const left = [plainLine(`CONVERSATIONS · ${threads.length} · Manager ↔ peers`, leftWidth)];
+		const manager = this.managerId();
+		const managerLabel = manager ? this.participantLabel(manager) : undefined;
+		const managerCommon =
+			threads.length > 0 &&
+			manager !== undefined &&
+			threads.every((item) => item.participants.includes(manager));
+		const left = [
+			plainLine(
+				`CONVERSATIONS · ${threads.length}${managerCommon && managerLabel ? ` · ${managerLabel} ↔ peers` : ""}`,
+				leftWidth,
+			),
+		];
 		const perThread = wide ? 1 : 3;
 		const capacity = Math.max(1, wide ? height - 1 : Math.floor((height - 1) / perThread));
 		const start = Math.max(0, selected - capacity + 1);
 		for (const item of threads.slice(start, start + capacity))
-			left.push(...this.threadRow(item, item.id === thread.id, leftWidth, wide));
+			left.push(...this.threadRow(item, item.id === thread.id, leftWidth, wide, managerCommon));
 		if (left.length < height) left.push(...this.threadSummary(leftWidth).slice(0, height - left.length));
 		const selectedEvent = thread.events.find((event) => event.id === this.selectedEvent) ?? thread.events.at(-1)!;
 		const cards: string[][] = [];
@@ -1771,7 +1807,13 @@ class SubagentConsole {
 				...reduced.lines,
 			];
 		}
-		const right = [plainLine(`EXCHANGES · unverified`, rightWidth), ...kept];
+		const right = [
+			plainLine(
+				this.threadFocus ? `EXCHANGES · selected · unverified` : `EXCHANGES · unverified · tab focus · enter source`,
+				rightWidth,
+			),
+			...kept,
+		];
 		while (left.length < height) left.push(plainLine("", leftWidth));
 		while (right.length < height) right.push(plainLine("", rightWidth));
 		if (!wide) return this.threadFocus ? right.slice(0, height) : left.slice(0, height);

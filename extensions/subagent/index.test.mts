@@ -34,6 +34,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { Value } from "typebox/value";
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-test-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -277,6 +278,31 @@ describe("worker record normalization", () => {
 		finalizeWorker(id, { error: "stopped" });
 		const mode = statSync(join(storeDir, id, "worker.json")).mode & 0o777;
 		assert.equal(mode, 0o600, `worker.json mode was 0${mode.toString(8)}`);
+	});
+
+	it("normalizes stored profile and label fields and nulls a legacy missing label", () => {
+		// A legacy record written without label or profile reads back with label
+		// null and no profile rather than crashing readers.
+		seedWorker("bg-legacy", runningRecord("bg-legacy"));
+		const legacy = readWorker("bg-legacy");
+		assert.equal(legacy?.label, null);
+		assert.equal(legacy?.profile, undefined);
+
+		const profile = {
+			path: join(agentDir, "profile.json"),
+			sha256: "a".repeat(64),
+			name: "review-check",
+			model: "test/model-a",
+			grounding: [],
+		};
+		seedWorker("bg-labeled", runningRecord("bg-labeled", { label: "review-check", profile }));
+		const labeled = readWorker("bg-labeled");
+		assert.equal(labeled?.label, "review-check");
+		assert.deepEqual(labeled?.profile, profile);
+
+		// Corrupt retained metadata reads as undefined, never throws.
+		seedWorker("bg-badprofile", runningRecord("bg-badprofile", { profile: { path: "relative", sha256: "z" } }));
+		assert.equal(readWorker("bg-badprofile")?.profile, undefined);
 	});
 });
 
@@ -3641,7 +3667,7 @@ describe("SubagentPanel controls", () => {
 						const consoleLines = component.render(140);
 						const consoleText = consoleLines.join("\n");
 						assert.doesNotMatch(consoleText, /press c|copy reopen|ctrl\+v/);
-						assert.match(consoleLines.at(-1) ?? "", /^↑↓ scroll · c copy · r continue · esc back/);
+						assert.match(consoleLines.at(-1) ?? "", /^↑↓ scroll │ c copy · r continue │ esc back/);
 						assert.equal(consoleText.includes(sessionFile), false);
 						for (const width of [60, 40, 24, 10, 3]) {
 							const footer = component.render(width).at(-1) ?? "";
@@ -4111,6 +4137,16 @@ describe("registered tool surface", () => {
 		assert.equal("wait" in dispatch.parameters.properties.tasks.items.properties, false);
 		assert.equal(dispatch.parameters.properties.tasks.minItems, 1);
 		assert.equal(dispatch.parameters.properties.model.maxLength, 256);
+		assert.ok("profile" in dispatch.parameters.properties);
+		assert.ok("profile" in dispatch.parameters.properties.tasks.items.properties);
+		assert.equal(dispatch.parameters.properties.profile.minLength, 1);
+		assert.equal(dispatch.parameters.properties.profile.maxLength, 4096);
+		// The profile path accepts exactly the 1..4096 character boundary.
+		assert.equal(Value.Check(dispatch.parameters, { task: "x", profile: "p".repeat(4096) }), true);
+		assert.equal(Value.Check(dispatch.parameters, { task: "x", profile: "p".repeat(4097) }), false);
+		assert.equal(Value.Check(dispatch.parameters, { task: "x", profile: "" }), false);
+		assert.equal(Value.Check(dispatch.parameters, { tasks: [{ task: "x", profile: "ok" }] }), true);
+		assert.equal(Value.Check(dispatch.parameters, { tasks: [{ task: "x", profile: "p".repeat(4097) }] }), false);
 		const executeCtx = {
 			cwd: agentDir,
 			sessionManager: { getSessionId: () => "dispatch-shape-session" },
