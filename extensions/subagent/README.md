@@ -620,12 +620,17 @@ result, and pause exchanges by their two participants. Wide terminals show the
 conversation list beside readable exchange content; narrow terminals use `Tab`
 to select either pane. Management-tool calls do not enter this conversation list.
 Send attempts and received records remain distinct, and record counts do not
-claim distinct delivered messages. Every exchange card marks worker-authored
-text as unverified and flags records the source observed as conflicting
-envelope evidence for one peer identity. While a family snapshot is pending the pane reports loading
-instead of an empty family. Wide conversation lists use one row per
-conversation; hidden earlier cards are counted, and card headers are never cut
-at the pane start. Full event details preserve original source
+claim distinct delivered messages. Exchange headers carry the record time and a
+direction mark; unverified status is stated once per pane rather than on every
+card, and records the source observed as conflicting envelope evidence for one
+peer identity are flagged. While a family snapshot is pending the pane reports loading
+instead of an empty family. Wide conversation lists use one row per conversation
+with aligned count, time, and kind columns; hidden earlier cards are counted,
+and card headers are never cut at the pane start. Recorded prose and card
+bodies wrap at a bounded reading measure, and recognized markdown markers
+render as terminal styles instead of literal characters. Short windows
+collapse the chrome to one header and one footer row and fill unused list
+space with a summary of the selected thread. Full event details preserve original source
 text and receipt evidence. Display-only removal of this extension's own worker
 text wrapper never changes stored evidence or grants authority.
 
@@ -640,10 +645,12 @@ The timeline projects dispatch records, terminal outcomes, collaboration tool
 calls/results, and received peer messages, reports, pause notices, and result
 notifications. Ordinary tool output stays in the worker console. Selecting a
 participant marks its exchanges with `*`; other exchanges keep normal text
-contrast. Filtering is a separate explicit action. Event details put recorded
-content before source session/entry identities, receipt evidence, reply links,
-and recorded task/context text. The dashboard does not infer task criteria,
-intent, model understanding, or result acceptance from prose.
+contrast. Filtering is a separate explicit action. Event details pin the participant identity and scroll
+position in the header and put recorded content before source session/entry
+identities, receipt evidence, reply links, and recorded task/context text. The dashboard does not infer task criteria,
+intent, model understanding, or result acceptance from prose. Footers show
+grouped primary actions for the current view; secondary actions stay listed in
+`?` help.
 
 | Key | Action |
 | --- | --- |

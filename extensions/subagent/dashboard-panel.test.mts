@@ -9,7 +9,21 @@ import type {
 	CollaborationSnapshot,
 } from "./collaboration-types.ts";
 import { renderConversation, stripTerminalSequences } from "./console.ts";
-import { openSubagentPanel, type SubagentPanelDeps } from "./panel.ts";
+import {
+	clockTime,
+	footerLine,
+	headerPair,
+	openSubagentPanel,
+	positionLabel,
+	readerMeasure,
+	styleMarkdownBlock,
+	styleMarkers,
+	threadPaneWidth,
+	truncateResidue,
+	type FooterStyles,
+	type MarkerStyles,
+	type SubagentPanelDeps,
+} from "./panel.ts";
 
 type Worker = NonNullable<ReturnType<SubagentPanelDeps["readWorker"]>>;
 type Component = {
@@ -340,14 +354,19 @@ describe("worker overview and separate communications", () => {
 			async (component, terminal) => {
 				terminal.rows = 16;
 				const wide = text(component, 180);
-				assert.match(wide, /worker-a ↔ worker-b · 5 exchange record/);
-				assert.match(wide, /root ↔ worker-c · 1 exchange record/);
-				assert.doesNotMatch(wide, /1 exchange records/);
+				assert.match(wide, /CONVERSATIONS · 2 · Manager ↔ peers/);
+				assert.match(wide, /worker-a ↔ worker-b/);
+				assert.match(wide, /EXCHANGES · unverified/);
+				assert.doesNotMatch(wide, /\d+ exchange record/);
+				assert.doesNotMatch(wide, /root ↔ worker-c/);
+				assert.match(wide, /worker-c/);
 				const lines = wide.split("\n");
 				const hint = lines.findIndex((line) => /earlier exchange records/.test(line));
 				assert.ok(hint >= 0, "hidden cards are counted");
 				assert.match(lines[hint], /… [0-9]+ earlier exchange records/);
-				assert.match(lines[hint + 1], /→ .* · peer · recorded · unverified/);
+				assert.match(lines[hint + 1], /\d{2}:\d{2}:\d{2}.*→.*peer/);
+				const unverified = wide.match(/unverified/g) ?? [];
+				assert.equal(unverified.length, 1);
 				const matches = wide.match(/conflicting envelope/g) ?? [];
 				assert.equal(matches.length, 1);
 				assert.match(wide, /readable message four/);
@@ -580,7 +599,9 @@ describe("collaboration dashboard", () => {
 			await flush();
 			const after = text(component, 180);
 			assert.match(after, /BROWSE · 1 new/);
-			assert.equal(before.split("\n").slice(3, -2).join("\n"), after.split("\n").slice(3, -2).join("\n"));
+			assert.match(after, /payload-1/);
+			assert.doesNotMatch(after, /newest payload/);
+			assert.match(before, /payload-1/);
 			component.handleInput("\r");
 			assert.match(text(component), /EVENT event-1/);
 			component.handleInput("\x1b");
@@ -613,11 +634,11 @@ describe("collaboration dashboard", () => {
 			component.handleInput("[");
 			const output = text(component);
 			assert.match(output, /EVENT event-1/);
-			assert.match(output, /Exact first message\s*\nSecond line/);
+			assert.match(output, /Exact first message\s*\n\s*Second line/);
 			assert.match(output, /Source: memory/);
 			assert.match(output, /Session: session-a/);
 			assert.match(output, /Entry: entry-event-1/);
-			assert.match(output, /TASK \/ CONTEXT.*\nTask for worker-a/);
+			assert.match(output, /TASK \/ CONTEXT[\s\S]*Task for worker-a/);
 			component.handleInput("]");
 			assert.match(text(component), /EVENT event-2/);
 		});
@@ -715,7 +736,7 @@ describe("collaboration dashboard", () => {
 				await flush();
 				assert.match(text(component, 180), /retained custom message/);
 				assert.match(text(component, 180), /TIMELINE · 3 events/);
-				assert.match(text(component, 180), /history/);
+				assert.match(text(component, 180), /HISTORY/);
 				deleted = true;
 				component.handleInput("h");
 				await flush();
@@ -736,6 +757,7 @@ describe("collaboration dashboard", () => {
 			component.handleInput("\x1b[H");
 			component.handleInput("\r");
 			assert.match(text(component), /EVENT event-50/);
+			component.handleInput("\x1b");
 			context.mock.timers.tick(1_000);
 			await flush();
 			assert.match(text(component), /BROWSE · 0 new/);
@@ -1207,5 +1229,164 @@ describe("worker console robustness", () => {
 			assert.doesNotMatch(line, /[\x00-\x1f\x7f-\x9f]/);
 		}
 		assert.doesNotMatch(lines.join("\n"), /title|Payload/);
+	});
+});
+
+describe("dashboard ergonomics", () => {
+	const markers: MarkerStyles = {
+		bold: (text) => `[b]${text}[/b]`,
+		italic: (text) => `[i]${text}[/i]`,
+		code: (text) => `[c]${text}[/c]`,
+		heading: (text) => `[h]${text}[/h]`,
+		rule: (text) => `[r]${text}[/r]`,
+		bullet: (text) => `[•]${text}[/•]`,
+	};
+	const footerStyles: FooterStyles = {
+		key: (text) => `<${text}>`,
+		label: (text) => text,
+		rule: (text) => text,
+	};
+	it("maps bounded markers and wraps markdown with hanging indents", () => {
+		assert.equal(styleMarkers("`code` and **bold** and *em*", markers), "[c]code[/c] and [b]bold[/b] and [i]em[/i]");
+		assert.doesNotMatch(styleMarkers("**keep**", markers), /\*\*/);
+		const lines = styleMarkdownBlock("intro\n# Title\n- item one that wraps at a tight measure\n---", 12, markers);
+		assert.ok(lines.some((line) => line === ""));
+		assert.ok(lines.some((line) => line.includes("[h]Title[/h]") || line.includes("[h]")));
+		const bullet = lines.find((line) => line.includes("[•]"));
+		assert.ok(bullet);
+		const bulletAt = lines.indexOf(bullet!);
+		assert.ok(bulletAt >= 0 && bulletAt + 1 < lines.length);
+		assert.match(lines[bulletAt + 1], /^ {2}/);
+		assert.ok(lines.some((line) => /\[r\]─{12}\[\/r\]/.test(line)));
+	});
+	it("caps reader measure, scales the thread pane, and counts truncation residue", () => {
+		assert.equal(readerMeasure(240), 96);
+		assert.equal(readerMeasure(50), 44);
+		assert.equal(readerMeasure(5), 1);
+		assert.equal(threadPaneWidth(80), 80);
+		assert.equal(threadPaneWidth(100), 28);
+		assert.equal(threadPaneWidth(160), 40);
+		assert.ok(threadPaneWidth(140) >= 28 && threadPaneWidth(140) <= 40);
+		assert.match(truncateResidue("abcdefghijklmnopqrstuvwxyz", 10), /\+\d+/);
+		assert.doesNotMatch(truncateResidue("abcdefghijklmnopqrstuvwxyz", 10), /…/);
+		assert.equal(visibleWidth(headerPair(20, "left identity", "esc back")), 20);
+		assert.equal(positionLabel(0, 10, 40), "lines 1-10/40");
+		assert.equal(clockTime(Number.NaN), "--:--:--");
+	});
+	it("drops footer groups from the end and keeps escape", () => {
+		const dismiss = { key: "esc", label: "close" };
+		const groups = [
+			[{ key: "↑↓", label: "select" }],
+			[{ key: "enter", label: "open" }],
+			[{ key: "k", label: "cancel" }],
+		];
+		const wide = footerLine(80, groups, dismiss, footerStyles);
+		assert.match(wide, /↑↓.*select/);
+		assert.match(wide, /enter.*open/);
+		assert.match(wide, /k.*cancel/);
+		assert.match(wide, /esc.*close/);
+		const mid = footerLine(28, groups, dismiss, footerStyles);
+		assert.match(mid, /↑↓.*select/);
+		assert.doesNotMatch(mid, /cancel/);
+		assert.match(mid, /esc.*close/);
+		const tight = footerLine(10, groups, dismiss, footerStyles);
+		assert.match(tight, /esc/);
+		assert.doesNotMatch(tight, /cancel/);
+	});
+	it("lays out thread columns, card time and direction, and a single unverified mark", async () => {
+		const current = snapshot();
+		current.events = [
+			event("out", "**bold** outbound", {
+				actorId: "root",
+				recipientId: "worker-a",
+				workerId: null,
+				exchange: { kind: "steer", text: "**bold** outbound" },
+			}),
+			event("in", "reply inbound", {
+				actorId: "worker-a",
+				recipientId: "root",
+				exchange: { kind: "peer", text: "reply inbound" },
+			}),
+		];
+		await panel(
+			deps({ collaboration: async () => current }),
+			async (component) => {
+				const output = text(component, 180);
+				assert.match(output, /CONVERSATIONS · 1 · Manager ↔ peers/);
+				assert.match(output, /worker-a/);
+				assert.doesNotMatch(output, /exchange record/);
+				assert.match(output, /\d{2}:\d{2}:\d{2}.*root → worker-a.*steer/);
+				assert.match(output, /→ /);
+				assert.match(output, /← /);
+				assert.doesNotMatch(output, /\*\*bold\*\*/);
+				assert.match(output, /bold outbound/);
+				assert.equal((output.match(/unverified/g) ?? []).length, 1);
+				assert.doesNotMatch(output, /e evidence|h history|n report|v transcript|\/ search|F families/);
+				component.handleInput("?");
+				const help = text(component, 140).replace(/\s+/g, " ");
+				assert.match(help, /e, h, n, v, \/, and F stay listed here/);
+			},
+			theme,
+			"communications",
+		);
+	});
+	it("pins a sticky reader identity with position readout and drops timeline tokens", async () => {
+		const current = snapshot();
+		current.events = [
+			event("event-1", "Exact first message\nSecond line", {
+				exchange: { kind: "peer", text: "Exact first message\nSecond line" },
+			}),
+			event("event-2", "Exact reply", {
+				actorId: "worker-b",
+				recipientId: "worker-a",
+				replyTo: "message-event-1",
+				exchange: { kind: "peer", text: "Exact reply" },
+			}),
+		];
+		await panel(
+			deps({ collaboration: async () => current }),
+			async (component) => {
+				component.handleInput("\r");
+				const output = text(component, 140);
+				assert.match(output, /SOURCE DETAILS/);
+				assert.match(output, /worker-b → worker-a · peer · recorded · \d{2}:\d{2}:\d{2}/);
+				assert.match(output, /lines \d+-\d+\/\d+/);
+				assert.match(output, /esc back/);
+				assert.doesNotMatch(output, /BROWSE|FOLLOW TAIL|l follow/);
+				assert.match(output, /Actor: worker-b/);
+				assert.match(output, /Recipient: worker-a/);
+			},
+			theme,
+			"communications",
+		);
+	});
+	it("collapses chrome in a short window and fills leftover thread rows", async () => {
+		await panel(
+			deps({
+				collaboration: async () => ({
+					...snapshot(),
+					events: [
+						event("q", "raw", { exchange: { kind: "peer", text: "hello from the thread" } }),
+					],
+				}),
+			}),
+			async (component, terminal) => {
+				terminal.rows = 10;
+				const conversations = text(component, 140);
+				assert.match(conversations, /SELECTED THREAD/);
+				assert.match(conversations, /running · test\/same-model/);
+				component.handleInput("\r");
+				const lines = component.render(80);
+				assert.ok(lines.length <= 8);
+				const reader = text(component, 80);
+				assert.match(reader, /worker-a → worker-b · peer · recorded · \d{2}:\d{2}:\d{2}/);
+				assert.match(reader, /lines /);
+				assert.match(reader, /esc/);
+				assert.doesNotMatch(reader, /BROWSE|FOLLOW TAIL/);
+				assert.equal(lines.filter((line) => /esc/.test(stripTerminalSequences(line))).length >= 1, true);
+			},
+			theme,
+			"communications",
+		);
 	});
 });

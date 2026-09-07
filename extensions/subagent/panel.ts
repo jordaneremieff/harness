@@ -87,25 +87,183 @@ function plainLine(text: string, width: number): string {
 	const value = truncateToWidth(text, Math.max(0, width), "");
 	return value + " ".repeat(Math.max(0, width - visibleWidth(value)));
 }
-function footerWithEscape(width: number, actions: string[], escapeLabel: string, notice?: string): string {
-	const escapeHint = visibleWidth(escapeLabel) <= width ? escapeLabel : "esc".slice(0, width);
-	if (notice) {
-		const budget = width - visibleWidth(escapeHint) - 3;
-		if (budget <= 0) return plainLine(escapeHint, width);
-		let tail = "";
-		for (const char of [...cleanLine(notice)].reverse()) {
-			if (visibleWidth(`…${char}${tail}`) > budget) break;
-			tail = char + tail;
-		}
-		return plainLine(
-			`${visibleWidth(cleanLine(notice)) > budget ? `…${tail}` : cleanLine(notice)} · ${escapeHint}`,
-			width,
-		);
-	}
-	const kept = [...actions];
-	while (kept.length && visibleWidth([...kept, escapeHint].join(" · ")) > width) kept.pop();
-	return plainLine([...kept, escapeHint].join(" · "), width);
+
+/** Longest comfortable prose measure; wide panes keep a gutter instead of running to the edge. */
+const READER_MEASURE = 96;
+const READER_GUTTER = "  ";
+/** Below this pane height the chrome collapses to one header row and one footer row. */
+const COMPACT_PANEL_HEIGHT = 12;
+
+export function readerMeasure(paneWidth: number): number {
+	return Math.max(1, Math.min(READER_MEASURE, paneWidth - 6));
 }
+
+/** Fixed-width clock column so list and card rows align. */
+export function clockTime(timestamp: number): string {
+	return Number.isFinite(timestamp) ? new Date(timestamp).toTimeString().slice(0, 8) : "--:--:--";
+}
+
+export function positionLabel(scroll: number, rows: number, total: number): string {
+	if (total <= 0) return "lines 0/0";
+	const first = Math.min(scroll + 1, total);
+	return `lines ${first}-${Math.min(total, scroll + Math.max(1, rows))}/${total}`;
+}
+
+export interface MarkerStyles {
+	bold(text: string): string;
+	italic(text: string): string;
+	code(text: string): string;
+	heading(text: string): string;
+	rule(text: string): string;
+	bullet(text: string): string;
+}
+
+const INLINE_MARKERS = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\*([^*\n]+)\*|_([^_\n]+)_/g;
+const HEADING_MARKER = /^(#{1,6})\s+(.*)$/;
+const RULE_MARKER = /^(?:-{3,}|\*{3,}|_{3,})$/;
+const LIST_MARKER = /^(\s*)(?:[-*+]|\d{1,3}[.)])\s+(.*)$/;
+const MAX_LIST_INDENT = 8;
+
+/** Bounded marker mapping, not a Markdown engine: recognized markers become styles and are removed. */
+export function styleMarkers(text: string, styles: MarkerStyles): string {
+	return text.replace(INLINE_MARKERS, (match, code, strong, strongAlt, emphasis, emphasisAlt) => {
+		if (code !== undefined) return styles.code(code);
+		if (strong !== undefined) return styles.bold(strong);
+		if (strongAlt !== undefined) return styles.bold(strongAlt);
+		if (emphasis !== undefined) return styles.italic(emphasis);
+		if (emphasisAlt !== undefined) return styles.italic(emphasisAlt);
+		return match;
+	});
+}
+
+/**
+ * Wrap recorded prose at a bounded measure. Headings gain a leading blank line, list items gain a
+ * hanging indent, and rules span the measure, so a wrapped continuation never reads as a new item.
+ */
+export function styleMarkdownBlock(source: string, measure: number, styles: MarkerStyles): string[] {
+	const width = Math.max(1, measure);
+	const out: string[] = [];
+	for (const raw of cleanText(source).split("\n")) {
+		const line = raw.replace(/\s+$/, "");
+		if (!line.trim()) {
+			out.push("");
+			continue;
+		}
+		if (RULE_MARKER.test(line.trim())) {
+			out.push(styles.rule("─".repeat(width)));
+			continue;
+		}
+		const heading = HEADING_MARKER.exec(line);
+		if (heading) {
+			if (out.length && out.at(-1) !== "") out.push("");
+			for (const wrapped of wrapTextWithAnsi(styleMarkers(heading[2].trim(), styles), width))
+				out.push(styles.heading(wrapped));
+			continue;
+		}
+		const item = LIST_MARKER.exec(line);
+		const indent = item ? Math.min(MAX_LIST_INDENT, item[1].length) : 0;
+		const hanging = item ? indent + 2 : 0;
+		const wrapped = wrapTextWithAnsi(styleMarkers(item ? item[2] : line.trim(), styles), Math.max(1, width - hanging));
+		const marker = item ? `${" ".repeat(indent)}${styles.bullet("•")} ` : "";
+		for (const [index, value] of wrapped.entries())
+			out.push(index === 0 ? marker + value : " ".repeat(hanging) + value);
+	}
+	while (out.length && out.at(-1) === "") out.pop();
+	return out;
+}
+
+export interface FooterAction {
+	key: string;
+	label: string;
+}
+export interface FooterStyles {
+	key(text: string): string;
+	label(text: string): string;
+	rule(text: string): string;
+}
+
+function noticeFooter(width: number, escapeHint: string, notice: string): string {
+	const hint = visibleWidth(escapeHint) <= width ? escapeHint : "esc".slice(0, width);
+	const budget = width - visibleWidth(hint) - 3;
+	if (budget <= 0) return plainLine(hint, width);
+	const clean = cleanLine(notice);
+	if (visibleWidth(clean) <= budget) return plainLine(`${clean} · ${hint}`, width);
+	let tail = "";
+	for (const char of [...clean].reverse()) {
+		if (visibleWidth(`…${char}${tail}`) > budget) break;
+		tail = char + tail;
+	}
+	return plainLine(`…${tail} · ${hint}`, width);
+}
+
+/**
+ * Grouped key hints: navigation, opening, and destructive keys stay in separate groups, and the
+ * escape hint survives every width. Groups drop from the end when the row does not fit.
+ */
+export function footerLine(
+	width: number,
+	groups: FooterAction[][],
+	dismiss: FooterAction,
+	styles: FooterStyles,
+	notice?: string,
+): string {
+	const plainOf = (action: FooterAction) => (action.key ? `${action.key} ${action.label}` : action.label);
+	if (notice) return noticeFooter(width, plainOf(dismiss), notice);
+	const kept = groups.filter((group) => group.length).map((group) => [...group]);
+	const plain = () =>
+		[...kept.map((group) => group.map(plainOf).join(" · ")), plainOf(dismiss)].join(" │ ");
+	while (kept.length && visibleWidth(plain()) > width) kept.pop();
+	if (visibleWidth(plain()) > width) return plainLine(plainOf(dismiss).slice(0, Math.max(0, width)), width);
+	const styled = (action: FooterAction) =>
+		action.key ? `${styles.key(action.key)} ${styles.label(action.label)}` : styles.label(action.label);
+	return plainLine(
+		[...kept.map((group) => group.map(styled).join(styles.rule(" · "))), styled(dismiss)].join(styles.rule(" │ ")),
+		width,
+	);
+}
+
+/** Wide windows keep a conversation list between 28 and 40 columns; narrow windows use the full width. */
+export function threadPaneWidth(totalWidth: number): number {
+	if (totalWidth < 100) return totalWidth;
+	return Math.max(28, Math.min(40, Math.round(totalWidth * 0.28)));
+}
+
+/** Truncate to width and show the remaining column count instead of a bare ellipsis. */
+export function truncateResidue(text: string, width: number): string {
+	const total = visibleWidth(text);
+	if (width <= 0) return "";
+	if (total <= width) return text;
+	let rest = total;
+	let suffix = `+${rest}`;
+	while (visibleWidth(suffix) >= width && rest > 0) {
+		rest = Math.floor(rest / 10);
+		suffix = rest ? `+${rest}` : "+";
+	}
+	const prefix = truncateToWidth(text, Math.max(0, width - visibleWidth(suffix)), "");
+	rest = Math.max(0, total - visibleWidth(prefix));
+	suffix = rest ? `+${rest}` : "";
+	return visibleWidth(prefix) + visibleWidth(suffix) > width
+		? truncateToWidth(`${prefix}${suffix}`, width, "")
+		: `${prefix}${suffix}`;
+}
+
+export function headerPair(width: number, left: string, right: string): string {
+	if (width <= 0) return "";
+	if (!right) return plainLine(truncateResidue(left, width), width);
+	const rightText = visibleWidth(right) <= width ? right : truncateResidue(right, width);
+	const budget = Math.max(0, width - visibleWidth(rightText) - 1);
+	const leftText = truncateResidue(left, budget);
+	const gap = Math.max(1, width - visibleWidth(leftText) - visibleWidth(rightText));
+	return plainLine(`${leftText}${" ".repeat(gap)}${rightText}`, width);
+}
+
+function padVisible(text: string, width: number, align: "left" | "right" = "left"): string {
+	if (width <= 0) return "";
+	const clipped = truncateResidue(text, width);
+	const pad = " ".repeat(Math.max(0, width - visibleWidth(clipped)));
+	return align === "right" ? pad + clipped : clipped + pad;
+}
+
 function printableKey(data: string): string {
 	return decodeKittyPrintable(data) ?? data;
 }
@@ -453,6 +611,123 @@ class SubagentConsole {
 		let length = 6;
 		while (length < id.length && ids.some((other) => other !== id && other.endsWith(id.slice(-length)))) length++;
 		return `…${id.slice(-length)}`;
+	}
+	/** Presentation label; a later profiles source replaces this without touching layout call sites. */
+	private participantLabel(id: string): string {
+		return this.displayId(id);
+	}
+	private managerId(): string | undefined {
+		return this.snapshot?.participants.find((participant) => !participant.workerId)?.id;
+	}
+	private directionMark(event: CollaborationEvent): "in" | "out" | "peer" {
+		const manager = this.managerId();
+		if (!manager) return "peer";
+		if (event.actorId === manager) return "out";
+		if (event.recipientId === manager) return "in";
+		return "peer";
+	}
+	private threadLabel(thread: { participants: readonly string[] }): string {
+		const manager = this.managerId();
+		const peers = manager ? thread.participants.filter((id) => id !== manager) : [...thread.participants];
+		if (manager && peers.length && thread.participants.includes(manager))
+			return peers.map((id) => this.participantLabel(id)).join(" ↔ ");
+		return thread.participants.map((id) => this.participantLabel(id)).join(" ↔ ");
+	}
+	private markerStyles(): MarkerStyles {
+		return {
+			bold: (text) => this.theme.bold(text),
+			italic: (text) => this.theme.italic(text),
+			code: (text) => this.theme.fg("mdCode", text),
+			heading: (text) => this.theme.fg("mdHeading", this.theme.bold(text)),
+			rule: (text) => this.theme.fg("mdHr", text),
+			bullet: (text) => this.theme.fg("mdListBullet", text),
+		};
+	}
+	private footerStyles(): FooterStyles {
+		return {
+			key: (text) => this.theme.fg("accent", text),
+			label: (text) => this.theme.fg("dim", text),
+			rule: (text) => this.theme.fg("dim", text),
+		};
+	}
+	private paneCap(): number {
+		const cap =
+			PANEL_MAX_ROWS_OVERRIDE > 0 ? PANEL_MAX_ROWS_OVERRIDE : Math.max(44, Math.floor(this.tui.terminal.rows * 0.85));
+		return Math.max(1, Math.min(this.tui.terminal.rows - 2, cap));
+	}
+	private compact(): boolean {
+		return this.paneCap() < COMPACT_PANEL_HEIGHT;
+	}
+	private paintSelected(line: string, selected: boolean): string {
+		return selected ? this.theme.bg("selectedBg", line) : line;
+	}
+	private gutterWrap(source: string, paneWidth: number, markdown = false): string[] {
+		const measure = readerMeasure(paneWidth);
+		const lines = markdown
+			? styleMarkdownBlock(source, measure, this.markerStyles())
+			: wrapTextWithAnsi(cleanText(source), measure);
+		return lines.map((line) => `${READER_GUTTER}${line}`);
+	}
+	private footer(
+		width: number,
+		groups: FooterAction[][],
+		dismiss: FooterAction,
+	): string {
+		return footerLine(width, groups, dismiss, this.footerStyles(), this.currentNotice());
+	}
+	private escapeAction(): FooterAction {
+		if (this.view === "search") return { key: "esc", label: "clear" };
+		if (
+			this.page === "details" ||
+			this.view === "families" ||
+			this.view === "report" ||
+			this.view === "help"
+		)
+			return { key: "esc", label: "back" };
+		return { key: "esc", label: "close" };
+	}
+	private familySuffix(): string {
+		const families = this.snapshot?.families ?? [];
+		if (families.length <= 1) return "";
+		const label = families.find((family) => family.id === this.familyId)?.label;
+		return label ? ` · ${label}` : "";
+	}
+	private statusMessage(): { text: string; fault: boolean } {
+		if (this.mode === "overview") {
+			const running = this.roster.filter((record) => record.state === "running" && !record.interruptedAt).length;
+			const paused = this.roster.filter((record) => record.state === "running" && record.interruptedAt).length;
+			const rows = this.rosterRows();
+			const query = this.rosterSearch.getValue();
+			return {
+				text: `${query ? `${rows.length}/${this.roster.length} workers · /${cleanLine(query)}` : `${this.roster.length} workers`} · ${running} running · ${paused} paused · ${this.roster.length - running - paused} terminal${this.rosterLimited ? " · more records outside view limit" : ""}`,
+				fault: false,
+			};
+		}
+		if (this.historyError) return { text: this.historyStatus(), fault: true };
+		if (this.historyPending) return { text: this.historyStatus(), fault: false };
+		if (this.requestPending) return { text: "Refresh pending", fault: false };
+		if (this.search.getValue()) return { text: `Search /${this.search.getValue()}`, fault: false };
+		if (this.participantFilter) return { text: `filter ${this.participantLabel(this.participantFilter)}`, fault: false };
+		const history = this.familyId ? this.retained.get(this.familyId)?.history : null;
+		if (history) return { text: this.historyStatus(), fault: false };
+		if (!this.evidenceMode && this.page !== "details") {
+			const thread = this.currentThread();
+			if (thread) {
+				const last = thread.events.at(-1);
+				return {
+					text: `${thread.events.length} records · last ${last ? clockTime(last.timestamp) : "--:--:--"} · ${last?.exchange?.kind ?? last?.kind ?? "message"}`,
+					fault: false,
+				};
+			}
+			return { text: this.snapshot ? "No recorded conversations in this family." : "Loading conversations…", fault: false };
+		}
+		const event = this.event();
+		if (event)
+			return {
+				text: `${event.kind} · ${clockTime(event.timestamp)} · ${this.participantLabel(event.actorId)}`,
+				fault: false,
+			};
+		return { text: this.historyStatus(), fault: Boolean(this.allNotices().length && this.historyError) };
 	}
 	private tree(): { participant: CollaborationParticipant; depth: number }[] {
 		const participants = this.snapshot?.participants ?? [];
@@ -991,9 +1266,7 @@ class SubagentConsole {
 		this.unsub = null;
 	}
 	private panelHeight(): number {
-		const cap =
-			PANEL_MAX_ROWS_OVERRIDE > 0 ? PANEL_MAX_ROWS_OVERRIDE : Math.max(44, Math.floor(this.tui.terminal.rows * 0.85));
-		const maximum = Math.max(1, Math.min(this.tui.terminal.rows - 2, cap));
+		const maximum = this.paneCap();
 		if (this.mode === "overview" && (this.view === "dashboard" || this.view === "search") && this.page !== "details")
 			return Math.min(maximum, Math.max(6, this.rosterRows().length + 6));
 		if (this.view === "dashboard" && this.page === "details")
@@ -1008,8 +1281,7 @@ class SubagentConsole {
 			);
 		if (this.mode === "communication" && this.view === "dashboard" && !this.evidenceMode) {
 			const threads = this.threads();
-			const width =
-				this.lastWidth >= 100 ? this.lastWidth - Math.min(42, Math.floor(this.lastWidth * 0.32)) - 3 : this.lastWidth;
+			const width = this.lastWidth - (this.lastWidth >= 100 ? threadPaneWidth(this.lastWidth) + 3 : 0);
 			const messageRows =
 				this.currentThread()
 					?.events.slice(-3)
@@ -1018,11 +1290,14 @@ class SubagentConsole {
 		}
 		return maximum;
 	}
+	private chromeRows(): number {
+		if (this.view === "console") return 3;
+		if (this.compact()) return this.view === "search" ? 3 : 2;
+		if (this.mode === "overview" && this.view !== "help") return 5;
+		return 3;
+	}
 	private windowHeight(): number {
-		return Math.max(
-			1,
-			this.panelHeight() - (this.view === "console" ? 3 : this.mode === "overview" && this.view !== "help" ? 5 : 4),
-		);
+		return Math.max(1, this.panelHeight() - this.chromeRows());
 	}
 	render(width: number): string[] {
 		if (width <= 0) return [];
@@ -1064,7 +1339,7 @@ class SubagentConsole {
 					rosterOutputPreview(record),
 				]
 			: ["No worker selected."];
-		return details.flatMap((line) => wrapTextWithAnsi(cleanText(line), Math.max(1, width)));
+		return details.flatMap((line) => this.gutterWrap(line, width));
 	}
 	private renderOverview(width: number): string[] {
 		const rows = this.rosterRows();
@@ -1072,18 +1347,25 @@ class SubagentConsole {
 			0,
 			rows.findIndex((record) => record.id === this.rosterId),
 		);
-		const running = this.roster.filter((record) => record.state === "running" && !record.interruptedAt).length;
-		const paused = this.roster.filter((record) => record.state === "running" && record.interruptedAt).length;
+		const compact = this.compact();
+		const status = this.statusMessage();
 		const scope = this.scope === "children" && this.deps.currentSessionId() ? "DIRECT CHILDREN" : "ALL SESSIONS";
 		const height = this.panelHeight();
-		const lines = [
-			plainLine(this.theme.fg("accent", this.theme.bold(`SUBAGENTS · OVERVIEW · ${scope} · m communications`)), width),
-			plainLine(
-				`${this.rosterSearch.getValue() ? `${rows.length}/${this.roster.length} workers · /${cleanLine(this.rosterSearch.getValue())}` : `${this.roster.length} workers`} · ${running} running · ${paused} paused · ${this.roster.length - running - paused} terminal${this.rosterLimited ? " · more records outside view limit" : ""}`,
-				width,
-			),
-		];
-		const available = Math.max(0, height - 5);
+		const title = this.theme.fg("accent", this.theme.bold(`SUBAGENTS · OVERVIEW · ${scope}`));
+		const lines = compact
+			? [
+					headerPair(
+						width,
+						this.theme.fg("accent", this.theme.bold(`SUBAGENTS · OVERVIEW · ${scope} · ${status.text}`)),
+						this.theme.fg("muted", this.page === "details" ? "esc back" : "m communications"),
+					),
+				]
+			: [
+					headerPair(width, title, this.theme.fg("muted", "m communications")),
+					plainLine(this.theme.fg("muted", status.text), width),
+				];
+		const footerReserve = compact && this.view !== "search" ? 1 : 2;
+		const available = Math.max(0, height - lines.length - footerReserve);
 		if (this.page === "details") {
 			const wrapped = this.overviewDetails(width);
 			this.detailLength = wrapped.length;
@@ -1104,7 +1386,7 @@ class SubagentConsole {
 					width,
 				),
 			);
-			const capacity = Math.max(1, height - 6);
+			const capacity = Math.max(1, height - lines.length - footerReserve);
 			const start = Math.max(0, selected - capacity + 1);
 			if (!rows.length)
 				lines.push(
@@ -1133,100 +1415,153 @@ class SubagentConsole {
 						? `$${record.usage.cost.toFixed(2)}`
 						: "?";
 				const tool = cleanLine(record.currentTool ?? "");
-				const identity = cleanLine(this.displayId(record.id));
+				const identity = cleanLine(this.participantLabel(record.id));
 				const owner =
-					this.scope === "all" ? `${plainLine(cleanLine(this.displayId(record.ownerSession ?? "unknown")), 10)} ` : "";
+					this.scope === "all"
+						? `${plainLine(cleanLine(this.participantLabel(record.ownerSession ?? "unknown")), 10)} `
+						: "";
+				const current = record.id === this.rosterId;
 				const meta = wide
-					? `${plainLine(identity, 13)} ${plainLine(state, 14)} ${plainLine(model, 20)} ${plainLine(elapsed, 9)} ${plainLine(cost, 8)} ${plainLine(tool, 17)} ${owner}`
-					: `${identity} · ${state} · ${model} · ${tool || elapsed} `;
-				let line = plainLine(
-					`${record.id === this.rosterId ? "›" : " "} ${meta}${truncateToWidth(rosterOutputPreview(record), Math.max(0, width - visibleWidth(meta) - 2), "…")}`,
-					width,
+					? `${plainLine(current ? this.theme.fg("accent", identity) : identity, 13)} ${plainLine(state, 14)} ${plainLine(model, 20)} ${plainLine(elapsed, 9)} ${plainLine(cost, 8)} ${plainLine(tool, 17)} ${owner}`
+					: `${current ? this.theme.fg("accent", identity) : identity} · ${state} · ${model} · ${tool || elapsed} `;
+				const preview = truncateResidue(rosterOutputPreview(record), Math.max(0, width - visibleWidth(meta) - 2));
+				lines.push(
+					this.paintSelected(
+						plainLine(`${current ? "›" : " "} ${meta}${preview}`, width),
+						current,
+					),
 				);
-				if (record.id === this.rosterId) line = this.theme.bg("selectedBg", line);
-				lines.push(line);
 			}
 		}
-		while (lines.length < height - 2) lines.push(plainLine("", width));
 		const selectedRecord = rows[selected];
-		lines.push(
-			this.view === "search"
-				? this.rosterSearch.render(width)[0]
-				: plainLine(
-						this.theme.fg(
-							"muted",
-							selectedRecord ? `Task: ${cleanLine(selectedRecord.task)}` : "a scope · m communications",
+		if (!compact) {
+			while (lines.length < height - 2) lines.push(plainLine("", width));
+			lines.push(
+				this.view === "search"
+					? this.rosterSearch.render(width)[0]
+					: plainLine(
+							this.theme.fg(
+								"muted",
+								selectedRecord ? `Task: ${cleanLine(selectedRecord.task)}` : "a scope · m communications",
+							),
+							width,
 						),
-						width,
-					),
-		);
+			);
+		} else if (this.view === "search") {
+			while (lines.length < height - 2) lines.push(plainLine("", width));
+			lines.push(this.rosterSearch.render(width)[0]);
+		} else {
+			if (selectedRecord && lines.length < height - 1) {
+				lines.push(plainLine(this.theme.fg("borderMuted", "─".repeat(width)), width));
+				for (const line of this.gutterWrap(`Task: ${cleanLine(selectedRecord.task)}`, width)) {
+					if (lines.length >= height - 1) break;
+					lines.push(plainLine(this.theme.fg("muted", line), width));
+				}
+			}
+			while (lines.length < height - 1) lines.push(plainLine("", width));
+		}
 		lines.push(
-			this.theme.fg(
-				"muted",
-				footerWithEscape(
-					width,
+			this.footer(
+				width,
+				[
 					[
-						"a scope",
-						"m comms",
-						"enter console",
-						"↑↓ select",
-						"d details",
-						"/ search",
-						"? help",
-						"i interrupt",
-						"k cancel",
+						{ key: "↑↓", label: "select" },
+						{ key: "a", label: "scope" },
+						{ key: "m", label: "comms" },
 					],
-					this.view === "search" ? "esc clear" : this.page === "details" ? "esc back" : "esc close",
-					this.currentNotice(),
-				),
+					[
+						{ key: "enter", label: "console" },
+						{ key: "d", label: "details" },
+						{ key: "?", label: "help" },
+					],
+					[
+						{ key: "i", label: "interrupt" },
+						{ key: "k", label: "cancel" },
+					],
+				],
+				this.escapeAction(),
 			),
 		);
 		return lines;
 	}
+	private dashboardFooterGroups(): FooterAction[][] {
+		if (this.view === "report" || this.view === "help")
+			return [[{ key: "↑↓", label: "scroll" }, { key: "b/space", label: "page" }], [], []];
+		if (this.view === "families")
+			return [[{ key: "↑↓", label: "family" }], [{ key: "enter", label: "load" }], []];
+		if (this.page === "details")
+			return [
+				[
+					{ key: "↑↓", label: "scroll" },
+					{ key: "[", label: "parent" },
+					{ key: "]", label: "reply" },
+				],
+				[{ key: "?", label: "help" }],
+				[],
+			];
+		if (!this.evidenceMode)
+			return [
+				[
+					{ key: "tab", label: "focus" },
+					{ key: "↑↓", label: "select" },
+				],
+				[
+					{ key: "enter", label: "source" },
+					{ key: "?", label: "help" },
+					{ key: "m", label: "overview" },
+				],
+				[
+					{ key: "i", label: "interrupt" },
+					{ key: "k", label: "cancel" },
+				],
+			];
+		return [
+			[
+				{ key: "tab", label: "focus" },
+				{ key: "l", label: "follow" },
+			],
+			[
+				{ key: "enter", label: "details" },
+				{ key: "?", label: "help" },
+				{ key: "e", label: "conversations" },
+				{ key: "f", label: "filter" },
+				{ key: "m", label: "overview" },
+			],
+			[
+				{ key: "i", label: "interrupt" },
+				{ key: "k", label: "cancel" },
+			],
+		];
+	}
+	private readerIdentity(): string {
+		if (this.detailParticipant) {
+			const participant = this.participant();
+			return participant
+				? `${this.participantLabel(participant.id)} · ${participant.state}`
+				: "No participant selected";
+		}
+		const event = this.event();
+		if (!event) return "No event selected";
+		return `${this.participantLabel(event.actorId)} → ${this.participantLabel(event.recipientId ?? "unknown recipient")} · ${event.kind} · ${event.kind.startsWith("call ") ? "send attempt" : "recorded"} · ${clockTime(event.timestamp)}`;
+	}
 	private renderDashboard(width: number): string[] {
+		const compact = this.compact();
 		const overviewHelp = this.mode === "overview";
-		const retained = overviewHelp ? null : this.familyId ? this.retained.get(this.familyId) : null;
-		const status = overviewHelp
-			? `${this.roster.length} workers · ${this.scope === "children" ? "DIRECT CHILDREN" : "ALL SESSIONS"}`
-			: retained
-				? `Snapshot ${new Date(retained.refreshedAt).toLocaleTimeString()}`
-				: "Snapshot pending";
-		const familyLabel =
-			this.snapshot?.families.find((family) => family.id === this.familyId)?.label ?? "Current family";
-		const label =
-			this.mode === "overview"
-				? "SUBAGENTS · OVERVIEW HELP"
-				: !this.evidenceMode && this.page !== "details"
-					? `SUBAGENTS · COMMUNICATIONS · ${this.threads().length} conversations · m overview · ${familyLabel}`
-					: `SUBAGENTS · ${this.evidenceMode ? "EVIDENCE" : "SOURCE DETAILS"} · ${this.followEvents ? "FOLLOW TAIL" : `BROWSE · ${this.newEvents} new · l follow`} · ${this.page} · ${familyLabel}`;
-		const lines = [plainLine(this.theme.fg("accent", this.theme.bold(cleanLine(label))), width)];
-		lines.push(
-			overviewHelp
-				? plainLine(
-						this.theme.fg(
-							"accent",
-							`${this.roster.length} worker records · ${this.scope === "children" ? "direct children · a shows all sessions" : "all sessions · a returns to direct children"}`,
-						),
-						width,
-					)
-				: plainLine(
-						this.theme.fg(this.historyError || this.allNotices().length ? "warning" : "accent", this.historyStatus()),
-						width,
-					),
-		);
+		const detailsReader = this.mode === "communication" && this.page === "details" && this.view === "dashboard";
 		const height = this.windowHeight();
+		const body: string[] = [];
 		if (this.view === "report" || this.view === "help") {
 			const info = this.infoLines(width);
 			this.infoLength = info.length;
 			this.infoScroll = Math.min(this.infoScroll, Math.max(0, info.length - height));
-			for (let i = 0; i < height; i++) lines.push(info[this.infoScroll + i] ?? plainLine("", width));
+			for (let i = 0; i < height; i++) body.push(info[this.infoScroll + i] ?? plainLine("", width));
 		} else if (this.view === "families") {
 			const families = this.snapshot?.families ?? [];
 			const start = Math.max(0, this.familyIndex - height + 2);
-			lines.push(plainLine("Families · Enter loads selected history", width));
+			body.push(plainLine("Families · Enter loads selected history", width));
 			for (let i = 0; i < height - 1; i++) {
 				const family = families[start + i];
-				lines.push(
+				body.push(
 					plainLine(
 						family
 							? `${start + i === this.familyIndex ? "›" : " "} ${cleanLine(family.label)} · ${cleanLine(family.id)}`
@@ -1236,106 +1571,148 @@ class SubagentConsole {
 				);
 			}
 		} else if (this.page === "details") {
-			const details = this.details(width);
+			const details = this.mode === "overview" ? this.overviewDetails(width) : this.details(width);
 			this.detailLength = details.length;
 			this.detailScroll = Math.min(this.detailScroll, Math.max(0, details.length - height));
-			for (let i = 0; i < height; i++) lines.push(details[this.detailScroll + i] ?? plainLine("", width));
+			for (let i = 0; i < height; i++) body.push(details[this.detailScroll + i] ?? plainLine("", width));
 		} else if (!this.evidenceMode) {
-			lines.push(...this.renderConversations(width, height));
+			body.push(...this.renderConversations(width, height));
 		} else if (width >= 100) {
 			const treeWidth = Math.min(52, Math.floor(width * 0.36)),
 				timelineWidth = width - treeWidth - 3;
 			const tree = this.renderTree(treeWidth, height),
 				timeline = this.renderTimeline(timelineWidth, height);
-			for (let i = 0; i < height; i++) lines.push(`${tree[i]} ${this.theme.fg("borderMuted", "│")} ${timeline[i]}`);
-		} else lines.push(...(this.page === "tree" ? this.renderTree(width, height) : this.renderTimeline(width, height)));
-		lines.push(
-			this.view === "search"
-				? this.search.render(width)[0]
-				: plainLine(
+			for (let i = 0; i < height; i++) body.push(`${tree[i]} ${this.theme.fg("borderMuted", "│")} ${timeline[i]}`);
+		} else body.push(...(this.page === "tree" ? this.renderTree(width, height) : this.renderTimeline(width, height)));
+		const identity = detailsReader ? this.readerIdentity() : "";
+		const position =
+			detailsReader || this.view === "report" || this.view === "help"
+				? positionLabel(
+						detailsReader ? this.detailScroll : this.infoScroll,
+						height,
+						detailsReader ? this.detailLength : this.infoLength,
+					)
+				: "";
+		const right = detailsReader
+			? `${position}  esc back`
+			: this.view === "report" || this.view === "help"
+				? `${position}  esc back`
+				: overviewHelp
+					? ""
+					: "m overview";
+		const left =
+			this.view === "help"
+				? overviewHelp
+					? "SUBAGENTS · OVERVIEW HELP"
+					: "SUBAGENTS · DASHBOARD HELP"
+				: this.view === "report"
+					? `SUBAGENTS · SOURCE REPORT${this.familySuffix()}`
+					: this.view === "families"
+						? `SUBAGENTS · FAMILIES${this.familySuffix()}`
+						: compact && detailsReader
+							? identity
+							: detailsReader
+								? `SUBAGENTS · SOURCE DETAILS${this.familySuffix()}`
+								: !this.evidenceMode && this.page !== "details"
+									? `SUBAGENTS · COMMUNICATIONS · ${this.threads().length} conversations${this.familySuffix()}`
+									: `SUBAGENTS · ${this.evidenceMode ? "EVIDENCE" : "SOURCE DETAILS"} · ${this.followEvents ? "FOLLOW TAIL" : `BROWSE · ${this.newEvents} new · l follow`} · ${this.page}${this.familySuffix()}`;
+		const lines = [
+			headerPair(width, this.theme.fg("accent", this.theme.bold(cleanLine(left))), this.theme.fg("muted", right)),
+		];
+		if (this.view === "search") lines.push(this.search.render(width)[0]);
+		else if (!compact) {
+			if (detailsReader) lines.push(plainLine(this.theme.fg("text", identity), width));
+			else if (overviewHelp)
+				lines.push(
+					plainLine(
 						this.theme.fg(
 							"muted",
-							cleanLine(
-								`${status}${!overviewHelp && this.requestPending ? " · refresh pending" : ""}${!overviewHelp && this.participantFilter ? ` · filter ${this.displayId(this.participantFilter)}` : ""}${!overviewHelp && this.search.getValue() ? ` · /${this.search.getValue()}` : ""}${this.view === "report" || this.view === "help" ? ` · lines ${this.infoScroll + 1}-${Math.min(this.infoLength, this.infoScroll + height)}/${this.infoLength}` : ""}`,
-							),
+							`${this.roster.length} worker records · ${this.scope === "children" ? "direct children · a shows all sessions" : "all sessions · a returns to direct children"}`,
 						),
 						width,
 					),
-		);
-		const actions =
-			this.view === "report" || this.view === "help"
-				? ["↑↓ scroll", "b/space page", ...(this.view === "report" ? ["h refresh"] : [])]
-				: this.view === "families"
-					? ["↑↓ family", "enter load"]
-					: this.page === "details"
-						? ["? help", "↑↓ scroll", "[ parent", "] reply", "v transcript", "tab focus", "h history", "n report"]
-						: !this.evidenceMode
-							? [
-									"m overview",
-									"tab focus",
-									"enter source",
-									"e evidence",
-									"? help",
-									"h history",
-									"n report",
-									"v transcript",
-									"/ search",
-									"F families",
-									"i interrupt",
-									"k cancel",
-								]
-							: [
-									"m overview",
-									"tab focus",
-									"enter details",
-									"e conversations",
-									"f filter",
-									"l follow",
-									"? help",
-									"h history",
-									"n report",
-									"v transcript",
-									"/ search",
-									"F families",
-									"i interrupt",
-									"k cancel",
-								];
-		lines.push(
-			this.theme.fg(
-				this.currentNotice() ? "warning" : "dim",
-				footerWithEscape(
-					width,
-					actions,
-					this.view === "search"
-						? "esc clear"
-						: this.page === "details" || this.view === "families" || this.view === "report" || this.view === "help"
-							? "esc back"
-							: "esc close",
-					this.currentNotice(),
-				),
-			),
-		);
+				);
+			else {
+				const status = this.statusMessage();
+				lines.push(plainLine(this.theme.fg(status.fault ? "warning" : "muted", status.text), width));
+			}
+		}
+		lines.push(...body);
+		lines.push(this.footer(width, this.dashboardFooterGroups(), this.escapeAction()));
 		return lines;
 	}
-	/** One readable exchange card: attributed as unverified, surfacing recorded conflict observations. */
+	/** One readable exchange card: time, direction, and kind in the header; provenance stays muted. */
 	private conversationCard(event: CollaborationEvent, width: number, selected: boolean): string[] {
 		const conflicting = event.kind === "peer conflicting envelope";
-		const header = [
-			`${selected ? "›" : " "} ${this.displayId(event.actorId)} → ${this.displayId(event.recipientId ?? "unknown recipient")}`,
-			event.exchange?.kind ?? event.kind,
-			event.kind.startsWith("call ") ? "send attempt" : "recorded",
-			"unverified",
-			...(conflicting ? ["conflicting envelope"] : []),
-		].join(" · ");
-		const body = wrapTextWithAnsi(cleanText(event.exchange?.text ?? event.text), Math.max(1, width - 2));
-		const values = [
-			header,
-			...body.slice(0, 4).map((line) => `  ${line}`),
-			...(body.length > 4 ? ["  … Enter opens the full source"] : []),
-		];
+		const dir = this.directionMark(event);
+		const dirGlyph = dir === "out" ? "→" : dir === "in" ? "←" : "↔";
+		const bar = selected ? this.theme.fg("accent", "▌") : " ";
+		const who = `${this.participantLabel(event.actorId)} → ${this.participantLabel(event.recipientId ?? "unknown recipient")}`;
+		const header = `${bar}${dirGlyph} ${clockTime(event.timestamp)} ${this.theme.fg(selected ? "accent" : "text", who)} ${event.exchange?.kind ?? event.kind} ${this.theme.fg("muted", event.kind.startsWith("call ") ? "send attempt" : "recorded")}${conflicting ? this.theme.fg("warning", " conflicting envelope") : ""}`;
+		const body = styleMarkdownBlock(event.exchange?.text ?? event.text, readerMeasure(width), this.markerStyles());
+		const indent = dir === "in" ? "  " : "";
+		const rows = [header, ...body.slice(0, 4).map((line) => `${bar}${indent}${READER_GUTTER}${line}`)];
+		if (body.length > 4) {
+			const prefix = `${bar}${indent}`;
+			const hint = this.theme.fg("dim", "Enter opens the full source");
+			rows.push(`${prefix}${padVisible(hint, Math.max(0, width - visibleWidth(prefix)), "right")}`);
+		}
+		return rows.map((value) =>
+			this.paintSelected(plainLine(this.theme.fg("text", truncateResidue(value, width)), width), selected),
+		);
+	}
+	private threadRow(
+		item: { participants: readonly string[]; events: CollaborationEvent[] },
+		isCurrent: boolean,
+		width: number,
+		wide: boolean,
+	): string[] {
+		const marker = isCurrent && !this.threadFocus ? "›" : " ";
+		const label = this.threadLabel(item);
+		const count = String(item.events.length);
+		const last = item.events.at(-1);
+		const time = last ? clockTime(last.timestamp) : "--:--:--";
+		const kind = last?.exchange?.kind ?? last?.kind ?? "";
+		const showKind = width >= 36;
+		const showLast = width >= 28;
+		const paint = (value: string) =>
+			this.paintSelected(
+				plainLine(isCurrent ? this.theme.fg("accent", truncateResidue(value, width)) : truncateResidue(value, width), width),
+				isCurrent,
+			);
+		if (!wide) {
+			const lines = [`${marker} ${label}`, `  ${count}${showLast ? ` ${time}` : ""}`];
+			if (showKind) lines.push(`  ${kind}`);
+			return lines.map(paint);
+		}
+		const countW = 4;
+		const timeW = 8;
+		let used = 2 + countW;
+		if (showLast) used += 1 + timeW;
+		if (showKind) used += 1 + visibleWidth(kind);
+		const labelW = Math.max(1, width - used);
+		const labelText = isCurrent ? this.theme.fg("accent", truncateResidue(label, labelW)) : truncateResidue(label, labelW);
 		return [
-			...values.map((value) => plainLine(this.theme.fg("text", truncateToWidth(value, width, "…")), width)),
-			plainLine("", width),
+			this.paintSelected(
+				plainLine(
+					`${marker} ${padVisible(labelText, labelW)}${padVisible(count, countW, "right")}${showLast ? ` ${time}` : ""}${showKind ? ` ${kind}` : ""}`,
+					width,
+				),
+				isCurrent,
+			),
+		];
+	}
+	private threadSummary(width: number): string[] {
+		const thread = this.currentThread();
+		if (!thread) return [];
+		const manager = this.managerId();
+		const peerId = thread.participants.find((id) => id !== manager) ?? thread.participants[0];
+		const peer = this.participant(peerId);
+		return [
+			plainLine(this.theme.fg("borderMuted", "─".repeat(Math.max(0, width))), width),
+			plainLine(this.theme.fg("muted", "SELECTED THREAD"), width),
+			plainLine(truncateResidue(`${peer?.state ?? ""} · ${peer?.model ?? ""}`, width), width),
+			...this.gutterWrap(peer?.task ?? "", width).map((line) => plainLine(this.theme.fg("muted", line), width)),
 		];
 	}
 	private renderConversations(width: number, height: number): string[] {
@@ -1349,46 +1726,33 @@ class SubagentConsole {
 			];
 		}
 		const wide = width >= 100;
-		const leftWidth = wide ? Math.min(42, Math.floor(width * 0.32)) : width;
+		const leftWidth = threadPaneWidth(width);
 		const rightWidth = wide ? width - leftWidth - 3 : width;
 		const selected = Math.max(
 			0,
 			threads.findIndex((item) => item.id === thread.id),
 		);
-		const left = [plainLine(`CONVERSATIONS · ${threads.length}${!this.threadFocus ? " · selected" : ""}`, leftWidth)];
+		const left = [plainLine(`CONVERSATIONS · ${threads.length} · Manager ↔ peers`, leftWidth)];
 		const perThread = wide ? 1 : 3;
 		const capacity = Math.max(1, wide ? height - 1 : Math.floor((height - 1) / perThread));
 		const start = Math.max(0, selected - capacity + 1);
-		for (const item of threads.slice(start, start + capacity)) {
-			const isCurrent = item.id === thread.id;
-			const count = item.events.length,
-				last = item.events.at(-1);
-			const values = wide
-				? [
-						`${isCurrent ? "›" : " "} ${item.participants.map((id) => this.displayId(id)).join(" ↔ ")} · ${count} exchange record${count === 1 ? "" : "s"} · ${last?.exchange?.kind ?? "message"}: ${cleanLine(last?.exchange?.text ?? "")}`,
-				]
-				: [
-						`${isCurrent ? "›" : " "} ${item.participants.map((id) => this.displayId(id)).join(" ↔ ")}`,
-						`  ${count} exchange record${count === 1 ? "" : "s"}`,
-						`  ${last?.exchange?.kind ?? "message"}: ${cleanLine(last?.exchange?.text ?? "")}`,
-				];
-			for (const value of values) {
-				const line = plainLine(truncateToWidth(value, leftWidth, "…"), leftWidth);
-				left.push(isCurrent ? this.theme.bg("selectedBg", line) : line);
-			}
-		}
+		for (const item of threads.slice(start, start + capacity))
+			left.push(...this.threadRow(item, item.id === thread.id, leftWidth, wide));
+		if (left.length < height) left.push(...this.threadSummary(leftWidth).slice(0, height - left.length));
 		const selectedEvent = thread.events.find((event) => event.id === this.selectedEvent) ?? thread.events.at(-1)!;
 		const cards: string[][] = [];
 		for (const event of thread.events.slice(0, thread.events.indexOf(selectedEvent) + 1))
 			cards.push(this.conversationCard(event, rightWidth, event.id === selectedEvent.id));
+		const rule = plainLine(this.theme.fg("borderMuted", "─".repeat(Math.max(0, rightWidth))), rightWidth);
 		const available = Math.max(0, height - 1);
 		const fitCards = (room: number): { lines: string[]; hidden: number } => {
 			const lines: string[] = [];
 			for (let index = cards.length - 1; index >= 0; index--) {
 				const card = cards[index];
+				const extra = lines.length ? 1 : 0;
 				if (lines.length === 0 && card.length > room) return { lines: card.slice(0, Math.max(1, room)), hidden: index };
-				if (lines.length + card.length > room) return { lines, hidden: index + 1 };
-				lines.unshift(...card);
+				if (lines.length + card.length + extra > room) return { lines, hidden: index + 1 };
+				lines.unshift(...card, ...(extra ? [rule] : []));
 			}
 			return { lines, hidden: 0 };
 		};
@@ -1400,21 +1764,14 @@ class SubagentConsole {
 				plainLine(
 					this.theme.fg(
 						"muted",
-						truncateToWidth(
-							`… ${reduced.hidden} earlier exchange record${reduced.hidden === 1 ? "" : "s"}`,
-							rightWidth,
-							"…",
-						),
+						truncateResidue(`… ${reduced.hidden} earlier exchange record${reduced.hidden === 1 ? "" : "s"}`, rightWidth),
 					),
 					rightWidth,
 				),
 				...reduced.lines,
 			];
 		}
-		const right = [
-			plainLine(`EXCHANGES · ${this.threadFocus ? "selected · " : ""}tab focus · enter source`, rightWidth),
-			...kept,
-		];
+		const right = [plainLine(`EXCHANGES · unverified`, rightWidth), ...kept];
 		while (left.length < height) left.push(plainLine("", leftWidth));
 		while (right.length < height) right.push(plainLine("", rightWidth));
 		if (!wide) return this.threadFocus ? right.slice(0, height) : left.slice(0, height);
@@ -1434,7 +1791,7 @@ class SubagentConsole {
 		const notices = this.allNotices().length;
 		return history
 			? `HISTORY · ${history.total} events · +${history.added}/-${history.removed} · ${notices} notices · n report`
-			: `LIVE MEMORY · ${notices} notices · h history · n report`;
+			: `Live memory · ${notices} notices`;
 	}
 	private infoLines(width: number): string[] {
 		const history = this.familyId ? this.retained.get(this.familyId)?.history : null;
@@ -1447,7 +1804,7 @@ class SubagentConsole {
 							"Rows show worker, state, model, elapsed, cost, current tool, and the latest output. Output is worker-authored and unverified.",
 							"m switches to communications. The overview never queries collaboration data or history.",
 							"Enter or v opens the selected worker console. d opens its details with exact identities.",
-							"/ searches workers. Enter keeps the filter. Escape clears it while the search is open.",
+							"/ searches workers. Enter keeps the filter. Escape clears it while the search is open. The footer keeps navigation, open, and cancel keys; / stays listed here.",
 							"i or Ctrl+C interrupts the selected worker; k cancels it. Only the owning session controls a live worker.",
 							"Console: Enter sends; failed sends keep the draft. Ctrl+K cancels. For terminal workers, c copies a reopen command and r drafts continuation.",
 							"Worker labels abbreviate long identities. Details retain exact identities, models, and tasks.",
@@ -1464,7 +1821,7 @@ class SubagentConsole {
 							"e switches to raw source evidence; e returns. F selects a known dispatch family and loads its history.",
 							"h loads or refreshes known history for this family. n reports the result and all source notices. The top row reports the outcome, even when nothing changes.",
 							"/ searches text and full identities. Enter keeps the filter. Escape clears it while search is open.",
-							"v opens the selected exchange worker's transcript. i / Ctrl+C interrupts; k cancels. Only the owner controls a live worker.",
+							"v opens the selected exchange worker's transcript. i / Ctrl+C interrupts; k cancels. Only the owner controls a live worker. The footer keeps navigation, open, and cancel keys; e, h, n, v, /, and F stay listed here.",
 							"In raw evidence only: Tab selects timeline, workers, or details; f filters exchanges to the selected worker; l or timeline End follows the tail.",
 							"[ / ] in event details: follow parent message / first reply.",
 							"Arrows / Page Up / Page Down scroll details. b / Space also page this help and the source report.",
@@ -1503,9 +1860,7 @@ class SubagentConsole {
 						"History notices remain here until the next successful history refresh. Live notices describe the latest memory query.",
 					];
 		return fields.flatMap((field) =>
-			wrapTextWithAnsi(cleanText(field), Math.max(1, width)).map((line) =>
-				plainLine(this.theme.fg("text", line), width),
-			),
+			this.gutterWrap(field, width).map((line) => plainLine(this.theme.fg("text", line), width)),
 		);
 	}
 	private renderTree(width: number, height: number): string[] {
@@ -1626,9 +1981,12 @@ class SubagentConsole {
 				participant.task || "No task text is recorded.",
 			);
 		if (!fields.length) fields.push("No event or participant is selected.");
-		return fields.flatMap((text) =>
-			wrapTextWithAnsi(cleanText(text), Math.max(1, width)).map((line) => plainLine(line, width)),
-		);
+		const out: string[] = [];
+		for (const field of fields) {
+			if (field === event?.text && event) out.push(...this.gutterWrap(field, width, true).map((line) => plainLine(line, width)));
+			else out.push(...this.gutterWrap(field, width).map((line) => plainLine(line, width)));
+		}
+		return out;
 	}
 	private renderConsole(width: number): string[] {
 		const id = this.pinnedId,
@@ -1665,24 +2023,36 @@ class SubagentConsole {
 					width,
 				),
 			);
-		const actions = this.continuing
+		const groups: FooterAction[][] = this.continuing
 			? this.continuationPending
-				? ["↑↓ scroll", "request pending"]
-				: ["↑↓ scroll", "enter start"]
+				? [[{ key: "↑↓", label: "scroll" }], [{ key: "", label: "request pending" }], []]
+				: [[{ key: "↑↓", label: "scroll" }], [{ key: "enter", label: "start" }], []]
 			: live
-				? ["↑↓ scroll", active ? "enter steer" : "enter run", "ctrl+c interrupt", "ctrl+k cancel"]
+				? [
+						[{ key: "↑↓", label: "scroll" }],
+						[{ key: "enter", label: active ? "steer" : "run" }],
+						[
+							{ key: "ctrl+c", label: "interrupt" },
+							{ key: "ctrl+k", label: "cancel" },
+						],
+					]
 				: record?.sessionFile && record.state !== "running"
-					? ["↑↓ scroll", "c copy", "r continue"]
-					: ["↑↓ scroll"];
+					? [
+							[{ key: "↑↓", label: "scroll" }],
+							[
+								{ key: "c", label: "copy" },
+								{ key: "r", label: "continue" },
+							],
+							[],
+						]
+					: [[{ key: "↑↓", label: "scroll" }], [], []];
 		lines.push(
-			this.theme.fg(
-				this.currentNotice() ? "warning" : "dim",
-				footerWithEscape(
-					width,
-					actions,
-					this.continuing && !this.continuationPending ? "esc cancel draft" : "esc back",
-					this.currentNotice(),
-				),
+			this.footer(
+				width,
+				groups,
+				this.continuing && !this.continuationPending
+					? { key: "esc", label: "cancel draft" }
+					: { key: "esc", label: "back" },
 			),
 		);
 		return lines;
