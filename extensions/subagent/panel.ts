@@ -189,16 +189,23 @@ function mergeEvents(previous: CollaborationEvent[], incoming: CollaborationEven
 }
 
 type FocusPage = "timeline" | "tree" | "details";
+type HistoryReport = {
+	at: number;
+	total: number;
+	added: number;
+	removed: number;
+	notices: string[];
+};
 type RetainedSnapshot = {
 	snapshot: CollaborationSnapshot;
-	historyAt: number | null;
+	history: HistoryReport | null;
 	refreshedAt: number;
 	observedIds: Set<string>;
 };
 
 class SubagentConsole {
 	private _focused = false;
-	private view: "dashboard" | "search" | "families" | "console" = "dashboard";
+	private view: "dashboard" | "search" | "families" | "console" | "report" | "help" = "dashboard";
 	private page: FocusPage = "timeline";
 	private readonly search = new Input({ prompt: "/ " });
 	private readonly composer = new Input({ prompt: "› " });
@@ -208,6 +215,10 @@ class SubagentConsole {
 	private familyIndex = 0;
 	private requestVersion = 0;
 	private requestPending = false;
+	private historyPending = false;
+	private historyError: string | null = null;
+	private infoScroll = 0;
+	private infoLength = 0;
 	private selectedParticipant: string | null = null;
 	private participantFilter: string | null = null;
 	private selectedEvent: string | null = null;
@@ -285,10 +296,12 @@ class SubagentConsole {
 		this.bump();
 	}
 	private async refresh(history: boolean): Promise<void> {
-		if (this.disposed || (this.requestPending && !history)) return;
+		if (this.disposed || this.historyPending || (this.requestPending && !history)) return;
 		const version = ++this.requestVersion;
 		const familyId = this.familyId;
 		this.requestPending = true;
+		this.historyPending = history;
+		if (history) this.historyError = null;
 		this.bump();
 		try {
 			const incoming = await this.deps.collaboration({
@@ -297,6 +310,7 @@ class SubagentConsole {
 			});
 			if (this.disposed || version !== this.requestVersion) return;
 			const previous = this.retained.get(incoming.familyId);
+			const priorViewIds = new Set(previous?.snapshot.events.map((event) => event.id) ?? []);
 			const oldIds = new Set([
 				...(previous?.observedIds ?? []),
 				...(this.snapshot?.familyId === incoming.familyId ? this.snapshot.events.map((event) => event.id) : []),
@@ -310,6 +324,7 @@ class SubagentConsole {
 				textSize += event.text.length;
 			}
 			events.reverse();
+			const eventIds = new Set(events.map((event) => event.id));
 			const participants = new Map<string, CollaborationParticipant>();
 			if (!history && previous)
 				for (const participant of previous.snapshot.participants) participants.set(participant.id, participant);
@@ -329,7 +344,15 @@ class SubagentConsole {
 			this.retained.delete(incoming.familyId);
 			this.retained.set(incoming.familyId, {
 				snapshot,
-				historyAt: history ? Date.now() : (previous?.historyAt ?? null),
+				history: history
+					? {
+							at: Date.now(),
+							total: events.length,
+							added: events.filter((event) => !priorViewIds.has(event.id)).length,
+							removed: [...priorViewIds].filter((id) => !eventIds.has(id)).length,
+							notices: [...snapshot.notices],
+						}
+					: (previous?.history ?? null),
 				refreshedAt: Date.now(),
 				observedIds: new Set(incoming.events.map((event) => event.id)),
 			});
@@ -352,11 +375,14 @@ class SubagentConsole {
 					snapshot.participants.find((participant) => participant.workerId)?.id ?? snapshot.participants[0]?.id ?? null;
 			if (this.followEvents) this.selectedEvent = this.events().at(-1)?.id ?? null;
 		} catch (error) {
-			if (version === this.requestVersion)
-				this.setNotice(`Snapshot refresh failed: ${errText(error)}. Retained data stays visible.`);
+			if (!this.disposed && version === this.requestVersion) {
+				if (history) this.historyError = cleanText(errText(error)).slice(0, 2048);
+				else this.setNotice(`Snapshot refresh failed: ${errText(error)}. Retained data stays visible.`);
+			}
 		} finally {
 			if (version === this.requestVersion) {
 				this.requestPending = false;
+				this.historyPending = false;
 				this.bump();
 			}
 		}
@@ -379,6 +405,16 @@ class SubagentConsole {
 	}
 	private participant(id = this.selectedParticipant): CollaborationParticipant | undefined {
 		return this.snapshot?.participants.find((participant) => participant.id === id);
+	}
+	/** Abbreviations are presentation only; actions always use exact identities. */
+	private displayId(id: string): string {
+		const participant = this.participant(id);
+		if (participant && !participant.workerId) return participant.label;
+		if (id.length <= 14) return id;
+		const ids = this.snapshot?.participants.map((item) => item.id) ?? [];
+		let length = 6;
+		while (length < id.length && ids.some((other) => other !== id && other.endsWith(id.slice(-length)))) length++;
+		return `…${id.slice(-length)}`;
 	}
 	private tree(): { participant: CollaborationParticipant; depth: number }[] {
 		const participants = this.snapshot?.participants ?? [];
@@ -423,6 +459,9 @@ class SubagentConsole {
 	private selectFamily(id: string): void {
 		this.requestVersion++;
 		this.requestPending = false;
+		this.historyPending = false;
+		this.historyError = null;
+		this.infoScroll = 0;
 		this.familyId = id;
 		this.snapshot = this.retained.get(id)?.snapshot ?? null;
 		this.selectedParticipant = null;
@@ -470,6 +509,30 @@ class SubagentConsole {
 			return;
 		}
 		const key = printableKey(data);
+		if (this.view === "report" || this.view === "help") {
+			if (matchesKey(data, Key.escape) || key === (this.view === "report" ? "n" : "?")) this.view = "dashboard";
+			else if (key === "h" && this.view === "report") void this.refresh(true);
+			else {
+				const delta = matchesKey(data, Key.up)
+					? -1
+					: matchesKey(data, Key.down)
+						? 1
+						: matchesKey(data, Key.pageUp) || key === "b"
+							? -this.windowHeight()
+							: matchesKey(data, Key.pageDown) || key === " "
+								? this.windowHeight()
+								: 0;
+				this.infoScroll = Math.max(
+					0,
+					Math.min(
+						Math.max(0, this.infoLength - this.windowHeight()),
+						matchesKey(data, Key.home) ? 0 : matchesKey(data, Key.end) ? this.infoLength : this.infoScroll + delta,
+					),
+				);
+			}
+			this.bump();
+			return;
+		}
 		if (this.view === "families") {
 			const families = this.snapshot?.families ?? [];
 			if (matchesKey(data, Key.escape)) this.view = "dashboard";
@@ -503,7 +566,10 @@ class SubagentConsole {
 			this.view = "families";
 			this.familyIndex = Math.max(0, this.snapshot?.families.findIndex((family) => family.id === this.familyId) ?? 0);
 		} else if (key === "h") void this.refresh(true);
-		else if (key === "l") this.returnLive();
+		else if (key === "n" || key === "?") {
+			this.view = key === "n" ? "report" : "help";
+			this.infoScroll = 0;
+		} else if (key === "l") this.returnLive();
 		else if (key === "f") {
 			this.participantFilter = this.participantFilter ? null : this.selectedParticipant;
 			this.eventStart = 0;
@@ -761,7 +827,7 @@ class SubagentConsole {
 		return Math.max(1, Math.min(this.tui.terminal.rows - 2, cap));
 	}
 	private windowHeight(): number {
-		return Math.max(1, this.panelHeight() - 3);
+		return Math.max(1, this.panelHeight() - (this.view === "console" ? 3 : 4));
 	}
 	render(width: number): string[] {
 		if (width <= 0) return [];
@@ -782,13 +848,24 @@ class SubagentConsole {
 	}
 	private renderDashboard(width: number): string[] {
 		const retained = this.familyId ? this.retained.get(this.familyId) : null;
-		const status = retained
-			? `retained snapshot ${new Date(retained.refreshedAt).toLocaleTimeString()}${retained.historyAt ? `; history ${new Date(retained.historyAt).toLocaleTimeString()}` : "; live memory only"}`
-			: "snapshot pending";
-		const label = `${this.followEvents ? "LIVE" : `PAUSED · ${this.newEvents} new · l live`} · ${this.page} · ${this.familyId ?? "current family"}`;
+		const status = retained ? `Snapshot ${new Date(retained.refreshedAt).toLocaleTimeString()}` : "Snapshot pending";
+		const familyLabel =
+			this.snapshot?.families.find((family) => family.id === this.familyId)?.label ?? "Current family";
+		const label = `SUBAGENTS · ${this.followEvents ? "FOLLOW TAIL" : `BROWSE · ${this.newEvents} new · l follow`} · ${this.page} · ${familyLabel}`;
 		const lines = [plainLine(this.theme.fg("accent", this.theme.bold(cleanLine(label))), width)];
+		lines.push(
+			plainLine(
+				this.theme.fg(this.historyError || this.allNotices().length ? "warning" : "accent", this.historyStatus()),
+				width,
+			),
+		);
 		const height = this.windowHeight();
-		if (this.view === "families") {
+		if (this.view === "report" || this.view === "help") {
+			const info = this.infoLines(width);
+			this.infoLength = info.length;
+			this.infoScroll = Math.min(this.infoScroll, Math.max(0, info.length - height));
+			for (let i = 0; i < height; i++) lines.push(info[this.infoScroll + i] ?? plainLine("", width));
+		} else if (this.view === "families") {
 			const families = this.snapshot?.families ?? [];
 			const start = Math.max(0, this.familyIndex - height + 2);
 			lines.push(plainLine("Families · Enter loads selected history", width));
@@ -809,7 +886,7 @@ class SubagentConsole {
 			this.detailScroll = Math.min(this.detailScroll, Math.max(0, details.length - height));
 			for (let i = 0; i < height; i++) lines.push(details[this.detailScroll + i] ?? plainLine("", width));
 		} else if (width >= 100) {
-			const treeWidth = Math.min(42, Math.floor(width * 0.34)),
+			const treeWidth = Math.min(52, Math.floor(width * 0.36)),
 				timelineWidth = width - treeWidth - 3;
 			const tree = this.renderTree(treeWidth, height),
 				timeline = this.renderTimeline(timelineWidth, height);
@@ -820,31 +897,35 @@ class SubagentConsole {
 				? this.search.render(width)[0]
 				: plainLine(
 						this.theme.fg(
-							"dim",
+							"muted",
 							cleanLine(
-								`${status}${this.requestPending ? " · refresh pending" : ""}${this.participantFilter ? ` · filter ${this.participantFilter}` : ""}${this.search.getValue() ? ` · /${this.search.getValue()}` : ""}${this.snapshot?.notices.length ? ` · ${this.snapshot.notices.join("; ")}` : ""}`,
+								`${status}${this.requestPending ? " · refresh pending" : ""}${this.participantFilter ? ` · filter ${this.displayId(this.participantFilter)}` : ""}${this.search.getValue() ? ` · /${this.search.getValue()}` : ""}${this.view === "report" || this.view === "help" ? ` · lines ${this.infoScroll + 1}-${Math.min(this.infoLength, this.infoScroll + height)}/${this.infoLength}` : ""}`,
 							),
 						),
 						width,
 					),
 		);
 		const actions =
-			this.view === "families"
-				? ["↑↓ family", "enter load"]
-				: this.page === "details"
-					? ["↑↓ scroll", "[ parent", "] reply", "v transcript", "tab focus", "h history"]
-					: [
-							"tab focus",
-							"enter details",
-							"v transcript",
-							"f filter",
-							"/ search",
-							"h history",
-							"F families",
-							"l live",
-							"i interrupt",
-							"k cancel",
-						];
+			this.view === "report" || this.view === "help"
+				? ["↑↓ scroll", "b/space page", ...(this.view === "report" ? ["h refresh"] : [])]
+				: this.view === "families"
+					? ["↑↓ family", "enter load"]
+					: this.page === "details"
+						? ["? help", "↑↓ scroll", "[ parent", "] reply", "v transcript", "tab focus", "h history", "n report"]
+						: [
+								"? help",
+								"h history",
+								"n report",
+								"tab focus",
+								"enter details",
+								"v transcript",
+								"f filter",
+								"/ search",
+								"F families",
+								"l live",
+								"i interrupt",
+								"k cancel",
+							];
 		lines.push(
 			this.theme.fg(
 				this.currentNotice() ? "warning" : "dim",
@@ -853,7 +934,7 @@ class SubagentConsole {
 					actions,
 					this.view === "search"
 						? "esc clear"
-						: this.page === "details" || this.view === "families"
+						: this.page === "details" || this.view === "families" || this.view === "report" || this.view === "help"
 							? "esc back"
 							: "esc close",
 					this.currentNotice(),
@@ -862,26 +943,107 @@ class SubagentConsole {
 		);
 		return lines;
 	}
+	private allNotices(): string[] {
+		const history = this.familyId ? this.retained.get(this.familyId)?.history : null;
+		return [...new Set([...(history?.notices ?? []), ...(this.snapshot?.notices ?? [])])];
+	}
+	private historyStatus(): string {
+		if (this.historyPending) return "HISTORY · Loading selected family… · n report";
+		if (this.historyError) return "HISTORY FAILED · Retained data stays visible · n report · h retry";
+		const history = this.familyId ? this.retained.get(this.familyId)?.history : null;
+		const notices = this.allNotices().length;
+		return history
+			? `HISTORY · ${history.total} events · +${history.added}/-${history.removed} · ${notices} notices · n report`
+			: `LIVE MEMORY · ${notices} notices · h history · n report`;
+	}
+	private infoLines(width: number): string[] {
+		const history = this.familyId ? this.retained.get(this.familyId)?.history : null;
+		const fields =
+			this.view === "help"
+				? [
+						"DASHBOARD HELP",
+						"Tab / Shift+Tab: select timeline, workers, or details.",
+						"Arrows: select an event or worker. Enter: read its details.",
+						"h: load or refresh known history for this family. The top row reports the result, even when nothing changes.",
+						"n: read history results and all source notices. Escape: return without changing selection.",
+						"F: choose a known dispatch family. Enter loads its history.",
+						"l / timeline End: follow the tail. BROWSE pauses only scrolling, never workers or live refresh.",
+						"f: filter exchanges to the selected worker. Selection alone marks related exchanges with *; other events stay visible.",
+						"/: search text and full identities. Enter keeps the filter. Escape clears it while search is open.",
+						"v: open the selected worker transcript. i / Ctrl+C: interrupt. k: cancel. Only the owner controls a live worker.",
+						"[ / ] in event details: follow parent message / first reply.",
+						"Arrows / Page Up / Page Down: scroll details. b / Space also page this help and the source report.",
+						"Worker labels abbreviate long IDs. Details retain exact IDs, models, tasks, source entries, and receipt evidence.",
+						"History is bounded source evidence, not a complete archive. Recorded messages and local receipts do not prove understanding or action.",
+						"Console: Enter sends; failed sends keep the draft. Ctrl+K cancels. For terminal workers, c copies a reopen command and r drafts continuation.",
+						"Escape returns from details or console, cancels an unsent continuation draft, or closes the dashboard. A submitted continuation remains active.",
+					]
+				: [
+						"HISTORY / SOURCE REPORT",
+						`Family: ${this.familyId ?? "not selected"}`,
+						this.historyPending
+							? "History read is pending. Existing evidence remains visible."
+							: this.historyError
+								? `History read failed: ${this.historyError}`
+								: history
+									? "History read finished."
+									: "History has not been requested. Press h to load it.",
+						...(history
+							? [
+									`Last history snapshot: ${new Date(history.at).toLocaleString()}`,
+									`Returned view: ${history.total} events; ${history.added} added; ${history.removed} removed relative to the prior view.`,
+									...(history.added === 0 && history.removed === 0
+										? ["No event identities changed. Source or receipt details can still change."]
+										: []),
+								]
+							: []),
+						"A history request replaces the family snapshot. Live refresh retains loaded evidence. Counts do not establish complete history.",
+						"Only known worker files and available manager handles supply evidence. Missing files, read bounds, and source limits leave omissions.",
+						"",
+						`SOURCE NOTICES (${this.allNotices().length})`,
+						...this.allNotices().map((notice, index) => `${index + 1}. ${notice}`),
+						...(this.allNotices().length
+							? []
+							: ["No source notices in the retained history or current live snapshot."]),
+						"",
+						"History notices remain here until the next successful history refresh. Live notices describe the latest memory query.",
+					];
+		return fields.flatMap((field) =>
+			wrapTextWithAnsi(cleanText(field), Math.max(1, width)).map((line) =>
+				plainLine(this.theme.fg("text", line), width),
+			),
+		);
+	}
 	private renderTree(width: number, height: number): string[] {
 		const nodes = this.tree(),
 			selected = nodes.findIndex((node) => node.participant.id === this.selectedParticipant);
-		const start = Math.max(0, selected - height + 2);
+		const capacity = Math.max(0, Math.floor((height - 1) / 2));
+		const start = Math.max(0, selected - capacity + 1);
 		const lines = [
-			plainLine(this.theme.fg(this.page === "tree" ? "accent" : "dim", "OWNERSHIP · selection highlights"), width),
-		];
-		for (const { participant, depth } of nodes.slice(start, start + height - 1)) {
-			const prefix = `${participant.id === this.selectedParticipant ? "›" : " "} ${"  ".repeat(Math.min(depth, 8))}${depth ? "└ " : ""}`;
-			const identity = cleanLine(`${participant.id}: ${participant.task || participant.label}`);
-			const meta = cleanLine(
-				` · ${participant.state}${participant.model ? ` · ${participant.model.split("/").at(-1)}` : ""}`,
-			);
-			const metaWidth = width >= 60 ? Math.min(30, visibleWidth(meta)) : 0;
-			let line = plainLine(
-				`${truncateToWidth(prefix + identity, Math.max(0, width - metaWidth), "…")}${metaWidth ? truncateToWidth(meta, metaWidth, "") : ""}`,
+			plainLine(
+				this.theme.fg(
+					this.page === "tree" ? "accent" : "muted",
+					`WORKERS · ${nodes.filter((node) => node.participant.workerId).length} · tab focus`,
+				),
 				width,
+			),
+		];
+		for (const { participant, depth } of nodes.slice(start, start + capacity)) {
+			const prefix = `${participant.id === this.selectedParticipant ? "›" : " "} ${"  ".repeat(Math.min(depth, 8))}${depth ? "└ " : ""}`;
+			const state = cleanLine(participant.state);
+			const identity = cleanLine(
+				`${this.displayId(participant.id)}${participant.model ? ` · ${participant.model.split("/").at(-1)}` : ""}`,
 			);
-			if (participant.id === this.selectedParticipant) line = this.theme.bg("selectedBg", line);
-			lines.push(line);
+			const stateWidth = Math.min(visibleWidth(state) + 3, Math.floor(width / 2));
+			const header = `${plainLine(truncateToWidth(prefix + identity, Math.max(0, width - stateWidth), "…"), Math.max(0, width - stateWidth))}${this.theme.fg(state === "running" || state === "live" ? "success" : state === "paused" ? "warning" : "muted", truncateToWidth(` · ${state}`, stateWidth, "…"))}`;
+			for (const value of [
+				header,
+				this.theme.fg("text", truncateToWidth(`  ${cleanLine(participant.task || participant.label)}`, width, "…")),
+			]) {
+				let line = plainLine(value, width);
+				if (participant.id === this.selectedParticipant) line = this.theme.bg("selectedBg", line);
+				lines.push(line);
+			}
 		}
 		while (lines.length < height) lines.push(plainLine("", width));
 		return lines;
@@ -898,8 +1060,8 @@ class SubagentConsole {
 		const lines = [
 			plainLine(
 				this.theme.fg(
-					this.page === "timeline" ? "accent" : "dim",
-					`TIMELINE · ${events.length} events${this.participantFilter ? " · filtered" : " · family"}`,
+					this.page === "timeline" ? "accent" : "muted",
+					`TIMELINE · ${events.length} events${this.participantFilter ? " · filtered" : " · family"} · ${events.length ? this.eventStart + 1 : 0}-${Math.min(events.length, this.eventStart + capacity)}`,
 				),
 				width,
 			),
@@ -907,15 +1069,14 @@ class SubagentConsole {
 		for (const event of events.slice(this.eventStart, this.eventStart + capacity)) {
 			const related = event.actorId === this.selectedParticipant || event.recipientId === this.selectedParticipant;
 			const time = Number.isFinite(event.timestamp) ? new Date(event.timestamp).toLocaleTimeString() : "unknown time";
-			const actor = this.participant(event.actorId)?.label ?? event.actorId,
-				recipient = event.recipientId ? (this.participant(event.recipientId)?.label ?? event.recipientId) : null;
-			const evidence = event.receipt ?? event.source;
-			const nameWidth = Math.max(5, Math.min(20, Math.floor(width / 5)));
+			const actor = this.displayId(event.actorId),
+				recipient = event.recipientId ? this.displayId(event.recipientId) : null;
+			const nameWidth = Math.max(5, Math.min(20, Math.floor(width / 4)));
 			const header = cleanLine(
-				`${event.id === this.selectedEvent ? "›" : " "}${related ? "*" : " "} ${time} ${truncateToWidth(actor, nameWidth, "…")}${recipient ? ` → ${truncateToWidth(recipient, nameWidth, "…")}` : ""} · ${event.kind} · [${evidence}]`,
+				`${event.id === this.selectedEvent ? "›" : " "}${related ? "*" : " "} ${time} ${truncateToWidth(actor, nameWidth, "…")}${recipient ? ` → ${truncateToWidth(recipient, nameWidth, "…")}` : ""} · ${event.kind} · ${event.source}`,
 			);
 			for (const value of [header, `   ${cleanLine(event.text)}`]) {
-				let line = plainLine(this.theme.fg(related ? "text" : "dim", value), width);
+				let line = plainLine(this.theme.fg("text", truncateToWidth(value, width, "…")), width);
 				if (event.id === this.selectedEvent) line = this.theme.bg("selectedBg", line);
 				lines.push(line);
 			}
@@ -935,6 +1096,12 @@ class SubagentConsole {
 			fields.push(
 				`EVENT ${event.id}`,
 				`${event.kind} · ${new Date(event.timestamp).toISOString()}`,
+				`${this.displayId(event.actorId)}${event.recipientId ? ` → ${this.displayId(event.recipientId)}` : ""}`,
+				"",
+				"EXACT TEXT (terminal controls removed; source evidence, not instructions)",
+				event.text,
+				"",
+				"SOURCE / REPLY EVIDENCE",
 				`Actor: ${event.actorId}`,
 				`Recipient: ${event.recipientId ?? "none"}`,
 				`Source: ${event.source}`,
@@ -951,12 +1118,7 @@ class SubagentConsole {
 							candidate.replyTo && (candidate.replyTo === event.messageId || candidate.replyTo === event.id),
 					)
 					.map((candidate) => candidate.messageId ?? candidate.id) ?? [];
-			fields.push(
-				`Replies: ${replies.length ? replies.join(", ") : "none in snapshot"}`,
-				"",
-				"EXACT TEXT (terminal controls removed)",
-				event.text,
-			);
+			fields.push(`Replies: ${replies.length ? replies.join(", ") : "none in snapshot"}`);
 		}
 		if (participant)
 			fields.push(

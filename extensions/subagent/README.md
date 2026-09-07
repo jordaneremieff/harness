@@ -598,14 +598,17 @@ generically; the statusline does not inspect worker files or parse this key.
 `/subagent` starts with the current dispatch family's timeline. The ownership
 tree includes the manager, workers, and nested managers. Continuation appears
 as a separate link rather than a child relationship. Worker identity and task
-text remain separate from model and execution state. Wide terminals show the
-tree and timeline together; narrow terminals show the selected focus page.
+text remain separate from model and execution state. Worker rows show a short,
+unambiguous ID, model, and state above the recorded task. Details retain full
+identities. Wide terminals show the tree and timeline together; narrow terminals
+show the selected focus page.
 
 The timeline projects dispatch records, terminal outcomes, collaboration tool
 calls/results, and received peer messages, reports, pause notices, and result
 notifications. Ordinary tool output stays in the worker console. Selecting a
-participant highlights its exchanges; filtering is a separate explicit action.
-Details expose source session/entry identities, receipt evidence, reply links,
+participant marks its exchanges with `*`; other exchanges keep normal text
+contrast. Filtering is a separate explicit action. Event details put recorded
+content before source session/entry identities, receipt evidence, reply links,
 and recorded task/context text. The dashboard does not infer task criteria,
 intent, model understanding, or result acceptance from prose.
 
@@ -616,9 +619,11 @@ intent, model understanding, or result acceptance from prose.
 | `v` | Open the selected worker's console |
 | `/` | Search event text and identities; Enter keeps the filter, Escape clears it |
 | `f` | Toggle the selected participant's exchange filter |
-| `h` | Load or refresh history for the selected family |
+| `h` | Load or refresh history for the selected family; show the result above the timeline |
+| `n` | Open the scrollable history/source report, including all retained notices |
+| `?` | Open keyboard help; arrows or `b` / Space scroll help and the source report |
 | `F` | Select another known family; Enter loads its history |
-| `l` / timeline End | Return to the live tail |
+| `l` / timeline End | Follow the live tail; `BROWSE` stops only automatic scrolling |
 | `[` / `]` in details | Follow the parent message or a reply |
 | `i` / `k` | Interrupt / cancel a selected owned worker |
 | `Escape` | Return from details or console; close the dashboard |
@@ -630,8 +635,18 @@ at 512 entries per session; selected file ancestry stops at 4096. The adapter
 bounds records, family members, event count, and event bytes; omissions remain
 visible. The view caches only bounded family snapshots. A history refresh
 replaces that family's prior snapshot. A live record update does not discard
-previously loaded message evidence. The header distinguishes tail-follow mode
-from a paused view, and the footer preserves the history capture time.
+previously loaded message evidence. The header distinguishes `FOLLOW TAIL` from
+`BROWSE`; neither pauses workers or memory refresh. A separate history row shows
+pending reads, failures, or the returned event count and identity additions/removals
+relative to the prior view. An unchanged result remains visible as `+0/-0`, not
+silence. Repeated keys do not start duplicate pending history reads.
+
+The source report preserves the history capture time and full wrapped notices.
+History omissions remain visible across live memory refreshes until the next
+successful history read replaces them. Failed history reads preserve prior data
+and an explicit error with a retry action. Counts describe the bounded view, not
+complete archive coverage. A source limit can leave history unchanged; the report
+states the omission rather than claiming that no older collaboration exists.
 
 Source order and explicit reply links remain distinct from display timestamps.
 Repeated peer envelopes appear once with separate source occurrences; conflicting

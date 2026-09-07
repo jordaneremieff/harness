@@ -157,10 +157,11 @@ describe("collaboration dashboard", () => {
 	it("starts with the family timeline, nested ownership, and a separate continuation edge", async () => {
 		await panel(deps(), async (component) => {
 			const output = text(component, 180);
-			assert.match(output, /LIVE · timeline · root/);
-			assert.match(output, /OWNERSHIP/);
+			assert.match(output, /FOLLOW TAIL · timeline · Current family/);
+			assert.match(output, /WORKERS/);
 			assert.match(output, /TIMELINE/);
-			assert.match(output, /worker-a: Task/);
+			assert.match(output, /worker-a · same-model/);
+			assert.match(output, /Task for worker-a/);
 			assert.match(output, / {4}└ worker-b/);
 			assert.match(output, /Exact reply/);
 			component.handleInput("\t");
@@ -226,7 +227,9 @@ describe("collaboration dashboard", () => {
 				context.mock.timers.tick(1_000);
 				await flush();
 				assert.match(text(component, 180), /historical evidence/);
-				assert.match(text(component), /retained snapshot.*history/);
+				assert.match(text(component), /HISTORY · 3 events · \+1\/-0/);
+				component.handleInput("n");
+				assert.match(text(component), /Last history snapshot:/);
 			},
 		);
 	});
@@ -241,13 +244,13 @@ describe("collaboration dashboard", () => {
 			context.mock.timers.tick(1_000);
 			await flush();
 			const after = text(component, 180);
-			assert.match(after, /PAUSED · 1 new/);
-			assert.equal(before.split("\n").slice(2, -2).join("\n"), after.split("\n").slice(2, -2).join("\n"));
+			assert.match(after, /BROWSE · 1 new/);
+			assert.equal(before.split("\n").slice(3, -2).join("\n"), after.split("\n").slice(3, -2).join("\n"));
 			component.handleInput("\r");
 			assert.match(text(component), /EVENT event-1/);
 			component.handleInput("\x1b");
 			component.handleInput("l");
-			assert.match(text(component, 180), /LIVE/);
+			assert.match(text(component, 180), /FOLLOW TAIL/);
 			assert.match(text(component, 180), /newest payload/);
 		});
 	});
@@ -319,6 +322,7 @@ describe("collaboration dashboard", () => {
 			async (component) => {
 				component.handleInput("h");
 				await flush();
+				component.handleInput("n");
 				assert.match(text(component, 220), /fresh snapshot/);
 				pending.resolve({ ...snapshot(), notices: ["stale snapshot"] });
 				await flush();
@@ -391,13 +395,15 @@ describe("collaboration dashboard", () => {
 			events: Array.from({ length: 1_050 }, (_, index) => event(`event-${index}`, `body-${index}`)),
 		};
 		await panel(deps({ collaboration: async () => current }), async (component) => {
+			component.handleInput("n");
 			assert.match(text(component, 240), /View cache omitted 50 older events/);
+			component.handleInput("\x1b");
 			component.handleInput("\x1b[H");
 			component.handleInput("\r");
 			assert.match(text(component), /EVENT event-50/);
 			context.mock.timers.tick(1_000);
 			await flush();
-			assert.match(text(component), /PAUSED · 0 new/);
+			assert.match(text(component), /BROWSE · 0 new/);
 		});
 	});
 	it("uses native Unicode and bracketed paste inputs with focus propagation and narrow pages", async () => {
@@ -413,7 +419,7 @@ describe("collaboration dashboard", () => {
 			component.focused = true;
 			component.handleInput("\x1b");
 			component.handleInput("\t");
-			assert.match(text(component, 60), /OWNERSHIP/);
+			assert.match(text(component, 60), /WORKERS/);
 			assert.doesNotMatch(text(component, 60), /TIMELINE/);
 			component.handleInput("v");
 			component.handleInput("\x1b[200~👩‍💻界\x1b[201~");
@@ -426,6 +432,252 @@ describe("collaboration dashboard", () => {
 			assert.equal(component.render(20).length, 2);
 			assert.match(text(component, 20), /esc/);
 		});
+	});
+});
+
+describe("history feedback and dense layouts", () => {
+	it("counts history additions against the retained view rather than omitted source events", async () => {
+		const many = Array.from({ length: 1001 }, (_, index) => event(`event-${index}`, `body-${index}`));
+		await panel(
+			deps({ collaboration: async (query) => ({ ...snapshot(), events: query.history ? [many[0]] : many }) }),
+			async (component) => {
+				component.handleInput("h");
+				await flush();
+				assert.match(text(component), /HISTORY · 1 events · \+1\/-1000/);
+			},
+		);
+	});
+	it("ignores late history failures after another family becomes selected", async () => {
+		const pending = deferred<CollaborationSnapshot>();
+		await panel(
+			deps({
+				collaboration: async (query) =>
+					query.familyId === "other"
+						? { ...snapshot(), familyId: "other", notices: ["Other family source"] }
+						: query.history
+							? pending.promise
+							: snapshot(),
+			}),
+			async (component) => {
+				component.handleInput("h");
+				component.handleInput("F");
+				component.handleInput("\x1b[B");
+				component.handleInput("\r");
+				await flush();
+				pending.reject(new Error("Old family failed"));
+				await flush();
+				component.handleInput("n");
+				assert.match(text(component), /Family: other/);
+				assert.match(text(component), /Other family source/);
+				assert.doesNotMatch(text(component), /Old family failed|HISTORY FAILED/);
+			},
+		);
+	});
+	it("shows a pending history read immediately, coalesces repeats, and reports no change", async () => {
+		const pending = deferred<CollaborationSnapshot>();
+		let reads = 0;
+		await panel(
+			deps({
+				collaboration: async (query) => {
+					if (!query.history) return snapshot();
+					reads++;
+					return pending.promise;
+				},
+			}),
+			async (component) => {
+				component.handleInput("h");
+				assert.match(text(component, 80).split("\n")[1], /HISTORY · Loading/);
+				component.handleInput("h");
+				assert.equal(reads, 1);
+				pending.resolve(snapshot());
+				await flush();
+				assert.match(text(component, 80).split("\n")[1], /HISTORY · 2 events · \+0\/-0/);
+				component.handleInput("n");
+				assert.match(text(component), /No event identities changed/);
+			},
+		);
+	});
+	it("preserves historical omissions across live ticks, then replaces them on history refresh", async (context) => {
+		context.mock.timers.enable({ apis: ["setInterval"] });
+		let limited = true;
+		await panel(
+			deps({
+				collaboration: async (query) => ({
+					...snapshot(),
+					notices:
+						query.history && limited
+							? [
+									"The event count or byte limit was reached; additional evidence was omitted.",
+									"Worker file exceeds the snapshot byte limit.",
+								]
+							: [],
+				}),
+			}),
+			async (component) => {
+				component.handleInput("h");
+				await flush();
+				context.mock.timers.tick(1000);
+				await flush();
+				assert.match(text(component, 80).split("\n")[1], /2 notices/);
+				component.handleInput("n");
+				assert.match(text(component), /Worker file exceeds/);
+				assert.match(text(component), /event count or byte limit/);
+				limited = false;
+				component.handleInput("h");
+				await flush();
+				assert.doesNotMatch(text(component), /Worker file exceeds/);
+				assert.match(text(component), /SOURCE NOTICES \(0\)/);
+			},
+		);
+	});
+	it("keeps history failures visible after later memory refresh and permits retry", async (context) => {
+		context.mock.timers.enable({ apis: ["setInterval"] });
+		let fail = true;
+		await panel(
+			deps({
+				collaboration: async (query) => {
+					if (query.history && fail) throw new Error("selected source unavailable");
+					return snapshot();
+				},
+			}),
+			async (component) => {
+				component.handleInput("h");
+				await flush();
+				context.mock.timers.tick(1000);
+				await flush();
+				assert.match(text(component, 80).split("\n")[1], /HISTORY FAILED/);
+				assert.match(text(component), /Exact reply/);
+				component.handleInput("n");
+				assert.match(text(component), /History read failed: selected source unavailable/);
+				fail = false;
+				component.handleInput("h");
+				await flush();
+				assert.match(text(component), /History read finished/);
+				assert.doesNotMatch(text(component), /HISTORY FAILED/);
+			},
+		);
+	});
+	it("reports removals and does not leak history reports between families", async () => {
+		await panel(
+			deps({
+				collaboration: async (query) =>
+					query.familyId === "other"
+						? {
+								...snapshot(),
+								familyId: "other",
+								events: [],
+								notices: [],
+							}
+						: query.history
+							? { ...snapshot(), events: [], notices: ["Current family omission"] }
+							: snapshot(),
+			}),
+			async (component) => {
+				component.handleInput("h");
+				await flush();
+				assert.match(text(component), /HISTORY · 0 events · \+0\/-2/);
+				component.handleInput("F");
+				component.handleInput("\x1b[B");
+				component.handleInput("\r");
+				await flush();
+				component.handleInput("n");
+				assert.doesNotMatch(text(component), /Current family omission/);
+				assert.match(text(component), /Family: other/);
+			},
+		);
+	});
+	it("wraps every notice, supports help and report paging on narrow terminals, and restores selection", async () => {
+		const notices = Array.from(
+			{ length: 30 },
+			(_, index) => `Notice ${index}: source information with a long explanation for the selected family.`,
+		);
+		await panel(deps({ collaboration: async () => ({ ...snapshot(), notices }) }), async (component, terminal) => {
+			terminal.rows = 16;
+			component.handleInput("\x1b[H");
+			component.handleInput("n");
+			text(component, 48);
+			component.handleInput("\x1b[F");
+			assert.match(text(component, 48), /Notice 29:/);
+			component.handleInput("b");
+			assert.doesNotMatch(text(component, 48), /Notice 29:/);
+			component.handleInput(" ");
+			assert.match(text(component, 48), /Notice 29:/);
+			component.handleInput("\x1b");
+			component.handleInput("\r");
+			assert.match(text(component, 48), /EVENT event-1/);
+			component.handleInput("?");
+			assert.match(text(component, 48), /DASHBOARD HELP/);
+			component.handleInput("\x1b[F");
+			assert.match(text(component, 48), /continuation remains\s+active/);
+			for (const width of [180, 100, 48, 24, 10, 3, 1]) {
+				for (const line of component.render(width)) assert.equal(visibleWidth(line), width);
+				assert.ok(component.render(width).length <= terminal.rows - 2);
+			}
+			component.handleInput("\x1b");
+			assert.match(text(component, 48), /EVENT event-1/);
+		});
+	});
+	it("abbreviates colliding worker IDs distinctly while preserving state, model, text, and exact controls", async () => {
+		const first = "bg-longfirsta123456",
+			second = "bg-longsecondb123456";
+		const current = {
+			...snapshot(),
+			participants: [
+				participant("root", null),
+				participant(first, "root", { state: "done" }),
+				participant(second, "root", { state: "paused" }),
+			],
+			events: [event("one", "Full readable event", { actorId: first, recipientId: second, workerId: first })],
+		};
+		let target = "";
+		await panel(
+			deps({
+				collaboration: async () => current,
+				interrupt: async (id) => {
+					target = id;
+					return "interrupted";
+				},
+			}),
+			async (component, terminal) => {
+				const lines = component.render(120).map(stripTerminalSequences);
+				assert.ok(lines.some((line) => /…a123456.*same-model.*done/.test(line)));
+				assert.ok(lines.some((line) => /…b123456.*same-model.*paused/.test(line)));
+				assert.match(lines.join("\n"), /…a123456 → …b123456/);
+				component.handleInput("i");
+				await flush();
+				assert.equal(target, first);
+				component.handleInput("\r");
+				terminal.rows = 60;
+				assert.match(text(component), new RegExp(`Actor: ${first}`));
+			},
+		);
+	});
+	it("uses normal text contrast for unrelated events and puts event content before source metadata", async () => {
+		const colors: { color: string; value: string }[] = [];
+		const trackedTheme = {
+			...theme,
+			fg: (color: string, value: string) => {
+				colors.push({ color, value });
+				return value;
+			},
+		} as Theme;
+		await panel(
+			deps({
+				collaboration: async () => ({
+					...snapshot(),
+					events: [event("plain", "unrelated readable content", { actorId: "root", recipientId: "worker-c" })],
+				}),
+			}),
+			async (component) => {
+				text(component);
+				assert.ok(colors.some((entry) => entry.color === "text" && entry.value.includes("unrelated readable content")));
+				assert.ok(!colors.some((entry) => entry.color === "dim" && entry.value.includes("unrelated readable content")));
+				component.handleInput("\r");
+				const output = text(component);
+				assert.ok(output.indexOf("unrelated readable content") < output.indexOf("SOURCE / REPLY EVIDENCE"));
+			},
+			trackedTheme,
+		);
 	});
 });
 
