@@ -23,7 +23,7 @@ export type Counters = Record<(typeof COUNTERS)[number], number>;
 export type HealthDelta = Partial<Record<(typeof HEALTH_COUNTERS)[number], number>>;
 export type Health = Required<HealthDelta> & { cellsOverflowedEvents: number; receiptQuotaReached: boolean };
 export type Stage = "tool_request" | "tool_result";
-export type ResourceClass = "entry" | "skill" | "inventory" | "governance" | "overflow";
+export type ResourceClass = "entry" | "inventory" | "governance" | "overflow";
 export type Reasoning = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "unknown";
 export interface Cell {
 	day: string;
@@ -120,7 +120,7 @@ export function validateCell(value: unknown, day: string): asserts value is Cell
 	fields(value, CELL_FIELDS);
 	dayNumber(value.day);
 	if (value.day !== day || typeof value.observationStage !== "string" || !["tool_request", "tool_result"].includes(value.observationStage)) fail();
-	if (typeof value.resourceClass !== "string" || !["entry", "skill", "inventory", "governance", "overflow"].includes(value.resourceClass)) fail();
+	if (typeof value.resourceClass !== "string" || !["entry", "inventory", "governance", "overflow"].includes(value.resourceClass)) fail();
 	text(value.resourceId, /^[a-z0-9][a-z0-9-]{0,63}$/);
 	if (value.resourceClass !== "entry" && value.resourceId !== value.resourceClass) fail();
 	text(value.model, /^[A-Za-z0-9][A-Za-z0-9._/+:-]{0,63}$/);

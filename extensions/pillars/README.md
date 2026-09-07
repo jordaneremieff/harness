@@ -1,17 +1,17 @@
 # Pillars access
 
 The extension makes the existing Pillars corpus directly accessible to agents
-and the operator. It also records bounded read-callback evidence. It does not
-replace the [Pillars skill](../../skills/pillars/SKILL.md) or
-[corpus governance](../../pillars/GOVERNANCE.md).
+and the operator. It also records bounded read-callback evidence. The `pillars`
+tool is the single consultation surface: it carries the WHEN triggers that tell
+the model when to consult the corpus, and it reads the
+[corpus governance](../../pillars/GOVERNANCE.md) directly.
 
 ## Read the corpus
 
 Agents use `pillars` with no arguments to read the inventory and discover
 resource identifiers. Read `resource:"governance"` for the consultation
-procedure, then read the relevant full entries. `resource:"skill"` returns the
-loaded skill. The tool returns current source text and its SHA-256 digest, not
-a generated summary or a compliance verdict.
+procedure, then read the relevant full entries. The tool returns current source
+text and its SHA-256 digest, not a generated summary or a compliance verdict.
 
 ```json
 {}
@@ -42,23 +42,24 @@ it is not stored in the aggregate telemetry directory.
 
 ## Discovery and activation
 
-The harness package distributes the skill and corpus together. The extension
-resolves the **actually loaded** skill through public Pi resource metadata and
-its documented `../../pillars` relation. It does not depend on the registry
-extension, guess a corpus directory, or scan session history. It loads the
-bounded inventory and canonical targets, with no full-corpus body cache.
+The extension and the corpus ship together in one package. At session start the
+extension resolves the corpus root as the sibling `../../pillars` directory
+relative to its own module location. `PI_PILLARS_CORPUS` overrides that root
+with an absolute path; a relative value fails closed rather than resolving
+against the session directory. The extension does not guess a corpus directory,
+depend on the registry extension, or scan session history. It loads the bounded
+inventory and canonical targets, with no full-corpus body cache.
 
-The skill remains the portable consultation entry point. It defines when to
-consult the corpus and points to governance. The `pillars` tool removes manual
-path navigation; it does not add another doctrine procedure. Registry, when
-available, discovers both resources through normal Pi metadata.
+The `pillars` tool is the single consultation surface. It carries the WHEN
+triggers in its description and prompt guidelines, and it points to governance.
+It removes manual path navigation; it does not add another doctrine procedure.
 
 The extension has a persistent worktree and an explicit local entrypoint.
 Follow [the worktree procedure](../../docs/conventions/worktrees.md) for local
 activation. Local activation does not promote the branch or push changes.
 New sessions load the configured entrypoint; an existing session requires
-`/reload`. Corpus distribution still follows the package's skill/corpus source,
-not an independent copy inside this extension.
+`/reload`. The corpus resolves from the package location, not an independent
+copy inside this extension.
 
 ## Read access evidence
 
@@ -124,9 +125,9 @@ source-specific attribution. Assessed complete outputs are verified or
 mismatched against reference bytes at that callback; partial, unknown, and
 error outputs remain unverifiable. No mismatched-body fingerprint persists.
 
-Operator command reads, `/skill:pillars` expansion, registry excerpts, shell
-reads, and unobserved callbacks do not enter this metric. These are scope
-boundaries, not proof of non-use. Per-turn deduplication admits at most 4,096
+Operator command reads, registry excerpts, shell reads, and unobserved
+callbacks do not enter this metric. These are scope boundaries, not proof of
+non-use. Per-turn deduplication admits at most 4,096
 call/stage keys and refuses new keys after saturation. It does not claim an
 exact lost-event count for unknown duplicates.
 
@@ -156,8 +157,11 @@ lock-free and reject unresolved temporary state instead of blocking.
 The store assumes a local filesystem. It does not admit or detect filesystem
 types, so a network filesystem is unsupported but not detected. Schema
 validation rejects invalid shards, counter partitions, and clock rollback.
-The store does not repair or migrate corrupt state. Storage unavailability
-does not prevent corpus retrieval.
+The store does not repair or migrate corrupt state. A shard that carries a
+retired resource class fails validation as corrupt, which blocks both readback
+and publication for the whole directory until the operator clears it; the
+collector counts those failed publications as write incidents. Storage
+unavailability does not prevent corpus retrieval.
 
 Storage uses 30 fixed daily slots, each at most 2 MiB, with 2,048 concrete
 cells, reserved per-stage overflow, and 4,096 private owner/day receipts.
@@ -194,6 +198,7 @@ mismatched-body hashes. Public evidence and exports exclude receipt identities.
 | Variable | Meaning |
 | --- | --- |
 | `PI_PILLARS_DIR` | Absolute aggregate directory; default `<agentDir>/pillars`. |
+| `PI_PILLARS_CORPUS` | Absolute corpus root override; unset resolves the sibling `../../pillars` package directory. |
 | `PI_PILLARS_COLLECT` | `1` or unset enables collection; `0` disables collection but preserves source access and retained-data readback. Other values disable collection with a local diagnostic. |
 | `PI_PILLARS_TEST_HOST_ROOT` | Test-only coding-agent package root for the SDK integration regression; unset uses checkout dependencies. |
 

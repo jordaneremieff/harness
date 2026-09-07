@@ -209,7 +209,7 @@ test("malformed shards never become empty or partial success", async () => {
 	const mutations: ((s: Snapshot) => void)[] = [
 		(s) => s.shards[DAY].cells.push(cell(0)),
 		(s) => s.shards[DAY].cells[0].counters.resultError++,
-		(s) => (s.shards[DAY].cells[0].resourceClass = "skill"),
+		(s) => ((s.shards[DAY].cells[0] as any).resourceClass = "foreign"),
 		(s) => (s.shards[DAY].retentionThroughDay = "2026-09-08"),
 		(s) => ((s.shards[DAY] as any).extra = "private"),
 		(s) => s.shards[DAY].receipts.push({ owner: "a".repeat(32), seq: 1 }, { owner: "a".repeat(32), seq: 1 }),

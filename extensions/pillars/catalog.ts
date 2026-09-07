@@ -1,19 +1,16 @@
 import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const BODY_BYTES = 1024 * 1024;
 export const CATALOG_TARGETS = 128;
-export type ResourceClass = "skill" | "inventory" | "governance" | "entry";
+export type ResourceClass = "inventory" | "governance" | "entry";
 export interface Resource {
 	resourceClass: ResourceClass;
 	resourceId: string;
 	path: string;
-}
-export interface SkillLocator {
-	name: string;
-	filePath: string;
 }
 export interface Catalog {
 	resources: readonly Resource[];
@@ -45,26 +42,28 @@ export function decodeBody(body: Buffer): string {
 	return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body);
 }
 
-/** The loaded skill, not a folder name, supplies the corpus root. */
-export async function loadCatalog(skills: readonly SkillLocator[], signal?: AbortSignal): Promise<Catalog> {
-	if (skills.length > 256) throw new Error("source_unavailable");
-	const selected = skills.filter((skill) => skill.name === "pillars");
-	if (selected.length !== 1) throw new Error("source_unavailable");
-	const skillPath = await realpath(selected[0].filePath);
-	const skill = await readBody(skillPath, signal);
-	const skillText = decodeBody(skill);
-	if (!/^name:\s*pillars\s*$/m.test(skillText) || !skillText.includes("../../pillars")) {
-		throw new Error("source_unavailable");
-	}
-	const root = await realpath(resolve(dirname(skillPath), "../../pillars"));
+/** The corpus ships beside the extension in one package, at ../../pillars from this module. */
+export function defaultCorpusRoot(): string {
+	return resolve(dirname(fileURLToPath(import.meta.url)), "../../pillars");
+}
+
+/** PI_PILLARS_CORPUS overrides the package-relative corpus root with an absolute path. */
+export function corpusRoot(): string {
+	const override = process.env.PI_PILLARS_CORPUS?.trim();
+	if (override === undefined || override === "") return defaultCorpusRoot();
+	if (!isAbsolute(override)) throw new Error("source_unavailable");
+	return override;
+}
+
+export async function loadCatalog(signal?: AbortSignal): Promise<Catalog> {
+	const root = await realpath(corpusRoot());
 	const inventoryPath = await realpath(resolve(root, "README.md"));
 	const governancePath = await realpath(resolve(root, "GOVERNANCE.md"));
 	const inventory = await readBody(inventoryPath, signal);
 	const governance = await readBody(governancePath, signal);
-	if (skill.length + inventory.length + governance.length > BODY_BYTES) throw new Error("source_unavailable");
+	if (inventory.length + governance.length > BODY_BYTES) throw new Error("source_unavailable");
 	decodeBody(governance);
 	const resources: Resource[] = [
-		{ resourceClass: "skill", resourceId: "skill", path: skillPath },
 		{ resourceClass: "inventory", resourceId: "inventory", path: inventoryPath },
 		{ resourceClass: "governance", resourceId: "governance", path: governancePath },
 	];
@@ -87,7 +86,7 @@ export async function loadCatalog(skills: readonly SkillLocator[], signal?: Abor
 		ids.add(id);
 		resources.push({ resourceClass: "entry", resourceId: id, path });
 	}
-	if (resources.length === 3) throw new Error("source_unavailable");
+	if (resources.length === 2) throw new Error("source_unavailable");
 	return { resources: Object.freeze(resources.map((resource) => Object.freeze(resource))) };
 }
 

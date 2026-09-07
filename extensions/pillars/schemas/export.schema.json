@@ -296,7 +296,6 @@
           },
           "resourceClass": {
             "enum": [
-              "skill",
               "inventory",
               "governance",
               "entry",

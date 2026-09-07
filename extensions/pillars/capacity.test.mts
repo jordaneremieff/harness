@@ -142,7 +142,7 @@ test("safe arithmetic rejects the complete candidate and its receipt", () => {
 test("closed validators reject malformed, duplicated, and semantically impossible data", () => {
 	for (const day of ["2026-02-29", "2026-13-01", "1999-01-01", "2026-09-07x"]) assert.throws(() => dayNumber(day));
 	const mutations: Array<(row: Cell) => void> = [
-		(row) => { row.resourceClass = "skill"; },
+		(row) => { (row as any).resourceClass = "foreign"; },
 		(row) => { row.piVersion = "other"; },
 		(row) => { row.model = "not a model"; },
 		(row) => { row.referenceBodyDigest = "a"; },

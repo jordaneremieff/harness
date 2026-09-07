@@ -12,7 +12,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Markdown } from "@earendil-works/pi-tui";
 import { access, ACCESS_DESCRIPTION } from "./access.ts";
-import { type Catalog, loadCatalog, readBody, resourceById, resourceByPath, type SkillLocator } from "./catalog.ts";
+import { type Catalog, loadCatalog, readBody, resourceById, resourceByPath } from "./catalog.ts";
 import { Collector, utcDay } from "./collector.ts";
 import { exportLocal, parseCommand } from "./export.ts";
 import { accessEvidence, Deduplicator, type DeliveryExtent, extract, readEvidence } from "./observation.ts";
@@ -33,16 +33,9 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 		if (ctx.hasUI) ctx.ui.notify(text, "warning");
 		else process.stderr.write(`${text}\n`);
 	}
-	async function discover(skills?: readonly SkillLocator[], signal?: AbortSignal): Promise<void> {
+	async function discover(signal?: AbortSignal): Promise<void> {
 		try {
-			if (!skills) {
-				const commands = pi.getCommands();
-				if (commands.length > 256) throw new Error("source_unavailable");
-				skills = commands
-					.filter((command) => command.source === "skill" && command.name === "skill:pillars")
-					.map((command) => ({ name: "pillars", filePath: command.sourceInfo.path }));
-			}
-			catalog = await loadCatalog(skills, signal);
+			catalog = await loadCatalog(signal);
 		} catch {
 			catalog = undefined;
 		}
@@ -57,10 +50,7 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 		dedup.newTurn();
 		sourceWarned = false;
 		if (enabled && event.reason === "fork") collector.incident("forkResets");
-		await discover();
-	});
-	pi.on("before_agent_start", async (event, ctx) => {
-		await discover(event.systemPromptOptions.skills, ctx.signal);
+		await discover(ctx.signal);
 		if (!catalog && !sourceWarned) {
 			sourceWarned = true;
 			diagnostic(ctx, "The loaded Pillars source is unavailable. Access attribution remains unavailable.");
@@ -154,6 +144,10 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 		label: "Pillars",
 		description: ACCESS_DESCRIPTION,
 		promptSnippet: "Read the Pillars inventory, consultation rules, and selected corpus entries",
+		promptGuidelines: [
+			"Call pillars at judgment moments: design or architecture decisions, trade-offs, option menus, verification depth, information placement, and prose tells.",
+			"Read resource:\"governance\" before applying any corpus entry.",
+		],
 		parameters: Type.Object(
 			{
 				resource: Type.Optional(
@@ -223,7 +217,7 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 		description:
 			"Browse Pillars: /pillars [read resource]. Access evidence: /pillars usage, revisions, or export absolute-path.",
 		handler: async (args, ctx) => {
-			await discover(ctx.getSystemPromptOptions().skills, ctx.signal);
+			await discover(ctx.signal);
 			try {
 				const input = args.trim();
 				if (!input || input === "browse" || input.startsWith("read ")) {

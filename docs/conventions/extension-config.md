@@ -24,6 +24,7 @@ Current consumers:
 | `PI_CLIPBOARD_DIR` | clipboard | Clipboard archive directory override; default `<agentDir>/clipboard`. |
 | `PI_PILLARS_DIR` | pillars | Aggregate directory override; default `<agentDir>/pillars`. |
 | `PI_PILLARS_COLLECT` | pillars | `1` or unset enables collection; `0` disables collection while preserving source access and readback. Other values disable collection with a diagnostic. |
+| `PI_PILLARS_CORPUS` | pillars | Absolute corpus root override; unset resolves the sibling `../../pillars` package directory. |
 | `PI_POLICY_DIR` | policy | Policy record directory override; default `<agentDir>/policy`. |
 | `PI_POLICY_MODE` | policy | Active mechanism: `observe` (default), `notice`, `annotate`, or `enforce`. An unrecognized value stops recording for the session; no silent fallback. |
 | `PI_SUBAGENT_PRUNE_DAYS` | subagent | Retention window for terminal workers in the store; default 30 days, `0` disables pruning. |

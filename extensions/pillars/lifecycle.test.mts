@@ -17,17 +17,14 @@ const entryBody = "# Synthetic lifecycle principle\nCheck the actual session bou
 
 async function fixture() {
 	const root = await mkdtemp(join(process.cwd(), ".pillars-lifecycle-test-"));
-	const skill = join(root, "package/skills/pillars/SKILL.md");
 	try {
-		await mkdir(join(root, "package/skills/pillars"), { recursive: true });
-		await mkdir(join(root, "package/pillars"));
+		await mkdir(join(root, "package/pillars"), { recursive: true });
 		await mkdir(join(root, "home"));
 		await mkdir(join(root, "agent"));
-		await writeFile(skill, "---\nname: pillars\ndescription: Consult the synthetic corpus for session checks.\ncompatibility: Requires ../../pillars\n---\nRead ../../pillars/README.md.\n");
 		await writeFile(join(root, "package/pillars/README.md"), "# Synthetic lifecycle inventory\n[Lifecycle](principle-lifecycle.md)\n");
 		await writeFile(join(root, "package/pillars/GOVERNANCE.md"), "# Synthetic governance\nRead the full selected body.\n");
 		await writeFile(join(root, "package/pillars/principle-lifecycle.md"), entryBody);
-		return { root, skill, agentDir: join(root, "agent"), store: join(root, "store") };
+		return { root, corpusDir: join(root, "package/pillars"), agentDir: join(root, "agent"), store: join(root, "store") };
 	} catch (error) {
 		await rm(root, { recursive: true, force: true });
 		throw error;
@@ -55,12 +52,12 @@ test("the actual Pi CLI prints the Pillars inventory without a provider request"
 		const output = execFileSync(process.execPath, [
 			join(hostRoot ?? sdk.getPackageDir(), "dist/cli.js"), "--print", "--offline", "--no-session",
 			"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
-			"--extension", entry, "--skill", f.skill, "--model", "anthropic/claude-sonnet-4-5", "/pillars",
+			"--extension", entry, "--model", "anthropic/claude-sonnet-4-5", "/pillars",
 		], {
 			cwd: f.root, input: "", encoding: "utf8", stdio: "pipe", timeout: 30000, maxBuffer: 65536,
 			env: {
 				PATH: process.env.PATH, HOME: join(f.root, "home"), PI_CODING_AGENT_DIR: f.agentDir,
-				PI_PILLARS_DIR: f.store, PI_PILLARS_COLLECT: "0", PI_OFFLINE: "1", NO_COLOR: "1",
+				PI_PILLARS_DIR: f.store, PI_PILLARS_COLLECT: "0", PI_PILLARS_CORPUS: f.corpusDir, PI_OFFLINE: "1", NO_COLOR: "1",
 			},
 		});
 		assert.match(output, /# Synthetic lifecycle inventory/);
@@ -70,11 +67,11 @@ test("the actual Pi CLI prints the Pillars inventory without a provider request"
 		const invalid = spawnSync(process.execPath, [
 			join(hostRoot ?? sdk.getPackageDir(), "dist/cli.js"), "--print", "--offline", "--no-session",
 			"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
-			"--extension", entry, "--skill", f.skill, "--model", "anthropic/claude-sonnet-4-5", "/pillars",
+			"--extension", entry, "--model", "anthropic/claude-sonnet-4-5", "/pillars",
 		], {
 			cwd: f.root, input: "", encoding: "utf8", timeout: 30000, maxBuffer: 65536,
 			env: { PATH: process.env.PATH, HOME: join(f.root, "home"), PI_CODING_AGENT_DIR: f.agentDir,
-				PI_PILLARS_DIR: f.store, PI_PILLARS_COLLECT: "invalid", PI_OFFLINE: "1", NO_COLOR: "1" },
+				PI_PILLARS_DIR: f.store, PI_PILLARS_COLLECT: "invalid", PI_PILLARS_CORPUS: f.corpusDir, PI_OFFLINE: "1", NO_COLOR: "1" },
 		});
 		assert.equal(invalid.status, 0);
 		assert.match(invalid.stdout, /# Synthetic lifecycle inventory/);
@@ -88,8 +85,10 @@ for (const transition of ["fork", "reload"] as const) {
 		const f = await fixture();
 		const previousDirectory = process.env.PI_PILLARS_DIR;
 		const previousCollect = process.env.PI_PILLARS_COLLECT;
+		const previousCorpus = process.env.PI_PILLARS_CORPUS;
 		process.env.PI_PILLARS_DIR = f.store;
 		process.env.PI_PILLARS_COLLECT = "1";
+		process.env.PI_PILLARS_CORPUS = f.corpusDir;
 		let runtime: InstanceType<typeof sdk.AgentSessionRuntime> | undefined;
 		let disposed = false;
 		try {
@@ -103,7 +102,7 @@ for (const transition of ["fork", "reload"] as const) {
 					settingsManager: sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
 					resourceLoaderOptions: {
 						noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-						additionalExtensionPaths: [entry], additionalSkillPaths: [f.skill],
+						additionalExtensionPaths: [entry],
 					},
 				});
 				assert.deepEqual(services.diagnostics, []);
@@ -185,6 +184,7 @@ for (const transition of ["fork", "reload"] as const) {
 			finally {
 				if (previousDirectory === undefined) delete process.env.PI_PILLARS_DIR; else process.env.PI_PILLARS_DIR = previousDirectory;
 				if (previousCollect === undefined) delete process.env.PI_PILLARS_COLLECT; else process.env.PI_PILLARS_COLLECT = previousCollect;
+				if (previousCorpus === undefined) delete process.env.PI_PILLARS_CORPUS; else process.env.PI_PILLARS_CORPUS = previousCorpus;
 				await rm(f.root, { recursive: true, force: true });
 			}
 		}

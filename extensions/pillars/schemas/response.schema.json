@@ -293,7 +293,6 @@
             "properties": {
               "resourceClass": {
                 "enum": [
-                  "skill",
                   "inventory",
                   "governance",
                   "entry",
@@ -770,7 +769,6 @@
               },
               "resourceClass": {
                 "enum": [
-                  "skill",
                   "inventory",
                   "governance",
                   "entry",

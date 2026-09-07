@@ -22,22 +22,19 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 	const root = await mkdtemp(join(process.cwd(), ".pillars-sdk-test-"));
 	const previous = process.env.PI_PILLARS_DIR;
 	const previousCollect = process.env.PI_PILLARS_COLLECT;
+	const previousCorpus = process.env.PI_PILLARS_CORPUS;
 	process.env.PI_PILLARS_DIR = join(root, "store");
 	process.env.PI_PILLARS_COLLECT = "1";
 	const entry = fileURLToPath(new URL("./index.ts", import.meta.url));
-	const skill = join(root, "package/skills/pillars/SKILL.md");
+	const corpusDir = join(root, "package/pillars");
+	process.env.PI_PILLARS_CORPUS = corpusDir;
 	const entryBody = "# Synthetic principle\nUse checked evidence.\n";
 	let session: InstanceType<typeof sdk.AgentSession> | undefined;
 	try {
-		await mkdir(join(root, "package/skills/pillars"), { recursive: true });
-		await mkdir(join(root, "package/pillars"));
-		await writeFile(
-			skill,
-			"---\nname: pillars\ndescription: Consult the synthetic Pillars corpus for decisions.\ncompatibility: Requires ../../pillars\n---\nRead ../../pillars/README.md.\n",
-		);
-		await writeFile(join(root, "package/pillars/README.md"), "# Inventory\n[Example](principle-example.md)\n");
-		await writeFile(join(root, "package/pillars/GOVERNANCE.md"), "# Rules\nRead the matching full body.\n");
-		await writeFile(join(root, "package/pillars/principle-example.md"), entryBody);
+		await mkdir(corpusDir, { recursive: true });
+		await writeFile(join(corpusDir, "README.md"), "# Inventory\n[Example](principle-example.md)\n");
+		await writeFile(join(corpusDir, "GOVERNANCE.md"), "# Rules\nRead the matching full body.\n");
+		await writeFile(join(corpusDir, "principle-example.md"), entryBody);
 		const settingsManager = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
 		const faux = ai.fauxProvider({
 			provider: "pillars-test",
@@ -61,11 +58,9 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 			noThemes: true,
 			noContextFiles: true,
 			additionalExtensionPaths: [entry],
-			additionalSkillPaths: [skill],
 		});
 		await loader.reload();
 		assert.deepEqual(loader.getExtensions().errors, []);
-		assert.equal(loader.getSkills().skills[0]?.filePath, skill);
 		const result = await sdk.createAgentSession({
 			cwd: root,
 			agentDir: join(root, "agent"),
@@ -81,7 +76,6 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 		const errors: string[] = [];
 		await session.bindExtensions({ mode: "json", onError: (error) => errors.push(error.error) });
 		assert.equal(resolve(session.getAllTools().find((tool) => tool.name === "pillars")!.sourceInfo.path), entry);
-		assert.ok(loader.getSkills().skills.some((skill) => skill.name === "pillars"));
 		assert.ok(session.extensionRunner.getRegisteredCommands().some((command) => command.name === "pillars"));
 		faux.setResponses([
 			(context) => {
@@ -161,6 +155,8 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 		else process.env.PI_PILLARS_DIR = previous;
 		if (previousCollect === undefined) delete process.env.PI_PILLARS_COLLECT;
 		else process.env.PI_PILLARS_COLLECT = previousCollect;
+		if (previousCorpus === undefined) delete process.env.PI_PILLARS_CORPUS;
+		else process.env.PI_PILLARS_CORPUS = previousCorpus;
 		await rm(root, { recursive: true, force: true });
 	}
 });
