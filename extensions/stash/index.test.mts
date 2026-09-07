@@ -595,9 +595,29 @@ function creationCtx(ui: any, extra: any = {}) {
 	};
 }
 
-function waitForSettle(): Promise<void> {
-	// The job settles on microtasks plus a few fs ticks after the store write.
-	return new Promise((resolve) => setTimeout(resolve, 30));
+/**
+ * Wrap a notify sink so it also releases a promise when a creation publishes one
+ * of its terminal notifications. Every terminal message is published after the
+ * in-flight slot is free, so awaiting `done` deterministically proves the job
+ * settled; a fixed sleep cannot, because the store commit may outlast it under
+ * suite load.
+ */
+function settledNotify<T extends unknown[]>(notify: (message: string, ...rest: T) => void) {
+	let release!: () => void;
+	const done = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const isTerminal = (message: string) =>
+		/^(?:Stashed "|Nothing worth stashing|Stash distillation failed|The stash artifact was already written|Stash creation cancelled by session shutdown)/.test(
+			message,
+		);
+	return {
+		done,
+		notify: (message: string, ...rest: T) => {
+			notify(message, ...rest);
+			if (isTerminal(message)) release();
+		},
+	};
 }
 
 /** Under mock timers, an unmocked macrotask turn lets the job's microtask chain complete. */
@@ -616,10 +636,11 @@ describe("stash creation", () => {
 		const { commands, sent } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
 		const statuses: string[] = [];
 		const notifications: string[] = [];
+		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		await commands.get("stash").handler(
 			"new focus the harness on distillation",
 			creationCtx({
-				notify: (message: string) => notifications.push(message),
+				notify,
 				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 			}),
 		);
@@ -628,7 +649,7 @@ describe("stash creation", () => {
 		assert.ok(statuses[0]?.startsWith("stash: running"), "a running status must appear on dispatch");
 		assert.match(notifications.join("\n"), /Stash distillation started.*focus the harness on distillation/);
 
-		await waitForSettle();
+		await done;
 		assert.ok(
 			statuses.some((text) => /^stash: done \d{8}T\d{6}Z-/.test(text)),
 			"a done status must name the written artifact",
@@ -651,10 +672,11 @@ describe("stash creation", () => {
 		const { commands } = registry({ distillSessionFactory: factory });
 		const statuses: string[] = [];
 		const notifications: string[] = [];
+		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		await commands.get("stash").handler(
 			"new show the distiller identity",
 			creationCtx({
-				notify: (message: string) => notifications.push(message),
+				notify,
 				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 			}),
 		);
@@ -665,7 +687,7 @@ describe("stash creation", () => {
 			/Stash distillation started \(test-model \[medium\]; hint: show the distiller identity\)\./,
 		);
 
-		await waitForSettle();
+		await done;
 		assert.ok(
 			statuses.some((text) => /^stash: done \d{8}T\d{6}Z-.*35k in · 2\.0k out · ~\$0\.12$/.test(text)),
 			"the done status must carry the token and cost totals",
@@ -687,14 +709,15 @@ describe("stash creation", () => {
 		const { commands } = registry({ distillSessionFactory: factory });
 		const notifications: string[] = [];
 		const statuses: string[] = [];
+		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		await commands.get("stash").handler(
 			"new skip probe",
 			creationCtx({
-				notify: (message: string) => notifications.push(message),
+				notify,
 				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 			}),
 		);
-		await waitForSettle();
+		await done;
 		assert.match(
 			notifications.join("\n"),
 			/Nothing worth stashing.*\n\nDistiller: test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/s,
@@ -715,14 +738,15 @@ describe("stash creation", () => {
 		});
 		const { commands } = registry({ distillSessionFactory: factory });
 		const notifications: string[] = [];
+		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		await commands.get("stash").handler(
 			"new failure probe",
 			creationCtx({
-				notify: (message: string) => notifications.push(message),
+				notify,
 				setStatus: () => {},
 			}),
 		);
-		await waitForSettle();
+		await done;
 		assert.match(
 			notifications.join("\n"),
 			/Stash distillation failed:.*\n\nDistiller: test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/s,
@@ -732,21 +756,23 @@ describe("stash creation", () => {
 	it("labels a non-reasoning model by name without a thinking bracket", async () => {
 		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
 		const notifications: string[] = [];
+		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		const ctx = creationCtx(
-			{ notify: (message: string) => notifications.push(message) },
+			{ notify },
 			{ model: { id: "test-model", name: "Custom Model", provider: "test", reasoning: false } },
 		);
 		await commands.get("stash").handler("new unlabeled", ctx);
 		const joined = notifications.join("\n");
 		assert.match(joined, /Stash distillation started \(Custom Model; hint: unlabeled\)\./);
 		assert.ok(!joined.includes("Custom Model ["), "a non-reasoning model must not carry a thinking bracket");
-		await waitForSettle();
+		await done;
 	});
 
 	it("sanitizes a hostile configured model name in status and notifications", async () => {
 		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
 		const statuses: string[] = [];
 		const notifications: string[] = [];
+		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		const esc = String.fromCharCode(27);
 		const bel = String.fromCharCode(7);
 		const evil = `evil${esc}]52;c;SGVsbG8=${bel}${String.fromCharCode(8238)}\nNEXT`;
@@ -754,7 +780,7 @@ describe("stash creation", () => {
 			"new hostile name",
 			creationCtx(
 				{
-					notify: (message: string) => notifications.push(message),
+					notify,
 					setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 				},
 				{ model: { id: "test-model", name: evil, provider: "test", reasoning: true } },
@@ -769,19 +795,20 @@ describe("stash creation", () => {
 			assert.ok(!surfaced.includes(String.fromCharCode(8238)), "no raw bidi control may surface");
 		}
 		assert.match(status, /evil\\x1b\]52;c;/);
-		await waitForSettle();
+		await done;
 	});
 
 	it("names the distiller in the RPC start notification", async () => {
 		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
 		const notifications: string[] = [];
-		const ctx = creationCtx({ notify: (message: string) => notifications.push(message) }, { mode: "rpc" });
+		const { done, notify } = settledNotify((message: string) => notifications.push(message));
+		const ctx = creationCtx({ notify }, { mode: "rpc" });
 		await commands.get("stash").handler("new rpc identity", ctx);
 		assert.match(
 			notifications.join("\n"),
 			/Stash distillation started \(test-model \[medium\]; hint: rpc identity\)\./,
 		);
-		await waitForSettle();
+		await done;
 	});
 
 	it("reserves the single-flight slot before asynchronous setup", async () => {
@@ -872,16 +899,14 @@ describe("stash creation", () => {
 		try {
 			process.env.PI_STASH_MODEL = "cheap/cheap-model";
 			const notifications: string[] = [];
+			const { done, notify } = settledNotify((message: string) => notifications.push(message));
 			await commands
 				.get("stash")
 				.handler(
 					"new use explicit model",
-					creationCtx(
-						{ notify: (message: string) => notifications.push(message) },
-						{ model: undefined, registryModels: [override] },
-					),
+					creationCtx({ notify }, { model: undefined, registryModels: [override] }),
 				);
-			await waitForSettle();
+			await done;
 			assert.equal(factoryCalls, 1);
 			assert.match(notifications.join("\n"), /Stash distillation started/);
 
@@ -919,10 +944,14 @@ describe("stash creation", () => {
 		const { commands } = registry({ distillSessionFactory: factory });
 		try {
 			delete process.env.PI_STASH_THINKING;
+			const inherited = settledNotify(() => {});
 			await commands
 				.get("stash")
-				.handler("new inherit thinking", creationCtx({ notify: () => {} }, { thinkingLevel: "high" }));
-			await waitForSettle();
+				.handler(
+					"new inherit thinking",
+					creationCtx({ notify: inherited.notify }, { thinkingLevel: "high" }),
+				);
+			await inherited.done;
 			assert.equal(received.thinkingLevel, "high");
 
 			process.env.PI_STASH_THINKING = "high";
@@ -992,15 +1021,16 @@ describe("stash creation", () => {
 		});
 		const { commands } = registry({ distillSessionFactory: factory });
 		const notifications: string[] = [];
+		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		const ctx = creationCtx({
-			notify: (message: string) => notifications.push(message),
+			notify,
 			setStatus: () => {},
 		});
 		abortNow = () => {
 			void commands.get("stash").handler("abort", ctx);
 		};
 		await commands.get("stash").handler("new create one", ctx);
-		await waitForSettle();
+		await done;
 		const text = notifications.join("\n");
 		assert.match(text, /Stash creation cancelled/);
 		assert.match(text, /already written when the creation was cancelled/);
@@ -1063,15 +1093,16 @@ describe("stash creation", () => {
 		const { commands, sent } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
 		const notifications: string[] = [];
 		const statuses: string[] = [];
+		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		const ctx = creationCtx(
 			{
-				notify: (message: string) => notifications.push(message),
+				notify,
 				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 			},
 			{ mode: "rpc" },
 		);
 		await commands.get("stash").handler("new rpc dispatch", ctx);
-		await waitForSettle();
+		await done;
 		assert.equal(sent.length, 0);
 		assert.ok((await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Distilled handover"));
 	});
@@ -1083,12 +1114,15 @@ describe("stash creation", () => {
 		const before = (await listStashes(dir, { limit: 200 })).length;
 		const notifications: string[] = [];
 		const statuses: string[] = [];
+		const { done, notify } = settledNotify((message: string, level: string) =>
+			notifications.push(`${level}: ${message}`),
+		);
 		const ctx = creationCtx({
-			notify: (message: string, level: string) => notifications.push(`${level}: ${message}`),
+			notify,
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 		});
 		await commands.get("stash").handler("new failing run", ctx);
-		await waitForSettle();
+		await done;
 		assert.match(notifications.join("\n"), /error: Stash distillation failed.*did not return valid JSON/);
 		assert.ok(statuses.some((text) => text === "stash: failed"));
 		assert.equal((await listStashes(dir, { limit: 200 })).length, before, "a failed distillation must not write");
@@ -1099,12 +1133,13 @@ describe("stash creation", () => {
 		const before = (await listStashes(dir, { limit: 200 })).length;
 		const notifications: string[] = [];
 		const statuses: string[] = [];
+		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		const ctx = creationCtx({
-			notify: (message: string) => notifications.push(message),
+			notify,
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 		});
 		await commands.get("stash").handler("new skip run", ctx);
-		await waitForSettle();
+		await done;
 		assert.match(notifications.join("\n"), /Nothing worth stashing/);
 		assert.ok(statuses.some((text) => text === "stash: skipped"));
 		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
@@ -1184,15 +1219,16 @@ describe("stash creation", () => {
 		});
 		const { commands, events } = registry({ distillSessionFactory: factory });
 		const notifications: string[] = [];
+		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		const ctx = creationCtx({
-			notify: (message: string) => notifications.push(message),
+			notify,
 			setStatus: () => {},
 		});
 		shutdownNow = () => {
 			void events.get("session_shutdown")({ type: "session_shutdown", reason: "reload" }, ctx);
 		};
 		await commands.get("stash").handler("new shutdown notice", ctx);
-		await waitForSettle();
+		await done;
 		assert.match(notifications.join("\n"), /Stash creation cancelled by session shutdown/);
 	});
 });
@@ -1229,11 +1265,10 @@ describe("stash command grammar", () => {
 	it("creates through /stash new and preserves an action-shaped hint", async () => {
 		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
 		const notifications: string[] = [];
-		await commands
-			.get("stash")
-			.handler("new abort the plan", creationCtx({ notify: (message: string) => notifications.push(message) }));
+		const { done, notify } = settledNotify((message: string) => notifications.push(message));
+		await commands.get("stash").handler("new abort the plan", creationCtx({ notify }));
 		assert.match(notifications.join("\n"), /hint: abort the plan/);
-		await waitForSettle();
+		await done;
 		assert.ok((await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Distilled handover"));
 	});
 
