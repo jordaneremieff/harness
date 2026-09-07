@@ -62,6 +62,43 @@ test("flags dot-prefixed relative specifiers that escape the slice", () => {
 	}
 });
 
+test("permits only the documented evaluation consumers and producer paths", () => {
+	const root = mkdtempSync(join(tmpdir(), "check-slices-evals-"));
+	try {
+		const scripts = join(root, "scripts");
+		const slice = join(root, "extensions", "example");
+		mkdirSync(scripts, { recursive: true });
+		mkdirSync(join(slice, "fixtures"), { recursive: true });
+		mkdirSync(join(root, "evals", "subjects"), { recursive: true });
+		copyFileSync(sourceScript, join(scripts, "check-slices.mts"));
+		writeFileSync(join(slice, "index.ts"), "export default function () {}\n");
+		writeFileSync(join(slice, "README.md"), "# Example\n");
+		writeFileSync(join(slice, "index.test.mts"), "// fixture\n");
+		writeFileSync(join(root, "evals", "vitest-evals.mts"), "export {};\n");
+		writeFileSync(join(root, "evals", "subjects", "pi-sdk.mts"), "export {};\n");
+		execFileSync("git", ["init", "-q"], { cwd: root });
+		const cases = [
+			["suite.eval.mts", "../../evals/vitest-evals.mts", true],
+			["suite.test.mts", "../../evals/subjects/pi-sdk.mts", true],
+			["runtime.ts", "../../evals/vitest-evals.mts", false],
+			["suite.eval.mts", "../../evals/subjects/pi-sdk.mts", false],
+			["suite.test.mts", "../../evals/core.mts", false],
+			["suite.eval.mts", "../../extensions/other/index.ts", false],
+			["fixtures/nested.eval.mts", "../../../evals/vitest-evals.mts", false],
+		] as const;
+		for (const [file, specifier, permitted] of cases) {
+			const path = join(slice, file);
+			writeFileSync(path, `import "${specifier}";\n`);
+			const result = spawnSync(process.execPath, [join(scripts, "check-slices.mts")], { cwd: root, encoding: "utf8" });
+			assert.equal(result.status, permitted ? 0 : 1, `${file}: ${result.stdout}${result.stderr}`);
+			if (!permitted) assert.match(result.stderr, /escapes the extension slice/);
+			rmSync(path);
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 function testGlobFixtureRoot(globs: string[]): string {
 	const root = mkdtempSync(join(tmpdir(), "check-slices-globs-"));
 	const scripts = join(root, "scripts");

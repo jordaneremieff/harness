@@ -188,6 +188,8 @@ documented surface:
   all extensions.
 - `status-keys.md` — the footer status-key registry (publisher, meaning,
   consumers).
+- `evaluation-suites.md` — the package evaluation interfaces available to
+  colocated extension suites and deterministic tests.
 
 New cross-extension behavior belongs here before it ships: write the
 contract, name the producer and consumers, and keep it stable.

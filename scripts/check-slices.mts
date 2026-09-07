@@ -5,8 +5,8 @@
 //   1. every extension under extensions/ is a complete vertical slice:
 //      index.ts with a default-export factory, README.md, and at least one
 //      colocated *.test.mts;
-//   2. no extension imports a sibling: no `from "../"`, no absolute import,
-//      no path that reaches into another extension's directory;
+//   2. no extension imports a sibling or escapes its slice except through the
+//      documented package-level evaluation interfaces in colocated suites/tests;
 //   3. no hardcoded counts of tests, tools, or files in tracked docs
 //      (AGENTS.md: "Do not hardcode counts ... in durable documentation");
 //   4. pillar corpus contract: strict frontmatter on every entry, README as
@@ -85,7 +85,12 @@ for (const file of sourceFiles) {
 		// check (e.g. './../sibling/index.ts').
 		const isRelative = specifier.startsWith("./") || specifier.startsWith("../");
 		const normalized = isRelative ? relative(sliceDir, resolve(dirname(file), specifier)) : specifier;
-		if (isRelative && normalized.startsWith("..")) {
+		const target = isRelative ? resolve(dirname(file), specifier) : undefined;
+		const evaluationContract =
+			dirname(file) === sliceDir &&
+			((file.endsWith(".eval.mts") && target === join(root, "evals", "vitest-evals.mts")) ||
+				(file.endsWith(".test.mts") && target === join(root, "evals", "subjects", "pi-sdk.mts")));
+		if (isRelative && normalized.startsWith("..") && !evaluationContract) {
 			fail(`${rel}: import "${specifier}" escapes the extension slice`);
 		} else if (specifier.startsWith("/")) {
 			fail(`${rel}: absolute import "${specifier}"`);

@@ -4,6 +4,11 @@ The `evals/` application plans and records maintained evaluations without coupli
 
 `vitest-evals.mts` is the repository facade for maintained suites. The facade loads Vitest only inside an approved child run. The child uses one explicitly included suite file and the repository's Pi SDK adapter. The CLI never discovers `*.eval.mts` files.
 
+Extension-owned suites and deterministic tests use the explicit
+[package evaluation import contract](../docs/conventions/evaluation-suites.md).
+The registry suite keeps its task cases and synthetic fixtures within its own
+slice; the shared application retains execution and review ownership.
+
 ## Commands
 
 Run all commands from the repository root:
