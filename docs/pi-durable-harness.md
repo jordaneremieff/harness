@@ -91,23 +91,32 @@ not the separately dated upstream program claims.
 
 Verified 2026-09-07 against installed Pi 0.85.1 and upstream `main` at
 [`9767ba27`](https://github.com/earendil-works/pi/commit/9767ba275f3e9a5ee0f5c5342249b629ab1b2282).
+The named installed sources below were rechecked on 2026-09-08 against the same
+installed version.
 The latest listed GitHub release remains v0.85.1. Fork pull request
 [#9152](https://github.com/earendil-works/pi/pull/9152) remains open and draft
 at `85186f823d31c6d36c135190b3c357dbb6522c81`. This focused check does not
 refresh the separately dated publication, backend, or packaging claims.
 
 - The [ordinary SDK][collaboration-sdk] still constructs `Agent` and
-  `AgentSession`. The subagent extension uses public session services and
+  `AgentSession`; installed `dist/core/sdk.js` keeps that construction
+  boundary. The subagent extension uses public session services and
   ordinary sessions; its dashboard does not adopt the durable runtime.
 - [Lane observation][collaboration-lane] exposes a snapshot, event subscription,
-  and resnapshot. The upstream [`reduceLaneSnapshot`][collaboration-reducer]
+  and resnapshot. Installed `pi-agent-core/dist/harness/agent-harness.d.ts`
+  declares `LaneSnapshot` as lane name, transcript entries, tip id, optional
+  last result, configuration, session stats, the current operation with its
+  streaming message and running tools, queued items, and a faulted flag.
+  The upstream [`reduceLaneSnapshot`][collaboration-reducer]
   owns event application and requests a fresh snapshot after navigation.
   Consumers of durable lanes use that reducer instead of another event fold.
   Installed `pi-agent-core/dist/harness/runtime/lane.js` captures ancestry only
   back to compaction, without a count limit; a live snapshot is neither a
   bounded history page nor a complete archive.
 - [Session-wide observation][collaboration-watch] still throws
-  `SliceNotImplemented("watchSession")`. Per-lane observation does not supply
+  `SliceNotImplemented("watchSession")`; installed
+  `pi-agent-core/dist/harness/runtime/harness.js` carries the same boundary.
+  Per-lane observation does not supply
   a complete session inventory subscription.
 - [Durable entry queries][collaboration-entries] belong to `Session` and
   `Branch`. Ordinary `SessionManager.open()` still reads the complete file and
