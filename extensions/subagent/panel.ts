@@ -496,9 +496,15 @@ class SubagentConsole {
 		return this.roster.filter(
 			(record) =>
 				!query ||
-				[record.id, record.task, record.model, record.state, record.thinking, rosterOutputPreview(record)].some(
-					(value) => value?.toLocaleLowerCase().includes(query),
-				),
+				[
+					record.id,
+					record.label,
+					record.task,
+					record.model,
+					record.state,
+					record.thinking,
+					rosterOutputPreview(record),
+				].some((value) => value?.toLocaleLowerCase().includes(query)),
 		);
 	}
 	private async refresh(history: boolean): Promise<void> {
@@ -630,7 +636,7 @@ class SubagentConsole {
 		while (length < id.length && ids.some((other) => other !== id && other.endsWith(id.slice(-length)))) length++;
 		return `…${id.slice(-length)}`;
 	}
-	/** Presentation label; a later profiles source replaces this without touching layout call sites. */
+	/** Presentation label for a participant; details keep the exact identity. */
 	private participantLabel(id: string): string {
 		return this.displayId(id);
 	}
@@ -1849,7 +1855,7 @@ class SubagentConsole {
 							"/ searches workers. Enter keeps the filter. Escape clears it while the search is open. The footer keeps navigation, open, and cancel keys; / stays listed here.",
 							"i or Ctrl+C interrupts the selected worker; k cancels it. Only the owning session controls a live worker.",
 							"Console: Enter sends; failed sends keep the draft. Ctrl+K cancels. For terminal workers, c copies a reopen command and r drafts continuation.",
-							"Worker labels abbreviate long identities. Details retain exact identities, models, and tasks.",
+							"Worker labels come from a profile name or the task text. Details retain exact identities, models, and tasks.",
 							"Arrows / Page Up / Page Down scroll details and this help. b / Space also page.",
 							"Escape returns from details or the console, or closes the dashboard.",
 						]
@@ -1867,7 +1873,7 @@ class SubagentConsole {
 							"In raw evidence only: Tab selects timeline, workers, or details; f filters exchanges to the selected worker; l or timeline End follows the tail.",
 							"[ / ] in event details: follow parent message / first reply.",
 							"Arrows / Page Up / Page Down scroll details. b / Space also page this help and the source report.",
-							"Worker labels abbreviate long identities. Details retain exact identities, models, tasks, source entries, and receipt evidence.",
+							"Worker labels come from a profile name or the task text. Details retain exact identities, models, tasks, source entries, and receipt evidence.",
 							"History is bounded source evidence, not a complete archive. Recorded messages and local receipts do not prove understanding or action.",
 							"Escape returns from details or the console, cancels an unsent continuation draft, or closes the dashboard. A submitted continuation remains active.",
 						]

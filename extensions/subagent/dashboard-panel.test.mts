@@ -311,6 +311,25 @@ describe("worker overview and separate communications", () => {
 			"overview",
 		);
 	});
+	it("overview search matches a stored label", async () => {
+		await panel(
+			deps({
+				readWorkers: () => [
+					worker("bg-one", { label: "review-check", task: "first task" }),
+					worker("bg-two", { label: "parser-audit", task: "second task" }),
+				],
+			}),
+			async (component) => {
+				component.handleInput("/");
+				for (const character of "parser") component.handleInput(character);
+				const output = text(component, 180);
+				assert.match(output, /parser-audit/);
+				assert.doesNotMatch(output, /review-check/);
+			},
+			theme,
+			"overview",
+		);
+	});
 	it("thread labels show a participant label while details keep exact ids", async () => {
 		const current = snapshot();
 		current.participants = [

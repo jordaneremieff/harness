@@ -119,7 +119,7 @@ environment, resource-loader, inheritance, and arbitrary settings fields are
 rejected. The file and resolved snapshot each have a 16 KiB UTF-8 limit;
 grounding accepts at most 16 pointers. A profile `name` is an optional display
 label: one word or a short kebab phrase, at most 64 characters, matching
-`[a-z0-9]+(-[a-z0-9])*` case-insensitively. It is stored on the snapshot only,
+`[a-z0-9]+(?:-[a-z0-9]+)*` case-insensitively. It is stored on the snapshot only,
 never applied as a dispatch default. Source names have a 160-character limit;
 paths have a 4096-character limit. Text fields reject controls. Invalid UTF-8,
 JSON, fields, and nonregular files fail explicitly.
@@ -162,9 +162,13 @@ Every worker carries a presentation `label`. A profile `name` becomes the
 label without an ordinal suffix (duplicates share the label; exact ids stay in
 details). A profile-less dispatch derives a task-based label from the first
 three normalized task tokens, joined and capped, plus a per-owner-session
-dispatch ordinal, for example `review-parser#2`. The label appears in the
+dispatch ordinal, for example `review-parser#2`. A derived label skips ordinals
+that the owner session's known workers already hold, so two derived labels in
+one session do not read alike; a shared profile `name` is exempt by design. The
+label appears in the
 dashboard overview identity column, thread labels, dispatch result lines, and
-`subagent_status`; exact worker ids stay in details, inspection, and control
+`subagent_status`, and the overview search and `/subagent <filter>` match it;
+exact worker ids stay in details, inspection, and control
 surfaces.
 
 Optional top-level `sharedContext` supplies one text snapshot to the whole

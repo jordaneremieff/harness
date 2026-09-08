@@ -109,11 +109,11 @@ import { openSubagentPanel, reopenCommand } from "./panel.ts";
 import { type PeerEnvelope, PeerHub } from "./peers.ts";
 import {
 	applyProfile,
-	deriveWorkerLabel,
 	loadProfile,
 	profileMessage,
 	profileSnapshot,
 	type ProfileSnapshot,
+	uniqueWorkerLabel,
 } from "./profiles.ts";
 import {
 	type ThinkingLevel,
@@ -3867,7 +3867,7 @@ export function statusView(filter?: string): StatusView {
 	const workers = listWorkers().filter(
 		(worker) =>
 			!needle ||
-			[worker.id, worker.state, worker.model, worker.task, worker.thinking]
+			[worker.id, worker.label, worker.state, worker.model, worker.task, worker.thinking]
 				.filter(Boolean)
 				.some((value) => String(value).toLocaleLowerCase().includes(needle)),
 	);
@@ -4533,7 +4533,12 @@ const subagentTool = defineTool({
 		// Every worker of this dispatch receives the same snapshot bytes. Selected
 		// profiles resolve once per resolved path, before any batch worker starts.
 		const profiles = new Map<string, ProfileSnapshot>();
-		let nextLabelOrdinal = listWorkers().filter((worker) => worker.ownerSession === ctx.sessionManager.getSessionId()).length;
+		const ownerSession = ctx.sessionManager.getSessionId();
+		const ownerWorkers = listWorkers().filter((worker) => worker.ownerSession === ownerSession);
+		const takenLabels = new Set(
+			ownerWorkers.map((worker) => worker.label).filter((label): label is string => typeof label === "string"),
+		);
+		let nextLabelOrdinal = ownerWorkers.length;
 		const tasks: DispatchTask[] = (params.tasks?.length ? params.tasks : [{ task: params.task ?? "" }]).map((task) => {
 			const selected = task.profile ?? params.profile;
 			let profile: ProfileSnapshot | undefined;
@@ -4546,8 +4551,13 @@ const subagentTool = defineTool({
 				}
 			}
 			const resolved = applyProfile(task, defaults, profile);
-			nextLabelOrdinal += 1;
-			const label = profile?.name ?? deriveWorkerLabel(task.task, nextLabelOrdinal);
+			let label = profile?.name;
+			if (label === undefined) {
+				const derived = uniqueWorkerLabel(takenLabels, task.task, nextLabelOrdinal + 1);
+				label = derived.label;
+				nextLabelOrdinal = derived.ordinal;
+				takenLabels.add(label);
+			}
 			return {
 				...resolved,
 				profile,

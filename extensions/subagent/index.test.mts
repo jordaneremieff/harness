@@ -1690,6 +1690,20 @@ describe("status and collection", () => {
 		assert.equal(filtered.terminal.length, 1);
 		assert.equal(filtered.terminal[0].id, "bg-recent9");
 
+		seedWorker(
+			"bg-labelled",
+			runningRecord("bg-labelled", {
+				task: "a task without the needle",
+				label: "parser-audit",
+				state: "cancelled",
+				createdAt: base + 20,
+				exitedAt: base + 21,
+			}),
+		);
+		const byLabel = statusView("parser-audit");
+		assert.equal(byLabel.terminal.length, 1);
+		assert.equal(byLabel.terminal[0].id, "bg-labelled");
+
 		const collected = collectWorker();
 		assert.equal(collected.workers.length, 8);
 		assert.match(collected.text, /showing 8 most recent/);
