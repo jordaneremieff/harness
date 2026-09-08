@@ -14,6 +14,11 @@ Verified 2026-09-05. Upstream reads use `main` commit
 0.85.1; this checkout's dependency snapshot remains on 0.85.0. Tests against
 that snapshot do not establish validation against the upgraded installation.
 
+Installed paths in this document are relative to the installed
+`@earendil-works/pi-coding-agent` package root. A path that starts with
+`pi-agent-core/` sits under that package's
+`node_modules/@earendil-works/pi-agent-core/`.
+
 | Source | Checked state |
 |---|---|
 | Active coding agent and agent core | Pi 0.85.1; confirmed from installed package metadata |
