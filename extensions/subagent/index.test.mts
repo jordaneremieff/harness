@@ -113,7 +113,13 @@ const { WorkerRuntime, buildTranscript, trackCommandStartedTurns, transcriptFrom
 );
 const { renderConversation } = await import("./console.ts");
 const { formatPanelElapsed, openSubagentPanel, rosterOutputPreview } = await import("./panel.ts");
-const { visibleWidth } = await import("@earendil-works/pi-tui");
+const { visibleWidth, stripTerminalSequences } = await import("@earendil-works/pi-tui");
+
+function panelContentRows(lines: string[]): string[] {
+	return stripTerminalSequences(lines[0] ?? "").startsWith("┌")
+		? lines.slice(1, -1).filter((line) => !stripTerminalSequences(line).startsWith("├"))
+		: lines;
+}
 
 after(() => {
 	rmSync(agentDir, { recursive: true, force: true });
@@ -3005,7 +3011,7 @@ const theme: any = {
 };
 
 function render(messages: any[], width = 40): string[] {
-	return renderConversation(messages, { width, theme });
+	return renderConversation(messages, { width, theme, expandedTools: true, showThinking: true });
 }
 
 describe("renderConversation", () => {
@@ -3025,7 +3031,7 @@ describe("renderConversation", () => {
 		for (const line of lines) assert.equal(visibleWidth(line), 40);
 	});
 
-	it("always renders full user, thinking, and tool content with no mode hint", () => {
+	it("renders full user, thinking, and tool content when expanded", () => {
 		const user = Array.from({ length: 14 }, (_, index) => `user-${index}`).join("\n");
 		const tool = Array.from({ length: 24 }, (_, index) => `tool-${index}`).join("\n");
 		const joined = render(
@@ -3648,6 +3654,7 @@ describe("SubagentPanel controls", () => {
 			},
 		};
 		const theme = {
+			getBgAnsi: (_color: string) => "",
 			fg: (_color: string, text: string) => text,
 			bg: (_color: string, text: string) => text,
 			bold: (text: string) => text,
@@ -3663,9 +3670,13 @@ describe("SubagentPanel controls", () => {
 						keybindings: unknown,
 						done: (value: undefined) => void,
 					) => TestComponent;
-					const component = make(tui, theme, undefined, () => {
+					const framedComponent = make(tui, theme, undefined, () => {
 						closeCalls++;
 					});
+					const component = {
+						...framedComponent,
+						render: (width: number) => panelContentRows(framedComponent.render(width)),
+					};
 					try {
 						await Promise.resolve();
 						const list = component.render(100);
@@ -3681,7 +3692,10 @@ describe("SubagentPanel controls", () => {
 						const consoleLines = component.render(140);
 						const consoleText = consoleLines.join("\n");
 						assert.doesNotMatch(consoleText, /press c|copy reopen|ctrl\+v/);
-						assert.match(consoleLines.at(-1) ?? "", /^↑↓ scroll │ c copy · r continue │ esc back/);
+						assert.match(
+							consoleLines.at(-1) ?? "",
+							/↑↓ scroll · tab view · alt\+↑↓ block · x expand │ c copy · r continue · ctrl\+o expand tools · ctrl\+t reasoning │ esc back/,
+						);
 						assert.equal(consoleText.includes(sessionFile), false);
 						for (const width of [60, 40, 24, 10, 3]) {
 							const footer = component.render(width).at(-1) ?? "";
@@ -3792,6 +3806,7 @@ describe("SubagentPanel controls", () => {
 			currentSessionId: () => "panel-session",
 		};
 		const theme = {
+			getBgAnsi: (_color: string) => "",
 			fg: (_color: string, text: string) => text,
 			bg: (_color: string, text: string) => text,
 			bold: (text: string) => text,
@@ -3807,7 +3822,11 @@ describe("SubagentPanel controls", () => {
 						keybindings: unknown,
 						done: (value: undefined) => void,
 					) => TestComponent;
-					const component = make(tui, theme, undefined, () => undefined);
+					const framedComponent = make(tui, theme, undefined, () => undefined);
+					const component = {
+						...framedComponent,
+						render: (width: number) => panelContentRows(framedComponent.render(width)),
+					};
 					try {
 						await Promise.resolve();
 						const initial = component.render(100);
@@ -3825,7 +3844,7 @@ describe("SubagentPanel controls", () => {
 						assert.match(component.render(100)[0], new RegExp(source.id));
 
 						component.handleInput?.("r");
-						assert.match(component.render(100).join("\n"), /continue ›/);
+						assert.match(component.render(100).join("\n"), /Continue ›/);
 						component.handleInput?.("\x1b");
 						assert.doesNotMatch(component.render(100).join("\n"), /continue ›/);
 						assert.equal(continued, null, "Escape cancels continuation input");

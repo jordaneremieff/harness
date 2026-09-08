@@ -1,28 +1,6 @@
-/**
- * Pure transcript renderer for subagent workers.
- *
- * Turns a worker's conversation into terminal lines that look like pi's real
- * interactive console: full-width user bands, plain assistant prose, thinking
- * blocks, and status-painted tool boxes. The renderer is PURE — no component,
- * no lifecycle, no I/O, no globals. Every returned string is ONE physical
- * terminal line of exactly `opts.width` visible columns, already ANSI-styled
- * with theme tokens and background-painted, ready for a TUI `render(width)`
- * to emit directly.
- *
- * Block model (mirrors pi's console layout):
- *   - a user message is a full-width band painted with `userMessageBg`;
- *   - assistant text and thinking are plain lines indented one space;
- *   - each tool call is one box, painted by status (`toolPendingBg` while
- *     running, `toolSuccessBg` on success, `toolErrorBg` on error), with a
- *     title header and the complete transcript result;
- *   - exactly one plain blank line separates consecutive blocks, and no
- *     blank line precedes the first block.
- *   - `toolResult` messages are never rendered directly; tool boxes consume
- *     them by `toolCallId` (indexed once up front).
- */
-
+/** Readable worker transcripts. Expansion changes presentation, never the retained source. */
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Markdown, type MarkdownTheme, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 export interface ConsoleTextPart {
 	type: "text";
@@ -39,7 +17,6 @@ export interface ConsoleToolCallPart {
 	arguments: Record<string, unknown>;
 }
 export type ConsolePart = ConsoleTextPart | ConsoleThinkingPart | ConsoleToolCallPart;
-
 export interface ConsoleUserMessage {
 	role: "user";
 	content: string | ConsoleTextPart[];
@@ -56,7 +33,6 @@ export interface ConsoleToolResultMessage {
 	toolName: string;
 	content: ConsoleTextPart[];
 	isError: boolean;
-	/** Live status; "running" marks a synthetic in-flight result carrying partial content. */
 	status?: "running" | "complete" | "error";
 }
 export interface ConsoleCustomMessage {
@@ -64,33 +40,36 @@ export interface ConsoleCustomMessage {
 	customType: string;
 	content: ConsoleTextPart[];
 }
-export type ConsoleMessage =
+export type ConsoleMessage = (
 	| ConsoleUserMessage
 	| ConsoleAssistantMessage
 	| ConsoleToolResultMessage
-	| ConsoleCustomMessage;
+	| ConsoleCustomMessage
+) & { id?: string };
 
 export interface RenderOpts {
-	/** Total terminal columns; every output line MUST be exactly this many visible columns. */
 	width: number;
-	/** Theme for `theme.fg(token, text)`, `theme.bg(token, text)`, `theme.bold`, `theme.italic`. */
 	theme: Theme;
+	expandedTools?: boolean;
+	showThinking?: boolean;
+	sectionExpansion?: ReadonlyMap<string, boolean>;
+	selectedSectionId?: string | null;
+	toolHint?: string;
+	thinkingHint?: string;
+}
+export interface TranscriptSection {
+	id: string;
+	label: string;
+	start: number;
+	end: number;
+	expanded?: boolean;
+	kind: "message" | "tool" | "reasoning";
+}
+export interface TranscriptDocument {
+	lines: string[];
+	sections: TranscriptSection[];
 }
 
-/** Background tokens this renderer paints with (subset of ThemeBg). */
-type BgToken = "userMessageBg" | "customMessageBg" | "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
-/**
- * ANSI escape sequences, applied to reduce tool output to plain text before
- * previewing. `theme.fg`/`bg` never run through this — only raw tool result
- * content.
- *
- * Ordered deliberately: OSC first (both BEL- and ST-terminated, since an
- * ST-terminated OSC would otherwise survive and paint its payload), then CSI,
- * then SS3, then the remaining two-character introducer forms such as ESC (B.
- * Anything left is handled by the C0/C1 sweep in `sanitize` — a stray control
- * byte occupies no display column but does move the cursor, which silently
- * breaks the renderer's exact-width contract.
- */
 const ANSI_PASSES: RegExp[] = [
 	/(?:\u001b\]|\u009d)(?:[^\u0007\u001b]|\u001b(?!\\))*(?:\u0007|\u001b\\)/g,
 	/\u001b[P_X^](?:[^\u001b]|\u001b(?!\\))*\u001b\\/g,
@@ -98,271 +77,220 @@ const ANSI_PASSES: RegExp[] = [
 	/\u001bO[ -~]/g,
 	/\u001b[ -/]*[0-~]/g,
 ];
-
-/** Remove complete terminal escape sequences while preserving their text. */
 export function stripTerminalSequences(text: string): string {
 	let stripped = text;
 	for (const pass of ANSI_PASSES) stripped = stripped.replace(pass, "");
 	return stripped;
 }
+export function cleanConsoleText(text: string): string {
+	return stripTerminalSequences(text)
+		.replace(/\t/g, "   ")
+		.replace(/[\r\v\f]/g, " ")
+		.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "");
+}
 
-function isBlank(text: string): boolean {
-	return text.trim() === "";
+/** The callback theme owns every style; no global theme or foreign tool renderer is invoked. */
+export function transcriptMarkdownTheme(theme: Theme): MarkdownTheme {
+	return {
+		heading: (text) => theme.fg("mdHeading", theme.bold(text)),
+		link: (text) => theme.fg("mdLink", text),
+		linkUrl: (text) => theme.fg("mdLinkUrl", text),
+		code: (text) => theme.fg("mdCode", text),
+		codeBlock: (text) => theme.fg("mdCodeBlock", text),
+		codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
+		quote: (text) => theme.fg("mdQuote", text),
+		quoteBorder: (text) => theme.fg("mdQuoteBorder", text),
+		hr: (text) => theme.fg("mdHr", text),
+		listBullet: (text) => theme.fg("mdListBullet", text),
+		bold: (text) => theme.bold(text),
+		italic: (text) => theme.italic(text),
+		strikethrough: (text) => theme.strikethrough(text),
+		underline: (text) => theme.underline(text),
+	};
+}
+export function renderMarkdownText(text: string, width: number, theme: Theme): string[] {
+	if (width <= 0) return [];
+	return new Markdown(cleanConsoleText(text), 0, 0, transcriptMarkdownTheme(theme), {
+		color: (s) => theme.fg("text", s),
+	})
+		.render(width)
+		.map((line) => truncateToWidth(line, width, ""));
+}
+
+function toolTitle(call: ConsoleToolCallPart): string {
+	const args = call.arguments;
+	const target = args.command ?? args.path ?? args.pattern;
+	return `${call.name}${target === undefined ? "" : `  ${String(target)}`}`;
+}
+
+export function renderTranscript(messages: ConsoleMessage[], opts: RenderOpts): TranscriptDocument {
+	const { theme } = opts;
+	const width = Math.max(0, opts.width);
+	const document: TranscriptDocument = { lines: [], sections: [] };
+	if (!width) return document;
+	const measure = Math.max(1, Math.min(100, width - 4));
+	const results = new Map<string, ConsoleToolResultMessage>();
+	for (const message of messages) if (message.role === "toolResult") results.set(message.toolCallId, message);
+	const paddedLine = (line: string): string => {
+		const clipped = truncateToWidth(line, width, "");
+		return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
+	};
+	const prose = (text: string): string[] => renderMarkdownText(text, measure, theme);
+	const literal = (text: string): string[] => wrapTextWithAnsi(cleanConsoleText(text), measure);
+	const add = (
+		id: string,
+		label: string,
+		body: string[],
+		color: "accent" | "muted" | "error" | "warning" | "success" = "muted",
+		expanded?: boolean,
+		kind: TranscriptSection["kind"] = "message",
+	) => {
+		if (document.lines.length) document.lines.push(paddedLine(""));
+		const start = document.lines.length;
+		for (const line of wrapTextWithAnsi(cleanConsoleText(label), measure))
+			document.lines.push(
+				paddedLine(
+					`${opts.selectedSectionId === id ? "›" : " "}${theme.fg(opts.selectedSectionId === id ? "accent" : color, theme.bold(line))}`,
+				),
+			);
+		for (const line of body) document.lines.push(paddedLine(` ${line}`));
+		document.sections.push({ id, label, start, end: document.lines.length, expanded, kind });
+	};
+	for (const [index, message] of messages.entries()) {
+		const key = message.id ?? `message-${index}`;
+		if (message.role === "toolResult") continue;
+		if (message.role === "user") {
+			const text =
+				typeof message.content === "string" ? message.content : message.content.map((p) => p.text).join("\n");
+			add(key, "User", prose(text), "accent");
+			continue;
+		}
+		if (message.role === "custom") {
+			add(
+				key,
+				`Message · ${cleanConsoleText(message.customType)}`,
+				prose(message.content.map((p) => p.text).join("\n")),
+			);
+			continue;
+		}
+		for (let partIndex = 0; partIndex < message.content.length; partIndex++) {
+			const part = message.content[partIndex];
+			const partKey = `${key}:${partIndex}`;
+			if (part.type === "text" || part.type === "thinking") {
+				const values = [part.type === "text" ? part.text : part.thinking];
+				while (message.content[partIndex + 1]?.type === part.type) {
+					const next = message.content[++partIndex];
+					if (next.type === "text") values.push(next.text);
+					else if (next.type === "thinking") values.push(next.thinking);
+				}
+				const text = values.join("\n\n");
+				if (!text.trim()) continue;
+				if (part.type === "text") add(partKey, "Assistant", prose(text));
+				else if (opts.sectionExpansion?.get(partKey) ?? opts.showThinking)
+					add(
+						partKey,
+						"Reasoning",
+						prose(text).map((line) => theme.fg("muted", line)),
+						"muted",
+						true,
+						"reasoning",
+					);
+				else
+					add(
+						partKey,
+						`Reasoning · collapsed · ${opts.thinkingHint ?? "ctrl+t"} expands`,
+						[],
+						"muted",
+						false,
+						"reasoning",
+					);
+				continue;
+			}
+			const result = results.get(part.id);
+			const failed = !result && (message.stopReason === "aborted" || message.stopReason === "error");
+			const state = failed
+				? message.stopReason!
+				: result?.status === "running" || !result
+					? "running"
+					: result.isError
+						? "error"
+						: "done";
+			const color = failed || result?.isError ? "error" : state === "running" ? "warning" : "muted";
+			const title = cleanConsoleText(toolTitle(part)).replace(/\s+/g, " ");
+			const output = result ? cleanConsoleText(result.content.map((p) => p.text).join("\n")) : "";
+			if (opts.sectionExpansion?.get(partKey) ?? opts.expandedTools) {
+				const args = JSON.stringify(part.arguments, null, 2);
+				const body = [
+					theme.fg("muted", "Input"),
+					...literal(args),
+					...(result
+						? [
+								theme.fg("muted", "Output"),
+								...literal(output).map((line) => theme.fg(result.isError ? "error" : "text", line)),
+							]
+						: []),
+				];
+				add(partKey, `${part.name} · ${state}`, body, color, true, "tool");
+			} else {
+				const wrapped = output ? literal(output) : [];
+				const count = Math.min(2, wrapped.length);
+				const body = wrapped.slice(0, count).map((line) => theme.fg(result?.isError ? "error" : "text", line));
+				if (wrapped.length > count || Object.keys(part.arguments).length)
+					body.push(
+						theme.fg(
+							"muted",
+							`${wrapped.length > count ? `${wrapped.length - count} more lines · ` : ""}${opts.toolHint ?? "ctrl+o"} expands input and output`,
+						),
+					);
+				add(
+					partKey,
+					`${state === "running" ? "●" : state === "done" ? "✓" : "!"} ${truncateToWidth(title, Math.max(1, measure - state.length - 5), "…")} · ${state}`,
+					body,
+					color,
+					false,
+					"tool",
+				);
+			}
+		}
+		const hasToolCalls = message.content.some((part) => part.type === "toolCall");
+		if (message.stopReason === "length") add(`${key}:stop`, "Response was truncated before completion.", [], "error");
+		else if (!hasToolCalls && message.stopReason === "error")
+			add(`${key}:stop`, "Error", literal(`Error: ${message.errorMessage || "Unknown error"}`), "error");
+		else if (!hasToolCalls && message.stopReason === "aborted")
+			add(
+				`${key}:stop`,
+				"Aborted",
+				literal(
+					message.errorMessage && message.errorMessage !== "Request was aborted"
+						? message.errorMessage
+						: "Operation aborted",
+				),
+				"error",
+			);
+	}
+	return document;
 }
 
 export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts): string[] {
-	const { width, theme } = opts;
+	return renderTranscript(messages, opts).lines;
+}
 
-	// Inner content width of a padded block: 1 space margin on each side.
-	const contentWidth = Math.max(0, width - 2);
-	const wrapWidth = Math.max(1, width - 2);
-
-	const out: string[] = [];
-	/** True once any line has been emitted; governs the between-blocks blank. */
-	let emitted = false;
-
-	/** One plain blank line before a new top-level block, unless it is the first line of the conversation. */
-	const pushSpacer = (): void => {
-		if (emitted) out.push(" ".repeat(width));
-	};
-
-	/** Plain (no background) line, truncated then padded to exactly `width` visible columns. */
-	const plainLine = (content: string): string => {
-		const truncated = truncateToWidth(content, width, "");
-		return truncated + " ".repeat(Math.max(0, width - visibleWidth(truncated)));
-	};
-
-	/** Full-width background-only line. */
-	const bgBlank = (token: BgToken): string => theme.bg(token, " ".repeat(width));
-
-	/**
-	 * Padded block line: `bg(" " + inner(padded to width-2) + " ")` — a 1-space
-	 * margin on each side with the background filling the whole line. Inner text
-	 * is truncated to the content width and padded by VISIBLE width (never JS
-	 * length), so ANSI styling cannot skew the padding.
-	 */
-	const padPaint = (token: BgToken, innerText: string): string => {
-		const inner = truncateToWidth(innerText, contentWidth, "");
-		const innerWidth = visibleWidth(inner);
-		const padded = innerWidth >= contentWidth ? inner : inner + " ".repeat(contentWidth - innerWidth);
-		const left = Math.max(0, Math.floor((width - contentWidth) / 2));
-		const right = Math.max(0, width - contentWidth - left);
-		return theme.bg(token, " ".repeat(left) + padded + " ".repeat(right));
-	};
-
-	// Index tool results once; tool boxes consume them by toolCallId.
-	const resultsById = new Map<string, ConsoleToolResultMessage>();
-	for (const m of messages) {
-		if (m.role === "toolResult") resultsById.set(m.toolCallId, m);
-	}
-
-	// ---- blocks ------------------------------------------------------------
-
-	/** Full-width user band: blank bg line, wrapped text, blank bg line. */
-	const renderUser = (msg: ConsoleUserMessage): void => {
-		pushSpacer();
-		out.push(bgBlank("userMessageBg"));
-		const text = sanitize(typeof msg.content === "string" ? msg.content : msg.content.map((p) => p.text).join("\n"));
-		for (const line of wrapTextWithAnsi(text, wrapWidth)) {
-			out.push(padPaint("userMessageBg", theme.fg("userMessageText", line)));
-		}
-		out.push(bgBlank("userMessageBg"));
-		emitted = true;
-	};
-
-	/** Plain assistant prose, indented one space, no background. */
-	const renderTextRun = (text: string): void => {
-		pushSpacer();
-		for (const line of wrapTextWithAnsi(sanitize(text), wrapWidth)) {
-			out.push(plainLine(` ${theme.fg("text", line)}`));
-		}
-		emitted = true;
-	};
-
-	/** One thinking block, always rendered in full. */
-	const renderThinking = (parts: ConsoleThinkingPart[]): void => {
-		pushSpacer();
-		const text = sanitize(parts.map((p) => p.thinking).join("\n\n"));
-		for (const line of wrapTextWithAnsi(text, wrapWidth)) {
-			out.push(plainLine(` ${theme.italic(theme.fg("thinkingText", line))}`));
-		}
-		emitted = true;
-	};
-
-	/** Blank line + one error-styled line. Matches pi's AssistantMessage layout
-	 * (a Spacer(1) then a single themed error Text). */
-	const renderErrorLine = (text: string): void => {
-		if (emitted) out.push(" ".repeat(width));
-		for (const line of wrapTextWithAnsi(sanitize(text), wrapWidth)) out.push(plainLine(` ${theme.fg("error", line)}`));
-		emitted = true;
-	};
-
-	/**
-	 * The tail pi renders after an assistant message, reproduced exactly from
-	 * dist/modes/interactive/components/assistant-message.js:
-	 *
-	 * - stopReason "length" always prints the truncation line, tool calls or not
-	 *   — a length stop can land mid-tool-call, and without this a truncated
-	 *   transcript reads as a complete one.
-	 * - otherwise, only when there are no tool calls (tool components carry the
-	 *   error themselves): "aborted" prints errorMessage unless it is the generic
-	 *   "Request was aborted", and "error" prints an "Error: " prefix with
-	 *   "Unknown error" as the fallback.
-	 */
-	const renderStopTail = (msg: ConsoleAssistantMessage, hasToolCalls: boolean): void => {
-		if (msg.stopReason === "length") {
-			renderErrorLine("Response was truncated before completion.");
-			return;
-		}
-		if (hasToolCalls) return;
-		if (msg.stopReason === "aborted") {
-			renderErrorLine(
-				msg.errorMessage && msg.errorMessage !== "Request was aborted" ? msg.errorMessage : "Operation aborted",
-			);
-		} else if (msg.stopReason === "error") {
-			renderErrorLine(`Error: ${msg.errorMessage || "Unknown error"}`);
-		}
-	};
-
-	/** Title header for a tool box, per tool. */
-	const toolTitle = (name: string, args: Record<string, unknown>): string => {
-		switch (name) {
-			case "bash":
-				return `$ ${String(args.command ?? "")}`;
-			case "read":
-				return `read ${String(args.path ?? "")}`;
-			case "write":
-				return `write ${String(args.path ?? "")}`;
-			case "edit":
-				return `edit ${String(args.path ?? "")}`;
-			case "grep":
-				return `grep /${String(args.pattern ?? "")}/`;
-			case "find":
-				return `find ${String(args.pattern ?? "")}`;
-			case "ls":
-				return `ls ${String(args.path ?? "")}`;
-			case "submit_result":
-				return "submit_result";
-			default:
-				return Object.keys(args).length > 0 ? `${name} ${JSON.stringify(args)}` : name;
-		}
-	};
-
-	/**
-	 * Strip ANSI/C0/C1 control bytes from RAW model/user text before it is
-	 * wrapped: a stray control byte occupies no display column but does move the
-	 * cursor, breaking the renderer's exact-width contract. Applied to user,
-	 * assistant, and thinking text (tool-result previews already used it).
-	 */
-	const sanitize = (text: string): string => {
-		let out = stripTerminalSequences(text);
-		// Layout controls become spaces BEFORE the control sweep so words on either
-		// side of a tab or carriage return do not fuse. Mirrors cleanConsoleInput in
-		// panel.ts; \n survives because the caller splits on it.
-		out = out.replace(/\t/g, "   ").replace(/[\r\v\f]/g, " ");
-		// Everything else in C0/DEL/C1 is unprintable: NUL, BEL, BS, and the eight-
-		// bit control range all corrupt the paint if they reach a rendered line.
-		return out.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "");
-	};
-
-	/**
-	 * Tool output inside a result box. Transcript content is always complete;
-	 * there is no display mode that collapses evidence.
-	 *
-	 * pi's console also prints an elapsed line ("Took …s") for bash boxes, but
-	 * the input shape carries no per-tool start timestamps, so the elapsed line
-	 * is deliberately omitted — nothing is invented.
-	 */
-	const resultPreview = (_name: string, result: ConsoleToolResultMessage): string[] => {
-		// A synthetic running result carries partial output: show it dimmed inside the pending box instead of nothing until completion.
-		const running = result.status === "running";
-		const style = (s: string): string =>
-			running ? theme.fg("dim", s) : result.isError ? theme.fg("error", s) : theme.fg("toolOutput", s);
-		const text = sanitize(result.content.map((p) => p.text).join("\n"));
-		if (running && text === "") return [];
-		return text.split("\n").map(style);
-	};
-
-	const renderToolCall = (call: ConsoleToolCallPart, stopReason?: string): void => {
-		const result = resultsById.get(call.id);
-		const running = result?.status === "running";
-		// A resultless tool call on an aborted/errored run never finished: render error-styled with a status label, never as pending.
-		const failed = !result && (stopReason === "aborted" || stopReason === "error");
-		const bg: BgToken = failed
-			? "toolErrorBg"
-			: !result || running
-				? "toolPendingBg"
-				: result.isError
-					? "toolErrorBg"
-					: "toolSuccessBg";
-		pushSpacer();
-		out.push(bgBlank(bg));
-		const header = sanitize(toolTitle(call.name, call.arguments));
-		const labelled = failed ? `${header} [${stopReason}]` : running ? `${header} [running]` : header;
-		// Wrap the header (long commands/paths) instead of truncating its tail.
-		for (const wl of wrapTextWithAnsi(labelled, contentWidth)) {
-			out.push(padPaint(bg, theme.fg("toolTitle", theme.bold(wl))));
-		}
-		const preview = result ? resultPreview(call.name, result) : [];
-		if (preview.length > 0) {
-			out.push(bgBlank(bg));
-			for (const line of preview) {
-				for (const wl of wrapTextWithAnsi(line, contentWidth)) out.push(padPaint(bg, wl));
-			}
-		}
-		out.push(bgBlank(bg));
-		emitted = true;
-	};
-
-	// ---- conversation walk -------------------------------------------------
-
-	for (const msg of messages) {
-		if (msg.role === "user") {
-			renderUser(msg);
-			continue;
-		}
-		if (msg.role === "toolResult") {
-			continue; // consumed by tool boxes via resultsById; never rendered directly
-		}
-		if (msg.role === "custom") {
-			pushSpacer();
-			for (const line of wrapTextWithAnsi(sanitize(msg.customType), wrapWidth))
-				out.push(padPaint("customMessageBg", theme.fg("customMessageLabel", line)));
-			for (const line of wrapTextWithAnsi(sanitize(msg.content.map((part) => part.text).join("\n")), wrapWidth))
-				out.push(padPaint("customMessageBg", theme.fg("customMessageText", line)));
-			emitted = true;
-			continue;
-		}
-		// assistant — walk content parts in order: text runs, thinking runs, tool boxes.
-		const hasToolCalls = msg.content.some((p) => p.type === "toolCall");
-		let i = 0;
-		while (i < msg.content.length) {
-			const part = msg.content[i];
-			if (part.type === "text") {
-				const texts = [part.text];
-				i++;
-				for (; i < msg.content.length; i++) {
-					const next = msg.content[i];
-					if (next.type !== "text") break;
-					texts.push(next.text);
-				}
-				if (texts.some((t) => !isBlank(t))) renderTextRun(texts.join("\n"));
-			} else if (part.type === "thinking") {
-				const thinking: ConsoleThinkingPart[] = [part];
-				i++;
-				for (; i < msg.content.length; i++) {
-					const next = msg.content[i];
-					if (next.type !== "thinking") break;
-					thinking.push(next);
-				}
-				if (thinking.some((p) => !isBlank(p.thinking))) renderThinking(thinking);
-			} else {
-				renderToolCall(part, msg.stopReason);
-				i++;
-			}
-		}
-		renderStopTail(msg, hasToolCalls);
-	}
-
-	return out;
+/** Anchor a reader to a section and its relative line, not a stale absolute screen row. */
+export function transcriptAnchor(document: TranscriptDocument, row: number): { id: string; fraction: number } | null {
+	const section =
+		document.sections.find((item) => item.start <= row && item.end > row) ??
+		[...document.sections].reverse().find((item) => item.start <= row);
+	return section
+		? { id: section.id, fraction: Math.max(0, (row - section.start) / Math.max(1, section.end - section.start)) }
+		: null;
+}
+export function restoreTranscriptAnchor(
+	document: TranscriptDocument,
+	anchor: ReturnType<typeof transcriptAnchor>,
+): number | null {
+	const section = anchor && document.sections.find((item) => item.id === anchor.id);
+	return section
+		? section.start +
+				Math.min(section.end - section.start - 1, Math.floor(anchor!.fraction * (section.end - section.start)))
+		: null;
 }

@@ -45,11 +45,18 @@ the custom entry as an `entry_appended` event; print mode emits the optionally
 filtered text view to the terminal. Model-facing status previews label worker
 authorship and state that the text is unverified, not an instruction. The TUI
 opens a compact overview of direct child workers, with a separate communication
-mode for peer and manager exchanges. Panels
-grow to at most 85% of the terminal (floor 44 rows; pin a fixed cap
-with `PI_SUBAGENT_PANEL_MAX_ROWS`). The `thinking:` value in a status line is
-the EFFECTIVE level — pi clamps an inherited level to what the model supports —
-and it carries the requested level beside it when the two differ.
+mode for peer and manager exchanges. The dashboard requests a centered overlay
+at 90% of the terminal width, with a minimum requested width of 100 columns,
+constrained by the available terminal space. A frame, padded background, and
+separate footer distinguish the panel from the surrounding Pi session. Small
+windows reduce the chrome; extremely small windows omit the frame and show an
+enlarge-terminal notice or the active input. Draft state stays intact. The
+default height cap is the larger of 44 rows and 85% of the terminal height,
+limited to the terminal height minus its margins.
+Set `PI_SUBAGENT_PANEL_MAX_ROWS` to request a fixed height cap. The `thinking:`
+value in a status line is the effective level: Pi clamps an inherited level to
+what the model supports. The status line carries the requested level beside it
+when the two differ.
 
 ## Dispatch
 
@@ -700,15 +707,24 @@ generically; the statusline does not inspect worker files or parse this key.
 
 ### Collaboration dashboard
 
-`/subagent` starts with a compact overview of this session's direct child workers.
-Each row leads with the worker identity and shows state, model, elapsed time,
-cost, current tool, and latest output as width permits. The all-session scope
-adds an owner column. A search shows the matched/total count beside the query.
-Worker details shrink the panel to their content. The selected worker's recorded
-task appears below the rows. The overview grows with its records rather than
-filling the screen when empty.
+`/subagent` starts with this session's direct child workers. Wide terminals show
+a narrow identity list beside a larger preview of the selected worker. Each
+worker has a name row and a secondary row for state, model, elapsed time, and
+cost. The selected preview wraps the label, model, recorded task, current tool
+when present, and latest output within the available space. The all-session
+scope shows the selected worker's owner in this preview. Selection highlights
+the worker's identity row; the latest output remains on the panel background.
+Compact name/state rows use color to distinguish active work, pauses, and failures.
+
+Narrow terminals place a short selected preview below the worker list. Short
+windows reduce each worker to a name/state row. A search shows the matched/total
+count beside the query. The header shows selection position. Ellipses mark
+clipped text; an explicit hint identifies additional output in the worker view.
+Full worker details and retained report text remain reachable. Empty lists and
+short details use only the height they need.
+
 `a` switches to all known sessions; an empty direct-child view names that action.
-`Enter` opens the selected console, and `d` opens full worker details. Stable
+`Enter` opens the selected worker, and `d` opens full worker details. Stable
 worker IDs preserve selection through live reorder and console navigation.
 
 The overview reads cached worker metadata independently of collaboration history.
@@ -717,23 +733,30 @@ workers do not crowd direct children out of the overview. The cap leaves an
 explicit notice when additional records remain outside the view.
 
 `m` switches to communications. This mode groups recorded peer, report, steer,
-result, and pause exchanges by their two participants. Wide terminals show the
-conversation list beside readable exchange content; narrow terminals use `Tab`
-to select either pane. Management-tool calls do not enter this conversation list.
-Send attempts and received records remain distinct, and record counts do not
-claim distinct delivered messages. Exchange headers carry the record time and a
-direction mark; unverified status is stated once per pane rather than on every
-card, and records the source observed as conflicting envelope evidence for one
-peer identity are flagged. While a family snapshot is pending the pane reports loading
-instead of an empty family. Wide conversation lists use one row per conversation
-with aligned count, time, and kind columns; hidden earlier cards are counted,
-and card headers are never cut at the pane start. Recorded prose and card
-bodies wrap at a bounded reading measure, and recognized markdown markers
-render as terminal styles instead of literal characters. Short windows
-collapse the chrome to one header and one footer row and fill unused list
-space with a summary of the selected thread. Full event details preserve original source
-text and receipt evidence. Display-only removal of this extension's own worker
-text wrapper never changes stored evidence or grants authority.
+result, and pause exchanges by their two participants. Wide terminals show a
+narrow conversation list beside the complete selected exchange. Each
+conversation has an identity row and a secondary row with its record count and
+latest record time. `Tab` switches focus between the list and exchange reader;
+narrow terminals show the focused pane. Up/Down selects a conversation or an
+exchange in the focused pane. Page Up/Down, `b` / Space, and Home/End select the
+reader and page through the selected exchange or reach its start/end. The
+reader shows the exchange position and visible line range. Paging holds the
+selected exchange instead of following new events; it does not pause workers.
+New text for the same exchange and terminal resize keep the line offset within
+its current bounds. Selecting another exchange starts its text at the top.
+
+Management-tool calls do not enter the conversation list. Send attempts and
+received records remain distinct; record counts do not claim distinct delivered
+messages. The selected exchange identifies its participants, record time,
+direction, record kind, and unverified status. Conflicting envelope evidence
+remains flagged. A pending family snapshot shows a loading notice, not an empty
+family. Recorded prose wraps through Pi's native Markdown component at a bounded
+reading width, including lists, links, tables, and fenced code. Short windows
+reduce the chrome to leave room for source labels and readable content.
+
+`Enter` opens exact event details with original source text and receipt evidence.
+Display-only removal of this extension's own worker text wrapper never changes
+stored evidence or grants authority.
 
 `e` selects raw evidence within communications. Its timeline and ownership tree
 retain nested ownership and separate continuation links. Short participant IDs
@@ -760,6 +783,9 @@ grouped primary actions for the current view; secondary actions stay listed in
 | `Enter` in overview / `v` | Open the selected worker's console |
 | `d` in overview | Open full worker details |
 | `Tab` / `Shift+Tab` in communications | Select the conversation list or exchange pane; raw evidence cycles timeline, ownership, and details |
+| Up/Down in conversations | Select a conversation or exchange in the focused pane |
+| Page Up/Down or `b` / Space in conversations | Focus the exchange reader and page through its text |
+| Home/End in conversations | Focus the exchange reader and reach its start/end |
 | `Enter` in communications | Open the selected exchange's exact source details |
 | `e` in communications | Switch between grouped conversations and raw evidence |
 | `/` | Search workers in overview or events in communications; Enter keeps the filter, Escape clears it |
@@ -805,25 +831,48 @@ journal, second transcript store, or new worker control authority exists.
 
 ### Worker console
 
-The console shows the loaded conversation, including generic custom messages,
-assistant reasoning/prose, and complete tool blocks within the selected snapshot.
-Terminal submitted results also appear as a compact `worker report · unverified`
-block; collection remains the full submitted-result authority. Source-message
-caches survive theme changes and resizing. A terminal state transition refreshes
-the final report without requiring another live callback or repeated file reads.
+The worker view separates **Chat**, **Report**, and **Details**. `Tab` selects the
+next view; `Shift+Tab` selects the previous view. Each view keeps its scroll
+position. Chat starts in read focus. Chat contains user messages, assistant prose, generic custom messages,
+reasoning, and tool calls from the selected snapshot. Report displays the retained
+worker report separately rather than appending a duplicate to Chat. The report
+keeps its source label and unverified status; collection remains the full
+submitted-result authority. Details contains exact identities, model, task,
+owner, session path, and recorded metadata.
 
-Native Pi input handles Unicode and paste. Enter steers an active owned worker
-or starts a new prompt on an idle owned worker. Failed sends preserve the draft;
+Pi's native Markdown component renders prose and reports at a bounded reading
+width. Roles have visible headers. Reasoning starts collapsed. Tools show their
+state and a short output preview, with an explicit expansion hint for hidden
+input or output. `Alt+Up` and `Alt+Down` move between blocks; `x` expands or folds
+the selected block, marked with `›`. `Ctrl+O` expands all tool inputs and outputs;
+`Ctrl+T` expands reasoning. These defaults follow Pi's injected `app.tools.expand` and
+`app.thinking.toggle` bindings, including custom keys shown in the hints.
+Expansion never changes source text. Source-message caches survive theme changes
+and resizing. A terminal state transition refreshes the report without requiring
+another live callback or repeated file reads.
+
+Native Pi input handles Unicode and paste. The Chat composer labels its action
+as Steer, Resume, or Continue. Enter or typing opens the composer. Enter from
+the composer steers an active owned worker or starts a new prompt on an idle
+owned worker. Escape returns to read focus without sending; the draft remains. Report and Details never submit a draft;
+the draft remains when returning to Chat. Failed sends preserve the draft;
 pending requests reject duplicate submission. `Ctrl+C` only interrupts;
 `Ctrl+K` explicitly cancels. Foreign worker controls remain unavailable.
-Arrow, Page Up/Down, Home, and End keys scroll; the console follows the tail
-until the operator moves away. `q` is not a navigation key.
+
+In read focus, arrows and Page Up/Down scroll. Home moves to the start; End
+returns to the tail and follows new output. In the composer, arrows and Home/End
+control the input; Page Up/Down still scroll the reader. `Ctrl+A` and `Ctrl+E`
+retain native input-line navigation. In read focus, `b` and Space also page. The header shows Tail or Browse
+and the visible line range. Browsing stops automatic scrolling, not the worker.
+Resizing and expansion preserve the current message position; new output does
+not move a reader away from earlier text. `q` is not a navigation key.
 
 For a terminal worker, `c` copies the shell-safe reopen command through `pbcopy`
 (macOS only). `r` opens a continuation draft; Enter creates a linked worker and
 opens its console. Escape cancels an unsent draft. After submission, Escape
 closes only the view and explicitly states that continuation remains active.
-Escape remains visible when narrow footers drop optional actions.
+Escape remains visible when narrow footers drop optional actions. Closing the
+overlay returns focus to the original Pi editor.
 
 ## Parent-death contract
 

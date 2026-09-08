@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
-import { CURSOR_MARKER, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, KeybindingsManager, visibleWidth } from "@earendil-works/pi-tui";
 import type {
 	CollaborationEvent,
 	CollaborationParticipant,
 	CollaborationQuery,
 	CollaborationSnapshot,
 } from "./collaboration-types.ts";
-import { renderConversation, stripTerminalSequences } from "./console.ts";
+import { renderConversation, renderMarkdownText, stripTerminalSequences } from "./console.ts";
 import {
 	clockTime,
 	footerLine,
@@ -16,12 +16,9 @@ import {
 	openSubagentPanel,
 	positionLabel,
 	readerMeasure,
-	styleMarkdownBlock,
-	styleMarkers,
 	threadPaneWidth,
-	truncateResidue,
+	clipText,
 	type FooterStyles,
-	type MarkerStyles,
 	type SubagentPanelDeps,
 } from "./panel.ts";
 
@@ -34,10 +31,13 @@ type Component = {
 	dispose(): void;
 };
 const theme = {
+	getBgAnsi: (_color: string) => "",
 	fg: (_color: string, text: string) => text,
 	bg: (_color: string, text: string) => text,
 	bold: (text: string) => text,
 	italic: (text: string) => text,
+	underline: (text: string) => text,
+	strikethrough: (text: string) => text,
 	inverse: (text: string) => text,
 } as unknown as Theme;
 function participant(
@@ -135,13 +135,14 @@ async function panel(
 	run: (component: Component, terminal: { rows: number }, closed: () => number) => Promise<void>,
 	panelTheme = theme,
 	start: "overview" | "communications" | "evidence" = "evidence",
+	keybindings?: KeybindingsManager,
 ): Promise<void> {
 	let closeCount = 0;
 	const terminal = { rows: 32 };
 	const ctx = {
 		ui: {
 			custom: async (factory: (tui: unknown, theme: Theme, keys: unknown, done: () => void) => Component) => {
-				const component = factory({ terminal, requestRender: () => undefined }, panelTheme, undefined, () => {
+				const component = factory({ terminal, requestRender: () => undefined }, panelTheme, keybindings, () => {
 					closeCount++;
 				});
 				component.focused = true;
@@ -159,8 +160,72 @@ async function panel(
 	await openSubagentPanel(ctx, dependencies);
 }
 function text(component: Component, width = 140): string {
-	return stripTerminalSequences(component.render(width).join("\n"));
+	const lines = component.render(width).map(stripTerminalSequences);
+	return (
+		lines[0]?.startsWith("┌")
+			? lines
+					.slice(1, -1)
+					.filter((line) => !line.startsWith("├"))
+					.map((line) => line.slice(2, -2))
+			: lines
+	).join("\n");
 }
+function assertFrame(component: Component, width: number, terminalRows: number): string[] {
+	const rendered = component.render(width);
+	const lines = rendered.map(stripTerminalSequences);
+	assert.ok(lines.length <= terminalRows - 2, `frame exceeds ${terminalRows} terminal rows`);
+	assert.match(lines[0] ?? "", /^┌.*┐$/);
+	assert.match(lines.at(-1) ?? "", /^└─+┘$/);
+	assert.match(lines.at(-3) ?? "", /^├─+┤$/, "a separator precedes the footer");
+	for (const [index, line] of rendered.entries()) {
+		assert.equal(visibleWidth(line), width, `row ${index} keeps its full width`);
+		assert.ok(line.startsWith("\x1b[48;2;12;18;24m"), `row ${index} starts with the panel background`);
+		assert.ok(line.endsWith("\x1b[49m"), `row ${index} ends after the panel background`);
+		if (index > 0 && index < lines.length - 1 && index !== lines.length - 3)
+			assert.match(lines[index], /^│ .* │$/, `row ${index} retains both sides and their padding`);
+	}
+	assert.match(lines.at(-2) ?? "", /esc/, "the footer retains Escape");
+	return rendered;
+}
+const framedTheme = {
+	...theme,
+	getBgAnsi: (color: string) => (color === "customMessageBg" ? "\x1b[48;2;12;18;24m" : ""),
+	bg: (color: string, value: string) => (color === "customMessageBg" ? `\x1b[48;2;12;18;24m${value}\x1b[49m` : value),
+} as Theme;
+
+function backgroundCells(line: string): Array<string | null> {
+	const cells: Array<string | null> = [];
+	let background: string | null = null;
+	for (const token of line.replaceAll(CURSOR_MARKER, "").matchAll(/\x1b\[([\d;]*)m|([^\x1b]+)/g)) {
+		if (token[1] !== undefined) {
+			const codes = token[1] === "" ? [0] : token[1].split(";").map(Number);
+			for (let index = 0; index < codes.length; index++) {
+				const code = codes[index];
+				if (code === 0 || code === 49) background = null;
+				else if (code >= 40 && code <= 47) background = String(code);
+				else if (code === 48 || code === 38) {
+					const length = codes[index + 1] === 2 ? 5 : 3;
+					if (code === 48) background = codes.slice(index, index + length).join(";");
+					index += length - 1;
+				}
+			}
+		} else {
+			for (const char of token[2]) {
+				for (let column = 0; column < visibleWidth(char); column++) cells.push(background);
+			}
+		}
+	}
+	return cells;
+}
+
+function assertExchangeProvenance(output: string, kind: "peer" | "report" | "steer"): void {
+	const row = output.split("\n").find((line) => line.includes("unverified"));
+	assert.ok(row, "the selected exchange retains its unverified attribution");
+	assert.match(row, /\brecorded\b/);
+	assert.match(row, /\d{2}:\d{2}:\d{2}/);
+	assert.match(row, new RegExp(`\\b${kind}\\b`));
+}
+
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: Error): void } {
 	let resolve!: (value: T) => void, reject!: (error: Error) => void;
 	const promise = new Promise<T>((yes, no) => {
@@ -199,8 +264,8 @@ describe("worker overview and separate communications", () => {
 			async (component) => {
 				const output = text(component, 180);
 				assert.match(output, /OVERVIEW · DIRECT CHILDREN/);
-				assert.match(output, /1 workers · 1 running/);
-				assert.match(output, /overview-model.*\$1\.25.*read.*Checking exported functions/);
+				assert.match(output, /1 worker · 1 running/);
+				assert.match(output, /overview-model[\s\S]*\$1\.25[\s\S]*Tool: read[\s\S]*Checking exported functions/);
 				assert.doesNotMatch(output, /TIMELINE|HISTORY|bg-nested|bg-foreign/);
 				context.mock.timers.tick(1000);
 				await flush();
@@ -228,7 +293,7 @@ describe("worker overview and separate communications", () => {
 				assert.ok(component.render(140).length <= 8);
 				assert.match(text(component), /No direct children.*Press a for all sessions/);
 				component.handleInput("a");
-				assert.match(text(component), /1 workers/);
+				assert.match(text(component), /1 worker/);
 				assert.doesNotMatch(text(component), /No direct children/);
 			},
 			theme,
@@ -290,7 +355,7 @@ describe("worker overview and separate communications", () => {
 			deps({ readWorkers: () => [worker("bg-direct", { label: "review-check" })] }),
 			async (component) => {
 				const output = text(component, 180);
-				assert.match(output, /review-check\s+running/);
+				assert.match(output, /› review-check[\s\S]*running/);
 			},
 			theme,
 			"overview",
@@ -299,7 +364,11 @@ describe("worker overview and separate communications", () => {
 	it("overview rows fall back to the id when a label is null, absent, or equal to the id", async () => {
 		await panel(
 			deps({
-				readWorkers: () => [worker("bg-null", { label: null }), worker("bg-self", { label: "bg-self" }), worker("bg-plain")],
+				readWorkers: () => [
+					worker("bg-null", { label: null }),
+					worker("bg-self", { label: "bg-self" }),
+					worker("bg-plain"),
+				],
 			}),
 			async (component) => {
 				const output = text(component, 180);
@@ -380,8 +449,13 @@ describe("worker overview and separate communications", () => {
 			deps({ collaboration: async () => current }),
 			async (component, terminal) => {
 				assert.match(text(component, 180), /CONVERSATIONS · 2/);
-				assert.match(text(component, 180), /Does the interface preserve/);
 				assert.match(text(component, 180), /checked source keeps/);
+				assert.doesNotMatch(text(component, 180), /Does the interface preserve/);
+				component.handleInput("\t");
+				component.handleInput("\x1b[A");
+				assert.match(text(component, 180), /Does the interface preserve/);
+				component.handleInput("\x1b[B");
+				component.handleInput("\t");
 				assert.doesNotMatch(text(component, 180), /raw status payload|raw peer envelope|call subagent_status/);
 				component.handleInput("\x1b[B");
 				assert.match(text(component, 180), /The interface check passed/);
@@ -400,7 +474,7 @@ describe("worker overview and separate communications", () => {
 			"communications",
 		);
 	});
-	it("attributes and bounds readable exchanges with whole cards and conflict flags", async () => {
+	it("attributes the selected exchange with its record position and conflict flag", async () => {
 		const current = snapshot();
 		current.events = [
 			...Array.from({ length: 4 }, (_, index) =>
@@ -430,18 +504,15 @@ describe("worker overview and separate communications", () => {
 				assert.match(wide, /CONVERSATIONS · 2/);
 				assert.doesNotMatch(wide, /Manager ↔ peers/);
 				assert.match(wide, /worker-a ↔ worker-b/);
-				assert.match(wide, /EXCHANGES · unverified/);
-				assert.doesNotMatch(wide, /\d+ exchange record/);
-				assert.match(wide, /root ↔ worker-c\s+1 10:00:00 report/);
-				assert.match(wide, /worker-c/);
-				const lines = wide.split("\n");
-				const hint = lines.findIndex((line) => /earlier exchange records/.test(line));
-				assert.ok(hint >= 0, "hidden cards are counted");
-				assert.match(lines[hint], /… [0-9]+ earlier exchange records/);
-				assert.match(lines[hint + 1], /\d{2}:\d{2}:\d{2}.*→.*peer/);
+				assert.match(wide, /EXCHANGES · 5\/5/);
+				assert.match(wide, /root ↔ worker-c/);
+				assert.match(wide, /1 record · 10:00:00/);
+				assert.match(wide, /worker-b → worker-a/);
+				assertExchangeProvenance(wide, "peer");
+				assert.doesNotMatch(wide, /readable message [0-3]/);
 				const unverified = wide.match(/unverified/g) ?? [];
 				assert.equal(unverified.length, 1);
-				const matches = wide.match(/conflicting envelope/g) ?? [];
+				const matches = wide.match(/Conflicting envelope/g) ?? [];
 				assert.equal(matches.length, 1);
 				assert.match(wide, /readable message four/);
 			},
@@ -516,7 +587,7 @@ describe("worker overview and separate communications", () => {
 				assert.doesNotMatch(conversations, /f filter/);
 				component.handleInput("f");
 				assert.match(text(component, 180), /Filtering applies to raw evidence only/);
-				assert.match(text(component, 180), /readable question/);
+				assert.match(text(component, 180), /readable answer/);
 			},
 			theme,
 			"communications",
@@ -558,13 +629,13 @@ describe("worker overview and separate communications", () => {
 		await panel(
 			deps({
 				collaboration: async () => ({
-				...snapshot(),
-				events: [
-					event("q", "raw peer envelope keeps the readable question", {
-						exchange: { kind: "peer", text: "the readable question" },
-					}),
-				],
-			}),
+					...snapshot(),
+					events: [
+						event("q", "raw peer envelope keeps the readable question", {
+							exchange: { kind: "peer", text: "the readable question" },
+						}),
+					],
+				}),
 			}),
 			async (component) => {
 				component.handleInput("?");
@@ -614,6 +685,7 @@ describe("collaboration dashboard", () => {
 			}),
 			async (component) => {
 				component.handleInput("v");
+				component.handleInput("\t");
 				assert.doesNotMatch(text(component), /Final retained result/);
 				assert.equal(reads, 1);
 				record.state = "done";
@@ -1039,7 +1111,7 @@ describe("history feedback and dense layouts", () => {
 			component.handleInput("?");
 			assert.match(text(component, 48), /DASHBOARD HELP/);
 			component.handleInput("\x1b[F");
-			assert.match(text(component, 48), /continuation remains\s+active/);
+			assert.match(text(component, 48).replace(/\s+/g, " "), /A submitted continuation remains active\./);
 			for (const width of [180, 100, 48, 24, 10, 3, 1]) {
 				for (const line of component.render(width)) assert.equal(visibleWidth(line), width);
 				assert.ok(component.render(width).length <= terminal.rows - 2);
@@ -1210,6 +1282,7 @@ describe("worker console robustness", () => {
 				component.handleInput("old draft");
 				component.handleInput("\r");
 				component.handleInput("\x1b");
+				component.handleInput("\x1b");
 				component.handleInput("v");
 				component.handleInput("\r");
 				assert.match(text(component), /Send request pending/);
@@ -1300,49 +1373,585 @@ describe("worker console robustness", () => {
 		);
 		for (const line of lines) {
 			assert.equal(visibleWidth(line), 30);
-			assert.doesNotMatch(line, /[\x00-\x1f\x7f-\x9f]/);
+			assert.doesNotMatch(stripTerminalSequences(line), /[\x00-\x1f\x7f-\x9f]/);
 		}
 		assert.doesNotMatch(lines.join("\n"), /title|Payload/);
 	});
 });
 
+describe("worker reading controls", () => {
+	it("preserves a draft across Chat, Report, and Details without duplicate report text or sends", async () => {
+		let sends = 0;
+		await panel(
+			deps({
+				report: () => ({ label: "Submitted report · unverified", text: "## Result\n\nThe result body." }),
+				conversation: () => [
+					{
+						id: "message",
+						role: "assistant",
+						timestamp: 1,
+						status: "completed",
+						model: { provider: "test", id: "model" },
+						content: [{ type: "text", text: "The chat body." }],
+					},
+				],
+				sendLive: async () => {
+					sends++;
+					return { ok: false, text: "refused" };
+				},
+			}),
+			async (component) => {
+				component.handleInput("v");
+				component.handleInput("draft retained");
+				assert.match(text(component), /\[Chat\][\s\S]*The chat body/);
+				assert.doesNotMatch(text(component), /The result body/);
+				component.handleInput("\t");
+				assert.match(text(component), /\[Report\][\s\S]*The result body/);
+				assert.doesNotMatch(text(component), /The chat body|draft retained/);
+				assert.ok(!component.render(140).join("\n").includes(CURSOR_MARKER));
+				component.handleInput("\r");
+				assert.equal(sends, 0);
+				component.handleInput("\t");
+				assert.match(text(component), /\[Details\][\s\S]*WORKER worker-a/);
+				component.handleInput("\t");
+				assert.match(text(component), /draft retained/);
+				assert.ok(component.render(140).join("\n").includes(CURSOR_MARKER));
+				component.handleInput("\r");
+				await flush();
+				assert.equal(sends, 1);
+				assert.match(text(component), /draft retained/);
+			},
+			theme,
+			"overview",
+		);
+	});
+	it("honors injected expansion keys and preserves the selected message across reflow", async () => {
+		const keybindings = new KeybindingsManager({
+			"app.tools.expand": { defaultKeys: "alt+o" },
+			"app.thinking.toggle": { defaultKeys: "alt+t" },
+		});
+		await panel(
+			deps({
+				isLive: () => false,
+				conversation: () => [
+					{
+						id: "thought",
+						role: "assistant",
+						status: "completed",
+						model: { provider: "test", id: "model" },
+						timestamp: 1,
+						content: [
+							{ type: "thinking", thinking: "Full retained reasoning." },
+							{ type: "toolCall", toolCallId: "call", toolName: "read", input: { path: "source.ts", limit: 50 } },
+						],
+					},
+					{
+						id: "tool",
+						role: "tool",
+						input: {},
+						toolCallId: "call",
+						toolName: "read",
+						status: "complete",
+						isError: false,
+						timestamp: 2,
+						content: [{ type: "text", text: Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n") }],
+					},
+					{
+						id: "last",
+						role: "assistant",
+						status: "completed",
+						model: { provider: "test", id: "model" },
+						timestamp: 3,
+						content: [{ type: "text", text: "A conclusion that remains visible." }],
+					},
+				],
+			}),
+			async (component) => {
+				component.handleInput("v");
+				assert.match(text(component), /alt\+o expand tools/);
+				component.handleInput("\x1b[H");
+				assert.match(text(component), /Reasoning · collapsed/);
+				component.handleInput("\x1bo");
+				component.handleInput("\x1bt");
+				assert.match(text(component), /Full retained reasoning/);
+				component.handleInput("\x1b[F");
+				assert.match(text(component), /A conclusion that remains visible/);
+				component.handleInput("\x1b[A");
+				assert.match(text(component), /Browse · lines/);
+				component.render(60);
+				assert.match(text(component, 60), /Browse · lines/);
+				component.handleInput("\x1b[F");
+				assert.match(text(component, 60), /Tail · lines/);
+				assert.match(text(component, 60), /A conclusion that remains visible/);
+			},
+			theme,
+			"overview",
+			keybindings,
+		);
+	});
+	it("keeps the same visible text while a scrolled live message grows", async () => {
+		let notify: (() => void) | undefined;
+		let count = 80;
+		await panel(
+			deps({
+				subscribeLive: (_id, listener) => {
+					notify = listener;
+					return () => {
+						notify = undefined;
+					};
+				},
+				conversation: () => [
+					{
+						id: "stream",
+						role: "assistant",
+						status: "streaming",
+						model: { provider: "test", id: "model" },
+						timestamp: 1,
+						content: [{ type: "text", text: Array.from({ length: count }, (_, i) => `paragraph ${i}\n`).join("\n") }],
+					},
+				],
+			}),
+			async (component) => {
+				component.handleInput("v");
+				component.render(90);
+				component.handleInput("\x1b[H");
+				component.handleInput("\x1b[6~");
+				const before = component.render(90).slice(2, -2).map(stripTerminalSequences);
+				count = 100;
+				notify?.();
+				assert.deepEqual(component.render(90).slice(2, -2).map(stripTerminalSequences), before);
+				component.handleInput("\x1b[F");
+				assert.match(text(component, 90), /paragraph 99/);
+			},
+			theme,
+			"overview",
+		);
+	});
+	it("selects and expands one block even when the complete collapsed chat fits on screen", async () => {
+		await panel(
+			deps({
+				isLive: () => false,
+				conversation: () => [
+					{ id: "user", role: "user", timestamp: 1, content: [{ type: "text", text: "A short task." }] },
+					...(["one", "two"] as const).flatMap((name) => [
+						{
+							id: name,
+							role: "assistant" as const,
+							timestamp: 2,
+							status: "completed" as const,
+							model: { provider: "test", id: "model" },
+							content: [{ type: "toolCall" as const, toolCallId: name, toolName: "read", input: { path: name } }],
+						},
+						{
+							id: `${name}-output`,
+							role: "tool" as const,
+							toolCallId: name,
+							toolName: "read",
+							input: {},
+							timestamp: 3,
+							status: "complete" as const,
+							isError: false,
+							content: [
+								{ type: "text" as const, text: Array.from({ length: 20 }, (_, i) => `${name}-line-${i}`).join("\n") },
+							],
+						},
+					]),
+				],
+			}),
+			async (component, terminal) => {
+				terminal.rows = 70;
+				component.handleInput("v");
+				component.render(120);
+				component.handleInput("\x1b[H");
+				component.handleInput("\x1b[1;3B");
+				assert.match(text(component, 120), /›✓ read one/);
+				component.handleInput("x");
+				assert.match(text(component, 120), /one-line-19/);
+				assert.doesNotMatch(text(component, 120), /two-line-19/);
+				component.handleInput("\x14");
+				assert.match(text(component, 120), /one-line-19/, "reasoning toggle preserves individual tool expansion");
+				component.handleInput("x");
+				assert.doesNotMatch(text(component, 120), /one-line-19/);
+				component.handleInput("\x1b[1;3B");
+				component.handleInput("x");
+				assert.match(text(component, 120), /two-line-19/);
+				assert.doesNotMatch(text(component, 120), /one-line-19/);
+			},
+			theme,
+			"overview",
+		);
+	});
+	it("uses selected-row emphasis, retains long labels, and leaves output out of other rows", async () => {
+		const records = [
+			worker("first", { label: "verify-session-resource-parity#17", lastOutput: "selected output" }),
+			worker("second", { label: "verify-session-resource-parity#18", lastOutput: "unselected output" }),
+		];
+		const painted: string[] = [];
+		await panel(
+			deps({ readWorkers: () => records }),
+			async (component, terminal) => {
+				terminal.rows = 50;
+				const output = text(component, 220);
+				assert.match(output, /verify-session-resource-parity#17/);
+				assert.match(output, /verify-session-resource-parity#18/);
+				assert.match(output, /selected output/);
+				assert.doesNotMatch(output, /unselected output|CURRENT TOOL|\+\d{3}/);
+				assert.ok(painted.some((line) => line.includes("parity#17")));
+				assert.ok(!painted.some((line) => line.includes("parity#18")));
+				assert.ok(component.render(220).length <= 15);
+				component.handleInput("\x1b[B");
+				assert.match(text(component, 220), /unselected output/);
+			},
+			{
+				...theme,
+				bg: (token, value) => {
+					if (token === "selectedBg") painted.push(value);
+					return value;
+				},
+			} as Theme,
+			"overview",
+		);
+	});
+});
+
+describe("panel frame and input boundaries", () => {
+	it("neutralizes stored labels and source identities in every view without changing source bytes", async () => {
+		const poison = "\u202e\u2066\x07\x1b[2J";
+		const record = worker("worker-a", {
+			label: `Roster${poison} label`,
+			task: `Recorded${poison} task`,
+			lastOutput: `Recorded${poison} output`,
+		});
+		const current = snapshot();
+		current.families[0].label = `Family${poison} label`;
+		current.participants = [
+			participant("root", null, { label: `Manager${poison} label` }),
+			participant("worker-a", "root", { label: `Worker${poison} label`, state: `running${poison}` }),
+		];
+		current.events = [
+			event("source-record", `Exact${poison} source`, {
+				actorId: "worker-a",
+				recipientId: "root",
+				kind: `report${poison}`,
+				sourceSessionId: `session${poison}`,
+				entryId: `entry${poison}`,
+				messageId: `message${poison}`,
+				exchange: { kind: "report", text: `Readable${poison} exchange` },
+			}),
+		];
+		current.notices = [`Source${poison} notice`];
+		const before = structuredClone({ record, current });
+		const transitions = [
+			[],
+			["d"],
+			["?"],
+			["/"],
+			["v"],
+			["v", "\t"],
+			["v", "\t", "\t"],
+			["m"],
+			["m", "\r"],
+			["m", "e"],
+			["m", "e", "\t", "\t"],
+			["m", "n"],
+			["m", "F"],
+			["m", "/"],
+		];
+		for (const keys of transitions) {
+			await panel(
+				deps({
+					readWorkers: () => [record],
+					readWorker: () => record,
+					collaboration: async () => current,
+					report: () => ({ label: `Report${poison} label`, text: `Report${poison} body` }),
+				}),
+				async (component, terminal) => {
+					terminal.rows = 60;
+					for (const key of keys) {
+						component.handleInput(key);
+						await flush();
+					}
+					if (keys.join("") === "m\r") {
+						assert.match(text(component, 180), /Worker label → Manager label/);
+						assert.match(text(component, 180), /SOURCE DETAILS/);
+					}
+					for (const width of [180, 80, 48]) {
+						for (const key of ["\x1b[H", "\x1b[F"]) {
+							if (!keys.includes("/")) component.handleInput(key);
+							const lines = component.render(width);
+							assert.doesNotMatch(
+								lines.join("\n").replaceAll(CURSOR_MARKER, ""),
+								/[\u202e\u2066\x07]|\x1b\[2J/,
+								`source controls stay inert for ${keys.join("/")} at ${width}`,
+							);
+							for (const line of lines) assert.equal(visibleWidth(line), width);
+						}
+					}
+				},
+				framedTheme,
+				"overview",
+			);
+		}
+		assert.deepEqual({ record, current }, before);
+	});
+	it("restores enclosing backgrounds after nested resets without erasing selection or the native cursor", async () => {
+		const panelBackground = "48;2;12;18;24";
+		const selectionBackground = "48;2;24;36;96";
+		const codeBackground = "48;2;36;48;60";
+		const colors = new Map([
+			["customMessageBg", panelBackground],
+			["selectedBg", selectionBackground],
+			["toolPendingBg", codeBackground],
+		]);
+		const ansiTheme = {
+			...theme,
+			getBgAnsi: (color: string) => `\x1b[${colors.get(color) ?? panelBackground}m`,
+			bg: (color: string, value: string) => `\x1b[${colors.get(color) ?? panelBackground}m${value}\x1b[49m`,
+			fg: (color: string, value: string) =>
+				color === "mdCodeBlock" ? `\x1b[${codeBackground}m${value}\x1b[49m` : `\x1b[38;2;240;245;250m${value}\x1b[39m`,
+			bold: (value: string) => `\x1b[1m${value}\x1b[0m`,
+			italic: (value: string) => `\x1b[3m${value}\x1b[m`,
+		} as Theme;
+		await panel(
+			deps({
+				readWorkers: () => [
+					worker("selected", {
+						label: "Selected identity",
+						lastOutput: "Ordinary preview\n\n```text\nCODE SAMPLE\n```\n\n*After code*",
+					}),
+				],
+			}),
+			async (component, terminal) => {
+				terminal.rows = 40;
+				const width = 180;
+				const rendered = component.render(width);
+				for (const line of rendered) {
+					const cells = backgroundCells(line);
+					assert.equal(cells.length, width);
+					assert.ok(
+						cells.every((background) => background !== null),
+						"every visible cell retains a background",
+					);
+					assert.equal(cells[0], panelBackground);
+					assert.equal(cells.at(-1), panelBackground);
+				}
+				const selected = rendered.find((line) => stripTerminalSequences(line).includes("› Selected identity"))!;
+				const identity = stripTerminalSequences(selected);
+				const divider = identity.indexOf("│", 1);
+				const selectedCells = backgroundCells(selected);
+				assert.equal(selectedCells[identity.indexOf("Selected identity")], selectionBackground);
+				assert.ok(selectedCells.slice(2, divider - 1).every((background) => background === selectionBackground));
+				assert.equal(selectedCells[divider], panelBackground);
+				assert.ok(selectedCells.slice(divider + 1).every((background) => background === panelBackground));
+				const code = rendered.find((line) => stripTerminalSequences(line).includes("CODE SAMPLE"))!;
+				assert.ok(code, "native Markdown retains its code text");
+				assert.equal(backgroundCells(code)[stripTerminalSequences(code).indexOf("CODE SAMPLE")], codeBackground);
+				const after = rendered.find((line) => stripTerminalSequences(line).includes("After code"))!;
+				assert.ok(after, "native Markdown retains text after the code block");
+				assert.ok(backgroundCells(after).every((background) => background === panelBackground));
+				component.handleInput("/");
+				component.handleInput("selected");
+				const input = component.render(width).find((line) => line.includes(CURSOR_MARKER));
+				assert.ok(input, "the outer background preserves Pi's cursor marker");
+				assert.equal(visibleWidth(input), width);
+				assert.ok(backgroundCells(input).every((background) => background === panelBackground));
+			},
+			ansiTheme,
+			"overview",
+		);
+	});
+	const views = [
+		{ name: "overview", keys: [] },
+		{ name: "communications", keys: ["m"] },
+		{ name: "worker chat", keys: ["v"] },
+		{ name: "worker report", keys: ["v", "\t"] },
+		{ name: "worker details", keys: ["v", "\t", "\t"] },
+		{ name: "overview details", keys: ["d"] },
+		{ name: "help", keys: ["?"] },
+		{ name: "overview search", keys: ["/"] },
+		{ name: "communications search", keys: ["m", "/"] },
+		{ name: "source details", keys: ["m", "\r"] },
+		{ name: "source report", keys: ["m", "n"] },
+		{ name: "raw evidence", keys: ["m", "e"] },
+		{ name: "families", keys: ["m", "F"] },
+	];
+	for (const view of views) {
+		it(`paints every ${view.name} row with complete frame boundaries`, async () => {
+			await panel(
+				deps({
+					readWorkers: () => [worker("worker-a", { label: "資料 👩‍💻 é", lastOutput: "Readable output" })],
+					collaboration: async () => ({
+						...snapshot(),
+						events: [
+							event("exchange-1", "Source text", { exchange: { kind: "peer", text: "Readable body 資料 👩‍💻 é" } }),
+						],
+					}),
+					report: () => ({ label: "Submitted report · unverified", text: "## Result\n\nA retained report." }),
+				}),
+				async (component, terminal) => {
+					for (const key of view.keys) {
+						component.handleInput(key);
+						await flush();
+					}
+					for (const rows of [40, 16, 12]) {
+						terminal.rows = rows;
+						for (const width of [220, 140, 104, 80, 48, 24, 12]) assertFrame(component, width, rows);
+					}
+				},
+				framedTheme,
+				"overview",
+			);
+		});
+	}
+	it("keeps render errors inside the same painted frame and permits Escape", async () => {
+		await panel(
+			deps({
+				conversation: () => {
+					throw new Error("synthetic transcript failure");
+				},
+			}),
+			async (component, terminal, closed) => {
+				component.handleInput("v");
+				const lines = assertFrame(component, 100, terminal.rows);
+				assert.match(lines.join("\n"), /render error: synthetic transcript failure/);
+				component.handleInput("\x1b");
+				assert.match(text(component), /OVERVIEW/);
+				component.handleInput("\x1b");
+				assert.equal(closed(), 1);
+			},
+			framedTheme,
+			"overview",
+		);
+	});
+	it("uses exact-width painted fallback rows on tiny terminals and retains Escape", async () => {
+		for (const start of ["overview", "communications"] as const) {
+			await panel(
+				deps(),
+				async (component, terminal, closed) => {
+					for (const rows of [4, 6, 10]) {
+						terminal.rows = rows;
+						for (const width of [80, 20, 11, 3, 1]) {
+							const lines = component.render(width);
+							assert.ok(lines.length <= rows - 2);
+							for (const line of lines) {
+								assert.equal(visibleWidth(line), width);
+								assert.ok(line.startsWith("\x1b[48;2;12;18;24m"));
+								assert.ok(line.endsWith("\x1b[49m"));
+							}
+							assert.doesNotMatch(stripTerminalSequences(lines[0] ?? ""), /^┌/);
+							if (width >= 3) assert.match(stripTerminalSequences(lines.at(-1) ?? ""), /esc/);
+						}
+					}
+					component.handleInput("\x1b");
+					assert.equal(closed(), 1);
+				},
+				framedTheme,
+				start,
+			);
+		}
+	});
+	it("preserves the native Unicode input cursor inside all enclosing frame rows", async () => {
+		await panel(
+			deps(),
+			async (component, terminal) => {
+				for (const keys of [["/"], ["m", "/"], ["m", "v", "\r"]]) {
+					for (const key of keys) {
+						component.handleInput(key);
+						await flush();
+					}
+					component.handleInput("\x1b[200~資料 👩‍💻 é\x1b[201~");
+					for (const width of [140, 80, 24]) {
+						const lines = assertFrame(component, width, terminal.rows);
+						const cursorRows = lines.filter((line) => line.includes(CURSOR_MARKER));
+						assert.equal(cursorRows.length, 1);
+						assert.match(stripTerminalSequences(cursorRows[0]), /^│ .* │$/);
+					}
+					assert.match(text(component, 140), /資料 👩‍💻 é/);
+					component.focused = false;
+					assert.ok(!component.render(80).join("\n").includes(CURSOR_MARKER));
+					component.focused = true;
+					assert.ok(component.render(80).join("\n").includes(CURSOR_MARKER));
+					component.handleInput("\x1b");
+				}
+			},
+			framedTheme,
+			"overview",
+		);
+	});
+	it("reserves the minority pane for identity before metadata with contrasted selected text", async () => {
+		const selected: string[] = [];
+		const styled = {
+			...framedTheme,
+			fg: (color: string, value: string) => `\x1b[${color === "muted" ? "90" : "97"}m${value}\x1b[39m`,
+			bg: (color: string, value: string) => {
+				if (color === "selectedBg") {
+					selected.push(value);
+					return `\x1b[44m${value}\x1b[49m`;
+				}
+				return framedTheme.bg(color as Parameters<Theme["bg"]>[0], value);
+			},
+		} as Theme;
+		await panel(
+			deps({
+				readWorkers: () => [
+					worker("first", { label: "Primary identity", model: "test/metadata-model" }),
+					worker("second", { label: "Other identity" }),
+				],
+			}),
+			async (component) => {
+				for (const width of [104, 140, 220]) {
+					const lines = component.render(width).map(stripTerminalSequences);
+					const identityRow = lines.findIndex((line) => line.includes("› Primary identity"));
+					assert.ok(identityRow > 0);
+					const divider = lines[identityRow].indexOf("│", 1);
+					assert.ok(divider > 2 && divider < width / 2, `identity pane stays smaller than the reader at ${width}`);
+					assert.ok(lines[identityRow + 1].includes("metadata-model"));
+					assert.ok(!lines[identityRow].slice(0, divider).includes("metadata-model"));
+					assert.ok(!lines[identityRow].slice(divider + 1).includes("Other identity"));
+				}
+				assert.ok(selected.some((value) => stripTerminalSequences(value).includes("Primary identity")));
+				assert.ok(!selected.some((value) => stripTerminalSequences(value).includes("Other identity")));
+				for (const value of selected.filter((line) => line.includes("Primary identity")))
+					assert.ok(!value.includes("\x1b[90m"), "selected identity never uses muted foreground");
+				component.handleInput("\x1b[B");
+				text(component);
+				assert.ok(selected.some((value) => stripTerminalSequences(value).includes("Other identity")));
+			},
+			styled,
+			"overview",
+		);
+	});
+});
+
 describe("dashboard ergonomics", () => {
-	const markers: MarkerStyles = {
-		bold: (text) => `[b]${text}[/b]`,
-		italic: (text) => `[i]${text}[/i]`,
-		code: (text) => `[c]${text}[/c]`,
-		heading: (text) => `[h]${text}[/h]`,
-		rule: (text) => `[r]${text}[/r]`,
-		bullet: (text) => `[•]${text}[/•]`,
-	};
 	const footerStyles: FooterStyles = {
 		key: (text) => `<${text}>`,
 		label: (text) => text,
 		rule: (text) => text,
 	};
-	it("maps bounded markers and wraps markdown with hanging indents", () => {
-		assert.equal(styleMarkers("`code` and **bold** and *em*", markers), "[c]code[/c] and [b]bold[/b] and [i]em[/i]");
-		assert.doesNotMatch(styleMarkers("**keep**", markers), /\*\*/);
-		const lines = styleMarkdownBlock("intro\n# Title\n- item one that wraps at a tight measure\n---", 12, markers);
-		assert.ok(lines.some((line) => line === ""));
-		assert.ok(lines.some((line) => line.includes("[h]Title[/h]") || line.includes("[h]")));
-		const bullet = lines.find((line) => line.includes("[•]"));
-		assert.ok(bullet);
-		const bulletAt = lines.indexOf(bullet!);
-		assert.ok(bulletAt >= 0 && bulletAt + 1 < lines.length);
-		assert.match(lines[bulletAt + 1], /^ {2}/);
-		assert.ok(lines.some((line) => /\[r\]─{12}\[\/r\]/.test(line)));
+	it("uses native Markdown for headings, lists, links, and fenced code", () => {
+		const lines = renderMarkdownText(
+			"# Title\n\n**bold** and [a link](https://example.com)\n\n- one\n- two\n\n```ts\nconst value = 1;\n```",
+			60,
+			theme,
+		);
+		const output = stripTerminalSequences(lines.join("\n"));
+		assert.match(output, /Title/);
+		assert.match(output, /bold and a link/);
+		assert.doesNotMatch(output, /\*\*bold\*\*|\[a link\]/);
+		assert.match(output, /const value = 1;/);
+		for (const line of lines) assert.ok(visibleWidth(line) <= 60);
 	});
-	it("caps reader measure, scales the thread pane, and counts truncation residue", () => {
+	it("caps reader measure, scales the thread pane, and marks display clipping", () => {
 		assert.equal(readerMeasure(240), 96);
 		assert.equal(readerMeasure(50), 44);
 		assert.equal(readerMeasure(5), 1);
 		assert.equal(threadPaneWidth(80), 80);
-		assert.equal(threadPaneWidth(100), 28);
-		assert.equal(threadPaneWidth(160), 40);
-		assert.ok(threadPaneWidth(140) >= 28 && threadPaneWidth(140) <= 40);
-		assert.match(truncateResidue("abcdefghijklmnopqrstuvwxyz", 10), /\+\d+/);
-		assert.doesNotMatch(truncateResidue("abcdefghijklmnopqrstuvwxyz", 10), /…/);
+		assert.equal(threadPaneWidth(100), 36);
+		assert.equal(threadPaneWidth(160), 48);
+		assert.ok(threadPaneWidth(140) >= 36 && threadPaneWidth(140) <= 48);
+		assert.equal(stripTerminalSequences(clipText("abcdefghijklmnopqrstuvwxyz", 10)), "abcdefghi…");
+		assert.doesNotMatch(clipText("abcdefghijklmnopqrstuvwxyz", 10), /\+\d+/);
 		assert.equal(visibleWidth(headerPair(20, "left identity", "esc back")), 20);
 		assert.equal(positionLabel(0, 10, 40), "lines 1-10/40");
 		assert.equal(clockTime(Number.NaN), "--:--:--");
@@ -1367,7 +1976,7 @@ describe("dashboard ergonomics", () => {
 		assert.match(tight, /esc/);
 		assert.doesNotMatch(tight, /cancel/);
 	});
-	it("lays out thread columns, card time and direction, and a single unverified mark", async () => {
+	it("separates thread identity, selected message direction, time, and provenance", async () => {
 		const current = snapshot();
 		current.events = [
 			event("out", "**bold** outbound", {
@@ -1386,14 +1995,18 @@ describe("dashboard ergonomics", () => {
 			deps({ collaboration: async () => current }),
 			async (component) => {
 				const output = text(component, 180);
-				assert.match(output, /CONVERSATIONS · 1 · root ↔ peers/);
-				assert.match(output, /worker-a/);
-				assert.doesNotMatch(output, /exchange record/);
-				assert.match(output, /\d{2}:\d{2}:\d{2}.*root → worker-a.*steer/);
-				assert.match(output, /→ /);
-				assert.match(output, /← /);
-				assert.doesNotMatch(output, /\*\*bold\*\*/);
-				assert.match(output, /bold outbound/);
+				assert.match(output, /CONVERSATIONS · 1/);
+				assert.match(output, /› worker-a/);
+				assert.match(output, /← worker-a → root/);
+				assertExchangeProvenance(output, "peer");
+				assert.match(output, /reply inbound/);
+				component.handleInput("\t");
+				component.handleInput("\x1b[A");
+				const outbound = text(component, 180);
+				assert.match(outbound, /→ root → worker-a/);
+				assertExchangeProvenance(outbound, "steer");
+				assert.doesNotMatch(outbound, /\*\*bold\*\*/);
+				assert.match(outbound, /bold outbound/);
 				assert.equal((output.match(/unverified/g) ?? []).length, 1);
 				assert.doesNotMatch(output, /e evidence|h history|n report|v transcript|\/ search|F families/);
 				component.handleInput("?");
@@ -1434,21 +2047,19 @@ describe("dashboard ergonomics", () => {
 			"communications",
 		);
 	});
-	it("collapses chrome in a short window and fills leftover thread rows", async () => {
+	it("collapses chrome in a short window and retains selected message content", async () => {
 		await panel(
 			deps({
 				collaboration: async () => ({
 					...snapshot(),
-					events: [
-						event("q", "raw", { exchange: { kind: "peer", text: "hello from the thread" } }),
-					],
+					events: [event("q", "raw", { exchange: { kind: "peer", text: "hello from the thread" } })],
 				}),
 			}),
 			async (component, terminal) => {
 				terminal.rows = 10;
 				const conversations = text(component, 140);
-				assert.match(conversations, /SELECTED THREAD/);
-				assert.match(conversations, /running · test\/same-model/);
+				assert.match(conversations, /1 record ·/);
+				assert.match(conversations, /hello from the thread/);
 				component.handleInput("\r");
 				const lines = component.render(80);
 				assert.ok(lines.length <= 8);
