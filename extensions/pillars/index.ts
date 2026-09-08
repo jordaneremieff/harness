@@ -1,6 +1,7 @@
 import { writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -8,17 +9,17 @@ import {
 	getMarkdownTheme,
 	VERSION,
 } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
 import { Markdown } from "@earendil-works/pi-tui";
-import { access, ACCESS_DESCRIPTION } from "./access.ts";
+import { Type } from "typebox";
+import { ACCESS_DESCRIPTION, access } from "./access.ts";
 import { type Catalog, loadCatalog, readBody, resourceById, resourceByPath } from "./catalog.ts";
 import { Collector, utcDay } from "./collector.ts";
+import { COMMAND_HELP, commandCompletions, judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
 import { exportLocal, parseCommand } from "./export.ts";
 import { accessEvidence, Deduplicator, type DeliveryExtent, extract, readEvidence } from "./observation.ts";
+import { accessRenderers, usageMarkdown, usageRenderers } from "./presentation.ts";
 import { createReader, TOOL_DESCRIPTION } from "./readback.ts";
 import { PillarsStore } from "./store.ts";
-import { usageMarkdown } from "./presentation.ts";
 
 export default function pillarsExtension(pi: ExtensionAPI): void {
 	let catalog: Catalog | undefined;
@@ -146,7 +147,7 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Read the Pillars inventory, consultation rules, and selected corpus entries",
 		promptGuidelines: [
 			"Call pillars at judgment moments: design or architecture decisions, trade-offs, option menus, verification depth, information placement, and prose tells.",
-			"Read resource:\"governance\" before applying any corpus entry.",
+			'Read resource:"governance" before applying any corpus entry.',
 		],
 		parameters: Type.Object(
 			{
@@ -165,6 +166,7 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 			},
 			{ additionalProperties: false },
 		),
+		...accessRenderers(),
 		async execute(id, args, signal) {
 			const result = await access(catalog, args, signal);
 			if (result.schema === "pillars-source" && delivered.size < 4096 && Buffer.byteLength(id) <= 256) {
@@ -187,6 +189,7 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 			},
 			{ additionalProperties: false },
 		),
+		...usageRenderers(),
 		async execute(_id, args, signal) {
 			const result = await reader.read(args, signal);
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
@@ -215,11 +218,27 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 	}
 	pi.registerCommand("pillars", {
 		description:
-			"Browse Pillars: /pillars [read resource]. Access evidence: /pillars usage, revisions, or export absolute-path.",
+			"Check alignment, derive candidates, review guidance, or browse Pillars. Use /pillars for help; judgment actions accept an optional hint.",
+		getArgumentCompletions: async (prefix) => {
+			if (/^read\s+[^\s]*$/.test(prefix)) await discover();
+			return commandCompletions(prefix, catalog);
+		},
 		handler: async (args, ctx) => {
+			const request = parseJudgmentRequest(args);
+			if (request) {
+				pi.sendMessage(
+					{ customType: "pillars-request", content: judgmentPrompt(request), display: true },
+					{ triggerTurn: true, deliverAs: "steer" },
+				);
+				return;
+			}
+			const input = args.trim();
+			if (!input || input === "help") {
+				display(COMMAND_HELP, ctx);
+				if (input === "help") return;
+			}
 			await discover(ctx.signal);
 			try {
-				const input = args.trim();
 				if (!input || input === "browse" || input.startsWith("read ")) {
 					const match = input.startsWith("read ")
 						? /^read ([a-z0-9][a-z0-9-]{0,63})(?: ([0-9]{1,7}) ([a-f0-9]{64}))?$/.exec(input)
@@ -260,7 +279,7 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 				);
 			} catch {
 				display(
-					'Use /pillars, /pillars read <resource>, /pillars usage [--days N], /pillars revisions [--days N], or /pillars export "/absolute/file.json" [--days N].',
+					`The Pillars command did not complete. Check the command syntax and source or export availability.\n\n${COMMAND_HELP}`,
 					ctx,
 				);
 			}

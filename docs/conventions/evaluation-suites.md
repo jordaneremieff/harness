@@ -19,9 +19,11 @@ allows only these consumer kinds and exact producer paths. Runtime modules,
 fixture factories, other evaluation internals, and sibling extensions remain
 outside this allowance. No test uses this contract to execute paid inference.
 
-Current extension consumers are `registry/registry.eval.mts` and
-`registry/registry-evals.test.mts`. Prompt suites also use the package evaluation
-facade outside the extension slice boundary.
+Current extension consumers include the registry discovery suite
+(`registry/registry.eval.mts`, `registry/registry-evals.test.mts`) and the Pillars
+command suite (`pillars/commands.eval.mts`, `pillars/evaluation.test.mts`).
+Prompt suites also use the package evaluation facade outside the extension
+slice boundary.
 
 ## Execution and evidence
 

@@ -12,7 +12,10 @@ principles, patterns, and heuristics for agent judgment. They guide decisions
 about evidence, structure, and communication. The [Pillars access
 extension](extensions/pillars/README.md) is the single consultation surface:
 its `pillars` tool carries the judgment-moment triggers and reads the corpus;
-the operator browses with `/pillars`.
+the operator browses with `/pillars`, checks alignment with `/pillars check`,
+explores candidates with `/pillars derive`, and reviews existing guidance with
+`/pillars review`. The judgment actions accept an optional free-text hint and
+otherwise use conversation context.
 
 ## Structure and use
 

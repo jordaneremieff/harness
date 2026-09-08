@@ -6,6 +6,50 @@ tool is the single consultation surface: it carries the WHEN triggers that tell
 the model when to consult the corpus, and it reads the
 [corpus governance](../../pillars/GOVERNANCE.md) directly.
 
+## Check work, derive candidates, or review guidance
+
+```text
+/pillars check
+/pillars check the proposed error handling
+/pillars derive
+/pillars derive what we learned from this design change
+/pillars review
+/pillars review agents keep asking permission despite Committed Contribution
+```
+
+`check` asks the agent to assess Pillars alignment. `derive` asks it to identify
+a transferable candidate, an adjustment to an existing entry, or no candidate
+when the evidence does not warrant one. `review` asks whether existing guidance
+expresses the intended behavior and supports its use. For observed mismatches,
+it investigates the cause before proposing a correction. Each accepts one optional free-text hint. The complete text after the action is the hint, including quotes,
+newlines, and flag-like words; no option parsing applies. Without a hint, the
+agent infers the subject from the current conversation. It asks only when that
+context does not identify a useful subject.
+
+These actions send a visible, extension-labeled task message into model context.
+They start a turn when idle and steer an active turn through Pi's normal message
+delivery. The agent keeps control of the reasoning depth and response form.
+The scaffold points to the live inventory, governance, and relevant entries;
+[governance](../../pillars/GOVERNANCE.md) owns document types, consultation, and
+mutation rules. The extension neither copies those rules nor scans session
+history to choose a target. `check` requests an assessment rather than automatic
+edits. `derive` and `review` keep proposals provisional in chat and grant no
+corpus-change approval. These actions do not compute an alignment score.
+
+For recurring misses, `review` compares expected and observed behavior against
+source and delivery evidence. Delivery, recognition, interpretation, application,
+and doctrine are possible causes, not a mandatory checklist. Sparse examples
+do not establish recurrence or its cause. The agent checks
+whether the entry applies and whether an exception or competing constraint
+explains the behavior. It separates demonstrated problems from hypotheses and
+recommends the correction at the responsible layer. A missing instruction needs
+a delivery correction, not automatically stronger doctrine.
+
+`review` also supports routine maintenance without an incident, through useful
+dimensions such as clarity, scope, overlap, and consistency. It does not invent failures, demand an incident archive,
+or assume a rewrite is necessary. Any proposed corpus change follows live
+governance and remains subject to operator approval.
+
 ## Read the corpus
 
 Agents use `pillars` with no arguments to read the inventory and discover
@@ -24,20 +68,33 @@ UTF-8 byte offset and `referenceBodyDigest`. A changed reference fails rather
 than silently combining revisions. Invalid input, unavailable source, and a
 changed source produce fixed tool errors. A source body is limited to 1 MiB.
 
+In the terminal TUI both tools render inside Pi's standard tool-call shell,
+collapsed by default. The call line names the requested resource or evidence
+view; the result line names the delivered byte range or evidence page and hides
+the body behind the host's tool-output expansion binding (`app.tools.expand`,
+`ctrl+o` by default). Expanding shows the full source text or the evidence page.
+The host owns the collapsed and expanded state; the tools only render it.
+
 Operator commands:
 
 ```text
 /pillars
+/pillars help
+/pillars browse
 /pillars read governance
 /pillars read heuristic-verification-reach
 /pillars read <resource> <nextOffset> <referenceBodyDigest>
 ```
 
-`/pillars` displays the actual inventory. Source output uses Pi's Markdown
-renderer in the terminal. Operator command output stays outside model context:
-TUI, JSON, and RPC use a custom session entry, while text-print mode writes to
-stdout. JSON/RPC consumers receive the host's `entry_appended` event. Command
-output remains in the ordinary session record where that record persists;
+`/pillars` displays command help, examples, and the actual inventory.
+`/pillars help` shows just the guide, even if the corpus is unavailable;
+`/pillars browse` shows just the inventory. Argument autocomplete offers actions
+with descriptions and current resource identifiers after `read `. It does not
+complete free-text hints or invent continuation values. Source output uses Pi's
+Markdown renderer in the terminal. Help, browse, read, and access-evidence
+output stay outside model context: TUI, JSON, and RPC use a custom session
+entry, while text-print mode writes to stdout. JSON/RPC consumers receive the
+host's `entry_appended` event. Command output remains in the ordinary session record where that record persists;
 it is not stored in the aggregate telemetry directory.
 
 ## Discovery and activation
@@ -126,7 +183,9 @@ mismatched against reference bytes at that callback; partial, unknown, and
 error outputs remain unverifiable. No mismatched-body fingerprint persists.
 
 Operator command reads, registry excerpts, shell reads, and unobserved
-callbacks do not enter this metric. These are scope boundaries, not proof of
+callbacks do not enter this metric. Invoking `check`, `derive`, or `review` is not itself
+a read event; eligible source tool calls during the resulting agent turn are
+observed normally. These are scope boundaries, not proof of
 non-use. Per-turn deduplication admits at most 4,096
 call/stage keys and refuses new keys after saturation. It does not claim an
 exact lost-event count for unknown duplicates.
@@ -202,6 +261,56 @@ mismatched-body hashes. Public evidence and exports exclude receipt identities.
 | `PI_PILLARS_COLLECT` | `1` or unset enables collection; `0` disables collection but preserves source access and retained-data readback. Other values disable collection with a local diagnostic. |
 | `PI_PILLARS_TEST_HOST_ROOT` | Test-only coding-agent package root for the SDK integration regression; unset uses checkout dependencies. |
 
+## Behavioral evaluations
+
+The maintained [`commands.eval.mts`](commands.eval.mts) suite exercises the real
+`/pillars check`, `/pillars derive`, and `/pillars review` commands against
+synthetic conversations and the live package corpus. It covers hint selection, inferred and absent
+subjects, supported alignment, unsupported claims, candidate exploration,
+existing-entry overlap, type choice, no-candidate outcomes, and quoted authority.
+Review cases distinguish delivery gaps, application gaps, recognition scope,
+operator expectations, sparse evidence, defective drafts, routine maintenance,
+and absent context.
+
+Validate the suite without model inference:
+
+```sh
+npm run evals -- validate extensions/pillars/commands.eval.mts
+node --test extensions/pillars/evaluation.test.mts
+```
+
+Use the existing [evaluation CLI](../../evals/README.md) to plan and run this
+suite with explicit participants, effects, and the exact approved plan digest.
+The suite does not select models or grant paid execution. Results remain in the
+framework's ignored evidence store; semantic quality requires human adjudication.
+Source-access checks and rejected mutation attempts are structural evidence,
+not proof that an assessment or candidate is good. Reviewers derive the relevant
+Pillars from the source and task rather than treat fixture gold as a closed list.
+No exact response wording, alignment score, or candidate quota is required.
+
+The evaluation-only [`evaluation.ts`](evaluation.ts) wrapper calls the real
+extension factory and admits only `check`, `derive`, and `review` invocations.
+It waits for Pi's `agent_settled` event before command return
+because this SDK evaluation adapter does not bind command-context `waitForIdle`
+actions. The production command and prompt are unchanged. Synthetic SDK tests
+cover completed and aborted command turns, source approval, and cleanup.
+
+The variant's `pillars-eval-source` flag binds a digest of the corpus and local
+extension TypeScript sources into the approved plan. The wrapper checks this
+value before command execution against the sources read at fixture startup.
+A different digest requires a fresh plan. This guard does not freeze the
+filesystem during a run; individual source results retain their body digests. The adapter excludes custom
+request messages from its normalized transcript; the command input and pinned
+source define that scaffold, not an assistant-text check.
+
+Collection is disabled, its directory is isolated, and fixture shutdown restores
+the prior environment and removes that directory. The model has `pillars` for
+source access plus `edit` and `write` to expose attempted mutation. A hook blocks
+all calls except `pillars`; attempted edits still fail the suite's checks.
+This controlled tool set is not full-session parity. The suite does not compare
+against a baseline, test terminal autocomplete, or submit a command during an
+existing turn; deterministic command and integration tests own those mechanics.
+
 ## Verification
 
 Run the focused tests with:
@@ -213,8 +322,11 @@ node --test extensions/pillars/*.test.mts
 The suite is Node-only. It covers cooperative lock exclusion and stale-lock
 breaking, crash-leftover reconciliation, atomic publication, retention,
 corruption, quotas, full-capacity pagination, memory refusal, export
-publication, and actual Pi discovery/callback/command/shutdown integration with
-a synthetic provider. It uses no paid model calls or real telemetry exports.
+publication, free-text command parsing, native argument-completion insertion,
+help rendering at narrow widths, and actual Pi discovery/callback/command/shutdown
+integration with a synthetic provider. Command integration covers operator-only
+help, model-visible check/derive/review requests, and delivery during an active turn.
+It uses no paid model calls or real telemetry exports.
 Full repository gates remain defined in
 [repository instructions](../../AGENTS.md).
 
