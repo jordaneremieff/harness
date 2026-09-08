@@ -57,6 +57,8 @@ const {
 	compactionVeto,
 	currentToolLabel,
 	completionNeedsNotification,
+	filterCollectedCompletions,
+	renderWorkerMessage,
 	continueWorker,
 	createSetupDiagnosticCollector,
 	dispatchWorker,
@@ -65,6 +67,7 @@ const {
 	messageCost,
 	modelCapabilities,
 	notifyCompletion,
+	notifyLimitPause,
 	parentToolSurface,
 	projectTrustInputs,
 	linkWorkerOwner,
@@ -81,6 +84,7 @@ const {
 	toolSurfaceMismatchMessage,
 	transferRegisteredProviders,
 	formatSubagentStatus,
+	inspectWorker,
 	listWorkers,
 	pruneTerminalWorkers,
 	readWorker,
@@ -1507,7 +1511,7 @@ describe("status and collection", () => {
 		assert.equal(sent[0].message.customType, "subagent_result");
 		assert.equal(sent[0].message.details.id, id);
 		assert.deepEqual(sent[0].options, {
-			deliverAs: "followUp",
+			deliverAs: "steer",
 			triggerTurn: true,
 		});
 		assert.equal(
@@ -1517,6 +1521,83 @@ describe("status and collection", () => {
 			false,
 		);
 		assert.equal(sent.length, 1, "a persisted marker suppresses a duplicate send");
+	});
+
+	it("keeps one result in context after exact collection, without altering history", async () => {
+		const tools = new Map<string, any>();
+		const renderers = new Map<string, unknown>();
+		registerSubagent({
+			registerTool: (tool: any) => tools.set(tool.name, tool),
+			registerMessageRenderer: (name: string, renderer: unknown) => renderers.set(name, renderer),
+			registerCommand() {},
+			on() {},
+		} as never);
+		assert.deepEqual([...renderers.keys()], ["subagent_result", "subagent_report", "subagent_paused"]);
+		const id = "bg-collectednotice";
+		const dir = seedWorker(id, runningRecord(id, { state: "done", exitedAt: 2, resultBytes: 5 }));
+		writeFileSync(join(dir, "result.txt"), "EXACT");
+		const call = async (params: { id?: string }) =>
+			tools.get("subagent_collect").execute("collect", params, undefined, undefined, {});
+		const receipt = await call({ id });
+		assert.equal(receipt.details.collectedId, id);
+		assert.equal((await call({})).details.collectedId, null, "a list is not a read receipt");
+		assert.equal((await call({ id: "bg-absentnotice" })).details.collectedId, null);
+		seedWorker("bg-activenotice", runningRecord("bg-activenotice"));
+		assert.equal((await call({ id: "bg-activenotice" })).details.collectedId, null);
+		const tool = { role: "toolResult", toolName: "subagent_collect", ...receipt, isError: false };
+		const notice = { role: "custom", customType: "subagent_result", details: { id }, content: "EXACT" };
+		const other = { ...notice, details: { id: "bg-other" } };
+		const report = { ...notice, customType: "subagent_report" };
+		const messages = [tool, notice, other, report];
+		assert.deepEqual(filterCollectedCompletions(messages as never), [tool, other, report]);
+		assert.deepEqual(
+			filterCollectedCompletions([notice, tool] as never),
+			[tool],
+			"notice-before-collection also deduplicates",
+		);
+		assert.equal(messages.length, 4, "stored history is not mutated");
+		assert.deepEqual(
+			filterCollectedCompletions([notice] as never),
+			[notice],
+			"no hidden acknowledgement crosses context branches",
+		);
+		for (const invalid of [
+			{ ...tool, isError: true },
+			{ ...tool, toolName: "subagent_status" },
+			{ ...tool, details: { collectedId: null } },
+		]) {
+			assert.deepEqual(filterCollectedCompletions([invalid, notice] as never), [invalid, notice]);
+		}
+		assert.equal(readFileSync(join(dir, "result.txt"), "utf8"), "EXACT");
+		const guidance = tools.get("subagent").promptGuidelines.join("\n");
+		assert.match(guidance, /how its result will affect the parent decision/);
+		assert.match(guidance, /immediately use subagent_kill/);
+		assert.match(guidance, /Before a final conclusion/);
+	});
+
+	it("collapses reports to bounded rows and exposes sanitized evidence on expansion", async () => {
+		const pi = await import("@earendil-works/pi-coding-agent");
+		pi.initTheme("dark");
+		const theme = { fg: (_color: string, text: string) => text } as never;
+		const body = `Worker evidence\n\n${"LONG_REPORT_LINE\n".repeat(300)}LAST_EVIDENCE\u202e\u001b[31m`;
+		for (const customType of ["subagent_result", "subagent_report", "subagent_paused"]) {
+			const message = { customType, content: body, display: true, details: { id: "bg-render", state: "done" } };
+			const collapsed = renderWorkerMessage(message as never, { expanded: false, outputPad: 1 }, theme)!;
+			for (const width of [1, 20, 80, 140]) {
+				const rows = collapsed.render(width);
+				assert.equal(rows.length, 2);
+				assert.ok(rows.every((row) => visibleWidth(row) <= width));
+				assert.doesNotMatch(rows.join("\n"), /LONG_REPORT_LINE/);
+			}
+			assert.match(stripTerminalSequences(collapsed.render(120).join("\n")), /unverified.*expand/);
+			const expanded = renderWorkerMessage(message as never, { expanded: true, outputPad: 1 }, theme)!;
+			assert.match(stripTerminalSequences(expanded.render(80).join("\n")), /LAST_EVIDENCE/);
+			assert.doesNotMatch(expanded.render(80).join("\n"), /\u202e/);
+			assert.equal(message.content, body);
+		}
+		const malformed = { customType: "subagent_result", content: body, details: { id: { toString: 1 }, state: {} } };
+		const safe = renderWorkerMessage(malformed as never, { expanded: false, outputPad: 1 }, theme)!;
+		assert.match(safe.render(80).join("\n"), /Subagent unknown/);
 	});
 
 	it("promotes a late authoritative result over a stale terminal state", () => {
@@ -1784,6 +1865,28 @@ describe("status and collection", () => {
 			label: "no submitted result · extension-generated",
 			text: "session setup failed",
 		});
+	});
+
+	for (const [index, state] of ["done", "failed", "cancelled", "no_result_submitted", "owner_lost"].entries()) {
+		it(`inspection keeps ${state} terminal after interruption`, () => {
+			const id = `bg-inspectterminal${index}`;
+			seedWorker(id, runningRecord(id, { state, interruptedAt: 2, exitedAt: 3 }));
+			const view = inspectWorker(id);
+			assert.equal(view.record?.state, state);
+			assert.equal(view.record?.interruptedAt, 2);
+			assert.equal(view.text.split("\n")[1], `state: ${state}`);
+		});
+	}
+
+	it("inspection preserves the active versus interrupted distinction until cancellation", () => {
+		const id = "bg-inspectpause";
+		seedWorker(id, runningRecord(id));
+		assert.equal(inspectWorker(id).text.split("\n")[1], "state: running");
+		seedWorker(id, runningRecord(id, { interruptedAt: 2 }));
+		assert.equal(inspectWorker(id).text.split("\n")[1], "state: running (interrupted and resumable)");
+		finalizeWorker(id, { state: "cancelled" });
+		assert.equal(inspectWorker(id).text.split("\n")[1], "state: cancelled");
+		assert.equal(readWorker(id)?.interruptedAt, 2);
 	});
 
 	it("renders a bounded transcript tail with tool and assistant errors", () => {
@@ -2376,6 +2479,7 @@ describe("compaction veto", () => {
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
 		const sessionId = "sess-missing-maps";
 		registerSubagent({
+			registerMessageRenderer: () => undefined,
 			registerTool: () => undefined,
 			registerCommand: () => undefined,
 			on: (name: string, handler: any) => handlers.set(name, handler),
@@ -2411,14 +2515,19 @@ describe("compaction veto", () => {
 		const tools: Array<Record<string, any>> = [];
 		const handlers = new Map<string, unknown>();
 		const deliveries: unknown[] = [];
+		const deliveryOptions: unknown[] = [];
 		let activeNames = ["initial_tool"];
 		registerSubagent({
+			registerMessageRenderer: () => undefined,
 			registerTool: (tool: { name: string }) => tools.push(tool),
 			registerCommand: () => undefined,
 			on: (event: string, handler: unknown) => handlers.set(event, handler),
 			getActiveTools: () => [...activeNames],
 			getAllTools: () => [],
-			sendMessage: (message: unknown) => deliveries.push(message),
+			sendMessage: (message: unknown, options: unknown) => {
+				deliveries.push(message);
+				deliveryOptions.push(options);
+			},
 			appendEntry: () => undefined,
 		} as never);
 		assert.ok(handlers.has("session_before_compact"));
@@ -2454,6 +2563,14 @@ describe("compaction veto", () => {
 		assert.equal(notifyCompletion(readWorker(id) as never), true);
 		assert.equal(deliveries.length, 1);
 		assert.ok(readWorker(id)?.notificationCallReturnedAt);
+		const pausedId = "bg-nestedpause";
+		seedWorker(pausedId, runningRecord(pausedId, { ownerSession: sessionId, interruptedAt: Date.now() }));
+		notifyLimitPause(readWorker(pausedId)!, "deadline", "deadline reached");
+		assert.deepEqual(deliveryOptions[1], { deliverAs: "steer", triggerTurn: true });
+		assert.equal((deliveries[1] as { customType: string }).customType, "subagent_paused");
+		finalizeWorker(pausedId, { state: "cancelled" });
+		notifyLimitPause(readWorker(pausedId)!, "deadline", "late pause");
+		assert.equal(deliveries.length, 2, "a terminal worker has no late pause");
 
 		await (handlers.get("session_shutdown") as (event: unknown, ctx: unknown) => Promise<void>)({}, ctx);
 		assert.equal(sharedWorkerState.workerSessionIds.has(sessionId), false);
@@ -2470,7 +2587,7 @@ describe("compaction veto", () => {
 		);
 		writeFileSync(join(afterDir, "result.txt"), "later", "utf-8");
 		assert.equal(notifyCompletion(readWorker(afterId) as never), false);
-		assert.equal(deliveries.length, 1);
+		assert.equal(deliveries.length, 2);
 	});
 
 	it("primary and worker sessions retain separate status owners", async () => {
@@ -2480,6 +2597,7 @@ describe("compaction veto", () => {
 		const workerStatus: unknown[][] = [];
 		const active = ["primary_tool"];
 		registerSubagent({
+			registerMessageRenderer: () => undefined,
 			registerTool: (tool: { name: string }) => {
 				if (tool.name === "subagent") dispatchTool = tool;
 			},
@@ -4118,6 +4236,7 @@ describe("registered tool surface", () => {
 	it("has no blocking wait parameter and includes terminal continuation", async () => {
 		const tools: Array<Record<string, any>> = [];
 		registerSubagent({
+			registerMessageRenderer: () => undefined,
 			registerTool: (tool: { name: string; parameters: any; description: string }) => tools.push(tool),
 			registerCommand: () => undefined,
 			on: () => undefined,
@@ -4252,6 +4371,7 @@ describe("registered tool surface", () => {
 		const entries: Array<{ customType: string; data: unknown }> = [];
 		const notifications: string[] = [];
 		registerSubagent({
+			registerMessageRenderer: () => undefined,
 			registerTool: () => undefined,
 			registerCommand: (name: string, value: RegisteredCommand) => {
 				commands.set(name, value);

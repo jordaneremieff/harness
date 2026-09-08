@@ -253,7 +253,7 @@ trust resolution, resource loading, session construction, and extension start
 and then returns the worker's id; the model run happens in the background.
 Setup is awaited, so an extension whose start handlers never settle delays the
 dispatch call, as it would delay any session start. An accepted worker remains
-steerable and reports completion through a `subagent_result` follow-up.
+steerable and reports completion through a `subagent_result` steering message.
 
 An omitted `tools` array and an empty one are different: `tools: []` is a
 declared, empty allowlist, so the worker gets `submit_result` and nothing else.
@@ -265,6 +265,26 @@ it never expands the worker's active allowlist: pi filters registered
 definitions down to exactly the declared surface, so a restricted worker sees
 no subagent tools as callable. If the source cannot be resolved, the worker
 runs without the veto and the dispatch reports that under `worker setup:`.
+
+### Useful delegation and closure
+
+A dispatch names an unresolved question, how its result affects the parent's
+decision, and what ends the task. The parent keeps its own work distinct from
+that question unless independent verification or different evidence requires
+overlap. Each submitted result remains self-contained.
+
+When evidence settles a task or changes its premise, the parent immediately
+cancels work with no remaining use through `subagent_kill`, or redirects it to
+a specific remaining question through `subagent_steer`. Uncertain work needs
+inspection before that decision. Before a final conclusion, the parent
+integrates useful results and resolves every live worker. An interim reply
+does not close the task.
+
+These are model-facing operating instructions, not automatic task judgments.
+The extension does not infer completion from parent prose, cancel on parent
+idle, or use a deadline as a substitute for the parent's decision. Controlled
+session tests establish that the controls stop active work; they do not
+establish that every model follows the instructions.
 
 ## Worker context
 
@@ -492,19 +512,29 @@ alone establishes general autonomous task reliability.
   sibling call can be dropped on abort, leaving an unanswered toolCall in the
   worker's session file.
 - Completion is persisted before any notification. While the owning session is
-  alive, a natural completion or failure delivers a `subagent_result` message
-  to that session (follow-up; triggers a turn when idle). For a grandchild, the
-  owning worker receives the message, resumes, and can collect the result.
-  Explicit cancellation returns its outcome through
-  the cancel action and does not enqueue a duplicate follow-up.
+  alive, a natural completion or failure delivers a `subagent_result` steering
+  message after the current tool batch and before the next model call. An idle
+  owner receives a new turn. The same delivery contract applies to nested
+  owners. Explicit cancellation returns its outcome through the cancel action
+  without a duplicate completion message.
   `notificationCallReturnedAt` records only that the owning session's
-  synchronous `sendMessage()` call returned. Pi observes asynchronous
-  delivery failures internally, so the marker proves neither queue acceptance
-  nor later processing. A top-level owner displays the message when it goes
-  idle. A worker owner processes it as a follow-up turn when it goes idle.
-  `subagent_status` and `subagent_collect` do not cancel the delivery attempt.
-  If Pi processes it later, the result can repeat at the presentation or
-  follow-up level, but the store still has one result.
+  synchronous `sendMessage()` call returned. It proves neither asynchronous
+  acceptance nor later processing.
+- Exact-id `subagent_collect` results carry a `collectedId` read receipt. The
+  context hook omits matching completion text when that successful tool result
+  is present in the same model context, regardless of their order. No-id lists,
+  previews, missing workers, running workers, and tool errors do not acknowledge
+  a terminal read. This is model-context deduplication, not model understanding or
+  result acceptance. Pi retains the original notification and tool result in
+  session history; the extension neither retracts Pi queue entries nor creates
+  a separate receipt store. If branch navigation or compaction removes the
+  collection from model context, it no longer suppresses a retained completion.
+- Completion, interim-report, and pause messages use Pi's native expansion state.
+  The default collapsed view occupies bounded rows with worker identity, message
+  kind, unverified status, and the configured expansion-key hint. `Ctrl+O` is
+  Pi's default key. Expansion exposes the bounded, sanitized original message;
+  collection and the dashboard preserve access to retained evidence. This
+  changes presentation only, not result bytes or authority.
 - The store resyncs cumulative usage from the session's own statistics whenever
   a message ends, a compaction ends, or a branch summary finishes, so a
   replacement session sees real numbers even if this one dies mid-flight.
@@ -585,7 +615,7 @@ fresh allowance instead of re-breaching immediately.
 
 On breach the worker takes the ordinary interrupt path — the run stops, the
 session stays alive, resumable, with its transcript intact — and the parent
-receives a `subagent_paused` message naming the limit, the elapsed time, the
+receives a `subagent_paused` steering message naming the limit, the elapsed time, the
 spend, and the last tool. The record shows `interrupted (deadline 30m reached)`
 in status. The parent then decides: inspect it with `subagent_inspect`, resume
 it with `subagent_steer` (a fresh allowance), or end it with `subagent_kill`. A
@@ -614,7 +644,7 @@ The same contracts apply at every depth:
   session cannot close another worker session's resources, even when both use
   the same module instance.
 - A completed grandchild sends `subagent_result` to the worker that dispatched
-  it. That worker receives a follow-up turn and can call `subagent_collect`.
+  it. That worker receives steering delivery or an idle turn and can call `subagent_collect`.
   Owner shutdown removes the delivery API before aborting grandchildren, so an
   `owner_lost` settlement never starts a new turn in a session being disposed.
 
@@ -673,6 +703,9 @@ complete archive or proof of later state. Every worker-controlled line has a vis
 direction controls are removed, so worker text cannot imitate the renderer's
 record headings. Redacted reasoning carries an explicit `REDACTED` label.
 Worker-authored content remains marked as unverified data, not instructions.
+Inspection labels a worker `interrupted and resumable` only while its state is
+`running` and it has an interruption timestamp. Terminal records retain that
+timestamp as historical evidence without the resumability label.
 
 A worker runs as a real `AgentSession` inside the dispatching session's process.
 It writes an ordinary pi session file (`worker.json` records `sessionFile` and

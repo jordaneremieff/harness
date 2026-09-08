@@ -4,7 +4,7 @@
  * Operator-visible behavior:
  *   - `subagent` dispatches one task or a `tasks[]` batch. Every worker runs
  *     in the background and may declare `model`, `thinking`, `tools`, and
- *     `cwd`; completion returns through a `subagent_result` follow-up.
+ *     `cwd`; completion returns through a `subagent_result` steering message.
  *   - One optional top-level `sharedContext` snapshot (16KiB of UTF-8 at most)
  *     is delivered verbatim to every worker of that dispatch, ahead of each
  *     worker's own task. The extension records a snapshot identifier and its
@@ -78,6 +78,7 @@ import {
 	type AgentSessionServices,
 	type AgentToolUpdateCallback,
 	type CreateAgentSessionRuntimeFactory,
+	type ContextEvent,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
@@ -87,9 +88,11 @@ import {
 	type ExtensionCommandContextActions,
 	type ExtensionContext,
 	getAgentDir,
+	getMarkdownTheme,
 	hasTrustRequiringProjectResources,
 	keyHint,
 	type LoadExtensionsResult,
+	type MessageRenderer,
 	ModelRuntime,
 	type ProjectTrustContext,
 	type ProjectTrustEvent,
@@ -101,7 +104,7 @@ import {
 	SettingsManager,
 	type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Markdown, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { collaborationFamilyChain, collaborationFamilyId, COLLABORATION_LIMITS, createCollaborationReader } from "./collaboration.ts";
 import { stripTerminalSequences } from "./console.ts";
@@ -1268,7 +1271,7 @@ export function notifyCompletion(
 			// A tool that failed during the run is invisible in the deliverable, so
 			// the parent gets it here: a blocked tool changes how the result reads.
 			(failedTools ? `\nTool failures: ${failedTools}` : "");
-		// Provenance is load-bearing. This arrives as a follow-up with
+		// Provenance is load-bearing. This arrives as a steering message with
 		// triggerTurn:true, which puts worker-authored text in the position the
 		// operator's own words occupy. The 50KB cap bounds size, not authority, so
 		// the boundary is marked the same way collectWorker flags unprotocolled
@@ -1296,7 +1299,7 @@ export function notifyCompletion(
 						resultPath: hasResult ? files.result : null,
 					},
 				},
-				{ deliverAs: "followUp", triggerTurn: true },
+				{ deliverAs: "steer", triggerTurn: true },
 			);
 			record.notificationCallReturnedAt = Date.now();
 			writeWorker(record);
@@ -1310,6 +1313,65 @@ export function notifyCompletion(
 		return false;
 	}
 }
+
+/** Exact collection replaces duplicate completion text only in the current model context.
+ * Pi retains the original messages; no receipt store or queue mutation is needed. */
+export function filterCollectedCompletions(messages: ContextEvent["messages"]): ContextEvent["messages"] {
+	const collected = new Set<string>();
+	for (const message of messages) {
+		if (message.role !== "toolResult" || message.toolName !== "subagent_collect" || message.isError) continue;
+		const details = message.details;
+		if (isRecord(details) && typeof details.collectedId === "string") collected.add(details.collectedId);
+	}
+	if (collected.size === 0) return messages;
+	return messages.filter((message) => {
+		if (message.role !== "custom" || message.customType !== "subagent_result") return true;
+		const details = message.details;
+		return !(isRecord(details) && typeof details.id === "string" && collected.has(details.id));
+	});
+}
+
+/** Native expansion controls presentation only; the retained evidence stays unchanged. */
+export const renderWorkerMessage: MessageRenderer = (message, { expanded, outputPad }, theme) => {
+	const details = message.details;
+	const id = inspectInline(isRecord(details) ? asString(details.id, "unknown") : "unknown", 128);
+	const state = inspectInline(isRecord(details) ? asString(details.state) : "", 64);
+	const kind =
+		message.customType === "subagent_result"
+			? `result ${state}`
+			: message.customType === "subagent_paused"
+				? "paused"
+				: "interim report";
+	const heading = `Subagent ${id} · ${kind.trim()}`;
+	if (!expanded) {
+		return {
+			render(width) {
+				const pad = " ".repeat(Math.max(0, Math.min(outputPad, width - 1)));
+				return [
+					truncateToWidth(`${pad}${theme.fg("accent", heading)}`, width),
+					truncateToWidth(
+						`${pad}${theme.fg("muted", `Worker evidence · unverified · ${keyHint("app.tools.expand", "expand")}`)}`,
+						width,
+					),
+				];
+			},
+			invalidate() {},
+		};
+	}
+	const text =
+		typeof message.content === "string"
+			? message.content
+			: message.content
+					.filter((part) => part.type === "text")
+					.map((part) => part.text)
+					.join("\n");
+	return new Markdown(
+		capUtf8(capLines(inspectPlainText(text), REPORT_ENVELOPE_LINE_CAP).text).text,
+		outputPad,
+		0,
+		getMarkdownTheme(),
+	);
+};
 
 const sessionApis = new Map<string, ExtensionAPI>();
 
@@ -2010,7 +2072,7 @@ export function limitPauseStillHolds(record: Pick<WorkerRecord, "state" | "inter
 	return Boolean(record && record.state === "running" && record.interruptedAt);
 }
 
-function notifyLimitPause(record: WorkerRecord, breach: "deadline" | "budget", reason: string): void {
+export function notifyLimitPause(record: WorkerRecord, breach: "deadline" | "budget", reason: string): void {
 	try {
 		if (!limitPauseStillHolds(readWorker(record.id))) return;
 		const elapsed = Math.round((Date.now() - record.startedAt) / 1000);
@@ -2042,7 +2104,7 @@ function notifyLimitPause(record: WorkerRecord, breach: "deadline" | "budget", r
 					sessionFile: record.sessionFile,
 				},
 			},
-			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "steer", triggerTurn: true },
 		);
 	} catch {
 		// Best-effort: the pause itself is persisted on the record.
@@ -4100,7 +4162,7 @@ export function inspectWorker(id: string): InspectView {
 	const usage = record.usage;
 	const lines = [
 		`Worker ${inspectInline(record.id, 256)}`,
-		`state: ${record.state}${record.interruptedAt ? " (interrupted and resumable)" : ""}`,
+		`state: ${record.state}${record.state === "running" && record.interruptedAt ? " (interrupted and resumable)" : ""}`,
 		`model: ${inspectInline(record.model)}`,
 		inspectInline(thinkingLabel(record), 256),
 		`task: ${task || "(empty)"}`,
@@ -4400,7 +4462,7 @@ const subagentTool = defineTool({
 	description: [
 		"Dispatch isolated Pi worker sessions for independent work: verification, investigation, review, research, drafting, or bounded implementation.",
 		"Choose exactly one form. Single mode: pass `task` (plus optional model/thinking/tools/cwd). Batch mode: pass a non-empty `tasks` array for parallel dispatch; each task may carry its own fields, otherwise it inherits the top-level defaults.",
-		"Every worker runs in the BACKGROUND: the call completes worker setup and returns stable worker ids, then the model run proceeds in the background under this session's control; a subagent_result message arrives when a worker settles without explicit cancellation (follow-up delivery, triggers a turn when idle). Explicit cancellation is acknowledged by its control response and adds no duplicate follow-up. submit_result stores at most 50KB and marks larger submissions [truncated].",
+		"Every worker runs in the BACKGROUND: the call completes worker setup and returns stable worker ids, then the model run proceeds in the background under this session's control; a subagent_result message arrives when a worker settles without explicit cancellation (steering delivery before the next model call, triggers a turn when idle). Explicit cancellation is acknowledged by its control response and adds no duplicate follow-up. submit_result stores at most 50KB and marks larger submissions [truncated].",
 		"Model: explicit `model` (bare id or provider/id) is checked against registry availability and configured auth only. Without an explicit or profile model, the worker inherits the parent's current model. Extension-registered providers are copied into the worker through Pi's public registration facade. Persisted and environment auth resolve; a parent-only runtime API-key override does not transfer. Without an explicit or profile cwd, the worker inherits the session cwd.",
 		"Thinking: an explicit level the model cannot run fails that task and names the levels the model supports. Without an explicit or profile level, the worker inherits the parent's level, is clamped to the model, and reports the effective level with the requested one.",
 		"Profile: optional JSON file path at top level or per task. A task profile replaces the top-level profile. Explicit task fields beat explicit top-level fields, then selected profile defaults, then ordinary session defaults. Profile model/thinking/cwd and source pointers are snapshotted; profiles never select tools or confer authority. Workers also carry a presentation label: a profile `name` or a task-derived fallback.",
@@ -4415,8 +4477,10 @@ const subagentTool = defineTool({
 		"Dispatch isolated Pi worker sessions (always background, tasks[] for parallel). Results steer back as subagent_result; steer/status/interrupt/kill/continue/collect tools manage workers.",
 	promptGuidelines: [
 		"Use subagent when the user says 'have a subagent', 'subagent verify', 'double-check', 'have another model check', 'dispatch', 'probe', or asks for independent verification or parallel investigation.",
-		"Write every dispatch as a four-part contract: objective (what done looks like), output format (what submit_result must contain), tool/source guidance (paths, keys, queries to start from), and task boundaries (what is out of scope). The worker only sees what it submits — state that the final submission must carry ALL information needed.",
-		"Every worker is background and steerable. Never poll with bash sleep; continue useful work or end your turn. Natural completion and failure arrive as subagent_result; explicit cancellation reports through its control response.",
+		"Write every subagent dispatch as a four-part contract: objective, output format, source guidance, and task boundaries. Name the unresolved question, how its result will affect the parent decision, and what ends the task. For later collection, submit_result must carry ALL information needed; interim exchanges do not replace it.",
+		"Keep subagent work distinct from your own work. Do not solve the same assigned question in parallel unless the operator requested independent verification or different evidence must decide it.",
+		"When evidence settles a subagent task or changes its premise, immediately use subagent_kill for work with no remaining use, or subagent_steer for a specific remaining question. Inspect uncertain work before that decision. Do not leave superseded workers active until their deadline.",
+		"Before a final conclusion, integrate needed subagent results and resolve live workers: await useful work, redirect changed work, or cancel superseded work. An interim reply is not task closure. Never poll with sleeps; completion messages arrive automatically.",
 		"For multiple independent checks, use the tasks array (parallel) instead of serial dispatches.",
 		"Provision context as pointers (file paths, URLs, query strings); the worker fetches content itself with its own tools.",
 		"If a worker's tool fails or its declared authority does not work, that is a bug to surface to the operator — do not route around it with narrower tool lists.",
@@ -4904,7 +4968,7 @@ const collectTool = defineTool({
 		"Return terminal subagent results from the durable store. Works in any session: the dispatching parent does not need to be alive.",
 		"With id: returns the stored result of that worker (up to 50KB; larger submissions carry a [truncated] marker). Every terminal worker without a submitted result points to its retained session transcript for inspection before continuation. For state no_result_submitted, retained final text is FLAGGED as unprotocolled — it is NOT the result.",
 		"Without id: lists recent terminal workers with result sizes and previews.",
-		"Collecting never deletes anything; for a worker whose owning session died, collecting may finalize its stored record (state transition) before returning it.",
+		"Exact-id collection acknowledges that terminal result in the current model context: duplicate completion text is omitted while the collection remains present. Lists, previews, and failed reads do not acknowledge results. Stored evidence is unchanged. Collecting may finalize a dead owner's record before returning it.",
 	].join(" "),
 	promptSnippet: "Collect terminal subagent results from the durable store (any session).",
 	parameters: Type.Object({ id: Type.Optional(Type.String({ minLength: 1 })) }),
@@ -4922,6 +4986,7 @@ const collectTool = defineTool({
 		return {
 			content: [{ type: "text", text: collected.text }],
 			details: {
+				collectedId: params.id && collected.workers.some((worker) => worker.id === params.id) ? params.id : null,
 				workers: collected.workers.map((w) => ({
 					id: w.id,
 					state: w.state,
@@ -5100,6 +5165,9 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(peersTool);
 	pi.registerTool(peerMessageTool);
 	pi.registerTool(peerWaitTool);
+	pi.registerMessageRenderer("subagent_result", renderWorkerMessage);
+	pi.registerMessageRenderer("subagent_report", renderWorkerMessage);
+	pi.registerMessageRenderer("subagent_paused", renderWorkerMessage);
 
 	pi.registerCommand("subagent", {
 		description:
@@ -5252,6 +5320,7 @@ export default function (pi: ExtensionAPI) {
 				ids.push(details.id);
 		}
 		sharedWorkerState.peerHub.observeContext(ctx.sessionManager.getSessionId(), ids);
+		return { messages: filterCollectedCompletions(event.messages) };
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {

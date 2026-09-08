@@ -146,6 +146,31 @@ refresh the separately dated publication, backend, or packaging claims.
 [collaboration-watch]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/agent/src/harness/runtime/harness.ts#L305-L307
 [collaboration-entries]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/agent/src/harness/session/types.ts#L520-L538
 
+## Ordinary-session completion delivery
+
+Verified 2026-09-08 against installed Pi 0.85.1
+`dist/core/agent-session.js`, `dist/core/extensions/types.d.ts`,
+`dist/modes/interactive/components/custom-message.js`, and
+`dist/modes/interactive/interactive-mode.js`. This check covers the ordinary
+message adapter, not the separately dated durable-runtime program claims.
+
+- `sendMessage` with steering delivery queues a custom message before the next
+  model call after tool results. Follow-up delivery waits until tool work ends.
+  An idle-turn trigger starts a response when the session is idle. The public
+  extension API does not expose per-message queue retraction.
+- A context hook can omit completion messages when an exact collection result
+  already supplies that evidence in the same context. This changes provider
+  input, not the retained session tree, and does not prove model acceptance.
+- `registerMessageRenderer` receives native expansion state and output padding.
+  `CustomMessageComponent` starts collapsed; the interactive host applies its
+  tool-expansion state and configured keybinding. The default renderer displays
+  the full body regardless of expansion. The subagent renderer supplies bounded
+  collapsed rows and exposes message evidence on expansion.
+- Keep delivery on these ordinary-session surfaces. The report view requires
+  no durable lane adoption, additional inbox, receipt journal, or replacement
+  terminal renderer. Replace this adapter when the worker host changes its
+  message contract, while preserving result access and owner-controlled work.
+
 ## Names and defining contracts
 
 The normative specification is [`packages/agent/docs/harness.md`][spec].
