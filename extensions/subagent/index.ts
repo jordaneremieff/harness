@@ -103,6 +103,7 @@ import {
 	sessionEntryToContextMessages,
 	SettingsManager,
 	type ToolInfo,
+	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Markdown, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -110,9 +111,20 @@ import { collaborationFamilyChain, collaborationFamilyId, COLLABORATION_LIMITS, 
 import { stripTerminalSequences } from "./console.ts";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
 import { type PeerEnvelope, PeerHub } from "./peers.ts";
+import { openProfilePanel } from "./profile-panel.ts";
 import {
 	applyProfile,
+	createProfile,
+	deleteProfile,
+	listProfiles,
 	loadProfile,
+	type ProfileEntry,
+	profileStorePath,
+	readProfile,
+	resolveProfileSelector,
+	scanProfileNames,
+	setProfileEnabled,
+	updateProfile,
 	profileMessage,
 	profileSnapshot,
 	type ProfileSnapshot,
@@ -2931,8 +2943,9 @@ export async function dispatchWorker(
 			customTools: [submitResultTool(files.result, endRun, () => live.session?.sessionManager.getSessionId() ?? "")],
 		});
 		try {
-			if (constructedSessionIds.size === 0 && task.profile?.grounding.length) {
-				await created.session.sendCustomMessage(profileMessage(task.profile), { triggerTurn: false });
+			const profile = task.profile ?? continuation?.profile;
+			if (profile && !hasProfileContext(created.session.messages, profile)) {
+				await created.session.sendCustomMessage(profileMessage(profile), { triggerTurn: false });
 			}
 		} catch (error) {
 			created.session.dispose();
@@ -4388,7 +4401,133 @@ const profileSchema = Type.String({
 	minLength: 1,
 	maxLength: 4096,
 	description:
-		"Explicit JSON profile path, relative to the dispatching session cwd. Defaults and source pointers only; no tool restrictions or authority.",
+		"Managed profile name or explicit JSON path relative to the dispatching session cwd (./name for a bare filename). Defaults, instructions, and pointers; disabled profiles refuse dispatch.",
+});
+
+const managedProfileNameSchema = Type.String({ minLength: 1, maxLength: 64, pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" });
+const profileDefinitionSchema = Type.Object({
+	name: Type.Optional(managedProfileNameSchema),
+	model: Type.Optional(modelSchema),
+	thinking: Type.Optional(thinkingSchema),
+	cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+	instructions: Type.Optional(Type.String({ maxLength: 16 * 1024, description: "Optional reusable instructions. Blank omits them; the complete profile and snapshot must each fit 16KiB of UTF-8." })),
+	grounding: Type.Optional(Type.Array(Type.Object({
+		name: Type.String({ minLength: 1, maxLength: 160 }),
+		path: Type.String({ minLength: 1, maxLength: 4096 }),
+	}, { additionalProperties: false }), { maxItems: 16 })),
+	enabled: Type.Optional(Type.Boolean({ default: true })),
+}, { additionalProperties: false });
+const profileActions = ["list", "read", "create", "update", "remove", "enable", "disable"] as const;
+const profilesParameters = Type.Object({
+	action: StringEnum(profileActions),
+	name: Type.Optional(managedProfileNameSchema),
+	definition: Type.Optional(profileDefinitionSchema),
+	expectedSha256: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$", description: "Digest from read; required for update, remove, enable, and disable." })),
+}, { additionalProperties: false });
+
+function profilePanelDependencies(cwd: string) {
+	return {
+		list: listProfiles,
+		read: readProfile,
+		create: (name: string, definition: unknown) => createProfile(name, definition, cwd),
+		update: (name: string, definition: unknown, expectedSha256: string) => updateProfile(name, definition, cwd, expectedSha256),
+		remove: deleteProfile,
+		setEnabled: setProfileEnabled,
+	};
+}
+
+function hasProfileContext(messages: ContextEvent["messages"], profile: ProfileSnapshot): boolean {
+	const expected = profileMessage(profile);
+	return messages.some((message) => {
+		if (message.role !== "custom" || message.customType !== expected.customType || message.content !== expected.content) return false;
+		const details = message.details;
+		if (!isRecord(details) || !isRecord(details.profile)) return false;
+		return details.profile.path === profile.path && details.profile.sha256 === profile.sha256;
+	});
+}
+
+/** Restore selected reusable context when effective history no longer carries its exact snapshot. */
+export function ensureProfileContext(messages: ContextEvent["messages"], profile?: ProfileSnapshot): ContextEvent["messages"] {
+	if (!profile || hasProfileContext(messages, profile)) return messages;
+	return [{ role: "custom", ...profileMessage(profile), timestamp: Date.now() }, ...messages];
+}
+
+function profileEntrySummary(entry: ProfileEntry) {
+	const identity = { ok: entry.ok, name: entry.name, path: inspectInline(entry.path, 512), sha256: entry.sha256 ?? null };
+	return entry.ok ? {
+		...identity, enabled: entry.enabled, model: entry.model ? inspectInline(entry.model, 128) : null,
+		thinking: entry.thinking ?? null, cwd: entry.cwd ? inspectInline(entry.cwd, 256) : null,
+		groundingCount: entry.grounding.length, instructionsBytes: Buffer.byteLength(entry.instructions ?? "", "utf8"),
+	} : { ...identity, error: inspectInline(entry.error, 256) };
+}
+
+function profileEntryLine(entry: ProfileEntry): string {
+	return `${entry.name} · ${!entry.ok ? `unreadable · ${inspectInline(entry.error, 256)}` : `${entry.enabled ? "enabled" : "disabled"} · model:${inspectInline(entry.model ?? "parent", 128)}`}`;
+}
+
+function profileListView(filter?: string) {
+	const listing = listProfiles();
+	const query = inspectInline(filter ?? "", 256).toLowerCase();
+	const entries: ReturnType<typeof profileEntrySummary>[] = [];
+	const lines: string[] = [];
+	let truncated = listing.truncated;
+	let bytes = 0;
+	for (const entry of listing.entries) {
+		const line = profileEntryLine(entry);
+		if (query && !entry.name.toLowerCase().includes(query)) continue;
+		const summary = profileEntrySummary(entry);
+		// Bound the complete transport, including repeated text and JSON escaping.
+		const size = Buffer.byteLength(JSON.stringify(summary)) + Buffer.byteLength(JSON.stringify(line)) * 2 + 8;
+		if (bytes + size > 40 * 1024) { truncated = true; break; }
+		bytes += size;
+		entries.push(summary);
+		lines.push(line);
+	}
+	const text = [lines.length ? lines.join("\n") : "No managed profiles match.",
+		...(truncated ? ["[Profile list truncated; read a profile by exact name.]"] : [])].join("\n");
+	return { filter: query || null, text, entries, truncated };
+}
+
+const profilesTool = defineTool({
+	name: "subagent_profiles",
+	label: "Subagent Profiles",
+	description: "Manage reusable dispatch defaults, instructions, and source pointers, never tools or authority. Actions: list, read, create, update, remove, enable, disable. Create requires a new name; update replaces the full definition. Mutations except create require expectedSha256 from read. Relative definition paths use session cwd. Lists are bounded summaries with faults and truncation; read returns one full record. Changes never affect existing worker snapshots.",
+	promptSnippet: "List, read, create, replace, remove, enable, or disable managed dispatch profiles.",
+	parameters: profilesParameters,
+	executionMode: "sequential",
+	async execute(_id, params, signal, _update, ctx) {
+		signal?.throwIfAborted();
+		if (!params || typeof params !== "object" || Array.isArray(params) ||
+			Object.keys(params).some((key) => !["action", "name", "definition", "expectedSha256"].includes(key)) ||
+			!profileActions.includes(params.action)) throw new Error("Invalid profile action or fields.");
+		const { action, name, definition, expectedSha256 } = params;
+		const replacement = action === "create" || action === "update";
+		const guarded = ["update", "remove", "enable", "disable"].includes(action);
+		if (action === "list") {
+			if (name !== undefined || definition !== undefined || expectedSha256 !== undefined) throw new Error("List accepts only action.");
+			const view = profileListView();
+			return { content: [{ type: "text", text: view.text }], details: view };
+		}
+		if (typeof name !== "string" || name.length > 64 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) throw new Error("Expected a lowercase kebab-case profile name, at most 64 characters.");
+		if (replacement ? !definition || typeof definition !== "object" || Array.isArray(definition) : definition !== undefined) throw new Error("Only create and update require a complete definition.");
+		if (guarded ? typeof expectedSha256 !== "string" || !/^[a-f0-9]{64}$/.test(expectedSha256) : expectedSha256 !== undefined) throw new Error("Update, remove, enable, and disable require expectedSha256 from read; other actions omit it.");
+		const deps = profilePanelDependencies(ctx.cwd);
+		if (action === "read") {
+			const entry = deps.read(name);
+			return { content: [{ type: "text", text: JSON.stringify({ action, entry }) }], details: { action, entry } };
+		}
+		return withFileMutationQueue(profileStorePath(name), async () => {
+			signal?.throwIfAborted();
+			let entry: ProfileEntry | undefined;
+			switch (action) {
+				case "create": entry = deps.create(name, definition); break;
+				case "update": entry = deps.update(name, definition, expectedSha256!); break;
+				case "remove": deps.remove(name, expectedSha256!); break;
+				case "enable": case "disable": entry = deps.setEnabled(name, action === "enable", expectedSha256!); break;
+			}
+			return { content: [{ type: "text" as const, text: JSON.stringify({ action, name, sha256: entry?.sha256 ?? null, entry: entry ?? null }) }], details: { action, name, entry: entry ?? null } };
+		});
+	},
 });
 
 const taskSchema = Type.Object({
@@ -4465,7 +4604,7 @@ const subagentTool = defineTool({
 		"Every worker runs in the BACKGROUND: the call completes worker setup and returns stable worker ids, then the model run proceeds in the background under this session's control; a subagent_result message arrives when a worker settles without explicit cancellation (steering delivery before the next model call, triggers a turn when idle). Explicit cancellation is acknowledged by its control response and adds no duplicate follow-up. submit_result stores at most 50KB and marks larger submissions [truncated].",
 		"Model: explicit `model` (bare id or provider/id) is checked against registry availability and configured auth only. Without an explicit or profile model, the worker inherits the parent's current model. Extension-registered providers are copied into the worker through Pi's public registration facade. Persisted and environment auth resolve; a parent-only runtime API-key override does not transfer. Without an explicit or profile cwd, the worker inherits the session cwd.",
 		"Thinking: an explicit level the model cannot run fails that task and names the levels the model supports. Without an explicit or profile level, the worker inherits the parent's level, is clamped to the model, and reports the effective level with the requested one.",
-		"Profile: optional JSON file path at top level or per task. A task profile replaces the top-level profile. Explicit task fields beat explicit top-level fields, then selected profile defaults, then ordinary session defaults. Profile model/thinking/cwd and source pointers are snapshotted; profiles never select tools or confer authority. Workers also carry a presentation label: a profile `name` or a task-derived fallback.",
+		"Profile: optional managed name or explicit JSON file path at top level or per task. Use subagent_profiles to manage names. Disabled profiles refuse the whole batch before setup. A task profile replaces the top-level profile. Explicit task fields beat explicit top-level fields, then selected profile defaults, then ordinary session defaults. Profile model/thinking/cwd, instructions, and source pointers are snapshotted; profiles never select tools or confer authority. Workers also carry a presentation label: a profile `name` or a task-derived fallback.",
 		"Tools: omitted `tools` reproduces this session's active tool surface exactly. Built-ins are rebuilt for the worker cwd, and extension registration files are reloaded from their registered source paths. The constructed surface is checked before provider work. Provided `tools` restricts the worker to exactly that set plus the submit_result protocol tool; a tool name that is not in the current registry fails the dispatch. `tools: []` is a declared EMPTY allowlist, not an omission: it yields a worker that has submit_result and nothing else.",
 		"Context: a worker loads what a session started in its `cwd` loads — that directory's settings, extensions, skills, prompt templates, and context files (AGENTS.md), under the same project-trust resolution. A worker runs the normal extension lifecycle, so an extension tool that opens its resources at session_start works inside a worker; a tool that still fails is reported with its failure count when the worker finishes.",
 		"Live workers can be steered (subagent_steer), interrupted and resumed (subagent_interrupt), cancelled (subagent_kill), oriented (subagent_status), and content-inspected (subagent_inspect). A terminal worker with a retained session can continue as a new linked worker (subagent_continue); its record, result, and transcript remain unchanged. Results persist in the store and are collectable later or from a replacement session (subagent_collect).",
@@ -4607,7 +4746,7 @@ const subagentTool = defineTool({
 			const selected = task.profile ?? params.profile;
 			let profile: ProfileSnapshot | undefined;
 			if (selected !== undefined) {
-				const path = resolve(ctx.cwd, selected);
+				const path = resolveProfileSelector(selected, ctx.cwd);
 				profile = profiles.get(path);
 				if (!profile) {
 					profile = loadProfile(selected, ctx.cwd);
@@ -5152,6 +5291,7 @@ export default function (pi: ExtensionAPI) {
 	// allowlist filters the callable tools. Session identity in session_start
 	// distinguishes workers from primary sessions without a construction race.
 	pi.registerTool(subagentTool);
+	pi.registerTool(profilesTool);
 	pi.registerTool(statusTool);
 	pi.registerTool(inspectTool);
 	pi.registerTool(steerTool);
@@ -5171,8 +5311,41 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("subagent", {
 		description:
-			"Worker overview with direct-child status, all-session scope, and worker consoles. Separate communication mode shows peer and manager conversations with explicit history and source details. RPC and JSON publish structured status; print emits filtered text. Optional argument: initial filter.",
+			"Worker dashboard with an optional filter. Use profiles [filter] to manage reusable dispatch profiles. RPC and JSON publish structured lists; print emits text.",
+		getArgumentCompletions: (prefix) => {
+			if ("profiles".startsWith(prefix)) return [{ value: "profiles", label: "profiles", description: "Manage dispatch profiles" }];
+			if (!prefix.startsWith("profiles ")) return null;
+			const filter = prefix.slice("profiles ".length).trim().toLowerCase();
+			try {
+				// Names first, then only the filtered files: typing must not open the whole store.
+				const items = scanProfileNames().names.sort().filter((name) => name.startsWith(filter)).slice(0, 64).map((name) => {
+					const entry = readProfile(name);
+					return {
+						value: `profiles ${name}`,
+						label: name,
+						description: !entry.ok ? "unreadable" : entry.enabled ? "enabled" : "disabled",
+					};
+				});
+				return items.length ? items : null;
+			} catch {
+				// Completions are optional; an unavailable store must never break typing.
+				return null;
+			}
+		},
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
+			const profilesArgument = /^profiles(?:\s+(.*))?$/s.exec(args.trim());
+			if (profilesArgument) {
+				const filter = profilesArgument[1]?.trim() || undefined;
+				if (ctx.mode === "tui") {
+					await openProfilePanel(ctx, profilePanelDependencies(ctx.cwd), filter);
+					return;
+				}
+				const view = profileListView(filter);
+				if (ctx.mode === "rpc") ctx.ui.notify(view.text, "info");
+				if (ctx.mode === "rpc" || ctx.mode === "json") pi.appendEntry("subagent_profiles", view);
+				else process.stdout.write(`${view.text}\n`);
+				return;
+			}
 			bindStatusContext(ctx);
 			if (ctx.mode === "tui") {
 				// Interactive dashboard — a view over the store and the live worker
@@ -5320,7 +5493,9 @@ export default function (pi: ExtensionAPI) {
 				ids.push(details.id);
 		}
 		sharedWorkerState.peerHub.observeContext(ctx.sessionManager.getSessionId(), ids);
-		return { messages: filterCollectedCompletions(event.messages) };
+		const worker = sharedWorkerState.workerOwners.get(ctx.sessionManager.getSessionId());
+		const profile = worker ? statusRecordCache.get(worker.workerId)?.profile : undefined;
+		return { messages: ensureProfileContext(filterCollectedCompletions(event.messages), profile) };
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {

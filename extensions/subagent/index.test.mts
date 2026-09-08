@@ -58,6 +58,7 @@ const {
 	currentToolLabel,
 	completionNeedsNotification,
 	filterCollectedCompletions,
+	ensureProfileContext,
 	renderWorkerMessage,
 	continueWorker,
 	createSetupDiagnosticCollector,
@@ -117,7 +118,8 @@ const { WorkerRuntime, buildTranscript, trackCommandStartedTurns, transcriptFrom
 );
 const { renderConversation } = await import("./console.ts");
 const { formatPanelElapsed, openSubagentPanel, rosterOutputPreview } = await import("./panel.ts");
-const { visibleWidth, stripTerminalSequences } = await import("@earendil-works/pi-tui");
+const { visibleWidth, stripTerminalSequences, CombinedAutocompleteProvider } = await import("@earendil-works/pi-tui");
+const { createProfile, readProfile, profileStoreDir, profileStorePath } = await import("./profiles.ts");
 
 function panelContentRows(lines: string[]): string[] {
 	return stripTerminalSequences(lines[0] ?? "").startsWith("┌")
@@ -4398,5 +4400,236 @@ describe("registered tool surface", () => {
 		await command.handler("", context("json"));
 		assert.equal(entries.at(-1)?.customType, "subagent_status");
 		assert.equal(entries.length, 2);
+	});
+});
+
+describe("managed profile adapters", () => {
+	function capture() {
+		type Command = Parameters<Parameters<typeof registerSubagent>[0]["registerCommand"]>[1];
+		const tools: Array<Record<string, any>> = [];
+		const commands = new Map<string, Command>();
+		const entries: Array<{ customType: string; data: any }> = [];
+		const notifications: string[] = [];
+		let customCalls = 0;
+		registerSubagent({
+			registerTool: (tool: Record<string, any>) => tools.push(tool),
+			registerCommand: (name: string, command: Command) => commands.set(name, command),
+			registerMessageRenderer() {}, on() {}, getActiveTools: () => [], getAllTools: () => [],
+			appendEntry: (customType: string, data: any) => entries.push({ customType, data }),
+		} as any);
+		const context = (mode: "tui" | "rpc" | "json" | "print" = "json") => ({
+			mode, cwd: agentDir, hasUI: mode === "tui" || mode === "rpc",
+			sessionManager: { getSessionId: () => "managed-profile-adapter" },
+			ui: { setStatus() {}, notify: (text: string) => notifications.push(text), custom: async () => { customCalls++; } },
+		}) as any;
+		return { tools, command: commands.get("subagent")!, entries, notifications, context, customCalls: () => customCalls };
+	}
+
+	it("registers one strict profile tool with the exact actions and bounded definition schema", () => {
+		const { tools } = capture();
+		const matches = tools.filter((tool) => tool.name === "subagent_profiles");
+		assert.equal(matches.length, 1);
+		const schema = matches[0].parameters;
+		assert.deepEqual(schema.properties.action.enum, ["list", "read", "create", "update", "remove", "enable", "disable"]);
+		assert.equal(Value.Check(schema, { action: "create", name: "review-check", definition: {} }), true);
+		for (const params of [
+			{}, { action: "save", name: "review" }, { action: "list", extra: true },
+			{ action: "read", name: "Upper" }, { action: "read", name: "../x" },
+			{ action: "read", name: "x".repeat(65) },
+			{ action: "create", name: "review", definition: { tools: [] } },
+			{ action: "create", name: "review", definition: { enabled: "false" } },
+			{ action: "create", name: "review", definition: { grounding: [{ name: "guide", path: "a", extra: true }] } },
+			{ action: "create", name: "review", definition: { grounding: Array(17).fill({ name: "guide", path: "a" }) } },
+			{ action: "update", name: "review", definition: {}, expectedSha256: "bad" },
+		]) assert.equal(Value.Check(schema, params), false, JSON.stringify(params));
+	});
+
+	it("runs CRUD through the tool and preserves digest conflicts and stored paths", async () => {
+		const adapter = capture();
+		const tool = adapter.tools.find((tool) => tool.name === "subagent_profiles")!;
+		const execute = async (params: { action: string; [key: string]: unknown }) => {
+			const result = await tool.execute("profiles-crud", params, undefined, undefined, adapter.context());
+			// The model sees content, not extension details. Drive mutations from that text alone.
+			return { ...result, details: params.action === "list" ? result.details : JSON.parse(result.content[0].text) };
+		};
+		const name = "adapter-crud";
+		try {
+			const created = await execute({ action: "create", name, definition: { model: "test/model-a", cwd: ".", instructions: "Apply the check.\nCite the source.", grounding: [{ name: "guide", path: "AGENTS.md" }] } });
+			assert.equal(created.details.entry.enabled, true);
+			assert.equal(created.details.entry.cwd, agentDir);
+			assert.equal(created.details.entry.grounding[0].path, join(agentDir, "AGENTS.md"));
+			assert.equal(JSON.parse(readFileSync(profileStorePath(name), "utf8")).model, "test/model-a");
+			await assert.rejects(execute({ action: "create", name, definition: {} }));
+			const read = await execute({ action: "read", name });
+			assert.equal(read.details.entry.sha256, created.details.entry.sha256);
+			assert.equal(read.details.entry.instructions, "Apply the check.\nCite the source.");
+			assert.equal(read.details.entry.model, "test/model-a");
+			assert.equal(read.details.entry.grounding[0].path, join(agentDir, "AGENTS.md"));
+			const disabled = await execute({ action: "disable", name, expectedSha256: read.details.entry.sha256 });
+			assert.equal(disabled.details.entry.enabled, false);
+			await assert.rejects(execute({ action: "update", name, definition: {}, expectedSha256: read.details.entry.sha256 }), /changed|digest|stale/i);
+			const enabled = await execute({ action: "enable", name, expectedSha256: disabled.details.entry.sha256 });
+			assert.equal(enabled.details.entry.enabled, true);
+			const updated = await execute({ action: "update", name, definition: { thinking: "low" }, expectedSha256: enabled.details.entry.sha256 });
+			assert.equal(updated.details.entry.model, undefined, "update replaces rather than merges the definition");
+			assert.deepEqual(updated.details.entry.grounding, []);
+			assert.equal(updated.details.entry.thinking, "low");
+			const listed = await execute({ action: "list" });
+			assert.ok(listed.details.entries.some((entry: any) => entry.name === name));
+			assert.equal("grounding" in listed.details.entries.find((entry: any) => entry.name === name), false);
+			await execute({ action: "remove", name, expectedSha256: updated.details.entry.sha256 });
+			assert.equal(existsSync(profileStorePath(name)), false);
+		} finally { rmSync(profileStorePath(name), { force: true }); }
+	});
+
+	it("restores the exact profile snapshot only when effective context lacks it", () => {
+		const profile = { path: join(agentDir, "context-profile.json"), sha256: "a".repeat(64), grounding: [], instructions: "CHECK_MODE\nUse complete sources." };
+		const messages = [{ role: "user" as const, content: "current task", timestamp: 1 }];
+		const restored = ensureProfileContext(messages, profile);
+		assert.equal(restored.length, 2);
+		assert.equal(restored[0].role, "custom");
+		assert.match(JSON.stringify(restored[0]), /CHECK_MODE/);
+		assert.equal(restored[1], messages[0]);
+		assert.equal(ensureProfileContext(restored, profile), restored);
+		assert.equal(ensureProfileContext(messages), messages, "primary or profile-less contexts remain unchanged");
+		const compacted = [{ role: "user" as const, content: "summary without exact profile", timestamp: 2 }];
+		assert.equal(ensureProfileContext(compacted, profile).length, 2);
+		const tampered = restored.map((message, index) => index === 0 && message.role === "custom" ? { ...message, content: "not the profile body" } : message);
+		assert.equal(ensureProfileContext(tampered, profile).length, 3, "metadata alone does not establish model-visible profile content");
+	});
+
+	it("uses Pi's file queue and checks cancellation before a queued mutation", async () => {
+		const { withFileMutationQueue } = await import("@earendil-works/pi-coding-agent");
+		const adapter = capture();
+		const tool = adapter.tools.find((tool) => tool.name === "subagent_profiles")!;
+		const name = "adapter-queued";
+		let enter!: () => void;
+		const entered = new Promise<void>((resolve) => { enter = resolve; });
+		let release!: () => void;
+		const barrier = new Promise<void>((resolve) => { release = resolve; });
+		const owner = withFileMutationQueue(profileStorePath(name), async () => { enter(); await barrier; });
+		await entered;
+		const controller = new AbortController();
+		const mutation = tool.execute("queued", { action: "create", name, definition: {} }, controller.signal, undefined, adapter.context());
+		controller.abort();
+		const rejected = assert.rejects(mutation, /abort/i);
+		release();
+		await owner;
+		await rejected;
+		assert.equal(existsSync(profileStorePath(name)), false);
+	});
+
+	it("throws for invalid direct calls without reflecting supplied JSON or model text", async () => {
+		const adapter = capture();
+		const tool = adapter.tools.find((tool) => tool.name === "subagent_profiles")!;
+		const marker = "PRIVATE_SYNTHETIC_MODEL_TEXT";
+		for (const params of [
+			null, [], {}, { action: marker }, { action: "list", extra: marker }, { action: "list", name: "a" },
+			{ action: "read" }, { action: "read", name: "Upper" }, { action: "read", name: "a", definition: {} },
+			{ action: "create", name: "adapter-invalid" }, { action: "create", name: "adapter-invalid", definition: [] },
+			{ action: "create", name: "adapter-invalid", definition: { name: "other" } },
+			{ action: "create", name: "adapter-invalid", definition: { model: { text: marker } } },
+			{ action: "create", name: "adapter-invalid", definition: { extra: marker } },
+			{ action: "create", name: "adapter-invalid", definition: {}, expectedSha256: "a".repeat(64) },
+			...(["update", "remove", "enable", "disable"].map((action) => ({ action, name: "a", ...(action === "update" ? { definition: {} } : {}) }))),
+		]) {
+			await assert.rejects(tool.execute("invalid", params, undefined, undefined, adapter.context()), (error: Error) => {
+				assert.doesNotMatch(error.message, new RegExp(marker)); return true;
+			});
+		}
+		assert.equal(existsSync(profileStorePath("adapter-invalid")), false);
+	});
+
+	it("refuses disabled profiles before a batch starts and separates names from relative filenames", async () => {
+		const adapter = capture();
+		const dispatch = adapter.tools.find((tool) => tool.name === "subagent")!;
+		const name = "adapter-cache";
+		const explicit = join(agentDir, name);
+		createProfile(name, {}, agentDir);
+		writeFileSync(explicit, JSON.stringify({ enabled: false }));
+		const before = listWorkers().map((worker) => worker.id);
+		try {
+			for (const selectors of [[name, `./${name}`], [`./${name}`, name]]) {
+				await assert.rejects(dispatch.execute("disabled-batch", { tasks: selectors.map((profile) => ({ task: "Never start this worker", profile })) }, undefined, undefined, adapter.context()), /disabled/i);
+				assert.deepEqual(listWorkers().map((worker) => worker.id), before);
+			}
+		} finally { rmSync(profileStorePath(name), { force: true }); rmSync(explicit, { force: true }); }
+	});
+
+	it("completes whole command arguments without profile autodispatch", async () => {
+		const adapter = capture();
+		createProfile("adapter-complete", { enabled: false }, agentDir);
+		try {
+			assert.equal(adapter.command.getArgumentCompletions?.("adapter"), null);
+			const provider = new CombinedAutocompleteProvider([{ name: "subagent", ...adapter.command }], agentDir);
+			for (const [line, expected] of [["/subagent pro", "/subagent profiles"], ["/subagent profiles adapter-comp", "/subagent profiles adapter-complete"]]) {
+				const suggestions = await provider.getSuggestions([line], 0, line.length, { signal: new AbortController().signal });
+				assert.ok(suggestions);
+				const result = provider.applyCompletion([line], 0, line.length, suggestions.items[0], suggestions.prefix);
+				assert.equal(result.lines[0].trimEnd(), expected);
+			}
+			const names = await adapter.command.getArgumentCompletions?.("profiles adapter-comp");
+			assert.equal(names?.[0].description, "disabled");
+		} finally { rmSync(profileStorePath("adapter-complete"), { force: true }); }
+	});
+
+	it("returns no profile completions instead of throwing while the store is unavailable", async () => {
+		const adapter = capture();
+		const store = profileStoreDir();
+		rmSync(store, { recursive: true, force: true });
+		writeFileSync(store, "not a directory");
+		try {
+			assert.equal(adapter.command.getArgumentCompletions?.("profiles "), null);
+			assert.equal(adapter.command.getArgumentCompletions?.("profiles ada"), null);
+			const manager = await adapter.command.getArgumentCompletions?.("pro");
+			assert.equal(manager?.[0].value, "profiles", "the manager keyword still completes");
+		} finally { rmSync(store, { force: true }); }
+	});
+
+	it("routes profile commands by mode while bare and other filters remain the dashboard", async (t) => {
+		const adapter = capture();
+		const name = "adapter-modes";
+		createProfile(name, { enabled: false }, agentDir);
+		try {
+			await adapter.command.handler(`profiles ${name}`, adapter.context("tui"));
+			assert.equal(adapter.customCalls(), 1);
+			await adapter.command.handler(`profiles ${name}`, adapter.context("rpc"));
+			assert.equal(adapter.customCalls(), 1);
+			assert.equal(adapter.notifications.length, 1);
+			assert.equal(adapter.entries.at(-1)?.customType, "subagent_profiles");
+			assert.equal(adapter.entries.at(-1)?.data.entries[0].name, name);
+			await adapter.command.handler(`profiles ${name}`, adapter.context("json"));
+			assert.equal(adapter.notifications.length, 1);
+			assert.equal(adapter.entries.at(-1)?.customType, "subagent_profiles");
+			let output = "";
+			const mock = t.mock.method(process.stdout, "write", (chunk: any) => { output += String(chunk); return true; });
+			await adapter.command.handler(`profiles ${name}`, adapter.context("print"));
+			mock.mock.restore();
+			assert.match(output, /adapter-modes · disabled/);
+			for (const filter of ["", name, "profiles-other"]) {
+				await adapter.command.handler(filter, adapter.context("json"));
+				assert.equal(adapter.entries.at(-1)?.customType, "subagent_status");
+			}
+		} finally { rmSync(profileStorePath(name), { force: true }); }
+	});
+
+	it("bounds list details and preserves unreadable records with truncation", async () => {
+		const adapter = capture();
+		const tool = adapter.tools.find((tool) => tool.name === "subagent_profiles")!;
+		const names = Array.from({ length: 256 }, (_, i) => `adapter-bound-${String(i).padStart(3, "0")}`);
+		mkdirSync(profileStoreDir(), { recursive: true });
+		try {
+			for (const name of names) writeFileSync(profileStorePath(name), JSON.stringify({ model: "x".repeat(256), cwd: `/${"a".repeat(3000)}` }));
+			writeFileSync(profileStorePath(names[0]), "{ invalid synthetic JSON");
+			const listed = await tool.execute("bounded", { action: "list" }, undefined, undefined, adapter.context());
+			assert.ok(Buffer.byteLength(JSON.stringify(listed)) < 50 * 1024);
+			assert.equal(listed.details.truncated, true);
+			assert.equal(listed.details.entries[0].ok, false);
+			assert.equal(typeof listed.details.entries[0].error, "string");
+			assert.doesNotMatch(listed.content[0].text, /invalid synthetic JSON/);
+			const read = await tool.execute("fault", { action: "read", name: names[0] }, undefined, undefined, adapter.context());
+			assert.equal(read.details.entry.ok, false);
+			assert.equal(read.details.entry.sha256, readProfile(names[0]).sha256);
+		} finally { for (const name of names) rmSync(profileStorePath(name), { force: true }); }
 	});
 });

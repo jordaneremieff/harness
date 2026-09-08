@@ -8,11 +8,14 @@ published packages, upstream implementation, and planned contracts.
 
 ## Checked source boundary
 
-Verified 2026-09-05. Upstream reads use `main` commit
-`da840b6216578c2a571d0374ac6a2091a83f9d91` and the WP08 fork branch commit
-`85186f823d31c6d36c135190b3c357dbb6522c81`. The installed runtime is Pi
-0.85.1; this checkout's dependency snapshot remains on 0.85.0. Tests against
-that snapshot do not establish validation against the upgraded installation.
+Verified 2026-09-08. Upstream reads use `main` commit
+`6160683a4a8012f0d1cd30c145df18b4ca6f5176`. The WP08 fork branch merged
+into `main` through [pull request #9152](https://github.com/earendil-works/pi/pull/9152)
+(merge commit
+[`3e4bc268`](https://github.com/earendil-works/pi/commit/3e4bc2680ea8eca162207974b88667ccfc20a564),
+2026-09-08). The installed runtime is Pi 0.85.1; this checkout's dependency
+snapshot remains on 0.85.0. Tests against that snapshot do not establish
+validation against the upgraded installation.
 
 Installed paths in this document are relative to the installed
 `@earendil-works/pi-coding-agent` package root. A path that starts with
@@ -25,21 +28,30 @@ Installed paths in this document are relative to the installed
 | Checkout packages | Pi 0.85.0; confirmed from local package metadata; separate from the active installation |
 | npm publication | `@earendil-works/pi-coding-agent` has `latest: 0.85.1`; the exact 0.85.1 metadata exposes client/plugin subpaths only under the `source` condition |
 | GitHub release metadata | Latest listed release is [v0.85.1](https://github.com/earendil-works/pi/releases/tag/v0.85.1), published 2026-09-05, tag commit `d981de1229ef899957bbe968bc8dcda02a21f477` |
-| Upstream main | [`da840b62`](https://github.com/earendil-works/pi/commit/da840b6216578c2a571d0374ac6a2091a83f9d91); coding-agent manifest declares 0.85.1 |
-| Active fork work | `dev-named-forks-streaming` at [`85186f82`](https://github.com/earendil-works/pi/commit/85186f823d31c6d36c135190b3c357dbb6522c81); [pull request #9152](https://github.com/earendil-works/pi/pull/9152) is open and draft |
+| Upstream main | [`6160683a`](https://github.com/earendil-works/pi/commit/6160683a4a8012f0d1cd30c145df18b4ca6f5176); coding-agent and agent-core manifests declare 0.85.1 |
+| Fork work | [Pull request #9152](https://github.com/earendil-works/pi/pull/9152) merged `dev-named-forks-streaming` at [`3e4bc268`](https://github.com/earendil-works/pi/commit/3e4bc2680ea8eca162207974b88667ccfc20a564) (2026-09-08); WP08 continues on `main`, Slice C in progress |
 
-The v0.85.0-to-checked-main comparison changes agent package metadata and its
-changelog, not `packages/agent` runtime code. It also leaves the extension
-loader unchanged. Installed 0.85.1 and the retained 0.85.0 checkout have
-byte-identical ordinary SDK, session-services, and extension-loader modules.
-This source comparison is not a runtime regression test. Do not infer npm
-publication state from GitHub release metadata or installed behavior from `main`.
+The v0.85.1-to-checked-main comparison merges the WP08 fork machinery
+(`packages/agent` session forks, JSONL streaming, a text-line-reader
+capability) and adds unreleased coding-agent changes listed in its changelog:
+extension model streaming, strict-prefer tool sampling for built-in tools,
+RPC input-handler routing, and editor-border spinner embedding. It leaves the
+ordinary SDK construction (`sdk.ts`), `AgentHarnessOptions`, the extension
+loader, the harness specification, and the roadmap unchanged. Installed
+0.85.1 and the retained 0.85.0 checkout have byte-identical ordinary SDK,
+session-services, and extension-loader modules. This source comparison is
+not a runtime regression test. Do not infer npm publication state from GitHub
+release metadata or installed behavior from `main`.
 
 ## Configuration and source context
 
 Verified 2026-09-06 against installed Pi 0.85.1, checkout dependencies 0.85.0,
 and upstream `main` at
 [`9767ba27`](https://github.com/earendil-works/pi/commit/9767ba275f3e9a5ee0f5c5342249b629ab1b2282).
+Rechecked 2026-09-08: `sdk.ts` and `agent-harness.ts` are byte-identical at
+`main` [`6160683a`](https://github.com/earendil-works/pi/commit/6160683a4a8012f0d1cd30c145df18b4ca6f5176),
+and the v0.85.1-to-`main` change census adds no reusable configuration-file
+selector or profile surface.
 This focused check covers configuration, resources, and message inputs. The
 publication, fork implementation, and other general-track checks above and
 below retain their separately stated dates; they are not current checks of
@@ -68,8 +80,8 @@ those surfaces.
   source applicability. Reusable guides retain ownership of their procedures;
   current tasks retain their targets and permitted actions.
 
-[configuration-sdk]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/coding-agent/src/core/sdk.ts#L306-L388
-[configuration-host]: https://github.com/earendil-works/pi/blob/9767ba275f3e9a5ee0f5c5342249b629ab1b2282/packages/agent/src/harness/agent-harness.ts#L518-L610
+[configuration-sdk]: https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/coding-agent/src/core/sdk.ts#L306-L388
+[configuration-host]: https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/agent/src/harness/agent-harness.ts#L518-L610
 
 ## Current-session evidence retrieval
 
@@ -96,12 +108,13 @@ not the separately dated upstream program claims.
 
 Verified 2026-09-07 against installed Pi 0.85.1 and upstream `main` at
 [`9767ba27`](https://github.com/earendil-works/pi/commit/9767ba275f3e9a5ee0f5c5342249b629ab1b2282).
-The named installed sources below were rechecked on 2026-09-08 against the same
+The named installed sources were rechecked on 2026-09-08 against the same
 installed version.
 The latest listed GitHub release remains v0.85.1. Fork pull request
-[#9152](https://github.com/earendil-works/pi/pull/9152) remains open and draft
-at `85186f823d31c6d36c135190b3c357dbb6522c81`. This focused check does not
-refresh the separately dated publication, backend, or packaging claims.
+[#9152](https://github.com/earendil-works/pi/pull/9152) merged into `main` on
+2026-09-08; its effects are recorded under "Fork and result boundaries".
+This focused check does not refresh the separately dated publication, backend,
+or packaging claims.
 
 - The [ordinary SDK][collaboration-sdk] still constructs `Agent` and
   `AgentSession`; installed `dist/core/sdk.js` keeps that construction
@@ -188,8 +201,8 @@ ordinary coding-agent SDK uses this runtime.
 
 ## Runtime adoption and distribution
 
-Verified 2026-09-05 against installed Pi 0.85.1, the retained checkout's
-0.85.0 modules, and checked `main`.
+Verified 2026-09-08 against installed Pi 0.85.1, the retained checkout's
+0.85.0 modules, checked `main`, and current release and npm metadata.
 
 - The ordinary SDK constructs `Agent` and `AgentSession` in
   `pi-coding-agent/dist/core/sdk.js`. This repository's subagent slice uses the
@@ -224,32 +237,38 @@ Verified 2026-09-05 against installed Pi 0.85.1, the retained checkout's
 
 ## Fork and result boundaries
 
-Verified 2026-09-05 against installed declarations, [WP08][wp08], and the
-[branch's JSONL fork implementation][jsonl-fork].
+Verified 2026-09-08 against [WP08][wp08] and the [JSONL fork
+implementation][jsonl-fork], both on `main` after pull request #9152 merged
+(`3e4bc268`, 2026-09-08).
 
-WP08 remains in progress. Its requirements call for named-branch and tree
-forks, source sequence preservation, and bounded auxiliary memory. The active
-branch advances Memory construction and JSONL copying, but those facts do not
+WP08 remains in progress; its status line records Slice C (SQLite streaming)
+as the active slice. The merge lands the explicit-scope `ForkOptions`
+contract, the closed fork classifier, direct Memory construction, and
+two-scan JSONL streaming with a read-only source capture: a JSONL fork never
+writes its source, and a torn tail is discarded in memory. These facts do not
 establish the entire requirement:
 
-- JSONL uses sequential passes over the source. `JsonlForkIndex` retains
-  in-memory maps and sets for current scalar addresses, entry parents, copied
-  entry IDs, and lane state. Auxiliary memory therefore grows with source
-  state; a two-pass implementation is not a source-size-independent bound.
-- WP08 records the implementation's sequence boundary in place of the
-  specified fixed file handle and prefix. It assumes no source replacement
-  during the scans. Its closed legacy-v3 normalization also retains the
-  complete source in memory. These remain distinct from the planned
-  disk-backed procedure.
-- SQLite streaming remains a separate WP08 slice. The checked branch
-  comparison contains no SQLite implementation change. Do not label backend
-  convergence complete from Memory or JSONL progress.
+- `JsonlForkIndex` still retains in-memory maps and sets for current scalar
+  addresses, entry parents, copied entry IDs, and lane state. Auxiliary
+  memory therefore still grows with source state; the two-scan fold is not a
+  source-size-independent bound. The legacy-v3 path copies an already
+  normalized in-memory source, and open legacy-v3 sources reject forks.
+- SQLite streaming is the in-progress Slice C, and Slice D (benchmarks plus
+  the specification status refresh) is pending: the specification's WP08
+  line still describes the Slice A state. Do not label backend convergence
+  complete from Memory or JSONL progress.
+- Sequence preservation is explicitly not part of the fork contract;
+  backends allocate destination-local sequences.
 - WP08 leaves coding-agent `/fork`, `/clone`, and `--fork` on
   `SessionManager`. The subagent slice also forks through that public API, so
   the new `SessionRepo` fork contract does not itself require a local cutover.
+- The merge adds a `TextLineReader`/`openTextLineReader` capability to the
+  harness `FileSystem` interface for streaming fork reads. It does not
+  change ordinary resource discovery.
 
 The installed `OperationResultRecord` declaration in
-`pi-agent-core/dist/harness/session/types.d.ts` contains terminal metadata and
+`pi-agent-core/dist/harness/session/types.d.ts` (Pi 0.85.1, unchanged)
+contains terminal metadata and
 `fromTipId`/`tipId` transcript pointers, not embedded submitted content.
 `AgentLane` also exposes `getResult` and entry queries. The repository must
 preserve exact submitted-result retrieval, including its documented bounds
@@ -260,14 +279,14 @@ then remove any superseded local storage in the same cutover.
 
 ## Convergence decisions
 
-Verified 2026-09-05. These decisions preserve capability while replacing
+Verified 2026-09-08. These decisions preserve capability while replacing
 mechanism when a suitable upstream contract exists.
 
 | Repository capability | Upstream boundary | Repository action |
 |---|---|---|
 | Worker execution and observation | Durable lanes, ordered inboxes, terminal records, lane reducer | Use the upstream primitives when the worker host adopts them; do not add a second lane fold |
 | Ordinary worker resources | `AgentHarnessOptions` accepts tools, resources, and system prompt; experimental worker defaults are narrower | Preserve full ordinary-session capabilities through the host's resource construction; a stored fork is not context discovery |
-| Worker continuation | `SessionRepo` named-branch/tree forks; WP08 is incomplete | Keep `SessionManager` until the adopting host preserves the continuation contract |
+| Worker continuation | `SessionRepo` fork contract merged for Memory and JSONL; WP08 SQLite and documentation slices remain | Keep `SessionManager` until the adopting host preserves the continuation contract |
 | Remote control | Implemented semantic services, development-only coding-agent packaging, unresolved raw Session transport | Evaluate the callable host contract and package support before replacing worker control; do not infer either permanent absence or ready parity |
 | Extension composition | Real Chord facets in the experimental worker | Map existing extension behavior when the ordinary host adopts that boundary; do not build a parallel plugin system |
 | Submitted result retrieval | Terminal records plus transcript access | Preserve exact retrievable content; replace separate storage if upstream satisfies the full contract |
@@ -298,9 +317,9 @@ A dated entry records the last check, not present truth. If a defining source
 is unavailable, mark the affected claim unverified rather than repeating it.
 Retire this track when convergence is complete; Git retains the history.
 
-[spec]: https://github.com/earendil-works/pi/blob/da840b6216578c2a571d0374ac6a2091a83f9d91/packages/agent/docs/harness.md
-[roadmap]: https://github.com/earendil-works/pi/blob/da840b6216578c2a571d0374ac6a2091a83f9d91/packages/agent/docs/post-wp05-roadmap.md
-[package]: https://github.com/earendil-works/pi/blob/da840b6216578c2a571d0374ac6a2091a83f9d91/packages/coding-agent/package.json
-[commands]: https://github.com/earendil-works/pi/blob/da840b6216578c2a571d0374ac6a2091a83f9d91/packages/coding-agent/src/experimental/commands.ts
-[wp08]: https://github.com/earendil-works/pi/blob/85186f823d31c6d36c135190b3c357dbb6522c81/packages/agent/docs/work-packages/08-named-branch-streaming-forks.md
-[jsonl-fork]: https://github.com/earendil-works/pi/blob/85186f823d31c6d36c135190b3c357dbb6522c81/packages/agent/src/harness/session/jsonl/fork.ts
+[spec]: https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/agent/docs/harness.md
+[roadmap]: https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/agent/docs/post-wp05-roadmap.md
+[package]: https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/coding-agent/package.json
+[commands]: https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/coding-agent/src/experimental/commands.ts
+[wp08]: https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/agent/docs/work-packages/08-named-branch-streaming-forks.md
+[jsonl-fork]: https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/agent/src/harness/session/jsonl/fork.ts

@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const runtimeErrors: unknown[] = [];
+const captureRuntimeError = (error: unknown) => { runtimeErrors.push(error); console.error(error); process.exitCode = 1; };
+process.on("unhandledRejection", captureRuntimeError);
+process.on("uncaughtException", captureRuntimeError);
+
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-context-agent-"));
 const home = mkdtempSync(join(tmpdir(), "subagent-context-home-"));
 const parentCwd = mkdtempSync(join(tmpdir(), "subagent-parent-cwd-"));
@@ -71,6 +76,29 @@ export default function (pi) {
       return ctx.newSession();
     },
   });
+  pi.on("session_before_compact", (event) => {
+    if (event.customInstructions !== "PROFILE_COMPACT") return;
+    const firstUser = event.branchEntries.find((entry) => entry.type === "message" && entry.message.role === "user");
+    if (!firstUser) throw new Error("Profile fixture requires a retained task before compaction.");
+    return { compaction: { summary: "PROFILE_SYNTHETIC_SUMMARY", firstKeptEntryId: firstUser.id, tokensBefore: event.preparation.tokensBefore } };
+  });
+  pi.registerCommand("worker-profile-compact", {
+    description: "Compact the retained profile context and request the next task",
+    handler: async (_args, ctx) => {
+      pi.sendMessage({ customType: "profile_compaction_input", content: "synthetic context ".repeat(256), display: false }, { triggerTurn: false });
+      await new Promise((resolve, reject) => ctx.compact({ customInstructions: "PROFILE_COMPACT", onComplete: resolve, onError: reject }));
+      pi.sendUserMessage("PROFILE_POST_COMPACTION_TASK");
+    },
+  });
+  pi.registerCommand("worker-profile-navigate", {
+    description: "Return before profile history and request another task",
+    handler: async (_args, ctx) => {
+      const target = ctx.sessionManager.getBranch().find((entry) => entry.type === "thinking_level_change");
+      if (!target) throw new Error("The initial branch metadata is absent.");
+      await ctx.navigateTree(target.id, { summarize: false });
+      pi.sendUserMessage("PROFILE_POST_NAVIGATION_TASK");
+    },
+  });
   pi.registerCommand("worker-fail", {
     description: "Fail the worker command",
     handler: () => { throw new Error("command exploded"); },
@@ -80,7 +108,7 @@ export default function (pi) {
 		"utf8",
 	);
 	mkdirSync(join(cwd, ".pi"), { recursive: true });
-	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ packages: [extensionPath] }), "utf8");
+	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ packages: [extensionPath], compaction: { enabled: false, keepRecentTokens: 128 } }), "utf8");
 	const skillDir = join(cwd, ".agents", "skills", skillSentinel(label));
 	mkdirSync(skillDir, { recursive: true });
 	writeFileSync(
@@ -156,10 +184,12 @@ const providerLabels = [
 	"untrusted",
 	"profile",
 	"profile-override",
+	"profile-instructions",
+	"profile-replacement",
 	"fallback",
 ];
 const providerPaths = providerLabels.map(seedProvider);
-writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: providerPaths }), "utf8");
+writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: providerPaths, compaction: { enabled: false, keepRecentTokens: 128 } }), "utf8");
 
 let parentSession: any = null;
 try {
@@ -365,6 +395,7 @@ try {
 		thinking: "off",
 		cwd: trustedCwd,
 		grounding: [{ name: "Check contract", path: "./contract.md" }],
+		instructions: "PROFILE_OPERATING_MODE\nUse all ordinary session capabilities.",
 	};
 	writeFileSync(selectedProfilePath, JSON.stringify(selectedProfile));
 	const promptDir = join(trustedCwd, ".pi", "prompts");
@@ -417,6 +448,9 @@ try {
 	assert.match(messages, /PROFILE_TEMPLATE_EXPANDED input/);
 	assert.ok(messages.includes(join(profileDir, "contract.md")));
 	assert.ok(messages.indexOf("Check contract") < messages.indexOf("PROFILE_TEMPLATE_EXPANDED"));
+	assert.equal(messages.split("PROFILE_OPERATING_MODE").length - 1, 1);
+	assert.ok(messages.indexOf("PROFILE_OPERATING_MODE") < messages.indexOf("PROFILE_TEMPLATE_EXPANDED"));
+	assert.ok(!received.systemPrompt.includes("PROFILE_OPERATING_MODE"));
 
 	// A task-selected file replaces unused top-level profile input. Explicit
 	// fields still win, and an explicit empty tool list retains its meaning.
@@ -479,6 +513,47 @@ try {
 	const continuedContext = readFileSync(`${promptPath("profile")}.context.json`, "utf8");
 	assert.ok(continuedContext.includes("Check contract"));
 	assert.ok(continuedContext.includes("Continue the check"));
+	assert.equal(continuedContext.split("PROFILE_OPERATING_MODE").length - 1, 1, "normal continuation does not duplicate exact profile context");
+
+	const compacted = (await continuation.execute(
+		"profile-compact", { id: continuedRecord.id, message: "/worker-profile-compact" }, undefined, undefined, profileContext,
+	)) as any;
+	const compactedRecord = await waitForProfile(compacted.details.worker.id);
+	assert.deepEqual(compactedRecord.profile, profileRecord.profile);
+	const compactedContext = JSON.parse(readFileSync(`${promptPath("profile")}.context.json`, "utf8"));
+	const compactedMessages = JSON.stringify(compactedContext.messages);
+	assert.match(compactedMessages, /PROFILE_SYNTHETIC_SUMMARY/);
+	assert.match(compactedMessages, /PROFILE_POST_COMPACTION_TASK/);
+	assert.equal(compactedMessages.split("PROFILE_OPERATING_MODE").length - 1, 1, "effective context restores the compacted-out profile exactly once");
+
+	const navigated = (await continuation.execute(
+		"profile-navigate", { id: compactedRecord.id, message: "/worker-profile-navigate" }, undefined, undefined, profileContext,
+	)) as any;
+	await waitForProfile(navigated.details.worker.id);
+	const navigatedContext = JSON.parse(readFileSync(`${promptPath("profile")}.context.json`, "utf8"));
+	assert.match(JSON.stringify(navigatedContext.messages), /PROFILE_POST_NAVIGATION_TASK/);
+	assert.equal(JSON.stringify(navigatedContext.messages).split("PROFILE_OPERATING_MODE").length - 1, 1);
+
+	const instructionPath = join(profileDir, "instructions.json");
+	writeFileSync(instructionPath, JSON.stringify({ cwd: trustedCwd, instructions: "PROFILE_INSTRUCTIONS_ONLY" }));
+	const instructionOnly = (await dispatch.execute(
+		"profile-instructions", { task: "/profile-check instruction-only", profile: instructionPath, model: "cwd-provider-profile-instructions/cwd-model-profile-instructions" }, undefined, undefined, profileContext,
+	)) as any;
+	const instructionRecord = await waitForProfile(instructionOnly.details.workers[0].id);
+	assert.deepEqual(instructionRecord.profile?.grounding, []);
+	const instructionContext = JSON.parse(readFileSync(`${promptPath("profile-instructions")}.context.json`, "utf8"));
+	assert.ok(!instructionContext.systemPrompt.includes("PROFILE_INSTRUCTIONS_ONLY"));
+	assert.match(JSON.stringify(instructionContext.messages), /PROFILE_INSTRUCTIONS_ONLY/);
+	assert.match(readFileSync(join(agentDir, "profile-at-session-start.json"), "utf8"), /PROFILE_INSTRUCTIONS_ONLY/);
+
+	const replacementProfile = (await dispatch.execute(
+		"profile-replacement", { task: "/worker-new", profile: instructionPath, model: "cwd-provider-profile-replacement/cwd-model-profile-replacement" }, undefined, undefined, profileContext,
+	)) as any;
+	await waitForProfile(replacementProfile.details.workers[0].id);
+	const replacementContext = JSON.parse(readFileSync(`${promptPath("profile-replacement")}.context.json`, "utf8"));
+	assert.match(JSON.stringify(replacementContext.messages), /replacement worker task/);
+	assert.equal(JSON.stringify(replacementContext.messages).split("PROFILE_INSTRUCTIONS_ONLY").length - 1, 1);
+	assert.match(readFileSync(join(agentDir, "profile-at-session-start.json"), "utf8"), /PROFILE_INSTRUCTIONS_ONLY/);
 
 	// A profile-less dispatch derives a task-based label with the per-owner-session
 	// dispatch ordinal, seeded from the workers this session already persisted.
@@ -497,6 +572,7 @@ try {
 
 	sub.shutdownWorkerSession(parentSession);
 	parentSession = null;
+	assert.deepEqual(runtimeErrors, []);
 	console.log("worker context child: PASS");
 } finally {
 	try {

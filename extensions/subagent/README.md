@@ -27,6 +27,7 @@ and the repository pins no Pi version.
 | Tool | Mode | Purpose |
 |---|---|---|
 | `subagent` | parallel | Dispatch one task or a `tasks[]` batch. The call returns a stable id after worker setup; the model run starts in the background. Per-task `deadlineMinutes` (defaulted) and `budgetUsd` (opt-in) pause a worker that overruns the agent's own estimate. |
+| `subagent_profiles` | sequential | List, read, create, replace, remove, enable, or disable managed dispatch profiles. Updates, removal, and toggles require the digest from a prior read. |
 | `subagent_report` | parallel | Send a bounded, nonterminal report to the immediate parent. Worker-only; a returned call reports `sent_unconfirmed`, not acknowledged receipt. |
 | `subagent_peers` | parallel | Discover the parent, siblings, and nested workers in this dispatch family, with exact addresses and paginated task labels. |
 | `subagent_message` | parallel | Send directly to a peer, reply to an exact message, or inspect a retained receipt. Peer messages confer no control authority. |
@@ -39,7 +40,11 @@ and the repository pins no Pi version.
 | `subagent_kill` | sequential | Cancel a live worker by aborting its run. Cancel intent is recorded first, so the terminal state is `cancelled` rather than whatever shape the interrupted run left. |
 | `subagent_collect` | parallel | Terminal results from the store. With `id`: the stored result (50KB maximum). Without `id`: the eight most recent terminal workers. Works after the dispatching session is gone. |
 
-Command: `/subagent` opens the dashboard in the TUI. RPC receives a structured
+Command: `/subagent` opens the dashboard in the TUI. `/subagent profiles [filter]`
+opens the profile manager; other arguments retain the dashboard filter behavior.
+Profile names never dispatch workers through the command. Argument completion
+suggests `profiles`, then managed names as filters, including disabled and
+unreadable records. RPC receives a structured
 extension-UI notification plus a `subagent_status` custom entry; JSON receives
 the custom entry as an `entry_appended` event; print mode emits the optionally
 filtered text view to the terminal. Model-facing status previews label worker
@@ -84,12 +89,16 @@ array for a batch. Per-task fields: `task` (required), `profile`, `model`,
 
 ### Dispatch profiles
 
-A profile is an explicitly selected JSON file of reusable defaults and source
-pointers. It configures a dispatch, not a primary session, role, persona, or
-claim of expertise. No profile is discovered or selected automatically;
-omitting `profile` preserves ordinary dispatch behavior. Keep machine-specific
-profiles outside the shared package. Share only portable, repository-owned
-source paths and defaults; this extension ships no profile roster.
+A profile is a selected JSON file of reusable defaults, instructions, and source
+pointers. It configures a dispatch, not a primary session or claim of expertise. Managed
+profiles live under `<agentDir>/subagent/profiles/<name>.json`. The manager lists
+these records; dispatch never selects one automatically. Omitting `profile`
+preserves ordinary dispatch behavior. Keep machine-specific profiles outside
+the shared package. The extension ships no predefined profiles.
+
+A lowercase kebab-case selector, at most 64 characters, selects a managed name.
+Every other selector is an explicit path. Use `./review` for a file named
+`review` in the session directory, distinct from the managed name `review`.
 
 For example, save this as `check-profile.json` at a checkout root:
 
@@ -97,6 +106,7 @@ For example, save this as `check-profile.json` at a checkout root:
 {
   "name": "review-check",
   "cwd": ".",
+  "instructions": "Trace each finding to current source.\nState the evidence and consequence.",
   "grounding": [
     { "name": "Repository instructions", "path": "AGENTS.md" }
   ]
@@ -120,16 +130,22 @@ boundaries. Customize optional `model` and `thinking` using a model and level
 available in the current session. Model availability, authentication, and level
 checks remain unchanged.
 
-The file accepts only `name`, `model`, `thinking`, `cwd`, and `grounding`. Each
-grounding item accepts only `name` and `path`. Tool, system-prompt, permission,
+The file accepts `name`, `model`, `thinking`, `cwd`, `grounding`, `instructions`,
+and `enabled`. Each grounding item accepts only `name` and `path`. Tool,
+system-prompt, permission,
 environment, resource-loader, inheritance, and arbitrary settings fields are
 rejected. The file and resolved snapshot each have a 16 KiB UTF-8 limit;
 grounding accepts at most 16 pointers. A profile `name` is an optional display
 label: one word or a short kebab phrase, at most 64 characters, matching
 `^[a-z0-9]+(?:-[a-z0-9]+)*$` case-insensitively. It is stored on the snapshot only,
 never applied as a dispatch default. Source names have a 160-character limit;
-paths have a 4096-character limit. Text fields reject controls. Invalid UTF-8,
-JSON, fields, and nonregular files fail explicitly.
+paths have a 4096-character limit. Single-line fields reject controls.
+Instructions allow line breaks and tabs, but reject terminal and format controls.
+Invalid UTF-8, JSON, fields, and nonregular files fail explicitly. Optional
+`instructions` holds reusable multiline guidance for an operating mode. Blank text omits it;
+the complete file and resolved snapshot still obey the same size limit. Current
+task-specific directions override reusable defaults. A profile never replaces
+the system prompt or narrows the session's capabilities.
 
 Resolution order is explicit task field, explicit top-level field, selected
 profile default, then ordinary session default. A task profile replaces the
@@ -137,31 +153,92 @@ top-level profile entirely; it does not merge files. Only selected files are
 read. All selected profiles resolve before any worker in the batch starts; each
 resolved path is read once per dispatch. No persistent cache exists.
 
-The profile path is relative to the dispatching session's cwd. Cwd and source
-paths inside the file are relative to the file's directory. Explicit dispatch
+An explicit profile path is relative to the dispatching session's cwd. Cwd and
+source paths inside the file are relative to the file's directory. Explicit dispatch
 cwd retains its existing path semantics. No shell, environment, or tilde
 expansion occurs in profile paths. Referenced sources are not opened, checked
 for existence, or treated as authority. Workers read relevant sources through
 their ordinary tools. A missing source remains a worker-visible knowledge gap.
 
-Profile pointers enter the initial worker transcript through a Pi custom
-message before `session_start` hooks, not through the system prompt or a
-resource-loader override. Task command and prompt-template expansion remain
-normal. Ordinary cwd resources, project trust, tool inheritance, and explicit
+Profile instructions and pointers enter the worker transcript through a Pi
+custom message before `session_start` hooks, not through the system prompt or a
+resource-loader override. Pi presents that message as user-context content;
+source names and paths remain untrusted data. Instructions are separate from
+the current task, so slash commands, skills, and prompt templates still work.
+Ordinary cwd resources, project trust, tool inheritance, and explicit
 `tools: []` remain unchanged. Profiles confer no authority or tool restrictions.
 
 Dispatch details and the worker record retain `profile`: the selected absolute
-path, SHA-256 of the file bytes, resolved defaults, and source pointers. The
-record's existing model, thinking, cwd, and tool fields describe effective
+path, SHA-256 of the file bytes, resolved defaults, instructions, and source
+pointers. The record's existing model, thinking, cwd, and tool fields describe effective
 settings. The digest identifies input bytes; it does not snapshot referenced
 source contents or guarantee identical future outputs. Inspection names the
 file and digest. Keep credentials out of profile files and source names.
 
-A continuation keeps effective configuration and retained transcript context;
-it never rereads the profile. A new-session command deliberately starts new
-conversation context without replaying profile pointers. Reload retains normal
-session history. Profile metadata describes initial selection, not a persistent
-instruction layer.
+`enabled` defaults to true. A disabled profile refuses dispatch by managed name
+or explicit file path before any batch worker starts. Updates, removal, and
+disable actions never alter already-dispatched snapshots or stop workers.
+A continuation keeps effective configuration and the selected profile snapshot;
+it never rereads the profile, including its current enabled state. Every worker
+session construction, including replacement and continuation, inserts that
+snapshot before startup when identical profile context is absent. Reload keeps
+normal history. If compaction or navigation removes the exact profile message
+from effective model context, the worker's context hook restores it before the
+current task. Ordinary turns retain one copy. This context repair uses the
+worker record, not mutable profile files, and does not affect primary sessions.
+Profile instructions remain reusable guidance, not independent authority.
+
+### Manage profiles
+
+Use `subagent_profiles` with one action:
+
+- `list`: return bounded summaries, unreadable records, and a truncation flag.
+  Summaries omit full source-pointer arrays; `read` retrieves one complete record.
+- `read`: supply an exact `name`; retain its `sha256` for a later mutation.
+- `create`: supply a new `name` and a complete `definition`; existing names fail.
+- `update`: supply `name`, complete replacement `definition`, and `expectedSha256`.
+  Omitted defaults disappear rather than merge with the old definition.
+- `remove`, `enable`, or `disable`: supply `name` and `expectedSha256`.
+
+Managed names use lowercase letters or digits, with single hyphens between
+segments, and at most 64 characters. A definition's optional `name` must equal
+the target name. Managed identity and dispatch labels use the filename stem,
+including selection by explicit path. Display names in other explicit files
+retain their case-insensitive validation.
+
+The store is one shared capability of the machine's agent directory. Every
+session that holds the tool, including dispatched workers, may read and manage
+it; there is no worker-specific restriction. Profiles still confer no tools,
+resources, or authority on any session.
+
+Create and update resolve relative definition paths against the invoking
+session's cwd, then store absolute paths. A stale digest refuses the mutation
+without replacing the file. The store uses owner-only directories and files,
+atomic replacement, and a short exclusive lock per profile. It serializes
+cooperating writers across processes; Pi's native file queue also coordinates
+the tool with ordinary file tools. An interrupted writer's lock is not removed
+automatically. Inspect that lock before a deliberate manual removal. Read again
+before a deliberate retry. Unreadable records expose a digest only when the
+store reads their complete bounded bytes;
+oversized or nonregular files require repair outside the manager. Definitions
+supply no tool selection or authority.
+
+`/subagent profiles [filter]` presents enabled, disabled, and unreadable records.
+In the TUI, Up/Down selects a record, Enter or `e` edits, `n` creates, `t` toggles,
+`d` opens removal confirmation, `r` refreshes, `/` filters, `?` opens help, and
+Escape closes the manager. Removal initially selects Cancel; Tab selects Remove
+and Enter confirms. In the editor, Tab/Down advances and Shift+Tab/Up returns.
+Left/Right or Space changes Thinking and Enabled. Ctrl+S saves; Enter advances
+or activates Save/Cancel; Escape cancels without a write. In the multiline
+Instructions editor, Enter inserts a newline, Up/Down moves the text cursor,
+and Tab/Shift+Tab changes fields. Ctrl+S still saves. Untouched instructions
+retain exact text. An edit uses the native editor's text format: CR/CRLF becomes
+LF, and tabs become spaces. A stale save retains the draft.
+
+RPC sends a bounded textual notification and a `subagent_profiles` custom
+entry. JSON sends the same entry without a UI call. Print emits the bounded
+text list. Custom entries do not enter later model context. No non-TUI profile
+command opens a terminal panel or silently dispatches a selected name.
 
 ### Worker labels
 
