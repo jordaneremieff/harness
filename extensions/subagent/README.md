@@ -721,9 +721,26 @@ The same contracts apply at every depth:
   session cannot close another worker session's resources, even when both use
   the same module instance.
 - A completed grandchild sends `subagent_result` to the worker that dispatched
-  it. That worker receives steering delivery or an idle turn and can call `subagent_collect`.
-  Owner shutdown removes the delivery API before aborting grandchildren, so an
+  it while that owner's session remains alive. The worker can then call
+  `subagent_collect`. Ending an assistant turn without a tool call is not a
+  wait: once the managed run settles without submission, the owner becomes
+  `no_result_submitted` and shutdown aborts unfinished children. A later result
+  does not revive the terminal owner.
+- The worker protocol directs a dependent owner to use `subagent_wait` when
+  available, not end its turn, and to resolve children before `submit_result`.
+  The peer wait keeps the run active. Child completion queues a Pi message but
+  does not wake the peer wait; the message enters context when the wait returns,
+  including on timeout. Choose a timeout within the remaining run allowance.
+  Deadlines and budgets remain active. An unavailable wait tool is a blocker to
+  report, not permission to invent a different lifecycle.
+- Owner shutdown removes the delivery API before aborting grandchildren, so an
   `owner_lost` settlement never starts a new turn in a session being disposed.
+
+`nested-wait-child.mts` exercises an actual managed parent that dispatches a
+child, waits, receives its queued completion, collects the exact result, and
+submits its own result. It also checks the protocol delivered to the provider.
+The scripted provider establishes this lifecycle path and prompt delivery,
+not autonomous model adherence.
 
 ## Continuing a terminal worker
 

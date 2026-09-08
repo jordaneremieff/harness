@@ -2871,6 +2871,23 @@ describe("compaction veto", () => {
 		}
 	});
 
+	it("keeps a managed nested worker alive through a completion wait and delivers the wait protocol", async () => {
+		const childPath = join(dirname(fileURLToPath(import.meta.url)), "nested-wait-child.mts");
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const childCoverageDir = mkdtempSync(join(tmpdir(), "subagent-nested-wait-cov-"));
+		try {
+			const { stdout, stderr } = await promisify(execFile)(process.execPath, [childPath], {
+				encoding: "utf-8",
+				env: { ...process.env, NODE_V8_COVERAGE: childCoverageDir },
+				timeout: 30_000,
+			});
+			assert.ok(stdout.includes("nested wait child: PASS"), `${stdout}\n${stderr}`);
+		} finally {
+			rmSync(childCoverageDir, { recursive: true, force: true });
+		}
+	});
+
 	it("delivers shared context and reports into a real idle parent turn", async () => {
 		const childPath = join(dirname(fileURLToPath(import.meta.url)), "report-delivery-child.mts");
 		const { execFile } = await import("node:child_process");
