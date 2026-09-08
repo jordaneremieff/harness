@@ -330,6 +330,97 @@ describe("Pi package reconciliation", () => {
 	});
 });
 
+describe("promotion internal checkout hooks", () => {
+	for (const recordOnMain of [false, true]) {
+		it(`suppresses checkout hooks with a development record ${recordOnMain ? "on" : "absent from"} main`, () => {
+			const root = realpathSync(mkdtempSync(join(tmpdir(), "worktree-checkout-hooks-")));
+			try {
+				const repo = join(root, "harness");
+				const worktrees = join(root, "harness.worktrees");
+				const target = join(worktrees, "target");
+				const sibling = join(worktrees, "sibling");
+				const hooks = join(root, "hooks");
+				const marker = join(root, "checkout-hook");
+				const gateMarker = join(root, "gate");
+				const settings = join(root, "settings.json");
+				const env = {
+					...cleanGitEnvironment(process.env),
+					GIT_CONFIG_GLOBAL: "/dev/null",
+					GIT_CONFIG_NOSYSTEM: "1",
+					GIT_AUTHOR_NAME: "Fixture",
+					GIT_AUTHOR_EMAIL: "fixture@example.com",
+					GIT_COMMITTER_NAME: "Fixture",
+					GIT_COMMITTER_EMAIL: "fixture@example.com",
+					PI_HARNESS_ROOT: repo,
+					PI_WORKTREE_ROOT: worktrees,
+					PI_SETTINGS_PATH: settings,
+					CHECKOUT_MARKER: marker,
+					PI_PROMOTE_GATES: JSON.stringify([
+						{
+							name: "test",
+							command: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], 'passed')", gateMarker],
+						},
+					]),
+				};
+				const git = (cwd: string, args: string[]): string =>
+					execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+				mkdirSync(join(repo, "target"), { recursive: true });
+				mkdirSync(join(repo, "extensions"));
+				mkdirSync(hooks);
+				git(repo, ["init", "-q", "-b", "main"]);
+				git(repo, ["config", "core.hooksPath", hooks]);
+				writeFileSync(join(repo, "target/code.txt"), "initial\n");
+				if (recordOnMain) writeFileSync(join(repo, "target/LOG.md"), "main record\n");
+				git(repo, ["add", "."]);
+				git(repo, ["commit", "-q", "-m", "Initial feature"]);
+				git(repo, ["worktree", "add", "-q", "-b", "feature/target", target]);
+				git(repo, ["worktree", "add", "-q", "-b", "feature/sibling", sibling]);
+				writeFileSync(join(target, "target/code.txt"), "shipped\n");
+				writeFileSync(join(target, "target/LOG.md"), "branch record\n");
+				git(target, ["add", "."]);
+				git(target, ["commit", "-q", "-m", "Update feature and development record"]);
+				writeFileSync(join(sibling, "target/code.txt"), "uncommitted sibling\n");
+				writeFileSync(settings, JSON.stringify({ packages: [{ source: repo, extensions: [] }] }));
+				writeFileSync(join(hooks, "post-checkout"), '#!/bin/sh\nprintf "%s\\n" "$PWD" >> "$CHECKOUT_MARKER"\nexit 1\n', {
+					mode: 0o755,
+				});
+				const control = spawnSync("git", ["checkout", "HEAD", "--", "target/code.txt"], { cwd: repo, env });
+				assert.equal(control.status, 1);
+				assert.equal(readFileSync(marker, "utf8"), `${repo}\n`);
+				rmSync(marker);
+
+				const script = fileURLToPath(new URL("./worktrees.mts", import.meta.url));
+				const result = spawnSync(process.execPath, [script, "promote", "feature/target", "--no-push", "--json"], {
+					cwd: repo,
+					env,
+					encoding: "utf8",
+					timeout: 30_000,
+				});
+				assert.equal(existsSync(marker), false, result.stderr || result.stdout);
+				const report: SerializedPromotionReport = JSON.parse(result.stdout);
+				assert.equal(report.ok, true);
+				assert.equal(report.gates.test, "pass");
+				assert.equal(readFileSync(gateMarker, "utf8"), "passed");
+				assert.equal(report.pushed, false);
+				assert.equal(report.syncOk, false);
+				assert.equal(result.status, 1);
+				assert.ok(report.branchFailures);
+				assert.equal(report.branchFailures.length, 1);
+				assert.match(report.branchFailures[0], /^sibling: .*uncommitted changes and main has advanced/);
+				assert.equal(readFileSync(join(sibling, "target/code.txt"), "utf8"), "uncommitted sibling\n");
+				assert.equal(readFileSync(join(repo, "target/code.txt"), "utf8"), "shipped\n");
+				assert.equal(readFileSync(join(target, "target/LOG.md"), "utf8"), "branch record\n");
+				assert.equal(git(target, ["status", "--porcelain"]), "");
+				assert.equal(git(repo, ["diff", "--name-only", "main", "feature/target"]), "target/LOG.md");
+				if (recordOnMain) assert.equal(readFileSync(join(repo, "target/LOG.md"), "utf8"), "main record\n");
+				else assert.equal(existsSync(join(repo, "target/LOG.md")), false);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+	}
+});
+
 describe("promotion against a real repository", () => {
 	const script = fileURLToPath(new URL("./worktrees.mts", import.meta.url));
 	let root: string;

@@ -612,7 +612,7 @@ function rebuildPromotedBranch(context: HarnessContext, record: WorktreeRecord, 
 
 	git(context.repoRoot, noHooks(["reset", "--hard", "main"]), { cwd: record.path });
 	if (originalPaths.length > 0) {
-		git(context.repoRoot, ["checkout", originalHead, "--", ...originalPaths], {
+		git(context.repoRoot, noHooks(["checkout", originalHead, "--", ...originalPaths]), {
 			cwd: record.path,
 		});
 	}
@@ -971,7 +971,7 @@ function promote(
 		}
 		for (const path of entry.devRecords) {
 			const inHead = git(context.repoRoot, ["cat-file", "-e", `HEAD:${path}`], { accept: [0, 1, 128] }).status === 0;
-			if (inHead) git(context.repoRoot, ["checkout", "HEAD", "--", path]);
+			if (inHead) git(context.repoRoot, noHooks(["checkout", "HEAD", "--", path]));
 			else git(context.repoRoot, ["rm", "-f", "--quiet", "--", path], { accept: [0, 1, 128] });
 		}
 		const unresolved = git(context.repoRoot, ["diff", "--name-only", "--diff-filter=U"]).stdout.trim();
