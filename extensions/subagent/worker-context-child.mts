@@ -282,6 +282,20 @@ try {
 		return record;
 	};
 
+	// A full-session worker that ends an ordinary turn without a submitted result
+	// stays live and idle; only a defined terminal path finalizes it.
+	const waitForIdle = async (id: string): Promise<any> => {
+		const deadline = Date.now() + 10_000;
+		let record = sub.readWorker(id);
+		while (Date.now() < deadline && record?.idleSince == null) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			record = sub.readWorker(id);
+		}
+		assert.equal(record?.state, "running", JSON.stringify(record));
+		assert.ok(record?.idleSince != null, JSON.stringify(record));
+		return record!;
+	};
+
 	await runWorker(trustedCwd, "trusted");
 	const trustedPrompt = readFileSync(promptPath("trusted"), "utf8");
 
@@ -305,10 +319,12 @@ try {
 
 	// Worker command contexts use the same real session-control host as Pi's
 	// normal modes. Reload rebuilds resources, and a pure control command ends
-	// cleanly without a submitted result.
+	// cleanly without a submitted result: the worker stays live and idle.
 	rmSync(markerPath("trusted"), { force: true });
 	rmSync(sessionMarkerPath("trusted"), { force: true });
-	await runWorker(trustedCwd, "reload", "/worker-reload", "no_result_submitted");
+	const reloadId = await startWorker(trustedCwd, "reload", "/worker-reload");
+	const reloadRecord = await waitForIdle(reloadId);
+	assert.deepEqual(reloadRecord.setupDiagnostics, [], JSON.stringify(reloadRecord.setupDiagnostics));
 	assert.equal(readFileSync(markerPath("trusted"), "utf8"), "factory\nstart\nfactory\nstart\n");
 	const reloadSessions = readFileSync(sessionMarkerPath("trusted"), "utf8").trim().split("\n");
 	assert.equal(reloadSessions.length, 2);

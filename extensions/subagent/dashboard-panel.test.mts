@@ -92,6 +92,9 @@ function snapshot(): CollaborationSnapshot {
 			event("event-1", "Exact first message\nSecond line"),
 			event("event-2", "Exact reply", { actorId: "worker-b", recipientId: "worker-a", replyTo: "message-event-1" }),
 		],
+		obligations: [],
+		outstandingRequired: [],
+		unaccepted: [],
 		notices: [],
 	};
 }
@@ -264,7 +267,7 @@ describe("worker overview and separate communications", () => {
 			async (component) => {
 				const output = text(component, 180);
 				assert.match(output, /OVERVIEW · DIRECT CHILDREN/);
-				assert.match(output, /1 worker · 1 running/);
+				assert.match(output, /1 worker · 1 active/);
 				assert.match(output, /overview-model[\s\S]*\$1\.25[\s\S]*Tool: read[\s\S]*Checking exported functions/);
 				assert.doesNotMatch(output, /TIMELINE|HISTORY|bg-nested|bg-foreign/);
 				context.mock.timers.tick(1000);
@@ -355,7 +358,7 @@ describe("worker overview and separate communications", () => {
 			deps({ readWorkers: () => [worker("bg-direct", { label: "review-check" })] }),
 			async (component) => {
 				const output = text(component, 180);
-				assert.match(output, /› review-check[\s\S]*running/);
+				assert.match(output, /› review-check[\s\S]*active/);
 			},
 			theme,
 			"overview",
@@ -799,6 +802,9 @@ describe("collaboration dashboard", () => {
 								families: snapshot().families,
 								participants: [participant("foreign", null)],
 								events: [event("foreign-event", "only other family", { actorId: "foreign" })],
+								obligations: [],
+								outstandingRequired: [],
+								unaccepted: [],
 								notices: [],
 							}
 						: snapshot(),

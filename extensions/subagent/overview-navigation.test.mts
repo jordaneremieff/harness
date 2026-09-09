@@ -84,6 +84,9 @@ function snapshot(): CollaborationSnapshot {
 				exchange: { kind: "report", text: "final report" },
 			}),
 		],
+		obligations: [],
+		outstandingRequired: [],
+		unaccepted: [],
 		notices: [],
 	};
 }
@@ -313,7 +316,7 @@ describe("overview navigation, scope, and action targets", () => {
 	it("returns from a worker console to the overview with escape twice", async () => {
 		await panel(deps(), async (component, _terminal, closed) => {
 			component.handleInput("\r");
-			assert.match(text(component), /worker-a · running/);
+			assert.match(text(component), /worker-a · active/);
 			component.handleInput("\x1b");
 			assert.match(text(component), /OVERVIEW · DIRECT CHILDREN/);
 			assert.equal(closed(), 0);
@@ -342,7 +345,7 @@ describe("overview navigation, scope, and action targets", () => {
 				for (const char of "resume work") component.handleInput(char);
 				component.handleInput("\r");
 				await flush();
-				assert.match(text(component), /bg-cont · running/);
+				assert.match(text(component), /bg-cont · active/);
 				assert.match(text(component), /continuation started/);
 				component.handleInput("\x1b");
 				assert.match(text(component), /OVERVIEW · DIRECT CHILDREN/);
@@ -357,7 +360,7 @@ describe("overview navigation, scope, and action targets", () => {
 		await panel(deps({ readWorkers: (owner) => (owner ? [own] : [own, foreign]) }), async (component) => {
 			const children = text(component, 140);
 			assert.doesNotMatch(children, /Worker +State/);
-			assert.match(children, /› bg-own[\s\S]*running/);
+			assert.match(children, /› bg-own[\s\S]*active/);
 			assert.doesNotMatch(children, /OWNER/);
 			component.handleInput("a");
 			const all = text(component, 140);
@@ -457,7 +460,7 @@ describe("selected exchange reader", () => {
 				component.handleInput("\x1b");
 				assert.deepEqual(readPosition(component, width), end);
 				component.handleInput("v");
-				assert.match(text(component, width), /worker-b · running/);
+				assert.match(text(component, width), /worker-b · active/);
 			},
 			"communications",
 		);
@@ -611,8 +614,8 @@ describe("communications navigation and visible targets", () => {
 				await flush();
 				assert.equal(interrupted, "worker-b");
 				component.handleInput("v");
-				assert.match(text(component, 180), /worker-b · running/);
-				assert.doesNotMatch(text(component, 180), /worker-c · running/);
+				assert.match(text(component, 180), /worker-b · active/);
+				assert.doesNotMatch(text(component, 180), /worker-c · active/);
 				component.handleInput("\x1b");
 				component.handleInput("\r");
 				assert.match(text(component, 180), /EVENT r1/);

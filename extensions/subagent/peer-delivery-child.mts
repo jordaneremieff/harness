@@ -1,4 +1,4 @@
-/** Direct SDK regression for peer delivery, explicit wait, and session ownership. */
+/** Direct SDK regression for peer delivery, idle activation, and session ownership. */
 import { strict as assert } from "node:assert";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,7 +69,6 @@ let terminalRefusal = false;
 let cancelRequested = false;
 let pauseRequested = false;
 let pausedSendRequested = false;
-let rootWaitRequested = false;
 const key = Symbol.for("subagent-test.peer-fixture");
 const { fauxAssistantMessage, fauxToolCall } = await import("@earendil-works/pi-ai");
 const tool = (name: string, args: Record<string, unknown>) =>
@@ -97,10 +96,6 @@ const response = async (role: string, context: any) => {
 	if (role === "owner") {
 		if (count === 1) return tool("subagent", { tasks: [{ task: "PEER_A" }, { task: "PEER_B" }] });
 		const serialized = JSON.stringify(context.messages);
-		if (serialized.includes("CHECK_ROOT_WAIT") && !rootWaitRequested) {
-			rootWaitRequested = true;
-			return tool("subagent_wait", { timeoutSeconds: 1 });
-		}
 		if (serialized.includes("SEND_PAUSED_PEER") && !pausedSendRequested) {
 			pausedSendRequested = true;
 			return tool("subagent_message", {
@@ -167,9 +162,8 @@ const response = async (role: string, context: any) => {
 			assert.equal(receipt.status, "sent_unconfirmed");
 			return tool("bash", { command: "printf independent > independent.txt" });
 		}
-		if (count === 4) return tool("subagent_wait", { timeoutSeconds: 10 });
+		if (count === 4) return fauxAssistantMessage("B_IDLE");
 		if (count === 5) {
-			assert.equal(lastResult(context, "subagent_wait").details.status, "message");
 			const answer = peerMessages("B").at(-1);
 			assert.ok(answer, "B receives a custom peer reply, not a parent relay");
 			assert.equal(answer.details.replyTo, questionId);
@@ -192,7 +186,7 @@ const response = async (role: string, context: any) => {
 		}
 		throw new Error(`Unexpected B provider request ${count}`);
 	}
-	if (role === "C") return tool("subagent_wait", { timeoutSeconds: 10 });
+	if (role === "C") return fauxAssistantMessage("C_IDLE");
 	throw new Error(`Unknown fixture role ${role}`);
 };
 (globalThis as any)[key] = {
@@ -265,16 +259,13 @@ try {
 	await owner.prompt("OWNER_PEER_SCENARIO");
 	assert.equal(owner.isStreaming, false);
 	const ownerId = owner.sessionManager.getSessionId();
-	await until(
-		() => sub.sharedWorkerState.peerHub.list(ownerId).peers.some((peer) => peer.id === bId && peer.waiting),
-		"B waits for A",
-	);
+	await until(() => sub.readWorker(bId)?.idleSince != null, "B ends its turn and stays idle");
 	assert.equal(readFileSync(join(cwd, "independent.txt"), "utf8"), "independent");
 	assert.equal(calls.get("B"), 4);
 	assert.equal(calls.get("A"), 1);
-	const waitingCalls = calls.get("B");
+	const idleCalls = calls.get("B");
 	await new Promise((resolve) => setTimeout(resolve, 80));
-	assert.equal(calls.get("B"), waitingCalls, "wait performs no provider request");
+	assert.equal(calls.get("B"), idleCalls, "an idle worker makes no provider request while waiting");
 	assert.equal(calls.get("owner"), 2, "the idle parent does not relay the question");
 	assert.equal(custom(owner).length, 0);
 	const a = sub.listWorkers().find((record) => record.id === aId)!;
@@ -296,7 +287,7 @@ try {
 		const record = sub.readWorker(id)!;
 		assert.equal(readFileSync(sub.workerFiles(id).result, "utf8"), result);
 		assert.deepEqual([...record.resolvedTools].sort(), [...inherited, "submit_result"].sort());
-		for (const name of ["read", "write", "bash", "fixture_gate", "subagent_peers", "subagent_message", "subagent_wait"])
+		for (const name of ["read", "write", "bash", "fixture_gate", "subagent_peers", "subagent_message"])
 			assert.ok(surfaces.get(role)?.includes(name), `${role} lacks ${name}`);
 		const entries = SessionManager.open(record.sessionFile!).getEntries();
 		const messages = entries.filter(
@@ -325,10 +316,7 @@ try {
 	await owner.prompt("START_CANCEL_PEER");
 	const c = sub.listWorkers().find((record) => record.task === "PEER_C")!;
 	assert.ok(c);
-	await until(
-		() => sub.sharedWorkerState.peerHub.list(ownerId).peers.some((peer) => peer.id === c.id && peer.waiting),
-		"C starts a cancellable wait",
-	);
+	await until(() => sub.readWorker(c.id)?.idleSince != null, "C ends its turn and stays idle");
 	await owner.prompt("PAUSE_WAITING_PEER");
 	assert.ok(sub.readWorker(c.id)?.interruptedAt);
 	await owner.prompt("SEND_PAUSED_PEER");
@@ -340,15 +328,13 @@ try {
 	await until(() => sub.readWorker(c.id)?.state === "cancelled", "the owner cancels C");
 	assert.ok(!sub.sharedWorkerState.peerHub.list(ownerId).peers.some((peer) => peer.id === c.id));
 	assert.equal(calls.get("C"), 1, "abort does not start another provider request");
-	await owner.prompt("CHECK_ROOT_WAIT");
-	assert.equal(lastResult(owner, "subagent_wait").details.status, "timeout", "the root has the same wait capability");
 	await owner.waitForIdle();
 	sub.shutdownWorkerSession(owner);
 	await until(() => !sub.sharedWorkerState.reportSinks.has(ownerId), "owner shutdown removes session resources");
 	owner = null;
 	assert.deepEqual(errors, []);
 	console.log(
-		"peer delivery child: PASS (direct IDs, context_seen, idle parent, wait, inherited tools, results, refusal, cancellation)",
+		"peer delivery child: PASS (direct IDs, context_seen, idle parent, idle activation, inherited tools, results, refusal, cancellation)",
 	);
 } finally {
 	releaseBusy.resolve();

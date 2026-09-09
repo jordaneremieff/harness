@@ -141,6 +141,9 @@ export interface SteerInput {
 	text: string;
 }
 
+/** A custom message handed to AgentSession.sendCustomMessage (message kind and provenance preserved). */
+export type SessionCustomMessage = Parameters<AgentSession["sendCustomMessage"]>[0];
+
 export interface ModelRef {
 	provider: string;
 	id: string;
@@ -654,22 +657,7 @@ export class WorkerRuntime {
 			// commands, skill commands, and prompt templates expand exactly as they
 			// do for any session input. No expansion suppression of its own.
 			await this.session.prompt(input.text);
-			// Extension commands can start turns through fire-and-forget ExtensionAPI
-			// messages. Drain both starts and active runs until no replacement session
-			// has more work that belongs to this prompt.
-			for (;;) {
-				const active = this.session;
-				const pending = pendingCommandTurns.get(active);
-				if (pending && pending.size > 0) {
-					await Promise.allSettled([...pending]);
-					continue;
-				}
-				if (active.isStreaming) {
-					await active.waitForIdle();
-					continue;
-				}
-				if (active === this.session && !(pendingCommandTurns.get(active)?.size ?? 0)) break;
-			}
+			await this.drainExtensionTurns();
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (/already processing|compaction/.test(message)) {
@@ -681,6 +669,57 @@ export class WorkerRuntime {
 			this.promptActive = false;
 			this.recomputePhase();
 			this.emit({ type: "snapshot" });
+		}
+	}
+
+	/**
+	 * Start one run leg from an event-delivered custom message (peer input, child
+	 * completion). The message keeps its native custom kind and provenance: it
+	 * is never rewritten into an owner prompt. AgentSession queues it as a steer
+	 * onto an active run or starts a fresh turn through the same path a primary
+	 * session uses; this wrapper only adds leg accounting (phase + extension-turn
+	 * drain) so the run is owned exactly like a prompted leg.
+	 */
+	async deliverCustomMessage(message: SessionCustomMessage): Promise<void> {
+		if (this.getPhase() !== "idle") {
+			throw new WorkerRuntimeError("busy", "the worker is already running a turn");
+		}
+		this.abortRequested = false;
+		this.promptActive = true;
+		this.phase = "turn";
+		try {
+			await this.session.sendCustomMessage(message, { deliverAs: "steer", triggerTurn: true });
+			await this.drainExtensionTurns();
+		} catch (error) {
+			const text = error instanceof Error ? error.message : String(error);
+			if (/already processing|compaction/.test(text)) {
+				throw new WorkerRuntimeError("busy", text);
+			}
+			throw error;
+		} finally {
+			this.abortRequested = false;
+			this.promptActive = false;
+			this.recomputePhase();
+			this.emit({ type: "snapshot" });
+		}
+	}
+
+	/** Extension commands can start turns through fire-and-forget ExtensionAPI
+	 * messages; drain both starts and active runs until no session has more work
+	 * that belongs to this leg. */
+	private async drainExtensionTurns(): Promise<void> {
+		for (;;) {
+			const active = this.session;
+			const pending = pendingCommandTurns.get(active);
+			if (pending && pending.size > 0) {
+				await Promise.allSettled([...pending]);
+				continue;
+			}
+			if (active.isStreaming) {
+				await active.waitForIdle();
+				continue;
+			}
+			if (active === this.session && !(pendingCommandTurns.get(active)?.size ?? 0)) break;
 		}
 	}
 

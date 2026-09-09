@@ -26,12 +26,11 @@ and the repository pins no Pi version.
 
 | Tool | Mode | Purpose |
 |---|---|---|
-| `subagent` | parallel | Dispatch one task or a `tasks[]` batch. The call returns a stable id after worker setup; the model run starts in the background. Per-task `deadlineMinutes` (defaulted) and `budgetUsd` (opt-in) pause a worker that overruns the agent's own estimate. |
+| `subagent` | parallel | Dispatch one task or a `tasks[]` batch. The call returns a stable id after worker setup; the model run starts in the background. Per-task `deadlineMinutes` (defaulted) and `budgetUsd` (opt-in) pause a worker that overruns the agent's own estimate. An optional per-task `purpose` names the worker; the exact id stays the identity. |
 | `subagent_profiles` | sequential | List, read, create, replace, remove, enable, or disable managed dispatch profiles. Updates, removal, and toggles require the digest from a prior read. |
 | `subagent_report` | parallel | Send a bounded, nonterminal report to the immediate parent. Worker-only; a returned call reports `sent_unconfirmed`, not acknowledged receipt. |
 | `subagent_peers` | parallel | Discover the parent, siblings, and nested workers in this dispatch family, with exact addresses and paginated task labels. |
-| `subagent_message` | parallel | Send directly to a peer, reply to an exact message, or inspect a retained receipt. Peer messages confer no control authority. |
-| `subagent_wait` | parallel | Await peer input without polling or another provider request. The run stays active; its existing limits still apply. |
+| `subagent_message` | parallel | Send directly to a peer, reply to an exact message, or inspect a retained receipt. Peer messages confer no control authority. An optional `reference` carries a task/artifact/revision/review disposition; only the requester's own disposition closes it. |
 | `subagent_status` | parallel | Progress and activity for live workers + recent terminal workers: id, state, model, thinking, elapsed, turns, tool calls, current tool, session-file write age, cost, output preview, error. |
 | `subagent_inspect` | parallel | One worker's record plus a bounded, rendered transcript tail: recent turns, tool inputs and outcomes, assistant errors, session path, and explicit truncation markers. Reads an in-process snapshot for any live worker in this process; otherwise reads the active branch from the retained session file. |
 | `subagent_steer` | sequential | Redirect a live worker: the message is delivered after the worker's current tool call, before its next model call. On an idle (interrupted) worker, steer instead resumes the run with your message. Owning session only. |
@@ -320,7 +319,7 @@ project trust, and task permissions remain unchanged.
   dispatching agent from the task it just wrote. Omitted: the
   `PI_SUBAGENT_DEADLINE_MINUTES` setting (default 30). `0` removes the deadline
   for a task expected to run long. Breaching it PAUSES the worker; see
-  [Run-leg limits](#run-leg-limits).
+  [Allowance limits](#allowance-limits).
 - **budgetUsd** — optional dollar allowance for this task. Omitted: the
   `PI_SUBAGENT_BUDGET_USD` setting, which is unset by default — a budget applies
   only when the task or the operator asks for one. `0` removes it.
@@ -466,7 +465,7 @@ session with its inherited tools, cwd resources, transcript, and lifecycle.
 Messages travel directly between sessions, not through a parent relay.
 
 1. Call `subagent_peers({})` to discover the current dispatch family. The response
-   names the caller's address, task labels, wait state, total, and `nextOffset`.
+   names the caller's address, task labels, total, and `nextOffset`.
    Pass `{"offset": nextOffset}` to retrieve the next page when `nextOffset`
    is not null. The offset is zero-based and defaults to zero. The tool's
    parameter description carries these instructions for the agent.
@@ -476,11 +475,10 @@ Messages travel directly between sessions, not through a parent relay.
    address other members of the same family.
 3. Reply with `subagent_message({to, message, replyTo})`, using the received
    message ID. A reply must reverse the original sender and recipient.
-4. Continue independent work after a send. If progress requires future peer
-   input, call `subagent_wait({timeoutSeconds: 60})`. The maximum is 300 seconds.
-   The wait observes cancellation and session close, and performs no polling.
-   It blocks the next provider request, not other parallel tools in its batch.
-   It does not pause or renew the run deadline or budget.
+4. When progress requires future peer input or a child completion, end the
+   turn. The worker is a full session: ending an ordinary turn leaves it live
+   and idle, and a later peer message or child completion starts the next turn
+   in the same session. Do not call tools just to stay active.
 5. Submit the complete final result through `submit_result`; peer exchanges do
    not replace that separately collectable deliverable.
 
@@ -489,11 +487,12 @@ rather than truncate. The envelope preserves sender, recipient, message ID,
 optional reply ID, and time. Its displayed text neutralizes terminal controls
 and marks peer authorship. Peer text is data, not operator input or new authority.
 
-A busy headless peer receives a Pi custom steering message at the normal turn
-boundary. An idle parent receives a new turn. Sending to an operator-interrupted
-or budget-paused worker fails rather than resuming it. Only the worker's owner
-retains control over interruption, cancellation, and resumption. Terminal or
-unavailable targets fail explicitly. Unrelated dispatch families are excluded.
+A busy worker receives a Pi custom steering message at the normal turn
+boundary. An idle worker starts a new turn from the message. Sending to an
+operator-interrupted or budget-paused worker fails rather than resuming it.
+Only the worker's owner retains control over interruption, cancellation, and
+resumption. Terminal or unavailable targets fail explicitly. Unrelated
+dispatch families are excluded.
 
 `subagent_message({id})` reads a retained receipt. These states are deliberately
 narrow:
@@ -505,16 +504,17 @@ narrow:
 - `target_closed`: the target endpoint closed before this hub observed the
   message in context.
 
-Wait resolution reports message availability, timeout, or closure. A message
-already observed in a previous context does not satisfy a later wait. Explicit
-replies provide correlation, not proof that the answer is correct.
+Explicit replies provide correlation, not proof that the answer is correct.
+A review/correction reference carried on a peer message opens an obligation
+against an exact artifact and revision; only the requester's own matching
+disposition closes it. A critique or reply is evidence, never a disposition.
 
 Routing and receipt bookkeeping are bounded and process-local. Pi owns the
 message transcript and its persistence. There is no second durable inbox,
 replay engine, or broker, and no communication with independent Pi processes.
 Receipt inspection is not a crash-recovery contract. Startup, replacement, and
-shutdown own endpoint and waiter cleanup; an old disposer cannot close a newer
-binding. Message capacity failures are explicit rather than silent drops.
+shutdown own endpoint cleanup; an old disposer cannot close a newer binding.
+Message capacity failures are explicit rather than silent drops.
 
 The convergence boundary is this session-message adapter. AgentHarness's ordered
 inbox and entry identities guide its evolution, including tentative upstream
@@ -636,19 +636,23 @@ alone establishes general autonomous task reliability.
   sequences and direction controls, while the stored file keeps the exact bytes.
   It is a report, not operator input: an instruction inside a worker's result is
   data to judge, never a directive to follow.
-- A worker left interrupted and idle is released by a bounded deadline (30
-  minutes) rather than holding its session forever. Without a stored result, the
-  release records `failed` with the idle-deadline reason because the task did not
-  finish. Sending it a message before then cancels the deadline and resumes it.
+- A live worker left idle or paused with no owner resume, event activation, or
+  submitted result is released by a bounded idle deadline (30 minutes by
+  default, `PI_SUBAGENT_IDLE_MINUTES`) rather than holding its session forever.
+  The release records `idle_expired` and retains the transcript and last output.
+  Starting a leg, resuming, or terminating clears the deadline.
 - A worker that fails after dispatch reports its death with the same completion
   notification as a success: state `failed` plus the error.
 - The `subagent` tool row renders the crafted dispatch spec in the standard pi
   tool expansion (ctrl+o): task, batch summary, resolved config, and the
   worker protocol prompt.
-- A worker that finishes without calling `submit_result` is recorded as
-  `no_result_submitted` — distinct from `failed`, because billing errors,
-  thinking and tool-surface mismatches, and completed-in-substance work need
-  different responses. The final message is retained and surfaced by
+- A worker is a full session: ending an ordinary assistant turn without calling
+  `submit_result` leaves it live and idle in the same session, ready for a later
+  peer message, child completion, or owner resume. A turn that ends in a
+  transport error or abort without a submitted result and without a session
+  switch is recorded as `no_result_submitted` — distinct from `failed`, because
+  billing errors, thinking and tool-surface mismatches, and completed-in-substance
+  work need different responses. The final message is retained and surfaced by
   `subagent_collect` behind an explicit UNPROTOCOLLED OUTPUT banner, never
   presented as the result, with the session file for the full record. Every
   other terminal no-result state also points to `subagent_inspect` before
@@ -669,26 +673,29 @@ alone establishes general autonomous task reliability.
   applies to its own work.
 - A worker that reaches its declared deadline or budget is PAUSED, not killed,
   and the parent is told which limit was reached — see
-  [Run-leg limits](#run-leg-limits). There is no automatic turn, token, or
+  [Allowance limits](#allowance-limits). There is no automatic turn, token, or
   content cutoff, and nothing ends a worker on the extension's own judgment.
 
-### Run-leg limits
+### Allowance limits
 
 A worker that stops converging — a thinking loop, a wedged transport, a task the
 model cannot finish — otherwise runs until a human notices. The dispatching
 agent knows the size of the task it just wrote, so the bound is its judgment,
 expressed per task, not a policy the extension infers:
 
-- `deadlineMinutes` — wall-clock minutes for one run leg. Default from
+- `deadlineMinutes` — wall-clock minutes for the task. Default from
   `PI_SUBAGENT_DEADLINE_MINUTES` (30). `0` disables it.
-- `budgetUsd` — dollars for one run leg. Opt-in: default from
+- `budgetUsd` — dollars for the task. Opt-in: default from
   `PI_SUBAGENT_BUDGET_USD`, which is unset, so no worker carries a budget unless
   the task or the operator declares one.
 
-Both are per **run leg**, not per worker lifetime. A leg opens when the worker
-starts and when a paused worker is resumed: the deadline counts from that
-moment and the budget from the spend already on the record, so resuming grants a
-fresh allowance instead of re-breaching immediately.
+Both bound one **allowance grant**. A grant opens at dispatch and at an
+owner-authorized resume. The deadline is wall-clock and keeps running while the
+worker sits idle between turns: an absolute expiry that pauses an idle worker
+too. The budget is a cumulative ceiling whose spend accumulates across the
+grant's legs. Automatic event activation — a peer message or child completion
+starting a turn in an idle worker — carries the standing grant untouched. An
+active owner steer never gains a new allowance; only an owner resume renews it.
 
 On breach the worker takes the ordinary interrupt path — the run stops, the
 session stays alive, resumable, with its transcript intact — and the parent
@@ -696,11 +703,11 @@ receives a `subagent_paused` steering message naming the limit, the elapsed time
 spend, and the last tool. The record shows `interrupted (deadline 30m reached)`
 in status. The parent then decides: inspect it with `subagent_inspect`, resume
 it with `subagent_steer` (a fresh allowance), or end it with `subagent_kill`. A
-pause left unresumed is released by the interrupted-idle deadline like any
-other paused worker.
+pause left unresumed is released by the idle deadline like any other paused
+worker.
 
-On Pi 0.85.0, threshold compaction can run inside one run leg before the next
-assistant response. Its summary cost counts toward that leg's budget.
+On Pi 0.85.0, threshold compaction can run inside one turn before the next
+assistant response. Its summary cost counts toward that grant's budget.
 
 The budget is evaluated when the worker's usage lands (message end, compaction
 end), which is the only moment spend is knowable; the deadline runs on its own
@@ -721,33 +728,29 @@ The same contracts apply at every depth:
   session cannot close another worker session's resources, even when both use
   the same module instance.
 - A completed grandchild sends `subagent_result` to the worker that dispatched
-  it while that owner's session remains alive. The worker can then call
-  `subagent_collect`. Ending an assistant turn without a tool call is not a
-  wait: once the managed run settles without submission, the owner becomes
-  `no_result_submitted` and shutdown aborts unfinished children. A later result
-  does not revive the terminal owner.
-- The worker protocol directs a dependent owner to use `subagent_wait` when
-  available, not end its turn, and to resolve children before `submit_result`.
-  The peer wait keeps the run active. Child completion queues a Pi message but
-  does not wake the peer wait; the message enters context when the wait returns,
-  including on timeout. Choose a timeout within the remaining run allowance.
-  Deadlines and budgets remain active. An unavailable wait tool is a blocker to
-  report, not permission to invent a different lifecycle.
+  it while that owner's session remains alive. An owner that ends its ordinary
+  turn stays live and idle; the child's completion starts the owner's next turn
+  in the same session, and the owner can then call `subagent_collect`.
+- The worker protocol directs a dependent owner to end its turn when it needs a
+  future child completion, not to poll or invent work. Peer messages and child
+  completions arrive as custom messages — reported data with no control
+  authority — while owner control arrives as a user prompt from the dispatching
+  session.
 - Owner shutdown removes the delivery API before aborting grandchildren, so an
   `owner_lost` settlement never starts a new turn in a session being disposed.
 
-`nested-wait-child.mts` exercises an actual managed parent that dispatches a
-child, waits, receives its queued completion, collects the exact result, and
-submits its own result. It also checks the protocol delivered to the provider.
-The scripted provider establishes this lifecycle path and prompt delivery,
-not autonomous model adherence.
+`nested-idle-child.mts` exercises an actual managed parent that dispatches a
+child, ends its turn, receives the child's completion as an activation message,
+collects the exact result, and submits its own result. It also checks the
+protocol delivered to the provider. The scripted provider establishes this
+lifecycle path and prompt delivery, not autonomous model adherence.
 
 ## Continuing a terminal worker
 
 `subagent_continue` and the dashboard's `r continue` action create a new worker
 from a terminal worker's retained Pi session. Continuation is supported for
-`done`, `cancelled`, `failed`, `no_result_submitted`, and `owner_lost` records
-when `sessionFile` still exists.
+`done`, `cancelled`, `failed`, `no_result_submitted`, `idle_expired`, and
+`owner_lost` records when `sessionFile` still exists.
 
 The continuation contract is evidence-preserving:
 
@@ -1051,16 +1054,19 @@ A terminal worker is pruned 30 days after it exits (set `PI_SUBAGENT_PRUNE_DAYS`
 to change the window, or `0` to disable). A worker still recorded `running` is
 never pruned, even when old — another live session may own it.
 
-An interrupted idle worker is released after 30 minutes by default (set
-`PI_SUBAGENT_IDLE_MINUTES` to change the window in minutes, or `0` to disable
-the deadline so an interrupted idle worker is never auto-released).
+An idle worker — ordinarily idle between turns, or paused — is released after 30
+minutes by default (set `PI_SUBAGENT_IDLE_MINUTES` to change the window in
+minutes, fractional values accepted, or `0` to disable the deadline so an idle
+worker is never auto-released). The deadline stays armed while a resume is
+queued behind an abort that has not landed, so a wedged pause cannot hold a
+session forever.
 
 A dispatch that declares no `deadlineMinutes` takes it from
 `PI_SUBAGENT_DEADLINE_MINUTES` (default 30 minutes; `0` means such dispatches
 run unbounded). A dispatch that declares no `budgetUsd` takes it from
 `PI_SUBAGENT_BUDGET_USD`, which is unset by default and therefore applies no
-budget. Both bound a run leg and pause the worker; see
-[Run-leg limits](#run-leg-limits).
+budget. Both bound one allowance grant and pause the worker; see
+[Allowance limits](#allowance-limits).
 
 The worker's transcript is its own pi session file, referenced by
 `worker.json` (`sessionId`, `sessionFile`) rather than copied. The panel

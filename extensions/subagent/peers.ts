@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { WorkReference } from "./work-references.ts";
 
 export interface PeerEnvelope {
 	id: string;
@@ -7,6 +8,8 @@ export interface PeerEnvelope {
 	replyTo: string | null;
 	sentAt: number;
 	message: string;
+	/** Optional task/artifact/revision/review reference; peer data, no authority. */
+	reference?: WorkReference;
 }
 export interface PeerReceipt extends Omit<PeerEnvelope, "message"> {
 	status: "sent_unconfirmed" | "context_seen" | "target_closed";
@@ -21,16 +24,11 @@ export interface PeerRegistration {
 interface Peer extends PeerRegistration {
 	pending: Set<string>;
 }
-export interface PeerWaitResult {
-	status: "message" | "timeout" | "closed";
-	messages: PeerReceipt[];
-}
 
 /** Process-local routing only. Pi owns message persistence and agent execution. */
 export class PeerHub {
 	private peers = new Map<string, Peer>();
 	private receipts = new Map<string, PeerReceipt>();
-	private waiters = new Map<string, (result: PeerWaitResult) => void>();
 
 	register(registration: PeerRegistration): () => void {
 		if (!registration.sessionId || registration.sessionId.length > 200)
@@ -50,7 +48,6 @@ export class PeerHub {
 				const receipt = this.receipts.get(id);
 				if (receipt?.status === "sent_unconfirmed") receipt.status = "target_closed";
 			}
-			this.waiters.get(peer.sessionId)?.({ status: "closed", messages: [] });
 		};
 	}
 
@@ -89,12 +86,11 @@ export class PeerHub {
 				id: this.address(peer),
 				parent: peer.parentSessionId ? this.address(this.requirePeer(peer.parentSessionId)) : null,
 				label: peer.label,
-				waiting: this.waiters.has(peer.sessionId),
 			})),
 		};
 	}
 
-	send(sessionId: string, to: string, message: string, replyTo?: string): PeerReceipt {
+	send(sessionId: string, to: string, message: string, replyTo?: string, reference?: WorkReference): PeerReceipt {
 		const sender = this.requirePeer(sessionId);
 		if (!message.trim() || Buffer.byteLength(message, "utf8") > 8192 || message.split("\n").length > 256) {
 			throw new Error("Peer message must contain text within 8192 UTF-8 bytes and 256 lines; nothing was sent");
@@ -128,6 +124,7 @@ export class PeerHub {
 			replyTo: replyTo ?? null,
 			sentAt: Date.now(),
 			message,
+			...(reference ? { reference } : {}),
 		};
 		const { message: _message, ...metadata } = envelope;
 		const receipt: PeerReceipt = { ...metadata, status: "sent_unconfirmed" };
@@ -140,7 +137,6 @@ export class PeerHub {
 			recipient.pending.delete(receipt.id);
 			throw error;
 		}
-		this.waiters.get(recipient.sessionId)?.({ status: "message", messages: [{ ...receipt }] });
 		return { ...receipt };
 	}
 
@@ -164,36 +160,5 @@ export class PeerHub {
 			receipt.status = "context_seen";
 			peer.pending.delete(id);
 		}
-	}
-
-	wait(sessionId: string, timeoutMs: number, signal?: AbortSignal): Promise<PeerWaitResult> {
-		const peer = this.requirePeer(sessionId);
-		if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000)
-			throw new Error("Wait timeout must be between 1 and 300000 milliseconds");
-		if (signal?.aborted) return Promise.reject(new Error("Peer wait aborted"));
-		if (this.waiters.has(sessionId)) throw new Error("This session already has a peer wait");
-		if (peer.pending.size)
-			return Promise.resolve({
-				status: "message",
-				messages: [...peer.pending].map((id) => ({ ...this.receipts.get(id)! })),
-			});
-		return new Promise((resolve, reject) => {
-			const finish = (result: PeerWaitResult) => {
-				cleanup();
-				resolve(result);
-			};
-			const abort = () => {
-				cleanup();
-				reject(new Error("Peer wait aborted"));
-			};
-			const timer = setTimeout(() => finish({ status: "timeout", messages: [] }), timeoutMs);
-			const cleanup = () => {
-				clearTimeout(timer);
-				signal?.removeEventListener("abort", abort);
-				if (this.waiters.get(sessionId) === finish) this.waiters.delete(sessionId);
-			};
-			this.waiters.set(sessionId, finish);
-			signal?.addEventListener("abort", abort, { once: true });
-		});
 	}
 }

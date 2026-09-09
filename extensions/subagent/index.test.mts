@@ -70,6 +70,7 @@ const {
 	notifyCompletion,
 	notifyLimitPause,
 	parentToolSurface,
+	purposeLabel,
 	projectTrustInputs,
 	linkWorkerOwner,
 	recordWorkerSurface,
@@ -1431,9 +1432,11 @@ describe("interim worker reports", () => {
 			messageBytes: 1,
 			text: "small report",
 			model: "x".repeat(30_000),
+			label: "review-check",
 		};
 		const bounded = workerReportMessage(envelope);
 		assertReportPayloadBound(bounded);
+		assert.equal(bounded.details.label, "review-check");
 		assert.ok(Buffer.byteLength(JSON.stringify(bounded, null, 2)) <= 50 * 1024);
 		assert.throws(() => workerReportMessage({ ...envelope, model: "x".repeat(51_200) }), /including details/);
 		assert.throws(() => workerReportMessage({ ...envelope, model: "x\n".repeat(2_001) }), /including details/);
@@ -1479,6 +1482,7 @@ describe("status and collection", () => {
 				exitedAt: 2,
 				resultBytes: 6,
 				resultPreview: "result",
+				label: "purpose-name",
 			}),
 		);
 		writeFileSync(join(dir, "result.txt"), "result", "utf-8");
@@ -1512,6 +1516,7 @@ describe("status and collection", () => {
 		assert.equal(sent.length, 1);
 		assert.equal(sent[0].message.customType, "subagent_result");
 		assert.equal(sent[0].message.details.id, id);
+		assert.equal(sent[0].message.details.label, "purpose-name");
 		assert.deepEqual(sent[0].options, {
 			deliverAs: "steer",
 			triggerTurn: true,
@@ -1580,18 +1585,55 @@ describe("status and collection", () => {
 	it("collapses reports to bounded rows and exposes sanitized evidence on expansion", async () => {
 		const pi = await import("@earendil-works/pi-coding-agent");
 		pi.initTheme("dark");
-		const theme = { fg: (_color: string, text: string) => text } as never;
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as never;
 		const body = `Worker evidence\n\n${"LONG_REPORT_LINE\n".repeat(300)}LAST_EVIDENCE\u202e\u001b[31m`;
-		for (const customType of ["subagent_result", "subagent_report", "subagent_paused"]) {
-			const message = { customType, content: body, display: true, details: { id: "bg-render", state: "done" } };
+		for (const [customType, kind] of [
+			["subagent_result", "result"],
+			["subagent_report", "report"],
+			["subagent_paused", "paused"],
+		] as const) {
+			const message = {
+				customType,
+				content: body,
+				display: true,
+				details: { id: "bg-render", label: "render-gap probe", state: "done" },
+			};
 			const collapsed = renderWorkerMessage(message as never, { expanded: false, outputPad: 1 }, theme)!;
-			for (const width of [1, 20, 80, 140]) {
+			for (const width of [20, 60, 120, 140]) {
 				const rows = collapsed.render(width);
-				assert.equal(rows.length, 2);
-				assert.ok(rows.every((row) => visibleWidth(row) <= width));
-				assert.doesNotMatch(rows.join("\n"), /LONG_REPORT_LINE/);
+				assert.ok(rows.length >= 3, `collapsed card has subject, status, and hint (${rows.length})`);
+				assert.ok(rows.every((row) => visibleWidth(row) <= width), `rows fit ${width}`);
+				const joined = stripTerminalSequences(rows.join("\n"));
+				if (kind === "paused") {
+					// A pause card has no author prose to quote; it shows state only.
+					assert.doesNotMatch(joined, /↳ /, `no preview row at ${width}`);
+				} else {
+					// The collapsed card quotes the bounded first substantive excerpt in
+					// the worker's own words; the report tail never reaches it. Narrow
+					// widths cut the same one line instead of wrapping it open.
+					const expected = width >= 60 ? /↳ Worker evidence LONG_REPORT_LINE/ : /↳ Worker/;
+					assert.match(joined, expected, `preview starts the body at ${width}`);
+					assert.doesNotMatch(joined, /LAST_EVIDENCE/, `preview excludes the tail at ${width}`);
+				}
+				assert.equal(
+					joined.split("↳ ").length - 1,
+					kind === "paused" ? 0 : 1,
+					`the preview stays one line at width ${width}`,
+				);
+				assert.ok(!joined.includes("\u202e"), `bidi controls are neutralized at ${width}`);
 			}
-			assert.match(stripTerminalSequences(collapsed.render(120).join("\n")), /unverified.*expand/);
+			// Collapsed card shows the work purpose first (label over bare id), its
+			// status facts, and the provenance + expand hint. Terminal escapes that
+			// would re-style the transcript (\u001b[31m here) never survive.
+			const collapsedText = stripTerminalSequences(collapsed.render(120).join("\n"));
+			assert.match(collapsedText, new RegExp(`render-gap probe · ${kind}`));
+			assert.match(collapsedText, /unverified/);
+			assert.match(collapsedText, /expand/);
+			assert.ok(!collapsed.render(120).join("\n").includes("\u001b[31m"));
 			const expanded = renderWorkerMessage(message as never, { expanded: true, outputPad: 1 }, theme)!;
 			assert.match(stripTerminalSequences(expanded.render(80).join("\n")), /LAST_EVIDENCE/);
 			assert.doesNotMatch(expanded.render(80).join("\n"), /\u202e/);
@@ -1759,6 +1801,23 @@ describe("status and collection", () => {
 		const line = statusLine(record);
 		assert.match(line, /interrupted/);
 		assert.doesNotMatch(line, /Request was aborted|running \(other session\)/);
+	});
+
+	it("renders an ordinary idle worker as idle, distinct from active and paused", () => {
+		const active = runningRecord("bg-active1") as any;
+		assert.match(statusLine(active), /bg-active1 · running/);
+		const idle = runningRecord("bg-idle1", { idleSince: 7 }) as any;
+		assert.match(statusLine(idle), /bg-idle1 · idle/);
+		assert.doesNotMatch(statusLine(idle), /interrupted/);
+	});
+
+	it("bounds a purpose name to presentation text, never the worker identity", () => {
+		assert.equal(purposeLabel("verify the GLM candidate"), "verify the GLM candidate");
+		assert.equal(purposeLabel("  padded  "), "padded");
+		assert.equal(purposeLabel("ab c"), "ab c");
+		assert.equal(purposeLabel("x".repeat(100))?.length, 64);
+		assert.equal(purposeLabel(undefined), null);
+		assert.equal(purposeLabel("   "), null);
 	});
 
 	it("applies status filters and bounds no-id collection to eight recent records", () => {
@@ -2871,18 +2930,18 @@ describe("compaction veto", () => {
 		}
 	});
 
-	it("keeps a managed nested worker alive through a completion wait and delivers the wait protocol", async () => {
-		const childPath = join(dirname(fileURLToPath(import.meta.url)), "nested-wait-child.mts");
+	it("keeps a managed nested worker live through ordinary idleness and resumes it on the child's completion", async () => {
+		const childPath = join(dirname(fileURLToPath(import.meta.url)), "nested-idle-child.mts");
 		const { execFile } = await import("node:child_process");
 		const { promisify } = await import("node:util");
-		const childCoverageDir = mkdtempSync(join(tmpdir(), "subagent-nested-wait-cov-"));
+		const childCoverageDir = mkdtempSync(join(tmpdir(), "subagent-nested-idle-cov-"));
 		try {
 			const { stdout, stderr } = await promisify(execFile)(process.execPath, [childPath], {
 				encoding: "utf-8",
 				env: { ...process.env, NODE_V8_COVERAGE: childCoverageDir },
 				timeout: 30_000,
 			});
-			assert.ok(stdout.includes("nested wait child: PASS"), `${stdout}\n${stderr}`);
+			assert.ok(stdout.includes("nested idle child: PASS"), `${stdout}\n${stderr}`);
 		} finally {
 			rmSync(childCoverageDir, { recursive: true, force: true });
 		}
@@ -3761,6 +3820,9 @@ describe("SubagentPanel controls", () => {
 				familyId: "panel-session",
 				families: [],
 				notices: [],
+				obligations: [],
+				outstandingRequired: [],
+				unaccepted: [],
 				events: [],
 				participants: [
 					{
@@ -3910,6 +3972,9 @@ describe("SubagentPanel controls", () => {
 				familyId: "panel-session",
 				families: [],
 				notices: [],
+				obligations: [],
+				outstandingRequired: [],
+				unaccepted: [],
 				events: [],
 				participants: roster.map((record) => ({
 					id: record.id,

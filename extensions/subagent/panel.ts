@@ -1569,13 +1569,15 @@ class SubagentConsole {
 			: "n/a";
 	}
 	private workerState(record: WorkerRecord): string {
-		return record.state === "running" && record.interruptedAt
-			? "paused"
-			: record.state === "no_result_submitted"
-				? "no result"
-				: record.state === "owner_lost"
-					? "owner lost"
-					: record.state;
+		if (record.state === "running") {
+			if (record.interruptedAt) return "paused";
+			return record.idleSince != null ? "idle" : "active";
+		}
+		return record.state === "no_result_submitted"
+			? "no result"
+			: record.state === "owner_lost"
+				? "owner lost"
+				: record.state;
 	}
 	private stateText(record: WorkerRecord): string {
 		const state = this.workerState(record);
@@ -1584,7 +1586,7 @@ class SubagentConsole {
 				? "error"
 				: state === "paused" || state === "owner lost" || state === "no result"
 					? "warning"
-					: state === "running"
+					: state === "active"
 						? "accent"
 						: "text",
 			state,
@@ -2056,14 +2058,26 @@ class SubagentConsole {
 		const history = this.familyId ? this.retained.get(this.familyId)?.history : null;
 		return [...new Set([...(history?.notices ?? []), ...(this.snapshot?.notices ?? [])])];
 	}
+	private obligationRows(obligations: CollaborationSnapshot["obligations"]): string[] {
+		return obligations.map((obligation, index) => {
+			const disposition = obligation.outcome
+				? ` — ${obligation.outcome}${obligation.reason ? `: ${obligation.reason}` : ""}`
+				: obligation.required
+					? " — required, open"
+					: " — open";
+			return `${index + 1}. ${obligation.requester} → ${obligation.reviewer ?? "any"}: ${obligation.artifact}@${obligation.revision} [${obligation.obligationId}]${disposition}`;
+		});
+	}
 	private historyStatus(): string {
 		if (this.historyPending) return "HISTORY · Loading selected family… · n report";
 		if (this.historyError) return "HISTORY FAILED · Retained data stays visible · n report · h retry";
 		const history = this.familyId ? this.retained.get(this.familyId)?.history : null;
 		const notices = this.allNotices().length;
-		return history
+		const outstanding = this.snapshot?.outstandingRequired?.length ?? 0;
+		const base = history
 			? `HISTORY · ${history.total} events · +${history.added}/-${history.removed} · ${notices} notices · n report`
 			: `Live memory · ${notices} notices`;
+		return outstanding > 0 ? `${base} · ${outstanding} outstanding required` : base;
 	}
 	private infoLines(width: number): string[] {
 		const history = this.familyId ? this.retained.get(this.familyId)?.history : null;
@@ -2124,6 +2138,18 @@ class SubagentConsole {
 							: []),
 						"A history request replaces the family snapshot. Live refresh retains loaded evidence. Counts do not establish complete history.",
 						"Only known worker files and available manager handles supply evidence. Missing files, read bounds, and source limits leave omissions.",
+						"",
+						`OUTSTANDING REQUIRED (${this.snapshot?.outstandingRequired?.length ?? 0})`,
+						...this.obligationRows(this.snapshot?.outstandingRequired ?? []),
+						...(this.snapshot?.outstandingRequired?.length
+							? []
+							: ["No required obligations are unresolved."]),
+						"",
+						`NOT ACCEPTED (${this.snapshot?.unaccepted?.length ?? 0})`,
+						...this.obligationRows(this.snapshot?.unaccepted ?? []),
+						...(this.snapshot?.unaccepted?.length
+							? []
+							: ["No dispositions are recorded as non-accepted."]),
 						"",
 						`SOURCE NOTICES (${this.allNotices().length})`,
 						...this.allNotices().map((notice, index) => `${index + 1}. ${notice}`),

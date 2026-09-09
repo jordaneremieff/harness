@@ -101,8 +101,8 @@ describe("peer routing", () => {
 		assert.equal(received.length, 1);
 		assert.equal(received[0].message, exact);
 	});
-	it("rolls back a synchronous delivery failure without waking a waiter", async () => {
-		const { hub } = family();
+	it("rolls back a synchronous delivery failure without leaving a receipt", () => {
+		const { hub, received } = family();
 		hub.register({
 			sessionId: "b-session",
 			workerId: "worker-b",
@@ -112,9 +112,8 @@ describe("peer routing", () => {
 				throw new Error("queue unavailable");
 			},
 		});
-		const waiting = hub.wait("b-session", 5);
 		assert.throws(() => hub.send("a-session", "worker-b", "one"), /queue unavailable/);
-		assert.equal((await waiting).status, "timeout");
+		assert.equal(received.length, 0);
 	});
 	it("paginates a bounded directory and reports the full family total", () => {
 		const { hub } = family();
@@ -139,74 +138,5 @@ describe("peer routing", () => {
 			received.map((message) => message.id),
 		);
 		assert.doesNotThrow(() => hub.send("a-session", "worker-b", "space released"));
-	});
-});
-
-describe("peer wait ownership", () => {
-	it("queues the payload before waking and does not infer context observation", async () => {
-		const { hub, received } = family();
-		const waiting = hub.wait("b-session", 1000).then((result) => {
-			assert.equal(received.length, 1);
-			return result;
-		});
-		assert.equal(hub.list("root").peers.find((peer) => peer.id === "worker-b")?.waiting, true);
-		const sent = hub.send("a-session", "worker-b", "ready");
-		const result = await waiting;
-		assert.equal(result.status, "message");
-		assert.equal(result.messages[0].id, sent.id);
-		assert.equal(result.messages[0].status, "sent_unconfirmed");
-		assert.equal(hub.list("root").peers.find((peer) => peer.id === "worker-b")?.waiting, false);
-	});
-	it("handles message-before-wait and does not reuse a message already in context", async () => {
-		const { hub } = family();
-		const sent = hub.send("a-session", "worker-b", "early");
-		assert.equal((await hub.wait("b-session", 1000)).messages[0].id, sent.id);
-		hub.observeContext("b-session", [sent.id]);
-		assert.equal((await hub.wait("b-session", 5)).status, "timeout");
-	});
-	it("cancels waits through their tool signal and releases the timer and slot", async () => {
-		const { hub } = family();
-		const controller = new AbortController();
-		const waiting = hub.wait("a-session", 1000, controller.signal);
-		assert.throws(() => hub.wait("a-session", 1000), /already has/);
-		controller.abort();
-		await assert.rejects(waiting, /aborted/);
-		await assert.rejects(hub.wait("a-session", 1000, controller.signal), /aborted/);
-		assert.equal((await hub.wait("a-session", 5)).status, "timeout");
-		assert.throws(() => hub.wait("a-session", 0), /between/);
-		assert.throws(() => hub.wait("a-session", 300001), /between/);
-	});
-	it("settles on close and records target closure without claiming receipt", async () => {
-		const { hub, b } = family();
-		const waiting = hub.wait("b-session", 1000);
-		b();
-		b();
-		assert.equal((await waiting).status, "closed");
-		const replacement = hub.register({
-			sessionId: "b-session",
-			workerId: "worker-b",
-			parentSessionId: "root",
-			label: "replacement",
-			send: () => {},
-		});
-		const sent = hub.send("a-session", "worker-b", "pending");
-		replacement();
-		assert.equal(hub.status("a-session", sent.id).status, "target_closed");
-	});
-	it("keeps a replacement binding when an old cleanup callback runs", () => {
-		const { hub, b } = family();
-		let calls = 0;
-		hub.register({
-			sessionId: "b-session",
-			workerId: "worker-b",
-			parentSessionId: "root",
-			label: "replacement",
-			send: () => {
-				calls++;
-			},
-		});
-		b();
-		hub.send("a-session", "worker-b", "current");
-		assert.equal(calls, 1);
 	});
 });

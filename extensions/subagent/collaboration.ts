@@ -7,6 +7,13 @@ import type {
 import type { WorkerRecord } from "./index.ts";
 import type { PeerReceipt } from "./peers.ts";
 import {
+	outstandingRequiredObligations,
+	projectObligations,
+	sanitizeWorkReference,
+	unacceptedObligations,
+	type ReferencedExchange,
+} from "./work-references.ts";
+import {
 	type EntryReader,
 	type EntrySnapshot,
 	readSelectedSession,
@@ -105,7 +112,6 @@ const toolNames = new Set([
 	"subagent_report",
 	"subagent_peers",
 	"subagent_message",
-	"subagent_wait",
 	"submit_result",
 ]);
 const customTypes = new Set(["subagent_peer", "subagent_report", "subagent_result", "subagent_paused"]);
@@ -216,12 +222,13 @@ export function createCollaborationReader(
 				label: record.label ?? record.id,
 				task: clip(record.task, 2048),
 				model: clip(record.model, 256),
-				state: record.state === "running" && record.interruptedAt ? "paused" : record.state,
+				state: record.state === "running" ? (record.interruptedAt ? "paused" : record.idleSince != null ? "idle" : "active") : record.state,
 				workerId: record.id,
 				continuedFrom: string(record.continuedFrom),
 			});
 		}
 		const events: CollaborationEvent[] = [];
+		const references: ReferencedExchange[] = [];
 		let eventBytes = 0;
 		let exhausted = false;
 		function add(event: CollaborationEvent): boolean {
@@ -401,6 +408,18 @@ export function createCollaborationReader(
 						notice("A peer message identity has conflicting envelope evidence; both observations are shown.");
 					const status = string(details.status);
 					const messageActor = address(string(peer ? details.from : details.id)) ?? actorId;
+					if (peer && details.reference !== undefined) {
+						const result = sanitizeWorkReference(details.reference);
+						if ("error" in result) {
+							notice(`A peer message reference was omitted: ${result.error}`);
+						} else {
+							references.push({
+								author: messageActor,
+								reference: result.reference,
+								timestamp: Date.parse(entry.timestamp) || 0,
+							});
+						}
+					}
 					const displayText = sources.messageText?.(body, messageActor) ?? body;
 					add({
 						...base,
@@ -453,11 +472,15 @@ export function createCollaborationReader(
 				}
 			}
 		}
+		const obligations = projectObligations(references);
 		return {
 			familyId,
 			families: [...familyMap].map(([id, label]) => ({ id, label })),
 			participants,
 			events,
+			obligations,
+			outstandingRequired: outstandingRequiredObligations(obligations),
+			unaccepted: unacceptedObligations(obligations),
 			notices: [...notices],
 		};
 	};

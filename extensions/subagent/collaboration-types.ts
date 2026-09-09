@@ -1,3 +1,5 @@
+import type { ObligationView } from "./work-references.ts";
+
 /** Presentation facts, not a second worker lifecycle or message queue. */
 export interface CollaborationParticipant {
 	id: string;
@@ -33,6 +35,12 @@ export interface CollaborationSnapshot {
 	families: { id: string; label: string }[];
 	participants: CollaborationParticipant[];
 	events: CollaborationEvent[];
+	/** Task/artifact/revision obligations folded from peer references. */
+	obligations: ObligationView[];
+	/** Required obligations no accepted disposition has closed (including `unavailable`). */
+	outstandingRequired: ObligationView[];
+	/** Dispositions closed without acceptance (`disagreed`), with their reasons. */
+	unaccepted: ObligationView[];
 	notices: string[];
 }
 

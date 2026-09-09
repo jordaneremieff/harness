@@ -1,11 +1,13 @@
-/** Managed nested workers retain their run through a bounded completion wait. */
+/** A managed nested worker ends its ordinary turn, stays live and idle, and
+ * resumes in the same session when its child's completion arrives as a native
+ * custom message. No wait tool, no polling, no keepalive instruction. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = mkdtempSync(join(tmpdir(), "subagent-nested-wait-"));
+const root = mkdtempSync(join(tmpdir(), "subagent-nested-idle-"));
 const agentDir = join(root, "agent");
 const cwd = join(root, "project");
 const home = join(root, "home");
@@ -17,10 +19,10 @@ const captureError = (error: unknown) => errors.push(error);
 process.on("unhandledRejection", captureError);
 process.on("uncaughtException", captureError);
 const watchdog = setTimeout(() => {
-	console.error("Nested wait fixture exceeded its runtime bound", errors);
+	console.error("Nested idle fixture exceeded its runtime bound", errors);
 	process.exit(1);
 }, 25_000);
-const key = Symbol.for("subagent-test.nested-wait");
+const key = Symbol.for("subagent-test.nested-idle");
 const model = {
 	id: "nested-model",
 	name: "Nested Model",
@@ -72,13 +74,14 @@ async function until(check: () => boolean, description: string) {
 		const dispatched = lastResult(context, "subagent").details.workers;
 		childId = dispatched[0].id;
 		assert.ok(childId);
-		return tool("subagent_wait", { timeoutSeconds: 1 });
+		// End the ordinary turn instead of waiting. The worker stays live and
+		// idle; the child's completion starts the next turn in this same session.
+		return fauxAssistantMessage("PARENT_IDLE");
 	}
 	if (count === 3) {
-		assert.equal(lastResult(context, "subagent_wait").details.status, "timeout");
 		assert.ok(
 			JSON.stringify(context.messages).includes("NESTED_CHILD_RESULT"),
-			"queued completion reaches the next call",
+			"the child completion reaches the parent's next turn without a wait",
 		);
 		return tool("subagent_collect", { id: childId });
 	}
@@ -93,7 +96,7 @@ writeFileSync(
 	`import { fauxProvider } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
 const model = ${JSON.stringify(model)};
 export default function(pi) {
-  const respond = globalThis[Symbol.for("subagent-test.nested-wait")];
+  const respond = globalThis[Symbol.for("subagent-test.nested-idle")];
   const faux = fauxProvider({api: model.api, provider: model.provider, models: [model]});
   let role;
   const next = context => {
@@ -129,28 +132,30 @@ try {
 			sessionManager: SessionManager.create(cwd),
 			model: model as never,
 			thinkingLevel: "off",
-			tools: ["subagent", "subagent_collect", "subagent_wait"],
+			tools: ["subagent", "subagent_collect"],
 		})
 	).session;
 	await owner.bindExtensions({ onError: captureError });
 	await owner.prompt("NESTED_ROOT_TASK");
 	const parent = sub.listWorkers().find((record) => record.task === "NESTED_PARENT_TASK")!;
 	assert.ok(parent, "the parent is a managed worker, not a manually marked SDK session");
-	await until(() => sub.readWorker(parent.id)?.currentTool === "subagent_wait", "parent enters its wait");
+	await until(() => sub.readWorker(parent.id)?.idleSince != null, "the parent ends its turn and stays idle");
 	assert.equal(sub.readWorker(parent.id)?.state, "running");
 	assert.equal(sub.readWorker(childId)?.state, "running");
 	assert.equal(sub.readWorker(childId)?.ownerSession, parent.sessionId);
 	releaseChild();
-	await until(() => sub.readWorker(childId)?.state === "done", "child submits during the wait");
-	await until(() => sub.readWorker(parent.id)?.state === "done", "parent collects and submits after the wait");
+	await until(() => sub.readWorker(childId)?.state === "done", "child submits while the parent is idle");
+	await until(() => sub.readWorker(parent.id)?.state === "done", "parent resumes on the completion, collects and submits");
 	assert.equal(readFileSync(sub.workerFiles(childId).result, "utf8"), "NESTED_CHILD_RESULT");
 	assert.equal(readFileSync(sub.workerFiles(parent.id).result, "utf8"), "NESTED_PARENT_RESULT");
-	assert.equal(calls.get("parent"), 4, "the wait does not poll through provider calls");
+	assert.equal(calls.get("parent"), 4, "the idle worker makes exactly its scripted turns, no polling");
 	assert.equal(calls.get("child"), 1);
-	assert.match(prompts.get("parent") ?? "", /Ending an assistant turn without a tool call is not a wait/);
-	assert.match(prompts.get("parent") ?? "", /future peer reply or child completion/);
-	assert.match(prompts.get("parent") ?? "", /Completion messages do not wake the peer wait/);
-	assert.doesNotMatch(prompts.get("parent") ?? "", /only when your next step depends on a future peer reply\./);
+	assert.match(prompts.get("parent") ?? "", /ending an assistant turn does not end your run/);
+	assert.match(prompts.get("parent") ?? "", /Your session stays live and idle/);
+	assert.match(prompts.get("parent") ?? "", /Do not call tools just to stay active/);
+	assert.match(prompts.get("parent") ?? "", /arrive as custom messages/);
+	assert.doesNotMatch(prompts.get("parent") ?? "", /subagent_wait/);
+	assert.doesNotMatch(prompts.get("parent") ?? "", /peer wait/);
 	assert.ok(
 		requests
 			.get("parent")
@@ -162,7 +167,7 @@ try {
 	await until(() => !sub.sharedWorkerState.reportSinks.has(ownerId), "root releases its resources");
 	owner = null;
 	assert.deepEqual(errors, []);
-	console.log("nested wait child: PASS");
+	console.log("nested idle child: PASS");
 } finally {
 	releaseChild();
 	try {
