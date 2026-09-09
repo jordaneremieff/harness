@@ -95,7 +95,8 @@ The harness is a Pi package. `package.json` declares the resources under the
   tests through `node --test` over the glob in the `test` script.
 - `package.json` declares wildcard peers for `@earendil-works/pi-ai`,
   `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox`, and
-  `@earendil-works/pi-server`. It declares no direct dependencies.
+  `@earendil-works/pi-server`. Its one direct runtime dependency is
+  `htmlparser2`, which the Brave extension uses for static HTML parsing.
 - Pi 0.85.1's extension loader binds the core AI, agent, coding-agent, TUI,
   and typebox imports to its running installation. `pi-server` is not in that
   bound set. The manifest still declares it as a peer, but the subagent slice
