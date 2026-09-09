@@ -17,6 +17,8 @@ Run all commands from the repository root:
 npm run evals -- validate prompts/wtf.eval.mts
 npm run evals -- validate prompts/drift.eval.mts
 npm run evals -- validate prompts/policy-enforce.eval.mts
+npm run evals -- validate prompts/seed.eval.mts
+npm run evals -- validate prompts/seed-transfer.eval.mts
 
 npm run evals -- plan prompts/wtf.eval.mts \
   --participant anthropic/claude-model:high \
@@ -106,6 +108,26 @@ model declines an available tool.
 `prompts/templates.test.mts` checks discovery through the public Pi resource
 loader without model inference. Package discovery and an explicit candidate
 load remain separate from semantic quality and active-session readback.
+
+### /seed prompt suites
+
+`prompts/seed.eval.mts` holds the delivery surfaces of the `/seed` clipboard
+brief: it binds an inert `clipboard_copy` fixture (`prompts/mock-clipboard.ts`)
+through success, archive-warning, failure, and missing-tool variants, so real
+executions reach the clipboard-first mechanism while no run touches an
+operating system clipboard or archive.
+
+`prompts/seed-transfer.eval.mts` holds transfer quality on the success variant.
+Its cases decide each token by its stated role, not its shape: bare fragments
+that carry no stated role must stay out of the payload and chat unnamed, while
+an operator-identified raw diagnostic line and a structured status field must
+survive exactly, with unknown meaning left unknown. The same contexts require
+speaker, qualification, frame, and approval-scope retention, so formatting-class
+and position rules cannot pass. The colocated tests in
+`prompts/seed.eval.test.mts` validate both suites, keep forbidden tokens
+role-less in the fixtures, and prove that a qualified rejection naming scrapped
+work still passes the structural floors; invented meaning beyond the recorded
+role stays human adjudication.
 
 ### Policy enforcement suite
 

@@ -28,6 +28,10 @@ boundaries, rather than a central feature catalog.
   updates, and machine configuration.
 - [Architecture](docs/architecture.md) explains the resource boundaries and
   repository conventions.
+- [Prompt templates](docs/conventions/prompts.md) supply the operator's `/`
+  commands, including `/seed [hint]`, which puts a quick next-session brief
+  on the clipboard labeled `seed: <topic>`; its chat confirmation follows
+  the clipboard tool's actual outcome, including the history archive result.
 - [Worktrees](docs/conventions/worktrees.md) defines the development and
   publication workflow.
 
