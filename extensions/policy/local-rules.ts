@@ -5,7 +5,9 @@ import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import {
+	contentRevision,
 	effectiveState,
+	FACTS_DOMAIN,
 	packageRowRevision,
 	POLICY_DOMAIN,
 	ruleDefinitionRevision,
@@ -13,9 +15,11 @@ import {
 	type AgentRuleAudit,
 	type AuditSurface,
 	type CommandShapeSpec,
+	type DefinitionEffect,
 	type OperatorRuleAudit,
 	type PackageDefinitionRow,
 	type PackageRuleAudit,
+	type PolicyDomain,
 	type RuleAudit,
 	type RuleEffect,
 	type RuleMatcher,
@@ -26,12 +30,15 @@ import {
 	type SessionRuleAudit,
 } from "./rule.ts";
 import { hasCodeMatcher, PACKAGE_CATALOG } from "./shell-rules.ts";
+import { PROGRAM_LIMITS, RULE_CAPACITY, validateFactsProgram, type FactsProgram } from "./program.ts";
+import { validateNamedData, type NamedData } from "./data.ts";
 import { ensurePrivateDirectory } from "./store.ts";
 
 export const RULES_FILE = "rules.jsonl";
 export const MAX_REGISTRY_BYTES = 4 * 1024 * 1024;
 export const MAX_RULE_EVENT_BYTES = 64 * 1024;
-export const MAX_LOCAL_RULES = 256;
+export const MAX_CATALOG_EVENT_BYTES = 512 * 1024;
+export const MAX_LOCAL_RULES = RULE_CAPACITY.local;
 export const MAX_PENDING_PROPOSALS = 256;
 export const MAX_RULE_ID_LENGTH = 80;
 export const MAX_NOTE_LENGTH = 2000;
@@ -42,7 +49,7 @@ export const MAX_LIST_ENTRIES = 64;
 export const MAX_LIST_ENTRY_LENGTH = 200;
 export const MAX_CWD_PREFIX_LENGTH = 500;
 export const MAX_AUDIT_FIELD_LENGTH = 500;
-export const MAX_CATALOG_ROWS = 1024;
+export const MAX_CATALOG_ROWS = RULE_CAPACITY.package;
 
 const RULE_ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -54,22 +61,22 @@ const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 export interface LocalRuleCandidate {
 	id: string;
-	domain: typeof POLICY_DOMAIN;
-	matcher: { kind: "declarative"; language: "command-shape/v1"; spec: CommandShapeSpec };
+	domain: PolicyDomain;
+	matcher: Extract<RuleMatcher, { kind: "declarative" }>;
 	note: string;
 	suggestion?: RuleSuggestion;
 	scope?: RuleScope;
 }
 
-interface PersistedLocalCandidate {
-	domain: typeof POLICY_DOMAIN;
-	matcher: { kind: "declarative"; language: "command-shape/v1"; spec: CommandShapeSpec };
+export interface PersistedLocalCandidate {
+	domain: PolicyDomain;
+	matcher: Extract<RuleMatcher, { kind: "declarative" }>;
 	note: string;
 	suggestion?: RuleSuggestion;
 	scope?: RuleScope;
 }
 
-export type ProposalOperation = "add" | "retire" | "disable";
+export type ProposalOperation = "add" | "replace" | "retire" | "disable";
 
 export interface CatalogEvent {
 	kind: "catalog";
@@ -86,6 +93,8 @@ export interface ProposalEvent {
 	ruleId: string;
 	reason: string;
 	candidate?: PersistedLocalCandidate;
+	/** Replacement compares the complete behavior revision at approval time. */
+	expectedRevision?: string;
 	audit: AgentRuleAudit;
 }
 
@@ -95,6 +104,8 @@ export interface DecisionEvent {
 	proposalId: string;
 	decision: "approved" | "rejected";
 	effect?: RuleEffect;
+	/** Facts approvals bind the exact inert proposal, including action parameters. */
+	proposalRevision?: string;
 	audit: SessionRuleAudit;
 }
 
@@ -132,12 +143,64 @@ export interface DefinitionEvent {
 	audit: SessionRuleAudit;
 }
 
-export type RuleEvent = CatalogEvent | ProposalEvent | DecisionEvent | OverrideEvent | DefinitionEvent;
+export interface DataSetEvent {
+	kind: "data";
+	id: string;
+	operation: "set";
+	data: NamedData;
+	expectedRevision: string | null;
+	audit: SessionRuleAudit;
+}
+
+export interface DataRemoveEvent {
+	kind: "data";
+	id: string;
+	operation: "remove";
+	name: string;
+	expectedRevision: string;
+	audit: SessionRuleAudit;
+}
+
+export type DataEvent = DataSetEvent | DataRemoveEvent;
+export type RuleEvent = CatalogEvent | ProposalEvent | DecisionEvent | OverrideEvent | DefinitionEvent | DataEvent;
 export type PendingProposal = ProposalEvent;
 
 export interface RuleReduction {
 	records: Map<string, RuleRecord>;
 	pending: PendingProposal[];
+	/** Operator-approved source bindings, never tool results or rule-selected paths. */
+	data: Map<string, NamedData>;
+}
+
+export const MAX_NAMED_DATA = 64;
+
+export function proposalRevision(proposal: ProposalEvent): string {
+	return contentRevision(proposal);
+}
+
+export function namedDataRevision(data: Omit<NamedData, "revision"> | NamedData): string {
+	const { revision: _revision, ...contract } = data as NamedData;
+	return contentRevision(contract);
+}
+
+function factsCandidate(candidate: PersistedLocalCandidate | undefined): candidate is PersistedLocalCandidate & {
+	matcher: { kind: "declarative"; language: "facts/v1"; spec: FactsProgram };
+} {
+	return candidate?.matcher.language === "facts/v1";
+}
+
+function candidateEffect(candidate: PersistedLocalCandidate, effect?: RuleEffect): DefinitionEffect | undefined {
+	if (!factsCandidate(candidate)) return effect;
+	switch (candidate.matcher.spec.action.kind) {
+		case "deny":
+			return "block";
+		case "guide":
+			return "steer";
+		case "observe":
+			return "observe";
+		default:
+			return "correct";
+	}
 }
 
 export interface RuleStoreHealth {
@@ -185,6 +248,12 @@ function oneOf<T extends string>(value: unknown, values: readonly T[], name: str
 		throw new Error(`${name} must be one of ${values.join(", ")}`);
 	}
 	return value as T;
+}
+
+function validateRevision(value: unknown, name: string): string {
+	const revision = text(value, name, 12);
+	if (!REVISION.test(revision)) throw new Error(`${name} must be 12 lowercase hexadecimal characters`);
+	return revision;
 }
 
 function eventId(value: unknown, name: string): string {
@@ -295,7 +364,12 @@ function validateMatcher(value: unknown, expected?: "code" | "declarative"): Rul
 		return { kind, key: text(value.key, "matcher.key", MAX_RULE_ID_LENGTH) };
 	}
 	exact(value, ["kind", "language", "spec"]);
-	if (value.language !== "command-shape/v1") throw new Error("matcher.language must be command-shape/v1");
+	if (value.language === "facts/v1") {
+		const error = validateFactsProgram(value.spec);
+		if (error) throw new Error(`matcher.spec: ${error}`);
+		return { kind, language: "facts/v1", spec: structuredClone(value.spec) as FactsProgram };
+	}
+	if (value.language !== "command-shape/v1") throw new Error("matcher.language must be command-shape/v1 or facts/v1");
 	return { kind, language: "command-shape/v1", spec: validateCommandShape(value.spec) };
 }
 
@@ -333,10 +407,14 @@ function validateScope(value: unknown): RuleScope {
 function validatePersistedCandidate(value: unknown): PersistedLocalCandidate {
 	if (!object(value)) throw new Error("candidate must be an object");
 	exact(value, ["domain", "matcher", "note"], ["suggestion", "scope"]);
-	if (value.domain !== POLICY_DOMAIN) throw new Error(`candidate.domain must be ${POLICY_DOMAIN}`);
+	const matcher = validateMatcher(value.matcher, "declarative") as PersistedLocalCandidate["matcher"];
+	const domain = matcher.language === "facts/v1" ? FACTS_DOMAIN : POLICY_DOMAIN;
+	if (value.domain !== domain) throw new Error(`candidate.domain must be ${domain}`);
+	if (matcher.language === "facts/v1" && value.suggestion !== undefined)
+		throw new Error("facts candidates do not accept a shell suggestion");
 	const candidate: PersistedLocalCandidate = {
-		domain: POLICY_DOMAIN,
-		matcher: validateMatcher(value.matcher, "declarative") as PersistedLocalCandidate["matcher"],
+		domain,
+		matcher,
 		note: text(value.note, "candidate.note", MAX_NOTE_LENGTH),
 	};
 	if (value.suggestion !== undefined) candidate.suggestion = validateSuggestion(value.suggestion);
@@ -376,17 +454,28 @@ export function validateLocalCandidate(value: unknown): LocalRuleCandidate {
 export function validatePackageDefinitionRow(value: unknown): PackageDefinitionRow {
 	if (!object(value)) throw new Error("catalog row must be an object");
 	exact(value, ["id", "domain", "matcher", "effect", "note", "revision"], ["suggestion", "scope"]);
-	if (value.domain !== POLICY_DOMAIN) throw new Error(`catalog row domain must be ${POLICY_DOMAIN}`);
+	const matcher = validateMatcher(value.matcher);
+	if (matcher.kind === "declarative" && matcher.language !== "facts/v1")
+		throw new Error("package rows require a code or facts/v1 matcher");
+	const domain = matcher.kind === "code" ? POLICY_DOMAIN : FACTS_DOMAIN;
+	if (value.domain !== domain) throw new Error(`catalog row domain must be ${domain}`);
+	if (matcher.kind === "declarative" && value.suggestion !== undefined)
+		throw new Error("facts package definitions do not accept a shell suggestion");
+	const effect =
+		matcher.kind === "code"
+			? oneOf(value.effect, EFFECTS, "catalog row effect")
+			: candidateEffect({ domain, matcher, note: "Package definition" })!;
+	if (value.effect !== effect) throw new Error("catalog row effect must match its program action");
 	const rowWithoutRevision = {
 		id: validateRuleId(value.id),
-		domain: POLICY_DOMAIN,
-		matcher: validateMatcher(value.matcher, "code") as PackageDefinitionRow["matcher"],
-		effect: oneOf(value.effect, EFFECTS, "catalog row effect"),
+		domain,
+		matcher,
+		effect,
 		note: text(value.note, "catalog row note", MAX_NOTE_LENGTH),
 		...(value.suggestion !== undefined ? { suggestion: validateSuggestion(value.suggestion) } : {}),
 		...(value.scope !== undefined ? { scope: validateScope(value.scope) } : {}),
 	};
-	if (rowWithoutRevision.matcher.key !== rowWithoutRevision.id) {
+	if (rowWithoutRevision.matcher.kind === "code" && rowWithoutRevision.matcher.key !== rowWithoutRevision.id) {
 		throw new Error("package rule id must equal its code matcher key");
 	}
 	const guidanceBytes = Buffer.byteLength(
@@ -421,7 +510,42 @@ function boundedCatalogRows(value: unknown, name: string): PackageDefinitionRow[
 
 export function validateRuleEvent(value: unknown): RuleEvent {
 	if (!object(value)) throw new Error("event must be an object");
-	const kind = oneOf(value.kind, ["catalog", "proposal", "decision", "override", "definition"] as const, "event kind");
+	const kind = oneOf(
+		value.kind,
+		["catalog", "proposal", "decision", "override", "definition", "data"] as const,
+		"event kind",
+	);
+	if (kind === "data") {
+		const operation = oneOf(value.operation, ["set", "remove"] as const, "data operation");
+		exact(value, ["kind", "id", "operation", "expectedRevision", "audit", operation === "set" ? "data" : "name"]);
+		const audit = validateAudit(value.audit);
+		if (audit.surface === "package") throw new Error("data audit must name a session surface");
+		const id = eventId(value.id, "data.id");
+		if (operation === "remove")
+			return {
+				kind,
+				id,
+				operation,
+				name: validateRuleId(value.name),
+				expectedRevision: validateRevision(value.expectedRevision, "expectedRevision"),
+				audit,
+			};
+		const error = validateNamedData(value.data);
+		if (error) throw new Error(`data: ${error}`);
+		const data = structuredClone(value.data) as NamedData;
+		validateRuleId(data.name);
+		if (data.revision !== namedDataRevision(data))
+			throw new Error("data revision does not describe its complete contract");
+		return {
+			kind,
+			id,
+			operation,
+			data,
+			expectedRevision:
+				value.expectedRevision === null ? null : validateRevision(value.expectedRevision, "expectedRevision"),
+			audit,
+		};
+	}
 	if (kind === "catalog") {
 		exact(value, ["kind", "rows", "audit"]);
 		const audit = validateAudit(value.audit);
@@ -431,10 +555,10 @@ export function validateRuleEvent(value: unknown): RuleEvent {
 		return { kind, rows, audit };
 	}
 	if (kind === "proposal") {
-		exact(value, ["kind", "id", "operation", "ruleId", "reason", "audit"], ["candidate"]);
+		exact(value, ["kind", "id", "operation", "ruleId", "reason", "audit"], ["candidate", "expectedRevision"]);
 		const audit = validateAudit(value.audit);
 		if (audit.surface !== "agent-tool") throw new Error("proposal audit surface must be agent-tool");
-		const operation = oneOf(value.operation, ["add", "retire", "disable"] as const, "proposal operation");
+		const operation = oneOf(value.operation, ["add", "replace", "retire", "disable"] as const, "proposal operation");
 		const event: ProposalEvent = {
 			kind,
 			id: eventId(value.id, "proposal.id"),
@@ -443,12 +567,15 @@ export function validateRuleEvent(value: unknown): RuleEvent {
 			reason: text(value.reason, "reason", MAX_REASON_LENGTH),
 			audit: audit as AgentRuleAudit,
 		};
-		if (operation === "add") event.candidate = validatePersistedCandidate(value.candidate);
+		if (operation === "add" || operation === "replace") event.candidate = validatePersistedCandidate(value.candidate);
 		else if (value.candidate !== undefined) throw new Error(`${operation} proposal must not contain a candidate`);
+		if (operation === "replace") event.expectedRevision = validateRevision(value.expectedRevision, "expectedRevision");
+		else if (value.expectedRevision !== undefined)
+			throw new Error(`${operation} proposal must not contain expectedRevision`);
 		return event;
 	}
 	if (kind === "decision") {
-		exact(value, ["kind", "id", "proposalId", "decision", "audit"], ["effect"]);
+		exact(value, ["kind", "id", "proposalId", "decision", "audit"], ["effect", "proposalRevision"]);
 		const audit = validateAudit(value.audit);
 		if (audit.surface === "package") throw new Error("decision audit must name a session surface");
 		const event: DecisionEvent = {
@@ -459,8 +586,10 @@ export function validateRuleEvent(value: unknown): RuleEvent {
 			audit,
 		};
 		if (value.effect !== undefined) event.effect = oneOf(value.effect, EFFECTS, "effect");
-		if (event.decision === "rejected" && event.effect !== undefined)
-			throw new Error("rejected decision must not contain an effect");
+		if (value.proposalRevision !== undefined)
+			event.proposalRevision = validateRevision(value.proposalRevision, "proposalRevision");
+		if (event.decision === "rejected" && (event.effect !== undefined || event.proposalRevision !== undefined))
+			throw new Error("rejected decision must not contain an effect or proposal revision");
 		return event;
 	}
 	if (kind === "override") {
@@ -590,6 +719,14 @@ function orderedRecords(
 	return ordered;
 }
 
+function assertActiveCapacity(records: ReadonlyMap<string, RuleRecord>, additional = 0, excludedId?: string): void {
+	let active = additional;
+	for (const record of records.values()) {
+		if (record.id !== excludedId && effectiveState(record) === "active") active++;
+	}
+	if (active > PROGRAM_LIMITS.rules) throw new Error(`active policy definitions exceed ${PROGRAM_LIMITS.rules}`);
+}
+
 function catalogCollisionIds(reduction: RuleReduction, catalog: readonly PackageDefinitionRow[]): string[] {
 	return catalog
 		.filter((row) => reduction.records.get(row.id)?.source.kind === "local")
@@ -604,6 +741,7 @@ export function reduceRuleEvents(
 	eventLines?: readonly number[],
 ): RuleReduction {
 	const records = new Map<string, RuleRecord>();
+	const data = new Map<string, NamedData>();
 	const pending = new Map<string, ProposalEvent>();
 	const pendingByRule = new Map<string, string>();
 	const localLines = new Map<string, number>();
@@ -613,6 +751,18 @@ export function reduceRuleEvents(
 		const event = events[eventIndex];
 		const eventLine = eventLines?.[eventIndex];
 		try {
+			if (event.kind === "data") {
+				if (isAgentSurface(event.audit)) continue;
+				const name = event.operation === "set" ? event.data.name : event.name;
+				if ((data.get(name)?.revision ?? null) !== event.expectedRevision) continue;
+				if (event.operation === "remove") data.delete(name);
+				else {
+					if (!data.has(name) && data.size >= MAX_NAMED_DATA)
+						throw new Error(`data store exceeds ${MAX_NAMED_DATA} bindings`);
+					data.set(name, clone(event.data));
+				}
+				continue;
+			}
 			if (event.kind === "catalog") {
 				packageOrder = event.rows.map((row) => row.id);
 				const installed = new Set(event.rows.map((row) => row.id));
@@ -634,6 +784,13 @@ export function reduceRuleEvents(
 				if (pendingByRule.has(event.ruleId)) continue;
 				const existing = records.get(event.ruleId);
 				if (event.operation === "add" && existing) continue;
+				if (
+					event.operation === "replace" &&
+					(existing?.source.kind !== "local" ||
+						existing.definition.revision !== event.expectedRevision ||
+						existing.definition.state === "retired")
+				)
+					continue;
 				if (event.operation === "retire" && existing?.source.kind !== "local") continue;
 				if (event.operation === "disable" && !existing) continue;
 				pending.set(event.id, clone(event));
@@ -646,33 +803,49 @@ export function reduceRuleEvents(
 				const proposal = pending.get(event.proposalId);
 				if (!proposal) continue;
 				let decided = event.decision === "rejected";
-				if (event.decision === "approved" && proposal.operation === "add") {
-					if (event.effect && proposal.candidate && !records.has(proposal.ruleId)) {
-						const revision = ruleDefinitionRevision({
-							id: proposal.ruleId,
-							domain: proposal.candidate.domain,
-							matcher: proposal.candidate.matcher,
-							effect: event.effect,
-							note: proposal.candidate.note,
-							suggestion: proposal.candidate.suggestion,
-							scope: proposal.candidate.scope,
-						});
-						records.set(proposal.ruleId, {
-							id: proposal.ruleId,
-							source: { kind: "local", proposalId: proposal.id, approvedAudit: clone(operatorAudit(event.audit)) },
-							domain: proposal.candidate.domain,
-							matcher: clone(proposal.candidate.matcher),
-							definition: {
-								revision,
-								state: "active",
-								effect: event.effect,
-								note: proposal.candidate.note,
-								...(proposal.candidate.suggestion ? { suggestion: clone(proposal.candidate.suggestion) } : {}),
-								...(proposal.candidate.scope ? { scope: clone(proposal.candidate.scope) } : {}),
-							},
-							matcherAvailable: true,
-							staleOverride: false,
-						});
+				if (event.decision === "approved" && (proposal.operation === "add" || proposal.operation === "replace")) {
+					const candidate = proposal.candidate;
+					const existing = records.get(proposal.ruleId);
+					const targetValid =
+						proposal.operation === "add"
+							? !existing
+							: existing?.source.kind === "local" &&
+								existing.definition.state === "active" &&
+								existing.definition.revision === proposal.expectedRevision;
+					const exactApproval = factsCandidate(candidate) || proposal.operation === "replace";
+					const approvalValid = !exactApproval || event.proposalRevision === proposalRevision(proposal);
+					const effect = candidate && candidateEffect(candidate, event.effect);
+					if (
+						candidate &&
+						effect &&
+						targetValid &&
+						approvalValid &&
+						(!factsCandidate(candidate) || event.effect === undefined)
+					) {
+						const revision = ruleDefinitionRevision({ id: proposal.ruleId, ...candidate, effect });
+						records.set(
+							proposal.ruleId,
+							refreshDerived(
+								{
+									id: proposal.ruleId,
+									source: { kind: "local", proposalId: proposal.id, approvedAudit: clone(operatorAudit(event.audit)) },
+									domain: candidate.domain,
+									matcher: clone(candidate.matcher),
+									definition: {
+										revision,
+										state: "active",
+										effect,
+										note: candidate.note,
+										...(candidate.suggestion ? { suggestion: clone(candidate.suggestion) } : {}),
+										...(candidate.scope ? { scope: clone(candidate.scope) } : {}),
+									},
+									...(existing?.override ? { override: clone(existing.override) } : {}),
+									matcherAvailable: true,
+									staleOverride: false,
+								},
+								available,
+							),
+						);
 						if (eventLine !== undefined) localLines.set(proposal.ruleId, eventLine);
 						decided = true;
 					}
@@ -765,7 +938,9 @@ export function reduceRuleEvents(
 			throw new RuleLineError(line, `rule store exceeds ${MAX_PENDING_PROPOSALS} pending proposals`);
 		throw new Error(`rule store exceeds ${MAX_PENDING_PROPOSALS} pending proposals`);
 	}
+	assertActiveCapacity(records);
 	return {
+		data,
 		records: orderedRecords(records, packageOrder),
 		pending: [...pending.values()].sort(
 			(left, right) => left.ruleId.localeCompare(right.ruleId) || left.id.localeCompare(right.id),
@@ -790,12 +965,14 @@ function applyInstalledCatalog(
 			records.set(id, refreshDerived({ ...record, definition: { ...record.definition, state: "retired" } }, available));
 		}
 	}
+	assertActiveCapacity(records);
 	return {
 		records: orderedRecords(
 			records,
 			catalog.map((row) => row.id),
 		),
 		pending: reduction.pending,
+		data: reduction.data,
 	};
 }
 
@@ -945,11 +1122,14 @@ async function readEvents(dir: string, path: string): Promise<ReadEventsResult> 
 			const line = content.subarray(start, index);
 			start = index + 1;
 			if (line.length === 0) throw new RuleLineError(lineNumber, "line is empty");
-			if (line.length + 1 > MAX_RULE_EVENT_BYTES) {
-				throw new RuleLineError(lineNumber, `line exceeds ${MAX_RULE_EVENT_BYTES} bytes`);
+			if (line.length + 1 > MAX_CATALOG_EVENT_BYTES) {
+				throw new RuleLineError(lineNumber, `line exceeds ${MAX_CATALOG_EVENT_BYTES} bytes`);
 			}
 			try {
-				events.push(validateRuleEvent(JSON.parse(UTF8.decode(line)) as unknown));
+				const event = validateRuleEvent(JSON.parse(UTF8.decode(line)) as unknown);
+				if (event.kind !== "catalog" && line.length + 1 > MAX_RULE_EVENT_BYTES)
+					throw new Error(`line exceeds ${MAX_RULE_EVENT_BYTES} bytes`);
+				events.push(event);
 				eventLines.push(lineNumber);
 			} catch (error) {
 				const reason = error instanceof Error ? error.message : String(error);
@@ -980,6 +1160,15 @@ function assertWritableAuthority(event: RuleEvent): void {
 }
 
 function assertTransition(event: Exclude<RuleEvent, CatalogEvent>, reduction: RuleReduction): void {
+	if (event.kind === "data") {
+		const name = event.operation === "set" ? event.data.name : event.name;
+		const current = reduction.data.get(name);
+		if ((current?.revision ?? null) !== event.expectedRevision)
+			throw new Error(`data "${name}" revision changed; inspect the current binding`);
+		if (event.operation === "set" && !current && reduction.data.size >= MAX_NAMED_DATA)
+			throw new Error(`data store already contains ${MAX_NAMED_DATA} bindings`);
+		return;
+	}
 	if (event.kind === "proposal") {
 		if (reduction.pending.some((proposal) => proposal.ruleId === event.ruleId)) {
 			throw new Error(`a proposal is already pending for "${event.ruleId}"`);
@@ -989,6 +1178,12 @@ function assertTransition(event: Exclude<RuleEvent, CatalogEvent>, reduction: Ru
 			if (existing) throw new Error(`rule id "${event.ruleId}" is already taken`);
 			const localCount = [...reduction.records.values()].filter((record) => record.source.kind === "local").length;
 			if (localCount >= MAX_LOCAL_RULES) throw new Error(`rule store already contains ${MAX_LOCAL_RULES} local rules`);
+		} else if (event.operation === "replace") {
+			if (existing?.source.kind !== "local")
+				throw new Error(`replacement target "${event.ruleId}" is not a local rule`);
+			if (existing.definition.state === "retired") throw new Error(`local rule "${event.ruleId}" is retired`);
+			if (existing.definition.revision !== event.expectedRevision)
+				throw new Error(`replacement target "${event.ruleId}" revision changed`);
 		} else if (event.operation === "retire") {
 			if (existing?.source.kind !== "local")
 				throw new Error(`retire proposal target "${event.ruleId}" is not a local rule`);
@@ -1008,12 +1203,31 @@ function assertTransition(event: Exclude<RuleEvent, CatalogEvent>, reduction: Ru
 				throw new Error(`cannot approve ${proposal.operation} proposal: target "${proposal.ruleId}" is retired`);
 			}
 		}
-		if (event.decision === "approved" && proposal.operation === "add") {
-			if (!event.effect) throw new Error("approving an add proposal requires effect steer or block");
-			if (reduction.records.has(proposal.ruleId)) throw new Error(`rule id "${proposal.ruleId}" is already taken`);
-		} else if (event.effect !== undefined) {
+		if (event.decision === "approved" && (proposal.operation === "add" || proposal.operation === "replace")) {
+			const isFacts = factsCandidate(proposal.candidate);
+			if (isFacts && event.effect !== undefined)
+				throw new Error("facts approval uses the exact proposed action, not steer or block");
+			if (!isFacts && !event.effect)
+				throw new Error("approving an add or replace command proposal requires effect steer or block");
+			if ((isFacts || proposal.operation === "replace") && event.proposalRevision !== proposalRevision(proposal))
+				throw new Error("approval requires the current exact proposal revision");
+			if (event.proposalRevision !== undefined && event.proposalRevision !== proposalRevision(proposal))
+				throw new Error("proposal revision changed");
+			assertActiveCapacity(
+				reduction.records,
+				reduction.records.get(proposal.ruleId)?.override?.state === "disabled" ? 0 : 1,
+				proposal.ruleId,
+			);
+			if (proposal.operation === "add" && reduction.records.has(proposal.ruleId))
+				throw new Error(`rule id "${proposal.ruleId}" is already taken`);
+			if (proposal.operation === "replace") {
+				const current = reduction.records.get(proposal.ruleId);
+				if (current?.source.kind !== "local" || current.definition.revision !== proposal.expectedRevision)
+					throw new Error("replacement target revision changed");
+			}
+		} else if (event.effect !== undefined || event.proposalRevision !== undefined) {
 			throw new Error(
-				`${event.decision === "approved" ? `approving a ${proposal.operation} proposal` : "rejecting a proposal"} does not accept an effect`,
+				`${event.decision === "approved" ? `approving a ${proposal.operation} proposal` : "rejecting a proposal"} does not accept an effect or proposal revision`,
 			);
 		}
 		return;
@@ -1021,11 +1235,26 @@ function assertTransition(event: Exclude<RuleEvent, CatalogEvent>, reduction: Ru
 	const existing = reduction.records.get(event.ruleId);
 	if (!existing) throw new Error(`no rule named "${event.ruleId}" exists`);
 	if (event.kind === "override") {
+		if (existing.definition.state === "active") {
+			assertActiveCapacity(
+				reduction.records,
+				event.operation === "set" && event.override.state === "disabled" ? 0 : 1,
+				existing.id,
+			);
+		}
 		if (event.operation === "clear" && !existing.override)
 			throw new Error(`rule "${event.ruleId}" has no override to clear`);
 		if (event.operation === "set" && event.override.againstDefinitionRevision !== existing.definition.revision) {
 			throw new Error(`override for "${event.ruleId}" must target its current definition revision`);
 		}
+		if (
+			event.operation === "set" &&
+			existing.matcher.kind === "declarative" &&
+			existing.matcher.language === "facts/v1" &&
+			event.override.effect !== undefined &&
+			event.override.effect !== existing.override?.effect
+		)
+			throw new Error("facts actions require an exact replacement proposal; steer/block overrides do not change them");
 		return;
 	}
 	if (existing.source.kind !== "local") throw new Error(`only local rules can be retired directly`);
@@ -1052,12 +1281,21 @@ export class RuleRegistry {
 	constructor(dir: string, options: RuleRegistryOptions = {}) {
 		this.dir = dir;
 		this.path = join(dir, RULES_FILE);
-		this.catalog = (options.catalog ?? PACKAGE_CATALOG).map((row) => validatePackageDefinitionRow(row));
+		this.catalog = boundedCatalogRows([...(options.catalog ?? PACKAGE_CATALOG)], "installed package catalog");
+		const catalogBytes = Buffer.byteLength(
+			`${JSON.stringify({ kind: "catalog", rows: this.catalog, audit: { surface: "package" } })}\n`,
+			"utf8",
+		);
+		if (catalogBytes > MAX_CATALOG_EVENT_BYTES)
+			throw new Error(`installed package catalog exceeds ${MAX_CATALOG_EVENT_BYTES} bytes`);
 		if (new Set(this.catalog.map((row) => row.id)).size !== this.catalog.length) {
 			throw new Error("installed package catalog contains duplicate rule ids");
 		}
 		this.matcherAvailable = options.matcherAvailable ?? hasCodeMatcher;
 		this.onNotice = options.onNotice ?? ((message) => console.warn(message));
+		assertActiveCapacity(
+			new Map(this.catalog.map((row) => [row.id, packageRecord(row, undefined, this.matcherAvailable)])),
+		);
 	}
 
 	private notice(message: string): void {
@@ -1069,7 +1307,11 @@ export class RuleRegistry {
 	}
 
 	private defaults(): RuleReduction {
-		return applyInstalledCatalog({ records: new Map(), pending: [] }, this.catalog, this.matcherAvailable);
+		return applyInstalledCatalog(
+			{ records: new Map(), pending: [], data: new Map() },
+			this.catalog,
+			this.matcherAvailable,
+		);
 	}
 
 	private degrade(error: unknown): void {
@@ -1119,8 +1361,8 @@ export class RuleRegistry {
 		const event = validateRuleEvent(eventValue);
 		if (!internalCatalog) assertWritableAuthority(event);
 		const serialized = Buffer.from(`${JSON.stringify(event)}\n`, "utf8");
-		if (serialized.length > MAX_RULE_EVENT_BYTES)
-			throw new Error(`policy rule event exceeds ${MAX_RULE_EVENT_BYTES} bytes`);
+		const maximum = event.kind === "catalog" ? MAX_CATALOG_EVENT_BYTES : MAX_RULE_EVENT_BYTES;
+		if (serialized.length > maximum) throw new Error(`policy rule event exceeds ${maximum} bytes`);
 		await ensurePrivateDirectory(this.dir);
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 		const handle = await open(this.path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | noFollow, 0o600);
@@ -1151,6 +1393,7 @@ export class RuleRegistry {
 				this.firstUse = undefined;
 				return;
 			}
+			applyInstalledCatalog(read.reduction, this.catalog, this.matcherAvailable);
 			const change = catalogChange(read.reduction, this.catalog);
 			if (change) await this.append(change, true);
 		} catch (error) {
@@ -1238,6 +1481,43 @@ export class RuleRegistry {
 		return this.mutate(() => ({ event, result: event }));
 	}
 
+	proposeReplace(
+		candidateValue: LocalRuleCandidate,
+		expectedRevision: string,
+		reason: string,
+		audit: AgentRuleAudit,
+	): Promise<ProposalEvent> {
+		const { id: ruleId, ...candidate } = validateLocalCandidate(candidateValue);
+		const event: ProposalEvent = {
+			kind: "proposal",
+			id: randomUUID(),
+			operation: "replace",
+			ruleId,
+			candidate,
+			expectedRevision,
+			reason,
+			audit,
+		};
+		return this.mutate(() => ({ event, result: event }));
+	}
+
+	setData(data: NamedData, expectedRevision: string | null, audit: SessionRuleAudit): Promise<DataSetEvent> {
+		const event: DataSetEvent = { kind: "data", id: randomUUID(), operation: "set", data, expectedRevision, audit };
+		return this.mutate(() => ({ event, result: event }));
+	}
+
+	removeData(name: string, expectedRevision: string, audit: SessionRuleAudit): Promise<DataRemoveEvent> {
+		const event: DataRemoveEvent = {
+			kind: "data",
+			id: randomUUID(),
+			operation: "remove",
+			name,
+			expectedRevision,
+			audit,
+		};
+		return this.mutate(() => ({ event, result: event }));
+	}
+
 	proposeRetire(ruleId: string, reason: string, audit: AgentRuleAudit): Promise<ProposalEvent> {
 		const event: ProposalEvent = { kind: "proposal", id: randomUUID(), operation: "retire", ruleId, reason, audit };
 		return this.mutate(() => ({ event, result: event }));
@@ -1253,9 +1533,11 @@ export class RuleRegistry {
 		decision: "approved" | "rejected",
 		effect: RuleEffect | undefined,
 		audit: SessionRuleAudit,
+		expectedProposalRevision?: string,
 	): Promise<DecisionEvent> {
 		const event: DecisionEvent = { kind: "decision", id: randomUUID(), proposalId, decision, audit };
 		if (effect !== undefined) event.effect = effect;
+		if (expectedProposalRevision !== undefined) event.proposalRevision = expectedProposalRevision;
 		return this.mutate(() => ({ event, result: event }));
 	}
 
@@ -1310,6 +1592,10 @@ export class RuleRegistry {
 	setEffect(ruleId: string, effect: RuleEffect, reason: string, audit: SessionRuleAudit): Promise<OverrideEvent> {
 		return this.mutate((reduction) => {
 			const existing = reduction.records.get(ruleId);
+			if (existing?.matcher.kind === "declarative" && existing.matcher.language === "facts/v1")
+				throw new Error(
+					"facts actions require an exact replacement proposal; steer/block overrides do not change them",
+				);
 			const event: SetOverrideEvent = {
 				kind: "override",
 				id: randomUUID(),

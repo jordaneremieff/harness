@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -100,6 +100,7 @@ function snapshot(overrides: Partial<RuleSnapshot> = {}): RuleSnapshot {
 	]);
 	return {
 		records,
+		data: new Map(),
 		pending: [
 			{
 				kind: "proposal",
@@ -306,6 +307,27 @@ describe("bounded telemetry readers", () => {
 		assert.equal(onlyOld.records.find((entry) => entry.session === "session-observed")?.ruleStoreDegraded, false);
 	});
 
+	it("retains data snapshot identity and omission evidence without data payloads", async (t) => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-panel-"));
+		t.after(() => rm(dir, { recursive: true, force: true }));
+		const metadata = { name: "rooms", revision: "123456abcdef", status: "ready", snapshotAt: 1 };
+		await writeFile(
+			join(dir, "2026-01-01.jsonl"),
+			recordLine(
+				activity({
+					policy: {
+						dataSnapshots: [{ ...metadata, rows: [{ key: "unretained-table-row", value: "private-value" }] }],
+						coverage: { dataSnapshots: { total: 3, omitted: 2 } },
+					},
+				}),
+			),
+		);
+		const result = await readRecentActivity(dir);
+		assert.deepEqual(result.records[0].policy?.dataSnapshots, [metadata]);
+		assert.deepEqual(result.records[0].policy?.recordedCoverage, { dataSnapshots: { total: 3, omitted: 2 } });
+		assert.equal(JSON.stringify(result).includes("unretained-table-row"), false);
+	});
+
 	it("returns empty healthy results for a missing telemetry directory", async () => {
 		const dir = join(await mkdtemp(join(tmpdir(), "policy-panel-")), "missing");
 		assert.deepEqual(await readRecentActivity(dir), {
@@ -482,11 +504,15 @@ describe("PolicyPanel", () => {
 		const panel = rig(data({ snapshot: addSnapshot }), 24, { actionHost: host, initialView: "proposals" }).panel;
 		panel.handleInput("a");
 		await settle();
-		assert.deepEqual(actions, [
-			"select:Choose effect for local.new:steer,block",
-			"confirm:Approve add proposal 00000000-0000-4000-8000-000000000010 for local.new with effect block?",
-			"approve",
-		]);
+		assert.equal(actions.length, 3);
+		assert.equal(actions[0], "select:Choose effect for local.new:steer,block");
+		assert.match(
+			actions[1],
+			/^confirm:Approve add proposal 00000000-0000-4000-8000-000000000010 for local.new with effect block\?/,
+		);
+		assert.match(actions[1], /candidate matcher:.*command-shape\/v1/);
+		assert.match(actions[1], /candidate note: Bound scan output\./);
+		assert.equal(actions[2], "approve");
 		assert.deepEqual(approved, [["00000000-0000-4000-8000-000000000010", "block"]]);
 		assert.match(panel.render(120).join("\n"), /add approved through panel/);
 	});

@@ -1,10 +1,13 @@
 /** Unified policy rule aggregate and matcher contracts. */
 
 import { createHash } from "node:crypto";
+import type { FactsProgram } from "./program.ts";
 
 export const POLICY_DOMAIN = "tool-call" as const;
-export type PolicyDomain = typeof POLICY_DOMAIN;
+export const FACTS_DOMAIN = "facts" as const;
+export type PolicyDomain = typeof POLICY_DOMAIN | typeof FACTS_DOMAIN;
 export type RuleEffect = "steer" | "block";
+export type DefinitionEffect = RuleEffect | "correct" | "observe";
 export type RuleDefinitionState = "active" | "retired";
 
 export interface OperandShape {
@@ -63,12 +66,13 @@ export type AgentRuleAudit = SessionRuleAudit & { surface: "agent-tool" };
 
 export type RuleMatcher =
 	| { kind: "code"; key: string }
-	| { kind: "declarative"; language: "command-shape/v1"; spec: CommandShapeSpec };
+	| { kind: "declarative"; language: "command-shape/v1"; spec: CommandShapeSpec }
+	| { kind: "declarative"; language: "facts/v1"; spec: FactsProgram };
 
 export interface RuleDefinition {
 	revision: string;
 	state: RuleDefinitionState;
-	effect: RuleEffect;
+	effect: DefinitionEffect;
 	note: string;
 	suggestion?: RuleSuggestion;
 	scope?: RuleScope;
@@ -97,12 +101,12 @@ export interface RuleRecord {
 	staleOverride: boolean;
 }
 
-/** Persisted package definition row. Package definitions always use code matchers. */
+/** Installed definitions retain package-source activation authority. */
 export interface PackageDefinitionRow {
 	id: string;
 	domain: PolicyDomain;
-	matcher: { kind: "code"; key: string };
-	effect: RuleEffect;
+	matcher: Extract<RuleMatcher, { kind: "code" } | { language: "facts/v1" }>;
+	effect: DefinitionEffect;
 	note: string;
 	suggestion?: RuleSuggestion;
 	scope?: RuleScope;
@@ -120,8 +124,19 @@ export function effectiveState(record: Pick<RuleRecord, "definition" | "override
 	return record.definition.state === "retired" ? "retired" : (record.override?.state ?? "active");
 }
 
-export function effectiveEffect(record: Pick<RuleRecord, "definition" | "override">): RuleEffect {
+export function effectiveEffect(
+	record: Pick<RuleRecord, "definition" | "override"> & Partial<Pick<RuleRecord, "matcher">>,
+): DefinitionEffect {
+	if (record.matcher?.kind === "declarative" && record.matcher.language === "facts/v1") {
+		return record.definition.effect;
+	}
 	return record.override?.effect ?? record.definition.effect;
+}
+
+export function factsProgram(record: Pick<RuleRecord, "matcher">): FactsProgram | undefined {
+	return record.matcher.kind === "declarative" && record.matcher.language === "facts/v1"
+		? record.matcher.spec
+		: undefined;
 }
 
 function canonical(value: unknown): unknown {
@@ -139,7 +154,7 @@ export interface RevisionInput {
 	id: string;
 	domain: PolicyDomain;
 	matcher: RuleMatcher;
-	effect: RuleEffect;
+	effect: DefinitionEffect;
 	note: string;
 	suggestion?: RuleSuggestion;
 	scope?: RuleScope;
@@ -149,11 +164,15 @@ export interface RevisionInput {
  * Short content identity for behavior-bearing definition fields.
  * Lifecycle state is excluded so retirement and return retain the same identity.
  */
-export function ruleDefinitionRevision(input: RevisionInput): string {
+export function contentRevision(input: unknown): string {
 	return createHash("sha256")
 		.update(JSON.stringify(canonical(input)))
 		.digest("hex")
 		.slice(0, 12);
+}
+
+export function ruleDefinitionRevision(input: RevisionInput): string {
+	return contentRevision(input);
 }
 
 export function packageRowRevision(row: Omit<PackageDefinitionRow, "revision">): string {

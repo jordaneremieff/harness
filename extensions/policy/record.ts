@@ -13,8 +13,15 @@ import type { PolicyMode } from "./mode.ts";
 /** Upper bound on unresolved calls held in memory. */
 export const MAX_PENDING = 512;
 
-/** Age after which an unresolved call is dropped. */
-export const MAX_PENDING_AGE_MS = 10 * 60 * 1000;
+/** Public events do not distinguish every preflight refusal. */
+export type CallOutcome =
+	| "success"
+	| "execution-error"
+	| "denied"
+	| "invalid"
+	| "aborted"
+	| "unexecuted"
+	| "incomplete";
 
 export interface SessionFacts {
 	session: string;
@@ -58,6 +65,14 @@ export interface PolicyRecord extends SessionFacts {
 	annotationBytes?: number;
 	/** The call was blocked at the tool boundary. */
 	blocked?: true;
+	/** Observed final execution outcome, not inferred from the error flag alone. */
+	outcome?: CallOutcome;
+	/** An abort was requested at observation time; this does not establish the result's cause. */
+	abortRequested?: boolean;
+	/** False when correlation or an event boundary leaves observations unavailable. */
+	observationComplete?: boolean;
+	/** Rule identities and metadata only; never new-domain inputs or result bodies. */
+	policy?: Record<string, unknown>;
 }
 
 /** What a mechanism did to one call. */
@@ -65,6 +80,10 @@ export interface CallEffects {
 	notified?: boolean;
 	annotationBytes?: number;
 	blocked?: boolean;
+	outcome?: CallOutcome;
+	abortRequested?: boolean;
+	observationComplete?: boolean;
+	policy?: Record<string, unknown>;
 }
 
 export interface PendingCall {
@@ -120,7 +139,8 @@ export function startCall(
 	return pending;
 }
 
-function outputBytes(content: ContentLike[] | undefined): number {
+/** UTF-8 bytes of text fields only; images and other nontext payloads contribute zero. */
+export function textContentBytes(content: ContentLike[] | undefined): number {
 	if (!content) return 0;
 	let total = 0;
 	for (const part of content) {
@@ -153,7 +173,7 @@ export function finishCall(
 		tool: pending.tool,
 		callId: pending.callId,
 		durationMs: Math.max(0, monotonic - pending.startedAt),
-		outputBytes: outputBytes(facts.content),
+		outputBytes: textContentBytes(facts.content),
 		truncated: facts.truncated === true,
 		error: isError,
 		errorKind: errorKind(facts.content, isError),
@@ -168,31 +188,16 @@ export function finishCall(
 		record.annotationBytes = effects.annotationBytes;
 	}
 	if (effects.blocked === true) record.blocked = true;
+	if (effects.outcome) record.outcome = effects.outcome;
+	if (effects.abortRequested !== undefined) record.abortRequested = effects.abortRequested;
+	if (effects.observationComplete !== undefined) record.observationComplete = effects.observationComplete;
+	if (effects.policy) record.policy = effects.policy;
 	return record;
 }
 
-/**
- * Insert one pending call, first dropping stale entries and then the oldest
- * entry when the map is still full.
- *
- * Not every call produces a result: another extension can block a call before
- * it runs, and an aborted run ends without one. Insertion order is
- * chronological, so the scan stops at the first entry still inside the age
- * bound. Without both bounds, unresolved calls would hold memory for the life
- * of the session and could evict entries that are still live.
- */
-export function trackPending<T extends PendingCall>(
-	pending: Map<string, T>,
-	call: T,
-	monotonic: number = performance.now(),
-): void {
-	for (const [id, entry] of pending) {
-		if (monotonic - entry.startedAt < MAX_PENDING_AGE_MS) break;
-		pending.delete(id);
-	}
-	if (pending.size >= MAX_PENDING) {
-		const oldest = pending.keys().next();
-		if (!oldest.done) pending.delete(oldest.value);
-	}
+/** Refuse new correlation at capacity; the caller reports incomplete observations. Live calls never expire. */
+export function trackPending<T extends PendingCall>(pending: Map<string, T>, call: T): boolean {
+	if (pending.has(call.callId) || pending.size >= MAX_PENDING) return false;
 	pending.set(call.callId, call);
+	return true;
 }

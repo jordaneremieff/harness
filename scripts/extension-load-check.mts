@@ -36,8 +36,12 @@ export function resolveLoaderPath(repoRoot: string, options: { binaryPath?: stri
 	if (existsSync(local)) return local;
 	const binary = options.binaryPath;
 	if (!binary || !existsSync(binary)) return undefined;
-	const candidate = join(dirname(realpathSync(binary)), "core", "extensions", "loader.js");
-	return existsSync(candidate) ? candidate : undefined;
+	const binaryDir = dirname(realpathSync(binary));
+	const candidates = [
+		join(binaryDir, "core", "extensions", "loader.js"),
+		join(binaryDir, "..", "core", "extensions", "loader.js"),
+	];
+	return candidates.find((candidate) => existsSync(candidate));
 }
 
 export async function checkExtensionLoad(

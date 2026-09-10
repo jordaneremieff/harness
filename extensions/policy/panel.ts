@@ -12,10 +12,11 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { ruleScopeVisibility } from "./classify.ts";
-import { ruleStoreHealthLine, type PendingProposal, type RuleSnapshot } from "./local-rules.ts";
+import { proposalRevision, ruleStoreHealthLine, type PendingProposal, type RuleSnapshot } from "./local-rules.ts";
 import {
 	effectiveEffect,
 	effectiveState,
+	factsProgram,
 	type RuleEffect,
 	type RuleMatchContext,
 	type RuleRecord,
@@ -50,6 +51,17 @@ export interface PolicyActivityRecord {
 	policyMode: string;
 	session: string;
 	ruleStoreDegraded: boolean;
+	callId?: string;
+	outcome?: string;
+	abortRequested?: boolean;
+	observationComplete?: boolean;
+	policy?: Record<string, unknown>;
+}
+
+export interface ActivityFilter {
+	session?: string;
+	callId?: string;
+	includeUnmatched?: boolean;
 }
 
 export interface ActivityReadResult {
@@ -82,7 +94,7 @@ export interface PanelActionResult {
 export interface PolicyPanelActionHost {
 	confirm(title: string, message: string): Promise<boolean>;
 	select(title: string, options: string[]): Promise<string | undefined>;
-	approve(proposalId: string, effect?: RuleEffect): Promise<PanelActionResult>;
+	approve(proposalId: string, effect?: RuleEffect, expectedProposalRevision?: string): Promise<PanelActionResult>;
 	reject(proposalId: string): Promise<PanelActionResult>;
 }
 
@@ -221,6 +233,14 @@ export function ruleDetailLines(
 		"fires by model:",
 		...fireBreakdownLines(summary, record.id),
 	];
+	const program = factsProgram(record);
+	if (program)
+		lines.push(
+			`phase: ${program.phase}`,
+			`action: ${JSON.stringify(program.action)}`,
+			`program: ${JSON.stringify(program)}`,
+			"action authority: exact definition; steer/block overrides do not change facts actions",
+		);
 	if (record.source.kind === "local") lines.push(...auditLines("approved audit", record.source.approvedAudit));
 	if (record.override) {
 		lines.push(
@@ -238,6 +258,8 @@ export function ruleDetailLines(
 export function proposalDetailLines(proposal: PendingProposal): string[] {
 	return [
 		`proposal id: ${proposal.id}`,
+		`proposal revision: ${proposalRevision(proposal)}`,
+		...(proposal.expectedRevision ? [`expected definition revision: ${proposal.expectedRevision}`] : []),
 		`operation: ${proposal.operation}`,
 		`rule id: ${proposal.ruleId}`,
 		`reason: ${proposal.reason}`,
@@ -369,13 +391,90 @@ export function formatPolicyShow(
 	return undefined;
 }
 
-function readActivityRecord(value: unknown): PolicyActivityRecord | undefined {
+function readDecisionSummary(value: unknown): Record<string, unknown> | undefined {
+	if (!isObject(value)) return undefined;
+	const result: Record<string, unknown> = {};
+	for (const name of ["decision", "inputCorrected", "resultCorrected"]) {
+		const field = value[name];
+		if (typeof field === "boolean" || (typeof field === "string" && field.length <= 80)) result[name] = field;
+	}
+	for (const name of ["evaluations", "corrections", "generations", "metadata", "dataSnapshots"]) {
+		const entries = value[name];
+		if (!Array.isArray(entries)) continue;
+		result[name] = entries.slice(0, 64).flatMap((entry: unknown) => {
+			if (!isObject(entry)) return [];
+			const item: Record<string, unknown> = {};
+			for (const key of [
+				"id",
+				"revision",
+				"truth",
+				"action",
+				"stage",
+				"unavailable",
+				"deny",
+				"generation",
+				"label",
+				"name",
+				"status",
+				"capturedAt",
+				"ageMs",
+				"maxAgeMs",
+				"snapshotAt",
+			]) {
+				const field = entry[key];
+				if (
+					typeof field === "boolean" ||
+					(typeof field === "number" && Number.isFinite(field)) ||
+					(typeof field === "string" && field.length <= 160)
+				)
+					item[key] = field;
+			}
+			if (
+				Array.isArray(entry.path) &&
+				entry.path.length <= 16 &&
+				entry.path.every((key: unknown) => typeof key === "string" && key.length <= 128)
+			)
+				item.path = [...entry.path];
+			return [item];
+		});
+		if (entries.length > 64) result[`${name}OmittedFromView`] = entries.length - 64;
+	}
+	if (
+		typeof value.preGuidanceBytes === "number" &&
+		Number.isSafeInteger(value.preGuidanceBytes) &&
+		value.preGuidanceBytes >= 0
+	)
+		result.preGuidanceBytes = value.preGuidanceBytes;
+	if (isObject(value.coverage)) {
+		const coverage: Record<string, unknown> = {};
+		for (const name of ["evaluations", "corrections", "generations", "metadata", "dataSnapshots"]) {
+			const counts = value.coverage[name];
+			const entries = value[name];
+			if (
+				isObject(counts) &&
+				Array.isArray(entries) &&
+				typeof counts.total === "number" &&
+				typeof counts.omitted === "number" &&
+				Number.isSafeInteger(counts.total) &&
+				Number.isSafeInteger(counts.omitted) &&
+				counts.omitted >= 0 &&
+				counts.total === entries.length + counts.omitted
+			)
+				coverage[name] = { total: counts.total, omitted: counts.omitted };
+			else if (counts !== undefined) result.coverageUnavailable = true;
+		}
+		result.recordedCoverage = coverage;
+	}
+	return result;
+}
+
+function readActivityRecord(value: unknown, includeUnmatched = false): PolicyActivityRecord | undefined {
 	if (!isObject(value) || typeof value.at !== "string" || Number.isNaN(Date.parse(value.at))) return undefined;
 	if (!Array.isArray(value.classes)) return undefined;
 	const classes = [
 		...new Set(value.classes.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)),
 	];
-	if (classes.length === 0) return undefined;
+	if (classes.length === 0 && !includeUnmatched) return undefined;
 	const record: PolicyActivityRecord = {
 		at: value.at,
 		model: typeof value.model === "string" ? value.model : null,
@@ -389,6 +488,12 @@ function readActivityRecord(value: unknown): PolicyActivityRecord | undefined {
 		ruleStoreDegraded: value.ruleStoreDegraded === true,
 	};
 	if (typeof value.captured === "string") record.captured = value.captured;
+	if (typeof value.callId === "string" && value.callId.length <= 256) record.callId = value.callId;
+	if (typeof value.outcome === "string" && value.outcome.length <= 40) record.outcome = value.outcome;
+	if (typeof value.abortRequested === "boolean") record.abortRequested = value.abortRequested;
+	if (typeof value.observationComplete === "boolean") record.observationComplete = value.observationComplete;
+	const policy = readDecisionSummary(value.policy);
+	if (policy) record.policy = policy;
 	return record;
 }
 
@@ -426,6 +531,7 @@ export async function readRecentActivity(
 	dir: string,
 	byteBound: number = MAX_ACTIVITY_SCAN_BYTES,
 	recordLimit: number = MAX_ACTIVITY_RECORDS,
+	filter: ActivityFilter = {},
 ): Promise<ActivityReadResult> {
 	const normalizedBytes = Number.isFinite(byteBound) ? Math.max(0, Math.floor(byteBound)) : MAX_ACTIVITY_SCAN_BYTES;
 	const normalizedRecords = Number.isFinite(recordLimit) ? Math.max(0, Math.floor(recordLimit)) : MAX_ACTIVITY_RECORDS;
@@ -475,8 +581,13 @@ export async function readRecentActivity(
 			const line = lines[lineIndex];
 			if (!line) continue;
 			try {
-				const record = readActivityRecord(JSON.parse(line) as unknown);
-				if (record) matched.push(record);
+				const record = readActivityRecord(JSON.parse(line) as unknown, filter.includeUnmatched);
+				if (
+					record &&
+					(filter.session === undefined || record.session === filter.session) &&
+					(filter.callId === undefined || record.callId === filter.callId)
+				)
+					matched.push(record);
 			} catch {
 				// One malformed telemetry record does not hide valid activity around it.
 			}
@@ -785,7 +896,9 @@ export class PolicyPanel {
 		this.bump();
 		try {
 			let effect: RuleEffect | undefined;
-			if (action === "approve" && proposal.operation === "add") {
+			const facts = proposal.candidate?.matcher.language === "facts/v1";
+			const exact = facts || proposal.operation === "replace";
+			if (action === "approve" && (proposal.operation === "add" || proposal.operation === "replace") && !facts) {
 				const selected = await host.select(`Choose effect for ${proposal.ruleId}`, ["steer", "block"]);
 				if (selected !== "steer" && selected !== "block") return;
 				effect = selected;
@@ -794,10 +907,13 @@ export class PolicyPanel {
 			const effectText = effect ? ` with effect ${effect}` : "";
 			const confirmed = await host.confirm(
 				`${decision === "approve" ? "Approve" : "Reject"} policy proposal`,
-				`${decision === "approve" ? "Approve" : "Reject"} ${proposal.operation} proposal ${proposal.id} for ${proposal.ruleId}${effectText}?`,
+				`${decision === "approve" ? "Approve" : "Reject"} ${proposal.operation} proposal ${proposal.id} for ${proposal.ruleId}${effectText}?\n\n${proposalDetailLines(proposal).map(terminalSafe).join("\n")}`,
 			);
 			if (!confirmed) return;
-			const result = action === "approve" ? await host.approve(proposal.id, effect) : await host.reject(proposal.id);
+			const result =
+				action === "approve"
+					? await host.approve(proposal.id, effect, exact ? proposalRevision(proposal) : undefined)
+					: await host.reject(proposal.id);
 			this.applyResult(result);
 		} catch (error) {
 			this.outcome = `Action failed: ${terminalSafe(error instanceof Error ? error.message : String(error))}`;
@@ -816,14 +932,16 @@ export class PolicyPanel {
 		this.selectedProposal = Math.min(this.selectedProposal, Math.max(0, this.proposals.length - 1));
 	}
 
-	private showRuleActionCommand(action: "disable" | "enable" | "effect" | "retire"): void {
+	private showRuleActionCommand(action: "disable" | "enable" | "effect" | "retire" | "reset" | "explain"): void {
 		const record = this.currentRule();
 		if (!record) return;
 		if (action === "retire" && record.source.kind !== "local") {
 			this.outcome = "Only local rules can be retired.";
+		} else if (action === "effect" && factsProgram(record)) {
+			this.outcome = "Facts actions require an exact replacement proposal.";
 		} else {
-			const tail = action === "effect" ? "<steer|block> <reason...>" : "<reason...>";
-			this.outcome = `Run: /policy ${action} ${record.id} ${tail}`;
+			const tail = action === "effect" ? "<steer|block> <reason...>" : action === "explain" ? "" : "<reason...>";
+			this.outcome = `Run: /policy ${action} ${record.id} ${tail}`.trim();
 		}
 		this.detailScroll = 0;
 		this.bump();
@@ -871,6 +989,10 @@ export class PolicyPanel {
 		else if (this.view === "rules" && data === "n") this.showRuleActionCommand("enable");
 		else if (this.view === "rules" && data === "e") this.showRuleActionCommand("effect");
 		else if (this.view === "rules" && data === "r") this.showRuleActionCommand("retire");
+		else if (this.view === "rules" && data === "z") this.showRuleActionCommand("reset");
+		else if (this.view === "rules" && data === "i") this.showRuleActionCommand("explain");
+		else if (data === "t") this.outcome = "Run: /policy data list";
+		else if (data === "s") this.outcome = "Run: /policy state";
 		else return;
 		this.bump();
 	}
@@ -894,10 +1016,11 @@ export class PolicyPanel {
 				this.keyPair("d/n", "disable/enable"),
 				this.keyPair("e", "effect"),
 				this.keyPair("r", "retire"),
+				this.keyPair("z/i", "reset/explain"),
 				this.keyPair("/", "filter"),
 			);
 		if (this.view === "proposals") keys.push(this.keyPair("a/x", "approve/reject"), this.keyPair("/", "filter"));
-		keys.push(this.keyPair("esc", "close"));
+		keys.push(this.keyPair("t/s", "data/state"), this.keyPair("esc", "close"));
 		return keys.join(this.deps.theme.fg("dim", " · "));
 	}
 

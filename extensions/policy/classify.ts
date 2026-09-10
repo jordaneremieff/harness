@@ -115,7 +115,7 @@ export function matchRuleRecords(
 				}
 				if (applies) break;
 			}
-		} else {
+		} else if (record.matcher.language === "command-shape/v1") {
 			const spec = record.matcher.spec;
 			for (const statement of statements) {
 				if (statement.some((stage, index) => declarativeStageMatches(stage, index, statement, spec))) {

@@ -158,6 +158,33 @@ describe("unified record dispatch", () => {
 		assert.equal(resolutions, 0);
 	});
 
+	it("leaves facts programs to the event interpreter rather than command-shape parsing", () => {
+		const record = codeRecord({
+			id: "local.tool-check",
+			domain: "facts",
+			matcher: {
+				kind: "declarative",
+				language: "facts/v1",
+				spec: {
+					phase: "input",
+					selector: { tools: ["bash"] },
+					when: { op: "exists", path: ["tool"] },
+					action: { kind: "deny" },
+					onUnavailable: "skip",
+				},
+			},
+		});
+		let resolutions = 0;
+		assert.deepEqual(
+			matchRuleRecords("bash", "echo ok", [record], { cwd: "/work" }, () => {
+				resolutions++;
+				return () => true;
+			}),
+			[],
+		);
+		assert.equal(resolutions, 0);
+	});
+
 	it("uses exact declared scope dimensions and exact command-shape fields", () => {
 		const record = declarativeRecord();
 		const context = { cwd: "/work/project/sub", provider: "openai", model: "openai/gpt-5" };

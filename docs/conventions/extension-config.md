@@ -25,8 +25,9 @@ Current consumers:
 | `PI_PILLARS_DIR` | pillars | Aggregate directory override; default `<agentDir>/pillars`. |
 | `PI_PILLARS_COLLECT` | pillars | `1` or unset enables collection; `0` disables collection while preserving source access and readback. Other values disable collection with a diagnostic. |
 | `PI_PILLARS_CORPUS` | pillars | Absolute corpus root override; unset resolves the sibling `../../pillars` package directory. |
-| `PI_POLICY_DIR` | policy | Policy record directory override; default `<agentDir>/policy`. |
-| `PI_POLICY_MODE` | policy | Active mechanism: `observe` (default), `notice`, `annotate`, or `enforce`. An unrecognized value stops recording for the session; no silent fallback. |
+| `PI_POLICY_DIR` | policy | Private rule, approved-data, and telemetry directory; default `<agentDir>/policy`. |
+| `PI_POLICY_MODE` | policy | Action limit: `observe` (default), `notice`, `annotate`, or `enforce`. Invalid configuration disables the runtime with a diagnostic; no silent fallback. |
+| `PI_POLICY_TEST_PI_ROOT` | policy tests | Test-only Pi package root for real-hook integration checks; the policy runtime does not read it. |
 | `PI_SUBAGENT_PRUNE_DAYS` | subagent | Retention window for terminal workers in the store; default 30 days, `0` disables pruning. |
 | `PI_SUBAGENT_IDLE_MINUTES` | subagent | Release deadline for an interrupted idle worker; default 30 minutes, `0` disables the deadline. |
 | `PI_SUBAGENT_DEADLINE_MINUTES` | subagent | Default run-leg deadline for a dispatch that declares none; default 30 minutes, `0` runs unbounded. |
@@ -44,6 +45,13 @@ Current consumers:
   override the location.
 - Introduce no configuration-file mechanism. A new mechanism enters this
   convention only by amending this document first.
+
+## Operator-controlled application state
+
+Policy definitions, proposals, approvals, and named tables/schemas are application
+state in policy's existing private event log. The explicit policy surfaces manage
+that state. Rules refer to approved binding names, not arbitrary files. This does
+not introduce ambient configuration-file discovery or a general file loader.
 
 ## Contract
 

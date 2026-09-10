@@ -87,8 +87,6 @@ export async function appendRecord(dir: string, record: PolicyRecord): Promise<s
 export class PolicyWriter {
 	private tail: Promise<void> = Promise.resolve();
 	private queued = 0;
-	/** Slots held for calls whose block was already returned. */
-	private reserved = 0;
 	private accepting = true;
 	private discardQueued = false;
 	private failureReported = false;
@@ -114,40 +112,12 @@ export class PolicyWriter {
 		}
 	}
 
-	/**
-	 * Reserve one record slot for a call whose block is about to be returned.
-	 *
-	 * The reserved call's `enqueue(record, true)` consumes the slot, so a
-	 * block is never returned without capacity for its record. A reservation
-	 * whose call never produces a record is released at close.
-	 */
-	tryReserve(): boolean {
+	/** Queue telemetry only. Refusal never changes an approved policy decision. */
+	enqueue(record: PolicyRecord): boolean {
 		if (!this.accepting) return false;
-		if (this.queued + this.reserved >= MAX_QUEUED_RECORDS) return false;
-		this.reserved++;
-		return true;
-	}
-
-	/**
-	 * Queue one record and return without waiting for disk I/O.
-	 *
-	 * Returns false when admission failed, so the caller can withhold any
-	 * mechanism effect that would otherwise exist without its record. `reserved`
-	 * consumes the slot that `tryReserve` held for this call.
-	 */
-	enqueue(record: PolicyRecord, reserved = false): boolean {
-		if (reserved) {
-			// A discarded queue cannot honor the reservation: the queued write
-			// would be skipped. Capacity-only failures keep the queue valid,
-			// so reservations still drain after those.
-			if (this.reserved === 0 || this.discardQueued) return false;
-			this.reserved--;
-		} else {
-			if (!this.accepting) return false;
-			if (this.queued + this.reserved >= MAX_QUEUED_RECORDS) {
-				this.fail(`policy writer queue reached ${MAX_QUEUED_RECORDS} records`, false);
-				return false;
-			}
+		if (this.queued >= MAX_QUEUED_RECORDS) {
+			this.fail(`policy writer queue reached ${MAX_QUEUED_RECORDS} records`, false);
+			return false;
 		}
 		this.queued++;
 		this.tail = this.tail
@@ -166,7 +136,6 @@ export class PolicyWriter {
 	/** Stop admission and wait for the final accepted write. */
 	async close(): Promise<void> {
 		this.accepting = false;
-		this.reserved = 0;
 		await this.tail;
 	}
 }

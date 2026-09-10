@@ -148,14 +148,19 @@ describe("strict event model", () => {
 
 	it("enforces package id equals code matcher key", () => {
 		const valid = row("routing.example");
-		assert.equal(validatePackageDefinitionRow(valid).matcher.key, valid.id);
+		const checked = validatePackageDefinitionRow(valid);
+		assert.equal(checked.matcher.kind, "code");
+		if (checked.matcher.kind === "code") assert.equal(checked.matcher.key, valid.id);
 		const mismatched = {
 			...valid,
 			matcher: { kind: "code" as const, key: "routing.other" },
 		};
 		const withMatchingRevision = { ...mismatched, revision: packageRowRevision(mismatched) };
 		assert.throws(() => validatePackageDefinitionRow(withMatchingRevision), /id must equal.*matcher key/);
-		for (const installed of PACKAGE_CATALOG) assert.equal(installed.id, installed.matcher.key);
+		for (const installed of PACKAGE_CATALOG) {
+			assert.equal(installed.matcher.kind, "code");
+			if (installed.matcher.kind === "code") assert.equal(installed.id, installed.matcher.key);
+		}
 	});
 
 	it("accepts an empty complete catalog and rejects duplicate rows", () => {

@@ -1,413 +1,491 @@
 # policy
 
-`policy` records paired tool calls and outcomes, evaluates one unified rule
-aggregate, and applies the mechanism selected for the session. Package rules and
-operator-approved local rules are both `RuleRecord`s reduced from one private,
-append-only `rules.jsonl` event log.
+`policy` is a runtime rule engine for tool checks, input correction, result
+correction, bounded behavioral state, guidance, and observation. One extension
+owns the event pipeline, rule authority, controls, and records. Domain-specific
+facts and corrections are internal implementations, not separate guards.
 
-There is no second built-in/local dispatch path. A record carries:
+Package rules and operator-approved local rules share one `RuleRecord` aggregate
+reduced from a private, append-only `rules.jsonl` log. The current
+`command-shape/v1` language and the general `facts/v1` language use the same
+runtime and controls. No script language, dynamic plugin loader, background
+service, or sibling-extension protocol is involved.
 
-- immutable `id`, source (`package` or `local`), domain, and matcher;
-- a versioned definition (`active|retired`, `steer|block`, note, optional
-  suggestion and scope);
-- at most one complete operator override slot;
-- derived matcher availability and stale-override status.
+## Authoring a correction
 
-Package matchers name installed code predicates. Local matchers use the closed
-`command-shape/v1` declarative language. For every package record, `id` and the
-code `matcher.key` are distinct fields with the enforced invariant that their
-values are equal.
+These examples use a hypothetical `chat_history` tool with a string `room`
+argument. Use actual configured tool names and their schemas in live rules.
 
-The agent can read rules and submit inert proposals. Only the `/policy` command
-and eligible panel actions exercise operator gates. No mode rewrites tool input,
-no observation changes authority, and every mode records.
+1. Inspect the available capabilities and exact session scope:
 
-## Modes and dispatch
+   ```json
+   {"view":"capabilities"}
+   ```
 
-`--policy-mode` accepts `observe`, `notice`, `annotate`, and `enforce` and
-overrides `PI_POLICY_MODE`. An unset or blank environment value defaults to
-`observe`. The mode is resolved once per session.
+   Pass this to `policy_rules`. The default view lists rules, pending proposals,
+   registry health, and current provider/model/cwd scope values.
 
-| Mode | Effective behavior |
-|---|---|
-| `observe` | Record matched ids; apply no mechanism. |
-| `notice` | Record and show a terminal warning for a matched call in TUI mode. No model-visible text is added. |
-| `annotate` | Record and append bounded guidance to an eligible successful result. |
-| `enforce` | Block when any matched record has effective effect `block`; otherwise annotate matched effective `steer` records after success. |
+2. Add an operator-owned lookup table through the operator command:
 
-One call uses this order:
+   ```text
+   /policy data set {"expectedRevision":null,"data":{"name":"rooms","kind":"table","rows":[{"key":"lobby","value":"room-17"}]}}
+   ```
 
-1. On first policy use, synchronize the package catalog, then load and reduce the
-   registry.
-2. Capture `bash` command text once.
-3. Select records whose definition/override gives effective state `active`,
-   whose matcher is available, and whose scope admits the session.
-4. Only then resolve a package predicate or enter declarative matching.
-5. Compute the call's effective mechanism once from that candidate set, its
-   effective effects, the session mode, and registry health.
-6. Record the same matched ids and the redacted form of the same capture.
+   The command supplies omitted source and capture-time metadata, then presents
+   the complete normalized artifact for approval. A table without `maxAgeMs` is
+   revision-controlled and does not require periodic renewal. No model tool can
+   change these bindings.
 
-Matched package records retain installed catalog order. Matched local records
-follow, sorted by id. Telemetry classes, guidance, and block reasons all use
-that same order.
+3. Submit an inert rule through `policy_propose`:
 
-Thus a disabled, retired, unavailable, or out-of-scope package record cannot
-invoke its predicate. Declarative records never dispatch through the package
-predicate registry.
+   ```json
+   {
+     "operation": "add",
+     "id": "local.room-id",
+     "reason": "Use the approved room identifier before execution.",
+     "note": "Resolve room names through the approved table.",
+     "language": "facts/v1",
+     "program": {
+       "phase": "input",
+       "selector": {"tools": ["chat_history"]},
+       "data": ["rooms"],
+       "when": {
+         "op": "lookup",
+         "path": ["input", "room"],
+         "table": "rooms",
+         "value": "unique"
+       },
+       "action": {"kind": "substitute", "path": ["room"], "table": "rooms"},
+       "onUnavailable": "skip"
+     }
+   }
+   ```
 
-Guidance is prefixed with `[policy]`, deduplicated by rendered text, and limited
-to 512 UTF-8 bytes. A rule id is annotated at most once per session. Failed calls
-are not annotated. In `enforce`, a block is returned only after the telemetry
-writer reserves capacity for its record.
+4. Inspect the complete proposal, then approve its exact revision:
 
-If the rule store is degraded, installed package defaults are used in memory and
-any mechanism stronger than notice is capped at notice. `observe` still applies
-no mechanism. This avoids either trusting unreadable operator state or silently
-turning package guidance into a block.
+   ```text
+   /policy approve <proposal-id> exact <proposal-revision>
+   ```
 
-## Unified event log
+   Approval does not override the session mode. The correction applies only in
+   `enforce`; the other modes expose the candidate without applying it.
 
-The registry is `<policy-dir>/rules.jsonl`, beside daily telemetry files. Every
-complete line is exactly one current-shape event. Later events supersede earlier
-ones during reduction; no operation rewrites history.
+## Rule model
 
-### Event shapes
+A record contains its id, source, domain, matcher, definition revision, lifecycle
+state, note, optional scope, and at most one complete operator override slot.
+Availability and stale-override status are derived rather than separate authority.
 
-```text
-catalog {
-  kind:"catalog",
-  rows: PackageDefinitionRow[],              // complete installed set
-  audit:{surface:"package"}
-}
+Package matchers use installed code predicates or `facts/v1` programs. For code
+matchers, the record id and matcher key must be equal. Package catalog changes
+retain package-source authority. Local additions and replacements require an
+operator decision. An old command-effect override never authorizes correction.
 
-proposal {
-  kind:"proposal", id:uuid,
-  operation:"add"|"retire"|"disable",
-  ruleId, reason, candidate?,
-  audit:SessionAudit(surface="agent-tool")
-}
+Definition effect families describe actual behavior:
 
-decision {
-  kind:"decision", id:uuid, proposalId,
-  decision:"approved"|"rejected", effect?:"steer"|"block",
-  audit:SessionAudit
-}
+- `block`: denial;
+- `steer`: guidance;
+- `correct`: input or result correction;
+- `observe`: metadata observation.
 
-override-set {
-  kind:"override", id:uuid, ruleId, operation:"set",
-  override:{
-    state?:"disabled", effect?:"steer"|"block",
-    reason, audit:SessionAudit, againstDefinitionRevision
-  }
-}
+The `steer|block` effect override applies only to command rules. A facts program's
+exact action defines its effect; changing that action requires a replacement
+rather than a command-effect override.
 
-override-clear {
-  kind:"override", id:uuid, ruleId, operation:"clear",
-  reason, audit:SessionAudit
-}
+### Facts programs
 
-definition {
-  kind:"definition", id:uuid, ruleId, state:"retired",
-  reason, audit:SessionAudit
-}
+The closed grammar is defined by [program.ts](program.ts). A program declares:
 
-SessionAudit {
-  at:ISO-8601, session, model:"provider/id"|null,
-  surface:"agent-tool"|"command"|"panel"
+| Field | Contract |
+| --- | --- |
+| `phase` | `input`, `result`, `completion`, or `context` |
+| `selector` | Optional exact physical tools, logical operations, and a declared argument codec |
+| `when` | A bounded three-valued condition |
+| `action` | One typed action with complete parameters |
+| `onUnavailable` | `skip`, or `deny` for an input rule |
+| `inputView` | Optional `original` or `effective`; effective-input checks are denials |
+| `data` | Approved named data dependencies |
+| `state` | Optional observation condition, reset condition, aggregates, and guidance limits |
+
+Conditions support `all`, `any`, `not`, `eq`, `in`, `exists`, `type`, numeric
+comparisons, bounded string comparisons, and exact table lookup status. Paths are
+arrays of safe own-property keys, not executable expressions. Unknown evidence
+stays unknown under negation and composition. Missing comparison values are not
+zero or false; `exists` tests actual property presence separately.
+
+Fact roots include `tool`, `operation`, `input`, `original`, `result`, `outcome`,
+`state`, `schema`, `data`, and `context`. Corrections use paths relative to their
+argument object, rather than condition paths prefixed with `input`.
+
+Public tool availability is available through
+`context.tools.<tool-name>.active` and `.configured`, with
+`context.catalogAvailable` and `context.turn`. These facts use Pi's public tool
+catalog, not a sibling extension's output. An unavailable catalog is not an empty
+catalog presented as proof of absence.
+
+A context rule has no current tool. Its selector qualifies completed observations
+for its state, not the later context projection. A context selector therefore
+requires observation state. Session scope still applies at projection time.
+
+### Actions
+
+| Action | Phase | Behavior |
+| --- | --- | --- |
+| `deny` | input | Refuse execution in enforce mode |
+| `rename-key` | input | Move a value between approved keys without changing the value |
+| `substitute` | input | Replace a value through a unique approved table lookup |
+| `assert-error` | result | Assert `isError:true` when the approved condition matches |
+| `guide` | result or context | Supply bounded policy guidance |
+| `observe` | completion | Add an approved metadata label to the common record |
+
+The engine does not independently establish a domain's meaning of failure. The
+rule's approved condition and schema/data contract supply that meaning. Error
+assertion never clears an existing error. Heuristic text matches remain
+inferences rather than an invented execution status.
+
+There is no arbitrary JSON patch, physical tool rename, redispatch, rule-authored
+code, tool invocation, network request, or filesystem-write action.
+
+## Execution contract
+
+Input processing preserves the requested arguments, the validated input received
+by policy, and the candidate committed by policy as distinct views.
+
+1. Capture the call's approved rules, data, and public tool metadata.
+2. Evaluate original-input prohibitions.
+3. Plan logical-target substitutions, key renames, then value substitutions.
+4. Validate the complete candidate against the outer and any declared inner
+   schemas.
+5. Evaluate effective-input prohibitions, including the captured eligible shell
+   predicates, before one synchronous input commit.
+
+Each correction stage reads one fixed snapshot. Later stages see earlier
+corrections. Rule ids provide stable order within a stage; conflicting writes
+invalidate the plan rather than depend on extension load order. An invalid or
+conflicting plan does not partially modify the original arguments.
+
+Result corrections precede stateless annotations. Completed-call counters and
+records update once at `tool_execution_end`, after the result chain. Calls that
+skip `tool_result` still reach this observation path. Partial progress does not
+count as a completed outcome.
+
+The record distinguishes successful execution, execution error, confirmed own
+policy denial, and unexecuted outcomes whose exact preflight cause is unknown.
+`abortRequested` reports the signal separately; it does not prove the cause of an
+error. The rule decision is separate from the terminal outcome because Pi can
+substitute an abort response after a denial.
+
+`outcome.outputBytes` counts UTF-8 bytes in final execution text content, not
+image payloads. `outcome.preGuidanceBytes` measures text at this policy's result
+hook before its own guidance. A missing result hook leaves that value unavailable.
+Earlier and later extension changes remain separate observation boundaries.
+
+Pi owns parallel tool execution. Sibling preflight is sequential, but execution
+and completion order can differ. State follows completion order, not an invented
+sequence of retries. Policy never serializes tool execution to simplify counters.
+
+### Host boundaries
+
+- Pi validates the outer tool schema before `tool_call`. Policy cannot repair a
+  call rejected before this hook. Tool-owned argument preparation is a different
+  public contract; policy does not replace tool registrations to acquire it.
+- Pi does not validate arguments again after hook mutation. Policy validates its
+  complete correction candidate without coercion, defaults, or property removal.
+- Policy owns its internal sequence, not globally final transcript semantics.
+  Later unrelated extensions can change results, and `message_end` permits a
+  later same-role message replacement. Records describe final execution output.
+- Extensions execute with host permissions. Policy is a workflow control, not an
+  operating-system sandbox or protection against a hostile installed extension.
+
+## Modes and guidance
+
+`--policy-mode` overrides `PI_POLICY_MODE`. Values are `observe`, `notice`,
+`annotate`, and `enforce`. Unset or blank environment configuration defaults to
+`observe`; invalid configuration is reported rather than silently guessed.
+
+| Mode | Applied behavior |
+| --- | --- |
+| `observe` | Record actual facts, matches, and candidate effects only |
+| `notice` | Also show bounded operator notices in TUI mode |
+| `annotate` | Also supply eligible model guidance; no denial or input/error correction |
+| `enforce` | Also apply approved denials and corrections |
+
+Every event phase obeys this matrix. Downstream live predicates use actual input
+and result state, never a suppressed hypothetical correction. Preview is a
+separately labeled simulation.
+
+Projected guidance shares a 2048-byte UTF-8 bound, including its `[policy]`
+prefix. Text is deduplicated and terminal-safe. Only guidance actually selected
+for projection consumes its once/cooldown allowance. Current command rules guide
+at most once per observation period and only after a successful result.
+
+Stateful guidance enters the next actual `context` request. It does not queue a
+steering message or create another model turn. A projection attempt does not
+establish provider delivery, understanding, or compliance.
+
+## Bounded observation state
+
+Each rule owns an in-memory observation period with an explicit start time, reset
+reason, revision, and generation. It can declare:
+
+- an `observe` condition and optional `resetWhen` condition;
+- an optional numeric `totalPath`;
+- a window with `maxEvents` and `maxAgeMs`;
+- `once:"period"` or `once:"turn"`;
+- a cooldown and optional natural expiry.
+
+Windows mean the last declared number of matching completions intersected with
+the age bound. They do not claim an exhaustive time-window tally after the event
+limit. Missing metrics and unavailable historical turn totals remain unknown,
+not zero. Inspection renders unavailable values explicitly.
+
+Session load, reload, new session, resume, fork, and tree navigation reset
+observations. Disable, replacement, and explicit reset invalidate the affected
+rule's prior pins. Old completions cannot restore explicitly reset state.
+Compaction and ordinary continuation preserve observations.
+
+Natural expiry and outcome-based reset are completion-time boundaries, not
+changes of authority. A long call can enter the new completion period. Preview
+projects expiry without changing live state. Expiry uses events rather than
+background timers.
+
+For example, this program produces limited guidance after repeated execution
+errors. It does not count a policy denial as an executed-tool failure:
+
+```json
+{
+  "phase": "context",
+  "when": {"op":"gte","path":["state","windowCount"],"value":2},
+  "state": {
+    "observe": {"op":"eq","path":["outcome","kind"],"value":"execution-error"},
+    "resetWhen": {"op":"eq","path":["outcome","kind"],"value":"success"},
+    "window": {"maxEvents":64,"maxAgeMs":30000},
+    "once": "turn",
+    "cooldownMs": 30000
+  },
+  "action": {"kind":"guide","text":"Check the failed assumption before another tool attempt."},
+  "onUnavailable": "skip"
 }
 ```
 
-Objects are closed: unknown fields, missing fields, unknown enum values, invalid
-identifiers, malformed audits, and over-bound values reject the complete line.
-There is no old-format or migration reader.
+There is no checkpoint persistence, ancestry replay, cross-session counter store,
+or persistent admission quota. Retained telemetry does not silently restore
+behavioral state.
 
-A package row contains `id`, domain `tool-call`, code matcher, default effect,
-note, optional suggestion/scope, and a canonical 12-hex definition revision.
-The revision identifies canonical definition content; it is not an event-log
-integrity digest. A local add candidate contains domain `tool-call`, a
-declarative matcher, note, and optional suggestion/scope. Its id is the
-proposal's `ruleId`.
+## Named data and schema validation
 
-Identifiers are at most 80 characters and match
-`^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$`. Notes are at most 2,000 characters,
-reasons at most 1,000, commands at most 200, lists at most 64 entries, and
-absolute cwd prefixes at most 500 characters. Rendered local guidance is at
-most 400 UTF-8 bytes. The file is at most 4 MiB and each event line at most 64
-KiB. The aggregate retains at most 256 local records and 256 pending proposals;
-package rows do not count toward the local-record limit.
+Named data is operator-owned control state in the existing rule log, not a new
+configuration-file loader. Rules refer to approved names, never arbitrary paths,
+skill prose, credential files, or private sibling caches.
 
-### Catalog synchronization
+A binding contains a table or schema, source, revision, and capture time.
+`maxAgeMs` is optional. Snapshots expose `ready`, `missing`, `stale`, or `invalid`
+status. Lookup reports missing, unique, ambiguous, or unavailable. Repeated equal
+destinations are still unique; conflicting destinations never select the first
+row.
 
-No registry I/O occurs during extension registration or `session_start`. The
-first tool call, `/policy` command, `policy_rules`, or `policy_propose` performs
-catalog synchronization.
+`/policy data set` fills omitted source with `operator` and capture time with its
+operator audit timestamp. Explicit values are never replaced. Revisions describe
+the complete normalized data contract. Replacement/removal checks the prior
+revision.
 
-A catalog event carries the complete installed package row set. Reduction makes
-every row in the latest catalog event an active package definition and marks
-every previously stored package definition absent from that event `retired`.
-Overrides remain attached across change, removal, and reintroduction. Sync
-appends only when the active installed set differs by id/content revision from
-the reduced stored set. Concurrent first-use synchronizers can append duplicate
-catalog events, but their payloads are content-identical and reduction is
-idempotent.
+A declined or unavailable dialog returns the complete exact-approval command.
+The operator can repeat its normalized `{data,expectedRevision,approveRevision}`
+artifact without a UI. The token binds all fields and the expected prior
+revision. A changed artifact needs a new token. The complete approval command
+must fit its output bound; it is never silently truncated.
 
-If an installed package row has the same id as a retained local record,
-reduction and both in-memory catalog paths retain the local record and skip the
-package row. The registry remains healthy and writable. Its non-degraded health
-line names every colliding id, and `/policy show` marks the retained local
-record as a catalog collision, so the condition is visible without inspecting
-the event log.
+Direct-tool schemas come from `pi.getAllTools().parameters`. An explicit argument
+codec can decode a JSON-string argument envelope and select an approved inner
+schema through `selector.codec.schemaData`. The outer gateway schema does not
+establish inner server schemas. Automatic gateway metadata discovery remains
+unavailable without a supported source contract; private cache conventions are
+not such a contract.
 
-A package update never silently clears an override. The override records its
-target definition revision; a later definition revision makes
-`staleOverride=true` while preserving and continuing to report the slot.
+External schemas use Ajv and `ajv-formats`. Default dialect is draft-07; explicit
+draft-2019-09 and draft-2020-12 are supported. Malformed schemas, unknown keywords
+or formats, unsupported dialects, unresolved references, and asynchronous schemas
+produce unavailable validation. No remote schema loader exists. The compiled
+schema cache is bounded. TypeBox validates the engine's own closed rule grammar.
 
-### Proposals, decisions, and direct authority
-
-- One rule id can have at most one pending proposal. Pending proposals are inert.
-- Add is allowed only when the id has never been taken. Operator approval
-  requires `steer` or `block` and creates one active local definition.
-- Rejection removes the pending proposal without changing a record.
-- Approved retire marks an existing local definition retired and forbids an
-  effect argument.
-- Approved disable creates a complete override slot for any existing record,
-  preserving an existing effect override, setting state `disabled`, taking the
-  proposal reason and decision audit, and targeting the current definition
-  revision.
-- Approval of a retire or disable proposal is refused if its target has already
-  retired. A definition revision change alone does not invalidate approval;
-  disable approval targets the current revision, and a later revision is
-  reported through `staleOverride`.
-- Direct disable/enable/effect are allowed for package and local records.
-  Direct definition retirement is local-only.
-- Decision, override, and definition events with audit surface `agent-tool` are
-  ignored defensively by reduction and refused by the sanctioned writer.
-
-Retirement does not free an id. Package definitions can return only through a
-later package catalog; local definitions do not have an unretire operation.
-
-### One complete override slot
-
-The override slot is replaced as one unit. Writers compose the complete intended
-slot from the current reduced record and requested change:
-
-- `disable` sets `state:"disabled"` and preserves an existing override effect;
-- `effect` sets the effect and preserves an existing disabled state;
-- `enable` removes the disabled state, preserving an effect if present;
-- if `enable` leaves no state or effect, it writes a clear, which removes the
-  entire slot.
-
-Every set carries one reason, operator audit, and the current definition
-revision. Every clear also requires a reason and operator audit. Consequently
-the reduced slot has the reason from the most recent override event, while the
-append-only log retains the full sequence.
-
-## Store health and filesystem contract
-
-The policy directory must be a current-user-owned, non-symlink directory with
-mode `0700`. The registry must be a current-user-owned regular file with mode
-`0600`; reads and writes use `O_NOFOLLOW` where available. Each event uses one
-checked `O_APPEND` write.
-
-A missing registry is healthy and synchronizes normally. An incomplete final
-line is treated as an append in flight: all complete lines are reduced, the
-suffix is skipped and reported once with path and line, and writes are refused
-until it completes or is repaired. It does not mark health degraded.
-
-Any malformed **complete** line, invalid path/permissions/owner, exceeded bound,
-or reduction invariant failure latches degraded health for that policy session:
-
-- use only installed package defaults in memory;
-- name the malformed or invariant-causing line, or name the failing filesystem
-  property for a file-level failure;
-- expose the same repair state through command, panel, and tool surfaces;
-- set telemetry `ruleStoreDegraded:true`;
-- refuse every rule write;
-- cap mechanisms at notice.
-
-For a line failure, the repair says that the file is append-only JSONL with one
-event per line and instructs the operator to edit or remove the named line. For
-a file-level failure, it gives the concrete property repair, such as restoring
-the private mode. After repair, start a new policy session. The implementation
-intentionally has no locks, event digests, monotonic revision
-counter, stale-process guard, lockdown mode, or migration reader. Duplicate
-whole catalog events and an incomplete final line are the only concurrency
-accommodations.
-
-## Declarative command-shape matching
-
-Local rules apply only to `bash` and use the existing bounded shell shape parser.
-They do not expand aliases, variables, globs, generated words, or shell data.
-
-```text
-matcher {
-  kind:"declarative", language:"command-shape/v1",
-  spec:{
-    command,
-    flags?, absentFlags?,
-    operands?:{min?, max?, any?, at?:{index:[allowed values]}},
-    pipe?:{from?, to?, fromRedirect?, toRedirect?, next?, later?}
-  }
-}
-```
-
-A statement matches when one stage satisfies every supplied constraint:
-
-- `command` equals the stage command basename;
-- every `flags` value occurs literally and no `absentFlags` value occurs;
-- operands are arguments not starting with `-`; `min`/`max` bound count, `any`
-  requires one listed operand, and `at` maps zero-based indexes to allowed
-  values;
-- pipe/redirect booleans equal the parser facts exactly;
-- `next` constrains the immediate next stage, while `later` permits any later
-  stage in the same statement.
-
-Nested command substitutions are parsed as separate statements. A command name
-inside a comment or variable value does not match.
-
-Optional scope is:
-
-```text
-scope {modelProviders?, models?, cwdPrefixes?}
-```
-
-Provider and `provider/id` model matches are exact and case-sensitive.
-`cwdPrefixes` entries must be absolute and use string-prefix matching. Missing
-scope dimensions are unconstrained. Scope filters session context only;
-`matcher.spec.command` selects the command.
-
-## Agent tools
+## Tools and operator controls
 
 ### `policy_propose`
 
-Submits one inert proposal with audit surface `agent-tool`:
+- Current command additions use `operation:"add"`, `id`, `reason`, `note`,
+  `match`, optional `suggestion`, and optional `scope`.
+- Facts additions use `language:"facts/v1"` and `program` instead of `match`.
+- `operation:"replace"` also requires the current definition's
+  `expectedRevision` and a complete candidate.
+- `retire` and `disable` retain only `id` and `reason`.
 
-- `operation:"add"` requires `id`, `reason`, `note`, and `match`; optional
-  `suggestion` and `scope` use the forms above;
-- `operation:"retire"` permits only `id` and `reason`;
-- `operation:"disable"` permits only `id` and `reason`.
-
-The emitted schema has top-level `type:"object"` plus closed `anyOf` arms, and
-every nested object schema is also closed. This keeps object-only providers
-compatible without weakening each operation's required fields. The tool exposes
-no effect, enable, approve, reject, override, or direct-retirement authority.
-Success returns the proposal id and explicitly says it remains inert pending
-operator approval.
+All proposals remain inert. Facts approval binds the exact proposal, including
+conditions, scope, state, data bindings, and action parameters. Command
+replacement binds the proposal revision and the operator-selected effect.
+Agent-origin decision, override, data, or direct-retirement events cannot grant
+authority. Retirement does not free an id.
 
 ### `policy_rules`
 
-Read-only. It prints exact current provider/model/cwd values, every package and
-local record, pending proposals, and registry health. Each record reports
-provenance, matcher kind/key or language, effective state/effect, override
-reason and audit, stale status, matcher availability, and note. Empty sections
-print `(none)`.
+Views are `rules` (default), `capabilities`, `state`, `health`, `data`, `explain`,
+and `preview`. Optional `id` narrows supported views. Explain accepts a rule id,
+or `call:<call-id>` for bounded current-session recorded decisions, including
+unmatched calls. Call explanations expose selected metadata, not arbitrary stored
+payloads. Missing records may lie outside the read bound or await persistence;
+absence does not prove that no decision occurred. Records remain untrusted
+historical evidence, not current rule authority.
 
-## Operator command
+Preview requires `tool` and bounded `input`, with optional `result` containing
+`isError` and `details`.
 
-`/policy` opens the panel. Text forms are:
+Preview neither executes a simulated tool nor changes simulated policy state or
+data. Its response deliberately shows the supplied candidate. That response can
+remain in the host transcript. The actual inspection invocation retains ordinary
+telemetry; it is not a promise that the complete invocation performs no writes.
+
+### `/policy`
 
 ```text
+/policy
 /policy list
-/policy show <id-or-proposal-id>
-/policy approve <proposal-id> <steer|block>   # add; effect required
-/policy approve <proposal-id>                 # retire/disable; effect forbidden
+/policy show <rule-or-proposal-id>
+/policy approve <command-add-proposal> <steer|block>
+/policy approve <command-replacement> <steer|block> <proposal-revision>
+/policy approve <facts-proposal> exact <proposal-revision>
+/policy approve <retire-or-disable-proposal>
 /policy reject <proposal-id>
 /policy disable <id> <reason...>
 /policy enable <id> <reason...>
-/policy effect <id> <steer|block> <reason...>
+/policy effect <command-rule-id> <steer|block> <reason...>
 /policy retire <local-id> <reason...>
 /policy mode
+/policy capabilities
+/policy state
+/policy health
+/policy explain <rule-id|call:call-id>
+/policy preview <JSON>
+/policy reset <rule-id|--all> <reason...>
+/policy data list
+/policy data show <name>
+/policy data set <JSON>
+/policy data remove <name> <current-revision> [exact]
 /policy help
 ```
 
-All direct changes require a nonblank reason. Command decisions and changes use
-audit surface `command`. Completion is token-aware: `show` offers rule and
-proposal ids; gate verbs offer pending proposal ids; direct state-changing verbs
-offer eligible rule ids; and add approval and `effect` offer `steer` and `block`
-in their value position.
+Set JSON contains `data`, `expectedRevision` (null for a new binding), and an
+optional exact `approveRevision`. Reset immediately invalidates the selected
+observation pins without stopping tools or changing rules, approvals, data, or
+historical records. `--all` is distinct from every valid rule id.
 
-Every command result and refusal has a mode-appropriate operator-visible path:
+The panel shares rule/proposal details and operator gates with the command. It
+shows exact actions and revisions, presents complete approval artifacts, and
+provides command hints for state, explain, reset, and data controls. TUI and RPC
+command responses use notifications. JSON commands append non-context custom
+entries. Print commands use the host-managed output path. The interactive panel
+itself remains TUI-only.
 
-- TUI and RPC use `ctx.ui.notify`, with information/error severity preserved.
-- JSON appends a `policy_command` custom entry whose data is `{text}`. Pi emits
-  that non-context entry as an `entry_appended` JSON frame and persists it with
-  the session when session persistence is enabled.
-- Print mode writes successful text through `process.stdout` and refusals through
-  `process.stderr`. Pi's noninteractive output guard routes extension stdout to
-  the terminal's stderr stream so Pi retains ownership of result/protocol
-  stdout.
+## Command-shape rules
 
-No entry renderer is registered. Entry renderers are TUI-only, while this
-extension appends `policy_command` entries only in JSON mode and already uses
-notifications on UI-capable command paths.
+The shell parser does not expand aliases, variables, globs, generated words, or
+shell data. It captures the command once and uses that same value for matching
+and bounded best-effort redaction.
 
-## Panel
+```text
+match {
+  command,
+  flags?, absentFlags?,
+  operands?: {min?, max?, any?, at?: {index: [allowed values]}},
+  pipe?: {from?, to?, fromRedirect?, toRedirect?, next?, later?}
+}
+scope {modelProviders?, models?, cwdPrefixes?}
+```
 
-`v` cycles **Rules → Proposals → Activity**. The Rules list is one unified list;
-detail shows definition/source/matcher, effective state/effect, scope visibility,
-override reason and full audit, staleness, matcher availability, and total/per-
-model fire counts. Proposals show complete candidate and proposal audit.
-Activity includes the telemetry health bit.
+Every supplied command constraint must hold in one parsed stage. Command names
+match basenames; flags match literally. Operands are arguments without a leading
+hyphen. `next` selects the immediate next stage; `later` selects a later stage.
+Nested substitutions are separate statements. Comments and variable values do
+not become command names.
 
-| Key | View | Action |
-|---|---|---|
-| `↑` / `↓` | all | Move selection |
-| `b` / `space` | all | Page detail backward / forward |
-| `v` | all | Cycle view |
-| `/` | Rules, Proposals | Filter |
-| `a` / `x` | Proposals | Approve / reject |
-| `d` / `n` / `e` / `r` | Rules | Disable / enable / effect / local retirement |
-| `Escape` | all | Close |
+Scope selects session context, not a tool. Provider and provider/model values
+match exactly and case-sensitively. Cwd prefixes use absolute string-prefix
+matching. Missing dimensions are unconstrained.
 
-Every panel approval and rejection requires confirmation before the registry
-call. Add approval first selects `steer` or `block`, then confirms the chosen
-effect. Successful decisions write audit surface `panel`; a cancelled selection
-or declined confirmation writes nothing. The panel is an overlay that hides and
-then refocuses around Pi's selector-backed prompts so the panel remains usable.
+Inactive, retired, unavailable, and out-of-scope rules never invoke their
+predicate. Command package matches retain catalog order; local command matches
+use id order. Facts correction stages use stable id order.
 
-Reason-bearing actions display their exact `/policy ... <reason...>` command
-instead of nesting `ctx.ui.input`. In installed Pi 0.84.4, the interactive input
-implementation clears the custom component from `editorContainer` and restores
-the default editor when input closes; it does not restore the still-open custom
-panel. The command fallback avoids orphaning panel focus and preserves the same
-operator gate and override composition through audit surface `command`.
+## Rule log, health, and privacy
 
-## Telemetry, privacy, and bounds
+The private log contains closed current-shape events:
 
-Completed calls append the existing private daily
-`<policy-dir>/YYYY-MM-DD.jsonl` records. `classes` lists matched package ids in
-catalog order followed by matched local ids sorted by id. Every new record
-explicitly includes `ruleStoreDegraded`; old rows
-without the field display as false in Activity. `rules.jsonl` does not match the
-daily filename pattern and is never treated as telemetry.
+- complete package `catalog` snapshots;
+- inert `proposal` and operator `decision` events;
+- complete `override` replacement/clear events;
+- local definition retirement;
+- operator-approved data set/remove events with expected revisions.
 
-Records keep timestamps, session facts, model, thinking level, project context,
-tool/call identity, duration, output bytes, truncation, inferred error kind,
-tokens, policy mode, classes, redacted shell capture, mechanism effects, and the
-rule-store health bit. Tool result text is not persisted.
+The latest catalog activates its installed definitions and retires removed
+package definitions. Existing disabled overrides survive replacement and catalog
+changes. A local id collision retains the local definition and reports the
+collision. There is no old-format decoder, migration reader, second built-in
+store, or parallel dispatch registry.
 
-Only `bash` reads `input.command`. Matching uses its transient pre-redaction
-value; `rules.jsonl` never contains observed command text. Telemetry stores the
-existing bounded best-effort redaction for recognized assignments, headers,
-secret flags, URL credentials, private keys, bearer values, signed parameters,
-known key forms, JWTs, and opaque base64 shapes.
+The store directory must be current-user-owned, non-symlink, and private (0700).
+The registry must be a current-user-owned regular file with mode 0600. Reads and
+writes use no-follow protections where available and checked append writes.
 
-Text/tool/panel outputs are terminal-safe and capped. Telemetry fire scans read
-at most 4 MiB. Activity reads at most 4 MiB and returns at most 200 matched
-records. The telemetry queue remains bounded at 512 entries.
+A missing registry is healthy. An incomplete final line is reported as an append
+in flight, skipped during reduction, and blocks writes until resolved. A malformed
+complete line, invalid filesystem property, exceeded bound, or reduction invariant
+latches degraded authority. Policy exposes the concrete repair, refuses control
+writes, uses package defaults as advisory evidence, and caps mechanisms at notice.
+Observe still applies no effect. A new session is required after repair.
 
-Telemetry writer failure keeps the established fail-open boundary: the first
-failure stops recording and all mechanisms for the session, reports once, and
-clears pending calls. Browser failures do not stop telemetry. A block already
-returned before a later disk failure can still lose its record.
+Capacity and byte limits are independent. Package/local/active plan limits share
+one definition in [program.ts](program.ts). Current event and registry byte bounds
+are declared in [local-rules.ts](local-rules.ts); data and JSON bounds are declared
+in [data.ts](data.ts). Actual serialized catalogs are checked before authority
+changes. Oversized declarations are rejected rather than silently truncated.
 
-## Configuration
+Daily telemetry records tool/call identity, session context, duration, text output
+size, truncation, reported tokens, observed outcome, mode, rule revisions,
+metadata labels, changed field paths, and requested/applied effects. Named data
+snapshots retain only names, revisions, status, and freshness metadata at call
+admission, never table rows or schema payloads. Later phases can reassess freshness
+while retaining that data revision. Each metadata group reports omissions.
+Correlation
+loss is explicit. Records do not invent a terminal result for an unfinished call.
+New domains retain no raw argument or result payload by default. Shell capture
+keeps its separately bounded best-effort secret redaction. Preview and explicit
+control artifacts are not telemetry payload capture.
+
+Telemetry failure stops persistence and reports health without stopping approved
+rules, corrections, or counters. A successful policy decision does not prove its
+record reached disk. Rule-authority health remains a separate boundary.
+
+## Configuration and validation
 
 | Setting | Purpose |
-|---|---|
-| `PI_POLICY_DIR` | Rule/telemetry directory; default `<agentDir>/policy` |
-| `--policy-mode` | Session mechanism; overrides `PI_POLICY_MODE` |
-| `PI_POLICY_MODE` | `observe` (default), `notice`, `annotate`, or `enforce` |
+| --- | --- |
+| `PI_POLICY_DIR` | Private rule/data/telemetry directory; default `<agentDir>/policy` |
+| `--policy-mode` | Session mode; overrides the environment |
+| `PI_POLICY_MODE` | `observe` by default, or `notice`, `annotate`, `enforce` |
+| `PI_POLICY_TEST_PI_ROOT` | Test-only explicit Pi package root for `pi-hooks.test.mts`; runtime does not read it |
 
-`PI_POLICY_DIR` must identify a trusted private directory. No other policy path
-or credential setting is used.
+Focused checks:
+
+```sh
+node --test extensions/policy/*.test.mts
+node scripts/extension-load-check.mts extensions/policy/index.ts
+npm run lint
+npm run typecheck
+npm run check
+npm test
+```
+
+The Pi hook tests drive the real extension runner and agent loop with controlled
+tools. They cover correction delivery, result chaining, completion order,
+preflight outcomes, and context projection without an extra request. Ordinary
+callback fakes do not establish those host behaviors. Use
+`PI_POLICY_TEST_PI_ROOT` to exercise a different installed Pi package rather than
+assume the repository dependency snapshot represents it.

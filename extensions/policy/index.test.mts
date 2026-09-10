@@ -158,9 +158,13 @@ describe("registration and lazy catalog use", () => {
 			}>;
 		};
 		assert.equal(schema.type, "object");
-		assert.equal(schema.anyOf?.length, 3);
+		assert.equal(schema.anyOf?.length, 6);
 		const arms = schema.anyOf ?? [];
-		const byOperation = new Map(arms.map((arm) => [arm.properties?.operation?.const, arm]));
+		const byOperation = new Map(
+			arms
+				.filter((arm) => !arm.properties?.program && arm.properties?.operation?.const !== "replace")
+				.map((arm) => [arm.properties?.operation?.const, arm]),
+		);
 		for (const [operation, required] of [
 			["add", ["operation", "id", "reason", "note", "match"]],
 			["retire", ["operation", "id", "reason"]],
@@ -218,7 +222,10 @@ describe("unified tools and command gates", () => {
 		assert.match(text, /definition: revision=[0-9a-f]{12} state=active effect=block/);
 		assert.match(text, /override audit: command .*session=session-1 model=openai-codex\/gpt-5\.6-sol/);
 		assert.match(text, /override against revision: [0-9a-f]{12}/);
-		assert.match(text, new RegExp(`${proposalId} \\| add \\| local\\.pending \\| Inspect this proposal`));
+		assert.match(
+			text,
+			new RegExp(`${proposalId} \\| add \\| local\\.pending \\| revision=[0-9a-f]{12} \\| Inspect this proposal`),
+		);
 		assert.match(text, /PENDING PROPOSALS/);
 		assert.match(text, /registry health: degraded=false \| ok/);
 	});
@@ -261,6 +268,98 @@ describe("unified tools and command gates", () => {
 		)) as { block?: boolean; reason?: string };
 		assert.equal(blocked.block, true);
 		assert.match(blocked.reason ?? "", /bounded scan/);
+	});
+
+	it("keeps a rule named all distinct from the explicit whole-runtime reset", async () => {
+		const { pi, ctx } = await setup();
+		const proposed = await callTool(
+			pi.tools.get("policy_propose")!,
+			{
+				operation: "add",
+				id: "all",
+				reason: "Use a distinct rule identity.",
+				note: "Keep rule identity separate from command flags.",
+				match: { command: "sample" },
+			},
+			ctx,
+		);
+		const proposalId = (proposed.details as { proposalId: string }).proposalId;
+		const command = pi.commands.get("policy")!;
+		await command.handler(`approve ${proposalId} block`, ctx as never);
+		const periods = async () => {
+			const result = await callTool(pi.tools.get("policy_rules")!, { view: "state" }, ctx);
+			return (
+				JSON.parse((result.content as Array<{ text: string }>)[0].text) as {
+					observationPeriods: Array<{ id: string; generation: number }>;
+				}
+			).observationPeriods;
+		};
+		const before = await periods();
+		await command.handler("reset all selected rule", ctx as never);
+		const selected = await periods();
+		assert.notEqual(
+			selected.find((entry) => entry.id === "all")?.generation,
+			before.find((entry) => entry.id === "all")?.generation,
+		);
+		const other = before.find((entry) => entry.id !== "all")!;
+		assert.equal(selected.find((entry) => entry.id === other.id)?.generation, other.generation);
+		await command.handler("reset --all whole runtime", ctx as never);
+		assert.notEqual((await periods()).find((entry) => entry.id === other.id)?.generation, other.generation);
+	});
+
+	it("approves command replacements only with both effect and exact revision", async () => {
+		const { pi, ctx, notifications } = await setup("enforce");
+		const proposalTool = pi.tools.get("policy_propose")!;
+		const added = await callTool(
+			proposalTool,
+			{
+				operation: "add",
+				id: "local.replace",
+				reason: "Initial rule",
+				note: "Bound the command.",
+				match: { command: "scan" },
+			},
+			ctx,
+		);
+		const addId = (added.details as { proposalId: string }).proposalId;
+		const command = pi.commands.get("policy")!;
+		await command.handler(`approve ${addId} block`, ctx as never);
+		const inspected = await callTool(pi.tools.get("policy_rules")!, {}, ctx);
+		const rulesText = (inspected.content as Array<{ text: string }>)[0].text;
+		const revision = /local\.replace[^\n]*\n\s+definition: revision=([0-9a-f]{12})/.exec(rulesText)?.[1];
+		assert.ok(revision);
+		const replaced = await callTool(
+			proposalTool,
+			{
+				operation: "replace",
+				id: "local.replace",
+				expectedRevision: revision,
+				reason: "New command",
+				note: "Bound the new command.",
+				match: { command: "walk" },
+			},
+			ctx,
+		);
+		const details = replaced.details as { proposalId: string; proposalRevision: string };
+		await command.handler(`approve ${details.proposalId} exact ${details.proposalRevision}`, ctx as never);
+		assert.match(notifications.at(-1)?.message ?? "", /Command replacement approval requires/);
+		const completions = command.getArgumentCompletions!(`approve ${details.proposalId} `) as Array<{ value: string }>;
+		assert.deepEqual(
+			completions.map((row) => row.value),
+			[`approve ${details.proposalId} steer`, `approve ${details.proposalId} block`],
+		);
+		await command.handler(`approve ${details.proposalId} block ${details.proposalRevision}`, ctx as never);
+		assert.match(notifications.at(-1)?.message ?? "", /Approved replace proposal/);
+		assert.equal(
+			(
+				(await pi.emit(
+					"tool_call",
+					{ toolName: "bash", toolCallId: "replacement", input: { command: "walk" } },
+					ctx,
+				)) as { block: boolean }
+			).block,
+			true,
+		);
 	});
 
 	it("the agent can only leave a disable proposal pending", async () => {
@@ -461,7 +560,7 @@ describe("unified tools and command gates", () => {
 		assert.equal(stderr.join(""), "Usage: /policy mode\n");
 	});
 
-	it("lists exact help and rejects removed legacy verbs", async () => {
+	it("lists exact help and rejects state mutation through the inspection verb", async () => {
 		const { pi, ctx, notifications } = await setup();
 		const command = pi.commands.get("policy")!;
 		await command.handler("help", ctx as never);
@@ -471,7 +570,7 @@ describe("unified tools and command gates", () => {
 		assert.match(usage, /\/policy retire <local-id> <reason\.\.\.>/);
 		assert.doesNotMatch(usage, /\/policy state/);
 		await command.handler("state routing.cat-read active", ctx as never);
-		assert.match(notifications.at(-1)?.message ?? "", /Unknown \/policy action "state"/);
+		assert.match(notifications.at(-1)?.message ?? "", /Usage: \/policy state/);
 	});
 });
 
@@ -545,6 +644,16 @@ describe("dispatch and telemetry", () => {
 			await pi.emit(
 				"tool_result",
 				{ toolCallId: callId, content: [{ type: "text", text: "content" }], isError: false, usage: {} },
+				ctx,
+			);
+			await pi.emit(
+				"tool_execution_end",
+				{
+					toolName: "bash",
+					toolCallId: callId,
+					isError: false,
+					result: { content: [{ type: "text", text: "content" }] },
+				},
 				ctx,
 			);
 		}
