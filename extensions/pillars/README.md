@@ -311,6 +311,47 @@ This controlled tool set is not full-session parity. The suite does not compare
 against a baseline, test terminal autocomplete, or submit a command during an
 existing turn; deterministic command and integration tests own those mechanics.
 
+### Reader comprehension
+
+The maintained [`reader-comprehension.eval.mts`](reader-comprehension.eval.mts)
+suite evaluates completed explanations and repairs rather than `/pillars`
+consultation. Synthetic cases cover self-contained answers, necessary technical
+terms, overcompressed language, claim support and ownership, warranted
+qualifications, evidence-based claim corrections, neutral analysis, exact
+quotations, raw and machine output, and insufficient evidence.
+
+The ad hoc text subject supplies complete working-tree bodies of the inventory,
+governance, Principle Unearned Prose, and Heuristic Tell Laundering through the
+existing Pi adapter's `contextFiles` configuration. The suite loader reads the
+named files; the model receives pasted full bodies, not filesystem access.
+The approved plan retains that content and the adapter's per-resource digests.
+Other entries listed in the inventory are not supplied. Fixture gold and claim
+ledgers stay in review data, outside the model's seed messages and prompt.
+
+Validate the suite and its deterministic tests without model inference:
+
+```sh
+npm run evals -- validate extensions/pillars/reader-comprehension.eval.mts
+node --test extensions/pillars/reader-comprehension.test.mts
+```
+
+Use the existing evaluation CLI for separately approved model execution.
+Semantic quality remains human-required. Lexical floors protect requested
+literal spans without scoring prose quality, synonyms, or headings. For only
+the raw and machine cases, containment of the complete literal plus a character
+ceiling equal to its own `.length` enforces exact output, including the absence
+of extra whitespace, wrappers, and duplicates. That ceiling follows the literal
+contract, not a prose-length preference. The quote-with-explanation case and all
+prose cases have no length check. Deterministic tests reject damaged literals,
+extra characters in exact-only outputs, and attempted mutation calls. They also
+admit alternate legitimate prose and demonstrate semantic failures that these
+narrow floors cannot detect.
+
+The subject has no tools. Its no-mutation transcript floors do not prove refusal
+of available tools. This single supplied-doctrine variant does not test natural
+activation, command behavior, full-session behavior, or improvement against a
+baseline. It adds no runtime adapter or active resource.
+
 ## Verification
 
 Run the focused tests with:

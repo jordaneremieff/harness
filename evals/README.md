@@ -144,6 +144,18 @@ The colocated test drives the real extension hooks without a provider, converts
 the outcomes with the Pi adapter's transcript normalizer, and runs the suite's
 own checks against both variants.
 
+### Reader comprehension suite
+
+[`reader-comprehension.eval.mts`](../extensions/pillars/reader-comprehension.eval.mts)
+exercises explanations and prose repairs with the current Pillars text supplied
+explicitly in context. Cases cover necessary explanation, precise terms,
+claim preservation, missing evidence, and requested neutral or verbatim output.
+The suite isolates text behavior rather than consultation or tool refusal.
+Deterministic checks protect declared exact artifacts and transcript boundaries;
+semantic quality remains subject to human adjudication. See the
+[Pillars evaluation guide](../extensions/pillars/README.md#behavioral-evaluations)
+for validation and delivery details.
+
 ## Deterministic development checks
 
 These commands do not call a model:

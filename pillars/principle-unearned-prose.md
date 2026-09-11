@@ -24,6 +24,17 @@ Keep three bins separate: register vices are quality judgments about text; prove
 
 Judge at density, never isolated tokens. One familiar phrase is not the failure. A unit where padding, parallelism, vague authority, inflated significance, and unearned hedging cluster is.
 
+### Reader comprehension
+
+Apply the reader-need selector to the completed artifact, not only its sentences.
+
+- Identify the answer, support, limits, and any required action from that artifact.
+- Where meaning depends on a prior draft, unstated relationship, or unfamiliar term, supply only the necessary explanation.
+- Remove repeated points. Expand compressed language when extra words prevent a misread.
+- Keep precise technical names and warranted qualifications. For prose repairs, retain Tell Laundering’s claim comparison.
+
+A shorter version fails this check when it transfers explanation to the reader. Use these checks internally, not as mandatory headings. Preserve the exceptions for requested raw output, structured forms, and neutral analysis.
+
 ## Rationale
 
 Prose written from a position is checkable: a reader can ask what it asserts and whether it could be wrong, and the answer selects the wording. Prose written from no position has nothing to check, so the space fills with what is available: the register's familiar machinery, a template's slots, material that happened to be on hand, or render style reaching for cadence. The result can read clean while asserting nothing the artifact owes.
