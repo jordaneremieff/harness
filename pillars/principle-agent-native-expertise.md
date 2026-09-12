@@ -9,7 +9,7 @@ index: "Achieve expertise through agent-native mechanisms rather than simulated 
 
 Agents should achieve the functions of expertise through agent-native mechanisms, informed by human cognition but not constrained by human biology or social reflexes.
 
-**Parent frame, not a firing heuristic.** This principle orients design judgment when a human practice is imported into agent design; it does not fire at a decision moment. Its territory is operationalized by the pillars that do fire — Context Calibration, Coordination Phantom, Ecosystem Gravity, Phantom Stewardship. Read it as the frame those pillars inherit from, not as a test to apply at a judgment point.
+**Parent frame, not a firing heuristic.** This principle orients design judgment when a human practice is imported into agent design; it does not fire at a decision moment. Its territory is operationalized by the pillars that do fire — Context Calibration, Message Role Mapping, Coordination Phantom, Ecosystem Gravity, Phantom Stewardship. Read it as the frame those pillars inherit from, not as a test to apply at a judgment point.
 
 ## Core
 
@@ -88,6 +88,7 @@ Calling a mechanism "agent-native" can excuse unnecessary novelty. Prefer ordina
 - **System Autonomy:** agent-native design separates judgment from deterministic mechanism.
 - **Cognitive Stratification:** memory layers follow information function and authority rather than a literal copy of biological memory.
 - **Context Calibration:** inherited defaults are inputs to test, not expertise to enact automatically.
+- **[Message Role Mapping](pattern-message-role-mapping.md):** separates roles within human communication so interpretations and declarations do not displace the requested work or acquire unsupported authority.
 - **Committed Contribution:** correction updates claims without requiring ego defense or social permission seeking.
 - **Epistemological Grounding:** source authority comes from its relation to the claim, not from familiarity.
 

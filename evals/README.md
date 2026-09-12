@@ -157,6 +157,19 @@ semantic quality remains subject to human adjudication. See the
 [Pillars evaluation guide](../extensions/pillars/README.md#behavioral-evaluations)
 for validation and delivery details.
 
+### Message role mapping suite
+
+[`message-role-mapping.eval.mts`](../extensions/pillars/message-role-mapping.eval.mts)
+exercises work selection and evidence boundaries under mixed human communication.
+It includes factual tasks, explicit delegation, requested interpretation, missing
+evidence, and clear requests that need no separate role analysis. Paired cases
+hold source wording fixed while the operator's request changes. Full selected
+Pillars bodies enter context explicitly; fixture gold remains outside subject
+messages. Deterministic checks protect exact requested artifacts and transcript
+boundaries, not semantic quality. Human adjudication remains required. See the
+[Pillars evaluation guide](../extensions/pillars/README.md#message-role-mapping)
+for validation, source delivery, and the text-only evidence boundary.
+
 ## Deterministic development checks
 
 These commands do not call a model:

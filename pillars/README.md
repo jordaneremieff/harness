@@ -27,6 +27,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [Grounding Preflight](pattern-grounding-preflight.md) | Before presenting a consequential conclusion, verify the evidence reaches the claim, covers its required facets, and leaves gaps visible. |
 | [Context Calibration](pattern-context-calibration.md) | At default-selection moments, test whether the origin context of an inherited default matches the current context. |
 | [Frame Inspection](pattern-frame-inspection.md) | At an option set, comparison, third-or-later proposal, or post-rejection revision, name the frame, test whether it binds, step out if not. |
+| [Message Role Mapping](pattern-message-role-mapping.md) | Before mixed human communication selects the work, separate assertions, declarations, and interpretations under the operator's actual request. |
 
 ### Heuristics
 

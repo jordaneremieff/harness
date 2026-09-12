@@ -165,6 +165,10 @@ Epistemological Grounding establishes what can anchor a claim. Triangulated Trut
 
 Everything is input, but not every input is the same kind of thing. Some inputs define a facet of reality. Others claim, interpret, or summarize it.
 
+### Message Role Mapping
+
+[Message Role Mapping](pattern-message-role-mapping.md) preserves the separate evidence and authority boundaries of assertions, declarations, and interpretations within human communication.
+
 ### System Autonomy
 
 Tooling can supply established source roles. Reuse a source's established authority for the same facet; do not assign one authority class to a communication medium across all claims.

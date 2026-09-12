@@ -352,6 +352,43 @@ of available tools. This single supplied-doctrine variant does not test natural
 activation, command behavior, full-session behavior, or improvement against a
 baseline. It adds no runtime adapter or active resource.
 
+### Message role mapping
+
+The maintained [`message-role-mapping.eval.mts`](message-role-mapping.eval.mts)
+suite exercises [Message Role Mapping](../../pillars/pattern-message-role-mapping.md)
+through synthetic text tasks. Cases separate restrictions from execution facts,
+preferences from equivalence, reported approval from authorization, and quoted
+proposals from adopted instructions. Other cases preserve useful human reports,
+requested communication analysis, settled preferences, and qualified inference
+across turns. Paired cases reuse a comment or ambiguous instruction under
+different requests, so the requested work rather than familiar wording decides
+the answer.
+
+The subject receives complete working-tree bodies of the inventory, governance,
+Epistemological Grounding, Agent-Native Expertise, and Message Role Mapping as
+pasted context. The approved plan binds those bodies through the existing
+adapter's resource digests. Other inventory entries are not supplied. Fixture
+gold and semantic ledgers stay in review data, outside subject messages.
+
+Validate without model inference:
+
+```sh
+npm run evals -- validate extensions/pillars/message-role-mapping.eval.mts
+node --test extensions/pillars/message-role-mapping.test.mts
+```
+
+Use the [evaluation CLI](../../evals/README.md) for separately approved model
+execution. Semantic quality requires human adjudication. Checks do not require
+role labels, a displayed table, preferred prose, or a response-length target.
+Only exact-only artifacts receive containment and character-length checks.
+Deterministic tests validate source delivery, paired inputs, exact artifacts,
+and transcript floors; they also demonstrate semantic failures that pass those
+floors. The subject has no tools, so this suite does not establish execution of
+investigations, refusal of available tools, natural consultation, or full-session
+behavior. Its single supplied-doctrine variant does not measure improvement
+against a baseline or isolate the pattern's contribution from its companion
+principles. It adds no runtime adapter or active resource.
+
 ## Verification
 
 Run the focused tests with:

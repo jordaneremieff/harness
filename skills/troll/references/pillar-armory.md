@@ -4,6 +4,7 @@ The corpus is the governing source of what correct agent behavior looks like and
 
 | Failure mode in the target | Governing pillar | Why it binds |
 |---|---|---|
+| Lets interpretations or declarations in mixed communication displace the requested work or lend authority to unchecked assertions | `../../pillars/pattern-message-role-mapping.md` | The operator's actual request governs the work; each statement role retains its own evidence and authority boundary. |
 | Applies an inherited default without checking its origin-context preconditions | `../../pillars/pattern-context-calibration.md` | The default was correct elsewhere; the target's context does not supply its conditions. |
 | Applies a collaboration convention whose multi-party precondition is absent | `../../pillars/heuristic-coordination-phantom.md` | The convention's value is conditional on consumers and coordination that do not exist here. |
 | Defends pattern caliber by label ("best practice") without a concrete failure account | `../../pillars/heuristic-failure-cost-calibration.md` | Protection caliber must match consequence; the target never priced the failure. |
