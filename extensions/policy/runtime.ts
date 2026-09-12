@@ -516,6 +516,28 @@ export class PolicyRuntime {
 		}
 		this.notice(call, ctx);
 	}
+	private resultPlan(call: ObservedCall, result: Result) {
+		const rules = this.currentRules(call);
+		const semantic = evaluatePrograms(rules, "result", this.contextFor(call, result)).filter(
+			(e) => e.action.kind !== "guide",
+		);
+		const correction =
+			this.effectiveMode() === "enforce" &&
+			result.isError !== true &&
+			semantic.some((e) => e.truth === true && e.action.kind === "assert-error");
+		const effective = correction ? { ...result, isError: true } : result;
+		const shell = call.shell
+			.filter(
+				(r) => rules.some((rule) => rule.id === r.id) && (this.mode() === "annotate" || effectiveEffect(r) === "steer"),
+			)
+			.map((r) => shellProgram(r, "result"));
+		const guides = evaluatePrograms(
+			[...rules.filter((rule) => !call.shell.some((r) => r.id === rule.id)), ...shell],
+			"result",
+			this.contextFor(call, effective),
+		).filter((e) => e.action.kind === "guide");
+		return { correction, semantic, guides };
+	}
 	async toolResult(
 		event: ToolResultEvent,
 		ctx: ExtensionContext,
@@ -531,28 +553,13 @@ export class PolicyRuntime {
 		const actual = inputSnapshot(event.input);
 		if (actual) call.input = actual;
 		else call.complete = false;
-		const rules = this.currentRules(call);
-		let result: Result = { content: event.content, details: event.details, isError: event.isError, usage: event.usage };
-		const semantic = evaluatePrograms(rules, "result", this.contextFor(call, result)).filter(
-			(e) => e.action.kind !== "guide",
-		);
-		this.collect(call, semantic);
-		const correction =
-			this.effectiveMode() === "enforce" &&
-			event.isError !== true &&
-			semantic.some((e) => e.truth === true && e.action.kind === "assert-error");
-		if (correction) result = { ...result, isError: true };
-		const shell = call.shell
-			.filter(
-				(r) => rules.some((rule) => rule.id === r.id) && (this.mode() === "annotate" || effectiveEffect(r) === "steer"),
-			)
-			.map((r) => shellProgram(r, "result"));
-		const guides = evaluatePrograms(
-			[...rules.filter((rule) => !call.shell.some((r) => r.id === rule.id)), ...shell],
-			"result",
-			this.contextFor(call, result),
-		).filter((e) => e.action.kind === "guide");
-		this.collect(call, guides);
+		const { correction, semantic, guides } = this.resultPlan(call, {
+			content: event.content,
+			details: event.details,
+			isError: event.isError,
+			usage: event.usage,
+		});
+		this.collect(call, [...semantic, ...guides]);
 		const text = this.guidance(guides);
 		this.notice(call, ctx);
 		if (text) {
@@ -799,19 +806,23 @@ export class PolicyRuntime {
 			const input = inputSnapshot(params.input);
 			if (!input) throw new Error("Preview input must be bounded JSON");
 			const call = this.makeCall(params.tool, "preview", input, ctx, snapshot);
-			const { plan } = this.inputPlan(call);
+			const { plan, shell } = this.inputPlan(call, this.effectiveMode() === "enforce");
+			for (const record of shell) {
+				if (!call.shell.some((matched) => matched.id === record.id)) {
+					call.shell.push(record);
+					call.rules.push(shellProgram(record));
+				}
+			}
+			if (this.effectiveMode() === "enforce" && plan.valid && !plan.denied) call.input = plan.candidate;
 			const result = object(params.result);
+			const results = result
+				? this.resultPlan(call, { details: result.details, isError: result.isError === true })
+				: undefined;
 			return {
 				preview: true,
 				stateAdvanced: false,
 				input: plan,
-				results: result
-					? evaluatePrograms(
-							call.rules,
-							"result",
-							this.contextFor(call, { details: result.details, isError: result.isError === true }),
-						)
-					: [],
+				results: results ? [...results.semantic, ...results.guides] : [],
 				boundary: "No simulated tool executes. The actual inspection call retains ordinary telemetry.",
 			};
 		}

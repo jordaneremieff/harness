@@ -2,8 +2,9 @@
 
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, unlink } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
 	contentRevision,
 	effectiveState,
@@ -35,6 +36,9 @@ import { validateNamedData, type NamedData } from "./data.ts";
 import { ensurePrivateDirectory } from "./store.ts";
 
 export const RULES_FILE = "rules.jsonl";
+const RULES_LOCK_FILE = ".rules-lock";
+const LOCK_ATTEMPTS = 200;
+const LOCK_RETRY_MS = 25;
 export const MAX_REGISTRY_BYTES = 4 * 1024 * 1024;
 export const MAX_RULE_EVENT_BYTES = 64 * 1024;
 export const MAX_CATALOG_EVENT_BYTES = 512 * 1024;
@@ -1382,6 +1386,53 @@ export class RuleRegistry {
 		}
 	}
 
+	/** Serialize reload, validation, and append across instances and processes. */
+	private async transaction<T>(action: () => Promise<T>): Promise<T> {
+		await checkExistingDirectory(this.dir);
+		await ensurePrivateDirectory(this.dir);
+		const path = join(this.dir, RULES_LOCK_FILE);
+		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+		let handle: Awaited<ReturnType<typeof open>> | undefined;
+		for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt++) {
+			try {
+				handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600);
+				break;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+				try {
+					privateFile(await lstat(path), path);
+				} catch (inspection) {
+					if ((inspection as NodeJS.ErrnoException).code !== "ENOENT") throw inspection;
+				}
+				if (attempt + 1 < LOCK_ATTEMPTS) await delay(LOCK_RETRY_MS);
+			}
+		}
+		if (!handle) {
+			throw new RuleFileError(
+				"transaction lock",
+				`policy rule transaction conflict: lock remains held at ${path}`,
+				`retry after the other writer completes; if its process stopped, remove ${path} only after all policy writers stop`,
+			);
+		}
+		try {
+			const owned = await handle.stat();
+			privateFile(owned, path);
+			const release = async (): Promise<void> => {
+				const current = await lstat(path);
+				if (current.dev !== owned.dev || current.ino !== owned.ino || current.isSymbolicLink())
+					throw new Error(`policy rule transaction lock changed; refusing to remove ${path}`);
+				await unlink(path);
+			};
+			try {
+				return await action();
+			} finally {
+				await release();
+			}
+		} finally {
+			await handle.close();
+		}
+	}
+
 	private async synchronizeCatalog(): Promise<void> {
 		if (this.degradedHealth) return;
 		try {
@@ -1402,7 +1453,7 @@ export class RuleRegistry {
 	}
 
 	private ensureFirstUse(): Promise<void> {
-		this.firstUse ??= this.synchronizeCatalog();
+		this.firstUse ??= this.transaction(() => this.synchronizeCatalog()).catch((error: unknown) => this.degrade(error));
 		return this.firstUse;
 	}
 
@@ -1448,7 +1499,7 @@ export class RuleRegistry {
 			await this.append(event);
 			return built.result;
 		};
-		const running = this.mutationTail.then(action);
+		const running = this.mutationTail.then(() => this.transaction(action));
 		this.mutationTail = running.then(
 			() => undefined,
 			() => undefined,

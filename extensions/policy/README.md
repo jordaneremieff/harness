@@ -301,7 +301,9 @@ A declined or unavailable dialog returns the complete exact-approval command.
 The operator can repeat its normalized `{data,expectedRevision,approveRevision}`
 artifact without a UI. The token binds all fields and the expected prior
 revision. A changed artifact needs a new token. The complete approval command
-must fit its output bound; it is never silently truncated.
+must fit its output bound; it is never silently truncated. Terminal-control
+characters are encoded as JSON Unicode escapes before measurement and display.
+Reusing the displayed command preserves the original data and approval revision.
 
 Direct-tool schemas come from `pi.getAllTools().parameters`. An explicit argument
 codec can decode a JSON-string argument envelope and select an approved inner
@@ -344,7 +346,9 @@ absence does not prove that no decision occurred. Records remain untrusted
 historical evidence, not current rule authority.
 
 Preview requires `tool` and bounded `input`, with optional `result` containing
-`isError` and `details`.
+`isError` and `details`. Downstream preview conditions use the input and error
+state that the current mode applies: valid input corrections first, then error
+assertions, then guidance. Original-input facts remain unchanged.
 
 Preview neither executes a simulated tool nor changes simulated policy state or
 data. Its response deliberately shows the supplied candidate. That response can
@@ -441,6 +445,18 @@ store, or parallel dispatch registry.
 The store directory must be current-user-owned, non-symlink, and private (0700).
 The registry must be a current-user-owned regular file with mode 0600. Reads and
 writes use no-follow protections where available and checked append writes.
+
+An exclusive private `.rules-lock` file serializes catalog writes and each
+reload/validate/append transaction across sessions and processes. Conflicting
+controls recheck the current revision or pending proposal before acknowledgment.
+Lock acquisition uses bounded retries and never reports an unapplied change as
+successful. Policy never removes a held lock based on its age. If a writer exits
+before cleanup, stop all policy writers before removing the retained lock, then
+restart affected sessions. Read-only snapshots do not acquire a transaction lock
+after initialization. Reload existing policy sessions after an upgrade before
+concurrent control writes so every writer uses the transaction boundary.
+A cleanup error rejects acknowledgment even if the event already reached the log.
+Inspect the current state before retrying that control.
 
 A missing registry is healthy. An incomplete final line is reported as an append
 in flight, skipped during reduction, and blocks writes until resolved. A malformed

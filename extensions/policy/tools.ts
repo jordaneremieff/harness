@@ -381,8 +381,13 @@ export async function policyDataCommand(
 		if (error) throw new Error(error);
 		const artifact = { data, expectedRevision: request.expectedRevision };
 		const approveRevision = contentRevision(artifact);
-		const approvalCommand = `/policy data set ${JSON.stringify({ ...artifact, approveRevision })}`;
-		if (Buffer.byteLength(terminalSafe(approvalCommand), "utf8") > 24 * 1024)
+		// JSON leaves DEL/C1 controls literal; terminal display escapes are not valid JSON.
+		const approvalJson = JSON.stringify({ ...artifact, approveRevision }).replace(
+			/[\u007f-\u009f]/g,
+			(character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+		);
+		const approvalCommand = `/policy data set ${approvalJson}`;
+		if (Buffer.byteLength(approvalCommand, "utf8") > 24 * 1024)
 			throw new Error("data approval artifact exceeds the command presentation bound");
 		if (request.approveRevision !== undefined && request.approveRevision !== approveRevision)
 			throw new Error("data approval requires the exact complete artifact revision");
