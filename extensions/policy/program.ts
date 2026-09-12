@@ -1,5 +1,5 @@
 /** Closed facts grammar and private correction plans. No action commits occur here. */
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import { Compile } from "typebox/compile";
 import {
 	checkSchema,
@@ -89,121 +89,137 @@ export interface FactsProgram {
 const PathSchema = Type.Array(Type.String({ minLength: 1, maxLength: 128 }), { minItems: 1, maxItems: 16 });
 const ParentPathSchema = Type.Array(Type.String({ minLength: 1, maxLength: 128 }), { maxItems: 16 });
 const closed = { additionalProperties: false };
-export const ConditionSchema = Type.Cyclic(
-	{
-		Condition: Type.Union([
-			Type.Object({ all: Type.Array(Type.Ref("Condition"), { minItems: 1, maxItems: 16 }) }, closed),
-			Type.Object({ any: Type.Array(Type.Ref("Condition"), { minItems: 1, maxItems: 16 }) }, closed),
-			Type.Object({ not: Type.Ref("Condition") }, closed),
-			Type.Object(
-				{
-					op: Type.Union(
-						[
-							"eq",
-							"in",
-							"exists",
-							"type",
-							"gt",
-							"gte",
-							"lt",
-							"lte",
-							"starts-with",
-							"ends-with",
-							"contains",
-							"lookup",
-						].map((entry) => Type.Literal(entry)),
-					),
-					path: PathSchema,
-					value: Type.Optional(Type.Union([ScalarSchema, Type.Array(ScalarSchema, { maxItems: 64 })])),
-					table: Type.Optional(DataNameSchema),
-				},
-				closed,
-			),
-		]),
-	},
-	"Condition",
-);
-export const StateSpecSchema = Type.Object(
-	{
-		observe: ConditionSchema,
-		resetWhen: Type.Optional(ConditionSchema),
-		totalPath: Type.Optional(PathSchema),
-		window: Type.Optional(
-			Type.Object(
-				{
-					maxEvents: Type.Integer({ minimum: 1, maximum: 1024 }),
-					maxAgeMs: Type.Integer({ minimum: 1, maximum: 86400000 }),
-				},
-				closed,
-			),
+function conditionShape<C extends TSchema>(child: C) {
+	return Type.Union([
+		Type.Object({ all: Type.Array(child, { minItems: 1, maxItems: PROGRAM_LIMITS.children }) }, closed),
+		Type.Object({ any: Type.Array(child, { minItems: 1, maxItems: PROGRAM_LIMITS.children }) }, closed),
+		Type.Object({ not: child }, closed),
+		Type.Object(
+			{
+				op: Type.Union(
+					[
+						"eq",
+						"in",
+						"exists",
+						"type",
+						"gt",
+						"gte",
+						"lt",
+						"lte",
+						"starts-with",
+						"ends-with",
+						"contains",
+						"lookup",
+					].map((entry) => Type.Literal(entry)),
+				),
+				path: PathSchema,
+				value: Type.Optional(Type.Union([ScalarSchema, Type.Array(ScalarSchema, { maxItems: 64 })])),
+				table: Type.Optional(DataNameSchema),
+			},
+			closed,
 		),
-		cooldownMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 86400000 })),
-		once: Type.Optional(Type.Union([Type.Literal("period"), Type.Literal("turn")])),
-		expiresAfterMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 86400000 })),
-	},
-	closed,
+	]);
+}
+export const ConditionSchema = Type.Cyclic({ Condition: conditionShape(Type.Ref("Condition")) }, "Condition");
+
+/** Provider descriptions stop at child objects; recursive validation owns every nested condition. */
+export const ProposalConditionSchema = conditionShape(
+	Type.Object(
+		{},
+		{
+			additionalProperties: true,
+			description: `A nested condition using the same closed grammar: exactly one of {all:[conditions]}, {any:[conditions]}, {not:condition}, or {op,path,value?,table?}. Use the parent's leaf operators and field types. All/any arrays have 1-${PROGRAM_LIMITS.children} children. Conditions share a ${PROGRAM_LIMITS.nodes}-node budget across when, observe, and resetWhen; maximum nesting depth is ${PROGRAM_LIMITS.depth} from each root. Every nested object receives strict local validation.`,
+		},
+	),
 );
-export const FactsProgramSchema = Type.Object(
-	{
-		phase: Type.Union(["input", "result", "completion", "context"].map((entry) => Type.Literal(entry))),
-		selector: Type.Optional(
-			Type.Object(
-				{
-					tools: Type.Optional(
-						Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 64 }),
-					),
-					operations: Type.Optional(
-						Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 64 }),
-					),
-					codec: Type.Optional(
-						Type.Object(
-							{
-								argumentsPath: PathSchema,
-								operationPath: Type.Optional(PathSchema),
-								schemaData: Type.Optional(DataNameSchema),
-							},
-							closed,
+function stateShape<C extends TSchema>(condition: C) {
+	return Type.Object(
+		{
+			observe: condition,
+			resetWhen: Type.Optional(condition),
+			totalPath: Type.Optional(PathSchema),
+			window: Type.Optional(
+				Type.Object(
+					{
+						maxEvents: Type.Integer({ minimum: 1, maximum: 1024 }),
+						maxAgeMs: Type.Integer({ minimum: 1, maximum: 86400000 }),
+					},
+					closed,
+				),
+			),
+			cooldownMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 86400000 })),
+			once: Type.Optional(Type.Union([Type.Literal("period"), Type.Literal("turn")])),
+			expiresAfterMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 86400000 })),
+		},
+		closed,
+	);
+}
+export const StateSpecSchema = stateShape(ConditionSchema);
+function programShape<C extends TSchema>(condition: C) {
+	return Type.Object(
+		{
+			phase: Type.Union(["input", "result", "completion", "context"].map((entry) => Type.Literal(entry))),
+			selector: Type.Optional(
+				Type.Object(
+					{
+						tools: Type.Optional(
+							Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 64 }),
 						),
-					),
-				},
-				closed,
+						operations: Type.Optional(
+							Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 64 }),
+						),
+						codec: Type.Optional(
+							Type.Object(
+								{
+									argumentsPath: PathSchema,
+									operationPath: Type.Optional(PathSchema),
+									schemaData: Type.Optional(DataNameSchema),
+								},
+								closed,
+							),
+						),
+					},
+					closed,
+				),
 			),
-		),
-		when: ConditionSchema,
-		action: Type.Union([
-			Type.Object({ kind: Type.Literal("deny") }, closed),
-			Type.Object(
-				{
-					kind: Type.Literal("rename-key"),
-					path: ParentPathSchema,
-					from: Type.String({ minLength: 1, maxLength: 128 }),
-					to: Type.String({ minLength: 1, maxLength: 128 }),
-				},
-				closed,
-			),
-			Type.Object(
-				{
-					kind: Type.Literal("substitute"),
-					path: PathSchema,
-					table: DataNameSchema,
-					stage: Type.Optional(Type.Union([Type.Literal("logical-target"), Type.Literal("values")])),
-				},
-				closed,
-			),
-			Type.Object({ kind: Type.Literal("assert-error") }, closed),
-			Type.Object(
-				{ kind: Type.Literal("guide"), text: Type.String({ minLength: 1, maxLength: PROGRAM_LIMITS.text }) },
-				closed,
-			),
-			Type.Object({ kind: Type.Literal("observe"), label: Type.String({ minLength: 1, maxLength: 80 }) }, closed),
-		]),
-		onUnavailable: Type.Union([Type.Literal("skip"), Type.Literal("deny")]),
-		inputView: Type.Optional(Type.Union([Type.Literal("original"), Type.Literal("effective")])),
-		data: Type.Optional(Type.Array(DataNameSchema, { maxItems: PROGRAM_LIMITS.data, uniqueItems: true })),
-		state: Type.Optional(StateSpecSchema),
-	},
-	closed,
-);
+			when: condition,
+			action: Type.Union([
+				Type.Object({ kind: Type.Literal("deny") }, closed),
+				Type.Object(
+					{
+						kind: Type.Literal("rename-key"),
+						path: ParentPathSchema,
+						from: Type.String({ minLength: 1, maxLength: 128 }),
+						to: Type.String({ minLength: 1, maxLength: 128 }),
+					},
+					closed,
+				),
+				Type.Object(
+					{
+						kind: Type.Literal("substitute"),
+						path: PathSchema,
+						table: DataNameSchema,
+						stage: Type.Optional(Type.Union([Type.Literal("logical-target"), Type.Literal("values")])),
+					},
+					closed,
+				),
+				Type.Object({ kind: Type.Literal("assert-error") }, closed),
+				Type.Object(
+					{ kind: Type.Literal("guide"), text: Type.String({ minLength: 1, maxLength: PROGRAM_LIMITS.text }) },
+					closed,
+				),
+				Type.Object({ kind: Type.Literal("observe"), label: Type.String({ minLength: 1, maxLength: 80 }) }, closed),
+			]),
+			onUnavailable: Type.Union([Type.Literal("skip"), Type.Literal("deny")]),
+			inputView: Type.Optional(Type.Union([Type.Literal("original"), Type.Literal("effective")])),
+			data: Type.Optional(Type.Array(DataNameSchema, { maxItems: PROGRAM_LIMITS.data, uniqueItems: true })),
+			state: Type.Optional(stateShape(condition)),
+		},
+		closed,
+	);
+}
+export const FactsProgramSchema = programShape(ConditionSchema);
+export const ProposalProgramSchema = programShape(ProposalConditionSchema);
 const programValidator = Compile(FactsProgramSchema);
 const roots = new Set([
 	"input",

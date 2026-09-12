@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { ruleScopeVisibility } from "./classify.ts";
 import { contentRevision, effectiveEffect, effectiveState, factsProgram, type OperatorRuleAudit } from "./rule.ts";
-import { FactsProgramSchema } from "./program.ts";
+import { ProposalProgramSchema } from "./program.ts";
 import { snapshotData, validateNamedData, type NamedData } from "./data.ts";
 import {
 	makeRuleAudit,
@@ -103,7 +103,7 @@ const FactsProposal = {
 	reason: ReasonSchema,
 	note: NoteSchema,
 	language: Type.Literal("facts/v1"),
-	program: FactsProgramSchema,
+	program: ProposalProgramSchema,
 	scope: Type.Optional(ScopeSchema),
 };
 

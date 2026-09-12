@@ -94,7 +94,15 @@ rather than a command-effect override.
 
 ### Facts programs
 
-The closed grammar is defined by [program.ts](program.ts). A program declares:
+The closed grammar is defined by [program.ts](program.ts). Provider-facing tool
+schemas describe one condition level and accept nested condition objects without
+recursive schema references. The same shape builders supply the internal recursive
+schema. Full local validation checks every nested condition before a proposal is
+stored, including closed fields, operators, paths, data bindings, shared node and
+depth bounds, and phase/action constraints. Transport acceptance does not grant
+approval or bypass these checks.
+
+A program declares:
 
 | Field | Contract |
 | --- | --- |
@@ -470,7 +478,7 @@ record reached disk. Rule-authority health remains a separate boundary.
 | `PI_POLICY_DIR` | Private rule/data/telemetry directory; default `<agentDir>/policy` |
 | `--policy-mode` | Session mode; overrides the environment |
 | `PI_POLICY_MODE` | `observe` by default, or `notice`, `annotate`, `enforce` |
-| `PI_POLICY_TEST_PI_ROOT` | Test-only explicit Pi package root for `pi-hooks.test.mts`; runtime does not read it |
+| `PI_POLICY_TEST_PI_ROOT` | Test-only explicit Pi package root for `pi-hooks.test.mts` and `proposal-schema.test.mts`; runtime does not read it |
 
 Focused checks:
 
