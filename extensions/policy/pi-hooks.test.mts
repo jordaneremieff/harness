@@ -68,7 +68,8 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 		const proposal = await registry.proposeAdd(
 			{
 				id,
-				domain: "facts",
+				purpose: "Exercise controlled tool policy behavior.",
+				authority: "exact",
 				matcher: { kind: "declarative", language: "facts/v1", spec: program },
 				note: `Policy ${id}.`,
 			},

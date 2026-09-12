@@ -3,28 +3,37 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { ruleScopeVisibility } from "./classify.ts";
-import { contentRevision, effectiveEffect, effectiveState, factsProgram, type OperatorRuleAudit } from "./rule.ts";
-import { ProposalProgramSchema } from "./program.ts";
-import { snapshotData, validateNamedData, type NamedData } from "./data.ts";
+import { type NamedData, snapshotData, validateNamedData } from "./data.ts";
 import {
-	makeRuleAudit,
-	namedDataRevision,
-	proposalRevision,
-	validateLocalCandidate,
-	MAX_RULE_EVENT_BYTES,
 	MAX_COMMAND_LENGTH,
 	MAX_CWD_PREFIX_LENGTH,
 	MAX_LIST_ENTRIES,
 	MAX_LIST_ENTRY_LENGTH,
 	MAX_NOTE_LENGTH,
+	MAX_PURPOSE_LENGTH,
 	MAX_REASON_LENGTH,
+	MAX_RULE_EVENT_BYTES,
 	MAX_RULE_ID_LENGTH,
-	ruleStoreHealthLine,
+	makeRuleAudit,
+	namedDataRevision,
+	type ProposalEvent,
+	proposalRevision,
 	type RuleRegistry,
 	type RuleSnapshot,
-	type ProposalEvent,
+	ruleStoreHealthLine,
+	validateLocalCandidate,
 } from "./local-rules.ts";
 import { capText, terminalSafe } from "./panel.ts";
+import { ProposalConditionSchema, ProposalProgramSchema } from "./program.ts";
+import {
+	contentRevision,
+	declaredAction,
+	effectiveEffect,
+	effectiveState,
+	factsProgram,
+	type OperatorRuleAudit,
+	permitsEffectChoice,
+} from "./rule.ts";
 
 const StringEntry = Type.String({ minLength: 1, maxLength: MAX_LIST_ENTRY_LENGTH });
 const StringList = Type.Array(StringEntry, { maxItems: MAX_LIST_ENTRIES });
@@ -98,7 +107,12 @@ const RuleIdSchema = Type.String({
 const ReasonSchema = Type.String({ minLength: 1, maxLength: MAX_REASON_LENGTH });
 const RevisionSchema = Type.String({ pattern: "^[a-f0-9]{12}$" });
 const NoteSchema = Type.String({ minLength: 1, maxLength: MAX_NOTE_LENGTH });
+const PurposeSchema = Type.String({ minLength: 1, maxLength: MAX_PURPOSE_LENGTH });
+const AuthoritySchema = Type.Union([Type.Literal("exact"), Type.Literal("steer-or-block")]);
 const FactsProposal = {
+	purpose: PurposeSchema,
+	authority: AuthoritySchema,
+	applicability: Type.Optional(ProposalConditionSchema),
 	id: RuleIdSchema,
 	reason: ReasonSchema,
 	note: NoteSchema,
@@ -107,8 +121,25 @@ const FactsProposal = {
 	scope: Type.Optional(ScopeSchema),
 };
 
+const PredicateProposal = {
+	id: RuleIdSchema,
+	purpose: PurposeSchema,
+	authority: AuthoritySchema,
+	applicability: Type.Optional(ProposalConditionSchema),
+	reason: ReasonSchema,
+	note: NoteSchema,
+	predicate: RuleIdSchema,
+	suggestion: Type.Optional(SuggestionSchema),
+	scope: Type.Optional(ScopeSchema),
+};
+
 export const PolicyProposeParams = Type.Union(
 	[
+		Type.Object({ operation: Type.Literal("add"), ...PredicateProposal }, { additionalProperties: false }),
+		Type.Object(
+			{ operation: Type.Literal("replace"), ...PredicateProposal, expectedRevision: RevisionSchema },
+			{ additionalProperties: false },
+		),
 		Type.Object({ operation: Type.Literal("add"), ...FactsProposal }, { additionalProperties: false }),
 		Type.Object(
 			{ operation: Type.Literal("replace"), ...FactsProposal, expectedRevision: RevisionSchema },
@@ -117,6 +148,9 @@ export const PolicyProposeParams = Type.Union(
 		Type.Object(
 			{
 				operation: Type.Literal("replace"),
+				purpose: PurposeSchema,
+				authority: AuthoritySchema,
+				applicability: Type.Optional(ProposalConditionSchema),
 				id: RuleIdSchema,
 				reason: ReasonSchema,
 				note: NoteSchema,
@@ -130,6 +164,9 @@ export const PolicyProposeParams = Type.Union(
 		Type.Object(
 			{
 				operation: Type.Literal("add"),
+				purpose: PurposeSchema,
+				authority: AuthoritySchema,
+				applicability: Type.Optional(ProposalConditionSchema),
 				id: RuleIdSchema,
 				reason: ReasonSchema,
 				note: Type.String({ minLength: 1, maxLength: MAX_NOTE_LENGTH }),
@@ -159,18 +196,36 @@ export const PolicyProposeParams = Type.Union(
 	{ type: "object" },
 );
 
+const MAX_PREVIEW_CONTENT_BLOCKS = 64;
+const PreviewContentSchema = Type.Array(
+	Type.Object(
+		{ type: Type.Literal("text"), text: Type.String({ maxLength: MAX_RULE_EVENT_BYTES }) },
+		{ additionalProperties: false },
+	),
+	{ maxItems: MAX_PREVIEW_CONTENT_BLOCKS },
+);
+
 export const PolicyRulesParams = Type.Object(
 	{
 		view: Type.Optional(
 			Type.Union(
-				["rules", "capabilities", "state", "health", "explain", "preview", "data"].map((value) => Type.Literal(value)),
+				["rules", "catalog", "capabilities", "state", "health", "explain", "preview", "data"].map((value) =>
+					Type.Literal(value),
+				),
 			),
 		),
 		id: Type.Optional(Type.String({ minLength: 1, maxLength: 261 })),
 		tool: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
 		input: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { maxProperties: 128 })),
 		result: Type.Optional(
-			Type.Object({ isError: Type.Boolean(), details: Type.Optional(Type.Unknown()) }, { additionalProperties: false }),
+			Type.Object(
+				{
+					isError: Type.Boolean(),
+					details: Type.Optional(Type.Unknown()),
+					content: Type.Optional(PreviewContentSchema),
+				},
+				{ additionalProperties: false },
+			),
 		),
 	},
 	{ additionalProperties: false },
@@ -208,14 +263,20 @@ export function formatRulesTool(snapshot: RuleSnapshot, context: Pick<ExtensionC
 	];
 	if (snapshot.records.size === 0) lines.push("(none)");
 	for (const record of snapshot.records.values()) {
-		const source = record.source.kind === "package" ? "package" : `local proposal=${record.source.proposalId}`;
+		const source =
+			record.source.kind === "package"
+				? "package"
+				: record.source.kind === "import"
+					? `catalog import=${record.source.importId}`
+					: `local proposal=${record.source.proposalId}`;
 		const matcher =
 			record.matcher.kind === "code" ? `code:${record.matcher.key}` : `declarative:${record.matcher.language}`;
 		lines.push(
 			[
 				line(record.id),
 				`source=${source}`,
-				`domain=${record.domain}`,
+				`purpose=${line(record.definition.purpose)}`,
+				`authority=${record.definition.authority}`,
 				`matcher=${matcher}`,
 				`state=${effectiveState(record)}`,
 				`effect=${effectiveEffect(record)}`,
@@ -228,19 +289,20 @@ export function formatRulesTool(snapshot: RuleSnapshot, context: Pick<ExtensionC
 		lines.push(
 			`  definition: revision=${record.definition.revision} state=${record.definition.state} effect=${record.definition.effect}`,
 			`  suggestion: ${record.definition.suggestion ? line(JSON.stringify(record.definition.suggestion)) : "(none)"}`,
+			`  applicability: ${record.definition.applicability ? line(JSON.stringify(record.definition.applicability)) : "(always)"}`,
 			`  scope: ${record.definition.scope ? line(JSON.stringify(record.definition.scope)) : "(none)"}`,
 			`  ${ruleScopeVisibility(record, {
 				cwd: context.cwd,
 				...(model ? { provider: model.provider, model: `${model.provider}/${model.id}` } : {}),
 			})}`,
 		);
+		lines.push(
+			`  declared action: ${line(JSON.stringify(declaredAction(record)))}`,
+			`  action authority: ${permitsEffectChoice(record) ? "operator selects steer or block; steer never denies; no correction authority" : "exact definition; effect overrides have no authority"}`,
+		);
 		const program = factsProgram(record);
-		if (program)
-			lines.push(
-				`  program: ${line(JSON.stringify(program))}`,
-				"  action authority: exact definition; steer/block overrides do not change facts actions",
-			);
-		if (record.source.kind === "local") lines.push(`  approved audit: ${line(audit(record.source.approvedAudit))}`);
+		if (program) lines.push(`  program: ${line(JSON.stringify(program))}`);
+		if (record.source.kind !== "package") lines.push(`  approved audit: ${line(audit(record.source.approvedAudit))}`);
 		if (record.override) {
 			lines.push(
 				`  override audit: ${line(audit(record.override.audit))}`,
@@ -287,7 +349,7 @@ function validateBoundedJson(value: unknown): void {
 export function validateInspectionParams(params: Record<string, unknown>): void {
 	validateBoundedJson(params);
 	const view = params.view ?? "rules";
-	const views = ["rules", "capabilities", "state", "health", "explain", "preview", "data"];
+	const views = ["rules", "catalog", "capabilities", "state", "health", "explain", "preview", "data"];
 	if (typeof view !== "string" || !views.includes(view)) throw new Error("unknown policy inspection view");
 	const allowed = view === "preview" ? ["view", "tool", "input", "result"] : ["view", "id"];
 	for (const key of Object.keys(params))
@@ -308,9 +370,28 @@ export function validateInspectionParams(params: Record<string, unknown>): void 
 				typeof result !== "object" ||
 				Array.isArray(result) ||
 				typeof result.isError !== "boolean" ||
-				Object.keys(result).some((key) => key !== "isError" && key !== "details")
+				Object.keys(result).some((key) => key !== "isError" && key !== "details" && key !== "content")
 			)
-				throw new Error("preview result requires isError and optional details only");
+				throw new Error("preview result requires isError and optional details or text content only");
+			if (result.content !== undefined) {
+				if (
+					!Array.isArray(result.content) ||
+					result.content.length > MAX_PREVIEW_CONTENT_BLOCKS ||
+					result.content.some((block: unknown) => {
+						if (!block || typeof block !== "object" || Array.isArray(block)) return true;
+						const text = block as Record<string, unknown>;
+						return (
+							text.type !== "text" ||
+							typeof text.text !== "string" ||
+							text.text.length > MAX_RULE_EVENT_BYTES ||
+							Object.keys(text).some((key) => key !== "type" && key !== "text")
+						);
+					})
+				)
+					throw new Error(
+						`preview content supports at most ${MAX_PREVIEW_CONTENT_BLOCKS} text blocks with type/text only`,
+					);
+			}
 		}
 	}
 }
@@ -413,15 +494,57 @@ export async function policyDataCommand(
 	throw new Error("Use /policy data list|show <name>|set <JSON>|remove <name> <revision>.");
 }
 
+export function formatCatalog(registry: RuleRegistry, id?: string): string {
+	const rows = registry.catalogRows(id);
+	return id
+		? boundedInspection({ source: "bundled starter catalog", row: rows[0] })
+		: boundedInspection({
+				source: "bundled starter catalog",
+				rules: rows.map((row) => ({
+					id: row.id,
+					revision: row.revision,
+					purpose: row.purpose,
+					matcher:
+						row.matcher.kind === "code" ? row.matcher : { kind: row.matcher.kind, language: row.matcher.language },
+				})),
+			});
+}
+
+export async function policyImportCommand(
+	registry: RuleRegistry,
+	args: string,
+	auditValue: OperatorRuleAudit,
+	confirm: (title: string, message: string) => Promise<boolean>,
+): Promise<string> {
+	const parts = args.trim().split(/\s+/);
+	if (parts.length !== 1 && (parts.length !== 3 || parts[1] !== "exact"))
+		throw new Error("Use /policy import <id|--all> [exact REV].");
+	const plan = await registry.planImport(parts[0]);
+	const approval = `/policy import ${parts[0]} exact ${plan.revision}`;
+	const artifact = `Replace selected definitions only. Preserve all override slots. Restore selected retired definitions. Leave all other rules and named data unchanged.\n${JSON.stringify(plan)}`;
+	if (parts.length === 3 && parts[2] !== plan.revision)
+		throw new Error("import revision changed; inspect a fresh import plan");
+	if (parts.length !== 3 && !(await confirm("Import bundled policy definitions", artifact))) {
+		const preview = `${artifact}\nNo rules changed. Exact approval command: ${approval}`;
+		if (Buffer.byteLength(terminalSafe(preview), "utf8") > 30 * 1024)
+			throw new Error(
+				"Complete import preview exceeds the display bound. Inspect and import one catalog id at a time.",
+			);
+		return terminalSafe(preview);
+	}
+	await registry.importCatalog(parts[0], plan.revision, auditValue);
+	return `Imported ${plan.rows.length} bundled policy definitions. Existing overrides remain unchanged.`;
+}
+
 export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 	pi.registerTool<typeof PolicyProposeParams, Record<string, unknown>>({
 		name: "policy_propose",
 		label: "Policy propose",
 		description:
-			"Submit one inert policy rule proposal. add and replace require id, reason, note, and either match (command-shape/v1) or language=facts/v1 with a complete program. replace also requires the current expectedRevision. Command matching uses exact command, flags, operands, and pipe shape; the operator selects steer or block. Facts programs declare phases, bounded conditions, exact action parameters, unavailable behavior, optional data names and observation state. The operator approves the exact proposal revision. retire and disable accept only id and reason. Scope uses exact provider/model identities and absolute cwd prefixes. Inspect policy_rules before authoring scope or data-dependent rules. Proposals cannot approve actions, write data, reset state, or invoke tools.",
-		promptSnippet: "Propose an inert local policy rule for operator review",
+			"Submit one inert policy rule proposal. add and replace require id, purpose, authority, reason, note, and exactly one authoring form: match (command-shape/v1), predicate (an installed bounded matcher key from policy_rules view=catalog), or language=facts/v1 with a complete program. purpose states the positive outcome. authority is exact or steer-or-block. Compact match authoring declares guidance from note and suggestion; the operator selects steer or block only with steer-or-block authority. Only input guide/deny actions permit steer-or-block authority; it never authorizes correction. Selected steer never denies, including unavailable evidence. Optional applicability is a bounded condition; only true permits rule evaluation, and false or unavailable skips the rule. Exact actions require approval of the complete proposal revision. replace also requires the current expectedRevision and exact proposal revision at approval. Programs declare applicability phase and selector, bounded evidence conditions, action parameters, unavailable behavior, optional data names and observation state. retire and disable accept only id and reason. Scope uses exact provider/model identities and absolute cwd prefixes. Inspect policy_rules before authoring scope or data-dependent rules. Proposals cannot approve actions, write data, reset state, or invoke tools.",
+		promptSnippet: "Propose an inert policy rule for operator review",
 		promptGuidelines: [
-			"Use policy_propose only when the operator asks for a local policy rule. A proposal is inert until operator approval.",
+			"Use policy_propose only when the operator asks for a policy rule change. A proposal is inert until operator approval.",
 			"Use policy_rules to inspect all rules, pending proposals, health, and exact session scope values before proposing a change.",
 		],
 		parameters: PolicyProposeParams,
@@ -433,11 +556,15 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 			if (params.operation === "add" || params.operation === "replace") {
 				const candidate = validateLocalCandidate({
 					id: params.id,
-					domain: "program" in params ? "facts" : "tool-call",
+					purpose: params.purpose,
+					authority: params.authority,
+					...(params.applicability !== undefined ? { applicability: params.applicability } : {}),
 					matcher:
-						"program" in params
-							? { kind: "declarative", language: "facts/v1", spec: params.program }
-							: { kind: "declarative", language: "command-shape/v1", spec: params.match },
+						"predicate" in params
+							? { kind: "code", key: params.predicate }
+							: "program" in params
+								? { kind: "declarative", language: "facts/v1", spec: params.program }
+								: { kind: "declarative", language: "command-shape/v1", spec: params.match },
 					note: params.note,
 					...("suggestion" in params && params.suggestion ? { suggestion: params.suggestion } : {}),
 					...(params.scope ? { scope: params.scope } : {}),
@@ -484,7 +611,7 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 		name: "policy_rules",
 		label: "Policy rules",
 		description:
-			"Inspect policy rules (default), capabilities, state, health, named data, explain, or preview. id selects a rule or data name; explain also accepts call:<callId> for bounded current-session decision evidence. Preview requires tool and bounded input, with optional result; it never executes a simulated tool or changes simulated/live policy state or data. The real inspection call retains ordinary telemetry. Views report exact revisions, authority, availability, and unavailable boundaries. This tool has no control mutation action.",
+			"Inspect policy rules (default), bundled starter catalog, capabilities, state, health, named data, explain, or preview. id selects a rule or data name; explain also accepts call:<callId> for bounded current-session decision evidence. Preview requires tool and bounded input, with optional result (isError, details, and text-only content); it never executes a simulated tool or changes simulated/live policy state or data. The real inspection call retains ordinary telemetry. Views report exact revisions, authority, availability, and unavailable boundaries. This tool has no control mutation action.",
 		promptSnippet: "Inspect unified policy rules, pending proposals, and health",
 		parameters: PolicyRulesParams,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -507,7 +634,8 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 							)
 						: `No rule named ${line(params.id)}.`;
 				} else output = formatRulesTool(snapshot, ctx);
-			} else if (view === "data") output = formatDataView(snapshot, params.id);
+			} else if (view === "catalog") output = formatCatalog(deps.registry, params.id);
+			else if (view === "data") output = formatDataView(snapshot, params.id);
 			else {
 				if (!deps.inspect) throw new Error(`policy ${view} inspection is unavailable: runtime callback absent`);
 				output = boundedInspection(await deps.inspect(view as PolicyInspectionView, params, ctx));

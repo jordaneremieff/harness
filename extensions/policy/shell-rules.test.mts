@@ -40,6 +40,10 @@ describe("routing rules", () => {
 		assert.deepEqual(bash("cat <<'EOF'\nbody\nEOF"), []);
 		assert.deepEqual(bash("cat < input.txt"), []);
 		assert.deepEqual(bash("cat a b > combined.txt"), []);
+		assert.deepEqual(bash("cat hash-a.txt hash-b.txt | shasum -a 256"), []);
+		assert.deepEqual(bash("cat -n data.txt | wc -c"), []);
+		assert.deepEqual(bash("cat -s data.txt"), []);
+		assert.deepEqual(bash("cat -"), []);
 	});
 
 	it("flags file slices but not pipeline slices", () => {
@@ -72,6 +76,12 @@ describe("routing rules", () => {
 
 	it("permits an inline script that processes data instead of reading a file", () => {
 		assert.deepEqual(bash("python3 -c \"import json; print(len(json.load(open('a.json'))))\""), []);
+		assert.deepEqual(
+			bash('node -e \'console.log(JSON.parse(require("node:fs").readFileSync("data.json","utf8")).items.length)\''),
+			[],
+		);
+		assert.deepEqual(bash('node -e \'console.log(require("fs").readFileSync("a.txt","utf8").length)\''), []);
+		assert.deepEqual(bash("python3 -c \"print(len(open('a.json').read()))\""), []);
 		assert.deepEqual(bash("python3 -c 'for line in open(\"a.csv\"): print(line)'"), []);
 		assert.deepEqual(bash(`python3 -c 'with open("a.csv") as f:\n    print(f.read())'`), []);
 		assert.deepEqual(bash(`python3 -c '${`print(open("a").read())\n`.repeat(3)}'`), []);
@@ -98,7 +108,11 @@ describe("form rules", () => {
 	it("flags the named discovery and traversal forms", () => {
 		assert.deepEqual(bash("find src -name '*.ts'"), ["form.find-discovery", "bounds.find-output-uncapped"]);
 		assert.deepEqual(bash("ls -R extensions"), ["form.ls-recursive", "bounds.ls-recursive-uncapped"]);
-		assert.deepEqual(bash("du -sh node_modules"), ["form.du-traversal", "bounds.du-uncapped"]);
+		assert.deepEqual(bash("du -sh dist"), []);
+		assert.deepEqual(bash("du -sh dist | head -n 50"), []);
+		assert.deepEqual(bash("du -sh ."), ["form.du-traversal"]);
+		assert.deepEqual(bash("du -sh / | head -n 50"), ["form.du-traversal"]);
+		assert.deepEqual(bash("du dist"), ["bounds.du-uncapped"]);
 	});
 
 	it("flags whole-environment filtering", () => {
@@ -114,7 +128,10 @@ describe("form rules", () => {
 		assert.deepEqual(bash("printenv | rg '^PATH$'"), ["form.env-grep"]);
 		assert.deepEqual(bash("printenv | rg -v KEY"), []);
 		assert.deepEqual(bash("printenv | rg '^PI_' | rg -v 'KEY|TOKEN|SECRET' | head -20"), []);
-		assert.deepEqual(bash("env | rg '^PI_'"), ["form.env-grep"]);
+		assert.deepEqual(bash("env | rg '^PI_'"), []);
+		assert.deepEqual(bash("env | rg -v KEY"), []);
+		assert.deepEqual(bash("env | rg 'PATH|HOME'"), []);
+		assert.deepEqual(bash("env | rg '^PATH$'"), ["form.env-grep"]);
 	});
 
 	it("classifies commands behind transparent prefixes and shell keywords", () => {
@@ -187,11 +204,8 @@ describe("bounds rules", () => {
 		assert.deepEqual(bash("grep -rn pattern ."), ["form.grep-file", "bounds.grep-recursive-uncapped"]);
 		assert.deepEqual(bash("grep -rn pattern . | head -10"), ["form.grep-file"]);
 		assert.deepEqual(bash("ls -R / | head -5"), ["form.ls-recursive"]);
-		assert.deepEqual(bash("du -sh x | sort | head -5"), [
-			"form.du-traversal",
-			"bounds.du-uncapped",
-			"bounds.false-cap",
-		]);
+		assert.deepEqual(bash("du -sh x | sort | head -5"), []);
+		assert.deepEqual(bash("du x | sort | head -5"), ["bounds.du-uncapped", "bounds.false-cap"]);
 	});
 
 	it("treats an fd result cap as a producer bound and a depth flag as none", () => {

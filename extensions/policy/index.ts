@@ -1,27 +1,34 @@
 /** Policy registration and operator controls over the shared event interpreter. */
 import {
-	getAgentDir,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
+	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { RuleRegistry, makeRuleAudit, proposalRevision, type RuleSnapshot } from "./local-rules.ts";
-import { POLICY_MODES, resolvePolicyMode, resolvePolicyModeValue, type PolicyMode } from "./mode.ts";
+import {
+	candidatePermitsEffectChoice,
+	makeRuleAudit,
+	proposalRevision,
+	RuleRegistry,
+	type RuleSnapshot,
+} from "./local-rules.ts";
+import { POLICY_MODES, type PolicyMode, resolvePolicyMode, resolvePolicyModeValue } from "./mode.ts";
 import {
 	capText,
 	formatPolicyList,
 	formatPolicyShow,
+	PolicyApprovalPanel,
 	PolicyPanel,
+	type PolicyPanelResult,
 	readFireSummary,
 	readRecentActivity,
 	terminalSafe,
-	type PolicyPanelResult,
 } from "./panel.ts";
-import { effectiveState } from "./rule.ts";
+import { effectiveState, permitsEffectChoice } from "./rule.ts";
 import { PolicyRuntime } from "./runtime.ts";
 import { resolvePolicyDir } from "./store.ts";
-import { policyDataCommand, registerRuleTools } from "./tools.ts";
+import { formatCatalog, policyDataCommand, policyImportCommand, registerRuleTools } from "./tools.ts";
 
 const POLICY_MODE_FLAG = "policy-mode";
 const POLICY_USAGE = [
@@ -29,15 +36,17 @@ const POLICY_USAGE = [
 	"  /policy                                      Open the policy panel (TUI only)",
 	"  /policy list                                 Print rules, proposals, and authority health",
 	"  /policy show <id-or-proposal-id>              Show a rule or proposal",
-	"  /policy approve <proposal-id> <steer|block>   Approve a command add proposal",
-	"  /policy approve <proposal-id> exact <revision> Approve exact facts behavior",
-	"  /policy approve <proposal-id> <steer|block> <revision> Approve exact command replacement behavior",
+	"  /policy approve <proposal-id> <steer|block>   Approve a selectable add action",
+	"  /policy approve <proposal-id> exact <revision> Approve an exact action",
+	"  /policy approve <proposal-id> <steer|block> <revision> Approve a selectable replacement action",
 	"  /policy approve <proposal-id>                Approve a retire or disable proposal",
 	"  /policy reject <proposal-id>                 Reject a proposal",
 	"  /policy disable <id> <reason...>              Disable a rule",
 	"  /policy enable <id> <reason...>               Enable a rule",
-	"  /policy effect <id> <steer|block> <reason...>  Override a command rule effect",
-	"  /policy retire <local-id> <reason...>         Retire a local definition",
+	"  /policy effect <id> <steer|block> <reason...>  Select an authorized steer/block effect",
+	"  /policy retire <id> <reason...>               Retire a definition",
+	"  /policy catalog [id]                         Inspect bundled starter definitions",
+	"  /policy import <id|--all> [exact REV]         Approve selected bundled definitions",
 	"  /policy capabilities | state | health       Inspect the runtime",
 	"  /policy explain <rule-id|call:call-id>        Explain a rule or recorded call",
 	"  /policy preview <JSON>                       Preview without simulated execution or state changes",
@@ -49,6 +58,8 @@ const POLICY_USAGE = [
 const VERBS = [
 	"list",
 	"show",
+	"catalog",
+	"import",
 	"approve",
 	"reject",
 	"disable",
@@ -146,6 +157,20 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		}
 		(error ? process.stderr : process.stdout).write(`${safe}\n`);
 	};
+	const reviewArtifact = (ctx: ExtensionCommandContext, title: string, artifact: string): Promise<boolean> =>
+		ctx.mode === "tui" && ctx.hasUI
+			? ctx.ui.custom<boolean>(
+					(tui, _theme, _keys, done) =>
+						new PolicyApprovalPanel({
+							title,
+							artifact,
+							tui,
+							getMaxRows: () => tui.terminal.rows,
+							done,
+						}),
+					{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
+				)
+			: Promise.resolve(false);
 	const openPanel = async (ctx: ExtensionCommandContext): Promise<void> => {
 		const [snapshot, fireSummary, activity] = await Promise.all([
 			loadRegistry(ctx),
@@ -177,7 +202,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 					initialSelectedProposalId: panelState.selectedProposalId,
 					initialSelectedActivityKey: panelState.selectedActivityKey,
 					actionHost: {
-						confirm: (title, message) => prompt(() => ctx.ui.confirm(title, message)),
+						confirm: (title, message) => prompt(() => reviewArtifact(ctx, title, message)),
 						select: (title, options) => prompt(() => ctx.ui.select(title, options)),
 						approve: async (id, effect, revision) => {
 							await registry.decide(id, "approved", effect, makeRuleAudit(ctx, "panel"), revision);
@@ -224,17 +249,18 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 							: verb === "enable"
 								? effectiveState(r) === "disabled"
 								: verb === "retire"
-									? r.source.kind === "local" && r.definition.state === "active"
-									: effectiveState(r) !== "retired",
+									? r.definition.state === "active"
+									: effectiveState(r) !== "retired" && (verb !== "effect" || permitsEffectChoice(r)),
 					)
 					.map((r) => r.id);
+			if (position === 1 && ["catalog", "import"].includes(verb))
+				choices = [...registry.catalogRows().map((row) => row.id), ...(verb === "import" ? ["--all"] : [])];
+			if (position === 2 && verb === "import") choices = ["exact"];
 			if (position === 2 && verb === "effect") choices = ["steer", "block"];
 			if (position === 2 && verb === "approve") {
 				const proposal = proposals.find((p) => p.id === parts[1]);
-				if (proposal?.operation === "add")
-					choices = proposal.candidate?.matcher.language === "facts/v1" ? ["exact"] : ["steer", "block"];
-				if (proposal?.operation === "replace")
-					choices = proposal.candidate?.matcher.language === "facts/v1" ? ["exact"] : ["steer", "block"];
+				if (proposal?.operation === "add" || proposal?.operation === "replace")
+					choices = candidatePermitsEffectChoice(proposal.candidate) ? ["steer", "block"] : ["exact"];
 			}
 			if (position === 3 && verb === "approve") {
 				const proposal = proposals.find((p) => p.id === parts[1]);
@@ -287,12 +313,26 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 					runtime.reset(parts[0] === "--all" ? undefined : [parts[0]], parts.slice(1).join(" "));
 					return output(ctx, "Started a new policy observation period.");
 				}
+				if (verb === "catalog") {
+					if (parts.length > 1) return output(ctx, "Usage: /policy catalog [id]", true);
+					return output(ctx, formatCatalog(registry, parts[0]));
+				}
+				if (verb === "import") {
+					const text = await policyImportCommand(
+						registry,
+						trimmed.slice(verb.length).trim(),
+						makeRuleAudit(ctx, "command"),
+						(title, artifact) => reviewArtifact(ctx, title, artifact),
+					);
+					await loadRegistry(ctx);
+					return output(ctx, text);
+				}
 				if (verb === "data") {
 					const text = await policyDataCommand(
 						registry,
 						trimmed.slice(verb.length).trim(),
 						makeRuleAudit(ctx, "command"),
-						(title, message) => (ctx.hasUI ? ctx.ui.confirm(title, message) : Promise.resolve(false)),
+						(title, message) => reviewArtifact(ctx, title, message),
 					);
 					await loadRegistry(ctx);
 					return output(ctx, text);
@@ -302,7 +342,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 						return output(ctx, "Usage: /policy approve <proposal-id> [steer|block|exact <revision>]", true);
 					const proposal = snapshot.pending.find((p) => p.id === parts[0]);
 					if (!proposal) return output(ctx, `No pending proposal with id "${parts[0]}".`, true);
-					const exact = proposal.candidate?.matcher.language === "facts/v1";
+					const exact = proposal.candidate !== undefined && !candidatePermitsEffectChoice(proposal.candidate);
 					let effect: "steer" | "block" | undefined;
 					let revision: string | undefined;
 					if (exact) {
@@ -313,7 +353,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 						if (parts.length !== 3 || (parts[1] !== "steer" && parts[1] !== "block"))
 							return output(
 								ctx,
-								"Command replacement approval requires: /policy approve <proposal-id> <steer|block> <revision>",
+								"Selectable replacement approval requires: /policy approve <proposal-id> <steer|block> <revision>",
 								true,
 							);
 						effect = parts[1];

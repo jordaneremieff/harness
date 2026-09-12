@@ -15,11 +15,14 @@ import {
 	type Scalar,
 	type Truth,
 } from "./data.ts";
+import { captureEvidence, type RuleEvidence } from "./compiler.ts";
+import type { PolicyMode } from "./mode.ts";
+import type { RuleMatchContext } from "./rule.ts";
 import type { StateView } from "./state.ts";
 
 export { UNKNOWN } from "./data.ts";
 export type { Truth } from "./data.ts";
-export const RULE_CAPACITY = { package: 1024, local: 256, active: 1280 } as const;
+export const RULE_CAPACITY = { catalog: 1280, active: 1280 } as const;
 export const GUIDANCE_BYTES = 2048;
 export const GUIDANCE_PREFIX = "[policy]";
 export const PROGRAM_LIMITS = {
@@ -48,10 +51,12 @@ export type Condition =
 				| "starts-with"
 				| "ends-with"
 				| "contains"
-				| "lookup";
+				| "lookup"
+				| "matches-schema";
 			path: string[];
 			value?: Scalar | Scalar[];
 			table?: string;
+			schemaData?: string;
 	  };
 export interface StateSpec {
 	observe: Condition;
@@ -110,11 +115,13 @@ function conditionShape<C extends TSchema>(child: C) {
 						"ends-with",
 						"contains",
 						"lookup",
+						"matches-schema",
 					].map((entry) => Type.Literal(entry)),
 				),
 				path: PathSchema,
 				value: Type.Optional(Type.Union([ScalarSchema, Type.Array(ScalarSchema, { maxItems: 64 })])),
 				table: Type.Optional(DataNameSchema),
+				schemaData: Type.Optional(DataNameSchema),
 			},
 			closed,
 		),
@@ -128,7 +135,7 @@ export const ProposalConditionSchema = conditionShape(
 		{},
 		{
 			additionalProperties: true,
-			description: `A nested condition using the same closed grammar: exactly one of {all:[conditions]}, {any:[conditions]}, {not:condition}, or {op,path,value?,table?}. Use the parent's leaf operators and field types. All/any arrays have 1-${PROGRAM_LIMITS.children} children. Conditions share a ${PROGRAM_LIMITS.nodes}-node budget across when, observe, and resetWhen; maximum nesting depth is ${PROGRAM_LIMITS.depth} from each root. Every nested object receives strict local validation.`,
+			description: `A nested condition using the same closed grammar: exactly one of {all:[conditions]}, {any:[conditions]}, {not:condition}, or {op,path,value?,table?,schemaData?}. Use the parent's leaf operators and field types. All/any arrays have 1-${PROGRAM_LIMITS.children} children. Conditions share a ${PROGRAM_LIMITS.nodes}-node budget across applicability, when, observe, and resetWhen; maximum nesting depth is ${PROGRAM_LIMITS.depth} from each root. Every nested object receives strict local validation.`,
 		},
 	),
 );
@@ -221,6 +228,7 @@ function programShape<C extends TSchema>(condition: C) {
 export const FactsProgramSchema = programShape(ConditionSchema);
 export const ProposalProgramSchema = programShape(ProposalConditionSchema);
 const programValidator = Compile(FactsProgramSchema);
+const conditionValidator = Compile(ConditionSchema);
 const roots = new Set([
 	"input",
 	"original",
@@ -246,6 +254,11 @@ function conditionError(condition: Condition, budget: { nodes: number }, depth =
 	if ("not" in condition) return conditionError(condition.not, budget, depth + 1);
 	if (!validPath(condition.path) || !roots.has(condition.path[0]))
 		return "Condition requires a safe declared fact path";
+	if (condition.op === "matches-schema")
+		return !condition.schemaData || condition.value !== undefined || condition.table !== undefined
+			? "matches-schema requires only a named schema binding"
+			: undefined;
+	if (condition.schemaData !== undefined) return "Only matches-schema accepts schemaData";
 	if (condition.op === "exists")
 		return condition.value !== undefined || condition.table !== undefined ? "exists has no value or table" : undefined;
 	if (condition.op === "lookup")
@@ -269,6 +282,38 @@ function conditionError(condition: Condition, budget: { nodes: number }, depth =
 	)
 		return "Unknown JSON type";
 	return undefined;
+}
+
+function bindingsValid(condition: Condition, bindings: ReadonlySet<string>): boolean {
+	return "all" in condition
+		? condition.all.every((child) => bindingsValid(child, bindings))
+		: "any" in condition
+			? condition.any.every((child) => bindingsValid(child, bindings))
+			: "not" in condition
+				? bindingsValid(condition.not, bindings)
+				: condition.op === "matches-schema"
+					? bindings.has(condition.schemaData ?? "")
+					: condition.op !== "lookup" || bindings.has(condition.table ?? "");
+}
+
+/** Applicability and the approved program share one condition budget and data authority. */
+export function validateApplicability(value: unknown, program?: FactsProgram): string | undefined {
+	try {
+		const copied = cloneJson(value);
+		if (!conditionValidator.Check(copied)) return "Invalid applicability condition shape";
+		const condition = copied as Condition;
+		const budget = { nodes: 0 };
+		for (const entry of [condition, program?.when, program?.state?.observe, program?.state?.resetWhen]) {
+			if (!entry) continue;
+			const error = conditionError(entry, budget);
+			if (error) return error;
+		}
+		return bindingsValid(condition, new Set(program?.data ?? []))
+			? undefined
+			: "Applicability requires declared data bindings";
+	} catch {
+		return "Applicability exceeds bounds or contains unsafe JSON";
+	}
 }
 
 export function validateFactsProgram(value: unknown): string | undefined {
@@ -298,14 +343,14 @@ export function validateFactsProgram(value: unknown): string | undefined {
 			"rename-key": ["input"],
 			substitute: ["input"],
 			"assert-error": ["result"],
-			guide: ["result", "context"],
+			guide: ["input", "result", "context"],
 			observe: ["completion"],
 		};
 		if (!permitted[action.kind].includes(phase)) return "Action is unavailable in this phase";
 		if (program.onUnavailable === "deny" && phase !== "input") return "Unavailable denial requires the input phase";
 		if (program.inputView && phase !== "input") return "inputView requires the input phase";
-		if (program.inputView === "effective" && action.kind !== "deny")
-			return "Only a denial uses an effective-input gate";
+		if (program.inputView === "effective" && action.kind !== "deny" && action.kind !== "guide")
+			return "Only denial or guidance uses an effective-input gate";
 		if ("path" in action && !validPath(action.path, action.kind === "rename-key")) return "Unsafe correction path";
 		if (action.kind === "rename-key" && (!safeKey(action.from) || !safeKey(action.to) || action.from === action.to))
 			return "Invalid key rename";
@@ -320,16 +365,10 @@ export function validateFactsProgram(value: unknown): string | undefined {
 			return "Substitution table requires a declared data binding";
 		if (selector?.codec?.schemaData && !bindings.has(selector.codec.schemaData))
 			return "Codec schema requires a declared data binding";
-		const checkBindings = (condition: Condition): boolean =>
-			"all" in condition
-				? condition.all.every(checkBindings)
-				: "any" in condition
-					? condition.any.every(checkBindings)
-					: "not" in condition
-						? checkBindings(condition.not)
-						: condition.op !== "lookup" || bindings.has(condition.table ?? "");
 		if (
-			![program.when, program.state?.observe, program.state?.resetWhen].every((entry) => !entry || checkBindings(entry))
+			![program.when, program.state?.observe, program.state?.resetWhen].every(
+				(entry) => !entry || bindingsValid(entry, bindings),
+			)
 		)
 			return "Lookup requires a declared data binding";
 		return undefined;
@@ -389,6 +428,12 @@ export function evaluateCondition(condition: Condition, facts: Record<string, un
 				return typeof value === "string" && typeof expected === "string" && value.endsWith(expected);
 			case "contains":
 				return typeof value === "string" && typeof expected === "string" && value.includes(expected);
+			case "matches-schema": {
+				const binding = readPath(facts, ["data", entry.schemaData ?? ""]).value as DataSnapshot | undefined;
+				return binding?.status === "ready" && binding.data?.kind === "schema"
+					? checkSchema(binding.data.schema, value)
+					: "unknown";
+			}
 			case "lookup": {
 				const data = readPath(facts, ["data", entry.table ?? ""]);
 				const lookup = lookupData(data.value as DataSnapshot | undefined, value);
@@ -403,10 +448,22 @@ export function evaluateCondition(condition: Condition, facts: Record<string, un
 	}
 }
 
+export interface ProgramStep extends FactsProgram {
+	/** A later step requires a true input match from this admitted call. */
+	requiresMatch?: boolean;
+}
 export interface ProgramRule {
 	id: string;
 	revision: string;
-	program: FactsProgram;
+	program: ProgramStep;
+	applicability?: Condition;
+	/** Internal steps share the rule identity and its single observation period. */
+	steps?: ProgramStep[];
+	evidence?: RuleEvidence;
+	projectionModes?: PolicyMode[];
+}
+export function programSteps(rule: ProgramRule): ProgramRule[] {
+	return [rule.program, ...(rule.steps ?? [])].map((program) => ({ ...rule, program, steps: undefined }));
 }
 export interface EvaluationContext {
 	tool: string;
@@ -418,10 +475,19 @@ export interface EvaluationContext {
 	now?: number;
 	/** False keeps candidate effects hypothetical and checks effective gates on actual input. */
 	applyCorrections?: boolean;
+	mode?: PolicyMode;
+	scope?: RuleMatchContext;
+	/** Input evidence uses a fixed snapshot; later phases use admitted matches. */
+	evidence?: ReadonlyMap<string, Truth>;
+	matched?: ReadonlySet<string>;
+	staleRules?: ReadonlySet<string>;
 }
 export interface ProgramEvaluation {
 	id: string;
 	revision: string;
+	phase: ProgramPhase;
+	inputView?: "original" | "effective";
+	applicable: Truth;
 	truth: Truth;
 	action: ProgramAction;
 	unavailable: boolean;
@@ -434,6 +500,7 @@ export interface InputPlan {
 	valid: boolean;
 	evaluations: ProgramEvaluation[];
 	problems: string[];
+	matches: string[];
 	corrections: { id: string; stage: "logical-target" | "keys" | "values"; path: string[] }[];
 }
 
@@ -477,6 +544,31 @@ export function programFacts(
 		schema: { valid: schemaTruth === "unknown" ? UNKNOWN : schemaTruth },
 	};
 }
+function applicabilityTruth(rule: ProgramRule, context: EvaluationContext, input?: unknown, original?: unknown): Truth {
+	return rule.applicability
+		? evaluateCondition(rule.applicability, programFacts(rule, context, input, original))
+		: true;
+}
+
+/** Capture only rules whose applicability facts authorize this snapshot. */
+export function captureProgramEvidence(
+	rules: readonly ProgramRule[],
+	context: EvaluationContext,
+	input?: unknown,
+	original?: unknown,
+): Map<string, Truth> {
+	const applicable = new Map(rules.map((rule) => [rule.id, applicabilityTruth(rule, context, input, original)]));
+	const evidence = captureEvidence(
+		rules.filter((rule) => applicable.get(rule.id) === true),
+		context.tool,
+		input ?? context.facts?.input,
+		context.scope ?? { cwd: "" },
+	);
+	for (const rule of rules)
+		if (rule.evidence && applicable.get(rule.id) !== true) evidence.set(rule.id, applicable.get(rule.id)!);
+	return evidence;
+}
+
 function evaluateRule(
 	rule: ProgramRule,
 	context: EvaluationContext,
@@ -485,16 +577,31 @@ function evaluateRule(
 ): ProgramEvaluation {
 	const program = rule.program;
 	const facts = programFacts(rule, context, input, original);
-	let truth: Truth = true;
+	const applicable = applicabilityTruth(rule, context, input, original);
+	let truth: Truth = applicable;
 	if (program.phase !== "context" && program.selector?.tools && !program.selector.tools.includes(context.tool))
 		truth = false;
 	if (program.phase !== "context" && truth !== false && program.selector?.operations) {
 		const operation = facts.operation;
-		truth =
+		const selected: Truth =
 			operation === UNKNOWN || typeof operation !== "string"
 				? "unknown"
 				: program.selector.operations.includes(operation);
+		truth = selected === false ? false : truth === "unknown" || selected === "unknown" ? "unknown" : true;
 	}
+	if (truth !== false && rule.evidence) {
+		const evidence = context.evidence?.get(rule.id) ?? context.matched?.has(rule.id) ?? "unknown";
+		truth = evidence === false ? false : truth === "unknown" || evidence === "unknown" ? "unknown" : true;
+	}
+	if (truth !== false && program.requiresMatch && !context.matched?.has(rule.id)) truth = false;
+	if (
+		truth !== false &&
+		program.phase !== "input" &&
+		program.action.kind === "guide" &&
+		rule.projectionModes &&
+		!rule.projectionModes.includes(context.mode ?? "enforce")
+	)
+		truth = false;
 	if (truth !== false) {
 		const missing = program.data?.some((name) => context.data?.[name]?.status !== "ready");
 		if (missing || truth === "unknown") truth = "unknown";
@@ -503,12 +610,31 @@ function evaluateRule(
 	return {
 		id: rule.id,
 		revision: rule.revision,
+		phase: program.phase,
+		applicable,
+		...(program.phase === "input" ? { inputView: program.inputView ?? "original" } : {}),
 		truth,
 		action: program.action,
 		unavailable: truth === "unknown",
 		deny:
-			(truth === true && program.action.kind === "deny") || (truth === "unknown" && program.onUnavailable === "deny"),
+			applicable === true &&
+			((truth === true && program.action.kind === "deny") || (truth === "unknown" && program.onUnavailable === "deny")),
 	};
+}
+export function observationSelected(rule: ProgramRule, context: EvaluationContext): Truth {
+	return evaluateRule(
+		{
+			...rule,
+			program: {
+				...rule.program,
+				phase: "completion",
+				requiresMatch: false,
+				when: { op: "exists", path: ["tool"] },
+				action: { kind: "observe", label: "state" },
+			},
+		},
+		context,
+	).truth;
 }
 export function evaluatePrograms(
 	rules: readonly ProgramRule[],
@@ -517,6 +643,7 @@ export function evaluatePrograms(
 ): ProgramEvaluation[] {
 	if (rules.length > PROGRAM_LIMITS.rules) throw new Error("Too many facts programs");
 	return rules
+		.flatMap(programSteps)
 		.filter((rule) => rule.program.phase === phase)
 		.sort((left, right) => left.id.localeCompare(right.id))
 		.map((rule) => evaluateRule(rule, context));
@@ -557,6 +684,7 @@ export function planInput(
 		valid: true,
 		evaluations: [],
 		problems: [],
+		matches: [],
 		corrections: [],
 	};
 	if (rules.length > PROGRAM_LIMITS.rules) {
@@ -573,27 +701,55 @@ export function planInput(
 		plan.problems.push("Input is unavailable or exceeds JSON bounds");
 		return plan;
 	}
-	const ordered = rules
-		.filter((rule) => rule.program.phase === "input")
+	const captured = rules.flatMap(programSteps).filter((rule) => rule.program.phase === "input");
+	const ordered = captured
+		.filter((rule) => !context.staleRules?.has(rule.id))
 		.sort((left, right) => left.id.localeCompare(right.id));
-	if (ordered.some((rule) => validateFactsProgram(rule.program))) {
+	if (
+		ordered.some(
+			(rule) =>
+				validateFactsProgram(rule.program) ||
+				(rule.applicability && validateApplicability(rule.applicability, rule.program)),
+		)
+	) {
 		plan.valid = false;
 		plan.problems.push("Invalid facts program");
 		return plan;
 	}
 	const finalChecks: Patch[] = [];
-	const record = (rule: ProgramRule, candidate: Record<string, unknown>): ProgramEvaluation => {
-		const evaluation = evaluateRule(rule, context, candidate, original);
+	const matches = new Set<string>();
+	const evidenceFor = (candidate: Record<string, unknown>) => {
+		const evidence = captureProgramEvidence(
+			rules.filter((rule) => !context.staleRules?.has(rule.id)),
+			context,
+			candidate,
+			original,
+		);
+		for (const [id, truth] of evidence) if (truth === true) matches.add(id);
+		plan.matches = [...matches];
+		return evidence;
+	};
+	const originalEvidence = evidenceFor(original);
+	const record = (
+		rule: ProgramRule,
+		candidate: Record<string, unknown>,
+		evidence = originalEvidence,
+	): ProgramEvaluation => {
+		const evaluation = evaluateRule(rule, { ...context, evidence }, candidate, original);
 		plan.evaluations.push(evaluation);
+		if (evaluation.truth === true) matches.add(rule.id);
+		plan.matches = [...matches];
 		plan.denied ||= evaluation.deny;
 		return evaluation;
 	};
 	for (const rule of ordered.filter(
-		(entry) => entry.program.action.kind === "deny" && entry.program.inputView !== "effective",
+		(entry) =>
+			(entry.program.action.kind === "deny" || entry.program.action.kind === "guide") &&
+			entry.program.inputView !== "effective",
 	))
 		record(rule, original);
-	if (plan.denied) return plan;
 	for (const stage of ["logical-target", "keys", "values"] as const) {
+		if (plan.denied) break;
 		const snapshot = cloneJson(plan.candidate);
 		const patches: Patch[] = [];
 		for (const rule of ordered) {
@@ -715,11 +871,29 @@ export function planInput(
 		plan.valid = false;
 		plan.problems.push("Corrected input fails or lacks the tool schema");
 	}
-	if (plan.valid || context.applyCorrections === false)
-		for (const rule of ordered.filter(
-			(entry) => entry.program.action.kind === "deny" && entry.program.inputView === "effective",
-		))
-			record(rule, context.applyCorrections === false ? original : plan.candidate);
+	if (
+		context.applyCorrections !== false &&
+		plan.changed &&
+		captured.some(
+			(rule) =>
+				context.staleRules?.has(rule.id) &&
+				rule.program.action.kind === "deny" &&
+				rule.program.inputView === "effective" &&
+				applicabilityTruth(rule, context, plan.candidate, original) === true &&
+				(!rule.program.selector?.tools || rule.program.selector.tools.includes(context.tool)),
+		)
+	) {
+		plan.valid = false;
+		plan.problems.push("Captured final-input rule observation periods changed before candidate validation");
+	}
+	const effective = context.applyCorrections === false || !plan.valid || plan.denied ? original : plan.candidate;
+	const effectiveEvidence = evidenceFor(effective);
+	for (const rule of ordered.filter(
+		(entry) =>
+			(entry.program.action.kind === "deny" || entry.program.action.kind === "guide") &&
+			entry.program.inputView === "effective",
+	))
+		record(rule, effective, effectiveEvidence);
 	if (!plan.valid || plan.denied) {
 		plan.candidate = cloneJson(original);
 		plan.changed = false;

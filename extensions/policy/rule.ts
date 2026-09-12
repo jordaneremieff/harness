@@ -1,11 +1,9 @@
 /** Unified policy rule aggregate and matcher contracts. */
 
 import { createHash } from "node:crypto";
-import type { FactsProgram } from "./program.ts";
+import type { Condition, FactsProgram, ProgramAction } from "./program.ts";
 
-export const POLICY_DOMAIN = "tool-call" as const;
-export const FACTS_DOMAIN = "facts" as const;
-export type PolicyDomain = typeof POLICY_DOMAIN | typeof FACTS_DOMAIN;
+export type RuleAuthority = "exact" | "steer-or-block";
 export type RuleEffect = "steer" | "block";
 export type DefinitionEffect = RuleEffect | "correct" | "observe";
 export type RuleDefinitionState = "active" | "retired";
@@ -48,7 +46,7 @@ export interface RuleScope {
 
 export type AuditSurface = "package" | "agent-tool" | "command" | "panel";
 
-/** Package catalog events are content-identical across concurrent sessions. */
+/** The starter catalog records bundled provenance, not continuing authority. */
 export interface PackageRuleAudit {
 	surface: "package";
 }
@@ -70,6 +68,12 @@ export type RuleMatcher =
 	| { kind: "declarative"; language: "facts/v1"; spec: FactsProgram };
 
 export interface RuleDefinition {
+	/** Positive outcome this policy protects. */
+	purpose: string;
+	/** Exact actions never acquire correction authority through an effect override. */
+	authority: RuleAuthority;
+	/** False or unavailable applicability leaves this rule inactive for the event. */
+	applicability?: Condition;
 	revision: string;
 	state: RuleDefinitionState;
 	effect: DefinitionEffect;
@@ -90,8 +94,10 @@ export interface RuleOverride {
 /** One reduced rule, irrespective of package or local provenance. */
 export interface RuleRecord {
 	id: string;
-	source: { kind: "package" } | { kind: "local"; proposalId: string; approvedAudit: OperatorRuleAudit };
-	domain: PolicyDomain;
+	source:
+		| { kind: "package" }
+		| { kind: "local"; proposalId: string; approvedAudit: OperatorRuleAudit }
+		| { kind: "import"; importId: string; approvedAudit: OperatorRuleAudit };
 	matcher: RuleMatcher;
 	definition: RuleDefinition;
 	override?: RuleOverride;
@@ -101,11 +107,13 @@ export interface RuleRecord {
 	staleOverride: boolean;
 }
 
-/** Installed definitions retain package-source activation authority. */
+/** A bundled starter definition available for initial seeding or explicit import. */
 export interface PackageDefinitionRow {
 	id: string;
-	domain: PolicyDomain;
-	matcher: Extract<RuleMatcher, { kind: "code" } | { language: "facts/v1" }>;
+	purpose: string;
+	authority: RuleAuthority;
+	applicability?: Condition;
+	matcher: RuleMatcher;
 	effect: DefinitionEffect;
 	note: string;
 	suggestion?: RuleSuggestion;
@@ -119,18 +127,42 @@ export interface RuleMatchContext {
 	cwd: string;
 }
 
-/** Effective state gives package retirement precedence over an operator override. */
+/** Retirement takes precedence over an operator override for every rule. */
 export function effectiveState(record: Pick<RuleRecord, "definition" | "override">): "active" | "disabled" | "retired" {
 	return record.definition.state === "retired" ? "retired" : (record.override?.state ?? "active");
 }
 
-export function effectiveEffect(
-	record: Pick<RuleRecord, "definition" | "override"> & Partial<Pick<RuleRecord, "matcher">>,
-): DefinitionEffect {
-	if (record.matcher?.kind === "declarative" && record.matcher.language === "facts/v1") {
-		return record.definition.effect;
-	}
-	return record.override?.effect ?? record.definition.effect;
+export interface RuleBehavior {
+	matcher: RuleMatcher;
+	definition: Pick<RuleDefinition, "authority" | "note"> & Partial<Pick<RuleDefinition, "effect" | "suggestion">>;
+}
+
+/** Decode authoring syntax at the rule boundary, not in operator controls. */
+export function declaredAction(record: RuleBehavior): ProgramAction {
+	const program = factsProgram(record);
+	if (program) return program.action;
+	return record.definition.effect === "block" ? { kind: "deny" } : { kind: "guide", text: ruleGuidance(record) };
+}
+
+export function permitsEffectChoice(record: RuleBehavior): boolean {
+	const action = declaredAction(record);
+	const program = factsProgram(record);
+	return (
+		record.definition.authority === "steer-or-block" &&
+		(!program || program.phase === "input") &&
+		(action.kind === "guide" || action.kind === "deny")
+	);
+}
+
+export function actionEffect(action: ProgramAction): DefinitionEffect {
+	if (action.kind === "deny") return "block";
+	if (action.kind === "guide") return "steer";
+	if (action.kind === "observe") return "observe";
+	return "correct";
+}
+
+export function effectiveEffect(record: Pick<RuleRecord, "definition" | "override" | "matcher">): DefinitionEffect {
+	return permitsEffectChoice(record) ? (record.override?.effect ?? record.definition.effect) : record.definition.effect;
 }
 
 export function factsProgram(record: Pick<RuleRecord, "matcher">): FactsProgram | undefined {
@@ -152,7 +184,9 @@ function canonical(value: unknown): unknown {
 
 export interface RevisionInput {
 	id: string;
-	domain: PolicyDomain;
+	purpose: string;
+	authority: RuleAuthority;
+	applicability?: Condition;
 	matcher: RuleMatcher;
 	effect: DefinitionEffect;
 	note: string;
@@ -180,7 +214,7 @@ export function packageRowRevision(row: Omit<PackageDefinitionRow, "revision">):
 }
 
 /** One-line guidance shared by code and declarative records. */
-export function ruleGuidance(record: Pick<RuleRecord, "definition">): string {
+export function ruleGuidance(record: { definition: Pick<RuleDefinition, "note" | "suggestion"> }): string {
 	const safe = (value: string) =>
 		value
 			.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, (character) => {

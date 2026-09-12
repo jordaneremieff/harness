@@ -132,9 +132,10 @@ role stays human adjudication.
 ### Policy enforcement suite
 
 `prompts/policy-enforce.eval.mts` loads the policy extension and exposes `bash`
-in both variants. The `enforce` variant sets the extension's `policy-mode` flag
-to `enforce`; `observe-baseline` omits the flag and therefore keeps the default
-`observe` mode. Both variants must attempt the exact governed call. Only the
+and `read` in both variants. The `enforce` variant sets the extension's
+`policy-mode` flag to `enforce`; `observe-baseline` sets the same flag to
+`observe` explicitly, so ambient `PI_POLICY_MODE` cannot change either arm. Both
+variants must attempt the exact governed call. Only the
 enforce variant can satisfy `policy-block-returned`, which requires an error
 result containing the built-in `routing.cat-read` guidance. The observe variant
 is an intentional negative control and must fail that check, making the suite

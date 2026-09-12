@@ -139,17 +139,13 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 			resourceLoader: loader,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(cwd),
-			tools: ["bash", "jobs"],
+			tools: ["bash", "read", "jobs"],
 		}));
 		await session.bindExtensions({ mode: "json", onError: (error) => errors.push(error.error) });
 
-		// This real package rule rejects a file read before any shell side effect or job admission.
+		// The active reader makes the package file-read policy applicable before job admission.
 		writeFileSync(join(cwd, "input.txt"), "fixture input\n");
-		await call(
-			"bash",
-			{ command: "printf launched > denied-marker; cat input.txt", background: true },
-			true,
-		);
+		await call("bash", { command: "printf launched > denied-marker; cat input.txt", background: true }, true);
 		assert.equal(existsSync(join(cwd, "denied-marker")), false);
 		assert.deepEqual((await data("jobs", { action: "list" })).jobs, []);
 

@@ -323,6 +323,44 @@ test("context selectors qualify completed observations and do not invent a curre
 	assert.equal(evaluatePrograms([completion], "completion", { tool: "other", operation: "send" })[0].truth, false);
 });
 
+test("named result schemas require an explicit binding and preserve unavailable evidence", () => {
+	const condition: Condition = { op: "matches-schema", path: ["result"], schemaData: "result-errors" };
+	const program = rule(
+		"semantic-error",
+		{ kind: "assert-error" },
+		{ phase: "result", when: condition, data: ["result-errors"] },
+	);
+	const schema: NamedData = {
+		kind: "schema",
+		name: "result-errors",
+		revision: "123456abcdef",
+		source: "approved-result-shape",
+		capturedAt: 1,
+		schema: {
+			type: "object",
+			properties: {
+				tool: { const: "sample" },
+				details: { type: "object", properties: { failed: { const: true } }, required: ["failed"] },
+			},
+			required: ["tool", "details"],
+		},
+	};
+	const data = snapshotData([schema], 2);
+	assert.equal(validateFactsProgram(program.program), undefined);
+	assert.ok(validateFactsProgram({ ...program.program, data: [] }));
+	for (const extra of [{ table: "result-errors" }, { value: true }, { op: "exists" }])
+		assert.ok(validateFactsProgram({ ...program.program, when: { ...condition, ...extra } }));
+	const result = { tool: "sample", details: { failed: true } };
+	assert.equal(evaluateCondition(condition, { result, data }), true);
+	assert.equal(evaluateCondition(condition, { result: { ...result, tool: "other" }, data }), false);
+	assert.equal(evaluateCondition(condition, { result: { tool: "sample", details: {} }, data }), false);
+	assert.equal(evaluateCondition(condition, { result, data: {} }), "unknown");
+	assert.equal(evaluateCondition({ not: condition }, { result, data: {} }), "unknown");
+	assert.equal(evaluateCondition(condition, { data }), "unknown");
+	const wrong = snapshotData([table("result-errors", [])], 2);
+	assert.equal(evaluateCondition(condition, { result, data: wrong }), "unknown");
+});
+
 test("only actual result facts support structural error assertions", () => {
 	const correction = rule(
 		"meaning",

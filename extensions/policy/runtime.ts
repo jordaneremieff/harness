@@ -1,16 +1,20 @@
 /** One event interpreter for approved plans, corrections, observations, and guidance. */
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
-import { captureFor, matchRuleRecords, ruleScopeMatches as scopeMatches } from "./classify.ts";
+import { captureFor, ruleScopeMatches as scopeMatches } from "./classify.ts";
+import { compileRule } from "./compiler.ts";
 import { cloneJson, snapshotData, UNKNOWN } from "./data.ts";
 import type { RuleSnapshot } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
 import { readRecentActivity } from "./panel.ts";
 import {
 	evaluatePrograms,
+	captureProgramEvidence,
 	GUIDANCE_BYTES,
 	GUIDANCE_PREFIX,
 	planInput,
 	programFacts,
+	programSteps,
+	observationSelected,
 	type Condition,
 	type EvaluationContext,
 	type InputPlan,
@@ -45,9 +49,7 @@ interface ObservedCall extends PendingCall {
 	rules: ProgramRule[];
 	pins: Map<string, StatePin>;
 	context: EvaluationContext;
-	scope: ReturnType<typeof sessionScope>;
-	shell: RuleRecord[];
-	shellCandidates: RuleRecord[];
+	matches: Set<string>;
 	evaluations: ProgramEvaluation[];
 	corrections: Array<{ id: string; stage: string; path: string[] }>;
 	effects: CallEffects;
@@ -92,9 +94,12 @@ function samePin(left: StatePin | undefined, right: StatePin | undefined): boole
 	);
 }
 function metadata(evaluations: ProgramEvaluation[]): unknown[] {
-	return evaluations.map(({ id, revision, truth, action, unavailable, deny }) => ({
+	return evaluations.map(({ id, revision, phase, inputView, applicable, truth, action, unavailable, deny }) => ({
 		id,
 		revision,
+		phase,
+		applicable,
+		...(inputView ? { inputView } : {}),
 		truth,
 		action: action.kind,
 		unavailable,
@@ -130,30 +135,6 @@ function guidanceText(lines: readonly string[]): string | undefined {
 	}
 	return text === GUIDANCE_PREFIX ? undefined : text;
 }
-function shellProgram(record: RuleRecord, phase: "input" | "result" = "input"): ProgramRule {
-	const guide = phase === "result" || effectiveEffect(record) === "steer";
-	return {
-		id: record.id,
-		revision: record.definition.revision,
-		program: {
-			phase: guide ? "result" : "input",
-			...(guide ? {} : { inputView: "original" as const }),
-			when: guide ? { op: "eq", path: ["result", "isError"], value: false } : { op: "exists", path: ["input"] },
-			action: guide ? { kind: "guide", text: ruleGuidance(record) } : { kind: "deny" },
-			onUnavailable: "skip",
-			state: { observe: { op: "eq", path: ["outcome", "kind"], value: "success" }, once: "period" },
-		},
-	};
-}
-function program(record: RuleRecord): ProgramRule {
-	if (record.matcher.kind === "declarative" && record.matcher.language === "facts/v1") {
-		return { id: record.id, revision: record.definition.revision, program: record.matcher.spec };
-	}
-	return shellProgram(record);
-}
-function isFacts(record: RuleRecord): boolean {
-	return record.matcher.kind === "declarative" && record.matcher.language === "facts/v1";
-}
 /** Pi supplies mutable plain argument objects. Refuse exotic descriptors before a single synchronous commit. */
 function commitInput(target: Record<string, unknown>, candidate: Record<string, unknown>): boolean {
 	const proto = Object.getPrototypeOf(target);
@@ -171,6 +152,7 @@ export class PolicyRuntime {
 	private readonly pending = new Map<string, ObservedCall>();
 	private readonly ended = new Set<string>();
 	private snapshot?: RuleSnapshot;
+	private effectiveActions = new Map<string, ReturnType<typeof effectiveEffect>>();
 	private generation = 0;
 	private turn = 0;
 	private closed = false;
@@ -207,15 +189,20 @@ export class PolicyRuntime {
 		}
 	}
 	sync(snapshot: RuleSnapshot): void {
-		const prior = this.snapshot;
+		const prior = this.effectiveActions;
+		this.effectiveActions = new Map(
+			[...snapshot.records.values()].map((record) => [record.id, effectiveEffect(record)]),
+		);
 		this.snapshot = snapshot;
 		this.state.sync(
-			[...snapshot.records.values()].filter((r) => effectiveState(r) === "active" && r.matcherAvailable).map(program),
+			[...snapshot.records.values()]
+				.filter((r) => effectiveState(r) === "active" && r.matcherAvailable)
+				.map(compileRule),
 			Date.now(),
 		);
 		for (const record of snapshot.records.values()) {
-			const previous = prior?.records.get(record.id);
-			if (previous && effectiveEffect(previous) !== effectiveEffect(record))
+			const previous = prior.get(record.id);
+			if (previous !== undefined && previous !== effectiveEffect(record))
 				this.state.reset("effective-action-change", Date.now(), record.id);
 		}
 	}
@@ -270,8 +257,10 @@ export class PolicyRuntime {
 				names.add(condition.path[2]);
 		};
 		for (const record of snapshot.records.values()) {
-			if (effectiveState(record) !== "active" || !isFacts(record)) continue;
-			const spec = program(record).program;
+			if (effectiveState(record) !== "active") continue;
+			const compiled = compileRule(record);
+			const spec = compiled.program;
+			if (compiled.applicability) gather(compiled.applicability);
 			gather(spec.when);
 			if (spec.state) {
 				gather(spec.state.observe);
@@ -308,54 +297,28 @@ export class PolicyRuntime {
 		if (call.generation !== this.generation) return [];
 		return call.rules.filter((rule) => samePin(call.pins.get(rule.id), this.state.pin(rule.id)));
 	}
-	/** Candidate command checks share the same plan and commit boundary as facts checks. */
-	private inputPlan(call: ObservedCall, applyCorrections = true): { plan: InputPlan; shell: RuleRecord[] } {
-		const input = call.input!;
-		const context = { ...this.contextFor(call), applyCorrections };
-		const plan = planInput(this.currentRules(call), input, context);
-		if (!plan.valid || plan.denied) return { plan, shell: [] };
-		if (
-			applyCorrections &&
-			plan.changed &&
-			call.shellCandidates.some((record) => !samePin(call.pins.get(record.id), this.state.pin(record.id)))
-		) {
-			plan.valid = false;
-			plan.changed = false;
-			plan.candidate = cloneJson(input);
-			plan.problems.push("Command rule observation periods changed before candidate validation");
-			return { plan, shell: [] };
-		}
-		const effectiveInput = applyCorrections ? plan.candidate : input;
-		const captured = captureFor(call.tool, effectiveInput);
-		const eligible =
-			call.generation === this.generation
-				? call.shellCandidates.filter((record) => samePin(call.pins.get(record.id), this.state.pin(record.id)))
-				: [];
-		const shell = captured === undefined ? [] : matchRuleRecords(call.tool, captured, eligible, call.scope);
-		const gates = shell
-			.filter((record) => effectiveEffect(record) === "block")
-			.map((record) => {
-				const gate = shellProgram(record);
-				return { ...gate, program: { ...gate.program, inputView: "effective" as const } };
-			});
-		const evaluations = evaluatePrograms(gates, "input", {
-			...context,
-			facts: { ...context.facts, input: effectiveInput },
+	private inputPlan(call: ObservedCall, applyCorrections = true): InputPlan {
+		const current = new Set(this.currentRules(call).map((rule) => rule.id));
+		return planInput(call.rules, call.input!, {
+			...this.contextFor(call),
+			applyCorrections,
+			staleRules: new Set(call.rules.filter((rule) => !current.has(rule.id)).map((rule) => rule.id)),
 		});
-		plan.evaluations.push(...evaluations);
-		if (evaluations.some((evaluation) => evaluation.deny)) {
-			plan.denied = true;
-			plan.changed = false;
-			plan.candidate = cloneJson(input);
-		}
-		return { plan, shell };
 	}
 	private facts(call: ObservedCall, result?: Result, outcome?: CallOutcome): Record<string, unknown> {
 		return {
 			input: call.input,
 			original: call.requested,
 			context: call.context.facts?.context,
-			result: result ? { ...result, isError: result.isError === true } : undefined,
+			result: result
+				? {
+						tool: call.tool,
+						isError: result.isError === true,
+						...(result.content !== undefined ? { content: result.content } : {}),
+						...(result.details !== undefined ? { details: result.details } : {}),
+						...(result.usage !== undefined ? { usage: result.usage } : {}),
+					}
+				: undefined,
 			outcome: outcome
 				? {
 						kind: outcome,
@@ -376,7 +339,15 @@ export class PolicyRuntime {
 			Object.values(call.context.data ?? {}).flatMap((source) => (source.data ? [source.data] : [])),
 			now,
 		);
-		return { ...call.context, data, facts: this.facts(call, result, outcome), states: this.states(), now };
+		return {
+			...call.context,
+			data,
+			facts: this.facts(call, result, outcome),
+			states: this.states(),
+			matched: call.matches,
+			mode: this.effectiveMode(),
+			now,
+		};
 	}
 	private makeCall(
 		tool: string,
@@ -391,25 +362,25 @@ export class PolicyRuntime {
 		const active = [...snapshot.records.values()].filter(
 			(r) => effectiveState(r) === "active" && r.matcherAvailable && scopeMatches(r.definition.scope, scope),
 		);
-		const shellCandidates = active.filter((record) => !isFacts(record)).map((record) => structuredClone(record));
-		const shell = captured === undefined ? [] : matchRuleRecords(tool, captured, shellCandidates, scope);
-		const rules = [...active.filter(isFacts).map(program), ...shell.map((r) => shellProgram(r))];
+		const rules = active.map(compileRule);
+		const context = { ...this.evaluationContext(tool, input, snapshot), scope };
+		const matches = new Set(
+			[...captureProgramEvidence(rules, context, input)].filter(([, truth]) => truth === true).map(([id]) => id),
+		);
 		return {
 			...startCall(tool, id, input ?? {}, new Date(), performance.now(), captured ?? null),
-			classes: shell.map((record) => record.id),
+			classes: [...matches],
 			requested: input,
 			input,
 			rules,
-			shell,
-			shellCandidates,
+			matches,
 			pins: new Map(
 				active.flatMap((rule) => {
 					const pin = this.state.pin(rule.id);
 					return pin ? [[rule.id, pin] as const] : [];
 				}),
 			),
-			context: this.evaluationContext(tool, input, snapshot),
-			scope,
+			context,
 			generation: this.generation,
 			turn: this.turn,
 			prepared: false,
@@ -444,9 +415,7 @@ export class PolicyRuntime {
 	}
 	private collect(call: ObservedCall, evaluations: ProgramEvaluation[]): void {
 		call.evaluations.push(...evaluations);
-		call.classes = [
-			...new Set([...call.classes, ...evaluations.filter((e) => e.truth === true || e.unavailable).map((e) => e.id)]),
-		];
+		call.classes = [...new Set([...call.classes, ...evaluations.filter((e) => e.truth === true).map((e) => e.id)])];
 	}
 	async toolStart(
 		event: { toolName: string; toolCallId: string; args: unknown },
@@ -487,13 +456,10 @@ export class PolicyRuntime {
 			}
 			return;
 		}
-		const { plan, shell } = this.inputPlan(call, this.effectiveMode() === "enforce");
-		for (const record of shell) {
-			if (!call.shell.some((matched) => matched.id === record.id)) {
-				call.shell.push(record);
-				call.rules.push(shellProgram(record));
-			}
-			if (!call.classes.includes(record.id)) call.classes.push(record.id);
+		const plan = this.inputPlan(call, this.effectiveMode() === "enforce");
+		for (const id of plan.matches) {
+			call.matches.add(id);
+			if (!call.classes.includes(id)) call.classes.push(id);
 		}
 		this.collect(call, plan.evaluations);
 		call.corrections = plan.corrections;
@@ -506,7 +472,12 @@ export class PolicyRuntime {
 			} else denied = true;
 		}
 		if (activeMode === "enforce" && denied) {
-			const notes = call.classes
+			const notes = [
+				...new Set([
+					...call.classes,
+					...plan.evaluations.filter((evaluation) => evaluation.deny).map((evaluation) => evaluation.id),
+				]),
+			]
 				.map((id) => snapshot.records.get(id))
 				.filter((r): r is RuleRecord => r !== undefined)
 				.map(ruleGuidance);
@@ -526,16 +497,9 @@ export class PolicyRuntime {
 			result.isError !== true &&
 			semantic.some((e) => e.truth === true && e.action.kind === "assert-error");
 		const effective = correction ? { ...result, isError: true } : result;
-		const shell = call.shell
-			.filter(
-				(r) => rules.some((rule) => rule.id === r.id) && (this.mode() === "annotate" || effectiveEffect(r) === "steer"),
-			)
-			.map((r) => shellProgram(r, "result"));
-		const guides = evaluatePrograms(
-			[...rules.filter((rule) => !call.shell.some((r) => r.id === rule.id)), ...shell],
-			"result",
-			this.contextFor(call, effective),
-		).filter((e) => e.action.kind === "guide");
+		const guides = evaluatePrograms(rules, "result", this.contextFor(call, effective)).filter(
+			(e) => e.action.kind === "guide",
+		);
 		return { correction, semantic, guides };
 	}
 	async toolResult(
@@ -619,15 +583,11 @@ export class PolicyRuntime {
 		const completionContext = this.contextFor(call, result, outcome);
 		this.stale += call.rules.length - rules.length;
 		for (const rule of rules) {
-			const selected = evaluatePrograms(
-				[{ ...rule, program: { ...rule.program, phase: "completion", when: { op: "exists", path: ["tool"] } } }],
-				"completion",
-				completionContext,
-			)[0];
+			const selected = observationSelected(rule, completionContext);
 			const pin = call.pins.get(rule.id);
 			if (
 				pin &&
-				selected?.truth === true &&
+				selected === true &&
 				!this.state.complete(pin, programFacts(rule, completionContext), call.turn, Date.now())
 			)
 				this.stale++;
@@ -641,7 +601,7 @@ export class PolicyRuntime {
 		const generations = boundedRows([...call.pins.values()]);
 		const dataNames = new Set([
 			...Object.keys(call.context.data ?? {}),
-			...call.rules.flatMap((rule) => rule.program.data ?? []),
+			...call.rules.flatMap(programSteps).flatMap((rule) => rule.program.data ?? []),
 		]);
 		const dataSnapshots = boundedRows(
 			[...dataNames].sort().map((name) => {
@@ -709,18 +669,16 @@ export class PolicyRuntime {
 		const rules = [...snapshot.records.values()]
 			.filter(
 				(r) =>
-					isFacts(r) &&
-					effectiveState(r) === "active" &&
-					r.matcherAvailable &&
-					scopeMatches(r.definition.scope, sessionScope(ctx)),
+					effectiveState(r) === "active" && r.matcherAvailable && scopeMatches(r.definition.scope, sessionScope(ctx)),
 			)
-			.map(program);
+			.map(compileRule);
 		const evaluation = evaluatePrograms(rules, "context", {
 			tool: "",
 			facts: { context: this.publicContext(snapshot) },
 			states: this.states(),
 			data: snapshotData([...snapshot.data.values()], Date.now()),
 			now: Date.now(),
+			mode: this.effectiveMode(),
 		});
 		if (this.effectiveMode() === "notice" && ctx.mode === "tui") {
 			const ids = evaluation
@@ -795,7 +753,7 @@ export class PolicyRuntime {
 				id: record.id,
 				revision: record.definition.revision,
 				active: effectiveState(record),
-				program: program(record).program,
+				programs: programSteps(compileRule(record)).map((rule) => rule.program),
 				scope: record.definition.scope,
 				observationPeriod: period ? publicState([period])[0] : undefined,
 			};
@@ -806,23 +764,26 @@ export class PolicyRuntime {
 			const input = inputSnapshot(params.input);
 			if (!input) throw new Error("Preview input must be bounded JSON");
 			const call = this.makeCall(params.tool, "preview", input, ctx, snapshot);
-			const { plan, shell } = this.inputPlan(call, this.effectiveMode() === "enforce");
-			for (const record of shell) {
-				if (!call.shell.some((matched) => matched.id === record.id)) {
-					call.shell.push(record);
-					call.rules.push(shellProgram(record));
-				}
-			}
+			const plan = this.inputPlan(call, this.effectiveMode() === "enforce");
+			for (const id of plan.matches) call.matches.add(id);
 			if (this.effectiveMode() === "enforce" && plan.valid && !plan.denied) call.input = plan.candidate;
 			const result = object(params.result);
 			const results = result
-				? this.resultPlan(call, { details: result.details, isError: result.isError === true })
+				? this.resultPlan(call, {
+						content: Array.isArray(result.content) ? result.content : undefined,
+						details: result.details,
+						isError: result.isError === true,
+					})
 				: undefined;
 			return {
 				preview: true,
 				stateAdvanced: false,
+				mode: this.effectiveMode(),
+				executionInput: call.input,
+				wouldCorrectInput: this.effectiveMode() === "enforce" && plan.valid && !plan.denied && plan.changed,
 				input: plan,
 				results: results ? [...results.semantic, ...results.guides] : [],
+				resultCorrected: results?.correction ?? false,
 				boundary: "No simulated tool executes. The actual inspection call retains ordinary telemetry.",
 			};
 		}

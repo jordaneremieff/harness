@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { PACKAGE_CATALOG } from "./catalog.ts";
 import registerPolicy from "./index.ts";
-import { RULES_FILE, validateRuleEvent, type RuleEvent } from "./local-rules.ts";
+import { RULES_FILE, type RuleEvent, validateRuleEvent } from "./local-rules.ts";
+import { PolicyApprovalPanel } from "./panel.ts";
 import { PolicyProposeParams } from "./tools.ts";
-import { PACKAGE_CATALOG } from "./shell-rules.ts";
 
 interface RegisteredTool {
 	name: string;
@@ -30,6 +31,22 @@ class FakePi {
 	}
 	registerTool(tool: RegisteredTool): void {
 		this.tools.set(tool.name, tool);
+	}
+	getAllTools() {
+		return [
+			{
+				name: "bash",
+				parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+			},
+			{
+				name: "read",
+				parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+			},
+			...[...this.tools.values()].map((tool) => ({ name: tool.name, parameters: tool.parameters })),
+		];
+	}
+	getActiveTools(): string[] {
+		return this.getAllTools().map((tool) => tool.name);
 	}
 	appendEntry(customType: string, data: unknown): void {
 		this.entries.push({ customType, data });
@@ -158,15 +175,18 @@ describe("registration and lazy catalog use", () => {
 			}>;
 		};
 		assert.equal(schema.type, "object");
-		assert.equal(schema.anyOf?.length, 6);
+		assert.equal(schema.anyOf?.length, 8);
 		const arms = schema.anyOf ?? [];
 		const byOperation = new Map(
 			arms
-				.filter((arm) => !arm.properties?.program && arm.properties?.operation?.const !== "replace")
+				.filter(
+					(arm) =>
+						!arm.properties?.program && !arm.properties?.predicate && arm.properties?.operation?.const !== "replace",
+				)
 				.map((arm) => [arm.properties?.operation?.const, arm]),
 		);
 		for (const [operation, required] of [
-			["add", ["operation", "id", "reason", "note", "match"]],
+			["add", ["operation", "purpose", "authority", "id", "reason", "note", "match"]],
 			["retire", ["operation", "id", "reason"]],
 			["disable", ["operation", "id", "reason"]],
 		] as const) {
@@ -182,7 +202,7 @@ describe("registration and lazy catalog use", () => {
 		assert.match(JSON.stringify(schema), /"maxLength":80/);
 	});
 
-	it("synchronizes the complete package catalog on the first policy use", async () => {
+	it("seeds the absent registry with the complete starter catalog on first use", async () => {
 		const { dir, pi, ctx } = await setup();
 		await callTool(pi.tools.get("policy_rules")!, {}, ctx);
 		const events = await storedEvents(dir);
@@ -206,6 +226,8 @@ describe("unified tools and command gates", () => {
 			{
 				operation: "add",
 				id: "local.pending",
+				purpose: "Keep search output bounded.",
+				authority: "steer-or-block",
 				reason: "Inspect this proposal",
 				note: "Use a bounded local command.",
 				match: { command: "scan" },
@@ -217,7 +239,10 @@ describe("unified tools and command gates", () => {
 		const text = (result.content as Array<{ text: string }>)[0].text;
 		assert.match(text, /SESSION CONTEXT/);
 		assert.match(text, /model provider: openai-codex/);
-		assert.match(text, /routing\.cat-read \| source=package \| domain=tool-call \| matcher=code:routing\.cat-read/);
+		assert.match(
+			text,
+			/routing\.cat-read \| source=package \| purpose=.+ \| authority=steer-or-block \| matcher=code:routing\.cat-read/,
+		);
 		assert.match(text, /state=active \| effect=steer \| override reason=operator calibration/);
 		assert.match(text, /definition: revision=[0-9a-f]{12} state=active effect=block/);
 		assert.match(text, /override audit: command .*session=session-1 model=openai-codex\/gpt-5\.6-sol/);
@@ -238,6 +263,8 @@ describe("unified tools and command gates", () => {
 			{
 				operation: "add",
 				id: "local.scan",
+				purpose: "Keep search output bounded.",
+				authority: "steer-or-block",
 				reason: "Bound scans",
 				note: "Use a bounded scan command.",
 				match: { command: "scan", flags: ["--all"], operands: { min: 1 } },
@@ -277,6 +304,8 @@ describe("unified tools and command gates", () => {
 			{
 				operation: "add",
 				id: "all",
+				purpose: "Keep search output bounded.",
+				authority: "steer-or-block",
 				reason: "Use a distinct rule identity.",
 				note: "Keep rule identity separate from command flags.",
 				match: { command: "sample" },
@@ -315,6 +344,8 @@ describe("unified tools and command gates", () => {
 			{
 				operation: "add",
 				id: "local.replace",
+				purpose: "Keep search output bounded.",
+				authority: "steer-or-block",
 				reason: "Initial rule",
 				note: "Bound the command.",
 				match: { command: "scan" },
@@ -333,6 +364,8 @@ describe("unified tools and command gates", () => {
 			{
 				operation: "replace",
 				id: "local.replace",
+				purpose: "Keep search output bounded.",
+				authority: "steer-or-block",
 				expectedRevision: revision,
 				reason: "New command",
 				note: "Bound the new command.",
@@ -342,7 +375,7 @@ describe("unified tools and command gates", () => {
 		);
 		const details = replaced.details as { proposalId: string; proposalRevision: string };
 		await command.handler(`approve ${details.proposalId} exact ${details.proposalRevision}`, ctx as never);
-		assert.match(notifications.at(-1)?.message ?? "", /Command replacement approval requires/);
+		assert.match(notifications.at(-1)?.message ?? "", /Selectable replacement approval requires/);
 		const completions = command.getArgumentCompletions!(`approve ${details.proposalId} `) as Array<{ value: string }>;
 		assert.deepEqual(
 			completions.map((row) => row.value),
@@ -408,6 +441,8 @@ describe("unified tools and command gates", () => {
 			{
 				operation: "add",
 				id: "local.scan",
+				purpose: "Keep search output bounded.",
+				authority: "steer-or-block",
 				reason: "Complete this proposal",
 				note: "Use a bounded scan.",
 				match: { command: "scan" },
@@ -431,10 +466,12 @@ describe("unified tools and command gates", () => {
 		]);
 		assert.ok(completions("disable routing.").includes("disable routing.cat-read"));
 		assert.deepEqual(completions("enable routing.cat-read"), []);
-		assert.deepEqual(completions("retire "), []);
+		assert.ok(completions("retire ").includes("retire routing.cat-read"));
 
 		await command.handler(`approve ${proposalId} steer`, ctx as never);
-		assert.deepEqual(completions("retire "), ["retire local.scan"]);
+		assert.ok(completions("retire ").includes("retire local.scan"));
+		assert.ok(completions("catalog ").includes("catalog routing.cat-read"));
+		assert.ok(completions("import ").includes("import --all"));
 		assert.ok(completions("effect local.").includes("effect local.scan"));
 		await command.handler("disable routing.cat-read completion setup", ctx as never);
 		assert.ok(completions("enable routing.").includes("enable routing.cat-read"));
@@ -455,7 +492,7 @@ describe("unified tools and command gates", () => {
 			ui: {
 				...baseUi,
 				async confirm() {
-					return true;
+					assert.fail("Native confirmation must not approve complete artifacts");
 				},
 				async custom<T>(
 					factory: (tui: unknown, themeValue: unknown, keybindings: unknown, done: (result: T) => void) => unknown,
@@ -465,6 +502,18 @@ describe("unified tools and command gates", () => {
 							handleInput(data: string): void;
 							render(width: number): string[];
 						};
+						if (component instanceof PolicyApprovalPanel) {
+							for (let page = 0; page < 100; page++) {
+								const lines = component.render(120);
+								if (lines.some((line) => line.includes("a: approve"))) {
+									component.handleInput("a");
+									return;
+								}
+								component.handleInput(" ");
+							}
+							reject(new Error("approval artifact did not reach its final page"));
+							return;
+						}
 						component.handleInput("v");
 						component.handleInput("a");
 						let attempts = 0;
@@ -567,10 +616,59 @@ describe("unified tools and command gates", () => {
 		const usage = notifications.at(-1)?.message ?? "";
 		assert.match(usage, /\/policy disable <id> <reason\.\.\.>/);
 		assert.match(usage, /\/policy enable <id> <reason\.\.\.>/);
-		assert.match(usage, /\/policy retire <local-id> <reason\.\.\.>/);
+		assert.match(usage, /\/policy retire <id> <reason\.\.\.>/);
 		assert.doesNotMatch(usage, /\/policy state/);
 		await command.handler("state routing.cat-read active", ctx as never);
 		assert.match(notifications.at(-1)?.message ?? "", /Usage: \/policy state/);
+	});
+});
+
+describe("catalog command controls", () => {
+	it("uses the complete paged overlay instead of native confirmation for TUI imports", async () => {
+		const { dir, pi, ctx } = await setup();
+		let pages = 0;
+		ctx.ui.confirm = async () => assert.fail("Native confirmation hides long artifacts");
+		ctx.ui.custom = async <T,>(
+			factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
+		): Promise<T> => {
+			let decision: T | undefined;
+			const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, theme, {}, (value) => {
+				decision = value;
+			}) as { render(width: number): string[]; handleInput(input: string): void };
+			for (; pages < 1000 && decision === undefined; pages++) {
+				const lines = panel.render(80);
+				assert.ok(lines.length <= 24);
+				panel.handleInput("a");
+				if (decision === undefined) panel.handleInput(" ");
+			}
+			assert.equal(decision, true);
+			return decision!;
+		};
+		await pi.commands.get("policy")!.handler("import --all", ctx as never);
+		assert.ok(pages > 1);
+		const imports = (await storedEvents(dir)).filter((event) => event.kind === "import");
+		assert.equal(imports.length, 1);
+		assert.equal(imports[0].rows.length, PACKAGE_CATALOG.length);
+	});
+
+	it("inspects bundled rows and imports with revision-bound no-UI authority", async () => {
+		const { dir, pi, notifications } = await setup();
+		const ctx = context(notifications, { mode: "json", hasUI: false });
+		const command = pi.commands.get("policy")!;
+		await command.handler("catalog routing.cat-read", ctx as never);
+		assert.match(JSON.stringify(pi.entries.at(-1)?.data), /bundled starter catalog/);
+		const inspected = await callTool(pi.tools.get("policy_rules")!, { view: "catalog", id: "routing.cat-read" }, ctx);
+		assert.match(JSON.stringify(inspected), /routing.cat-read/);
+		await command.handler("retire routing.cat-read Remove this rule.", ctx as never);
+		await command.handler("import routing.cat-read", ctx as never);
+		const preview = JSON.stringify(pi.entries.at(-1)?.data);
+		assert.match(preview, /No rules changed/);
+		const exact = /\/policy import routing\.cat-read exact ([a-f0-9]{12})/.exec(preview)![1];
+		await command.handler(`import routing.cat-read exact ${exact}`, ctx as never);
+		assert.match(JSON.stringify(pi.entries.at(-1)?.data), /Imported 1/);
+		assert.equal((await storedEvents(dir)).at(-1)?.kind, "import");
+		await command.handler(`import routing.cat-read exact ${exact}`, ctx as never);
+		assert.match(JSON.stringify(pi.entries.at(-1)?.data), /revision changed/);
 	});
 });
 
@@ -614,7 +712,7 @@ describe("dispatch and telemetry", () => {
 		);
 	});
 
-	it("caps degraded enforcement at notice and records ruleStoreDegraded on every telemetry row", async () => {
+	it("loads no fallback rules and records degradation on every telemetry row", async () => {
 		const dir = join(await mkdtemp(join(tmpdir(), "policy-index-degraded-")), "policy");
 		await mkdir(dir, { mode: 0o700 });
 		await writeFile(
@@ -659,12 +757,12 @@ describe("dispatch and telemetry", () => {
 		}
 		await pi.emit("session_shutdown", {}, ctx);
 		assert.equal(notifications.filter((entry) => /rule store unreadable/i.test(entry.message)).length, 1);
-		assert.equal(notifications.filter((entry) => /\[policy\] routing\.cat-read/.test(entry.message)).length, 3);
+		assert.equal(notifications.filter((entry) => /\[policy\] routing\.cat-read/.test(entry.message)).length, 0);
 		const records = await telemetry(dir);
 		assert.equal(records.length, 3);
 		assert.ok(records.every((record) => record.ruleStoreDegraded === true));
 		assert.ok(records.every((record) => record.blocked === undefined));
-		assert.ok(records.every((record) => record.notified === true));
+		assert.ok(records.every((record) => record.notified === undefined));
 	});
 
 	it("annotates steer rules once per session and never annotates an errored result", async () => {

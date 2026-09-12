@@ -47,6 +47,14 @@ function createPolicyHarness(extensionFlags: Record<string, boolean | string> | 
 		},
 		registerTool() {},
 		registerCommand() {},
+		getAllTools: () => [
+			{
+				name: "bash",
+				parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+			},
+			{ name: "read", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
+		],
+		getActiveTools: () => ["bash", "read"],
 		appendEntry() {},
 		sendUserMessage() {},
 	};
@@ -97,7 +105,7 @@ async function evidenceFor(
 	const previousDir = process.env.PI_POLICY_DIR;
 	const previousMode = process.env.PI_POLICY_MODE;
 	process.env.PI_POLICY_DIR = join(root, "policy");
-	delete process.env.PI_POLICY_MODE;
+	process.env.PI_POLICY_MODE = "enforce";
 	const config = variant.config as VariantConfig;
 	const run = createPolicyHarness(config.extensionFlags, root);
 	const callId = `call-${variant.id}`;
@@ -166,7 +174,7 @@ async function evidenceFor(
 	}
 }
 
-it("passes both checks in enforce and fails policy-block-returned in observe", async (t) => {
+it("explicit variant modes ignore ambient enforcement and retain falsifiable controls", async (t) => {
 	const evaluationCase = suite.cases[0];
 	const input = evaluationCase.input as { fixture: PolicyFixture };
 	const enforce = suite.subject.variants.find((variant) => variant.id === "enforce");

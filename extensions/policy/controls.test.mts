@@ -6,35 +6,36 @@ import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Compile } from "typebox/compile";
-import { snapshotData, type NamedData } from "./data.ts";
+import { type NamedData, snapshotData } from "./data.ts";
 import {
-	RuleRegistry,
+	type DataSetEvent,
+	type LocalRuleCandidate,
 	namedDataRevision,
+	type ProposalEvent,
 	proposalRevision,
+	type RuleEvent,
+	RuleRegistry,
 	reduceRuleEvents,
 	validateLocalCandidate,
 	validatePackageDefinitionRow,
 	validateRuleEvent,
-	type DataSetEvent,
-	type LocalRuleCandidate,
-	type ProposalEvent,
-	type RuleEvent,
 } from "./local-rules.ts";
-import { PolicyPanel, proposalDetailLines, ruleDetailLines, type PolicyPanelActionHost } from "./panel.ts";
-import { PROGRAM_LIMITS, RULE_CAPACITY, type FactsProgram } from "./program.ts";
+import { PolicyPanel, type PolicyPanelActionHost, proposalDetailLines, ruleDetailLines } from "./panel.ts";
+import { type FactsProgram, PROGRAM_LIMITS, RULE_CAPACITY } from "./program.ts";
 import {
+	type AgentRuleAudit,
 	effectiveEffect,
 	effectiveState,
-	packageRowRevision,
-	type AgentRuleAudit,
 	type OperatorRuleAudit,
 	type PackageDefinitionRow,
+	packageRowRevision,
 } from "./rule.ts";
 import {
+	formatRulesTool,
 	PolicyProposeParams,
 	PolicyRulesParams,
-	formatRulesTool,
 	policyDataCommand,
+	policyImportCommand,
 	registerRuleTools,
 	validateInspectionParams,
 } from "./tools.ts";
@@ -55,14 +56,16 @@ const rename: FactsProgram = {
 };
 const facts = (id = "local.rename", program = rename): LocalRuleCandidate => ({
 	id,
-	domain: "facts",
+	purpose: "Use valid tool arguments.",
+	authority: "exact",
 	matcher: { kind: "declarative", language: "facts/v1", spec: structuredClone(program) },
 	note: "Use the declared key.",
 	scope: { models: ["provider/model"] },
 });
 const command = (id = "local.command"): LocalRuleCandidate => ({
 	id,
-	domain: "tool-call",
+	purpose: "Keep search output bounded.",
+	authority: "steer-or-block",
 	matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "scan" } },
 	note: "Bound the search.",
 });
@@ -122,10 +125,13 @@ const call = (tool: Tool, params: Record<string, unknown>) =>
 
 describe("general rule schema and exact authority", () => {
 	it("accepts both current grammars and rejects open, incompatible, and excessive facts programs", () => {
-		assert.equal(validateLocalCandidate(facts()).domain, "facts");
-		assert.equal(validateLocalCandidate(command()).domain, "tool-call");
-		assert.throws(() => validateLocalCandidate({ ...facts(), domain: "tool-call" }), /domain must be facts/);
-		assert.throws(() => validateLocalCandidate({ ...facts(), suggestion: { command: "ignored" } }), /do not accept/);
+		assert.equal(validateLocalCandidate(facts()).authority, "exact");
+		assert.equal(validateLocalCandidate(command()).authority, "steer-or-block");
+		assert.throws(() => validateLocalCandidate({ ...facts(), domain: "tool-call" }), /unknown field/);
+		assert.throws(
+			() => validateLocalCandidate({ ...facts(), suggestion: { command: "ignored" } }),
+			/accept a suggestion/,
+		);
 		for (const program of [
 			{ ...rename, extra: true },
 			{ ...rename, phase: "result" },
@@ -135,6 +141,110 @@ describe("general rule schema and exact authority", () => {
 			{ ...rename, action: { kind: "substitute", path: ["name"], table: "undeclared" } },
 		])
 			assert.throws(() => validateLocalCandidate(facts("local.invalid", program as FactsProgram)), /matcher.spec/);
+	});
+
+	it("bounds positive purpose and rejects undeclared or unsafe authority", () => {
+		for (const purpose of [undefined, "", " ", "x".repeat(401)])
+			assert.throws(() => validateLocalCandidate({ ...command(), purpose }), /purpose/);
+		assert.equal(validateLocalCandidate({ ...command(), purpose: "x".repeat(400) }).purpose.length, 400);
+		for (const authority of [undefined, "", "correct", "operator", "steer-or-block"])
+			assert.throws(() => validateLocalCandidate({ ...facts(), authority }), /authority/);
+		for (const program of [
+			{ ...rename, phase: "completion", action: { kind: "observe", label: "counter" } },
+			{ ...rename, phase: "result", action: { kind: "guide", text: "Use the result." } },
+		])
+			assert.throws(
+				() =>
+					validateLocalCandidate({ ...facts("local.action", program as FactsProgram), authority: "steer-or-block" }),
+				/authority/,
+			);
+	});
+
+	it("permits steer/block control for declared input actions independent of syntax", async (t) => {
+		const reg = await registry(t);
+		const candidate = {
+			...facts("local.admission", {
+				...rename,
+				action: { kind: "deny" },
+			}),
+			authority: "steer-or-block" as const,
+		};
+		const proposal = await reg.proposeAdd(candidate, "Choose the admission effect.", agent);
+		await reg.decide(proposal.id, "approved", "steer", operator);
+		let record = (await reg.snapshot()).records.get(candidate.id)!;
+		assert.equal(effectiveEffect(record), "steer");
+		await reg.setEffect(candidate.id, "block", "Deny the action.", operator);
+		await reg.disable(candidate.id, "Pause the rule.", operator);
+		await reg.enable(candidate.id, "Resume the rule.", operator);
+		record = (await reg.snapshot()).records.get(candidate.id)!;
+		assert.equal(effectiveEffect(record), "block");
+		assert.equal(effectiveState(record), "active");
+		assert.match(
+			formatRulesTool(await reg.snapshot(), context),
+			/operator selects steer or block; steer never denies; no correction authority/,
+		);
+	});
+
+	it("binds exact compact guidance to its proposal without granting effect control", async (t) => {
+		const reg = await registry(t);
+		const candidate = { ...command("local.exact"), authority: "exact" as const };
+		const proposal = await reg.proposeAdd(candidate, "Approve only this guidance.", agent);
+		await assert.rejects(reg.decide(proposal.id, "approved", "block", operator), /exact proposed action/);
+		await assert.rejects(reg.decide(proposal.id, "approved", undefined, operator), /exact proposal revision/);
+		await reg.decide(proposal.id, "approved", undefined, operator, proposalRevision(proposal));
+		assert.equal(effectiveEffect((await reg.snapshot()).records.get(candidate.id)!), "steer");
+		await assert.rejects(reg.setEffect(candidate.id, "block", "Convert the action.", operator), /exact replacement/);
+	});
+
+	it("validates common applicability and binds it to exact definition revisions", async (t) => {
+		const applicability = { op: "eq" as const, path: ["context", "tools", "read", "active"], value: true };
+		assert.deepEqual(validateLocalCandidate({ ...command(), applicability }).applicability, applicability);
+		for (const invalid of [
+			null,
+			{},
+			{ all: [] },
+			{ op: "exists", path: ["private", "secret"] },
+			{ not: { op: "exists", path: ["__proto__"] } },
+		])
+			assert.throws(() => validateLocalCandidate({ ...command(), applicability: invalid }), /applicability/);
+		assert.throws(
+			() =>
+				validateLocalCandidate({
+					...command(),
+					applicability: { op: "lookup", path: ["input", "id"], table: "unbound", value: "unique" },
+				}),
+			/applicability/,
+		);
+		const wide = {
+			all: Array.from({ length: 4 }, () => ({
+				all: Array.from({ length: 16 }, () => ({ op: "exists" as const, path: ["input"] })),
+			})),
+		};
+		assert.throws(
+			() => validateLocalCandidate({ ...facts("local.budget", { ...rename, when: wide }), applicability: wide }),
+			/applicability.*bounds/,
+		);
+		const reg = await registry(t);
+		const candidate = { ...facts(), applicability };
+		const proposed = await reg.proposeAdd(candidate, "Require an active alternative.", agent);
+		await reg.decide(proposed.id, "approved", undefined, operator, proposalRevision(proposed));
+		const original = (await reg.snapshot()).records.get(candidate.id)!;
+		assert.deepEqual(original.definition.applicability, applicability);
+		const replacement = await reg.proposeReplace(
+			{ ...candidate, applicability: { ...applicability, value: false } },
+			original.definition.revision,
+			"Change applicability.",
+			agent,
+		);
+		await assert.rejects(
+			reg.decide(replacement.id, "approved", undefined, operator, proposalRevision(proposed)),
+			/exact proposal revision/,
+		);
+		await reg.decide(replacement.id, "approved", undefined, operator, proposalRevision(replacement));
+		const record = (await reg.snapshot()).records.get(candidate.id)!;
+		assert.notEqual(record.definition.revision, original.definition.revision);
+		assert.deepEqual(record.definition.applicability, { ...applicability, value: false });
+		assert.match(formatRulesTool(await reg.snapshot(), context), /applicability:.*context.*read.*false/);
 	});
 
 	it("keeps complete facts proposals inert until an exact operator decision", async (t) => {
@@ -183,7 +293,7 @@ describe("general rule schema and exact authority", () => {
 		assert.equal(reduced.pending.length, 1);
 	});
 
-	it("replaces only local current revisions and preserves a disabled override", async (t) => {
+	it("replaces current revisions and preserves a disabled override", async (t) => {
 		const reg = await registry(t);
 		await approve(reg);
 		const original = (await reg.snapshot()).records.get("local.rename")!;
@@ -245,10 +355,11 @@ describe("general rule schema and exact authority", () => {
 		assert.equal(effectiveEffect((await reg.snapshot()).records.get(record.id)!), "correct");
 	});
 
-	it("activates package facts through the installed catalog and keeps package updates outside local approval", async (t) => {
+	it("seeds exact facts and changes them only through ordinary approval or explicit import", async (t) => {
 		const value = {
 			id: "package.rename",
-			domain: "facts" as const,
+			purpose: "Use valid tool arguments.",
+			authority: "exact" as const,
 			matcher: { kind: "declarative" as const, language: "facts/v1" as const, spec: rename },
 			effect: "correct" as const,
 			note: "Use declared keys.",
@@ -258,23 +369,24 @@ describe("general rule schema and exact authority", () => {
 		assert.throws(() => validatePackageDefinitionRow({ ...row, effect: "steer" }), /effect must match/);
 		assert.throws(
 			() => validatePackageDefinitionRow({ ...row, suggestion: { command: "unused" } }),
-			/do not accept a shell suggestion/,
+			/accept a suggestion/,
 		);
 		const reg = await registry(t, [row]);
 		const snap = await reg.snapshot();
 		assert.equal(snap.records.get(row.id)?.source.kind, "package");
 		assert.equal(snap.records.get(row.id)?.matcherAvailable, true);
 		assert.equal(snap.pending.length, 0);
-		await assert.rejects(
-			reg.proposeReplace(facts(row.id), row.revision, "Replace package.", agent),
-			/not a local rule/,
-		);
+		const edit = await reg.proposeReplace(facts(row.id), row.revision, "Replace seeded rule.", agent);
+		await reg.decide(edit.id, "rejected", undefined, operator);
 		await reg.disable(row.id, "Pause package action.", operator);
 		const updatedValue = { ...value, note: "Another package note." };
 		const updated = { ...updatedValue, revision: packageRowRevision(updatedValue) };
 		const nextRegistry = new RuleRegistry(join(reg.path, ".."), { catalog: [updated] });
 		const next = await nextRegistry.snapshot();
-		assert.equal(next.records.get(row.id)?.definition.revision, updated.revision);
+		assert.equal(next.records.get(row.id)?.definition.revision, row.revision);
+		const plan = await nextRegistry.planImport(row.id);
+		await nextRegistry.importCatalog(row.id, plan.revision, operator);
+		assert.equal((await nextRegistry.snapshot()).records.get(row.id)?.definition.revision, updated.revision);
 		assert.equal(effectiveState(next.records.get(row.id)!), "disabled");
 		assert.equal(next.pending.length, 0);
 	});
@@ -282,20 +394,22 @@ describe("general rule schema and exact authority", () => {
 
 describe("shared rule capacity", () => {
 	it("admits a mixed maximum aggregate under the same engine limit", async (t) => {
-		const catalog: PackageDefinitionRow[] = Array.from({ length: RULE_CAPACITY.package }, (_, index) => {
+		const catalog: PackageDefinitionRow[] = Array.from({ length: RULE_CAPACITY.catalog / 2 }, (_, index) => {
 			const id = `package.rule-${index}`;
 			const value: Omit<PackageDefinitionRow, "revision"> =
 				index % 2 === 0
 					? {
 							id,
-							domain: "tool-call",
+							purpose: "Use valid tool arguments.",
+							authority: "steer-or-block",
 							matcher: { kind: "code", key: id },
 							effect: "block",
 							note: "Use the declared behavior.",
 						}
 					: {
 							id,
-							domain: "facts",
+							purpose: "Use valid tool arguments.",
+							authority: "exact",
 							matcher: { kind: "declarative", language: "facts/v1", spec: rename },
 							effect: "correct",
 							note: "Use the declared behavior.",
@@ -304,9 +418,9 @@ describe("shared rule capacity", () => {
 		});
 		const reg = await registry(t, catalog);
 		assert.equal((await reg.snapshot()).health.status, "ok");
-		assert.equal((await reg.snapshot()).records.size, RULE_CAPACITY.package);
+		assert.equal((await reg.snapshot()).records.size, catalog.length);
 		const events: RuleEvent[] = [{ kind: "catalog", rows: catalog, audit: { surface: "package" } }];
-		for (let index = 0; index < RULE_CAPACITY.local; index++) {
+		for (let index = 0; index < RULE_CAPACITY.catalog - catalog.length; index++) {
 			const { id: ruleId, ...candidate } =
 				index % 2 === 0 ? command(`local.rule-${index}`) : facts(`local.rule-${index}`);
 			const proposal: ProposalEvent = {
@@ -323,7 +437,7 @@ describe("shared rule capacity", () => {
 				id: randomUUID(),
 				proposalId: proposal.id,
 				decision: "approved",
-				...(candidate.matcher.language === "facts/v1"
+				...(candidate.authority === "exact"
 					? { proposalRevision: proposalRevision(proposal) }
 					: { effect: "block" as const }),
 				audit: operator,
@@ -335,7 +449,7 @@ describe("shared rule capacity", () => {
 			[...reduced.records.values()].filter((record) => effectiveState(record) === "active").length,
 			RULE_CAPACITY.active,
 		);
-		assert.throws(() => new RuleRegistry(join(reg.path, ".."), { catalog: [...catalog, catalog[0]] }), /catalog rows/);
+		assert.throws(() => new RuleRegistry(join(reg.path, ".."), { catalog: [...catalog, catalog[0]] }), /duplicate/);
 	});
 
 	it("rejects oversized catalog bytes before any package state exists", async (t) => {
@@ -347,7 +461,8 @@ describe("shared rule capacity", () => {
 		const catalog: PackageDefinitionRow[] = Array.from({ length: 300 }, (_, index) => {
 			const row = {
 				id: `package.long-${index}`,
-				domain: "facts" as const,
+				purpose: "Use valid tool arguments.",
+				authority: "exact" as const,
 				matcher: { kind: "declarative" as const, language: "facts/v1" as const, spec: longProgram },
 				effect: "steer" as const,
 				note: "Bound guidance.",
@@ -355,6 +470,109 @@ describe("shared rule capacity", () => {
 			return { ...row, revision: packageRowRevision(row) };
 		});
 		await assert.rejects(registry(t, catalog), /installed package catalog exceeds/);
+	});
+});
+
+describe("bundled catalog inspection and import approval", () => {
+	const bundled = (): PackageDefinitionRow => {
+		const value = {
+			id: "operator.catalog",
+			purpose: "Keep output bounded.",
+			authority: "steer-or-block" as const,
+			matcher: { kind: "code" as const, key: "routing.cat-read" },
+			effect: "block" as const,
+			note: "Use bounded file reads.",
+		};
+		return { ...value, revision: packageRowRevision(value) };
+	};
+	it("validates predicate proposals with exclusive authoring forms and bounded installed references", async (t) => {
+		const reg = await registry(t, [bundled()]);
+		const tool = tools(reg).get("policy_propose")!;
+		const schema = Compile(PolicyProposeParams);
+		const params = {
+			operation: "replace",
+			id: bundled().id,
+			expectedRevision: bundled().revision,
+			purpose: "Keep output bounded.",
+			authority: "steer-or-block",
+			predicate: "routing.cat-read",
+			note: "Read a bounded file.",
+			reason: "Edit the seeded definition.",
+		};
+		assert.equal(schema.Check(params), true);
+		assert.equal(schema.Check({ ...params, match: { command: "cat" } }), false);
+		assert.equal(schema.Check({ ...params, predicate: "../code" }), false);
+		await call(tool, params);
+		assert.equal((await reg.snapshot()).pending[0]?.candidate?.matcher.kind, "code");
+		await assert.rejects(
+			call(tool, { ...params, operation: "add", id: "operator.unknown", predicate: "unknown.matcher" }),
+			/unavailable/,
+		);
+	});
+	it("routes catalog inspection through a read-only tool with complete selected rows", async (t) => {
+		const reg = await registry(t, [bundled()]);
+		const tool = tools(reg).get("policy_rules")!;
+		const before = await reg.snapshot();
+		assert.equal(Compile(PolicyRulesParams).Check({ view: "catalog", id: bundled().id }), true);
+		const result = await call(tool, { view: "catalog", id: bundled().id });
+		assert.match(result.content[0].text, /bundled starter catalog/);
+		assert.match(result.content[0].text, /routing.cat-read/);
+		assert.deepEqual(await reg.snapshot(), before);
+	});
+	it("shows current overrides and resulting effects before confirmation and rejects target changes during confirmation", async (t) => {
+		const reg = await registry(t, [bundled()]);
+		await reg.setEffect(bundled().id, "steer", "Preserve this choice.", operator);
+		await reg.disable(bundled().id, "Keep this pause.", operator);
+		let saw = false;
+		await assert.rejects(
+			policyImportCommand(reg, bundled().id, operator, async (_title, message) => {
+				saw = true;
+				assert.match(message, /Keep this pause/);
+				assert.match(message, /"resulting":\[\{"id":"operator.catalog","state":"disabled","effect":"steer"\}\]/);
+				await reg.enable(bundled().id, "Target changed.", operator);
+				return true;
+			}),
+			/revision changed/,
+		);
+		assert.equal(saw, true);
+		assert.equal((await reg.snapshot()).records.get(bundled().id)?.source.kind, "package");
+	});
+	it("returns the full no-UI artifact and an exact revision command without an implicit write", async (t) => {
+		const reg = await registry(t, [bundled()]);
+		await reg.retire(bundled().id, "Retire this rule.", operator);
+		const before = await readFile(reg.path, "utf8");
+		const preview = await policyImportCommand(reg, bundled().id, operator, async () => false);
+		assert.match(preview, /"current":/);
+		assert.match(preview, /"rows":/);
+		assert.match(preview, /"targets":/);
+		assert.equal(await readFile(reg.path, "utf8"), before);
+		const revision = / exact ([a-f0-9]{12})/.exec(preview)![1];
+		await policyImportCommand(reg, `${bundled().id} exact ${revision}`, operator, async () =>
+			assert.fail("Exact approval does not reopen confirmation"),
+		);
+		assert.equal(effectiveState((await reg.snapshot()).records.get(bundled().id)!), "active");
+		await assert.rejects(
+			policyImportCommand(reg, `${bundled().id} exact ${revision}`, operator, async () => true),
+			/revision changed/,
+		);
+	});
+	it("confirms all selected rows once and commits one event", async (t) => {
+		const a = bundled();
+		const value = { ...a, id: "operator.second" };
+		const { revision: _revision, ...definition } = value;
+		const b = { ...definition, revision: packageRowRevision(definition) };
+		const reg = await registry(t, [a, b]);
+		await reg.snapshot();
+		const before = (await readFile(reg.path, "utf8")).trim().split("\n").length;
+		let confirmations = 0;
+		await policyImportCommand(reg, "--all", operator, async (_title, message) => {
+			confirmations++;
+			assert.match(message, /operator.catalog/);
+			assert.match(message, /operator.second/);
+			return true;
+		});
+		assert.equal(confirmations, 1);
+		assert.equal((await readFile(reg.path, "utf8")).trim().split("\n").length, before + 1);
 	});
 });
 
@@ -500,6 +718,8 @@ describe("bounded tools and operator panel", () => {
 	it("exposes one closed proposal schema for both languages and no tool mutation gate", () => {
 		const schema = Compile(PolicyProposeParams);
 		const add = {
+			purpose: "Use valid tool arguments.",
+			authority: "exact",
 			operation: "add",
 			id: "local.rename",
 			reason: "Exact rename.",
@@ -508,6 +728,8 @@ describe("bounded tools and operator panel", () => {
 			program: rename,
 		};
 		assert.equal(schema.Check(add), true);
+		assert.equal(schema.Check({ ...add, purpose: "x".repeat(401) }), false);
+		assert.equal(schema.Check({ ...add, authority: "correct" }), false);
 		assert.equal(schema.Check({ ...add, effect: "block" }), false);
 		assert.equal(schema.Check({ ...add, operation: "approve" }), false);
 		assert.equal(schema.Check({ ...add, operation: "replace" }), false);
@@ -516,6 +738,8 @@ describe("bounded tools and operator panel", () => {
 			schema.Check({
 				operation: "add",
 				id: "local.command",
+				purpose: "Keep search output bounded.",
+				authority: "steer-or-block",
 				reason: "Bound.",
 				note: "Use shape.",
 				match: { command: "scan" },
@@ -531,7 +755,7 @@ describe("bounded tools and operator panel", () => {
 				view: "preview",
 				tool: "sample",
 				input: { name: "alias" },
-				result: { isError: false, details: { status: "ok" } },
+				result: { isError: false, details: { status: "ok" }, content: [{ type: "text", text: "The request failed." }] },
 			}),
 		);
 		assert.throws(() => validateInspectionParams({ view: "preview", tool: "sample" }), /input object/);
@@ -549,7 +773,36 @@ describe("bounded tools and operator panel", () => {
 					input: {},
 					result: { isError: false, content: "raw" },
 				}),
-			/optional details only/,
+			/text blocks/,
+		);
+		for (const content of [
+			[{ type: "image", data: "data" }],
+			[{ type: "text", text: "value", extra: true }],
+			[{ type: "text", text: 1 }],
+			Array.from({ length: 65 }, () => ({ type: "text", text: "" })),
+		]) {
+			const request = { view: "preview", tool: "sample", input: {}, result: { isError: false, content } };
+			assert.equal(Compile(PolicyRulesParams).Check(request), false);
+			assert.throws(() => validateInspectionParams(request), /text blocks/);
+		}
+		const textResult = {
+			view: "preview",
+			tool: "sample",
+			input: {},
+			result: { isError: false, content: [{ type: "text", text: "The request failed." }] },
+		};
+		assert.equal(Compile(PolicyRulesParams).Check(textResult), true);
+		assert.throws(
+			() => validateInspectionParams({ ...textResult, result: { ...textResult.result, usage: {} } }),
+			/text content only/,
+		);
+		assert.throws(
+			() =>
+				validateInspectionParams({
+					...textResult,
+					result: { isError: false, content: [{ type: "text", text: "x".repeat(70000) }] },
+				}),
+			/byte bound/,
 		);
 	});
 
@@ -557,6 +810,8 @@ describe("bounded tools and operator panel", () => {
 		const reg = await registry(t);
 		const registered = tools(reg);
 		const result = await call(registered.get("policy_propose")!, {
+			purpose: "Use valid tool arguments.",
+			authority: "exact",
 			operation: "add",
 			id: "local.rename",
 			reason: "Exact rename.",
@@ -598,7 +853,7 @@ describe("bounded tools and operator panel", () => {
 		await assert.rejects(call(noCallback.get("policy_rules")!, { view: "state" }), /runtime callback absent/);
 	});
 
-	it("confirms the complete facts proposal and sends its exact revision without an effect menu", async (t) => {
+	it("confirms the complete exact proposal and sends its revision without an effect menu", async (t) => {
 		const reg = await registry(t);
 		const proposal = await reg.proposeAdd(facts(), "Exact rename.", agent);
 		const snapshot = await reg.snapshot();
@@ -610,7 +865,7 @@ describe("bounded tools and operator panel", () => {
 		});
 		const host: PolicyPanelActionHost = {
 			async select() {
-				throw new Error("Facts actions do not use an effect menu");
+				throw new Error("Exact actions do not use an effect menu");
 			},
 			async confirm(_title, message) {
 				confirmation = message;

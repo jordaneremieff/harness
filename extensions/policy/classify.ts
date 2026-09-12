@@ -1,4 +1,4 @@
-/** Capture and evaluate the unified rule aggregate. */
+/** Extract command-match evidence and redact command text for records. */
 
 import {
 	effectiveState,
@@ -10,21 +10,21 @@ import {
 import {
 	captureShell,
 	codeMatcherStageEligible,
-	PACKAGE_CATALOG,
 	redactShell,
 	resolveCodeMatcher,
 	type CodeMatcher,
 } from "./shell-rules.ts";
 import { parseStatements, type Stage } from "./shell.ts";
+import { PACKAGE_CATALOG } from "./catalog.ts";
 
-export type CodeMatcherResolver = (domain: string, key: string) => CodeMatcher | undefined;
+export type CodeMatcherResolver = (key: string) => CodeMatcher | undefined;
 
-/** Input text declared by the tool's policy domain, or undefined. */
+/** Command text from the declared argument field, or undefined. */
 export function captureFor(tool: string, input: Record<string, unknown>): string | undefined {
 	return captureShell(tool, input);
 }
 
-/** Domain-owned redaction applied before telemetry persistence. */
+/** Command redaction applied before telemetry persistence. */
 export function redactFor(tool: string, captured: string): string {
 	return redactShell(tool, captured);
 }
@@ -91,7 +91,6 @@ export function matchRuleRecords(
 	if (tool !== "bash") return [];
 	const candidates = [...records].filter(
 		(record) =>
-			record.domain === "tool-call" &&
 			effectiveState(record) === "active" &&
 			record.matcherAvailable &&
 			ruleScopeMatches(record.definition.scope, context),
@@ -102,7 +101,7 @@ export function matchRuleRecords(
 	for (const record of candidates) {
 		let applies = false;
 		if (record.matcher.kind === "code") {
-			const predicate = resolveMatcher(record.domain, record.matcher.key);
+			const predicate = resolveMatcher(record.matcher.key);
 			if (!predicate) continue;
 			for (const statement of statements) {
 				for (let index = 0; index < statement.length; index++) {
@@ -126,20 +125,18 @@ export function matchRuleRecords(
 		}
 		if (applies) matched.push(record);
 	}
-	const packageMatches = matched.filter((record) => record.source.kind === "package");
-	const localMatches = matched
-		.filter((record) => record.source.kind === "local")
-		.sort((left, right) => left.id.localeCompare(right.id));
-	return [...packageMatches, ...localMatches];
+	return matched;
 }
 
 function installedRecords(): RuleRecord[] {
 	return PACKAGE_CATALOG.map((row) => ({
 		id: row.id,
 		source: { kind: "package" },
-		domain: row.domain,
 		matcher: structuredClone(row.matcher),
 		definition: {
+			purpose: row.purpose,
+			authority: row.authority,
+			...(row.applicability ? { applicability: structuredClone(row.applicability) } : {}),
 			revision: row.revision,
 			state: "active",
 			effect: row.effect,

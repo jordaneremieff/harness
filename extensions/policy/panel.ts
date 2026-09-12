@@ -12,11 +12,19 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { ruleScopeVisibility } from "./classify.ts";
-import { proposalRevision, ruleStoreHealthLine, type PendingProposal, type RuleSnapshot } from "./local-rules.ts";
 import {
+	candidatePermitsEffectChoice,
+	type PendingProposal,
+	proposalRevision,
+	type RuleSnapshot,
+	ruleStoreHealthLine,
+} from "./local-rules.ts";
+import {
+	declaredAction,
 	effectiveEffect,
 	effectiveState,
 	factsProgram,
+	permitsEffectChoice,
 	type RuleEffect,
 	type RuleMatchContext,
 	type RuleRecord,
@@ -200,23 +208,26 @@ function auditLines(label: string, audit: SessionRuleAudit | undefined): string[
 }
 
 function sourceText(record: RuleRecord): string {
-	return record.source.kind === "package" ? "package" : `local (proposal ${record.source.proposalId})`;
+	return record.source.kind === "package"
+		? "package"
+		: record.source.kind === "import"
+			? `catalog import (${record.source.importId})`
+			: `local (proposal ${record.source.proposalId})`;
 }
 
 function matcherText(record: RuleRecord): string {
 	return record.matcher.kind === "code" ? `code (${record.matcher.key})` : `declarative (${record.matcher.language})`;
 }
 
-export function ruleDetailLines(
-	record: RuleRecord,
-	context: RuleMatchContext,
-	summary: RuleFireSummary,
-	catalogCollision = false,
-): string[] {
+export function ruleDetailLines(record: RuleRecord, context: RuleMatchContext, summary: RuleFireSummary): string[] {
 	const lines = [
 		`id: ${record.id}`,
+		`purpose: ${record.definition.purpose}`,
 		`source: ${sourceText(record)}`,
-		`matcher: ${matcherText(record)}`,
+		`evidence syntax: ${matcherText(record)}`,
+		`authority: ${record.definition.authority}`,
+		`declared action: ${JSON.stringify(declaredAction(record))}`,
+		`effect control: ${permitsEffectChoice(record) ? "steer or block; steer never denies; no correction authority" : "exact action only"}`,
 		`effective state: ${effectiveState(record)}`,
 		`effective effect: ${effectiveEffect(record)}`,
 		`definition state: ${record.definition.state}`,
@@ -224,10 +235,10 @@ export function ruleDetailLines(
 		`definition revision: ${record.definition.revision}`,
 		`note: ${record.definition.note}`,
 		`suggestion: ${record.definition.suggestion ? JSON.stringify(record.definition.suggestion) : "(none)"}`,
+		`applicability: ${record.definition.applicability ? JSON.stringify(record.definition.applicability) : "(always)"}`,
 		`scope: ${record.definition.scope ? JSON.stringify(record.definition.scope) : "(none)"}`,
 		ruleScopeVisibility(record, context),
 		`matcher available: ${record.matcherAvailable ? "yes" : "no"}`,
-		`catalog collision: ${catalogCollision ? "yes (local record retained; installed package row skipped)" : "no"}`,
 		`stale override: ${record.staleOverride ? "yes" : "no"}`,
 		`total fires: ${summary.fires.get(record.id) ?? 0}`,
 		"fires by model:",
@@ -239,9 +250,8 @@ export function ruleDetailLines(
 			`phase: ${program.phase}`,
 			`action: ${JSON.stringify(program.action)}`,
 			`program: ${JSON.stringify(program)}`,
-			"action authority: exact definition; steer/block overrides do not change facts actions",
 		);
-	if (record.source.kind === "local") lines.push(...auditLines("approved audit", record.source.approvedAudit));
+	if (record.source.kind !== "package") lines.push(...auditLines("approved audit", record.source.approvedAudit));
 	if (record.override) {
 		lines.push(
 			`override state: ${record.override.state ?? "(none)"}`,
@@ -266,7 +276,9 @@ export function proposalDetailLines(proposal: PendingProposal): string[] {
 		...auditLines("proposal audit", proposal.audit),
 		...(proposal.candidate
 			? [
-					`candidate domain: ${proposal.candidate.domain}`,
+					`candidate purpose: ${proposal.candidate.purpose}`,
+					`candidate authority: ${proposal.candidate.authority}`,
+					`candidate applicability: ${proposal.candidate.applicability ? JSON.stringify(proposal.candidate.applicability) : "(always)"}`,
 					`candidate matcher: ${JSON.stringify(proposal.candidate.matcher)}`,
 					`candidate note: ${proposal.candidate.note}`,
 					`candidate suggestion: ${proposal.candidate.suggestion ? JSON.stringify(proposal.candidate.suggestion) : "(none)"}`,
@@ -304,6 +316,8 @@ export function filteredRecords(snapshot: RuleSnapshot, filter = ""): RuleRecord
 				matcherText(record),
 				effectiveState(record),
 				effectiveEffect(record),
+				record.definition.purpose,
+				record.definition.authority,
 				record.definition.note,
 				record.override?.reason ?? "",
 			],
@@ -314,7 +328,17 @@ export function filteredRecords(snapshot: RuleSnapshot, filter = ""): RuleRecord
 
 function filteredProposals(snapshot: RuleSnapshot, filter = ""): PendingProposal[] {
 	return snapshot.pending.filter((proposal) =>
-		matchesFilter([proposal.id, proposal.operation, proposal.ruleId, proposal.reason], filter),
+		matchesFilter(
+			[
+				proposal.id,
+				proposal.operation,
+				proposal.ruleId,
+				proposal.reason,
+				proposal.candidate?.purpose ?? "",
+				proposal.candidate?.authority ?? "",
+			],
+			filter,
+		),
 	);
 }
 
@@ -373,19 +397,7 @@ export function formatPolicyShow(
 	const health = [ruleStoreHealthLine(data.snapshot.health), ""];
 	const record = data.snapshot.records.get(ref);
 	if (record)
-		return capText(
-			[
-				...health,
-				...ruleDetailLines(
-					record,
-					context,
-					data.fireSummary,
-					data.snapshot.health.catalogCollisions?.includes(record.id) === true,
-				),
-			]
-				.map(terminalSafe)
-				.join("\n"),
-		);
+		return capText([...health, ...ruleDetailLines(record, context, data.fireSummary)].map(terminalSafe).join("\n"));
 	const proposal = data.snapshot.pending.find((entry) => entry.id === ref);
 	if (proposal) return capText([...health, ...proposalDetailLines(proposal)].map(terminalSafe).join("\n"));
 	return undefined;
@@ -407,6 +419,9 @@ function readDecisionSummary(value: unknown): Record<string, unknown> | undefine
 			for (const key of [
 				"id",
 				"revision",
+				"phase",
+				"inputView",
+				"applicable",
 				"truth",
 				"action",
 				"stage",
@@ -736,6 +751,77 @@ function activityDetailLines(record: PolicyActivityRecord, activity: ActivityRea
 	];
 }
 
+interface PolicyApprovalPanelDeps {
+	title: string;
+	artifact: string;
+	tui: { requestRender(): void };
+	getMaxRows(): number;
+	done(approved: boolean): void;
+}
+
+/** Immutable complete-artifact review with explicit approval on the final page. */
+export class PolicyApprovalPanel {
+	private width = 0;
+	private scroll = 0;
+	private pageRows = 0;
+	private lines: string[] = [];
+	private ready = false;
+	private finished = false;
+
+	private readonly deps: PolicyApprovalPanelDeps;
+
+	constructor(deps: PolicyApprovalPanelDeps) {
+		this.deps = deps;
+	}
+
+	render(width: number): string[] {
+		const rows = Math.max(1, Math.min(MAX_PANEL_ROWS, Math.floor(this.deps.getMaxRows())));
+		if (width !== this.width) {
+			this.width = width;
+			this.scroll = 0;
+			this.lines = wrapDetail([this.deps.artifact], Math.max(8, width));
+		}
+		this.ready = false;
+		this.pageRows = Math.max(0, rows - 3);
+		if (width < 24 || rows < 6) return [fitText("Resize to review. Esc cancels.", width)];
+		this.scroll = Math.min(this.scroll, Math.max(0, this.lines.length - this.pageRows));
+		const end = Math.min(this.lines.length, this.scroll + this.pageRows);
+		this.ready = end === this.lines.length;
+		return [
+			fitText(this.deps.title, width),
+			...this.lines.slice(this.scroll, end).map((line) => fitText(line, width)),
+			fitText(`Space/b: page | ${this.scroll + 1}-${end}/${this.lines.length}`, width),
+			fitText(this.ready ? "a: approve | Esc: cancel" : "Esc: cancel | Read pages", width),
+		];
+	}
+
+	handleInput(raw: string): void {
+		if (this.finished) return;
+		const data = decodeKittyPrintable(raw) ?? raw;
+		if (matchesKey(raw, "escape") || (data === "a" && this.ready)) {
+			this.finished = true;
+			this.deps.done(data === "a");
+			return;
+		}
+		if (matchesKey(raw, "space") || matchesKey(raw, "pageDown"))
+			this.scroll = Math.min(
+				Math.max(0, this.lines.length - this.pageRows),
+				this.scroll + Math.max(1, this.pageRows - 1),
+			);
+		else if (data === "b" || matchesKey(raw, "pageUp"))
+			this.scroll = Math.max(0, this.scroll - Math.max(1, this.pageRows - 1));
+		else return;
+		this.ready = false;
+		this.deps.tui.requestRender();
+	}
+
+	invalidate(): void {
+		this.ready = false;
+	}
+
+	dispose(): void {}
+}
+
 export class PolicyPanel {
 	private readonly deps: PolicyPanelDeps;
 	private view: PolicyView;
@@ -822,16 +908,7 @@ export class PolicyPanel {
 			const record = this.currentRule();
 			return wrapDetail(
 				record
-					? [
-							...status,
-							...health,
-							...ruleDetailLines(
-								record,
-								this.deps.scopeContext,
-								this.deps.data.fireSummary,
-								this.deps.data.snapshot.health.catalogCollisions?.includes(record.id) === true,
-							),
-						]
+					? [...status, ...health, ...ruleDetailLines(record, this.deps.scopeContext, this.deps.data.fireSummary)]
 					: [...health, "No rules match the filter.", ...status],
 				width,
 			);
@@ -896,9 +973,9 @@ export class PolicyPanel {
 		this.bump();
 		try {
 			let effect: RuleEffect | undefined;
-			const facts = proposal.candidate?.matcher.language === "facts/v1";
-			const exact = facts || proposal.operation === "replace";
-			if (action === "approve" && (proposal.operation === "add" || proposal.operation === "replace") && !facts) {
+			const choice = candidatePermitsEffectChoice(proposal.candidate);
+			const exact = (proposal.candidate !== undefined && !choice) || proposal.operation === "replace";
+			if (action === "approve" && (proposal.operation === "add" || proposal.operation === "replace") && choice) {
 				const selected = await host.select(`Choose effect for ${proposal.ruleId}`, ["steer", "block"]);
 				if (selected !== "steer" && selected !== "block") return;
 				effect = selected;
@@ -935,10 +1012,8 @@ export class PolicyPanel {
 	private showRuleActionCommand(action: "disable" | "enable" | "effect" | "retire" | "reset" | "explain"): void {
 		const record = this.currentRule();
 		if (!record) return;
-		if (action === "retire" && record.source.kind !== "local") {
-			this.outcome = "Only local rules can be retired.";
-		} else if (action === "effect" && factsProgram(record)) {
-			this.outcome = "Facts actions require an exact replacement proposal.";
+		if (action === "effect" && !permitsEffectChoice(record)) {
+			this.outcome = "This action requires an exact replacement proposal.";
 		} else {
 			const tail = action === "effect" ? "<steer|block> <reason...>" : action === "explain" ? "" : "<reason...>";
 			this.outcome = `Run: /policy ${action} ${record.id} ${tail}`.trim();

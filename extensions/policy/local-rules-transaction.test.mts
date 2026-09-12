@@ -17,8 +17,9 @@ const lockName = ".rules-lock";
 const row = (): PackageDefinitionRow => {
 	const value = {
 		id: "synthetic.catalog",
-		domain: "tool-call" as const,
-		matcher: { kind: "code" as const, key: "synthetic.catalog" },
+		purpose: "Bound synthetic output.",
+		authority: "steer-or-block" as const,
+		matcher: { kind: "declarative" as const, language: "command-shape/v1" as const, spec: { command: "synthetic" } },
 		effect: "block" as const,
 		note: "Use bounded output.",
 	};
@@ -109,8 +110,9 @@ async function conflictEvents(
 		const proposal = await reg.proposeAdd(
 			{
 				id: "synthetic.local",
-				domain: definition.domain,
-				matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "synthetic" } },
+				purpose: definition.purpose,
+				authority: definition.authority,
+				matcher: definition.matcher,
 				note: definition.note,
 			},
 			"Bound output.",
@@ -318,48 +320,49 @@ if (process.argv[2] === "--transaction-child") {
 			await Promise.all([first.exited, second.exited]);
 			assert.equal((await events(registry(dir, catalog))).filter((event) => event.kind === "catalog").length, 1);
 		});
-		it("serializes catalog updates across instances", async (t) => {
+		it("rejects a conflicting exact catalog import before append", async (t) => {
 			const dir = await directory(t);
-			await registry(dir, [row()]).snapshot();
-			const { revision: _prior, ...definition } = row();
-			const changed = { ...definition, note: "Use exact bounded output." };
-			const catalog = [{ ...changed, revision: packageRowRevision(changed) }];
-			const first = registry(dir, catalog);
-			const second = registry(dir, catalog);
-			const gate = pause(first, "transaction");
+			const rows = [row()];
+			const first = registry(dir, rows);
+			const second = registry(dir, rows);
+			await Promise.all([first.snapshot(), second.snapshot()]);
+			const plan = await first.planImport("--all");
+			const gate = pause(first, "append");
 			t.after(gate.release);
 			const contended = observeContention(t);
-			const left = first.snapshot();
+			const left = first.importCatalog("--all", plan.revision, audit);
 			await gate.entered;
-			const right = second.snapshot();
+			const right = assert.rejects(second.importCatalog("--all", plan.revision, audit), /import revision changed/);
 			await contended;
 			gate.release();
-			for (const state of await Promise.all([left, right])) {
-				assert.equal(state.health.status, "ok");
-				assert.equal(state.records.get(changed.id)?.definition.revision, catalog[0].revision);
-			}
-			assert.equal((await events(first)).filter((event) => event.kind === "catalog").length, 2);
+			await Promise.all([left, right]);
+			assert.equal((await events(first)).filter((event) => event.kind === "import").length, 1);
 		});
-		it("serializes catalog updates across OS processes", async (t) => {
+		it("rejects a conflicting catalog import across OS processes", async (t) => {
 			const dir = await directory(t);
-			await registry(dir, [row()]).snapshot();
-			const { revision: _prior, ...definition } = row();
-			const changed = { ...definition, note: "Use exact bounded output." };
-			const catalog = [{ ...changed, revision: packageRowRevision(changed) }];
-			const first = worker(t, { dir, catalog, hold: "transaction" });
-			const second = worker(t, { dir, catalog });
+			const catalog = [row()];
+			const reg = registry(dir, catalog);
+			const plan = await reg.planImport("--all");
+			const event = {
+				kind: "import" as const,
+				id: randomUUID(),
+				rows: plan.rows,
+				targets: plan.targets,
+				revision: plan.revision,
+				audit,
+			};
+			const first = worker(t, { dir, catalog, event, hold: "append" });
+			const second = worker(t, { dir, catalog, event: { ...event, id: randomUUID() } });
 			await Promise.all([first.next("ready"), second.next("ready")]);
 			first.child.send({ type: "start" });
 			await first.next("held");
 			second.child.send({ type: "start" });
 			await second.next("contended");
 			first.child.send({ type: "release" });
-			for (const result of await Promise.all([first.next("result"), second.next("result")]))
-				assert.equal(result.error, undefined);
+			assert.equal((await first.next("result")).error, undefined);
+			assert.match((await second.next("result")).error ?? "", /import target identity changed/);
 			await Promise.all([first.exited, second.exited]);
-			const reg = registry(dir, catalog);
-			assert.equal((await reg.snapshot()).records.get(changed.id)?.definition.revision, catalog[0].revision);
-			assert.equal((await events(reg)).filter((event) => event.kind === "catalog").length, 2);
+			assert.equal((await events(reg)).filter((item) => item.kind === "import").length, 1);
 		});
 		it("releases the lock after validation and append failures", async (t) => {
 			const dir = await directory(t);

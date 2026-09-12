@@ -12,7 +12,7 @@ import type { FactsProgram } from "./program.ts";
 import type { PolicyRecord } from "./record.ts";
 import type { RuleRecord } from "./rule.ts";
 import { PolicyRuntime } from "./runtime.ts";
-import { PACKAGE_CATALOG } from "./shell-rules.ts";
+import { PACKAGE_CATALOG } from "./catalog.ts";
 import { PolicyWriter } from "./store.ts";
 
 const yes = { op: "exists" as const, path: ["input"] };
@@ -20,10 +20,23 @@ const success = { op: "eq" as const, path: ["outcome", "kind"], value: "success"
 function rule(id: string, program: FactsProgram): RuleRecord {
 	return {
 		id,
-		domain: "facts",
 		source: { kind: "package" },
 		matcher: { kind: "declarative", language: "facts/v1", spec: program },
-		definition: { revision: "123456abcdef", state: "active", effect: "block", note: `Rule ${id}.` },
+		definition: {
+			purpose: `Preserve ${id}.`,
+			authority: "exact",
+			revision: "123456abcdef",
+			state: "active",
+			effect:
+				program.action.kind === "deny"
+					? "block"
+					: program.action.kind === "guide"
+						? "steer"
+						: program.action.kind === "observe"
+							? "observe"
+							: "correct",
+			note: `Rule ${id}.`,
+		},
 		matcherAvailable: true,
 		staleOverride: false,
 	};
@@ -165,10 +178,16 @@ function shellRule(effect: "block" | "steer" = "block"): RuleRecord {
 	const row = PACKAGE_CATALOG.find((record) => record.id === "routing.cat-read")!;
 	return {
 		id: row.id,
-		domain: row.domain,
 		source: { kind: "package" },
 		matcher: row.matcher,
-		definition: { revision: row.revision, state: "active", effect, note: row.note },
+		definition: {
+			purpose: row.purpose,
+			authority: row.authority,
+			revision: row.revision,
+			state: "active",
+			effect,
+			note: row.note,
+		},
 		matcherAvailable: true,
 		staleOverride: false,
 	};
@@ -296,6 +315,230 @@ describe("effective command checks", () => {
 		assert.deepEqual(f.records[0].classes, ["routing.cat-read"]);
 		assert.equal(f.records[0].annotated, undefined);
 		assert.equal(f.records[0].outcome, "execution-error");
+	});
+});
+
+describe("normalized execution plans", () => {
+	it("keeps every mixed final denial in one plan and leaves arguments unchanged", async () => {
+		const f = correctedBash(shellRule());
+		const structured = rule("structured.final", {
+			phase: "input",
+			inputView: "effective",
+			when: { op: "eq", path: ["input", "command"], value: "cat notes.md" },
+			action: { kind: "deny" },
+			onUnavailable: "skip",
+		});
+		f.snapshot.records.set(structured.id, structured);
+		f.runtime.sync(f.snapshot);
+		const input = { command: "printf safe" };
+		const decision = await f.call("mixed", input);
+		assert.equal(decision?.block, true);
+		assert.deepEqual(input, { command: "printf safe" });
+		await f.runtime.toolEnd(
+			{
+				toolName: "bash",
+				toolCallId: "mixed",
+				isError: true,
+				result: { content: [{ type: "text", text: decision!.reason }] },
+			},
+			f.ctx,
+		);
+		await f.writer.close();
+		const evaluations = f.records[0].policy?.evaluations as Array<{ id: string; inputView?: string; deny: boolean }>;
+		assert.deepEqual(
+			evaluations.filter((row) => row.inputView === "effective" && row.deny).map((row) => row.id),
+			["routing.cat-read", "structured.final"],
+		);
+	});
+	it("refuses corrections after any captured final gate changes its observation period", async () => {
+		const gate = rule("final", {
+			phase: "input",
+			inputView: "effective",
+			when: { op: "exists", path: ["input", "blocked"] },
+			action: { kind: "deny" },
+			onUnavailable: "skip",
+		});
+		const f = fixture([rename(), gate]);
+		const input = { old: "x" };
+		await f.runtime.toolStart({ toolName: "sample", toolCallId: "stale-final", args: input }, f.ctx);
+		f.runtime.reset([gate.id], "Approved reset");
+		assert.equal(
+			(await f.runtime.toolCall({ type: "tool_call", toolName: "sample", toolCallId: "stale-final", input }, f.ctx))
+				?.block,
+			true,
+		);
+		assert.deepEqual(input, { old: "x" });
+		await f.writer.close();
+	});
+	it("refuses a correction on nonwritable arguments before any input write", async () => {
+		const f = fixture([rename()]);
+		const input = Object.freeze({ old: "x" });
+		assert.equal((await f.call("frozen", input))?.block, true);
+		assert.deepEqual(input, { old: "x" });
+		await f.writer.close();
+	});
+	for (const mode of ["observe", "notice", "annotate", "enforce"] as const)
+		it(`${mode} previews the same corrected-result then guidance sequence as execution`, async () => {
+			const error = rule("error", {
+				phase: "result",
+				when: { op: "eq", path: ["result", "details", "failed"], value: true },
+				action: { kind: "assert-error" },
+				onUnavailable: "skip",
+			});
+			const guide = rule("result.guide", {
+				phase: "result",
+				when: {
+					all: [
+						{ op: "exists", path: ["input", "name"] },
+						{ op: "eq", path: ["result", "isError"], value: true },
+					],
+				},
+				action: { kind: "guide", text: "Inspect the corrected error." },
+				onUnavailable: "skip",
+			});
+			const f = fixture([rename(), error, guide], mode);
+			const input = { old: "x" };
+			const preview = (await f.runtime.inspect(
+				"preview",
+				{ tool: "sample", input, result: { isError: false, details: { failed: true } } },
+				f.ctx,
+			)) as { resultCorrected: boolean; results: Array<{ id: string; truth: boolean }> };
+			assert.deepEqual(input, { old: "x" });
+			await f.call("previewed", input);
+			const result = await f.result("previewed", false, { failed: true });
+			assert.equal(preview.resultCorrected, result?.isError === true);
+			assert.equal(preview.results.find((row) => row.id === guide.id)?.truth, mode === "enforce");
+			assert.equal(result?.content !== undefined, mode === "enforce");
+			await f.writer.close();
+		});
+	it("omits absent result fields and shares text-content schema evidence between preview and execution", async () => {
+		const check = rule("result.schema", {
+			phase: "result",
+			when: { op: "matches-schema", path: ["result"], schemaData: "errors" },
+			data: ["errors"],
+			action: { kind: "assert-error" },
+			onUnavailable: "skip",
+		});
+		const f = fixture([check]);
+		f.snapshot.data.set("errors", {
+			kind: "schema",
+			name: "errors",
+			revision: "abcdef123456",
+			source: "approved-result-contract",
+			capturedAt: Date.now(),
+			schema: {
+				type: "object",
+				properties: {
+					tool: { const: "sample" },
+					isError: { const: false },
+					details: { type: "object", properties: { failed: { const: true } }, required: ["failed"] },
+					content: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: { type: { const: "text" }, text: { const: "body" } },
+							required: ["type", "text"],
+						},
+						minItems: 1,
+					},
+				},
+				required: ["tool", "isError", "details", "content"],
+				additionalProperties: false,
+			},
+		});
+		const preview = (await f.runtime.inspect(
+			"preview",
+			{ tool: "sample", input: {}, result: { details: { failed: true }, content: [{ type: "text", text: "body" }] } },
+			f.ctx,
+		)) as { resultCorrected: boolean; results: Array<{ truth: unknown }> };
+		assert.equal(preview.resultCorrected, true);
+		assert.equal(preview.results[0].truth, true);
+		await f.call("absent-optionals", {});
+		assert.equal((await f.result("absent-optionals", false, { failed: true }))?.isError, true);
+		await f.writer.close();
+	});
+	it("uses common applicability before captured matches, guidance, and completed observations", async () => {
+		for (const active of [true, false, "unknown"] as const) {
+			const record = shellRule("steer");
+			record.definition.applicability = { op: "eq", path: ["context", "tools", "read", "active"], value: true };
+			const f = fixture([record], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+			if (active === "unknown")
+				f.pi.getAllTools = () => {
+					throw new Error("Catalog unavailable");
+				};
+			else if (active) {
+				const tools = f.pi.getAllTools();
+				f.pi.getAllTools = () => [...tools, { ...tools[0], name: "read" }];
+				f.pi.getActiveTools = () => ["bash", "read"];
+			}
+			await f.call("applicability", { command: "cat notes.md" });
+			assert.equal((await f.result("applicability"))?.content !== undefined, active === true);
+			await f.finish("applicability");
+			assert.equal((await f.views())[0].count, active === true ? 1 : 0);
+			await f.writer.close();
+			assert.deepEqual(f.records[0].classes, active === true ? [record.id] : []);
+		}
+	});
+	it("keeps unavailable evaluations separate from true match classes and retains required denial guidance", async () => {
+		for (const required of [false, true]) {
+			const check = rule("schema.check", {
+				phase: "input",
+				when: { op: "eq", path: ["schema", "valid"], value: false },
+				action: { kind: "deny" },
+				onUnavailable: required ? "deny" : "skip",
+			});
+			const f = fixture([check]);
+			f.pi.getAllTools = () => [];
+			const decision = await f.call("unavailable", {});
+			assert.equal(decision?.block, required ? true : undefined);
+			if (required) assert.match(decision!.reason, /Rule schema.check/);
+			await f.finish("unavailable", required);
+			await f.writer.close();
+			assert.deepEqual(f.records[0].classes, []);
+			const evaluations = f.records[0].policy?.evaluations as Array<{
+				truth: unknown;
+				unavailable: boolean;
+				deny: boolean;
+			}>;
+			assert.equal(evaluations[0].truth, "unknown");
+			assert.equal(evaluations[0].unavailable, true);
+			assert.equal(evaluations[0].deny, required);
+		}
+	});
+	it("invalidates admitted effects when an operator changes the effective action on the same record object", async () => {
+		const record = shellRule("steer");
+		const f = fixture([record], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+		await f.call("changed-action", { command: "cat notes.md" });
+		const before = (await f.views())[0].generation;
+		record.override = {
+			effect: "block",
+			reason: "Require prevention",
+			againstDefinitionRevision: record.definition.revision,
+			audit: { surface: "command", session: "session", model: null, at: new Date().toISOString() },
+		};
+		assert.equal(await f.result("changed-action"), undefined);
+		await f.finish("changed-action");
+		const view = (await f.views())[0];
+		assert.notEqual(view.generation, before);
+		assert.equal(view.count, 0);
+		assert.equal(view.projected, 0);
+		await f.writer.close();
+	});
+	it("routes approved input guidance to a matched successful result without a new turn", async () => {
+		const inputGuide = rule("input.guide", {
+			phase: "input",
+			when: { op: "eq", path: ["input", "name"], value: "special" },
+			action: { kind: "guide", text: "Use the approved target." },
+			onUnavailable: "skip",
+		});
+		const f = fixture([inputGuide]);
+		await f.call("matching", { name: "special" });
+		assert.match(JSON.stringify(await f.result("matching")), /Use the approved target/);
+		await f.call("other", { name: "ordinary" });
+		assert.equal(await f.result("other"), undefined);
+		await f.call("error", { name: "special" });
+		assert.equal(await f.result("error", true), undefined);
+		await f.writer.close();
 	});
 });
 

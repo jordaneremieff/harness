@@ -4,11 +4,11 @@ import { captureFor, classify, matchRuleRecords, notesFor, redactFor, ruleScopeM
 import type { RuleRecord } from "./rule.ts";
 
 describe("captureFor", () => {
-	it("returns the text the owning domain declares", () => {
+	it("returns the declared command text", () => {
 		assert.equal(captureFor("bash", { command: "ls -R ." }), "ls -R .");
 	});
 
-	it("returns nothing for a tool no domain owns", () => {
+	it("returns nothing for a tool without command input", () => {
 		assert.equal(captureFor("read", { path: "/etc/hosts" }), undefined);
 	});
 
@@ -19,21 +19,21 @@ describe("captureFor", () => {
 });
 
 describe("classify", () => {
-	it("dispatches to the domain that owns the tool", () => {
+	it("extracts command evidence for bash", () => {
 		assert.deepEqual(classify("bash", { command: "cat notes.md" }), ["routing.cat-read"]);
 	});
 
-	it("returns no class for a tool no domain owns", () => {
+	it("returns no command match for other tools", () => {
 		assert.deepEqual(classify("write", { path: "/tmp/x", content: "cat notes.md" }), []);
 	});
 
-	it("returns no class when the domain captures nothing", () => {
+	it("returns no command match without command text", () => {
 		assert.deepEqual(classify("bash", { timeout: 5 }), []);
 	});
 });
 
 describe("redactFor", () => {
-	it("applies the owning domain's redaction", () => {
+	it("redacts command secrets", () => {
 		assert.equal(redactFor("bash", "TOKEN=abcdef cat x"), "TOKEN=[redacted] cat x");
 	});
 
@@ -47,9 +47,10 @@ describe("unified record dispatch", () => {
 	const codeRecord = (changes: Partial<RuleRecord> = {}): RuleRecord => ({
 		id: "routing.test",
 		source: { kind: "package" },
-		domain: "tool-call",
 		matcher: { kind: "code", key: "routing.test" },
 		definition: {
+			purpose: "Use the appropriate information source.",
+			authority: "steer-or-block",
 			revision: "000000000000",
 			state: "active",
 			effect: "block",
@@ -71,7 +72,6 @@ describe("unified record dispatch", () => {
 				surface: "command",
 			},
 		},
-		domain: "tool-call",
 		matcher: {
 			kind: "declarative",
 			language: "command-shape/v1",
@@ -84,6 +84,8 @@ describe("unified record dispatch", () => {
 			},
 		},
 		definition: {
+			purpose: "Use bounded text search.",
+			authority: "steer-or-block",
 			revision: "000000000001",
 			state: "active",
 			effect: "steer",
@@ -161,7 +163,6 @@ describe("unified record dispatch", () => {
 	it("leaves facts programs to the event interpreter rather than command-shape parsing", () => {
 		const record = codeRecord({
 			id: "local.tool-check",
-			domain: "facts",
 			matcher: {
 				kind: "declarative",
 				language: "facts/v1",
@@ -197,21 +198,21 @@ describe("unified record dispatch", () => {
 		assert.equal(matchRuleRecords("bash", "grep -R needle src | sort | head -20", [record], context).length, 0);
 	});
 
-	it("resolves active code records by domain plus matcher key", () => {
+	it("resolves active command evidence by its declared key", () => {
 		const record = codeRecord();
 		const keys: string[] = [];
-		const matched = matchRuleRecords("bash", "echo ok", [record], { cwd: "/work" }, (domain, key) => {
-			keys.push(`${domain}:${key}`);
+		const matched = matchRuleRecords("bash", "echo ok", [record], { cwd: "/work" }, (key) => {
+			keys.push(key);
 			return () => true;
 		});
-		assert.deepEqual(keys, ["tool-call:routing.test"]);
+		assert.deepEqual(keys, ["routing.test"]);
 		assert.deepEqual(
 			matched.map((entry) => entry.id),
 			[record.id],
 		);
 	});
 
-	it("returns package matches before id-sorted local matches", () => {
+	it("preserves supplied evidence order without origin priority", () => {
 		const packageMatch = codeRecord({
 			id: "routing.zzz",
 			matcher: { kind: "code", key: "routing.zzz" },
@@ -226,7 +227,7 @@ describe("unified record dispatch", () => {
 		);
 		assert.deepEqual(
 			matched.map((record) => record.id),
-			[packageMatch.id, localMatch.id],
+			[localMatch.id, packageMatch.id],
 		);
 	});
 });
@@ -241,8 +242,8 @@ describe("notesFor", () => {
 
 	it("returns one line for ids that share wording", () => {
 		assert.deepEqual(
-			notesFor("bash", ["bounds.du-uncapped", "bounds.find-output-uncapped"]),
-			notesFor("bash", ["bounds.du-uncapped"]),
+			notesFor("bash", ["bounds.ls-recursive-uncapped", "bounds.find-output-uncapped"]),
+			notesFor("bash", ["bounds.ls-recursive-uncapped"]),
 		);
 	});
 

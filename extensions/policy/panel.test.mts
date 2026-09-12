@@ -4,23 +4,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import type { RuleSnapshot } from "./local-rules.ts";
 import {
 	computePolicyPanes,
-	fireBreakdownLines,
 	filteredRecords,
+	fireBreakdownLines,
 	formatPolicyList,
 	formatPolicyShow,
 	MAX_ACTIVITY_RECORDS,
-	PolicyPanel,
-	readFireSummary,
-	readRecentActivity,
-	terminalSafe,
 	type PolicyActivityRecord,
+	PolicyApprovalPanel,
+	PolicyPanel,
 	type PolicyPanelActionHost,
 	type PolicyPanelData,
 	type PolicyView,
+	readFireSummary,
+	readRecentActivity,
+	terminalSafe,
 } from "./panel.ts";
-import type { RuleSnapshot } from "./local-rules.ts";
 import type { RuleMatchContext, RuleRecord } from "./rule.ts";
 
 const theme: never = {
@@ -49,9 +50,10 @@ function packageRule(overrides: Partial<RuleRecord> = {}): RuleRecord {
 	return {
 		id: "routing.cat-read",
 		source: { kind: "package" },
-		domain: "tool-call",
 		matcher: { kind: "code", key: "routing.cat-read" },
 		definition: {
+			purpose: "Read complete file content.",
+			authority: "steer-or-block",
 			revision: "111111111111",
 			state: "active",
 			effect: "block",
@@ -71,9 +73,10 @@ function localRule(overrides: Partial<RuleRecord> = {}): RuleRecord {
 			proposalId: "00000000-0000-4000-8000-000000000001",
 			approvedAudit: operatorAudit,
 		},
-		domain: "tool-call",
 		matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "scan" } },
 		definition: {
+			purpose: "Keep search output bounded.",
+			authority: "steer-or-block",
 			revision: "222222222222",
 			state: "active",
 			effect: "steer",
@@ -199,21 +202,20 @@ describe("unified text surfaces", () => {
 		assert.match(text, /registry health: degraded=false \| ok/);
 	});
 
-	it("show includes full audit, scope visibility, and catalog-collision status", () => {
+	it("show includes full audit and scope visibility without origin-based collision status", () => {
 		const collisionData = data({
 			snapshot: snapshot({
 				health: {
 					status: "ok",
 					path: "/agent/policy/rules.jsonl",
-					catalogCollisions: ["local.scan"],
 				},
 			}),
 		});
 		const text = formatPolicyShow(collisionData, "local.scan", scopeContext) ?? "";
-		assert.match(text, /registry health: degraded=false \| catalog collision:.*"local\.scan"/);
+		assert.match(text, /registry health: degraded=false \| ok/);
 		assert.match(text, /definition revision: 222222222222/);
 		assert.match(text, /scope matches this session: yes/);
-		assert.match(text, /catalog collision: yes \(local record retained; installed package row skipped\)/);
+		assert.doesNotMatch(text, /catalog collision/);
 		assert.match(text, /override reason: Temporarily noisy/);
 		assert.match(text, /override audit:[\s\S]*session: session-local/);
 		assert.match(text, /stale override: yes/);
@@ -307,6 +309,32 @@ describe("bounded telemetry readers", () => {
 		assert.equal(onlyOld.records.find((entry) => entry.session === "session-observed")?.ruleStoreDegraded, false);
 	});
 
+	it("retains separate original and effective evaluation evidence for one policy", async (t) => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-panel-"));
+		t.after(() => rm(dir, { recursive: true, force: true }));
+		const evaluations = [
+			{
+				id: "local.admission",
+				phase: "input",
+				inputView: "original",
+				applicable: true,
+				truth: false,
+				unavailable: false,
+			},
+			{
+				id: "local.admission",
+				phase: "input",
+				inputView: "effective",
+				applicable: "unknown",
+				truth: "unknown",
+				unavailable: true,
+			},
+		];
+		await writeFile(join(dir, "2026-01-01.jsonl"), recordLine(activity({ policy: { evaluations } })));
+		const result = await readRecentActivity(dir);
+		assert.deepEqual(result.records[0].policy?.evaluations, evaluations);
+	});
+
 	it("retains data snapshot identity and omission evidence without data payloads", async (t) => {
 		const dir = await mkdtemp(join(tmpdir(), "policy-panel-"));
 		t.after(() => rm(dir, { recursive: true, force: true }));
@@ -338,6 +366,65 @@ describe("bounded telemetry readers", () => {
 			bytesRead: 0,
 		});
 		assert.equal((await readFireSummary(dir)).partial, false);
+	});
+});
+
+describe("complete policy artifact review", () => {
+	it("exposes every artifact row before final-page approval at bounded terminal sizes", () => {
+		for (const [width, rows] of [
+			[80, 24],
+			[120, 40],
+			[24, 6],
+		]) {
+			const decisions: boolean[] = [];
+			const artifact = Array.from({ length: 100 }, (_, index) => `artifact-row-${index}`).join("\n");
+			const panel = new PolicyApprovalPanel({
+				title: "Import review",
+				artifact,
+				tui: { requestRender() {} },
+				getMaxRows: () => rows,
+				done: (approved) => decisions.push(approved),
+			});
+			const seen = new Set<string>();
+			panel.handleInput("a");
+			assert.deepEqual(decisions, []);
+			for (let page = 0; page < 200; page++) {
+				const rendered = panel.render(width);
+				assert.ok(rendered.length <= rows);
+				assert.ok(rendered.every((line) => visibleWidth(line) <= width));
+				for (const line of rendered) if (line.trim().startsWith("artifact-row-")) seen.add(line.trim());
+				panel.handleInput("\r");
+				assert.deepEqual(decisions, []);
+				panel.handleInput("a");
+				if (decisions.length) break;
+				panel.handleInput(" ");
+			}
+			assert.equal(seen.size, 100);
+			assert.deepEqual(decisions, [true]);
+			panel.handleInput("a");
+			assert.deepEqual(decisions, [true]);
+		}
+	});
+	it("blocks approval on tiny screens and resets page position after width changes", () => {
+		let rows = 3;
+		const decisions: boolean[] = [];
+		const panel = new PolicyApprovalPanel({
+			title: "Import review",
+			artifact: "First row\nLast row",
+			tui: { requestRender() {} },
+			getMaxRows: () => rows,
+			done: (approved) => decisions.push(approved),
+		});
+		panel.render(80);
+		panel.handleInput("a");
+		assert.deepEqual(decisions, []);
+		rows = 24;
+		panel.render(10);
+		panel.handleInput("a");
+		assert.deepEqual(decisions, []);
+		panel.render(80);
+		panel.handleInput("\u001b");
+		assert.deepEqual(decisions, [false]);
 	});
 });
 
@@ -473,7 +560,8 @@ describe("PolicyPanel", () => {
 					ruleId: "local.new",
 					reason: "Add it",
 					candidate: {
-						domain: "tool-call",
+						purpose: "Keep search output bounded.",
+						authority: "steer-or-block",
 						matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "scan" } },
 						note: "Bound scan output.",
 					},

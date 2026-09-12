@@ -7,7 +7,7 @@ import { describe, it, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Compile } from "typebox/compile";
-import { type Condition, PROGRAM_LIMITS } from "./program.ts";
+import { type Condition, PROGRAM_LIMITS, validateFactsProgram } from "./program.ts";
 import { RuleRegistry } from "./local-rules.ts";
 import { PolicyProposeParams, registerRuleTools } from "./tools.ts";
 
@@ -20,9 +20,12 @@ const leaf = (): Condition => ({ op: "eq", path: ["input", "ready"], value: true
 const request = () => ({
 	operation: "add",
 	id: "sample.condition",
+	purpose: "Check the declared input facts.",
+	authority: "exact",
 	reason: "Use the declared condition.",
 	note: "The condition matched.",
 	language: "facts/v1",
+	applicability: leaf(),
 	program: {
 		phase: "input",
 		when: leaf(),
@@ -32,10 +35,11 @@ const request = () => ({
 	},
 });
 type Request = ReturnType<typeof request>;
-const positions = ["when", "observe", "resetWhen"] as const;
+const positions = ["applicability", "when", "observe", "resetWhen"] as const;
 type Position = (typeof positions)[number];
 function setCondition(input: Request, position: Position, condition: unknown) {
-	if (position === "when") input.program.when = condition as Condition;
+	if (position === "applicability") input.applicability = condition as Condition;
+	else if (position === "when") input.program.when = condition as Condition;
 	else input.program.state[position] = condition as Condition;
 }
 function nested(depth: number): Condition {
@@ -78,11 +82,7 @@ async function setup(t: TestContext) {
 	return {
 		registry,
 		registered,
-		bytes: () =>
-			readFile(join(dir, "rules.jsonl")).catch((error: NodeJS.ErrnoException) => {
-				if (error.code === "ENOENT") return undefined;
-				throw error;
-			}),
+		bytes: () => readFile(join(dir, "rules.jsonl")),
 		execute: (args: Request) => {
 			const validated = validateToolArguments(tool, {
 				type: "toolCall",
@@ -119,6 +119,7 @@ describe("finite proposal description and recursive admission", () => {
 			assert.equal(snapshot.records.size, 0);
 			assert.equal(snapshot.pending.length, 1);
 			const candidate = snapshot.pending[0].candidate!;
+			assert.deepEqual(candidate.applicability, input.applicability);
 			assert.equal(candidate.matcher.kind, "declarative");
 			if (candidate.matcher.kind === "declarative") assert.deepEqual(candidate.matcher.spec, input.program);
 		});
@@ -137,6 +138,7 @@ describe("finite proposal description and recursive admission", () => {
 				{ not: { op: "gt", path: ["input"], value: "3" } },
 				{ not: { op: "exists", path: ["input"], value: true } },
 				{ not: { op: "lookup", path: ["input"], table: "missing", value: "unique" } },
+				{ not: { op: "matches-schema", path: ["result"], schemaData: "missing" } },
 				{ not: { op: "eq", path: ["input"], value: "x".repeat(70_000) } },
 				nested(PROGRAM_LIMITS.depth + 1),
 			];
@@ -151,30 +153,35 @@ describe("finite proposal description and recursive admission", () => {
 		});
 	}
 
-	it("rejects invalid nested replacement conditions before storage", async (t) => {
+	it("checks applicability for every authoring form and replacement before storage", async (t) => {
 		const fixture = await setup(t);
 		const before = await fixture.bytes();
-		for (const position of positions) {
-			const input = {
-				...request(),
-				operation: "replace",
-				expectedRevision: "000000000000",
-			};
-			setCondition(input, position, { not: { ...leaf(), unexpected: true } });
-			assert.equal(transport.Check(input), true);
-			await assert.rejects(fixture.execute(input), /Invalid facts program shape/);
-			assert.deepEqual(await fixture.bytes(), before);
+		const { program, language, ...common } = request();
+		for (const form of [{ language, program }, { match: { command: "scan" } }, { predicate: "routing.cat-read" }]) {
+			for (const operation of ["add", "replace"]) {
+				const input = {
+					...common,
+					...form,
+					operation,
+					...(operation === "replace" ? { expectedRevision: "000000000000" } : {}),
+					applicability: { not: { ...leaf(), unexpected: true } },
+				};
+				assert.equal(transport.Check(input), true);
+				await assert.rejects(fixture.execute(input as Request), /applicability/);
+				assert.deepEqual(await fixture.bytes(), before);
+			}
 		}
 	});
 
 	it("keeps the complete shared node budget and accepted depth", async (t) => {
 		const fixture = await setup(t);
 		const input = request();
-		input.program.when = wide(PROGRAM_LIMITS.nodes - 2);
+		input.program.when = wide(PROGRAM_LIMITS.nodes - 3);
 		await fixture.execute(input);
 		const before = await fixture.bytes();
 		input.id = "sample.excess";
-		input.program.when = wide(PROGRAM_LIMITS.nodes - 1);
+		input.program.when = wide(PROGRAM_LIMITS.nodes - 2);
+		assert.equal(validateFactsProgram(input.program), undefined, "program alone fits the budget");
 		await assert.rejects(fixture.execute(input), /grammar bounds/);
 		assert.deepEqual(await fixture.bytes(), before);
 		const deep = request();
@@ -183,16 +190,15 @@ describe("finite proposal description and recursive admission", () => {
 		await fixture.execute(deep);
 	});
 
-	it("keeps phase/action and correction safety checks after transport validation", async (t) => {
+	it("keeps phase/action and authority checks after transport validation", async (t) => {
 		const fixture = await setup(t);
 		const before = await fixture.bytes();
 		const invalidPhase = request();
 		invalidPhase.program.phase = "result";
-		const unsafeCorrection = request();
-		Object.assign(unsafeCorrection.program, {
-			action: { kind: "rename-key", path: [], from: "a", to: "__proto__" },
-		});
-		for (const input of [invalidPhase, unsafeCorrection]) {
+		const invalidAuthority = request();
+		invalidAuthority.authority = "steer-or-block";
+		Object.assign(invalidAuthority.program, { action: { kind: "rename-key", path: [], from: "a", to: "b" } });
+		for (const input of [invalidPhase, invalidAuthority]) {
 			assert.equal(transport.Check(input), true);
 			await assert.rejects(fixture.execute(input));
 			assert.deepEqual(await fixture.bytes(), before);

@@ -13,10 +13,11 @@ function rule(id: string, program: FactsProgram): RuleRecord {
 	assert.equal(validateFactsProgram(program), undefined, id);
 	return {
 		id,
-		domain: "facts",
 		source: { kind: "package" },
 		matcher: { kind: "declarative", language: "facts/v1", spec: program },
 		definition: {
+			purpose: `Preserve ${id}.`,
+			authority: "exact",
 			revision: "123456abcdef",
 			state: "active",
 			effect: program.action.kind === "guide" ? "steer" : "correct",

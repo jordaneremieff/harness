@@ -15,7 +15,7 @@ const suite: EvaluationSuite = {
 			"Exercise the policy extension at the bash tool boundary and compare enforce mode with its observe baseline.",
 		config: {
 			invocation: "explicit-policy-extension",
-			baselinePlaceholder: "The observe baseline loads the same extension and tool without a policy-mode flag.",
+			baseline: "Both modes load the same extension with bash and its read-tool alternative active.",
 		},
 		variants: [
 			{
@@ -23,16 +23,17 @@ const suite: EvaluationSuite = {
 				description: "Load policy with the policy-mode extension flag set to enforce.",
 				config: {
 					extensions: [{ path: "../extensions/policy/index.ts" }],
-					tools: ["bash"],
+					tools: ["bash", "read"],
 					extensionFlags: { "policy-mode": "enforce" },
 				},
 			},
 			{
 				id: "observe-baseline",
-				description: "Load the same policy extension and bash tool with the default observe mode.",
+				description: "Load the same policy extension and active tools with explicit observe mode.",
 				config: {
 					extensions: [{ path: "../extensions/policy/index.ts" }],
-					tools: ["bash"],
+					tools: ["bash", "read"],
+					extensionFlags: { "policy-mode": "observe" },
 				},
 			},
 		],

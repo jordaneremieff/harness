@@ -1,12 +1,4 @@
-/*
- * The shell policy domain: declarative rules over `bash` command text.
- *
- * Each rule names a class group, an id, a predicate over one pipeline stage,
- * and one line of guidance. Rules add observations only. A call carries every
- * matched id because co-occurrence is evidence needed by later analysis.
- */
-
-import { packageRowRevision, POLICY_DOMAIN, type PackageDefinitionRow, type RuleEffect } from "./rule.ts";
+/** Bounded command evidence. Package policy selection belongs to the catalog. */
 import { redactCommand } from "./redact.ts";
 import type { Stage, Statement } from "./shell.ts";
 
@@ -25,9 +17,7 @@ interface PredicateRule {
 }
 
 export interface ShellRule extends PredicateRule {
-	domain: typeof POLICY_DOMAIN;
 	key: string;
-	effect: RuleEffect;
 }
 
 const READ_TOOL_NOTE = "Use the read tool for file contents, one call per file: read path=README.md.";
@@ -43,16 +33,15 @@ const TEXT_FILTERS = new Set([...GREP_COMMANDS, "rg", "ripgrep", "ag", "ack"]);
 const INLINE_SCRIPT = new Map([
 	["python", "-c"],
 	["python3", "-c"],
-	["perl", "-e"],
 	["node", "-e"],
 ]);
-const READ_MARKERS = [/\bopen\s*\(/, /\bread_text\b/, /\breadFile/, /\bjson\.load/, /\bPath\s*\(/];
-/*
- * Script shapes that compute rather than read: a loop, a definition, a context
- * manager, an error handler, or an imported module. A `require` call is not one
- * of these, because a bare file read in Node needs it.
- */
-const SCRIPT_PROCESSING = /(^|[\s;:({[])(for|while|def|class|try|with|import)\b/;
+const SCRIPT_LITERAL = /(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*')/.source;
+const READ_ONLY_PYTHON = new RegExp(
+	`^print\\(\\s*open\\(\\s*${SCRIPT_LITERAL}\\s*(?:,\\s*(?:"r"|'r'))?\\s*\\)\\.read\\(\\s*\\)\\s*\\)\\s*;?$`,
+);
+const READ_ONLY_NODE = new RegExp(
+	`^(?:console\\.log|process\\.stdout\\.write)\\(\\s*require\\(\\s*(?:"(?:node:)?fs"|'(?:node:)?fs')\\s*\\)\\.readFileSync\\(\\s*${SCRIPT_LITERAL}\\s*,\\s*(?:"utf-?8"|'utf-?8')\\s*\\)\\s*\\)\\s*;?$`,
+);
 const MAX_READ_SCRIPT_BYTES = 200;
 const MAX_READ_SCRIPT_LINES = 2;
 const AWK_COMMANDS = new Set(["awk", "gawk", "mawk", "nawk"]);
@@ -214,12 +203,14 @@ function falseCap(statement: Statement, index: number): boolean {
 
 function isCatRead(stage: Stage): boolean {
 	if (stage.command !== "cat" || stage.fromPipe || stage.fromRedirect || stage.toRedirect) return false;
-	return operands(stage).length === 1;
+	const files = operands(stage);
+	return files.length === 1 && files[0] !== "-" && flags(stage).every((flag) => flag === "u");
 }
 
 function isCatPipe(stage: Stage): boolean {
 	if (stage.command !== "cat" || stage.fromPipe || stage.fromRedirect || !stage.toPipe) return false;
-	return operands(stage).length > 0;
+	const files = operands(stage);
+	return files.length === 1 && files[0] !== "-" && flags(stage).every((flag) => flag === "u");
 }
 
 function isSedSlice(stage: Stage): boolean {
@@ -257,21 +248,16 @@ function isHeadSliceReadable(stage: Stage): boolean {
 	return !(lines?.startsWith("-") === true);
 }
 
-/**
- * An inline script that only reads a file: the work the read tool performs. A
- * longer, multi-line, or computing script does work the read tool cannot do, so
- * the command-line rules permit it.
- */
+/** Only literal, whole-file read expressions establish equivalence to the read tool. */
 function isInlineScriptRead(stage: Stage): boolean {
 	const flag = INLINE_SCRIPT.get(stage.command);
 	if (!flag) return false;
 	const position = stage.args.indexOf(flag);
 	if (position === -1) return false;
 	const script = (stage.args[position + 1] ?? "").trim();
-	if (!READ_MARKERS.some((marker) => marker.test(script))) return false;
 	if (Buffer.byteLength(script, "utf8") > MAX_READ_SCRIPT_BYTES) return false;
 	if (script.split("\n").length > MAX_READ_SCRIPT_LINES) return false;
-	return !SCRIPT_PROCESSING.test(script);
+	return (stage.command === "node" ? READ_ONLY_NODE : READ_ONLY_PYTHON).test(script);
 }
 
 function isRecursiveGrep(stage: Stage): boolean {
@@ -284,6 +270,20 @@ function isRecursiveLs(stage: Stage): boolean {
 
 function isDu(stage: Stage): boolean {
 	return stage.command === "du" || stage.command === "gdu";
+}
+
+function hasDuScope(stage: Stage): boolean {
+	if (hasFlag(stage, "files0-from")) return false;
+	const paths = operands(
+		stage,
+		new Set(["d", "max-depth", "B", "block-size", "t", "threshold", "X", "exclude-from", "exclude"]),
+	);
+	return paths.length > 0 && paths.every((path) => isScopingPath(path) && path !== "~");
+}
+
+/** Summary output is bounded by explicit operands, not by the visited tree size. */
+function hasDuSummary(stage: Stage): boolean {
+	return hasFlag(stage, "s", "summarize") || optionValue(stage, "d", "max-depth") === "0";
 }
 
 /** `rg --files` or `fd`: a discovery traversal of the tree, like `find`. */
@@ -378,7 +378,7 @@ const PREDICATE_RULES: PredicateRule[] = [
 	},
 	{
 		id: "routing.cat-pipe",
-		note: "Give the file to the next command directly: jq . data.json.",
+		note: "Use the consumer's file argument or input redirection instead of a one-file cat pipe: jq . data.json.",
 		matches: ({ stage }) => isCatPipe(stage),
 	},
 	{ id: "routing.sed-slice", note: READ_SLICE_NOTE, matches: ({ stage }) => isSedSlice(stage) },
@@ -421,17 +421,16 @@ const PREDICATE_RULES: PredicateRule[] = [
 	{
 		id: "form.du-traversal",
 		note: "Scope the traversal to the smallest root that holds the target: du -sh dist.",
-		matches: ({ stage }) => isDu(stage),
+		matches: ({ stage }) => isDu(stage) && !hasDuScope(stage),
 	},
 	{
 		id: "form.env-grep",
 		note: "Use printenv NAME for one environment variable: printenv PATH.",
 		matches: ({ statement, stage, index }) => {
 			const later = statement.slice(index + 1);
-			if (stage.command === "env" && !hasFlag(stage, "a", "argv0", "S", "split-string", "help", "version")) {
-				return later.some((candidate) => TEXT_FILTERS.has(candidate.command));
-			}
-			if (stage.command !== "printenv" || operands(stage).length !== 0) return false;
+			if (stage.command === "env") {
+				if (hasFlag(stage, "a", "argv0", "S", "split-string", "help", "version")) return false;
+			} else if (stage.command !== "printenv" || operands(stage).length !== 0) return false;
 			const filter = later.find((candidate) => TEXT_FILTERS.has(candidate.command));
 			if (filter === undefined || hasFlag(filter, "v", "invert-match")) return false;
 			const pattern = operands(filter)[0];
@@ -456,8 +455,8 @@ const PREDICATE_RULES: PredicateRule[] = [
 	},
 	{
 		id: "bounds.du-uncapped",
-		note: OUTPUT_BOUND_NOTE,
-		matches: ({ statement, stage, index }) => isDu(stage) && isUncapped(statement, index),
+		note: "Limit disk-usage output to summaries of explicit targets: du -sh dist. Output limits do not bound filesystem traversal.",
+		matches: ({ statement, stage, index }) => isDu(stage) && !hasDuSummary(stage) && isUncapped(statement, index),
 	},
 	{
 		id: "bounds.rg-files-uncapped",
@@ -494,40 +493,24 @@ const PREDICATE_RULES: PredicateRule[] = [
 			(stage.command === "find" ||
 				isRecursiveGrep(stage) ||
 				isRecursiveLs(stage) ||
-				isDu(stage) ||
+				(isDu(stage) && !hasDuSummary(stage)) ||
 				(isDiscoveryTraversal(stage) && !hasTraversalResultCap(stage)) ||
 				(isRecursiveSearch(stage) && !hasScopingPath(stage) && !hasResultCap(stage))) &&
 			falseCap(statement, index),
 	},
 ];
 
-export const RULES: ShellRule[] = PREDICATE_RULES.map((rule) => ({
-	...rule,
-	domain: POLICY_DOMAIN,
-	key: rule.id,
-	effect: "block",
-}));
+export const RULES: ShellRule[] = PREDICATE_RULES.map((rule) => ({ ...rule, key: rule.id }));
 
-export const PACKAGE_CATALOG: PackageDefinitionRow[] = RULES.map((rule) => {
-	const row = {
-		id: rule.id,
-		domain: rule.domain,
-		matcher: { kind: "code" as const, key: rule.key },
-		effect: rule.effect,
-		note: rule.note,
-	};
-	return { ...row, revision: packageRowRevision(row) };
-});
-
-const CODE_MATCHERS = new Map(RULES.map((rule) => [`${rule.domain}\0${rule.key}`, rule.matches]));
+const CODE_MATCHERS = new Map(RULES.map((rule) => [rule.key, rule.matches]));
 
 /** Resolve only predicates shipped by this installed package. */
-export function resolveCodeMatcher(domain: string, key: string): CodeMatcher | undefined {
-	return CODE_MATCHERS.get(`${domain}\0${key}`);
+export function resolveCodeMatcher(key: string): CodeMatcher | undefined {
+	return CODE_MATCHERS.get(key);
 }
 
-export function hasCodeMatcher(domain: string, key: string): boolean {
-	return CODE_MATCHERS.has(`${domain}\0${key}`);
+export function hasCodeMatcher(key: string): boolean {
+	return CODE_MATCHERS.has(key);
 }
 
 /** Code rules keep the established exemption for usage and version stages. */
@@ -535,7 +518,7 @@ export function codeMatcherStageEligible(stage: Stage): boolean {
 	return !isHelpInvocation(stage);
 }
 
-/** Capture shell text once; no other tool currently has a policy capture. */
+/** Capture the command field without expansion or execution. */
 export function captureShell(tool: string, input: Record<string, unknown>): string | undefined {
 	if (tool !== "bash") return undefined;
 	const command = input.command;
