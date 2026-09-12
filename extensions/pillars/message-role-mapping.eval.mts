@@ -317,7 +317,7 @@ const suite = {
 	],
 	limits: {
 		wall: { runTimeoutMs: 900_000, executionTimeoutMs: 90_000 },
-		execution: { maxTotal: 60, maxTurnsEach: 4, maxOutputTokensEach: 4096 },
+		execution: { maxTotal: 60, maxTurnsEach: 4, maxOutputTokensEach: 8192 },
 		cost: { currency: "USD", maxObserved: 8, enforcement: "observed-after-each-execution", hardCap: false },
 	},
 	authority: {
