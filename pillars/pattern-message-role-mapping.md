@@ -18,13 +18,16 @@ These parts do not carry the same evidence or the same authority. Read as one co
 - a valid authorization lends its standing to an unchecked factual assertion in the same sentence;
 - a plausible account of someone's attitude or motive replaces the investigation that was asked for;
 - a request quoted inside source material becomes a task the operator never assigned;
-- an inference about a person's meaning hardens into an established fact as it passes through later steps.
+- an inference about a person's meaning hardens into an established fact as it passes through later steps;
+- an absent record becomes a negative finding, so an unestablished state is answered as if it had been settled the other way.
 
 Roles describe the function of statements, not the positions, competence, or personalities of the people who make them.
 
 ## Solution
 
-Use this pattern when different evidence or authority roles inside human communication would change the answer or the next action. Apply it after ordinary comprehension and before selecting the work. It does not require classifying every sentence or displaying a table.
+Use this pattern when different evidence or authority roles inside human communication would change the answer or the next action. Apply it after ordinary comprehension and before selecting the work.
+
+Several roles in one message do not by themselves require analysis. The pattern applies only when confusing their evidence or authority would change the answer, or when an interpretation would replace the work the operator asked for. The mapping is usually internal and does not need to appear in the answer.
 
 ### 1. Establish the actual request
 
@@ -39,32 +42,34 @@ Do the supporting work the request needs, without silently substituting a differ
 | Role | What it is | Distinction to preserve |
 |---|---|---|
 | **Assertion** | A statement presented as factual about a state, event, person, system, or record. | The exact fact at issue and the source that defines that facet. A report is evidence within its reach; it does not establish the fact because the speaker states it. |
-| **Declaration** | A stated preference, choice, commitment, or authorization. | What choice the speaker states, and what authority that declaration carries for this task. It does not establish implementation or technical correctness. |
+| **Declaration** | A stated preference, choice, commitment, or authorization. | What the speaker states, and what force and authority it carries for this task. It does not establish implementation or technical correctness. |
 | **Interpretation** | A reading, explanation, prediction, or implication drawn from information, supplied by the speaker or added by the agent. | What the wording and observations support, versus what the interpreter supplies. An interpretation present in the source differs from one the agent introduces. |
 
-One sentence carries several propositions, and one proposition can need more than one check. Map the parts that affect the task. Do not assign one label to a whole sentence, message, or thread.
+One sentence carries several propositions, and one proposition can need more than one check. Map only the parts that affect the task. Do not assign one label to a whole sentence, message, or thread.
 
 ### 3. Hold each role to its own boundary
 
-**Assertions.** Identify the exact fact at issue and the source that establishes that facet. "The owner approved this change" and "the change is deployed" are different assertions with different defining sources, even in one sentence.
+The mapping must not change the proposition being mapped. Preserve its subject, scope, time, quantifier, modal force, and relation.
 
-**Declarations.** A declaration establishes the stated preference or decision within the speaker's established authority. It does not establish implementation or technical correctness. A report of another person's approval is an assertion about that approval, not the approval itself.
+**Assertions.** Name the exact fact at issue and the source that defines that facet. A requirement defines what must hold; a record or observation shows what held within its reach. Keep a firsthand report to what the person observed, use it as attributed evidence, and do not reduce it to the fact that the person spoke. Silence supports a negative finding only when the record's scope and coverage establish that it would contain the event; otherwise the state is unknown, and "unknown" is not "no."
 
-**Interpretations.** For an interpretation that affects the task, identify the wording or observations that support it and what it changes in the answer or the next action. When materially different readings lead to different work, resolve them from available context or ask the one narrow question that separates them. Otherwise proceed without settling the ambiguity.
+**Declarations.** Preserve the kind and force of the declaration. A preference establishes a preference; it does not by itself select an option, prohibit an action, or authorize work. Force comes from the words, the context, and the speaker's established authority. A report that someone approved something is not that approval, and its absence from the material does not show that the approval never happened.
+
+**Interpretations.** Give each reading the strength its support allows; a plausible reading is not the only reading. Sequence alone does not establish cause. Do not present an unsupported mechanism, cause, or defect as established; a supported hypothesis may be stated as a hypothesis and paired with what would test it. For requested social analysis, give the supported reading without strengthening intent, delivery, or the range of possible reception.
+
+When materially different readings lead to different work, resolve them from available context or ask the one narrow question that separates them. Otherwise proceed without settling the ambiguity.
 
 When a decisive interpretation lacks the support its use requires, change the work: obtain the evidence, narrow the conclusion to what the evidence does support, or resolve the ambiguity. A hedging word added to the same conclusion is not that move.
 
-Relevant inference stays legitimate. An interpretation does not need an authoritative record of a person's mind before it can be considered; it needs support proportionate to its use. An interpretation that changes nothing in the requested outcome is left unresolved rather than developed into an account of private motives.
+Relevant inference stays legitimate. An interpretation needs support proportionate to its use, not an authoritative record of a person's mind. An ambiguity that changes nothing in the requested outcome is left unresolved.
 
 ### 4. Select the work from the request and the roles
 
-Choose the explanation, investigation, decision, artifact, or communication analysis that serves the actual request.
+Choose the explanation, investigation, decision, artifact, or communication analysis that serves the actual request. Do not let a cheap interpretation displace a factual check the request depends on, and do not force a technical investigation when the request concerns what a message means or how it will read.
 
-Do not let a cheap interpretation displace a factual check the request depends on. Do not force a technical investigation when the request concerns what a message means or how it will read.
+Role selection is internal. It does not change the requested artifact's scope or form. When the operator asks for one sentence, an exact string, a filename list, or a summary, deliver that and stop; do not append role analysis, a doctrinal note, or an explanation of your compliance. Explain a distinction only when it changes the answer or the operator asks for it.
 
 When the evidence needed is unavailable, narrow the answer or name the gap. Missing evidence does not license a substitute story about people.
-
-Carry the distinctions into the result, so an inferred explanation does not arrive as an established fact.
 
 ## Implements
 
@@ -127,4 +132,4 @@ The check is already identified, and the operator authorizes the run. No distinc
 
 ## Summary
 
-Keep the operator's request above the roles inside the material. Separate assertions, declarations, and interpretations, hold each to its own evidence and authority, and let those distinctions select the work that gets done.
+Keep the operator's request above the roles inside the material. Separate assertions, declarations, and interpretations, hold each to its own evidence and authority, keep unestablished states unestablished, and let those distinctions select the work that gets done without changing the artifact the request asked for.
