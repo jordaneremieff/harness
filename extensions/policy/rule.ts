@@ -28,7 +28,9 @@ export interface PipeShape {
 export interface CommandShapeSpec {
 	command: string;
 	flags?: string[];
+	anyFlags?: string[];
 	absentFlags?: string[];
+	cli?: { profile: "git"; subcommand: ["push"] };
 	operands?: OperandShape;
 	pipe?: PipeShape;
 }
@@ -64,7 +66,12 @@ export type AgentRuleAudit = SessionRuleAudit & { surface: "agent-tool" };
 
 export type RuleMatcher =
 	| { kind: "code"; key: string }
-	| { kind: "declarative"; language: "command-shape/v1"; spec: CommandShapeSpec }
+	| {
+			kind: "declarative";
+			language: "command-shape/v1";
+			spec: CommandShapeSpec;
+			onUnavailable?: "skip" | "deny";
+	  }
 	| { kind: "declarative"; language: "facts/v1"; spec: FactsProgram };
 
 export interface RuleDefinition {

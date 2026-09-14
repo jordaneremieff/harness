@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Type } from "typebox";
+import { describe, it } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { RuleSnapshot } from "./local-rules.ts";
+import { Type } from "typebox";
+import { PACKAGE_CATALOG } from "./catalog.ts";
 import type { NamedData } from "./data.ts";
+import type { RuleSnapshot } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
 import type { FactsProgram } from "./program.ts";
 import type { PolicyRecord } from "./record.ts";
 import type { RuleRecord } from "./rule.ts";
 import { PolicyRuntime } from "./runtime.ts";
-import { PACKAGE_CATALOG } from "./catalog.ts";
 import { PolicyWriter } from "./store.ts";
 
 const yes = { op: "exists" as const, path: ["input"] };
@@ -543,6 +543,41 @@ describe("normalized execution plans", () => {
 });
 
 describe("recorded call explanations", () => {
+	it("preserves unknown CLI reason codes through preview, telemetry, and call explanation", async (t) => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-cli-explain-"));
+		t.after(() => rm(dir, { recursive: true, force: true }));
+		const commandRule = rule("cli", {
+			phase: "input",
+			when: yes,
+			action: { kind: "deny" },
+			onUnavailable: "deny",
+		});
+		commandRule.matcher = {
+			kind: "declarative",
+			language: "command-shape/v1",
+			onUnavailable: "deny",
+			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] }, anyFlags: ["--force", "-f"] },
+		};
+		const f = fixture([commandRule], "enforce", Type.Object({ command: Type.String() }), false, dir, "bash");
+		const input = { command: "git push $FLAGS" };
+		type Evaluation = { truth: string; unavailableReasons: string[] };
+		const preview = (await f.runtime.inspect("preview", { tool: "bash", input }, f.ctx)) as {
+			input: { denied: boolean; evaluations: Evaluation[] };
+		};
+		assert.equal(preview.input.denied, true);
+		assert.equal(preview.input.evaluations[0].truth, "unknown");
+		const reasons = preview.input.evaluations[0].unavailableReasons;
+		assert.ok(reasons.length > 0);
+		assert.ok(reasons.every((reason) => /^[a-z0-9.-]{1,80}$/.test(reason)));
+		assert.equal((await f.call("unknown", input))?.block, true);
+		await f.finish("unknown", true);
+		await f.writer.close();
+		await writeFile(join(dir, "2026-01-01.jsonl"), `${JSON.stringify(f.records[0])}\n`);
+		const explained = (await f.runtime.inspect("explain", { id: "call:unknown" }, f.ctx)) as {
+			records: Array<{ policy: { evaluations: Evaluation[] } }>;
+		};
+		assert.deepEqual(explained.records[0].policy.evaluations[0].unavailableReasons, reasons);
+	});
 	it("reads current-session unmatched calls and only approved metadata fields", async (t) => {
 		const dir = await mkdtemp(join(tmpdir(), "policy-explain-"));
 		t.after(() => rm(dir, { recursive: true, force: true }));
@@ -589,6 +624,42 @@ describe("recorded call explanations", () => {
 });
 
 describe("input transactions and modes", () => {
+	it("retains explicit CLI unknown denial when the outer input exceeds snapshot bounds", async () => {
+		for (const effect of ["block", "steer"] as const) {
+			const commandRule = rule("cli-limit", {
+				phase: "input",
+				when: yes,
+				action: { kind: "deny" },
+				onUnavailable: "deny",
+			});
+			commandRule.definition.authority = "steer-or-block";
+			commandRule.definition.effect = effect;
+			commandRule.matcher = {
+				kind: "declarative",
+				language: "command-shape/v1",
+				onUnavailable: "deny",
+				spec: { command: "git", cli: { profile: "git", subcommand: ["push"] }, anyFlags: ["--force"] },
+			};
+			const f = fixture([commandRule], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+			const denial = await f.call("oversize", { command: `git push ${"x".repeat(300000)}` });
+			assert.equal(denial?.block === true, effect === "block");
+			await f.writer.close();
+		}
+	});
+	it("does not give unavailable input corrections authority when applicability is unknown", async () => {
+		const correction = rule("inapplicable", {
+			phase: "input",
+			when: yes,
+			action: { kind: "rename-key", path: [], from: "old", to: "name" },
+			onUnavailable: "deny",
+		});
+		correction.definition.applicability = { op: "eq", path: ["input", "authorized"], value: true };
+		const f = fixture([correction]);
+		const input = { old: "x".repeat(300000) };
+		assert.equal(await f.call("unknown-applicability", input), undefined);
+		assert.ok(Object.hasOwn(input, "old"));
+		await f.writer.close();
+	});
 	it("commits one schema-valid candidate and retains no private input in telemetry", async () => {
 		const f = fixture([rename()]);
 		const input = { old: "private-value" };
@@ -753,6 +824,79 @@ describe("asynchronous lifecycle boundaries", () => {
 });
 
 describe("final observations and guidance", () => {
+	it("pins complete folded data before replacement and gives the next call the new table", async () => {
+		const correction = rule("folded", {
+			phase: "input",
+			when: yes,
+			action: { kind: "substitute", path: ["name"], table: "values" },
+			data: ["values"],
+			onUnavailable: "skip",
+		});
+		const f = fixture([correction]);
+		const binding: NamedData = {
+			kind: "table",
+			name: "values",
+			collation: "ascii-case-insensitive",
+			revision: "111122223333",
+			source: "operator-file",
+			capturedAt: Date.now() - 1000,
+			rows: [{ key: "Lobby", value: "room-first" }],
+		};
+		f.snapshot.data.set("values", binding);
+		const first = { name: "LOBBY" };
+		await f.runtime.toolStart({ toolName: "sample", toolCallId: "first", args: first }, f.ctx);
+		f.snapshot.data.set("values", {
+			...binding,
+			revision: "444455556666",
+			rows: [{ key: "lobby", value: "room-next" }],
+		});
+		await f.runtime.toolCall({ type: "tool_call", toolName: "sample", toolCallId: "first", input: first }, f.ctx);
+		assert.deepEqual(first, { name: "room-first" });
+		const next = { name: "LoBbY" };
+		await f.call("next", next);
+		assert.deepEqual(next, { name: "room-next" });
+		await f.finish("first");
+		await f.finish("next");
+		await f.writer.close();
+		const revisions = f.records.map((record) => {
+			const policy = record.policy as { dataSnapshots: Array<{ name: string; revision: string }> };
+			return policy.dataSnapshots.find((entry) => entry.name === "values")?.revision;
+		});
+		assert.deepEqual(revisions, ["111122223333", "444455556666"]);
+		assert.doesNotMatch(JSON.stringify(f.records), /room-first|room-next|LoBbY|Lobby/);
+	});
+	it("rolls back an earlier key repair when folded destination rows conflict", async () => {
+		const key = rule("key", {
+			phase: "input",
+			when: yes,
+			action: { kind: "rename-key", path: [], from: "old", to: "name" },
+			onUnavailable: "skip",
+		});
+		const value = rule("value", {
+			phase: "input",
+			when: yes,
+			action: { kind: "substitute", path: ["name"], table: "values" },
+			data: ["values"],
+			onUnavailable: "skip",
+		});
+		const f = fixture([key, value]);
+		f.snapshot.data.set("values", {
+			kind: "table",
+			name: "values",
+			collation: "ascii-case-insensitive",
+			revision: "111122223333",
+			source: "operator-file",
+			capturedAt: 1,
+			rows: [
+				{ key: "Lobby", value: "room-a" },
+				{ key: "lobby", value: "room-b" },
+			],
+		});
+		const input = { old: "Lobby" };
+		assert.equal((await f.call("collision", input))?.block, true);
+		assert.deepEqual(input, { old: "Lobby" });
+		await f.writer.close();
+	});
 	it("retains bounded pinned data identities and freshness without table or schema payloads", async () => {
 		const correction = rule("value.correction", {
 			phase: "input",

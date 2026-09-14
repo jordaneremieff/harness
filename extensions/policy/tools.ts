@@ -1,9 +1,11 @@
 /** Agent proposal and read-only unified rule tools. */
 
+import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { ruleScopeVisibility } from "./classify.ts";
-import { type NamedData, snapshotData, validateNamedData } from "./data.ts";
+import { snapshotData } from "./data.ts";
+import { dataFileApprovalText, dataReview, normalizeDataArtifact, readDataArtifact, safeJson } from "./data-import.ts";
 import {
 	MAX_COMMAND_LENGTH,
 	MAX_CWD_PREFIX_LENGTH,
@@ -15,7 +17,6 @@ import {
 	MAX_RULE_EVENT_BYTES,
 	MAX_RULE_ID_LENGTH,
 	makeRuleAudit,
-	namedDataRevision,
 	type ProposalEvent,
 	proposalRevision,
 	type RuleRegistry,
@@ -71,12 +72,26 @@ const MatchSchema = Type.Object(
 	{
 		command: Type.String({ minLength: 1, maxLength: MAX_COMMAND_LENGTH }),
 		flags: Type.Optional(StringList),
+		anyFlags: Type.Optional(StringList),
 		absentFlags: Type.Optional(StringList),
 		operands: Type.Optional(OperandsSchema),
 		pipe: Type.Optional(PipeSchema),
 	},
 	{ additionalProperties: false },
 );
+
+const CliMatchSchema = Type.Object(
+	{
+		...MatchSchema.properties,
+		command: Type.Literal("git"),
+		cli: Type.Object(
+			{ profile: Type.Literal("git"), subcommand: Type.Tuple([Type.Literal("push")]) },
+			{ additionalProperties: false },
+		),
+	},
+	{ additionalProperties: false },
+);
+const UnavailableSchema = Type.Union([Type.Literal("skip"), Type.Literal("deny")]);
 
 const SuggestionSchema = Type.Object(
 	{
@@ -133,6 +148,20 @@ const PredicateProposal = {
 	scope: Type.Optional(ScopeSchema),
 };
 
+const CommandProposal = {
+	purpose: PurposeSchema,
+	authority: AuthoritySchema,
+	applicability: Type.Optional(ProposalConditionSchema),
+	id: RuleIdSchema,
+	reason: ReasonSchema,
+	note: NoteSchema,
+	match: MatchSchema,
+	onUnavailable: Type.Optional(UnavailableSchema),
+	suggestion: Type.Optional(SuggestionSchema),
+	scope: Type.Optional(ScopeSchema),
+};
+const CliProposal = { ...CommandProposal, match: CliMatchSchema, onUnavailable: UnavailableSchema };
+
 export const PolicyProposeParams = Type.Union(
 	[
 		Type.Object({ operation: Type.Literal("add"), ...PredicateProposal }, { additionalProperties: false }),
@@ -145,35 +174,14 @@ export const PolicyProposeParams = Type.Union(
 			{ operation: Type.Literal("replace"), ...FactsProposal, expectedRevision: RevisionSchema },
 			{ additionalProperties: false },
 		),
+		Type.Object({ operation: Type.Literal("add"), ...CommandProposal }, { additionalProperties: false }),
 		Type.Object(
-			{
-				operation: Type.Literal("replace"),
-				purpose: PurposeSchema,
-				authority: AuthoritySchema,
-				applicability: Type.Optional(ProposalConditionSchema),
-				id: RuleIdSchema,
-				reason: ReasonSchema,
-				note: NoteSchema,
-				match: MatchSchema,
-				suggestion: Type.Optional(SuggestionSchema),
-				scope: Type.Optional(ScopeSchema),
-				expectedRevision: RevisionSchema,
-			},
+			{ operation: Type.Literal("replace"), ...CommandProposal, expectedRevision: RevisionSchema },
 			{ additionalProperties: false },
 		),
+		Type.Object({ operation: Type.Literal("add"), ...CliProposal }, { additionalProperties: false }),
 		Type.Object(
-			{
-				operation: Type.Literal("add"),
-				purpose: PurposeSchema,
-				authority: AuthoritySchema,
-				applicability: Type.Optional(ProposalConditionSchema),
-				id: RuleIdSchema,
-				reason: ReasonSchema,
-				note: Type.String({ minLength: 1, maxLength: MAX_NOTE_LENGTH }),
-				match: MatchSchema,
-				suggestion: Type.Optional(SuggestionSchema),
-				scope: Type.Optional(ScopeSchema),
-			},
+			{ operation: Type.Literal("replace"), ...CliProposal, expectedRevision: RevisionSchema },
 			{ additionalProperties: false },
 		),
 		Type.Object(
@@ -300,6 +308,8 @@ export function formatRulesTool(snapshot: RuleSnapshot, context: Pick<ExtensionC
 			`  declared action: ${line(JSON.stringify(declaredAction(record)))}`,
 			`  action authority: ${permitsEffectChoice(record) ? "operator selects steer or block; steer never denies; no correction authority" : "exact definition; effect overrides have no authority"}`,
 		);
+		if (record.matcher.kind === "declarative" && record.matcher.language === "command-shape/v1")
+			lines.push(`  matcher contract: ${safeJson(record.matcher)}`);
 		const program = factsProgram(record);
 		if (program) lines.push(`  program: ${line(JSON.stringify(program))}`);
 		if (record.source.kind !== "package") lines.push(`  approved audit: ${line(audit(record.source.approvedAudit))}`);
@@ -418,6 +428,7 @@ export async function policyDataCommand(
 	args: string,
 	auditValue: OperatorRuleAudit,
 	confirm: (title: string, message: string) => Promise<boolean>,
+	cwd: string = process.cwd(),
 ): Promise<string> {
 	if (auditValue.surface !== "command" && auditValue.surface !== "panel")
 		throw new Error("data controls require an operator surface");
@@ -429,6 +440,32 @@ export async function policyDataCommand(
 		if (verb === "list" && tail) throw new Error("data list does not accept arguments");
 		if (verb === "show" && (!tail || /\s/.test(tail))) throw new Error("data show requires one name");
 		return formatDataView(await registry.snapshot(), verb === "show" ? tail : undefined);
+	}
+	if (verb === "set-file") {
+		const value: unknown = JSON.parse(tail);
+		validateBoundedJson(value);
+		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("set-file requires an object");
+		const request = value as Record<string, unknown>;
+		if (
+			Object.keys(request).some((key) => key !== "path" && key !== "approveRevision") ||
+			typeof request.path !== "string" ||
+			!request.path ||
+			request.path.length > 4096
+		)
+			throw new Error("set-file requires path and optional approveRevision only");
+		if (/^[a-z][a-z0-9+.-]*:\/\//i.test(request.path)) throw new Error("data source requires a local file path");
+		const path = resolve(cwd, request.path);
+		const artifact = await readDataArtifact(path);
+		const approveRevision = contentRevision(artifact);
+		if (request.approveRevision !== undefined && request.approveRevision !== approveRevision)
+			throw new Error("data approval requires the exact complete artifact revision");
+		const review = dataReview(artifact, approveRevision);
+		const approvalText = dataFileApprovalText(path, approveRevision);
+		await registry.preflightData(artifact.data, artifact.expectedRevision, auditValue);
+		const approved = request.approveRevision === approveRevision || (await confirm("Approve policy data", review));
+		if (!approved) return approvalText;
+		await registry.setData(artifact.data, artifact.expectedRevision, auditValue);
+		return `Policy data ${artifact.data.name} uses revision ${artifact.data.revision}.`;
 	}
 	if (verb === "set") {
 		const value: unknown = JSON.parse(tail);
@@ -448,19 +485,12 @@ export async function policyDataCommand(
 			(typeof request.expectedRevision !== "string" || !/^[a-f0-9]{12}$/.test(request.expectedRevision))
 		)
 			throw new Error("expectedRevision must be null for a new binding or its current revision");
-		const supplied = request.data as Record<string, unknown>;
-		const raw = {
-			...supplied,
-			...(!Object.hasOwn(supplied, "capturedAt") ? { capturedAt: Date.parse(auditValue.at) } : {}),
-			...(!Object.hasOwn(supplied, "source") ? { source: "operator" } : {}),
-		} as NamedData;
-		const revision = namedDataRevision(raw);
-		if (raw.revision !== undefined && raw.revision !== revision)
-			throw new Error("data revision does not describe its contract");
-		const data = structuredClone({ ...raw, revision }) as NamedData;
-		const error = validateNamedData(data);
-		if (error) throw new Error(error);
-		const artifact = { data, expectedRevision: request.expectedRevision };
+		const artifact = normalizeDataArtifact(
+			{ data: request.data, expectedRevision: request.expectedRevision },
+			{ source: "operator", capturedAt: Date.parse(auditValue.at) },
+		);
+		const { data } = artifact;
+		const revision = data.revision;
 		const approveRevision = contentRevision(artifact);
 		// JSON leaves DEL/C1 controls literal; terminal display escapes are not valid JSON.
 		const approvalJson = JSON.stringify({ ...artifact, approveRevision }).replace(
@@ -472,9 +502,10 @@ export async function policyDataCommand(
 			throw new Error("data approval artifact exceeds the command presentation bound");
 		if (request.approveRevision !== undefined && request.approveRevision !== approveRevision)
 			throw new Error("data approval requires the exact complete artifact revision");
+		await registry.preflightData(data, artifact.expectedRevision, auditValue);
 		const approved =
 			request.approveRevision === approveRevision ||
-			(await confirm("Approve policy data", JSON.stringify(artifact, null, 2)));
+			(await confirm("Approve policy data", dataReview(artifact, approveRevision)));
 		if (!approved) return `Policy data change canceled. No data changed.\nExact approval command:\n${approvalCommand}`;
 		await registry.setData(data, request.expectedRevision as string | null, auditValue);
 		return `Policy data ${data.name} uses revision ${revision}.`;
@@ -491,7 +522,7 @@ export async function policyDataCommand(
 		await registry.removeData(parts[0], parts[1], auditValue);
 		return `Policy data ${parts[0]} was removed.`;
 	}
-	throw new Error("Use /policy data list|show <name>|set <JSON>|remove <name> <revision>.");
+	throw new Error("Use /policy data list|show <name>|set <JSON>|set-file <JSON>|remove <name> <revision>.");
 }
 
 export function formatCatalog(registry: RuleRegistry, id?: string): string {
@@ -541,7 +572,7 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 		name: "policy_propose",
 		label: "Policy propose",
 		description:
-			"Submit one inert policy rule proposal. add and replace require id, purpose, authority, reason, note, and exactly one authoring form: match (command-shape/v1), predicate (an installed bounded matcher key from policy_rules view=catalog), or language=facts/v1 with a complete program. purpose states the positive outcome. authority is exact or steer-or-block. Compact match authoring declares guidance from note and suggestion; the operator selects steer or block only with steer-or-block authority. Only input guide/deny actions permit steer-or-block authority; it never authorizes correction. Selected steer never denies, including unavailable evidence. Optional applicability is a bounded condition; only true permits rule evaluation, and false or unavailable skips the rule. Exact actions require approval of the complete proposal revision. replace also requires the current expectedRevision and exact proposal revision at approval. Programs declare applicability phase and selector, bounded evidence conditions, action parameters, unavailable behavior, optional data names and observation state. retire and disable accept only id and reason. Scope uses exact provider/model identities and absolute cwd prefixes. Inspect policy_rules before authoring scope or data-dependent rules. Proposals cannot approve actions, write data, reset state, or invoke tools.",
+			"Submit one inert policy rule proposal. add and replace require id, purpose, authority, reason, note, and exactly one authoring form: match (command-shape/v1), predicate (an installed bounded matcher key from policy_rules view=catalog), or language=facts/v1 with a complete program. purpose states the positive outcome. authority is exact or steer-or-block. Compact match authoring supports flags (AND), anyFlags (OR), and absentFlags. match.cli with profile git and subcommand [push] uses command-aware options and requires explicit top-level onUnavailable skip or deny. Literal matching defaults to skip. Compact match authoring declares guidance from note and suggestion; the operator selects steer or block only with steer-or-block authority. Only input guide/deny actions permit steer-or-block authority; it never authorizes correction. Selected steer never denies, including unavailable evidence. Optional applicability is a bounded condition; only true permits rule evaluation, and false or unavailable skips the rule. Exact actions require approval of the complete proposal revision. replace also requires the current expectedRevision and exact proposal revision at approval. Programs declare applicability phase and selector, bounded evidence conditions, action parameters, unavailable behavior, optional data names and observation state. retire and disable accept only id and reason. Scope uses exact provider/model identities and absolute cwd prefixes. Inspect policy_rules before authoring scope or data-dependent rules. Proposals cannot approve actions, write data, reset state, or invoke tools.",
 		promptSnippet: "Propose an inert policy rule for operator review",
 		promptGuidelines: [
 			"Use policy_propose only when the operator asks for a policy rule change. A proposal is inert until operator approval.",
@@ -564,7 +595,12 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 							? { kind: "code", key: params.predicate }
 							: "program" in params
 								? { kind: "declarative", language: "facts/v1", spec: params.program }
-								: { kind: "declarative", language: "command-shape/v1", spec: params.match },
+								: {
+										kind: "declarative",
+										language: "command-shape/v1",
+										spec: params.match,
+										...(params.onUnavailable !== undefined ? { onUnavailable: params.onUnavailable } : {}),
+									},
 					note: params.note,
 					...("suggestion" in params && params.suggestion ? { suggestion: params.suggestion } : {}),
 					...(params.scope ? { scope: params.scope } : {}),

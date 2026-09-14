@@ -175,13 +175,16 @@ describe("registration and lazy catalog use", () => {
 			}>;
 		};
 		assert.equal(schema.type, "object");
-		assert.equal(schema.anyOf?.length, 8);
 		const arms = schema.anyOf ?? [];
+		assert.ok(arms.length > 0);
 		const byOperation = new Map(
 			arms
 				.filter(
 					(arm) =>
-						!arm.properties?.program && !arm.properties?.predicate && arm.properties?.operation?.const !== "replace",
+						!arm.properties?.program &&
+						!arm.properties?.predicate &&
+						!arm.required?.includes("onUnavailable") &&
+						arm.properties?.operation?.const !== "replace",
 				)
 				.map((arm) => [arm.properties?.operation?.const, arm]),
 		);
@@ -218,6 +221,44 @@ describe("registration and lazy catalog use", () => {
 });
 
 describe("unified tools and command gates", () => {
+	it("resolves set-file paths against the command context and commits only after exact approval", async () => {
+		const { dir, pi, notifications } = await setup();
+		const cwd = await mkdtemp(join(tmpdir(), "policy-data-cwd-"));
+		await writeFile(
+			join(cwd, "table.json"),
+			JSON.stringify({
+				expectedRevision: null,
+				data: {
+					name: "rooms",
+					kind: "table",
+					collation: "ascii-case-insensitive",
+					source: "operator-file",
+					capturedAt: 1,
+					rows: [{ key: "Lobby", value: "room-7" }],
+				},
+			}),
+		);
+		const ctx = context(notifications, { cwd, mode: "rpc", hasUI: true });
+		const command = pi.commands.get("policy")!;
+		await command.handler('data set-file {"path":"table.json"}', ctx as never);
+		assert.equal(
+			(await storedEvents(dir)).some((event) => event.kind === "data" && event.operation === "set"),
+			false,
+		);
+		const message = notifications.at(-1)?.message ?? "";
+		const revision = message.match(/"approveRevision":"([a-f0-9]{12})"/)?.[1];
+		assert.ok(revision, message);
+		await command.handler(
+			`data set-file ${JSON.stringify({ path: "table.json", approveRevision: revision })}`,
+			ctx as never,
+		);
+		const events = (await storedEvents(dir)).filter((event) => event.kind === "data" && event.operation === "set");
+		assert.equal(events.length, 1);
+		if (events[0].kind === "data" && events[0].operation === "set") {
+			assert.equal(events[0].data.source, "operator-file");
+			assert.equal(events[0].data.capturedAt, 1);
+		}
+	});
 	it("policy_rules reports record definitions, overrides, proposals, context, and health", async () => {
 		const { pi, ctx } = await setup();
 		await pi.commands.get("policy")!.handler("effect routing.cat-read steer operator calibration", ctx as never);

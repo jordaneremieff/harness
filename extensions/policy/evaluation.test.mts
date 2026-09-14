@@ -172,6 +172,18 @@ test("suite resources resolve without model execution and variants differ only b
 	);
 });
 
+test("authoring scripts request policy inspection before proposals", () => {
+	for (const id of ["proposal-authoring", "cli-proposal-authoring"]) {
+		const entry = suite.cases.find((candidate) => candidate.id === id)!;
+		const fixture = (entry.input as unknown as { fixture: CaseFixture }).fixture;
+		assert.deepEqual(
+			fixture.script.slice(0, 2).map((step) => step.name),
+			["policy_rules", "policy_propose"],
+		);
+		assert.deepEqual(fixture.script[0].args, {});
+	}
+});
+
 for (const mode of ["enforce", "observe"] as const)
 	for (const entry of suite.cases) {
 		test(`${mode}: ${entry.id} checks reflect real fixture hook outcomes`, async () => {
@@ -180,9 +192,10 @@ for (const mode of ["enforce", "observe"] as const)
 			try {
 				await run.start();
 				assert.equal(
-					run.active().some((name) => ["bash", "read", "write", "edit"].includes(name)),
+					run.active().some((name) => ["read", "write", "edit"].includes(name)),
 					false,
 				);
+				assert.equal(run.active().includes("bash"), true, "the only shell-shaped tool is the inert echo fixture");
 				for (const step of fixture.script) await run.call(step);
 				await run.context();
 				const checked = runDeterministicChecks(
@@ -194,7 +207,34 @@ for (const mode of ["enforce", "observe"] as const)
 				assert.deepEqual(
 					checked.filter((check) => !check.passed).map((check) => check.checkId),
 					mode === "observe" ? fixture.expectedObserveMisses : [],
+					JSON.stringify(run.events),
 				);
+				if (entry.id.startsWith("cli-")) {
+					assert.deepEqual(
+						run.inputs,
+						fixture.script.map((step) => step.args),
+					);
+					const denied = mode === "enforce" && fixture.expectedObserveMisses.includes("outcome");
+					const count = await run.call({ name: "policy_eval_count", args: {} });
+					assert.equal(count.text, `COUNT=${denied ? 0 : 1}`, "refusal must prevent inert tool execution");
+				}
+				if (
+					["folded-conflict", "exact-case", "codec-other-server", "codec-missing-server", "codec-malformed"].includes(
+						entry.id,
+					)
+				)
+					assert.deepEqual(
+						run.inputs[0],
+						fixture.script[0].args,
+						"negative controls must retain the complete original input",
+					);
+				if (entry.id === "codec")
+					assert.deepEqual(
+						run.inputs[0],
+						mode === "enforce"
+							? { server: "primary", operation: "fetch", arguments: '{"room":"room-7"}' }
+							: fixture.script[0].args,
+					);
 				if (entry.id === "effective-deny" || entry.id === "collision")
 					assert.deepEqual(
 						run.inputs[0],

@@ -219,10 +219,27 @@ arrays of safe own-property keys, not executable expressions. Unknown evidence
 stays unknown under negation and composition. Missing comparison values are not
 zero or false; `exists` tests actual property presence separately.
 
-Fact roots include `tool`, `operation`, `input`, `original`, `result`, `outcome`,
-`state`, `schema`, `data`, and `context`. `result.tool` identifies the actual
-physical tool independently of arbitrary result details. Corrections use paths relative to their
-argument object, rather than condition paths prefixed with `input`.
+Fact roots include `tool`, `operation`, `input`, `original`, `outer`,
+`originalOuter`, `result`, `outcome`, `state`, `schema`, `data`, and `context`.
+`result.tool` identifies the actual physical tool independently of arbitrary
+result details. Corrections use paths relative to their argument object, rather
+than condition paths prefixed with `input`.
+
+With a codec, `input` and `original` contain decoded inner arguments. `outer`
+and `originalOuter` retain the corresponding raw argument objects, including
+server and operation fields. Without a codec, these roots expose the same
+objects as `input` and `original`. Each correction stage reads one fixed outer
+snapshot. Later stages see earlier logical-target corrections; original roots
+retain the input before those corrections. Missing or malformed inner arguments
+remain unknown without hiding available outer fields.
+
+Qualify gateway repairs with an exact physical tool selector, operation selector,
+and an outer-server condition. Put server qualification in `applicability` when
+missing server evidence must leave the rule inactive even with
+`onUnavailable:"deny"`. For a hypothetical gateway with a `server` field, use
+`{"op":"eq","path":["outer","server"],"value":"alpha"}`. An inner schema
+alone does not establish the intended server. Policy does not discover private
+gateway metadata or supply vendor-specific selectors.
 
 Public tool availability is available through
 `context.tools.<tool-name>.active` and `.configured`, with
@@ -396,6 +413,14 @@ status. Lookup reports missing, unique, ambiguous, or unavailable. Repeated equa
 destinations are still unique; conflicting destinations never select the first
 row.
 
+Tables accept optional `collation:"exact"` or
+`collation:"ascii-case-insensitive"`. Exact comparison is the default. The
+insensitive mode folds only ASCII letters in string keys and lookup queries.
+Stored rows remain unchanged. Values, scalar types, and non-ASCII characters
+remain exact. All matching rows contribute to the result, including when one
+key has the query's exact case. Conflicting destinations therefore remain
+ambiguous; no exact-case row takes priority.
+
 `/policy data set` fills omitted source with `operator` and capture time with its
 operator audit timestamp. Explicit values are never replaced. Revisions describe
 the complete normalized data contract. Replacement/removal checks the prior
@@ -408,6 +433,50 @@ revision. A changed artifact needs a new token. The complete approval command
 must fit its output bound; it is never silently truncated. Terminal-control
 characters are encoded as JSON Unicode escapes before measurement and display.
 Reusing the displayed command preserves the original data and approval revision.
+
+### Complete data files
+
+Use `/policy data set-file {"path":"table.json"}` for a complete local table or
+schema. Relative paths resolve against the command's working directory. The file
+contains only `data` and `expectedRevision`, with explicit `data.source` and
+`data.capturedAt` metadata. `data.revision` is optional: policy computes a
+content revision and rejects a supplied revision that differs.
+
+```json
+{
+  "expectedRevision": null,
+  "data": {
+    "name": "rooms",
+    "kind": "table",
+    "collation": "ascii-case-insensitive",
+    "source": "operator-table",
+    "capturedAt": 1789387200000,
+    "rows": [{"key": "Lobby", "value": "room-17"}]
+  }
+}
+```
+
+The command captures a bounded regular file without following a final symlink.
+It rejects URLs, invalid UTF-8, malformed JSON, and changing or oversized files.
+It never executes source content, watches a file, or uses the file as live table
+storage. The complete normalized data enters one approved log event.
+
+The TUI shows every normalized field and each table row in a complete paged
+review. Approval requires the final page. Without that reviewer, the response
+identifies the source artifact and its exact approval command, not a claim of
+complete review. Review the complete source file, then repeat the command with
+`approveRevision`. The repeated command rereads and validates the file; a changed
+normalized artifact requires a new approval. The approval binds the full data
+and expected prior revision. No pending artifact store exists.
+
+Source files are bounded to 512 KiB, serialized normalized data to 256 KiB, and
+complete review text to 1 MiB. Tables retain the independent row and structural
+bounds in [data.ts](data.ts). Data events permit 512 KiB including audit fields
+and newline; ordinary rule events retain their smaller bound. The whole registry
+remains bounded to 4 MiB. Capacity is checked before review and again inside the
+append transaction. There are no chunks, external blobs, compression, or
+automatic compaction. Calls already admitted retain their captured data revision;
+the next call receives the replacement.
 
 Direct-tool schemas come from `pi.getAllTools().parameters`. An explicit argument
 codec can decode a JSON-string argument envelope and select an approved inner
@@ -466,11 +535,15 @@ requires the alternative reader:
 
 Views are `rules` (default), `catalog`, `capabilities`, `state`, `health`, `data`,
 `explain`, and `preview`. The catalog view shows bundled starter definitions;
-it does not make them active or replace the stored catalog. Optional `id` narrows supported views. Explain accepts a rule id,
+it does not make them active or replace the stored catalog. Active command-shape
+rules retain their complete matcher in rule inspection and `/policy show`,
+including CLI selection, flag clauses, and unavailable behavior.
+Optional `id` narrows supported views. Explain accepts a rule id,
 or `call:<call-id>` for bounded current-session recorded decisions, including
 unmatched calls. Call explanations expose selected metadata, not arbitrary stored
 payloads. Evaluation metadata includes phase and input view, so original and
-final checks retain distinct evidence even when they share a rule id.
+final checks retain distinct evidence even when they share a rule id. Unavailable
+command evidence also carries bounded reason codes without raw command text.
 Missing records may lie outside the read bound or await persistence;
 absence does not prove that no decision occurred. Records remain untrusted
 historical evidence, not current rule authority.
@@ -512,6 +585,7 @@ telemetry; it is not a promise that the complete invocation performs no writes.
 /policy data list
 /policy data show <name>
 /policy data set <JSON>
+/policy data set-file <JSON>
 /policy data remove <name> <current-revision> [exact]
 /policy help
 ```
@@ -560,7 +634,8 @@ and bounded best-effort redaction.
 ```text
 match {
   command,
-  flags?, absentFlags?,
+  flags?, anyFlags?, absentFlags?,
+  cli?: {profile: "git", subcommand: ["push"]},
   operands?: {min?, max?, any?, at?: {index: [allowed values]}},
   pipe?: {from?, to?, fromRedirect?, toRedirect?, next?, later?}
 }
@@ -568,10 +643,58 @@ scope {modelProviders?, models?, cwdPrefixes?}
 ```
 
 Every supplied command constraint must hold in one parsed stage. Command names
-match basenames; flags match literally. Operands are arguments without a leading
-hyphen. `next` selects the immediate next stage; `later` selects a later stage.
-Nested substitutions are separate statements. Comments and variable values do
-not become command names.
+match basenames. `flags` requires all spellings, `anyFlags` requires at least one,
+and `absentFlags` requires none. Without `cli`, the current literal mode matches
+flags literally and treats arguments without a leading hyphen as operands.
+`next` selects the immediate next stage; `later` selects a later stage. Nested
+substitutions are separate statements. Comments and variable values do not
+become command names.
+
+### Git option evidence
+
+`match.cli:{"profile":"git","subcommand":["push"]}` selects the closed Git
+profile in [cli.ts](cli.ts). It distinguishes Git global options, the push
+subcommand, option occurrences, option values, and operands after the subcommand.
+The profile does not execute Git, scrape help, resolve aliases/configuration, or
+expand shell data. It is not a general command grammar.
+
+CLI flags select option spellings, not values or the command's final effective
+state. For example, `-o --force` consumes `--force` as a push-option value, and
+`-ofool` does not contain the `-f` option. `--` ends push options.
+`--force-with-lease=ref` is the lease option with a value, not plain force. The
+profile retains occurrence order, canonical identity, values, and polarity.
+Git global `-C` and `-c` require separate values in this profile; attached forms
+and global clusters are unavailable evidence.
+
+CLI proposals must explicitly declare top-level `onUnavailable:"skip"` or
+`"deny"`. That choice is stored with the matcher and included in the approved
+revision. Unknown expansion, malformed syntax, unsupported grammar, and exhausted
+parse bounds stay unknown rather than proving a flag absent. A selected `steer`
+effect never denies. False scope or false/unavailable applicability never acquires
+unknown-denial authority. Literal proposals retain `skip` when omitted.
+
+This example refuses plain-force option occurrences. Git `--force` disables
+lease checks, so a lease option is not an exception to this rule.
+
+```json
+{
+  "operation": "add",
+  "id": "local.push-force",
+  "purpose": "Refuse explicitly forced Git pushes.",
+  "authority": "steer-or-block",
+  "reason": "Use the approved force-option restriction.",
+  "note": "Remove the plain force option before this push.",
+  "match": {
+    "command": "git",
+    "cli": {"profile": "git", "subcommand": ["push"]},
+    "anyFlags": ["--force", "-f"]
+  },
+  "onUnavailable": "deny"
+}
+```
+
+This spelling-based rule does not claim to prohibit every Git force mechanism,
+such as a plus-prefixed refspec. Approve the behavior your rule actually selects.
 
 Scope selects session context, not a tool. Provider and provider/model values
 match exactly and case-sensitively. Cwd prefixes use absolute string-prefix
@@ -663,8 +786,9 @@ tasks, and adaptive retry/output-volume guidance. The existing
 [shell enforcement suite](../../prompts/policy-enforce.eval.mts) covers the built-in
 bash route separately.
 
-Mechanism cases require the same original arguments in both variants. Their
-positive outcome checks deliberately fail in observe mode; those failures are
+Authoring cases request policy inspection before the inert proposal, as the
+production tool guidelines require. Mechanism cases require the same original
+arguments in both variants. Their positive outcome checks deliberately fail in observe mode; those failures are
 negative-control evidence, not a reason to weaken the checks. Near misses and
 inert-authority cases must succeed in both variants. Adaptive cases permit either
 variant to succeed and require comparison of actual recovery, extra calls,

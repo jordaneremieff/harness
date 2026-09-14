@@ -24,6 +24,7 @@ import { PolicyPanel, type PolicyPanelActionHost, proposalDetailLines, ruleDetai
 import { type FactsProgram, PROGRAM_LIMITS, RULE_CAPACITY } from "./program.ts";
 import {
 	type AgentRuleAudit,
+	contentRevision,
 	effectiveEffect,
 	effectiveState,
 	type OperatorRuleAudit,
@@ -80,6 +81,19 @@ const binding = (): NamedData => {
 	};
 	return { ...raw, revision: namedDataRevision(raw) };
 };
+function parseTableReview(message: string): {
+	data: NamedData;
+	expectedRevision: string | null;
+	approveRevision: string;
+} {
+	const [header, count, rows] = message.split(/\nrows \((\d+)\):\n/u);
+	assert.notEqual(rows, undefined);
+	const parsed = JSON.parse(header);
+	const values = rows.split("\n").map((row) => JSON.parse(row));
+	assert.equal(values.length, Number(count));
+	return { ...parsed, data: { ...parsed.data, rows: values } };
+}
+
 async function registry(t: TestContext, catalog: readonly PackageDefinitionRow[] = []): Promise<RuleRegistry> {
 	const dir = await mkdtemp(join(tmpdir(), "policy-controls-"));
 	t.after(() => rm(dir, { recursive: true, force: true }));
@@ -624,7 +638,11 @@ describe("named data controls", () => {
 			/canceled/,
 		);
 		assert.equal((await reg.snapshot()).data.size, 0);
-		assert.deepEqual(JSON.parse(shown), { data, expectedRevision: null });
+		assert.deepEqual(parseTableReview(shown), {
+			data,
+			expectedRevision: null,
+			approveRevision: contentRevision({ data, expectedRevision: null }),
+		});
 		await assert.rejects(
 			policyDataCommand(reg, `set ${request}`, operator, async () => {
 				await reg.setData(data, null, operator);
@@ -653,7 +671,7 @@ describe("named data controls", () => {
 		};
 		let shown: { data: NamedData } | undefined;
 		await policyDataCommand(reg, `set ${JSON.stringify(request)}`, operator, async (_title, message) => {
-			shown = JSON.parse(message);
+			shown = parseTableReview(message);
 			return true;
 		});
 		assert.equal(shown?.data.source, "operator");
@@ -830,6 +848,42 @@ describe("bounded tools and operator panel", () => {
 		const active = (await reg.snapshot()).records.get("local.rename")!;
 		assert.match(formatRulesTool(await reg.snapshot(), context), /effect=correct/);
 		assert.match(ruleDetailLines(active, { cwd: "/work" }, summary).join("\n"), /action:.*rename-key/);
+	});
+
+	it("retains the complete command matcher in active inspection after approval", async (t) => {
+		const reg = await registry(t);
+		const registered = tools(reg);
+		await call(registered.get("policy_propose")!, {
+			operation: "add",
+			id: "local.force",
+			purpose: "Prevent plain force occurrences.",
+			authority: "steer-or-block",
+			reason: "Require explicit CLI authority.",
+			note: "Remove plain force.",
+			match: {
+				command: "git",
+				cli: { profile: "git", subcommand: ["push"] },
+				anyFlags: ["--force", "-f"],
+				flags: ["--verbose"],
+				absentFlags: ["--dry-run"],
+				operands: { any: ["alpha  beta", "line\u0085break"] },
+			},
+			onUnavailable: "deny",
+		});
+		const pending = (await reg.snapshot()).pending[0];
+		await reg.decide(pending.id, "approved", "block", operator, proposalRevision(pending));
+		const snapshot = await reg.snapshot();
+		const active = snapshot.records.get("local.force")!;
+		const displayed = formatRulesTool(snapshot, context)
+			.split("\n")
+			.find((row) => row.startsWith("  matcher contract: "))!;
+		assert.deepEqual(JSON.parse(displayed.slice("  matcher contract: ".length)), active.matcher);
+		assert.equal(displayed.includes("\u0085"), false);
+		assert.ok(
+			ruleDetailLines(active, { cwd: "/work" }, summary).includes(
+				`matcher contract: ${JSON.stringify(active.matcher)}`,
+			),
+		);
 	});
 
 	it("routes inspection through one callback and never changes data or approvals for preview", async (t) => {

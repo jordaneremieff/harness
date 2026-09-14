@@ -335,6 +335,37 @@ describe("bounded telemetry readers", () => {
 		assert.deepEqual(result.records[0].policy?.evaluations, evaluations);
 	});
 
+	it("retains bounded reason codes but rejects arbitrary text and oversized reason arrays", async (t) => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-panel-"));
+		t.after(() => rm(dir, { recursive: true, force: true }));
+		const valid = ["cli.unknown-option", "shell.dynamic-word"];
+		const invalid = [
+			["private command text"],
+			["line\nfeed"],
+			["X"],
+			["x".repeat(81)],
+			Array(17).fill("x"),
+			[null],
+			[""],
+			"x",
+		];
+		await writeFile(
+			join(dir, "2026-01-01.jsonl"),
+			recordLine(
+				activity({
+					policy: {
+						evaluations: [valid, ...invalid].map((unavailableReasons) => ({ id: "sample", unavailableReasons })),
+					},
+				}),
+			),
+		);
+		const result = await readRecentActivity(dir);
+		assert.deepEqual(result.records[0].policy?.evaluations, [
+			{ id: "sample", unavailableReasons: valid },
+			...invalid.map(() => ({ id: "sample" })),
+		]);
+	});
+
 	it("retains data snapshot identity and omission evidence without data payloads", async (t) => {
 		const dir = await mkdtemp(join(tmpdir(), "policy-panel-"));
 		t.after(() => rm(dir, { recursive: true, force: true }));
@@ -370,6 +401,21 @@ describe("bounded telemetry readers", () => {
 });
 
 describe("complete policy artifact review", () => {
+	it("preserves every whitespace character and grapheme across display wraps", () => {
+		const artifact = `{"key":"${" ".repeat(90)}","value":"${"界e\u0301👩‍💻 ".repeat(8)}"}`;
+		for (const width of [24, 40, 80]) {
+			const panel = new PolicyApprovalPanel({
+				title: "Review",
+				artifact,
+				tui: { requestRender() {} },
+				getMaxRows: () => 46,
+				done() {},
+			});
+			const rendered = panel.render(width);
+			assert.equal(rendered.slice(1, -2).join(""), artifact);
+			assert.ok(rendered.every((line) => visibleWidth(line) <= width));
+		}
+	});
 	it("exposes every artifact row before final-page approval at bounded terminal sizes", () => {
 		for (const [width, rows] of [
 			[80, 24],

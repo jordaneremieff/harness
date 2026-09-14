@@ -7,32 +7,32 @@ import type { RuleSnapshot } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
 import { readRecentActivity } from "./panel.ts";
 import {
-	evaluatePrograms,
+	type Condition,
 	captureProgramEvidence,
+	type EvaluationContext,
+	evaluatePrograms,
 	GUIDANCE_BYTES,
 	GUIDANCE_PREFIX,
+	type InputPlan,
+	observationSelected,
+	type ProgramEvaluation,
+	type ProgramRule,
 	planInput,
 	programFacts,
 	programSteps,
-	observationSelected,
-	type Condition,
-	type EvaluationContext,
-	type InputPlan,
-	type ProgramEvaluation,
-	type ProgramRule,
 } from "./program.ts";
 import {
-	finishCall,
-	startCall,
-	trackPending,
-	textContentBytes,
 	type CallEffects,
 	type CallOutcome,
 	type ContentLike,
+	finishCall,
 	type PendingCall,
 	type SessionFacts,
+	startCall,
+	textContentBytes,
+	trackPending,
 } from "./record.ts";
-import { effectiveEffect, effectiveState, ruleGuidance, type RuleRecord } from "./rule.ts";
+import { effectiveEffect, effectiveState, type RuleRecord, ruleGuidance } from "./rule.ts";
 import { ObservationState, type StatePin } from "./state.ts";
 import { PolicyWriter } from "./store.ts";
 
@@ -94,17 +94,20 @@ function samePin(left: StatePin | undefined, right: StatePin | undefined): boole
 	);
 }
 function metadata(evaluations: ProgramEvaluation[]): unknown[] {
-	return evaluations.map(({ id, revision, phase, inputView, applicable, truth, action, unavailable, deny }) => ({
-		id,
-		revision,
-		phase,
-		applicable,
-		...(inputView ? { inputView } : {}),
-		truth,
-		action: action.kind,
-		unavailable,
-		deny,
-	}));
+	return evaluations.map(
+		({ id, revision, phase, inputView, applicable, truth, action, unavailable, unavailableReasons, deny }) => ({
+			id,
+			revision,
+			phase,
+			applicable,
+			...(inputView ? { inputView } : {}),
+			truth,
+			action: action.kind,
+			unavailable,
+			...(unavailableReasons ? { unavailableReasons } : {}),
+			deny,
+		}),
+	);
 }
 function boundedRows(rows: readonly unknown[], maxBytes = 32768): { rows: unknown[]; total: number; omitted: number } {
 	const retained: unknown[] = [];
@@ -443,8 +446,10 @@ export class PolicyRuntime {
 			call.complete = false;
 			this.incomplete++;
 			const rules = this.currentRules(call);
-			const evaluations = evaluatePrograms(rules, "input", this.contextFor(call)).map((e) => {
-				if (e.truth === false || e.action.kind === "deny") return e;
+			const context = this.contextFor(call);
+			const evidence = captureProgramEvidence(rules, context);
+			const evaluations = evaluatePrograms(rules, "input", { ...context, evidence }).map((e) => {
+				if (e.applicable !== true || e.truth === false || e.action.kind === "deny") return e;
 				const rule = rules.find((rule) => rule.id === e.id)!;
 				return { ...e, truth: "unknown" as const, unavailable: true, deny: rule.program.onUnavailable === "deny" };
 			});

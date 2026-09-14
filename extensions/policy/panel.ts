@@ -244,6 +244,8 @@ export function ruleDetailLines(record: RuleRecord, context: RuleMatchContext, s
 		"fires by model:",
 		...fireBreakdownLines(summary, record.id),
 	];
+	if (record.matcher.kind === "declarative" && record.matcher.language === "command-shape/v1")
+		lines.push(`matcher contract: ${JSON.stringify(record.matcher)}`);
 	const program = factsProgram(record);
 	if (program)
 		lines.push(
@@ -444,6 +446,15 @@ function readDecisionSummary(value: unknown): Record<string, unknown> | undefine
 				)
 					item[key] = field;
 			}
+			if (
+				name === "evaluations" &&
+				Array.isArray(entry.unavailableReasons) &&
+				entry.unavailableReasons.length <= 16 &&
+				entry.unavailableReasons.every(
+					(reason: unknown) => typeof reason === "string" && reason.length <= 80 && /^[a-z0-9.-]+$/.test(reason),
+				)
+			)
+				item.unavailableReasons = [...entry.unavailableReasons];
 			if (
 				Array.isArray(entry.path) &&
 				entry.path.length <= 16 &&
@@ -759,6 +770,28 @@ interface PolicyApprovalPanelDeps {
 	done(approved: boolean): void;
 }
 
+/** Preserve whitespace and graphemes instead of the word wrapper's whitespace elision. */
+function wrapArtifact(artifact: string, width: number): string[] {
+	const lines: string[] = [];
+	const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+	for (const source of terminalSafe(artifact).split("\n")) {
+		let line = "";
+		let columns = 0;
+		for (const { segment } of segmenter.segment(source)) {
+			const size = visibleWidth(segment);
+			if (line && columns + size > width) {
+				lines.push(line);
+				line = "";
+				columns = 0;
+			}
+			line += segment;
+			columns += size;
+		}
+		lines.push(line);
+	}
+	return lines;
+}
+
 /** Immutable complete-artifact review with explicit approval on the final page. */
 export class PolicyApprovalPanel {
 	private width = 0;
@@ -779,7 +812,7 @@ export class PolicyApprovalPanel {
 		if (width !== this.width) {
 			this.width = width;
 			this.scroll = 0;
-			this.lines = wrapDetail([this.deps.artifact], Math.max(8, width));
+			this.lines = wrapArtifact(this.deps.artifact, Math.max(8, width));
 		}
 		this.ready = false;
 		this.pageRows = Math.max(0, rows - 3);
@@ -789,7 +822,7 @@ export class PolicyApprovalPanel {
 		this.ready = end === this.lines.length;
 		return [
 			fitText(this.deps.title, width),
-			...this.lines.slice(this.scroll, end).map((line) => fitText(line, width)),
+			...this.lines.slice(this.scroll, end),
 			fitText(`Space/b: page | ${this.scroll + 1}-${end}/${this.lines.length}`, width),
 			fitText(this.ready ? "a: approve | Esc: cancel" : "Esc: cancel | Read pages", width),
 		];

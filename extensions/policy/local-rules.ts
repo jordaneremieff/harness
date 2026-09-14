@@ -6,6 +6,7 @@ import { link, lstat, open, unlink } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { PACKAGE_CATALOG } from "./catalog.ts";
+import { isGitPushFlag } from "./cli.ts";
 import { type NamedData, validateNamedData } from "./data.ts";
 import {
 	type Condition,
@@ -53,6 +54,19 @@ const LOCK_RETRY_MS = 25;
 export const MAX_REGISTRY_BYTES = 4 * 1024 * 1024;
 export const MAX_RULE_EVENT_BYTES = 64 * 1024;
 export const MAX_CATALOG_EVENT_BYTES = 512 * 1024;
+export const MAX_DATA_EVENT_BYTES = 512 * 1024;
+
+/** The same complete-line bound governs preflight, append, and replay. */
+function eventByteLimit(event: RuleEvent): number {
+	if (event.kind === "catalog" || event.kind === "import") return MAX_CATALOG_EVENT_BYTES;
+	return event.kind === "data" ? MAX_DATA_EVENT_BYTES : MAX_RULE_EVENT_BYTES;
+}
+function serializeEvent(event: RuleEvent): Buffer {
+	const bytes = Buffer.from(`${JSON.stringify(event)}\n`, "utf8");
+	const maximum = eventByteLimit(event);
+	if (bytes.length > maximum) throw new Error(`policy rule event exceeds ${maximum} bytes`);
+	return bytes;
+}
 export const MAX_RULES = RULE_CAPACITY.catalog;
 export const MAX_PENDING_PROPOSALS = 256;
 export const MAX_RULE_ID_LENGTH = 80;
@@ -339,10 +353,29 @@ function validateAudit(value: unknown): RuleAudit {
 
 function validateCommandShape(value: unknown): CommandShapeSpec {
 	if (!object(value)) throw new Error("matcher.spec must be an object");
-	exact(value, ["command"], ["flags", "absentFlags", "operands", "pipe"]);
+	exact(value, ["command"], ["flags", "anyFlags", "absentFlags", "operands", "pipe", "cli"]);
 	const spec: CommandShapeSpec = { command: text(value.command, "matcher.spec.command", MAX_COMMAND_LENGTH) };
 	if (value.flags !== undefined) spec.flags = stringList(value.flags, "matcher.spec.flags");
+	if (value.anyFlags !== undefined) spec.anyFlags = stringList(value.anyFlags, "matcher.spec.anyFlags");
+	if (value.cli !== undefined) {
+		if (!object(value.cli)) throw new Error("matcher.spec.cli must be an object");
+		exact(value.cli, ["profile", "subcommand"]);
+		if (
+			value.cli.profile !== "git" ||
+			!Array.isArray(value.cli.subcommand) ||
+			value.cli.subcommand.length !== 1 ||
+			value.cli.subcommand[0] !== "push" ||
+			spec.command !== "git"
+		)
+			throw new Error("matcher.spec.cli requires command git, profile git, and subcommand [push]");
+		spec.cli = { profile: "git", subcommand: ["push"] };
+	}
 	if (value.absentFlags !== undefined) spec.absentFlags = stringList(value.absentFlags, "matcher.spec.absentFlags");
+	if (spec.cli) {
+		for (const field of ["flags", "anyFlags", "absentFlags"] as const)
+			if (spec[field]?.some((flag) => !isGitPushFlag(flag)))
+				throw new Error(`matcher.spec.${field} requires supported Git push option spellings`);
+	}
 	if (value.operands !== undefined) {
 		if (!object(value.operands)) throw new Error("matcher.spec.operands must be an object");
 		exact(value.operands, [], ["min", "max", "any", "at"]);
@@ -400,14 +433,23 @@ function validateMatcher(value: unknown): RuleMatcher {
 		exact(value, ["kind", "key"]);
 		return { kind, key: validateRuleId(value.key) };
 	}
-	exact(value, ["kind", "language", "spec"]);
+	exact(value, ["kind", "language", "spec"], value.language === "command-shape/v1" ? ["onUnavailable"] : []);
 	if (value.language === "facts/v1") {
 		const error = validateFactsProgram(value.spec);
 		if (error) throw new Error(`matcher.spec: ${error}`);
 		return { kind, language: "facts/v1", spec: structuredClone(value.spec) as FactsProgram };
 	}
 	if (value.language !== "command-shape/v1") throw new Error("matcher.language must be command-shape/v1 or facts/v1");
-	return { kind, language: "command-shape/v1", spec: validateCommandShape(value.spec) };
+	const spec = validateCommandShape(value.spec);
+	if (spec.cli && value.onUnavailable === undefined) throw new Error("CLI matching requires explicit onUnavailable");
+	return {
+		kind,
+		language: "command-shape/v1",
+		spec,
+		...(value.onUnavailable !== undefined
+			? { onUnavailable: oneOf(value.onUnavailable, ["skip", "deny"] as const, "matcher.onUnavailable") }
+			: {}),
+	};
 }
 
 function validateSuggestion(value: unknown): RuleSuggestion {
@@ -1151,13 +1193,12 @@ async function readEvents(dir: string, path: string): Promise<ReadEventsResult> 
 			const line = content.subarray(start, index);
 			start = index + 1;
 			if (line.length === 0) throw new RuleLineError(lineNumber, "line is empty");
-			if (line.length + 1 > MAX_CATALOG_EVENT_BYTES) {
-				throw new RuleLineError(lineNumber, `line exceeds ${MAX_CATALOG_EVENT_BYTES} bytes`);
+			if (line.length + 1 > Math.max(MAX_CATALOG_EVENT_BYTES, MAX_DATA_EVENT_BYTES)) {
+				throw new RuleLineError(lineNumber, "line exceeds maximum policy event byte bound");
 			}
 			try {
 				const event = validateRuleEvent(JSON.parse(UTF8.decode(line)) as unknown);
-				if (event.kind !== "catalog" && event.kind !== "import" && line.length + 1 > MAX_RULE_EVENT_BYTES)
-					throw new Error(`line exceeds ${MAX_RULE_EVENT_BYTES} bytes`);
+				if (line.length + 1 > eventByteLimit(event)) throw new Error(`line exceeds ${eventByteLimit(event)} bytes`);
 				events.push(event);
 				eventLines.push(lineNumber);
 			} catch (error) {
@@ -1382,9 +1423,7 @@ export class RuleRegistry {
 	private async append(eventValue: Exclude<RuleEvent, CatalogEvent>): Promise<void> {
 		const event = validateRuleEvent(eventValue);
 		assertWritableAuthority(event);
-		const serialized = Buffer.from(`${JSON.stringify(event)}\n`, "utf8");
-		const maximum = event.kind === "import" ? MAX_CATALOG_EVENT_BYTES : MAX_RULE_EVENT_BYTES;
-		if (serialized.length > maximum) throw new Error(`policy rule event exceeds ${maximum} bytes`);
+		const serialized = serializeEvent(event);
 		await ensurePrivateDirectory(this.dir);
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 		const handle = await open(this.path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | noFollow, 0o600);
@@ -1655,8 +1694,38 @@ export class RuleRegistry {
 		return this.mutate(() => ({ event, result: event }));
 	}
 
-	setData(data: NamedData, expectedRevision: string | null, audit: SessionRuleAudit): Promise<DataSetEvent> {
-		const event: DataSetEvent = { kind: "data", id: randomUUID(), operation: "set", data, expectedRevision, audit };
+	/** Check the exact event size and current capacity before complete operator review. */
+	async preflightData(data: NamedData, expectedRevision: string | null, audit: SessionRuleAudit): Promise<void> {
+		const event = validateRuleEvent({
+			kind: "data",
+			id: randomUUID(),
+			operation: "set",
+			data,
+			expectedRevision,
+			audit,
+		}) as DataSetEvent;
+		assertWritableAuthority(event);
+		const bytes = serializeEvent(event);
+		const snapshot = await this.snapshot();
+		if (snapshot.health.status === "degraded" || snapshot.health.incompleteFinalLine)
+			throw new Error(snapshot.health.message);
+		assertTransition(event, snapshot);
+		const info = await lstat(this.path);
+		privateFile(info, this.path);
+		if (info.size + bytes.length > MAX_REGISTRY_BYTES)
+			throw new Error(`policy rule store would exceed ${MAX_REGISTRY_BYTES} bytes`);
+	}
+
+	async setData(data: NamedData, expectedRevision: string | null, audit: SessionRuleAudit): Promise<DataSetEvent> {
+		// Capture before the transaction waits so callers cannot alter approved data in flight.
+		const event = validateRuleEvent({
+			kind: "data",
+			id: randomUUID(),
+			operation: "set",
+			data,
+			expectedRevision,
+			audit,
+		}) as DataSetEvent;
 		return this.mutate(() => ({ event, result: event }));
 	}
 

@@ -52,6 +52,7 @@ const POLICY_USAGE = [
 	"  /policy preview <JSON>                       Preview without simulated execution or state changes",
 	"  /policy reset <id|--all> <reason...>          Start a new observation period",
 	"  /policy data list|show <name>|set <JSON>|remove <name> <revision>",
+	"  /policy data set-file <JSON>                 Review and import one complete local data file",
 	"  /policy mode                                Report the session mode",
 	"  /policy help                                Show this usage",
 ].join("\n");
@@ -333,6 +334,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 						trimmed.slice(verb.length).trim(),
 						makeRuleAudit(ctx, "command"),
 						(title, message) => reviewArtifact(ctx, title, message),
+						ctx.cwd,
 					);
 					await loadRegistry(ctx);
 					return output(ctx, text);

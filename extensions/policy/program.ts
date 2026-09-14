@@ -1,27 +1,27 @@
 /** Closed facts grammar and private correction plans. No action commits occur here. */
-import { Type, type TSchema } from "typebox";
+import { type TSchema, Type } from "typebox";
 import { Compile } from "typebox/compile";
+import { type CommandEvidence, captureEvidence, type RuleEvidence } from "./compiler.ts";
 import {
 	checkSchema,
 	cloneJson,
 	DataNameSchema,
+	type DataSnapshot,
 	lookupData,
 	readPath,
-	safeKey,
+	type Scalar,
 	ScalarSchema,
+	safeKey,
+	type Truth,
 	UNKNOWN,
 	validPath,
-	type DataSnapshot,
-	type Scalar,
-	type Truth,
 } from "./data.ts";
-import { captureEvidence, type RuleEvidence } from "./compiler.ts";
 import type { PolicyMode } from "./mode.ts";
 import type { RuleMatchContext } from "./rule.ts";
 import type { StateView } from "./state.ts";
 
-export { UNKNOWN } from "./data.ts";
 export type { Truth } from "./data.ts";
+export { UNKNOWN } from "./data.ts";
 export const RULE_CAPACITY = { catalog: 1280, active: 1280 } as const;
 export const GUIDANCE_BYTES = 2048;
 export const GUIDANCE_PREFIX = "[policy]";
@@ -232,6 +232,8 @@ const conditionValidator = Compile(ConditionSchema);
 const roots = new Set([
 	"input",
 	"original",
+	"outer",
+	"originalOuter",
 	"result",
 	"outcome",
 	"state",
@@ -478,7 +480,7 @@ export interface EvaluationContext {
 	mode?: PolicyMode;
 	scope?: RuleMatchContext;
 	/** Input evidence uses a fixed snapshot; later phases use admitted matches. */
-	evidence?: ReadonlyMap<string, Truth>;
+	evidence?: ReadonlyMap<string, Truth> & { readonly reasons?: ReadonlyMap<string, readonly string[]> };
 	matched?: ReadonlySet<string>;
 	staleRules?: ReadonlySet<string>;
 }
@@ -491,6 +493,8 @@ export interface ProgramEvaluation {
 	truth: Truth;
 	action: ProgramAction;
 	unavailable: boolean;
+	/** Fixed evidence codes only, without raw arguments or command text. */
+	unavailableReasons?: readonly string[];
 	deny: boolean;
 }
 export interface InputPlan {
@@ -529,6 +533,7 @@ export function programFacts(
 	original?: unknown,
 ): Record<string, unknown> {
 	const outer = input ?? context.facts?.input;
+	const originalOuter = original ?? context.facts?.original ?? outer;
 	const codec = rule.program.selector?.codec;
 	const args = decoded(outer, codec);
 	const operation = codec?.operationPath ? readPath(outer, codec.operationPath).value : context.operation;
@@ -538,7 +543,9 @@ export function programFacts(
 		tool: context.tool || UNKNOWN,
 		operation: operation ?? UNKNOWN,
 		input: args ?? UNKNOWN,
-		original: decoded(original ?? context.facts?.original ?? outer, codec) ?? UNKNOWN,
+		original: decoded(originalOuter, codec) ?? UNKNOWN,
+		outer: outer ?? UNKNOWN,
+		originalOuter: originalOuter ?? UNKNOWN,
 		state: context.states?.[rule.id] ?? context.facts?.state ?? UNKNOWN,
 		data: context.data ?? {},
 		schema: { valid: schemaTruth === "unknown" ? UNKNOWN : schemaTruth },
@@ -556,7 +563,7 @@ export function captureProgramEvidence(
 	context: EvaluationContext,
 	input?: unknown,
 	original?: unknown,
-): Map<string, Truth> {
+): CommandEvidence {
 	const applicable = new Map(rules.map((rule) => [rule.id, applicabilityTruth(rule, context, input, original)]));
 	const evidence = captureEvidence(
 		rules.filter((rule) => applicable.get(rule.id) === true),
@@ -616,6 +623,9 @@ function evaluateRule(
 		truth,
 		action: program.action,
 		unavailable: truth === "unknown",
+		...(truth === "unknown" && context.evidence?.reasons?.has(rule.id)
+			? { unavailableReasons: context.evidence.reasons.get(rule.id) }
+			: {}),
 		deny:
 			applicable === true &&
 			((truth === true && program.action.kind === "deny") || (truth === "unknown" && program.onUnavailable === "deny")),

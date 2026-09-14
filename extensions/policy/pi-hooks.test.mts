@@ -1,14 +1,14 @@
 /** Controlled real Pi dispatcher tests. No provider, credential, or external tool executes. */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, it } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Type } from "typebox";
+import { namedDataRevision, proposalRevision, RuleRegistry } from "./local-rules.ts";
 import type { FactsProgram } from "./program.ts";
-import { RuleRegistry, proposalRevision } from "./local-rules.ts";
 
 const piRoot = process.env.PI_POLICY_TEST_PI_ROOT
 	? resolve(process.env.PI_POLICY_TEST_PI_ROOT)
@@ -290,6 +290,79 @@ const contextProgram: FactsProgram = {
 };
 
 describe(`ordinary Pi ${version} policy hooks`, () => {
+	it("qualifies decoded repairs with exact raw server and operation facts", async () => {
+		const program: FactsProgram = {
+			phase: "input",
+			selector: {
+				tools: ["gateway"],
+				operations: ["send"],
+				codec: { argumentsPath: ["arguments"], operationPath: ["operation"], schemaData: "gateway-schema" },
+			},
+			data: ["gateway-schema"],
+			when: {
+				all: [
+					{ op: "eq", path: ["outer", "server"], value: "alpha" },
+					{ op: "eq", path: ["originalOuter", "operation"], value: "send" },
+					{ op: "exists", path: ["input", "old"] },
+				],
+			},
+			action: { kind: "rename-key", path: [], from: "old", to: "name" },
+			onUnavailable: "skip",
+		};
+		const f = await setup([["gateway-repair", program]]);
+		try {
+			const schema = {
+				name: "gateway-schema",
+				kind: "schema" as const,
+				source: "controlled",
+				capturedAt: 1,
+				schema: {
+					type: "object",
+					properties: { name: { type: "string" } },
+					required: ["name"],
+					additionalProperties: false,
+				},
+			};
+			await f.registry.setData({ ...schema, revision: namedDataRevision(schema) }, null, {
+				...audit,
+				surface: "command",
+			});
+			const received: Array<Record<string, unknown>> = [];
+			f.setTools([
+				{
+					name: "gateway",
+					description: "controlled envelope",
+					parameters: Type.Object({
+						server: Type.Optional(Type.String()),
+						operation: Type.String(),
+						arguments: Type.String(),
+					}),
+					execute: async (_id, args) => {
+						received.push({ ...args });
+						return { content: [{ type: "text", text: "received" }], details: {} };
+					},
+				},
+			]);
+			const raw = '{"old":"value"}';
+			await f.run([
+				{ id: "alpha", name: "gateway", arguments: { server: "alpha", operation: "send", arguments: raw } },
+				{ id: "beta", name: "gateway", arguments: { server: "beta", operation: "send", arguments: raw } },
+				{ id: "missing", name: "gateway", arguments: { operation: "send", arguments: raw } },
+				{ id: "malformed", name: "gateway", arguments: { server: "alpha", operation: "send", arguments: "invalid" } },
+			]);
+			assert.deepEqual(received, [
+				{ server: "alpha", operation: "send", arguments: '{"name":"value"}' },
+				{ server: "beta", operation: "send", arguments: raw },
+				{ operation: "send", arguments: raw },
+				{ server: "alpha", operation: "send", arguments: "invalid" },
+			]);
+			const records = await f.telemetry();
+			assert.equal(records.find((row) => row.callId === "alpha").policy.inputCorrected, true);
+			assert.deepEqual(f.errors, []);
+		} finally {
+			await f.cleanup();
+		}
+	});
 	it("executes validated input corrections and observes final chained result patches in completion order", async () => {
 		let releaseFirst = () => {};
 		const secondFinalized = new Promise<void>((resolve) => {

@@ -5,12 +5,12 @@ import {
 	cloneJson,
 	DATA_LIMITS,
 	lookupData,
+	type NamedData,
 	readPath,
 	snapshotData,
 	UNKNOWN,
 	validateNamedData,
 	validPath,
-	type NamedData,
 } from "./data.ts";
 
 const binding = (changes: Partial<NamedData> = {}): NamedData =>
@@ -60,6 +60,36 @@ test("tables distinguish duplicate same destinations from ambiguity without coer
 	assert.deepEqual(lookupData(snapshotData([table], 100).teams, "1"), { status: "unique", value: "b" });
 	if (table.kind === "table") table.rows.push({ key: 1, value: "c" });
 	assert.deepEqual(lookupData(snapshotData([table], 100).teams, 1), { status: "ambiguous" });
+});
+
+test("ASCII collation folds only string keys and retains all collision choices", () => {
+	const table = binding({
+		collation: "ascii-case-insensitive",
+		rows: [
+			{ key: "Blue", value: "A" },
+			{ key: "bLUE", value: "A" },
+			{ key: "Å", value: "accent" },
+			{ key: "1", value: "string" },
+			{ key: 1, value: "number" },
+			{ key: true, value: false },
+			{ key: null, value: null },
+		],
+	});
+	assert.equal(validateNamedData(table), undefined);
+	const snapshot = snapshotData([table], 100).teams;
+	assert.deepEqual(lookupData(snapshot, "BLUE"), { status: "unique", value: "A" });
+	assert.deepEqual(lookupData(snapshot, "å"), { status: "missing" });
+	assert.deepEqual(lookupData(snapshot, 1), { status: "unique", value: "number" });
+	assert.deepEqual(lookupData(snapshot, "1"), { status: "unique", value: "string" });
+	assert.deepEqual(lookupData(snapshot, true), { status: "unique", value: false });
+	assert.deepEqual(lookupData(snapshot, null), { status: "unique", value: null });
+	if (table.kind === "table") table.rows.push({ key: "BLUE", value: "a" });
+	assert.deepEqual(lookupData(snapshotData([table], 100).teams, "BLUE"), { status: "ambiguous" });
+	assert.deepEqual(lookupData(snapshot, "BLUE"), { status: "unique", value: "A" });
+	assert.ok(validateNamedData({ ...table, collation: "unicode" }));
+	assert.deepEqual(lookupData(snapshotData([binding({ collation: "exact" })], 100).teams, "Blue"), {
+		status: "missing",
+	});
 });
 
 test("data snapshots own independent copies and reject repeated names", () => {

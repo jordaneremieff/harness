@@ -29,6 +29,7 @@ export const NamedDataSchema = Type.Union([
 		{
 			...metadata,
 			kind: Type.Literal("table"),
+			collation: Type.Optional(Type.Union([Type.Literal("exact"), Type.Literal("ascii-case-insensitive")])),
 			rows: Type.Array(Type.Object({ key: ScalarSchema, value: ScalarSchema }, { additionalProperties: false }), {
 				maxItems: DATA_LIMITS.rows,
 			}),
@@ -48,7 +49,10 @@ interface DataMetadata {
 	maxAgeMs?: number;
 }
 export type NamedData = DataMetadata &
-	({ kind: "table"; rows: { key: Scalar; value: Scalar }[] } | { kind: "schema"; schema: Record<string, unknown> });
+	(
+		| { kind: "table"; collation?: "exact" | "ascii-case-insensitive"; rows: { key: Scalar; value: Scalar }[] }
+		| { kind: "schema"; schema: Record<string, unknown> }
+	);
 export interface DataSnapshot {
 	name: string;
 	status: "ready" | "missing" | "stale" | "invalid";
@@ -224,6 +228,8 @@ export function validateNamedData(value: unknown): string | undefined {
 	try {
 		const copied = cloneJson(value);
 		if (!dataValidator.Check(copied)) return "Invalid named data definition";
+		if (Buffer.byteLength(JSON.stringify(copied), "utf8") > DATA_LIMITS.bytes)
+			return "Named data exceeds serialized byte bound";
 		const data = copied as NamedData;
 		if (data.kind === "schema" && checkSchema(data.schema, null) === "unknown") return "Unavailable schema validator";
 		return undefined;
@@ -263,7 +269,12 @@ export function snapshotData(bindings: readonly NamedData[], now: number): Recor
 
 export function lookupData(snapshot: DataSnapshot | undefined, key: unknown): LookupResult {
 	if (snapshot?.status !== "ready" || snapshot.data?.kind !== "table") return { status: "unavailable" };
-	const choices = snapshot.data.rows.filter((row) => row.key === key).map((row) => row.value);
+	const fold = (value: unknown): unknown =>
+		snapshot.data?.kind === "table" && snapshot.data.collation === "ascii-case-insensitive" && typeof value === "string"
+			? value.replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+			: value;
+	const query = fold(key);
+	const choices = snapshot.data.rows.filter((row) => fold(row.key) === query).map((row) => row.value);
 	if (!choices.length) return { status: "missing" };
 	if (choices.some((choice) => choice !== choices[0])) return { status: "ambiguous" };
 	return { status: "unique", value: choices[0] };

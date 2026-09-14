@@ -10,6 +10,7 @@ import { namedDataRevision, proposalRevision, RuleRegistry } from "./local-rules
 import type { Condition, FactsProgram } from "./program.ts";
 
 const tools = [
+	"bash",
 	"policy_eval_call",
 	"policy_eval_codec",
 	"policy_eval_missing",
@@ -39,6 +40,27 @@ async function seed(dir: string): Promise<void> {
 			rows: [
 				{ key: "lobby", value: "room-7" },
 				{ key: "alias", value: "forbidden" },
+			],
+			source: "synthetic",
+			capturedAt: 0,
+			revision: "000000000000",
+		},
+		{
+			name: "folded-rooms",
+			kind: "table",
+			collation: "ascii-case-insensitive",
+			rows: [{ key: "Lobby", value: "room-7" }],
+			source: "synthetic",
+			capturedAt: 0,
+			revision: "000000000000",
+		},
+		{
+			name: "folded-conflict",
+			kind: "table",
+			collation: "ascii-case-insensitive",
+			rows: [
+				{ key: "Lobby", value: "room-7" },
+				{ key: "LOBBY", value: "room-8" },
 			],
 			source: "synthetic",
 			capturedAt: 0,
@@ -113,6 +135,20 @@ async function seed(dir: string): Promise<void> {
 				onUnavailable: "skip",
 			},
 		],
+		...(["folded", "folded-conflict", "exact-case"] as const).map((id): [string, FactsProgram] => {
+			const table = id === "folded" ? "folded-rooms" : id === "exact-case" ? "rooms" : "folded-conflict";
+			return [
+				id,
+				{
+					phase: "input",
+					selector: selected,
+					when: { all: [scenario(id), { op: "lookup", path: ["input", "room"], table, value: "unique" }] },
+					data: [table],
+					action: { kind: "substitute", path: ["room"], table },
+					onUnavailable: "skip",
+				},
+			];
+		}),
 		[
 			"effective",
 			{
@@ -223,7 +259,7 @@ async function seed(dir: string): Promise<void> {
 			{
 				phase: "input",
 				selector: { tools: ["policy_eval_codec"] },
-				when: eq(["input", "operation"], "old.fetch"),
+				when: { all: [eq(["outer", "server"], "primary"), eq(["input", "operation"], "old.fetch")] },
 				data: ["operations"],
 				action: { kind: "substitute", path: ["operation"], table: "operations", stage: "logical-target" },
 				onUnavailable: "skip",
@@ -241,7 +277,15 @@ async function seed(dir: string): Promise<void> {
 			{
 				phase: "input",
 				selector: codec,
-				when: { op: "exists", path: ["input", "oldRoom"] },
+				when: {
+					all: [
+						eq(["outer", "server"], "primary"),
+						eq(["originalOuter", "server"], "primary"),
+						eq(["outer", "operation"], "fetch"),
+						eq(["originalOuter", "operation"], "old.fetch"),
+						{ op: "exists", path: ["input", "oldRoom"] },
+					],
+				},
 				data: ["fetch-shape"],
 				action: { kind: "rename-key", path: [], from: "oldRoom", to: "room" },
 				onUnavailable: "skip",
@@ -252,13 +296,30 @@ async function seed(dir: string): Promise<void> {
 			{
 				phase: "input",
 				selector: codec,
-				when: eq(["input", "room"], "lobby"),
+				when: { all: [eq(["outer", "server"], "primary"), eq(["input", "room"], "lobby")] },
 				data: ["fetch-shape", "rooms"],
 				action: { kind: "substitute", path: ["room"], table: "rooms" },
 				onUnavailable: "skip",
 			},
 		],
 	);
+	const cliProposal = await registry.proposeAdd(
+		{
+			id: "eval.cli-force",
+			purpose: "Refuse explicit plain force options in synthetic Git push commands.",
+			authority: "steer-or-block",
+			matcher: {
+				kind: "declarative",
+				language: "command-shape/v1",
+				spec: { command: "git", cli: { profile: "git", subcommand: ["push"] }, anyFlags: ["--force", "-f"] },
+				onUnavailable: "deny",
+			},
+			note: "Synthetic CLI force policy refused this call.",
+		},
+		"Synthetic evaluation setup",
+		proposed,
+	);
+	await registry.decide(cliProposal.id, "approved", "block", audit, proposalRevision(cliProposal));
 	for (const [id, program, approve = true] of programs) {
 		const proposal = await registry.proposeAdd(
 			{
@@ -309,6 +370,17 @@ export default function policyEvalFixture(pi: ExtensionAPI): void {
 		details,
 	});
 	pi.registerTool({
+		name: "bash",
+		label: "Inert shell request",
+		description:
+			"Echo the exact command as synthetic data. This fixture never starts a shell, Git, a subprocess, or a network request.",
+		parameters: Type.Object({ command: Type.String({ maxLength: 4096 }) }, { additionalProperties: false }),
+		async execute(_id, args) {
+			calls++;
+			return result(`INERT COMMAND:${args.command}`);
+		},
+	});
+	pi.registerTool({
 		name: "policy_eval_call",
 		label: "Synthetic policy operation",
 		description:
@@ -330,7 +402,7 @@ export default function policyEvalFixture(pi: ExtensionAPI): void {
 			if (args.scenario === "summary") return result("SUMMARY: 2 items");
 			if (args.scenario === "semantic-error") return result("APPLICATION REFUSED", { ok: false });
 			if (args.scenario === "semantic-success") return result("SUCCESS: zero failure records", { ok: true });
-			if (["rename", "map"].includes(args.scenario) && (args.room !== "room-7" || args.oldRoom !== undefined))
+			if (["rename", "map", "folded"].includes(args.scenario) && (args.room !== "room-7" || args.oldRoom !== undefined))
 				throw new Error("BACKEND REJECTED ARGUMENTS");
 			return result(`EXECUTED:${JSON.stringify(args)}`);
 		},
@@ -340,11 +412,16 @@ export default function policyEvalFixture(pi: ExtensionAPI): void {
 		label: "Synthetic encoded operation",
 		description: "Run an inert encoded operation. Supply the exact requested operation and JSON argument string.",
 		parameters: Type.Object(
-			{ operation: Type.String({ maxLength: 80 }), arguments: Type.String({ maxLength: 4096 }) },
+			{
+				server: Type.Optional(Type.String({ maxLength: 80 })),
+				operation: Type.String({ maxLength: 80 }),
+				arguments: Type.String({ maxLength: 4096 }),
+			},
 			{ additionalProperties: false },
 		),
 		async execute(_id, args) {
 			calls++;
+			if (args.server !== "primary") return result(`UNTOUCHED:${JSON.stringify(args)}`);
 			let inner: unknown;
 			try {
 				inner = JSON.parse(args.arguments);

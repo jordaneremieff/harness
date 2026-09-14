@@ -7,8 +7,8 @@ import { describe, it, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Compile } from "typebox/compile";
+import { RuleRegistry, validateLocalCandidate } from "./local-rules.ts";
 import { type Condition, PROGRAM_LIMITS, validateFactsProgram } from "./program.ts";
-import { RuleRegistry } from "./local-rules.ts";
 import { PolicyProposeParams, registerRuleTools } from "./tools.ts";
 
 const { validateToolArguments } = await import(
@@ -96,6 +96,81 @@ async function setup(t: TestContext) {
 	};
 }
 const transport = Compile(PolicyProposeParams);
+
+describe("command-aware proposal admission", () => {
+	const commandRequest = () => ({
+		operation: "add",
+		id: "git.push",
+		purpose: "Protect branch updates.",
+		authority: "steer-or-block",
+		reason: "Require safe updates.",
+		note: "Use a checked lease.",
+		match: { command: "git", cli: { profile: "git", subcommand: ["push"] }, anyFlags: ["--force", "-f"] },
+		onUnavailable: "deny",
+	});
+	it("preserves CLI declarations through host validation, proposal persistence, and replay", async (t) => {
+		const host = await setup(t);
+		const input = commandRequest();
+		assert.equal(transport.Check(input), true);
+		await host.execute(input as unknown as Request);
+		const matcher = (await host.registry.snapshot()).pending[0].candidate?.matcher;
+		assert.deepEqual(matcher, {
+			kind: "declarative",
+			language: "command-shape/v1",
+			spec: input.match,
+			onUnavailable: "deny",
+		});
+	});
+	it("rejects unsupported option spellings at local admission without limiting literal flags", () => {
+		const input = commandRequest();
+		for (const field of ["flags", "anyFlags", "absentFlags"] as const) {
+			for (const flag of ["--for", "--force=true", "-uf", "--unknown"]) {
+				const spec = { ...input.match, [field]: [flag] };
+				const candidate = {
+					id: input.id,
+					purpose: input.purpose,
+					authority: input.authority,
+					note: input.note,
+					matcher: { kind: "declarative", language: "command-shape/v1", spec, onUnavailable: "deny" },
+				};
+				assert.throws(() => validateLocalCandidate(candidate), /supported Git push option spellings/);
+				assert.doesNotThrow(() =>
+					validateLocalCandidate({
+						...candidate,
+						matcher: { ...candidate.matcher, spec: { command: "git", [field]: [flag] } },
+					}),
+				);
+			}
+		}
+	});
+	it("requires explicit unknown behavior for CLI and rejects unsupported profile declarations", () => {
+		const input = commandRequest();
+		const { onUnavailable: _omitted, ...missing } = input;
+		assert.equal(transport.Check(missing), false);
+		assert.throws(
+			() =>
+				validateLocalCandidate({
+					id: input.id,
+					purpose: input.purpose,
+					authority: input.authority,
+					note: input.note,
+					matcher: { kind: "declarative", language: "command-shape/v1", spec: input.match },
+				}),
+			/explicit onUnavailable/,
+		);
+		for (const cli of [
+			{ profile: "git", subcommand: ["fetch"] },
+			{ profile: "other", subcommand: ["push"] },
+			{ profile: "git", subcommand: ["push", "extra"] },
+			{ profile: "git", subcommand: ["push"], ignored: true },
+		]) {
+			assert.equal(transport.Check({ ...input, match: { ...input.match, cli } }), false);
+		}
+		assert.equal(transport.Check({ ...input, onUnavailable: "maybe" }), false);
+		assert.equal(transport.Check({ ...input, match: { ...input.match, command: "other" } }), false);
+		assert.equal(transport.Check({ ...missing, match: { command: "git", anyFlags: ["-f"] } }), true);
+	});
+});
 
 describe("finite proposal description and recursive admission", () => {
 	it("registers finite schemas without recursive reference keywords", async (t) => {

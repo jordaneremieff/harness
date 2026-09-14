@@ -1,6 +1,6 @@
 /** Authoring syntax becomes execution steps and closed, batch-captured evidence. */
-import { captureFor, matchRuleRecords } from "./classify.ts";
-import type { Truth } from "./data.ts";
+import { captureFor, CommandEvidence, evaluateCommandRecords, ruleScopeMatches } from "./classify.ts";
+export { CommandEvidence } from "./classify.ts";
 import type { FactsProgram, ProgramRule } from "./program.ts";
 import {
 	declaredAction,
@@ -61,7 +61,10 @@ export function compileRule(record: RuleRecord): ProgramRule {
 		selector: { tools: ["bash"] },
 		when: { op: "exists", path: ["input"] },
 		action: { kind: "deny" },
-		onUnavailable: "skip",
+		onUnavailable:
+			record.matcher.kind === "declarative" && record.matcher.language === "command-shape/v1"
+				? (record.matcher.onUnavailable ?? "skip")
+				: "skip",
 	};
 	return {
 		id: record.id,
@@ -93,15 +96,26 @@ export function captureEvidence(
 	tool: string,
 	input: unknown,
 	scope: RuleMatchContext,
-): Map<string, Truth> {
+): CommandEvidence {
 	const records = rules.flatMap((rule) => (rule.evidence ? [rule.evidence.record] : []));
-	if (!records.length) return new Map();
-	if (tool !== "bash") return new Map(records.map((record) => [record.id, false]));
+	if (!records.length) return new CommandEvidence();
+	if (tool !== "bash") return new CommandEvidence(records.map((record) => [record.id, false]));
 	const captured =
 		input !== null && typeof input === "object" && !Array.isArray(input)
 			? captureFor(tool, input as Record<string, unknown>)
 			: undefined;
-	if (captured === undefined) return new Map(records.map((record) => [record.id, "unknown"]));
-	const matches = new Set(matchRuleRecords(tool, captured, records, scope).map((record) => record.id));
-	return new Map(records.map((record) => [record.id, matches.has(record.id)]));
+	if (captured === undefined) {
+		const evidence = new CommandEvidence();
+		for (const record of records) {
+			const eligible =
+				record.definition.state === "active" &&
+				record.override?.state !== "disabled" &&
+				record.matcherAvailable &&
+				ruleScopeMatches(record.definition.scope, scope);
+			evidence.set(record.id, eligible ? "unknown" : false);
+			if (eligible) evidence.reasons.set(record.id, ["command-unavailable"]);
+		}
+		return evidence;
+	}
+	return evaluateCommandRecords(tool, captured, records, scope);
 }

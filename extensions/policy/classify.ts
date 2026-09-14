@@ -1,21 +1,28 @@
 /** Extract command-match evidence and redact command text for records. */
 
+import { PACKAGE_CATALOG } from "./catalog.ts";
+import { type CliEvidence, decodeGitPush } from "./cli.ts";
+import type { Truth } from "./data.ts";
 import {
-	effectiveState,
 	type CommandShapeSpec,
+	effectiveState,
 	type RuleMatchContext,
 	type RuleRecord,
 	type RuleScope,
 } from "./rule.ts";
+import { parseShellEvidence, type Stage } from "./shell.ts";
 import {
+	type CodeMatcher,
 	captureShell,
 	codeMatcherStageEligible,
 	redactShell,
 	resolveCodeMatcher,
-	type CodeMatcher,
 } from "./shell-rules.ts";
-import { parseStatements, type Stage } from "./shell.ts";
-import { PACKAGE_CATALOG } from "./catalog.ts";
+
+/** Truth and fixed reason codes share the same captured input snapshot. */
+export class CommandEvidence extends Map<string, Truth> {
+	readonly reasons = new Map<string, string[]>();
+}
 
 export type CodeMatcherResolver = (key: string) => CodeMatcher | undefined;
 
@@ -52,11 +59,24 @@ function declarativeStageMatches(
 	position: number,
 	statement: readonly Stage[],
 	match: CommandShapeSpec,
-): boolean {
+	cli?: CliEvidence,
+): Truth {
+	if (match.cli && stage.commandLiteral === false) return "unknown";
 	if (stage.command !== match.command) return false;
-	if (match.flags && !match.flags.every((flag) => stage.args.includes(flag))) return false;
-	if (match.absentFlags?.some((flag) => stage.args.includes(flag))) return false;
-	const operands = stage.args.filter((arg) => !arg.startsWith("-"));
+	if (cli?.status === "unrelated") return false;
+	const pipe = match.pipe;
+	if (pipe?.from !== undefined && stage.fromPipe !== pipe.from) return false;
+	if (pipe?.to !== undefined && stage.toPipe !== pipe.to) return false;
+	if (pipe?.fromRedirect !== undefined && stage.fromRedirect !== pipe.fromRedirect) return false;
+	if (pipe?.toRedirect !== undefined && stage.toRedirect !== pipe.toRedirect) return false;
+	if (pipe?.next && !pipe.next.includes(statement[position + 1]?.command ?? "")) return false;
+	if (pipe?.later && !statement.slice(position + 1).some((later) => pipe.later!.includes(later.command))) return false;
+	if (cli?.status === "unknown") return "unknown";
+	const flags = cli?.status === "known" ? cli.options.map((option) => option.spelling) : stage.args;
+	if (match.flags && !match.flags.every((flag) => flags.includes(flag))) return false;
+	if (match.anyFlags && !match.anyFlags.some((flag) => flags.includes(flag))) return false;
+	if (match.absentFlags?.some((flag) => flags.includes(flag))) return false;
+	const operands = cli?.status === "known" ? cli.operands : stage.args.filter((arg) => !arg.startsWith("-"));
 	if (match.operands?.min !== undefined && operands.length < match.operands.min) return false;
 	if (match.operands?.max !== undefined && operands.length > match.operands.max) return false;
 	if (match.operands?.any && !operands.some((operand) => match.operands!.any!.includes(operand))) return false;
@@ -65,13 +85,6 @@ function declarativeStageMatches(
 			if (!choices.includes(operands[Number(index)])) return false;
 		}
 	}
-	const pipe = match.pipe;
-	if (pipe?.from !== undefined && stage.fromPipe !== pipe.from) return false;
-	if (pipe?.to !== undefined && stage.toPipe !== pipe.to) return false;
-	if (pipe?.fromRedirect !== undefined && stage.fromRedirect !== pipe.fromRedirect) return false;
-	if (pipe?.toRedirect !== undefined && stage.toRedirect !== pipe.toRedirect) return false;
-	if (pipe?.next && !pipe.next.includes(statement[position + 1]?.command ?? "")) return false;
-	if (pipe?.later && !statement.slice(position + 1).some((later) => pipe.later!.includes(later.command))) return false;
 	return true;
 }
 
@@ -81,25 +94,52 @@ function declarativeStageMatches(
  * Candidate selection precedes matcher resolution. A disabled or retired record
  * therefore cannot execute a package predicate or enter the declarative path.
  */
-export function matchRuleRecords(
+export function evaluateCommandRecords(
 	tool: string,
 	captured: string,
 	records: Iterable<RuleRecord>,
 	context: RuleMatchContext,
 	resolveMatcher: CodeMatcherResolver = resolveCodeMatcher,
-): RuleRecord[] {
-	if (tool !== "bash") return [];
-	const candidates = [...records].filter(
+): CommandEvidence {
+	const all = [...records];
+	const result = new CommandEvidence(all.map((record) => [record.id, false]));
+	if (tool !== "bash") return result;
+	const candidates = all.filter(
 		(record) =>
 			effectiveState(record) === "active" &&
 			record.matcherAvailable &&
 			ruleScopeMatches(record.definition.scope, context),
 	);
-	if (candidates.length === 0) return [];
-	const statements = parseStatements(captured);
-	const matched: RuleRecord[] = [];
+	if (candidates.length === 0) return result;
+	const parsed = parseShellEvidence(captured);
+	const statements = parsed.statements;
+	const decoded = new Map<Stage, CliEvidence>();
+	if (
+		candidates.some(
+			(record) =>
+				record.matcher.kind === "declarative" &&
+				record.matcher.language === "command-shape/v1" &&
+				record.matcher.spec.cli,
+		)
+	) {
+		let options = 0;
+		for (const statement of statements) {
+			for (const stage of statement) {
+				const cli = decodeGitPush(stage);
+				decoded.set(stage, cli);
+				if (cli.status === "known") options += cli.globals.length + cli.options.length;
+			}
+		}
+		if (parsed.wordCount + options > 4096) {
+			parsed.complete = false;
+			parsed.reasons.push("option-limit");
+			for (const [stage, cli] of decoded)
+				if (cli.status === "known") decoded.set(stage, { status: "unknown", reason: "option-limit" });
+		}
+	}
 	for (const record of candidates) {
-		let applies = false;
+		let applies: Truth = false;
+		const reasons = new Set<string>();
 		if (record.matcher.kind === "code") {
 			const predicate = resolveMatcher(record.matcher.key);
 			if (!predicate) continue;
@@ -116,16 +156,68 @@ export function matchRuleRecords(
 			}
 		} else if (record.matcher.language === "command-shape/v1") {
 			const spec = record.matcher.spec;
+			if (spec.cli && !parsed.complete) {
+				applies = "unknown";
+				for (const reason of parsed.reasons) reasons.add(reason);
+			}
 			for (const statement of statements) {
-				if (statement.some((stage, index) => declarativeStageMatches(stage, index, statement, spec))) {
-					applies = true;
-					break;
+				for (let index = 0; index < statement.length; index++) {
+					const stage = statement[index];
+					let cli: CliEvidence | undefined;
+					if (spec.cli) {
+						cli = decoded.get(stage)!;
+					}
+					const indirect =
+						spec.cli &&
+						(stage.commandLiteral === false ||
+							stage.shellReasons?.includes("unresolved-command") ||
+							[
+								"eval",
+								"source",
+								".",
+								"sh",
+								"bash",
+								"zsh",
+								"dash",
+								"ksh",
+								"xargs",
+								"for",
+								"select",
+								"case",
+								"function",
+							].includes(stage.command));
+					const truth = indirect ? "unknown" : declarativeStageMatches(stage, index, statement, spec, cli);
+					if (truth === true) {
+						applies = true;
+						break;
+					}
+					if (truth === "unknown") {
+						applies = "unknown";
+						reasons.add(
+							indirect ? "unresolved-command" : cli?.status === "unknown" ? cli.reason : "shell-evidence-unavailable",
+						);
+					}
 				}
+				if (applies === true) break;
 			}
 		}
-		if (applies) matched.push(record);
+		result.set(record.id, applies);
+		if (applies === "unknown") result.reasons.set(record.id, [...reasons].slice(0, 16));
 	}
-	return matched;
+	return result;
+}
+
+/** True-only convenience view over the same evidence evaluator. */
+export function matchRuleRecords(
+	tool: string,
+	captured: string,
+	records: Iterable<RuleRecord>,
+	context: RuleMatchContext,
+	resolveMatcher: CodeMatcherResolver = resolveCodeMatcher,
+): RuleRecord[] {
+	const all = [...records];
+	const evidence = evaluateCommandRecords(tool, captured, all, context, resolveMatcher);
+	return all.filter((record) => evidence.get(record.id) === true);
 }
 
 function installedRecords(): RuleRecord[] {

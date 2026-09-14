@@ -13,6 +13,11 @@ export interface Stage {
 	command: string;
 	/** Operands and flags after the command word. */
 	args: string[];
+	/** Certainty belongs to shell words, not their rendered strings. */
+	commandLiteral?: boolean;
+	argLiterals?: boolean[];
+	/** Fixed reason codes only; no command contents. */
+	shellReasons?: string[];
 	/** A pipe feeds this stage's standard input. */
 	fromPipe: boolean;
 	/** This stage's standard output feeds a pipe. */
@@ -40,7 +45,8 @@ function basename(word: string): string {
 }
 
 /** Consume a balanced shell body and return the index after its close. */
-function skipBalanced(text: string, start: number, open: string, close: string): number {
+function skipBalanced(text: string, start: number, open: string, close: string, nesting = 0): number {
+	if (nesting > MAX_NESTED_DEPTH) return text.length;
 	let depth = 0;
 	let quote: "single" | "double" | null = null;
 	let index = start;
@@ -62,7 +68,7 @@ function skipBalanced(text: string, start: number, open: string, close: string):
 				continue;
 			}
 			if (char === "$" && text[index + 1] === "(") {
-				index = skipBalanced(text, index + 1, "(", ")");
+				index = skipBalanced(text, index + 1, "(", ")", nesting + 1);
 				continue;
 			}
 			index++;
@@ -84,7 +90,7 @@ function skipBalanced(text: string, start: number, open: string, close: string):
 			continue;
 		}
 		if (char === "$" && text[index + 1] === "{") {
-			index = skipBalanced(text, index + 1, "{", "}");
+			index = skipBalanced(text, index + 1, "{", "}", nesting + 1);
 			continue;
 		}
 		if (char === open) depth++;
@@ -98,7 +104,8 @@ function skipBalanced(text: string, start: number, open: string, close: string):
 }
 
 /** Find real command substitutions inside an otherwise opaque shell body. */
-function collectNestedCommands(text: string, start: number, end: number, nestedCommands: string[]): void {
+function collectNestedCommands(text: string, start: number, end: number, nestedCommands: string[], depth = 0): void {
+	if (depth > MAX_NESTED_DEPTH) return;
 	let index = start;
 	while (index < end) {
 		if (text[index] === "\\") {
@@ -116,7 +123,7 @@ function collectNestedCommands(text: string, start: number, end: number, nestedC
 		}
 		if (text[index] === "$" && text.slice(index, index + 3) === "$((") {
 			const close = skipBalanced(text, index + 1, "(", ")");
-			collectNestedCommands(text, index + 3, Math.max(index + 3, close - 2), nestedCommands);
+			collectNestedCommands(text, index + 3, Math.max(index + 3, close - 2), nestedCommands, depth + 1);
 			index = close;
 			continue;
 		}
@@ -138,12 +145,30 @@ function collectNestedCommands(text: string, start: number, end: number, nestedC
 
 interface Word {
 	text: string;
+	literal: boolean;
 	/** The word carries a redirect operator rather than an operand. */
 	redirect?: "in" | "out";
 	/** The word opened a heredoc; its text is the delimiter. */
 	heredoc?: boolean;
 	/** Explicit or default descriptor affected by a redirect. */
 	fd?: number;
+}
+
+interface ParseFrame {
+	groups: string[];
+}
+
+interface ParseBudget {
+	words: number;
+	stages: number;
+	reasons: Set<string>;
+}
+
+export interface ShellEvidence {
+	statements: Statement[];
+	wordCount: number;
+	complete: boolean;
+	reasons: string[];
 }
 
 interface Split {
@@ -162,9 +187,13 @@ function readWords(
 	start: number,
 	heredocs: string[],
 	nestedCommands: string[],
+	budget: ParseBudget,
+	frame: ParseFrame,
 ): { split: Split; next: number } {
 	const words: Word[] = [];
 	let current = "";
+	let literal = true;
+	let quoted = false;
 	let started = false;
 	let pendingRedirect: "in" | "out" | null = null;
 	let pendingHeredoc = false;
@@ -173,8 +202,12 @@ function readWords(
 
 	const flush = (): void => {
 		if (!started) return;
-		const word: Word = { text: current };
+		const word: Word = { text: current, literal };
+		budget.words++;
+		if (budget.words > 4096) budget.reasons.add("word-limit");
+		if ((pendingRedirect || pendingHeredoc) && !current) budget.reasons.add("malformed-shell");
 		if (pendingHeredoc) {
+			if (!quoted) budget.reasons.add("unexpanded-heredoc");
 			if (current !== "") {
 				word.heredoc = true;
 				word.fd = pendingFd ?? 0;
@@ -186,6 +219,8 @@ function readWords(
 		}
 		words.push(word);
 		current = "";
+		literal = true;
+		quoted = false;
 		started = false;
 		pendingRedirect = null;
 		pendingHeredoc = false;
@@ -197,6 +232,7 @@ function readWords(
 		for (const delimiter of heredocs) {
 			const pattern = new RegExp(`^[ \\t]*${escapedRegex(delimiter)}[ \\t]*(?:\\n|$)`, "m");
 			const match = pattern.exec(text.slice(position));
+			if (!match) budget.reasons.add("malformed-shell");
 			position = match ? position + match.index + match[0].length : text.length;
 		}
 		heredocs.length = 0;
@@ -207,41 +243,60 @@ function readWords(
 		if (to > from) nestedCommands.push(text.slice(from, to));
 	};
 
+	const dynamic = (char: string, next: string | undefined): boolean =>
+		char === "`" || (char === "$" && next !== undefined && /[A-Za-z_0-9{(?!@$*#\-'"]/.test(next));
+
+	const balanced = (start: number, open: string, close: string): number => {
+		const end = skipBalanced(text, start, open, close);
+		if (text[end - 1] !== close) budget.reasons.add("malformed-shell");
+		return end;
+	};
+
 	const readDoubleQuote = (): void => {
 		let scan = index + 1;
 		while (scan < text.length) {
 			const char = text[scan];
+			if (dynamic(char, text[scan + 1])) literal = false;
 			if (char === '"') {
 				index = scan + 1;
 				return;
 			}
 			if (char === "\\") {
-				current += text[scan + 1] ?? "";
+				const next = text[scan + 1];
+				if (next === "\n") {
+					scan += 2;
+					continue;
+				}
+				current += next !== undefined && '$`"\\'.includes(next) ? next : `\\${next ?? ""}`;
 				scan += 2;
 				continue;
 			}
 			if (char === "$" && text.slice(scan, scan + 3) === "$((") {
-				const end = skipBalanced(text, scan + 1, "(", ")");
+				budget.reasons.add("unexpanded-arithmetic");
+				const end = balanced(scan + 1, "(", ")");
 				current += text.slice(scan, end);
 				collectNestedCommands(text, scan + 3, Math.max(scan + 3, end - 2), nestedCommands);
 				scan = end;
 				continue;
 			}
 			if (char === "$" && text[scan + 1] === "(") {
-				const end = skipBalanced(text, scan + 1, "(", ")");
+				const end = balanced(scan + 1, "(", ")");
 				current += text.slice(scan, end);
 				addNested(scan + 2, Math.max(scan + 2, end - 1));
 				scan = end;
 				continue;
 			}
 			if (char === "$" && text[scan + 1] === "{") {
-				const end = skipBalanced(text, scan + 1, "{", "}");
+				const end = balanced(scan + 1, "{", "}");
+				if (/\$\(|`/.test(text.slice(scan, end))) budget.reasons.add("unexpanded-parameter");
 				current += text.slice(scan, end);
 				scan = end;
 				continue;
 			}
 			if (char === "`") {
+				budget.reasons.add("unexpanded-backtick");
 				const close = text.indexOf("`", scan + 1);
+				if (close === -1) budget.reasons.add("malformed-shell");
 				const end = close === -1 ? text.length : close + 1;
 				current += text.slice(scan, end);
 				addNested(scan + 1, close === -1 ? text.length : close);
@@ -251,11 +306,14 @@ function readWords(
 			current += char;
 			scan++;
 		}
+		budget.reasons.add("malformed-shell");
 		index = text.length;
 	};
 
 	while (index < text.length) {
+		if (budget.words > 4096) return { split: { words, end: "eof" }, next: text.length };
 		const char = text[index];
+		if (dynamic(char, text[index + 1]) || "*?[~".includes(char)) literal = false;
 
 		if (isBlank(char)) {
 			flush();
@@ -300,7 +358,8 @@ function readWords(
 		}
 
 		if ((char === "<" || char === ">") && text[index + 1] === "(") {
-			const end = skipBalanced(text, index + 1, "(", ")");
+			literal = false;
+			const end = balanced(index + 1, "(", ")");
 			current += text.slice(index, end);
 			addNested(index + 2, Math.max(index + 2, end - 1));
 			started = true;
@@ -335,7 +394,9 @@ function readWords(
 		}
 
 		if (char === "'") {
+			quoted = true;
 			const close = text.indexOf("'", index + 1);
+			if (close === -1) budget.reasons.add("malformed-shell");
 			const end = close === -1 ? text.length : close;
 			current += text.slice(index + 1, end);
 			started = true;
@@ -344,6 +405,7 @@ function readWords(
 		}
 
 		if (char === '"') {
+			quoted = true;
 			started = true;
 			readDoubleQuote();
 			continue;
@@ -354,6 +416,7 @@ function readWords(
 				index += 2;
 				continue;
 			}
+			if (text[index + 1] === undefined) budget.reasons.add("malformed-shell");
 			current += text[index + 1] ?? "";
 			started = true;
 			index += 2;
@@ -361,7 +424,8 @@ function readWords(
 		}
 
 		if (char === "$" && text.slice(index, index + 3) === "$((") {
-			const end = skipBalanced(text, index + 1, "(", ")");
+			budget.reasons.add("unexpanded-arithmetic");
+			const end = balanced(index + 1, "(", ")");
 			current += text.slice(index, end);
 			collectNestedCommands(text, index + 3, Math.max(index + 3, end - 2), nestedCommands);
 			started = true;
@@ -370,7 +434,7 @@ function readWords(
 		}
 
 		if (char === "$" && text[index + 1] === "(") {
-			const end = skipBalanced(text, index + 1, "(", ")");
+			const end = balanced(index + 1, "(", ")");
 			current += text.slice(index, end);
 			addNested(index + 2, Math.max(index + 2, end - 1));
 			started = true;
@@ -379,7 +443,8 @@ function readWords(
 		}
 
 		if (char === "$" && text[index + 1] === "{") {
-			const end = skipBalanced(text, index + 1, "{", "}");
+			const end = balanced(index + 1, "{", "}");
+			if (/\$\(|`/.test(text.slice(index, end))) budget.reasons.add("unexpanded-parameter");
 			current += text.slice(index, end);
 			started = true;
 			index = end;
@@ -387,7 +452,9 @@ function readWords(
 		}
 
 		if (char === "`") {
+			budget.reasons.add("unexpanded-backtick");
 			const close = text.indexOf("`", index + 1);
+			if (close === -1) budget.reasons.add("malformed-shell");
 			const end = close === -1 ? text.length : close + 1;
 			current += text.slice(index, end);
 			addNested(index + 1, close === -1 ? text.length : close);
@@ -397,6 +464,9 @@ function readWords(
 		}
 
 		if (char === "(" || char === ")" || char === "{" || char === "}") {
+			if (started) budget.reasons.add("unsupported-shell");
+			if (char === "(" || char === "{") frame.groups.push(char);
+			else if (frame.groups.pop() !== (char === ")" ? "(" : "{")) budget.reasons.add("malformed-shell");
 			flush();
 			return { split: { words, end: "statement" }, next: index + 1 };
 		}
@@ -418,7 +488,7 @@ function skipOption(words: Word[], index: number, values: Set<string>): number {
 	return values.has(name) && attached === undefined ? index + 2 : index + 1;
 }
 
-function unwrapPrefix(words: Word[], start: number): number {
+function unwrapPrefix(words: Word[], start: number, reasons: string[]): number {
 	let index = start;
 	for (;;) {
 		const command = basename(words[index]?.text ?? "");
@@ -429,9 +499,12 @@ function unwrapPrefix(words: Word[], start: number): number {
 			continue;
 		}
 		if (command === "command") {
-			if (words.slice(index + 1).some((word) => /^-[^-]*[vV]/.test(word.text))) return index;
+			const original = index;
 			index++;
-			while (words[index]?.text.startsWith("-") && words[index]?.text !== "--") index++;
+			while (words[index]?.text.startsWith("-") && words[index]?.text !== "--") {
+				if (/^-[^-]*[vV]/.test(words[index].text)) return original;
+				index++;
+			}
 			if (words[index]?.text === "--") index++;
 			continue;
 		}
@@ -439,10 +512,30 @@ function unwrapPrefix(words: Word[], start: number): number {
 			const original = index;
 			index++;
 			const values = new Set(["a", "argv0", "u", "unset", "C", "chdir", "S", "split-string"]);
+			const flags = new Set(["-i", "-0", "-v", "--ignore-environment", "--null", "--debug"]);
 			while (index < words.length) {
-				if (ASSIGNMENT.test(words[index].text)) {
+				const word = words[index].text;
+				if (word === "--") {
+					index++;
+					break;
+				}
+				if (ASSIGNMENT.test(word)) {
 					index++;
 					continue;
+				}
+				if (/^-[auC].+/.test(word)) {
+					index++;
+					continue;
+				}
+				const name = word.replace(/^-+/, "").split("=", 1)[0];
+				if (
+					word.startsWith("-") &&
+					!flags.has(word) &&
+					!/^-[i0v]+$/.test(word) &&
+					(!values.has(name) || name === "S" || name === "split-string")
+				) {
+					// CLI uncertainty must not replace the separate literal extraction contract.
+					reasons.push("unresolved-command");
 				}
 				const next = skipOption(words, index, values);
 				if (next === index) break;
@@ -500,14 +593,22 @@ function toStage(words: Word[], fromPipe: boolean, toPipe: boolean): Stage {
 	const fromRedirect = words.some((word) => (word.redirect === "in" || word.heredoc) && word.fd === 0);
 	const toRedirect = words.some((word) => word.redirect === "out" && word.fd === 1);
 	let index = 0;
+	const shellReasons: string[] = [];
 	while (index < operands.length && ASSIGNMENT.test(operands[index].text)) index++;
-	index = unwrapPrefix(operands, index);
+	index = unwrapPrefix(operands, index, shellReasons);
 	while (index < operands.length && ASSIGNMENT.test(operands[index].text)) index++;
+	const prefix = operands.slice(0, index);
+	if (prefix.some((word) => !word.literal)) shellReasons.push("dynamic-prefix");
+	if (prefix.some((word) => ["sudo", "env", "time", "nice", "nohup"].includes(basename(word.text))))
+		shellReasons.push("unsupported-prefix");
 	operands = operands.slice(index);
 	const head = operands[0]?.text ?? "";
 	return {
 		command: basename(head),
 		args: operands.slice(1).map((word) => word.text),
+		commandLiteral: operands[0]?.literal ?? true,
+		argLiterals: operands.slice(1).map((word) => word.literal),
+		...(shellReasons.length ? { shellReasons } : {}),
 		fromPipe,
 		toPipe,
 		fromRedirect,
@@ -515,10 +616,11 @@ function toStage(words: Word[], fromPipe: boolean, toPipe: boolean): Stage {
 	};
 }
 
-function parse(command: string, depth: number): Statement[] {
+function parse(command: string, depth: number, budget: ParseBudget): Statement[] {
 	const statements: Statement[] = [];
 	const heredocs: string[] = [];
 	const nestedCommands: string[] = [];
+	const frame: ParseFrame = { groups: [] };
 	let stages: Word[][] = [];
 	let index = 0;
 
@@ -530,8 +632,17 @@ function parse(command: string, depth: number): Statement[] {
 	};
 
 	while (index <= command.length) {
-		const { split, next } = readWords(command, index, heredocs, nestedCommands);
-		if (split.words.length > 0 || split.end === "pipe") stages.push(split.words);
+		if (budget.words > 4096 || (budget.stages >= 256 && index < command.length)) {
+			budget.reasons.add(budget.words > 4096 ? "word-limit" : "stage-limit");
+			close();
+			break;
+		}
+		const { split, next } = readWords(command, index, heredocs, nestedCommands, budget, frame);
+		if (split.words.length > 0 || split.end === "pipe") {
+			stages.push(split.words);
+			budget.stages++;
+		}
+		if (split.end === "eof" && stages.length > 0 && split.words.length === 0) budget.reasons.add("malformed-shell");
 		if (split.end === "statement") close();
 		if (split.end === "eof") {
 			close();
@@ -540,13 +651,30 @@ function parse(command: string, depth: number): Statement[] {
 		if (next <= index) break;
 		index = next;
 	}
+	if (heredocs.length || frame.groups.length) budget.reasons.add("malformed-shell");
 	if (depth < MAX_NESTED_DEPTH) {
-		for (const nested of nestedCommands) statements.push(...parse(nested, depth + 1));
-	}
+		for (const nested of nestedCommands) {
+			if (budget.words > 4096 || budget.stages >= 256) {
+				budget.reasons.add("parse-limit");
+				break;
+			}
+			statements.push(...parse(nested, depth + 1, budget));
+		}
+	} else if (nestedCommands.length) budget.reasons.add("nested-depth-limit");
 	return statements;
 }
 
 /** Split command text into top-level and nested statements of pipeline stages. */
 export function parseStatements(command: string): Statement[] {
-	return parse(command, 0);
+	return parseShellEvidence(command).statements;
+}
+
+/** Unexamined input never proves absence. All budgets apply across nested statements. */
+export function parseShellEvidence(command: string): ShellEvidence {
+	if (Buffer.byteLength(command, "utf8") > 64 * 1024)
+		return { statements: [], wordCount: 0, complete: false, reasons: ["command-byte-limit"] };
+	const budget: ParseBudget = { words: 0, stages: 0, reasons: new Set() };
+	if (command.includes("\0")) budget.reasons.add("malformed-shell");
+	const statements = parse(command, 0, budget);
+	return { statements, wordCount: budget.words, complete: budget.reasons.size === 0, reasons: [...budget.reasons] };
 }
