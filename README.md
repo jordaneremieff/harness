@@ -35,6 +35,19 @@ boundaries, rather than a central feature catalog.
 - [Worktrees](docs/conventions/worktrees.md) defines the development and
   publication workflow.
 
+`npm test` includes a serialized tool-schema check in
+[scripts/extension-load-check.test.mts](scripts/extension-load-check.test.mts).
+It loads every extension selected by the package manifest in an isolated Pi
+resource loader and checks its factory-registered tools, Pi's built-in tools,
+and the subagent's worker-only result tool. Registration runs in a bounded child
+with separate coverage output because jiti and native imports share source URLs
+but have different line maps. The schema assertions run in the normal test suite.
+The check rejects array-valued `items`, `additionalItems`, and `prefixItems` in
+schema positions, including local definitions, without treating annotation data
+or property names as schema keywords. It does not fetch external references,
+discover arbitrary future runtime registrations, validate the complete OpenAPI dialect, or
+establish acceptance by a live provider. No runtime sanitizer changes schemas.
+
 The harness follows Pi's own capabilities rather than maintaining a parallel
 agent core. The [durable-harness track](docs/pi-durable-harness.md) records the
 upstream contracts and the conditions for adopting them here.

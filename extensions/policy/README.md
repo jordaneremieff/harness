@@ -658,6 +658,12 @@ subcommand, option occurrences, option values, and operands after the subcommand
 The profile does not execute Git, scrape help, resolve aliases/configuration, or
 expand shell data. It is not a general command grammar.
 
+For both add and replace proposals, `subcommand` accepts exactly `["push"]`.
+The tool schema uses a single literal `items` schema with `minItems:1` and
+`maxItems:1`, not tuple-array notation. Provider-specific acceptance still
+requires a check against the selected provider; local admission alone does not
+establish it.
+
 CLI flags select option spellings, not values or the command's final effective
 state. For example, `-o --force` consumes `--force` as a push-option value, and
 `-ofool` does not contain the `-f` option. `--` ends push options.
@@ -835,12 +841,12 @@ adjudication remain distinct from deterministic validation.
 | `PI_POLICY_DIR` | Private rule/data/telemetry directory; default `<agentDir>/policy` |
 | `--policy-mode` | Session mode; overrides the environment |
 | `PI_POLICY_MODE` | `observe` by default, or `notice`, `annotate`, `enforce` |
-| `PI_POLICY_TEST_PI_ROOT` | Test-only explicit Pi package root for `pi-hooks.test.mts` and `proposal-schema.test.mts`; runtime does not read it |
+| `PI_POLICY_TEST_PI_ROOT` | Test-only explicit Pi package root for `pi-hooks.test.mts`, `proposal-schema.test.mts`, and the package schema test in `scripts/extension-load-check.test.mts`; runtime does not read it |
 
 Focused checks:
 
 ```sh
-node --test extensions/policy/*.test.mts
+node --test extensions/policy/*.test.mts scripts/extension-load-check.test.mts
 node scripts/extension-load-check.mts extensions/policy/index.ts
 npm run lint
 npm run typecheck

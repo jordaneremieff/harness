@@ -108,6 +108,62 @@ describe("command-aware proposal admission", () => {
 		match: { command: "git", cli: { profile: "git", subcommand: ["push"] }, anyFlags: ["--force", "-f"] },
 		onUnavailable: "deny",
 	});
+	it("serializes exact-length literal arrays for both CLI operations without changing admission", async (t) => {
+		const { registered } = await setup(t);
+		const tool = registered.get("policy_propose")!;
+		const schema = JSON.parse(JSON.stringify(tool.parameters));
+		const branches = schema.anyOf.filter(
+			(branch: { properties: { match?: { properties: { cli?: unknown } } } }) =>
+				branch.properties.match?.properties.cli,
+		);
+		assert.equal(branches.length, 2);
+		assert.deepEqual(
+			branches.map((branch: { properties: { operation: { const: string } } }) => branch.properties.operation.const),
+			["add", "replace"],
+		);
+		for (const branch of branches) {
+			assert.deepEqual(branch.properties.match.properties.cli.properties.subcommand, {
+				type: "array",
+				items: { type: "string", const: "push" },
+				minItems: 1,
+				maxItems: 1,
+			});
+			for (const subcommand of [
+				["push"],
+				[],
+				["fetch"],
+				["PUSH"],
+				["push", "push"],
+				["push", "extra"],
+				[1],
+				[null],
+				"push",
+				null,
+				undefined,
+			]) {
+				const input = {
+					...commandRequest(),
+					operation: branch.properties.operation.const,
+					...(branch.properties.operation.const === "replace" ? { expectedRevision: "000000000000" } : {}),
+					match: { ...commandRequest().match, cli: { profile: "git", subcommand } },
+				};
+				const accepted = Array.isArray(subcommand) && subcommand.length === 1 && subcommand[0] === "push";
+				assert.equal(transport.Check(input), accepted, JSON.stringify(input));
+				const validate = () =>
+					validateToolArguments(
+						{ ...tool, parameters: schema },
+						{
+							type: "toolCall",
+							id: "cli-schema",
+							name: tool.name,
+							arguments: input,
+						},
+					);
+				if (accepted) assert.deepEqual(validate(), input);
+				else assert.throws(validate, /Validation failed/);
+			}
+		}
+	});
 	it("preserves CLI declarations through host validation, proposal persistence, and replay", async (t) => {
 		const host = await setup(t);
 		const input = commandRequest();

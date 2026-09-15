@@ -85,7 +85,10 @@ const CliMatchSchema = Type.Object(
 		...MatchSchema.properties,
 		command: Type.Literal("git"),
 		cli: Type.Object(
-			{ profile: Type.Literal("git"), subcommand: Type.Tuple([Type.Literal("push")]) },
+			{
+				profile: Type.Literal("git"),
+				subcommand: Type.Array(Type.Literal("push"), { minItems: 1, maxItems: 1 }),
+			},
 			{ additionalProperties: false },
 		),
 	},
