@@ -105,7 +105,8 @@ test("all pages use one immutable capture and repeat complete qualifications", a
 	);
 	const first = page(await read.read({ view: "revisions" }));
 	assert.equal(first.pagination.pageCount, 4);
-	const cursor = first.pagination.nextCursor!;
+	const cursor = first.pagination.nextCursor;
+	assert.ok(cursor);
 	const second = await read.read({ cursor });
 	store.shards[DAY].cells.length = 0;
 	assert.deepEqual(await read.read({ cursor }), second);
@@ -137,7 +138,8 @@ test("TTL is fixed, old keys retire within a bounded set, invalid cursors never 
 		},
 		{ now: () => now },
 	);
-	const cursor = page(await read.read({ view: "revisions" })).pagination.nextCursor!;
+	const cursor = page(await read.read({ view: "revisions" })).pagination.nextCursor;
+	assert.ok(cursor);
 	now += TTL_MS - 1;
 	page(await read.read({ cursor }));
 	now++;
@@ -209,9 +211,13 @@ test("malformed shards never become empty or partial success", async () => {
 	const mutations: ((s: Snapshot) => void)[] = [
 		(s) => s.shards[DAY].cells.push(cell(0)),
 		(s) => s.shards[DAY].cells[0].counters.resultError++,
-		(s) => ((s.shards[DAY].cells[0] as any).resourceClass = "foreign"),
+		(s) => {
+			Object.assign(s.shards[DAY].cells[0], { resourceClass: "foreign" });
+		},
 		(s) => (s.shards[DAY].retentionThroughDay = "2026-09-08"),
-		(s) => ((s.shards[DAY] as any).extra = "private"),
+		(s) => {
+			Object.assign(s.shards[DAY], { extra: "private" });
+		},
 		(s) => s.shards[DAY].receipts.push({ owner: "a".repeat(32), seq: 1 }, { owner: "a".repeat(32), seq: 1 }),
 		(s) => (s.shards[DAY].cells[0].day = "2026-02-30"),
 		(s) => (s.shards[DAY].cells[0].referenceBodyDigest = "unresolved"),
@@ -245,7 +251,7 @@ test("export projection excludes receipts, preserves totals, and validates exact
 	assert(!JSON.stringify(doc).includes("c".repeat(32)));
 	assert(!("pagination" in doc));
 	const wrong = structuredClone(doc);
-	(wrong.meaning as any).coverage = "not coverage";
+	Object.assign(wrong.meaning, { coverage: "not coverage" });
 	assert.throws(() => validateExport(wrong));
 	const invalid = structuredClone(doc);
 	invalid.rows[0].counters.resultError++;
@@ -329,7 +335,9 @@ test("overlapping captures and cancellation never expose a partial or replaced s
 	const replaced = await first;
 	assert.equal(replaced.kind, "error");
 	if (replaced.kind === "error") assert.equal(replaced.code, "cursor_expired");
-	page(await read.read({ cursor: current.pagination.nextCursor! }));
+	const next = current.pagination.nextCursor;
+	assert.ok(next);
+	page(await read.read({ cursor: next }));
 	const controller = new AbortController();
 	const cancelled = read.read({}, controller.signal);
 	controller.abort();
