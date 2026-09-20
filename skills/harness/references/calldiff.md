@@ -53,8 +53,9 @@ Re-check `npx calldiff --help` and `npx calldiff diff --help` against the
 installed version for the current interface. Typical flags:
 
 - `--from <ref>`, `--to <ref>` — explicit left and right trees.
-- `-e, --entry <name>` — force an entrypoint. A free function name or
-  `ClassName.method`. Repeatable.
+- `-e, --entry <name>` — force one entrypoint. Use a free function name or
+  `ClassName.method`. Run a separate invocation for each entrypoint: version
+  0.5.0 silently retains only the last repeated `--entry` value.
 - `-F, --file <path>` — use every export in that file as an entrypoint.
 - `--max-depth <n>` — cap call-tree depth.
 - `--locs` — show call-site source locations.
