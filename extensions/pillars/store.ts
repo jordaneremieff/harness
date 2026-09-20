@@ -1,6 +1,6 @@
 /** Private local persistence for Pillars day shards: lock-free reads, rename-published writes. */
 
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { getHeapStatistics } from "node:v8";
@@ -46,28 +46,39 @@ function memoryGuard(start: NodeJS.MemoryUsage): void {
  * other user can rewrite, and the store itself must be private to this user.
  * Returns false when the store does not exist yet; a reader treats that as empty.
  */
-async function verifyChain(root: string): Promise<boolean> {
+function chainFrom(root: string): string[] {
 	if (!isAbsolute(root) || resolve(root) !== root) throw new StoreUnavailableError();
 	const chain: string[] = [];
 	for (let current = root; ; current = dirname(current)) {
 		chain.unshift(current);
 		if (dirname(current) === current) break;
 	}
+	return chain;
+}
+
+function verifyChainDirectory(info: Stats, uid: number | undefined, isPrivate: boolean): void {
+	if (!info.isDirectory() || info.isSymbolicLink()) throw new StoreUnavailableError();
+	if (uid !== undefined && (isPrivate ? info.uid !== uid : info.uid !== uid && info.uid !== 0))
+		throw new StoreUnavailableError();
+	if ((info.mode & (isPrivate ? 0o077 : 0o022)) !== 0) throw new StoreUnavailableError();
+}
+
+async function chainEntry(component: string): Promise<Stats | undefined> {
+	try {
+		return await lstat(component);
+	} catch (error) {
+		if (code(error) === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+async function verifyChain(root: string): Promise<boolean> {
+	const chain = chainFrom(root);
 	const uid = owner();
 	for (const [index, component] of chain.entries()) {
-		let info: Awaited<ReturnType<typeof lstat>>;
-		try {
-			info = await lstat(component);
-		} catch (error) {
-			if (code(error) === "ENOENT") return false;
-			throw error;
-		}
-		if (!info.isDirectory() || info.isSymbolicLink()) throw new StoreUnavailableError();
-		if (index === chain.length - 1) {
-			if ((uid !== undefined && info.uid !== uid) || (info.mode & 0o077) !== 0) throw new StoreUnavailableError();
-		} else if ((uid !== undefined && info.uid !== uid && info.uid !== 0) || (info.mode & 0o022) !== 0) {
-			throw new StoreUnavailableError();
-		}
+		const info = await chainEntry(component);
+		if (!info) return false;
+		verifyChainDirectory(info, uid, index === chain.length - 1);
 	}
 	return true;
 }
@@ -157,41 +168,75 @@ export class PillarsStore {
 		} finally { await this.release(); }
 	}
 
+	private async openLock(path: string): Promise<boolean> {
+		try {
+			const handle = await open(path, "wx", 0o600);
+			await handle.close();
+			return true;
+		} catch (error) {
+			if (code(error) !== "EEXIST") throw error;
+			return false;
+		}
+	}
+
+	private async staleLock(path: string): Promise<"broken" | "vanished" | "wait"> {
+		let info: Awaited<ReturnType<typeof lstat>> | undefined;
+		try {
+			info = await lstat(path);
+		} catch (error) {
+			if (code(error) !== "ENOENT") throw error;
+			return "vanished";
+		}
+		if (!info.isFile()) throw new StoreUnavailableError();
+		if (Date.now() - info.mtimeMs <= STALE_LOCK_MS) return "wait";
+		try {
+			await unlink(path);
+		} catch (error) {
+			if (code(error) !== "ENOENT") throw error;
+		}
+		return "broken";
+	}
+
+	private async pause(signal?: AbortSignal): Promise<void> {
+		await delay(POLL_MS);
+		if (signal?.aborted) throw aborted();
+	}
+
 	private async acquire(signal?: AbortSignal): Promise<void> {
 		const path = join(this.root, LOCK);
 		const deadline = Date.now() + LIMITS.lockMilliseconds;
-		let broken = false;
+		let checkStale = true;
 		for (let attempt = 0; ; attempt++) {
 			if (attempt > 0 && Date.now() >= deadline) throw new StoreUnavailableError();
-			try {
-				const handle = await open(path, "wx", 0o600);
-				await handle.close();
-				return;
-			} catch (error) {
-				if (code(error) !== "EEXIST") throw error;
+			if (await this.openLock(path)) return;
+			if (!checkStale) {
+				await this.pause(signal);
+				continue;
 			}
-			if (!broken) {
-				let info: Awaited<ReturnType<typeof lstat>> | undefined;
-				try {
-					info = await lstat(path);
-				} catch (error) {
-					if (code(error) !== "ENOENT") throw error;
-					continue;
-				}
-				if (!info.isFile()) throw new StoreUnavailableError();
-				if (Date.now() - info.mtimeMs > STALE_LOCK_MS) {
-					broken = true;
-					try { await unlink(path); } catch (error) { if (code(error) !== "ENOENT") throw error; }
-					continue;
-				}
-			}
-			await delay(POLL_MS);
-			if (signal?.aborted) throw aborted();
+			const outcome = await this.staleLock(path);
+			if (outcome === "broken") checkStale = false;
+			if (outcome === "wait") await this.pause(signal);
 		}
 	}
 
 	private async release(): Promise<void> {
 		try { await unlink(join(this.root, LOCK)); } catch (error) { if (code(error) !== "ENOENT") throw error; }
+	}
+
+	private async entryStats(name: string, uid: number | undefined): Promise<Stats> {
+		if (name !== LOCK && name !== PENDING && !SLOT.test(name)) throw new StoreUnavailableError();
+		const info = await lstat(join(this.root, name));
+		const maxBytes = name === LOCK ? LIMITS.controlBytes : LIMITS.shardBytes;
+		if (
+			!info.isFile() ||
+			info.nlink !== 1 ||
+			(uid !== undefined && info.uid !== uid) ||
+			(info.mode & 0o077) !== 0 ||
+			info.size > maxBytes
+		) {
+			throw new StoreUnavailableError();
+		}
+		return info;
 	}
 
 	/** Admission is by name, type, link count, owner, private mode, and size. */
@@ -201,12 +246,7 @@ export class PillarsStore {
 		const uid = owner();
 		const scan: Scan = { slots: new Map(), pending: false };
 		for (const name of names.sort()) {
-			if (name !== LOCK && name !== PENDING && !SLOT.test(name)) throw new StoreUnavailableError();
-			const info = await lstat(join(this.root, name));
-			if (!info.isFile() || info.nlink !== 1 || (uid !== undefined && info.uid !== uid) ||
-				(info.mode & 0o077) !== 0 || info.size > (name === LOCK ? LIMITS.controlBytes : LIMITS.shardBytes)) {
-				throw new StoreUnavailableError();
-			}
+			const info = await this.entryStats(name, uid);
 			if (name === LOCK) scan.lockBytes = info.size;
 			else if (name === PENDING) scan.pending = true;
 			else scan.slots.set(name, info.size);
@@ -254,30 +294,38 @@ export class PillarsStore {
 	 * A failure keeps the sealed batch retryable: the caller receives a status,
 	 * never a partially applied store.
 	 */
+	private async writePending(path: string, payload: Buffer): Promise<void> {
+		const handle = await open(path, "wx", 0o600);
+		try {
+			for (let written = 0; written < payload.length; ) {
+				const { bytesWritten } = await handle.write(payload, written, payload.length - written, written);
+				if (bytesWritten === 0) throw new StoreUnavailableError();
+				written += bytesWritten;
+			}
+			await handle.sync();
+		} finally { await handle.close(); }
+	}
+
+	private async removeExpired(slots: readonly string[]): Promise<void> {
+		let removed = false;
+		for (const expired of slots) {
+			try {
+				await unlink(join(this.root, expired));
+				removed = true;
+			} catch (error) { if (code(error) !== "ENOENT") throw error; }
+		}
+		if (removed) await syncDirectory(this.root);
+	}
+
 	private async publish(payload: Buffer, slot: string, expiredSlots: readonly string[]): Promise<boolean> {
 		const pending = join(this.root, PENDING);
 		let renamed = false;
 		try {
-			const handle = await open(pending, "wx", 0o600);
-			try {
-				for (let written = 0; written < payload.length; ) {
-					const { bytesWritten } = await handle.write(payload, written, payload.length - written, written);
-					if (bytesWritten === 0) throw new StoreUnavailableError();
-					written += bytesWritten;
-				}
-				await handle.sync();
-			} finally { await handle.close(); }
+			await this.writePending(pending, payload);
 			await rename(pending, join(this.root, slot));
 			renamed = true;
 			await syncDirectory(this.root);
-			let removed = false;
-			for (const expired of expiredSlots) {
-				try {
-					await unlink(join(this.root, expired));
-					removed = true;
-				} catch (error) { if (code(error) !== "ENOENT") throw error; }
-			}
-			if (removed) await syncDirectory(this.root);
+			await this.removeExpired(expiredSlots);
 			return true;
 		} catch {
 			if (!renamed) { try { await unlink(pending); } catch { /* the temporary file may not exist */ } }
