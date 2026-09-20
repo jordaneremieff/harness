@@ -55,6 +55,14 @@ function boundary(text: string, offset: number): boolean {
 		text.charCodeAt(offset - 1) <= 0xdbff
 	);
 }
+/** UTF-8 byte cost of one code point. */
+function utf8Bytes(codePoint: number): number {
+	if (codePoint <= 0x7f) return 1;
+	if (codePoint <= 0x7ff) return 2;
+	if (codePoint <= 0xffff) return 3;
+	return 4;
+}
+
 function page(text: string, offset: number, bytes: number, signal?: AbortSignal) {
 	if (offset > text.length || !boundary(text, offset))
 		throw new Error("Offset must be within the string at a Unicode boundary; offsets use UTF-16 code units.");
@@ -63,7 +71,7 @@ function page(text: string, offset: number, bytes: number, signal?: AbortSignal)
 	while (end < text.length) {
 		if ((end - offset) % 256 === 0) check(signal);
 		const cp = text.codePointAt(end) ?? 0;
-		const cost = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+		const cost = utf8Bytes(cp);
 		if (used + cost > bytes) break;
 		used += cost;
 		end += cp > 0xffff ? 2 : 1;
@@ -112,37 +120,36 @@ function entryAt(source: HistorySource, id: string): SessionEntry | undefined {
 	if (parent !== null) shortString(parent, "parentId", true);
 	return entry;
 }
+/** Copy the bounded metadata fields an entry or message exposes at `prefix`. */
+function copyMetadataFields(result: RecordValue, value: unknown, prefix: string, keys: readonly string[]): void {
+	for (const key of keys) {
+		const field = own(value, key);
+		if (typeof field === "string") {
+			result[key] =
+				field.length <= 256 ? field : { omitted: true, pointer: `${prefix}/${key}`, totalCodeUnits: field.length };
+		} else if (typeof field === "boolean" || typeof field === "number") {
+			result[key] = field;
+		}
+	}
+}
+
 function metadata(entry: SessionEntry) {
 	const result: RecordValue = { id: entry.id, parentId: entry.parentId, type: entry.type, timestamp: entry.timestamp };
 	if (entry.type === "compaction" || entry.type === "branch_summary") result.summaryKind = entry.type;
 	if (entry.type === "custom") result.contextParticipation = "plain custom entry: not context";
 	const message = own(entry, "message");
-	for (const [value, prefix, keys] of [
-		[entry, "", ["customType", "label", "targetId", "fromId", "firstKeptEntryId", "fromHook", "display"]],
-		[
-			message,
-			"/message",
-			[
-				"role",
-				"customType",
-				"toolName",
-				"toolCallId",
-				"isError",
-				"truncated",
-				"cancelled",
-				"excludeFromContext",
-				"stopReason",
-			],
-		],
-	] as const) {
-		for (const key of keys) {
-			const field = own(value, key);
-			if (typeof field === "string")
-				result[key] =
-					field.length <= 256 ? field : { omitted: true, pointer: `${prefix}/${key}`, totalCodeUnits: field.length };
-			else if (typeof field === "boolean" || typeof field === "number") result[key] = field;
-		}
-	}
+	copyMetadataFields(result, entry, "", ["customType", "label", "targetId", "fromId", "firstKeptEntryId", "fromHook", "display"]);
+	copyMetadataFields(result, message, "/message", [
+		"role",
+		"customType",
+		"toolName",
+		"toolCallId",
+		"isError",
+		"truncated",
+		"cancelled",
+		"excludeFromContext",
+		"stopReason",
+	]);
 	return result;
 }
 function textSlot(entry: SessionEntry, slot: number): { pointer: string; value: unknown } | undefined {
@@ -168,181 +175,227 @@ function textSlot(entry: SessionEntry, slot: number): { pointer: string; value: 
 	return { pointer: `${prefix}/${index}/${key}`, value: readable ? own(block, key) : undefined };
 }
 
-export function searchHistory(source: HistorySource, value: unknown, signal?: AbortSignal): RecordValue {
-	check(signal);
-	const args = input(value);
-	const query = shortString(own(args, "query"), "query");
-	if (query !== undefined && /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(query))
-		throw new Error("Query must contain complete Unicode characters.");
-	const snap = snapshot(source, args);
-	const fromId = shortString(own(args, "fromId"), "fromId");
-	let id = fromId ?? snap.currentLeafId;
-	let slot = integer(own(args, "slot"), 0, 0, Number.MAX_SAFE_INTEGER, "slot");
-	let offset = integer(own(args, "offset"), 0, 0, Number.MAX_SAFE_INTEGER, "offset");
-	if ((slot || offset) && !fromId) throw new Error("A search continuation requires fromId.");
-	const visitCap = integer(own(args, "maxVisits"), LIMITS.visits, 1, LIMITS.visits, "maxVisits");
-	const scanCap = integer(own(args, "maxScanBytes"), LIMITS.scanBytes, 2048, LIMITS.scanBytes, "maxScanBytes");
-	const matchCap = integer(own(args, "maxMatches"), LIMITS.matches, 1, LIMITS.matches, "maxMatches");
-	const outputCap = integer(
-		own(args, "maxOutputBytes"),
-		LIMITS.outputBytes,
-		4096,
-		LIMITS.outputBytes,
-		"maxOutputBytes",
-	);
-	const matches: RecordValue[] = [];
-	const seen = new Set<string>();
-	let visited = 0;
-	let slotsVisited = 0;
-	let scannedBytes = 0;
-	const result = (status: string, next: unknown = null, gap?: unknown): RecordValue =>
-		finish(
+/** Walk one ancestry, collecting listing entries or literal text matches under per-call bounds. */
+class HistorySearch {
+	readonly #source: HistorySource;
+	readonly #snap: { sessionId: string; currentLeafId: string | null };
+	readonly #fromId: string | undefined;
+	readonly #query: string | undefined;
+	readonly #signal: AbortSignal | undefined;
+	readonly #visitCap: number;
+	readonly #scanCap: number;
+	readonly #matchCap: number;
+	readonly #outputCap: number;
+	readonly #matches: RecordValue[] = [];
+	readonly #seen = new Set<string>();
+	#visited = 0;
+	#slotsVisited = 0;
+	#scannedBytes = 0;
+	#slot: number;
+	#offset: number;
+	#id: string | null;
+
+	constructor(source: HistorySource, value: unknown, signal?: AbortSignal) {
+		check(signal);
+		const args = input(value);
+		const query = shortString(own(args, "query"), "query");
+		if (query !== undefined && /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(query))
+			throw new Error("Query must contain complete Unicode characters.");
+		this.#source = source;
+		this.#signal = signal;
+		this.#query = query;
+		this.#snap = snapshot(source, args);
+		this.#fromId = shortString(own(args, "fromId"), "fromId");
+		this.#id = this.#fromId ?? this.#snap.currentLeafId;
+		this.#slot = integer(own(args, "slot"), 0, 0, Number.MAX_SAFE_INTEGER, "slot");
+		this.#offset = integer(own(args, "offset"), 0, 0, Number.MAX_SAFE_INTEGER, "offset");
+		if ((this.#slot || this.#offset) && !this.#fromId) throw new Error("A search continuation requires fromId.");
+		this.#visitCap = integer(own(args, "maxVisits"), LIMITS.visits, 1, LIMITS.visits, "maxVisits");
+		this.#scanCap = integer(own(args, "maxScanBytes"), LIMITS.scanBytes, 2048, LIMITS.scanBytes, "maxScanBytes");
+		this.#matchCap = integer(own(args, "maxMatches"), LIMITS.matches, 1, LIMITS.matches, "maxMatches");
+		this.#outputCap = integer(own(args, "maxOutputBytes"), LIMITS.outputBytes, 4096, LIMITS.outputBytes, "maxOutputBytes");
+	}
+
+	#cursor() {
+		return { sessionId: this.#snap.sessionId, fromId: this.#id, slot: this.#slot, offset: this.#offset };
+	}
+
+	#result(status: string, next: unknown = null, gap?: unknown): RecordValue {
+		return finish(
 			{
 				notice: NOTICE,
 				coverage: COVERAGE,
-				...snap,
-				startId: fromId ?? snap.currentLeafId,
+				...this.#snap,
+				startId: this.#fromId ?? this.#snap.currentLeafId,
 				status,
-				visited,
-				slotsVisited,
-				scannedBytes,
-				matches,
+				visited: this.#visited,
+				slotsVisited: this.#slotsVisited,
+				scannedBytes: this.#scannedBytes,
+				matches: this.#matches,
 				next,
 				...(gap ? { gap } : {}),
 			},
-			outputCap,
+			this.#outputCap,
 		);
-	const cursor = () => ({ sessionId: snap.sessionId, fromId: id, slot, offset });
-	while (id !== null) {
-		check(signal);
-		if (seen.has(id))
-			return result("cycle", null, { entryId: id, action: "Parent chain repeats; stop this ancestry walk." });
-		if (visited >= visitCap) return result("visit_limit", cursor());
-		seen.add(id);
-		visited++;
-		const entry = entryAt(source, id);
-		check(signal);
-		if (!entry)
-			return result(visited === 1 ? "unknown_entry" : "missing_parent", null, {
-				entryId: id,
-				action: "No entry with this ID exists in the current session; use a known ID.",
-			});
-		const meta = metadata(entry);
-		if (query === undefined) {
-			if (slot !== 0 || offset !== 0) throw new Error("Entry listing does not accept text offsets.");
-			matches.push({
-				entry: meta,
-				pointer: "",
-				action: "Read this entry's standard field manifest with history_read.",
-			});
-			if (
-				!fits(
-					{
-						notice: NOTICE,
-						coverage: COVERAGE,
-						...snap,
-						startId: fromId ?? snap.currentLeafId,
-						status: "output_limit",
-						visited,
-						slotsVisited,
-						scannedBytes,
-						matches,
-						next: cursor(),
-					},
-					outputCap - 256,
-				)
-			) {
-				matches.pop();
-				if (matches.length === 0)
-					throw new Error("Entry metadata exceeds the output limit. Increase maxOutputBytes or read a specific field.");
-				return result("output_limit", cursor());
-			}
-			id = entry.parentId;
-			if (matches.length >= matchCap && id !== null) return result("match_limit", cursor());
-			continue;
+	}
+
+	/** Space has to remain for the continuation before a match or listing entry is accepted. */
+	#fitsWithContinuation(next: unknown): boolean {
+		return fits(
+			{
+				notice: NOTICE,
+				coverage: COVERAGE,
+				...this.#snap,
+				startId: this.#fromId ?? this.#snap.currentLeafId,
+				status: "output_limit",
+				visited: this.#visited,
+				slotsVisited: this.#slotsVisited,
+				scannedBytes: this.#scannedBytes,
+				matches: this.#matches,
+				next,
+			},
+			this.#outputCap - 256,
+		);
+	}
+
+	run(): RecordValue {
+		while (this.#id !== null) {
+			check(this.#signal);
+			if (this.#seen.has(this.#id))
+				return this.#result("cycle", null, {
+					entryId: this.#id,
+					action: "Parent chain repeats; stop this ancestry walk.",
+				});
+			if (this.#visited >= this.#visitCap) return this.#result("visit_limit", this.#cursor());
+			this.#seen.add(this.#id);
+			this.#visited++;
+			const entry = entryAt(this.#source, this.#id);
+			check(this.#signal);
+			if (!entry)
+				return this.#result(this.#visited === 1 ? "unknown_entry" : "missing_parent", null, {
+					entryId: this.#id,
+					action: "No entry with this ID exists in the current session; use a known ID.",
+				});
+			const meta = metadata(entry);
+			const query = this.#query;
+			const outcome = query === undefined ? this.#collectListing(entry, meta) : this.#scanEntry(entry, meta, query);
+			if (outcome) return outcome;
+			this.#id = entry.parentId;
+			this.#slot = 0;
+			this.#offset = 0;
 		}
+		return this.#result("ancestry_exhausted");
+	}
+
+	#collectListing(entry: SessionEntry, meta: RecordValue): RecordValue | null {
+		if (this.#slot !== 0 || this.#offset !== 0) throw new Error("Entry listing does not accept text offsets.");
+		this.#matches.push({
+			entry: meta,
+			pointer: "",
+			action: "Read this entry's standard field manifest with history_read.",
+		});
+		if (!this.#fitsWithContinuation(this.#cursor())) {
+			this.#matches.pop();
+			if (this.#matches.length === 0)
+				throw new Error("Entry metadata exceeds the output limit. Increase maxOutputBytes or read a specific field.");
+			return this.#result("output_limit", this.#cursor());
+		}
+		this.#id = entry.parentId;
+		if (this.#matches.length >= this.#matchCap && this.#id !== null) return this.#result("match_limit", this.#cursor());
+		return null;
+	}
+
+	#scanEntry(entry: SessionEntry, meta: RecordValue, query: string): RecordValue | null {
 		while (true) {
-			check(signal);
-			if (slotsVisited >= LIMITS.slots) return result("slot_limit", cursor());
-			const field = textSlot(entry, slot);
+			check(this.#signal);
+			if (this.#slotsVisited >= LIMITS.slots) return this.#result("slot_limit", this.#cursor());
+			const field = textSlot(entry, this.#slot);
 			if (!field) {
-				if (offset !== 0) throw new Error("Offset does not select a text field.");
+				if (this.#offset !== 0) throw new Error("Offset does not select a text field.");
 				break;
 			}
-			slotsVisited++;
+			this.#slotsVisited++;
 			if (typeof field.value === "string") {
-				if (scannedBytes >= scanCap) return result("scan_limit", cursor());
-				const chunk = page(field.value, offset, scanCap - scannedBytes, signal);
-				scannedBytes += chunk.bytes;
-				let position = chunk.text.indexOf(query);
-				while (position !== -1) {
-					check(signal);
-					const matchOffset = offset + position;
-					let excerptBytes = 512;
-					let excerpt = page(chunk.text, position, excerptBytes, signal);
-					const match = {
-						entry: meta,
-						pointer: field.pointer,
-						offset: matchOffset,
-						endOffset: matchOffset + query.length,
-						excerpt: excerpt.text,
-						excerptEndOffset: offset + excerpt.endOffset,
-					};
-					matches.push(match);
-					// Reserve space for the continuation before accepting this match.
-					const matchFits = () =>
-						fits(
-							{
-								notice: NOTICE,
-								coverage: COVERAGE,
-								...snap,
-								startId: fromId ?? snap.currentLeafId,
-								status: "output_limit",
-								visited,
-								slotsVisited,
-								scannedBytes,
-								matches,
-								next: { sessionId: snap.sessionId, fromId: id, slot, offset: matchOffset },
-							},
-							outputCap - 256,
-						);
-					while (!matchFits()) {
-						if (matches.length === 1 && excerptBytes > 4) {
-							excerptBytes = Math.max(4, Math.floor(excerptBytes / 2));
-							excerpt = page(chunk.text, position, excerptBytes, signal);
-							match.excerpt = excerpt.text;
-							match.excerptEndOffset = offset + excerpt.endOffset;
-							continue;
-						}
-						matches.pop();
-						offset = matchOffset;
-						if (matches.length === 0)
-							throw new Error(
-								"Match metadata exceeds the output limit. Increase maxOutputBytes or read a specific field.",
-							);
-						return result("output_limit", cursor());
-					}
-					if (matches.length >= matchCap) {
-						offset = matchOffset + (field.value.codePointAt(matchOffset)! > 0xffff ? 2 : 1);
-						return result("match_limit", cursor());
-					}
-					position = chunk.text.indexOf(query, position + 1);
-				}
-				if (chunk.nextOffset !== null) {
-					let nextOffset = Math.max(offset, chunk.endOffset - query.length + 1);
-					if (!boundary(field.value, nextOffset)) nextOffset--;
-					offset = nextOffset;
-					return result("scan_limit", cursor());
-				}
-			} else if (offset !== 0) throw new Error("Offset does not select a text field.");
-			slot++;
-			offset = 0;
+				const terminal = this.#scanField(meta, field, field.value, query);
+				if (terminal) return terminal;
+			} else if (this.#offset !== 0) throw new Error("Offset does not select a text field.");
+			this.#slot++;
+			this.#offset = 0;
 		}
-		id = entry.parentId;
-		slot = 0;
-		offset = 0;
+		return null;
 	}
-	return result("ancestry_exhausted");
+
+	#scanField(
+		meta: RecordValue,
+		field: { pointer: string; value: unknown },
+		value: string,
+		query: string,
+	): RecordValue | null {
+		if (this.#scannedBytes >= this.#scanCap) return this.#result("scan_limit", this.#cursor());
+		const chunk = page(value, this.#offset, this.#scanCap - this.#scannedBytes, this.#signal);
+		this.#scannedBytes += chunk.bytes;
+		let position = chunk.text.indexOf(query);
+		while (position !== -1) {
+			check(this.#signal);
+			const terminal = this.#recordMatch(meta, field, value, chunk, position, query);
+			if (terminal) return terminal;
+			position = chunk.text.indexOf(query, position + 1);
+		}
+		if (chunk.nextOffset !== null) {
+			let nextOffset = Math.max(this.#offset, chunk.endOffset - query.length + 1);
+			if (!boundary(value, nextOffset)) nextOffset--;
+			this.#offset = nextOffset;
+			return this.#result("scan_limit", this.#cursor());
+		}
+		return null;
+	}
+
+	#recordMatch(
+		meta: RecordValue,
+		field: { pointer: string; value: unknown },
+		value: string,
+		chunk: { text: string; endOffset: number },
+		position: number,
+		query: string,
+	): RecordValue | null {
+		const matchOffset = this.#offset + position;
+		let excerptBytes = 512;
+		let excerpt = page(chunk.text, position, excerptBytes, this.#signal);
+		const match: RecordValue = {
+			entry: meta,
+			pointer: field.pointer,
+			offset: matchOffset,
+			endOffset: matchOffset + query.length,
+			excerpt: excerpt.text,
+			excerptEndOffset: this.#offset + excerpt.endOffset,
+		};
+		this.#matches.push(match);
+		// Reserve space for the continuation before accepting this match.
+		while (!this.#fitsWithContinuation({ sessionId: this.#snap.sessionId, fromId: this.#id, slot: this.#slot, offset: matchOffset })) {
+			if (this.#matches.length === 1 && excerptBytes > 4) {
+				excerptBytes = Math.max(4, Math.floor(excerptBytes / 2));
+				excerpt = page(chunk.text, position, excerptBytes, this.#signal);
+				match.excerpt = excerpt.text;
+				match.excerptEndOffset = this.#offset + excerpt.endOffset;
+				continue;
+			}
+			this.#matches.pop();
+			this.#offset = matchOffset;
+			if (this.#matches.length === 0)
+				throw new Error("Match metadata exceeds the output limit. Increase maxOutputBytes or read a specific field.");
+			return this.#result("output_limit", this.#cursor());
+		}
+		if (this.#matches.length >= this.#matchCap) {
+			const codePoint = value.codePointAt(matchOffset) ?? 0;
+			this.#offset = matchOffset + (codePoint > 0xffff ? 2 : 1);
+			return this.#result("match_limit", this.#cursor());
+		}
+		return null;
+	}
+}
+
+export function searchHistory(source: HistorySource, value: unknown, signal?: AbortSignal): RecordValue {
+	return new HistorySearch(source, value, signal).run();
 }
 
 const ENTRY_KEYS = [
@@ -491,117 +544,151 @@ function knownKeys(parts: string[]): readonly string[] | undefined {
 	return undefined;
 }
 
-export function readHistory(source: HistorySource, value: unknown, signal?: AbortSignal): RecordValue {
-	check(signal);
-	const args = input(value);
-	const entryId = shortString(own(args, "entryId"), "entryId", true) as string;
-	const snap = snapshot(source, args);
-	const rawPointer = own(args, "pointer");
-	if (rawPointer !== undefined && (typeof rawPointer !== "string" || rawPointer.length > 1024))
-		throw new Error("pointer must be a string of at most 1024 code units.");
-	const pointer = (rawPointer ?? "") as string;
-	const parts = pointerParts(pointer);
-	const offset = integer(own(args, "offset"), 0, 0, Number.MAX_SAFE_INTEGER, "offset");
-	const maxBytes = integer(own(args, "maxBytes"), LIMITS.readBytes, 4, LIMITS.readBytes, "maxBytes");
-	const maxItems = integer(own(args, "maxItems"), LIMITS.items, 1, LIMITS.items, "maxItems");
-	const outputCap = integer(
-		own(args, "maxOutputBytes"),
-		LIMITS.outputBytes,
-		4096,
-		LIMITS.outputBytes,
-		"maxOutputBytes",
-	);
-	const entry = entryAt(source, entryId);
-	check(signal);
-	const base: RecordValue = {
-		notice: NOTICE,
-		...snap,
-		startId: entryId,
-		membership: "not_checked",
-		pointer,
-		offsetUnit: "UTF-16 code units for strings; item index for arrays and known-field lists",
-	};
-	if (!entry)
-		return finish({ ...base, status: "unknown_entry", action: "Use an entry ID from the current session." }, outputCap);
-	base.entry = metadata(entry);
-	if (withheld(entry, parts))
-		return finish(
-			{
-				...base,
+/** Point-read one entry field under per-call string, item, and output bounds. */
+class HistoryRead {
+	readonly #source: HistorySource;
+	readonly #snap: { sessionId: string; currentLeafId: string | null };
+	readonly #entryId: string;
+	readonly #pointer: string;
+	readonly #parts: string[];
+	readonly #offset: number;
+	readonly #maxBytes: number;
+	readonly #maxItems: number;
+	readonly #outputCap: number;
+	readonly #signal: AbortSignal | undefined;
+	readonly #base: RecordValue;
+
+	constructor(source: HistorySource, value: unknown, signal?: AbortSignal) {
+		check(signal);
+		const args = input(value);
+		const entryId = shortString(own(args, "entryId"), "entryId", true) as string;
+		this.#source = source;
+		this.#signal = signal;
+		this.#snap = snapshot(source, args);
+		const rawPointer = own(args, "pointer");
+		if (rawPointer !== undefined && (typeof rawPointer !== "string" || rawPointer.length > 1024))
+			throw new Error("pointer must be a string of at most 1024 code units.");
+		this.#pointer = (rawPointer ?? "") as string;
+		this.#parts = pointerParts(this.#pointer);
+		this.#offset = integer(own(args, "offset"), 0, 0, Number.MAX_SAFE_INTEGER, "offset");
+		this.#maxBytes = integer(own(args, "maxBytes"), LIMITS.readBytes, 4, LIMITS.readBytes, "maxBytes");
+		this.#maxItems = integer(own(args, "maxItems"), LIMITS.items, 1, LIMITS.items, "maxItems");
+		this.#outputCap = integer(own(args, "maxOutputBytes"), LIMITS.outputBytes, 4096, LIMITS.outputBytes, "maxOutputBytes");
+		this.#entryId = entryId;
+		this.#base = {
+			notice: NOTICE,
+			...this.#snap,
+			startId: entryId,
+			membership: "not_checked",
+			pointer: this.#pointer,
+			offsetUnit: "UTF-16 code units for strings; item index for arrays and known-field lists",
+		};
+	}
+
+	#finish(value: RecordValue): RecordValue {
+		return finish(value, this.#outputCap);
+	}
+
+	#pageRef(offset: number): RecordValue {
+		return { sessionId: this.#snap.sessionId, entryId: this.#entryId, pointer: this.#pointer, offset };
+	}
+
+	run(): RecordValue {
+		const entry = entryAt(this.#source, this.#entryId);
+		check(this.#signal);
+		if (!entry)
+			return this.#finish({
+				...this.#base,
+				status: "unknown_entry",
+				action: "Use an entry ID from the current session.",
+			});
+		this.#base.entry = metadata(entry);
+		if (withheld(entry, this.#parts))
+			return this.#finish({
+				...this.#base,
 				status: "withheld",
 				reason: "Image payloads, opaque provider signatures, and redacted thinking are not exposed.",
-			},
-			outputCap,
-		);
-	const selected = select(entry, parts);
-	if (selected === undefined)
-		return finish(
-			{
-				...base,
+			});
+		const selected = select(entry, this.#parts);
+		if (selected === undefined)
+			return this.#finish({
+				...this.#base,
 				status: "field_absent",
 				action: "Read the entry root or a parent pointer for supported field selectors.",
-			},
-			outputCap,
-		);
-	if (typeof selected === "string") {
-		let bytes = maxBytes;
+			});
+		if (typeof selected === "string") return this.#readString(selected);
+		const keys = object(selected) ? knownKeys(this.#parts) : undefined;
+		if (Array.isArray(selected) || keys) return this.#readItems(entry, selected, keys);
+		if (this.#offset !== 0) throw new Error("Offset applies only to strings, arrays, or known-field lists.");
+		return this.#finish({
+			...this.#base,
+			status: object(selected) ? "structured_omitted" : "complete",
+			...descriptor(selected, this.#pointer),
+			next: null,
+		});
+	}
+
+	#readString(value: string): RecordValue {
+		let bytes = this.#maxBytes;
 		while (true) {
-			check(signal);
-			const data = page(selected, offset, bytes, signal);
-			const next =
-				data.nextOffset === null ? null : { sessionId: snap.sessionId, entryId, pointer, offset: data.nextOffset };
-			const result = { ...base, status: next ? "page" : "complete", ...data, next };
-			if (fits(result, outputCap)) return result;
+			check(this.#signal);
+			const data = page(value, this.#offset, bytes, this.#signal);
+			const next = data.nextOffset === null ? null : this.#pageRef(data.nextOffset);
+			const result = { ...this.#base, status: next ? "page" : "complete", ...data, next };
+			if (fits(result, this.#outputCap)) return result;
 			if (bytes <= 4)
 				throw new Error("Output metadata exceeds the byte limit. Use a shorter pointer or a larger output limit.");
 			bytes = Math.max(4, Math.floor(bytes / 2));
 		}
 	}
-	const keys = object(selected) ? knownKeys(parts) : undefined;
-	if (Array.isArray(selected) || keys) {
-		const length = Array.isArray(selected) ? selected.length : keys!.length;
-		if (offset > length) throw new Error("Offset exceeds the item list length.");
+
+	#readItems(entry: SessionEntry, selected: unknown, keys: readonly string[] | undefined): RecordValue {
+		const length = Array.isArray(selected) ? selected.length : (keys?.length ?? 0);
+		if (this.#offset > length) throw new Error("Offset exceeds the item list length.");
 		const items: RecordValue[] = [];
-		let index = offset;
-		for (; index < length && index - offset < maxItems; index++) {
-			check(signal);
-			const key = keys ? keys[index] : String(index);
-			const child = own(selected, key);
-			if (child === undefined) continue;
-			items.push(
-				withheld(entry, [...parts, key])
-					? {
-							pointer: `${pointer}/${key}`,
-							kind: "withheld",
-							reason: "Image payload, provider signature, or redacted thinking.",
-						}
-					: descriptor(child, `${pointer}/${key}`),
-			);
-			if (
-				!fits(
-					{ ...base, status: "page", items, next: { sessionId: snap.sessionId, entryId, pointer, offset: index } },
-					outputCap - 256,
-				)
-			) {
-				items.pop();
-				if (items.length === 0)
-					throw new Error(
-						"Field descriptor exceeds the output limit. Increase maxOutputBytes or select a shorter pointer.",
-					);
-				break;
-			}
+		let index = this.#offset;
+		for (; index < length && index - this.#offset < this.#maxItems; index++) {
+			check(this.#signal);
+			if (!this.#appendItem(entry, selected, keys, index, items)) break;
 		}
-		const next = index < length ? { sessionId: snap.sessionId, entryId, pointer, offset: index } : null;
-		return finish({ ...base, status: next ? "page" : "complete", items, next }, outputCap);
+		const next = index < length ? this.#pageRef(index) : null;
+		return this.#finish({ ...this.#base, status: next ? "page" : "complete", items, next });
 	}
-	if (offset !== 0) throw new Error("Offset applies only to strings, arrays, or known-field lists.");
-	return finish(
-		{
-			...base,
-			status: object(selected) ? "structured_omitted" : "complete",
-			...descriptor(selected, pointer),
-			next: null,
-		},
-		outputCap,
-	);
+
+	/** Append item `index` when present; false when it does not fit and the page must stop. */
+	#appendItem(
+		entry: SessionEntry,
+		selected: unknown,
+		keys: readonly string[] | undefined,
+		index: number,
+		items: RecordValue[],
+	): boolean {
+		const key = keys ? keys[index] : String(index);
+		const child = own(selected, key);
+		if (child === undefined) return true;
+		items.push(this.#itemDescriptor(entry, key, child));
+		if (this.#itemsFit(items, index)) return true;
+		items.pop();
+		if (items.length === 0)
+			throw new Error("Field descriptor exceeds the output limit. Increase maxOutputBytes or select a shorter pointer.");
+		return false;
+	}
+
+	#itemDescriptor(entry: SessionEntry, key: string, child: unknown): RecordValue {
+		return withheld(entry, [...this.#parts, key])
+			? {
+					pointer: `${this.#pointer}/${key}`,
+					kind: "withheld",
+					reason: "Image payload, provider signature, or redacted thinking.",
+				}
+			: descriptor(child, `${this.#pointer}/${key}`);
+	}
+
+	#itemsFit(items: RecordValue[], index: number): boolean {
+		return fits({ ...this.#base, status: "page", items, next: this.#pageRef(index) }, this.#outputCap - 256);
+	}
+}
+
+export function readHistory(source: HistorySource, value: unknown, signal?: AbortSignal): RecordValue {
+	return new HistoryRead(source, value, signal).run();
 }

@@ -262,7 +262,8 @@ test("manifests contain malformed opaque fields without enumeration, getters, to
 		),
 	);
 	const getter = source([raw("get", null)]);
-	const getterEntry = getter.getEntry("get")!;
+	const getterEntry = getter.getEntry("get");
+	assert.ok(getterEntry);
 	Object.defineProperty(getterEntry, "summary", {
 		get() {
 			throw new Error("getter ran");
@@ -299,7 +300,8 @@ test("system messages and compaction checkpoints expose bounded prompt and tool 
 	assert.ok(checkpoint.some((field) => field.pointer === "/systemMessage/sections"));
 	assert.equal(readHistory(sm, { entryId: compact, pointer: "/systemMessage/sections/rules" }).text, "exact rule text");
 	assert.equal(readHistory(sm, { entryId: compact, pointer: "/systemMessage/content" }).text, "base instructions");
-	const stored = sm.getEntry(compact)!;
+	const stored = sm.getEntry(compact);
+	assert.ok(stored);
 	assert.equal(stored.type, "compaction");
 	if (stored.type !== "compaction") throw new Error("Expected a compaction checkpoint");
 	const arrayCheckpoint = source([{ ...stored, systemMessage: {
