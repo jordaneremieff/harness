@@ -61,16 +61,16 @@ describe("writeStash + listStashes", () => {
 	});
 
 	it("hardens an existing store and its artifacts when discovered", async () => {
-		const legacyDir = join(dir, "legacy-store");
-		await mkdir(legacyDir, { mode: 0o755 });
-		await chmod(legacyDir, 0o755);
-		const legacyPath = join(legacyDir, "20260724T103500Z-legacy.md");
-		await writeFile(legacyPath, "# legacy\n", { mode: 0o644 });
-		await chmod(legacyPath, 0o644);
+		const store = join(dir, "permission-store");
+		await mkdir(store, { mode: 0o755 });
+		await chmod(store, 0o755);
+		const path = join(store, "20260724T103500Z-permissions.md");
+		await writeFile(path, '---\nstate: "open"\n---\nbody\n', { mode: 0o644 });
+		await chmod(path, 0o644);
 
-		assert.equal((await listStashes(legacyDir)).length, 1);
-		assert.equal((await stat(legacyDir)).mode & 0o777, 0o700);
-		assert.equal((await stat(legacyPath)).mode & 0o777, 0o600);
+		assert.equal((await listStashes(store)).length, 1);
+		assert.equal((await stat(store)).mode & 0o777, 0o700);
+		assert.equal((await stat(path)).mode & 0o777, 0o600);
 	});
 
 	it("lists newest-first and respects limit", async () => {
@@ -139,7 +139,7 @@ describe("writeStash + listStashes", () => {
 		// survives the preview's own head-cut. One of the two preview budgets
 		// below must split a codepoint regardless of alignment. The header
 		// itself stays small so the state stays verifiable at the scan window.
-		const artifact = `---\ntitle: "Multibyte"\n---\n${"é".repeat(17_000)}`;
+		const artifact = `---\ntitle: "Multibyte"\nstate: "open"\n---\n${"é".repeat(17_000)}`;
 		await writeFile(join(scoped, `${id}.md`), artifact, "utf8");
 		for (const previewBytes of [200, 201]) {
 			const [entry] = await listStashes(scoped, { limit: 1, previewBytes });
@@ -232,17 +232,20 @@ describe("stash lifecycle transitions", () => {
 		await assert.rejects(transitionStash(lifecycleDir, record.id, { action: "release" }), /released only from active/i);
 	});
 
-	it("normalizes metadata-less artifacts to open and filters lists by lifecycle state", async () => {
-		const lifecycleDir = join(dir, "legacy-lifecycle-store");
-		await mkdir(lifecycleDir);
-		const legacyId = "20260726T130000Z-legacy-lifecycle";
-		await writeFile(join(lifecycleDir, `${legacyId}.md`), "# Legacy handover\n", "utf8");
-		const [legacy] = await listStashes(lifecycleDir, { state: "open" });
-		assert.equal(legacy.meta.id, legacyId);
-		assert.equal(legacy.meta.state, "open");
-		await transitionStash(lifecycleDir, legacyId, { action: "activate" }, at("2026-07-26T13:30:00Z"));
-		assert.equal((await listStashes(lifecycleDir, { state: "open" })).length, 0);
-		assert.equal((await listStashes(lifecycleDir, { state: "active" }))[0].meta.id, legacyId);
+	it("rejects missing lifecycle state without synthesizing an open artifact", async () => {
+		const store = join(dir, "missing-state-store");
+		await mkdir(store);
+		const id = "20260726T130000Z-missing-state";
+		const path = join(store, `${id}.md`);
+		const content = '---\ntitle: "Missing state"\n---\nbody\n';
+		await writeFile(path, content, "utf8");
+		const [entry] = await listStashes(store);
+		assert.equal(entry.meta.state, "unknown");
+		assert.equal(entry.meta.invalidState, "missing");
+		assert.deepEqual(await listStashes(store, { state: "open" }), []);
+		await assert.rejects(transitionStash(store, id, { action: "activate" }), /invalid lifecycle state/);
+		await assert.rejects(rotateStash(store, id), /invalid lifecycle state/);
+		assert.equal(await readFile(path, "utf8"), content);
 	});
 
 	it("rejects corrupt explicit lifecycle state instead of silently rewriting it", async () => {
@@ -361,7 +364,7 @@ describe("unreadable and invalid lifecycle states", () => {
 		assert.ok(entry, "the artifact must still be listed without a state filter");
 		assert.ok(entry?.previewError, "an unclosed header must be reported, not defaulted");
 		assert.match(entry?.previewError ?? "", /never closes/);
-		assert.equal(entry?.meta.state, "open", "the defaulted fallback must stay distinguishable");
+		assert.equal(entry?.meta.state, "unknown");
 		// No state filter may satisfy it.
 		assert.equal(
 			(await listStashes(store, { state: "open" })).some((item) => item.meta.id === id),
@@ -380,17 +383,18 @@ describe("unreadable and invalid lifecycle states", () => {
 		await rm(store, { recursive: true, force: true });
 	});
 
-	it("keeps a legacy artifact without any header open and mutable", async () => {
-		const store = await mkdtemp(join(tmpdir(), "stash-legacy-open-"));
-		await chmod(store, 0o700);
-		const id = "20260726T160000Z-legacy-open";
-		await writeFile(join(store, `${id}.md`), "# Legacy handover\n", "utf8");
-		const [entry] = await listStashes(store, { state: "open" });
-		assert.equal(entry.meta.id, id);
-		assert.equal(entry.meta.state, "open");
-		assert.equal(entry.previewError, undefined);
-		await transitionStash(store, id, { action: "activate" });
-		assert.equal((await listStashes(store, { state: "active" }))[0].meta.id, id);
+	it("keeps headerless files visible as unknown and refuses lifecycle changes", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-missing-header-"));
+		const id = "20260726T160000Z-missing-header";
+		const path = join(store, `${id}.md`);
+		await writeFile(path, "# Handover without metadata\n", "utf8");
+		const [entry] = await listStashes(store);
+		assert.equal(entry.meta.state, "unknown");
+		assert.equal(entry.meta.invalidState, "missing");
+		assert.deepEqual(await listStashes(store, { state: "open" }), []);
+		await assert.rejects(transitionStash(store, id, { action: "activate" }), /invalid lifecycle state/);
+		await assert.rejects(rotateStash(store, id), /invalid lifecycle state/);
+		assert.equal(await readFile(path, "utf8"), "# Handover without metadata\n");
 		await rm(store, { recursive: true, force: true });
 	});
 
@@ -445,16 +449,15 @@ describe("unreadable and invalid lifecycle states", () => {
 		await rm(store, { recursive: true, force: true });
 	});
 
-	it("keeps a legacy artifact whose first line starts with dashes open and rotatable", async () => {
-		const store = await mkdtemp(join(tmpdir(), "stash-legacy-dashes-"));
-		await chmod(store, 0o700);
-		const id = "20260726T192000Z-legacy-dashes";
-		await writeFile(join(store, `${id}.md`), "---- section\nbody\n", "utf8");
-		const [entry] = await listStashes(store, { state: "open" });
-		assert.equal(entry.meta.id, id);
-		assert.equal(entry.previewError, undefined);
-		await rotateStash(store, id);
-		assert.equal((await readStash(store, id)).ok, false, "a legacy artifact must remain rotatable");
+	it("refuses a raw lifecycle value that is not encoded as JSON", async () => {
+		const store = await mkdtemp(join(tmpdir(), "stash-nonjson-state-"));
+		const id = "20260726T192000Z-nonjson-state";
+		await writeFile(join(store, `${id}.md`), "---\nstate: open\n---\nbody\n", "utf8");
+		const [entry] = await listStashes(store);
+		assert.equal(entry.meta.state, "unknown");
+		assert.equal(entry.meta.invalidState, "missing");
+		await assert.rejects(rotateStash(store, id), /invalid lifecycle state/);
+		await assert.rejects(transitionStash(store, id, { action: "activate" }), /invalid lifecycle state/);
 		await rm(store, { recursive: true, force: true });
 	});
 
@@ -515,7 +518,7 @@ describe("unreadable and invalid lifecycle states", () => {
 		const entry = all.find((item) => item.meta.id === id);
 		assert.ok(entry);
 		assert.equal(entry.meta.invalidState, "mystery");
-		assert.equal(entry.meta.state, "open", "the defaulted fallback must stay distinguishable");
+		assert.equal(entry.meta.state, "unknown");
 		assert.equal(entry.previewError, undefined);
 		assert.equal(
 			(await listStashes(store, { state: "open" })).some((item) => item.meta.id === id),

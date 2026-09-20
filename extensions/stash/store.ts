@@ -2,19 +2,19 @@
 
 import { randomUUID } from "node:crypto";
 import { constants, type Dirent, type Stats } from "node:fs";
-import { chmod, link, lstat, mkdir, open, readdir, rename, unlink, writeFile, type FileHandle } from "node:fs/promises";
+import { chmod, type FileHandle, link, lstat, mkdir, open, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
 	isStashState,
 	parseFrontmatter,
+	type StashMeta,
+	type StashRecord,
+	type StashState,
 	serializeArtifact,
 	slugify,
 	updateFrontmatter,
 	utcTimestamp,
-	type StashMeta,
-	type StashRecord,
-	type StashState,
 } from "./format.ts";
 import { redactSecrets } from "./redact.ts";
 
@@ -213,11 +213,8 @@ interface ListOptions {
  * True when a text opens a frontmatter header that never closes. Mirrors the
  * extension's own parseFrontmatter (format.ts) exactly: the header opens only
  * when the first line trims to "---" and closes at the first later line that
- * trims to "---". The parser cannot tell an unclosed header from a legacy
- * artifact with no header at all, and the difference matters: an unread header
- * means the state is UNKNOWN, not the default "open". Treating it as open
- * would let a state filter report an active effort as open and let rotation
- * move it to the trash.
+ * trims to "---". An unread header has unknown state and cannot authorize
+ * lifecycle changes or rotation.
  */
 function headerUnclosed(text: string): boolean {
 	const lines = text.split("\n");
@@ -276,10 +273,12 @@ function normalizeMeta(name: string, parsed: Partial<StashMeta> & Record<string,
 		branch: typeof parsed.branch === "string" ? parsed.branch : undefined,
 		sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : undefined,
 		tags: Array.isArray(parsed.tags) ? parsed.tags.filter((tag): tag is string => typeof tag === "string") : [],
-		// An ABSENT state is legacy `open`. A present-but-unrecognized value is not:
-		// every transition rejects it, so it must not be presented as usable.
-		state: isStashState(parsed.state) ? parsed.state : "open",
-		invalidState: parsed.state !== undefined && !isStashState(parsed.state) ? String(parsed.state) : undefined,
+		state: isStashState(parsed.state) ? parsed.state : "unknown",
+		invalidState: isStashState(parsed.state)
+			? undefined
+			: parsed.state === undefined
+				? "missing"
+				: String(parsed.state),
 		activatedAt: typeof parsed.activatedAt === "string" ? parsed.activatedAt : undefined,
 		closedAt: typeof parsed.closedAt === "string" ? parsed.closedAt : undefined,
 		outcome: typeof parsed.outcome === "string" ? parsed.outcome : undefined,
@@ -460,7 +459,6 @@ async function readMutationSource(path: string): Promise<{
 }
 
 function currentState(meta: Partial<StashMeta> & Record<string, unknown>): StashState {
-	if (meta.state === undefined) return "open";
 	if (!isStashState(meta.state)) throw new Error(`stash has invalid lifecycle state: ${String(meta.state)}`);
 	return meta.state;
 }

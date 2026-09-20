@@ -39,8 +39,10 @@ agent has a deterministic closure path. `stash_complete` accepts only active art
 requires an outcome, and records `closed`, `closedAt`, and the outcome. A closed effort
 cannot be picked up until the operator deliberately reopens it.
 
-Existing artifacts without lifecycle metadata normalize to `open`; no bulk migration is
-required. Reopening returns a closed artifact to `open` and removes closure metadata
+Artifacts require an explicit JSON-encoded lifecycle state. Missing headers, missing states,
+and malformed state values remain visible as unknown but cannot authorize pickup or lifecycle changes.
+The extension never synthesizes missing metadata or interprets unquoted values as a second format.
+Reopening returns a closed artifact to `open` and removes closure metadata
 while retaining its prior activation timestamp. Artifacts never move or disappear as a
 lifecycle side effect.
 
@@ -182,7 +184,7 @@ Each artifact is `<utcTimestamp>-<slug>[-<collision>].md` with JSON-valued front
 
 - Credential-shaped content is redacted deterministically: before distillation, the transcript and observed references are scanned and credential-shaped values (prefixed provider tokens, JWTs, bearer headers, private keys, `key: value` assignments, URL userinfo passwords) are replaced with `[REDACTED]`; the same pass runs over the generated payload before the artifact is written, so no secret depends on the model's discretion. The operator hint is trusted input and is never redacted. Artifacts written before this version are not retroactively scrubbed.
 
-- Directory mode is enforced as `0700`; regular artifact files are enforced as `0600`, including artifacts created by older versions.
+- Directory mode is enforced as `0700`; regular artifact files are enforced as `0600`, on discovery.
 - Completed temporary files are hard-linked into place. Existing names are never replaced; concurrent same-second writes receive numeric suffixes.
 - Lifecycle changes run through Pi's per-file mutation queue, reread the exact regular file with `O_NOFOLLOW`, preserve unknown frontmatter, write a private dot-hidden temporary file, recheck file identity, and atomically rename the completed revision into place.
 - Symlinks are ignored during discovery and reads. Mutation rechecks reject a selected target that is no longer the same regular file. Ordinary Node APIs cannot make the entire ancestor path descriptor-relative, so this is a private same-user local store rather than a claim of immunity to a hostile process replacing directory ancestors.
@@ -226,8 +228,8 @@ The component derives its row budget from the host TUI and the overlay's height 
 ## Verification
 
 ```bash
+node --test extensions/stash/*.test.mts
 npm test
-# full suite passes; stash coverage in extensions/stash/*.test.mts
 
 npx --yes --package typescript@5.9.3 tsc --noEmit \
   --allowImportingTsExtensions --module ESNext --moduleResolution Bundler \

@@ -3,11 +3,11 @@ import { describe, it } from "node:test";
 import {
 	parseFrontmatter,
 	resumeCommand,
+	type StashRecord,
 	serializeArtifact,
 	slugify,
 	updateFrontmatter,
 	utcTimestamp,
-	type StashRecord,
 } from "./format.ts";
 
 function rec(overrides: Partial<StashRecord> = {}): StashRecord {
@@ -98,14 +98,14 @@ describe("updateFrontmatter", () => {
 		assert.ok(updated.endsWith("\n# Body\nunchanged\n"));
 	});
 
-	it("can remove closure keys and add frontmatter to legacy markdown", () => {
+	it("removes closure keys but never synthesizes a missing header", () => {
 		const reopened = updateFrontmatter('---\nstate: "closed"\noutcome: "old"\n---\nbody\n', {
 			state: "open",
 			outcome: undefined,
 		});
 		assert.doesNotMatch(reopened, /^outcome:/m);
 		assert.equal(parseFrontmatter(reopened).meta.state, "open");
-		assert.equal(parseFrontmatter(updateFrontmatter("# Legacy\n", { state: "active" })).meta.state, "active");
+		assert.throws(() => updateFrontmatter("# Missing header\n", { state: "active" }), /closed frontmatter header/);
 	});
 });
 
@@ -120,8 +120,9 @@ describe("parseFrontmatter tolerance", () => {
 		assert.deepEqual(meta, {});
 		assert.match(body, /no end/);
 	});
-	it("keeps unparseable values as raw strings", () => {
-		const { meta } = parseFrontmatter("---\ntitle: not-json\n---\nbody\n");
-		assert.equal(meta.title, "not-json");
+	it("omits unparseable JSON values without interpreting a second format", () => {
+		const { meta } = parseFrontmatter("---\ntitle: not-json\nstate: open\n---\nbody\n");
+		assert.equal(meta.title, undefined);
+		assert.equal(meta.state, undefined);
 	});
 });

@@ -43,9 +43,9 @@ export interface StashMeta {
 	branch?: string;
 	sessionId?: string;
 	tags: string[];
-	state: StashState;
+	state: StashState | "unknown";
 	/**
-	 * A lifecycle value that is present but is not a real state. The artifact is
+	 * A missing or unrecognized lifecycle value. The artifact is
 	 * still listed so it cannot hide, but its state is UNKNOWN: every lifecycle
 	 * transition rejects it, so no action may be offered as if it would work.
 	 */
@@ -59,12 +59,11 @@ export interface StashMeta {
  * Human-readable lifecycle label for listings and previews: the verified state,
  * or a marker when the state is unknown. `unread` covers artifacts whose header
  * could not be read (listing failures, unclosed headers); `invalidState` covers
- * a present-but-unrecognized lifecycle value. Neither may be presented as the
- * defaulted "open" fallback.
+ * a missing or unrecognized lifecycle value. Neither is an open artifact.
  */
 export function stateLabel(meta: { state: string; invalidState?: string }, unread = false): string {
-	if (meta.invalidState !== undefined) return `unknown (${meta.invalidState})`;
 	if (unread) return "unknown";
+	if (meta.invalidState !== undefined) return `unknown (${meta.invalidState})`;
 	return meta.state;
 }
 
@@ -161,13 +160,7 @@ export function updateFrontmatter(md: string, patch: Record<string, unknown | un
 		}
 	}
 	const entries = Object.entries(patch);
-	if (end === -1) {
-		const header = entries
-			.filter((entry): entry is [string, unknown] => entry[1] !== undefined)
-			.map(([key, value]) => `${key}: ${JSON.stringify(value)}`);
-		if (header.length === 0) return md;
-		return ["---", ...header, "---", "", md].join("\n");
-	}
+	if (end === -1) throw new Error("stash requires a closed frontmatter header");
 
 	const targets = new Map(entries);
 	const emitted = new Set<string>();
@@ -193,7 +186,7 @@ export function updateFrontmatter(md: string, patch: Record<string, unknown | un
 /**
  * Split a markdown document into frontmatter metadata and body.
  * Tolerant: a missing or malformed closing fence yields empty meta and the
- * whole input as body; unparseable values are kept as raw strings.
+ * whole input as body; unparseable JSON values are omitted.
  */
 export function parseFrontmatter(md: string): ParsedArtifact {
 	const lines = md.split("\n");
@@ -216,7 +209,7 @@ export function parseFrontmatter(md: string): ParsedArtifact {
 		try {
 			meta[key] = JSON.parse(raw);
 		} catch {
-			meta[key] = raw;
+			// Invalid current metadata is unavailable, never a second value format.
 		}
 	}
 	return {

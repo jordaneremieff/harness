@@ -3,35 +3,35 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	copyToClipboard,
-	getAgentDir,
-	withFileMutationQueue,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
+	getAgentDir,
+	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
-	resolveDistillModel,
-	resolveDistillThinking,
-	startDistillJob,
 	type DistillJob,
 	type DistillOutcome,
 	type DistillSessionFactory,
 	type DistillUsage,
+	resolveDistillModel,
+	resolveDistillThinking,
+	startDistillJob,
 } from "./distill.ts";
-import { resumeCommand, stateLabel, STASH_STATES, type StashState } from "./format.ts";
-import { redactPayload } from "./redact.ts";
+import { resumeCommand, STASH_STATES, stateLabel } from "./format.ts";
 import { StashPanel } from "./panel.ts";
 import { buildPickupMessage } from "./pickup.ts";
+import { redactPayload } from "./redact.ts";
 import {
 	listStashes,
 	readStash,
 	resolveStash,
 	resolveStoreDir,
 	rotateStash,
+	type StashLifecycleChange,
 	transitionStash,
 	writeStash,
-	type StashLifecycleChange,
 } from "./store.ts";
 import { boundedOutput, formatTokenCount, sanitizeTerminalText } from "./text.ts";
 
@@ -656,7 +656,7 @@ async function browseAndPickup(
 			continue;
 		}
 
-		const state: StashState = result.manage.meta.state;
+		const state = result.manage.meta.state;
 		const choices =
 			state === "active"
 				? ["Close with outcome", "Release (return to open)", "Back"]
