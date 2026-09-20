@@ -3,13 +3,16 @@
 import { spawnSync } from "node:child_process";
 import {
 	chmodSync,
+	closeSync,
 	existsSync,
 	mkdirSync,
+	openSync,
 	readFileSync,
 	readdirSync,
 	realpathSync,
 	renameSync,
 	statSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -134,10 +137,6 @@ interface PromotionReport {
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = resolve(dirname(scriptPath), "..");
 const hookMarker = "# managed by scripts/worktrees.mts";
-const legacyHookMarkers = [
-	"# managed by scripts/extension-worktrees.mts",
-	"# managed by scripts/extension-worktrees.mjs",
-];
 
 const sliceKinds: SliceKind[] = [
 	{
@@ -166,9 +165,9 @@ const sliceKinds: SliceKind[] = [
 	},
 ];
 
-/** True when a hook file is this installer's own output, current or prior. */
+/** True when a hook file carries the current installer's ownership marker. */
 export function hookIsManaged(content: string): boolean {
-	return content.includes(hookMarker) || legacyHookMarkers.some((marker) => content.includes(marker));
+	return content.includes(hookMarker);
 }
 
 function sliceKindForBranch(branch: string): SliceKind | undefined {
@@ -1183,9 +1182,54 @@ function addSlice(context: HarnessContext, reference: string | undefined): void 
 	console.log(record.path);
 }
 
+class WorktreeBusyError extends Error {}
+
+function withWorktreeLock(context: HarnessContext, operation: () => void): void {
+	const commonDir = git(context.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout.trim();
+	const lockPath = join(commonDir, "worktrees.lock");
+	let descriptor: number;
+	try {
+		descriptor = openSync(lockPath, "wx", 0o600);
+	} catch (error) {
+		if (isRecord(error) && error.code === "EEXIST") {
+			throw new WorktreeBusyError(
+				`Another worktree command holds ${lockPath}. Retry after it exits; inspect an interrupted owner before manual recovery.`,
+			);
+		}
+		throw error;
+	}
+	try {
+		writeFileSync(descriptor, `${process.pid}\n`);
+		operation();
+	} finally {
+		closeSync(descriptor);
+		unlinkSync(lockPath);
+	}
+}
+
 function main(): void {
 	const context = contextFromEnvironment();
 	const args = process.argv.slice(2);
+	try {
+		withWorktreeLock(context, () => executeCommand(context, args));
+	} catch (error) {
+		if (!(error instanceof WorktreeBusyError)) throw error;
+		const command = args.find((arg) => !arg.startsWith("--")) ?? "sync";
+		if (command === "promote" && args.includes("--json")) {
+			const parsed = parsePromoteArguments(args.slice(args.indexOf(command) + 1));
+			process.exitCode = reportPromotion(
+				{ ok: false, name: parsed.name, stage: "coordination", reason: error.message, recover: null },
+				true,
+			);
+		} else {
+			const hook = command === "sync" && args.includes("--hook");
+			console.error(hook ? `Worktree sync deferred: ${error.message}` : error.message);
+			process.exitCode = hook ? 0 : 1;
+		}
+	}
+}
+
+function executeCommand(context: HarnessContext, args: string[]): void {
 	const command = args.find((arg) => !arg.startsWith("--")) ?? "sync";
 	const commandIndex = args.indexOf(command);
 	const name = args.slice(commandIndex + 1).find((arg) => !arg.startsWith("--"));

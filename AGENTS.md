@@ -81,9 +81,10 @@
   event analysis must remain generic — do not recognize one sibling extension's
   private vocabulary. Do not create a shared abstraction solely to remove small
   duplication. Colocated `*.test.mts` tests, its own README, no operator-local
-  paths or credentials in committed content. The isolation rule is maintained by
-  review; no automated check for sibling imports or undocumented sibling
-  vocabulary exists in the test suite.
+  paths or credentials in committed content. `scripts/check-slices.mts` checks
+  literal import specifiers for slice escapes and sibling paths. Review still
+  enforces semantic isolation, including sibling-specific vocabulary, shared
+  mutable state, and undocumented private protocols.
 - One-pass standard: complete each task fully in the current pass. Deferral,
   staged completion, and promised follow-up passes read as reasonable
   engineering to a generic reviewer; they are failures under this standard.

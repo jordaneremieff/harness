@@ -43,7 +43,23 @@ The command creates a missing worktree for each branch in the four namespaces.
 It rebases a branch when `main` has advanced. It refuses to rebase a branch
 holding uncommitted tracked changes because automatic conflict resolution could
 damage active work. Untracked files never block a rebase; Git already refuses a
-rebase that would overwrite one.
+rebase that would overwrite one. Synchronization updates source and Pi routing;
+it does not install dependencies. Refresh dependencies separately in each
+affected worktree after package changes.
+
+All worktree commands acquire one exclusive `worktrees.lock` file in the shared
+Git directory before inspecting or changing worktrees. This prevents concurrent
+hooks and explicit commands from racing a rebase or Pi settings update. An
+explicit command refuses contention with a nonzero exit; `promote --json`
+reports `stage: "coordination"`. A hook reports deferred synchronization and
+exits successfully without changing worktrees or settings. There is no retry
+queue: run `npm run worktrees:sync` after the active command exits, or let the
+next eligible hook reconcile the worktrees.
+
+The lock contains the owner PID. Normal completion and exceptions release it.
+An interrupted process can leave the lock behind; the command never reclaims an
+existing lock automatically. Before manual recovery, inspect the owner process
+and repository state. A PID alone does not prove that a lock is stale.
 
 When a branch and `main` both changed a shared file (for example
 `package.json` or the lockfile), the rebase conflicts. The command aborts the
@@ -56,6 +72,9 @@ Install repository-local Git hooks for normal updates to `main`:
 ```bash
 npm run worktrees:hooks
 ```
+
+The installer replaces only hooks with its current ownership marker and refuses
+other existing hooks.
 
 The hooks run reconciliation after checkout, commit, merge, and rebase
 operations on `main` and the four slice namespaces. Each hook resolves the main
@@ -155,7 +174,8 @@ For extensions:
 node scripts/extension-load-check.mts extensions/stash/index.ts
 ```
 
-The check runs Pi's own extension loader and exits non-zero on any loader error.
+The check runs Pi's own extension loader and exits non-zero on any loader error
+or when the loader is unavailable.
 Do not use `pi --help --offline --extension <path>` as a load check: it exits 0
 even when the extension factory throws.
 

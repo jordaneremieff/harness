@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -87,6 +87,61 @@ test("loader discovery supports the current bundled CLI layout", async (t) => {
 	await mkdir(join(local, ".."), { recursive: true });
 	await writeFile(local, "");
 	assert.equal(resolveLoaderPath(root, { binaryPath: binary }), local);
+});
+
+test("the load CLI fails when no Pi loader is available", async (t) => {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-loader-unavailable-")));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const script = join(root, "scripts", "extension-load-check.mts");
+	await mkdir(dirname(script));
+	await copyFile(fileURLToPath(new URL("./extension-load-check.mts", import.meta.url)), script);
+	const extension = join(root, "example.ts");
+	await writeFile(extension, "export default function () {}\n");
+	await assert.rejects(
+		promisify(execFile)(process.execPath, [script, extension], {
+			cwd: root,
+			env: { ...process.env, PATH: join(root, "no-binaries") },
+			timeout: 10_000,
+		}),
+		(error: unknown) => {
+			const failure = error as { code: number; stderr: string };
+			assert.equal(failure.code, 1);
+			assert.match(failure.stderr, /Pi extension loader not found/);
+			return true;
+		},
+	);
+});
+
+test("the load CLI reports factory and registration failures from Pi", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-loader-contract-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const script = fileURLToPath(new URL("./extension-load-check.mts", import.meta.url));
+	const extension = join(root, "example.ts");
+	const options = {
+		cwd: root,
+		env: { ...process.env, NODE_V8_COVERAGE: join(root, "coverage") },
+		timeout: 20_000,
+		maxBuffer: 100_000,
+	};
+	await writeFile(extension, "export default function (pi) { pi.on('session_start', () => {}); }\n");
+	const loaded = await promisify(execFile)(process.execPath, [script, extension], options);
+	assert.match(loaded.stdout, /Loaded 1 extension/);
+	for (const [source, message] of [
+		["export const value = 1;", /does not export a valid factory function/],
+		["export default function () { throw new Error('factory refused'); }", /factory refused/],
+		[
+			"export default function (pi) { pi.registerTool({ name: 'invalid', parameters: null }); }",
+			/must define an object parameter schema/,
+		],
+	] as const) {
+		await writeFile(extension, source);
+		await assert.rejects(promisify(execFile)(process.execPath, [script, extension], options), (error: unknown) => {
+			const failure = error as { code: number; stderr: string };
+			assert.equal(failure.code, 1);
+			assert.match(failure.stderr, message);
+			return true;
+		});
+	}
 });
 
 test("serialized package registrations and built-in schemas exclude tuple notation", async (t) => {

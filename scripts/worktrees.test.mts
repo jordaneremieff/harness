@@ -73,11 +73,6 @@ describe("hook ownership", () => {
 		assert.equal(hookIsManaged("#!/bin/sh\n# managed by scripts/worktrees.mts\n"), true);
 	});
 
-	it("recognizes hooks installed by the pre-rename script", () => {
-		assert.equal(hookIsManaged("#!/bin/sh\n# managed by scripts/extension-worktrees.mts\n"), true);
-		assert.equal(hookIsManaged("#!/bin/sh\n# managed by scripts/extension-worktrees.mjs\n"), true);
-	});
-
 	it("rejects hooks the installer did not write", () => {
 		assert.equal(hookIsManaged("#!/bin/sh\n# my own hook\n"), false);
 	});

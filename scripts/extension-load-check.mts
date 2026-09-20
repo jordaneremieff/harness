@@ -83,6 +83,7 @@ async function main() {
 	);
 	if (outcome.status === "skipped") {
 		console.error(outcome.reason);
+		process.exitCode = 1;
 		return;
 	}
 	for (const failure of outcome.failures) {
