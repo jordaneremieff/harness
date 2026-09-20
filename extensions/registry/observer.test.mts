@@ -77,8 +77,10 @@ describe("observation copying", () => {
 		const store = new ObservationStore();
 		const input = options();
 		store.observe(input, 1);
-		input.skills![0].sourceInfo.path = "/mutated";
-		input.skills![0].name = "mutated";
+		const skills = input.skills;
+		assert.ok(skills);
+		skills[0].sourceInfo.path = "/mutated";
+		skills[0].name = "mutated";
 		assert.equal(store.snapshot()?.skills[0].sourceInfo.path, "/skills/one/SKILL.md");
 		assert.equal(store.snapshot()?.skills[0].name, "one");
 	});

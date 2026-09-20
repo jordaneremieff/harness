@@ -108,18 +108,19 @@ export interface HostSnapshot {
 
 const KIND_RANK: Record<ResourceKind, number> = { tool: 0, command: 1, skill: 2, prompt: 3 };
 
+function compareStrings(a: string, b: string): number {
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** Deterministic ordinal order: kind, then name, then source fields. */
 export function compareRecords(a: ResourceRecord, b: ResourceRecord): number {
 	if (KIND_RANK[a.kind] !== KIND_RANK[b.kind]) return KIND_RANK[a.kind] - KIND_RANK[b.kind];
-	if (a.name !== b.name) return a.name < b.name ? -1 : 1;
-	if (a.sourceInfo.source !== b.sourceInfo.source) return a.sourceInfo.source < b.sourceInfo.source ? -1 : 1;
-	if (a.sourceInfo.path !== b.sourceInfo.path) return a.sourceInfo.path < b.sourceInfo.path ? -1 : 1;
-	if (a.sourceInfo.scope !== b.sourceInfo.scope) return a.sourceInfo.scope < b.sourceInfo.scope ? -1 : 1;
-	if (a.sourceInfo.origin !== b.sourceInfo.origin) return a.sourceInfo.origin < b.sourceInfo.origin ? -1 : 1;
-	const aBase = a.sourceInfo.baseDir ?? "";
-	const bBase = b.sourceInfo.baseDir ?? "";
-	if (aBase !== bBase) return aBase < bBase ? -1 : 1;
-	return 0;
+	if (a.name !== b.name) return compareStrings(a.name, b.name);
+	if (a.sourceInfo.source !== b.sourceInfo.source) return compareStrings(a.sourceInfo.source, b.sourceInfo.source);
+	if (a.sourceInfo.path !== b.sourceInfo.path) return compareStrings(a.sourceInfo.path, b.sourceInfo.path);
+	if (a.sourceInfo.scope !== b.sourceInfo.scope) return compareStrings(a.sourceInfo.scope, b.sourceInfo.scope);
+	if (a.sourceInfo.origin !== b.sourceInfo.origin) return compareStrings(a.sourceInfo.origin, b.sourceInfo.origin);
+	return compareStrings(a.sourceInfo.baseDir ?? "", b.sourceInfo.baseDir ?? "");
 }
 
 function kindOfCommand(source: "extension" | "prompt" | "skill"): ResourceKind {
@@ -132,28 +133,68 @@ function kindOfCommand(source: "extension" | "prompt" | "skill"): ResourceKind {
  * A tool record always states configured presence; `active` is only set when the
  * active-tool surface answered, so an unavailable surface cannot read as inactive.
  */
-export function buildRecords(snapshot: HostSnapshot): ResourceRecord[] {
+type CommandEntry = HostSnapshot["commands"][number];
+
+function buildToolRecords(snapshot: HostSnapshot, activeSet: Set<string>): ResourceRecord[] {
+	if (!snapshot.availability.tools) return [];
 	const records: ResourceRecord[] = [];
-	const activeSet = new Set(snapshot.activeTools);
-
-	if (snapshot.availability.tools) {
-		for (const tool of snapshot.tools) {
-			const record: ResourceRecord = {
-				kind: "tool",
-				name: tool.name,
-				sourceInfo: tool.sourceInfo,
-				evidence: "registration",
-				at: snapshot.at,
-				configured: true,
-			};
-			if (tool.description !== undefined) record.description = tool.description;
-			if (tool.parameters !== undefined) record.parameters = tool.parameters;
-			if (tool.promptGuidelines !== undefined) record.promptGuidelines = [...tool.promptGuidelines];
-			if (snapshot.availability.activeTools) record.active = activeSet.has(tool.name);
-			records.push(record);
-		}
+	for (const tool of snapshot.tools) {
+		const record: ResourceRecord = {
+			kind: "tool",
+			name: tool.name,
+			sourceInfo: tool.sourceInfo,
+			evidence: "registration",
+			at: snapshot.at,
+			configured: true,
+		};
+		if (tool.description !== undefined) record.description = tool.description;
+		if (tool.parameters !== undefined) record.parameters = tool.parameters;
+		if (tool.promptGuidelines !== undefined) record.promptGuidelines = [...tool.promptGuidelines];
+		if (snapshot.availability.activeTools) record.active = activeSet.has(tool.name);
+		records.push(record);
 	}
+	return records;
+}
 
+function buildCommandRecord(
+	command: CommandEntry,
+	observedSkills: Map<string, ObservedSkill>,
+	observedSkillNames: Set<string>,
+	observedAt: number,
+	at: number,
+): ResourceRecord {
+	const kind = kindOfCommand(command.source);
+	const name =
+		kind === "skill" && command.name.startsWith(SKILL_COMMAND_PREFIX)
+			? command.name.slice(SKILL_COMMAND_PREFIX.length)
+			: command.name;
+	const record: ResourceRecord = {
+		kind,
+		name,
+		invocation: `/${command.name}`,
+		sourceInfo: command.sourceInfo,
+		evidence: "registration",
+		at,
+	};
+	if (command.description !== undefined) record.description = command.description;
+	if (kind !== "skill") return record;
+	const observed = observedSkills.get(skillIdentity(name, command.sourceInfo));
+	if (observed === undefined && observedSkillNames.has(name)) record.observationIdentityMismatch = true;
+	if (observed) {
+		record.modelInvocable = { value: !observed.disableModelInvocation, evidence: "observation", at: observedAt };
+		record.baseDir = { value: observed.baseDir, evidence: "observation", at: observedAt };
+	}
+	return record;
+}
+
+/**
+ * Project the host snapshot into ordered records.
+ *
+ * A tool record always states configured presence; `active` is only set when the
+ * active-tool surface answered, so an unavailable surface cannot read as inactive.
+ */
+export function buildRecords(snapshot: HostSnapshot): ResourceRecord[] {
+	const records = buildToolRecords(snapshot, new Set(snapshot.activeTools));
 	const observedSkills = new Map<string, ObservedSkill>();
 	const observedSkillNames = new Set<string>();
 	for (const skill of snapshot.observation?.skills ?? []) {
@@ -161,41 +202,11 @@ export function buildRecords(snapshot: HostSnapshot): ResourceRecord[] {
 		observedSkillNames.add(skill.name);
 	}
 	const observedAt = snapshot.observation?.observedAt ?? 0;
-
 	if (snapshot.availability.commands) {
 		for (const command of snapshot.commands) {
-			const kind = kindOfCommand(command.source);
-			const name =
-				kind === "skill" && command.name.startsWith(SKILL_COMMAND_PREFIX)
-					? command.name.slice(SKILL_COMMAND_PREFIX.length)
-					: command.name;
-			const record: ResourceRecord = {
-				kind,
-				name,
-				invocation: `/${command.name}`,
-				sourceInfo: command.sourceInfo,
-				evidence: "registration",
-				at: snapshot.at,
-			};
-			if (command.description !== undefined) record.description = command.description;
-			if (kind === "skill") {
-				const observed = observedSkills.get(skillIdentity(name, command.sourceInfo));
-				if (observed === undefined && observedSkillNames.has(name)) {
-					record.observationIdentityMismatch = true;
-				}
-				if (observed) {
-					record.modelInvocable = {
-						value: !observed.disableModelInvocation,
-						evidence: "observation",
-						at: observedAt,
-					};
-					record.baseDir = { value: observed.baseDir, evidence: "observation", at: observedAt };
-				}
-			}
-			records.push(record);
+			records.push(buildCommandRecord(command, observedSkills, observedSkillNames, observedAt, snapshot.at));
 		}
 	}
-
 	return records.sort(compareRecords);
 }
 

@@ -5,6 +5,15 @@ import registerRegistry, { RegistryParams, readSnapshot } from "./index.ts";
 
 const sourceInfo = { path: "/fixtures/SKILL.md", source: "fixture", scope: "temporary" as const, origin: "top-level" as const };
 const context = { cwd: "/fixtures", mode: "rpc", hasUI: true, isProjectTrusted: () => true } as ExtensionContext;
+
+function handlerFor(
+	handlers: Map<string, (event: Record<string, unknown>) => Promise<void>>,
+	name: string,
+): (event: Record<string, unknown>) => Promise<void> {
+	const handler = handlers.get(name);
+	assert.ok(handler, `handler ${name}`);
+	return handler;
+}
 function fixture() {
 	const handlers = new Map<string, (event: Record<string, unknown>) => Promise<void>>();
 	const registeredNames: string[] = [];
@@ -60,21 +69,21 @@ describe("Pi adapter", () => {
 	});
 	it("copies selected observation metadata and clears it at both lifecycle boundaries", async () => {
 		const { tool, handlers } = fixture();
-		await handlers.get("session_start")!({});
+		await handlerFor(handlers, "session_start")({});
 		const options = { cwd: "/fixtures", customPrompt: "private prompt", appendSystemPrompt: "private append",
 			contextFiles: [{ path: "/fixtures/AGENTS.md", content: "private context" }], selectedTools: ["one"],
 			skills: [{ name: "example", filePath: sourceInfo.path, baseDir: "/fixtures", disableModelInvocation: true, sourceInfo: { ...sourceInfo } }] };
-		await handlers.get("before_agent_start")!({ systemPromptOptions: options, prompt: "private event" });
+		await handlerFor(handlers, "before_agent_start")({ systemPromptOptions: options, prompt: "private event" });
 		options.skills[0].disableModelInvocation = false;
 		options.skills[0].sourceInfo.path = "/changed";
 		const result = await tool.execute("lookup", { name: "example" }, undefined, undefined, context);
 		assert.ok(result.details);
 		assert.equal((result.details.records as { modelInvocable: { value: boolean } }[])[0].modelInvocable.value, false);
 		assert.doesNotMatch(JSON.stringify(result), /private prompt|private append|private context|private event/);
-		await handlers.get("session_shutdown")!({});
+		await handlerFor(handlers, "session_shutdown")({});
 		const stopped = await tool.execute("lookup", {}, undefined, undefined, context);
 		assert.equal(stopped.details?.outcome, "cancelled");
-		await handlers.get("session_start")!({});
+		await handlerFor(handlers, "session_start")({});
 		const restarted = await tool.execute("lookup", {}, undefined, undefined, context);
 		assert.equal(restarted.details?.observed, false);
 	});
@@ -83,7 +92,7 @@ describe("Pi adapter", () => {
 		const result = await first.tool.execute("lookup", { kind: "tool", limit: 1 }, undefined, undefined, context);
 		const cursor = result.details?.cursor as string;
 		assert.equal(typeof cursor, "string");
-		await first.handlers.get("session_start")!({});
+		await handlerFor(first.handlers, "session_start")({});
 		const reset = await first.tool.execute("lookup", { cursor }, undefined, undefined, context);
 		assert.equal(reset.details?.outcome, "stale_cursor");
 		const second = fixture();
@@ -100,7 +109,7 @@ describe("Pi adapter", () => {
 		const result = await tool.execute("cancelled", { kind: "model" }, AbortSignal.abort(), undefined, ctx);
 		assert.equal(result.details?.outcome, "cancelled");
 		assert.deepEqual(probes, []);
-		await handlers.get("session_shutdown")!({});
+		await handlerFor(handlers, "session_shutdown")({});
 		const stopped = await tool.execute("stopped", { kind: "model" }, undefined, undefined, ctx);
 		assert.equal(stopped.details?.outcome, "cancelled");
 		assert.deepEqual(probes, []);

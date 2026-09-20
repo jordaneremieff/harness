@@ -92,6 +92,58 @@ function measure(text: string, details: Record<string, unknown>): { bytes: numbe
 	return { bytes: Buffer.byteLength(serialized, "utf8"), lines: text.split("\n").length + detailLines + 6 };
 }
 
+/** Header, page notice, and footer for one retained block count. */
+function boundLines(assembled: Assembled, kept: number, dropped: number, cursor: string | undefined): string[] {
+	const notice =
+		dropped > 0
+			? [`[result bounded: ${dropped} of ${assembled.blocks.length} record blocks omitted from this page]`]
+			: [];
+	return [
+		...assembled.header,
+		...(assembled.pageSummary ? [assembled.pageSummary(kept)] : []),
+		...assembled.blocks.slice(0, kept).flatMap((block) => block.lines),
+		...notice,
+		...(cursor ? [`next page: pass cursor=${cursor} as the only argument`] : []),
+		...(dropped > 0 && kept === 0 ? ["The first record exceeds the result bound; this page cannot advance."] : []),
+		...assembled.footer,
+	];
+}
+
+function boundDetails(
+	assembled: Assembled,
+	kept: number,
+	dropped: number,
+	cursor: string | undefined,
+): Record<string, unknown> {
+	return {
+		...assembled.details,
+		records: assembled.blocks.slice(0, kept).map((block) => block.detail),
+		resultBounded: dropped > 0,
+		omittedRecordBlocks: dropped,
+		returnedRecords: kept,
+		...(cursor ? { cursor } : {}),
+		...(dropped > 0 && kept === 0 ? { pageBlocked: true } : {}),
+	};
+}
+
+/** Last resort when even zero record blocks cannot meet the result bound. */
+function oversizedResult(assembled: Assembled): BoundedResult {
+	const minimal = {
+		outcome: oneLine(String(assembled.details.outcome ?? "unavailable")),
+		resultBounded: true,
+		omittedDetails: true,
+		omittedRecordBlocks: assembled.blocks.length,
+		returnedRecords: 0,
+		pageBlocked: true,
+	};
+	const text = [
+		oneLine(assembled.header[0] ?? "registry"),
+		"[result bounded: oversized metadata omitted; this page cannot advance; no absence is established]",
+		...BOUNDARY_LINES,
+	].join("\n");
+	return { text, details: minimal, droppedBlocks: assembled.blocks.length };
+}
+
 /**
  * Drop whole blocks from the tail until the serialized result fits both bounds.
  * A single oversized head is cut on a byte boundary as the last resort.
@@ -100,52 +152,14 @@ export function boundResult(assembled: Assembled): BoundedResult {
 	let kept = assembled.blocks.length;
 	for (;;) {
 		const dropped = assembled.blocks.length - kept;
-		const notice =
-			dropped > 0
-				? [`[result bounded: ${dropped} of ${assembled.blocks.length} record blocks omitted from this page]`]
-				: [];
 		const cursor = kept > 0 ? assembled.continuation?.(kept) : undefined;
-		const lines = [
-			...assembled.header,
-			...(assembled.pageSummary ? [assembled.pageSummary(kept)] : []),
-			...assembled.blocks.slice(0, kept).flatMap((block) => block.lines),
-			...notice,
-			...(cursor ? [`next page: pass cursor=${cursor} as the only argument`] : []),
-			...(dropped > 0 && kept === 0 ? ["The first record exceeds the result bound; this page cannot advance."] : []),
-			...assembled.footer,
-		];
-		const text = lines.join("\n");
-		const details: Record<string, unknown> = {
-			...assembled.details,
-			records: assembled.blocks.slice(0, kept).map((block) => block.detail),
-			resultBounded: dropped > 0,
-			omittedRecordBlocks: dropped,
-			returnedRecords: kept,
-			...(cursor ? { cursor } : {}),
-			...(dropped > 0 && kept === 0 ? { pageBlocked: true } : {}),
-		};
+		const text = boundLines(assembled, kept, dropped, cursor).join("\n");
+		const details = boundDetails(assembled, kept, dropped, cursor);
 		const size = measure(text, details);
 		if (size.bytes <= MAX_RESULT_BYTES && size.lines <= MAX_RESULT_LINES) {
 			return { text, details, droppedBlocks: dropped };
 		}
-		if (kept === 0) {
-			// Unbounded source metadata also occurs outside record blocks. Do not
-			// retain an oversized details object behind a small text preview.
-			const minimal = {
-				outcome: oneLine(String(assembled.details.outcome ?? "unavailable")),
-				resultBounded: true,
-				omittedDetails: true,
-				omittedRecordBlocks: assembled.blocks.length,
-				returnedRecords: 0,
-				pageBlocked: true,
-			};
-			const text = [
-				oneLine(assembled.header[0] ?? "registry"),
-				"[result bounded: oversized metadata omitted; this page cannot advance; no absence is established]",
-				...BOUNDARY_LINES,
-			].join("\n");
-			return { text, details: minimal, droppedBlocks: assembled.blocks.length };
-		}
+		if (kept === 0) return oversizedResult(assembled);
 		kept -= 1;
 	}
 }
@@ -200,40 +214,29 @@ export function observationLines(observation: ObservationSnapshot | null): strin
 	return lines;
 }
 
-export function recordBlock(record: ResourceRecord): Block {
-	const lines = [
-		"",
-		`${record.kind.toUpperCase()} ${oneLine(record.name)}`,
-		`  invocation: ${record.invocation === undefined ? "(not a slash command)" : oneLine(record.invocation)}`,
-		`  description: ${record.description === undefined ? "(none registered)" : oneLine(record.description)}`,
-		`  sourceInfo.path: ${oneLine(record.sourceInfo.path)}`,
-		`  sourceInfo.source: ${oneLine(record.sourceInfo.source)}`,
-		`  sourceInfo.scope: ${record.sourceInfo.scope}`,
-		`  sourceInfo.origin: ${record.sourceInfo.origin}`,
-		`  sourceInfo.baseDir: ${record.sourceInfo.baseDir === undefined ? "(absent)" : oneLine(record.sourceInfo.baseDir)}`,
-		`  evidence: ${record.evidence} at ${isoTime(record.at)}`,
+function toolRecordLines(record: ResourceRecord): string[] {
+	return [
+		`  configured: ${record.configured === true}`,
+		`  active: ${record.active === undefined ? "unavailable (the active-tool surface did not answer)" : record.active}`,
 	];
-	if (record.kind === "tool") {
-		lines.push(`  configured: ${record.configured === true}`);
-		lines.push(
-			`  active: ${record.active === undefined ? "unavailable (the active-tool surface did not answer)" : record.active}`,
-		);
+}
+
+function skillRecordLines(record: ResourceRecord): string[] {
+	const lines = [
+		record.modelInvocable === undefined
+			? "  model-invocable: unknown (no matching observation or current file evidence)"
+			: `  model-invocable: ${record.modelInvocable.value} (evidence: ${record.modelInvocable.evidence} at ${isoTime(record.modelInvocable.at)})`,
+	];
+	if (record.baseDir !== undefined) {
+		lines.push(`  skill baseDir: ${oneLine(record.baseDir.value)} (evidence: ${record.baseDir.evidence})`);
 	}
-	if (record.kind === "skill") {
-		lines.push(
-			record.modelInvocable === undefined
-				? "  model-invocable: unknown (no matching observation or current file evidence)"
-				: `  model-invocable: ${record.modelInvocable.value} (evidence: ${record.modelInvocable.evidence} at ${isoTime(record.modelInvocable.at)})`,
-		);
-		if (record.baseDir !== undefined) {
-			lines.push(`  skill baseDir: ${oneLine(record.baseDir.value)} (evidence: ${record.baseDir.evidence})`);
-		}
-		if (record.observationIdentityMismatch === true) {
-			lines.push(
-				"  note: an observation holds this skill name from a different source; that evidence is not applied here",
-			);
-		}
+	if (record.observationIdentityMismatch === true) {
+		lines.push("  note: an observation holds this skill name from a different source; that evidence is not applied here");
 	}
+	return lines;
+}
+
+function recordDetail(record: ResourceRecord): Record<string, unknown> {
 	const detail: Record<string, unknown> = {
 		kind: record.kind,
 		name: record.name,
@@ -247,7 +250,25 @@ export function recordBlock(record: ResourceRecord): Block {
 	if (record.active !== undefined) detail.active = record.active;
 	if (record.modelInvocable !== undefined) detail.modelInvocable = { ...record.modelInvocable };
 	if (record.observationIdentityMismatch === true) detail.observationIdentityMismatch = true;
-	return { lines, detail };
+	return detail;
+}
+
+export function recordBlock(record: ResourceRecord): Block {
+	const lines = [
+		"",
+		`${record.kind.toUpperCase()} ${oneLine(record.name)}`,
+		`  invocation: ${record.invocation === undefined ? "(not a slash command)" : oneLine(record.invocation)}`,
+		`  description: ${record.description === undefined ? "(none registered)" : oneLine(record.description)}`,
+		`  sourceInfo.path: ${oneLine(record.sourceInfo.path)}`,
+		`  sourceInfo.source: ${oneLine(record.sourceInfo.source)}`,
+		`  sourceInfo.scope: ${record.sourceInfo.scope}`,
+		`  sourceInfo.origin: ${record.sourceInfo.origin}`,
+		`  sourceInfo.baseDir: ${record.sourceInfo.baseDir === undefined ? "(absent)" : oneLine(record.sourceInfo.baseDir)}`,
+		`  evidence: ${record.evidence} at ${isoTime(record.at)}`,
+	];
+	if (record.kind === "tool") lines.push(...toolRecordLines(record));
+	if (record.kind === "skill") lines.push(...skillRecordLines(record));
+	return { lines, detail: recordDetail(record) };
 }
 
 export function matchBlock(match: ScanMatch): Block {

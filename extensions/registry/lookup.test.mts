@@ -141,7 +141,8 @@ describe("file-backed lookup", () => {
 		const second = await lookup(request({ params: { cursor: cursor(first) }, snapshot: host }));
 		assert.equal(second.outcome, "ok");
 		assert.match(second.text, /MEMORY second/);
-		const stamp = decodeCursor(cursor(first)).file!;
+		const stamp = decodeCursor(cursor(first)).file;
+		assert.ok(stamp);
 		await writeFile(path, "---\ndisable-model-invocation: true\n---\nBefore\nmemory instruction\nMEMORY second\nAfter\n");
 		await utimes(path, new Date(), stamp.mtimeMs / 1000);
 		assert.equal((await lookup(request({ params: { cursor: cursor(first) }, snapshot: host }))).outcome, "stale_cursor");

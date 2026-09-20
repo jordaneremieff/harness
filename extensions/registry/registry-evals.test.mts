@@ -26,6 +26,31 @@ type Handler = (
 	event: { toolName: string; input: Record<string, unknown> },
 	ctx: { cwd: string },
 ) => { block: boolean; reason: string } | undefined;
+type FixtureProvider = { baseUrl: string; apiKey: string; models: Array<{ id: string; reasoning: boolean }> };
+
+function requireHook(hooks: Map<string, Handler>, name: string): Handler {
+	const hook = hooks.get(name);
+	assert.ok(hook, `hook ${name}`);
+	return hook;
+}
+
+function requireProvider(providers: Map<string, FixtureProvider>, name: string): FixtureProvider {
+	const provider = providers.get(name);
+	assert.ok(provider, `provider ${name}`);
+	return provider;
+}
+
+function requireTool<T extends { name: string }>(tools: T[], name: string): T {
+	const tool = tools.find((entry) => entry.name === name);
+	assert.ok(tool, `tool ${name}`);
+	return tool;
+}
+
+function requirePromptTemplate(config: VariantConfig, name: string) {
+	const template = config.promptTemplates.find((entry) => entry.name === name);
+	assert.ok(template, `prompt template ${name}`);
+	return template;
+}
 
 function fixtureHarness(cwd: string) {
 	const hooks = new Map<string, Handler>();
@@ -49,8 +74,9 @@ function fixtureHarness(cwd: string) {
 	return {
 		providers,
 		active: () => active,
-		start: () => hooks.get("session_start")!({ toolName: "", input: {} }, { cwd }),
-		call: (toolName: string, input: Record<string, unknown>) => hooks.get("tool_call")!({ toolName, input }, { cwd }),
+		start: () => requireHook(hooks, "session_start")({ toolName: "", input: {} }, { cwd }),
+		call: (toolName: string, input: Record<string, unknown>) =>
+			requireHook(hooks, "tool_call")({ toolName, input }, { cwd }),
 	};
 }
 
@@ -107,7 +133,8 @@ test("the suite preserves task coverage and requires human semantic judgment", (
 			],
 		);
 	}
-	piSdkAdapter.validate!({
+	assert.ok(piSdkAdapter.validate);
+	piSdkAdapter.validate({
 		suitePath,
 		subjectKind: suite.subject.kind,
 		subjectConfig: suite.subject.config,
@@ -197,12 +224,12 @@ test("fixture startup creates exact receipt data and removes only archive activa
 test("fixture providers have synthetic identities and different configured authentication", () => {
 	const fixture = fixtureHarness(root);
 	assert.deepEqual([...fixture.providers.keys()], ["registry-eval-ready", "registry-eval-locked"]);
-	assert.equal(fixture.providers.get("registry-eval-ready")!.apiKey, "synthetic-eval-not-a-secret");
-	assert.equal(fixture.providers.get("registry-eval-locked")!.apiKey, "$PI_REGISTRY_EVAL_UNSET");
+	assert.equal(requireProvider(fixture.providers, "registry-eval-ready").apiKey, "synthetic-eval-not-a-secret");
+	assert.equal(requireProvider(fixture.providers, "registry-eval-locked").apiKey, "$PI_REGISTRY_EVAL_UNSET");
 	for (const provider of fixture.providers.values())
 		assert.equal(new URL(provider.baseUrl).hostname, "registry-eval.invalid");
 	assert.deepEqual(
-		fixture.providers.get("registry-eval-ready")!.models.map(({ id, reasoning }) => ({ id, reasoning })),
+		requireProvider(fixture.providers, "registry-eval-ready").models.map(({ id, reasoning }) => ({ id, reasoning })),
 		[
 			{ id: "reasoning-text", reasoning: true },
 			{ id: "image-reader", reasoning: false },
@@ -265,12 +292,12 @@ test("ledger fixture registers exact archive schema without replacing builtins",
 		tools.map(({ name }) => name),
 		["ledger_preview", "ledger_publish", "ledger_archive"],
 	);
-	assert.deepEqual(JSON.parse(JSON.stringify(tools.find(({ name }) => name === "ledger_archive")!.parameters)), {
+	assert.deepEqual(JSON.parse(JSON.stringify(requireTool(tools, "ledger_archive").parameters)), {
 		type: "object",
 		required: ["batchId", "retentionDays"],
 		properties: { batchId: { type: "string" }, retentionDays: { type: "integer", minimum: 7, maximum: 90 } },
 	});
-	const archive = tools.find(({ name }) => name === "ledger_archive")!;
+	const archive = requireTool(tools, "ledger_archive");
 	assert.deepEqual(archive.promptGuidelines, ["Use ledger_archive when the operator asks to retain reconciled batches."]);
 	assert.ok(!archive.name.includes("retain reconciled batches"));
 	assert.ok(!archive.description.includes("retain reconciled batches"));
@@ -291,7 +318,7 @@ test("source fixtures retain hidden procedures, exact facts, and the adversarial
 	assert.match(readFileSync(join(fixtureRoot, "checkout/ledger/index.ts"), "utf8"), /checkout-copy-not-loaded/);
 	for (const variant of suite.subject.variants) {
 		const config = variant.config as unknown as VariantConfig;
-		assert.ok("inline" in config.promptTemplates.find(({ name }) => name === "ephemeral-note")!.source);
+		assert.ok("inline" in requirePromptTemplate(config, "ephemeral-note").source);
 		assert.equal(config.contextFiles[0].path, "/virtual/evals/ledger/AGENTS.md");
 	}
 });

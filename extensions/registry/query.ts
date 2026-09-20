@@ -83,46 +83,52 @@ export function hasAnySelector(params: RawParams): boolean {
 	return SELECTOR_KEYS.some((key) => params[key] !== undefined);
 }
 
-/** Parse a fresh (non-cursor) request. Schema bounds are re-checked here so the
- * pure query layer is safe to test and reuse without the tool schema. */
-export function parseQuery(params: RawParams): Query {
-	if (!params || typeof params !== "object" || Array.isArray(params) ||
-		Object.keys(params).some((key) => ![...SELECTOR_KEYS, "cursor"].includes(key))) {
+function assertKnownFields(params: RawParams): void {
+	if (
+		!params ||
+		typeof params !== "object" ||
+		Array.isArray(params) ||
+		Object.keys(params).some((key) => ![...SELECTOR_KEYS, "cursor"].includes(key))
+	) {
 		throw new QueryError("invalid_arguments", "arguments must contain only documented fields");
 	}
-	if (params.name !== undefined) {
-		if (typeof params.name !== "string" || params.name.length < NAME_MIN || params.name.length > NAME_MAX) {
-			throw new QueryError("invalid_arguments", `name must be ${NAME_MIN}-${NAME_MAX} characters`);
-		}
+}
+
+function assertBoundedString(value: unknown, name: string, min: number, max: number): void {
+	if (value === undefined) return;
+	if (typeof value !== "string" || value.length < min || value.length > max) {
+		throw new QueryError("invalid_arguments", `${name} must be ${min}-${max} characters`);
 	}
-	if (params.contains !== undefined) {
-		if (
-			typeof params.contains !== "string" ||
-			params.contains.length < CONTAINS_MIN ||
-			params.contains.length > CONTAINS_MAX
-		) {
-			throw new QueryError("invalid_arguments", `contains must be ${CONTAINS_MIN}-${CONTAINS_MAX} characters`);
-		}
-	}
-	if (params.match !== undefined && params.match !== "exact" && params.match !== "substring") {
+}
+
+function assertMatch(value: unknown): void {
+	if (value !== undefined && value !== "exact" && value !== "substring") {
 		throw new QueryError("invalid_arguments", `match must be "exact" or "substring"`);
 	}
-	if (params.kind !== undefined && !(QUERY_KINDS as readonly string[]).includes(params.kind)) {
+}
+
+function assertKind(value: unknown): void {
+	if (value !== undefined && !(QUERY_KINDS as readonly string[]).includes(value as string)) {
 		throw new QueryError("invalid_arguments", `kind must be one of ${QUERY_KINDS.join(", ")}`);
 	}
-	for (const key of ["search", "provider"] as const) {
-		const value = params[key];
-		if (value !== undefined && (typeof value !== "string" || value.length < 1 || value.length > NAME_MAX)) {
-			throw new QueryError("invalid_arguments", `${key} must be 1-${NAME_MAX} characters`);
-		}
+}
+
+function assertBoolean(value: unknown, name: string): void {
+	if (value !== undefined && typeof value !== "boolean") {
+		throw new QueryError("invalid_arguments", `${name} must be boolean`);
 	}
-	for (const key of ["detail", "available"] as const) {
-		if (params[key] !== undefined && typeof params[key] !== "boolean") {
-			throw new QueryError("invalid_arguments", `${key} must be boolean`);
-		}
-	}
-	if (params.detail !== undefined && (params.kind !== "tool" || params.name === undefined ||
-		(params.match !== undefined && params.match !== "exact") || params.contains !== undefined || params.search !== undefined)) {
+}
+
+/** Cross-field rules that tie detail and model-only selectors to their kind. */
+function assertSelectorShape(params: RawParams): void {
+	if (
+		params.detail !== undefined &&
+		(params.kind !== "tool" ||
+			params.name === undefined ||
+			(params.match !== undefined && params.match !== "exact") ||
+			params.contains !== undefined ||
+			params.search !== undefined)
+	) {
 		throw new QueryError("invalid_arguments", "detail requires kind tool and an exact name, without search or contains");
 	}
 	if ((params.provider !== undefined || params.available !== undefined) && params.kind !== "model") {
@@ -131,13 +137,17 @@ export function parseQuery(params: RawParams): Query {
 	if (params.contains !== undefined && (params.kind === "model" || params.kind === "context_file")) {
 		throw new QueryError("invalid_arguments", "contains accepts only file-backed skills or prompts");
 	}
-	let limit = LIMIT_DEFAULT;
-	if (params.limit !== undefined) {
-		if (!Number.isInteger(params.limit) || params.limit < LIMIT_MIN || params.limit > LIMIT_MAX) {
-			throw new QueryError("invalid_arguments", `limit must be an integer ${LIMIT_MIN}-${LIMIT_MAX}`);
-		}
-		limit = params.limit;
+}
+
+function parseLimit(value: unknown): number {
+	if (value === undefined) return LIMIT_DEFAULT;
+	if (!Number.isInteger(value) || (value as number) < LIMIT_MIN || (value as number) > LIMIT_MAX) {
+		throw new QueryError("invalid_arguments", `limit must be an integer ${LIMIT_MIN}-${LIMIT_MAX}`);
 	}
+	return value as number;
+}
+
+function buildQuery(params: RawParams, limit: number): Query {
 	const query: Query = { match: (params.match as MatchMode) ?? "exact", limit };
 	if (params.name !== undefined) query.name = params.name;
 	if (params.kind !== undefined) query.kind = params.kind as QueryKind;
@@ -147,6 +157,22 @@ export function parseQuery(params: RawParams): Query {
 	if (params.provider !== undefined) query.provider = params.provider;
 	if (params.available !== undefined) query.available = params.available;
 	return query;
+}
+
+/** Parse a fresh (non-cursor) request. Schema bounds are re-checked here so the
+ * pure query layer is safe to test and reuse without the tool schema. */
+export function parseQuery(params: RawParams): Query {
+	assertKnownFields(params);
+	assertBoundedString(params.name, "name", NAME_MIN, NAME_MAX);
+	assertBoundedString(params.contains, "contains", CONTAINS_MIN, CONTAINS_MAX);
+	assertMatch(params.match);
+	assertKind(params.kind);
+	assertBoundedString(params.search, "search", 1, NAME_MAX);
+	assertBoundedString(params.provider, "provider", 1, NAME_MAX);
+	assertBoolean(params.detail, "detail");
+	assertBoolean(params.available, "available");
+	assertSelectorShape(params);
+	return buildQuery(params, parseLimit(params.limit));
 }
 
 /** Case-sensitive name comparison; a skill also answers to its invocation name. */

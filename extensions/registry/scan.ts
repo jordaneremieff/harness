@@ -131,22 +131,74 @@ export interface ScanIO {
 	open(path: string, flags: number): Promise<ScanHandle>;
 }
 
+function cancelledResult(bytesRead = 0, fileSize = 0, truncated = false, stamp?: FileStamp): ScanResult {
+	return { outcome: "cancelled", matches: [], bytesRead, fileSize, truncated, ...(stamp ? { stamp } : {}) };
+}
+
+function ioErrorResult(error: string): ScanResult {
+	return { outcome: "io_error", matches: [], bytesRead: 0, fileSize: 0, truncated: false, error };
+}
+
+/**
+ * Reject a non-regular source before the open.
+ *
+ * A pipe, device, or socket must be rejected before the open, because opening
+ * one can block past cancellation. O_NONBLOCK, where the platform defines it,
+ * keeps the open itself from parking on a reader-less FIFO.
+ */
+async function statTarget(path: string, io: ScanIO, signal?: AbortSignal): Promise<ScanResult | null> {
+	const pre = await io.stat(path);
+	signal?.throwIfAborted();
+	return pre.isFile() ? null : ioErrorResult("the resolved source is not a regular file");
+}
+
+interface ScanRead {
+	needle: string;
+	stat2: Stats;
+	after: Stats;
+	buffer: Buffer;
+	bytesRead: number;
+	stamp: FileStamp;
+}
+
+function assembleScanResult(read: ScanRead): ScanResult {
+	const changed =
+		read.after.size !== read.stat2.size ||
+		read.after.mtimeMs !== read.stat2.mtimeMs ||
+		read.after.ctimeMs !== read.stat2.ctimeMs;
+	const text = read.buffer.subarray(0, read.bytesRead).toString("utf8");
+	read.stamp.digest = createHash("sha256").update(read.buffer.subarray(0, read.bytesRead)).digest("hex");
+	const truncated = read.bytesRead < read.stat2.size || changed;
+	const result: ScanResult = {
+		at: Date.now(),
+		outcome: truncated ? "partial" : "ok",
+		matches: findLiteral(text, read.needle),
+		bytesRead: read.bytesRead,
+		fileSize: read.stat2.size,
+		truncated,
+		stamp: read.stamp,
+	};
+	// The complete frontmatter block is evidence even when the body exceeds
+	// the read budget. A concurrent mutation invalidates this evidence.
+	if (!changed) {
+		const frontmatter = readFrontmatter(text);
+		result.frontmatter = frontmatter;
+		if (frontmatter.state === "invalid" || frontmatter.state === "non_object") {
+			result.outcome = "unavailable";
+			result.error = `frontmatter is ${frontmatter.state}; skill metadata is unavailable`;
+		}
+		if (frontmatter.disableModelInvocation !== undefined) {
+			result.disableModelInvocation = frontmatter.disableModelInvocation;
+		}
+	}
+	return result;
+}
+
 export async function scanFile(
 	path: string, needle: string, signal?: AbortSignal, io: ScanIO = { stat, open },
 ): Promise<ScanResult> {
-	if (signal?.aborted) {
-		return { outcome: "cancelled", matches: [], bytesRead: 0, fileSize: 0, truncated: false };
-	}
-	if (!isRealFilePath(path)) {
-		return {
-			outcome: "io_error",
-			matches: [],
-			bytesRead: 0,
-			fileSize: 0,
-			truncated: false,
-			error: "the resolved source is not an absolute file path",
-		};
-	}
+	if (signal?.aborted) return cancelledResult();
+	if (!isRealFilePath(path)) return ioErrorResult("the resolved source is not an absolute file path");
 	let handle: ScanHandle | undefined;
 	let closing: Promise<void> | undefined;
 	const close = () => {
@@ -156,85 +208,26 @@ export async function scanFile(
 	const onAbort = () => { void close(); };
 	signal?.addEventListener("abort", onAbort, { once: true });
 	try {
-		// A pipe, device, or socket must be rejected before the open, because
-		// opening one can block past cancellation. O_NONBLOCK, where the platform
-		// defines it, keeps the open itself from parking on a reader-less FIFO.
-		const pre = await io.stat(path);
-		signal?.throwIfAborted();
-		if (!pre.isFile()) {
-			return {
-				outcome: "io_error",
-				matches: [],
-				bytesRead: 0,
-				fileSize: 0,
-				truncated: false,
-				error: "the resolved source is not a regular file",
-			};
-		}
+		const rejection = await statTarget(path, io, signal);
+		if (rejection) return rejection;
 		const flags = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 		handle = await io.open(path, flags);
 		signal?.throwIfAborted();
 		const stat2 = await handle.stat();
 		signal?.throwIfAborted();
-		if (!stat2.isFile()) {
-			return {
-				outcome: "io_error",
-				matches: [],
-				bytesRead: 0,
-				fileSize: 0,
-				truncated: false,
-				error: "the resolved source stopped being a regular file before the read",
-			};
-		}
+		if (!stat2.isFile()) return ioErrorResult("the resolved source stopped being a regular file before the read");
 		const stamp: FileStamp = { path, size: stat2.size, mtimeMs: stat2.mtimeMs,
 			ctimeMs: stat2.ctimeMs, ino: stat2.ino, dev: stat2.dev, digest: "" };
 		const budget = Math.min(stat2.size, SCAN_MAX_BYTES);
 		const buffer = Buffer.alloc(budget);
 		const { bytesRead } = budget > 0 ? await handle.read(buffer, 0, budget, 0) : { bytesRead: 0 };
-		if (signal?.aborted) {
-			return { outcome: "cancelled", matches: [], bytesRead, fileSize: stat2.size, truncated: false, stamp };
-		}
+		if (signal?.aborted) return cancelledResult(bytesRead, stat2.size, false, stamp);
 		const after = await handle.stat();
 		signal?.throwIfAborted();
-		const changed = after.size !== stat2.size || after.mtimeMs !== stat2.mtimeMs || after.ctimeMs !== stat2.ctimeMs;
-		const text = buffer.subarray(0, bytesRead).toString("utf8");
-		stamp.digest = createHash("sha256").update(buffer.subarray(0, bytesRead)).digest("hex");
-		const truncated = bytesRead < stat2.size || changed;
-		const result: ScanResult = {
-			at: Date.now(),
-			outcome: truncated ? "partial" : "ok",
-			matches: findLiteral(text, needle),
-			bytesRead,
-			fileSize: stat2.size,
-			truncated,
-			stamp,
-		};
-		// The complete frontmatter block is evidence even when the body exceeds
-		// the read budget. A concurrent mutation invalidates this evidence.
-		if (!changed) {
-			const frontmatter = readFrontmatter(text);
-			result.frontmatter = frontmatter;
-			if (frontmatter.state === "invalid" || frontmatter.state === "non_object") {
-				result.outcome = "unavailable";
-				result.error = `frontmatter is ${frontmatter.state}; skill metadata is unavailable`;
-			}
-			if (frontmatter.disableModelInvocation !== undefined) {
-				result.disableModelInvocation = frontmatter.disableModelInvocation;
-			}
-		}
-		return result;
+		return assembleScanResult({ needle, stat2, after, buffer, bytesRead, stamp });
 	} catch (error) {
-		if (signal?.aborted) {
-			return { outcome: "cancelled", matches: [], bytesRead: 0, fileSize: 0, truncated: false };
-		}
-		return {
-			outcome: "io_error",
-			matches: [],
-			bytesRead: 0,
-			fileSize: 0,
-			truncated: false,
-			error: error instanceof Error ? error.message : String(error),
-		};
+		if (signal?.aborted) return cancelledResult();
+		return ioErrorResult(error instanceof Error ? error.message : String(error));
 	} finally {
 		signal?.removeEventListener("abort", onAbort);
 		await close();

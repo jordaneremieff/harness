@@ -39,6 +39,90 @@ export function retainedBytes(value: unknown): number {
 	return Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
 }
 
+interface ObserveState {
+	options: ObservableOptions;
+	at: number;
+	cwd: string;
+	skills: ObservedSkill[];
+	selectedTools: string[];
+	contextFilePaths: string[];
+	overflowRecords: boolean;
+	overflowBytes: boolean;
+}
+
+function observeRecordCount(state: ObserveState): number {
+	return state.skills.length + state.selectedTools.length + state.contextFilePaths.length;
+}
+
+function buildObservation(state: ObserveState): ObservationSnapshot {
+	return {
+		observedAt: state.at,
+		cwd: state.cwd,
+		skills: state.skills,
+		selectedTools: state.selectedTools,
+		contextFilePaths: state.contextFilePaths,
+		customPromptPresent: typeof state.options.customPrompt === "string" && state.options.customPrompt.length > 0,
+		forcedSystemPromptPresent: typeof state.options.forceSystemPrompt === "string",
+		appendSystemPromptPresent:
+			typeof state.options.appendSystemPrompt === "string" && state.options.appendSystemPrompt.length > 0,
+		recordCount: observeRecordCount(state),
+		bytes: 0,
+		overflowRecords: state.overflowRecords,
+		overflowBytes: state.overflowBytes,
+	};
+}
+
+function admitRecord<T>(state: ObserveState, list: T[], item: T): boolean {
+	if (observeRecordCount(state) >= MAX_OBSERVED_RECORDS) {
+		state.overflowRecords = true;
+		return false;
+	}
+	list.push(item);
+	if (retainedBytes(buildObservation(state)) > MAX_OBSERVED_BYTES) {
+		list.pop();
+		state.overflowBytes = true;
+		return false;
+	}
+	return true;
+}
+
+function admitObservedSkills(state: ObserveState): void {
+	for (const skill of state.options.skills ?? []) {
+		const copy: ObservedSkill = {
+			name: skill.name,
+			filePath: skill.filePath,
+			baseDir: skill.baseDir,
+			disableModelInvocation: skill.disableModelInvocation === true,
+			sourceInfo: { ...skill.sourceInfo },
+		};
+		if (!admitRecord(state, state.skills, copy)) return;
+	}
+}
+
+function admitSelectedTools(state: ObserveState): void {
+	for (const name of state.options.selectedTools ?? []) {
+		if (!admitRecord(state, state.selectedTools, name)) return;
+	}
+}
+
+function admitContextFiles(state: ObserveState): void {
+	// Only the path is copied. Context-file content never enters this store.
+	for (const file of state.options.contextFiles ?? []) {
+		if (!admitRecord(state, state.contextFilePaths, file.path)) return;
+	}
+}
+
+/** Measure to a fixed point because recording the size grows the snapshot. */
+function settleObservation(state: ObserveState): ObservationSnapshot {
+	const value = buildObservation(state);
+	for (let pass = 0; pass < 4; pass += 1) {
+		const measured = retainedBytes(value);
+		if (measured === value.bytes) break;
+		value.bytes = measured;
+	}
+	return value;
+}
+
 /**
  * Session-scoped observation state.
  *
@@ -50,86 +134,37 @@ export class ObservationStore {
 
 	/** Replace the retained observation with a bounded copy of the current inputs. */
 	observe(options: ObservableOptions, at: number): void {
-		const skills: ObservedSkill[] = [];
-		const selectedTools: string[] = [];
-		const contextFilePaths: string[] = [];
-		let overflowRecords = false;
-		let overflowBytes = false;
-
-		const build = (cwd: string): ObservationSnapshot => ({
-			observedAt: at,
-			cwd,
-			skills,
-			selectedTools,
-			contextFilePaths,
-			customPromptPresent: typeof options.customPrompt === "string" && options.customPrompt.length > 0,
-			forcedSystemPromptPresent: typeof options.forceSystemPrompt === "string",
-			appendSystemPromptPresent:
-				typeof options.appendSystemPrompt === "string" && options.appendSystemPrompt.length > 0,
-			recordCount: skills.length + selectedTools.length + contextFilePaths.length,
-			bytes: 0,
-			overflowRecords,
-			overflowBytes,
-		});
-
+		const state: ObserveState = {
+			options,
+			at,
+			cwd: typeof options.cwd === "string" ? options.cwd : "",
+			skills: [],
+			selectedTools: [],
+			contextFilePaths: [],
+			overflowRecords: false,
+			overflowBytes: false,
+		};
 		// The observed cwd is unbounded input, so it is charged to the same budget
 		// as every other retained field before any record is admitted.
-		let cwd = typeof options.cwd === "string" ? options.cwd : "";
-		if (retainedBytes(build(cwd)) > MAX_OBSERVED_BYTES) {
-			cwd = "";
-			overflowBytes = true;
+		if (retainedBytes(buildObservation(state)) > MAX_OBSERVED_BYTES) {
+			state.cwd = "";
+			state.overflowBytes = true;
 		}
-
-		const admit = <T>(list: T[], item: T): boolean => {
-			const count = skills.length + selectedTools.length + contextFilePaths.length;
-			if (count >= MAX_OBSERVED_RECORDS) {
-				overflowRecords = true;
-				return false;
-			}
-			list.push(item);
-			if (retainedBytes(build(cwd)) > MAX_OBSERVED_BYTES) {
-				list.pop();
-				overflowBytes = true;
-				return false;
-			}
-			return true;
-		};
-
-		for (const skill of options.skills ?? []) {
-			const copy: ObservedSkill = {
-				name: skill.name,
-				filePath: skill.filePath,
-				baseDir: skill.baseDir,
-				disableModelInvocation: skill.disableModelInvocation === true,
-				sourceInfo: { ...skill.sourceInfo },
-			};
-			if (!admit(skills, copy)) break;
-		}
-		for (const name of options.selectedTools ?? []) {
-			if (!admit(selectedTools, name)) break;
-		}
-		// Only the path is copied. Context-file content never enters this store.
-		for (const file of options.contextFiles ?? []) {
-			if (!admit(contextFilePaths, file.path)) break;
-		}
-
-		// Recording the measured size grows the snapshot, so the count is taken to
-		// a fixed point and the bound is then settled against the final object.
-		const settle = (value: ObservationSnapshot): ObservationSnapshot => {
-			for (let pass = 0; pass < 4; pass += 1) {
-				const measured = retainedBytes(value);
-				if (measured === value.bytes) break;
-				value.bytes = measured;
-			}
-			return value;
-		};
-		let snapshot = settle(build(cwd));
+		admitObservedSkills(state);
+		admitSelectedTools(state);
+		admitContextFiles(state);
+		let snapshot = settleObservation(state);
 		while (retainedBytes(snapshot) > MAX_OBSERVED_BYTES) {
-			const source = contextFilePaths.length > 0 ? contextFilePaths : selectedTools.length > 0 ? selectedTools : skills;
-			if (source.length === 0) cwd = "";
+			const source =
+				state.contextFilePaths.length > 0
+					? state.contextFilePaths
+					: state.selectedTools.length > 0
+						? state.selectedTools
+						: state.skills;
+			if (source.length === 0) state.cwd = "";
 			else source.pop();
-			overflowBytes = true;
-			snapshot = settle(build(cwd));
+			state.overflowBytes = true;
+			snapshot = settleObservation(state);
 		}
 		this.current = snapshot;
 	}
