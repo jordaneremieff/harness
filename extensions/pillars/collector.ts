@@ -40,6 +40,15 @@ export function folded(cell: Cell): Cell {
 	};
 }
 
+const REFUSED_STATUSES: readonly CommitStatus[] = [
+	"receipt_quota",
+	"sequence_gap",
+	"counter_saturated",
+	"revision_saturated",
+	"byte_quota",
+	"outside_window",
+];
+
 /** A sealed delta never changes after its first publication attempt. */
 export class Collector {
 	private readonly owner = randomBytes(16).toString("hex");
@@ -95,36 +104,39 @@ export class Collector {
 			this.diagnostic("Pillars access counters reached their limit. Unpersisted loss remains unknown.");
 		}
 	}
+	private normalCells(): number {
+		let normal = 0;
+		for (const value of this.pending.values()) if (value.resourceClass !== "overflow") normal++;
+		return normal;
+	}
+
+	/** Restores the pending cell or removes it, then records the dropped event count. */
+	private dropPending(cellKey: string, previous: Cell | undefined, source: Cell): false {
+		if (previous) this.pending.set(cellKey, previous);
+		else this.pending.delete(cellKey);
+		this.incident("pendingDroppedEvents", safeAdd(source.counters.readRequests, source.counters.readResults));
+		return false;
+	}
+
 	admit(source: Cell): boolean {
 		if (this.closed || this.saturated) return false;
 		if (!this.prune()) return false;
 		if (!inWindow(source.day, utcDay(this.now())) || this.refused.has(source.day)) return false;
-		let cell = structuredClone(source),
+		let cell = structuredClone(source);
+		let cellKey = key(cell);
+		if (!this.pending.has(cellKey) && cell.resourceClass !== "overflow" && this.normalCells() >= LIMITS.cellsPerDay) {
+			cell = folded(cell);
 			cellKey = key(cell);
-		if (!this.pending.has(cellKey) && cell.resourceClass !== "overflow") {
-			let normal = 0;
-			for (const value of this.pending.values()) if (value.resourceClass !== "overflow") normal++;
-			if (normal >= LIMITS.cellsPerDay) {
-				cell = folded(cell);
-				cellKey = key(cell);
-			}
 		}
 		const previous = this.pending.get(cellKey);
 		try {
 			cell.counters = addCounters(previous?.counters ?? zero(), cell.counters);
 			this.pending.set(cellKey, cell);
-			if (bytes([...this.pending.values()]) + bytes([...this.health]) > LIMITS.shardBytes - 4096) {
-				if (previous) this.pending.set(cellKey, previous);
-				else this.pending.delete(cellKey);
-				this.incident("pendingDroppedEvents", safeAdd(source.counters.readRequests, source.counters.readResults));
-				return false;
-			}
+			if (bytes([...this.pending.values()]) + bytes([...this.health]) > LIMITS.shardBytes - 4096)
+				return this.dropPending(cellKey, previous, source);
 			return true;
 		} catch {
-			if (previous) this.pending.set(cellKey, previous);
-			else this.pending.delete(cellKey);
-			this.incident("pendingDroppedEvents", safeAdd(source.counters.readRequests, source.counters.readResults));
-			return false;
+			return this.dropPending(cellKey, previous, source);
 		}
 	}
 	async observed(signal?: AbortSignal): Promise<void> {
@@ -173,6 +185,24 @@ export class Collector {
 		);
 		this.timer.unref();
 	}
+	private async attempt(batch: Batch, signal?: AbortSignal): Promise<void> {
+		try {
+			const status = await this.publisher.commit(batch, utcDay(this.now()), signal);
+			if (status === "committed" || status === "duplicate") {
+				this.sequences.set(batch.day, batch.seq);
+				this.sealed = undefined;
+			} else if (REFUSED_STATUSES.includes(status)) {
+				this.sealed = undefined;
+				this.refused.add(batch.day);
+				for (const [cellKey, cell] of this.pending) if (cell.day === batch.day) this.pending.delete(cellKey);
+				this.health.delete(batch.day);
+				this.diagnostic("Pillars storage refused a delta. Unpersisted loss remains unknown.");
+			} else if (status === "publication_failed") this.incident("writeFailures");
+		} catch {
+			this.incident("writeFailures");
+		}
+	}
+
 	async flush(immediate = false, signal?: AbortSignal): Promise<void> {
 		if (this.closed) return;
 		if (this.active) {
@@ -187,32 +217,7 @@ export class Collector {
 		if (!this.sealed) return;
 		const batch = this.sealed;
 		this.lastAttempt = this.now();
-		this.active = (async () => {
-			try {
-				const status = await this.publisher.commit(batch, utcDay(this.now()), signal);
-				if (status === "committed" || status === "duplicate") {
-					this.sequences.set(batch.day, batch.seq);
-					this.sealed = undefined;
-				} else if (
-					[
-						"receipt_quota",
-						"sequence_gap",
-						"counter_saturated",
-						"revision_saturated",
-						"byte_quota",
-						"outside_window",
-					].includes(status)
-				) {
-					this.sealed = undefined;
-					this.refused.add(batch.day);
-					for (const [cellKey, cell] of this.pending) if (cell.day === batch.day) this.pending.delete(cellKey);
-					this.health.delete(batch.day);
-					this.diagnostic("Pillars storage refused a delta. Unpersisted loss remains unknown.");
-				} else if (status === "publication_failed") this.incident("writeFailures");
-			} catch {
-				this.incident("writeFailures");
-			}
-		})();
+		this.active = this.attempt(batch, signal);
 		try {
 			await this.active;
 		} finally {
