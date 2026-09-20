@@ -48,7 +48,8 @@ under `~/.pi/agent/git/github.com/OWNER/harness`.
 
 To load the shared global Pi rules, point `~/.pi/agent/AGENTS.md` at
 [`config/pi/agent/AGENTS.md`](../config/pi/agent/AGENTS.md). Check any existing
-file before replacing it. For a machine without that file, create the pointer:
+file before replacing it. Create a symbolic link only after the operator
+explicitly approves that link. For an approved link with no existing destination:
 
 ```bash
 ln -s /absolute/path/to/harness/config/pi/agent/AGENTS.md ~/.pi/agent/AGENTS.md
@@ -95,9 +96,10 @@ The harness is a Pi package. `package.json` declares the resources under the
   tests through `node --test` over the glob in the `test` script.
 - `package.json` declares wildcard peers for `@earendil-works/pi-ai`,
   `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox`, and
-  `@earendil-works/pi-server`. Its one direct runtime dependency is
-  `htmlparser2`, which the Brave extension uses for static HTML parsing.
-- Pi 0.85.1's extension loader binds the core AI, agent, coding-agent, TUI,
+  `@earendil-works/pi-server`. Runtime dependencies include `htmlparser2`
+  for static HTML parsing and `ajv` with `ajv-formats` for policy data validation.
+  Read the manifest for the complete current dependency set.
+- Pi's extension loader binds the core AI, agent, coding-agent, TUI,
   and typebox imports to its running installation. `pi-server` is not in that
   bound set. The manifest still declares it as a peer, but the subagent slice
   imports neither `pi-server` nor `pi-protocol` and exposes no worker socket.
@@ -129,6 +131,35 @@ The root `AGENTS.md` governs work on this repository. The separate
 `config/pi/agent/AGENTS.md` file is the machine-independent source for global
 Pi rules. Its repository location does not establish how a particular machine
 deploys or loads it.
+
+## Native Pi controls
+
+Use the installed Pi documentation for exact settings and API contracts. Keep
+machine choices in Pi's own configuration rather than introducing harness
+extensions that duplicate these controls:
+
+- **Compaction:** `compaction.modelOverrides` sets `reserveTokens` and
+  `keepRecentTokens` by exact, case-sensitive `provider/modelId`. Pi merges
+  global and project settings before model lookup. A global model-specific
+  value therefore wins over a project-wide fallback. `compaction.enabled`
+  controls automatic compaction; manual `/compact` remains available when it
+  is false. Preserve the operator's current toggle and token budgets unless
+  a change is requested. See Pi's `docs/settings.md` and `docs/compaction.md`.
+- **Prompt cache warming:** global `cacheWarming` selects `off`, `streaming`,
+  or `idle`. Pi owns the refresh schedule and cost decision. Refresh requests
+  incur provider usage; a model needs a known cache lifetime for its selected
+  retention tier. `/session` exposes the decision and estimated cost. Do not
+  add a second refresh timer or infer that an absent refresh is a fault.
+  See Pi's `docs/settings.md` and `docs/models.md`.
+- **Bug reports:** `/bug` offers upload or local zip export. Both include
+  configuration and error diagnostics even without the optional transcript.
+  The summary option sends transcript content to the current provider.
+  Review the selected evidence and obtain the required disclosure authority;
+  credential redaction is not proof that arbitrary diagnostic text is safe.
+  See Pi's `docs/sessions.md`.
+
+These controls are host capabilities, not package defaults. Installing this
+harness does not select their values or authorize an evidence upload.
 
 ## Extension anatomy
 

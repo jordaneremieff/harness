@@ -27,7 +27,9 @@ boundaries, rather than a central feature catalog.
 - [Setup and load model](docs/architecture.md#setup) covers installation,
   updates, and machine configuration.
 - [Architecture](docs/architecture.md) explains the resource boundaries and
-  repository conventions.
+  repository conventions. [Native Pi controls](docs/architecture.md#native-pi-controls)
+  covers model-specific compaction, cache warming, and bug-report privacy without
+  adding parallel harness mechanisms.
 - [Prompt templates](docs/conventions/prompts.md) supply the operator's `/`
   commands, including `/seed [hint]`, which puts a quick next-session brief
   on the clipboard labeled `seed: <topic>`; its chat confirmation follows
