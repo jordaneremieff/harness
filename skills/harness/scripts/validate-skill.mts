@@ -225,47 +225,6 @@ function stripYamlComment(value: string): string {
 	return result.trim();
 }
 
-function toggleQuote(char: string, previous: string | undefined, quote: string | undefined): string | undefined {
-	if ((char !== '"' && char !== "'") || previous === "\\") return quote;
-	return quote === char ? undefined : (quote ?? char);
-}
-
-function bracketDelta(char: string): { square: number; curly: number } | undefined {
-	if (char === "[") return { square: 1, curly: 0 };
-	if (char === "]") return { square: -1, curly: 0 };
-	if (char === "{") return { square: 0, curly: 1 };
-	if (char === "}") return { square: 0, curly: -1 };
-	return undefined;
-}
-
-function _splitTopLevel(value: string, delimiter: string): string[] {
-	const parts: string[] = [];
-	let current = "";
-	let square = 0;
-	let curly = 0;
-	let quote: string | undefined;
-	let previous: string | undefined;
-	for (const char of value) {
-		quote = toggleQuote(char, previous, quote);
-		if (!quote) {
-			const delta = bracketDelta(char);
-			if (delta) {
-				square += delta.square;
-				curly += delta.curly;
-			} else if (char === delimiter && square === 0 && curly === 0) {
-				parts.push(current);
-				current = "";
-				previous = char;
-				continue;
-			}
-		}
-		current += char;
-		previous = char;
-	}
-	parts.push(current);
-	return parts;
-}
-
 function parseBlockHeader(value: string): { value: ""; block: BlockScalar } | undefined {
 	const match = value.match(/^([|>])([+-])?$/);
 	if (!match) return undefined;
