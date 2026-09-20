@@ -231,7 +231,9 @@ test("temporary replacement fails closed and preserves a foreign hard link", asy
 		const result = await exportLocal(join(directory, "final.json"), doc, {
 			before: async (step) => {
 				if (step !== "publish") return;
-				temporary = (await readdir(directory)).find((name) => name.startsWith(".pillars-export-"))!;
+				const observed = (await readdir(directory)).find((name) => name.startsWith(".pillars-export-"));
+				assert.ok(observed);
+				temporary = observed;
 				await rename(join(directory, temporary), join(directory, "moved"));
 				await link(sentinel, join(directory, temporary));
 			},
@@ -256,7 +258,7 @@ test("cancellation at the publication boundary leaves no final artifact", async 
 test("invalid export documents fail before temporary creation", async () =>
 	fixture(async (directory) => {
 		const doc = await document();
-		(doc as any).privateOwner = "synthetic-private";
+		Object.assign(doc, { privateOwner: "synthetic-private" });
 		const result = await exportLocal(join(directory, "invalid.json"), doc);
 		assert.equal(result.code, "export_write_failed");
 		assert.deepEqual(await readdir(directory), []);
