@@ -6,34 +6,53 @@ import { after, afterEach, before, describe, it, mock } from "node:test";
 import registerStash from "./index.ts";
 import { listStashes, readStash, transitionStash, writeStash } from "./store.ts";
 
-interface Registry {
-	tools: Map<string, any>;
-	commands: Map<string, any>;
-	sent: Array<{ content: string; options?: unknown }>;
-	events: Map<string, any>;
-	pi: any;
-}
+import type { Api, Model } from "@earendil-works/pi-ai";
+import type { DistillSession, DistillSessionFactory } from "./distill.ts";
+import type { PanelTheme } from "./panel.ts";
+import {
+	captureCommand,
+	captureTool,
+	hostContext,
+	RequiredMap,
+	stringArray,
+	testModel,
+	type CustomOptions,
+	type TestContext,
+	type TestUi,
+} from "./test-fixtures.mts";
 
-function registry(overrides?: { distillSessionFactory?: any; copyText?: (text: string) => Promise<void> }): Registry {
-	const tools = new Map<string, any>();
-	const commands = new Map<string, any>();
+function registry(overrides?: Parameters<typeof registerStash>[1]) {
+	const tools = new RequiredMap<string, ReturnType<typeof captureTool>>();
+	const commands = new RequiredMap<string, ReturnType<typeof captureCommand>>();
 	const sent: Array<{ content: string; options?: unknown }> = [];
-	const events = new Map<string, any>();
-	const pi = {
-		registerTool: (tool: any) => tools.set(tool.name, tool),
-		registerCommand: (name: string, command: any) => commands.set(name, command),
+	const events = new RequiredMap<
+		string,
+		(event: { type?: string; reason?: string }, ctx: TestContext) => Promise<void>
+	>();
+	const pi: Parameters<typeof registerStash>[0] = {
+		registerTool: (tool) => {
+			tools.set(tool.name, captureTool(tool));
+		},
+		registerCommand: (name, command) => {
+			commands.set(name, captureCommand(command));
+		},
 		exec: async () => ({ code: 0, stdout: "main\n", stderr: "", killed: false }),
-		sendUserMessage: (content: string, options?: unknown) => sent.push({ content, options }),
-		on: (event: string, handler: any) => {
-			events.set(event, handler);
-			return () => events.delete(event);
+		sendUserMessage: (content, options) => {
+			assert.ok(typeof content === "string");
+			sent.push({ content, options });
+		},
+		on: (event, handler) => {
+			events.set(event, (_event, ctx) => handler({ type: "session_shutdown", reason: "quit" }, hostContext(ctx)));
+			return () => {
+				events.delete(event);
+			};
 		},
 	};
 	registerStash(pi, overrides);
 	return { tools, commands, sent, events, pi };
 }
 
-const theme: any = {
+const theme: PanelTheme = {
 	fg: (_color: string, text: string) => text,
 	bg: (_color: string, text: string) => text,
 	bold: (text: string) => text,
@@ -78,11 +97,16 @@ describe("stash entrypoint", () => {
 		assert.equal(rotated.details.state, "open");
 		assert.match(rotated.content[0].text, /Rotated stash/);
 		const listed = await tools.get("stash_list").execute("call", { limit: 50 }, new AbortController().signal);
-		assert.equal(listed.details.ids.includes(record.id), false, "rotated artifacts must disappear from listings");
+		assert.equal(
+			stringArray(listed.details.ids).includes(record.id),
+			false,
+			"rotated artifacts must disappear from listings",
+		);
 		await assert.rejects(
 			tools.get("stash_read").execute("call", { id: record.id }, new AbortController().signal),
 			/no stash matches/,
 		);
+		assert.ok(typeof rotated.details.archivePath === "string");
 		assert.match(await readFile(rotated.details.archivePath, "utf8"), /SUPERSEDED_BODY/);
 	});
 
@@ -125,7 +149,7 @@ describe("stash entrypoint", () => {
 		);
 		const { commands } = registry();
 		const notifications: string[] = [];
-		const ctx: any = {
+		const ctx: TestContext = {
 			mode: "rpc",
 			hasUI: true,
 			cwd: "/workspace",
@@ -150,20 +174,18 @@ describe("stash entrypoint", () => {
 		const notifications: string[] = [];
 		let confirmShown = 0;
 		let rounds = 0;
-		const ctx: any = {
+		const ctx: TestContext = {
 			mode: "tui",
 			hasUI: true,
 			isIdle: () => true,
 			ui: {
 				notify: (message: string) => notifications.push(message),
-				custom: async (factory: any) => {
+				custom: async (factory) => {
 					rounds++;
 					if (rounds > 1) return {};
 					return new Promise((resolve) => {
 						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
-						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component: any) =>
-							component.handleInput("\t"),
-						);
+						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => component.handleInput("\t"));
 					});
 				},
 				select: async () => "Rotate (archive)",
@@ -199,7 +221,7 @@ describe("stash entrypoint", () => {
 
 	it("uses /stash get <id> as a direct, deterministic pickup", async () => {
 		const { commands, sent, tools } = registry();
-		const ctx: any = {
+		const ctx: TestContext = {
 			mode: "tui",
 			hasUI: true,
 			isIdle: () => true,
@@ -220,7 +242,7 @@ describe("stash entrypoint", () => {
 		);
 		const listed = await tools.get("stash_list").execute("call", { state: "active" }, new AbortController().signal);
 		assert.match(listed.content[0].text, /active · Pickup target/);
-		assert.ok(listed.details.states.every((state: string) => state === "active"));
+		assert.ok(stringArray(listed.details.states).every((state) => state === "active"));
 	});
 
 	it("keeps activation committed and reports it when pickup delivery fails", async () => {
@@ -285,7 +307,7 @@ describe("stash entrypoint", () => {
 		);
 		const { commands, sent } = registry();
 		const notifications: string[] = [];
-		const ctx: any = {
+		const ctx: TestContext = {
 			mode: "rpc",
 			hasUI: true,
 			cwd: "/workspace",
@@ -315,7 +337,7 @@ describe("stash entrypoint", () => {
 			new Date("2025-07-26T10:00:00Z"),
 		);
 		const { commands, sent } = registry();
-		const ctx: any = {
+		const ctx: TestContext = {
 			mode: "rpc",
 			hasUI: true,
 			cwd: "/workspace",
@@ -354,7 +376,7 @@ describe("stash entrypoint", () => {
 		);
 		const { commands } = registry();
 		const notifications: string[] = [];
-		const ctx: any = {
+		const ctx: TestContext = {
 			mode: "rpc",
 			hasUI: true,
 			ui: { notify: (message: string) => notifications.push(message) },
@@ -419,19 +441,19 @@ describe("stash entrypoint", () => {
 
 	it("picks up the selected artifact in one injected message and retains the footer height authority", async () => {
 		const { commands, sent } = registry();
-		let overlayOptions: any;
-		const notifications: Array<{ message: string; level: string }> = [];
-		const ctx: any = {
+		let overlayOptions: NonNullable<CustomOptions>["overlayOptions"];
+		const notifications: Array<{ message: string; level: string | undefined }> = [];
+		const ctx: TestContext = {
 			mode: "tui",
 			hasUI: true,
 			isIdle: () => true,
 			ui: {
-				notify: (message: string, level: string) => notifications.push({ message, level }),
-				custom: async (factory: any, options: any) => {
-					overlayOptions = options.overlayOptions;
+				notify: (message, level) => notifications.push({ message, level }),
+				custom: async (factory, options) => {
+					overlayOptions = options?.overlayOptions;
 					return new Promise((resolve) => {
 						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
-						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component: any) => {
+						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => {
 							const lines = component.render(38);
 							assert.ok(lines.length <= 8);
 							assert.match(lines.join("\n"), /esc|close/i);
@@ -447,6 +469,7 @@ describe("stash entrypoint", () => {
 		assert.match(sent[0].content, /UNIQUE_PICKUP_BODY/);
 		assert.doesNotMatch(sent[0].content, /stash_read|fetch the stash/i);
 		assert.equal(sent[0].options, undefined);
+		assert.ok(overlayOptions && typeof overlayOptions !== "function");
 		assert.equal(overlayOptions.minWidth, 104);
 		assert.equal(overlayOptions.maxHeight, "92%");
 		assert.equal(notifications.length, 0);
@@ -466,7 +489,7 @@ describe("stash entrypoint", () => {
 			isIdle: () => true,
 			ui: {
 				notify: () => {},
-				custom: async (factory: any) =>
+				custom: async (factory) =>
 					new Promise((resolve) => {
 						const tui = { terminal: { rows: 20 }, requestRender: () => {} };
 						const component = factory(tui, theme, {}, resolve);
@@ -497,7 +520,7 @@ describe("stash entrypoint", () => {
 			ui: {
 				notify: () => {},
 				input: async () => "The direct browser action closed this effort.",
-				custom: async (factory: any) =>
+				custom: async (factory) =>
 					new Promise((resolve) => {
 						const tui = { terminal: { rows: 20 }, requestRender: () => {} };
 						const component = factory(tui, theme, {}, resolve);
@@ -537,7 +560,7 @@ describe("stash entrypoint", () => {
 				select: async () => "Close with outcome",
 				input: async () => "The browser-driven effort reached its intended result.",
 				confirm: async () => true,
-				custom: async (factory: any) =>
+				custom: async (factory) =>
 					new Promise((resolve) => {
 						const tui = { terminal: { rows: 20 }, requestRender: () => {} };
 						const component = factory(tui, theme, {}, resolve);
@@ -559,7 +582,7 @@ describe("stash entrypoint", () => {
 });
 
 /** A canned distillation reply that resolves immediately. */
-function fakeDistillFactory(reply: string, opts?: { session?: any }) {
+function fakeDistillFactory(reply: string, opts?: { session?: { aborted?: boolean; instance?: DistillSession } }) {
 	const session = {
 		prompt: async () => {},
 		getLastAssistantText: () => reply,
@@ -580,20 +603,17 @@ const DISTILL_PAYLOAD = JSON.stringify({
 	tags: ["distill"],
 });
 
-function creationCtx(ui: any, extra: any = {}) {
-	const parentModel =
-		extra.model === undefined && !("model" in extra)
-			? { id: "test-model", provider: "test", reasoning: true }
-			: extra.model;
+function creationCtx(ui: TestUi, extra: TestContext & { registryModels?: Model<Api>[] } = {}): TestContext {
+	const parentModel = extra.model === undefined && !("model" in extra) ? testModel() : extra.model;
 	const available = extra.registryModels ?? (parentModel ? [parentModel] : []);
 	const registry = extra.modelRegistry ?? {
 		find(provider: string, id: string) {
-			return available.find((model: any) => model.provider === provider && model.id === id) ?? null;
+			return available.find((model) => model.provider === provider && model.id === id) ?? null;
 		},
 		getAvailable() {
 			return available;
 		},
-		hasConfiguredAuth(model: any) {
+		hasConfiguredAuth(model: Model<Api>) {
 			return available.includes(model);
 		},
 	};
@@ -776,10 +796,7 @@ describe("stash creation", () => {
 		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
 		const notifications: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		const ctx = creationCtx(
-			{ notify },
-			{ model: { id: "test-model", name: "Custom Model", provider: "test", reasoning: false } },
-		);
+		const ctx = creationCtx({ notify }, { model: testModel({ name: "Custom Model", reasoning: false }) });
 		await commands.get("stash").handler("new unlabeled", ctx);
 		const joined = notifications.join("\n");
 		assert.match(joined, /Stash distillation started \(Custom Model; hint: unlabeled\)\./);
@@ -802,7 +819,7 @@ describe("stash creation", () => {
 					notify,
 					setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 				},
-				{ model: { id: "test-model", name: evil, provider: "test", reasoning: true } },
+				{ model: testModel({ name: evil, reasoning: true }) },
 			),
 		);
 		const status = statuses[0] ?? "";
@@ -831,7 +848,7 @@ describe("stash creation", () => {
 	});
 
 	it("reserves the single-flight slot before asynchronous setup", async () => {
-		type ExecResult = { code: number; stdout: string; stderr: string };
+		type ExecResult = { code: number; stdout: string; stderr: string; killed: boolean };
 		let releaseExec!: (result: ExecResult) => void;
 		const execGate = new Promise<ExecResult>((resolve) => {
 			releaseExec = resolve;
@@ -852,13 +869,13 @@ describe("stash creation", () => {
 		await commands.get("stash").handler("new second try", ctx);
 		assert.match(notifications.join("\n"), /already in flight.*abort/i);
 
-		releaseExec({ code: 0, stdout: "main\n", stderr: "" });
+		releaseExec({ code: 0, stdout: "main\n", stderr: "", killed: false });
 		await first;
 		await commands.get("stash").handler("abort", ctx);
 	});
 
 	it("does not let aborted setup clear a replacement creation slot", async () => {
-		type ExecResult = { code: number; stdout: string; stderr: string };
+		type ExecResult = { code: number; stdout: string; stderr: string; killed: boolean };
 		const releases: Array<(result: ExecResult) => void> = [];
 		const never = () => new Promise<void>(() => {});
 		const factory = async () => ({
@@ -880,13 +897,13 @@ describe("stash creation", () => {
 		const replacement = commands.get("stash").handler("new replacement setup", ctx);
 		assert.equal(releases.length, 2);
 
-		releases[0]({ code: 0, stdout: "main\n", stderr: "" });
+		releases[0]({ code: 0, stdout: "main\n", stderr: "", killed: false });
 		await first;
 		notifications.length = 0;
 		await commands.get("stash").handler("new third dispatch", ctx);
 		assert.match(notifications.join("\n"), /already in flight.*abort/i);
 
-		releases[1]({ code: 0, stdout: "main\n", stderr: "" });
+		releases[1]({ code: 0, stdout: "main\n", stderr: "", killed: false });
 		await replacement;
 		await commands.get("stash").handler("abort", ctx);
 	});
@@ -903,7 +920,7 @@ describe("stash creation", () => {
 
 	it("uses PI_STASH_MODEL without a parent model and fails a missing override without starting a job", async () => {
 		const oldModel = process.env.PI_STASH_MODEL;
-		const override = { id: "cheap-model", provider: "cheap", reasoning: true };
+		const override = testModel({ id: "cheap-model", name: "cheap-model", provider: "cheap", reasoning: true });
 		let factoryCalls = 0;
 		const factory = async () => {
 			factoryCalls++;
@@ -947,8 +964,8 @@ describe("stash creation", () => {
 
 	it("passes inherited thinking through the factory and rejects an unsupported explicit level", async () => {
 		const oldThinking = process.env.PI_STASH_THINKING;
-		let received: any;
-		const factory = async (options: any) => {
+		let received: Parameters<DistillSessionFactory>[0] | undefined;
+		const factory: DistillSessionFactory = async (options) => {
 			received = options;
 			return {
 				prompt: async () => {},
@@ -965,6 +982,7 @@ describe("stash creation", () => {
 				.get("stash")
 				.handler("new inherit thinking", creationCtx({ notify: inherited.notify }, { thinkingLevel: "high" }));
 			await inherited.done;
+			assert.ok(received);
 			assert.equal(received.thinkingLevel, "high");
 
 			process.env.PI_STASH_THINKING = "high";
@@ -975,8 +993,8 @@ describe("stash creation", () => {
 				creationCtx(
 					{ notify: (message: string) => notifications.push(message) },
 					{
-						model: { id: "plain", provider: "plain", reasoning: false },
-						registryModels: [{ id: "plain", provider: "plain", reasoning: false }],
+						model: testModel({ id: "plain", provider: "plain", reasoning: false }),
+						registryModels: [testModel({ id: "plain", provider: "plain", reasoning: false })],
 					},
 				),
 			);
@@ -989,7 +1007,7 @@ describe("stash creation", () => {
 	});
 
 	it("aborts an in-flight creation, clears the status, and frees the slot", async () => {
-		const session: any = {};
+		const session: { aborted?: boolean } = {};
 		const never = () => new Promise<void>(() => {});
 		const factory = async () => ({
 			prompt: never,
@@ -1127,7 +1145,7 @@ describe("stash creation", () => {
 		const before = (await listStashes(dir, { limit: 200 })).length;
 		const notifications: string[] = [];
 		const statuses: string[] = [];
-		const { done, notify } = settledNotify((message: string, level: string) =>
+		const { done, notify } = settledNotify((message: string, level?: string) =>
 			notifications.push(`${level}: ${message}`),
 		);
 		const ctx = creationCtx({
@@ -1159,7 +1177,7 @@ describe("stash creation", () => {
 	});
 
 	it("aborts the in-flight job on session shutdown", async () => {
-		const session: any = {};
+		const session: { aborted?: boolean } = {};
 		const never = () => new Promise<void>(() => {});
 		const factory = async () => ({
 			prompt: never,
@@ -1187,7 +1205,7 @@ describe("stash creation", () => {
 		// shutdown fires the same handler with their own context: the in-flight
 		// job belongs to the session that reserved it and must survive the foreign
 		// shutdown untouched.
-		const session: any = {};
+		const session: { aborted?: boolean } = {};
 		const never = () => new Promise<void>(() => {});
 		const factory = async () => ({
 			prompt: never,
@@ -1283,18 +1301,18 @@ describe("stash command grammar", () => {
 		const complete = commands.get("stash").getArgumentCompletions;
 		const actions = await complete("");
 		assert.deepEqual(
-			actions.map((item: any) => item.value),
+			actions?.map((item) => item.value),
 			["new", "get", "complete", "release", "reopen", "rotate", "abort", "help"],
 		);
 		assert.equal(await complete("20270724"), null, "bare ids must not autocomplete as actions");
 		const ids = await complete("get 20270724");
-		assert.ok(ids.some((item: any) => item.value === "get 20270724T100000Z-pickup-target"));
+		assert.ok(ids?.some((item) => item.value === "get 20270724T100000Z-pickup-target"));
 	});
 
 	it("always treats the first word as an action", async () => {
 		const { commands } = registry();
 		const notifications: string[] = [];
-		const ctx = {
+		const ctx: TestContext = {
 			mode: "rpc",
 			hasUI: true,
 			ui: { notify: (message: string) => notifications.push(message) },
@@ -1399,10 +1417,10 @@ describe("unknown and unread lifecycle states", () => {
 		await writeFile(join(dir, `${unreadId}.md`), '---\nstate: "active"\n\n# body\n', "utf8");
 		const { tools } = registry();
 		const result = await tools.get("stash_list").execute("call-1", { limit: 50 }, undefined);
-		const text = (result.content as any[]).map((part: any) => part.text).join("");
+		const text = result.content.map((part) => part.text).join("");
 		assert.match(text, new RegExp(`${invalidId}\\s+unknown \\(mystery\\)`));
 		assert.match(text, new RegExp(`${unreadId}\\s+unknown`));
-		const states = (result.details as any).states as string[];
+		const states = stringArray(result.details.states);
 		assert.ok(states.includes("unknown (mystery)"), "details.states must carry the unknown label");
 		assert.ok(states.includes("unknown"), "details.states must carry the unread label");
 	});
@@ -1413,10 +1431,10 @@ describe("unknown and unread lifecycle states", () => {
 		await writeFile(join(dir, `${hostileId}.md`), hostile, "utf8");
 		const { tools } = registry();
 		const result = await tools.get("stash_list").execute("call-1", { limit: 50 }, undefined);
-		const text = (result.content as any[]).map((part: any) => part.text).join("");
+		const text = result.content.map((part) => part.text).join("");
 		assert.ok(!text.includes("\x1b"), "no terminal control may reach stash_list output");
 		assert.ok(!text.includes("\nIGNORE PREVIOUS"), "no injected newline may reach stash_list output");
-		const states = (result.details as any).states as string[];
+		const states = stringArray(result.details.states);
 		const label = states.find((value) => value.includes("bogus"));
 		assert.ok(label, "the hostile label must still be present and identifiable");
 		assert.ok(!label.includes("\x1b") && !label.includes("\n"), "details.states must be sanitized");
@@ -1438,7 +1456,7 @@ describe("unknown and unread lifecycle states", () => {
 					selects++;
 					return "Back";
 				},
-				custom: async (factory: any) =>
+				custom: async (factory) =>
 					new Promise((resolve) => {
 						const tui = { terminal: { rows: 20 }, requestRender: () => {} };
 						const component = factory(tui, theme, {}, resolve);
@@ -1464,8 +1482,8 @@ describe("unknown and unread lifecycle states", () => {
 		// Completion descriptions must not present the unknown state as open.
 		const complete = commands.get("stash").getArgumentCompletions;
 		const items = await complete("complete 20270725");
-		assert.ok(items?.some((item: any) => item.description.includes("unknown (mystery)")));
-		assert.ok(!items?.some((item: any) => item.description.includes("open ·")));
+		assert.ok(items?.some((item) => item.description?.includes("unknown (mystery)")));
+		assert.ok(!items?.some((item) => item.description?.includes("open ·")));
 	});
 	it("collects an operator note from the browser a key and delivers it with pickup", async () => {
 		const { record } = await writeStash(
@@ -1475,7 +1493,7 @@ describe("unknown and unread lifecycle states", () => {
 		);
 		const { commands, sent } = registry();
 		const inputs: string[] = [];
-		const ctx: any = {
+		const ctx: TestContext = {
 			mode: "tui",
 			hasUI: true,
 			isIdle: () => true,
@@ -1486,10 +1504,10 @@ describe("unknown and unread lifecycle states", () => {
 					inputs.push(prompt);
 					return "Thursday landed the migration.";
 				},
-				custom: async (factory: any) => {
+				custom: async (factory) => {
 					return new Promise((resolve) => {
 						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
-						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component: any) => component.handleInput("a"));
+						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => component.handleInput("a"));
 					});
 				},
 			},
@@ -1513,20 +1531,18 @@ describe("unknown and unread lifecycle states", () => {
 		const { commands } = registry();
 		const notifications: string[] = [];
 		let rounds = 0;
-		const ctx: any = {
+		const ctx: TestContext = {
 			mode: "tui",
 			hasUI: true,
 			isIdle: () => true,
 			ui: {
 				notify: (message: string) => notifications.push(message),
-				custom: async (factory: any) => {
+				custom: async (factory) => {
 					rounds++;
 					if (rounds > 1) return {};
 					return new Promise((resolve) => {
 						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
-						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component: any) =>
-							component.handleInput("\t"),
-						);
+						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => component.handleInput("\t"));
 					});
 				},
 				select: async () => "Release (return to open)",

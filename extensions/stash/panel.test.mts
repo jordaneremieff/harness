@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { computePanes, StashPanel } from "./panel.ts";
+import { computePanes, StashPanel, type StashPanelResult, type PanelTheme } from "./panel.ts";
 import type { StashEntry } from "./store.ts";
 
-const theme: never = {
+const theme: PanelTheme = {
 	fg: (_color: string, text: string) => text,
 	bg: (_color: string, text: string) => text,
 	bold: (text: string) => text,
 	italic: (text: string) => text,
 	underline: (text: string) => text,
 	strikethrough: (text: string) => text,
-} as never;
+};
 
 function entry(id: string, title: string, preview?: string, overrides: Partial<StashEntry> = {}): StashEntry {
 	return {
@@ -41,7 +41,7 @@ function rig(
 	initialSelectedId?: string,
 	initialSelectedIndex?: number,
 ) {
-	const calls = { renders: 0, done: undefined as unknown, copies: [] as string[] };
+	const calls: { renders: number; done?: StashPanelResult; copies: string[] } = { renders: 0, copies: [] };
 	const panel = new StashPanel({
 		entries,
 		title: "Stashes",
@@ -61,7 +61,7 @@ function rig(
 			calls.done = result;
 		},
 	});
-	return { panel, calls };
+	return { panel, calls, result: () => calls.done };
 }
 
 function samples(): StashEntry[] {
@@ -107,7 +107,7 @@ describe("StashPanel", () => {
 	});
 
 	it("uses an explicit filter mode so action keys remain available", () => {
-		const { panel, calls } = rig(samples());
+		const { panel, calls, result } = rig(samples());
 		panel.handleInput("/");
 		for (const char of "continuity") panel.handleInput(char);
 		assert.match(panel.render(104).join("\n"), /filter continuity▌.*1 match/);
@@ -116,8 +116,8 @@ describe("StashPanel", () => {
 		assert.equal(calls.done, undefined);
 		assert.match(panel.render(104).join("\n"), /New work/);
 		panel.handleInput("\x1b");
-		assert.equal((calls.done as any).filter, "continuity");
-		assert.equal((calls.done as any).selectedId, samples()[0].meta.id);
+		assert.equal(result()?.filter, "continuity");
+		assert.equal(result()?.selectedId, samples()[0].meta.id);
 	});
 
 	it("accepts Kitty CSI-u printable events for commands and filter text", () => {
@@ -136,13 +136,13 @@ describe("StashPanel", () => {
 		first.panel.handleInput("\x1b[B");
 		first.panel.handleInput("\r");
 		await flush();
-		assert.equal((first.calls.done as any).selected.meta.id, samples()[1].meta.id);
-		assert.equal((first.calls.done as any).selectedId, samples()[1].meta.id);
-		assert.equal((first.calls.done as any).selectedIndex, 1);
+		assert.equal(first.calls.done?.selected?.meta.id, samples()[1].meta.id);
+		assert.equal(first.calls.done?.selectedId, samples()[1].meta.id);
+		assert.equal(first.calls.done?.selectedIndex, 1);
 
 		const second = rig(samples());
 		second.panel.handleInput("\t");
-		assert.equal((second.calls.done as any).manage.meta.id, samples()[0].meta.id);
+		assert.equal(second.calls.done?.manage?.meta.id, samples()[0].meta.id);
 	});
 
 	it("copies a resume command in place and opens completion directly for an active stash", async () => {
@@ -156,14 +156,15 @@ describe("StashPanel", () => {
 		const completed = rig(samples());
 		completed.panel.handleInput("\x1b[B");
 		completed.panel.handleInput("o");
-		assert.equal((completed.calls.done as any).complete.meta.id, samples()[1].meta.id);
+		assert.equal(completed.calls.done?.complete?.meta.id, samples()[1].meta.id);
 	});
 
 	it("hands the selected entry to the host for a noted pickup on a", async () => {
 		const noted = rig(samples());
 		noted.panel.handleInput("a");
-		assert.equal((noted.calls.done as any).note.meta.id, samples()[0].meta.id);
-		assert.equal((noted.calls.done as any).selected, undefined);
+		assert.ok(noted.calls.done);
+		assert.equal(noted.calls.done.note?.meta.id, samples()[0].meta.id);
+		assert.equal(noted.calls.done.selected, undefined);
 
 		// An entry with an unknown state must not offer a noted pickup.
 		const invalid = rig([entry("20260724T120000Z-bad", "Broken", "body", { previewError: "unreadable header" })]);
@@ -225,7 +226,7 @@ describe("StashPanel", () => {
 		lines = panel.render(38);
 		assert.match(lines.join("\n"), /› ○ 2026-07-24 Work 1/);
 		panel.handleInput("\r");
-		assert.equal((calls.done as any).selected.meta.id, "row-1");
+		assert.equal(calls.done?.selected?.meta.id, "row-1");
 	});
 
 	it("shows a useful empty state and never emits untrusted terminal controls", () => {
@@ -342,7 +343,7 @@ describe("StashPanel", () => {
 			previewError: "artifact header is unreadable; its state cannot be verified",
 		});
 		const valid = entry("valid", "Valid work", "body");
-		const { panel, calls } = rig([invalid, unread, valid], 20);
+		const { panel, calls, result } = rig([invalid, unread, valid], 20);
 		// The footer must not advertise actions that the panel blocks on unknown rows.
 		const unknownFooter = panel.render(104).join("\n");
 		assert.doesNotMatch(unknownFooter, /enter pick|tab actions/);
@@ -358,7 +359,7 @@ describe("StashPanel", () => {
 		// The footer advertises actions again once a readable row is selected.
 		assert.match(panel.render(104).join("\n"), /enter pick/);
 		panel.handleInput("\r");
-		assert.ok(calls.done, "a readable entry must still pick up");
-		assert.equal((calls.done as any).selected?.meta.id, "valid");
+		assert.ok(result(), "a readable entry must still pick up");
+		assert.equal(result()?.selected?.meta.id, "valid");
 	});
 });

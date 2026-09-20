@@ -24,10 +24,12 @@ export interface StashPanelResult {
 	selectedIndex?: number;
 }
 
+export type PanelTheme = Pick<Theme, "fg" | "bg" | "bold" | "italic" | "strikethrough" | "underline">;
+
 interface StashPanelDeps {
 	entries: StashEntry[];
 	title: string;
-	theme: Theme;
+	theme: PanelTheme;
 	tui: { requestRender(): void };
 	getMaxRows: () => number;
 	hasMore?: boolean;
@@ -125,7 +127,7 @@ function computeLayout(maxRows: number, width: number): Layout {
 	};
 }
 
-function markdownTheme(theme: Theme): MarkdownTheme {
+function markdownTheme(theme: PanelTheme): MarkdownTheme {
 	return {
 		heading: (text) => theme.fg("mdHeading", text),
 		link: (text) => theme.fg("mdLink", text),
@@ -233,10 +235,13 @@ export class StashPanel {
 		return computeLayout(this.deps.getMaxRows(), width);
 	}
 
+	private emptyMessage(): string {
+		return this.deps.entries.length === 0 ? "No stashes yet. Create one with stash_write." : "No matching stashes.";
+	}
+
 	private previewSource(width = this.layout().previewWidth): string[] {
 		const entry = this.current();
-		if (!entry)
-			return [this.deps.entries.length === 0 ? "No stashes yet. Create one with stash_write." : "No matching stashes."];
+		if (!entry) return [this.emptyMessage()];
 		const key = [
 			entry.meta.id,
 			width,
@@ -251,22 +256,7 @@ export class StashPanel {
 			this.previewCacheLines = [`Preview unavailable: ${safeLine(entry.previewError)}`];
 			return this.previewCacheLines;
 		}
-		const meta = entry.meta;
-		const metadata = [
-			`**${safeLine(stateLabel(meta))}** · stashed ${safeLine(formatCreated(meta.created)) || "?"}`,
-			meta.activatedAt ? `activated: ${safeLine(formatCreated(meta.activatedAt))}` : undefined,
-			meta.closedAt ? `closed: ${safeLine(formatCreated(meta.closedAt))}` : undefined,
-			meta.outcome ? `outcome: ${safeLine(meta.outcome)}` : undefined,
-			meta.tags.length > 0 ? `tags: ${meta.tags.map(safeLine).join(", ")}` : undefined,
-			meta.sessionId ? `session: ${safeLine(meta.sessionId)}` : undefined,
-			meta.project ? `project: ${safeLine(meta.project)}` : undefined,
-			meta.branch ? `branch: ${safeLine(meta.branch)}` : undefined,
-			`file: ${safeLine(entry.path)}`,
-		]
-			.filter((value): value is string => Boolean(value))
-			.join("  \n");
-		const body = sanitizeTerminalText(entry.preview ?? "").text;
-		const markdown = `${metadata}\n\n---\n\n${body}`;
+		const markdown = `${this.previewMetadata(entry)}\n\n---\n\n${sanitizeTerminalText(entry.preview ?? "").text}`;
 		let lines: string[];
 		try {
 			lines = new Markdown(markdown, 0, 0, markdownTheme(this.deps.theme), {
@@ -279,6 +269,23 @@ export class StashPanel {
 		this.previewCacheKey = key;
 		this.previewCacheLines = lines;
 		return lines;
+	}
+
+	private previewMetadata(entry: StashEntry): string {
+		const meta = entry.meta;
+		return [
+			`**${safeLine(stateLabel(meta))}** · stashed ${safeLine(formatCreated(meta.created)) || "?"}`,
+			meta.activatedAt ? `activated: ${safeLine(formatCreated(meta.activatedAt))}` : undefined,
+			meta.closedAt ? `closed: ${safeLine(formatCreated(meta.closedAt))}` : undefined,
+			meta.outcome ? `outcome: ${safeLine(meta.outcome)}` : undefined,
+			meta.tags.length > 0 ? `tags: ${meta.tags.map(safeLine).join(", ")}` : undefined,
+			meta.sessionId ? `session: ${safeLine(meta.sessionId)}` : undefined,
+			meta.project ? `project: ${safeLine(meta.project)}` : undefined,
+			meta.branch ? `branch: ${safeLine(meta.branch)}` : undefined,
+			`file: ${safeLine(entry.path)}`,
+		]
+			.filter((value): value is string => Boolean(value))
+			.join("  \n");
 	}
 
 	private helpSource(width: number): string[] {
@@ -383,65 +390,72 @@ export class StashPanel {
 		const decoded = decodeKittyPrintable(raw);
 		const data = decoded ?? raw;
 		if (this.help) {
-			if (data === "h" || matchesKey(raw, "escape")) {
-				this.help = false;
-				this.helpScroll = 0;
-			} else if (matchesKey(raw, "up")) {
-				this.helpScroll = Math.max(0, this.helpScroll - 1);
-			} else if (matchesKey(raw, "down")) {
-				this.helpScroll = Math.min(this.helpMaxScroll(), this.helpScroll + 1);
-			} else if (data === "b") {
-				this.helpScroll = Math.max(0, this.helpScroll - this.pageSize());
-			} else if (matchesKey(raw, "space")) {
-				this.helpScroll = Math.min(this.helpMaxScroll(), this.helpScroll + this.pageSize());
-			} else {
-				return;
-			}
-			this.bump();
+			this.handleHelpInput(raw, data);
 			return;
 		}
-
 		if (this.filtering) {
-			if (matchesKey(raw, "escape") || matchesKey(raw, "enter")) {
-				this.filtering = false;
-			} else if (matchesKey(raw, "backspace")) {
-				this.filter = Array.from(this.filter).slice(0, -1).join("");
-				this.resetSelection();
-			} else if (matchesKey(raw, "up")) {
-				this.moveSelection(-1);
-			} else if (matchesKey(raw, "down")) {
-				this.moveSelection(1);
-			} else if (data.length > 0 && !matchesKey(raw, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(data)) {
-				this.filter += data;
-				this.resetSelection();
-			} else {
-				return;
-			}
-			this.bump();
+			this.handleFilterInput(raw, data);
 			return;
 		}
-
 		if (matchesKey(raw, "escape")) {
 			this.finish({});
 			return;
 		}
-		if (matchesKey(raw, "up")) {
-			this.moveSelection(-1);
-			this.bump();
-			return;
-		}
-		if (matchesKey(raw, "down")) {
-			this.moveSelection(1);
+		if (matchesKey(raw, "up") || matchesKey(raw, "down")) {
+			this.moveSelection(matchesKey(raw, "up") ? -1 : 1);
 			this.bump();
 			return;
 		}
 		if (this.lastWidth < 104) {
-			if (matchesKey(raw, "enter")) {
-				const selected = this.current();
-				if (this.actionable(selected)) this.finish({ selected });
-			}
+			if (matchesKey(raw, "enter")) this.pickCurrent();
 			return;
 		}
+		this.handleBrowserInput(raw, data);
+	}
+
+	private pickCurrent(): void {
+		const selected = this.current();
+		if (this.actionable(selected)) this.finish({ selected });
+	}
+
+	private handleHelpInput(raw: string, data: string): void {
+		if (data === "h" || matchesKey(raw, "escape")) {
+			this.help = false;
+			this.helpScroll = 0;
+		} else if (matchesKey(raw, "up")) {
+			this.helpScroll = Math.max(0, this.helpScroll - 1);
+		} else if (matchesKey(raw, "down")) {
+			this.helpScroll = Math.min(this.helpMaxScroll(), this.helpScroll + 1);
+		} else if (data === "b") {
+			this.helpScroll = Math.max(0, this.helpScroll - this.pageSize());
+		} else if (matchesKey(raw, "space")) {
+			this.helpScroll = Math.min(this.helpMaxScroll(), this.helpScroll + this.pageSize());
+		} else {
+			return;
+		}
+		this.bump();
+	}
+
+	private handleFilterInput(raw: string, data: string): void {
+		if (matchesKey(raw, "escape") || matchesKey(raw, "enter")) {
+			this.filtering = false;
+		} else if (matchesKey(raw, "backspace")) {
+			this.filter = Array.from(this.filter).slice(0, -1).join("");
+			this.resetSelection();
+		} else if (matchesKey(raw, "up")) {
+			this.moveSelection(-1);
+		} else if (matchesKey(raw, "down")) {
+			this.moveSelection(1);
+		} else if (data.length > 0 && !matchesKey(raw, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(data)) {
+			this.filter += data;
+			this.resetSelection();
+		} else {
+			return;
+		}
+		this.bump();
+	}
+
+	private handleBrowserInput(raw: string, data: string): void {
 		if (data === "b") {
 			this.previewScroll = Math.max(0, this.previewScroll - this.pageSize());
 			this.bump();
@@ -463,9 +477,12 @@ export class StashPanel {
 			this.bump();
 			return;
 		}
+		this.handleEntryInput(raw, data);
+	}
+
+	private handleEntryInput(raw: string, data: string): void {
 		if (matchesKey(raw, "enter")) {
-			const selected = this.current();
-			if (this.actionable(selected)) this.finish({ selected });
+			this.pickCurrent();
 			return;
 		}
 		if (matchesKey(raw, "tab")) {
@@ -549,79 +566,12 @@ export class StashPanel {
 		const entries = this.filtered;
 		const position =
 			entries.length === 0 ? "0/0" : `${this.selected + 1}/${entries.length}${this.deps.hasMore ? "+" : ""}`;
-		const paint = (text: string): string => theme.bg("customMessageBg", fitText(text, width));
 		const lines: string[] = [];
 
-		if (!layout.framed) {
-			const headerRows = layout.total > 1 ? 1 : 0;
-			if (headerRows) lines.push(paint(`${safeLine(this.deps.title)} · ${position}`));
-			const itemRows = Math.max(0, layout.total - headerRows - 1);
-			if (this.selected < this.listScroll) this.listScroll = this.selected;
-			if (itemRows > 0 && this.selected >= this.listScroll + itemRows) {
-				this.listScroll = this.selected - itemRows + 1;
-			}
-			for (let slot = 0; slot < itemRows; slot++) {
-				const absolute = this.listScroll + slot;
-				const entry = entries[absolute];
-				const empty =
-					slot === 0 && entries.length === 0
-						? this.deps.entries.length === 0
-							? "No stashes yet. Create one with stash_write."
-							: "No matching stashes."
-						: "";
-				lines.push(
-					paint(
-						entry
-							? `${absolute === this.selected ? "›" : " "} ${entryMark(entry).glyph} ${safeLine(formatDate(entry.meta.created))} ${oneLine(entry.meta.title)}`
-							: empty,
-					),
-				);
-			}
-			lines.push(paint(this.footerText(width)));
-			this.cachedWidth = width;
-			this.cachedRows = layout.total;
-			this.cachedVersion = this.version;
-			this.cachedLines = lines.slice(0, layout.total);
-			return this.cachedLines;
-		}
+		if (!layout.framed) return this.cacheRender(width, layout, this.renderCompact(width, layout, entries, position));
 
 		lines.push(this.topBorder(width, position));
-		if (this.help) {
-			const source = this.helpSource(layout.innerWidth);
-			this.helpScroll = Math.min(this.helpScroll, Math.max(0, source.length - layout.bodyRows));
-			const page = source.slice(this.helpScroll, this.helpScroll + layout.bodyRows);
-			for (let index = 0; index < layout.bodyRows; index++) {
-				lines.push(
-					theme.bg(
-						"customMessageBg",
-						`${theme.fg("borderMuted", "│ ")}${fitText(page[index] ?? "", layout.innerWidth)}${theme.fg("borderMuted", " │")}`,
-					),
-				);
-			}
-		} else {
-			if (this.selected < this.listScroll) this.listScroll = this.selected;
-			if (this.selected >= this.listScroll + layout.bodyRows) this.listScroll = this.selected - layout.bodyRows + 1;
-			this.previewScroll = Math.min(this.previewScroll, this.previewMaxScroll());
-			const preview = this.previewSource(layout.previewWidth);
-			const previewPage = preview.slice(this.previewScroll, this.previewScroll + layout.bodyRows);
-			for (let index = 0; index < layout.bodyRows; index++) {
-				const absolute = this.listScroll + index;
-				const entry = entries[absolute];
-				let listCell = "";
-				if (entry) {
-					const selected = absolute === this.selected;
-					const mark = entryMark(entry);
-					listCell = `${selected ? theme.fg("accent", "› ") : "  "}${theme.fg(mark.color, mark.glyph)} ${theme.fg("dim", safeLine(formatDate(entry.meta.created)))} ${theme.fg(selected ? "accent" : "text", oneLine(entry.meta.title))}`;
-				}
-				lines.push(
-					theme.bg(
-						"customMessageBg",
-						`${theme.fg("borderMuted", "│ ")}${fitText(listCell, layout.listWidth)}${theme.fg("borderMuted", " │ ")}${fitText(previewPage[index] ?? "", layout.previewWidth)}${theme.fg("borderMuted", " │")}`,
-					),
-				);
-			}
-		}
-
+		lines.push(...(this.help ? this.renderHelp(layout) : this.renderPanes(layout, entries)));
 		lines.push(theme.bg("customMessageBg", theme.fg("borderMuted", `├${"─".repeat(Math.max(0, width - 2))}┤`)));
 		lines.push(
 			theme.bg(
@@ -630,7 +580,80 @@ export class StashPanel {
 			),
 		);
 		lines.push(theme.bg("customMessageBg", theme.fg("borderMuted", `└${"─".repeat(Math.max(0, width - 2))}┘`)));
+		return this.cacheRender(width, layout, lines);
+	}
 
+	private renderCompact(width: number, layout: Layout, entries: StashEntry[], position: string): string[] {
+		const paint = (text: string): string => this.deps.theme.bg("customMessageBg", fitText(text, width));
+		const lines: string[] = [];
+		const headerRows = layout.total > 1 ? 1 : 0;
+		if (headerRows) lines.push(paint(`${safeLine(this.deps.title)} · ${position}`));
+		const itemRows = Math.max(0, layout.total - headerRows - 1);
+		if (this.selected < this.listScroll) this.listScroll = this.selected;
+		if (itemRows > 0 && this.selected >= this.listScroll + itemRows) {
+			this.listScroll = this.selected - itemRows + 1;
+		}
+		for (let slot = 0; slot < itemRows; slot++) {
+			const absolute = this.listScroll + slot;
+			const entry = entries[absolute];
+			const empty = slot === 0 && entries.length === 0 ? this.emptyMessage() : "";
+			lines.push(
+				paint(
+					entry
+						? `${absolute === this.selected ? "›" : " "} ${entryMark(entry).glyph} ${safeLine(formatDate(entry.meta.created))} ${oneLine(entry.meta.title)}`
+						: empty,
+				),
+			);
+		}
+		lines.push(paint(this.footerText(width)));
+		return lines;
+	}
+
+	private renderHelp(layout: Layout): string[] {
+		const theme = this.deps.theme;
+		const lines: string[] = [];
+		const source = this.helpSource(layout.innerWidth);
+		this.helpScroll = Math.min(this.helpScroll, Math.max(0, source.length - layout.bodyRows));
+		const page = source.slice(this.helpScroll, this.helpScroll + layout.bodyRows);
+		for (let index = 0; index < layout.bodyRows; index++) {
+			lines.push(
+				theme.bg(
+					"customMessageBg",
+					`${theme.fg("borderMuted", "│ ")}${fitText(page[index] ?? "", layout.innerWidth)}${theme.fg("borderMuted", " │")}`,
+				),
+			);
+		}
+		return lines;
+	}
+
+	private renderPanes(layout: Layout, entries: StashEntry[]): string[] {
+		const theme = this.deps.theme;
+		const lines: string[] = [];
+		if (this.selected < this.listScroll) this.listScroll = this.selected;
+		if (this.selected >= this.listScroll + layout.bodyRows) this.listScroll = this.selected - layout.bodyRows + 1;
+		this.previewScroll = Math.min(this.previewScroll, this.previewMaxScroll());
+		const preview = this.previewSource(layout.previewWidth);
+		const previewPage = preview.slice(this.previewScroll, this.previewScroll + layout.bodyRows);
+		for (let index = 0; index < layout.bodyRows; index++) {
+			const absolute = this.listScroll + index;
+			const entry = entries[absolute];
+			let listCell = "";
+			if (entry) {
+				const selected = absolute === this.selected;
+				const mark = entryMark(entry);
+				listCell = `${selected ? theme.fg("accent", "› ") : "  "}${theme.fg(mark.color, mark.glyph)} ${theme.fg("dim", safeLine(formatDate(entry.meta.created)))} ${theme.fg(selected ? "accent" : "text", oneLine(entry.meta.title))}`;
+			}
+			lines.push(
+				theme.bg(
+					"customMessageBg",
+					`${theme.fg("borderMuted", "│ ")}${fitText(listCell, layout.listWidth)}${theme.fg("borderMuted", " │ ")}${fitText(previewPage[index] ?? "", layout.previewWidth)}${theme.fg("borderMuted", " │")}`,
+				),
+			);
+		}
+		return lines;
+	}
+
+	private cacheRender(width: number, layout: Layout, lines: string[]): string[] {
 		this.cachedWidth = width;
 		this.cachedRows = layout.total;
 		this.cachedVersion = this.version;

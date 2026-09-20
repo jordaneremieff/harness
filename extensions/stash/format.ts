@@ -147,18 +147,15 @@ interface ParsedArtifact {
 	body: string;
 }
 
+function headerEnd(lines: string[]): number {
+	if (lines[0]?.trim() !== "---") return -1;
+	return lines.findIndex((line, index) => index > 0 && line.trim() === "---");
+}
+
 /** Rewrite selected JSON-valued frontmatter keys while retaining unknown fields and the body. */
 export function updateFrontmatter(md: string, patch: Record<string, unknown | undefined>): string {
 	const lines = md.split("\n");
-	let end = -1;
-	if (lines[0]?.trim() === "---") {
-		for (let index = 1; index < lines.length; index++) {
-			if (lines[index].trim() === "---") {
-				end = index;
-				break;
-			}
-		}
-	}
+	const end = headerEnd(lines);
 	const entries = Object.entries(patch);
 	if (end === -1) throw new Error("stash requires a closed frontmatter header");
 

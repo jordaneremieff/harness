@@ -19,13 +19,16 @@ import {
 	validatePayload,
 	type DistillPayload,
 	type DistillSession,
+	type DistillSessionFactory,
 } from "./distill.ts";
 import { listStashes } from "./store.ts";
+import { testModel, transcriptEntries } from "./test-fixtures.mts";
+import type { Api, Model } from "@earendil-works/pi-ai";
 
 const NOW = new Date("2027-03-01T08:00:00Z");
 
 function sessionEntries() {
-	return [
+	return transcriptEntries([
 		{ type: "message", message: { role: "user", content: "Start the migration work." } },
 		{
 			type: "message",
@@ -49,7 +52,7 @@ function sessionEntries() {
 		},
 		{ type: "compaction", summary: "Early exploration compacted away." },
 		{ type: "custom_message", customType: "note", content: "Remember the token budget.", display: true },
-	] as any;
+	]);
 }
 
 function fakeFactory(reply: string, opts?: { promptReject?: Error; neverResolves?: boolean; onAbort?: () => void }) {
@@ -115,8 +118,11 @@ const VALID_PAYLOAD: DistillPayload = {
 	tags: ["migration"],
 };
 
-const baseOptions = (factory: any, extra: any = {}) => ({
-	model: { id: "test-model", provider: "test", reasoning: true },
+const baseOptions = (
+	factory: DistillSessionFactory,
+	extra: Partial<Parameters<typeof startDistillJob>[0]> = {},
+): Parameters<typeof startDistillJob>[0] => ({
+	model: testModel(),
 	cwd: "/workspace",
 	thinkingLevel: "low" as const,
 	hint: "port the first tool",
@@ -143,27 +149,29 @@ describe("transcript serialization", () => {
 	});
 
 	it("marks failed tool results and omits thinking content", () => {
-		const text = entriesToTranscript([
-			{
-				type: "message",
-				message: {
-					role: "assistant",
-					content: [
-						{ type: "thinking", thinking: "internal reasoning" },
-						{ type: "text", text: "Retry." },
-					],
+		const text = entriesToTranscript(
+			transcriptEntries([
+				{
+					type: "message",
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "thinking", thinking: "internal reasoning" },
+							{ type: "text", text: "Retry." },
+						],
+					},
 				},
-			},
-			{
-				type: "message",
-				message: {
-					role: "toolResult",
-					toolName: "edit",
-					content: [{ type: "text", text: "no match" }],
-					isError: true,
+				{
+					type: "message",
+					message: {
+						role: "toolResult",
+						toolName: "edit",
+						content: [{ type: "text", text: "no match" }],
+						isError: true,
+					},
 				},
-			},
-		] as any);
+			]),
+		);
 		assert.doesNotMatch(text, /internal reasoning/);
 		assert.match(text, /\[tool result: edit \(error\)\]/);
 	});
@@ -452,7 +460,7 @@ describe("distill job", () => {
 
 	it("redacts credential-shaped transcript content before the distiller", async () => {
 		const secret = "sk-ant-oa" + "t01-abcdefghijklmnopqrstuvwxyz123456";
-		const entries = [
+		const entries = transcriptEntries([
 			{
 				type: "message",
 				message: {
@@ -463,7 +471,7 @@ describe("distill job", () => {
 				},
 			},
 			{ type: "message", message: { role: "user", content: "Keep going." } },
-		] as any;
+		]);
 		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
 		await startDistillJob(baseOptions(factory, { entries })).result;
 		assert.equal(calls.prompted.length, 1);
@@ -472,7 +480,7 @@ describe("distill job", () => {
 	});
 
 	it("redacts userinfo credentials from the observed references", async () => {
-		const entries = [
+		const entries = transcriptEntries([
 			{
 				type: "message",
 				message: {
@@ -482,7 +490,7 @@ describe("distill job", () => {
 					isError: false,
 				},
 			},
-		] as any;
+		]);
 		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
 		await startDistillJob(baseOptions(factory, { entries })).result;
 		assert.equal(calls.prompted.length, 1);
@@ -494,7 +502,7 @@ describe("distill job", () => {
 		// Parentheses are valid in userinfo per RFC 3986 and terminate the
 		// reference regex; the pre-extraction redaction must remove the password
 		// before the reference is cut.
-		const entries = [
+		const entries = transcriptEntries([
 			{
 				type: "message",
 				message: {
@@ -504,7 +512,7 @@ describe("distill job", () => {
 					isError: false,
 				},
 			},
-		] as any;
+		]);
 		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
 		await startDistillJob(baseOptions(factory, { entries })).result;
 		assert.equal(calls.prompted.length, 1);
@@ -539,8 +547,8 @@ describe("distill job", () => {
 	});
 
 	it("passes the model, cwd, and thinking level to the session factory", async () => {
-		let received: any;
-		const factory = async (options: any) => {
+		let received: Parameters<DistillSessionFactory>[0] | undefined;
+		const factory: DistillSessionFactory = async (options) => {
 			received = options;
 			return {
 				prompt: async () => {},
@@ -552,6 +560,7 @@ describe("distill job", () => {
 		const job = startDistillJob(baseOptions(factory, { thinkingLevel: "high" }));
 		const outcome = await job.result;
 		assert.equal(outcome.ok, true);
+		assert.ok(received);
 		assert.equal(received.model.id, "test-model");
 		assert.equal(received.cwd, "/workspace");
 		assert.equal(received.thinkingLevel, "high");
@@ -739,12 +748,12 @@ describe("distill job", () => {
 });
 
 describe("distill model and thinking resolution", () => {
-	const parent = { id: "parent-model", provider: "parent", reasoning: true } as any;
-	const override = { id: "cheap-model", provider: "cheap", reasoning: true } as any;
-	const unauthed = { id: "locked-model", provider: "locked", reasoning: true } as any;
-	const noReasoning = { id: "plain", provider: "plain", reasoning: false } as any;
+	const parent = testModel({ id: "parent-model", provider: "parent", reasoning: true });
+	const override = testModel({ id: "cheap-model", provider: "cheap", reasoning: true });
+	const unauthed = testModel({ id: "locked-model", provider: "locked", reasoning: true });
+	const noReasoning = testModel({ id: "plain", provider: "plain", reasoning: false });
 
-	function registry(models: any[], authed: Set<any> = new Set(models)) {
+	function registry(models: Model<Api>[], authed: Set<Model<Api>> = new Set(models)) {
 		return {
 			find(provider: string, id: string) {
 				return models.find((model) => model.provider === provider && model.id === id) ?? null;
@@ -752,7 +761,7 @@ describe("distill model and thinking resolution", () => {
 			getAvailable() {
 				return models;
 			},
-			hasConfiguredAuth(model: any) {
+			hasConfiguredAuth(model: Model<Api>) {
 				return authed.has(model);
 			},
 		};

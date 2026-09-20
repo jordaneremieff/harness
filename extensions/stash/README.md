@@ -224,6 +224,7 @@ The component derives its row budget from the host TUI and the overlay's height 
 - `distill.ts`: transcript capture, prompt building, payload validation, and the bounded SDK session seam.
 - `redact.ts`: deterministic credential redaction for transcript, references, payloads, and lifecycle outcomes.
 - `text.ts`: terminal-safe text and output bounds local to this extension.
+- `test-fixtures.mts`: typed model and transcript fixtures, registration capture, and the partial host context for entrypoint tests.
 - `*.test.mts`: unit and entrypoint drive tests.
 
 ## Verification

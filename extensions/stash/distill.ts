@@ -16,6 +16,7 @@ import {
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import {
+	type Api,
 	clampThinkingLevel,
 	getSupportedThinkingLevels,
 	type Model,
@@ -69,19 +70,25 @@ export function extractArtifacts(texts: readonly string[], cap = 40): string[] {
 	const found: string[] = [];
 	const seen = new Set<string>();
 	for (const text of texts) {
-		for (const pattern of [URL_REFERENCE, WORK_ITEM_REFERENCE, POSIX_PATH_REFERENCE]) {
-			pattern.lastIndex = 0;
-			for (const match of text.matchAll(pattern)) {
-				const value = match[0].replace(/[.,;:!?]+$/, "");
-				if (value.length < 4 || value.length > 200) continue;
-				if (value.includes("/node_modules/") || value.includes("/.pi/agent/sessions/")) continue;
-				if (seen.has(value)) continue;
-				seen.add(value);
-				found.push(value);
-			}
+		for (const value of artifactReferences(text)) {
+			if (seen.has(value)) continue;
+			seen.add(value);
+			found.push(value);
 		}
 	}
 	return found.slice(-limit);
+}
+
+function* artifactReferences(text: string): Generator<string> {
+	for (const pattern of [URL_REFERENCE, WORK_ITEM_REFERENCE, POSIX_PATH_REFERENCE]) {
+		pattern.lastIndex = 0;
+		for (const match of text.matchAll(pattern)) {
+			const value = match[0].replace(/[.,;:!?]+$/, "");
+			if (value.length < 4 || value.length > 200) continue;
+			if (value.includes("/node_modules/") || value.includes("/.pi/agent/sessions/")) continue;
+			yield value;
+		}
+	}
 }
 
 export interface DistillPayload {
@@ -128,9 +135,9 @@ export interface DistillUsage {
 	costUsd: number;
 }
 
-function collectUsage(session: DistillSession): DistillUsage | undefined {
+function collectUsage(session: DistillSession | null): DistillUsage | undefined {
 	try {
-		const stats = session.getSessionStats?.();
+		const stats = session?.getSessionStats?.();
 		if (!stats) return undefined;
 		return {
 			inputTokens: stats.tokens.input,
@@ -146,13 +153,13 @@ function collectUsage(session: DistillSession): DistillUsage | undefined {
 }
 
 export type DistillSessionFactory = (options: {
-	model: Model<any>;
+	model: Model<Api>;
 	cwd: string;
 	thinkingLevel: ModelThinkingLevel;
 }) => Promise<DistillSession>;
 
 interface DistillJobOptions {
-	model: Model<any>;
+	model: Model<Api>;
 	cwd: string;
 	thinkingLevel: ModelThinkingLevel;
 	hint: string;
@@ -168,12 +175,12 @@ interface DistillJobOptions {
 
 /** Minimal registry surface used to resolve PI_STASH_MODEL. */
 export interface DistillModelRegistry {
-	find(provider: string, id: string): Model<any> | null | undefined;
-	getAvailable(): readonly Model<any>[];
-	hasConfiguredAuth(model: Model<any>): boolean;
+	find(provider: string, id: string): Model<Api> | null | undefined;
+	getAvailable(): readonly Model<Api>[];
+	hasConfiguredAuth(model: Model<Api>): boolean;
 }
 
-export type DistillModelResolution = { ok: true; model: Model<any> } | { ok: false; error: string };
+export type DistillModelResolution = { ok: true; model: Model<Api> } | { ok: false; error: string };
 
 export type DistillThinkingResolution = { ok: true; level: ModelThinkingLevel } | { ok: false; error: string };
 
@@ -190,7 +197,7 @@ export function readOptionalEnv(value: string | undefined): string | undefined {
  */
 export function resolveDistillModel(options: {
 	envModel: string | undefined;
-	parentModel: Model<any> | undefined | null;
+	parentModel: Model<Api> | undefined | null;
 	registry: DistillModelRegistry | undefined | null;
 }): DistillModelResolution {
 	const raw = readOptionalEnv(options.envModel);
@@ -200,7 +207,7 @@ export function resolveDistillModel(options: {
 			return { ok: false, error: `model "${raw}" cannot be resolved because no model registry is available.` };
 		}
 		const slash = raw.indexOf("/");
-		let found: Model<any> | null | undefined = null;
+		let found: Model<Api> | null | undefined = null;
 		if (slash > 0) {
 			found = registry.find(raw.slice(0, slash), raw.slice(slash + 1));
 		} else {
@@ -243,7 +250,7 @@ function isThinkingLevel(value: string): value is ModelThinkingLevel {
 export function resolveDistillThinking(options: {
 	envThinking: string | undefined;
 	parentThinking: string | undefined | null;
-	model: Model<any>;
+	model: Model<Api>;
 }): DistillThinkingResolution {
 	const raw = readOptionalEnv(options.envThinking);
 	if (raw) {
@@ -467,32 +474,33 @@ export function escapeRawControlChars(text: string): string {
 	let inString = false;
 	for (let i = 0; i < text.length; i++) {
 		const ch = text[i];
-		if (inString) {
-			if (ch === "\\") {
-				const next = text[i + 1];
-				if (next !== undefined && next < "\u0020") {
-					// A raw control character is not a legal escape continuation. Keep both
-					// characters the model wrote: emit an escaped literal backslash (two
-					// backslashes) plus the escaped control.
-					out += `${text.slice(start, i)}\\\\${CONTROL_ESCAPES[next] ?? `\\u${next.charCodeAt(0).toString(16).padStart(4, "0")}`}`;
-					start = i + 2;
-				}
-				i++; // skip the character after the backslash (escape continuation or rewritten pair)
-				continue;
-			}
-			if (ch === '"') {
-				inString = false;
-				continue;
-			}
-			if (ch >= "\u0020") continue;
-			out += text.slice(start, i);
-			out += CONTROL_ESCAPES[ch] ?? `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
-			start = i + 1;
-		} else if (ch === '"') {
-			inString = true;
+		if (!inString) {
+			inString = ch === '"';
+			continue;
 		}
+		if (ch === "\\") {
+			const next = text[i + 1];
+			if (next !== undefined && next < "\u0020") {
+				// Preserve both the literal backslash and its raw control continuation.
+				out += `${text.slice(start, i)}\\\\${escapeControl(next)}`;
+				start = i + 2;
+			}
+			i++;
+			continue;
+		}
+		if (ch === '"') {
+			inString = false;
+			continue;
+		}
+		if (ch >= "\u0020") continue;
+		out += text.slice(start, i) + escapeControl(ch);
+		start = i + 1;
 	}
 	return start === 0 ? text : out + text.slice(start);
+}
+
+function escapeControl(ch: string): string {
+	return CONTROL_ESCAPES[ch] ?? `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
 }
 
 /** Interpret the distiller's final text: SKIP marker, fenced JSON, or invalid. */
@@ -590,12 +598,114 @@ export function startDistillJob(options: DistillJobOptions): DistillJob {
 	};
 }
 
-async function runDistill(options: DistillJobOptions, signal: AbortSignal): Promise<DistillOutcome> {
-	if (signal.aborted) return { ok: false, reason: "aborted" };
+interface DistillResources {
+	session: DistillSession | null;
+	creationWindowClosed: boolean;
+}
+
+function disposeQuietly(session: DistillSession | null): void {
+	try {
+		session?.dispose();
+	} catch {
+		// Resource cleanup never replaces the settled outcome.
+	}
+}
+
+async function promptDistiller(
+	options: DistillJobOptions,
+	signal: AbortSignal,
+	prompt: string,
+	resources: DistillResources,
+): Promise<DistillOutcome | undefined> {
 	const factory = options.sessionFactory ?? defaultDistillSessionFactory;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-	let session: DistillSession | null = null;
-	let creationWindowClosed = false;
+	let timedOut = false;
+	let interrupt: ((error: Error) => void) | undefined;
+	const interrupted = new Promise<never>((_resolve, reject) => {
+		interrupt = reject;
+	});
+	interrupted.catch(() => {});
+	const onAbort = () => {
+		interrupt?.(new Error("distillation interrupted"));
+		try {
+			void resources.session?.abort().catch(() => {});
+		} catch {
+			// The interrupted outcome remains authoritative.
+		}
+	};
+	if (signal.aborted) onAbort();
+	else signal.addEventListener("abort", onAbort, { once: true });
+	const timeout = setTimeout(() => {
+		timedOut = true;
+		onAbort();
+	}, timeoutMs);
+	timeout.unref?.();
+	try {
+		const creating = factory({ model: options.model, cwd: options.cwd, thinkingLevel: options.thinkingLevel });
+		void creating.then(
+			(created) => {
+				if (resources.creationWindowClosed && created !== resources.session) disposeQuietly(created);
+			},
+			() => {},
+		);
+		resources.session = await Promise.race([creating, interrupted]);
+		if (signal.aborted || timedOut) throw new Error("distillation interrupted");
+		await Promise.race([resources.session.prompt(prompt), interrupted]);
+	} catch (error) {
+		if (signal.aborted || timedOut) {
+			return {
+				ok: false,
+				reason: "aborted",
+				message: timedOut ? `distillation timed out after ${Math.round(timeoutMs / 1000)}s` : undefined,
+			};
+		}
+		return {
+			ok: false,
+			reason: "failed",
+			message: errorMessage(error),
+			usage: collectUsage(resources.session),
+		};
+	} finally {
+		resources.creationWindowClosed = true;
+		clearTimeout(timeout);
+		signal.removeEventListener("abort", onAbort);
+	}
+}
+
+async function saveDistillReply(session: DistillSession, options: DistillJobOptions): Promise<DistillOutcome> {
+	const usage = collectUsage(session);
+	const text = session.getLastAssistantText() ?? "";
+	const parsed = parseDistillPayload(text);
+	if (parsed.kind === "skip")
+		return { ok: false, reason: "skip", message: "the distiller found nothing worth stashing", usage };
+	if (parsed.kind === "invalid") return { ok: false, reason: "invalid", message: parsed.error, usage };
+	try {
+		const payload = redactPayload(parsed.payload);
+		const { record, path } = await writeStash(
+			options.storeDir,
+			{
+				title: payload.title,
+				summary: payload.summary,
+				decisions: payload.decisions,
+				openLoops: payload.openLoops,
+				nextActions: payload.nextActions,
+				files: payload.files,
+				tags: payload.tags,
+				project: options.project,
+				branch: options.branch,
+				sessionId: options.sessionId,
+			},
+			options.now?.() ?? new Date(),
+		);
+		return { ok: true, record, path, usage };
+	} catch (error) {
+		return { ok: false, reason: "failed", message: `stash write failed: ${errorMessage(error)}`, usage };
+	}
+}
+
+async function runDistill(options: DistillJobOptions, signal: AbortSignal): Promise<DistillOutcome> {
+	if (signal.aborted) return { ok: false, reason: "aborted" };
+	const resources: DistillResources = { session: null, creationWindowClosed: false };
 	try {
 		// Credential-shaped values are removed deterministically before the
 		// distiller sees the transcript or the observed references, and again
@@ -609,113 +719,15 @@ async function runDistill(options: DistillJobOptions, signal: AbortSignal): Prom
 		const transcript = boundTranscript(redactSecrets(entriesToTranscript(options.entries)));
 		const artifacts = extractArtifacts(toolResultTexts(options.entries).map(redactSecrets)).map(redactSecrets);
 		const prompt = buildDistillPrompt(options.hint, transcript, artifacts);
-		let timedOut = false;
-		let interrupt: ((error: Error) => void) | undefined;
-		const interrupted = new Promise<never>((_resolve, reject) => {
-			interrupt = reject;
-		});
-		// Consume any rejection that arrives after a race settles.
-		interrupted.catch(() => {});
-		const onAbort = () => {
-			interrupt?.(new Error("distillation interrupted"));
-			try {
-				void session?.abort().catch(() => {});
-			} catch {
-				// The interrupted outcome remains authoritative.
-			}
-		};
-		if (signal.aborted) onAbort();
-		else signal.addEventListener("abort", onAbort, { once: true });
-		const timeout = setTimeout(() => {
-			timedOut = true;
-			onAbort();
-		}, timeoutMs);
-		timeout.unref?.();
-
-		try {
-			const creating = factory({
-				model: options.model,
-				cwd: options.cwd,
-				thinkingLevel: options.thinkingLevel,
-			});
-			// A factory that resolves after timeout or cancellation still owns a
-			// session resource. Dispose that late result instead of leaking it.
-			void creating.then(
-				(created) => {
-					if (!creationWindowClosed || created === session) return;
-					try {
-						created.dispose();
-					} catch {
-						// Late cleanup cannot change the settled outcome.
-					}
-				},
-				() => {},
-			);
-			session = await Promise.race([creating, interrupted]);
-			if (signal.aborted || timedOut) throw new Error("distillation interrupted");
-			await Promise.race([session.prompt(prompt), interrupted]);
-		} catch (error) {
-			if (signal.aborted || timedOut) {
-				return {
-					ok: false,
-					reason: "aborted",
-					message: timedOut ? `distillation timed out after ${Math.round(timeoutMs / 1000)}s` : undefined,
-				};
-			}
-			return {
-				ok: false,
-				reason: "failed",
-				message: errorMessage(error),
-				// A rejected prompt may still have billed tokens; report them when the
-				// session exists. Creation failures have no session and carry no usage.
-				usage: session ? collectUsage(session) : undefined,
-			};
-		} finally {
-			creationWindowClosed = true;
-			clearTimeout(timeout);
-			signal.removeEventListener("abort", onAbort);
-		}
+		const outcome = await promptDistiller(options, signal, prompt, resources);
+		if (outcome) return outcome;
 		if (signal.aborted) return { ok: false, reason: "aborted" };
-
-		const usage = collectUsage(session);
-		const text = session.getLastAssistantText() ?? "";
-		const parsed = parseDistillPayload(text);
-		if (parsed.kind === "skip") {
-			return { ok: false, reason: "skip", message: "the distiller found nothing worth stashing", usage };
-		}
-		if (parsed.kind === "invalid") return { ok: false, reason: "invalid", message: parsed.error, usage };
-		try {
-			const payload = redactPayload(parsed.payload);
-			const { record, path } = await writeStash(
-				options.storeDir,
-				{
-					title: payload.title,
-					summary: payload.summary,
-					decisions: payload.decisions,
-					openLoops: payload.openLoops,
-					nextActions: payload.nextActions,
-					files: payload.files,
-					tags: payload.tags,
-					project: options.project,
-					branch: options.branch,
-					sessionId: options.sessionId,
-				},
-				options.now?.() ?? new Date(),
-			);
-			return { ok: true, record, path, usage };
-		} catch (error) {
-			return { ok: false, reason: "failed", message: `stash write failed: ${errorMessage(error)}`, usage };
-		}
+		if (!resources.session) throw new Error("distiller session unavailable");
+		return await saveDistillReply(resources.session, options);
 	} catch (error) {
 		return { ok: false, reason: "failed", message: errorMessage(error) };
 	} finally {
-		creationWindowClosed = true;
-		if (session) {
-			try {
-				session.dispose();
-			} catch {
-				// Disposal must not mask the outcome already produced.
-			}
-		}
+		resources.creationWindowClosed = true;
+		disposeQuietly(resources.session);
 	}
 }

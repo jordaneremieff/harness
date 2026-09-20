@@ -81,19 +81,27 @@ async function openRegular(path: string): Promise<{ handle: FileHandle; info: St
 /** Store directories whose artifacts this process has already hardened. */
 const hardenedStores = new Set<string>();
 
+/** Harden discovered artifacts through nonblocking, no-follow regular-file descriptors. */
+async function hardenArtifacts(dir: string, dirents: Dirent[]): Promise<void> {
+	for (const entry of artifactDirents(dirents)) {
+		try {
+			const { handle, info } = await openRegular(join(dir, entry.name));
+			try {
+				if ((info.mode & 0o7777) !== 0o600) await handle.chmod(0o600);
+			} finally {
+				await handle.close();
+			}
+		} catch (error) {
+			if (!hasCode(error, "ENOENT") && !hasCode(error, "ELOOP")) throw error;
+		}
+	}
+}
+
 /**
- * Enforce the store's privacy on every touch, including stores created by an
- * older version. The directory check itself is O(1); hardening the artifacts
- * inside is O(n) in artifact count — each one is opened, stat'ed, and chmod'ed
- * only when its mode differs — so the sweep runs once per process per store
- * directory rather than on every touch. That keeps every touch O(1) beyond the
- * readdir callers already need without a security regression: the 0700
- * directory mode above is re-enforced on every call and already bars other
- * users from reaching any artifact inside it, every artifact open travels
- * through O_NOFOLLOW with a regular-file check, every read chmods the artifact
- * it reads to 0600, and the write path publishes at 0600. The sweep only
- * migrates stores written before artifacts were private. Symlinks are ignored
- * rather than followed.
+ * Enforce directory privacy on every touch and sweep artifact permissions once
+ * per process. Subsequent reads enforce 0600 on each opened regular artifact;
+ * writes publish at 0600. The cached sweep avoids repeated linear hardening
+ * without weakening the per-touch directory and per-read file checks.
  */
 async function secureStore(dir: string, create: boolean): Promise<Dirent[] | null> {
 	if (create) await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -114,21 +122,7 @@ async function secureStore(dir: string, create: boolean): Promise<Dirent[] | nul
 		throw error;
 	}
 	if (hardenedStores.has(dir)) return dirents;
-	for (const entry of artifactDirents(dirents)) {
-		try {
-			const { handle, info } = await openRegular(join(dir, entry.name));
-			try {
-				// Hardening for stores written before artifacts were published at
-				// 0600; artifacts already at 0600 (everything written by current
-				// code) skip the redundant chmod.
-				if ((info.mode & 0o7777) !== 0o600) await handle.chmod(0o600);
-			} finally {
-				await handle.close();
-			}
-		} catch (error) {
-			if (!hasCode(error, "ENOENT") && !hasCode(error, "ELOOP")) throw error;
-		}
-	}
+	await hardenArtifacts(dir, dirents);
 	// Mark the store hardened only after a completed sweep so an interrupted one
 	// retries on the next touch.
 	hardenedStores.add(dir);
@@ -153,6 +147,34 @@ function recordFor(id: string, created: string, input: StashInput): StashRecord 
 	};
 }
 
+async function publishArtifact(temporary: string, path: string, serialized: string): Promise<boolean> {
+	let published = false;
+	try {
+		await writeFile(temporary, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
+		await chmod(temporary, 0o600);
+		try {
+			await link(temporary, path);
+		} catch (error) {
+			if (hasCode(error, "EEXIST")) return false;
+			throw error;
+		}
+		// The hard link shares the completed temporary inode's private mode.
+		published = true;
+		return true;
+	} finally {
+		await cleanTemporary(temporary, published);
+	}
+}
+
+/** Cleanup must not turn a successful publication into a duplicate-producing failure. */
+async function cleanTemporary(path: string, published: boolean): Promise<void> {
+	try {
+		await unlink(path);
+	} catch (error) {
+		if (!published && !hasCode(error, "ENOENT")) throw error;
+	}
+}
+
 /** Write a fully materialized artifact with an atomic, no-clobber link. */
 export async function writeStash(
 	dir: string,
@@ -173,30 +195,7 @@ export async function writeStash(
 		}
 		const path = join(dir, `${id}.md`);
 		const temporary = join(dir, `.${id}.${randomUUID()}.tmp`);
-		let published = false;
-		try {
-			await writeFile(temporary, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
-			await chmod(temporary, 0o600);
-			try {
-				await link(temporary, path);
-			} catch (error) {
-				if (hasCode(error, "EEXIST")) continue;
-				throw error;
-			}
-			// A hard link shares the already-enforced 0600 mode with the completed
-			// temporary inode, so no fallible metadata step remains after publish.
-			published = true;
-			return { record, path };
-		} finally {
-			try {
-				await unlink(temporary);
-			} catch (error) {
-				// Do not turn a successful publish into a reported failure that could
-				// prompt a duplicate retry. Any orphan remains private and dot-hidden.
-				// biome-ignore lint/correctness/noUnsafeFinally: guarded rethrow after publish failure
-				if (!published && !hasCode(error, "ENOENT")) throw error;
-			}
-		}
+		if (await publishArtifact(temporary, path, serialized)) return { record, path };
 	}
 	throw new Error(`could not allocate a unique stash id for ${baseId}`);
 }
@@ -285,6 +284,40 @@ function normalizeMeta(name: string, parsed: Partial<StashMeta> & Record<string,
 	};
 }
 
+async function listingEntry(dir: string, name: string, options: ListOptions): Promise<StashEntry> {
+	const path = join(dir, name);
+	const entry: StashEntry = {
+		meta: normalizeMeta(name, {}),
+		path,
+		preview: undefined,
+		previewTruncated: undefined,
+		previewError: undefined,
+	};
+	try {
+		const previewBytes = Math.min(MAX_STASH_BYTES - HEADER_SCAN_BYTES, Math.max(0, options.previewBytes ?? 0));
+		const prefix = await readPrefix(path, HEADER_SCAN_BYTES + previewBytes);
+		// Every consumer uses the same bounded header window for lifecycle decisions.
+		const headerPrefix = previewBytes > 0 ? await readPrefix(path, HEADER_SCAN_BYTES) : prefix;
+		if (headerUnclosed(headerPrefix.text)) {
+			throw new Error(
+				headerPrefix.truncated
+					? `artifact header is longer than the ${HEADER_SCAN_BYTES}-byte scan window; its state cannot be verified`
+					: "artifact header never closes; its state cannot be verified",
+			);
+		}
+		const parsed = parseFrontmatter(prefix.text);
+		entry.meta = normalizeMeta(name, parsed.meta);
+		if (options.previewBytes !== undefined) {
+			const bodyPrefix = utf8BodyPrefix(parsed.body, previewBytes);
+			entry.preview = bodyPrefix.text;
+			entry.previewTruncated = prefix.truncated || bodyPrefix.truncated;
+		}
+	} catch (error) {
+		entry.previewError = error instanceof Error ? error.message : String(error);
+	}
+	return entry;
+}
+
 /** List artifacts newest-first without allowing malformed files to hide their siblings. */
 export async function listStashes(dir: string, options: ListOptions = {}): Promise<StashEntry[]> {
 	const dirents = await secureStore(dir, false);
@@ -299,36 +332,8 @@ export async function listStashes(dir: string, options: ListOptions = {}): Promi
 	const entries: StashEntry[] = [];
 
 	for (const name of names) {
-		const path = join(dir, name);
-		let meta = normalizeMeta(name, {});
-		let preview: string | undefined;
-		let previewTruncated: boolean | undefined;
-		let previewError: string | undefined;
-		try {
-			const previewBytes = Math.min(MAX_STASH_BYTES - HEADER_SCAN_BYTES, Math.max(0, options.previewBytes ?? 0));
-			const prefix = await readPrefix(path, HEADER_SCAN_BYTES + previewBytes);
-			// The lifecycle decision always uses the bounded header window, no
-			// matter how much preview was requested, so every consumer sees the
-			// same state for the same artifact (a header closing beyond the
-			// window is unverified everywhere, including the browser).
-			const headerPrefix = previewBytes > 0 ? await readPrefix(path, HEADER_SCAN_BYTES) : prefix;
-			if (headerUnclosed(headerPrefix.text)) {
-				throw new Error(
-					headerPrefix.truncated
-						? `artifact header is longer than the ${HEADER_SCAN_BYTES}-byte scan window; its state cannot be verified`
-						: "artifact header never closes; its state cannot be verified",
-				);
-			}
-			const parsed = parseFrontmatter(prefix.text);
-			meta = normalizeMeta(name, parsed.meta);
-			if (options.previewBytes !== undefined) {
-				const bodyPrefix = utf8BodyPrefix(parsed.body, previewBytes);
-				preview = bodyPrefix.text;
-				previewTruncated = prefix.truncated || bodyPrefix.truncated;
-			}
-		} catch (error) {
-			previewError = error instanceof Error ? error.message : String(error);
-		}
+		const entry = await listingEntry(dir, name, options);
+		const { meta, previewError } = entry;
 		// An unreadable artifact has no readable tags, so an explicit tag filter
 		// cannot match it; it stays visible in unfiltered listings (the same rule
 		// as the state filter below).
@@ -341,7 +346,7 @@ export async function listStashes(dir: string, options: ListOptions = {}): Promi
 			(previewError !== undefined || meta.invalidState !== undefined || meta.state !== options.state)
 		)
 			continue;
-		entries.push({ meta, path, preview, previewTruncated, previewError });
+		entries.push(entry);
 		if (entries.length >= limit) break;
 	}
 	return entries;
@@ -463,6 +468,37 @@ function currentState(meta: Partial<StashMeta> & Record<string, unknown>): Stash
 	return meta.state;
 }
 
+function completionOutcome(raw: string): string {
+	const outcome = redactSecrets(raw.trim());
+	if (!outcome) throw new Error("stash completion outcome must not be empty");
+	if (outcome.length > 20_000) throw new Error("stash completion outcome exceeds 20000 characters");
+	return outcome;
+}
+
+function lifecyclePatch(
+	id: string,
+	state: StashState,
+	change: StashLifecycleChange,
+	stamp: string,
+): Record<string, unknown> | null {
+	if (change.action === "activate") {
+		if (state === "closed") throw new Error(`stash ${id} is closed; reopen it before pickup`);
+		if (state === "active") return null;
+		return { state: "active", activatedAt: stamp, closedAt: undefined, outcome: undefined };
+	}
+	if (change.action === "close") {
+		const outcome = completionOutcome(change.outcome);
+		if (state !== "active") throw new Error(`stash ${id} must be active before it can be closed (state: ${state})`);
+		return { state: "closed", closedAt: stamp, outcome };
+	}
+	if (change.action === "release") {
+		if (state !== "active") throw new Error(`stash ${id} can be released only from active state (state: ${state})`);
+		return { state: "open", activatedAt: undefined };
+	}
+	if (state !== "closed") throw new Error(`stash ${id} can be reopened only from closed state (state: ${state})`);
+	return { state: "open", closedAt: undefined, outcome: undefined };
+}
+
 /** Atomically rewrite only lifecycle frontmatter after rechecking the regular-file target. */
 export async function transitionStash(
 	dir: string,
@@ -490,41 +526,14 @@ export async function transitionStash(
 	}
 	const state = currentState(parsed.meta);
 	const stamp = utcTimestamp(now);
-	let patch: Record<string, unknown | undefined>;
-
-	if (change.action === "activate") {
-		if (state === "closed") throw new Error(`stash ${located.id} is closed; reopen it before pickup`);
-		if (state === "active") {
-			return {
-				...located,
-				content: source.content,
-				meta: normalizeMeta(`${located.id}.md`, parsed.meta),
-				changed: false,
-			};
-		}
-		patch = { state: "active", activatedAt: stamp, closedAt: undefined, outcome: undefined };
-	} else if (change.action === "close") {
-		// The outcome is operator/model-authored text stored durably; the same
-		// deterministic redaction applies so a credential cannot enter an
-		// artifact through the lifecycle path either.
-		const outcome = redactSecrets(change.outcome.trim());
-		if (!outcome) throw new Error("stash completion outcome must not be empty");
-		if (outcome.length > 20_000) throw new Error("stash completion outcome exceeds 20000 characters");
-		if (state !== "active")
-			throw new Error(`stash ${located.id} must be active before it can be closed (state: ${state})`);
-		patch = { state: "closed", closedAt: stamp, outcome };
-	} else if (change.action === "release") {
-		// The inverse of pickup: an active effort whose owning session died or
-		// polluted its context returns to pristine open, so a fresh session picks
-		// it up without reconciling a phantom predecessor. Nothing durable is
-		// lost — the artifact body is untouched and pickup is one action away.
-		if (state !== "active")
-			throw new Error(`stash ${located.id} can be released only from active state (state: ${state})`);
-		patch = { state: "open", activatedAt: undefined };
-	} else {
-		if (state !== "closed")
-			throw new Error(`stash ${located.id} can be reopened only from closed state (state: ${state})`);
-		patch = { state: "open", closedAt: undefined, outcome: undefined };
+	const patch = lifecyclePatch(located.id, state, change, stamp);
+	if (!patch) {
+		return {
+			...located,
+			content: source.content,
+			meta: normalizeMeta(`${located.id}.md`, parsed.meta),
+			changed: false,
+		};
 	}
 
 	const content = updateFrontmatter(source.content, patch);
@@ -543,12 +552,7 @@ export async function transitionStash(
 		await rename(temporary, located.path);
 		published = true;
 	} finally {
-		try {
-			await unlink(temporary);
-		} catch (error) {
-			// biome-ignore lint/correctness/noUnsafeFinally: guarded rethrow after publish failure
-			if (!hasCode(error, "ENOENT") && !published) throw error;
-		}
+		await cleanTemporary(temporary, published);
 	}
 	return {
 		...located,
@@ -556,6 +560,66 @@ export async function transitionStash(
 		meta: normalizeMeta(`${located.id}.md`, parseFrontmatter(content).meta),
 		changed: true,
 	};
+}
+
+async function secureArchive(dir: string): Promise<string> {
+	const archiveDir = join(dir, ROTATED_STORE_NAME);
+	await mkdir(archiveDir, { recursive: true, mode: 0o700 });
+	const archiveInfo = await lstat(archiveDir);
+	if (!archiveInfo.isDirectory() || archiveInfo.isSymbolicLink()) {
+		throw new Error(`stash archive is not a regular directory: ${archiveDir}`);
+	}
+	if ((archiveInfo.mode & 0o7777) !== 0o700) await chmod(archiveDir, 0o700);
+	return archiveDir;
+}
+
+type FileIdentity = { dev: number; ino: number };
+
+function sameRegularFile(info: Stats, identity: FileIdentity): boolean {
+	return info.isFile() && !info.isSymbolicLink() && info.dev === identity.dev && info.ino === identity.ino;
+}
+
+async function removeArchivedSource(path: string, archivePath: string, identity: FileIdentity): Promise<void> {
+	try {
+		const archived = await lstat(archivePath);
+		const source = await lstat(path);
+		if (!sameRegularFile(archived, identity) || source.dev !== identity.dev || source.ino !== identity.ino) {
+			throw new Error("stash target changed during rotation");
+		}
+		await unlink(path);
+	} catch (error) {
+		throw new Error(
+			`stash archive retained at ${archivePath}, but source removal failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+async function publishArchive(
+	id: string,
+	path: string,
+	archivePath: string,
+	temporary: string,
+	identity: FileIdentity,
+): Promise<void> {
+	let staged = false;
+	let published = false;
+	try {
+		await link(path, temporary);
+		staged = true;
+		const retained = await lstat(temporary);
+		if (!sameRegularFile(retained, identity))
+			throw new Error("stash target changed during rotation; retry the operation");
+		try {
+			await link(temporary, archivePath);
+		} catch (error) {
+			if (hasCode(error, "EEXIST")) throw new Error(`stash ${id} is already rotated`);
+			throw error;
+		}
+		published = true;
+		await removeArchivedSource(path, archivePath, identity);
+	} finally {
+		if (staged) await cleanTemporary(temporary, published);
+	}
 }
 
 /**
@@ -595,13 +659,7 @@ export async function rotateStash(dir: string, idOrPrefix: string): Promise<Stas
 		throw new Error(`stash ${located.id} is active; complete it before rotation (state: active)`);
 	}
 
-	const archiveDir = join(dir, ROTATED_STORE_NAME);
-	await mkdir(archiveDir, { recursive: true, mode: 0o700 });
-	const archiveInfo = await lstat(archiveDir);
-	if (!archiveInfo.isDirectory() || archiveInfo.isSymbolicLink()) {
-		throw new Error(`stash archive is not a regular directory: ${archiveDir}`);
-	}
-	if ((archiveInfo.mode & 0o7777) !== 0o700) await chmod(archiveDir, 0o700);
+	const archiveDir = await secureArchive(dir);
 
 	const archivePath = join(archiveDir, `${located.id}.md`);
 	const current = await lstat(located.path);
@@ -613,56 +671,6 @@ export async function rotateStash(dir: string, idOrPrefix: string): Promise<Stas
 	// A source-path replacement must not reserve the archive name with an
 	// unverified inode. Cleanup owns only this temporary link, never the archive.
 	const temporary = join(archiveDir, `.${located.id}.${randomUUID()}.tmp`);
-	let staged = false;
-	let published = false;
-	try {
-		await link(located.path, temporary);
-		staged = true;
-		const retained = await lstat(temporary);
-		if (
-			!retained.isFile() ||
-			retained.isSymbolicLink() ||
-			retained.dev !== prefix.identity.dev ||
-			retained.ino !== prefix.identity.ino
-		) {
-			throw new Error("stash target changed during rotation; retry the operation");
-		}
-		try {
-			await link(temporary, archivePath);
-		} catch (error) {
-			if (hasCode(error, "EEXIST")) throw new Error(`stash ${located.id} is already rotated`);
-			throw error;
-		}
-		published = true;
-		try {
-			const archived = await lstat(archivePath);
-			const source = await lstat(located.path);
-			if (
-				!archived.isFile() ||
-				archived.isSymbolicLink() ||
-				archived.dev !== prefix.identity.dev ||
-				archived.ino !== prefix.identity.ino ||
-				source.dev !== prefix.identity.dev ||
-				source.ino !== prefix.identity.ino
-			) {
-				throw new Error("stash target changed during rotation");
-			}
-			await unlink(located.path);
-		} catch (error) {
-			throw new Error(
-				`stash archive retained at ${archivePath}, but source removal failed: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	} finally {
-		if (staged) {
-			try {
-				await unlink(temporary);
-			} catch (error) {
-				// Preserve the publication result; any orphan stays private and hidden.
-				// biome-ignore lint/correctness/noUnsafeFinally: guarded rethrow before archive publication
-				if (!published && !hasCode(error, "ENOENT")) throw error;
-			}
-		}
-	}
+	await publishArchive(located.id, located.path, archivePath, temporary, prefix.identity);
 	return { id: located.id, path: located.path, archivePath, state };
 }
