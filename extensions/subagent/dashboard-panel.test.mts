@@ -39,7 +39,10 @@ const theme = {
 	underline: (text: string) => text,
 	strikethrough: (text: string) => text,
 	inverse: (text: string) => text,
-} as unknown as Theme;
+} satisfies Pick<
+	Theme,
+	"getBgAnsi" | "fg" | "bg" | "bold" | "italic" | "underline" | "strikethrough" | "inverse"
+> as unknown as Theme;
 function participant(
 	id: string,
 	parentId: string | null,
@@ -196,29 +199,89 @@ const framedTheme = {
 	bg: (color: string, value: string) => (color === "customMessageBg" ? `\x1b[48;2;12;18;24m${value}\x1b[49m` : value),
 } as Theme;
 
+/** The background a simple SGR code selects: null for default, undefined when not a direct selector. */
+function directBackground(code: number): string | null | undefined {
+	if (code === 0 || code === 49) return null;
+	if (code >= 40 && code <= 47) return String(code);
+	return undefined;
+}
+
+/** Apply one SGR parameter list to the running background, returning the new value. */
+function updateBackground(background: string | null, codes: number[]): string | null {
+	let current = background;
+	for (let index = 0; index < codes.length; index++) {
+		const code = codes[index];
+		const direct = directBackground(code);
+		if (direct !== undefined) {
+			current = direct;
+			continue;
+		}
+		if (code === 48 || code === 38) {
+			const length = codes[index + 1] === 2 ? 5 : 3;
+			if (code === 48) current = codes.slice(index, index + length).join(";");
+			index += length - 1;
+		}
+	}
+	return current;
+}
+
+/** Push one visible character once per display column, all under the current background. */
+function pushBackgroundCells(cells: Array<string | null>, text: string, background: string | null): void {
+	for (const char of text) {
+		for (let column = 0; column < visibleWidth(char); column++) cells.push(background);
+	}
+}
+
+/** Fold one token into the running background, pushing visible characters. */
+function applyBackgroundToken(
+	cells: Array<string | null>,
+	token: RegExpMatchArray,
+	background: string | null,
+): string | null {
+	if (token[1] === undefined) {
+		pushBackgroundCells(cells, token[2], background);
+		return background;
+	}
+	const codes = token[1] === "" ? [0] : token[1].split(";").map(Number);
+	return updateBackground(background, codes);
+}
+
 function backgroundCells(line: string): Array<string | null> {
 	const cells: Array<string | null> = [];
 	let background: string | null = null;
 	for (const token of line.replaceAll(CURSOR_MARKER, "").matchAll(/\x1b\[([\d;]*)m|([^\x1b]+)/g)) {
-		if (token[1] !== undefined) {
-			const codes = token[1] === "" ? [0] : token[1].split(";").map(Number);
-			for (let index = 0; index < codes.length; index++) {
-				const code = codes[index];
-				if (code === 0 || code === 49) background = null;
-				else if (code >= 40 && code <= 47) background = String(code);
-				else if (code === 48 || code === 38) {
-					const length = codes[index + 1] === 2 ? 5 : 3;
-					if (code === 48) background = codes.slice(index, index + length).join(";");
-					index += length - 1;
-				}
-			}
-		} else {
-			for (const char of token[2]) {
-				for (let column = 0; column < visibleWidth(char); column++) cells.push(background);
-			}
-		}
+		background = applyBackgroundToken(cells, token, background);
 	}
 	return cells;
+}
+
+/** Move within a view's rendered frames and prove stored control bytes stay inert. */
+function assertInertSourceControls(component: Component, keys: string[]): void {
+	for (const width of [180, 80, 48]) {
+		for (const key of ["\x1b[H", "\x1b[F"]) {
+			if (!keys.includes("/")) component.handleInput(key);
+			const lines = component.render(width);
+			assert.doesNotMatch(
+				lines.join("\n").replaceAll(CURSOR_MARKER, ""),
+				/[\u202e\u2066\x07]|\x1b\[2J/,
+				`source controls stay inert for ${keys.join("/")} at ${width}`,
+			);
+			for (const line of lines) assert.equal(visibleWidth(line), width);
+		}
+	}
+}
+
+/** Every painted row on a tiny terminal keeps the exact requested width. */
+function assertTinyFrame(component: Component, rows: number, width: number): void {
+	const lines = component.render(width);
+	assert.ok(lines.length <= rows - 2);
+	for (const line of lines) {
+		assert.equal(visibleWidth(line), width);
+		assert.ok(line.startsWith("\x1b[48;2;12;18;24m"));
+		assert.ok(line.endsWith("\x1b[49m"));
+	}
+	assert.doesNotMatch(stripTerminalSequences(lines[0] ?? ""), /^┌/);
+	if (width >= 3) assert.match(stripTerminalSequences(lines.at(-1) ?? ""), /esc/);
 }
 
 function assertExchangeProvenance(output: string, kind: "peer" | "report" | "steer"): void {
@@ -947,8 +1010,14 @@ describe("collaboration dashboard", () => {
 describe("history feedback and dense layouts", () => {
 	it("shows complete unavailable and disagreed review obligations", async () => {
 		const view = snapshot();
-		const base = { obligationId: "review-source", artifact: "src/example.ts", revision: "rev-42",
-			requester: "worker-a", reviewer: "worker-b", required: true };
+		const base = {
+			obligationId: "review-source",
+			artifact: "src/example.ts",
+			revision: "rev-42",
+			requester: "worker-a",
+			reviewer: "worker-b",
+			required: true,
+		};
 		view.outstandingRequired = [{ ...base, outcome: "unavailable", reason: "Source absent" }];
 		view.unaccepted = [{ ...base, obligationId: "review-contract", outcome: "disagreed", reason: "Contract differs" }];
 		view.obligations = [...view.outstandingRequired, ...view.unaccepted];
@@ -959,7 +1028,10 @@ describe("history feedback and dense layouts", () => {
 			assert.match(body, /OUTSTANDING REQUIRED \(1\)/);
 			assert.match(body, /NOT ACCEPTED \(1\)/);
 			assert.match(body, /worker-a → worker-b: src\/example\.ts@rev-42 \[review-source\].*unavailable: Source absent/);
-			assert.match(body, /worker-a → worker-b: src\/example\.ts@rev-42 \[review-contract\].*disagreed: Contract differs/);
+			assert.match(
+				body,
+				/worker-a → worker-b: src\/example\.ts@rev-42 \[review-contract\].*disagreed: Contract differs/,
+			);
 		});
 	});
 	it("counts history additions against the retained view rather than omitted source events", async () => {
@@ -1698,18 +1770,7 @@ describe("panel frame and input boundaries", () => {
 						assert.match(text(component, 180), /Worker label → Manager label/);
 						assert.match(text(component, 180), /SOURCE DETAILS/);
 					}
-					for (const width of [180, 80, 48]) {
-						for (const key of ["\x1b[H", "\x1b[F"]) {
-							if (!keys.includes("/")) component.handleInput(key);
-							const lines = component.render(width);
-							assert.doesNotMatch(
-								lines.join("\n").replaceAll(CURSOR_MARKER, ""),
-								/[\u202e\u2066\x07]|\x1b\[2J/,
-								`source controls stay inert for ${keys.join("/")} at ${width}`,
-							);
-							for (const line of lines) assert.equal(visibleWidth(line), width);
-						}
-					}
+					assertInertSourceControls(component, keys);
 				},
 				framedTheme,
 				"overview",
@@ -1758,7 +1819,8 @@ describe("panel frame and input boundaries", () => {
 					assert.equal(cells[0], panelBackground);
 					assert.equal(cells.at(-1), panelBackground);
 				}
-				const selected = rendered.find((line) => stripTerminalSequences(line).includes("› Selected identity"))!;
+				const selected = rendered.find((line) => stripTerminalSequences(line).includes("› Selected identity"));
+				assert.ok(selected, "the selected identity row is painted");
 				const identity = stripTerminalSequences(selected);
 				const divider = identity.indexOf("│", 1);
 				const selectedCells = backgroundCells(selected);
@@ -1766,10 +1828,10 @@ describe("panel frame and input boundaries", () => {
 				assert.ok(selectedCells.slice(2, divider - 1).every((background) => background === selectionBackground));
 				assert.equal(selectedCells[divider], panelBackground);
 				assert.ok(selectedCells.slice(divider + 1).every((background) => background === panelBackground));
-				const code = rendered.find((line) => stripTerminalSequences(line).includes("CODE SAMPLE"))!;
+				const code = rendered.find((line) => stripTerminalSequences(line).includes("CODE SAMPLE"));
 				assert.ok(code, "native Markdown retains its code text");
 				assert.equal(backgroundCells(code)[stripTerminalSequences(code).indexOf("CODE SAMPLE")], codeBackground);
-				const after = rendered.find((line) => stripTerminalSequences(line).includes("After code"))!;
+				const after = rendered.find((line) => stripTerminalSequences(line).includes("After code"));
 				assert.ok(after, "native Markdown retains text after the code block");
 				assert.ok(backgroundCells(after).every((background) => background === panelBackground));
 				component.handleInput("/");
@@ -1853,17 +1915,7 @@ describe("panel frame and input boundaries", () => {
 				async (component, terminal, closed) => {
 					for (const rows of [4, 6, 10]) {
 						terminal.rows = rows;
-						for (const width of [80, 20, 11, 3, 1]) {
-							const lines = component.render(width);
-							assert.ok(lines.length <= rows - 2);
-							for (const line of lines) {
-								assert.equal(visibleWidth(line), width);
-								assert.ok(line.startsWith("\x1b[48;2;12;18;24m"));
-								assert.ok(line.endsWith("\x1b[49m"));
-							}
-							assert.doesNotMatch(stripTerminalSequences(lines[0] ?? ""), /^┌/);
-							if (width >= 3) assert.match(stripTerminalSequences(lines.at(-1) ?? ""), /esc/);
-						}
+						for (const width of [80, 20, 11, 3, 1]) assertTinyFrame(component, rows, width);
 					}
 					component.handleInput("\x1b");
 					assert.equal(closed(), 1);

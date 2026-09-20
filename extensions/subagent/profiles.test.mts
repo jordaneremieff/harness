@@ -213,13 +213,17 @@ describe("managed dispatch profiles", () => {
 			writeFileSync(first.path, "sensitive invalid json");
 			const fault = readProfile("broken");
 			assert.equal(fault.ok, false);
-			assert.ok(fault.sha256);
+			const faultSha = fault.sha256;
+			assert.ok(faultSha);
 			assert.doesNotMatch(JSON.stringify(fault), /sensitive invalid json/);
 			assert.equal(listProfiles().entries[0].ok, false);
-			assert.throws(() => setProfileEnabled("broken", false, fault.sha256!), /valid UTF-8 JSON/);
-			assert.equal(updateProfile("broken", {}, root, fault.sha256!).ok, true);
+			assert.throws(() => setProfileEnabled("broken", false, faultSha), /valid UTF-8 JSON/);
+			assert.equal(updateProfile("broken", {}, root, faultSha).ok, true);
 			writeFileSync(first.path, "[");
-			deleteProfile("broken", readProfile("broken").sha256!);
+			const replaced = readProfile("broken");
+			const replacedSha = replaced.sha256;
+			assert.ok(replacedSha);
+			deleteProfile("broken", replacedSha);
 			assert.equal(listProfiles().entries.length, 0);
 		}));
 
@@ -324,7 +328,9 @@ describe("managed dispatch profiles", () => {
 			);
 			assert.deepEqual(results.map((r) => r.stdout.trim()).sort(), ["created", "refused"]);
 			const persisted = good(readProfile("race"));
-			assert.ok(["first", "second"].includes(persisted.model!));
+			const persistedModel = persisted.model;
+			assert.ok(persistedModel);
+			assert.ok(["first", "second"].includes(persistedModel));
 			const read = await exec(
 				process.execPath,
 				[

@@ -88,20 +88,28 @@ interface ProfileConfiguration extends ProfileDefaults, Pick<ProfileSnapshot, "g
 	enabled?: boolean;
 }
 
+function profileInstructions(value: unknown): string | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string" || value.length > PROFILE_MAX_BYTES || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\p{Cf}]/u.test(value))
+		throw new Error("Instructions need text without terminal controls; line breaks and tabs are allowed.");
+	return value.trim() ? value : undefined;
+}
+
+function profileGrounding(value: unknown, base: string): ProfileSnapshot["grounding"] {
+	if (!Array.isArray(value) || value.length > 16) throw new Error("Grounding accepts at most 16 source pointers.");
+	return value.map((value) => {
+		const source = object(value);
+		keys(source, ["name", "path"]);
+		return { name: text(source.name, 160), path: text(resolve(base, text(source.path, 4096)), 4096) };
+	});
+}
+
 function configuration(value: unknown, base: string): ProfileConfiguration {
 	const input = object(value);
 	keys(input, ["model", "thinking", "cwd", "grounding", "name", "enabled", "instructions"]);
 	const result: ProfileConfiguration = { grounding: [] };
-	if (input.instructions !== undefined) {
-		if (
-			typeof input.instructions !== "string" ||
-			input.instructions.length > PROFILE_MAX_BYTES ||
-			/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\p{Cf}]/u.test(input.instructions)
-		) {
-			throw new Error("Instructions need text without terminal controls; line breaks and tabs are allowed.");
-		}
-		if (input.instructions.trim()) result.instructions = input.instructions;
-	}
+	const instructions = profileInstructions(input.instructions);
+	if (instructions !== undefined) result.instructions = instructions;
 	if (input.enabled !== undefined) {
 		if (typeof input.enabled !== "boolean") throw new Error("Expected enabled to be true or false.");
 		result.enabled = input.enabled;
@@ -113,15 +121,7 @@ function configuration(value: unknown, base: string): ProfileConfiguration {
 	}
 	if (input.cwd !== undefined) result.cwd = text(resolve(base, text(input.cwd, 4096)), 4096);
 	if (input.name !== undefined) result.name = profileName(input.name);
-	if (input.grounding !== undefined) {
-		if (!Array.isArray(input.grounding) || input.grounding.length > 16)
-			throw new Error("Grounding accepts at most 16 source pointers.");
-		result.grounding = input.grounding.map((value) => {
-			const source = object(value);
-			keys(source, ["name", "path"]);
-			return { name: text(source.name, 160), path: text(resolve(base, text(source.path, 4096)), 4096) };
-		});
-	}
+	if (input.grounding !== undefined) result.grounding = profileGrounding(input.grounding, base);
 	return result;
 }
 

@@ -24,7 +24,7 @@ const theme = {
 	fg: (_color: string, text: string) => `\x1b[37m${text}\x1b[39m`,
 	bg: (color: string, text: string) => `${color === "selectedBg" ? "\x1b[44m" : "\x1b[40m"}${text}\x1b[49m`,
 	bold: (text: string) => `\x1b[1m${text}\x1b[0m`,
-} as unknown as Theme;
+} satisfies Pick<Theme, "getBgAnsi" | "fg" | "bg" | "bold"> as unknown as Theme;
 const tab = "\t";
 const enter = "\r";
 const esc = "\x1b";
@@ -65,7 +65,9 @@ function store(initial: ProfileEntry[] = []) {
 		},
 		read: (name) => {
 			if (fail === "read failed") throw new Error(fail);
-			return entries.get(name)!;
+			const entry = entries.get(name);
+			if (!entry) throw new Error(`Missing profile entry: ${name}`);
+			return entry;
 		},
 		create: (name, definition) => {
 			calls.push({ action: "create", name, definition });
@@ -149,6 +151,17 @@ function press(component: Component, ...keys: string[]) {
 }
 function replace(component: Component, value: string) {
 	press(component, "\x01", "\x0b", value);
+}
+
+/** Sweep one terminal size nine times, checking every rendered line stays in bounds. */
+function assertResizeBounds(component: Component, terminal: { rows: number }, rows: number, width: number): void {
+	terminal.rows = rows;
+	for (let i = 0; i < 9; i++) {
+		const lines = component.render(width);
+		assert.ok(lines.length <= Math.max(1, rows - 2));
+		for (const line of lines) assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}`);
+		press(component, tab);
+	}
 }
 
 describe("profile manager", () => {
@@ -333,15 +346,7 @@ describe("profile manager", () => {
 		await panel(s.deps, (c, t) => {
 			press(c, "n", "界".repeat(100));
 			for (const rows of [30, 12, 8, 5, 3])
-				for (const width of [100, 30, 20, 8, 1]) {
-					t.rows = rows;
-					for (let i = 0; i < 9; i++) {
-						const lines = c.render(width);
-						assert.ok(lines.length <= Math.max(1, rows - 2));
-						for (const line of lines) assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}`);
-						press(c, tab);
-					}
-				}
+				for (const width of [100, 30, 20, 8, 1]) assertResizeBounds(c, t, rows, width);
 			t.rows = 8;
 			for (let i = 0; i < 9; i++) {
 				assert.match(text(c, 30), new RegExp(`${i + 1}/9`));
@@ -439,9 +444,15 @@ describe("profile manager", () => {
 		await panel(store([record("review")]).deps, (c) => {
 			const lines = c.render(100);
 			assert.match(stripTerminalSequences(lines[0]), /^┌/);
-			assert.match(stripTerminalSequences(lines.at(-3)!), /^├/);
-			assert.match(stripTerminalSequences(lines.at(-2)!), /esc close/);
-			assert.match(stripTerminalSequences(lines.at(-1)!), /^└/);
+			const separator = lines.at(-3);
+			const actionHint = lines.at(-2);
+			const bottom = lines.at(-1);
+			assert.ok(separator, "the separator row is present");
+			assert.ok(actionHint, "the action hint row is present");
+			assert.ok(bottom, "the bottom row is present");
+			assert.match(stripTerminalSequences(separator), /^├/);
+			assert.match(stripTerminalSequences(actionHint), /esc close/);
+			assert.match(stripTerminalSequences(bottom), /^└/);
 			assert.ok(lines[0].includes("\x1b[0m\x1b[40m"));
 			assert.ok(lines.some((line) => line.includes("\x1b[44m")));
 			press(c, "n", "\x1b[200~bad\x1b[2J\u202etext\x1b[201~");

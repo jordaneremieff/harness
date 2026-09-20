@@ -123,152 +123,148 @@ function toolTitle(call: ConsoleToolCallPart): string {
 	return `${call.name}${target === undefined ? "" : `  ${String(target)}`}`;
 }
 
-export function renderTranscript(messages: ConsoleMessage[], opts: RenderOpts): TranscriptDocument {
-	const { theme } = opts;
-	const width = Math.max(0, opts.width);
-	const document: TranscriptDocument = { lines: [], sections: [] };
-	if (!width) return document;
-	const measure = Math.max(1, Math.min(100, width - 4));
-	const results = new Map<string, ConsoleToolResultMessage>();
-	for (const message of messages) if (message.role === "toolResult") results.set(message.toolCallId, message);
-	const paddedLine = (line: string): string => {
-		const clipped = truncateToWidth(line, width, "");
-		return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
-	};
-	const prose = (text: string): string[] => renderMarkdownText(text, measure, theme);
-	const literal = (text: string): string[] => wrapTextWithAnsi(cleanConsoleText(text), measure);
-	const add = (
-		id: string,
-		label: string,
-		body: string[],
-		color: "accent" | "muted" | "error" | "warning" | "success" = "muted",
-		expanded?: boolean,
-		kind: TranscriptSection["kind"] = "message",
-	) => {
-		if (document.lines.length) document.lines.push(paddedLine(""));
+type SectionColor = "accent" | "muted" | "error" | "warning" | "success";
+
+function toolState(result: ConsoleToolResultMessage | undefined, stopReason: string | undefined): string {
+	if (!result && (stopReason === "aborted" || stopReason === "error")) return stopReason;
+	if (!result || result.status === "running") return "running";
+	return result.isError ? "error" : "done";
+}
+
+/** One render owns its document, tool-result lookup, and width-dependent layout. */
+class TranscriptRenderer {
+	readonly document: TranscriptDocument = { lines: [], sections: [] };
+	readonly results = new Map<string, ConsoleToolResultMessage>();
+	readonly width: number;
+	readonly measure: number;
+	readonly theme: Theme;
+	readonly opts: RenderOpts;
+
+	constructor(opts: RenderOpts) {
+		this.opts = opts;
+		this.theme = opts.theme;
+		this.width = Math.max(0, opts.width);
+		this.measure = Math.max(1, Math.min(100, this.width - 4));
+	}
+
+	paddedLine(line: string): string {
+		const clipped = truncateToWidth(line, this.width, "");
+		return clipped + " ".repeat(Math.max(0, this.width - visibleWidth(clipped)));
+	}
+
+	prose(text: string): string[] {
+		return renderMarkdownText(text, this.measure, this.theme);
+	}
+
+	literal(text: string): string[] {
+		return wrapTextWithAnsi(cleanConsoleText(text), this.measure);
+	}
+
+	add(id: string, label: string, body: string[], color: SectionColor = "muted", expanded?: boolean,
+		kind: TranscriptSection["kind"] = "message"): void {
+		const { document, theme, opts } = this;
+		if (document.lines.length) document.lines.push(this.paddedLine(""));
 		const start = document.lines.length;
-		for (const line of wrapTextWithAnsi(cleanConsoleText(label), measure))
-			document.lines.push(
-				paddedLine(
-					`${opts.selectedSectionId === id ? "›" : " "}${theme.fg(opts.selectedSectionId === id ? "accent" : color, theme.bold(line))}`,
-				),
-			);
-		for (const line of body) document.lines.push(paddedLine(` ${line}`));
+		for (const line of wrapTextWithAnsi(cleanConsoleText(label), this.measure))
+			document.lines.push(this.paddedLine(
+				`${opts.selectedSectionId === id ? "›" : " "}${theme.fg(opts.selectedSectionId === id ? "accent" : color, theme.bold(line))}`,
+			));
+		for (const line of body) document.lines.push(this.paddedLine(` ${line}`));
 		document.sections.push({ id, label, start, end: document.lines.length, expanded, kind });
-	};
-	for (const [index, message] of messages.entries()) {
-		const key = message.id ?? `message-${index}`;
-		if (message.role === "toolResult") continue;
-		if (message.role === "user") {
-			const text =
-				typeof message.content === "string" ? message.content : message.content.map((p) => p.text).join("\n");
-			add(key, "User", prose(text), "accent");
-			continue;
+	}
+
+	renderMessage(message: ConsoleMessage, key: string): void {
+		switch (message.role) {
+			case "toolResult": return;
+			case "user": {
+				const text = typeof message.content === "string" ? message.content : message.content.map((p) => p.text).join("\n");
+				this.add(key, "User", this.prose(text), "accent");
+				return;
+			}
+			case "custom":
+				this.add(key, `Message · ${cleanConsoleText(message.customType)}`, this.prose(message.content.map((p) => p.text).join("\n")));
+				return;
+			case "assistant":
+				this.renderAssistant(message, key);
 		}
-		if (message.role === "custom") {
-			add(
-				key,
-				`Message · ${cleanConsoleText(message.customType)}`,
-				prose(message.content.map((p) => p.text).join("\n")),
-			);
-			continue;
-		}
+	}
+
+	renderAssistant(message: ConsoleAssistantMessage, key: string): void {
 		for (let partIndex = 0; partIndex < message.content.length; partIndex++) {
 			const part = message.content[partIndex];
 			const partKey = `${key}:${partIndex}`;
-			if (part.type === "text" || part.type === "thinking") {
-				const values = [part.type === "text" ? part.text : part.thinking];
-				while (message.content[partIndex + 1]?.type === part.type) {
-					const next = message.content[++partIndex];
-					if (next.type === "text") values.push(next.text);
-					else if (next.type === "thinking") values.push(next.thinking);
-				}
-				const text = values.join("\n\n");
-				if (!text.trim()) continue;
-				if (part.type === "text") add(partKey, "Assistant", prose(text));
-				else if (opts.sectionExpansion?.get(partKey) ?? opts.showThinking)
-					add(
-						partKey,
-						"Reasoning",
-						prose(text).map((line) => theme.fg("muted", line)),
-						"muted",
-						true,
-						"reasoning",
-					);
-				else
-					add(
-						partKey,
-						`Reasoning · collapsed · ${opts.thinkingHint ?? "ctrl+t"} expands`,
-						[],
-						"muted",
-						false,
-						"reasoning",
-					);
+			if (part.type === "toolCall") {
+				this.renderTool(part, partKey, message.stopReason);
 				continue;
 			}
-			const result = results.get(part.id);
-			const failed = !result && (message.stopReason === "aborted" || message.stopReason === "error");
-			const state = failed
-				? message.stopReason!
-				: result?.status === "running" || !result
-					? "running"
-					: result.isError
-						? "error"
-						: "done";
-			const color = failed || result?.isError ? "error" : state === "running" ? "warning" : "muted";
-			const title = cleanConsoleText(toolTitle(part)).replace(/\s+/g, " ");
-			const output = result ? cleanConsoleText(result.content.map((p) => p.text).join("\n")) : "";
-			if (opts.sectionExpansion?.get(partKey) ?? opts.expandedTools) {
-				const args = JSON.stringify(part.arguments, null, 2);
-				const body = [
-					theme.fg("muted", "Input"),
-					...literal(args),
-					...(result
-						? [
-								theme.fg("muted", "Output"),
-								...literal(output).map((line) => theme.fg(result.isError ? "error" : "text", line)),
-							]
-						: []),
-				];
-				add(partKey, `${part.name} · ${state}`, body, color, true, "tool");
-			} else {
-				const wrapped = output ? literal(output) : [];
-				const count = Math.min(2, wrapped.length);
-				const body = wrapped.slice(0, count).map((line) => theme.fg(result?.isError ? "error" : "text", line));
-				if (wrapped.length > count || Object.keys(part.arguments).length)
-					body.push(
-						theme.fg(
-							"muted",
-							`${wrapped.length > count ? `${wrapped.length - count} more lines · ` : ""}${opts.toolHint ?? "ctrl+o"} expands input and output`,
-						),
-					);
-				add(
-					partKey,
-					`${state === "running" ? "●" : state === "done" ? "✓" : "!"} ${truncateToWidth(title, Math.max(1, measure - state.length - 5), "…")} · ${state}`,
-					body,
-					color,
-					false,
-					"tool",
-				);
+			const values = [part.type === "text" ? part.text : part.thinking];
+			while (message.content[partIndex + 1]?.type === part.type) {
+				const next = message.content[++partIndex];
+				if (next.type === "text") values.push(next.text);
+				else if (next.type === "thinking") values.push(next.thinking);
 			}
+			this.renderProse(partKey, part.type, values.join("\n\n"));
 		}
-		const hasToolCalls = message.content.some((part) => part.type === "toolCall");
-		if (message.stopReason === "length") add(`${key}:stop`, "Response was truncated before completion.", [], "error");
-		else if (!hasToolCalls && message.stopReason === "error")
-			add(`${key}:stop`, "Error", literal(`Error: ${message.errorMessage || "Unknown error"}`), "error");
-		else if (!hasToolCalls && message.stopReason === "aborted")
-			add(
-				`${key}:stop`,
-				"Aborted",
-				literal(
-					message.errorMessage && message.errorMessage !== "Request was aborted"
-						? message.errorMessage
-						: "Operation aborted",
-				),
-				"error",
-			);
+		this.renderStop(message, key);
 	}
-	return document;
+
+	renderProse(key: string, type: "text" | "thinking", text: string): void {
+		if (!text.trim()) return;
+		if (type === "text") {
+			this.add(key, "Assistant", this.prose(text));
+		} else if (this.opts.sectionExpansion?.get(key) ?? this.opts.showThinking) {
+			this.add(key, "Reasoning", this.prose(text).map((line) => this.theme.fg("muted", line)), "muted", true, "reasoning");
+		} else {
+			this.add(key, `Reasoning · collapsed · ${this.opts.thinkingHint ?? "ctrl+t"} expands`, [], "muted", false, "reasoning");
+		}
+	}
+
+	expandedToolBody(part: ConsoleToolCallPart, result: ConsoleToolResultMessage | undefined, output: string): string[] {
+		const body = [this.theme.fg("muted", "Input"), ...this.literal(JSON.stringify(part.arguments, null, 2))];
+		if (result) body.push(this.theme.fg("muted", "Output"), ...this.literal(output).map((line) => this.theme.fg(result.isError ? "error" : "text", line)));
+		return body;
+	}
+
+	collapsedToolBody(part: ConsoleToolCallPart, result: ConsoleToolResultMessage | undefined, output: string): string[] {
+		const wrapped = output ? this.literal(output) : [];
+		const count = Math.min(2, wrapped.length);
+		const body = wrapped.slice(0, count).map((line) => this.theme.fg(result?.isError ? "error" : "text", line));
+		if (wrapped.length > count || Object.keys(part.arguments).length)
+			body.push(this.theme.fg("muted", `${wrapped.length > count ? `${wrapped.length - count} more lines · ` : ""}${this.opts.toolHint ?? "ctrl+o"} expands input and output`));
+		return body;
+	}
+
+	renderTool(part: ConsoleToolCallPart, key: string, stopReason: string | undefined): void {
+		const result = this.results.get(part.id);
+		const failed = !result && (stopReason === "aborted" || stopReason === "error");
+		const state = toolState(result, stopReason);
+		const color = failed || result?.isError ? "error" : state === "running" ? "warning" : "muted";
+		const title = cleanConsoleText(toolTitle(part)).replace(/\s+/g, " ");
+		const output = result ? cleanConsoleText(result.content.map((p) => p.text).join("\n")) : "";
+		if (this.opts.sectionExpansion?.get(key) ?? this.opts.expandedTools) {
+			this.add(key, `${part.name} · ${state}`, this.expandedToolBody(part, result, output), color, true, "tool");
+		} else {
+			this.add(key, `${state === "running" ? "●" : state === "done" ? "✓" : "!"} ${truncateToWidth(title, Math.max(1, this.measure - state.length - 5), "…")} · ${state}`,
+				this.collapsedToolBody(part, result, output), color, false, "tool");
+		}
+	}
+
+	renderStop(message: ConsoleAssistantMessage, key: string): void {
+		const hasToolCalls = message.content.some((part) => part.type === "toolCall");
+		if (message.stopReason === "length") this.add(`${key}:stop`, "Response was truncated before completion.", [], "error");
+		else if (!hasToolCalls && message.stopReason === "error")
+			this.add(`${key}:stop`, "Error", this.literal(`Error: ${message.errorMessage || "Unknown error"}`), "error");
+		else if (!hasToolCalls && message.stopReason === "aborted")
+			this.add(`${key}:stop`, "Aborted", this.literal(message.errorMessage && message.errorMessage !== "Request was aborted" ? message.errorMessage : "Operation aborted"), "error");
+	}
+}
+
+export function renderTranscript(messages: ConsoleMessage[], opts: RenderOpts): TranscriptDocument {
+	const renderer = new TranscriptRenderer(opts);
+	if (!renderer.width) return renderer.document;
+	for (const message of messages) if (message.role === "toolResult") renderer.results.set(message.toolCallId, message);
+	for (const [index, message] of messages.entries()) renderer.renderMessage(message, message.id ?? `message-${index}`);
+	return renderer.document;
 }
 
 export function renderConversation(messages: ConsoleMessage[], opts: RenderOpts): string[] {
@@ -288,9 +284,10 @@ export function restoreTranscriptAnchor(
 	document: TranscriptDocument,
 	anchor: ReturnType<typeof transcriptAnchor>,
 ): number | null {
-	const section = anchor && document.sections.find((item) => item.id === anchor.id);
+	if (!anchor) return null;
+	const section = document.sections.find((item) => item.id === anchor.id);
 	return section
 		? section.start +
-				Math.min(section.end - section.start - 1, Math.floor(anchor!.fraction * (section.end - section.start)))
+				Math.min(section.end - section.start - 1, Math.floor(anchor.fraction * (section.end - section.start)))
 		: null;
 }

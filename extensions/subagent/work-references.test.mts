@@ -88,7 +88,8 @@ describe("projectObligations", () => {
 		const own = exchange("worker-a", ref({ outcome: "accepted" }), 3);
 		const closed = projectObligations([request, unrelated, own]);
 		assert.equal(outstandingRequiredObligations(closed).length, 0);
-		const closedView = closed.find((view) => view.requester === "worker-a")!;
+		const closedView = closed.find((view) => view.requester === "worker-a");
+		assert.ok(closedView, "the closed obligation is present");
 		assert.equal(closedView.outcome, "accepted");
 	});
 	it("never lets a v1 disposition clear a v2 request", () => {
@@ -104,7 +105,8 @@ describe("projectObligations", () => {
 		const disagree = exchange("worker-a", ref({ outcome: "disagreed", reason: "the spec changed" }), 2);
 		const views = projectObligations([request, disagree]);
 		assert.equal(outstandingRequiredObligations(views).length, 0, "a disagreement closes the obligation");
-		const view = views.find((view) => view.requester === "worker-a")!;
+		const view = views.find((view) => view.requester === "worker-a");
+		assert.ok(view, "the closed obligation is present");
 		assert.equal(view.outcome, "disagreed");
 		assert.equal(view.reason, "the spec changed");
 		assert.equal(unacceptedObligations(views).length, 1, "a disagreement stays visible as non-accepted");

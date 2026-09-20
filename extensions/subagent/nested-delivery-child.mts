@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-nested-delivery-agent-"));
 const cwd = mkdtempSync(join(tmpdir(), "subagent-nested-delivery-cwd-"));
@@ -61,7 +62,8 @@ export default function (pi) {
 );
 writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [providerPath] }), "utf-8");
 
-let ownerSession: any = null;
+type AgentMessage = AgentSession["state"]["messages"][number];
+let ownerSession: AgentSession | null = null;
 try {
 	const sub = await import("./index.ts");
 	const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import(
@@ -86,18 +88,19 @@ try {
 		thinkingLevel: "off",
 		tools: ["subagent", "subagent_collect"],
 	});
-	ownerSession = created.session;
-	sub.sharedWorkerState.workerSessionIds.add(ownerSession.sessionManager.getSessionId());
-	await ownerSession.bindExtensions({});
+	const session = created.session;
+	ownerSession = session;
+	sub.sharedWorkerState.workerSessionIds.add(session.sessionManager.getSessionId());
+	await session.bindExtensions({});
 
-	await ownerSession.prompt("OWNER_TASK", { expandPromptTemplates: false });
+	await session.prompt("OWNER_TASK", { expandPromptTemplates: false });
 	const deadline = Date.now() + 8_000;
 	let grandchild = sub.listWorkers().find((record) => record.task === "GRANDCHILD_TASK");
 	const hasOwnerResult = () =>
-		ownerSession.messages.some(
-			(message: any) =>
+		session.messages.some(
+			(message: AgentMessage) =>
 				message.role === "assistant" &&
-				message.content?.some((part: any) => part.type === "text" && part.text === "OWNER_COLLECTED"),
+				message.content.some((part) => part.type === "text" && part.text === "OWNER_COLLECTED"),
 		);
 	while (
 		Date.now() < deadline &&
@@ -109,10 +112,10 @@ try {
 	assert.equal(grandchild?.state, "done", JSON.stringify(grandchild));
 	assert.ok(grandchild.notificationCallReturnedAt, "the live worker owner's synchronous send call must return");
 	assert.equal(readFileSync(sub.workerFiles(grandchild.id).result, "utf-8"), "GRANDCHILD_RESULT");
-	assert.equal(hasOwnerResult(), true, JSON.stringify(ownerSession.messages));
+	assert.equal(hasOwnerResult(), true, JSON.stringify(session.messages));
 	assert.equal(
-		ownerSession.messages.some(
-			(message: any) =>
+		session.messages.some(
+			(message: AgentMessage) =>
 				message.role === "toolResult" &&
 				message.toolName === "subagent_collect" &&
 				JSON.stringify(message.content).includes("GRANDCHILD_RESULT"),
@@ -122,8 +125,8 @@ try {
 	);
 	assert.match(readFileSync(marker, "utf-8"), /owner:4/);
 
-	const ownerSessionId = ownerSession.sessionManager.getSessionId();
-	sub.shutdownWorkerSession(ownerSession);
+	const ownerSessionId = session.sessionManager.getSessionId();
+	sub.shutdownWorkerSession(session);
 	ownerSession = null;
 	const cleanupDeadline = Date.now() + 5_000;
 	while (Date.now() < cleanupDeadline && sub.sharedWorkerState.workerSurfaces.has(ownerSessionId)) {

@@ -106,17 +106,9 @@ export class PeerHub {
 			throw new Error("Peer messages stay inside the caller's dispatch family");
 		const from = this.address(sender);
 		const target = this.address(recipient);
-		if (replyTo) {
-			const original = this.receipts.get(replyTo);
-			if (!original || original.from !== target || original.to !== from)
-				throw new Error("replyTo must name a message from this recipient to this sender");
-		}
+		this.validateReply(replyTo, from, target);
 		if (recipient.pending.size >= 128) throw new Error("Peer has too many unconfirmed messages; nothing was sent");
-		if (this.receipts.size >= 512) {
-			const evict = [...this.receipts].find(([, receipt]) => receipt.status !== "sent_unconfirmed");
-			if (!evict) throw new Error("Peer receipt capacity is full; nothing was sent");
-			this.receipts.delete(evict[0]);
-		}
+		this.reserveReceipt();
 		const envelope: PeerEnvelope = {
 			id: `pm-${randomUUID()}`,
 			from,
@@ -138,6 +130,20 @@ export class PeerHub {
 			throw error;
 		}
 		return { ...receipt };
+	}
+
+	private validateReply(replyTo: string | undefined, from: string, target: string): void {
+		if (!replyTo) return;
+		const original = this.receipts.get(replyTo);
+		if (!original || original.from !== target || original.to !== from)
+			throw new Error("replyTo must name a message from this recipient to this sender");
+	}
+
+	private reserveReceipt(): void {
+		if (this.receipts.size < 512) return;
+		const evict = [...this.receipts].find(([, receipt]) => receipt.status !== "sent_unconfirmed");
+		if (!evict) throw new Error("Peer receipt capacity is full; nothing was sent");
+		this.receipts.delete(evict[0]);
 	}
 
 	status(sessionId: string, id: string): PeerReceipt {

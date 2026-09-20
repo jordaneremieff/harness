@@ -259,14 +259,8 @@ function assistantContentPart(part: unknown): TranscriptAssistantContentPart {
  * unknown, or deferred stop reasons, or an error with no message — return null
  * so the caller drops them, exactly as a settled transcript does. */
 function assistantTranscriptItem(message: unknown, id: string): TranscriptAssistantItem | null {
-	if (!isObject(message)) return null;
-	if (message.role !== "assistant") return null;
-	if (!Array.isArray(message.content)) return null;
+	if (!mappableAssistant(message)) return null;
 	const stopReason = message.stopReason;
-	if (stopReason === "deferred") return null;
-	if (typeof stopReason !== "string") return null;
-	if (!["pending", "stop", "length", "toolUse", "error", "aborted"].includes(stopReason)) return null;
-	if (stopReason === "error" && !message.errorMessage) return null;
 	const content: TranscriptAssistantContentPart[] = [];
 	for (const part of message.content) {
 		content.push(assistantContentPart(part));
@@ -289,6 +283,13 @@ function assistantTranscriptItem(message: unknown, id: string): TranscriptAssist
 	}
 	if (typeof stopReason === "string") item.stopReason = stopReason;
 	return item;
+}
+
+function mappableAssistant(message: unknown): message is Record<string, unknown> & { content: unknown[]; stopReason: string } {
+	if (!isObject(message) || message.role !== "assistant" || !Array.isArray(message.content)) return false;
+	const reason = message.stopReason;
+	if (typeof reason !== "string" || !["pending", "stop", "length", "toolUse", "error", "aborted"].includes(reason)) return false;
+	return reason !== "error" || Boolean(message.errorMessage);
 }
 
 function toolResultTranscriptItem(
@@ -356,57 +357,32 @@ export function buildTranscript(
 		}
 	}
 	for (const message of messages) {
-		if (message.role === "user") {
-			try {
-				items.push(userTranscriptItem(message, idFor(message)));
-			} catch {
-				// A malformed message is skipped, never fatal to a transcript view.
-			}
-		} else if (message.role === "assistant") {
-			try {
-				const item = assistantTranscriptItem(message, idFor(message));
-				if (item) items.push(item);
-			} catch {
-				// A part with no transcript form skips the whole message.
-			}
-		} else if (message.role === "custom") {
-			try {
-				items.push({
-					role: "custom",
-					id: idFor(message),
-					customType: message.customType,
-					content: transcriptUserContent(message.content),
-					details: message.details,
-					timestamp: message.timestamp,
-				});
-			} catch {
-				// A malformed custom message does not hide the rest of the transcript.
-			}
-		} else if (message.role === "toolResult") {
-			const call = toolCalls.get(message.toolCallId);
-			if (!call) continue;
-			try {
-				const messageShape = {
-					toolCallId: message.toolCallId,
-					toolName: message.toolName,
-					content: message.content,
-					details: (message as { details?: unknown }).details,
-					usage: (message as { usage?: AiUsage }).usage,
-					isError: message.isError,
-					timestamp: message.timestamp,
-				};
-				items.push(
-					toolResultTranscriptItem(messageShape, {
-						id: idFor(message),
-						arguments: (call as { arguments?: unknown }).arguments,
-					}),
-				);
-			} catch {
-				// Same containment.
-			}
+		try {
+			const item = transcriptMessage(message, idFor, toolCalls);
+			if (item) items.push(item);
+		} catch {
+			// A malformed message is skipped, never fatal to the remaining transcript.
 		}
 	}
 	return items;
+}
+
+function transcriptMessage(message: SessionMessage, idFor: (message: SessionMessage) => string,
+	toolCalls: ReadonlyMap<string, unknown>): TranscriptItem | null {
+	switch (message.role) {
+		case "user": return userTranscriptItem(message, idFor(message));
+		case "assistant": return assistantTranscriptItem(message, idFor(message));
+		case "custom": return {
+			role: "custom", id: idFor(message), customType: message.customType,
+			content: transcriptUserContent(message.content), details: message.details, timestamp: message.timestamp,
+		};
+		case "toolResult": {
+			const call = toolCalls.get(message.toolCallId);
+			if (!call) return null;
+			return toolResultTranscriptItem(message, { id: idFor(message), arguments: (call as { arguments?: unknown }).arguments });
+		}
+		default: return null;
+	}
 }
 
 /**
@@ -562,29 +538,7 @@ export class WorkerRuntime {
 		const items = buildTranscript(state.messages, (message) => this.messageId(message));
 		const streaming = state.streamingMessage;
 		if (streaming?.role === "assistant") {
-			const id = this.stream?.id ?? this.messageId(streaming);
-			let item: TranscriptAssistantItem | null = null;
-			try {
-				item = assistantTranscriptItem(streaming, id);
-				if (!item) item = assistantTranscriptItem({ ...streaming, stopReason: "pending" }, id);
-			} catch {
-				// A provider stream can emit a partial toolCall before its id and name.
-				// Drop only the un-addressable toolCall parts and retry so the rest
-				// still renders.
-				const content = streaming.content;
-				const pruned = content.filter((part) =>
-					isObject(part) && part.type === "toolCall" ? Boolean(part.id && part.name) : true,
-				);
-				if (pruned.length !== content.length) {
-					try {
-						const fallback = { ...streaming, content: pruned };
-						item = assistantTranscriptItem(fallback, id);
-						if (!item) item = assistantTranscriptItem({ ...fallback, stopReason: "pending" }, id);
-					} catch {
-						// Still unmappable; skip the in-flight item for this snapshot.
-					}
-				}
-			}
+			const item = this.streamingItem(streaming);
 			if (item) items.push(item);
 		}
 		for (const [toolCallId, pending] of this.liveTools) {
@@ -615,6 +569,25 @@ export class WorkerRuntime {
 			queuedSteer,
 			queuedSteerCount: queuedSteer.length,
 		};
+	}
+
+	private streamingItem(streaming: AssistantSessionMessage): TranscriptAssistantItem | null {
+		const id = this.stream?.id ?? this.messageId(streaming);
+		try {
+			return assistantTranscriptItem(streaming, id) ?? assistantTranscriptItem({ ...streaming, stopReason: "pending" }, id);
+		} catch {
+			// A provider stream can emit a partial toolCall before its id and name.
+			const content = streaming.content;
+			const pruned = content.filter((part) => isObject(part) && part.type === "toolCall" ? Boolean(part.id && part.name) : true);
+			if (pruned.length === content.length) return null;
+			try {
+				const fallback = { ...streaming, content: pruned };
+				return assistantTranscriptItem(fallback, id) ?? assistantTranscriptItem({ ...fallback, stopReason: "pending" }, id);
+			} catch {
+				// Still unmappable; skip the in-flight item for this snapshot.
+				return null;
+			}
+		}
 	}
 
 	private currentPhase(fallback: SessionPhase): SessionPhase {
@@ -876,61 +849,52 @@ export class WorkerRuntime {
 		});
 	}
 
+	private messageStarted(message: SessionMessage): void {
+		if (message.role === "user") {
+			const item = userTranscriptItem(message, this.messageId(message));
+			this.emit({ type: "progress", progress: { type: "item_started", item } });
+		} else if (message.role === "assistant") {
+			const id = `m-${++this.msgSeq}`;
+			this.msgIds.set(message, id);
+			this.stream = { id, lens: new Map() };
+			const item = assistantTranscriptItem(message, id);
+			if (item) this.emit({ type: "progress", progress: { type: "item_started", item } });
+		}
+	}
+
+	private messageEnded(message: SessionMessage): void {
+		if (message.role === "assistant") {
+			const id = this.stream?.id ?? this.messageId(message);
+			this.msgIds.set(message, id);
+			try {
+				const item = assistantTranscriptItem(message, id);
+				if (item && item.status !== "streaming") this.emit({ type: "progress", progress: { type: "item_finished", item } });
+			} catch {
+				// Deferred stop reasons stay available through snapshots.
+			}
+			this.stream = null;
+			this.emit({ type: "snapshot" });
+		} else if (message.role === "toolResult") {
+			this.liveTools.delete(message.toolCallId);
+			this.emit({ type: "snapshot" });
+		} else if (message.role === "user" || message.role === "custom") {
+			this.emit({ type: "snapshot" });
+		}
+	}
+
 	private onSessionEvent(event: AgentSessionEvent): void {
 		switch (event.type) {
-			case "message_start": {
-				const { message } = event;
-				if (message.role === "user") {
-					const item = userTranscriptItem(message, this.messageId(message));
-					this.emit({
-						type: "progress",
-						progress: { type: "item_started", item },
-					});
-				} else if (message.role === "assistant") {
-					const id = `m-${++this.msgSeq}`;
-					this.msgIds.set(message, id);
-					this.stream = { id, lens: new Map() };
-					const item = assistantTranscriptItem(message, id);
-					if (item) {
-						this.emit({
-							type: "progress",
-							progress: { type: "item_started", item },
-						});
-					}
-				}
+			case "message_start":
+				this.messageStarted(event.message);
 				break;
-			}
 			case "message_update":
 				if (event.message.role === "assistant") {
 					this.emitAssistantDeltas(event.message);
 				}
 				break;
-			case "message_end": {
-				const { message } = event;
-				if (message.role === "assistant") {
-					const id = this.stream?.id ?? this.messageId(message);
-					this.msgIds.set(message, id);
-					try {
-						const item = assistantTranscriptItem(message, id);
-						if (item && item.status !== "streaming") {
-							this.emit({
-								type: "progress",
-								progress: { type: "item_finished", item },
-							});
-						}
-					} catch {
-						// Deferred stop reasons stay available through snapshots.
-					}
-					this.stream = null;
-					this.emit({ type: "snapshot" });
-				} else if (message.role === "toolResult") {
-					this.liveTools.delete(message.toolCallId);
-					this.emit({ type: "snapshot" });
-				} else if (message.role === "user" || message.role === "custom") {
-					this.emit({ type: "snapshot" });
-				}
+			case "message_end":
+				this.messageEnded(event.message);
 				break;
-			}
 			case "tool_execution_start": {
 				const item = this.toolItem({
 					toolCallId: event.toolCallId,

@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-realloader-"));
 const testHome = mkdtempSync(join(tmpdir(), "subagent-realloader-home-"));
@@ -25,7 +26,7 @@ const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManag
 const { sharedWorkerState, submitResultTool } = await import("./index.ts");
 
 async function main(): Promise<void> {
-	let session: any = null;
+	let session: AgentSession | null = null;
 	try {
 		const settingsManager = SettingsManager.create(agentDir, agentDir);
 		const resourceLoader = new DefaultResourceLoader({

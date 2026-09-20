@@ -15,7 +15,8 @@
  *    AgentSession, its subscription, and a `running` record forever.
  */
 import { strict as assert } from "node:assert";
-import type { JsonObject } from "@earendil-works/pi-ai";
+import type { AssistantMessage, JsonObject, Message, TranscriptContext } from "@earendil-works/pi-ai";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -53,11 +54,11 @@ const preflight = gate();
 const preflightEntered = gate();
 const holdForever = gate();
 const calls = new Map<string, number>();
-const contexts = new Map<string, any[][]>();
+const contexts = new Map<string, Message[][]>();
 /** Worker record state observed at the moment a context carried the correction. */
 let correctionObservedIdle: number | null | undefined;
 let correctionCall = 0;
-let owner: any;
+let owner: AgentSession | null = null;
 let sub: typeof import("./index.ts");
 let raceWorkerId = "";
 let holdWorkerId = "";
@@ -68,7 +69,7 @@ let holdRequested = false;
 const { fauxAssistantMessage, fauxToolCall } = await import("@earendil-works/pi-ai");
 const tool = (name: string, args: JsonObject) =>
 	fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
-const serialize = (messages: any[]) => JSON.stringify(messages);
+const serialize = (messages: readonly Message[]) => JSON.stringify(messages);
 
 async function until(check: () => boolean, description: string) {
 	const end = Date.now() + 15_000;
@@ -102,27 +103,29 @@ const model = {
 };
 
 const key = Symbol.for("subagent-test.activation-race");
-const response = async (role: string, context: any) => {
+function ownerResponse(count: number, messages: readonly Message[]): AssistantMessage {
+	if (count === 1) return tool("subagent", { task: "RACE_PREFLIGHT_TASK", purpose: "preflight race" });
+	const serialized = serialize(messages);
+	if (serialized.includes("START_HOLD_WORKER") && !holdRequested) {
+		holdRequested = true;
+		return tool("subagent", { task: "RACE_HOLD_TASK", purpose: "wedged abort" });
+	}
+	if (serialized.includes("PAUSE_HOLD_WORKER") && !interruptRequested) {
+		interruptRequested = true;
+		return tool("subagent_interrupt", { id: holdWorkerId });
+	}
+	if (serialized.includes("RESUME_HOLD_WORKER") && !steerRequested) {
+		steerRequested = true;
+		return tool("subagent_steer", { id: holdWorkerId, message: "continue please" });
+	}
+	return fauxAssistantMessage("OWNER_IDLE");
+}
+
+const response = async (role: string, context: TranscriptContext): Promise<AssistantMessage> => {
 	const count = (calls.get(role) ?? 0) + 1;
 	calls.set(role, count);
 	contexts.set(role, [...(contexts.get(role) ?? []), context.messages]);
-	if (role === "owner") {
-		if (count === 1) return tool("subagent", { task: "RACE_PREFLIGHT_TASK", purpose: "preflight race" });
-		const serialized = serialize(context.messages);
-		if (serialized.includes("START_HOLD_WORKER") && !holdRequested) {
-			holdRequested = true;
-			return tool("subagent", { task: "RACE_HOLD_TASK", purpose: "wedged abort" });
-		}
-		if (serialized.includes("PAUSE_HOLD_WORKER") && !interruptRequested) {
-			interruptRequested = true;
-			return tool("subagent_interrupt", { id: holdWorkerId });
-		}
-		if (serialized.includes("RESUME_HOLD_WORKER") && !steerRequested) {
-			steerRequested = true;
-			return tool("subagent_steer", { id: holdWorkerId, message: "continue please" });
-		}
-		return fauxAssistantMessage("OWNER_IDLE");
-	}
+	if (role === "owner") return ownerResponse(count, context.messages);
 	if (role === "race") {
 		// The first turn holds the run open with a gated tool so the steer that
 		// was sent during preflight has a live run to reach.
@@ -139,7 +142,13 @@ const response = async (role: string, context: any) => {
 	return fauxAssistantMessage("HOLD_IDLE");
 };
 
-(globalThis as any)[key] = {
+type Fixture = {
+	response: (role: string, context: TranscriptContext) => Promise<AssistantMessage>;
+	hold(stage: string): Promise<void>;
+	input(text: string): Promise<void>;
+};
+const fixtureHost = globalThis as Record<symbol, Fixture | undefined>;
+fixtureHost[key] = {
 	response,
 	async hold(stage: string) {
 		if (stage === "forever") {
@@ -220,8 +229,11 @@ try {
 	const ownerTurn = owner.prompt("OWNER_RACE_SCENARIO");
 	await preflightEntered.promise;
 	await until(() => sub.listWorkers().some((record) => record.task === "RACE_PREFLIGHT_TASK"), "the worker is created");
-	raceWorkerId = sub.listWorkers().find((record) => record.task === "RACE_PREFLIGHT_TASK")!.id;
-	const raceRecord = sub.readWorker(raceWorkerId)!;
+	const raceWorker = sub.listWorkers().find((record) => record.task === "RACE_PREFLIGHT_TASK");
+	assert.ok(raceWorker, "the race worker is listed");
+	raceWorkerId = raceWorker.id;
+	const raceRecord = sub.readWorker(raceWorkerId);
+	assert.ok(raceRecord, "the race worker record is readable");
 	assert.equal(raceRecord.state, "running");
 	assert.equal(raceRecord.idleSince, null, "the worker is in its first leg, not idle");
 	assert.equal(calls.get("race"), undefined, "no model call has happened yet: the leg is still in preflight");
@@ -243,7 +255,9 @@ try {
 	// ---------------------------------------------------------------- case 2
 	await owner.prompt("START_HOLD_WORKER");
 	await until(() => sub.listWorkers().some((record) => record.task === "RACE_HOLD_TASK"), "the wedged worker starts");
-	holdWorkerId = sub.listWorkers().find((record) => record.task === "RACE_HOLD_TASK")!.id;
+	const holdWorker = sub.listWorkers().find((record) => record.task === "RACE_HOLD_TASK");
+	assert.ok(holdWorker, "the wedged worker is listed");
+	holdWorkerId = holdWorker.id;
 	await until(() => calls.get("hold") === 1, "the wedged worker entered its tool");
 	await owner.prompt("PAUSE_HOLD_WORKER");
 	await until(() => Boolean(sub.readWorker(holdWorkerId)?.interruptedAt), "the owner pauses the wedged worker");
@@ -255,7 +269,8 @@ try {
 		() => sub.readWorker(holdWorkerId)?.state === "idle_expired",
 		"the declared idle deadline still releases a paused worker holding a queued resume",
 	);
-	const expired = sub.readWorker(holdWorkerId)!;
+	const expired = sub.readWorker(holdWorkerId);
+	assert.ok(expired, "the expired worker record is readable");
 	assert.match(expired.error ?? "", /released by the declared idle deadline/);
 	assert.match(expired.error ?? "", /paused for 3 seconds/);
 	assert.ok(expired.sessionFile, "the transcript is retained for collection or continuation");
@@ -275,7 +290,7 @@ try {
 			owner.dispose();
 		}
 	} finally {
-		delete (globalThis as any)[key];
+		delete fixtureHost[key];
 		clearTimeout(watchdog);
 		rmSync(root, { recursive: true, force: true });
 		process.off("unhandledRejection", captureError);

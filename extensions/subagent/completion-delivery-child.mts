@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import type { JsonObject } from "@earendil-works/pi-ai";
+import type { JsonObject, TranscriptContext } from "@earendil-works/pi-ai";
+import type { AgentSession, DefaultResourceLoader as DefaultResourceLoaderType } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -57,9 +58,9 @@ const fixture = {
 		activeTools.splice(activeTools.indexOf(name), 1);
 		return { content: [{ type: "text", text: signal?.aborted ? "ABORTED" : "RELEASED" }] };
 	},
-	respond(context: { messages: unknown[] }) {
+	respond(context: TranscriptContext) {
 		const serialized = JSON.stringify(context.messages);
-		if (!JSON.stringify(context.messages.find((message: any) => message.role === "user")).includes("OWNER_")) {
+		if (!JSON.stringify(context.messages.find((message) => message.role === "user")).includes("OWNER_")) {
 			workerCalls++;
 			return reply(call("fixture_hold", { name: "worker" }), { stopReason: "toolUse" });
 		}
@@ -79,7 +80,8 @@ const fixture = {
 		return reply(serialized.includes("DECISIVE_EVIDENCE") ? "CONCLUSION_WITH_EVIDENCE" : "PREMATURE_CONCLUSION");
 	},
 };
-(globalThis as any)[Symbol.for("completion-fixture")] = fixture;
+const fixtureHost = globalThis as Record<symbol, typeof fixture | undefined>;
+fixtureHost[Symbol.for("completion-fixture")] = fixture;
 const model = {
 	id: "completion-model",
 	name: "Completion model",
@@ -109,7 +111,17 @@ export default function(pi) {
 `,
 );
 writeFileSync(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), JSON.stringify({ packages: [fixturePath] }));
-let owner: any;
+type AgentMessage = AgentSession["state"]["messages"][number];
+const isResultFor = (message: AgentMessage, id: string): boolean =>
+	message.role === "custom" &&
+	message.customType === "subagent_result" &&
+	typeof message.details === "object" &&
+	message.details !== null &&
+	"id" in message.details &&
+	message.details.id === id;
+const isSubagentResult = (message: AgentMessage): boolean =>
+	message.role === "custom" && message.customType === "subagent_result";
+let owner: AgentSession | null = null;
 try {
 	for (const name of ["active", "collected", "idle", "lifecycle"]) {
 		scenario = name;
@@ -118,7 +130,7 @@ try {
 		fixture.collected = false;
 		gates.clear();
 		const settingsManager = SettingsManager.create(root, process.env.PI_CODING_AGENT_DIR);
-		const resourceLoader = new DefaultResourceLoader({
+		const resourceLoader: DefaultResourceLoaderType = new DefaultResourceLoader({
 			cwd: root,
 			agentDir: process.env.PI_CODING_AGENT_DIR,
 			settingsManager,
@@ -149,7 +161,7 @@ try {
 			nextAction = { name: "subagent", args: { task: "WAITING_WORKER", deadlineMinutes: 1 } };
 			await owner.prompt("OWNER_START");
 			await until(() => activeTools.includes("worker"), "worker tool starts");
-			const worker = sub.listWorkers().find((record) => record.task === "WAITING_WORKER")!;
+			const worker = sub.listWorkers().find((record) => record.task === "WAITING_WORKER");
 			assert.ok(worker);
 			nextAction = { name: "subagent_interrupt", args: { id: worker.id } };
 			await owner.prompt("OWNER_PAUSE");
@@ -167,9 +179,7 @@ try {
 			assert.equal(abortedTools.length, 2);
 			assert.equal(workerCalls, 2, "cancellation starts no further provider work");
 			assert.equal(
-				owner.messages.some(
-					(m: any) => m.role === "custom" && m.customType === "subagent_result" && m.details?.id === worker.id,
-				),
+				owner.messages.some((message) => isResultFor(message, worker.id)),
 				false,
 				"explicit cancellation has no late completion",
 			);
@@ -212,10 +222,13 @@ try {
 		if (name === "idle") await run;
 		else await until(() => gates.has("owner"), "owner tool is active");
 		if (name === "collected") await until(() => fixture.collected, "collection completes");
+		const targetRecord = sub.readWorker(target);
+		assert.ok(targetRecord, "the seeded worker record is readable");
+		const activeOwner = owner;
 		assert.equal(
-			sub.notifyCompletion(sub.readWorker(target)!, {
+			sub.notifyCompletion(targetRecord, {
 				sendMessage: (message, options) => {
-					void owner.sendCustomMessage(message, options).catch(capture);
+					void activeOwner.sendCustomMessage(message, options).catch(capture);
 				},
 			}),
 			true,
@@ -224,15 +237,17 @@ try {
 		await run;
 		await owner.waitForIdle();
 		assert.equal(calls, 2, `${name}: no redundant provider turn after the conclusion`);
-		assert.match(providerInputs[1]!, /DECISIVE_EVIDENCE/);
-		const completionInContext = providerInputs[1]!.includes(`Subagent ${target}`);
+		const secondInput = providerInputs[1];
+		assert.ok(secondInput, "the second provider turn carries the evidence");
+		assert.match(secondInput, /DECISIVE_EVIDENCE/);
+		const completionInContext = secondInput.includes(`Subagent ${target}`);
 		assert.equal(
 			completionInContext,
 			name !== "collected",
 			`${name}: exact collection replaces notification in model input`,
 		);
 		assert.equal(
-			owner.messages.filter((m: any) => m.role === "custom" && m.customType === "subagent_result").length,
+			owner.messages.filter(isSubagentResult).length,
 			1,
 			"Pi keeps one original notification in history",
 		);

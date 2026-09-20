@@ -97,7 +97,8 @@ describe("readable transcripts", () => {
 	});
 	it("keeps source identity anchors across wrapping and expansion", () => {
 		const original = renderTranscript(messages, { width: 120, theme });
-		const section = original.sections.find((item) => item.id === "conclusion:0")!;
+		const section = original.sections.find((item) => item.id === "conclusion:0");
+		assert.ok(section, "the conclusion section is present");
 		const anchor = transcriptAnchor(original, section.start);
 		const expanded = renderTranscript(messages, { width: 40, theme, expandedTools: true, showThinking: true });
 		const position = restoreTranscriptAnchor(expanded, anchor);

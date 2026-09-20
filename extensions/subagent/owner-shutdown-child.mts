@@ -1,8 +1,17 @@
 import { strict as assert } from "node:assert";
+import type { AgentSession, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+/** The host fields a directly-executed tool reads from this sparse fixture context. */
+type ToolContextFixture = Pick<ExtensionContext, "cwd" | "modelRegistry"> & {
+	thinkingLevel?: ExtensionContext["thinkingLevel"];
+	model: unknown;
+	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">;
+	ui: Pick<ExtensionContext["ui"], "setStatus">;
+};
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-owner-shutdown-agent-"));
 const cwd = mkdtempSync(join(tmpdir(), "subagent-owner-shutdown-cwd-"));
@@ -51,7 +60,15 @@ export default function (pi) {
 );
 writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [providerPath] }), "utf-8");
 
-let ownerSession: any = null;
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+const isUnknownArray = (value: unknown): value is readonly unknown[] => Array.isArray(value);
+const isString = (value: unknown): value is string => typeof value === "string";
+/** getToolDefinition erases each tool's detail type; narrow the shape the fixture consumes. */
+const toolDetails = (result: { details: unknown }): Record<string, unknown> => {
+	assert.ok(isRecord(result.details), "the tool result carries object details");
+	return result.details;
+};
+let ownerSession: AgentSession | null = null;
 try {
 	const sub = await import("./index.ts");
 	const { createAgentSession, DefaultResourceLoader, ModelRegistry, SessionManager, SettingsManager } = await import(
@@ -86,6 +103,8 @@ try {
 	const killTool = ownerSession.extensionRunner.getToolDefinition("subagent_kill");
 	assert.ok(tool && steerTool && interruptTool && killTool);
 	const ownerSessionId = ownerSession.sessionManager.getSessionId();
+	// The extension reads only these context fields when its tool runs directly here,
+	// so the fixture supplies a partial host context instead of a full session interior.
 	const ctx = {
 		cwd,
 		thinkingLevel: "off",
@@ -93,16 +112,21 @@ try {
 		modelRegistry: new ModelRegistry(ownerSession.modelRuntime),
 		sessionManager: { getSessionId: () => ownerSessionId },
 		ui: { setStatus: () => undefined },
-	};
-	const dispatched = (await tool.execute(
+	} satisfies ToolContextFixture as unknown as ExtensionContext;
+	const dispatched = await tool.execute(
 		"nested-owner",
 		{ task: "hold until the owner closes" },
 		undefined,
 		undefined,
 		ctx,
-	)) as any;
-	const id = dispatched.details.workers[0].id as string;
-	assert.ok(id, JSON.stringify(dispatched));
+	);
+	const workers = toolDetails(dispatched).workers;
+	assert.ok(isUnknownArray(workers), JSON.stringify(dispatched));
+	const firstWorker = workers[0];
+	assert.ok(isRecord(firstWorker), JSON.stringify(dispatched));
+	const idValue = firstWorker.id;
+	assert.ok(isString(idValue), JSON.stringify(dispatched));
+	const id = idValue;
 
 	const startedDeadline = Date.now() + 5_000;
 	while (Date.now() < startedDeadline) {
@@ -127,52 +151,46 @@ try {
 	const foreignCtx = {
 		...ctx,
 		sessionManager: { getSessionId: () => "different-live-session" },
-	};
-	const refusedSteer = (await steerTool.execute(
+	} satisfies ToolContextFixture as unknown as ExtensionContext;
+	const refusedSteer = await steerTool.execute(
 		"foreign-steer",
 		{ id, message: "must not arrive" },
 		undefined,
 		undefined,
 		foreignCtx,
-	)) as any;
-	assert.equal(refusedSteer.details.ok, false);
-	const refusedInterrupt = (await interruptTool.execute(
-		"foreign-interrupt",
-		{ id },
-		undefined,
-		undefined,
-		foreignCtx,
-	)) as any;
+	);
+	assert.equal(toolDetails(refusedSteer).ok, false);
+	const refusedInterrupt = await interruptTool.execute("foreign-interrupt", { id }, undefined, undefined, foreignCtx);
 	assert.match(JSON.stringify(refusedInterrupt.content), /another live session/);
-	const refusedKill = (await killTool.execute("foreign-kill", { id }, undefined, undefined, foreignCtx)) as any;
+	const refusedKill = await killTool.execute("foreign-kill", { id }, undefined, undefined, foreignCtx);
 	assert.match(JSON.stringify(refusedKill.content), /another live session/);
 	assert.equal(sub.readWorker(id)?.state, "running");
 	assert.equal(sub.readWorker(id)?.interruptedAt, null);
 
 	// A second steer during the abort window must not queue a second resumed
 	// prompt over the same run leg.
-	const interrupting = interruptTool.execute("owner-interrupt", { id }, undefined, undefined, ctx) as Promise<any>;
+	const interrupting = interruptTool.execute("owner-interrupt", { id }, undefined, undefined, ctx);
 	const interruptDeadline = Date.now() + 2_000;
 	while (Date.now() < interruptDeadline && !sub.readWorker(id)?.interruptedAt) {
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 	assert.ok(sub.readWorker(id)?.interruptedAt);
-	const firstResume = (await steerTool.execute(
+	const firstResume = await steerTool.execute(
 		"owner-resume",
 		{ id, message: "resume exactly once" },
 		undefined,
 		undefined,
 		ctx,
-	)) as any;
+	);
 	assert.match(JSON.stringify(firstResume.content), /Resume queued/);
-	const duplicateResume = (await steerTool.execute(
+	const duplicateResume = await steerTool.execute(
 		"owner-resume-duplicate",
 		{ id, message: "must not start" },
 		undefined,
 		undefined,
 		ctx,
-	)) as any;
-	assert.equal(duplicateResume.details.ok, false);
+	);
+	assert.equal(toolDetails(duplicateResume).ok, false);
 	assert.match(JSON.stringify(duplicateResume.content), /already queued/);
 	await interrupting;
 	const resumedDeadline = Date.now() + 2_000;

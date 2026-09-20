@@ -2,7 +2,8 @@
  * resumes in the same session when its child's completion arrives as a native
  * custom message. No wait tool, no polling, no keepalive instruction. */
 import assert from "node:assert/strict";
-import type { JsonObject } from "@earendil-works/pi-ai";
+import type { AssistantMessage, JsonObject, JsonValue, Message, TranscriptContext } from "@earendil-works/pi-ai";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -43,21 +44,37 @@ const childGate = new Promise<void>((resolve) => {
 });
 const calls = new Map<string, number>();
 const prompts = new Map<string, string>();
-const requests = new Map<string, any[]>();
-let owner: any;
+const requests = new Map<string, Message[]>();
+let owner: AgentSession | null = null;
 let sub: typeof import("./index.ts");
 let childId = "";
 const { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt } = await import("@earendil-works/pi-ai");
 const tool = (name: string, args: JsonObject) =>
 	fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
-const lastResult = (context: any, name: string) =>
-	context.messages.filter((message: any) => message.role === "toolResult" && message.toolName === name).at(-1);
+type ToolResultMessage = Extract<Message, { role: "toolResult" }>;
+const isJsonObject = (value: JsonValue | undefined): value is JsonObject =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
+const isJsonArray = (value: JsonValue | undefined): value is readonly JsonValue[] => Array.isArray(value);
+const isString = (value: JsonValue | undefined): value is string => typeof value === "string";
+const lastResult = (context: TranscriptContext, name: string): ToolResultMessage | undefined =>
+	context.messages
+		.filter((message): message is ToolResultMessage => message.role === "toolResult" && message.toolName === name)
+		.at(-1);
+/** The fixture reads dispatch details it wrote itself; narrow them at the boundary. */
+const resultDetails = (result: ToolResultMessage | undefined): JsonObject => {
+	assert.ok(result, "expected a tool result");
+	const details = result.details;
+	assert.ok(isJsonObject(details), "expected object tool-result details");
+	return details;
+};
 async function until(check: () => boolean, description: string) {
 	const end = Date.now() + 10_000;
 	while (!check() && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.ok(check(), `${description}; errors: ${JSON.stringify(errors)}; calls: ${JSON.stringify([...calls])}`);
 }
-(globalThis as any)[key] = async (role: string, context: any) => {
+type FixtureResponse = (role: string, context: TranscriptContext) => Promise<AssistantMessage>;
+const fixtureHost = globalThis as Record<symbol, FixtureResponse | undefined>;
+fixtureHost[key] = async (role: string, context: TranscriptContext) => {
 	const count = (calls.get(role) ?? 0) + 1;
 	calls.set(role, count);
 	prompts.set(role, getCurrentSystemPrompt(context.messages));
@@ -72,9 +89,12 @@ async function until(check: () => boolean, description: string) {
 	}
 	if (count === 1) return tool("subagent", { task: "NESTED_CHILD_TASK", tools: [] });
 	if (count === 2) {
-		const dispatched = lastResult(context, "subagent").details.workers;
-		childId = dispatched[0].id;
-		assert.ok(childId);
+		const dispatched = resultDetails(lastResult(context, "subagent")).workers;
+		assert.ok(isJsonArray(dispatched), "dispatch details carry a workers array");
+		const first = dispatched[0];
+		assert.ok(isJsonObject(first), "the first worker is an object");
+		assert.ok(isString(first.id), "the first worker carries a string id");
+		childId = first.id;
 		// End the ordinary turn instead of waiting. The worker stays live and
 		// idle; the child's completion starts the next turn in this same session.
 		return fauxAssistantMessage("PARENT_IDLE");
@@ -87,7 +107,7 @@ async function until(check: () => boolean, description: string) {
 		return tool("subagent_collect", { id: childId });
 	}
 	if (count === 4) {
-		assert.equal(lastResult(context, "subagent_collect").details.collectedId, childId);
+		assert.equal(resultDetails(lastResult(context, "subagent_collect")).collectedId, childId);
 		return tool("submit_result", { content: "NESTED_PARENT_RESULT" });
 	}
 	throw new Error(`Unexpected parent request ${count}`);
@@ -138,7 +158,7 @@ try {
 	).session;
 	await owner.bindExtensions({ onError: captureError });
 	await owner.prompt("NESTED_ROOT_TASK");
-	const parent = sub.listWorkers().find((record) => record.task === "NESTED_PARENT_TASK")!;
+	const parent = sub.listWorkers().find((record) => record.task === "NESTED_PARENT_TASK");
 	assert.ok(parent, "the parent is a managed worker, not a manually marked SDK session");
 	await until(() => sub.readWorker(parent.id)?.idleSince != null, "the parent ends its turn and stays idle");
 	assert.equal(sub.readWorker(parent.id)?.state, "running");
@@ -160,7 +180,7 @@ try {
 	assert.ok(
 		requests
 			.get("parent")
-			?.some((message: any) => message.role === "toolResult" && message.toolName === "subagent_collect"),
+			?.some((message) => message.role === "toolResult" && message.toolName === "subagent_collect"),
 	);
 	await owner.waitForIdle();
 	const ownerId = owner.sessionManager.getSessionId();
@@ -177,7 +197,7 @@ try {
 			owner.dispose();
 		}
 	} finally {
-		delete (globalThis as any)[key];
+		delete fixtureHost[key];
 		clearTimeout(watchdog);
 		rmSync(root, { recursive: true, force: true });
 		process.off("unhandledRejection", captureError);

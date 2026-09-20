@@ -46,10 +46,7 @@ function object(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Contain malformed current input without a replacement session-format parser. */
-function validateEntries(entries: unknown[], physicalLines: number, expectedId: string): void {
-	if (entries.length !== physicalLines) throw new Error("malformed session input; the public parser omitted a line");
-	const header = entries[0];
+function validateHeader(header: unknown, expectedId: string): void {
 	if (
 		!object(header) ||
 		header.type !== "session" ||
@@ -61,21 +58,19 @@ function validateEntries(entries: unknown[], physicalLines: number, expectedId: 
 	) {
 		throw new Error("session header, identity, or current format version does not match");
 	}
-	const seen = new Set<string>();
-	for (const entry of entries.slice(1)) {
-		if (
-			!object(entry) ||
-			typeof entry.id !== "string" ||
-			!entry.id ||
-			seen.has(entry.id) ||
-			typeof entry.timestamp !== "string" ||
-			!Number.isFinite(Date.parse(entry.timestamp)) ||
-			(entry.parentId !== null && (typeof entry.parentId !== "string" || !seen.has(entry.parentId)))
-		) {
-			throw new Error("malformed session entry identity, timestamp, or ancestry");
-		}
-		seen.add(entry.id);
-		switch (entry.type) {
+}
+
+function validateEntryIdentity(entry: unknown, seen: Set<string>): asserts entry is Record<string, unknown> {
+	if (!object(entry) || typeof entry.id !== "string" || !entry.id || seen.has(entry.id) ||
+		typeof entry.timestamp !== "string" || !Number.isFinite(Date.parse(entry.timestamp)) ||
+		(entry.parentId !== null && (typeof entry.parentId !== "string" || !seen.has(entry.parentId)))) {
+		throw new Error("malformed session entry identity, timestamp, or ancestry");
+	}
+	seen.add(entry.id);
+}
+
+function validateEntryContent(entry: Record<string, unknown>): void {
+	switch (entry.type) {
 			case "message":
 				if (
 					!object(entry.message) ||
@@ -107,8 +102,29 @@ function validateEntries(entries: unknown[], physicalLines: number, expectedId: 
 				break;
 			default:
 				throw new Error("unknown current session entry type");
-		}
 	}
+}
+
+/** Contain malformed current input without a replacement session-format parser. */
+function validateEntries(entries: unknown[], physicalLines: number, expectedId: string): void {
+	if (entries.length !== physicalLines) throw new Error("malformed session input; the public parser omitted a line");
+	validateHeader(entries[0], expectedId);
+	const seen = new Set<string>();
+	for (const entry of entries.slice(1)) {
+		validateEntryIdentity(entry, seen);
+		validateEntryContent(entry);
+	}
+}
+
+function snapshotFromBytes(buffer: Buffer, expectedId: string, bytes: number): EntrySnapshot {
+	const content = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+	if (!content.endsWith("\n")) throw new Error("the selected file ends with a truncated line");
+	const parsed = parseSessionEntries(content);
+	validateEntries(parsed, content.split("\n").filter((line) => line.trim()).length, expectedId);
+	const header = parsed[0];
+	if (header.type !== "session") throw new Error("the selected file has no session header");
+	const manager = SessionManager.inMemory(header.cwd, undefined, parsed);
+	return { ...selectedEntries(manager, 4096), bytes };
 }
 
 /** Read one known regular file through a fixed descriptor, never a repair-capable session open. */
@@ -137,14 +153,7 @@ export function readSelectedSession(
 		const after = fstatSync(fd);
 		if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs)
 			throw new Error("the selected file changed during the read; request history again");
-		const content = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-		if (!content.endsWith("\n")) throw new Error("the selected file ends with a truncated line");
-		const parsed = parseSessionEntries(content);
-		validateEntries(parsed, content.split("\n").filter((line) => line.trim()).length, expectedId);
-		const header = parsed[0];
-		if (header.type !== "session") throw new Error("the selected file has no session header");
-		const manager = SessionManager.inMemory(header.cwd, undefined, parsed);
-		return { ...selectedEntries(manager, 4096), bytes };
+		return snapshotFromBytes(buffer, expectedId, bytes);
 	} catch (error) {
 		return {
 			entries: [],

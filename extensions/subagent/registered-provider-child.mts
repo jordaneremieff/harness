@@ -3,6 +3,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AgentSession, ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+/** The host fields a directly-executed tool reads from this sparse fixture context. */
+type ToolContextFixture = Pick<ExtensionContext, "cwd" | "modelRegistry"> & {
+	thinkingLevel?: ExtensionContext["thinkingLevel"];
+	model: unknown;
+	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">;
+	ui: Pick<ExtensionContext["ui"], "setStatus">;
+};
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-provider-agent-"));
 const parentCwd = mkdtempSync(join(tmpdir(), "subagent-provider-parent-"));
@@ -94,7 +103,10 @@ export default function (pi) {
 mkdirSync(join(workerCwd, ".pi"), { recursive: true });
 writeFileSync(join(workerCwd, ".pi", "settings.json"), JSON.stringify({ packages: [targetProviderPath] }), "utf8");
 
-let parentSession: any = null;
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+const isUnknownArray = (value: unknown): value is readonly unknown[] => Array.isArray(value);
+const isString = (value: unknown): value is string => typeof value === "string";
+let parentSession: AgentSession | null = null;
 try {
 	const sub = await import("./index.ts");
 	const {
@@ -138,6 +150,7 @@ try {
 
 	const dispatch = parentSession.extensionRunner.getToolDefinition("subagent");
 	assert.ok(dispatch);
+	// The extension reads only these context fields when its tool runs directly here.
 	const toolContext = {
 		cwd: parentCwd,
 		thinkingLevel: "off",
@@ -145,11 +158,18 @@ try {
 		modelRegistry: parentRegistry,
 		sessionManager: { getSessionId: () => parentSessionId },
 		ui: { setStatus: () => undefined },
-	};
+	} satisfies ToolContextFixture as unknown as ExtensionContext;
 	const runDispatched = async (toolCallId: string, params: Record<string, unknown>) => {
-		const result = (await dispatch.execute(toolCallId, params, undefined, undefined, toolContext)) as any;
-		const workerId = result.details.workers[0].id as string;
-		assert.ok(workerId, JSON.stringify(result));
+		const result = await dispatch.execute(toolCallId, params, undefined, undefined, toolContext);
+		const dispatchDetails = result.details;
+		assert.ok(isRecord(dispatchDetails), "the dispatch result carries details");
+		const workers = dispatchDetails.workers;
+		assert.ok(isUnknownArray(workers), "the dispatch lists workers");
+		const firstWorker = workers[0];
+		assert.ok(isRecord(firstWorker), "the first worker is listed");
+		const workerIdValue = firstWorker.id;
+		assert.ok(isString(workerIdValue), JSON.stringify(result));
+		const workerId = workerIdValue;
 		const deadline = Date.now() + 10_000;
 		let workerRecord = sub.readWorker(workerId);
 		while (Date.now() < deadline && workerRecord?.state === "running") {
@@ -185,15 +205,20 @@ try {
 
 	const continuation = parentSession.extensionRunner.getToolDefinition("subagent_continue");
 	assert.ok(continuation);
-	const continued = (await continuation.execute(
+	const continued = await continuation.execute(
 		"registered-provider-continuation",
 		{ id, message: "continue through the target model" },
 		undefined,
 		undefined,
 		toolContext,
-	)) as any;
-	const continuedId = continued.details.worker.id as string;
-	assert.ok(continuedId, JSON.stringify(continued));
+	);
+	const continuedDetails = continued.details;
+	assert.ok(isRecord(continuedDetails), "the continuation result carries details");
+	const continuedWorker = continuedDetails.worker;
+	assert.ok(isRecord(continuedWorker), "the continuation names its worker");
+	const continuedIdValue = continuedWorker.id;
+	assert.ok(isString(continuedIdValue), JSON.stringify(continued));
+	const continuedId = continuedIdValue;
 	const continuedDeadline = Date.now() + 10_000;
 	let continuedRecord = sub.readWorker(continuedId);
 	while (Date.now() < continuedDeadline && continuedRecord?.state === "running") {

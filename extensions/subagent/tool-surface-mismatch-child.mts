@@ -3,6 +3,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AgentSession, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+
+/** The host fields a directly-executed tool reads from this sparse fixture context. */
+type ToolContextFixture = Pick<ExtensionContext, "cwd" | "modelRegistry"> & {
+	thinkingLevel?: ExtensionContext["thinkingLevel"];
+	model: unknown;
+	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">;
+	ui: Pick<ExtensionContext["ui"], "setStatus">;
+};
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-surface-agent-"));
 const parentCwd = mkdtempSync(join(tmpdir(), "subagent-surface-parent-"));
@@ -78,7 +87,12 @@ function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-async function rejectedDispatch(dispatch: any, ctx: any, cwd: string, id: string): Promise<string> {
+async function rejectedDispatch(
+	dispatch: ToolDefinition,
+	ctx: ExtensionContext,
+	cwd: string,
+	id: string,
+): Promise<string> {
 	try {
 		await dispatch.execute(id, { task: "This dispatch must stop at tool preflight.", cwd }, undefined, undefined, ctx);
 	} catch (error) {
@@ -87,7 +101,10 @@ async function rejectedDispatch(dispatch: any, ctx: any, cwd: string, id: string
 	throw new Error("the changed registration unexpectedly passed preflight");
 }
 
-let parentSession: any = null;
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+const isUnknownArray = (value: unknown): value is readonly unknown[] => Array.isArray(value);
+const isString = (value: unknown): value is string => typeof value === "string";
+let parentSession: AgentSession | null = null;
 let uncaught: unknown;
 const captureUncaught = (error: unknown) => {
 	uncaught = error;
@@ -122,6 +139,7 @@ try {
 
 	const dispatch = parentSession.extensionRunner.getToolDefinition("subagent");
 	assert.ok(dispatch);
+	// The extension reads only these context fields when its tool runs directly here.
 	const ctx = {
 		cwd: parentCwd,
 		thinkingLevel: "off",
@@ -129,21 +147,28 @@ try {
 		modelRegistry: new ModelRegistry(parentSession.modelRuntime),
 		sessionManager: { getSessionId: () => parentSessionId },
 		ui: { setStatus: () => undefined },
-	};
+	} satisfies ToolContextFixture as unknown as ExtensionContext;
 
 	writeFileSync(probePath, probeSource("new"), "utf8");
 	const future = new Date(Date.now() + 60_000);
 	utimesSync(probePath, future, future);
 
-	const sameCwd = (await dispatch.execute(
+	const sameCwd = await dispatch.execute(
 		"same-cwd-before",
 		{ task: "Submit the fixed result.", cwd: parentCwd },
 		undefined,
 		undefined,
 		ctx,
-	)) as any;
-	const successfulId = sameCwd.details.workers[0].id as string;
-	assert.ok(successfulId);
+	);
+	const sameCwdDetails = sameCwd.details;
+	assert.ok(isRecord(sameCwdDetails), "the dispatch result carries details");
+	const workers = sameCwdDetails.workers;
+	assert.ok(isUnknownArray(workers), "the dispatch lists workers");
+	const firstWorker = workers[0];
+	assert.ok(isRecord(firstWorker), "the first worker is listed");
+	const successfulIdValue = firstWorker.id;
+	assert.ok(isString(successfulIdValue), "the worker id is a string");
+	const successfulId = successfulIdValue;
 
 	const deadline = Date.now() + 10_000;
 	let record = sub.readWorker(successfulId);

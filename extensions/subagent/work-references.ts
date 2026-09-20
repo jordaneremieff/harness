@@ -44,8 +44,8 @@ export interface WorkReference {
 
 export type WorkReferenceResult = { reference: WorkReference } | { error: string };
 
-function asString(value: unknown): string | null {
-	return typeof value === "string" ? value : null;
+function optionalPresentation(value: unknown, max: number): string | undefined {
+	return typeof value === "string" ? cleanPresentation(value, max) : undefined;
 }
 
 function asBoolean(value: unknown): boolean | null {
@@ -88,22 +88,14 @@ export function sanitizeWorkReference(raw: unknown): WorkReferenceResult {
 	if (typeof artifact !== "string") return { error: artifact.error };
 	const revision = identity(obj.revision, "reference.revision", WORK_REFERENCE_LIMITS.revision);
 	if (typeof revision !== "string") return { error: revision.error };
-	const reviewerRaw = asString(obj.reviewer);
-	const reviewer = reviewerRaw === null ? undefined : cleanPresentation(reviewerRaw, WORK_REFERENCE_LIMITS.reviewer);
+	const reviewer = optionalPresentation(obj.reviewer, WORK_REFERENCE_LIMITS.reviewer);
 	const requiredRaw = asBoolean(obj.required);
 	if (obj.required !== undefined && requiredRaw === null) {
 		return { error: "reference.required must be a boolean when present" };
 	}
-	let outcome: ReferenceOutcome | undefined;
-	if (obj.outcome !== undefined) {
-		const outcomeRaw = asString(obj.outcome);
-		if (outcomeRaw === null || !OUTCOMES.has(outcomeRaw as ReferenceOutcome)) {
-			return { error: `reference.outcome must be one of ${[...OUTCOMES].join(", ")} when present` };
-		}
-		outcome = outcomeRaw as ReferenceOutcome;
-	}
-	const reasonRaw = asString(obj.reason);
-	const reason = reasonRaw === null ? undefined : cleanPresentation(reasonRaw, WORK_REFERENCE_LIMITS.reason);
+	const outcome = referenceOutcome(obj.outcome);
+	if (typeof outcome === "object") return outcome;
+	const reason = optionalPresentation(obj.reason, WORK_REFERENCE_LIMITS.reason);
 	if (outcome !== undefined && outcome !== "accepted" && !reason) {
 		return { error: "a non-accepted disposition needs a bounded reason" };
 	}
@@ -113,6 +105,12 @@ export function sanitizeWorkReference(raw: unknown): WorkReferenceResult {
 	if (outcome !== undefined) reference.outcome = outcome;
 	if (reason !== undefined) reference.reason = reason;
 	return { reference };
+}
+
+function referenceOutcome(value: unknown): ReferenceOutcome | undefined | { error: string } {
+	if (value === undefined) return undefined;
+	for (const outcome of OUTCOMES) if (outcome === value) return outcome;
+	return { error: `reference.outcome must be one of ${[...OUTCOMES].join(", ")} when present` };
 }
 
 /** One reference-bearing exchange, in the order it was recorded. */

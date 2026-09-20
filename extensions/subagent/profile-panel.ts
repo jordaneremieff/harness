@@ -70,6 +70,11 @@ function digest(entry: ProfileEntry): string {
 		throw new Error("No readable digest. Refresh after repair outside this panel.");
 	return entry.sha256;
 }
+/** An existing profile's draft always carries the digest read before editing. */
+function requireDraftSha(draft: Draft): string {
+	if (draft.sha256 === undefined) throw new Error("No readable digest. Refresh after repair outside this panel.");
+	return draft.sha256;
+}
 
 type Draft = {
 	name: string | null;
@@ -157,10 +162,15 @@ class ProfilePanel {
 		return input;
 	}
 	private edit(create: boolean): void {
-		if (!create && !this.selected) return;
-		const entry = create ? null : this.deps.read(this.selected!);
-		const sha256 = entry ? digest(entry) : undefined;
+		const selected = this.selected;
+		if (!create && selected === null) return;
+		const entry = create || selected === null ? null : this.deps.read(selected);
 		const good = entry?.ok ? entry : null;
+		this.draft = this.draftFrom(entry, good);
+		this.field = entry ? 1 : 0;
+		if (entry && !entry.ok) this.notice = "Broken profile. Enter replacement fields before Save.";
+	}
+	private instructionsEditor(): Editor {
 		const instructions = new Editor(this.tui, {
 			borderColor: (text) => this.theme.fg("borderMuted", text),
 			selectList: {
@@ -172,13 +182,17 @@ class ProfilePanel {
 			},
 		});
 		instructions.disableSubmit = true;
+		return instructions;
+	}
+	private draftFrom(entry: ProfileEntry | null, good: Extract<ProfileEntry, { ok: true }> | null): Draft {
+		const instructions = this.instructionsEditor();
 		instructions.setText(good?.instructions ?? "");
-		this.draft = {
+		return {
 			instructions,
 			originalInstructions: good?.instructions ?? "",
 			initialEditorText: instructions.getExpandedText(),
 			name: entry?.name ?? null,
-			sha256,
+			sha256: entry ? digest(entry) : undefined,
 			inputs: [
 				this.input(entry?.name ?? ""),
 				this.input(good?.model ?? ""),
@@ -189,8 +203,6 @@ class ProfilePanel {
 			thinking: levels.indexOf(good?.thinking ?? ""),
 			enabled: good?.enabled ?? true,
 		};
-		this.field = entry ? 1 : 0;
-		if (entry && !entry.ok) this.notice = "Broken profile. Enter replacement fields before Save.";
 	}
 	private save(): void {
 		const draft = this.draft;
@@ -213,12 +225,145 @@ class ProfilePanel {
 		if (levels[draft.thinking]) definition.thinking = levels[draft.thinking] || undefined;
 		const name = draft.name ?? draft.inputs[0].getValue().trim();
 		const entry =
-			draft.name === null ? this.deps.create(name, definition) : this.deps.update(name, definition, draft.sha256!);
+			draft.name === null
+				? this.deps.create(name, definition)
+				: this.deps.update(name, definition, requireDraftSha(draft));
 		if (!entry.ok) throw new Error(entry.error);
 		this.draft = null;
 		this.filter = "";
 		this.notice = `Saved ${clean(entry.name)}.`;
 		this.refresh(entry.name);
+	}
+	private renderModes(
+		inner: number,
+		body: number,
+		lines: string[],
+		add: (line: string) => void,
+	): { controls: Array<{ key: string; label: string }>; exit: string } {
+		if (this.helpOpen) return this.renderHelp(inner, body, add);
+		if (this.search) return this.renderSearch(this.search, inner, body, add);
+		if (this.removal) return this.renderRemoval(this.removal, inner, body, add);
+		if (this.draft) return this.renderDraft(this.draft, inner, body, lines, add);
+		return this.renderList(inner, body, lines, add);
+	}
+	private renderHelp(inner: number, body: number, add: (line: string) => void) {
+		const wrapped = help.flatMap((line) => wrapTextWithAnsi(line, inner));
+		this.helpScroll = Math.min(this.helpScroll, Math.max(0, wrapped.length - Math.max(1, body)));
+		for (const line of wrapped.slice(this.helpScroll, this.helpScroll + body)) add(line);
+		return { controls: [{ key: "↑↓", label: "scroll" }], exit: "back" };
+	}
+	private renderSearch(search: Input, inner: number, body: number, add: (line: string) => void) {
+		if (body > 1) add("Filter profiles by name");
+		add(search.render(inner)[0]);
+		return { controls: [{ key: "enter", label: "apply" }], exit: "cancel" };
+	}
+	private renderRemoval(removal: { name: string; sha256: string }, inner: number, body: number, add: (line: string) => void) {
+		if (body > 1) add(`Remove ${clean(removal.name)}?`);
+		add(this.selectedLine(this.confirmRemove ? "> Remove permanently" : "> Cancel", inner));
+		if (this.notice) add(this.theme.fg("error", this.notice));
+		return {
+			controls: [
+				{ key: "tab", label: "select" },
+				{ key: "enter", label: "confirm" },
+			],
+			exit: "cancel",
+		};
+	}
+	private renderDraft(draft: Draft, inner: number, body: number, lines: string[], add: (line: string) => void) {
+		const controls = [
+			{ key: "tab", label: "next" },
+			{ key: this.field === 6 ? "shift-tab" : "↑", label: "previous" },
+			{ key: "^S", label: "save" },
+		];
+		const title = `${draft.name === null ? "New" : "Edit"} · ${fields[this.field]} ${this.field + 1}/${fields.length}`;
+		if (body > 1) add(this.theme.fg("accent", title));
+		if (this.field === 6) this.renderInstructionsField(draft, inner, body, lines, add);
+		else this.addDraftField(inner, add);
+		if (this.notice) add(this.theme.fg("error", this.notice));
+		add(this.draftHint());
+		add(
+			this.field === 6
+				? "Tab next · Shift+Tab previous · Ctrl+S save · Esc cancel"
+				: "Tab/Down next · Shift+Tab/Up previous · Ctrl+S save · Esc cancel",
+		);
+		if (body >= 8) {
+			add("");
+			for (let index = 0; index < fields.length; index++)
+				add(`${index === this.field ? ">" : " "} ${fields[index]}: ${clean(this.fieldValue(index))}`);
+		}
+		return { controls, exit: "cancel" };
+	}
+	private renderInstructionsField(draft: Draft, inner: number, body: number, lines: string[], add: (line: string) => void): void {
+		const rendered = draft.instructions.render(inner).slice(1, -1);
+		const room = Math.max(1, body - lines.length - (body > 4 ? 2 : 0));
+		const cursor = Math.max(
+			0,
+			rendered.findIndex((line) => line.includes(CURSOR_MARKER)),
+		);
+		const start = Math.max(0, Math.min(cursor - Math.floor(room / 2), rendered.length - room));
+		for (const line of rendered.slice(start, start + room)) add(line);
+	}
+	private addDraftField(inner: number, add: (line: string) => void): void {
+		const input = this.activeInput();
+		add(
+			input
+				? input.render(inner)[0]
+				: this.selectedLine(`${fields[this.field]}: ${this.fieldValue(this.field)}`, inner),
+		);
+	}
+	private draftHint(): string {
+		if (this.field === 4) return 'JSON array: [{"name":"guide","path":"/docs/guide.md"}]';
+		if (this.field === 2 || this.field === 5) return "Left/Right or Space changes the value.";
+		if (this.field === 6) return "Enter adds a line. Tab changes the field. Ctrl+S saves.";
+		if (this.field > 6) return "Enter activates this action.";
+		if (this.field === 0 && this.draft?.name) return "The stored name is immutable.";
+		return "Type a value. Blank optional fields inherit defaults.";
+	}
+	private renderList(inner: number, body: number, lines: string[], add: (line: string) => void) {
+		const controls = [
+			{ key: "?", label: "help" },
+			{ key: "n", label: "new" },
+			{ key: "↑↓", label: "select" },
+			{ key: "enter", label: "edit" },
+			{ key: "t", label: "toggle" },
+			{ key: "d", label: "remove" },
+			{ key: "r", label: "refresh" },
+			{ key: "/", label: "filter" },
+		];
+		const visible = this.visible();
+		this.renderListHeader(inner, body, visible, add);
+		const room = Math.max(1, body - lines.length);
+		const index = Math.max(
+			0,
+			visible.findIndex((entry) => entry.name === this.selected),
+		);
+		const start = Math.max(0, Math.min(index - Math.floor(room / 2), visible.length - room));
+		for (const entry of visible.slice(start, start + room)) this.addListRow(entry, inner, add);
+		if (this.truncated) add("Partial list. Read an unlisted profile by exact name.");
+		const selected = visible.find((entry) => entry.name === this.selected);
+		if (selected && !selected.ok) add(this.theme.fg("error", clean(selected.error)));
+		return { controls, exit: "close" };
+	}
+	private renderListHeader(inner: number, body: number, visible: ProfileEntry[], add: (line: string) => void): void {
+		if (body > 1)
+			add(
+				headerPair(
+					inner,
+					`Profiles${this.filter ? ` / ${clean(this.filter)}` : ""}`,
+					this.truncated ? `${visible.length} shown (partial)` : `${visible.length}/${this.entries.length}`,
+				),
+			);
+		if (this.notice && body > 2) add(this.theme.fg("error", this.notice));
+		if (!visible.length)
+			add(
+				this.filter
+					? "No matches. / changes the filter; n creates a profile."
+					: "No profiles. Press n to create one.",
+			);
+	}
+	private addListRow(entry: ProfileEntry, inner: number, add: (line: string) => void): void {
+		const label = `${entry.name === this.selected ? ">" : " "} ${clean(entry.name)} · ${entry.ok ? (entry.enabled ? "enabled" : "disabled") : "broken"}`;
+		add(entry.name === this.selected ? this.selectedLine(clipText(label, inner), inner) : label);
 	}
 	private move(amount: number): void {
 		const entries = this.visible();
@@ -239,89 +384,139 @@ class ProfilePanel {
 		const up = this.matches(data, "up");
 		const down = this.matches(data, "down");
 		this.attempt(() => {
-			if (cancel) {
-				if (this.helpOpen) this.helpOpen = false;
-				else if (this.search) this.search = null;
-				else if (this.draft) this.draft = null;
-				else if (this.removal) this.removal = null;
-				else {
-					this.dispose();
-					this.done();
-				}
-				this.notice = "";
-			} else if (this.helpOpen) {
-				if (up) this.helpScroll = Math.max(0, this.helpScroll - 1);
-				if (down) this.helpScroll++;
-			} else if (this.search) {
-				if (enter) {
-					this.filter = this.search.getValue();
-					this.search = null;
-					this.refresh();
-				} else this.feed(this.search, data);
-			} else if (this.removal) {
-				if (up || down || matchesKey(data, Key.tab) || matchesKey(data, Key.left) || matchesKey(data, Key.right))
-					this.confirmRemove = !this.confirmRemove;
-				else if (enter) {
-					if (this.confirmRemove) {
-						this.deps.remove(this.removal.name, this.removal.sha256);
-						this.notice = `Removed ${clean(this.removal.name)}.`;
-						this.removal = null;
-						this.refresh();
-					} else this.removal = null;
-				}
-			} else if (this.draft) {
-				if (matchesKey(data, Key.ctrl("s"))) this.save();
-				else if (matchesKey(data, Key.shift("tab")) || (up && this.field !== 6))
-					this.field = (this.field + fields.length - 1) % fields.length;
-				else if (matchesKey(data, Key.tab) || (down && this.field !== 6)) this.field = (this.field + 1) % fields.length;
-				else if (this.field === 6) {
-					const editor = this.draft.instructions;
-					const before = editor.getExpandedText();
-					if (enter) editor.insertTextAtCursor("\n");
-					else editor.handleInput(data);
-					if ([...editor.getExpandedText()].some((char) => /[\p{Cc}\p{Cf}]/u.test(char) && !"\r\n\t".includes(char))) {
-						editor.setText(before);
-						throw new Error("Default instructions refuse control characters. The prior draft remains unchanged.");
-					}
-				} else if (enter) {
-					if (this.field === 7) this.save();
-					else if (this.field === 8) this.draft = null;
-					else this.field++;
-				} else if (this.field === 2 && (key === " " || matchesKey(data, Key.left) || matchesKey(data, Key.right))) {
-					this.draft.thinking =
-						(this.draft.thinking + (matchesKey(data, Key.left) ? levels.length - 1 : 1)) % levels.length;
-				} else if (this.field === 5 && (key === " " || matchesKey(data, Key.left) || matchesKey(data, Key.right)))
-					this.draft.enabled = !this.draft.enabled;
-				else {
-					const input = this.activeInput();
-					if (input) this.feed(input, data);
-				}
-			} else {
-				this.notice = "";
-				if (up) this.move(-1);
-				else if (down) this.move(1);
-				else if (key === "n") this.edit(true);
-				else if (key === "e" || enter) this.edit(false);
-				else if (key === "r") this.refresh();
-				else if (key === "/") this.search = this.input(this.filter);
-				else if (key === "?") {
-					this.helpOpen = true;
-					this.helpScroll = 0;
-				} else if (this.selected && key === "d") {
-					const entry = this.deps.read(this.selected);
-					this.removal = { name: entry.name, sha256: digest(entry) };
-					this.confirmRemove = false;
-				} else if (this.selected && key === "t") {
-					const entry = this.entries.find((entry) => entry.name === this.selected)!;
-					if (!entry.ok) throw new Error("Broken profile. Edit the replacement fields before enable or disable.");
-					const updated = this.deps.setEnabled(entry.name, !entry.enabled, entry.sha256);
-					if (!updated.ok) throw new Error(updated.error);
-					this.refresh(updated.name);
-				}
-			}
+			if (cancel) this.handleCancel();
+			else if (this.helpOpen) this.handleHelpKeys(up, down);
+			else if (this.search) this.handleSearchKeys(data, enter);
+			else if (this.removal) this.handleRemovalKeys(data, up, down, enter);
+			else if (this.draft) this.handleDraftKeys(data, key, up, down, enter);
+			else this.handleListKeys(key, up, down, enter);
 		});
 		this.forwardFocus();
 		this.tui.requestRender();
+	}
+	private handleCancel(): void {
+		if (this.helpOpen) this.helpOpen = false;
+		else if (this.search) this.search = null;
+		else if (this.draft) this.draft = null;
+		else if (this.removal) this.removal = null;
+		else {
+			this.dispose();
+			this.done();
+		}
+		this.notice = "";
+	}
+	private handleHelpKeys(up: boolean, down: boolean): void {
+		if (up) this.helpScroll = Math.max(0, this.helpScroll - 1);
+		if (down) this.helpScroll++;
+	}
+	private handleSearchKeys(data: string, enter: boolean): void {
+		const search = this.search;
+		if (!search) return;
+		if (enter) {
+			this.filter = search.getValue();
+			this.search = null;
+			this.refresh();
+		} else this.feed(search, data);
+	}
+	private handleRemovalKeys(data: string, up: boolean, down: boolean, enter: boolean): void {
+		const removal = this.removal;
+		if (!removal) return;
+		if (up || down || matchesKey(data, Key.tab) || matchesKey(data, Key.left) || matchesKey(data, Key.right))
+			this.confirmRemove = !this.confirmRemove;
+		else if (enter) {
+			if (this.confirmRemove) {
+				this.deps.remove(removal.name, removal.sha256);
+				this.notice = `Removed ${clean(removal.name)}.`;
+				this.removal = null;
+				this.refresh();
+			} else this.removal = null;
+		}
+	}
+	private handleListKeys(key: string, up: boolean, down: boolean, enter: boolean): void {
+		this.notice = "";
+		if (up) this.move(-1);
+		else if (down) this.move(1);
+		else if (key === "n") this.edit(true);
+		else if (key === "e" || enter) this.edit(false);
+		else if (key === "r") this.refresh();
+		else if (key === "/") this.search = this.input(this.filter);
+		else if (key === "?") {
+			this.helpOpen = true;
+			this.helpScroll = 0;
+		} else if (this.selected && key === "d") {
+			const entry = this.deps.read(this.selected);
+			this.removal = { name: entry.name, sha256: digest(entry) };
+			this.confirmRemove = false;
+		} else if (this.selected && key === "t") this.toggleSelectedProfile();
+	}
+	private toggleSelectedProfile(): void {
+		const entry = this.entries.find((candidate) => candidate.name === this.selected);
+		if (!entry) throw new Error("The selected profile is no longer stored. Refresh the list.");
+		if (!entry.ok) throw new Error("Broken profile. Edit the replacement fields before enable or disable.");
+		const updated = this.deps.setEnabled(entry.name, !entry.enabled, entry.sha256);
+		if (!updated.ok) throw new Error(updated.error);
+		this.refresh(updated.name);
+	}
+	private handleDraftKeys(data: string, key: string, up: boolean, down: boolean, enter: boolean): void {
+		const draft = this.draft;
+		if (!draft) return;
+		if (matchesKey(data, Key.ctrl("s"))) {
+			this.save();
+			return;
+		}
+		if (this.navigateDraftField(data, up, down)) return;
+		if (this.field === 6) {
+			this.handleInstructionsKey(draft, data, enter);
+			return;
+		}
+		if (enter) {
+			this.advanceDraftField();
+			return;
+		}
+		if (this.field === 2 && this.cyclingValue(data, key)) {
+			this.cycleThinking(data);
+			return;
+		}
+		if (this.field === 5 && this.cyclingValue(data, key)) {
+			draft.enabled = !draft.enabled;
+			return;
+		}
+		const input = this.activeInput();
+		if (input) this.feed(input, data);
+	}
+	private navigateDraftField(data: string, up: boolean, down: boolean): boolean {
+		if (matchesKey(data, Key.shift("tab")) || (up && this.field !== 6)) {
+			this.field = (this.field + fields.length - 1) % fields.length;
+			return true;
+		}
+		if (matchesKey(data, Key.tab) || (down && this.field !== 6)) {
+			this.field = (this.field + 1) % fields.length;
+			return true;
+		}
+		return false;
+	}
+	private cyclingValue(data: string, key: string): boolean {
+		return key === " " || matchesKey(data, Key.left) || matchesKey(data, Key.right);
+	}
+	private advanceDraftField(): void {
+		if (this.field === 7) this.save();
+		else if (this.field === 8) this.draft = null;
+		else this.field++;
+	}
+	private cycleThinking(data: string): void {
+		const draft = this.draft;
+		if (!draft) return;
+		draft.thinking = (draft.thinking + (matchesKey(data, Key.left) ? levels.length - 1 : 1)) % levels.length;
+	}
+	private handleInstructionsKey(draft: Draft, data: string, enter: boolean): void {
+		const editor = draft.instructions;
+		const before = editor.getExpandedText();
+		if (enter) editor.insertTextAtCursor("\n");
+		else editor.handleInput(data);
+		if ([...editor.getExpandedText()].some((char) => /[\p{Cc}\p{Cf}]/u.test(char) && !"\r\n\t".includes(char))) {
+			editor.setText(before);
+			throw new Error("Default instructions refuse control characters. The prior draft remains unchanged.");
+		}
 	}
 	private feed(input: Input, data: string): void {
 		input.handleInput(data);
@@ -357,117 +552,7 @@ class ProfilePanel {
 		const add = (line: string) => {
 			if (lines.length < body) lines.push(clipText(line, inner));
 		};
-		let controls = [
-			{ key: "?", label: "help" },
-			{ key: "n", label: "new" },
-			{ key: "↑↓", label: "select" },
-			{ key: "enter", label: "edit" },
-			{ key: "t", label: "toggle" },
-			{ key: "d", label: "remove" },
-			{ key: "r", label: "refresh" },
-			{ key: "/", label: "filter" },
-		];
-		let exit = "close";
-		if (this.helpOpen) {
-			exit = "back";
-			controls = [{ key: "↑↓", label: "scroll" }];
-			const wrapped = help.flatMap((line) => wrapTextWithAnsi(line, inner));
-			this.helpScroll = Math.min(this.helpScroll, Math.max(0, wrapped.length - Math.max(1, body)));
-			for (const line of wrapped.slice(this.helpScroll, this.helpScroll + body)) add(line);
-		} else if (this.search) {
-			exit = "cancel";
-			controls = [{ key: "enter", label: "apply" }];
-			if (body > 1) add("Filter profiles by name");
-			add(this.search.render(inner)[0]);
-		} else if (this.removal) {
-			exit = "cancel";
-			controls = [
-				{ key: "tab", label: "select" },
-				{ key: "enter", label: "confirm" },
-			];
-			if (body > 1) add(`Remove ${clean(this.removal.name)}?`);
-			add(this.selectedLine(this.confirmRemove ? "> Remove permanently" : "> Cancel", inner));
-			if (this.notice) add(this.theme.fg("error", this.notice));
-		} else if (this.draft) {
-			exit = "cancel";
-			controls = [
-				{ key: "tab", label: "next" },
-				{ key: this.field === 6 ? "shift-tab" : "↑", label: "previous" },
-				{ key: "^S", label: "save" },
-			];
-			const title = `${this.draft.name === null ? "New" : "Edit"} · ${fields[this.field]} ${this.field + 1}/${fields.length}`;
-			if (body > 1) add(this.theme.fg("accent", title));
-			const input = this.activeInput();
-			if (this.field === 6) {
-				const rendered = this.draft.instructions.render(inner).slice(1, -1);
-				const room = Math.max(1, body - lines.length - (body > 4 ? 2 : 0));
-				const cursor = Math.max(
-					0,
-					rendered.findIndex((line) => line.includes(CURSOR_MARKER)),
-				);
-				const start = Math.max(0, Math.min(cursor - Math.floor(room / 2), rendered.length - room));
-				for (const line of rendered.slice(start, start + room)) add(line);
-			} else
-				add(
-					input
-						? input.render(inner)[0]
-						: this.selectedLine(`${fields[this.field]}: ${this.fieldValue(this.field)}`, inner),
-				);
-			if (this.notice) add(this.theme.fg("error", this.notice));
-			add(
-				this.field === 4
-					? 'JSON array: [{"name":"guide","path":"/docs/guide.md"}]'
-					: this.field === 2 || this.field === 5
-						? "Left/Right or Space changes the value."
-						: this.field === 6
-							? "Enter adds a line. Tab changes the field. Ctrl+S saves."
-							: this.field > 6
-								? "Enter activates this action."
-								: this.field === 0 && this.draft.name
-									? "The stored name is immutable."
-									: "Type a value. Blank optional fields inherit defaults.",
-			);
-			add(
-				this.field === 6
-					? "Tab next · Shift+Tab previous · Ctrl+S save · Esc cancel"
-					: "Tab/Down next · Shift+Tab/Up previous · Ctrl+S save · Esc cancel",
-			);
-			if (body >= 8) {
-				add("");
-				for (let index = 0; index < fields.length; index++)
-					add(`${index === this.field ? ">" : " "} ${fields[index]}: ${clean(this.fieldValue(index))}`);
-			}
-		} else {
-			const visible = this.visible();
-			if (body > 1)
-				add(
-					headerPair(
-						inner,
-						`Profiles${this.filter ? ` / ${clean(this.filter)}` : ""}`,
-						this.truncated ? `${visible.length} shown (partial)` : `${visible.length}/${this.entries.length}`,
-					),
-				);
-			if (this.notice && body > 2) add(this.theme.fg("error", this.notice));
-			if (!visible.length)
-				add(
-					this.filter
-						? "No matches. / changes the filter; n creates a profile."
-						: "No profiles. Press n to create one.",
-				);
-			const room = Math.max(1, body - lines.length);
-			const index = Math.max(
-				0,
-				visible.findIndex((entry) => entry.name === this.selected),
-			);
-			const start = Math.max(0, Math.min(index - Math.floor(room / 2), visible.length - room));
-			for (const entry of visible.slice(start, start + room)) {
-				const label = `${entry.name === this.selected ? ">" : " "} ${clean(entry.name)} · ${entry.ok ? (entry.enabled ? "enabled" : "disabled") : "broken"}`;
-				add(entry.name === this.selected ? this.selectedLine(clipText(label, inner), inner) : label);
-			}
-			if (this.truncated) add("Partial list. Read an unlisted profile by exact name.");
-			const selected = visible.find((entry) => entry.name === this.selected);
-			if (selected && !selected.ok) add(this.theme.fg("error", clean(selected.error)));
-		}
+		const { controls, exit } = this.renderModes(inner, body, lines, add);
 		const footer = footerLine(
 			inner,
 			[controls],

@@ -22,7 +22,10 @@ const theme = {
 	underline: (text: string) => text,
 	strikethrough: (text: string) => text,
 	inverse: (text: string) => text,
-} as unknown as Theme;
+} satisfies Pick<
+	Theme,
+	"getBgAnsi" | "fg" | "bg" | "bold" | "italic" | "underline" | "strikethrough" | "inverse"
+> as unknown as Theme;
 
 function participant(id: string, parentId: string | null, overrides: Partial<CollaborationParticipant> = {}) {
 	return {
@@ -397,6 +400,18 @@ function readPosition(component: Component, width: number): { first: number; las
 	assert.ok(match, "the selected exchange has a visible read position");
 	return { first: Number(match[1]), last: Number(match[2]), total: Number(match[3]) };
 }
+/** Page forward through the selected exchange, collecting every marker seen. */
+function collectPagedMarkers(component: Component, width: number): Set<string> {
+	const observed = new Set<string>();
+	for (let page = 0; page < 100; page++) {
+		for (const marker of text(component, width).match(/ANSWER-\d{2}/g) ?? []) observed.add(marker);
+		const position = readPosition(component, width);
+		if (position.last === position.total) break;
+		component.handleInput(page % 2 ? " " : "\x1b[6~");
+	}
+	return observed;
+}
+
 function longExchange(prefix: string, count = 72): string {
 	return Array.from({ length: count }, (_, index) => `${prefix}-${String(index).padStart(2, "0")}`).join("\n\n");
 }
@@ -432,13 +447,7 @@ describe("selected exchange reader", () => {
 				assert.deepEqual(readPosition(component, width), space);
 				component.handleInput("\x1b[5~");
 				assert.deepEqual(readPosition(component, width), start);
-				const observed = new Set<string>();
-				for (let page = 0; page < 100; page++) {
-					for (const marker of text(component, width).match(/ANSWER-\d{2}/g) ?? []) observed.add(marker);
-					const position = readPosition(component, width);
-					if (position.last === position.total) break;
-					component.handleInput(page % 2 ? " " : "\x1b[6~");
-				}
+				const observed = collectPagedMarkers(component, width);
 				assert.deepEqual(
 					[...observed].sort(),
 					Array.from({ length: 72 }, (_, index) => `ANSWER-${String(index).padStart(2, "0")}`),

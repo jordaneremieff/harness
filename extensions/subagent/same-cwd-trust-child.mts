@@ -4,6 +4,16 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import type { AgentSession, ExtensionContext, ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
+
+/** The host fields a directly-executed tool reads from this sparse fixture context. */
+type ToolContextFixture = Pick<ExtensionContext, "cwd" | "modelRegistry"> & {
+	thinkingLevel?: ExtensionContext["thinkingLevel"];
+	model: unknown;
+	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">;
+	ui: Pick<ExtensionContext["ui"], "setStatus">;
+	isProjectTrusted(): boolean;
+};
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-sametrust-agent-"));
 const home = mkdtempSync(join(tmpdir(), "subagent-sametrust-home-"));
@@ -34,7 +44,20 @@ export default function (pi) {
 	return marker;
 }
 
-function fauxModel(label: string): Record<string, unknown> {
+interface FauxModel {
+	id: string;
+	name: string;
+	api: string;
+	provider: string;
+	baseUrl: string;
+	reasoning: boolean;
+	input: Array<"text" | "image">;
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	contextWindow: number;
+	maxTokens: number;
+}
+
+function fauxModel(label: string): FauxModel {
 	return {
 		id: `sametrust-model-${label}`,
 		name: `Same Trust Model ${label}`,
@@ -49,12 +72,12 @@ function fauxModel(label: string): Record<string, unknown> {
 	};
 }
 
-function registerFaux(runtime: any, label: string): Record<string, unknown> {
+function registerFaux(runtime: ModelRuntime, label: string): FauxModel {
 	const model = fauxModel(label);
 	const faux = fauxProvider({
-		api: model.api as string,
-		provider: model.provider as string,
-		models: [{ id: model.id as string }],
+		api: model.api,
+		provider: model.provider,
+		models: [{ id: model.id }],
 	});
 	faux.setResponses(
 		Array.from({ length: 8 }, () =>
@@ -63,7 +86,7 @@ function registerFaux(runtime: any, label: string): Record<string, unknown> {
 			}),
 		),
 	);
-	runtime.registerProvider(model.provider as string, {
+	runtime.registerProvider(model.provider, {
 		api: model.api,
 		apiKey: "not-used",
 		baseUrl: model.baseUrl,
@@ -84,8 +107,15 @@ const trustedMarker = seedProject(trustedBySession, "trusted");
 const refusedMarker = seedProject(refusedBySession, "refused");
 writeFileSync(join(agentDir, "settings.json"), JSON.stringify({}), "utf8");
 
+interface HostSession {
+	session: AgentSession;
+	sessionId: string;
+	dispatch: ToolDefinition;
+	model: FauxModel;
+}
+
 const sub = await import("./index.ts");
-const sessions: any[] = [];
+const sessions: AgentSession[] = [];
 try {
 	const {
 		createAgentSessionFromServices,
@@ -101,7 +131,7 @@ try {
 
 	const selfPath = join(dirname(fileURLToPath(import.meta.url)), "index.ts");
 
-	async function hostSession(cwd: string, sessionTrusted: boolean, label: string): Promise<any> {
+	async function hostSession(cwd: string, sessionTrusted: boolean, label: string): Promise<HostSession> {
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,
@@ -126,9 +156,9 @@ try {
 		return { session, sessionId, dispatch, model };
 	}
 
-	async function runWorker(host: any, marker: string, shouldLoad: boolean): Promise<void> {
+	async function runWorker(host: HostSession, marker: string, shouldLoad: boolean): Promise<void> {
 		const registry = new ModelRegistry(host.session.modelRuntime);
-		const result = (await host.dispatch.execute(
+		const result = await host.dispatch.execute(
 			"same-trust",
 			{
 				task: "work here",
@@ -137,6 +167,7 @@ try {
 			},
 			undefined,
 			undefined,
+			// The extension reads only these context fields when its tool runs directly here.
 			{
 				cwd: host.session.sessionManager.getCwd(),
 				thinkingLevel: "off",
@@ -145,10 +176,17 @@ try {
 				sessionManager: { getSessionId: () => host.sessionId },
 				ui: { setStatus: () => undefined },
 				isProjectTrusted: () => host.session.settingsManager.isProjectTrusted(),
-			},
-		)) as any;
-		const id = result.details.workers[0].id as string;
-		assert.ok(id, JSON.stringify(result));
+			} satisfies ToolContextFixture as unknown as ExtensionContext,
+		);
+		const details = result.details;
+		assert.ok(typeof details === "object" && details !== null, "the dispatch result carries details");
+		assert.ok("workers" in details, "the dispatch details carry workers");
+		const workers = details.workers;
+		assert.ok(Array.isArray(workers), "the dispatch lists its workers");
+		const first = workers[0];
+		assert.ok(typeof first === "object" && first !== null && "id" in first, "the first worker is listed");
+		const id = first.id;
+		assert.ok(typeof id === "string", JSON.stringify(result));
 		const deadline = Date.now() + 10_000;
 		let record = sub.readWorker(id);
 		while (Date.now() < deadline && record?.state === "running") {

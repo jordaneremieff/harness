@@ -4,9 +4,23 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+import type { AgentSession, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { WorkerRecord } from "./index.ts";
+
+/** The host fields a directly-executed tool reads from this sparse fixture context. */
+type ToolContextFixture = Pick<ExtensionContext, "cwd" | "modelRegistry"> & {
+	thinkingLevel?: ExtensionContext["thinkingLevel"];
+	model: unknown;
+	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">;
+	ui: Pick<ExtensionContext["ui"], "setStatus">;
+};
 
 const runtimeErrors: unknown[] = [];
-const captureRuntimeError = (error: unknown) => { runtimeErrors.push(error); console.error(error); process.exitCode = 1; };
+const captureRuntimeError = (error: unknown) => {
+	runtimeErrors.push(error);
+	console.error(error);
+	process.exitCode = 1;
+};
 process.on("unhandledRejection", captureRuntimeError);
 process.on("uncaughtException", captureRuntimeError);
 
@@ -109,7 +123,11 @@ export default function (pi) {
 		"utf8",
 	);
 	mkdirSync(join(cwd, ".pi"), { recursive: true });
-	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ packages: [extensionPath], compaction: { enabled: false, keepRecentTokens: 128 } }), "utf8");
+	writeFileSync(
+		join(cwd, ".pi", "settings.json"),
+		JSON.stringify({ packages: [extensionPath], compaction: { enabled: false, keepRecentTokens: 128 } }),
+		"utf8",
+	);
 	const skillDir = join(cwd, ".agents", "skills", skillSentinel(label));
 	mkdirSync(skillDir, { recursive: true });
 	writeFileSync(
@@ -126,7 +144,20 @@ export default function (pi) {
 	writeFileSync(join(cwd, "AGENTS.md"), `${contextSentinel(label)}\n`, "utf8");
 }
 
-function fauxModel(label: string): Record<string, unknown> {
+interface FauxModel {
+	id: string;
+	name: string;
+	api: string;
+	provider: string;
+	baseUrl: string;
+	reasoning: boolean;
+	input: Array<"text" | "image">;
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	contextWindow: number;
+	maxTokens: number;
+}
+
+function fauxModel(label: string): FauxModel {
 	return {
 		id: `cwd-model-${label}`,
 		name: `Cwd Model ${label}`,
@@ -190,9 +221,35 @@ const providerLabels = [
 	"fallback",
 ];
 const providerPaths = providerLabels.map(seedProvider);
-writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: providerPaths, compaction: { enabled: false, keepRecentTokens: 128 } }), "utf8");
+writeFileSync(
+	join(agentDir, "settings.json"),
+	JSON.stringify({ packages: providerPaths, compaction: { enabled: false, keepRecentTokens: 128 } }),
+	"utf8",
+);
 
-let parentSession: any = null;
+type DetailObject = Record<string, unknown>;
+const isRecord = (value: unknown): value is DetailObject => typeof value === "object" && value !== null;
+const isUnknownArray = (value: unknown): value is readonly unknown[] => Array.isArray(value);
+const isString = (value: unknown): value is string => typeof value === "string";
+/** getToolDefinition erases each tool's detail type; narrow the shape the fixture consumes. */
+const toolDetails = (result: { details: unknown }): DetailObject => {
+	const details = result.details;
+	assert.ok(isRecord(details), "the tool result carries object details");
+	return details;
+};
+const firstWorkerDetails = (result: { details: unknown }): DetailObject => {
+	const workers = toolDetails(result).workers;
+	assert.ok(isUnknownArray(workers), "the dispatch lists workers");
+	const first = workers[0];
+	assert.ok(isRecord(first), "the first worker is listed");
+	return first;
+};
+const workerDetails = (result: { details: unknown }): DetailObject => {
+	const worker = toolDetails(result).worker;
+	assert.ok(isRecord(worker), "the tool result names its worker");
+	return worker;
+};
+let parentSession: AgentSession | null = null;
 try {
 	const sub = await import("./index.ts");
 	const { deriveWorkerLabel } = await import("./profiles.ts");
@@ -251,16 +308,16 @@ try {
 			modelRegistry: parentRegistry,
 			sessionManager: { getSessionId: () => parentSessionId },
 			ui: { setStatus: () => undefined },
-		};
-		const result = (await dispatch.execute(
+		} satisfies ToolContextFixture as unknown as ExtensionContext;
+		const result = await dispatch.execute(
 			"worker-context",
 			{ task, cwd, tools: ["read"], model: `${model.provider}/${model.id}` },
 			undefined,
 			undefined,
 			toolContext,
-		)) as any;
-		const id = result.details.workers[0].id as string;
-		assert.ok(id, JSON.stringify(result));
+		);
+		const id = firstWorkerDetails(result).id;
+		assert.ok(isString(id), JSON.stringify(result));
 		return id;
 	};
 
@@ -270,7 +327,7 @@ try {
 		task = "work in the selected directory",
 		expectedState = "done",
 		expectedDiagnostics: string[] = [],
-	): Promise<any> => {
+	): Promise<WorkerRecord> => {
 		const id = await startWorker(cwd, label, task);
 		const deadline = Date.now() + 10_000;
 		let record = sub.readWorker(id);
@@ -280,21 +337,23 @@ try {
 		}
 		assert.equal(record?.state, expectedState, JSON.stringify(record));
 		assert.deepEqual(record?.setupDiagnostics, expectedDiagnostics, JSON.stringify(record?.setupDiagnostics));
+		assert.ok(record, `the worker record for ${id} is readable`);
 		return record;
 	};
 
 	// A full-session worker that ends an ordinary turn without a submitted result
 	// stays live and idle; only a defined terminal path finalizes it.
-	const waitForIdle = async (id: string): Promise<any> => {
+	const waitForIdle = async (id: string): Promise<WorkerRecord> => {
 		const deadline = Date.now() + 10_000;
 		let record = sub.readWorker(id);
 		while (Date.now() < deadline && record?.idleSince == null) {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 			record = sub.readWorker(id);
 		}
-		assert.equal(record?.state, "running", JSON.stringify(record));
-		assert.ok(record?.idleSince != null, JSON.stringify(record));
-		return record!;
+		assert.ok(record, `the worker record for ${id} is readable`);
+		assert.equal(record.state, "running", JSON.stringify(record));
+		assert.ok(record.idleSince != null, JSON.stringify(record));
+		return record;
 	};
 
 	await runWorker(trustedCwd, "trusted");
@@ -363,7 +422,7 @@ try {
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 	assert.equal(existsSync(slowReplacementBound), true, "the replacement session must enter session_start");
-	const cancelledReplacement = (await kill.execute(
+	const cancelledReplacement = await kill.execute(
 		"worker-context-kill",
 		{ id: slowReplacementId },
 		undefined,
@@ -374,9 +433,9 @@ try {
 			modelRegistry: parentRegistry,
 			sessionManager: { getSessionId: () => parentSessionId },
 			ui: { setStatus: () => undefined },
-		},
-	)) as any;
-	assert.equal(cancelledReplacement.details.state, "cancelled", JSON.stringify(cancelledReplacement));
+		} satisfies ToolContextFixture as unknown as ExtensionContext,
+	);
+	assert.equal(toolDetails(cancelledReplacement).state, "cancelled", JSON.stringify(cancelledReplacement));
 	await new Promise((resolve) => setTimeout(resolve, 150));
 	const slowReplacementRecord = sub.readWorker(slowReplacementId);
 	assert.equal(slowReplacementRecord?.state, "cancelled", JSON.stringify(slowReplacementRecord));
@@ -425,8 +484,8 @@ try {
 		modelRegistry: parentRegistry,
 		sessionManager: { getSessionId: () => parentSessionId },
 		ui: { setStatus: () => undefined },
-	};
-	const waitForProfile = async (id: string) => {
+	} satisfies ToolContextFixture as unknown as ExtensionContext;
+	const waitForProfile = async (id: string): Promise<WorkerRecord> => {
 		const deadline = Date.now() + 10_000;
 		let record = sub.readWorker(id);
 		while (Date.now() < deadline && record?.state === "running") {
@@ -434,9 +493,10 @@ try {
 			record = sub.readWorker(id);
 		}
 		assert.equal(record?.state, "done", JSON.stringify(record));
-		return record!;
+		assert.ok(record, `the worker record for ${id} is readable`);
+		return record;
 	};
-	const profileResult = (await dispatch.execute(
+	const profileResult = await dispatch.execute(
 		"profile",
 		{
 			task: "/profile-check input",
@@ -446,8 +506,11 @@ try {
 		undefined,
 		undefined,
 		profileContext,
-	)) as any;
-	const profileId = profileResult.details.workers[0].id;
+	);
+	const profileWorker = firstWorkerDetails(profileResult);
+	const profileIdValue = profileWorker.id;
+	assert.ok(isString(profileIdValue), JSON.stringify(profileResult));
+	const profileId = profileIdValue;
 	const profileRecord = await waitForProfile(profileId);
 	assert.equal(profileRecord.cwd, trustedCwd);
 	assert.equal(profileRecord.model, selectedProfile.model);
@@ -455,8 +518,8 @@ try {
 	assert.equal(profileRecord.label, "review-check");
 	assert.match(readFileSync(join(agentDir, "profile-at-session-start.json"), "utf8"), /Check contract/);
 	assert.deepEqual(profileRecord.resolvedTools.slice().sort(), ["read", "subagent", "submit_result"]);
-	assert.deepEqual(profileResult.details.workers[0].profile, profileRecord.profile);
-	assert.equal(profileResult.details.workers[0].label, "review-check");
+	assert.deepEqual(profileWorker.profile, profileRecord.profile);
+	assert.equal(profileWorker.label, "review-check");
 	const received = JSON.parse(readFileSync(`${promptPath("profile")}.context.json`, "utf8"));
 	const receivedPrompt = getCurrentSystemPrompt(received.messages);
 	assert.match(receivedPrompt, /SENTINEL_CONTEXT_FILE_trusted/);
@@ -472,7 +535,7 @@ try {
 
 	// A task-selected file replaces unused top-level profile input. Explicit
 	// fields still win, and an explicit empty tool list retains its meaning.
-	const overrideResult = (await dispatch.execute(
+	const overrideResult = await dispatch.execute(
 		"profile-override",
 		{
 			profile: "does-not-exist.json",
@@ -483,8 +546,10 @@ try {
 		undefined,
 		undefined,
 		profileContext,
-	)) as any;
-	const overrideRecord = await waitForProfile(overrideResult.details.workers[0].id);
+	);
+	const overrideIdValue = firstWorkerDetails(overrideResult).id;
+	assert.ok(isString(overrideIdValue), JSON.stringify(overrideResult));
+	const overrideRecord = await waitForProfile(overrideIdValue);
 	assert.equal(overrideRecord.model, "cwd-provider-profile-override/cwd-model-profile-override");
 	assert.equal(overrideRecord.cwd, untrustedCwd);
 	assert.deepEqual(overrideRecord.resolvedTools, ["submit_result"]);
@@ -515,14 +580,17 @@ try {
 	// selected file disappears. It neither reloads nor reapplies profile defaults.
 	rmSync(selectedProfilePath);
 	const continuation = parentSession.extensionRunner.getToolDefinition("subagent_continue");
-	const continued = (await continuation.execute(
+	assert.ok(continuation);
+	const continued = await continuation.execute(
 		"profile-continue",
 		{ id: profileId, message: "Continue the check" },
 		undefined,
 		undefined,
 		profileContext,
-	)) as any;
-	const continuedRecord = await waitForProfile(continued.details.worker.id);
+	);
+	const continuedIdValue = workerDetails(continued).id;
+	assert.ok(isString(continuedIdValue), JSON.stringify(continued));
+	const continuedRecord = await waitForProfile(continuedIdValue);
 	assert.equal(continuedRecord.cwd, trustedCwd);
 	assert.equal(continuedRecord.model, selectedProfile.model);
 	assert.deepEqual(continuedRecord.profile, profileRecord.profile);
@@ -531,43 +599,83 @@ try {
 	const continuedContext = readFileSync(`${promptPath("profile")}.context.json`, "utf8");
 	assert.ok(continuedContext.includes("Check contract"));
 	assert.ok(continuedContext.includes("Continue the check"));
-	assert.equal(continuedContext.split("PROFILE_OPERATING_MODE").length - 1, 1, "normal continuation does not duplicate exact profile context");
+	assert.equal(
+		continuedContext.split("PROFILE_OPERATING_MODE").length - 1,
+		1,
+		"normal continuation does not duplicate exact profile context",
+	);
 
-	const compacted = (await continuation.execute(
-		"profile-compact", { id: continuedRecord.id, message: "/worker-profile-compact" }, undefined, undefined, profileContext,
-	)) as any;
-	const compactedRecord = await waitForProfile(compacted.details.worker.id);
+	const compacted = await continuation.execute(
+		"profile-compact",
+		{ id: continuedRecord.id, message: "/worker-profile-compact" },
+		undefined,
+		undefined,
+		profileContext,
+	);
+	const compactedIdValue = workerDetails(compacted).id;
+	assert.ok(isString(compactedIdValue), JSON.stringify(compacted));
+	const compactedRecord = await waitForProfile(compactedIdValue);
 	assert.deepEqual(compactedRecord.profile, profileRecord.profile);
 	const compactedContext = JSON.parse(readFileSync(`${promptPath("profile")}.context.json`, "utf8"));
 	const compactedMessages = JSON.stringify(compactedContext.messages);
 	assert.match(compactedMessages, /PROFILE_SYNTHETIC_SUMMARY/);
 	assert.match(compactedMessages, /PROFILE_POST_COMPACTION_TASK/);
-	assert.equal(compactedMessages.split("PROFILE_OPERATING_MODE").length - 1, 1, "effective context restores the compacted-out profile exactly once");
+	assert.equal(
+		compactedMessages.split("PROFILE_OPERATING_MODE").length - 1,
+		1,
+		"effective context restores the compacted-out profile exactly once",
+	);
 
-	const navigated = (await continuation.execute(
-		"profile-navigate", { id: compactedRecord.id, message: "/worker-profile-navigate" }, undefined, undefined, profileContext,
-	)) as any;
-	await waitForProfile(navigated.details.worker.id);
+	const navigated = await continuation.execute(
+		"profile-navigate",
+		{ id: compactedRecord.id, message: "/worker-profile-navigate" },
+		undefined,
+		undefined,
+		profileContext,
+	);
+	const navigatedIdValue = workerDetails(navigated).id;
+	assert.ok(isString(navigatedIdValue), JSON.stringify(navigated));
+	await waitForProfile(navigatedIdValue);
 	const navigatedContext = JSON.parse(readFileSync(`${promptPath("profile")}.context.json`, "utf8"));
 	assert.match(JSON.stringify(navigatedContext.messages), /PROFILE_POST_NAVIGATION_TASK/);
 	assert.equal(JSON.stringify(navigatedContext.messages).split("PROFILE_OPERATING_MODE").length - 1, 1);
 
 	const instructionPath = join(profileDir, "instructions.json");
 	writeFileSync(instructionPath, JSON.stringify({ cwd: trustedCwd, instructions: "PROFILE_INSTRUCTIONS_ONLY" }));
-	const instructionOnly = (await dispatch.execute(
-		"profile-instructions", { task: "/profile-check instruction-only", profile: instructionPath, model: "cwd-provider-profile-instructions/cwd-model-profile-instructions" }, undefined, undefined, profileContext,
-	)) as any;
-	const instructionRecord = await waitForProfile(instructionOnly.details.workers[0].id);
+	const instructionOnly = await dispatch.execute(
+		"profile-instructions",
+		{
+			task: "/profile-check instruction-only",
+			profile: instructionPath,
+			model: "cwd-provider-profile-instructions/cwd-model-profile-instructions",
+		},
+		undefined,
+		undefined,
+		profileContext,
+	);
+	const instructionIdValue = firstWorkerDetails(instructionOnly).id;
+	assert.ok(isString(instructionIdValue), JSON.stringify(instructionOnly));
+	const instructionRecord = await waitForProfile(instructionIdValue);
 	assert.deepEqual(instructionRecord.profile?.grounding, []);
 	const instructionContext = JSON.parse(readFileSync(`${promptPath("profile-instructions")}.context.json`, "utf8"));
 	assert.ok(!getCurrentSystemPrompt(instructionContext.messages).includes("PROFILE_INSTRUCTIONS_ONLY"));
 	assert.match(JSON.stringify(instructionContext.messages), /PROFILE_INSTRUCTIONS_ONLY/);
 	assert.match(readFileSync(join(agentDir, "profile-at-session-start.json"), "utf8"), /PROFILE_INSTRUCTIONS_ONLY/);
 
-	const replacementProfile = (await dispatch.execute(
-		"profile-replacement", { task: "/worker-new", profile: instructionPath, model: "cwd-provider-profile-replacement/cwd-model-profile-replacement" }, undefined, undefined, profileContext,
-	)) as any;
-	await waitForProfile(replacementProfile.details.workers[0].id);
+	const replacementProfile = await dispatch.execute(
+		"profile-replacement",
+		{
+			task: "/worker-new",
+			profile: instructionPath,
+			model: "cwd-provider-profile-replacement/cwd-model-profile-replacement",
+		},
+		undefined,
+		undefined,
+		profileContext,
+	);
+	const replacementIdValue = firstWorkerDetails(replacementProfile).id;
+	assert.ok(isString(replacementIdValue), JSON.stringify(replacementProfile));
+	await waitForProfile(replacementIdValue);
 	const replacementContext = JSON.parse(readFileSync(`${promptPath("profile-replacement")}.context.json`, "utf8"));
 	assert.match(JSON.stringify(replacementContext.messages), /replacement worker task/);
 	assert.equal(JSON.stringify(replacementContext.messages).split("PROFILE_INSTRUCTIONS_ONLY").length - 1, 1);
@@ -576,17 +684,20 @@ try {
 	// A profile-less dispatch derives a task-based label with the per-owner-session
 	// dispatch ordinal, seeded from the workers this session already persisted.
 	const fallbackOrdinal = sub.listWorkers().filter((worker) => worker.ownerSession === parentSessionId).length + 1;
-	const fallbackResult = (await dispatch.execute(
+	const fallbackResult = await dispatch.execute(
 		"profile-fallback",
 		{ task: "Fallback label check", model: "cwd-provider-fallback/cwd-model-fallback" },
 		undefined,
 		undefined,
 		profileContext,
-	)) as any;
-	const fallbackRecord = await waitForProfile(fallbackResult.details.workers[0].id);
+	);
+	const fallbackWorker = firstWorkerDetails(fallbackResult);
+	const fallbackIdValue = fallbackWorker.id;
+	assert.ok(isString(fallbackIdValue), JSON.stringify(fallbackResult));
+	const fallbackRecord = await waitForProfile(fallbackIdValue);
 	assert.equal(fallbackRecord.label, deriveWorkerLabel("Fallback label check", fallbackOrdinal));
 	assert.match(fallbackRecord.label ?? "", /^fallback-label-check#\d+$/);
-	assert.equal(fallbackResult.details.workers[0].label, fallbackRecord.label);
+	assert.equal(fallbackWorker.label, fallbackRecord.label);
 
 	sub.shutdownWorkerSession(parentSession);
 	parentSession = null;

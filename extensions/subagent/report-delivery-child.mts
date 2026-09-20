@@ -9,6 +9,7 @@
  * builds real Pi sessions with a faux provider.
  */
 import { strict as assert } from "node:assert";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -39,13 +40,14 @@ function gate(): { promise: Promise<void>; resolve: () => void } {
 }
 const reportGate = gate();
 const submitGate = gate();
-(globalThis as any)[Symbol.for("subagent-test.report-gates")] = {
+const globalHost = globalThis as Record<symbol, unknown>;
+globalHost[Symbol.for("subagent-test.report-gates")] = {
 	report: reportGate.promise,
 	submit: submitGate.promise,
 };
 // A fresh module joins existing live process state without replacing its maps.
 const retainedSurfaces = new Map();
-(globalThis as any)[Symbol.for("pi-subagent.worker-runtime-state")] = {
+globalHost[Symbol.for("pi-subagent.worker-runtime-state")] = {
 	workerSessionIds: new Set(),
 	submittedSessionIds: new Set(),
 	workerSurfaces: retainedSurfaces,
@@ -99,7 +101,24 @@ export default function (pi) {
 );
 writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [providerPath] }), "utf-8");
 
-let ownerSession: any = null;
+type AgentMessage = AgentSession["state"]["messages"][number];
+type CustomItem = Extract<AgentMessage, { role: "custom" }>;
+const isCustom = (message: AgentMessage): message is CustomItem => message.role === "custom";
+interface ReportDetails {
+	status: string;
+	id: string;
+	reportNumber: number;
+}
+const isReportDetails = (value: unknown): value is ReportDetails =>
+	typeof value === "object" &&
+	value !== null &&
+	"status" in value &&
+	typeof value.status === "string" &&
+	"id" in value &&
+	typeof value.id === "string" &&
+	"reportNumber" in value &&
+	typeof value.reportNumber === "number";
+let ownerSession: AgentSession | null = null;
 try {
 	const sub = await import("./index.ts");
 	assert.equal(sub.sharedWorkerState.workerSurfaces, retainedSurfaces);
@@ -127,19 +146,22 @@ try {
 		thinkingLevel: "off",
 		tools: ["subagent", "subagent_report"],
 	});
-	ownerSession = created.session;
-	await ownerSession.bindExtensions({ onError: captureRuntimeError });
+	const session = created.session;
+	ownerSession = session;
+	await session.bindExtensions({ onError: captureRuntimeError });
 
-	await ownerSession.prompt("OWNER_TASK", { expandPromptTemplates: false });
+	await session.prompt("OWNER_TASK", { expandPromptTemplates: false });
 	const reportMessage = () =>
-		ownerSession.messages.find((message: any) => message.role === "custom" && message.customType === "subagent_report");
-	assert.equal(ownerSession.isStreaming, false, "the parent is idle before reports are released");
+		session.messages.find(
+			(message): message is CustomItem => isCustom(message) && message.customType === "subagent_report",
+		);
+	assert.equal(session.isStreaming, false, "the parent is idle before reports are released");
 	assert.equal(reportMessage(), undefined);
 	const sawReport = () =>
-		ownerSession.messages.some(
-			(message: any) =>
+		session.messages.some(
+			(message) =>
 				message.role === "assistant" &&
-				message.content?.some((part: any) => part.type === "text" && part.text === "OWNER_SAW_REPORT"),
+				message.content.some((part) => part.type === "text" && part.text === "OWNER_SAW_REPORT"),
 		);
 	assert.equal(sawReport(), false);
 	reportGate.resolve();
@@ -165,7 +187,11 @@ try {
 	assert.ok(workers.every((record) => record.sharedContextId === sub.sharedContextSnapshotId(SNAPSHOT)));
 	assert.ok(workers.every((record) => record.sharedContextBytes === Buffer.byteLength(SNAPSHOT, "utf-8")));
 	assert.ok(workers.every((record) => !sub.sharedWorkerState.workerOwners.has(record.sessionId)));
-	const worker = workers.find((record) => record.id === reportMessage()?.details.id);
+	const report = reportMessage();
+	assert.ok(report, `the parent session must receive the report: ${JSON.stringify(session.messages)}`);
+	const reportDetails = report.details;
+	assert.ok(isReportDetails(reportDetails), "the report details carry status, id, and number");
+	const worker = workers.find((record) => record.id === reportDetails.id);
 	assert.ok(worker, "the dispatch must create the reported worker record");
 	assert.equal(worker.state, "done", JSON.stringify(worker));
 	assert.equal(
@@ -184,26 +210,24 @@ try {
 	// own context, and the worker kept working afterwards.
 	assert.match(providerLog, /worker-ack:true/);
 
-	const report = reportMessage();
-	assert.ok(report, `the parent session must receive the report: ${JSON.stringify(ownerSession.messages)}`);
 	const reportText = typeof report.content === "string" ? report.content : JSON.stringify(report.content);
 	assert.match(reportText, /INTERIM_ONE/);
 	assert.match(reportText, /interim report #1/);
 	assert.match(reportText, /worker-authored content begins/);
-	assert.equal(report.details.status, "sent_unconfirmed");
-	assert.equal(report.details.id, worker.id);
-	assert.equal(report.details.reportNumber, 1);
+	assert.equal(reportDetails.status, "sent_unconfirmed");
+	assert.equal(reportDetails.id, worker.id);
+	assert.equal(reportDetails.reportNumber, 1);
 
 	// The report is delivered into the parent's turn, so the parent's own model
 	// sees it.
-	assert.equal(sawReport(), true, JSON.stringify(ownerSession.messages));
+	assert.equal(sawReport(), true, JSON.stringify(session.messages));
 
 	// A settled worker keeps no reporting link, so a later report cannot route
 	// to a session that no longer owns the worker.
 	assert.equal(sub.sharedWorkerState.workerOwners.has(worker.sessionId), false);
 
-	const ownerSessionId = ownerSession.sessionManager.getSessionId();
-	sub.shutdownWorkerSession(ownerSession);
+	const ownerSessionId = session.sessionManager.getSessionId();
+	sub.shutdownWorkerSession(session);
 	ownerSession = null;
 	const cleanupDeadline = Date.now() + 5_000;
 	while (Date.now() < cleanupDeadline && sub.sharedWorkerState.reportSinks.has(ownerSessionId)) {
