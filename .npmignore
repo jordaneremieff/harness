@@ -3,6 +3,7 @@ node_modules
 
 # Local session state and verification output must never enter an install artifact.
 .pi/
+.evals/
 .DS_Store
 *.tgz
 *.zip
