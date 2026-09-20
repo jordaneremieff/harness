@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 
 import type { Message, Model } from "@earendil-works/pi-ai";
 import type { TranscriptEvent } from "vitest-evals";
+import { Type } from "typebox";
 import type { EvaluationCase } from "../types.mts";
 import {
 	collectPiExecutionErrors,
@@ -360,6 +361,74 @@ describe("Pi case preflight validation", () => {
 });
 
 describe("Pi evidence normalization", () => {
+	it("preserves system instructions and ordered prompt and tool changes", () => {
+		const tool = {
+			name: "inspect_file",
+			description: "Inspect a fixture file",
+			parameters: Type.Object({ path: Type.String() }),
+			constrainedSampling: { type: "json_schema" as const, strict: "require" as const },
+		};
+		const messages: Message[] = [
+			{
+				role: "system",
+				content: "Base instructions",
+				sections: { rules: "Original rules" },
+				toolsAdded: [tool],
+				timestamp: 1,
+			},
+			{ role: "user", content: "Question", timestamp: 2 },
+			{
+				role: "system",
+				content: [{ type: "text", text: "Additional instructions" }],
+				sections: { rules: null, safety: "Keep scope" },
+				toolsRemoved: [{ name: tool.name }],
+				timestamp: 3,
+			},
+			{ role: "system", content: "", toolsAdded: [], timestamp: 4 },
+			{
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: tool.name,
+				content: [{ type: "text", text: "Tool failed" }],
+				isError: true,
+				timestamp: 5,
+			},
+		];
+		const events = normalizePiTranscript(messages);
+		assert.deepEqual(events, [
+			{
+				type: "message",
+				role: "system",
+				content: "Base instructions",
+				metadata: {
+					timestamp: 1,
+					sections: { rules: "Original rules" },
+					toolsAdded: JSON.parse(JSON.stringify([tool])),
+				},
+			},
+			{ type: "message", role: "user", content: "Question" },
+			{
+				type: "message",
+				role: "system",
+				content: "Additional instructions",
+				metadata: {
+					timestamp: 3,
+					sections: { rules: null, safety: "Keep scope" },
+					toolsRemoved: [{ name: tool.name }],
+				},
+			},
+			{ type: "message", role: "system", content: "", metadata: { timestamp: 4, toolsAdded: [] } },
+			{
+				type: "tool_result",
+				toolCallId: "call-1",
+				name: tool.name,
+				content: "Tool failed",
+				error: { message: "Tool failed" },
+			},
+		]);
+		assert.deepEqual(JSON.parse(JSON.stringify(events)), events);
+	});
+
 	it("keeps transcript order and provider usage metadata", () => {
 		const messages: Message[] = [
 			{ role: "user", content: "question", timestamp: 1 },
@@ -603,17 +672,22 @@ describe("Pi evidence normalization", () => {
 			{ role: "user", content: "live prompt", timestamp: 2 },
 			assistantMessage([{ type: "text", text: "done" }], 3),
 		];
-		const scored = scorePostSeedPiTranscript(allMessages, 1, [
-			{ id: "live-read", type: "tool-call", config: { name: "read" } },
-		]);
-		assert.equal(scored.output, "done");
-		assert.deepEqual(scored.checks, [
-			{
-				checkId: "live-read",
-				type: "tool-call",
-				passed: false,
-				message: 'No matching tool call to "read" appears.',
-			},
-		]);
+		const system: Message = { role: "system", content: "Instructions", timestamp: 0 };
+		const delta: Message = { role: "system", content: "", toolsRemoved: [{ name: "read" }], timestamp: 2 };
+		for (const messages of [allMessages, [system, allMessages[0], delta, ...allMessages.slice(1)]]) {
+			const scored = scorePostSeedPiTranscript(messages, 1, [
+				{ id: "live-read", type: "tool-call", config: { name: "read" } },
+			]);
+			assert.equal(scored.output, "done");
+			assert.deepEqual(scored.checks, [
+				{
+					checkId: "live-read",
+					type: "tool-call",
+					passed: false,
+					message: 'No matching tool call to "read" appears.',
+				},
+			]);
+			if (messages[0].role === "system") assert.equal(scored.newMessages[0], delta);
+		}
 	});
 });

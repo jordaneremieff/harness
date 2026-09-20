@@ -8,6 +8,7 @@ import {
 	createAssistantMessageEventStream,
 	InMemoryCredentialStore,
 	type AssistantMessage,
+	type JsonObject,
 	type ToolCall,
 } from "@earendil-works/pi-ai";
 import {
@@ -75,7 +76,7 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 		events.end();
 		return events;
 	};
-	async function call(name: string, args: Record<string, unknown>, isError = false) {
+	async function call(name: string, args: JsonObject, isError = false) {
 		assert.ok(session);
 		const id = `fixture-${++sequence}`;
 		pending = { type: "toolCall", id, name, arguments: args };
@@ -85,7 +86,7 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 		assert.equal(result.isError, isError, JSON.stringify(result.content));
 		return result;
 	}
-	async function data(name: string, args: Record<string, unknown>) {
+	async function data(name: string, args: JsonObject) {
 		const result = await call(name, args);
 		return JSON.parse(JSON.stringify(result.details));
 	}

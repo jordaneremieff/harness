@@ -225,6 +225,20 @@ function textContent(content: unknown): string {
 export function normalizePiTranscript(messages: Message[]): TranscriptEvent[] {
 	const events: TranscriptEvent[] = [];
 	for (const message of messages) {
+		if (message.role === "system") {
+			events.push({
+				type: "message",
+				role: "system",
+				content: textContent(message.content),
+				metadata: {
+					timestamp: message.timestamp,
+					...(message.sections === undefined ? {} : { sections: jsonValue(message.sections) }),
+					...(message.toolsAdded === undefined ? {} : { toolsAdded: jsonValue(message.toolsAdded) }),
+					...(message.toolsRemoved === undefined ? {} : { toolsRemoved: jsonValue(message.toolsRemoved) }),
+				},
+			});
+			continue;
+		}
 		if (message.role === "user") {
 			events.push({ type: "message", role: "user", content: textContent(message.content) });
 			continue;
@@ -574,7 +588,13 @@ export function scorePostSeedPiTranscript(
 	checks: EvaluationCheck[],
 	caseId = "unscoped",
 ) {
-	const newMessages = allMessages.slice(seedMessageCount);
+	let start = 0;
+	let remainingSeeds = seedMessageCount;
+	while (start < allMessages.length && remainingSeeds > 0) {
+		if (allMessages[start].role !== "system") remainingSeeds--;
+		start++;
+	}
+	const newMessages = allMessages.slice(start);
 	const assistant = lastAssistant(newMessages);
 	const output = assistant ? textContent(assistant.content) : "";
 	const events = normalizePiTranscript(newMessages);
@@ -769,7 +789,10 @@ async function runPiSubject(args: Parameters<SubjectAdapter["run"]>[0]) {
 
 		const allMessages = session.messages.filter(
 			(message): message is Message =>
-				message.role === "user" || message.role === "assistant" || message.role === "toolResult",
+				message.role === "system" ||
+				message.role === "user" ||
+				message.role === "assistant" ||
+				message.role === "toolResult",
 		);
 		const scoredTranscript = scorePostSeedPiTranscript(
 			allMessages,
