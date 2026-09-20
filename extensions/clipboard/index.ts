@@ -1,10 +1,10 @@
 /** macOS clipboard tools, stable history retrieval, and the /clipboard overlay. */
 
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { ClipboardPanel } from "./panel.ts";
 import { pbCopy, pbPaste } from "./pb.ts";
-import { appendEntry, makeEntry, readEntries, resolveClipboardDir, type ClipboardEntry } from "./store.ts";
+import { appendEntry, type ClipboardEntry, makeEntry, readEntries, resolveClipboardDir } from "./store.ts";
 import { boundedOutput, sanitizeTerminalText } from "./text.ts";
 
 const PAGE_CHARS = 8000;
@@ -197,9 +197,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	async function findEntry(id: string, date: string | undefined, toolName: string): Promise<ClipboardEntry> {
+	async function findEntry(
+		id: string,
+		date: string | undefined,
+		toolName: string,
+		signal?: AbortSignal,
+	): Promise<ClipboardEntry> {
 		if (!id) throw new Error(`${toolName} requires a stable id from clipboard_list`);
-		const entry = (await readEntries(storeDir(), { date, id }))[0];
+		const entry = (await readEntries(storeDir(), { date, id, signal }))[0];
 		if (!entry) throw new Error(`no clipboard entry with id "${safeLine(id)}"${date ? ` for ${date}` : ""}`);
 		return entry;
 	}
@@ -218,7 +223,7 @@ export default function (pi: ExtensionAPI) {
 			if (signal?.aborted) throw new Error("clipboard_list cancelled");
 			const scope = params.date ? ` for ${params.date}` : "";
 			const limit = params.limit ?? 10;
-			const entries = await readEntries(storeDir(), { date: params.date, limit: limit + 1, contentChars: 0 });
+			const entries = await readEntries(storeDir(), { date: params.date, limit: limit + 1, contentChars: 0, signal });
 			const hasMore = entries.length > limit;
 			const shown = entries.slice(0, limit);
 			if (shown.length === 0) {
@@ -258,7 +263,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: GetParams,
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("clipboard_get cancelled");
-			const entry = await findEntry(params.id, params.date, "clipboard_get");
+			const entry = await findEntry(params.id, params.date, "clipboard_get", signal);
 			const offset = params.offset ?? 0;
 			const totalCharacters = entry.chars;
 			if (offset >= totalCharacters && totalCharacters > 0) {
@@ -297,7 +302,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: RestoreParams,
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("clipboard_restore cancelled");
-			const entry = await findEntry(params.id, params.date, "clipboard_restore");
+			const entry = await findEntry(params.id, params.date, "clipboard_restore", signal);
 			try {
 				// The signal must reach the child: without it an abort waits out the
 				// 30s pbcopy timeout instead of rejecting promptly.
@@ -325,7 +330,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("clipboard", {
 		description: "Browse clipboard history in an interactive overlay (filter, preview, restore)",
 		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) {
+			if (ctx.mode !== "tui") {
 				try {
 					const entries = await readEntries(storeDir(), { limit: 5, contentChars: 0 });
 					ctx.ui.notify(
@@ -364,12 +369,12 @@ export default function (pi: ExtensionAPI) {
 						getMaxRows: () => Math.max(1, tui.terminal.rows - 2),
 						hasMore,
 						done,
-						onRestore: async (entry) => {
+						onRestore: async (entry, signal) => {
 							let archived: ClipboardEntry | undefined;
 							try {
-								archived = (await readEntries(storeDir(), { id: entry.id }))[0];
+								archived = (await readEntries(storeDir(), { id: entry.id, signal }))[0];
 								if (!archived) return { ok: false, error: `archive entry ${entry.id} is no longer available` };
-								await pbCopy(archived.content);
+								await pbCopy(archived.content, signal);
 							} catch (error) {
 								return { ok: false, error: error instanceof Error ? error.message : String(error) };
 							}

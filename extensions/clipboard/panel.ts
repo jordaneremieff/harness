@@ -19,7 +19,7 @@ interface PanelDeps {
 	getMaxRows: () => number;
 	hasMore?: boolean;
 	done: (result: PanelResult) => void;
-	onRestore: (entry: ClipboardEntry) => Promise<RestoreOutcome>;
+	onRestore: (entry: ClipboardEntry, signal: AbortSignal) => Promise<RestoreOutcome>;
 }
 
 interface Layout {
@@ -78,6 +78,8 @@ export class ClipboardPanel {
 	private previewScroll = 0;
 	private flash: string | null = null;
 	private restoring = false;
+	private restoreController?: AbortController;
+	private disposed = false;
 	private version = 0;
 	private lastWidth = 80;
 	private cachedWidth = -1;
@@ -126,7 +128,11 @@ export class ClipboardPanel {
 	}
 
 	handleInput(data: string): void {
-		if (this.restoring) return;
+		if (this.disposed) return;
+		if (this.restoring) {
+			if (matchesKey(data, "escape")) this.restoreController?.abort();
+			return;
+		}
 		const entries = this.filtered;
 		if (matchesKey(data, "escape")) {
 			if (this.filter) {
@@ -177,15 +183,19 @@ export class ClipboardPanel {
 			const entry = entries[this.selected];
 			if (!entry) return;
 			this.restoring = true;
+			const controller = new AbortController();
+			this.restoreController = controller;
 			this.bump();
 			void (async () => {
 				let outcome: RestoreOutcome;
 				try {
-					outcome = await this.deps.onRestore(entry);
+					outcome = await this.deps.onRestore(entry, controller.signal);
 				} catch (error) {
 					outcome = { ok: false, error: error instanceof Error ? error.message : String(error) };
 				}
+				this.restoreController = undefined;
 				this.restoring = false;
+				if (this.disposed) return;
 				if ("error" in outcome) {
 					this.flash = `restore failed: ${outcome.error}`;
 					this.bump();
@@ -296,7 +306,7 @@ export class ClipboardPanel {
 			const position =
 				entries.length > 0 ? `${this.selected + 1}/${entries.length}${this.deps.hasMore ? "+" : ""}` : "0/0";
 			const hint = this.restoring
-				? " restoring…"
+				? " restoring… · esc cancel"
 				: this.flash
 					? ` esc close · ${safeLine(this.flash)}`
 					: ` enter restore · esc close · ←→ preview · ↑↓ select · ${position}`;
@@ -308,6 +318,11 @@ export class ClipboardPanel {
 		this.cachedVersion = this.version;
 		this.cachedLines = lines.slice(0, layout.total);
 		return this.cachedLines;
+	}
+
+	dispose(): void {
+		this.disposed = true;
+		this.restoreController?.abort();
 	}
 
 	invalidate(): void {

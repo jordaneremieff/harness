@@ -2,7 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { constants, type Dirent } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, stat, type FileHandle } from "node:fs/promises";
+import { chmod, type FileHandle, lstat, mkdir, open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -124,7 +124,11 @@ export async function appendEntry(dir: string, entry: ClipboardEntry): Promise<s
 		const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | noFollow, 0o600);
 		try {
 			await handle.chmod(0o600);
-			await handle.appendFile(serialized, "utf8");
+			// One O_APPEND write keeps concurrent records contiguous. appendFile
+			// splits large inputs across writes, which can interleave with peers.
+			const buffer = Buffer.from(serialized, "utf8");
+			const { bytesWritten } = await handle.write(buffer, 0, buffer.length, null);
+			if (bytesWritten !== buffer.length) throw new Error("incomplete clipboard archive append");
 		} finally {
 			await handle.close();
 		}
@@ -135,6 +139,8 @@ export async function appendEntry(dir: string, entry: ClipboardEntry): Promise<s
 }
 
 interface ReadOptions {
+	/** Stop archive traversal when the caller cancels. */
+	signal?: AbortSignal;
 	/** YYYY-MM-DD (local). When set, only that day's file is read. */
 	date?: string;
 	/** Max entries returned after newest-first ordering (hard maximum 1000). */
@@ -184,11 +190,12 @@ async function openArchive(path: string): Promise<{ handle: FileHandle; size: nu
 	}
 }
 
-async function physicalLineNumber(handle: FileHandle, startOffset: number): Promise<number> {
+async function physicalLineNumber(handle: FileHandle, startOffset: number, signal?: AbortSignal): Promise<number> {
 	const buffer = Buffer.alloc(READ_CHUNK_BYTES);
 	let position = 0;
 	let newlines = 0;
 	while (position < startOffset) {
+		signal?.throwIfAborted();
 		const wanted = Math.min(buffer.length, startOffset - position);
 		const { bytesRead } = await handle.read(buffer, 0, wanted, position);
 		if (bytesRead === 0) break;
@@ -205,7 +212,7 @@ interface ReverseLine {
 }
 
 /** Iterate physical JSONL records from the end with bounded per-record memory. */
-async function* reverseLines(handle: FileHandle, size: number): AsyncGenerator<ReverseLine> {
+async function* reverseLines(handle: FileHandle, size: number, signal?: AbortSignal): AsyncGenerator<ReverseLine> {
 	let position = size;
 	let reverseIndex = 0;
 	let parts: Buffer[] = [];
@@ -228,11 +235,13 @@ async function* reverseLines(handle: FileHandle, size: number): AsyncGenerator<R
 	};
 
 	while (position > 0) {
+		signal?.throwIfAborted();
 		const wanted = Math.min(READ_CHUNK_BYTES, position);
 		position -= wanted;
 		const buffer = Buffer.allocUnsafe(wanted);
 		let bytesRead = 0;
 		while (bytesRead < wanted) {
+			signal?.throwIfAborted();
 			const result = await handle.read(buffer, bytesRead, wanted - bytesRead, position + bytesRead);
 			if (result.bytesRead === 0) break;
 			bytesRead += result.bytesRead;
@@ -267,6 +276,7 @@ function unusedId(fallbackId: string, seenIds: Set<string>): string {
  * as soon as the newest matching record is found.
  */
 export async function readEntries(dir: string, options: ReadOptions = {}): Promise<ClipboardEntry[]> {
+	options.signal?.throwIfAborted();
 	if (!(await ensurePrivateDirectory(dir, false))) return [];
 	let dirents: Dirent[];
 	try {
@@ -288,6 +298,7 @@ export async function readEntries(dir: string, options: ReadOptions = {}): Promi
 	const entries: ClipboardEntry[] = [];
 	const seenIds = new Set<string>();
 	for (const file of files) {
+		options.signal?.throwIfAborted();
 		const path = join(dir, file);
 		let opened: { handle: FileHandle; size: number } | undefined;
 		try {
@@ -302,12 +313,13 @@ export async function readEntries(dir: string, options: ReadOptions = {}): Promi
 			let anchorReverseIndex = 0;
 			const numberFor = async (line: ReverseLine): Promise<number> => {
 				if (anchorPhysicalLine === undefined) {
-					anchorPhysicalLine = await physicalLineNumber(opened.handle, line.startOffset);
+					anchorPhysicalLine = await physicalLineNumber(opened.handle, line.startOffset, options.signal);
 					anchorReverseIndex = line.reverseIndex;
 				}
 				return anchorPhysicalLine - (line.reverseIndex - anchorReverseIndex);
 			};
-			for await (const line of reverseLines(opened.handle, opened.size)) {
+			for await (const line of reverseLines(opened.handle, opened.size, options.signal)) {
+				options.signal?.throwIfAborted();
 				if (!line.text?.trim()) continue;
 				try {
 					const parsed = JSON.parse(line.text) as unknown;
@@ -333,6 +345,7 @@ export async function readEntries(dir: string, options: ReadOptions = {}): Promi
 					entries.push(entry);
 					if (entries.length >= requestedLimit) return entries;
 				} catch {
+					options.signal?.throwIfAborted();
 					// A damaged record must not hide valid recovery data around it.
 				}
 			}

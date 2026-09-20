@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { ClipboardPanel, type RestoreOutcome } from "./panel.ts";
-import { makeEntry, type ClipboardEntry } from "./store.ts";
+import { type ClipboardEntry, makeEntry } from "./store.ts";
 
 const theme: never = {
 	fg: (_color: string, text: string) => text,
@@ -14,7 +14,7 @@ const theme: never = {
 
 function rig(
 	entries: ClipboardEntry[],
-	onRestore?: (entry: ClipboardEntry) => Promise<RestoreOutcome>,
+	onRestore?: (entry: ClipboardEntry, signal: AbortSignal) => Promise<RestoreOutcome>,
 	rows = 20,
 	hasMore = false,
 ) {
@@ -119,6 +119,59 @@ describe("ClipboardPanel", () => {
 		assert.equal(calls.restores.length, 1);
 		assert.equal(calls.restores[0].label, "long");
 		assert.deepEqual(calls.done, { restored: calls.restores[0] });
+	});
+
+	it("cancels an active restore with Escape and keeps the failure visible", async () => {
+		let signal: AbortSignal | undefined;
+		const { panel, calls } = rig(sampleEntries(), async (_entry, current) => {
+			signal = current;
+			return new Promise((resolve) => {
+				current.addEventListener("abort", () => resolve({ ok: false, error: "cancelled" }), { once: true });
+			});
+		});
+		panel.handleInput("\r");
+		assert.match(panel.render(72).at(-1) ?? "", /esc cancel/);
+		panel.handleInput("\x1b");
+		await flush();
+		assert.equal(signal?.aborted, true);
+		assert.equal(calls.done, undefined);
+		assert.match(panel.render(72).join("\n"), /cancelled/);
+	});
+
+	it("disposes active work and suppresses late callbacks", async () => {
+		let settle!: (outcome: RestoreOutcome) => void;
+		let signal: AbortSignal | undefined;
+		const { panel, calls } = rig(sampleEntries(), async (_entry, current) => {
+			signal = current;
+			return new Promise((resolve) => {
+				settle = resolve;
+			});
+		});
+		panel.handleInput("\r");
+		panel.dispose();
+		panel.dispose();
+		assert.equal(signal?.aborted, true);
+		const renders = calls.renders;
+		settle({ ok: true });
+		await flush();
+		assert.equal(calls.done, undefined);
+		assert.equal(calls.renders, renders);
+	});
+
+	it("reports a completed copy even if cancellation arrives during archival", async () => {
+		let settle!: (outcome: RestoreOutcome) => void;
+		const { panel, calls } = rig(
+			sampleEntries(),
+			async () =>
+				new Promise((resolve) => {
+					settle = resolve;
+				}),
+		);
+		panel.handleInput("\r");
+		panel.handleInput("\x1b");
+		settle({ ok: true, warning: "archive unavailable" });
+		await flush();
+		assert.deepEqual(calls.done, { restored: sampleEntries()[0], warning: "archive unavailable" });
 	});
 
 	it("closes as restored with a warning when only archival fails", async () => {

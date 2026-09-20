@@ -43,7 +43,7 @@ before(async () => {
 	const pbpaste = join(bin, "pbpaste");
 	await writeFile(
 		pbcopy,
-		'#!/bin/sh\nif [ "$FAKE_PBCOPY_FAIL" = "1" ]; then exit 7; fi\nif [ "$FAKE_PBCOPY_SLOW" = "1" ]; then sleep 20; fi\ncat > "$FAKE_CLIPBOARD_FILE"\n',
+		'#!/bin/sh\nif [ "$FAKE_PBCOPY_FAIL" = "1" ]; then exit 7; fi\nif [ "$FAKE_PBCOPY_SLOW" = "1" ]; then exec sleep 20; fi\ncat > "$FAKE_CLIPBOARD_FILE"\n',
 	);
 	await writeFile(pbpaste, '#!/bin/sh\ncat "$FAKE_CLIPBOARD_FILE" 2>/dev/null || true\n');
 	await chmod(pbcopy, 0o755);
@@ -146,6 +146,36 @@ describe("clipboard entrypoint", () => {
 		assert.match(result.content[0].text, /offset 8000/);
 	});
 
+	it("uses a useful RPC notification instead of the TUI-only overlay", async () => {
+		const { commands } = registry();
+		const notifications: string[] = [];
+		await commands.get("clipboard").handler("", {
+			hasUI: true,
+			mode: "rpc",
+			ui: {
+				notify: (message: string) => notifications.push(message),
+				custom: () => assert.fail("RPC must not open the terminal overlay"),
+			},
+		});
+		assert.ok(notifications.some((message) => message.includes("clipboard_list")));
+	});
+
+	it("contains early stdin closure for large failed copies without a false archive entry", async () => {
+		const { tools } = registry();
+		const before = await execute(tools.get("clipboard_list"), { limit: 50 });
+		process.env.FAKE_PBCOPY_FAIL = "1";
+		try {
+			await assert.rejects(
+				execute(tools.get("clipboard_copy"), { content: "x".repeat(8 * 1024 * 1024) }),
+				/pbcopy failed/,
+			);
+		} finally {
+			delete process.env.FAKE_PBCOPY_FAIL;
+		}
+		const after = await execute(tools.get("clipboard_list"), { limit: 50 });
+		assert.deepEqual(after.details.ids, before.details.ids);
+	});
+
 	it("restores the full archived entry from a bounded browser preview", async () => {
 		const { tools, commands } = registry();
 		const full = `${"preview ".repeat(5000)}FULL_TAIL`;
@@ -153,6 +183,7 @@ describe("clipboard entrypoint", () => {
 		const notifications: string[] = [];
 		const ctx: any = {
 			hasUI: true,
+			mode: "tui",
 			ui: {
 				notify: (message: string) => notifications.push(message),
 				custom: async (factory: any) =>

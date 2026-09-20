@@ -19,9 +19,15 @@ const PB_TIMEOUT_MS = 30_000;
 
 export async function pbCopy(content: string, signal?: AbortSignal): Promise<void> {
 	return new Promise<void>((resolve, reject) => {
+		let inputError: Error | undefined;
 		const child = execFile("pbcopy", [], { encoding: "utf8", timeout: PB_TIMEOUT_MS, signal }, (error) => {
-			if (error) return reject(error);
+			if (error || inputError) return reject(error ?? inputError);
 			resolve();
+		});
+		// An early child exit can close stdin before a large write completes.
+		child.stdin?.on("error", (error) => {
+			inputError = error;
+			child.kill("SIGKILL");
 		});
 		child.stdin?.end(content, "utf8");
 	});

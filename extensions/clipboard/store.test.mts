@@ -61,6 +61,19 @@ describe("appendEntry + readEntries", () => {
 		assert.equal(mode, 0o600);
 	});
 
+	it("preserves complete records during concurrent large appends", async () => {
+		const concurrentDir = join(dir, "concurrent-store");
+		const entries = ["a", "b", "c"].map((char) => makeEntry(char.repeat(1024 * 1024)));
+		assert.deepEqual(await Promise.all(entries.map((entry) => appendEntry(concurrentDir, entry))), [null, null, null]);
+		const found = await readEntries(concurrentDir, { contentChars: Number.POSITIVE_INFINITY });
+		assert.equal(found.length, entries.length);
+		for (const entry of entries)
+			assert.deepEqual(
+				found.find((candidate) => candidate.id === entry.id),
+				entry,
+			);
+	});
+
 	it("respects limit and skips syntactically or structurally malformed records", async () => {
 		const path = join(dir, `${localDate(new Date("2026-07-24T10:00:00Z"))}.jsonl`);
 		await writeFile(path, '{"broken"\n{"timestamp":42,"content":false}\n', { flag: "a" });
@@ -139,6 +152,24 @@ describe("appendEntry + readEntries", () => {
 		const linked = join(dir, "linked-store");
 		await symlink(dir, linked);
 		await assert.rejects(readEntries(linked), /not a regular directory/);
+	});
+
+	it("rejects cancellation before access and during chunk traversal", async () => {
+		const cancelled = new AbortController();
+		cancelled.abort();
+		await assert.rejects(readEntries(dir, { signal: cancelled.signal }), { name: "AbortError" });
+
+		const controller = new AbortController();
+		let checks = 0;
+		Object.defineProperty(controller.signal, "throwIfAborted", {
+			value() {
+				if (++checks === 5) controller.abort();
+				AbortSignal.prototype.throwIfAborted.call(controller.signal);
+			},
+		});
+		await assert.rejects(readEntries(dir, { signal: controller.signal }), { name: "AbortError" });
+		assert.equal(checks, 5);
+		assert.ok((await readEntries(dir)).length > 0, "cancellation leaves archive data intact");
 	});
 
 	it("scopes to a single date and reports empties", async () => {

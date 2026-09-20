@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, boundedOutput, sanitizeTerminalText } from "./text.ts";
+import { boundedOutput, MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, sanitizeTerminalText } from "./text.ts";
 
 describe("clipboard display safety", () => {
 	it("escapes terminal and bidi controls without flattening real lines", () => {

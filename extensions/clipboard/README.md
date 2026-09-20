@@ -23,13 +23,15 @@ History is one append-only JSONL file per local calendar day at `<agentDir>/clip
 
 - Each new entry has a UUID. Legacy records receive deterministic ids based on source date and physical line number.
 - Directory and file modes are re-enforced as `0700` and `0600` on use.
-- Appends use `O_APPEND` and `O_NOFOLLOW` where available.
+- Appends use one bounded `O_APPEND` write per record and `O_NOFOLLOW` where available. Concurrent large appends do not interleave chunks. Short writes return an archive warning.
 - Reads reject a symlinked store, ignore symlinked archives, skip malformed records, and recompute derived metadata from validated content.
-- Readers scan files and records newest-first in bounded chunks. Lists stop after the requested page and retain no body content; the browser retains at most 32,768 characters per entry. Stable-id lookup refetches the full selected record without materializing a whole daily archive.
+- Readers scan files and records newest-first in bounded chunks and check cancellation between reads and records. Lists stop after the requested page and retain no body content; the browser retains at most 32,768 characters per entry. Stable-id lookup refetches the full selected record without materializing a whole daily archive.
 - Individual JSONL records are capped at 64 MiB. This contains malformed or unexpectedly large historical data while accommodating the tool's 8 MiB input limit and JSON escaping.
 - Restores append a new `(restored)` entry because they are real clipboard writes.
 
-A successful `pbcopy` followed by an archive failure is reported as a successful copy or restore with a warning. A `pbcopy` failure remains an error and does not append a false history event.
+A successful `pbcopy` followed by an archive failure is reported as a successful copy or restore with a warning. A `pbcopy` failure remains an error and does not append a false history event. Archival continues after a confirmed copy even if cancellation arrives afterward.
+
+Clipboard subprocesses use asynchronous, shell-free I/O with a 30-second timeout and caller cancellation. Early stdin closure rejects the copy instead of raising an unhandled stream error. Pi's native `copyToClipboard(text)` helper has no cancellation parameter and emits OSC 52 in remote sessions. This extension retains its subprocess adapter to preserve cancellation, confirmed local-copy outcomes, and clean RPC output.
 
 ## Retention and deletion
 
@@ -39,7 +41,9 @@ Entry-level deletion would require coordinated rewrites or tombstones across pro
 
 ## Browser behavior
 
-The overlay loads the newest 200 entries and marks the count with `+` when older history exists. It supports live filtering across labels, ids, and loaded body prefixes. Up/Down selects entries, Left/Right scrolls the preview by a page, Enter restores, and Escape clears or closes. A truncated preview is labeled. Restore resolves the selected stable id again and writes the full archived content, so preview bounds never truncate the clipboard result.
+The overlay is available in TUI mode. RPC receives a notification that directs the caller to `clipboard_list`, rather than attempting a terminal-only custom component.
+
+The overlay loads the newest 200 entries and marks the count with `+` when older history exists. It supports live filtering across labels, ids, and loaded body prefixes. Up/Down selects entries, Left/Right scrolls the preview by a page, Enter restores, and Escape clears or closes. Escape cancels an active restore. Disposal also cancels active work and suppresses late component callbacks. A completed copy remains a success if cancellation arrives only during archival. A truncated preview is labeled. Restore resolves the selected stable id again and writes the full archived content, so preview bounds never truncate the clipboard result.
 
 The component is the sole height authority. It reads the host TUI row count and the overlay host does not impose `maxHeight`, which prevents Pi from slicing away the footer. Every rendered row paints the full width inside a background-backed frame. The footer is always the final row, including `40x10` and `50x12` terminals. Labels, previews, content, and error text have terminal and bidi controls escaped before custom rendering.
 
@@ -55,16 +59,8 @@ The component is the sole height authority. It reads the host TUI row count and 
 ## Verification
 
 ```bash
+node --test extensions/clipboard/*.test.mts
 npm test
-# full suite passes; clipboard coverage in extensions/clipboard/*.test.mts
-
-pi -e . --mode rpc --no-session --offline
 ```
 
-Verified with:
-
-- mocked subprocess integration for copy, stable-id restore after a newer append shifted indexes, paging, tool error signaling, and failed-write clipboard preservation;
-- real PTY captures at `120x40`, `80x24`, `60x16`, `50x12`, and `40x10`;
-- live filtering and successful restore;
-- a live PTY with a failing `pbcopy` shim, where the error stayed in the overlay and the pre-existing clipboard fixture remained unchanged;
-- isolated tarball installation and package loading.
+The focused suite covers synthetic subprocess copy and restore, cancellation, early stdin closure, stable-id recovery, bounded pages, concurrent large appends, private storage, RPC command routing, and browser behavior. Browser tests drive keyboard input, narrow layouts, disposal, and late results with controlled I/O. They do not read or change the operator's system clipboard.
