@@ -356,28 +356,12 @@ function settingsSource(path: string, settingsDir: string): string {
 	return value.startsWith(".") ? value : `./${value}`;
 }
 
-export function reconcilePackageEntries(
+function activePackageNames(
 	packages: readonly unknown[],
+	mainEntry: unknown,
 	options: ReconcilePackageOptions,
-): { packages: unknown[]; activeNames: string[] } {
-	const {
-		settingsDir,
-		repoRoot,
-		worktreeRoot,
-		mainExtensionNames,
-		entrypoints,
-		forceActive = [],
-		forceInactive = [],
-	} = options;
-
-	const mainIndex = packages.findIndex((entry) => {
-		const source = packageSource(entry);
-		return resolveLocalSource(source, settingsDir) === repoRoot;
-	});
-	if (mainIndex < 0) {
-		throw new Error(`Pi settings do not contain the harness package: ${repoRoot}`);
-	}
-
+): Set<string> {
+	const { settingsDir, worktreeRoot, mainExtensionNames, entrypoints, forceActive = [], forceInactive = [] } = options;
 	const active = new Set(forceActive);
 	for (const entry of packages) {
 		const source = packageSource(entry);
@@ -386,7 +370,6 @@ export function reconcilePackageEntries(
 		if (name) active.add(name);
 	}
 
-	const mainEntry = packages[mainIndex];
 	const mainLoadsAll = typeof mainEntry === "string" || (isRecord(mainEntry) && mainEntry.extensions === undefined);
 	if (mainLoadsAll) {
 		for (const name of mainExtensionNames) active.add(name);
@@ -399,14 +382,25 @@ export function reconcilePackageEntries(
 		}
 	}
 
-	let normalizedMain: Record<string, unknown>;
-	if (typeof mainEntry === "string") {
-		normalizedMain = { source: mainEntry, extensions: [] };
-	} else if (isRecord(mainEntry)) {
-		normalizedMain = { ...mainEntry, extensions: [] };
-	} else {
-		throw new Error(`Invalid harness package entry: ${String(mainEntry)}`);
-	}
+	return active;
+}
+
+function mainPackageWithoutExtensions(entry: unknown): Record<string, unknown> {
+	if (typeof entry === "string") return { source: entry, extensions: [] };
+	if (isRecord(entry)) return { ...entry, extensions: [] };
+	throw new Error(`Invalid harness package entry: ${String(entry)}`);
+}
+
+export function reconcilePackageEntries(
+	packages: readonly unknown[],
+	options: ReconcilePackageOptions,
+): { packages: unknown[]; activeNames: string[] } {
+	const { settingsDir, repoRoot, worktreeRoot, entrypoints } = options;
+	const mainIndex = packages.findIndex((entry) => resolveLocalSource(packageSource(entry), settingsDir) === repoRoot);
+	if (mainIndex < 0) throw new Error(`Pi settings do not contain the harness package: ${repoRoot}`);
+	const mainEntry = packages[mainIndex];
+	const active = activePackageNames(packages, mainEntry, options);
+	const normalizedMain = mainPackageWithoutExtensions(mainEntry);
 	const managed = [...active].sort().map((name) => {
 		const entrypoint = entrypoints.get(name);
 		if (entrypoint === undefined) {
@@ -431,6 +425,42 @@ export function reconcilePackageEntries(
 	return { packages: next, activeNames: [...active].sort() };
 }
 
+function ensureSliceWorktree(
+	repoRoot: string,
+	worktreeRoot: string,
+	branch: string,
+	byBranch: ReadonlyMap<string, string>,
+	nameOwners: Map<string, string>,
+): WorktreeRecord {
+	const kind = sliceKindForBranch(branch);
+	if (!kind) throw new Error(`branch has no recognized slice kind: ${branch}`);
+	const name = branch.slice(kind.branchPrefix.length);
+	if (!sliceNamePattern.test(name)) {
+		throw new Error(`slice name must use lowercase letters, numbers, and hyphens: ${name}`);
+	}
+	const owner = nameOwners.get(name);
+	if (owner !== undefined && owner !== branch) {
+		throw new Error(`worktree name collision across kinds: ${name} (${owner} and ${branch})`);
+	}
+	nameOwners.set(name, branch);
+	let path = byBranch.get(`refs/heads/${branch}`);
+	if (!path) {
+		path = join(worktreeRoot, name);
+		if (existsSync(path) && readdirSync(path).length > 0) {
+			throw new Error(`expected worktree path is not empty: ${path}`);
+		}
+		git(repoRoot, ["-c", "core.hooksPath=/dev/null", "worktree", "add", path, branch], { inherit: true });
+	}
+	return {
+		kind: kind.name,
+		name,
+		branch,
+		path,
+		entrypoint: kind.entrypoint(path, name),
+		devRecordRoot: kind.devRecordRoot(name),
+	};
+}
+
 function repositoryState(repoRoot: string, worktreeRoot: string): { records: WorktreeRecord[]; problems: string[] } {
 	const problems: string[] = [];
 	const branches: string[] = [];
@@ -453,34 +483,7 @@ function repositoryState(repoRoot: string, worktreeRoot: string): { records: Wor
 	mkdirSync(worktreeRoot, { recursive: true });
 	for (const branch of branches) {
 		try {
-			const kind = sliceKindForBranch(branch);
-			if (!kind) throw new Error(`branch has no recognized slice kind: ${branch}`);
-			const name = branch.slice(kind.branchPrefix.length);
-			if (!sliceNamePattern.test(name)) {
-				throw new Error(`slice name must use lowercase letters, numbers, and hyphens: ${name}`);
-			}
-			const owner = nameOwners.get(name);
-			if (owner !== undefined && owner !== branch) {
-				throw new Error(`worktree name collision across kinds: ${name} (${owner} and ${branch})`);
-			}
-			nameOwners.set(name, branch);
-			const ref = `refs/heads/${branch}`;
-			let path = byBranch.get(ref);
-			if (!path) {
-				path = join(worktreeRoot, name);
-				if (existsSync(path) && readdirSync(path).length > 0) {
-					throw new Error(`expected worktree path is not empty: ${path}`);
-				}
-				git(repoRoot, ["-c", "core.hooksPath=/dev/null", "worktree", "add", path, branch], { inherit: true });
-			}
-			records.push({
-				kind: kind.name,
-				name,
-				branch,
-				path,
-				entrypoint: kind.entrypoint(path, name),
-				devRecordRoot: kind.devRecordRoot(name),
-			});
+			records.push(ensureSliceWorktree(repoRoot, worktreeRoot, branch, byBranch, nameOwners));
 		} catch (error) {
 			const message = error instanceof Error ? error.message : undefined;
 			problems.push(`${branch}: ${message}`);
@@ -558,6 +561,35 @@ function hasTrackedChanges(path: string): boolean {
 	return git(path, ["status", "--porcelain", "--untracked-files=no"], { cwd: path }).stdout.trim().length > 0;
 }
 
+function syncBranch(context: HarnessContext, record: WorktreeRecord): { changed: boolean; failure?: string } {
+	let changed = false;
+	let rebasing = false;
+	try {
+		if (!branchHasCommonHistory(context.repoRoot, record.branch)) {
+			throw new Error("branch has no common base with main");
+		}
+		if (!branchHasBase(context.repoRoot, record.branch)) {
+			if (hasTrackedChanges(record.path)) {
+				throw new Error("worktree has uncommitted changes and main has advanced");
+			}
+			rebasing = true;
+			git(context.repoRoot, noHooks(["rebase", "main"]), { cwd: record.path });
+			rebasing = false;
+			changed = true;
+		}
+		if (record.entrypoint !== null && !existsSync(record.entrypoint)) {
+			throw new Error(`entrypoint is absent: ${record.entrypoint}`);
+		}
+		return { changed };
+	} catch (error) {
+		if (rebasing) {
+			git(context.repoRoot, noHooks(["rebase", "--abort"]), { cwd: record.path, accept: [0, 1, 128] });
+		}
+		const message = error instanceof Error ? error.message : undefined;
+		return { changed, failure: `${record.name}: ${message}` };
+	}
+}
+
 function syncBranches(
 	context: HarnessContext,
 	records: readonly WorktreeRecord[],
@@ -565,33 +597,9 @@ function syncBranches(
 	const changed: string[] = [];
 	const failures: string[] = [];
 	for (const record of records) {
-		let rebasing = false;
-		try {
-			if (!branchHasCommonHistory(context.repoRoot, record.branch)) {
-				throw new Error("branch has no common base with main");
-			}
-			if (!branchHasBase(context.repoRoot, record.branch)) {
-				if (hasTrackedChanges(record.path)) {
-					throw new Error("worktree has uncommitted changes and main has advanced");
-				}
-				rebasing = true;
-				git(context.repoRoot, noHooks(["rebase", "main"]), { cwd: record.path });
-				rebasing = false;
-				changed.push(record.name);
-			}
-			if (record.entrypoint !== null && !existsSync(record.entrypoint)) {
-				throw new Error(`entrypoint is absent: ${record.entrypoint}`);
-			}
-		} catch (error) {
-			if (rebasing) {
-				git(context.repoRoot, noHooks(["rebase", "--abort"]), {
-					cwd: record.path,
-					accept: [0, 1, 128],
-				});
-			}
-			const message = error instanceof Error ? error.message : undefined;
-			failures.push(`${record.name}: ${message}`);
-		}
+		const result = syncBranch(context, record);
+		if (result.changed) changed.push(record.name);
+		if (result.failure !== undefined) failures.push(result.failure);
 	}
 	return { changed, failures };
 }
@@ -789,70 +797,87 @@ function resolveSliceBranch(repoRoot: string, name: string): string | undefined 
 	return matches[0];
 }
 
-function promote(
+type ReplayCommit = ReturnType<typeof classifyCommitFiles> & { sha: string; full: string; subject: string };
+
+interface PreparedPromotion {
+	name: string;
+	branch: string;
+	kind: SliceKind;
+	devRecordRoot: string | null;
+	remote: ReturnType<typeof remoteMainState>;
+	shipping: ReplayCommit[];
+	held: ReplayCommit[];
+	mainBefore: string;
+}
+
+function requestedPromotionBranch(
+	repoRoot: string,
+	requested: ReturnType<typeof parseSliceReference>,
+): string | undefined {
+	if (!requested.kind) return resolveSliceBranch(repoRoot, requested.name);
+	const candidate = `${sliceKindForName(requested.kind).branchPrefix}${requested.name}`;
+	return branchExists(repoRoot, candidate) ? candidate : undefined;
+}
+
+function promotionReadiness(context: HarnessContext, branch: string): string | undefined {
+	const head = git(context.repoRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+		accept: [0, 1],
+	}).stdout.trim();
+	if (head !== "main") {
+		return `main must be checked out at ${context.repoRoot} (found: ${head || "detached"})`;
+	}
+	if (hasTrackedChanges(context.repoRoot)) return `uncommitted tracked changes in ${context.repoRoot}`;
+	if (!branchHasCommonHistory(context.repoRoot, branch)) return `${branch} shares no history with main`;
+	return undefined;
+}
+
+function failedPromotion(
+	name: string | undefined,
+	stage: string,
+	reason: string,
+	extra: Partial<PromotionReport> = {},
+): PromotionReport {
+	return { ok: false, name, stage, reason, promoted: [], held: [], recover: null, ...extra };
+}
+
+function preparePromotion(
 	context: HarnessContext,
 	requestedReference: string | undefined,
-	options: PromoteOptions,
-): PromotionReport {
+): PreparedPromotion | PromotionReport {
 	const reference =
 		requestedReference ?? promoteNameFromCwd(canonicalPath(process.cwd()), canonicalPath(context.worktreeRoot));
 	let name = reference;
-	const fail = (stage: string, reason: string, extra: Partial<PromotionReport> = {}): PromotionReport => ({
-		ok: false,
-		name,
-		stage,
-		reason,
-		promoted: [],
-		held: [],
-		recover: null,
-		...extra,
-	});
+	const fail = (reason: string) => failedPromotion(name, "preflight", reason);
 
 	if (!reference) {
-		return fail("preflight", "no slice name given and the working directory is not a worktree");
+		return fail("no slice name given and the working directory is not a worktree");
 	}
 	let requested: { kind?: SliceKindName; name: string };
 	try {
 		requested = parseSliceReference(reference);
 	} catch (error) {
-		return fail("preflight", error instanceof Error ? error.message : String(error));
+		return fail(error instanceof Error ? error.message : String(error));
 	}
 	name = requested.name;
 	let branch: string | undefined;
 	try {
-		if (requested.kind) {
-			const candidate = `${sliceKindForName(requested.kind).branchPrefix}${name}`;
-			branch = branchExists(context.repoRoot, candidate) ? candidate : undefined;
-		} else {
-			branch = resolveSliceBranch(context.repoRoot, name);
-		}
+		branch = requestedPromotionBranch(context.repoRoot, requested);
 	} catch (error) {
-		return fail("preflight", error instanceof Error ? error.message : String(error));
+		return fail(error instanceof Error ? error.message : String(error));
 	}
-	if (!branch) return fail("preflight", `branch does not exist: ${reference}`);
+	if (!branch) return fail(`branch does not exist: ${reference}`);
 	const kind = sliceKindForBranch(branch);
-	if (!kind) return fail("preflight", `branch has no recognized slice kind: ${branch}`);
-
-	const head = git(context.repoRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"], {
-		accept: [0, 1],
-	}).stdout.trim();
-	if (head !== "main") {
-		return fail("preflight", `main must be checked out at ${context.repoRoot} (found: ${head || "detached"})`);
-	}
-	if (hasTrackedChanges(context.repoRoot)) {
-		return fail("preflight", `uncommitted tracked changes in ${context.repoRoot}`);
-	}
-	if (!branchHasCommonHistory(context.repoRoot, branch)) {
-		return fail("preflight", `${branch} shares no history with main`);
-	}
+	if (!kind) return fail(`branch has no recognized slice kind: ${branch}`);
+	const problem = promotionReadiness(context, branch);
+	if (problem) return fail(problem);
 
 	const remote = remoteMainState(context);
 	if (remote.present && remote.behindRemote) {
-		return fail("preflight", "origin/main has commits that main does not; sync before promoting");
+		return fail("origin/main has commits that main does not; sync before promoting");
 	}
 
 	const merges = git(context.repoRoot, ["rev-list", "--merges", `main..${branch}`]).stdout.trim();
-	if (merges) return fail("preflight", `${branch} contains merge commits; promote cannot replay them`);
+	if (merges) return fail(`${branch} contains merge commits; promote cannot replay them`);
 
 	const devRecordRoot = kind.devRecordRoot(name);
 	const shas = git(context.repoRoot, ["rev-list", "--reverse", "--topo-order", `main..${branch}`])
@@ -872,6 +897,131 @@ function promote(
 	const shipping = plan.filter((entry) => entry.kind !== "held");
 	const held = plan.filter((entry) => entry.kind === "held");
 	const mainBefore = git(context.repoRoot, ["rev-parse", "main"]).stdout.trim();
+	return { name, branch, kind, remote, shipping, held, mainBefore, devRecordRoot };
+}
+
+function promoteWithoutCommits(
+	context: HarnessContext,
+	prepared: PreparedPromotion,
+	options: PromoteOptions,
+): PromotionReport {
+	const { name, kind, remote, held, mainBefore } = prepared;
+	let pushed = false;
+	if (options.push && remote.present && remote.ahead) {
+		const push = git(context.repoRoot, noHooks(["push", "origin", "main"]), { accept: [0, 1] });
+		if (push.status !== 0) {
+			return failedPromotion(name, "push", (push.stderr || push.stdout).trim(), {
+				held: held.map((entry) => entry.sha),
+				mainBefore,
+				mainAfter: mainBefore,
+				recover: `git -C ${context.repoRoot} push origin main`,
+			});
+		}
+		pushed = true;
+	}
+	return {
+		ok: true,
+		name,
+		kind: kind.name,
+		promoted: [],
+		held: held.map((entry) => entry.sha),
+		mainBefore,
+		mainAfter: mainBefore,
+		gates: {},
+		pushed,
+	};
+}
+
+function replayPromotionCommit(repoRoot: string, entry: ReplayCommit): { committed: boolean; reason?: string } {
+	const pick = git(repoRoot, noHooks(["cherry-pick", "-n", entry.full]), { accept: [0, 1, 128] });
+	if (pick.status !== 0) {
+		const unmerged = git(repoRoot, ["diff", "--name-only", "--diff-filter=U", "-z"]).stdout.split("\0").filter(Boolean);
+		const developmentRecords = new Set(entry.devRecords);
+		if (unmerged.length === 0 || unmerged.some((path) => !developmentRecords.has(path))) {
+			return { committed: false, reason: `${entry.sha} (${entry.subject}): ${(pick.stderr || pick.stdout).trim()}` };
+		}
+	}
+	for (const path of entry.devRecords) {
+		const inHead = git(repoRoot, ["cat-file", "-e", `HEAD:${path}`], { accept: [0, 1, 128] }).status === 0;
+		if (inHead) git(repoRoot, noHooks(["checkout", "HEAD", "--", path]));
+		else git(repoRoot, ["rm", "-f", "--quiet", "--", path], { accept: [0, 1, 128] });
+	}
+	const unresolved = git(repoRoot, ["diff", "--name-only", "--diff-filter=U"]).stdout.trim();
+	if (unresolved)
+		return { committed: false, reason: `${entry.sha} left unresolved development records: ${unresolved}` };
+	const staged = git(repoRoot, ["diff", "--cached", "--quiet"], { accept: [0, 1] });
+	if (staged.status === 0) {
+		git(repoRoot, ["cherry-pick", "--quit"], { accept: [0, 1, 128] });
+		return { committed: false };
+	}
+	const commit = git(repoRoot, noHooks(["commit", "--no-verify", "-C", entry.full]), { accept: [0, 1] });
+	if (commit.status !== 0)
+		return { committed: false, reason: `${entry.sha}: ${(commit.stderr || commit.stdout).trim()}` };
+	return { committed: true };
+}
+
+function replayPromotion(repoRoot: string, shipping: ReplayCommit[]): { promoted: string[]; reason?: string } {
+	const promoted: string[] = [];
+	for (const entry of shipping) {
+		const result = replayPromotionCommit(repoRoot, entry);
+		if (result.reason !== undefined) return { promoted, reason: result.reason };
+		if (result.committed) promoted.push(entry.sha);
+	}
+	return { promoted };
+}
+
+function completePromotion(
+	context: HarnessContext,
+	prepared: PreparedPromotion,
+	options: PromoteOptions,
+	records: WorktreeRecord[],
+	promoted: string[],
+	gates: GateResults,
+): PromotionReport {
+	const { name, kind, remote, held, mainBefore } = prepared;
+	let pushed = false;
+	if (options.push && remote.present) {
+		const push = git(context.repoRoot, noHooks(["push", "origin", "main"]), { accept: [0, 1] });
+		if (push.status !== 0) {
+			return failedPromotion(name, "push", (push.stderr || push.stdout).trim(), {
+				kind: kind.name,
+				promoted,
+				held: held.map((entry) => entry.sha),
+				mainBefore,
+				mainAfter: git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
+				gates,
+				recover: `git -C ${context.repoRoot} push origin main`,
+			});
+		}
+		pushed = true;
+	}
+	const branchResult = syncBranches(context, records);
+	reconcileSettings(context, records);
+	return {
+		ok: true,
+		name,
+		kind: kind.name,
+		promoted,
+		held: held.map((entry) => entry.sha),
+		mainBefore,
+		mainAfter: git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
+		gates,
+		pushed,
+		syncOk: branchResult.failures.length === 0,
+		branchFailures: branchResult.failures,
+	};
+}
+
+function promote(
+	context: HarnessContext,
+	requestedReference: string | undefined,
+	options: PromoteOptions,
+): PromotionReport {
+	const prepared = preparePromotion(context, requestedReference);
+	if ("ok" in prepared) return prepared;
+	const { name, branch, kind, shipping, held, mainBefore, devRecordRoot } = prepared;
+	const fail = (stage: string, reason: string, extra: Partial<PromotionReport> = {}) =>
+		failedPromotion(name, stage, reason, extra);
 
 	if (options.dryRun) {
 		return {
@@ -892,32 +1042,7 @@ function promote(
 		};
 	}
 
-	if (shipping.length === 0) {
-		let pushed = false;
-		if (options.push && remote.present && remote.ahead) {
-			const push = git(context.repoRoot, noHooks(["push", "origin", "main"]), { accept: [0, 1] });
-			if (push.status !== 0) {
-				return fail("push", (push.stderr || push.stdout).trim(), {
-					held: held.map((entry) => entry.sha),
-					mainBefore,
-					mainAfter: mainBefore,
-					recover: `git -C ${context.repoRoot} push origin main`,
-				});
-			}
-			pushed = true;
-		}
-		return {
-			ok: true,
-			name,
-			kind: kind.name,
-			promoted: [],
-			held: held.map((entry) => entry.sha),
-			mainBefore,
-			mainAfter: mainBefore,
-			gates: {},
-			pushed,
-		};
-	}
+	if (shipping.length === 0) return promoteWithoutCommits(context, prepared, options);
 
 	const records = repositoryState(context.repoRoot, context.worktreeRoot).records;
 	const record = records.find((candidate) => candidate.name === name && candidate.kind === kind.name);
@@ -954,42 +1079,8 @@ function promote(
 		};
 	};
 
-	const promoted: string[] = [];
-	for (const entry of shipping) {
-		const pick = git(context.repoRoot, noHooks(["cherry-pick", "-n", entry.full]), {
-			accept: [0, 1, 128],
-		});
-		if (pick.status !== 0) {
-			const unmerged = git(context.repoRoot, ["diff", "--name-only", "--diff-filter=U", "-z"])
-				.stdout.split("\0")
-				.filter(Boolean);
-			const developmentRecords = new Set(entry.devRecords);
-			if (unmerged.length === 0 || unmerged.some((path) => !developmentRecords.has(path))) {
-				return abandon("cherry-pick", `${entry.sha} (${entry.subject}): ${(pick.stderr || pick.stdout).trim()}`);
-			}
-		}
-		for (const path of entry.devRecords) {
-			const inHead = git(context.repoRoot, ["cat-file", "-e", `HEAD:${path}`], { accept: [0, 1, 128] }).status === 0;
-			if (inHead) git(context.repoRoot, noHooks(["checkout", "HEAD", "--", path]));
-			else git(context.repoRoot, ["rm", "-f", "--quiet", "--", path], { accept: [0, 1, 128] });
-		}
-		const unresolved = git(context.repoRoot, ["diff", "--name-only", "--diff-filter=U"]).stdout.trim();
-		if (unresolved) {
-			return abandon("cherry-pick", `${entry.sha} left unresolved development records: ${unresolved}`);
-		}
-		const staged = git(context.repoRoot, ["diff", "--cached", "--quiet"], { accept: [0, 1] });
-		if (staged.status === 0) {
-			git(context.repoRoot, ["cherry-pick", "--quit"], { accept: [0, 1, 128] });
-			continue;
-		}
-		const commit = git(context.repoRoot, noHooks(["commit", "--no-verify", "-C", entry.full]), {
-			accept: [0, 1],
-		});
-		if (commit.status !== 0) {
-			return abandon("cherry-pick", `${entry.sha}: ${(commit.stderr || commit.stdout).trim()}`);
-		}
-		promoted.push(entry.sha);
-	}
+	const replay = replayPromotion(context.repoRoot, shipping);
+	if (replay.reason !== undefined) return abandon("cherry-pick", replay.reason);
 
 	const boundary = git(context.repoRoot, ["diff", "--name-only", "--no-renames", "main", branch])
 		.stdout.trim()
@@ -1028,69 +1119,24 @@ function promote(
 		return abandon("verify", `${branch} still differs from main outside dev records: ${rebuiltLeak.join(", ")}`);
 	}
 
-	let pushed = false;
-	if (options.push && remote.present) {
-		const push = git(context.repoRoot, noHooks(["push", "origin", "main"]), { accept: [0, 1] });
-		if (push.status !== 0) {
-			return {
-				...fail("push", (push.stderr || push.stdout).trim()),
-				name,
-				kind: kind.name,
-				promoted,
-				held: held.map((entry) => entry.sha),
-				mainBefore,
-				mainAfter: git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
-				gates,
-				recover: `git -C ${context.repoRoot} push origin main`,
-			};
-		}
-		pushed = true;
-	}
-
-	const branchResult = syncBranches(context, records);
-	reconcileSettings(context, records);
-
-	return {
-		ok: true,
-		name,
-		kind: kind.name,
-		promoted,
-		held: held.map((entry) => entry.sha),
-		mainBefore,
-		mainAfter: git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
-		gates,
-		pushed,
-		syncOk: branchResult.failures.length === 0,
-		branchFailures: branchResult.failures,
-	};
+	return completePromotion(context, prepared, options, records, replay.promoted, gates);
 }
 
-function reportPromotion(report: PromotionReport, json: boolean): number {
-	const status = report.ok && report.syncOk !== false ? 0 : 1;
-	if (json) {
-		console.log(JSON.stringify(report, null, 2));
-		return status;
+function printPromotionPlan(report: PromotionReport): void {
+	console.log(`promote ${report.name} (dry run)`);
+	const wouldPromote = report.wouldPromote ?? [];
+	for (const entry of wouldPromote) {
+		const dropped = entry.dropped.length > 0 ? ` (dropping ${entry.dropped.join(", ")})` : "";
+		console.log(`  ship ${entry.sha} ${entry.subject}${dropped}`);
 	}
-	if (report.dryRun) {
-		console.log(`promote ${report.name} (dry run)`);
-		const wouldPromote = report.wouldPromote ?? [];
-		for (const entry of wouldPromote) {
-			const dropped = entry.dropped.length > 0 ? ` (dropping ${entry.dropped.join(", ")})` : "";
-			console.log(`  ship ${entry.sha} ${entry.subject}${dropped}`);
-		}
-		for (const entry of report.held ?? []) {
-			if (typeof entry !== "string") console.log(`  hold ${entry.sha} ${entry.subject}`);
-		}
-		if (wouldPromote.length === 0) console.log("  nothing to promote");
-		console.log(`  gates: ${report.wouldRunGates ? "yes" : "no"}  push: ${report.wouldPush ? "yes" : "no"}`);
-		return 0;
+	for (const entry of report.held ?? []) {
+		if (typeof entry !== "string") console.log(`  hold ${entry.sha} ${entry.subject}`);
 	}
-	if (!report.ok) {
-		console.error(`promote ${report.name ?? ""} failed at ${report.stage}: ${report.reason}`);
-		if (report.recover) console.error(`recover: ${report.recover}`);
-		else console.error(`main is unchanged at ${report.mainAfter ?? report.mainBefore ?? "its original commit"}`);
-		return 1;
-	}
+	if (wouldPromote.length === 0) console.log("  nothing to promote");
+	console.log(`  gates: ${report.wouldRunGates ? "yes" : "no"}  push: ${report.wouldPush ? "yes" : "no"}`);
+}
+
+function printPromotionOutcome(report: PromotionReport): void {
 	const promoted = report.promoted ?? [];
 	const held = report.held ?? [];
 	if (promoted.length === 0) console.log(`Nothing to promote from ${report.kind ?? ""}/${report.name}`);
@@ -1104,6 +1150,25 @@ function reportPromotion(report: PromotionReport, json: boolean): number {
 	if (report.syncOk === false) {
 		console.error("Promotion landed. A sibling worktree did not update. Resolve it, then run npm run worktrees:sync.");
 	}
+}
+
+function reportPromotion(report: PromotionReport, json: boolean): number {
+	const status = report.ok && report.syncOk !== false ? 0 : 1;
+	if (json) {
+		console.log(JSON.stringify(report, null, 2));
+		return status;
+	}
+	if (report.dryRun) {
+		printPromotionPlan(report);
+		return 0;
+	}
+	if (!report.ok) {
+		console.error(`promote ${report.name ?? ""} failed at ${report.stage}: ${report.reason}`);
+		if (report.recover) console.error(`recover: ${report.recover}`);
+		else console.error(`main is unchanged at ${report.mainAfter ?? report.mainBefore ?? "its original commit"}`);
+		return 1;
+	}
+	printPromotionOutcome(report);
 	return status;
 }
 
@@ -1229,6 +1294,50 @@ function main(): void {
 	}
 }
 
+function setExtensionActive(
+	context: HarnessContext,
+	records: WorktreeRecord[],
+	command: "activate" | "deactivate",
+	name: string | undefined,
+): void {
+	if (!name) throw new Error(`${command} requires a slice name`);
+	const record = records.find((candidate) => candidate.name === name);
+	if (!record) throw new Error(`No slice worktree is named ${name}`);
+	if (record.kind !== "extension") {
+		throw new Error(
+			`${command} applies to extensions only; ${name} is a ${record.kind} slice that Pi loads from main after promotion`,
+		);
+	}
+	reconcileSettings(context, records, {
+		forceActive: command === "activate" ? [name] : [],
+		forceInactive: command === "deactivate" ? [name] : [],
+	});
+	console.log(`${name} is ${command === "activate" ? "active" : "provisional"}`);
+}
+
+function reportReconciliation(
+	context: HarnessContext,
+	branchResult: ReturnType<typeof syncBranches>,
+	settingsResult: ReturnType<typeof reconcileSettings>,
+	problems: string[],
+	quiet: boolean,
+): void {
+	if (!quiet || branchResult.changed.length > 0 || settingsResult.changed || branchResult.failures.length > 0) {
+		if (branchResult.changed.length > 0) {
+			console.log(`Updated from main: ${branchResult.changed.join(", ")}`);
+		}
+		if (settingsResult.changed) {
+			console.log(`Updated Pi settings: ${context.settingsPath}`);
+		}
+		console.log(`Active worktree extensions: ${settingsResult.activeNames.join(", ") || "none"}`);
+	}
+	const allFailures = [...branchResult.failures, ...problems];
+	if (allFailures.length > 0) {
+		for (const failure of allFailures) console.error(failure);
+		process.exitCode = 1;
+	}
+}
+
 function executeCommand(context: HarnessContext, args: string[]): void {
 	const command = args.find((arg) => !arg.startsWith("--")) ?? "sync";
 	const commandIndex = args.indexOf(command);
@@ -1259,19 +1368,7 @@ function executeCommand(context: HarnessContext, args: string[]): void {
 		return;
 	}
 	if (command === "activate" || command === "deactivate") {
-		if (!name) throw new Error(`${command} requires a slice name`);
-		const record = records.find((candidate) => candidate.name === name);
-		if (!record) throw new Error(`No slice worktree is named ${name}`);
-		if (record.kind !== "extension") {
-			throw new Error(
-				`${command} applies to extensions only; ${name} is a ${record.kind} slice that Pi loads from main after promotion`,
-			);
-		}
-		reconcileSettings(context, records, {
-			forceActive: command === "activate" ? [name] : [],
-			forceInactive: command === "deactivate" ? [name] : [],
-		});
-		console.log(`${name} is ${command === "activate" ? "active" : "provisional"}`);
+		setExtensionActive(context, records, command, name);
 		return;
 	}
 	if (command !== "sync" && command !== "configure") {
@@ -1281,20 +1378,7 @@ function executeCommand(context: HarnessContext, args: string[]): void {
 	let branchResult: { changed: string[]; failures: string[] } = { changed: [], failures: [] };
 	if (command === "sync") branchResult = syncBranches(context, records);
 	const settingsResult = reconcileSettings(context, records);
-	if (!quiet || branchResult.changed.length > 0 || settingsResult.changed || branchResult.failures.length > 0) {
-		if (branchResult.changed.length > 0) {
-			console.log(`Updated from main: ${branchResult.changed.join(", ")}`);
-		}
-		if (settingsResult.changed) {
-			console.log(`Updated Pi settings: ${context.settingsPath}`);
-		}
-		console.log(`Active worktree extensions: ${settingsResult.activeNames.join(", ") || "none"}`);
-	}
-	const allFailures = [...branchResult.failures, ...problems];
-	if (allFailures.length > 0) {
-		for (const failure of allFailures) console.error(failure);
-		process.exitCode = 1;
-	}
+	reportReconciliation(context, branchResult, settingsResult, problems, quiet);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : undefined;

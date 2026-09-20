@@ -237,8 +237,9 @@ test("projection preserves existing README order and appends newcomers determini
 		const result = auditPillars(root);
 		const heuristicsBlock = result.readmeProjection.split("### Heuristics\n")[1] ?? "";
 		const rows = heuristicsBlock.split("\n").filter((line) => line.startsWith("| ["));
-		assert.match(rows[0]!, /\[Framed Menu\]/);
-		assert.match(rows[rows.length - 1]!, /\[Aardvark First\]/);
+		assert.equal(rows.length, 2);
+		assert.match(rows[0], /\[Framed Menu\]/);
+		assert.match(rows[rows.length - 1], /\[Aardvark First\]/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -255,6 +256,36 @@ test("frontmatter grammar failures are precise and withhold the projection", () 
 			result.violations.some((v) => v.includes('unknown key "mood"')),
 			result.violations.join("\n"),
 		);
+		assert.equal(result.readmeProjection, "");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("missing required frontmatter values stop inventory projection", () => {
+	const root = pillarFixtureRoot();
+	try {
+		const file = join(root, "pillars", "heuristic-framed-menu.md");
+		const valid = readFileSync(file, "utf8");
+		for (const key of ["title", "index"]) {
+			writeFileSync(file, valid.replace(new RegExp(`^${key}:.*\\n`, "m"), ""));
+			const result = auditPillars(root);
+			assert.ok(
+				result.violations.includes(`pillars/heuristic-framed-menu.md: frontmatter missing required key "${key}"`),
+			);
+			assert.equal(result.readmeProjection, "");
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("an invalid UTF-8 entry reports its path and stops inventory projection", () => {
+	const root = pillarFixtureRoot();
+	try {
+		writeFileSync(join(root, "pillars", "heuristic-framed-menu.md"), Buffer.from([0xff]));
+		const result = auditPillars(root);
+		assert.ok(result.violations.includes("pillars/heuristic-framed-menu.md: invalid UTF-8"));
 		assert.equal(result.readmeProjection, "");
 	} finally {
 		rmSync(root, { recursive: true, force: true });

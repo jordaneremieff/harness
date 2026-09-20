@@ -33,32 +33,38 @@ function schemaObject(value: unknown): value is Record<string, unknown> {
 
 // Inspect schema positions only. Annotation data and user property names are not schema keywords.
 // Local definitions are visited directly, including referenced and unused definitions; no references are fetched.
+function schemaEntries(schema: Record<string, unknown>, path: string): Array<[unknown, string]> {
+	const entries: Array<[unknown, string]> = [];
+	for (const keyword of schemaMaps) {
+		const map = schema[keyword];
+		if (!schemaObject(map)) continue;
+		for (const [key, child] of Object.entries(map)) {
+			entries.push([child, `${path}[${JSON.stringify(keyword)}][${JSON.stringify(key)}]`]);
+		}
+	}
+	for (const keyword of schemaLists) {
+		const list = schema[keyword];
+		if (!Array.isArray(list)) continue;
+		for (const [index, child] of list.entries()) {
+			entries.push([child, `${path}[${JSON.stringify(keyword)}][${index}]`]);
+		}
+	}
+	for (const keyword of schemaChildren) entries.push([schema[keyword], `${path}[${JSON.stringify(keyword)}]`]);
+	return entries;
+}
+
+function visitTupleSchema(name: string, schema: unknown, path: string, issues: string[]): void {
+	if (!schemaObject(schema)) return;
+	for (const keyword of ["additionalItems", "prefixItems"]) {
+		if (Object.hasOwn(schema, keyword)) issues.push(`${name} ${path}[${JSON.stringify(keyword)}]: tuple keyword`);
+	}
+	if (Array.isArray(schema.items)) issues.push(`${name} ${path}["items"]: array-valued items`);
+	for (const [child, childPath] of schemaEntries(schema, path)) visitTupleSchema(name, child, childPath, issues);
+}
+
 function tupleSchemaIssues(name: string, parameters: unknown): string[] {
 	const issues: string[] = [];
-	function visit(schema: unknown, path: string) {
-		if (!schemaObject(schema)) return;
-		for (const keyword of ["additionalItems", "prefixItems"]) {
-			if (Object.hasOwn(schema, keyword)) issues.push(`${name} ${path}[${JSON.stringify(keyword)}]: tuple keyword`);
-		}
-		if (Array.isArray(schema.items)) issues.push(`${name} ${path}["items"]: array-valued items`);
-		for (const keyword of schemaMaps) {
-			const map = schema[keyword];
-			if (schemaObject(map)) {
-				for (const [key, child] of Object.entries(map))
-					visit(child, `${path}[${JSON.stringify(keyword)}][${JSON.stringify(key)}]`);
-			}
-		}
-		for (const keyword of schemaLists) {
-			const list = schema[keyword];
-			if (Array.isArray(list)) {
-				list.forEach((child, index) => {
-					visit(child, `${path}[${JSON.stringify(keyword)}][${index}]`);
-				});
-			}
-		}
-		for (const keyword of schemaChildren) visit(schema[keyword], `${path}[${JSON.stringify(keyword)}]`);
-	}
-	visit(JSON.parse(JSON.stringify(parameters)), "$");
+	visitTupleSchema(name, JSON.parse(JSON.stringify(parameters)), "$", issues);
 	return issues;
 }
 

@@ -4,13 +4,21 @@
 		"enabled": true,
 		"rules": {
 			"preset": "recommended",
+			"complexity": {
+				"noExcessiveCognitiveComplexity": {
+					"level": "error",
+					"options": {
+						"maxAllowedComplexity": 15
+					}
+				}
+			},
 			"style": {
-				"noNonNullAssertion": "off",
+				"noNonNullAssertion": "error",
 				"useConst": "error",
 				"useNodejsImportProtocol": "off"
 			},
 			"suspicious": {
-				"noExplicitAny": "off",
+				"noExplicitAny": "error",
 				"noControlCharactersInRegex": "off",
 				"noEmptyInterface": "off"
 			}

@@ -150,6 +150,39 @@ process.exitCode = result.status ?? 1;
 	assert.equal(f.git(["status", "--porcelain"], f.tree), "");
 });
 
+test("a failed rebase abort stops synchronization before settings writes", async (t) => {
+	const f = fixture(t);
+	const bin = join(f.root, "bin");
+	mkdirSync(bin);
+	const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+	writeFileSync(
+		join(bin, "git"),
+		`#!${process.execPath}
+import { spawnSync } from "node:child_process";
+const args = process.argv.slice(2);
+if (args.at(-2) === "rebase") {
+	if (args.at(-1) === "main") process.exit(1);
+	if (args.at(-1) === "--abort") {
+		console.error("fixture abort refused");
+		process.exit(42);
+	}
+}
+const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit" });
+process.exitCode = result.status ?? 1;
+`,
+		{ mode: 0o755 },
+	);
+	const beforeSettings = readFileSync(f.settings, "utf8");
+	const beforeHead = f.git(["rev-parse", "HEAD"], f.tree);
+	const result = await f.call(["sync"], f.repo, { PATH: `${bin}${delimiter}${process.env.PATH}` });
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /rebase --abort failed: fixture abort refused/);
+	assert.doesNotMatch(result.stdout, /Active worktree extensions:/);
+	assert.equal(readFileSync(f.settings, "utf8"), beforeSettings);
+	assert.equal(f.git(["rev-parse", "HEAD"], f.tree), beforeHead);
+	assert.equal(existsSync(f.lock), false);
+});
+
 test("failed commands release their own lock and never reclaim an existing lock", async (t) => {
 	const f = fixture(t);
 	const failed = await f.call(["unknown"]);
