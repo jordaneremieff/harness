@@ -1,5 +1,6 @@
 /** Direct SDK regression for peer delivery, idle activation, and session ownership. */
 import { strict as assert } from "node:assert";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,9 +9,10 @@ import { fileURLToPath } from "node:url";
 const root = mkdtempSync(join(tmpdir(), "subagent-peer-"));
 const agentDir = join(root, "agent");
 const cwd = join(root, "project");
+const workerCwd = join(root, "worker-project");
 const home = join(root, "home");
 const { mkdirSync } = await import("node:fs");
-for (const path of [agentDir, cwd, home]) mkdirSync(path);
+for (const path of [agentDir, cwd, workerCwd, home]) mkdirSync(path);
 process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env.HOME = home;
 const errors: unknown[] = [];
@@ -44,7 +46,7 @@ const surfaces = new Map<string, string[]>();
 const requestMessages = new Map<string, any[]>();
 const sessionMessages = new Map<string, any[]>();
 const evidence = "fixture_schema_field_7c4e";
-writeFileSync(join(cwd, "schema.txt"), evidence);
+writeFileSync(join(workerCwd, "schema.txt"), evidence);
 const providerPath = join(agentDir, "peer-fixture.mjs");
 const model = {
 	id: "peer-model",
@@ -70,8 +72,8 @@ let cancelRequested = false;
 let pauseRequested = false;
 let pausedSendRequested = false;
 const key = Symbol.for("subagent-test.peer-fixture");
-const { fauxAssistantMessage, fauxToolCall } = await import("@earendil-works/pi-ai");
-const tool = (name: string, args: Record<string, unknown>) =>
+const { fauxAssistantMessage, fauxToolCall, getCurrentTools } = await import("@earendil-works/pi-ai");
+const tool = (name: string, args: JsonObject) =>
 	fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
 const lastResult = (context: any, name: string) =>
 	context.messages.filter((message: any) => message.role === "toolResult" && message.toolName === name).at(-1);
@@ -91,10 +93,10 @@ const response = async (role: string, context: any) => {
 	requestMessages.set(role, context.messages);
 	surfaces.set(
 		role,
-		context.tools.map((item: any) => item.name),
+		getCurrentTools(context.messages).map((item: any) => item.name),
 	);
 	if (role === "owner") {
-		if (count === 1) return tool("subagent", { tasks: [{ task: "PEER_A" }, { task: "PEER_B" }] });
+		if (count === 1) return tool("subagent", { tasks: [{ task: "PEER_A", cwd: workerCwd }, { task: "PEER_B", cwd: workerCwd }] });
 		const serialized = JSON.stringify(context.messages);
 		if (serialized.includes("SEND_PAUSED_PEER") && !pausedSendRequested) {
 			pausedSendRequested = true;
@@ -260,7 +262,7 @@ try {
 	assert.equal(owner.isStreaming, false);
 	const ownerId = owner.sessionManager.getSessionId();
 	await until(() => sub.readWorker(bId)?.idleSince != null, "B ends its turn and stays idle");
-	assert.equal(readFileSync(join(cwd, "independent.txt"), "utf8"), "independent");
+	assert.equal(readFileSync(join(workerCwd, "independent.txt"), "utf8"), "independent");
 	assert.equal(calls.get("B"), 4);
 	assert.equal(calls.get("A"), 1);
 	const idleCalls = calls.get("B");
@@ -274,7 +276,7 @@ try {
 	assert.equal(sub.sharedWorkerState.peerHub.status(b.sessionId, questionId).status, "sent_unconfirmed");
 	releaseBusy.resolve();
 	await until(() => sub.readWorker(bId)?.state === "done", "B submits its result");
-	assert.equal(readFileSync(join(cwd, "resolved-schema.txt"), "utf8"), evidence);
+	assert.equal(readFileSync(join(workerCwd, "resolved-schema.txt"), "utf8"), evidence);
 	assert.equal(bQuestionReceipt.status, "context_seen");
 	assert.equal(sub.sharedWorkerState.peerHub.status(a.sessionId, replyId).status, "context_seen");
 	assert.equal(custom(owner).length, 0, "peer payloads never enter the parent transcript");

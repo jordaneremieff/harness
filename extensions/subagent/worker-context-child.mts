@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 
 const runtimeErrors: unknown[] = [];
 const captureRuntimeError = (error: unknown) => { runtimeErrors.push(error); console.error(error); process.exitCode = 1; };
@@ -150,7 +151,7 @@ function seedProvider(label: string): string {
 	writeFileSync(
 		providerPath,
 		`import { existsSync, writeFileSync } from "node:fs";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentSystemPrompt } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
 const guard = Symbol.for("pi-subagent.test.provider.${label}");
 const model = ${JSON.stringify(fauxModel(label))};
 export default function (pi) {
@@ -159,7 +160,7 @@ export default function (pi) {
   const faux = fauxProvider({ api: model.api, provider: model.provider, models: [model] });
   const respond = (context) => {
     const path = ${JSON.stringify(promptPath(label))};
-    if (!existsSync(path)) writeFileSync(path, context.systemPrompt ?? "", "utf8");
+    if (!existsSync(path)) writeFileSync(path, getCurrentSystemPrompt(context.messages), "utf8");
     writeFileSync(path + ".context.json", JSON.stringify(context), "utf8");
     return fauxAssistantMessage(fauxToolCall("submit_result", { content: "CWD_RESULT" }), { stopReason: "toolUse" });
   };
@@ -457,16 +458,17 @@ try {
 	assert.deepEqual(profileResult.details.workers[0].profile, profileRecord.profile);
 	assert.equal(profileResult.details.workers[0].label, "review-check");
 	const received = JSON.parse(readFileSync(`${promptPath("profile")}.context.json`, "utf8"));
-	assert.match(received.systemPrompt, /SENTINEL_CONTEXT_FILE_trusted/);
-	assert.match(received.systemPrompt, /sentinel-skill-trusted/);
-	assert.ok(!received.systemPrompt.includes("Check contract"), "profile pointers never replace system instructions");
+	const receivedPrompt = getCurrentSystemPrompt(received.messages);
+	assert.match(receivedPrompt, /SENTINEL_CONTEXT_FILE_trusted/);
+	assert.match(receivedPrompt, /sentinel-skill-trusted/);
+	assert.ok(!receivedPrompt.includes("Check contract"), "profile pointers never replace system instructions");
 	const messages = JSON.stringify(received.messages);
 	assert.match(messages, /PROFILE_TEMPLATE_EXPANDED input/);
 	assert.ok(messages.includes(join(profileDir, "contract.md")));
 	assert.ok(messages.indexOf("Check contract") < messages.indexOf("PROFILE_TEMPLATE_EXPANDED"));
 	assert.equal(messages.split("PROFILE_OPERATING_MODE").length - 1, 1);
 	assert.ok(messages.indexOf("PROFILE_OPERATING_MODE") < messages.indexOf("PROFILE_TEMPLATE_EXPANDED"));
-	assert.ok(!received.systemPrompt.includes("PROFILE_OPERATING_MODE"));
+	assert.ok(!receivedPrompt.includes("PROFILE_OPERATING_MODE"));
 
 	// A task-selected file replaces unused top-level profile input. Explicit
 	// fields still win, and an explicit empty tool list retains its meaning.
@@ -558,7 +560,7 @@ try {
 	const instructionRecord = await waitForProfile(instructionOnly.details.workers[0].id);
 	assert.deepEqual(instructionRecord.profile?.grounding, []);
 	const instructionContext = JSON.parse(readFileSync(`${promptPath("profile-instructions")}.context.json`, "utf8"));
-	assert.ok(!instructionContext.systemPrompt.includes("PROFILE_INSTRUCTIONS_ONLY"));
+	assert.ok(!getCurrentSystemPrompt(instructionContext.messages).includes("PROFILE_INSTRUCTIONS_ONLY"));
 	assert.match(JSON.stringify(instructionContext.messages), /PROFILE_INSTRUCTIONS_ONLY/);
 	assert.match(readFileSync(join(agentDir, "profile-at-session-start.json"), "utf8"), /PROFILE_INSTRUCTIONS_ONLY/);
 

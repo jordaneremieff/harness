@@ -462,7 +462,10 @@ live maps. This state is not a persisted store or a data migration.
 
 Workers and their parent use the same peer tools. Each remains an ordinary Pi
 session with its inherited tools, cwd resources, transcript, and lifecycle.
-Messages travel directly between sessions, not through a parent relay.
+Messages travel directly between sessions, not through a parent relay. Each
+worker endpoint uses its dispatching module's owner-bound delivery function.
+A different working directory loads another extension instance but does not
+change the owner of that worker's live runtime.
 
 1. Call `subagent_peers({})` to discover the current dispatch family. The response
    names the caller's address, task labels, total, and `nextOffset`.
@@ -563,6 +566,9 @@ alone establishes general autonomous task reliability.
   with the worker. Workers have no operator UI, so extensions see Pi's no-op UI
   context and `print` mode. Registered commands use Pi's real
   `AgentSessionRuntime` session-control actions.
+- The worker runtime's model and thinking controls use Pi's session setters.
+  Pi checks authentication, clamps thinking, records session history, and emits
+  model/thinking hooks. These changes do not alter global defaults.
 - Each worker is an `AgentSession` constructed in this process. Live status
   (turns, usage, cost, current tool, output) comes from the worker session's own
   events; steering and abort are direct calls on it. Nothing is scraped. Every
@@ -611,7 +617,8 @@ alone establishes general autonomous task reliability.
   kind, unverified status, and the configured expansion-key hint. `Ctrl+O` is
   Pi's default key. Expansion exposes the bounded, sanitized original message;
   collection and the dashboard preserve access to retained evidence. This
-  changes presentation only, not result bytes or authority.
+  changes presentation only, not result bytes or authority. Card backgrounds
+  resume after nested text resets, including the preview's truncation ellipsis.
 - The store resyncs cumulative usage from the session's own statistics whenever
   a message ends, a compaction ends, or a branch summary finishes, so a
   replacement session sees real numbers even if this one dies mid-flight.
@@ -706,8 +713,8 @@ it with `subagent_steer` (a fresh allowance), or end it with `subagent_kill`. A
 pause left unresumed is released by the idle deadline like any other paused
 worker.
 
-On Pi 0.85.0, threshold compaction can run inside one turn before the next
-assistant response. Its summary cost counts toward that grant's budget.
+Threshold compaction can run inside one turn before the next assistant response.
+Its summary cost counts toward that grant's budget.
 
 The budget is evaluated when the worker's usage lands (message end, compaction
 end), which is the only moment spend is knowable; the deadline runs on its own
@@ -785,8 +792,10 @@ Use `subagent_inspect {"id":"bg-..."}` to check a worker's actual work. The
 result includes record state, the session path, and the most recent transcript
 items in human-readable form; the extension converts the session's messages to
 its own transcript items. It shows thinking, tool-call inputs,
-tool outcomes, and assistant errors. The transcript tail is capped at 24KB and
-32 items; older or oversized content produces an explicit truncation marker.
+tool outcomes, and assistant errors. A finished parallel tool keeps its final
+output and status visible until Pi places that result in transcript order;
+placement replaces the live item without a duplicate. The transcript tail is
+capped at 24KB and 32 items; older or oversized content produces an explicit truncation marker.
 Retained inspection follows the session file's active branch and excludes
 abandoned branches. When a worker is not live in this process, the extension
 reads a fixed snapshot of its known file through a read-only descriptor. The
@@ -794,8 +803,9 @@ file limit is 2 MiB. Pi's public `parseSessionEntries()` and an in-memory
 `SessionManager` own parsing and ancestry selection; the source never enters
 Pi's repair-capable file loader. Symlinks, non-regular files, changed files,
 malformed input, identity/version mismatches, and incomplete final lines produce
-an explicit unavailable notice without source repair. Selected ancestry stops
-at 4096 entries with an omission notice. These are bounded snapshots, not a
+an explicit unavailable notice without source repair. Current usage entries,
+including cache-warming costs, remain valid ancestry without becoming chat text.
+Selected ancestry stops at 4096 entries with an omission notice. These are bounded snapshots, not a
 complete archive or proof of later state. Every worker-controlled line has a visible quote prefix, and
 direction controls are removed, so worker text cannot imitate the renderer's
 record headings. Redacted reasoning carries an explicit `REDACTED` label.
@@ -1006,7 +1016,10 @@ overlay returns focus to the original Pi editor.
 
 ## Parent-death contract
 
-Workers live in the dispatching session's process. Therefore:
+Workers live in the dispatching session's process. Reload also tears down that
+session's extension runtime: `/reload` aborts its unfinished workers. Resolve
+owned workers before a reload, or start a separate fresh session without
+reloading their owner. Therefore:
 
 - A worker that already submitted keeps its persisted result and remains
   collectable by any session.

@@ -945,6 +945,23 @@ describe("collaboration dashboard", () => {
 });
 
 describe("history feedback and dense layouts", () => {
+	it("shows complete unavailable and disagreed review obligations", async () => {
+		const view = snapshot();
+		const base = { obligationId: "review-source", artifact: "src/example.ts", revision: "rev-42",
+			requester: "worker-a", reviewer: "worker-b", required: true };
+		view.outstandingRequired = [{ ...base, outcome: "unavailable", reason: "Source absent" }];
+		view.unaccepted = [{ ...base, obligationId: "review-contract", outcome: "disagreed", reason: "Contract differs" }];
+		view.obligations = [...view.outstandingRequired, ...view.unaccepted];
+		await panel(deps({ collaboration: async () => view }), async (component, terminal) => {
+			terminal.rows = 60;
+			component.handleInput("n");
+			const body = text(component, 160);
+			assert.match(body, /OUTSTANDING REQUIRED \(1\)/);
+			assert.match(body, /NOT ACCEPTED \(1\)/);
+			assert.match(body, /worker-a → worker-b: src\/example\.ts@rev-42 \[review-source\].*unavailable: Source absent/);
+			assert.match(body, /worker-a → worker-b: src\/example\.ts@rev-42 \[review-contract\].*disagreed: Contract differs/);
+		});
+	});
 	it("counts history additions against the retained view rather than omitted source events", async () => {
 		const many = Array.from({ length: 1001 }, (_, index) => event(`event-${index}`, `body-${index}`));
 		await panel(

@@ -2,6 +2,7 @@
  * resumes in the same session when its child's completion arrives as a native
  * custom message. No wait tool, no polling, no keepalive instruction. */
 import assert from "node:assert/strict";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -46,8 +47,8 @@ const requests = new Map<string, any[]>();
 let owner: any;
 let sub: typeof import("./index.ts");
 let childId = "";
-const { fauxAssistantMessage, fauxToolCall } = await import("@earendil-works/pi-ai");
-const tool = (name: string, args: Record<string, unknown>) =>
+const { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt } = await import("@earendil-works/pi-ai");
+const tool = (name: string, args: JsonObject) =>
 	fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
 const lastResult = (context: any, name: string) =>
 	context.messages.filter((message: any) => message.role === "toolResult" && message.toolName === name).at(-1);
@@ -59,7 +60,7 @@ async function until(check: () => boolean, description: string) {
 (globalThis as any)[key] = async (role: string, context: any) => {
 	const count = (calls.get(role) ?? 0) + 1;
 	calls.set(role, count);
-	prompts.set(role, context.systemPrompt);
+	prompts.set(role, getCurrentSystemPrompt(context.messages));
 	requests.set(role, context.messages);
 	if (role === "root") {
 		if (count === 1) return tool("subagent", { task: "NESTED_PARENT_TASK" });

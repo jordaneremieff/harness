@@ -52,6 +52,22 @@ test("selected file uses the public current-format parser and active ancestry wi
 	});
 });
 
+test("usage entries retain the selected conversation without entering its transcript", () => {
+	const usage = {
+		type: "usage", id: "cost", parentId: "first", timestamp,
+		kind: "cache_warm", provider: "test", model: "test",
+		usage: { input: 0, output: 0, cacheRead: 12, cacheWrite: 0, totalTokens: 12,
+			cost: { input: 0, output: 0, cacheRead: 0.01, cacheWrite: 0, total: 0.01 } },
+	};
+	withFile(content(entry("first"), usage, entry("last", "cost")), (path) => {
+		const before = readFileSync(path);
+		const snapshot = readSelectedSession(path, id);
+		assert.deepEqual(snapshot.notices, []);
+		assert.deepEqual(snapshot.entries.map((entry) => entry.id), ["first", "cost", "last"]);
+		assert.deepEqual(readFileSync(path), before);
+	});
+});
+
 test("size cap rejects before reading bytes or invoking the public parser", (t) => {
 	withFile(content(entry("one")), (path) => {
 		let reads = 0;

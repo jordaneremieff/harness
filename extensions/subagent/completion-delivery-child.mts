@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -38,7 +39,7 @@ let scenario = "";
 let target = "";
 let calls = 0;
 let workerCalls = 0;
-let nextAction: { name: string; args: Record<string, unknown> } | null = null;
+let nextAction: { name: string; args: JsonObject } | null = null;
 const fixture = {
 	collected: false,
 	async hold(name: string, signal: AbortSignal) {
@@ -58,7 +59,7 @@ const fixture = {
 	},
 	respond(context: { messages: unknown[] }) {
 		const serialized = JSON.stringify(context.messages);
-		if (!JSON.stringify(context.messages[0]).includes("OWNER_")) {
+		if (!JSON.stringify(context.messages.find((message: any) => message.role === "user")).includes("OWNER_")) {
 			workerCalls++;
 			return reply(call("fixture_hold", { name: "worker" }), { stopReason: "toolUse" });
 		}

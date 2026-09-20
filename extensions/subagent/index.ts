@@ -1461,7 +1461,9 @@ export const renderWorkerMessage: MessageRenderer = (message, { expanded }, them
 	}
 	const subject = `${label || `Subagent ${id}`} · ${kind}`;
 
-	const box = new Box(1, 1, (line) => theme.bg("customMessageBg", line));
+	const box = new Box(1, 1, (line) =>
+		theme.bg("customMessageBg", line.replace(/\x1b\[(?:0|49)?m/g, (reset) => reset + theme.getBgAnsi("customMessageBg"))),
+	);
 	box.addChild(
 		new Text(`${theme.fg("customMessageLabel", theme.bold("subagent"))} ${theme.fg("accent", subject)}`, 0, 0),
 	);
@@ -1551,8 +1553,6 @@ export interface WorkerOwnerLink {
 	reports: number;
 	/** Presentation label (purpose name, profile name, or derived fallback). */
 	label?: string | null;
-	/** Read the owner's live state across per-cwd module instances. */
-	peerDeliveryState?: () => "active" | "paused" | "closed";
 	/** Deliver an owner-bound event (peer message, child completion, report)
 	 * into this worker's live session through the single-leg activation path. */
 	deliverEvent?: (input: WorkerEventInput) => WorkerEventDelivery;
@@ -1620,18 +1620,6 @@ export function linkWorkerOwner(workerSessionId: string, link: Omit<WorkerOwnerL
 		deliverEvent: (input) => deliverWorkerEvent(workerSessionId, link.workerId, input),
 		collaborationManager: () => liveWorkers.get(link.workerId)?.session.sessionManager ?? null,
 		collaborationRecord: () => liveWorkers.get(link.workerId)?.record ?? null,
-		peerDeliveryState: () => {
-			const live = liveWorkers.get(link.workerId);
-			if (
-				!live ||
-				live.record.sessionId !== workerSessionId ||
-				live.record.state !== "running" ||
-				live.record.cancelRequestedAt ||
-				sharedWorkerState.submittedSessionIds.has(workerSessionId)
-			)
-				return "closed";
-			return live.record.interruptedAt ? "paused" : "active";
-		},
 	});
 }
 
@@ -5899,7 +5887,11 @@ export default function (pi: ExtensionAPI) {
 				label: compactStatusText(link ? (link.label ?? `${link.model}: ${link.task ?? "Worker"}`) : "Root session", 240),
 			send: (envelope) => {
 				if (link) {
-					const delivery = deliverWorkerEvent(sessionId, link.workerId, {
+					// The dispatching module owns the live runtime, not this cwd's
+					// extension instance. Resolve its current owner-bound delivery.
+					const owner = sharedWorkerState.workerOwners.get(sessionId);
+					if (!owner?.deliverEvent) throw new Error(`peer message to ${link.workerId}: the worker is closed; nothing was sent`);
+					const delivery = owner.deliverEvent({
 						message: () => peerMessage(envelope),
 						pausedBehavior: "refuse",
 						describe: `peer message to ${link.workerId}`,

@@ -15,6 +15,7 @@
  *    AgentSession, its subscription, and a `running` record forever.
  */
 import { strict as assert } from "node:assert";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -65,7 +66,7 @@ let interruptRequested = false;
 let holdRequested = false;
 
 const { fauxAssistantMessage, fauxToolCall } = await import("@earendil-works/pi-ai");
-const tool = (name: string, args: Record<string, unknown>) =>
+const tool = (name: string, args: JsonObject) =>
 	fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
 const serialize = (messages: any[]) => JSON.stringify(messages);
 

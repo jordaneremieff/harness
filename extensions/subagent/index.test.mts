@@ -1588,6 +1588,7 @@ describe("status and collection", () => {
 		const theme = {
 			fg: (_color: string, text: string) => text,
 			bg: (_color: string, text: string) => text,
+			getBgAnsi: () => "",
 			bold: (text: string) => text,
 		} as never;
 		const body = `Worker evidence\n\n${"LONG_REPORT_LINE\n".repeat(300)}LAST_EVIDENCE\u202e\u001b[31m`;
@@ -1642,6 +1643,28 @@ describe("status and collection", () => {
 		const malformed = { customType: "subagent_result", content: body, details: { id: { toString: 1 }, state: {} } };
 		const safe = renderWorkerMessage(malformed as never, { expanded: false, outputPad: 1 }, theme)!;
 		assert.match(safe.render(80).join("\n"), /Subagent unknown/);
+	});
+
+	it("keeps the card background through preview truncation resets", async () => {
+		const pi = await import("@earendil-works/pi-coding-agent");
+		pi.initTheme("dark");
+		const message = { role: "custom" as const, timestamp: 1, customType: "subagent_report", content: "long preview ".repeat(40), display: true,
+			details: { id: "bg-background" } };
+		const background = "\x1b[48;2;25;28;32m";
+		const theme = {
+			fg: (_color: string, text: string) => `\x1b[37m${text}\x1b[39m`,
+			bg: (_color: string, text: string) => `${background}${text}\x1b[49m`,
+			getBgAnsi: () => background,
+			bold: (text: string) => `\x1b[1m${text}\x1b[22m`,
+		} as never;
+		const card = renderWorkerMessage(message, { expanded: false, outputPad: 1 }, theme)!;
+		for (const width of [20, 60, 120]) {
+			const preview = card.render(width).find((row) => stripTerminalSequences(row).includes("↳"))!;
+			assert.match(stripTerminalSequences(preview), /\.\.\./);
+			assert.ok(preview.includes(`\x1b[0m${background}...`), "ellipsis retains the card background");
+			assert.ok(preview.includes(`...\x1b[0m${background}`), "padding retains the card background");
+			assert.equal(visibleWidth(preview), width);
+		}
 	});
 
 	it("promotes a late authoritative result over a stale terminal state", () => {
@@ -3415,10 +3438,17 @@ class FakeSession {
 	getAvailableThinkingLevels(): string[] {
 		return this.agent.state.model.id === "model-b" ? ["off", "low"] : ["off", "low", "medium", "high"];
 	}
-	setThinkingLevel(_level: string): void {
-		// The real AgentSession.setThinkingLevel writes the clamped level into the
-		// operator's GLOBAL defaultThinkingLevel. A worker must never reach it.
-		throw new Error("AgentSession.setThinkingLevel persists operator defaults; the worker adapter must not call it");
+	modelChanges: string[] = [];
+	thinkingChanges: string[] = [];
+	async setModel(model: { provider: string; id: string }): Promise<void> {
+		this.state.model = model;
+		this.modelChanges.push(`${model.provider}/${model.id}`);
+		this.setThinkingLevel(this.thinkingLevel);
+	}
+	setThinkingLevel(level: string): void {
+		const supported = this.getAvailableThinkingLevels();
+		this.state.thinkingLevel = supported.includes(level) ? level : supported.at(-1)!;
+		this.thinkingChanges.push(this.state.thinkingLevel);
 	}
 	subscribe(listener: (event: FakeEvent) => void): () => void {
 		this.listeners.add(listener);
@@ -3499,6 +3529,33 @@ class FakeSession {
 }
 
 describe("WorkerRuntime regressions", () => {
+	it("keeps settled parallel tool output visible until Pi places the final result", () => {
+		const session = new FakeSession();
+		session.state.messages = [assistantWithToolCall];
+		const runtime = new WorkerRuntime({ session: session as never, id: "bg-placement", name: "placement", cwd: agentDir, createdAt: 1 });
+		let snapshots = 0;
+		runtime.watch(() => snapshots++);
+		session.emit({ type: "tool_execution_start", toolCallId: "call-1", toolName: "read", args: { path: "file.txt" } });
+		session.emit({ type: "tool_execution_update", toolCallId: "call-1", toolName: "read", args: { path: "file.txt" }, partialResult: { content: [{ type: "text", text: "partial" }] } });
+		assert.equal(runtime.snapshot().transcript.find((item) => item.role === "tool")?.status, "running");
+		session.emit({ type: "tool_execution_end", toolCallId: "call-1", toolName: "read", isError: false,
+			result: { content: [{ type: "text", text: "complete" }], details: { checked: true } } });
+		const settled = runtime.snapshot().transcript.find((item) => item.role === "tool")!;
+		assert.equal(settled.status, "complete");
+		assert.deepEqual(settled.content, [{ type: "text", text: "complete" }]);
+		assert.deepEqual(settled.input, { path: "file.txt" });
+		assert.deepEqual(settled.details, { checked: true });
+		const result = { role: "toolResult", toolCallId: "call-1", toolName: "read", isError: false,
+			content: [{ type: "text", text: "placed" }], timestamp: 5 };
+		session.state.messages.push(result);
+		const beforePlacement = snapshots;
+		session.emit({ type: "message_end", message: result });
+		assert.equal(snapshots, beforePlacement + 1);
+		const placed = runtime.snapshot().transcript.filter((item) => item.role === "tool");
+		assert.equal(placed.length, 1);
+		assert.deepEqual(placed[0].content, [{ type: "text", text: "placed" }]);
+		runtime.shutdown();
+	});
 	it("hands tasks to the session prompt with pi's own expansion defaults", async () => {
 		// A worker is a full session: no suppression of its own. pi's
 		// AgentSession.prompt defaults to expanding extension commands, skill
@@ -3693,10 +3750,10 @@ describe("WorkerRuntime regressions", () => {
 			isError: false,
 		});
 		transcript = runtime.snapshot().transcript as Array<Record<string, any>>;
-		assert.ok(
-			!transcript.some((i) => i.role === "tool" && i.toolCallId === "call-9"),
-			"tool_execution_end clears the synthetic item when no result message exists yet",
-		);
+		const completed = transcript.find((i) => i.role === "tool" && i.toolCallId === "call-9");
+		assert.equal(completed?.status, "complete", "completion remains visible before result placement");
+		assert.deepEqual(completed?.content, [{ type: "text", text: "done" }]);
+		runtime.shutdown();
 	});
 
 	it("keeps the branch-summary phase when a compaction retry finishes", () => {
@@ -3762,8 +3819,7 @@ it("changes model and thinking without touching persisted settings", async () =>
 	assert.equal(runtime.snapshot().thinkingLevel, "high");
 	assert.equal(record.thinking, "high");
 
-	// model-b supports only off/low, so the level must be re-clamped here
-	// WITHOUT the persisting AgentSession API.
+	// The session owns clamping and records both changes without global persistence.
 	await runtime.setModel({ provider: "test", id: "model-b" } as never);
 	assert.deepEqual(runtime.snapshot().model, {
 		provider: "test",
@@ -3773,6 +3829,8 @@ it("changes model and thinking without touching persisted settings", async () =>
 	assert.equal(record.model, "test/model-b");
 	assert.equal(record.thinking, "low");
 	assert.equal(record.bootstrapModel, "test/model-a");
+	assert.deepEqual(session.modelChanges, ["test/model-b"]);
+	assert.deepEqual(session.thinkingChanges, ["high", "low"]);
 
 	await assert.rejects(() => runtime.setModel({ provider: "test", id: "ghost" } as never), /unknown model/);
 	runtime.shutdown();

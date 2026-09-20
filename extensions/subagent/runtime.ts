@@ -28,8 +28,8 @@
  * |-------------------------------------|-------------------|---------------|
  * | `session.state.messages`            | buildTranscript() | A tool run snapshot keeps user, assistant, and tool items in order. |
  * | `session.state.streamingMessage`    | snapshot()        | A mid-run snapshot includes the in-flight assistant item. |
- * | `session.state.model`               | setModel()        | The snapshot model changes without a settings write. |
- * | `session.state.thinkingLevel`       | setThinking()     | The thinking level changes without a settings write. |
+ * | `session.setModel()`                | setModel()        | Model changes reach session history and hooks without a settings write. |
+ * | `session.setThinkingLevel()`        | setThinking()     | Thinking changes clamp and reach session history without a settings write. |
  * | `session.modelRuntime.getModel()`   | setModel()        | A known model resolves; an unknown model returns `invalid_request`. |
  * | `session.isStreaming` and events    | getPhase()        | Turn, compaction, retry, branch-summary, and idle phases stay distinct. |
  */
@@ -151,7 +151,7 @@ export interface ModelRef {
 
 export type WorkerProgress =
 	| { type: "item_started"; item: TranscriptItem }
-	| { type: "item_updated"; item: Extract<TranscriptItem, { status: "running" }> }
+	| { type: "item_updated"; item: TranscriptToolItem & { status: "running" } }
 	| { type: "item_finished"; item: TranscriptItem }
 	| { type: "assistant_delta"; messageId: string; contentIndex: number; kind: "text" | "thinking"; delta: string };
 
@@ -487,12 +487,9 @@ export class WorkerRuntime {
 	private readonly msgIds = new WeakMap<object, string>();
 	private readonly steerIds = new Map<string, string>();
 	private stream: StreamState | null = null;
-	/** Live tool state. The end event omits arguments, so one keyed owner retains
-	 * the validated start arguments and any partial output. */
-	private readonly liveTools = new Map<
-		string,
-		{ toolName: string; args: unknown; content?: TranscriptContentPart[] }
-	>();
+	/** Tools remain visible until Pi places their final result in the transcript.
+	 * Parallel execution emits completion before result placement in source order. */
+	private readonly liveTools = new Map<string, TranscriptToolItem>();
 	private phase: SessionPhase = "idle";
 	private compactionCount = 0;
 	private retryActive = false;
@@ -590,21 +587,9 @@ export class WorkerRuntime {
 			}
 			if (item) items.push(item);
 		}
-		// Synthetic running items carry live partial output to the panel; the real
-		// toolResult replaces them at tool_execution_end.
-		for (const [toolCallId, partial] of this.liveTools) {
+		for (const [toolCallId, pending] of this.liveTools) {
 			const hasToolResult = items.some((item) => item.role === "tool" && item.toolCallId === toolCallId);
-			if (hasToolResult) continue;
-			items.push(
-				this.toolItem({
-					toolCallId,
-					toolName: partial.toolName,
-					args: partial.args,
-					content: partial.content,
-					status: "running",
-					timestamp: Date.now(),
-				}),
-			);
+			if (!hasToolResult) items.push(pending);
 		}
 		const steerTexts = this.session.getSteeringMessages();
 		const queuedSteer: TranscriptUserItem[] = steerTexts.map((text, index) => ({
@@ -755,26 +740,15 @@ export class WorkerRuntime {
 		if (!model) {
 			throw new WorkerRuntimeError("invalid_request", `unknown model ${ref.provider}/${ref.id}`);
 		}
-		// Direct state assignment on purpose: AgentSession.setModel() would persist a
-		// new default into the operator's settings.json. A worker's model must never
-		// mutate the operator's defaults.
-		const state = this.session.state;
-		state.model = model;
-		// Re-clamp the level against the NEW model by hand. AgentSession.setThinkingLevel
-		// writes the clamped level into the operator's global defaultThinkingLevel,
-		// which is the same persistence this method exists to avoid.
-		const supported = this.session.getAvailableThinkingLevels();
-		const current = this.session.thinkingLevel;
-		if (supported.length > 0 && !supported.includes(current)) {
-			state.thinkingLevel = supported[supported.length - 1];
-		}
+		// Pi owns authentication, clamping, history, and model-select hooks.
+		// Session setters do not change global defaults unless persistence is requested.
+		await this.session.setModel(model);
 		this.onSessionStateChange?.(this.session);
 		this.emit({ type: "snapshot" });
 	}
 
 	async setThinking(thinkingLevel: ThinkingLevel): Promise<void> {
-		// Same non-persisting rationale as setModel.
-		this.session.state.thinkingLevel = thinkingLevel;
+		this.session.setThinkingLevel(thinkingLevel);
 		this.onSessionStateChange?.(this.session);
 		this.emit({ type: "snapshot" });
 	}
@@ -854,10 +828,10 @@ export class WorkerRuntime {
 		return id;
 	}
 
-	private toolItem(input: ToolItemInput & { status: "running" }): Extract<TranscriptToolItem, { status: "running" }>;
+	private toolItem(input: ToolItemInput & { status: "running" }): TranscriptToolItem & { status: "running" };
 	private toolItem(
 		input: ToolItemInput & { status: "complete" | "error" },
-	): Extract<TranscriptToolItem, { status: "complete" | "error" }>;
+	): TranscriptToolItem & { status: "complete" | "error" };
 	private toolItem(input: ToolItemInput): TranscriptToolItem {
 		const base = {
 			id: input.toolCallId,
@@ -949,16 +923,15 @@ export class WorkerRuntime {
 					}
 					this.stream = null;
 					this.emit({ type: "snapshot" });
+				} else if (message.role === "toolResult") {
+					this.liveTools.delete(message.toolCallId);
+					this.emit({ type: "snapshot" });
 				} else if (message.role === "user" || message.role === "custom") {
 					this.emit({ type: "snapshot" });
 				}
 				break;
 			}
 			case "tool_execution_start": {
-				this.liveTools.set(event.toolCallId, {
-					toolName: event.toolName,
-					args: event.args,
-				});
 				const item = this.toolItem({
 					toolCallId: event.toolCallId,
 					toolName: event.toolName,
@@ -967,6 +940,7 @@ export class WorkerRuntime {
 					status: "running",
 					timestamp: Date.now(),
 				});
+				this.liveTools.set(event.toolCallId, item);
 				this.emit({
 					type: "progress",
 					progress: { type: "item_started", item },
@@ -975,11 +949,6 @@ export class WorkerRuntime {
 			}
 			case "tool_execution_update": {
 				const partial = event.partialResult as { content?: TranscriptContentPart[] } | undefined;
-				this.liveTools.set(event.toolCallId, {
-					toolName: event.toolName,
-					args: event.args,
-					content: partial?.content,
-				});
 				const item = this.toolItem({
 					toolCallId: event.toolCallId,
 					toolName: event.toolName,
@@ -988,6 +957,7 @@ export class WorkerRuntime {
 					status: "running",
 					timestamp: Date.now(),
 				});
+				this.liveTools.set(event.toolCallId, item);
 				this.emit({
 					type: "progress",
 					progress: { type: "item_updated", item },
@@ -996,18 +966,18 @@ export class WorkerRuntime {
 			}
 			case "tool_execution_end": {
 				const started = this.liveTools.get(event.toolCallId);
-				this.liveTools.delete(event.toolCallId);
 				const result = event.result as { content?: TranscriptContentPart[]; details?: unknown; usage?: AiUsage };
 				const item = this.toolItem({
 					toolCallId: event.toolCallId,
 					toolName: event.toolName,
-					args: started?.args,
+					args: started?.input,
 					content: result?.content,
 					status: event.isError ? "error" : "complete",
 					details: result?.details,
 					usage: result?.usage,
 					timestamp: Date.now(),
 				});
+				this.liveTools.set(event.toolCallId, item);
 				this.emit({
 					type: "progress",
 					progress: { type: "item_finished", item },

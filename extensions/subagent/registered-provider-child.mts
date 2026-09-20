@@ -64,14 +64,14 @@ const targetProviderPath = join(workerCwd, "target-provider.mjs");
 writeFileSync(
 	targetProviderPath,
 	`import { existsSync, writeFileSync } from "node:fs";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentSystemPrompt } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
 const model = ${JSON.stringify(targetModel)};
 export default function (pi) {
   const faux = fauxProvider({ api: model.api, provider: model.provider, models: [model] });
   faux.setResponses([
     (context) => {
       const path = ${JSON.stringify(targetPrompt)};
-      if (!existsSync(path)) writeFileSync(path, context.systemPrompt ?? "", "utf8");
+      if (!existsSync(path)) writeFileSync(path, getCurrentSystemPrompt(context.messages), "utf8");
       return fauxAssistantMessage(fauxToolCall("submit_result", { content: "TARGET_PROVIDER_RESULT" }), { stopReason: "toolUse" });
     },
   ]);

@@ -103,6 +103,7 @@ function validateEntries(entries: unknown[], physicalLines: number, expectedId: 
 			case "branch_summary":
 			case "label":
 			case "session_info":
+			case "usage":
 				break;
 			default:
 				throw new Error("unknown current session entry type");
