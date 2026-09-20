@@ -85,26 +85,16 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 		if (!source) return false;
 		return resolve(source.path) === fileURLToPath(import.meta.url);
 	}
-	async function observedResource(event: ObservedToolEvent, catalog: Catalog, ctx: ExtensionContext) {
-		if (event.toolName === "pillars") return resourceById(catalog, event.input.resource ?? "inventory");
-		return resourceByPath(catalog, event.input.path, ctx.cwd);
-	}
-	async function observedReference(resource: Resource, collector: Collector, signal?: AbortSignal) {
-		try {
-			return await readBody(resource.path, signal);
-		} catch {
-			collector.incident("unresolvedAccessEvents");
-			return undefined;
-		}
+	function ownedResource(event: ObservedToolEvent, source: Catalog): Resource | undefined {
+		return ownsPillarsTool(event) ? resourceById(source, event.input.resource ?? "inventory") : undefined;
 	}
 	function observedResult(
 		event: ObservedToolEvent,
 		resource: Resource,
 		reference: Buffer | undefined,
-		deliveredExtent?: DeliveryExtent,
 	): ResultEvidence | undefined {
 		if (event.toolName === "pillars")
-			return accessEvidence(event.content, resource.resourceId, event.isError ?? false, deliveredExtent);
+			return accessEvidence(event.content, resource.resourceId, event.isError ?? false, delivered.get(event.toolCallId));
 		if (event.toolName === "read") return readEvidence(event.content, reference, event.isError ?? false);
 		return undefined;
 	}
@@ -115,24 +105,17 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 			diagnostic(ctx, "Pillars callback deduplication reached its limit. Unpersisted loss remains unknown.");
 		return false;
 	}
-	async function recordObservation(
+	function observationCell(
 		event: ObservedToolEvent,
 		ctx: ExtensionContext,
 		stage: "tool_request" | "tool_result",
-		collector: Collector,
-		catalog: Catalog,
-	): Promise<void> {
-		if (!ownsPillarsTool(event)) return;
-		const resource = await observedResource(event, catalog, ctx);
-		if (!resource) return;
-		if (!admitObservation(event, stage, ctx)) return;
-		const reference = await observedReference(resource, collector, ctx.signal);
-		const deliveredExtent = delivered.get(event.toolCallId);
-		const result =
-			stage === "tool_result" ? observedResult(event, resource, reference, deliveredExtent) : undefined;
+		resource: Resource,
+		reference: Buffer | undefined,
+	) {
+		const result = stage === "tool_result" ? observedResult(event, resource, reference) : undefined;
 		if (stage === "tool_result") delivered.delete(event.toolCallId);
 		const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-		const cell = extract({
+		return extract({
 			stage,
 			day: utcDay(),
 			resource,
@@ -142,12 +125,22 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 			reference,
 			result,
 		});
-		if (collector.admit(cell)) await collector.observed(ctx.signal);
 	}
 	async function observe(event: ObservedToolEvent, ctx: ExtensionContext, stage: "tool_request" | "tool_result"): Promise<void> {
 		if (!enabled || !collector || !catalog || !["read", "pillars"].includes(event.toolName)) return;
 		try {
-			await recordObservation(event, ctx, stage, collector, catalog);
+			const resource = event.toolName === "pillars"
+				? ownedResource(event, catalog)
+				: await resourceByPath(catalog, event.input.path, ctx.cwd);
+			if (!resource || !admitObservation(event, stage, ctx)) return;
+			let reference: Buffer | undefined;
+			try {
+				reference = await readBody(resource.path, ctx.signal);
+			} catch {
+				collector.incident("unresolvedAccessEvents");
+			}
+			const cell = observationCell(event, ctx, stage, resource, reference);
+			if (collector.admit(cell)) await collector.observed(ctx.signal);
 		} catch {
 			diagnostic(ctx, "Pillars observation was unavailable. Unpersisted loss remains unknown.");
 		}
