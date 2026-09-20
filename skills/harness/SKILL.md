@@ -13,7 +13,7 @@ description: >
   outcome does not exempt them. Do not use for invoking or installing an unchanged
   resource, ordinary application code, unrelated uses of "tool", "skill", or
   "extension", or Pi core development.
-compatibility: Pi-specific workflow. The bundled skill validator uses dependency-free TypeScript and requires Node.js 22.19 or newer for direct execution; verify Pi-sensitive behavior against the active Pi installation.
+compatibility: Pi-specific workflow. The bundled skill validator uses dependency-free TypeScript and requires Node.js 22.19 or newer for direct execution; verify Pi-sensitive behavior against the active Pi installation. Uses the sibling repository instructions at `../../AGENTS.md` for the owning repository's binding rules.
 ---
 
 # Harness
@@ -27,7 +27,7 @@ Select, design, change, and verify Pi harness surfaces through one entry point. 
 - Classify the capability before drafting when the implementation surface is open. A user word such as “tool,” “command,” or “plugin” does not settle the Pi building block.
 - Use the lowest sufficient surface, but build a coherent end-to-end capability rather than minimizing line count.
 - Treat current Pi documentation, declarations, installed source, and shipped examples as the authority for version-sensitive claims.
-- Follow the owning repository's provenance, privacy, worktree, testing, and release rules.
+- Follow the owning repository's rules in `AGENTS.md` for provenance, privacy, worktree, testing, release, scope, and dependency approval.
 - Keep common decisions here and lane-specific detail in one-level references. Read only the references that the selected lane requires.
 - **New surfaces require a proposal and explicit operator approval before any write.** The enumeration below decides what counts — not the agent's framing of the request. Reclassifying an addition as "part of the requested outcome," "the sharing mechanism," or "just making it work" does not exempt it.
 

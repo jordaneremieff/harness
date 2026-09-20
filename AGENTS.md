@@ -91,6 +91,28 @@
 - Before closing work: focused tests, `npm test`, `npm run typecheck`, `npm run
   check`, and README claims updated to match reality in the same change.
 
+## Scope and dependencies
+
+- Add an extra format, compatibility branch, or fallback only for a concrete
+  current requirement, and name that requirement when you add the mechanism.
+  An existing capability, symmetry with another surface, a possible future use,
+  and speculative tolerance are not requirements. Reviewers challenge
+  unnecessary scope before implementation polish.
+- Add or install a new direct runtime dependency only after explicit operator
+  approval, before you add its declaration or its runtime use. Judge newness
+  against the state before the change: a package is new when the change adds it
+  to `dependencies`, `peerDependencies`, or `optionalDependencies`, or when the
+  change makes shipped code use it at runtime through an import or a spawned
+  executable and the package was not already a runtime dependency. This second
+  case includes a development-only package moved into runtime use, and a
+  package that is undeclared or present only through another dependency. The
+  request states the purpose, the existing alternatives considered, and the
+  indirect packages the dependency adds; disclose the indirect additions there,
+  and they need no separate approval. A version update to an already-declared
+  runtime dependency, a lockfile or indirect update, a development-only
+  addition, and an ordinary local edit are not new direct runtime
+  dependencies.
+
 ## Repository contents
 
 Only commit durable artifacts required to:
