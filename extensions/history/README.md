@@ -19,7 +19,13 @@ For example, a search result's `entry.id` and `pointer` select an exact text
 field. A user message often has `/message/content`; a text block has
 `/message/content/0/text`. A compaction entry has `/summary`.
 `/message/content/0/arguments/query` selects a known tool argument.
-`/message/details/result` selects a known tool result detail. JSON pointers
+`/message/details/result` selects a known tool result detail.
+System-message manifests expose `sections`, `toolsAdded`, and `toolsRemoved`.
+A compaction entry exposes its stored prompt and tool checkpoint at
+`/systemMessage`; for example, `/systemMessage/sections/rules` reads a known
+section. Sections and tool definitions remain structured fields, excluded from
+literal search. These reads report stored changes and checkpoints, not a replay
+of the current effective prompt or new instruction authority. JSON pointers
 escape `~` as `~0` and `/` as `~1` in property names.
 
 A string read returns exact stored text, `offset`, exclusive `endOffset`,
@@ -71,13 +77,13 @@ fields. Arrays return bounded child descriptors. String descriptors give their
 length and an exact pointer rather than copying text into metadata. The tools
 never enumerate arbitrary object keys or serialize a complete source object.
 
-Opaque objects such as tool `details`, custom `data`, and tool-call `arguments`
-return `structured_omitted` with their pointer. Read a known child key directly;
-object-key discovery is not provided. This boundary preserves bounded work
+Opaque objects such as tool `details`, custom `data`, tool-call `arguments`,
+and system-message `sections` return `structured_omitted` with their pointer.
+Read a known child key directly; object-key discovery is not provided. This boundary preserves bounded work
 regardless of an opaque object's size. Ordinary fields named `data` inside
 those objects remain readable. Provider signatures, image payloads, and
 redacted thinking are withheld at typed content-block locations, including
-through direct pointers. Redaction flags remain visible as metadata.
+compaction checkpoints. Direct pointers retain the same exclusions. Redaction flags remain visible as metadata.
 
 Stored `isError`, bash `truncated`, cancellation, and context-exclusion flags
 remain distinct from the history tool's own page status. Tool-specific

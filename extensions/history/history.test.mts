@@ -213,8 +213,7 @@ test("control-heavy output fits the complete wire JSON cap and has useful contin
 	assert.ok(matches(more)[0].offset > matches(search)[0].offset);
 });
 
-test("manifests and opaque fields avoid enumeration, getters, toJSON and large payload serialization", () => {
-	const sm = SessionManager.inMemory();
+test("manifests contain malformed opaque fields without enumeration, getters, toJSON or payload serialization", () => {
 	let enumerated = false;
 	const details = new Proxy(
 		{
@@ -231,15 +230,21 @@ test("manifests and opaque fields avoid enumeration, getters, toJSON and large p
 			},
 		},
 	);
-	const id = sm.appendMessage({
-		role: "toolResult",
-		toolName: "synthetic_tool",
-		toolCallId: "synthetic-call",
-		content: [{ type: "text", text: "stored truncation notice" }],
-		details,
-		isError: true,
-		timestamp: 1,
-	});
+	// Malformed source data bypasses Pi's JSON-only append contract deliberately.
+	const entry = {
+		...raw("opaque", null),
+		message: {
+			role: "toolResult",
+			toolName: "synthetic_tool",
+			toolCallId: "synthetic-call",
+			content: [{ type: "text", text: "stored truncation notice" }],
+			details,
+			isError: true,
+			timestamp: 1,
+		},
+	} as unknown as SessionEntry;
+	const sm = source([entry]);
+	const id = entry.id;
 	const result = readHistory(sm, { entryId: id, pointer: "/message/details" });
 	assert.equal(result.status, "structured_omitted");
 	assert.equal((result.entry as Record<string, unknown>).isError, true);
@@ -257,13 +262,52 @@ test("manifests and opaque fields avoid enumeration, getters, toJSON and large p
 		),
 	);
 	const getter = source([raw("get", null)]);
-	const entry = getter.getEntry("get")!;
-	Object.defineProperty(entry, "summary", {
+	const getterEntry = getter.getEntry("get")!;
+	Object.defineProperty(getterEntry, "summary", {
 		get() {
 			throw new Error("getter ran");
 		},
 	});
 	assert.throws(() => searchHistory(getter, { query: "x" }), /Accessor fields/);
+});
+
+test("system messages and compaction checkpoints expose bounded prompt and tool selectors", () => {
+	const sm = SessionManager.inMemory();
+	const system = sm.appendMessage({
+		role: "system",
+		content: [{ type: "text", text: "base instructions", textSignature: "opaque signature" }],
+		sections: { rules: "exact rule text", removed: null },
+		toolsAdded: [{ name: "synthetic_tool", description: "tool contract", parameters: {} }],
+		toolsRemoved: [{ name: "removed_tool" }],
+		timestamp: 1,
+	});
+	const kept = user(sm, "retained request");
+	const compact = sm.appendCompaction("summary", kept, 1000);
+	assert.equal(matches(searchHistory(sm, { query: "base instructions" }))[0].entry.id, system);
+	assert.equal(matches(searchHistory(sm, { query: "exact rule text" })).length, 0);
+	const fields = readHistory(sm, { entryId: system, pointer: "/message" }).items as Record<string, unknown>[];
+	for (const key of ["sections", "toolsAdded", "toolsRemoved"]) {
+		assert.ok(fields.some((field) => field.pointer === `/message/${key}`));
+	}
+	assert.equal(readHistory(sm, { entryId: system, pointer: "/message/sections" }).status, "structured_omitted");
+	assert.equal(readHistory(sm, { entryId: system, pointer: "/message/sections/rules" }).text, "exact rule text");
+	assert.equal(readHistory(sm, { entryId: system, pointer: "/message/sections/removed" }).value, null);
+	assert.equal(readHistory(sm, { entryId: system, pointer: "/message/toolsAdded/0/name" }).text, "synthetic_tool");
+	const root = readHistory(sm, { entryId: compact }).items as Record<string, unknown>[];
+	assert.ok(root.some((field) => field.pointer === "/systemMessage"));
+	const checkpoint = readHistory(sm, { entryId: compact, pointer: "/systemMessage" }).items as Record<string, unknown>[];
+	assert.ok(checkpoint.some((field) => field.pointer === "/systemMessage/sections"));
+	assert.equal(readHistory(sm, { entryId: compact, pointer: "/systemMessage/sections/rules" }).text, "exact rule text");
+	assert.equal(readHistory(sm, { entryId: compact, pointer: "/systemMessage/content" }).text, "base instructions");
+	const stored = sm.getEntry(compact)!;
+	assert.equal(stored.type, "compaction");
+	if (stored.type !== "compaction") throw new Error("Expected a compaction checkpoint");
+	const arrayCheckpoint = source([{ ...stored, systemMessage: {
+		role: "system", content: [{ type: "text", text: "base instructions", textSignature: "opaque signature" }], timestamp: 1,
+	} }]);
+	assert.equal(readHistory(arrayCheckpoint, { entryId: compact, pointer: "/systemMessage/content/0/textSignature" }).status, "withheld");
+	const block = readHistory(arrayCheckpoint, { entryId: compact, pointer: "/systemMessage/content/0" }).items as Record<string, unknown>[];
+	assert.ok(block.some((field) => field.pointer === "/systemMessage/content/0/textSignature" && field.kind === "withheld"));
 });
 
 test("custom entries retain their entry class and literal nested pointers", () => {

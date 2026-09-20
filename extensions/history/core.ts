@@ -368,6 +368,7 @@ const ENTRY_KEYS = [
 	"provider",
 	"modelId",
 	"thinkingLevel",
+	"systemMessage",
 ];
 const MESSAGE_KEYS = [
 	"role",
@@ -395,6 +396,9 @@ const MESSAGE_KEYS = [
 	"summary",
 	"fromId",
 	"tokensBefore",
+	"sections",
+	"toolsAdded",
+	"toolsRemoved",
 ];
 const BLOCK_KEYS = [
 	"type",
@@ -454,7 +458,8 @@ function descriptor(value: unknown, pointer: string): RecordValue {
 }
 function withheld(entry: SessionEntry, parts: string[]): boolean {
 	const blockLength =
-		entry.type === "message" && parts[0] === "message" && parts[1] === "content"
+		((entry.type === "message" && parts[0] === "message") ||
+			(entry.type === "compaction" && parts[0] === "systemMessage")) && parts[1] === "content"
 			? 3
 			: entry.type === "custom_message" && parts[0] === "content"
 				? 2
@@ -474,10 +479,13 @@ function withheld(entry: SessionEntry, parts: string[]): boolean {
 }
 function knownKeys(parts: string[]): readonly string[] | undefined {
 	if (parts.length === 0) return ENTRY_KEYS;
-	if (parts.length === 1 && parts[0] === "message") return MESSAGE_KEYS;
+	if (parts.length === 1 && (parts[0] === "message" || parts[0] === "systemMessage")) return MESSAGE_KEYS;
 	if (
 		(parts.length === 2 && parts[0] === "content" && /^\d+$/.test(parts[1])) ||
-		(parts.length === 3 && parts[0] === "message" && parts[1] === "content" && /^\d+$/.test(parts[2]))
+		(parts.length === 3 &&
+			(parts[0] === "message" || parts[0] === "systemMessage") &&
+			parts[1] === "content" &&
+			/^\d+$/.test(parts[2]))
 	)
 		return BLOCK_KEYS;
 	return undefined;
