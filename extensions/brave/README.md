@@ -112,7 +112,12 @@ no key or configuration; it fetches only public pages with no credential.
   call settles.
 - Query length, result count, page offset, country, language, freshness, and enum
   values are schema-bounded. The client stops streaming decoded response bodies
-  at 5 MiB and accepts only HTTP(S) result URLs.
+  at 5 MiB. A fixed buffer also bounds retained allocation overhead when a response
+  arrives in many small chunks. Result URLs must use HTTP(S) without userinfo
+  credentials; other URLs are omitted.
+- HTTP errors report the status and local guidance for authentication, query,
+  and rate-limit failures. Remote error bodies and transport exception messages
+  are not returned because they can reflect request credentials or instructions.
 - Search strings are stripped of terminal and bidi controls before presentation.
   Individual fields and final output are bounded; final model-visible output
   never exceeds Pi's 50 KB / 2000-line tool-output truncation limits
@@ -143,8 +148,9 @@ node scripts/extension-load-check.mts extensions/brave/index.ts
 ```
 
 The focused tests cover configuration precedence and failures, request
-construction, response normalization, API errors, credential non-disclosure,
-response bounds, cancellation, timeout cleanup, control-character handling,
+construction, response normalization, HTTP error guidance, reflected-credential
+non-disclosure, credential-bearing URL omission, fragmented UTF-8, exact response
+bounds, cancellation, timeout cleanup, control-character handling,
 output truncation, registration, entrypoint execution, URL and address policy,
 static main/article/body extraction, excerpt references, and page reading
 results.

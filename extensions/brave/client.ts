@@ -71,14 +71,6 @@ function cleanKey(value: unknown): string | undefined {
 	return key.length > 0 ? key : undefined;
 }
 
-function cleanErrorText(value: string): string {
-	return value
-		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, " ")
-		.replace(/\s+/g, " ")
-		.trim()
-		.slice(0, 400);
-}
-
 export async function resolveApiKey(options: BraveClientOptions = {}, signal?: AbortSignal): Promise<string> {
 	if (signal?.aborted) throw new Error("Brave web search cancelled.");
 	const explicit = cleanKey(options.apiKey);
@@ -95,7 +87,9 @@ function httpUrl(value: unknown): string | undefined {
 	if (!raw) return undefined;
 	try {
 		const url = new URL(raw);
-		return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : undefined;
+		return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password
+			? url.toString()
+			: undefined;
 	} catch {
 		return undefined;
 	}
@@ -132,17 +126,17 @@ function decodeResponse(payload: unknown, fallbackQuery: string): BraveWebSearch
 	};
 }
 
-function apiErrorDetail(body: string): string | undefined {
-	try {
-		const root = asRecord(JSON.parse(body));
-		const error = asRecord(root?.error);
-		const detail = asString(error?.detail);
-		const code = asString(error?.code);
-		if (detail && code) return cleanErrorText(`${code}: ${detail}`);
-		return detail || code ? cleanErrorText(detail ?? code ?? "") : undefined;
-	} catch {
-		return cleanErrorText(body) || undefined;
-	}
+function httpError(status: number): Error {
+	// Remote error bodies and transport messages can reflect request credentials.
+	const hint =
+		status === 401 || status === 403
+			? " Check PI_BRAVE_API_KEY and subscription access."
+			: status === 429
+				? " Check the subscription quota or retry after the rate limit resets."
+				: status === 400 || status === 422
+					? " Check the query and search filters."
+					: "";
+	return new Error(`Brave Search request failed (HTTP ${status}).${hint}`);
 }
 
 function requestUrl(params: BraveWebSearchRequest): URL {
@@ -163,11 +157,6 @@ function requestUrl(params: BraveWebSearchRequest): URL {
 	return url;
 }
 
-function transportError(prefix: string, error: unknown): Error {
-	const detail = error instanceof Error ? cleanErrorText(error.message) : cleanErrorText(String(error));
-	return new Error(detail ? `${prefix}: ${detail}` : prefix);
-}
-
 class ResponseLimitError extends Error {}
 
 async function readBoundedBody(response: FetchResponse): Promise<string> {
@@ -180,7 +169,8 @@ async function readBoundedBody(response: FetchResponse): Promise<string> {
 		return body;
 	}
 
-	const chunks: Buffer[] = [];
+	// Fixed storage bounds allocation overhead independently of transfer chunk size.
+	const buffer = Buffer.allocUnsafe(MAX_RESPONSE_BYTES);
 	let totalBytes = 0;
 	try {
 		while (true) {
@@ -194,12 +184,12 @@ async function readBoundedBody(response: FetchResponse): Promise<string> {
 				} catch {}
 				throw new ResponseLimitError(`Brave Search response exceeded the ${MAX_RESPONSE_BYTES}-byte safety limit.`);
 			}
-			chunks.push(Buffer.from(value));
+			buffer.set(value, totalBytes - value.byteLength);
 		}
 	} finally {
 		reader.releaseLock();
 	}
-	return Buffer.concat(chunks, totalBytes).toString("utf8");
+	return buffer.toString("utf8", 0, totalBytes);
 }
 
 export async function searchBraveWeb(
@@ -236,10 +226,10 @@ export async function searchBraveWeb(
 				redirect: "error",
 				signal: controller.signal,
 			});
-		} catch (error) {
+		} catch {
 			if (signal?.aborted) throw new Error("Brave web search cancelled.");
 			if (timedOut) throw new Error(`Brave web search timed out after ${timeoutMs}ms.`);
-			throw transportError("Brave Search network request failed", error);
+			throw new Error("Brave Search network request failed.");
 		}
 
 		const declaredLength = Number(response.headers?.get("content-length"));
@@ -256,7 +246,7 @@ export async function searchBraveWeb(
 			if (error instanceof ResponseLimitError) throw error;
 			if (signal?.aborted) throw new Error("Brave web search cancelled.");
 			if (timedOut) throw new Error(`Brave web search timed out after ${timeoutMs}ms.`);
-			throw transportError("Could not read the Brave Search response", error);
+			throw new Error("Could not read the Brave Search response.");
 		}
 	} finally {
 		clearTimeout(timer);
@@ -265,10 +255,7 @@ export async function searchBraveWeb(
 
 	if (signal?.aborted) throw new Error("Brave web search cancelled.");
 	if (timedOut) throw new Error(`Brave web search timed out after ${timeoutMs}ms.`);
-	if (!response.ok) {
-		const detail = apiErrorDetail(body);
-		throw new Error(`Brave Search request failed (HTTP ${response.status})${detail ? `: ${detail}` : "."}`);
-	}
+	if (!response.ok) throw httpError(response.status);
 
 	let payload: unknown;
 	try {

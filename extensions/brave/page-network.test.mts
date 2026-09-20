@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter, getEventListeners } from "node:events";
-import http, { Agent, IncomingMessage, request as httpRequest, type ClientRequest } from "node:http";
+import http, { Agent, type ClientRequest, request as httpRequest, IncomingMessage } from "node:http";
 import { Socket } from "node:net";
 import { Duplex } from "node:stream";
 import { describe, it } from "node:test";
@@ -9,10 +9,10 @@ import {
 	fetchPublicPage,
 	isPublicPageAddress,
 	PAGE_NETWORK_LIMITS,
-	parsePublicPageUrl,
-	pinnedPageRequestOptions,
 	type PageNetworkDependencies,
 	type PageResolver,
+	parsePublicPageUrl,
+	pinnedPageRequestOptions,
 } from "./page-network.ts";
 
 interface Reply {

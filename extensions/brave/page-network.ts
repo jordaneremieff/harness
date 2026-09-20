@@ -1,5 +1,5 @@
 import { Resolver } from "node:dns/promises";
-import { request as httpRequest, type ClientRequest, type IncomingMessage } from "node:http";
+import { type ClientRequest, request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest, type RequestOptions } from "node:https";
 import { BlockList, isIP } from "node:net";
 import { checkServerIdentity } from "node:tls";

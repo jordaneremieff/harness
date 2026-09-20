@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { formatSearchResults } from "./format.ts";
 import type { BraveWebSearchResponse } from "./client.ts";
+import { formatSearchResults } from "./format.ts";
 
 function response(overrides: Partial<BraveWebSearchResponse> = {}): BraveWebSearchResponse {
 	return {
