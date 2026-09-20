@@ -115,14 +115,19 @@ export async function appendEntry(dir: string, entry: ClipboardEntry): Promise<s
 		if (Number.isNaN(timestamp.getTime())) throw new Error(`invalid clipboard timestamp: ${entry.timestamp}`);
 		await ensurePrivateDirectory(dir, true);
 		const path = join(dir, `${localDate(timestamp)}.jsonl`);
-		const serialized = `${JSON.stringify(entry)}\n`;
+		// A leading separator keeps a previous torn append from consuming this record.
+		const serialized = `\n${JSON.stringify(entry)}\n`;
 		const bytes = Buffer.byteLength(serialized, "utf8");
 		if (bytes > MAX_ARCHIVE_RECORD_BYTES) {
 			throw new Error(`clipboard archive record is ${bytes} bytes; maximum is ${MAX_ARCHIVE_RECORD_BYTES}`);
 		}
-		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-		const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | noFollow, 0o600);
+		const handle = await open(
+			path,
+			constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+			0o600,
+		);
 		try {
+			if (!(await handle.stat()).isFile()) throw new Error(`not a regular archive file: ${path}`);
 			await handle.chmod(0o600);
 			// One O_APPEND write keeps concurrent records contiguous. appendFile
 			// splits large inputs across writes, which can interleave with peers.
@@ -178,8 +183,7 @@ function normalizeEntry(value: unknown, contentChars: number): ClipboardEntry | 
 }
 
 async function openArchive(path: string): Promise<{ handle: FileHandle; size: number }> {
-	const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-	const handle = await open(path, constants.O_RDONLY | noFollow);
+	const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	try {
 		const info = await handle.stat();
 		if (!info.isFile()) throw new Error(`not a regular archive file: ${path}`);

@@ -1,11 +1,25 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { closeSync, constants, openSync } from "node:fs";
+import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { appendEntry, fileMode, localDate, makeEntry, makePreview, readEntries, resolveClipboardDir } from "./store.ts";
 
 let dir: string;
+
+function runStoreProbe(source: string): { error: string | null } {
+	const module = JSON.stringify(new URL("./store.ts", import.meta.url).href);
+	const child = spawnSync(
+		process.execPath,
+		["--input-type=module", "--eval", `import { appendEntry, makeEntry, readEntries } from ${module}; ${source}`],
+		{ encoding: "utf8", timeout: 2000, maxBuffer: 8192 },
+	);
+	assert.ifError(child.error);
+	assert.equal(child.status, 0, child.stderr);
+	return JSON.parse(child.stdout) as { error: string | null };
+}
 
 before(async () => {
 	dir = await mkdtemp(join(tmpdir(), "clipboard-store-test-"));
@@ -72,6 +86,63 @@ describe("appendEntry + readEntries", () => {
 				found.find((candidate) => candidate.id === entry.id),
 				entry,
 			);
+	});
+
+	it("preserves a valid append after a torn record without rewriting existing bytes", async () => {
+		const tornDir = await mkdtemp(join(dir, "torn-record-"));
+		const entry = makeEntry("complete record");
+		const path = join(tornDir, `${localDate(new Date(entry.timestamp))}.jsonl`);
+		const torn = '{"id":"torn"';
+		await writeFile(path, torn);
+		assert.equal(await appendEntry(tornDir, entry), null);
+		assert.ok((await readFile(path, "utf8")).startsWith(torn));
+		assert.deepEqual(await readEntries(tornDir), [entry]);
+	});
+
+	for (const connected of [false, true]) {
+		it(`refuses an archive pipe with ${connected ? "a connected" : "no"} reader`, async () => {
+			const pipeDir = await mkdtemp(join(dir, "archive-pipe-"));
+			const pipe = join(pipeDir, `${localDate(new Date())}.jsonl`);
+			const created = spawnSync("mkfifo", [pipe], { encoding: "utf8", timeout: 2000, maxBuffer: 8192 });
+			assert.ifError(created.error);
+			assert.equal(created.status, 0, created.stderr);
+			const mode = (await stat(pipe)).mode;
+			const reader = connected ? openSync(pipe, constants.O_RDONLY | constants.O_NONBLOCK) : undefined;
+			try {
+				const result = runStoreProbe(`
+					const error = await appendEntry(${JSON.stringify(pipeDir)}, makeEntry("not written"));
+					process.stdout.write(JSON.stringify({ error }));
+				`);
+				assert.equal(typeof result.error, "string");
+				assert.equal((await stat(pipe)).mode, mode, "refusal leaves the pipe permissions unchanged");
+			} finally {
+				if (reader !== undefined) closeSync(reader);
+			}
+		});
+	}
+
+	it("refuses an archive replaced by a pipe after directory discovery", async () => {
+		const raceDir = await mkdtemp(join(dir, "archive-read-race-"));
+		const entry = makeEntry("original");
+		assert.equal(await appendEntry(raceDir, entry), null);
+		const path = join(raceDir, `${localDate(new Date(entry.timestamp))}.jsonl`);
+		const result = runStoreProbe(`
+			const { unlinkSync } = await import("node:fs");
+			const { execFileSync } = await import("node:child_process");
+			const signal = new AbortController().signal;
+			let checks = 0;
+			Object.defineProperty(signal, "throwIfAborted", { value() {
+				if (++checks === 2) {
+					unlinkSync(${JSON.stringify(path)});
+					execFileSync("mkfifo", [${JSON.stringify(path)}], { timeout: 1000, maxBuffer: 8192 });
+				}
+			}});
+			let error = null;
+			try { await readEntries(${JSON.stringify(raceDir)}, { signal }); }
+			catch (failure) { error = failure.message; }
+			process.stdout.write(JSON.stringify({ error }));
+		`);
+		assert.match(result.error ?? "", /not a regular archive file/);
 	});
 
 	it("respects limit and skips syntactically or structurally malformed records", async () => {

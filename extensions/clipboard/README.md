@@ -23,8 +23,9 @@ History is one append-only JSONL file per local calendar day at `<agentDir>/clip
 
 - Each entry requires a valid stored id. Records without one are skipped, never assigned a synthetic identity. For duplicate ids, only the newest record is visible.
 - Directory and file modes are re-enforced as `0700` and `0600` on use.
-- Appends use one bounded `O_APPEND` write per record and `O_NOFOLLOW` where available. Concurrent large appends do not interleave chunks. Short writes return an archive warning.
-- Reads reject a symlinked store, ignore symlinked archives, skip malformed records, and recompute derived metadata from validated content.
+- Appends use one bounded `O_APPEND` write per record, with leading and trailing newline separators. Concurrent large appends do not interleave chunks. Short writes return an archive warning; a later append remains readable after a torn record without rewriting prior bytes.
+- Archive opens use `O_NOFOLLOW` and `O_NONBLOCK`, then verify the descriptor is a regular file before changing its mode or accessing content. A pipe at an archive path is refused without waiting for a peer.
+- Reads reject a symlinked store, ignore symlinked archives, skip blank or malformed records, and recompute derived metadata from validated content.
 - Readers scan files and records newest-first in bounded chunks and check cancellation between reads and records. Lists stop after the requested page and retain no body content; the browser retains at most 32,768 characters per entry. Stable-id lookup refetches the full selected record without materializing a whole daily archive.
 - Individual JSONL records are capped at 64 MiB. This contains malformed or unexpectedly large historical data while accommodating the tool's 8 MiB input limit and JSON escaping.
 - Restores append a new `(restored)` entry because they are real clipboard writes.
@@ -63,4 +64,4 @@ node --test extensions/clipboard/*.test.mts
 npm test
 ```
 
-The focused suite covers synthetic subprocess copy and restore, cancellation, early stdin closure, stable-id recovery, bounded pages, concurrent large appends, private storage, RPC command routing, and browser behavior. Browser tests drive keyboard input, narrow layouts, disposal, and late results with controlled I/O. They do not read or change the operator's system clipboard.
+The focused suite covers synthetic subprocess copy and restore, cancellation, early stdin closure, stable-id recovery, bounded pages, concurrent large appends, torn-record isolation, nonregular-file refusal, private storage, RPC command routing, and browser behavior. Browser tests drive keyboard input, narrow layouts, disposal, and late results with controlled I/O. They do not read or change the operator's system clipboard.
