@@ -399,6 +399,27 @@ describe("atomic explicit catalog import", () => {
 		assert.equal(snapshot.records.size, MAX_RULES);
 		assert.equal(additions.filter((entry) => snapshot.records.has(entry.id)).length, 1);
 	});
+	it("rechecks catalog capacity at approval without consuming a rejected pending addition", async (t) => {
+		const dir = await directory(t);
+		const rows = Array.from({ length: MAX_RULES - 1 }, (_, index) => row(`rule.n-${index}`));
+		const reg = registry(dir, rows);
+		await reg.snapshot();
+		await reg.disable(rows[0].id, "Keep an inactive definition in the catalog.", sessionAudit());
+		const first = await reg.proposeAdd(candidate("operator.first"), "First addition.", agent);
+		const second = await reg.proposeAdd(candidate("operator.second"), "Second addition.", agent);
+		await reg.decide(first.id, "approved", "steer", sessionAudit());
+		const before = await readFile(join(dir, RULES_FILE));
+		await assert.rejects(reg.decide(second.id, "approved", "steer", sessionAudit()), /already contains.*rules/);
+		assert.deepEqual(await readFile(join(dir, RULES_FILE)), before);
+		const snapshot = await registry(dir).snapshot();
+		assert.equal(snapshot.health.status, "ok");
+		assert.equal(snapshot.records.size, MAX_RULES);
+		assert.equal(snapshot.pending[0]?.id, second.id);
+		assert.equal(effectiveState(snapshot.records.get(rows[0].id)!), "disabled");
+		await reg.decide(second.id, "rejected", undefined, sessionAudit());
+		assert.equal((await reg.snapshot()).pending.length, 0);
+	});
+
 	it("allows a seeded rule edit at full capacity without a separate origin quota", async (t) => {
 		const dir = await directory(t);
 		const rows = Array.from({ length: MAX_RULES }, (_, index) => row(`rule.n-${index}`));

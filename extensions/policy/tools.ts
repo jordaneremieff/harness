@@ -204,7 +204,19 @@ export const PolicyProposeParams = Type.Union(
 			{ additionalProperties: false },
 		),
 	],
-	{ type: "object" },
+	{
+		type: "object",
+		// Providers that project only object fields still receive the complete authoring vocabulary.
+		properties: {
+			...FactsProposal,
+			...PredicateProposal,
+			...CommandProposal,
+			operation: Type.Union(["add", "replace", "retire", "disable"].map((value) => Type.Literal(value))),
+			match: Type.Union([MatchSchema, CliMatchSchema]),
+			expectedRevision: RevisionSchema,
+		},
+		required: ["operation", "id", "reason"],
+	},
 );
 
 const MAX_PREVIEW_CONTENT_BLOCKS = 64;
@@ -376,6 +388,7 @@ export function validateInspectionParams(params: Record<string, unknown>): void 
 			throw new Error("preview requires a bounded tool name");
 		if (!params.input || typeof params.input !== "object" || Array.isArray(params.input))
 			throw new Error("preview requires input object");
+		if (Object.keys(params.input).length > 128) throw new Error("preview input exceeds the property bound");
 		if (params.result !== undefined) {
 			const result = params.result as Record<string, unknown>;
 			if (

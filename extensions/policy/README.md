@@ -194,8 +194,12 @@ This finite description applies to applicability, `when`, `state.observe`, and
 `state.resetWhen`; it does not limit valid nesting or grant admission. Before a
 proposal reaches storage, the local recursive validator checks every condition,
 the shared node/depth limits, field types, declared data, and action authority.
-Both descriptions use the same condition and program shape builders. Stored
-rules and their validation contract do not change.
+Both descriptions use the same condition and program shape builders. The proposal
+schema also exposes all authoring fields at its object root, so provider adapters
+that project object properties retain the complete vocabulary. Its closed union
+branches still enforce operation-specific admission before execution. Policy does
+not request strict constrained sampling for this grammar. Stored rules and their
+validation contract do not change.
 
 A program declares:
 
@@ -315,6 +319,10 @@ sequence of retries. Policy never serializes tool execution to simplify counters
 
 ### Host boundaries
 
+- Policy governs model tool calls, not operator `!` or `!!` commands. It registers
+  no `user_bash` handler. Pi owns that separate route and aborts it if an installed
+  handler throws or returns an invalid defined result; `undefined` continues
+  propagation. That host behavior does not extend policy rules to operator commands.
 - Pi validates the outer tool schema before `tool_call`. Policy cannot repair a
   call rejected before this hook. Tool-owned argument preparation is a different
   public contract; policy does not replace tool registrations to acquire it.
@@ -551,7 +559,10 @@ historical evidence, not current rule authority.
 Preview requires `tool` and bounded `input`, with optional `result` containing
 `isError`, `details`, and text `content` blocks. Binary/image content and `usage`
 are not accepted. Preview and execution share result fact projection and the
-error-correction-before-guidance sequence.
+error-correction-before-guidance sequence. The tool and `/policy preview` command
+apply the same bounded inspection validation, including result types, allowed
+fields, text-only content, and total JSON size. Invalid result flags are rejected,
+not converted to successful results.
 
 Preview neither executes a simulated tool nor changes simulated policy state or
 data. Its response deliberately shows the supplied candidate. That response can
@@ -593,7 +604,10 @@ telemetry; it is not a promise that the complete invocation performs no writes.
 Set JSON contains `data`, `expectedRevision` (null for a new binding), and an
 optional exact `approveRevision`. Reset immediately invalidates the selected
 observation pins without stopping tools or changing rules, approvals, data, or
-historical records. `--all` is distinct from every valid rule id.
+historical records. `--all` is distinct from every valid rule id. Command completion
+includes `reset --all`, data actions, stored data names, and the current revision
+for removal. Completion supplies syntax, not approval; the command still validates
+authority and the current revision.
 
 ### Explicit catalog import
 
@@ -731,6 +745,9 @@ registry.
 The store directory must be current-user-owned, non-symlink, and private (0700).
 The registry must be a current-user-owned regular file with mode 0600. Reads and
 writes use no-follow protections where available and checked append writes.
+Existing rule and telemetry paths open without waiting for pipe peers. Nonregular
+files are rejected before reads or writes; panel reads report partial evidence
+instead of treating an unreadable source as an empty history.
 
 An exclusive private `.rules-lock` file serializes catalog writes and each
 reload/validate/append transaction across sessions and processes. Conflicting
@@ -758,7 +775,10 @@ capacity regardless of origin; an edit never transfers a rule into a smaller
 quota. Catalog and active-plan bounds live in [program.ts](program.ts). Current event and registry byte bounds
 are declared in [local-rules.ts](local-rules.ts); data and JSON bounds are declared
 in [data.ts](data.ts). Actual serialized catalogs are checked before authority
-changes. Oversized declarations are rejected rather than silently truncated.
+changes. Add approval rechecks total catalog capacity inside the write transaction,
+including disabled and retired definitions. Competing pending additions never
+reserve capacity; a refused approval remains pending and leaves the log unchanged.
+Oversized declarations are rejected rather than silently truncated.
 
 Daily telemetry records tool/call identity, session context, duration, text output
 size, truncation, reported tokens, observed outcome, mode, rule revisions,
@@ -853,6 +873,10 @@ npm run typecheck
 npm run check
 npm test
 ```
+
+The proposal schema tests also capture the real Anthropic adapter's request payload
+before network dispatch. They prove field preservation through that adapter, not
+acceptance by a remote endpoint.
 
 The Pi hook tests drive the real extension runner and agent loop with controlled
 tools. They cover correction delivery, result chaining, completion order,

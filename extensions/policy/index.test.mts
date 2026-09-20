@@ -161,6 +161,7 @@ describe("registration and lazy catalog use", () => {
 		const { dir, pi, ctx } = await setup();
 		assert.deepEqual([...pi.tools.keys()].sort(), ["policy_propose", "policy_rules"]);
 		assert.deepEqual([...pi.commands.keys()], ["policy"]);
+		assert.equal(pi.handlers.has("user_bash"), false, "Operator shell commands remain outside model-tool policy");
 		await pi.emit("session_start", { type: "session_start" }, ctx);
 		await assert.rejects(stat(dir), /ENOENT/);
 	});
@@ -221,6 +222,62 @@ describe("registration and lazy catalog use", () => {
 });
 
 describe("unified tools and command gates", () => {
+	it("validates command previews with the same bounded inspection contract as the tool", async () => {
+		const { dir, pi, ctx, notifications } = await setup("enforce");
+		const command = pi.commands.get("policy")!;
+		const input = { tool: "read", input: { path: "sample.txt" }, result: { isError: false } };
+		await command.handler(`preview ${JSON.stringify(input)}`, ctx as never);
+		assert.equal(notifications.at(-1)?.type, "info");
+		assert.match(notifications.at(-1)?.message ?? "", /"preview": true/);
+		const before = await storedEvents(dir);
+		for (const invalid of [
+			null,
+			[],
+			{ ...input, view: "health" },
+			{ ...input, unexpected: true },
+			{ ...input, input: Object.fromEntries(Array.from({ length: 129 }, (_, n) => [`key${n}`, n])) },
+			{ ...input, result: null },
+			{ ...input, result: {} },
+			{ ...input, result: { isError: "false" } },
+			{ ...input, result: { isError: false, usage: { totalTokens: 1 } } },
+			{ ...input, result: { isError: false, content: [{ type: "image", data: "sample" }] } },
+			{ ...input, result: { isError: false, content: [{ type: "text", text: "body", extra: true }] } },
+			{ ...input, result: { isError: false, details: "x".repeat(65_536) } },
+		]) {
+			await command.handler(`preview ${JSON.stringify(invalid)}`, ctx as never);
+			assert.equal(notifications.at(-1)?.type, "error");
+			assert.doesNotMatch(notifications.at(-1)?.message ?? "", /"preview": true/);
+		}
+		assert.deepEqual(await storedEvents(dir), before, "Preview validation never changes authority");
+	});
+
+	it("completes data actions, stored names, exact revisions, and whole-state reset", async () => {
+		const { pi, ctx, notifications } = await setup();
+		const command = pi.commands.get("policy")!;
+		const completions = (prefix: string) =>
+			(command.getArgumentCompletions!(prefix) as Array<{ value: string }>).map((item) => item.value);
+		assert.deepEqual(completions("data "), ["data list", "data show", "data set", "data set-file", "data remove"]);
+		assert.deepEqual(completions("data show "), []);
+		assert.deepEqual(completions("reset --"), ["reset --all"]);
+		const artifact = {
+			expectedRevision: null,
+			data: { name: "rooms", kind: "table", source: "test", capturedAt: 1, rows: [{ key: "lobby", value: "1" }] },
+		};
+		await command.handler(`data set ${JSON.stringify(artifact)}`, ctx as never);
+		const approval = (notifications.at(-1)?.message ?? "").match(/\/policy data set (.+)/)?.[1];
+		assert.ok(approval);
+		await command.handler(`data set ${approval}`, ctx as never);
+		assert.equal(notifications.at(-1)?.type, "info");
+		assert.deepEqual(completions("data show ro"), ["data show rooms"]);
+		assert.deepEqual(completions("data remove "), ["data remove rooms"]);
+		const [remove] = completions("data remove rooms ");
+		assert.match(remove, /^data remove rooms [a-f0-9]{12}$/);
+		assert.deepEqual(completions(`${remove} `), [`${remove} exact`]);
+		assert.deepEqual(completions("data remove rooms 000000000000 "), []);
+		await command.handler(`${remove} exact`, ctx as never);
+		assert.deepEqual(completions("data show "), []);
+		assert.deepEqual(completions("data remove rooms "), []);
+	});
 	it("resolves set-file paths against the command context and commits only after exact approval", async () => {
 		const { dir, pi, notifications } = await setup();
 		const cwd = await mkdtemp(join(tmpdir(), "policy-data-cwd-"));

@@ -63,8 +63,16 @@ export async function appendRecord(dir: string, record: PolicyRecord): Promise<s
 		await ensurePrivateDirectory(dir);
 		const path = join(dir, `${localDate(timestamp)}.jsonl`);
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-		const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | noFollow, 0o600);
+		const handle = await open(
+			path,
+			constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NONBLOCK | noFollow,
+			0o600,
+		);
 		try {
+			const info = await handle.stat();
+			if (!info.isFile()) throw new Error(`policy record store is not a regular file: ${path}`);
+			if (typeof process.getuid === "function" && info.uid !== process.getuid())
+				throw new Error(`policy record store is not owned by this user: ${path}`);
 			await handle.chmod(0o600);
 			const { bytesWritten } = await handle.write(serialized, 0, serialized.length, null);
 			if (bytesWritten !== serialized.length) {

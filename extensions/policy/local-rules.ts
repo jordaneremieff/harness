@@ -1155,7 +1155,7 @@ async function readEvents(dir: string, path: string): Promise<ReadEventsResult> 
 	let handle: Awaited<ReturnType<typeof open>>;
 	try {
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-		handle = await open(path, constants.O_RDONLY | noFollow);
+		handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | noFollow);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { events: [], eventLines: [] };
 		const reason = error instanceof Error ? error.message : String(error);
@@ -1291,8 +1291,10 @@ function assertTransition(event: Exclude<RuleEvent, CatalogEvent>, reduction: Ru
 				reduction.records.get(proposal.ruleId)?.override?.state === "disabled" ? 0 : 1,
 				proposal.ruleId,
 			);
-			if (proposal.operation === "add" && reduction.records.has(proposal.ruleId))
-				throw new Error(`rule id "${proposal.ruleId}" is already taken`);
+			if (proposal.operation === "add") {
+				if (reduction.records.has(proposal.ruleId)) throw new Error(`rule id "${proposal.ruleId}" is already taken`);
+				if (reduction.records.size >= MAX_RULES) throw new Error(`rule store already contains ${MAX_RULES} rules`);
+			}
 			if (proposal.operation === "replace") {
 				const current = reduction.records.get(proposal.ruleId);
 				if (!current || current.definition.revision !== proposal.expectedRevision)
@@ -1426,7 +1428,11 @@ export class RuleRegistry {
 		const serialized = serializeEvent(event);
 		await ensurePrivateDirectory(this.dir);
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-		const handle = await open(this.path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | noFollow, 0o600);
+		const handle = await open(
+			this.path,
+			constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NONBLOCK | noFollow,
+			0o600,
+		);
 		try {
 			const info = await handle.stat();
 			privateFile(info, this.path);

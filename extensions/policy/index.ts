@@ -28,7 +28,13 @@ import {
 import { effectiveState, permitsEffectChoice } from "./rule.ts";
 import { PolicyRuntime } from "./runtime.ts";
 import { resolvePolicyDir } from "./store.ts";
-import { formatCatalog, policyDataCommand, policyImportCommand, registerRuleTools } from "./tools.ts";
+import {
+	formatCatalog,
+	policyDataCommand,
+	policyImportCommand,
+	registerRuleTools,
+	validateInspectionParams,
+} from "./tools.ts";
 
 const POLICY_MODE_FLAG = "policy-mode";
 const POLICY_USAGE = [
@@ -256,6 +262,18 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 					.map((r) => r.id);
 			if (position === 1 && ["catalog", "import"].includes(verb))
 				choices = [...registry.catalogRows().map((row) => row.id), ...(verb === "import" ? ["--all"] : [])];
+			if (position === 1 && verb === "reset") choices.push("--all");
+			if (position === 1 && verb === "data") choices = ["list", "show", "set", "set-file", "remove"];
+			if (position === 2 && verb === "data" && ["show", "remove"].includes(parts[1]))
+				choices = [...(completionSnapshot?.data.keys() ?? [])];
+			if (position === 3 && verb === "data" && parts[1] === "remove") {
+				const binding = completionSnapshot?.data.get(parts[2]);
+				if (binding) choices = [binding.revision];
+			}
+			if (position === 4 && verb === "data" && parts[1] === "remove") {
+				const binding = completionSnapshot?.data.get(parts[2]);
+				if (binding?.revision === parts[3]) choices = ["exact"];
+			}
 			if (position === 2 && verb === "import") choices = ["exact"];
 			if (position === 2 && verb === "effect") choices = ["steer", "block"];
 			if (position === 2 && verb === "approve") {
@@ -307,7 +325,13 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 				if (verb === "preview") {
 					const text = trimmed.slice(verb.length).trim();
 					if (Buffer.byteLength(text) > 262144) throw new Error("Preview exceeds the input bound");
-					return output(ctx, JSON.stringify(await runtime.inspect(verb, JSON.parse(text), ctx), null, 2));
+					const params = JSON.parse(text);
+					if (!params || typeof params !== "object" || Array.isArray(params))
+						throw new Error("Preview requires an inspection object");
+					if (params.view !== undefined && params.view !== "preview")
+						throw new Error("The preview command requires view preview");
+					validateInspectionParams({ ...params, view: "preview" });
+					return output(ctx, JSON.stringify(await runtime.inspect(verb, params, ctx), null, 2));
 				}
 				if (verb === "reset") {
 					if (parts.length < 2) return output(ctx, "Usage: /policy reset <id|--all> <reason...>", true);

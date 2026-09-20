@@ -229,6 +229,92 @@ describe("command-aware proposal admission", () => {
 });
 
 describe("finite proposal description and recursive admission", () => {
+	it("preserves the proposal vocabulary through the real Anthropic request converter", async (t) => {
+		const { registered } = await setup(t);
+		const { stream } = await import(
+			process.env.PI_POLICY_TEST_PI_ROOT
+				? pathToFileURL(
+						join(
+							process.env.PI_POLICY_TEST_PI_ROOT,
+							"node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js",
+						),
+					).href
+				: "@earendil-works/pi-ai/api/anthropic-messages"
+		);
+		let payload:
+			| { tools: Array<{ name: string; input_schema: { properties: Record<string, unknown>; required: string[] } }> }
+			| undefined;
+		const result = await stream(
+			{
+				provider: "anthropic",
+				id: "controlled",
+				api: "anthropic-messages",
+				name: "Controlled",
+				baseUrl: "https://api.anthropic.com",
+				reasoning: false,
+				input: ["text"],
+				contextWindow: 8192,
+				maxTokens: 64,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			},
+			{
+				messages: [
+					{
+						role: "system",
+						content: "Controlled schema inspection",
+						toolsAdded: [...registered.values()],
+						timestamp: 0,
+					},
+					{ role: "user", content: "Inspect schemas", timestamp: 0 },
+				],
+			},
+			{
+				client: { beta: { messages: { create: () => assert.fail("Schema inspection must not send a request") } } },
+				onPayload(value: typeof payload) {
+					payload = value;
+					throw new Error("schema inspection complete");
+				},
+			},
+		).result();
+		assert.match(result.errorMessage ?? "", /schema inspection complete/);
+		assert.ok(payload);
+		const tool = registered.get("policy_propose")!;
+		const schema = JSON.parse(JSON.stringify(tool.parameters));
+		const projected = payload.tools.find((item) => item.name === tool.name)!.input_schema;
+		assert.deepEqual(
+			Object.keys(projected.properties).sort(),
+			[
+				"applicability",
+				"authority",
+				"expectedRevision",
+				"id",
+				"language",
+				"match",
+				"note",
+				"onUnavailable",
+				"operation",
+				"predicate",
+				"program",
+				"purpose",
+				"reason",
+				"scope",
+				"suggestion",
+			].sort(),
+		);
+		assert.deepEqual(projected.required, ["operation", "id", "reason"]);
+		const variantFields = new Set(
+			schema.anyOf.flatMap((branch: { properties: object }) => Object.keys(branch.properties)),
+		);
+		assert.deepEqual(Object.keys(projected.properties).sort(), [...variantFields].sort());
+		assert.deepEqual(
+			projected.properties.program,
+			schema.anyOf.find((branch: { properties: { program?: unknown } }) => branch.properties.program).properties
+				.program,
+		);
+		assert.equal(transport.Check({ operation: "retire", id: "sample.rule", reason: "Retire it." }), true);
+		assert.equal(transport.Check({ operation: "add", id: "sample.rule", reason: "Add it." }), false);
+	});
+
 	it("registers finite schemas without recursive reference keywords", async (t) => {
 		const { registered } = await setup(t);
 		assert.deepEqual([...registered.keys()].sort(), ["policy_propose", "policy_rules"]);

@@ -263,7 +263,7 @@ export function ruleDetailLines(record: RuleRecord, context: RuleMatchContext, s
 			...auditLines("override audit", record.override.audit),
 		);
 	} else lines.push("override: (none)");
-	if (summary.partial) lines.push("", `[fire counts partial: ${MAX_FIRE_SCAN_BYTES} byte scan bound reached]`);
+	if (summary.partial) lines.push("", "[fire counts partial: store scan incomplete]");
 	return lines;
 }
 
@@ -386,8 +386,7 @@ export function formatPolicyList(data: Pick<PolicyPanelData, "snapshot" | "fireS
 			lines.push(`${proposal.id} | ${proposal.operation} | ${proposal.ruleId} | ${proposal.reason}`);
 		}
 	}
-	if (data.fireSummary.partial)
-		lines.push("", `firing counts partial: store scan exceeded ${MAX_FIRE_SCAN_BYTES} bytes`);
+	if (data.fireSummary.partial) lines.push("", "firing counts partial: store scan incomplete");
 	return capText(lines.map(terminalSafe).join("\n"));
 }
 
@@ -531,8 +530,10 @@ async function readFileTail(
 	let bytesRead = 0;
 	try {
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-		handle = await open(path, constants.O_RDONLY | noFollow);
-		const size = (await handle.stat()).size;
+		handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | noFollow);
+		const info = await handle.stat();
+		if (!info.isFile()) throw new Error("Policy telemetry source is not a regular file");
+		const size = info.size;
 		const length = Math.min(size, Math.max(0, byteLimit));
 		const start = size - length;
 		const buffer = Buffer.alloc(length);
@@ -642,8 +643,10 @@ async function scanJsonlPrefix(
 	let complete = false;
 	try {
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-		handle = await open(path, constants.O_RDONLY | noFollow);
-		const size = (await handle.stat()).size;
+		handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | noFollow);
+		const info = await handle.stat();
+		if (!info.isFile()) throw new Error("Policy telemetry source is not a regular file");
+		const size = info.size;
 		let position = 0;
 		let fragments: Buffer[] = [];
 		let fragmentBytes = 0;
