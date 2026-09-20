@@ -27,7 +27,9 @@ const check = (id: string, output: string, events: Parameters<typeof runDetermin
 };
 
 test("the suite validates without inference and keeps semantic review outside subject input", () => {
-	piSdkAdapter.validate!({
+	const validate = piSdkAdapter.validate;
+	assert.ok(validate, "the SDK adapter exposes validate");
+	validate({
 		suitePath,
 		subjectKind: suite.subject.kind,
 		subjectConfig: suite.subject.config,
@@ -84,7 +86,9 @@ test("every declared source supplies its complete current body and a content-bou
 			},
 		);
 		const changed = structuredClone(variant);
-		changed.config.contextFiles.find((context) => context.path === path)!.content += "\nChanged source body.\n";
+		const target = changed.config.contextFiles.find((context) => context.path === path);
+		assert.ok(target, path);
+		target.content += "\nChanged source body.\n";
 		assert.notDeepEqual(resolve(changed), resolution, path);
 	}
 });

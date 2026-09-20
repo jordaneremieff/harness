@@ -22,7 +22,9 @@ const ai: typeof import("@earendil-works/pi-ai") = await import(
 );
 
 test("the maintained suite validates and keeps semantic judgment with the operator", () => {
-	piSdkAdapter.validate!({
+	const validate = piSdkAdapter.validate;
+	assert.ok(validate, "the SDK adapter exposes validate");
+	validate({
 		suitePath,
 		subjectKind: suite.subject.kind,
 		subjectConfig: suite.subject.config,
@@ -58,7 +60,8 @@ test("the maintained suite validates and keeps semantic judgment with the operat
 });
 
 test("source and mutation floors reject missing evidence and attempted writes, not alternative prose", () => {
-	const item = suite.cases.find(({ id }) => id === "derive-existing")!;
+	const item = suite.cases.find(({ id }) => id === "derive-existing");
+	assert.ok(item, "the derive-existing case exists");
 	const call: TranscriptEvent = {
 		type: "tool_call",
 		id: "source",

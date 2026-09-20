@@ -28,7 +28,9 @@ const check = (id: string, output: string, events: Parameters<typeof runDetermin
 
 // The application retains fixture review data separately from seed messages and prompts.
 test("the text suite validates without a runtime and reserves semantic judgment for a human", () => {
-	piSdkAdapter.validate!({
+	const validate = piSdkAdapter.validate;
+	assert.ok(validate, "the SDK adapter exposes validate");
+	validate({
 		suitePath,
 		subjectKind: suite.subject.kind,
 		subjectConfig: suite.subject.config,
@@ -111,7 +113,8 @@ test("the source envelope contains complete current bodies and resolution binds 
 			},
 		);
 		const changed = structuredClone(variant);
-		const target = changed.config.contextFiles.find((context) => context.path === path)!;
+		const target = changed.config.contextFiles.find((context) => context.path === path);
+		assert.ok(target, path);
 		target.content += "\nA changed body requires a different source digest.\n";
 		assert.notDeepEqual(resolve(changed), resolution, path);
 	}
