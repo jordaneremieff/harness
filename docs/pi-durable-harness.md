@@ -1,359 +1,286 @@
 # Pi durable-harness track
 
-Upstream Pi develops AgentHarness as a durable agent core: an immutable entry
-tree, stored values and lists, execution lanes with ordered inboxes, and
-terminal result records. This repository converges with that program instead
-of building a parallel core. The track distinguishes the installed runtime,
-published packages, upstream implementation, and planned contracts.
+Pi's ordinary SDK, durable AgentHarness, and Pico3 kernel are distinct runtime
+contracts. This repository uses host-owned execution and observation where those
+contracts preserve its capabilities. An exported kernel does not by itself
+replace ordinary extension loading, project trust, resource discovery, or
+submitted-result retrieval.
 
 ## Checked source boundary
 
-Verified 2026-09-09. Upstream reads use `main` commit
-`acaa253cc8e3f159e6100b6f3874861b1f0bfc99`. The WP08 fork branch merged
-into `main` through [pull request #9152](https://github.com/earendil-works/pi/pull/9152)
-(merge commit
-[`3e4bc268`](https://github.com/earendil-works/pi/commit/3e4bc2680ea8eca162207974b88667ccfc20a564),
-2026-09-08). Since the previous boundary
-([`6160683a`](https://github.com/earendil-works/pi/commit/6160683a4a8012f0d1cd30c145df18b4ca6f5176),
-2026-09-08), the only durable-harness change is `c37b0e03b5`, which caps
-agent-level retry delay; the other landed changes touch the extension loader,
-a provider header, and repository guidance. The installed runtime is Pi
-0.85.1; this checkout's dependency snapshot remains on 0.85.0. Tests against
-that snapshot do not establish validation against the upgraded installation.
-
-Installed paths in this document are relative to the installed
-`@earendil-works/pi-coding-agent` package root. A path that starts with
-`pi-agent-core/` sits under that package's
-`node_modules/@earendil-works/pi-agent-core/`.
+Verified 2026-09-20. Active installation, checkout dependency snapshot, and npm
+`latest` resolve Pi 0.86.0. The manifest retains wildcard Pi peers; the lockfile
+records the resolved dependency graph rather than an older supported target.
+TypeBox resolves to 1.3.27, the version Pi declares for its runtime.
 
 | Source | Checked state |
 |---|---|
-| Active coding agent and agent core | Pi 0.85.1; confirmed from installed package metadata |
-| Checkout packages | Pi 0.85.0; confirmed from local package metadata; separate from the active installation |
-| npm publication | `@earendil-works/pi-coding-agent` has `latest: 0.85.1`; the exact 0.85.1 metadata exposes client/plugin subpaths only under the `source` condition |
-| GitHub release metadata | Latest listed release is [v0.85.1](https://github.com/earendil-works/pi/releases/tag/v0.85.1), published 2026-09-05, tag commit `d981de1229ef899957bbe968bc8dcda02a21f477` |
-| Upstream main | [`acaa253cc8`](https://github.com/earendil-works/pi/commit/acaa253cc8e3f159e6100b6f3874861b1f0bfc99); coding-agent and agent-core manifests declare 0.85.1 |
-| Fork work | [Pull request #9152](https://github.com/earendil-works/pi/pull/9152) merged `dev-named-forks-streaming` at [`3e4bc268`](https://github.com/earendil-works/pi/commit/3e4bc2680ea8eca162207974b88667ccfc20a564) (2026-09-08); WP08 continues on `main`, Slice C in progress |
-| Work packages | WP00–WP09 are present. WP08 status is unchanged. WP09 (`e26afb63a4`, 2026-09-02) is implemented and changes `LaneSnapshot.operation.runningTools` |
+| Installed coding agent and agent core | 0.86.0, from package metadata and installed declarations/source |
+| Checkout Pi packages | 0.86.0, from the lockfile and local package metadata |
+| npm publication | Coding-agent, AI, server, and TUI `latest` are 0.86.0 |
+| GitHub release | [v0.86.0][release], published 2026-09-19; tag commit `ecac0a9c4edad3dac5d9f8b40e0c7db7a56471fc` |
+| Checked upstream `main` | [`d1230ea2000d876b479a69b8b061f9d670f262f5`][main] |
 
-The v0.85.1-to-checked-main comparison merges the WP08 fork machinery
-(`packages/agent` session forks, JSONL streaming, a text-line-reader
-capability) and adds unreleased changes: extension model streaming,
-strict-prefer tool sampling for built-in tools, RPC input-handler routing,
-editor-border spinner embedding, a capped agent-level retry delay, and
-registration-time validation that an extension tool declares an object
-parameter schema. The retry cap changes the public `RetryPolicy` contract and
-normalized lane state; the validation changes the extension loader. The
-ordinary SDK construction (`sdk.ts`), `AgentHarnessOptions`, and the roadmap
-are unchanged at this boundary. Installed 0.85.1 and the retained 0.85.0
-checkout have byte-identical ordinary SDK, session-services, and
-extension-loader modules. This source comparison is not a runtime regression
-test. Do not infer npm publication state from GitHub release metadata or
-installed behavior from `main`.
+The [release-to-main comparison][release-main] changes bug-report UI code and
+changelogs, not agent execution. This track is a targeted contract review, not
+an exhaustive changelog. Its claims use exact files and installed source.
 
-The program's actionable queue is unchanged in shape. WP08 Slice C (SQLite
-streaming) and Slice D (benchmarks and documentation) remain, and the
-[mobile handoff][mobile] records `01-delta` landed, `02-scopes` Step 1
-actionable but unimplemented, `03-execenv` landed in production, and
-`04-tool-output` plus `05-assistant-output` as specifications only.
-
-## Configuration and source context
-
-Verified 2026-09-06 against installed Pi 0.85.1, checkout dependencies 0.85.0,
-and upstream `main` at
-[`9767ba27`](https://github.com/earendil-works/pi/commit/9767ba275f3e9a5ee0f5c5342249b629ab1b2282).
-Rechecked 2026-09-08: `sdk.ts` and `agent-harness.ts` are byte-identical at
-`main` [`6160683a`](https://github.com/earendil-works/pi/commit/6160683a4a8012f0d1cd30c145df18b4ca6f5176),
-and the v0.85.1-to-`main` change census adds no reusable configuration-file
-selector or profile surface. Rechecked 2026-09-09: both files remain unchanged
-at `acaa253cc8`, and the census adds only the retry-delay cap recorded above.
-This focused check covers configuration, resources, and message inputs. The
-publication, fork implementation, and other general-track checks above and
-below retain their separately stated dates; they are not current checks of
-those surfaces.
-
-- The [ordinary SDK][configuration-sdk] still constructs `Agent` and
-  `AgentSession`. Installed `dist/core/resource-loader.js` merges additional
-  skill paths into ordinary discovery. Reusable source selection does not
-  require a replacement resource loader.
-- [AgentHarness options and lanes][configuration-host] expose model, thinking,
-  tools, resources, skill/template invocation, and message insertion. These
-  primitives do not themselves define a reusable configuration-file selector
-  or the ordinary host's cwd discovery behavior.
-- Installed `dist/core/messages.js` converts custom-message content into a
-  provider message with role `user`. It omits custom metadata such as `details`
-  and `display`. Source labels and authority limits belong in the content;
-  metadata is not a separate permission boundary. Selecting cwd also selects
-  ordinary project context and trust inputs.
-- Keep reusable input resolution before ordinary session construction. Replace
-  its message adapter when the adopting host preserves model-visible delivery,
-  transcript behavior, lifecycle, and full resources. A custom metadata entry
-  alone does not establish those properties.
-- Remove local selection machinery when a host-owned selection contract supplies
-  the same job, or when ordinary dispatch and existing skills remove its need.
-  AgentHarness adoption alone does not supply file resolution, precedence, or
-  source applicability. Reusable guides retain ownership of their procedures;
-  current tasks retain their targets and permitted actions.
-
-[configuration-sdk]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/coding-agent/src/core/sdk.ts#L306-L388
-[configuration-host]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/agent/src/harness/agent-harness.ts#L518-L610
-
-## Current-session evidence retrieval
-
-Verified 2026-09-06 against installed Pi 0.85.1
-`dist/core/session-manager.d.ts`, `dist/core/session-manager.js`, and
-`dist/core/extensions/types.d.ts`. This check covers ordinary-session retrieval,
-not the separately dated upstream program claims.
-
-- `ExtensionContext.sessionManager` exposes `ReadonlySessionManager`.
-  `getEntry(id)` reads the existing in-memory map; `getLeafId()` and
-  `getSessionId()` read current identifiers. No session file needs to be opened.
-- `getBranch()` follows the complete parent chain, including compaction entries.
-  `getEntries()` filters the whole session; `getTree()` builds the whole tree.
-  None accepts a visit limit. A bounded extension query must walk parents through
-  `getEntry()` and stop at its own limit, rather than truncate a complete scan.
-- Raw entries remain distinct from `buildContextEntries()`, which applies
-  compaction. Stored roles, custom types, and summaries describe recorded source
-  metadata; they do not establish human identity or fresh operator authority.
-- History retrieval uses a selected entry and its ancestry. Bounded discovery
-  of unknown alternate branches requires a host-owned paged enumeration API.
-  Do not add a parallel index or raw session-file reader to supply that API.
-
-## Collaboration observation
-
-Verified 2026-09-07 against installed Pi 0.85.1 and upstream `main` at
-[`9767ba27`](https://github.com/earendil-works/pi/commit/9767ba275f3e9a5ee0f5c5342249b629ab1b2282).
-The named installed sources were rechecked on 2026-09-08 against the same
-installed version. Rechecked 2026-09-09 at `acaa253cc8`: the lane snapshot
-shape, the `watchSession` stub, and the entry-query boundaries are unchanged,
-and the settled-tool contract below is now recorded.
-The latest listed GitHub release remains v0.85.1. Fork pull request
-[#9152](https://github.com/earendil-works/pi/pull/9152) merged into `main` on
-2026-09-08; its effects are recorded under "Fork and result boundaries".
-This focused check does not refresh the separately dated publication, backend,
-or packaging claims.
-
-- The [ordinary SDK][collaboration-sdk] still constructs `Agent` and
-  `AgentSession`; installed `dist/core/sdk.js` keeps that construction
-  boundary. The subagent extension uses public session services and
-  ordinary sessions; its dashboard does not adopt the durable runtime.
-- [Lane observation][collaboration-lane] exposes a snapshot, event subscription,
-  and resnapshot. Installed `pi-agent-core/dist/harness/agent-harness.d.ts`
-  declares `LaneSnapshot` as lane name, transcript entries, tip id, optional
-  last result, configuration, session stats, the current operation with its
-  streaming message and running-tool list, queued items, and a faulted flag.
-  The upstream [`reduceLaneSnapshot`][collaboration-reducer]
-  owns event application and requests a fresh snapshot after navigation.
-  Consumers of durable lanes use that reducer instead of another event fold.
-  `runningTools` is a `LaneSnapshotTool` union: a started call is
-  `status: "running"` with an optional latest progress result, and a finished
-  call stays visible as `status: "settled"` with its final result and
-  `isError` until its `toolResult` entry is placed. The reducer clears the
-  entry on that placement, not on `turn_end`; `tool_end` means the final
-  result is durably staged. A lane-consuming view gets progress and settled
-  results from the snapshot and needs no local progress store.
-  Installed `pi-agent-core/dist/harness/runtime/lane.js` captures ancestry only
-  back to compaction, without a count limit; a live snapshot is neither a
-  bounded history page nor a complete archive.
-- [Session-wide observation][collaboration-watch] still throws
-  `SliceNotImplemented("watchSession")`; installed
-  `pi-agent-core/dist/harness/runtime/harness.js` carries the same boundary.
-  Per-lane observation does not supply
-  a complete session inventory subscription.
-- [Durable entry queries][collaboration-entries] belong to `Session` and
-  `Branch`. Ordinary `SessionManager.open()` still reads the complete file and
-  repairs an unfinished tail. Do not pass foreign active files to that loader.
-  Installed coding-agent publicly exports the pure `parseSessionEntries()`
-  function and `SessionManager.inMemory(cwd, options, entries)`. A selected,
-  byte-bounded read-only file snapshot can therefore use Pi's parser and tree
-  traversal without a private decoder or any write to its source. This is not
-  a native paged file API: oversized files require an explicit unavailable
-  state, and snapshots do not establish current state after capture. Keep this
-  adapter limited to known session files, not whole-session discovery or a
-  parallel index.
-- Preserve source session and entry identities, per-session order, and explicit
-  reply links. Display-time ordering does not establish causality. A recorded
-  recipient message, a process-local context observation, and a reply establish
-  different facts; none establishes understanding or action. Missing historical
-  observations remain unknown rather than reconstructed from current state.
-
-[collaboration-sdk]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/coding-agent/src/core/sdk.ts#L306-L403
-[collaboration-lane]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/agent/src/harness/agent-harness.ts#L180-L250
-[collaboration-reducer]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/agent/src/harness/runtime/reducer.ts#L21-L232
-[collaboration-watch]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/agent/src/harness/runtime/harness.ts#L305-L307
-[collaboration-entries]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/agent/src/harness/session/types.ts#L521-L539
-
-## Ordinary-session completion delivery
-
-Verified 2026-09-08 against installed Pi 0.85.1
-`dist/core/agent-session.js`, `dist/core/extensions/types.d.ts`,
-`dist/modes/interactive/components/custom-message.js`, and
-`dist/modes/interactive/interactive-mode.js`. This check covers the ordinary
-message adapter, not the separately dated durable-runtime program claims.
-Rechecked 2026-09-09 at `acaa253cc8`: the message adapter, renderer
-registration, and expansion-state surfaces are unchanged; `agent-session.ts`
-changed only in retry-delay computation.
-
-- `sendMessage` with steering delivery queues a custom message before the next
-  model call after tool results. Follow-up delivery waits until tool work ends.
-  An idle-turn trigger starts a response when the session is idle. The public
-  extension API does not expose per-message queue retraction.
-- A context hook can omit completion messages when an exact collection result
-  already supplies that evidence in the same context. This changes provider
-  input, not the retained session tree, and does not prove model acceptance.
-- `registerMessageRenderer` receives native expansion state and output padding.
-  `CustomMessageComponent` starts collapsed; the interactive host applies its
-  tool-expansion state and configured keybinding. The default renderer displays
-  the full body regardless of expansion. The subagent renderer supplies bounded
-  collapsed rows and exposes message evidence on expansion.
-- Keep delivery on these ordinary-session surfaces. The report view requires
-  no durable lane adoption, additional inbox, receipt journal, or replacement
-  terminal renderer. Replace this adapter when the worker host changes its
-  message contract, while preserving result access and owner-controlled work.
-
-## Names and defining contracts
-
-The normative specification is [`packages/agent/docs/harness.md`][spec].
-"AgentHarness" and the historical "harness v2" branch vocabulary refer to the
-same program. The [post-WP05 roadmap][roadmap] is a planning inventory, not a
-behavior contract; it explicitly records contradictions with normative text.
-A work-package requirement is not proof that its implementation is complete.
-
-The installed `pi-agent-core` 0.85.1 manifest exports `./harness/context`,
-`./harness/session`, `./harness/session/testing`, `./harness/runtime/reducer`,
-and `./harness/env/nodejs`. Its declarations expose `accept`, `drive`,
-`requestAbort`, and `inspectExecution`. The `reduceLaneSnapshot` reducer owns
-the client fold of lane events. Published reachability does not mean that the
-ordinary coding-agent SDK uses this runtime. Rechecked 2026-09-09: the
-installed export set is unchanged.
+Installed paths below are relative to the active `@earendil-works/pi-coding-agent`
+package root. `pi-agent-core/` and `pi-ai/` refer to its corresponding packages
+under `node_modules/@earendil-works/`. Source inspection establishes the checked
+contract and implementation, not a runtime regression result for this repository.
 
 ## Runtime adoption and distribution
 
-Verified 2026-09-09 against installed Pi 0.85.1, the retained checkout's
-0.85.0 modules, checked `main` at `acaa253cc8`, and current release and npm
-metadata.
+| Runtime | Available boundary | Consequence |
+|---|---|---|
+| Ordinary coding-agent SDK | [`createAgentSession`][sdk] constructs `Agent` and `AgentSession`; `AgentSessionRuntime` owns session replacement | Keep full extension/resource behavior through public session services and runtime construction |
+| Durable AgentHarness | Root agent-core API plus harness context, session, environment, and reducer exports | Lanes, stored results, and ordered inboxes remain a separate explicit host choice |
+| Pico3 | Agent-core exports [`./experimental/pico3`][agent-package] with declarations and executable JavaScript | The kernel is published, not merely a design document; its host integration still requires an explicit capability match |
 
-- The ordinary SDK constructs `Agent` and `AgentSession` in
-  `pi-coding-agent/dist/core/sdk.js`. This repository's subagent slice uses the
-  public session-services construction path and `SessionManager`, not
-  AgentHarness lanes.
-- The retained Pi 0.85.0 package includes an experimental AgentHarness worker in
-  `dist/experimental/session-worker.js`. Its construction supplies read,
-  write, and bash tools and `resources: {}`. That source does not establish
-  full ordinary-session tool, extension, skill, or instruction parity.
-- Facets are executable bundles that provide services. They are not only a
-  specification: the retained 0.85.0 `dist/experimental/services/worker.js` calls
-  Chord's `defineFacet`, `createFacetHost`, and `createRemoteServiceEndpoint`
-  for built-in services and loaded plugins. This is concrete adoption in the
-  experimental worker, not migration of the ordinary extension loader.
-- Installed 0.85.1 exposes `./client` and `./experimental/plugin` only under
-  the `source` condition and contains neither client nor experimental dist
-  directories. Checked [main packaging][package] defines those exclusions;
-  rechecked 2026-09-09, `main` and installed 0.85.1 keep them, and
-  `./rpc-entry` keeps its `dist` import.
-  The main [command dispatcher][commands] labels server/client commands
-  development-only. Release 0.85.1 corrects accidental publication of internal
-  experimental code and dependencies that caused import failures; it does not
-  remove the supported local SDK or stdio RPC contract. The runtime exports in
-  0.85.0 were not a supported upgrade contract.
-- The [roadmap][roadmap] distinguishes process-local `Session` and
-  `AgentHarness` objects from remote semantic services. It records an
-  unresolved raw RemoteSession contract and lists generic remote harness
-  capabilities as optional or deferred. Remote semantic services exist, but
-  these sources do not establish a supported drop-in attachment contract for
-  this repository's ordinary SDK workers.
-- Installed `dist/harness/runtime/harness.js` in `pi-agent-core` still throws
-  `SliceNotImplemented("watchSession")`. Lane observation and session-wide
-  observation are different surfaces.
+Coding-agent exports its ordinary root and `./rpc-entry` as runtime entrypoints.
+Its `./client` and `./experimental/plugin` remain source-condition-only. Do not
+restore coupling to the accidentally published experimental distribution from
+an earlier package. The supported local SDK and stdio RPC contract remain
+separate from those development entrypoints.
+
+The installed extension loader binds Pi core imports to the running install.
+`dist/core/extensions/loader.js` aliases coding-agent, agent-core, TUI, AI and
+its named compatibility/provider subpaths, plus TypeBox root/compile/value.
+Server, client, and Chord are not in that alias map; their package resolution
+must be checked separately. Matching a checkout lockfile does not establish
+that every loaded extension resolves the same dependency instance.
+
+## Current ordinary-session contracts
+
+Verified 2026-09-20 against installed `docs/sdk.md`,
+`dist/core/sdk.js`, `dist/core/extensions/types.d.ts`,
+`pi-ai/dist/types.d.ts`, and
+`pi-agent-core/dist/agent.d.ts`.
+
+- Provider `TranscriptContext` contains messages. System prompt sections and
+  tool declarations now travel through `SystemMessage` entries, including
+  additions and removals. Code that reads `context.systemPrompt` or
+  `context.tools` must use the current transcript contract instead.
+- `Message` includes the `system` role. Exhaustive consumers must distinguish
+  it from user, assistant, and tool-result messages.
+- Tool-call arguments use `JsonObject`; stored tool-result details use strict
+  JSON types. Test fixtures and adapters must validate or construct those
+  types rather than retain `Record<string, unknown>` at the wire boundary.
+- `ExtensionAPI.on()` returns an unsubscribe function. Extension test doubles
+  must match that lifecycle contract.
+- `createAgentSessionServices` and `createAgentSessionFromServices` supply
+  ordinary resources and extensions. `AgentSessionRuntime` owns new-session,
+  switch, fork, clone, and import replacement. A replacement changes the
+  `AgentSession`; event subscriptions and extension bindings belong to the
+  new session.
+- `ModelRuntime` owns credential resolution, cached model catalogs, availability,
+  and optional remote refresh. Local availability is not remote provider health.
+
+These changes apply to the ordinary SDK without a durable-kernel migration.
+Do not treat an AgentHarness or Pico3 cutover as a prerequisite for fixing
+current provider transcripts, lifecycle registration, or session replacement.
+
+## Configuration and source context
+
+Verified 2026-09-20 against installed `dist/core/resource-loader.js`,
+`dist/core/messages.js`, the ordinary SDK, and [Pico3 options][pico-options].
+
+- Ordinary discovery accepts additional skill paths. Reusable source selection
+  does not require a replacement resource loader.
+- Cwd selects project context and trust inputs. A stored conversation or fork
+  does not perform ordinary project discovery by itself.
+- Ordinary custom messages become provider messages with role `user`.
+  Conversion omits `details` and `display`; source labels and authority limits
+  belong in model-visible content, not only metadata.
+- Pico3 options accept models, tools, task kinds, sections, plugins, a process
+  host, and initial documents. They do not expose the ordinary resource loader
+  or an automatic extension-factory adapter.
+- Keep reusable input resolution before ordinary session construction. Replace
+  local selection only when the adopting host supplies its file resolution,
+  precedence, source applicability, and delivery semantics. Kernel adoption
+  alone does not supply these application contracts.
+
+## Current-session evidence retrieval
+
+Verified 2026-09-20 against installed `dist/core/session-manager.d.ts`,
+`dist/core/session-manager.js`, and `dist/core/extensions/types.d.ts`.
+
+- `ExtensionContext.sessionManager` exposes `ReadonlySessionManager`.
+  `getEntry(id)` reads the existing map; current leaf/session identifiers need
+  no session-file read.
+- `getBranch()` follows the full parent chain. `getEntries()` filters the whole
+  session and `getTree()` constructs the whole tree. These methods accept no
+  visit limit. Bound ancestry queries by repeated `getEntry()` calls with an
+  explicit stop condition, not by truncating a completed scan.
+- Raw entries differ from compaction-aware `buildContextEntries()`. Stored
+  role, custom type, or summary metadata does not establish fresh authority.
+- `SessionManager.open()` reads a complete file and repairs an unfinished tail.
+  Do not use it to inspect a foreign active file. A known, byte-bounded read-only
+  capture can use public `parseSessionEntries()` and `SessionManager.inMemory()`
+  without a private decoder or a write to its source. Oversized captures need an
+  explicit unavailable state; capture time limits freshness.
+- The ordinary API still does not provide bounded discovery of unknown alternate
+  branches. Neither a complete tree scan nor a durable live view is a paged
+  archive query. Do not add a parallel raw-file index to imply that contract.
+
+## Collaboration observation
+
+Verified 2026-09-20 against installed durable-lane and Pico3 implementations.
+Their observation contracts are not interchangeable.
+
+**Durable AgentHarness lanes.** `LaneSnapshot` carries configuration, transcript,
+operation, queues, stats, and fault state. The public `reduceLaneSnapshot` owns
+event application and requests a fresh snapshot after navigation. A tool remains
+`status: "settled"` after `tool_end` until its `toolResult` entry is placed;
+`turn_end` does not remove it. Consumers need no parallel progress store.
+Installed `pi-agent-core/dist/harness/runtime/harness.js` still throws
+`SliceNotImplemented("watchSession")`. Per-lane observation does not establish
+a complete session-inventory subscription.
+
+**Pico3 conversations.** [Capture and subscription][pico-watch] share the session
+transaction boundary. `ConversationView` contains entries, resolved config,
+inbox, active turn, compaction, task status, and projected plugin state.
+`applyEnvelope` applies the host's document operations; consumers must not
+reconstruct the view through a second event reducer. The raw watch buffers
+before `start()` with a bounded capacity, then calls listeners synchronously in
+order. Overflow or listener failure closes that watch. It has no resnapshot or
+replay method: reopen a watch for a fresh capture.
+
+Pico3 captures the active transcript through the latest head boundary, or all
+fork-visible entries when no head exists. It pages internally but has no public
+total capture limit. That is not a bounded history page. The
+[Chord adapter][pico-chord] publishes one replicated view update per envelope,
+uses its own bounded queue, and closes on failure; the owner must replace the
+failed service instance. `PicoHarnessService` is local; the keyed
+`PicoConversationService` is the remote semantic surface.
+
+Preserve source identities, per-session order, and explicit reply links.
+Display order does not prove causality. Delivery, context observation, and a
+reply establish different facts; none alone proves understanding or action.
+
+## Ordinary-session completion delivery
+
+Verified 2026-09-20 against installed `dist/core/agent-session.js` and
+`dist/core/messages.js`.
+
+- Steering queues a custom message for the next model-call boundary after tool
+  results. Follow-up waits until work ends. An idle trigger starts a turn.
+- During streaming, `triggerTurn: false` defers custom-message insertion until
+  the turn's tool results are in state and history. It does not insert a custom
+  message between an assistant tool call and its result.
+- A context hook can omit completion messages when exact collection evidence
+  already appears in the same context. This changes provider input, not retained
+  history, and does not prove model acceptance.
+- Keep completion delivery on the selected worker host's public message surface.
+  A report view does not itself require another durable inbox, receipt journal,
+  or terminal renderer. Preserve exact result access when the host changes.
+
+## Pico3 storage and ownership
+
+Verified 2026-09-20 against [Pico3 JSONL source][pico-jsonl] and installed
+`pi-agent-core/dist/harness/pico3/{harness,jsonl,chord}.js`.
+
+- Pico3 supplies Memory and JSONL storage. Its JSONL implementation extends
+  Memory storage and replays file contents into memory; it is not a
+  source-size-independent archive reader.
+- One process owns a JSONL directory. Cross-process writer ownership is a host
+  responsibility, not a kernel lock service.
+- Sidecars precede the main commit marker. Replay rejects incomplete published
+  state and discards unconfirmed tails. Terminal task records remain readable;
+  live-only task sidecars are retired after terminal publication.
+- JSONL uses fsync by default, but it does not fsync parent-directory metadata
+  after creation, rename, or unlink. Do not describe it as an unconditional
+  machine-failure durability guarantee.
+- `resume()` starts scheduling after registrations. `suspend()` joins active
+  invocations, closes views/storage, and preserves durable tasks for reopening.
+  Reload at a quiescent hold or suspend/reopen; do not substitute source reload
+  for a checked task-lifecycle boundary.
+
+These primitives overlap local scheduling, task recovery, watch folding, and
+result retention. They do not establish full ordinary-worker parity or remove
+the need for an owner of process control, resources, and external side effects.
 
 ## Fork and result boundaries
 
-Verified 2026-09-09 at `main` `acaa253cc8` against [WP08][wp08] and the
-[JSONL fork implementation][jsonl-fork], both unchanged since pull request
-#9152 merged (`3e4bc268`, 2026-09-08).
+Verified 2026-09-20 against the current [WP08 handoff][wp08], installed
+`pi-agent-core/dist/harness/session/{types.d.ts,jsonl/fork.js}`, and the ordinary
+session APIs.
 
-WP08 remains in progress; its status line records Slice C (SQLite streaming)
-as the active slice, and no Slice C or Slice D commit landed between
-`6160683a` and `acaa253cc8`. The merge lands the explicit-scope `ForkOptions`
-contract, the closed fork classifier, direct Memory construction, and
-two-scan JSONL streaming with a read-only source capture: a JSONL fork never
-writes its source, and a torn tail is discarded in memory. These facts do not
-establish the entire requirement:
+WP08 still states that SQLite streaming is in progress. Memory direct copies
+and JSONL two-scan forks implement the required explicit branch/tree scope.
+JSONL's structural maps and copied-entry set still grow with source state;
+streaming does not mean constant auxiliary memory. Its fork read discards a
+torn tail without repairing the source. The handoff retains SQLite and
+benchmark/documentation completion as separate obligations. Do not infer
+backend convergence from the Memory or JSONL implementation.
 
-- `JsonlForkIndex` still retains in-memory maps and sets for current scalar
-  addresses, entry parents, copied entry IDs, and lane state. Auxiliary
-  memory therefore still grows with source state; the two-scan fold is not a
-  source-size-independent bound. The legacy-v3 path copies an already
-  normalized in-memory source, and open legacy-v3 sources reject forks.
-- SQLite streaming is the in-progress Slice C, and Slice D (benchmarks plus
-  the specification status refresh) is pending: the specification's WP08
-  line still describes the Slice A state. Do not label backend convergence
-  complete from Memory or JSONL progress.
-- Sequence preservation is explicitly not part of the fork contract;
-  backends allocate destination-local sequences.
-- WP08 leaves coding-agent `/fork`, `/clone`, and `--fork` on
-  `SessionManager`. The subagent slice also forks through that public API, so
-  the new `SessionRepo` fork contract does not itself require a local cutover.
-- The merge adds a `TextLineReader`/`openTextLineReader` capability to the
-  harness `FileSystem` interface for streaming fork reads. It does not
-  change ordinary resource discovery.
+Ordinary `/fork`, `/clone`, and `--fork` still use `SessionManager`. Pico3
+conversation forks belong to its own storage and document model. Neither
+contract silently replaces an ordinary-session continuation.
 
-The installed `OperationResultRecord` declaration in
-`pi-agent-core/dist/harness/session/types.d.ts` (Pi 0.85.1, unchanged)
-contains terminal metadata and
-`fromTipId`/`tipId` transcript pointers, not embedded submitted content.
-`AgentLane` also exposes `getResult` and entry queries. The repository must
-preserve exact submitted-result retrieval, including its documented bounds
-and parent-session loss behavior. That requirement does not make a separate
-content store permanent: upstream transcript or service contracts could
-satisfy it. Adopt them only after checking retrieval and retention semantics,
-then remove any superseded local storage in the same cutover.
+The durable `OperationResultRecord` stores terminal metadata and transcript
+pointers, not submitted content. Pico3 exposes retained task outcomes and input
+results. Adopt either for submitted-result storage only after exact content,
+lookup, retention, size bounds, and parent-session-loss behavior meet the
+application contract. Delete superseded storage in the same cutover.
+
+## Names and defining contracts
+
+The older [AgentHarness specification][spec], [roadmap][roadmap], and
+[mobile handoff][mobile] describe the lane runtime. The roadmap is a planning
+inventory with explicit contract contradictions, not proof of implementation.
+WP08 status does not describe Pico3 readiness.
+
+Pico3 has its own source and contracts. Its [hardening handoff][pico-hardening]
+explicitly yields on overlapping topics to [view/events][pico-view-doc] and
+[plugins][pico-plugin-doc]. The handoff still describes a pre-integration archive,
+while the package exports and installed source establish that Pico3 now ships.
+Do not turn historical delivery instructions or prototype defect lists into
+current defects without checking the implementation.
 
 ## Convergence decisions
 
-Verified 2026-09-09. These decisions preserve capability while replacing
-mechanism when a suitable upstream contract exists.
+Verified 2026-09-20. Match the selected host, not only a shared name.
 
-| Repository capability | Upstream boundary | Repository action |
+| Repository capability | Host-owned replacement condition | Action |
 |---|---|---|
-| Worker execution and observation | Durable lanes, ordered inboxes, terminal records, lane reducer, settled-but-unplaced tool calls in the snapshot | Use the upstream primitives when the worker host adopts them; do not add a second lane fold or a local tool-progress store |
-| Ordinary worker resources | `AgentHarnessOptions` accepts tools, resources, and system prompt; experimental worker defaults are narrower | Preserve full ordinary-session capabilities through the host's resource construction; a stored fork is not context discovery |
-| Worker continuation | `SessionRepo` fork contract merged for Memory and JSONL; WP08 SQLite and documentation slices remain | Keep `SessionManager` until the adopting host preserves the continuation contract |
-| Remote control | Implemented semantic services, development-only coding-agent packaging, unresolved raw Session transport | Evaluate the callable host contract and package support before replacing worker control; do not infer either permanent absence or ready parity |
-| Extension composition | Real Chord facets in the experimental worker | Map existing extension behavior when the ordinary host adopts that boundary; do not build a parallel plugin system |
-| Submitted result retrieval | Terminal records plus transcript access | Preserve exact retrievable content; replace separate storage if upstream satisfies the full contract |
-| Prose handover and doctrine | Application-level content | Keep the content here; upstream execution durability does not supply its meaning |
-
-## Action triggers
-
-| Trigger | Action |
-|---|---|
-| A new Pi release installs | Recheck active metadata, package exports, loader bindings, and this track; refresh the lockfile and run repository gates. The manifest has wildcard peers, not old direct version pins |
-| A repository consumer starts to observe AgentHarness lanes | Use `reduceLaneSnapshot`; verify the required watch surface rather than treating session-wide watch as implemented |
-| WP08 advances or merges | Recheck Memory, JSONL auxiliary memory and source boundaries, and SQLite separately |
-| A work package completes or a new one appears | Recheck the affected contract and the convergence table, not only the active slice |
-| Remote contracts or coding-agent distribution change | Check the actual published entrypoints and host capability parity before changing worker control |
-| The ordinary host adopts AgentHarness or facets | Preserve resources, tools, lifecycle, cancellation, continuation, and exact result retrieval; delete mechanisms upstream supersedes |
-| The extension loader changes | Check the source change against imports and resource discovery before the next upgrade |
-| Storage format changes | Check the public session APIs and their supported data contract; do not introduce raw-file coupling |
+| Ordinary session replacement | Public session services and `AgentSessionRuntime` preserve cwd, resources, trust, and lifecycle | Use them now rather than duplicate construction and replacement |
+| Worker execution/recovery | Durable lane or Pico3 host preserves tools, hooks, cancellation, continuation, and resources | Replace local scheduling only at that complete host boundary |
+| Live observation | Selected host supplies lane snapshots/reducer or Pico3 view/envelopes | Use its fold and closure behavior; do not keep duplicate progress state |
+| Remote control | Published semantic services preserve the required process/attachment authority | Check the actual callable contract; source-only coding-agent entrypoints are not a runtime dependency |
+| Submitted results | Retained outcomes/transcripts satisfy exact retrieval and parent-loss behavior | Remove separate storage when the host demonstrably owns the whole contract |
+| Reusable source selection | Host resolves files, precedence, applicability, and model-visible delivery | Remove local selection when those semantics exist, not merely when a kernel exports config |
+| Prose handover and doctrine | Application-level meaning | Keep content ownership here; execution durability does not supply it |
 
 ## Refresh
 
-Refresh after each Pi upgrade, before a program-dependent decision, and when
-this verification predates the active install. Use read-only GitHub release,
-commit, comparison, exact-file, and pull-request APIs; npm metadata; installed
-manifests and implementation; and checkout dependency metadata. Resolve each
-mutable upstream ref before reading its files. Replace dates and state in
-place, without commit-distance tallies or an investigation history.
+After each Pi upgrade and before a host-dependent decision:
 
-A dated entry records the last check, not present truth. If a defining source
-is unavailable, mark the affected claim unverified rather than repeating it.
-Retire this track when convergence is complete; Git retains the history.
+- Resolve npm publication, the active installation, the checkout lockfile, and
+  upstream refs separately. Keep wildcard peers and refresh the lockfile.
+- Check published exports, running-install aliases, declarations, and nearest
+  implementation. Do not infer deployed behavior from a work-package status.
+- Recheck ordinary SDK, durable lanes, and Pico3 separately. Follow the affected
+  host's storage, resources, lifecycle, observation, and result contracts.
+- Run repository gates after consumer repairs. Source inspection and successful
+  dependency installation are not substitutes for those gates.
+- Replace dated claims in place. If a defining source is unavailable, mark the
+  affected claim unverified rather than preserve a stale verification date.
 
-[spec]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/agent/docs/harness.md
-[roadmap]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/agent/docs/post-wp05-roadmap.md
-[package]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/coding-agent/package.json
-[commands]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/coding-agent/src/experimental/commands.ts
-[wp08]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/agent/docs/work-packages/08-named-branch-streaming-forks.md
-[jsonl-fork]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/agent/src/harness/session/jsonl/fork.ts
-[mobile]: https://github.com/earendil-works/pi/blob/acaa253cc8e3f159e6100b6f3874861b1f0bfc99/packages/agent/docs/mobile-handoff/README.md
+[release]: https://github.com/earendil-works/pi/releases/tag/v0.86.0
+[main]: https://github.com/earendil-works/pi/commit/d1230ea2000d876b479a69b8b061f9d670f262f5
+[release-main]: https://github.com/earendil-works/pi/compare/ecac0a9c4edad3dac5d9f8b40e0c7db7a56471fc...d1230ea2000d876b479a69b8b061f9d670f262f5
+[sdk]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/coding-agent/src/core/sdk.ts#L368-L432
+[agent-package]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/package.json#L8-L41
+[pico-options]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/src/harness/pico3/harness.ts#L58-L110
+[pico-watch]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/src/harness/pico3/harness.ts#L746-L803
+[pico-chord]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/src/harness/pico3/chord.ts#L22-L145
+[pico-jsonl]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/src/harness/pico3/jsonl.ts#L28-L110
+[wp08]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/work-packages/08-named-branch-streaming-forks.md
+[spec]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/harness.md
+[roadmap]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/post-wp05-roadmap.md
+[mobile]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/mobile-handoff/README.md
+[pico-hardening]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/pico/v3/hardening-handoff.md
+[pico-view-doc]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/pico/v3/view-and-events.md
+[pico-plugin-doc]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/pico/v3/plugins.md
