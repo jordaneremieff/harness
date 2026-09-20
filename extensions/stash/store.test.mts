@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import fs, { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import fs, { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -151,6 +152,77 @@ describe("writeStash + listStashes", () => {
 			assert.match(entry.preview ?? "", /é$/);
 		}
 	});
+});
+
+describe("artifact replaced by a FIFO after discovery", () => {
+	for (const operation of ["harden", "list", "read", "rotate", "transition"]) {
+		it(`refuses a writerless FIFO without blocking during ${operation}`, { skip: process.platform === "win32" }, () => {
+			const child = spawnSync(
+				process.execPath,
+				[
+					"--input-type=module",
+					"-e",
+					`
+					import assert from "node:assert/strict";
+					import { execFileSync } from "node:child_process";
+					import fs from "node:fs/promises";
+					import { syncBuiltinESMExports } from "node:module";
+					import { join } from "node:path";
+					import { mock } from "node:test";
+					const [moduleUrl, store, operation] = process.argv.slice(1);
+					const { listStashes, readStash, rotateStash, transitionStash, writeStash } = await import(moduleUrl);
+					await fs.mkdir(store);
+					let id = "fifo-target";
+					let path = join(store, id + ".md");
+					if (operation === "harden") {
+						await fs.writeFile(path, '---\\nstate: "open"\\n---\\nbody\\n');
+					} else {
+						const written = await writeStash(store, { title: "FIFO target", summary: "original" });
+						id = written.record.id;
+						path = written.path;
+					}
+					const originalOpen = fs.open;
+					let replaced = false;
+					mock.method(fs, "open", async (...args) => {
+						if (args[0] === path && !replaced) {
+							await fs.unlink(path);
+							execFileSync("mkfifo", [path], { timeout: 1000, maxBuffer: 8192 });
+							replaced = true;
+							console.log("fifo-installed");
+						}
+						return originalOpen(...args);
+					});
+					syncBuiltinESMExports();
+					if (operation === "list") {
+						const [entry] = await listStashes(store);
+						assert.equal(entry.meta.state, "unknown");
+						assert.match(entry.previewError, /not a regular file/);
+					} else if (operation === "read") {
+						const result = await readStash(store, id);
+						assert.equal(result.ok, false);
+						assert.match(result.error, /not a regular file/);
+					} else {
+						const action = operation === "harden" ? listStashes(store)
+							: operation === "rotate" ? rotateStash(store, id)
+							: transitionStash(store, id, { action: "activate" });
+						await assert.rejects(action, /not a regular file/);
+					}
+					assert.equal(replaced, true);
+					assert.equal((await fs.lstat(path)).isFIFO(), true);
+					console.log("fifo-refused");
+					`,
+					new URL("./store.ts", import.meta.url).href,
+					join(dir, `fifo-${operation}`),
+					operation,
+				],
+				{ encoding: "utf8", timeout: 3000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 },
+			);
+			assert.match(child.stdout, /fifo-installed/);
+			assert.equal(child.error?.message, undefined, child.stderr);
+			assert.equal(child.status, 0, child.stderr);
+			assert.match(child.stdout, /fifo-refused/);
+		});
+	}
 });
 
 describe("stash lifecycle transitions", () => {
@@ -573,6 +645,114 @@ describe("rotateStash", () => {
 		assert.equal(await readFile(path, "utf8"), replacementText);
 	});
 
+	it("rejects a replacement at the source-link boundary without publishing an unverified archive", async (t) => {
+		const store = join(dir, "source-link-store");
+		const { record, path } = await writeStash(store, { title: "Source link", summary: "original" });
+		const archiveDir = join(store, ".trash");
+		const replacement = join(store, ".replacement");
+		const replacementText = '---\nstate: "open"\n---\nreplacement\n';
+		await writeFile(replacement, replacementText, { mode: 0o600 });
+		const realLink = fs.link;
+		let replaced = false;
+		const mocked = mock.method(fs, "link", async (source: string, destination: string) => {
+			if (source === path && !replaced) {
+				await rename(replacement, path);
+				replaced = true;
+			}
+			return realLink(source, destination);
+		});
+		syncBuiltinESMExports();
+		t.after(() => {
+			mocked.mock.restore();
+			syncBuiltinESMExports();
+		});
+		await assert.rejects(rotateStash(store, record.id), /stash target changed/);
+		assert.equal(replaced, true);
+		assert.equal(await readFile(path, "utf8"), replacementText);
+		assert.deepEqual(await readdir(archiveDir), [], "an unverified inode must not occupy the archive name");
+		mocked.mock.restore();
+		syncBuiltinESMExports();
+		const retried = await rotateStash(store, record.id);
+		assert.equal(await readFile(retried.archivePath, "utf8"), replacementText);
+	});
+
+	it("does not remove a temporary name it failed to create", async (t) => {
+		const store = join(dir, "temporary-collision-store");
+		const { record, path } = await writeStash(store, { title: "Temporary collision", summary: "original" });
+		const original = await readFile(path, "utf8");
+		const archivePath = join(store, ".trash", `${record.id}.md`);
+		const realLink = fs.link;
+		let temporary = "";
+		const mocked = mock.method(fs, "link", async (source: string, destination: string) => {
+			if (source === path && destination !== archivePath) {
+				temporary = destination;
+				await writeFile(temporary, "concurrent temporary", { flag: "wx", mode: 0o600 });
+			}
+			return realLink(source, destination);
+		});
+		syncBuiltinESMExports();
+		t.after(() => {
+			mocked.mock.restore();
+			syncBuiltinESMExports();
+		});
+		await assert.rejects(rotateStash(store, record.id), { code: "EEXIST" });
+		assert.equal(await readFile(path, "utf8"), original);
+		assert.equal(await readFile(temporary, "utf8"), "concurrent temporary");
+		await assert.rejects(stat(archivePath), { code: "ENOENT" });
+	});
+
+	it("retains the verified archive and a source replaced at final publication", async (t) => {
+		const store = join(dir, "final-publication-store");
+		const { record, path } = await writeStash(store, { title: "Final publication", summary: "original" });
+		const original = await readFile(path, "utf8");
+		const archivePath = join(store, ".trash", `${record.id}.md`);
+		const replacement = join(store, ".replacement");
+		const replacementText = '---\nstate: "active"\n---\nconcurrent pickup\n';
+		await writeFile(replacement, replacementText, { mode: 0o600 });
+		const realLink = fs.link;
+		let replaced = false;
+		const mocked = mock.method(fs, "link", async (source: string, destination: string) => {
+			if (destination === archivePath) {
+				await rename(replacement, path);
+				replaced = true;
+			}
+			return realLink(source, destination);
+		});
+		syncBuiltinESMExports();
+		t.after(() => {
+			mocked.mock.restore();
+			syncBuiltinESMExports();
+		});
+		await assert.rejects(rotateStash(store, record.id), /archive retained.*source removal failed/);
+		assert.equal(replaced, true);
+		assert.equal(await readFile(path, "utf8"), replacementText);
+		assert.equal(await readFile(archivePath, "utf8"), original);
+		assert.deepEqual(await readdir(join(store, ".trash")), [`${record.id}.md`]);
+	});
+
+	it("never deletes an archive replaced after publication", async (t) => {
+		const store = join(dir, "archive-replacement-store");
+		const { record, path } = await writeStash(store, { title: "Archive replacement", summary: "original" });
+		const original = await readFile(path, "utf8");
+		const archivePath = join(store, ".trash", `${record.id}.md`);
+		const replacement = join(store, ".replacement");
+		await writeFile(replacement, "concurrent archive", { mode: 0o600 });
+		const realLink = fs.link;
+		const mocked = mock.method(fs, "link", async (source: string, destination: string) => {
+			await realLink(source, destination);
+			if (destination === archivePath) await rename(replacement, archivePath);
+		});
+		syncBuiltinESMExports();
+		t.after(() => {
+			mocked.mock.restore();
+			syncBuiltinESMExports();
+		});
+		await assert.rejects(rotateStash(store, record.id), /stash target changed/);
+		assert.equal(await readFile(path, "utf8"), original);
+		assert.equal(await readFile(archivePath, "utf8"), "concurrent archive");
+		assert.deepEqual(await readdir(join(store, ".trash")), [`${record.id}.md`]);
+	});
+
 	it("never overwrites a concurrent archive and preserves both files after source-removal failure", async (t) => {
 		const store = join(dir, "archive-publication-store");
 		const { record, path } = await writeStash(store, { title: "Publication", summary: "retained" });
@@ -580,7 +760,7 @@ describe("rotateStash", () => {
 		const archivePath = join(store, ".trash", `${record.id}.md`);
 		const realLink = fs.link;
 		const linkMock = mock.method(fs, "link", async (source: string, destination: string) => {
-			await writeFile(destination, "concurrent archive", { flag: "wx" });
+			if (destination === archivePath) await writeFile(destination, "concurrent archive", { flag: "wx" });
 			return realLink(source, destination);
 		});
 		syncBuiltinESMExports();
@@ -594,8 +774,10 @@ describe("rotateStash", () => {
 		linkMock.mock.restore();
 		syncBuiltinESMExports();
 		await rm(archivePath);
-		const unlinkMock = mock.method(fs, "unlink", async () => {
-			throw new Error("source removal denied");
+		const realUnlink = fs.unlink;
+		const unlinkMock = mock.method(fs, "unlink", async (target: string) => {
+			if (target === path) throw new Error("source removal denied");
+			return realUnlink(target);
 		});
 		syncBuiltinESMExports();
 		t.after(() => {

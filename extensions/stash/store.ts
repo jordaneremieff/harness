@@ -67,7 +67,7 @@ function artifactDirents(dirents: Dirent[]): Dirent[] {
  */
 async function openRegular(path: string): Promise<{ handle: FileHandle; info: Stats }> {
 	const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-	const handle = await open(path, constants.O_RDONLY | noFollow);
+	const handle = await open(path, constants.O_RDONLY | noFollow | constants.O_NONBLOCK);
 	try {
 		const info = await handle.stat();
 		if (!info.isFile()) throw new Error(`not a regular file: ${path}`);
@@ -565,8 +565,8 @@ export async function transitionStash(
  * retained byte-for-byte and restoring it is a plain move back into the store.
  * Active artifacts are excluded: a live session owns them and completion is the
  * only close path. Only the bounded header is read for eligibility, so oversized
- * artifacts remain rotatable. Exclusive linking prevents archive replacement;
- * source removal follows successful archive publication.
+ * artifacts remain rotatable. A private temporary link pins the verified inode
+ * before exclusive archive publication; source removal follows publication.
  */
 export async function rotateStash(dir: string, idOrPrefix: string): Promise<StashRotateResult> {
 	const dirents = await secureStore(dir, false);
@@ -609,33 +609,60 @@ export async function rotateStash(dir: string, idOrPrefix: string): Promise<Stas
 	if (current.dev !== prefix.identity.dev || current.ino !== prefix.identity.ino) {
 		throw new Error("stash target changed before rotation; retry the operation");
 	}
-	// Publish without replacement, including when another process archives the
-	// same id concurrently. Remove the source name only after its bytes have a
-	// retained archive name; an interrupted move leaves both names recoverable.
+	// Pin and verify the inode under a private name before final publication.
+	// A source-path replacement must not reserve the archive name with an
+	// unverified inode. Cleanup owns only this temporary link, never the archive.
+	const temporary = join(archiveDir, `.${located.id}.${randomUUID()}.tmp`);
+	let staged = false;
+	let published = false;
 	try {
-		await link(located.path, archivePath);
-	} catch (error) {
-		if (hasCode(error, "EEXIST")) throw new Error(`stash ${located.id} is already rotated`);
-		throw error;
-	}
-	try {
-		const archived = await lstat(archivePath);
-		const source = await lstat(located.path);
+		await link(located.path, temporary);
+		staged = true;
+		const retained = await lstat(temporary);
 		if (
-			!archived.isFile() ||
-			archived.isSymbolicLink() ||
-			archived.dev !== prefix.identity.dev ||
-			archived.ino !== prefix.identity.ino ||
-			source.dev !== prefix.identity.dev ||
-			source.ino !== prefix.identity.ino
+			!retained.isFile() ||
+			retained.isSymbolicLink() ||
+			retained.dev !== prefix.identity.dev ||
+			retained.ino !== prefix.identity.ino
 		) {
-			throw new Error("stash target changed during rotation");
+			throw new Error("stash target changed during rotation; retry the operation");
 		}
-		await unlink(located.path);
-	} catch (error) {
-		throw new Error(
-			`stash archive retained at ${archivePath}, but source removal failed: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		try {
+			await link(temporary, archivePath);
+		} catch (error) {
+			if (hasCode(error, "EEXIST")) throw new Error(`stash ${located.id} is already rotated`);
+			throw error;
+		}
+		published = true;
+		try {
+			const archived = await lstat(archivePath);
+			const source = await lstat(located.path);
+			if (
+				!archived.isFile() ||
+				archived.isSymbolicLink() ||
+				archived.dev !== prefix.identity.dev ||
+				archived.ino !== prefix.identity.ino ||
+				source.dev !== prefix.identity.dev ||
+				source.ino !== prefix.identity.ino
+			) {
+				throw new Error("stash target changed during rotation");
+			}
+			await unlink(located.path);
+		} catch (error) {
+			throw new Error(
+				`stash archive retained at ${archivePath}, but source removal failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	} finally {
+		if (staged) {
+			try {
+				await unlink(temporary);
+			} catch (error) {
+				// Preserve the publication result; any orphan stays private and hidden.
+				// biome-ignore lint/correctness/noUnsafeFinally: guarded rethrow before archive publication
+				if (!published && !hasCode(error, "ENOENT")) throw error;
+			}
+		}
 	}
 	return { id: located.id, path: located.path, archivePath, state };
 }
