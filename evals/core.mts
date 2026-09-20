@@ -6,10 +6,13 @@ import { pathToFileURL } from "node:url";
 import {
 	EVALUATION_SCHEMA_VERSION,
 	THINKING_LEVELS,
+	type EvaluationAuthority,
 	type EvaluationCase,
+	type EvaluationLimits,
 	type EvaluationPlan,
 	type EvaluationPlanBody,
 	type EvaluationSuite,
+	type InvocationGrant,
 	type Participant,
 	type SubjectAdapter,
 	type SubjectVariant,
@@ -41,40 +44,60 @@ function assertUniqueIds(values: Array<{ id: string }>, field: string): void {
 	}
 }
 
+function isJsonScalar(current: unknown): current is string | number | boolean | null {
+	return current === null || typeof current === "string" || typeof current === "number" || typeof current === "boolean";
+}
+
+function assertJsonScalar(current: string | number | boolean | null, path: string): void {
+	if (typeof current === "number" && !Number.isFinite(current)) fail(`${path} contains a non-finite number`);
+}
+
+function assertJsonArrayElements(
+	current: unknown[],
+	path: string,
+	visit: (value: unknown, valuePath: string) => void,
+): void {
+	for (let index = 0; index < current.length; index += 1) {
+		if (!Object.hasOwn(current, index)) fail(`${path} contains a sparse array slot at ${index}`);
+		visit(current[index], `${path}[${index}]`);
+	}
+	const extraKeys = Reflect.ownKeys(current).filter(
+		(key) => key !== "length" && !(typeof key === "string" && /^(0|[1-9]\d*)$/.test(key)),
+	);
+	if (extraKeys.length > 0) fail(`${path} contains unsupported array properties`);
+}
+
+function assertJsonObjectProperties(
+	current: object,
+	path: string,
+	visit: (value: unknown, valuePath: string) => void,
+): void {
+	const prototype = Object.getPrototypeOf(current);
+	if (prototype !== Object.prototype && prototype !== null) fail(`${path} must contain only plain objects`);
+	for (const key of Reflect.ownKeys(current)) {
+		if (typeof key !== "string") fail(`${path} contains a symbol key`);
+		const descriptor = Object.getOwnPropertyDescriptor(current, key);
+		if (!descriptor || !("value" in descriptor) || descriptor.get || descriptor.set) {
+			fail(`${path}.${key} contains an accessor`);
+		}
+		if (!descriptor.enumerable) fail(`${path}.${key} is not enumerable`);
+		visit(descriptor.value, `${path}.${key}`);
+	}
+}
+
 function assertJsonData(value: unknown, field: string): void {
 	const ancestors = new WeakSet<object>();
 	const visit = (current: unknown, path: string): void => {
-		if (current === null || typeof current === "string" || typeof current === "boolean") return;
-		if (typeof current === "number") {
-			if (!Number.isFinite(current)) fail(`${path} contains a non-finite number`);
+		if (isJsonScalar(current)) {
+			assertJsonScalar(current, path);
 			return;
 		}
-		if (typeof current !== "object") fail(`${path} contains unsupported type ${typeof current}`);
+		if (typeof current !== "object" || current === null) fail(`${path} contains unsupported type ${typeof current}`);
 		if (ancestors.has(current)) fail(`${path} contains a cycle`);
 		ancestors.add(current);
 		try {
-			if (Array.isArray(current)) {
-				for (let index = 0; index < current.length; index += 1) {
-					if (!Object.hasOwn(current, index)) fail(`${path} contains a sparse array slot at ${index}`);
-					visit(current[index], `${path}[${index}]`);
-				}
-				const extraKeys = Reflect.ownKeys(current).filter(
-					(key) => key !== "length" && !(typeof key === "string" && /^(0|[1-9]\d*)$/.test(key)),
-				);
-				if (extraKeys.length > 0) fail(`${path} contains unsupported array properties`);
-				return;
-			}
-			const prototype = Object.getPrototypeOf(current);
-			if (prototype !== Object.prototype && prototype !== null) fail(`${path} must contain only plain objects`);
-			for (const key of Reflect.ownKeys(current)) {
-				if (typeof key !== "string") fail(`${path} contains a symbol key`);
-				const descriptor = Object.getOwnPropertyDescriptor(current, key);
-				if (!descriptor || !("value" in descriptor) || descriptor.get || descriptor.set) {
-					fail(`${path}.${key} contains an accessor`);
-				}
-				if (!descriptor.enumerable) fail(`${path}.${key} is not enumerable`);
-				visit(descriptor.value, `${path}.${key}`);
-			}
+			if (Array.isArray(current)) assertJsonArrayElements(current, path, visit);
+			else assertJsonObjectProperties(current, path, visit);
 		} finally {
 			ancestors.delete(current);
 		}
@@ -86,6 +109,86 @@ function assertPositiveInteger(value: unknown, field: string): void {
 	if (!Number.isSafeInteger(value) || (value as number) < 1) fail(`${field} must be a positive integer`);
 }
 
+function assertSuiteSubject(subject: unknown): asserts subject is EvaluationSuite["subject"] {
+	if (!subject || typeof subject !== "object") fail("suite.subject must be an object");
+	const candidate = subject as EvaluationSuite["subject"];
+	assertId(candidate.adapter, "suite.subject.adapter");
+	assertId(candidate.kind, "suite.subject.kind");
+	assertString(candidate.description, "suite.subject.description");
+	assertJsonData(candidate.config, "suite.subject.config");
+	if (!Array.isArray(candidate.variants) || candidate.variants.length < 1) {
+		fail("suite.subject.variants must contain at least one variant");
+	}
+	assertUniqueIds(candidate.variants, "suite.subject.variants");
+	for (const variant of candidate.variants) {
+		assertString(variant.description, `variant ${variant.id}.description`);
+		assertJsonData(variant.config, `variant ${variant.id}.config`);
+	}
+}
+
+function assertSuiteCase(evaluationCase: unknown): void {
+	const candidate = evaluationCase as EvaluationSuite["cases"][number];
+	assertString(candidate.title, `case ${candidate.id}.title`);
+	assertJsonData(candidate.input, `case ${candidate.id}.input`);
+	if (!Array.isArray(candidate.checks) || candidate.checks.length < 1) {
+		fail(`case ${candidate.id}.checks must contain at least one check`);
+	}
+	assertUniqueIds(candidate.checks, `case ${candidate.id}.checks`);
+	for (const check of candidate.checks) {
+		assertId(check.type, `case ${candidate.id} check type`);
+		assertJsonData(check.config, `case ${candidate.id} check config`);
+	}
+	if (candidate.reviewMetadata !== undefined) {
+		assertJsonData(candidate.reviewMetadata, `case ${candidate.id}.reviewMetadata`);
+	}
+}
+
+function assertSuiteLimits(limits: unknown): asserts limits is EvaluationLimits {
+	if (!limits || typeof limits !== "object") fail("suite.limits must be an object");
+	const candidate = limits as EvaluationLimits;
+	assertPositiveInteger(candidate.wall?.runTimeoutMs, "suite.limits.wall.runTimeoutMs");
+	assertPositiveInteger(candidate.wall?.executionTimeoutMs, "suite.limits.wall.executionTimeoutMs");
+	assertPositiveInteger(candidate.execution?.maxTotal, "suite.limits.execution.maxTotal");
+	assertPositiveInteger(candidate.execution?.maxTurnsEach, "suite.limits.execution.maxTurnsEach");
+	assertPositiveInteger(candidate.execution?.maxOutputTokensEach, "suite.limits.execution.maxOutputTokensEach");
+	if (candidate.cost?.currency !== "USD") fail("suite.limits.cost.currency must equal USD");
+	if (!Number.isFinite(candidate.cost?.maxObserved) || candidate.cost.maxObserved < 0) {
+		fail("suite.limits.cost.maxObserved must be a non-negative number");
+	}
+	if (candidate.cost.enforcement !== "observed-after-each-execution" || candidate.cost.hardCap !== false) {
+		fail("suite cost limits must declare observed-after-each-execution enforcement and hardCap false");
+	}
+}
+
+function assertSuiteAuthority(authority: unknown): void {
+	if (!authority || typeof authority !== "object") fail("suite.authority must be an object");
+	const candidate = authority as EvaluationAuthority;
+	for (const [field, effects] of [
+		["providerNetwork", candidate.requestedEffects?.providerNetwork],
+		["credentials", candidate.requestedEffects?.credentials],
+		["subject", candidate.requestedEffects?.subject],
+	] as const) {
+		if (!Array.isArray(effects)) fail(`suite.authority.requestedEffects.${field} must be an array`);
+		for (const effect of effects) assertString(effect, `suite.authority.requestedEffects.${field}`);
+	}
+}
+
+function assertSuiteAdjudication(adjudication: unknown): void {
+	if (!adjudication || typeof adjudication !== "object") fail("suite.adjudication must be an object");
+	const candidate = adjudication as EvaluationSuite["adjudication"];
+	if (candidate.policy !== "deterministic-only" && candidate.policy !== "human-required") {
+		fail("suite.adjudication.policy is invalid");
+	}
+	if (!Array.isArray(candidate.criteria)) fail("suite.adjudication.criteria must be an array");
+	if (candidate.policy === "human-required" && candidate.criteria.length < 1) {
+		fail("human-required adjudication needs at least one criterion");
+	}
+	for (const criterion of candidate.criteria) assertString(criterion, "suite.adjudication criterion");
+	if (candidate.metadata !== undefined) {
+		assertJsonData(candidate.metadata, "suite.adjudication.metadata");
+	}
+}
+
 export function validateSuite(suite: unknown): asserts suite is EvaluationSuite {
 	if (!suite || typeof suite !== "object" || Array.isArray(suite)) fail("suite must be an object");
 	const candidate = suite as Partial<EvaluationSuite>;
@@ -94,75 +197,13 @@ export function validateSuite(suite: unknown): asserts suite is EvaluationSuite 
 	}
 	assertId(candidate.id, "suite.id");
 	assertString(candidate.title, "suite.title");
-	if (!candidate.subject || typeof candidate.subject !== "object") fail("suite.subject must be an object");
-	assertId(candidate.subject.adapter, "suite.subject.adapter");
-	assertId(candidate.subject.kind, "suite.subject.kind");
-	assertString(candidate.subject.description, "suite.subject.description");
-	assertJsonData(candidate.subject.config, "suite.subject.config");
-	if (!Array.isArray(candidate.subject.variants) || candidate.subject.variants.length < 1) {
-		fail("suite.subject.variants must contain at least one variant");
-	}
-	assertUniqueIds(candidate.subject.variants, "suite.subject.variants");
-	for (const variant of candidate.subject.variants) {
-		assertString(variant.description, `variant ${variant.id}.description`);
-		assertJsonData(variant.config, `variant ${variant.id}.config`);
-	}
+	assertSuiteSubject(candidate.subject);
 	if (!Array.isArray(candidate.cases) || candidate.cases.length < 1) fail("suite.cases must contain at least one case");
 	assertUniqueIds(candidate.cases, "suite.cases");
-	for (const evaluationCase of candidate.cases) {
-		assertString(evaluationCase.title, `case ${evaluationCase.id}.title`);
-		assertJsonData(evaluationCase.input, `case ${evaluationCase.id}.input`);
-		if (!Array.isArray(evaluationCase.checks) || evaluationCase.checks.length < 1) {
-			fail(`case ${evaluationCase.id}.checks must contain at least one check`);
-		}
-		assertUniqueIds(evaluationCase.checks, `case ${evaluationCase.id}.checks`);
-		for (const check of evaluationCase.checks) {
-			assertId(check.type, `case ${evaluationCase.id} check type`);
-			assertJsonData(check.config, `case ${evaluationCase.id} check config`);
-		}
-		if (evaluationCase.reviewMetadata !== undefined) {
-			assertJsonData(evaluationCase.reviewMetadata, `case ${evaluationCase.id}.reviewMetadata`);
-		}
-	}
-	if (!candidate.limits || typeof candidate.limits !== "object") fail("suite.limits must be an object");
-	assertPositiveInteger(candidate.limits.wall?.runTimeoutMs, "suite.limits.wall.runTimeoutMs");
-	assertPositiveInteger(candidate.limits.wall?.executionTimeoutMs, "suite.limits.wall.executionTimeoutMs");
-	assertPositiveInteger(candidate.limits.execution?.maxTotal, "suite.limits.execution.maxTotal");
-	assertPositiveInteger(candidate.limits.execution?.maxTurnsEach, "suite.limits.execution.maxTurnsEach");
-	assertPositiveInteger(candidate.limits.execution?.maxOutputTokensEach, "suite.limits.execution.maxOutputTokensEach");
-	if (candidate.limits.cost?.currency !== "USD") fail("suite.limits.cost.currency must equal USD");
-	if (!Number.isFinite(candidate.limits.cost?.maxObserved) || candidate.limits.cost.maxObserved < 0) {
-		fail("suite.limits.cost.maxObserved must be a non-negative number");
-	}
-	if (
-		candidate.limits.cost.enforcement !== "observed-after-each-execution" ||
-		candidate.limits.cost.hardCap !== false
-	) {
-		fail("suite cost limits must declare observed-after-each-execution enforcement and hardCap false");
-	}
-	if (!candidate.authority || typeof candidate.authority !== "object") fail("suite.authority must be an object");
-	for (const [field, effects] of [
-		["providerNetwork", candidate.authority.requestedEffects?.providerNetwork],
-		["credentials", candidate.authority.requestedEffects?.credentials],
-		["subject", candidate.authority.requestedEffects?.subject],
-	] as const) {
-		if (!Array.isArray(effects)) fail(`suite.authority.requestedEffects.${field} must be an array`);
-		for (const effect of effects) assertString(effect, `suite.authority.requestedEffects.${field}`);
-	}
-	if (!candidate.adjudication || typeof candidate.adjudication !== "object") {
-		fail("suite.adjudication must be an object");
-	}
-	if (candidate.adjudication.policy !== "deterministic-only" && candidate.adjudication.policy !== "human-required") {
-		fail("suite.adjudication.policy is invalid");
-	}
-	if (!Array.isArray(candidate.adjudication.criteria)) fail("suite.adjudication.criteria must be an array");
-	if (candidate.adjudication.policy === "human-required" && candidate.adjudication.criteria.length < 1) {
-		fail("human-required adjudication needs at least one criterion");
-	}
-	for (const criterion of candidate.adjudication.criteria) assertString(criterion, "suite.adjudication criterion");
-	if (candidate.adjudication.metadata !== undefined) {
-		assertJsonData(candidate.adjudication.metadata, "suite.adjudication.metadata");
-	}
+	for (const evaluationCase of candidate.cases) assertSuiteCase(evaluationCase);
+	assertSuiteLimits(candidate.limits);
+	assertSuiteAuthority(candidate.authority);
+	assertSuiteAdjudication(candidate.adjudication);
 	assertJsonData(suite, "suite");
 }
 
@@ -209,6 +250,21 @@ function selectById<T extends { id: string }>(values: T[], selectedIds: string[]
 	return values.filter((value) => selected.has(value.id));
 }
 
+function assertInvocationGrant(authority: EvaluationAuthority, grant: InvocationGrant): void {
+	if (!Array.isArray(grant.credentialSources.environment)) fail("invocation credential environment must be an array");
+	for (const name of grant.credentialSources.environment) {
+		if (!/^[A-Z][A-Z0-9_]*$/.test(name)) fail(`credential environment name is invalid: ${name}`);
+	}
+	if (!Array.isArray(grant.grantedEffects)) fail("invocation grantedEffects must be an array");
+	const requested = new Set(Object.values(authority.requestedEffects).flat());
+	for (const effect of grant.grantedEffects) {
+		if (!requested.has(effect)) fail(`invocation grants an unrequested effect: ${effect}`);
+	}
+	for (const effect of requested) {
+		if (!grant.grantedEffects.includes(effect)) fail(`invocation grant is missing requested effect: ${effect}`);
+	}
+}
+
 export function createPlan(
 	suite: EvaluationSuite,
 	suitePath: string,
@@ -232,18 +288,7 @@ export function createPlan(
 	assertPositiveInteger(repetitions, "repetitions");
 	if (grant.providerNetwork !== "approved-effects-only")
 		fail("invocation grant must limit provider and credential activity to approved effects");
-	if (!Array.isArray(grant.credentialSources.environment)) fail("invocation credential environment must be an array");
-	for (const name of grant.credentialSources.environment) {
-		if (!/^[A-Z][A-Z0-9_]*$/.test(name)) fail(`credential environment name is invalid: ${name}`);
-	}
-	if (!Array.isArray(grant.grantedEffects)) fail("invocation grantedEffects must be an array");
-	const requested = new Set(Object.values(suite.authority.requestedEffects).flat());
-	for (const effect of grant.grantedEffects) {
-		if (!requested.has(effect)) fail(`invocation grants an unrequested effect: ${effect}`);
-	}
-	for (const effect of requested) {
-		if (!grant.grantedEffects.includes(effect)) fail(`invocation grant is missing requested effect: ${effect}`);
-	}
+	assertInvocationGrant(suite.authority, grant);
 	const participantIds = new Set(participants.map((participant) => participant.id));
 	if (participantIds.size !== participants.length) fail("participant selection contains a duplicate");
 	const cases = selectById(suite.cases, selection.caseIds, "case");

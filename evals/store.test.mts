@@ -154,6 +154,12 @@ function removeFixture(fixture: Fixture): void {
 	rmSync(fixture.root, { recursive: true, force: true });
 }
 
+function entryFor<T extends { executionId: string }>(entries: T[], executionId: string): T {
+	const entry = entries.find((candidate) => candidate.executionId === executionId);
+	assert.ok(entry, `review entry ${executionId} must exist`);
+	return entry;
+}
+
 const providerError = [
 	{ type: "AssistantError", message: "Provider refused the request." },
 	{ type: "AssistantStopReason", message: "Assistant stopped with error." },
@@ -271,8 +277,8 @@ describe("run coverage and review evidence", () => {
 			}>(join(fixture.directory, "review.json"));
 			assert.deepEqual(state.coverage, fixture.coverage);
 			assert.deepEqual(review.coverage, fixture.coverage);
-			const usable = review.cases[0].entries.find((entry) => entry.executionId === usableId)!;
-			const excluded = review.cases[0].entries.find((entry) => entry.executionId === excludedId)!;
+			const usable = entryFor(review.cases[0].entries, usableId);
+			const excluded = entryFor(review.cases[0].entries, excludedId);
 			assert.equal(usable.evidenceStatus, "usable");
 			assert.ok(Object.hasOwn(usable, "checks"));
 			assert.equal(excluded.evidenceStatus, "excluded");
@@ -318,8 +324,8 @@ describe("run coverage and review evidence", () => {
 			const review = readJson<{
 				cases: Array<{ entries: Array<{ executionId: string; events: unknown }> }>;
 			}>(join(fixture.directory, "review.json"));
-			const usable = review.cases[0].entries.find((entry) => entry.executionId === executionId(participants[0]))!;
-			const excluded = review.cases[0].entries.find((entry) => entry.executionId === executionId(participants[1]))!;
+			const usable = entryFor(review.cases[0].entries, executionId(participants[0]));
+			const excluded = entryFor(review.cases[0].entries, executionId(participants[1]));
 			assert.deepEqual(usable.events, transcriptEvents(0));
 			assert.deepEqual(excluded.events, transcriptEvents(1));
 		} finally {

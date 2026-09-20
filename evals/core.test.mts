@@ -44,6 +44,12 @@ const adapter: SubjectAdapter = {
 	},
 };
 
+function firstVariant(suite: EvaluationSuite): EvaluationSuite["subject"]["variants"][number] {
+	const variant = suite.subject.variants[0];
+	assert.ok(variant, "suite must declare at least one variant");
+	return variant;
+}
+
 describe("neutral suite contract", () => {
 	it("builds a stable plan with exact invocation data and authority", () => {
 		const directory = mkdtempSync(join(tmpdir(), "eval-core-"));
@@ -115,11 +121,11 @@ describe("neutral suite contract", () => {
 				grantedEffects: ["effect"],
 			};
 			const suite = neutralSuite();
-			suite.subject.variants[0]!.config = { extensionFlags: { enabled: true, mode: "strict" } };
+			firstVariant(suite).config = { extensionFlags: { enabled: true, mode: "strict" } };
 			const equivalent = neutralSuite();
-			equivalent.subject.variants[0]!.config = { extensionFlags: { mode: "strict", enabled: true } };
+			firstVariant(equivalent).config = { extensionFlags: { mode: "strict", enabled: true } };
 			const changed = neutralSuite();
-			changed.subject.variants[0]!.config = { extensionFlags: { enabled: true, mode: "advisory" } };
+			firstVariant(changed).config = { extensionFlags: { enabled: true, mode: "advisory" } };
 			const planned = createPlan(suite, suitePath, [participant], 1, adapter, grant);
 			const equivalentPlan = createPlan(equivalent, suitePath, [participant], 1, adapter, grant);
 			const changedPlan = createPlan(changed, suitePath, [participant], 1, adapter, grant);

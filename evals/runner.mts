@@ -97,17 +97,17 @@ export function buildChildEnvironment(
 	return environment;
 }
 
-export function validateVitestReport(
-	reportPath: string,
-	expectedFile: string,
-	expectedExecutions: number,
-	exitCode: number | null,
-): ChildOutcome {
-	let report: {
-		success?: boolean;
-		numTotalTests?: number;
-		testResults?: Array<{ name?: string; assertionResults?: unknown[] }>;
-	};
+interface VitestReport {
+	success?: boolean;
+	numTotalTests?: number;
+	testResults?: Array<{ name?: string; assertionResults?: unknown[] }>;
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function readVitestReport(reportPath: string): { report: VitestReport } | { error: string } {
 	try {
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 		const descriptor = openSync(reportPath, constants.O_RDONLY | noFollow);
@@ -119,40 +119,65 @@ export function validateVitestReport(
 			if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
 				throw new Error("Vitest report must be a JSON object");
 			}
-			report = parsed as typeof report;
+			return { report: parsed as VitestReport };
 		} finally {
 			closeSync(descriptor);
 		}
 	} catch (error) {
-		return {
-			status: "failed",
-			exitCode,
-			error: `Vitest JSON is invalid: ${error instanceof Error ? error.message : String(error)}`,
-		};
+		return { error: `Vitest JSON is invalid: ${errorMessage(error)}` };
 	}
+}
+
+function resolveReportedFiles(
+	testResults: Array<{ name?: string }>,
+	expectedFile: string,
+): { requested: string; reported: string[] } | { error: string } {
+	try {
+		return {
+			requested: realpathSync(expectedFile),
+			reported: testResults.map((result) => {
+				if (typeof result.name !== "string") throw new Error("Vitest JSON contains a result without a file name.");
+				return realpathSync(result.name);
+			}),
+		};
+	} catch (error) {
+		return { error: `Vitest file-set validation failed: ${errorMessage(error)}` };
+	}
+}
+
+function classifyVitestExit(exitCode: number | null, success: boolean): ChildOutcome {
+	if (exitCode === 0 && success) return { status: "completed", exitCode };
+	if (exitCode === 1 && !success)
+		return { status: "failed", exitCode, error: "One or more operational eval executions failed." };
+	if (exitCode === 1 && success) {
+		return { status: "failed", exitCode, error: "Vitest exited with code 1 despite a successful JSON report." };
+	}
+	return {
+		status: "failed",
+		exitCode,
+		error: `Vitest and its JSON report disagree (exit ${exitCode}, success ${success}).`,
+	};
+}
+
+export function validateVitestReport(
+	reportPath: string,
+	expectedFile: string,
+	expectedExecutions: number,
+	exitCode: number | null,
+): ChildOutcome {
+	const read = readVitestReport(reportPath);
+	if ("error" in read) return { status: "failed", exitCode, error: read.error };
+	const report = read.report;
 	if (typeof report.success !== "boolean" || !Array.isArray(report.testResults)) {
 		return { status: "failed", exitCode, error: "Vitest JSON is missing required result fields." };
 	}
-	let requested: string;
-	let reported: string[];
-	try {
-		requested = realpathSync(expectedFile);
-		reported = report.testResults.map((result) => {
-			if (typeof result.name !== "string") throw new Error("Vitest JSON contains a result without a file name.");
-			return realpathSync(result.name);
-		});
-	} catch (error) {
+	const files = resolveReportedFiles(report.testResults, expectedFile);
+	if ("error" in files) return { status: "failed", exitCode, error: files.error };
+	if (files.reported.length !== 1 || files.reported[0] !== files.requested) {
 		return {
 			status: "failed",
 			exitCode,
-			error: `Vitest file-set validation failed: ${error instanceof Error ? error.message : String(error)}`,
-		};
-	}
-	if (reported.length !== 1 || reported[0] !== requested) {
-		return {
-			status: "failed",
-			exitCode,
-			error: `Vitest reported an unexpected file set: ${JSON.stringify(reported)}`,
+			error: `Vitest reported an unexpected file set: ${JSON.stringify(files.reported)}`,
 		};
 	}
 	const assertionCount = report.testResults.reduce(
@@ -166,17 +191,41 @@ export function validateVitestReport(
 			error: `Vitest reported ${report.numTotalTests}/${assertionCount} tests; expected ${expectedExecutions}.`,
 		};
 	}
-	if (exitCode === 0 && report.success) return { status: "completed", exitCode };
-	if (exitCode === 1 && !report.success)
-		return { status: "failed", exitCode, error: "One or more operational eval executions failed." };
-	if (exitCode === 1 && report.success) {
-		return { status: "failed", exitCode, error: "Vitest exited with code 1 despite a successful JSON report." };
+	return classifyVitestExit(exitCode, report.success);
+}
+
+async function runChildProcess(args: {
+	directory: string;
+	plan: EvaluationPlan;
+	environment: NodeJS.ProcessEnv;
+	vitestEntry: string;
+	configPath: string;
+}): Promise<{ child: Awaited<ReturnType<typeof runManagedChild>> } | ChildOutcome> {
+	const controller = new AbortController();
+	const cancel = () => controller.abort();
+	process.once("SIGINT", cancel);
+	process.once("SIGTERM", cancel);
+	try {
+		const child = await runManagedChild({
+			executable: process.execPath,
+			args: [args.vitestEntry, "run", "--config", args.configPath, "--root", REPOSITORY_ROOT, "--no-color"],
+			cwd: REPOSITORY_ROOT,
+			env: args.environment,
+			stdoutPath: resolve(args.directory, "vitest.stdout.log"),
+			stderrPath: resolve(args.directory, "vitest.stderr.log"),
+			maxOutputBytes: MAX_OUTPUT_BYTES,
+			watchdogMs: args.plan.limits.wall.runTimeoutMs,
+			terminationGraceMs: 5_000,
+			killWaitMs: 2_000,
+			signal: controller.signal,
+		});
+		return { child };
+	} catch (error) {
+		return { status: "failed", exitCode: null, error: errorMessage(error) };
+	} finally {
+		process.removeListener("SIGINT", cancel);
+		process.removeListener("SIGTERM", cancel);
 	}
-	return {
-		status: "failed",
-		exitCode,
-		error: `Vitest and its JSON report disagree (exit ${exitCode}, success ${report.success}).`,
-	};
 }
 
 export async function runVitestChild(
@@ -184,50 +233,33 @@ export async function runVitestChild(
 	plan: EvaluationPlan,
 	labelsPath: string,
 ): Promise<ChildOutcome> {
-	let configPath: string;
-	let reportPath: string;
-	let vitestEntry: string;
+	let launch: { vitestEntry: string; configPath: string; reportPath: string };
 	try {
-		({ vitestEntry } = pinnedInstall());
-		({ configPath, reportPath } = writeVitestConfig(directory, plan));
+		const install = pinnedInstall();
+		const config = writeVitestConfig(directory, plan);
+		launch = { vitestEntry: install.vitestEntry, configPath: config.configPath, reportPath: config.reportPath };
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = errorMessage(error);
 		return { status: message.startsWith("blocked:") ? "blocked" : "failed", exitCode: null, error: message };
 	}
 	let environment: NodeJS.ProcessEnv;
 	try {
 		environment = buildChildEnvironment(plan);
 	} catch (error) {
-		return { status: "blocked", exitCode: null, error: error instanceof Error ? error.message : String(error) };
+		return { status: "blocked", exitCode: null, error: errorMessage(error) };
 	}
 	environment.HARNESS_EVAL_PLAN_PATH = join(directory, "plan.json");
 	environment.HARNESS_EVAL_RUN_DIRECTORY = directory;
 	environment.HARNESS_EVAL_LABELS_PATH = labelsPath;
-	const controller = new AbortController();
-	const cancel = () => controller.abort();
-	process.once("SIGINT", cancel);
-	process.once("SIGTERM", cancel);
-	let child: Awaited<ReturnType<typeof runManagedChild>>;
-	try {
-		child = await runManagedChild({
-			executable: process.execPath,
-			args: [vitestEntry, "run", "--config", configPath, "--root", REPOSITORY_ROOT, "--no-color"],
-			cwd: REPOSITORY_ROOT,
-			env: environment,
-			stdoutPath: resolve(directory, "vitest.stdout.log"),
-			stderrPath: resolve(directory, "vitest.stderr.log"),
-			maxOutputBytes: MAX_OUTPUT_BYTES,
-			watchdogMs: plan.limits.wall.runTimeoutMs,
-			terminationGraceMs: 5_000,
-			killWaitMs: 2_000,
-			signal: controller.signal,
-		});
-	} catch (error) {
-		return { status: "failed", exitCode: null, error: error instanceof Error ? error.message : String(error) };
-	} finally {
-		process.removeListener("SIGINT", cancel);
-		process.removeListener("SIGTERM", cancel);
-	}
+	const result = await runChildProcess({
+		directory,
+		plan,
+		environment,
+		vitestEntry: launch.vitestEntry,
+		configPath: launch.configPath,
+	});
+	if (!("child" in result)) return result;
+	const child = result.child;
 	if (child.cancellation === "watchdog")
 		return { status: "timed_out", exitCode: child.exitCode, error: "The parent run watchdog expired." };
 	if (child.cancellation === "parent_signal")
@@ -240,7 +272,7 @@ export async function runVitestChild(
 		};
 	}
 	return validateVitestReport(
-		reportPath,
+		launch.reportPath,
 		plan.suite.path,
 		plan.cases.length * plan.variants.length * plan.participants.length * plan.invocation.repetitions,
 		child.exitCode,

@@ -59,9 +59,14 @@ function toolEvidence(name: string, args: Record<string, string>, invoke: () => 
 	return normalizePiTranscript(messages);
 }
 
-function failedChecks(caseId: string, events: TranscriptEvent[], output = "") {
+function caseById(caseId: string): (typeof suite.cases)[number] {
 	const evaluationCase = suite.cases.find((entry) => entry.id === caseId);
-	assert.ok(evaluationCase);
+	assert.ok(evaluationCase, `case ${caseId} must exist`);
+	return evaluationCase;
+}
+
+function failedChecks(caseId: string, events: TranscriptEvent[], output = "") {
+	const evaluationCase = caseById(caseId);
 	return runDeterministicChecks(output, evaluationCase.checks, events, caseId)
 		.filter((check) => !check.passed)
 		.map((check) => check.checkId);
@@ -95,7 +100,8 @@ it("isolates the extension store before execution and refuses missing or reused 
 
 it("resolves only explicit peer resources and preserves bounded human adjudication", () => {
 	const suitePath = fileURLToPath(new URL("./peer-collaboration.eval.mts", import.meta.url));
-	piSdkAdapter.validate!({
+	assert.ok(piSdkAdapter.validate, "the pi-sdk adapter must expose case validation");
+	piSdkAdapter.validate({
 		suitePath,
 		subjectKind: suite.subject.kind,
 		subjectConfig: suite.subject.config,
@@ -126,7 +132,7 @@ it("resolves only explicit peer resources and preserves bounded human adjudicati
 
 it("scores real unavailable-target evidence and rejects successful-send and missing-directory controls", () => {
 	const hub = rootPeer();
-	const evaluationCase = suite.cases.find((entry) => entry.id === "unavailable-target")!;
+	const evaluationCase = caseById("unavailable-target");
 	const { fixture } = evaluationCase.input as { fixture: { target: string; message: string } };
 	const attempt = () =>
 		toolEvidence("subagent_message", { to: fixture.target, message: fixture.message }, () =>
@@ -150,7 +156,7 @@ it("scores real unavailable-target evidence and rejects successful-send and miss
 
 it("scores an absent receipt and rejects unrelated errors and unauthorized extra messages", () => {
 	const hub = rootPeer();
-	const evaluationCase = suite.cases.find((entry) => entry.id === "unretained-receipt")!;
+	const evaluationCase = caseById("unretained-receipt");
 	const { fixture } = evaluationCase.input as { fixture: { receiptId: string } };
 	const lookup = toolEvidence("subagent_message", { id: fixture.receiptId }, () =>
 		hub.status("eval-root", fixture.receiptId),
@@ -171,7 +177,7 @@ it("does not confuse prose or a false semantic claim with transcript evidence", 
 		assert.ok(failedChecks(evaluationCase.id, [], JSON.stringify(evaluationCase)).length > 0);
 	}
 	const hub = rootPeer();
-	const evaluationCase = suite.cases.find((entry) => entry.id === "unretained-receipt")!;
+	const evaluationCase = caseById("unretained-receipt");
 	const { fixture } = evaluationCase.input as { fixture: { receiptId: string } };
 	const events = toolEvidence("subagent_message", { id: fixture.receiptId }, () =>
 		hub.status("eval-root", fixture.receiptId),

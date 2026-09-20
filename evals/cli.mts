@@ -79,6 +79,8 @@ function values(parsed: ParsedArguments, name: string): string[] {
 	return parsed.values.get(name) ?? [];
 }
 
+function one(parsed: ParsedArguments, name: string, required?: true): string;
+function one(parsed: ParsedArguments, name: string, required: false): string | undefined;
 function one(parsed: ParsedArguments, name: string, required = true): string | undefined {
 	const found = values(parsed, name);
 	if (found.length > 1) throw new Error(`Option --${name} must appear once`);
@@ -203,7 +205,7 @@ export function refineOperationalStatus(
 
 async function executeRun(parsed: ParsedArguments): Promise<Record<string, unknown>> {
 	const { plan, suite } = await planned(parsed);
-	const approval = one(parsed, "approve")!;
+	const approval = one(parsed, "approve");
 	if (approval !== plan.digest) throw new Error(`Approval digest mismatch. Exact plan digest: ${plan.digest}`);
 	const prepared = prepareRun(EVIDENCE_ROOT, plan);
 	const state = prepared.state;
@@ -317,7 +319,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<number> {
 					EVIDENCE_ROOT,
 					positional(parsed, "run-id"),
 					verdict,
-					one(parsed, "notes")!,
+					one(parsed, "notes"),
 					one(parsed, "preferred", false),
 					scope,
 				);
@@ -327,7 +329,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<number> {
 			case "delete": {
 				assertAllowed(parsed, ["approve"], []);
 				const runId = positional(parsed, "run-id");
-				deleteRun(EVIDENCE_ROOT, runId, one(parsed, "approve")!);
+				deleteRun(EVIDENCE_ROOT, runId, one(parsed, "approve"));
 				process.stdout.write(`${JSON.stringify({ deleted: runId }, null, 2)}\n`);
 				return 0;
 			}

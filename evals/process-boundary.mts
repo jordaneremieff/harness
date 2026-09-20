@@ -85,6 +85,26 @@ export function runManagedChild(options: ManagedChildOptions): Promise<ManagedCh
 				if ((error as NodeJS.ErrnoException).code !== "ESRCH") ioError ??= `termination failed: ${errorText(error)}`;
 			}
 		};
+		const closeSink = (sink: BoundedFileSink, path: string, label: string): BoundedFileResult => {
+			try {
+				return sink.close();
+			} catch (error) {
+				ioError ??= `${label} sink failed: ${errorText(error)}`;
+				return { path, bytes: 0, truncated: false };
+			}
+		};
+		const settle = (): void => {
+			resolveOutcome({
+				pid: child.pid,
+				exitCode,
+				signal: exitSignal,
+				...((spawnError ?? ioError) ? { spawnError: spawnError ?? ioError } : {}),
+				...(cancellation ? { cancellation } : {}),
+				terminationSignals,
+				stdout: closeSink(stdoutSink, options.stdoutPath, "stdout"),
+				stderr: closeSink(stderrSink, options.stderrPath, "stderr"),
+			});
+		};
 		const finish = (hardStop = false): void => {
 			if (settled) return;
 			settled = true;
@@ -97,28 +117,7 @@ export function runManagedChild(options: ManagedChildOptions): Promise<ManagedCh
 				child.stderr?.destroy();
 				child.unref();
 			}
-			let stdout: BoundedFileResult = { path: options.stdoutPath, bytes: 0, truncated: false };
-			let stderr: BoundedFileResult = { path: options.stderrPath, bytes: 0, truncated: false };
-			try {
-				stdout = stdoutSink.close();
-			} catch (error) {
-				ioError ??= `stdout sink failed: ${errorText(error)}`;
-			}
-			try {
-				stderr = stderrSink.close();
-			} catch (error) {
-				ioError ??= `stderr sink failed: ${errorText(error)}`;
-			}
-			resolveOutcome({
-				pid: child.pid,
-				exitCode,
-				signal: exitSignal,
-				...((spawnError ?? ioError) ? { spawnError: spawnError ?? ioError } : {}),
-				...(cancellation ? { cancellation } : {}),
-				terminationSignals,
-				stdout,
-				stderr,
-			});
+			settle();
 		};
 		function cancel(reason: CancellationReason): void {
 			if (settled || cancellation !== undefined) return;

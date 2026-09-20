@@ -233,6 +233,43 @@ export function inspectRun(evidenceRoot: string, runId: string, reveal: boolean)
 	};
 }
 
+interface StoredReview {
+	cases: Array<{ entries: Array<{ executionId?: string; evidenceStatus?: string; label: string }> }>;
+}
+
+function resolveAdjudicationScope(
+	state: RunState,
+	verdict: Exclude<QualityStatus, "not_assessed">,
+	scope: "usable-executions" | undefined,
+): string[] | undefined {
+	const conclusive = verdict === "pass" || verdict === "fail";
+	if (state.operational.status === "partial" && conclusive) {
+		if (scope !== "usable-executions") {
+			throw new Error("A partial run pass or fail must be explicitly scoped to usable executions");
+		}
+		if (!state.coverage || state.coverage.usableExecutionIds.length === 0) {
+			throw new Error("A partial run requires persisted usable execution coverage");
+		}
+		return [...state.coverage.usableExecutionIds];
+	}
+	if (state.operational.status !== "completed" && conclusive) {
+		throw new Error("An operationally incomplete run permits only an inconclusive adjudication");
+	}
+	if (scope) throw new Error("Usable-execution scope is valid only for a partial pass or fail");
+	return undefined;
+}
+
+function collectReviewLabels(review: StoredReview, coveredIds: Set<string> | undefined): Set<string> {
+	const labels = new Set<string>();
+	for (const evaluationCase of review.cases) {
+		for (const entry of evaluationCase.entries) {
+			if (coveredIds && (entry.executionId === undefined || !coveredIds.has(entry.executionId))) continue;
+			labels.add(entry.label);
+		}
+	}
+	return labels;
+}
+
 export function adjudicateRun(
 	evidenceRoot: string,
 	runId: string,
@@ -245,36 +282,13 @@ export function adjudicateRun(
 	const directory = runDirectory(evidenceRoot, runId);
 	const state = readJson<RunState>(join(directory, "state.json"));
 	if (state.phase !== "terminal") throw new Error("Only a terminal run can be adjudicated");
-	const conclusive = verdict === "pass" || verdict === "fail";
-	let coveredExecutionIds: string[] | undefined;
-	if (state.operational.status === "partial" && conclusive) {
-		if (scope !== "usable-executions") {
-			throw new Error("A partial run pass or fail must be explicitly scoped to usable executions");
-		}
-		if (!state.coverage || state.coverage.usableExecutionIds.length === 0) {
-			throw new Error("A partial run requires persisted usable execution coverage");
-		}
-		coveredExecutionIds = [...state.coverage.usableExecutionIds];
-	} else {
-		if (state.operational.status !== "completed" && conclusive) {
-			throw new Error("An operationally incomplete run permits only an inconclusive adjudication");
-		}
-		if (scope) throw new Error("Usable-execution scope is valid only for a partial pass or fail");
-	}
+	const coveredExecutionIds = resolveAdjudicationScope(state, verdict, scope);
 	if (state.quality.adjudicationFile || existsSync(join(directory, "adjudication.json"))) {
 		throw new Error("This run already has an adjudication; adjudication records are immutable");
 	}
-	const review = readJson<{
-		cases: Array<{ entries: Array<{ executionId?: string; evidenceStatus?: string; label: string }> }>;
-	}>(join(directory, "review.json"));
+	const review = readJson<StoredReview>(join(directory, "review.json"));
 	const coveredIds = coveredExecutionIds ? new Set(coveredExecutionIds) : undefined;
-	const labels = new Set(
-		review.cases.flatMap((value) =>
-			value.entries
-				.filter((entry) => !coveredIds || (entry.executionId !== undefined && coveredIds.has(entry.executionId)))
-				.map((entry) => entry.label),
-		),
-	);
+	const labels = collectReviewLabels(review, coveredIds);
 	if (preferredLabel && !labels.has(preferredLabel)) throw new Error(`Unknown blinded label: ${preferredLabel}`);
 	const adjudication: AdjudicationRecord = {
 		adjudicatedAt: new Date().toISOString(),
