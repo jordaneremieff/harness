@@ -73,11 +73,15 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 			tools: ["read", "pillars", "pillars_usage"],
 		});
 		session = result.session;
+		const activeSession = session;
 		const errors: string[] = [];
 		await session.bindExtensions({ mode: "json", onError: (error) => errors.push(error.error) });
-		assert.equal(resolve(session.getAllTools().find((tool) => tool.name === "pillars")!.sourceInfo.path), entry);
+		const pillarsTool = session.getAllTools().find((tool) => tool.name === "pillars");
+		assert.ok(pillarsTool, "the session registers the pillars tool");
+		assert.equal(resolve(pillarsTool.sourceInfo.path), entry);
 		const command = session.extensionRunner.getRegisteredCommands().find((command) => command.name === "pillars");
 		assert.ok(command?.getArgumentCompletions);
+		const completions = command.getArgumentCompletions;
 		assert.equal((await command.getArgumentCompletions("de"))?.[0].value, "derive");
 		assert.equal((await command.getArgumentCompletions("read p"))?.[0].value, "read principle-example");
 		faux.setResponses([
@@ -105,109 +109,118 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 				.flatMap((shard) => shard.cells)
 				.some((cell) => cell.observationStage === "tool_request"),
 		);
-		const messagesBeforeCommand = session.messages.length;
-		await session.prompt("/pillars read principle-example");
-		assert.equal(
-			session.messages.length,
-			messagesBeforeCommand,
-			"operator-only source output never enters model context",
-		);
-		const view = session.sessionManager.getLeafEntry();
-		assert.ok(view?.type === "custom" && view.customType === "pillars-view");
-		assert.ok((view.data as { text: string }).text.includes(entryBody));
-		for (const input of ["/pillars help", "/pillars", "/pillars invalid"]) {
-			const before = session.sessionManager.getEntries().length;
-			await session.prompt(input);
-			assert.equal(session.messages.length, messagesBeforeCommand);
-			assert.ok(
-				session.sessionManager
-					.getEntries()
-					.slice(before)
-					.some(
-						(entry) =>
-							entry.type === "custom" &&
-							entry.customType === "pillars-view" &&
-							(entry.data as { text: string }).text.includes("/pillars derive [hint]"),
-					),
+		const assertHelpCommands = async () => {
+			const messagesBeforeCommand = activeSession.messages.length;
+			await activeSession.prompt("/pillars read principle-example");
+			assert.equal(
+				activeSession.messages.length,
+				messagesBeforeCommand,
+				"operator-only source output never enters model context",
 			);
-		}
-		process.env.PI_PILLARS_CORPUS = join(root, "absent-corpus");
-		try {
-			await session.prompt("/pillars help");
-			const help = session.sessionManager.getLeafEntry();
-			assert.ok(help?.type === "custom" && (help.data as { text: string }).text.includes("# Pillars commands"));
-			assert.equal(await command.getArgumentCompletions("read "), null);
-			assert.equal((await command.getArgumentCompletions("ch"))?.[0].value, "check");
-		} finally {
-			process.env.PI_PILLARS_CORPUS = corpusDir;
-		}
-		assert.equal((await command.getArgumentCompletions("read p"))?.[0].value, "read principle-example");
-		for (const input of [
-			"check",
-			"derive",
-			'check the "quoted" approach --days 7\nwith context',
-			"derive a reusable lesson",
-			"review",
-			'review why agents miss the "same cue" -- repeatedly\nUse the examples above.',
-		]) {
-			let received = false;
-			faux.setResponses([
-				(context) => {
-					const message = context.messages.at(-1);
-					assert.equal(message?.role, "user");
-					const text = JSON.stringify(message?.content);
-					assert.ok(text.includes("extension-provided task scaffolding"));
-					assert.ok(
-						text.includes(
-							input.startsWith("check")
-								? "Pillars alignment"
-								: input.startsWith("review")
-									? "expected and observed behavior"
-									: "transferable candidate",
+			const view = activeSession.sessionManager.getLeafEntry();
+			assert.ok(view?.type === "custom" && view.customType === "pillars-view");
+			assert.ok((view.data as { text: string }).text.includes(entryBody));
+			for (const input of ["/pillars help", "/pillars", "/pillars invalid"]) {
+				const before = activeSession.sessionManager.getEntries().length;
+				await activeSession.prompt(input);
+				assert.equal(activeSession.messages.length, messagesBeforeCommand);
+				assert.ok(
+					activeSession.sessionManager
+						.getEntries()
+						.slice(before)
+						.some(
+							(entry) =>
+								entry.type === "custom" &&
+								entry.customType === "pillars-view" &&
+								(entry.data as { text: string }).text.includes("/pillars derive [hint]"),
 						),
-					);
-					received = true;
-					return ai.fauxAssistantMessage("Synthetic judgment request received.");
-				},
-			]);
-			await session.prompt(`/pillars ${input}`);
-			await session.waitForIdle();
-			assert.equal(received, true);
-			const request = session.messages.findLast((message) => message.role === "custom");
-			assert.ok(request?.role === "custom" && request.customType === "pillars-request" && request.display);
-		}
-		for (const action of ["check", "derive", "review"]) {
-			let release!: () => void;
-			let started!: () => void;
-			const held = new Promise<void>((resolve) => {
-				release = resolve;
-			});
-			const entered = new Promise<void>((resolve) => {
-				started = resolve;
-			});
-			let steered = false;
-			faux.setResponses([
-				async () => {
-					started();
-					await held;
-					return ai.fauxAssistantMessage("Synthetic active response.");
-				},
-				(context) => {
-					assert.ok(JSON.stringify(context.messages).includes("busy hint"));
-					steered = true;
-					return ai.fauxAssistantMessage("Synthetic steering received.");
-				},
-			]);
-			const active = session.prompt("Hold the response for a command.");
-			await entered;
-			try {
-				await session.prompt(`/pillars ${action} busy hint`);
-			} finally {
-				release();
+				);
 			}
-			await active;
-			assert.equal(steered, true);
-		}
+			process.env.PI_PILLARS_CORPUS = join(root, "absent-corpus");
+			try {
+				await activeSession.prompt("/pillars help");
+				const help = activeSession.sessionManager.getLeafEntry();
+				assert.ok(help?.type === "custom" && (help.data as { text: string }).text.includes("# Pillars commands"));
+				assert.equal(await completions("read "), null);
+				assert.equal((await completions("ch"))?.[0].value, "check");
+			} finally {
+				process.env.PI_PILLARS_CORPUS = corpusDir;
+			}
+			assert.equal((await completions("read p"))?.[0].value, "read principle-example");
+		};
+		await assertHelpCommands();
+		const assertJudgmentRequests = async () => {
+			for (const input of [
+				"check",
+				"derive",
+				'check the "quoted" approach --days 7\nwith context',
+				"derive a reusable lesson",
+				"review",
+				'review why agents miss the "same cue" -- repeatedly\nUse the examples above.',
+			]) {
+				let received = false;
+				faux.setResponses([
+					(context) => {
+						const message = context.messages.at(-1);
+						assert.equal(message?.role, "user");
+						const text = JSON.stringify(message?.content);
+						assert.ok(text.includes("extension-provided task scaffolding"));
+						assert.ok(
+							text.includes(
+								input.startsWith("check")
+									? "Pillars alignment"
+									: input.startsWith("review")
+										? "expected and observed behavior"
+										: "transferable candidate",
+							),
+						);
+						received = true;
+						return ai.fauxAssistantMessage("Synthetic judgment request received.");
+					},
+				]);
+				await activeSession.prompt(`/pillars ${input}`);
+				await activeSession.waitForIdle();
+				assert.equal(received, true);
+				const request = activeSession.messages.findLast((message) => message.role === "custom");
+				assert.ok(request?.role === "custom" && request.customType === "pillars-request" && request.display);
+			}
+		};
+		await assertJudgmentRequests();
+		const assertSteering = async () => {
+			for (const action of ["check", "derive", "review"]) {
+				let release!: () => void;
+				let started!: () => void;
+				const held = new Promise<void>((resolve) => {
+					release = resolve;
+				});
+				const entered = new Promise<void>((resolve) => {
+					started = resolve;
+				});
+				let steered = false;
+				faux.setResponses([
+					async () => {
+						started();
+						await held;
+						return ai.fauxAssistantMessage("Synthetic active response.");
+					},
+					(context) => {
+						assert.ok(JSON.stringify(context.messages).includes("busy hint"));
+						steered = true;
+						return ai.fauxAssistantMessage("Synthetic steering received.");
+					},
+				]);
+				const active = activeSession.prompt("Hold the response for a command.");
+				await entered;
+				try {
+					await activeSession.prompt(`/pillars ${action} busy hint`);
+				} finally {
+					release();
+				}
+				await active;
+				assert.equal(steered, true);
+			}
+		};
+		await assertSteering();
 		faux.setResponses([
 			ai.fauxAssistantMessage(
 				ai.fauxToolCall(

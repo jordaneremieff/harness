@@ -122,20 +122,20 @@ for (const transition of ["fork", "reload"] as const) {
 			const day = utcDay(now);
 			// Hold the retry clock, not filesystem work, so shutdown owns the pending result flush.
 			t.mock.method(Date, "now", () => now);
-			const runRead = async () => {
+			const runRead = async (active: InstanceType<typeof sdk.AgentSession>) => {
 				faux.setResponses([
 					ai.fauxAssistantMessage(ai.fauxToolCall("pillars", { resource: "principle-lifecycle" }, { id: "reused-call-id" })),
 					ai.fauxAssistantMessage("Synthetic read complete."),
 				]);
-				await runtime!.session.prompt("Read the synthetic lifecycle principle.");
-				const result = runtime!.session.messages.findLast((message) => message.role === "toolResult");
+				await active.prompt("Read the synthetic lifecycle principle.");
+				const result = active.messages.findLast((message) => message.role === "toolResult");
 				assert.ok(result && result.role === "toolResult");
 				assert.equal(result.isError, false);
 				const text = result.content.find((block) => block.type === "text");
 				assert.ok(text && text.type === "text");
 				assert.equal(JSON.parse(text.text).text, entryBody);
 			};
-			await runRead();
+			await runRead(runtime.session);
 			const initial = committedShard(f.store, day);
 			assert.deepEqual(summary(initial), { requests: 1, results: 0, verified: 0 });
 			assert.equal(initial.receipts.length, 1);
@@ -160,7 +160,7 @@ for (const transition of ["fork", "reload"] as const) {
 			assert.deepEqual(summary(afterReplacement), { requests: 1, results: 1, verified: 1 });
 			assert.deepEqual(afterReplacement.receipts, [{ owner: originalOwner, seq: 2 }]);
 			assert.equal(runtime.session.messages.filter((message) => message.role === "toolResult").length, 1);
-			await runRead();
+			await runRead(runtime.session);
 			const beforeDispose = committedShard(f.store, day);
 			assert.deepEqual(summary(beforeDispose), { requests: 2, results: 1, verified: 1 });
 			assert.equal(beforeDispose.receipts.length, 2);

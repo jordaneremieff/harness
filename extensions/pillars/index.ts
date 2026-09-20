@@ -12,11 +12,11 @@ import {
 import { Markdown } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { ACCESS_DESCRIPTION, access } from "./access.ts";
-import { type Catalog, loadCatalog, readBody, resourceById, resourceByPath } from "./catalog.ts";
+import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import { Collector, utcDay } from "./collector.ts";
 import { COMMAND_HELP, commandCompletions, judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
 import { exportLocal, parseCommand } from "./export.ts";
-import { accessEvidence, Deduplicator, type DeliveryExtent, extract, readEvidence } from "./observation.ts";
+import { accessEvidence, Deduplicator, type DeliveryExtent, extract, readEvidence, type ResultEvidence } from "./observation.ts";
 import { accessRenderers, usageMarkdown, usageRenderers } from "./presentation.ts";
 import { createReader, TOOL_DESCRIPTION } from "./readback.ts";
 import { PillarsStore } from "./store.ts";
@@ -70,66 +70,84 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 		delivered.clear();
 		catalog = undefined;
 	});
-	async function observe(
-		event: {
-			toolName: string;
-			toolCallId: string;
-			input: Record<string, unknown>;
-			content?: unknown;
-			isError?: boolean;
-		},
+	interface ObservedToolEvent {
+		toolName: string;
+		toolCallId: string;
+		input: Record<string, unknown>;
+		content?: unknown;
+		isError?: boolean;
+	}
+	function ownsPillarsTool(event: ObservedToolEvent): boolean {
+		if (event.toolName !== "pillars") return true;
+		const tools = pi.getAllTools();
+		if (tools.length > 256) return false;
+		const source = tools.find((tool) => tool.name === "pillars")?.sourceInfo;
+		if (!source) return false;
+		return resolve(source.path) === fileURLToPath(import.meta.url);
+	}
+	async function observedResource(event: ObservedToolEvent, catalog: Catalog, ctx: ExtensionContext) {
+		if (event.toolName === "pillars") return resourceById(catalog, event.input.resource ?? "inventory");
+		return resourceByPath(catalog, event.input.path, ctx.cwd);
+	}
+	async function observedReference(resource: Resource, collector: Collector, signal?: AbortSignal) {
+		try {
+			return await readBody(resource.path, signal);
+		} catch {
+			collector.incident("unresolvedAccessEvents");
+			return undefined;
+		}
+	}
+	function observedResult(
+		event: ObservedToolEvent,
+		resource: Resource,
+		reference: Buffer | undefined,
+		deliveredExtent?: DeliveryExtent,
+	): ResultEvidence | undefined {
+		if (event.toolName === "pillars")
+			return accessEvidence(event.content, resource.resourceId, event.isError ?? false, deliveredExtent);
+		if (event.toolName === "read") return readEvidence(event.content, reference, event.isError ?? false);
+		return undefined;
+	}
+	function admitObservation(event: ObservedToolEvent, stage: "tool_request" | "tool_result", ctx: ExtensionContext): boolean {
+		const admission = dedup.admit(event.toolCallId, stage);
+		if (admission === "admitted") return true;
+		if (admission === "saturated" && dedup.warnOnce())
+			diagnostic(ctx, "Pillars callback deduplication reached its limit. Unpersisted loss remains unknown.");
+		return false;
+	}
+	async function recordObservation(
+		event: ObservedToolEvent,
 		ctx: ExtensionContext,
 		stage: "tool_request" | "tool_result",
+		collector: Collector,
+		catalog: Catalog,
 	): Promise<void> {
+		if (!ownsPillarsTool(event)) return;
+		const resource = await observedResource(event, catalog, ctx);
+		if (!resource) return;
+		if (!admitObservation(event, stage, ctx)) return;
+		const reference = await observedReference(resource, collector, ctx.signal);
+		const deliveredExtent = delivered.get(event.toolCallId);
+		const result =
+			stage === "tool_result" ? observedResult(event, resource, reference, deliveredExtent) : undefined;
+		if (stage === "tool_result") delivered.delete(event.toolCallId);
+		const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+		const cell = extract({
+			stage,
+			day: utcDay(),
+			resource,
+			model,
+			reasoning: ctx.thinkingLevel,
+			piVersion: VERSION,
+			reference,
+			result,
+		});
+		if (collector.admit(cell)) await collector.observed(ctx.signal);
+	}
+	async function observe(event: ObservedToolEvent, ctx: ExtensionContext, stage: "tool_request" | "tool_result"): Promise<void> {
 		if (!enabled || !collector || !catalog || !["read", "pillars"].includes(event.toolName)) return;
 		try {
-			if (event.toolName === "pillars") {
-				const tools = pi.getAllTools();
-				if (tools.length > 256) return;
-				const source = tools.find((tool) => tool.name === "pillars")?.sourceInfo;
-				if (!source || resolve(source.path) !== fileURLToPath(import.meta.url)) return;
-			}
-			const resource =
-				event.toolName === "pillars"
-					? resourceById(catalog, event.input.resource ?? "inventory")
-					: await resourceByPath(catalog, event.input.path, ctx.cwd);
-			if (!resource) return;
-			const admitted = dedup.admit(event.toolCallId, stage);
-			if (admitted !== "admitted") {
-				if (admitted === "saturated" && dedup.warnOnce())
-					diagnostic(ctx, "Pillars callback deduplication reached its limit. Unpersisted loss remains unknown.");
-				return;
-			}
-			let reference: Buffer | undefined;
-			try {
-				reference = await readBody(resource.path, ctx.signal);
-			} catch {
-				collector.incident("unresolvedAccessEvents");
-			}
-			const result =
-				stage === "tool_result"
-					? event.toolName === "pillars"
-						? accessEvidence(
-								event.content,
-								resource.resourceId,
-								event.isError ?? false,
-								delivered.get(event.toolCallId),
-							)
-						: readEvidence(event.content, reference, event.isError ?? false)
-					: undefined;
-			if (stage === "tool_result") delivered.delete(event.toolCallId);
-			const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-			const cell = extract({
-				stage,
-				day: utcDay(),
-				resource,
-				model,
-				reasoning: ctx.thinkingLevel,
-				piVersion: VERSION,
-				reference,
-				result,
-			});
-			if (collector.admit(cell)) await collector.observed(ctx.signal);
+			await recordObservation(event, ctx, stage, collector, catalog);
 		} catch {
 			diagnostic(ctx, "Pillars observation was unavailable. Unpersisted loss remains unknown.");
 		}
@@ -216,6 +234,38 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 		if (ctx.mode === "print") writePrintOutput(`${content}\n`);
 		else pi.appendEntry("pillars-view", { text: content });
 	}
+	const READ_PATTERN = /^read ([a-z0-9][a-z0-9-]{0,63})(?: ([0-9]{1,7}) ([a-f0-9]{64}))?$/;
+	async function readSource(input: string, ctx: ExtensionContext): Promise<void> {
+		const match = input.startsWith("read ") ? READ_PATTERN.exec(input) : undefined;
+		if (input.startsWith("read ") && !match) throw new Error("invalid_command");
+		const result = await access(
+			catalog,
+			match ? { resource: match[1], offset: match[2] ? Number(match[2]) : 0, referenceBodyDigest: match[3] } : {},
+			ctx.signal,
+		);
+		if (result.schema === "pillars-source-error") {
+			display(`Pillars source: ${result.code}.`, ctx);
+			return;
+		}
+		const continuation =
+			result.nextOffset !== undefined
+				? `Continue: /pillars read ${result.resource} ${result.nextOffset} ${result.referenceBodyDigest}`
+				: "Read an entry: /pillars read <resource>. Read consultation rules: /pillars read governance. View access evidence: /pillars usage.";
+		display(`${result.text}\n\nSource: ${result.resource}; SHA-256: ${result.referenceBodyDigest}.\n${continuation}`, ctx);
+	}
+	async function usageOrExport(input: string, ctx: ExtensionContext): Promise<void> {
+		const parsed = parseCommand(input === "usage" ? "" : input.startsWith("usage ") ? input.slice(6) : input);
+		if (parsed.kind === "export") {
+			const document = await reader.exportCapture(parsed.windowDays, ctx.signal);
+			if (document.schema !== "pillars-export") {
+				display(usageMarkdown(document), ctx);
+				return;
+			}
+			display(JSON.stringify(await exportLocal(parsed.path, document, { signal: ctx.signal })), ctx);
+			return;
+		}
+		display(usageMarkdown(await reader.read({ view: parsed.kind, windowDays: parsed.windowDays }, ctx.signal)), ctx);
+	}
 	pi.registerCommand("pillars", {
 		description:
 			"Check alignment, derive candidates, review guidance, or browse Pillars. Use /pillars for help; judgment actions accept an optional hint.",
@@ -240,43 +290,14 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 			await discover(ctx.signal);
 			try {
 				if (!input || input === "browse" || input.startsWith("read ")) {
-					const match = input.startsWith("read ")
-						? /^read ([a-z0-9][a-z0-9-]{0,63})(?: ([0-9]{1,7}) ([a-f0-9]{64}))?$/.exec(input)
-						: undefined;
-					if (input.startsWith("read ") && !match) throw new Error("invalid_command");
-					const result = await access(
-						catalog,
-						match ? { resource: match[1], offset: match[2] ? Number(match[2]) : 0, referenceBodyDigest: match[3] } : {},
-						ctx.signal,
-					);
-					if (result.schema === "pillars-source-error") {
-						display(`Pillars source: ${result.code}.`, ctx);
-						return;
-					}
-					display(
-						`${result.text}\n\nSource: ${result.resource}; SHA-256: ${result.referenceBodyDigest}.\n${result.nextOffset !== undefined ? `Continue: /pillars read ${result.resource} ${result.nextOffset} ${result.referenceBodyDigest}` : "Read an entry: /pillars read <resource>. Read consultation rules: /pillars read governance. View access evidence: /pillars usage."}`,
-						ctx,
-					);
+					await readSource(input, ctx);
 					return;
 				}
 				if (input.startsWith("next ")) {
 					display(usageMarkdown(await reader.read({ cursor: input.slice(5) }, ctx.signal)), ctx);
 					return;
 				}
-				const parsed = parseCommand(input === "usage" ? "" : input.startsWith("usage ") ? input.slice(6) : input);
-				if (parsed.kind === "export") {
-					const document = await reader.exportCapture(parsed.windowDays, ctx.signal);
-					if (document.schema !== "pillars-export") {
-						display(usageMarkdown(document), ctx);
-						return;
-					}
-					display(JSON.stringify(await exportLocal(parsed.path, document, { signal: ctx.signal })), ctx);
-					return;
-				}
-				display(
-					usageMarkdown(await reader.read({ view: parsed.kind, windowDays: parsed.windowDays }, ctx.signal)),
-					ctx,
-				);
+				await usageOrExport(input, ctx);
 			} catch {
 				display(
 					`The Pillars command did not complete. Check the command syntax and source or export availability.\n\n${COMMAND_HELP}`,
