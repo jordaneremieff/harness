@@ -10,8 +10,9 @@ store.
 |---|---|---|
 | `registry` | tool | Discover resources, model capabilities, tool parameters, and observed context paths with explicit evidence boundaries. |
 
-With no arguments, the tool returns available cwd, mode, trust, installed-version,
-package, documentation-location, session-ID, and session-file facts. An answered
+With no arguments, the tool returns the current model, thinking level, context
+usage, cwd, mode, trust, installed-version, package, documentation-location,
+session-ID, and session-file facts. An answered
 session-file accessor with no file means an ephemeral session; a failed accessor
 means unavailable. Missing accessors remain explicitly
 unavailable. The agent-directory fact is Pi's process default, not proof of an
@@ -45,6 +46,26 @@ Examples:
 {"kind":"prompt","limit":10}
 {"cursor":"<cursor from the preceding result>"}
 ```
+
+## Current context usage
+
+The no-argument summary calls Pi's `ctx.getContextUsage()` once at query time.
+It returns the estimate's tokens, context window, percentage, observation time,
+and `available`, `unknown`, or `unavailable` state in text and structured
+`details.context`. Zero usage remains zero; overflow percentages are not clamped.
+After compaction, Pi can return a known context window with unknown usage until
+a subsequent assistant response supplies usage. Failed or absent accessors
+remain unavailable and never expose raw error text.
+
+The estimate uses assistant usage and trailing messages. It is not an exact
+provider payload count, a safe remaining budget, or an automatic-compaction
+threshold. Response reserves, pending inputs, and subsequent tool results still
+need room. Registry does not infer those settings or trigger compaction.
+
+Pi owns the estimate, including its in-memory branch traversal. Registry reads
+it only for a valid no-argument summary, not for resource queries, continuations,
+or rejected calls. No timer, message injection, retained estimate, directory
+scan, or separate context estimator is added.
 
 ## Agent discovery
 
@@ -99,7 +120,9 @@ its schema and registered guidance without activating it.
   evidence and its observation time. Records use deterministic ordinal order by
   kind, name, and source fields, not locale-dependent sorting.
 - `before_agent_start` copies only names, paths, selected tool names, skill
-  invocation metadata, and custom/appended prompt-presence flags. It retains no
+  invocation metadata, and custom/appended/forced prompt-presence flags. An empty
+  forced replacement still counts as present. These are prior handler inputs,
+  not proof of the final transcript or provider payload. It retains no
   mutable event, prompt text, or context-file content.
 - The retained snapshot contains at most 1,000 records and 256 KiB of serialized
   metadata, including cwd and JSON overhead. It reports overflow explicitly.
@@ -174,8 +197,9 @@ to mutate them after that validation.
 - Source records identify registration origins, not immutable executing bytes.
   Hook-only extensions, complete settings, resource load rejection reasons, and
   built-in interactive commands are not an enumerated inventory. Theme enumeration
-  and context-usage estimation have public APIs, but this tool excludes their
-  filesystem and complete-branch traversal to keep its no-crawl query contract. Slash names
+  has a public API, but this tool excludes its filesystem traversal to keep its
+  no-crawl query contract. Current context estimation uses the host-owned accessor
+  only for no-argument summaries, as described above. Slash names
   alone do not prove dispatch to a particular record: extension commands can
   shadow same-name prompts. The final provider payload is not visible here.
 - Cursors also detect changes to search metadata, tool schemas/guidelines,
@@ -216,7 +240,9 @@ matches, field-local literal semantics, explicit negative-result boundaries,
 and continuation invalidation after usage guidance changes.
 These tests establish component and adapter behavior, not model-backed utility
 or global activation. Adapter tests also require zero host probes after caller
-or session cancellation.
+or session cancellation. Current-context tests cover fresh reads, zero and overflow,
+post-compaction unknown state, accessor failures, and no estimate probes on
+resource pages, continuations, or rejected queries.
 
 ### Task evaluation
 

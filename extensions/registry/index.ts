@@ -13,6 +13,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { lookup } from "./lookup.ts";
+import { readContext } from "./host.ts";
 import { readModels } from "./models.ts";
 import { ObservationStore } from "./observer.ts";
 import {
@@ -184,11 +185,12 @@ export default function registerRegistry(pi: ExtensionAPI) {
 		name: "registry",
 		label: "Registry",
 		description:
-			"Look up session tools, commands, skills, prompt templates, model catalog, and prior observed context-file paths. Use search for purpose discovery across names, descriptions, and tool usage guidelines, kind model with canonical provider/id name for model selection facts, and detail true with kind tool and an exact name for its parameters and guidelines. With no arguments it returns a host summary and its observation boundaries. name is case-sensitive; a skill also answers to its skill:<name> invocation form and results keep both names. contains runs one literal, case-insensitive content search over a single uniquely resolved file-backed skill or prompt and returns matching lines with context. Results carry every sourceInfo field, the observation time, and the evidence type, and tool records separate configured presence from active status. Complete results are bounded to 50 KiB and 2000 lines; scans read at most 256 KiB. Read-only: it accepts no file path, crawls no directory, and mutates nothing.",
+			"Look up session tools, commands, skills, prompt templates, model catalog, and prior observed context-file paths. Use search for purpose discovery across names, descriptions, and tool usage guidelines, kind model with canonical provider/id name for model selection facts, and detail true with kind tool and an exact name for its parameters and guidelines. With no arguments it returns current model, thinking level, live context-usage estimate, host facts, and observation boundaries. Context usage is not a safe remaining budget; unknown remains unknown after compaction. name is case-sensitive; a skill also answers to its skill:<name> invocation form and results keep both names. contains runs one literal, case-insensitive content search over a single uniquely resolved file-backed skill or prompt and returns matching lines with context. Results carry every sourceInfo field, the observation time, and the evidence type, and tool records separate configured presence from active status. Complete results are bounded to 50 KiB and 2000 lines; scans read at most 256 KiB. Read-only: it accepts no file path, crawls no directory, and mutates nothing.",
 		promptSnippet: "Discover session resources, models, tool schemas, and observed context paths",
 		promptGuidelines: [
 			"Use an already-visible tool directly when its purpose and arguments fit the task. Use registry when the needed resource, model capability, tool arguments, or instruction source is uncertain. Use search with a short task phrase when the name is unknown.",
 			"Use registry detail true with kind tool and an exact name to inspect parameters and guidelines; registry presence does not activate a tool. Model availability is a cached local snapshot, not credential validity or remote health.",
+			"Use registry with no arguments for current context usage and model facts. Read the observation time; unknown or unavailable context usage is not zero or a safe remaining budget.",
 			"Use registry with contains to quote a line from one named skill or prompt file rather than reading the file by path.",
 			"Treat a registry partial, unavailable, or not_yet_observed result as incomplete evidence, not absence. Search is literal: no matching phrase does not prove no relevant capability exists. Try another short term or inspect a bounded kind list.",
 		],
@@ -215,6 +217,7 @@ export default function registerRegistry(pi: ExtensionAPI) {
 				params: params as RawParams,
 				snapshot,
 				session: sessionFacts(ctx),
+				readContext: () => readContext(ctx, at),
 				epoch,
 				signal: abortSignal,
 			});

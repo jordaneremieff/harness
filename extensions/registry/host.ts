@@ -16,6 +16,7 @@ import {
 	getPackageDir,
 	getReadmePath,
 	VERSION,
+	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
 export interface HostFact {
@@ -60,6 +61,55 @@ function fact(key: string, read: () => string, exists?: (value: string) => boole
 	} catch {
 		return { key, value: null };
 	}
+}
+
+export interface ContextSnapshot {
+	at: number;
+	evidence: "host_estimate";
+	state: "available" | "unknown" | "unavailable";
+	model: string | null;
+	thinkingLevel: string | null;
+	tokens: number | null;
+	contextWindow: number | null;
+	percent: number | null;
+}
+
+/** Read on demand. Pi owns the estimate and its post-compaction unknown state. */
+export function readContext(ctx: ExtensionContext, at: number): ContextSnapshot {
+	const snapshot: ContextSnapshot = {
+		at, evidence: "host_estimate", state: "unavailable",
+		model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null,
+		thinkingLevel: ctx.thinkingLevel ?? null,
+		tokens: null, contextWindow: null, percent: null,
+	};
+	try {
+		const usage = ctx.getContextUsage();
+		if (!usage || !Number.isFinite(usage.contextWindow) || usage.contextWindow <= 0) return snapshot;
+		snapshot.contextWindow = usage.contextWindow;
+		if (usage.tokens === null || usage.percent === null) {
+			snapshot.state = "unknown";
+		} else if (Number.isFinite(usage.tokens) && usage.tokens >= 0 && Number.isFinite(usage.percent) && usage.percent >= 0) {
+			snapshot.state = "available";
+			snapshot.tokens = usage.tokens;
+			snapshot.percent = usage.percent;
+		}
+	} catch { /* Access failure does not establish an empty context. */ }
+	return snapshot;
+}
+
+export const CONTEXT_BOUNDARY = "Pi estimates context from assistant usage and trailing messages; unknown usage can follow compaction. This is not a safe remaining budget, a final provider payload count, or a compaction threshold.";
+
+export function contextLines(context: ContextSnapshot): string[] {
+	return [
+		"CURRENT SESSION",
+		`- model: ${context.model === null ? "unavailable" : JSON.stringify(context.model)}`,
+		`- thinking level: ${context.thinkingLevel === null ? "unavailable" : JSON.stringify(context.thinkingLevel)}`,
+		`- context usage: ${context.state} (host_estimate)`,
+		`- context tokens: ${context.tokens ?? "unknown"}`,
+		`- context window: ${context.contextWindow ?? "unavailable"}`,
+		`- context percent: ${context.percent ?? "unknown"}`,
+		CONTEXT_BOUNDARY,
+	];
 }
 
 export interface SessionFacts {

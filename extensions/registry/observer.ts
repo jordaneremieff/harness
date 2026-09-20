@@ -21,6 +21,7 @@ export const MAX_OBSERVED_BYTES = 256 * 1024;
 export interface ObservableOptions {
 	cwd?: string;
 	customPrompt?: string;
+	forceSystemPrompt?: string;
 	appendSystemPrompt?: string;
 	selectedTools?: string[];
 	contextFiles?: Array<{ path: string; content: string }>;
@@ -62,6 +63,7 @@ export class ObservationStore {
 			selectedTools,
 			contextFilePaths,
 			customPromptPresent: typeof options.customPrompt === "string" && options.customPrompt.length > 0,
+			forcedSystemPromptPresent: typeof options.forceSystemPrompt === "string",
 			appendSystemPromptPresent:
 				typeof options.appendSystemPrompt === "string" && options.appendSystemPrompt.length > 0,
 			recordCount: skills.length + selectedTools.length + contextFilePaths.length,

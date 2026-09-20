@@ -24,7 +24,7 @@ import {
 	queryLine,
 	recordBlock,
 } from "./format.ts";
-import { type HostAccessors, hostFacts, installedAccessors, type SessionFacts } from "./host.ts";
+import { type ContextSnapshot, contextLines, type HostAccessors, hostFacts, installedAccessors, type SessionFacts } from "./host.ts";
 import {
 	type CursorState,
 	type FileStamp,
@@ -47,6 +47,7 @@ export interface LookupRequest {
 	params: RawParams;
 	snapshot: HostSnapshot;
 	models?: ModelSnapshot;
+	readContext?: () => ContextSnapshot;
 	session: SessionFacts;
 	epoch: string;
 	signal?: AbortSignal;
@@ -82,6 +83,7 @@ function hostSummary(request: LookupRequest, records: ResourceRecord[]): LookupR
 	const counts = { tool: 0, command: 0, skill: 0, prompt: 0 };
 	for (const record of records) counts[record.kind] += 1;
 	const activeCount = snapshot.availability.activeTools ? snapshot.activeTools.length : null;
+	const context = request.readContext?.();
 	const assembled: Assembled = {
 		header: [
 			...baseHeader("host_summary", snapshot.at, [
@@ -90,6 +92,7 @@ function hostSummary(request: LookupRequest, records: ResourceRecord[]): LookupR
 			]),
 			...hostFactLines(hostFacts(request.session, request.accessors ?? installedAccessors)),
 			"",
+			...(context ? [...contextLines(context).map(escapeJsonControls), ""] : []),
 			"SURFACES",
 			`- tool registry: ${snapshot.availability.tools ? `available (${counts.tool} configured)` : "unavailable"}`,
 			`- active tools: ${activeCount === null ? "unavailable" : `available (${activeCount} active)`}`,
@@ -107,6 +110,7 @@ function hostSummary(request: LookupRequest, records: ResourceRecord[]): LookupR
 		footer: [],
 		details: {
 			host: true,
+			...(context ? { context } : {}),
 			counts,
 			activeToolCount: activeCount,
 			availability: { ...snapshot.availability },

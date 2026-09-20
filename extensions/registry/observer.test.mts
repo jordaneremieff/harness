@@ -63,6 +63,16 @@ describe("observation copying", () => {
 		assert.ok(!serialized.includes('"custom"'), "custom prompt text is not retained");
 	});
 
+	it("reports a forced prompt including an empty replacement without retaining its text", () => {
+		const store = new ObservationStore();
+		for (const forceSystemPrompt of ["", "private replacement"]) {
+			store.observe(options({ forceSystemPrompt }), 1);
+			assert.equal(store.snapshot()?.forcedSystemPromptPresent, true);
+			assert.doesNotMatch(JSON.stringify(store.snapshot()), /private replacement/);
+		}
+		store.observe(options(), 2);
+		assert.equal(store.snapshot()?.forcedSystemPromptPresent, false);
+	});
 	it("copies the skill record instead of aliasing the caller's object", () => {
 		const store = new ObservationStore();
 		const input = options();

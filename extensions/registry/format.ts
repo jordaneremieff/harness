@@ -184,6 +184,7 @@ export function observationLines(observation: ObservationSnapshot | null): strin
 		`- selected tools observed: ${observation.selectedTools.length}`,
 		`- context files observed: ${observation.contextFilePaths.length} (paths only; contents are never retained)`,
 		`- custom system prompt present: ${observation.customPromptPresent}`,
+		`- forced whole system prompt present: ${observation.forcedSystemPromptPresent}`,
 		`- appended system prompt present: ${observation.appendSystemPromptPresent}`,
 		`- retained records: ${observation.recordCount} | retained bytes: ${observation.bytes}`,
 	];

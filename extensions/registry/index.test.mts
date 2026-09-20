@@ -37,6 +37,27 @@ describe("Pi adapter", () => {
 		if (result.content[0].type === "text") assert.match(result.content[0].text, /^registry outcome=host_summary\n/);
 		assert.equal((RegistryParams as unknown as Record<string, unknown>).additionalProperties, false);
 	});
+	it("reads fresh context only for a valid host summary, never for resource pages", async () => {
+		const { tool } = fixture();
+		let calls = 0;
+		let tokens: number | null = 7500;
+		const ctx = { ...context, model: { provider: "fixture", id: "selected" }, thinkingLevel: "high",
+			getContextUsage: () => { calls += 1; return { tokens, contextWindow: 10000, percent: tokens === null ? null : tokens / 100 }; },
+		} as ExtensionContext;
+		const first = await tool.execute("host", {}, undefined, undefined, ctx);
+		assert.ok(first.details);
+		assert.equal((first.details.context as { tokens: number }).tokens, 7500);
+		assert.match(JSON.stringify(first.content), /not a safe remaining budget/);
+		tokens = null;
+		const second = await tool.execute("host", {}, undefined, undefined, ctx);
+		assert.ok(second.details);
+		assert.equal((second.details.context as { state: string }).state, "unknown");
+		assert.equal(calls, 2);
+		const page = await tool.execute("page", { kind: "tool", limit: 1 }, undefined, undefined, ctx);
+		await tool.execute("page", { cursor: page.details?.cursor as string }, undefined, undefined, ctx);
+		await tool.execute("invalid", { kind: "invalid" } as never, undefined, undefined, ctx);
+		assert.equal(calls, 2);
+	});
 	it("copies selected observation metadata and clears it at both lifecycle boundaries", async () => {
 		const { tool, handlers } = fixture();
 		await handlers.get("session_start")!({});

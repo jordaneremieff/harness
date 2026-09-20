@@ -34,6 +34,7 @@ export interface ObservationSnapshot {
 	selectedTools: string[];
 	contextFilePaths: string[];
 	customPromptPresent: boolean;
+	forcedSystemPromptPresent: boolean;
 	appendSystemPromptPresent: boolean;
 	recordCount: number;
 	bytes: number;
