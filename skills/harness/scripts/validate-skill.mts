@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { closeSync, existsSync, openSync, opendirSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, type Dirent, existsSync, openSync, opendirSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 
 const STANDARD_OPTIONAL_FIELDS = new Set(["license", "compatibility", "metadata", "allowed-tools"]);
@@ -15,6 +15,23 @@ const MAX_REPORTED_PER_LEVEL = 40;
 const MAX_DIAGNOSTIC_LENGTH = 500;
 const DANGEROUS_YAML_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const SCRIPT_TEST_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".ts", ".mts", ".py", ".sh"]);
+const SCANNABLE_EXTENSIONS = new Set([
+	".md",
+	".py",
+	".js",
+	".mjs",
+	".cjs",
+	".ts",
+	".mts",
+	".sh",
+	".json",
+	".yaml",
+	".yml",
+	".txt",
+]);
+const PLACEHOLDER_PATTERN = new RegExp(`\\b(?:${["TO" + "DO:", "FIX" + "ME:", "<replace-" + "me>"].join("|")})`, "i");
+const ABSOLUTE_PATH_PATTERN = /(?:^|[\s"'(])(?:[A-Za-z]:[\\/]|\/Users\/|\/home\/)/m;
+const OPERATOR_HOME_PATTERN = /(?:^|[\s"'`(])~\/+/m;
 
 type YamlScalar = string | number | boolean | null;
 type YamlMapping = { [key: string]: YamlValue };
@@ -54,6 +71,9 @@ type ValidationReport = {
 };
 
 type YamlStackEntry = { indent: number; path: string[] };
+type LineEntry = { key: string; raw: string; indent: number };
+type LineResult = { kind: "skip" } | { kind: "error"; error: string } | { kind: "entry"; entry: LineEntry };
+type WalkState = { results: string[]; visited: number };
 
 function createYamlMapping(): YamlMapping {
 	return Object.create(null) as YamlMapping;
@@ -127,6 +147,12 @@ Checks:
 `;
 }
 
+function parseFormatValue(requested: string): OutputFormat {
+	if (requested !== "text" && requested !== "json")
+		throw new Error(`--format must be text or json, received: ${requested}`);
+	return requested;
+}
+
 function parseArgs(argv: string[]): ParseOptions {
 	let directory: string | undefined;
 	let format: OutputFormat = "text";
@@ -134,17 +160,11 @@ function parseArgs(argv: string[]): ParseOptions {
 		const arg = argv[index];
 		if (arg === "--help" || arg === "-h") return { help: true };
 		if (arg === "--format") {
-			const requested = argv[++index] ?? "";
-			if (requested !== "text" && requested !== "json")
-				throw new Error(`--format must be text or json, received: ${requested}`);
-			format = requested;
+			format = parseFormatValue(argv[++index] ?? "");
 			continue;
 		}
 		if (arg.startsWith("--format=")) {
-			const requested = arg.slice("--format=".length);
-			if (requested !== "text" && requested !== "json")
-				throw new Error(`--format must be text or json, received: ${requested}`);
-			format = requested;
+			format = parseFormatValue(arg.slice("--format=".length));
 			continue;
 		}
 		if (arg.startsWith("-")) throw new Error(`Unknown option: ${arg}`);
@@ -205,64 +225,88 @@ function stripYamlComment(value: string): string {
 	return result.trim();
 }
 
+function toggleQuote(char: string, previous: string | undefined, quote: string | undefined): string | undefined {
+	if ((char !== '"' && char !== "'") || previous === "\\") return quote;
+	return quote === char ? undefined : (quote ?? char);
+}
+
+function bracketDelta(char: string): { square: number; curly: number } | undefined {
+	if (char === "[") return { square: 1, curly: 0 };
+	if (char === "]") return { square: -1, curly: 0 };
+	if (char === "{") return { square: 0, curly: 1 };
+	if (char === "}") return { square: 0, curly: -1 };
+	return undefined;
+}
+
 function _splitTopLevel(value: string, delimiter: string): string[] {
-	const parts = [];
+	const parts: string[] = [];
 	let current = "";
 	let square = 0;
 	let curly = 0;
 	let quote: string | undefined;
-	for (let index = 0; index < value.length; index++) {
-		const char = value[index];
-		if ((char === '"' || char === "'") && value[index - 1] !== "\\") {
-			if (quote === char) quote = undefined;
-			else if (!quote) quote = char;
-		}
+	let previous: string | undefined;
+	for (const char of value) {
+		quote = toggleQuote(char, previous, quote);
 		if (!quote) {
-			if (char === "[") square++;
-			if (char === "]") square--;
-			if (char === "{") curly++;
-			if (char === "}") curly--;
-			if (char === delimiter && square === 0 && curly === 0) {
+			const delta = bracketDelta(char);
+			if (delta) {
+				square += delta.square;
+				curly += delta.curly;
+			} else if (char === delimiter && square === 0 && curly === 0) {
 				parts.push(current);
 				current = "";
+				previous = char;
 				continue;
 			}
 		}
 		current += char;
+		previous = char;
 	}
 	parts.push(current);
 	return parts;
 }
 
-function parseScalar(raw: string, path: string): ScalarResult {
-	const value = stripYamlComment(raw);
-	if (!value) return { value: "" };
-	const block = value.match(/^([|>])([+-])?$/);
-	if (block) {
-		const style = block[1] === ">" ? ">" : "|";
-		const chomping = block[2] === "+" || block[2] === "-" ? block[2] : "clip";
-		return { value: "", block: { style, chomping } };
+function parseBlockHeader(value: string): { value: ""; block: BlockScalar } | undefined {
+	const match = value.match(/^([|>])([+-])?$/);
+	if (!match) return undefined;
+	const style = match[1] === ">" ? ">" : "|";
+	const chomping = match[2] === "+" || match[2] === "-" ? match[2] : "clip";
+	return { value: "", block: { style, chomping } };
+}
+
+function parseDoubleQuoted(value: string, path: string): ScalarResult {
+	if (!value.endsWith('"') || value.length < 2) return { error: `${path}: unterminated double-quoted scalar` };
+	try {
+		const parsed: unknown = JSON.parse(value);
+		return typeof parsed === "string" ? { value: parsed } : { error: `${path}: invalid double-quoted scalar` };
+	} catch {
+		return { error: `${path}: invalid double-quoted scalar` };
 	}
-	if (value.startsWith('"')) {
-		if (!value.endsWith('"') || value.length < 2) return { error: `${path}: unterminated double-quoted scalar` };
-		try {
-			const parsed: unknown = JSON.parse(value);
-			return typeof parsed === "string" ? { value: parsed } : { error: `${path}: invalid double-quoted scalar` };
-		} catch {
-			return { error: `${path}: invalid double-quoted scalar` };
-		}
-	}
-	if (value.startsWith("'")) {
-		if (!value.endsWith("'") || value.length < 2) return { error: `${path}: unterminated single-quoted scalar` };
-		return { value: value.slice(1, -1).replace(/''/g, "'") };
-	}
-	if (value.startsWith("[") || value.startsWith("{")) {
-		return { error: `${path}: flow collections are outside this conservative validator; use block YAML` };
-	}
+}
+
+function parseSingleQuoted(value: string, path: string): ScalarResult {
+	if (!value.endsWith("'") || value.length < 2) return { error: `${path}: unterminated single-quoted scalar` };
+	return { value: value.slice(1, -1).replace(/''/g, "'") };
+}
+
+function parsePlainScalar(value: string): ScalarResult {
 	if (/^(?:null|~)$/i.test(value)) return { value: null };
 	if (/^(?:true|false)$/i.test(value)) return { value: value.toLowerCase() === "true" };
 	if (/^-?\d+(?:\.\d+)?$/.test(value)) return { value: Number(value) };
 	return { value };
+}
+
+function parseScalar(raw: string, path: string): ScalarResult {
+	const value = stripYamlComment(raw);
+	if (!value) return { value: "" };
+	const block = parseBlockHeader(value);
+	if (block) return block;
+	if (value.startsWith('"')) return parseDoubleQuoted(value, path);
+	if (value.startsWith("'")) return parseSingleQuoted(value, path);
+	if (value.startsWith("[") || value.startsWith("{")) {
+		return { error: `${path}: flow collections are outside this conservative validator; use block YAML` };
+	}
+	return parsePlainScalar(value);
 }
 
 function setNested(root: YamlMapping, path: string[], value: YamlValue): void {
@@ -300,55 +344,80 @@ function finishBlockScalar(lines: string[], block: BlockScalar): string {
 	return lines.length > 0 ? `${value}\n` : "";
 }
 
+function leadingSpaces(line: string): number {
+	const match = line.match(/^ */);
+	return match ? match[0].length : 0;
+}
+
+function parseLineEntry(line: string, lineNumber: number): LineResult {
+	if (!line.trim() || line.trimStart().startsWith("#")) return { kind: "skip" };
+	if (/^ *\t/.test(line)) return { kind: "error", error: `line ${lineNumber}: tabs are not supported for indentation` };
+	const indent = leadingSpaces(line);
+	const trimmed = line.trimEnd().slice(indent);
+	if (trimmed.startsWith("-"))
+		return { kind: "error", error: `line ${lineNumber}: sequences are outside this conservative validator` };
+	const match = trimmed.match(/^([^:]+):(.*)$/);
+	if (!match) return { kind: "error", error: `line ${lineNumber}: expected a YAML mapping entry` };
+	const key = match[1].trim();
+	if (!key) return { kind: "error", error: `line ${lineNumber}: empty mapping key` };
+	if (DANGEROUS_YAML_KEYS.has(key))
+		return { kind: "error", error: `line ${lineNumber}: unsafe mapping key: ${key}` };
+	return { kind: "entry", entry: { key, raw: match[2], indent } };
+}
+
+function resolveParent(stack: YamlStackEntry[], indent: number): YamlStackEntry | undefined {
+	while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop();
+	const parent = stack[stack.length - 1];
+	return indent <= parent.indent ? undefined : parent;
+}
+
+function collectBlockLines(
+	lines: string[],
+	startIndex: number,
+	parentIndent: number,
+): { rawBlockLines: string[]; nextIndex: number } {
+	const rawBlockLines: string[] = [];
+	let cursor = startIndex;
+	for (; cursor < lines.length; cursor++) {
+		const next = lines[cursor];
+		if (!next.trim()) {
+			rawBlockLines.push(next);
+			continue;
+		}
+		if (leadingSpaces(next) <= parentIndent) break;
+		rawBlockLines.push(next);
+	}
+	return { rawBlockLines, nextIndex: cursor };
+}
+
+function blockContentIndent(rawBlockLines: string[], fallback: number): number {
+	const indents = rawBlockLines.filter((line) => line.trim()).map(leadingSpaces);
+	return indents.length > 0 ? Math.min(...indents) : fallback;
+}
+
+function indentBlockLines(rawBlockLines: string[], contentIndent: number): string[] {
+	return rawBlockLines.map((line) => (line.trim() ? line.slice(contentIndent) : ""));
+}
+
 function parseSimpleYaml(source: string): { value: YamlMapping } | { error: string } {
 	const root = createYamlMapping();
 	const lines = source.split(/\r?\n/);
 	const stack: YamlStackEntry[] = [{ indent: -1, path: [] }];
 	for (let index = 0; index < lines.length; index++) {
-		const line = lines[index];
-		if (!line.trim() || line.trimStart().startsWith("#")) continue;
-		if (/^ *\t/.test(line)) return { error: `line ${index + 1}: tabs are not supported for indentation` };
-		const indentMatch = line.match(/^ */);
-		const indent = indentMatch ? indentMatch[0].length : 0;
-		const trimmed = line.trimEnd().slice(indent);
-		if (trimmed.startsWith("-"))
-			return { error: `line ${index + 1}: sequences are outside this conservative validator` };
-		const match = trimmed.match(/^([^:]+):(.*)$/);
-		if (!match) return { error: `line ${index + 1}: expected a YAML mapping entry` };
-		const key = match[1].trim();
-		if (!key) return { error: `line ${index + 1}: empty mapping key` };
-		if (DANGEROUS_YAML_KEYS.has(key)) return { error: `line ${index + 1}: unsafe mapping key: ${key}` };
-		while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop();
-		const parent = stack[stack.length - 1];
-		if (indent <= parent.indent) return { error: `line ${index + 1}: inconsistent indentation` };
+		const parsed = parseLineEntry(lines[index], index + 1);
+		if (parsed.kind === "skip") continue;
+		if (parsed.kind === "error") return { error: parsed.error };
+		const { key, raw, indent } = parsed.entry;
+		const parent = resolveParent(stack, indent);
+		if (!parent) return { error: `line ${index + 1}: inconsistent indentation` };
 		const path = [...parent.path, key];
-		const raw = match[2];
 		const scalar = parseScalar(raw, path.join("."));
 		if ("error" in scalar) return { error: `line ${index + 1}: ${scalar.error}` };
 		if ("block" in scalar) {
-			const rawBlockLines: string[] = [];
-			let cursor = index + 1;
-			for (; cursor < lines.length; cursor++) {
-				const next = lines[cursor];
-				if (!next.trim()) {
-					rawBlockLines.push(next);
-					continue;
-				}
-				const nextIndentMatch = next.match(/^ */);
-				const nextIndent = nextIndentMatch ? nextIndentMatch[0].length : 0;
-				if (nextIndent <= indent) break;
-				rawBlockLines.push(next);
-			}
-			const contentIndents = rawBlockLines
-				.filter((blockLine) => blockLine.trim())
-				.map((blockLine) => {
-					const blockIndentMatch = blockLine.match(/^ */);
-					return blockIndentMatch ? blockIndentMatch[0].length : 0;
-				});
-			const contentIndent = contentIndents.length > 0 ? Math.min(...contentIndents) : indent + 1;
-			const blockLines = rawBlockLines.map((blockLine) => (blockLine.trim() ? blockLine.slice(contentIndent) : ""));
-			index = cursor - 1;
-			setNested(root, path, finishBlockScalar(blockLines, scalar.block));
+			const { rawBlockLines, nextIndex } = collectBlockLines(lines, index + 1, indent);
+			const contentIndent = blockContentIndent(rawBlockLines, indent + 1);
+			index = nextIndex - 1;
+			setNested(root, path, finishBlockScalar(indentBlockLines(rawBlockLines, contentIndent), scalar.block));
 			continue;
 		}
 		setNested(root, path, scalar.value);
@@ -436,9 +505,7 @@ function checkDescription(): void {
 		warn("description.boundary", "description should state a do-not-use or boundary clause");
 }
 
-function checkFields(): void {
-	const frontmatter = skill.frontmatter;
-	if (!frontmatter) return;
+function checkUnknownFields(frontmatter: YamlMapping): void {
 	for (const key of Object.keys(frontmatter)) {
 		if (["name", "description"].includes(key)) continue;
 		if (STANDARD_OPTIONAL_FIELDS.has(key)) continue;
@@ -448,37 +515,59 @@ function checkFields(): void {
 		}
 		warn("frontmatter.unknown", `unknown frontmatter field: ${key}`);
 	}
+}
 
+function checkLicenseField(frontmatter: YamlMapping): void {
 	const license = frontmatter.license;
 	if (license !== undefined && typeof license !== "string") fail("license.type", "license must be a string");
+}
 
+function checkCompatibilityField(frontmatter: YamlMapping): void {
 	const compatibility = frontmatter.compatibility;
-	if (compatibility !== undefined) {
-		if (typeof compatibility !== "string") fail("compatibility.type", "compatibility must be a string");
-		else if (compatibility.length < 1 || compatibility.length > 500) {
-			fail("compatibility.length", `compatibility is ${compatibility.length} characters; expected 1-500`);
-		}
+	if (compatibility === undefined) return;
+	if (typeof compatibility !== "string") {
+		fail("compatibility.type", "compatibility must be a string");
+		return;
 	}
+	if (compatibility.length < 1 || compatibility.length > 500) {
+		fail("compatibility.length", `compatibility is ${compatibility.length} characters; expected 1-500`);
+	}
+}
 
+function checkMetadataField(frontmatter: YamlMapping): void {
 	const metadata = frontmatter.metadata;
-	if (metadata !== undefined) {
-		if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
-			fail("metadata.type", "metadata must be a mapping from string keys to string values");
-		} else {
-			for (const [key, value] of Object.entries(metadata)) {
-				if (typeof value !== "string") fail("metadata.value", `metadata.${key} must be a string`);
-			}
-		}
+	if (metadata === undefined) return;
+	if (!isYamlMapping(metadata)) {
+		fail("metadata.type", "metadata must be a mapping from string keys to string values");
+		return;
 	}
+	for (const [key, value] of Object.entries(metadata)) {
+		if (typeof value !== "string") fail("metadata.value", `metadata.${key} must be a string`);
+	}
+}
 
+function checkAllowedToolsField(frontmatter: YamlMapping): void {
 	const allowedTools = frontmatter["allowed-tools"];
 	if (allowedTools !== undefined && typeof allowedTools !== "string") {
 		fail("allowed-tools.type", "allowed-tools must be a space-separated string");
 	}
+}
 
+function checkDisableModelInvocation(frontmatter: YamlMapping): void {
 	if (frontmatter["disable-model-invocation"] !== undefined) {
 		checkScalar(["disable-model-invocation"], "boolean");
 	}
+}
+
+function checkFields(): void {
+	const frontmatter = skill.frontmatter;
+	if (!frontmatter) return;
+	checkUnknownFields(frontmatter);
+	checkLicenseField(frontmatter);
+	checkCompatibilityField(frontmatter);
+	checkMetadataField(frontmatter);
+	checkAllowedToolsField(frontmatter);
+	checkDisableModelInvocation(frontmatter);
 }
 
 function decodeLink(link: string): string {
@@ -572,24 +661,38 @@ function checkFragment(resolved: string, fragment: string, source: string, targe
 	}
 }
 
+function withoutAngleBrackets(target: string): string {
+	return target.startsWith("<") && target.endsWith(">") ? target.slice(1, -1) : target;
+}
+
+function isExternalReference(target: string): boolean {
+	return /^(?:https?:|mailto:)/i.test(target) || /^(?:[a-zA-Z][a-zA-Z0-9+.-]*:)/.test(target);
+}
+
+function escapesDirectory(root: string, candidate: string): boolean {
+	const relativeCandidate = relative(root, candidate);
+	return relativeCandidate === ".." || relativeCandidate.startsWith(`..${sep}`);
+}
+
+function linkTargetParts(target: string): { fragment: string | undefined; pathOnly: string } {
+	const hashIndex = target.indexOf("#");
+	const fragment = hashIndex >= 0 ? target.slice(hashIndex + 1) : undefined;
+	const beforeFragment = hashIndex >= 0 ? target.slice(0, hashIndex) : target;
+	return { fragment, pathOnly: beforeFragment.split("?", 1)[0] };
+}
+
 function checkLinkTarget(rawTarget: string, source: string): void {
-	let target = rawTarget.trim();
-	if (target.startsWith("<") && target.endsWith(">")) target = target.slice(1, -1);
+	const target = withoutAngleBrackets(rawTarget.trim());
 	if (/^[A-Za-z]:[\\/]/.test(target) || target.startsWith("/")) {
 		fail("link.absolute", `${source}: link '${target}' is absolute, not skill-relative`);
 		return;
 	}
-	if (/^(?:https?:|mailto:)/i.test(target)) return;
-	if (/^(?:[a-zA-Z][a-zA-Z0-9+.-]*:)/.test(target)) return;
+	if (isExternalReference(target)) return;
 
-	const hashIndex = target.indexOf("#");
-	const fragment = hashIndex >= 0 ? target.slice(hashIndex + 1) : undefined;
-	const beforeFragment = hashIndex >= 0 ? target.slice(0, hashIndex) : target;
-	const pathOnly = beforeFragment.split("?", 1)[0];
+	const { fragment, pathOnly } = linkTargetParts(target);
 	const sourceFile = source === "SKILL.md body" ? join(skill.directory, "SKILL.md") : join(skill.directory, source);
 	const resolved = pathOnly ? resolve(dirname(sourceFile), decodeLink(pathOnly)) : sourceFile;
-	const relativeTarget = relative(skill.directory, resolved);
-	if (relativeTarget === ".." || relativeTarget.startsWith(`..${sep}`)) {
+	if (escapesDirectory(skill.directory, resolved)) {
 		fail("link.escape", `${source}: link '${target}' escapes the skill directory`);
 		return;
 	}
@@ -597,10 +700,7 @@ function checkLinkTarget(rawTarget: string, source: string): void {
 		fail("link.missing", `${source}: linked path does not exist: ${target}`);
 		return;
 	}
-	const realTarget = realpathSync(resolved);
-	const realRoot = realpathSync(skill.directory);
-	const realRelative = relative(realRoot, realTarget);
-	if (realRelative === ".." || realRelative.startsWith(`..${sep}`)) {
+	if (escapesDirectory(realpathSync(skill.directory), realpathSync(resolved))) {
 		fail("link.escape", `${source}: link '${target}' resolves through a symlink outside the skill directory`);
 		return;
 	}
@@ -634,34 +734,40 @@ function checkLinks(): void {
 	}
 }
 
-function walk(directory: string): string[] {
-	const results: string[] = [];
-	let visited = 0;
-	function visit(current: string, depth: number): boolean {
-		const handle = opendirSync(current);
-		try {
-			for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
-				if (++visited > MAX_TREE_ENTRIES) {
-					fail("tree.limit", "directory entry budget exceeded; validation is incomplete");
-					return false;
-				}
-				if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-				const path = join(current, entry.name);
-				if (entry.isDirectory()) {
-					if (depth >= MAX_TREE_DEPTH) {
-						fail("tree.depth", "directory depth budget exceeded; validation is incomplete");
-						return false;
-					}
-					if (!visit(path, depth + 1)) return false;
-				} else if (entry.isFile()) results.push(path);
-			}
-			return true;
-		} finally {
-			handle.closeSync();
+function visitDirectory(current: string, depth: number, state: WalkState): boolean {
+	const handle = opendirSync(current);
+	try {
+		for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+			if (!visitEntry(current, depth, entry, state)) return false;
 		}
+		return true;
+	} finally {
+		handle.closeSync();
 	}
-	visit(directory, 0);
-	return results;
+}
+
+function visitEntry(current: string, depth: number, entry: Dirent, state: WalkState): boolean {
+	if (++state.visited > MAX_TREE_ENTRIES) {
+		fail("tree.limit", "directory entry budget exceeded; validation is incomplete");
+		return false;
+	}
+	if (entry.name.startsWith(".") || entry.name === "node_modules") return true;
+	const path = join(current, entry.name);
+	if (!entry.isDirectory()) {
+		if (entry.isFile()) state.results.push(path);
+		return true;
+	}
+	if (depth >= MAX_TREE_DEPTH) {
+		fail("tree.depth", "directory depth budget exceeded; validation is incomplete");
+		return false;
+	}
+	return visitDirectory(path, depth + 1, state);
+}
+
+function walk(directory: string): string[] {
+	const state: WalkState = { results: [], visited: 0 };
+	visitDirectory(directory, 0, state);
+	return state.results;
 }
 
 function likelySecret(text: string): boolean {
@@ -675,40 +781,35 @@ function likelySecret(text: string): boolean {
 	].some((pattern) => pattern.test(text));
 }
 
+function checkDocumentedFile(file: string): void {
+	const extension = extname(file).toLowerCase();
+	if (!SCANNABLE_EXTENSIONS.has(extension)) return;
+	const rel = relative(skill.directory, file);
+	const size = statSync(file).size;
+	if (size > MAX_FILE_BYTES) {
+		warn("file.large", `${rel} is ${size} bytes; not scanned for placeholder/security markers`);
+		return;
+	}
+	const text = readBoundedText(file).text;
+	if (PLACEHOLDER_PATTERN.test(text)) warn("file.placeholder", `${rel} contains a task marker or replacement token`);
+	if (ABSOLUTE_PATH_PATTERN.test(text)) warn("file.absolute-path", `${rel} contains an operator-local absolute path`);
+	if (OPERATOR_HOME_PATTERN.test(text)) {
+		warn("path.operator-home", `${rel} contains an operator-private home path form (tilde-slash)`);
+	}
+	if (likelySecret(text)) fail("file.secret", `${rel} contains a likely credential or private key`);
+}
+
+function checkScriptFile(file: string): void {
+	if (statSync(file).size > MAX_FILE_BYTES) return;
+	const rel = relative(skill.directory, file);
+	const text = readBoundedText(file).text;
+	if (!text.includes("--help") && !text.includes("usage"))
+		warn("script.help", `${rel} does not visibly document --help or usage`);
+}
+
 function checkFiles(): void {
-	for (const file of skill.files) {
-		const rel = relative(skill.directory, file);
-		const extension = extname(file).toLowerCase();
-		if (
-			![".md", ".py", ".js", ".mjs", ".cjs", ".ts", ".mts", ".sh", ".json", ".yaml", ".yml", ".txt"].includes(extension)
-		)
-			continue;
-		const size = statSync(file).size;
-		if (size > MAX_FILE_BYTES) {
-			warn("file.large", `${rel} is ${size} bytes; not scanned for placeholder/security markers`);
-			continue;
-		}
-		const text = readBoundedText(file).text;
-		const placeholderPattern = new RegExp(
-			`\\b(?:${["TO" + "DO:", "FIX" + "ME:", "<replace-" + "me>"].join("|")})`,
-			"i",
-		);
-		if (placeholderPattern.test(text)) warn("file.placeholder", `${rel} contains a task marker or replacement token`);
-		if (/(?:^|[\s"'(])(?:[A-Za-z]:[\\/]|\/Users\/|\/home\/)/m.test(text)) {
-			warn("file.absolute-path", `${rel} contains an operator-local absolute path`);
-		}
-		if (/(?:^|[\s"'`(])~\/+/m.test(text)) {
-			warn("path.operator-home", `${rel} contains an operator-private home path form (tilde-slash)`);
-		}
-		if (likelySecret(text)) fail("file.secret", `${rel} contains a likely credential or private key`);
-	}
-	for (const file of skill.scriptFiles) {
-		if (statSync(file).size > MAX_FILE_BYTES) continue;
-		const rel = relative(skill.directory, file);
-		const text = readBoundedText(file).text;
-		if (!text.includes("--help") && !text.includes("usage"))
-			warn("script.help", `${rel} does not visibly document --help or usage`);
-	}
+	for (const file of skill.files) checkDocumentedFile(file);
+	for (const file of skill.scriptFiles) checkScriptFile(file);
 }
 
 function checkScriptTests(): void {
@@ -745,6 +846,67 @@ function collectFiles(): void {
 	skill.scriptFiles = skill.files.filter((path) => path.startsWith(`${scriptsDir}${sep}`));
 }
 
+function loadSkillFrontmatter(directory: string): void {
+	const skillPath = join(directory, "SKILL.md");
+	if (!existsSync(skillPath)) {
+		fail("skill.missing", `SKILL.md is required at ${skillPath}`);
+		return;
+	}
+	const markdown = readBoundedText(skillPath).text;
+	const parsed = extractFrontmatter(markdown);
+	if (!parsed) {
+		fail("frontmatter.missing", "SKILL.md must start with YAML frontmatter fenced by --- lines");
+		return;
+	}
+	const frontmatter = parseSimpleYaml(parsed.yaml);
+	if ("error" in frontmatter) {
+		fail("frontmatter.parse", frontmatter.error);
+		return;
+	}
+	skill.frontmatter = frontmatter.value;
+	skill.body = parsed.body;
+}
+
+function runSkillChecks(): void {
+	if (skill.frontmatter) {
+		checkName();
+		checkDescription();
+		checkFields();
+		if (skill.body !== undefined) checkBodyH1();
+	}
+	collectFiles();
+	if (skill.body !== undefined) checkLinks();
+	checkScriptTests();
+	checkFiles();
+}
+
+function logReport(format: OutputFormat, directory: string): void {
+	const omittedFail = issueCount - issues.length;
+	const omittedWarn = warningCount - warnings.length;
+	const report: ValidationReport = {
+		directory,
+		ok: issueCount === 0,
+		fail: issues,
+		warn: warnings,
+		counts: {
+			fail: issueCount,
+			warn: warningCount,
+			shown: { fail: issues.length, warn: warnings.length },
+			omitted: { fail: omittedFail, warn: omittedWarn },
+		},
+	};
+	if (format === "json") {
+		console.log(JSON.stringify(report, null, 2));
+		return;
+	}
+	console.log(`${issueCount === 0 ? "PASS" : "FAIL"} ${directory}`);
+	for (const issue of issues) console.log(`FAIL ${issue.code}: ${issue.message}`);
+	if (omittedFail > 0) console.log(`FAIL report.truncated: ${omittedFail} additional FAIL findings omitted`);
+	for (const warning of warnings) console.log(`WARN ${warning.code}: ${warning.message}`);
+	if (omittedWarn > 0) console.log(`WARN report.truncated: ${omittedWarn} additional WARN findings omitted`);
+	console.log(`Summary: ${issueCount} fail, ${warningCount} warn`);
+}
+
 function main(): void {
 	let options: ParseOptions;
 	try {
@@ -765,56 +927,9 @@ function main(): void {
 		console.error(`Error: skill directory does not exist or is not a directory: ${directory}`);
 		process.exit(2);
 	}
-	const skillPath = join(directory, "SKILL.md");
-	if (!existsSync(skillPath)) fail("skill.missing", `SKILL.md is required at ${skillPath}`);
-	else {
-		const markdown = readBoundedText(skillPath).text;
-		const parsed = extractFrontmatter(markdown);
-		if (!parsed) fail("frontmatter.missing", "SKILL.md must start with YAML frontmatter fenced by --- lines");
-		else {
-			const frontmatter = parseSimpleYaml(parsed.yaml);
-			if ("error" in frontmatter) fail("frontmatter.parse", frontmatter.error);
-			else {
-				skill.frontmatter = frontmatter.value;
-				skill.body = parsed.body;
-			}
-		}
-	}
-	if (skill.frontmatter) {
-		checkName();
-		checkDescription();
-		checkFields();
-		if (skill.body !== undefined) checkBodyH1();
-	}
-	collectFiles();
-	if (skill.body !== undefined) checkLinks();
-	checkScriptTests();
-	checkFiles();
-
-	const omittedFail = issueCount - issues.length;
-	const omittedWarn = warningCount - warnings.length;
-	const report: ValidationReport = {
-		directory,
-		ok: issueCount === 0,
-		fail: issues,
-		warn: warnings,
-		counts: {
-			fail: issueCount,
-			warn: warningCount,
-			shown: { fail: issues.length, warn: warnings.length },
-			omitted: { fail: omittedFail, warn: omittedWarn },
-		},
-	};
-	if (options.format === "json") {
-		console.log(JSON.stringify(report, null, 2));
-	} else {
-		console.log(`${issueCount === 0 ? "PASS" : "FAIL"} ${directory}`);
-		for (const issue of issues) console.log(`FAIL ${issue.code}: ${issue.message}`);
-		if (omittedFail > 0) console.log(`FAIL report.truncated: ${omittedFail} additional FAIL findings omitted`);
-		for (const warning of warnings) console.log(`WARN ${warning.code}: ${warning.message}`);
-		if (omittedWarn > 0) console.log(`WARN report.truncated: ${omittedWarn} additional WARN findings omitted`);
-		console.log(`Summary: ${issueCount} fail, ${warningCount} warn`);
-	}
+	loadSkillFrontmatter(directory);
+	runSkillChecks();
+	logReport(options.format, directory);
 	process.exit(issueCount === 0 ? 0 : 1);
 }
 
