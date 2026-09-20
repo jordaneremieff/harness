@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { closeSync, existsSync, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, opendirSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 
 const STANDARD_OPTIONAL_FIELDS = new Set(["license", "compatibility", "metadata", "allowed-tools"]);
@@ -8,6 +8,9 @@ const PI_ONLY_FIELDS = new Set(["disable-model-invocation"]);
 const MAX_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
 const MAX_FILE_BYTES = 512 * 1024;
+const MAX_TREE_ENTRIES = 2048;
+const MAX_TREE_DEPTH = 16;
+const MAX_SCAN_BYTES = 16 * 1024 * 1024;
 const MAX_REPORTED_PER_LEVEL = 40;
 const MAX_DIAGNOSTIC_LENGTH = 500;
 const DANGEROUS_YAML_KEYS = new Set(["__proto__", "constructor", "prototype"]);
@@ -64,6 +67,8 @@ const issues: Finding[] = [];
 const warnings: Finding[] = [];
 let issueCount = 0;
 let warningCount = 0;
+let scannedBytes = 0;
+let scanLimitReported = false;
 let skill: Skill;
 
 function boundedDiagnostic(message: unknown): string {
@@ -116,6 +121,8 @@ Checks:
   - the description should state a do-not-use or boundary clause (warning)
   - standalone common credential forms are failures
   - scripts have discoverable --help documentation
+  - traversal stops at 2048 entries or 16 directory levels; hidden entries and node_modules are skipped
+  - text reads stop at 16 MiB total; incomplete scans fail
   - diagnostic lists and individual messages are bounded
 `;
 }
@@ -158,7 +165,14 @@ function isDirectory(path: string): boolean {
 function readBoundedText(path: string): BoundedText {
 	const size = statSync(path).size;
 	if (size === 0) return { text: "", size, truncated: false };
-	const buffer = Buffer.allocUnsafe(Math.min(size, MAX_FILE_BYTES));
+	const readSize = Math.min(size, MAX_FILE_BYTES);
+	if (scannedBytes + readSize > MAX_SCAN_BYTES) {
+		if (!scanLimitReported) fail("scan.limit", "text read budget exceeded; validation is incomplete");
+		scanLimitReported = true;
+		return { text: "", size, truncated: true };
+	}
+	scannedBytes += readSize;
+	const buffer = Buffer.allocUnsafe(readSize);
 	const descriptor = openSync(path, "r");
 	let bytesRead = 0;
 	try {
@@ -622,11 +636,31 @@ function checkLinks(): void {
 
 function walk(directory: string): string[] {
 	const results: string[] = [];
-	for (const entry of readdirSync(directory, { withFileTypes: true })) {
-		const path = join(directory, entry.name);
-		if (entry.isDirectory()) results.push(...walk(path));
-		else if (entry.isFile()) results.push(path);
+	let visited = 0;
+	function visit(current: string, depth: number): boolean {
+		const handle = opendirSync(current);
+		try {
+			for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+				if (++visited > MAX_TREE_ENTRIES) {
+					fail("tree.limit", "directory entry budget exceeded; validation is incomplete");
+					return false;
+				}
+				if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+				const path = join(current, entry.name);
+				if (entry.isDirectory()) {
+					if (depth >= MAX_TREE_DEPTH) {
+						fail("tree.depth", "directory depth budget exceeded; validation is incomplete");
+						return false;
+					}
+					if (!visit(path, depth + 1)) return false;
+				} else if (entry.isFile()) results.push(path);
+			}
+			return true;
+		} finally {
+			handle.closeSync();
+		}
 	}
+	visit(directory, 0);
 	return results;
 }
 
@@ -701,12 +735,14 @@ function collectFiles(): void {
 	skill.references = [];
 	const referencesDir = join(skill.directory, "references");
 	if (isDirectory(referencesDir)) {
-		for (const file of walk(referencesDir).filter((path) => path.toLowerCase().endsWith(".md"))) {
+		for (const file of skill.files.filter(
+			(path) => path.startsWith(`${referencesDir}${sep}`) && path.toLowerCase().endsWith(".md"),
+		)) {
 			skill.references.push({ path: file, text: readBoundedText(file).text });
 		}
 	}
 	const scriptsDir = join(skill.directory, "scripts");
-	skill.scriptFiles = isDirectory(scriptsDir) ? walk(scriptsDir) : [];
+	skill.scriptFiles = skill.files.filter((path) => path.startsWith(`${scriptsDir}${sep}`));
 }
 
 function main(): void {

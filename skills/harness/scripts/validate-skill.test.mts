@@ -247,6 +247,55 @@ test("bounds reads of oversized skill resources", () => {
 	assert.ok(!report.warn.some((finding) => finding.code === "script.help"));
 });
 
+test("fails incomplete scans at traversal and aggregate text bounds", async (t) => {
+	await t.test("directory entries", () => {
+		const directory = createSkill({ frontmatter: "placeholder" });
+		writeFileSync(
+			join(directory, "SKILL.md"),
+			`---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n`,
+		);
+		for (let index = 0; index < 2050; index++) writeFileSync(join(directory, `item-${index}.txt`), "");
+		const { status, report } = runJson(directory);
+		assert.equal(status, 1);
+		assert.ok(report.fail.some((finding) => finding.code === "tree.limit"));
+	});
+	await t.test("directory depth", () => {
+		const directory = createSkill({ frontmatter: "placeholder" });
+		writeFileSync(
+			join(directory, "SKILL.md"),
+			`---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n`,
+		);
+		mkdirSync(join(directory, ...Array.from({ length: 18 }, () => "nested")), { recursive: true });
+		const { status, report } = runJson(directory);
+		assert.equal(status, 1);
+		assert.ok(report.fail.some((finding) => finding.code === "tree.depth"));
+	});
+	await t.test("aggregate text", () => {
+		const directory = createSkill({ frontmatter: "placeholder" });
+		writeFileSync(
+			join(directory, "SKILL.md"),
+			`---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n`,
+		);
+		for (let index = 0; index < 33; index++)
+			writeFileSync(join(directory, `item-${index}.txt`), "x".repeat(512 * 1024));
+		const { status, report } = runJson(directory);
+		assert.equal(status, 1);
+		assert.equal(report.fail.filter((finding) => finding.code === "scan.limit").length, 1);
+	});
+});
+
+test("skips hidden and dependency directories during the candidate scan", () => {
+	const directory = createSkill({ frontmatter: "placeholder" });
+	writeFileSync(join(directory, "SKILL.md"), `---\n${validFrontmatter(directory)}\n---\n\n# ${basename(directory)}\n`);
+	for (const ignored of [".git", "node_modules"]) {
+		mkdirSync(join(directory, ignored, ...Array.from({ length: 18 }, () => "nested")), { recursive: true });
+	}
+	const { status, report } = runJson(directory);
+	assert.equal(status, 0);
+	assert.deepEqual(report.fail, []);
+	assert.deepEqual(report.warn, []);
+});
+
 test("bounds reported findings while preserving total counts and failure status", () => {
 	const directory = createSkill({ frontmatter: "placeholder" });
 	const links = Array.from({ length: 85 }, (_, index) => `[missing ${index}](references/missing-${index}.md)`).join(

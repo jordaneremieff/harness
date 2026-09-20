@@ -13,7 +13,7 @@ description: >
   outcome does not exempt them. Do not use for invoking or installing an unchanged
   resource, ordinary application code, unrelated uses of "tool", "skill", or
   "extension", or Pi core development.
-compatibility: Pi-specific workflow. The bundled skill validator is dependency-free Node.js and supports Node.js 18 or newer; verify Pi-sensitive behavior against the active Pi installation.
+compatibility: Pi-specific workflow. The bundled skill validator uses dependency-free TypeScript and requires Node.js 22.19 or newer for direct execution; verify Pi-sensitive behavior against the active Pi installation.
 ---
 
 # Harness

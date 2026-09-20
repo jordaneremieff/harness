@@ -22,8 +22,13 @@ which source layers decide the next action:
 
 Read the layers that can change the decision. Name the unresolved question
 before broadening inspection; whole-harness grounding is not an instruction to
-read every resource. If a source layer is unavailable, keep the affected claim
-inside the evidence boundary rather than substituting another layer's success.
+read every resource. When the operator explicitly requests a comprehensive
+review, inventory the requested resources first. Distinguish shipped, active,
+provisional, and orphaned work; listing a path is not reviewing its content.
+Assign each part a source boundary, owner, and final disposition so gaps and
+duplicate work remain visible. If a source layer is unavailable, keep the
+affected claim inside the evidence boundary rather than substituting another
+layer's success.
 
 Inspection does not grant mutation authority. Use the main workflow's existing
 surface and authority rules for any resulting change.
@@ -36,10 +41,13 @@ work for independent source checks or owned changes. Use shared exploration or
 staged exchanges when one result changes another task's question. Honor an
 explicit request for independent verification.
 
-Give each split task an integration destination and acceptance criteria. Assign
-composition and verification to the session best placed to do them; the session
-that owes the operator the outcome remains accountable for delivery. Revisit
-the split when evidence changes the problem. A list of completed worker tasks
+Give each split task an integration destination and acceptance criteria. Keep
+file ownership disjoint during concurrent edits. Assign shared mutations such
+as worktree synchronization, dependency refresh, promotion, and publication to
+one coordinator; a worker's local commit does not establish integration or
+release. Assign composition and verification to the session best placed to do
+them; the session that owes the operator the outcome remains accountable for
+delivery. Revisit the split when evidence changes the problem. A list of completed worker tasks
 is not an outcome if their combined result misses the request.
 
 ## Delegate with enough context

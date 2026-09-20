@@ -12,6 +12,7 @@ request to inspect every listed mechanism.
   - [Independent extensions and mediated composition](#independent-extensions-and-mediated-composition)
 - [Lifecycle, state, and cancellation](#lifecycle-state-and-cancellation)
 - [Tools, commands, providers, and model-facing output](#tools-commands-providers-and-model-facing-output)
+- [Host-owned prompts, model calls, and observation](#host-owned-prompts-model-calls-and-observation)
 - [TUI and non-UI modes; RPC and SDK drivers](#tui-and-non-ui-modes-rpc-and-sdk-drivers)
 - [Package, discovery, and upgrades](#package-discovery-and-upgrades)
 - [Harness integration](#harness-integration)
@@ -88,6 +89,34 @@ load can bind the wrong session or directory.
   separately.
 - Keep user-visible semantics shared between command/tool/UI paths; adapt the
   transport or presentation at the edge.
+
+## Host-owned prompts, model calls, and observation
+
+Select the host surface by the effect required. Confirm these contracts in the
+active installation's `docs/extensions.md` and public declarations before use;
+they are selection cues, not a substitute for version grounding.
+
+| Required effect | Host surface and boundary |
+|---|---|
+| Add prompt sections or change selected tools | Mutate `before_agent_start`'s `systemPromptOptions` or use `pi.setActiveTools()`. Pi owns prompt/tool deltas and provider replay. Avoid reparsing or replacing the whole rendered prompt for a local addition. |
+| Retain extension data without model context | Use `pi.appendEntry()`. Add `registerEntryRenderer()` only when that data needs a transcript view. A custom entry is not a message to the model. |
+| Deliver content to the model | Use `pi.sendMessage()` with the required delivery mode. Keep visible presentation, retained entries, provider context, and completed work as separate claims. |
+| Call a configured model from an extension | Use `ctx.modelRegistry.streamSimple()` for provider-neutral options or `stream()` for API-specific options. These resolve the configured provider and authentication, including extension registrations. Standalone compatibility helpers do not establish the same provider visibility. |
+| Observe live tool work | Use tool execution events keyed by `toolCallId`. Updates can interleave; completion order differs from final transcript placement order. Do not infer one from the other. |
+| Observe the end of automatic continuation | Use `agent_settled`, not `agent_end`, when retries, compaction, and queued follow-ups must finish first. Session teardown still belongs to `session_shutdown`. |
+
+For nested model calls, pass the owning abort signal, inspect the final message
+for errors, and return nested usage through the tool's supported `usage` field
+when the call belongs to a tool. Do not reconstruct authentication, copy secrets
+into child prompts, or treat a stream's creation as successful completion.
+
+A current tool loadout is not historical evidence. Use Pi's retained session
+entries for historical prompt and tool changes, and retain source entry IDs.
+Do not add a parallel transcript, event fold, or progress store when the chosen
+host already supplies the required state. If an observation API lacks the
+required history, paging, or retention, name that exact gap before selecting
+additional storage. Check the repository's durable-harness guidance before
+mixing ordinary-session events with durable lane contracts.
 
 ## TUI and non-UI modes; RPC and SDK drivers
 
@@ -190,6 +219,15 @@ Before adding telemetry or preserving incident evidence, obtain the required
 operator/repository approval and define purpose, minimum fields, anonymization,
 access, retention, and deletion. Store audits and handoffs with the same data
 minimization applied to shipped artifacts.
+
+Treat Pi's `/bug` as an evidence-export workflow, not a local diagnostic read.
+Read the active `docs/sessions.md` reporting contract before proposing it.
+Excluding the transcript does not exclude configuration or error diagnostics;
+a model-written summary sends transcript content to the selected provider.
+Export and inspect the selected evidence locally when authorized, then obtain
+publication authority before upload. Built-in credential redaction does not
+establish that arbitrary file contents, tool output, or diagnostic text are
+safe to disclose.
 
 When code, fixtures, or prose are copied or adapted, record source, license,
 version/date or commit, what changed, and compatibility in the owning
