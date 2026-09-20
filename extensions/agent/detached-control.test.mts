@@ -12,6 +12,7 @@ import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { createDetachedControlServer, readControlEndpoint, withDetachedControl, type DetachedControlServerOptions } from "./detached-control.ts";
 import { DetachedRuns, type DetachedRunRequest } from "./detached.ts";
 import type { AgentWorkerSession, WorkerStatus } from "./worker.ts";
+import { defined } from "./test-assertions.mts";
 
 function deferred() {
 	let resolve!: () => void;
@@ -42,7 +43,7 @@ function fixture() {
 	return { root, request, worker, status, inspection, options, calls, descriptor: `${runs.requestFile(request.runId)}.control.json`, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 async function rawClient(request: DetachedRunRequest) {
-	const endpoint = readControlEndpoint(request)!;
+	const endpoint = defined(readControlEndpoint(request));
 	const client = await Client.connect({ serverId: endpoint.serverId, transportFactory: createUnixTransportFactory({ path: endpoint.path }), maxFrameLength: 4 * 1024 * 1024 });
 	try {
 		await client.request({ serverId: endpoint.serverId }, { serviceId: "agent.run-attachment", member: "attach", args: [request.sessionId] });
@@ -73,7 +74,7 @@ describe("detached control over public Unix transport", () => {
 		const f = fixture();
 		assert.equal(readControlEndpoint(f.request), undefined);
 		const server = await createDetachedControlServer(f.options);
-		const endpoint = readControlEndpoint(f.request)!;
+		const endpoint = defined(readControlEndpoint(f.request));
 		try {
 			assert.notEqual(endpoint.serverId, f.request.runId);
 			assert.ok(Buffer.byteLength(endpoint.path) <= 100);
@@ -165,11 +166,11 @@ describe("detached control over public Unix transport", () => {
 		const server = await createDetachedControlServer(f.options);
 		const client = await rawClient(f.request);
 		try {
-			const operation = client.request(client.attachment!, { serviceId: "agent.run-control", member: "steer", args: ["hold", null] });
+			const operation = client.request(defined(client.attachment), { serviceId: "agent.run-control", member: "steer", args: ["hold", null] });
 			await entered.promise;
 			let drained = false;
 			const drain = server.sealAndDrain().then(() => { drained = true; });
-			await assert.rejects(client.request(client.attachment!, { serviceId: "agent.run-control", member: "status", args: [] }), /draining/iu);
+			await assert.rejects(client.request(defined(client.attachment), { serviceId: "agent.run-control", member: "status", args: [] }), /draining/iu);
 			assert.equal(drained, false);
 			finish.resolve();
 			await operation;
@@ -185,13 +186,13 @@ describe("detached control over public Unix transport", () => {
 		const second = await rawClient(f.request);
 		try {
 			const call = { serviceId: "agent.run-control", member: "status", args: [] };
-			await assert.rejects(first.request({ ...first.attachment!, serverId: randomUUID() }, call), /server/iu);
-			await assert.rejects(first.request({ ...first.attachment!, sessionId: "other-session" }, call), /attach/iu);
-			await assert.rejects(second.request(first.attachment!, call), /attach/iu);
+			await assert.rejects(first.request({ ...defined(first.attachment), serverId: randomUUID() }, call), /server/iu);
+			await assert.rejects(first.request({ ...defined(first.attachment), sessionId: "other-session" }, call), /attach/iu);
+			await assert.rejects(second.request(defined(first.attachment), call), /attach/iu);
 			await assert.rejects(first.request({ serverId: first.serverId }, { serviceId: "agent.run-attachment", member: "attach", args: ["other-session"] }), /session/iu);
 			await first.disconnect();
 			await first.reconnect();
-			await assert.rejects(first.request(second.attachment!, call), /attach/iu);
+			await assert.rejects(first.request(defined(second.attachment), call), /attach/iu);
 		} finally { await first.dispose(); await second.dispose(); await server.close(); f.cleanup(); }
 	});
 
@@ -204,7 +205,7 @@ describe("detached control over public Unix transport", () => {
 				["status", ["extra"]], ["abort", [true]], ["inspect", [{ limit: 13 }]], ["inspect", [{ offset: -1 }]],
 				["inspect", [{ unexpected: true }]], ["steer", ["", null]], ["steer", ["text", [{ type: "image", data: "a", mimeType: "text/plain" }]]],
 			] as Array<[string, JsonValue[]]>) {
-				await assert.rejects(client.request(client.attachment!, { serviceId: "agent.run-control", member, args }), /invalid/iu);
+				await assert.rejects(client.request(defined(client.attachment), { serviceId: "agent.run-control", member, args }), /invalid/iu);
 			}
 			assert.equal(f.calls.aborts, 0);
 			assert.equal(f.calls.steers.length, 0);
@@ -270,7 +271,7 @@ describe("detached control over public Unix transport", () => {
 	it("removes its descriptor even after the socket disappears", async () => {
 		const f = fixture();
 		const server = await createDetachedControlServer(f.options);
-		const endpoint = readControlEndpoint(f.request)!;
+		const endpoint = defined(readControlEndpoint(f.request));
 		try {
 			unlinkSync(endpoint.path);
 			assert.equal(readControlEndpoint(f.request), undefined);
@@ -283,7 +284,7 @@ describe("detached control over public Unix transport", () => {
 	it("preserves a replaced descriptor while it releases its own socket", async () => {
 		const f = fixture();
 		const server = await createDetachedControlServer(f.options);
-		const endpoint = readControlEndpoint(f.request)!;
+		const endpoint = defined(readControlEndpoint(f.request));
 		const replacement = JSON.stringify({ ...endpoint, serverId: randomUUID() });
 		try {
 			writeFileSync(f.descriptor, replacement);

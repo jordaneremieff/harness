@@ -5,6 +5,7 @@ import { type ExtensionAPI, type ExtensionCommandContext, type RegisteredCommand
 import { CombinedAutocompleteProvider, Editor, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { createAgentCommand, type AgentSessionSummary } from "./command.ts";
 import registerAgentExtension from "./index.ts";
+import { defined } from "./test-assertions.mts";
 
 function registration() {
 	let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
@@ -46,16 +47,18 @@ describe("agent command discovery and help", () => {
 		assert.equal(slash.items[0].description, "Manage durable sessions; add a space to choose an action");
 		assert.equal(native.applyCompletion(["/agent"], 0, 6, slash.items[0], slash.prefix).lines[0], "/agent ");
 		const actions = await suggest(native, "/agent ");
-		assert.ok(actions!.items.length > 0);
-		assert.deepEqual(actions!.items.map((item) => item.label), ["new", "status", "send", "steer", "abort", "list", "runs", "attach", "fork", "rewind", "detach", "place", "places", "unbind", "help"]);
-		assert.ok(actions!.items.every((item) => item.description && !item.description.includes(" | ")));
-		assert.equal(actions!.items.filter((item) => item.label === "list").length, 1);
-		assert.ok(!actions!.items.some((item) => item.label === "ls"));
+		assert.ok(actions);
+		assert.ok(actions.items.length > 0);
+		assert.deepEqual(actions.items.map((item) => item.label), ["new", "status", "send", "steer", "abort", "list", "runs", "attach", "fork", "rewind", "detach", "place", "places", "unbind", "help"]);
+		assert.ok(actions.items.every((item) => item.description && !item.description.includes(" | ")));
+		assert.equal(actions.items.filter((item) => item.label === "list").length, 1);
+		assert.ok(!actions.items.some((item) => item.label === "ls"));
 		const { ctx, notices } = context();
-		for (const item of actions!.items) {
+		for (const item of actions.items) {
 			await registration().handler(`help ${item.label}`, ctx);
-			assert.ok(notices.at(-1)!.text.startsWith(`/agent ${item.label}`));
-			assert.ok(notices.at(-1)!.text.includes(item.description!));
+			const notice = defined(notices.at(-1));
+			assert.ok(notice.text.startsWith(`/agent ${item.label}`));
+			assert.ok(notice.text.includes(defined(item.description)));
 		}
 	});
 
@@ -66,10 +69,10 @@ describe("agent command discovery and help", () => {
 			["/agent stop", "abort", "/agent abort "],
 			["/agent help rew", "rewind", "/agent help rewind"],
 		]) {
-			const result = await suggest(native, input);
-			const selected = result?.items.find((item) => item.label === choice);
+			const result = defined(await suggest(native, input));
+			const selected = result.items.find((item) => item.label === choice);
 			assert.ok(selected, input);
-			assert.equal(native.applyCompletion([input], 0, input.length, selected, result!.prefix).lines[0], expected);
+			assert.equal(native.applyCompletion([input], 0, input.length, selected, result.prefix).lines[0], expected);
 		}
 	});
 
@@ -79,8 +82,9 @@ describe("agent command discovery and help", () => {
 		const { ctx, notices } = context();
 		for (const input of ["", "help", "--help", "-h"]) {
 			await command.handler(input, ctx);
-			assert.match(notices.at(-1)!.text, /\/agent manages durable sessions/);
-			assert.doesNotMatch(notices.at(-1)!.text, /\|/);
+			const notice = defined(notices.at(-1));
+			assert.match(notice.text, /\/agent manages durable sessions/);
+			assert.doesNotMatch(notice.text, /\|/);
 		}
 		for (const [input, expected] of [
 			["send", /Missing session\.\n\/agent send <session> <message>/],
@@ -103,14 +107,14 @@ describe("agent command discovery and help", () => {
 			["missing", /Unknown action "missing"/],
 		] as const) {
 			await command.handler(input, ctx);
-			assert.match(notices.at(-1)!.text, expected, input);
+			assert.match(defined(notices.at(-1)).text, expected, input);
 		}
 		assert.equal(runtime.mock.callCount(), 0);
 		assert.ok(notices.every((notice) => notice.type === "info"));
 	});
 
 	it("leaves prompts, messages, directory arguments and entry IDs as text, not invented choices", async () => {
-		const complete = registration().getArgumentCompletions!;
+		const complete = defined(registration().getArgumentCompletions);
 		for (const text of ["new ", "new check errors", "place ", "unbind ", "unknown ", "help new extra"]) {
 			assert.equal(await complete(text), null, text);
 		}
@@ -131,15 +135,15 @@ describe("agent metadata completion", () => {
 		const native = provider(completionFixture());
 		const line = "/agent send parser keep this task";
 		const col = "/agent send parser".length;
-		const result = (await suggest(native, line, col))!;
+		const result = defined(await suggest(native, line, col));
 		assert.equal(result.items[0].label, "Review parser");
-		assert.match(result.items[0].description!, /Open session/);
+		assert.match(defined(result.items[0].description), /Open session/);
 		assert.equal(native.applyCompletion([line], 0, col, result.items[0], result.prefix).lines[0], "/agent send open-2  keep this task");
-		const stored = (await suggest(native, "/agent status library"))!;
+		const stored = defined(await suggest(native, "/agent status library"));
 		assert.match(stored.items[0].label, /Session in library/);
-		assert.match(stored.items[0].description!, /Stored session/);
+		assert.match(defined(stored.items[0].description), /Stored session/);
 		assert.equal(stored.items[0].value, "status stored-1");
-		assert.equal((await suggest(native, "/agent send open-2"))!.items[0].value, "send open-2 ");
+		assert.equal(defined(await suggest(native, "/agent send open-2")).items[0].value, "send open-2 ");
 	});
 
 	it("completes multiword names and tasks until an exact ID starts the free-text argument", async () => {
@@ -149,7 +153,7 @@ describe("agent metadata completion", () => {
 			["/agent send Review par", "/agent send open-2 "],
 			["/agent runs Audit dep", "/agent runs run-3"],
 		]) {
-			const result = (await suggest(native, input))!;
+			const result = defined(await suggest(native, input));
 			assert.equal(native.applyCompletion([input], 0, input.length, result.items[0], result.prefix).lines[0], expected);
 		}
 		for (const input of ["/agent send open-2 ", "/agent send open-2 Review parser", "/agent status open-2 ", "/agent runs run-3 "]) {
@@ -159,16 +163,17 @@ describe("agent metadata completion", () => {
 
 	it("offers detached sessions for owner controls, but not new tasks", async () => {
 		const command = completionFixture();
-		assert.ok(!(await command.getArgumentCompletions!("send "))!.some((item) => item.value.includes("detached-3")));
+		const complete = defined(command.getArgumentCompletions);
+		assert.ok(!defined(await complete("send ")).some((item) => item.value.includes("detached-3")));
 		for (const action of ["steer", "abort", "status"]) {
-			const controls = (await command.getArgumentCompletions!(`${action} Audit`))!;
+			const controls = defined(await complete(`${action} Audit`));
 			assert.equal(controls[0].value, `${action} detached-3${action === "steer" ? " " : ""}`);
-			assert.match(controls[0].description!, /Detached run; owner control/);
+			assert.match(defined(controls[0].description), /Detached run; owner control/);
 		}
-		const run = (await command.getArgumentCompletions!("runs dependencies"))!;
+		const run = defined(await complete("runs dependencies"));
 		assert.equal(run[0].value, "runs run-3");
 		assert.match(run[0].label, /Audit dependencies/);
-		assert.match(run[0].description!, /finished/);
+		assert.match(defined(run[0].description), /finished/);
 	});
 
 	it("keeps duplicate and unnamed choices distinct and removes terminal controls from metadata", async () => {
@@ -177,15 +182,15 @@ describe("agent metadata completion", () => {
 			{ ...rows[0], name: "Review parser", sessionId: "sameprefix-two" },
 			{ ...rows[0], sessionId: "unnamed" },
 		]);
-		const result = (await command.getArgumentCompletions!("status "))!;
+		const result = defined(await defined(command.getArgumentCompletions)("status "));
 		assert.equal(new Set(result.map((item) => item.label)).size, 3);
 		assert.ok(result.some((item) => item.label.includes("sameprefix-one")));
 		assert.ok(result.every((item) => !/[\x1b\n]/.test(item.label + item.description)));
 	});
 
 	it("returns no invented session choices for empty or unavailable metadata", async () => {
-		assert.deepEqual(await completionFixture(async () => []).getArgumentCompletions!("send "), []);
-		assert.equal(await completionFixture(async () => { throw new Error("store unavailable"); }).getArgumentCompletions!("send "), null);
+		assert.deepEqual(await defined(completionFixture(async () => []).getArgumentCompletions)("send "), []);
+		assert.equal(await defined(completionFixture(async () => { throw new Error("store unavailable"); }).getArgumentCompletions)("send "), null);
 	});
 });
 

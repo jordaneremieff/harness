@@ -226,6 +226,28 @@ describe("ordinary worker input", () => {
 		);
 	});
 
+	it("does not yield before expansion and activity checks when no input handler exists", async () => {
+		const { runner } = await fixture();
+		const order: string[] = [];
+		let streaming = false;
+		const prepared = prepareWorkerInput(runner, {
+			text: "/review file", streaming: () => { order.push("activity"); return streaming; }, streamingBehavior: "steer",
+		}, resources, async () => assert.fail("command"));
+		assert.deepEqual(order, ["activity"]);
+		streaming = true;
+		assert.deepEqual(await prepared, { kind: "prompt", text: "file||file|default" });
+	});
+
+	it("continues at the input dispatch promise without an extra async boundary", async () => {
+		const { runner } = await fixture(new Map([["input", [() => ({ action: "continue" })]]]));
+		const dispatched = Promise.resolve({ action: "continue" as const });
+		runner.emitInput = () => dispatched;
+		let streaming = false;
+		const prepared = prepareWorkerInput(runner, { text: "hello", streaming: () => streaming, streamingBehavior: "steer" }, resources, async () => {});
+		void dispatched.then(() => { streaming = true; });
+		assert.deepEqual(await prepared, { kind: "prompt", text: "hello" });
+	});
+
 	it("rechecks live activity after asynchronous input handlers", async () => {
 		let streaming = false;
 		const { runner } = await fixture(

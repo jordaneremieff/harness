@@ -132,7 +132,7 @@ describe("agent worker session", () => {
 		const metadata = listed.find((candidate) => candidate.id === sessionId);
 		assert.ok(metadata, "session metadata survives close");
 
-		const reopened = await AgentWorkerSession.open(metadata!, {
+		const reopened = await AgentWorkerSession.open(metadata, {
 			cwd,
 			agentDir,
 			model: { provider: "agent-test", modelId: "model" },
@@ -177,7 +177,8 @@ describe("agent worker session", () => {
 		await source.appendCustomEntry("agent.test.fork-source", { n: 1 });
 		const sourceId = source.sessionId();
 		const metadataList = await store.list(context);
-		const sourceMetadata = metadataList.find((m) => m.id === sourceId)!;
+		const sourceMetadata = metadataList.find((m) => m.id === sourceId);
+		assert.ok(sourceMetadata, "source metadata is listed");
 
 		const fork = await AgentWorkerSession.fork(sourceMetadata, {
 			cwd,
@@ -236,7 +237,7 @@ describe("agent trust and replacement", () => {
 		const metadata = listed.find((candidate) => candidate.id === sessionId);
 		assert.ok(metadata, "session metadata survives close");
 		// No model option: the durable meta entry is the only model source.
-		const reopened = await AgentWorkerSession.open(metadata!, {
+		const reopened = await AgentWorkerSession.open(metadata, {
 			cwd,
 			agentDir,
 			extensionPaths: [],
@@ -290,7 +291,9 @@ describe("agent trust and replacement", () => {
 		await explicit.close();
 		// Persistence of explicit decisions is the manager layer's job; persist and reopen.
 		trustStore.set(cwd, true);
-		const saved = await AgentWorkerSession.open((await store.list(context)).at(-1)!, {
+		const savedMetadata = (await store.list(context)).at(-1);
+		assert.ok(savedMetadata, "saved session metadata is listed");
+		const saved = await AgentWorkerSession.open(savedMetadata, {
 			cwd, agentDir, extensionPaths: [], store, modelRuntime, trustStore, rootContext: context,
 		});
 		assert.equal(saved.isProjectTrusted(), true, "decision persisted in the trust store");
@@ -378,11 +381,11 @@ describe("agent trust and replacement", () => {
 			const immediate = committed.find((entry) => entry.type === "custom" && entry.customType === "agent.immediate-read");
 			assert.deepEqual(immediate?.type === "custom" ? immediate.data : undefined, { immediate: false });
 
-			const result = await manager.runCommand(sessionId!, "agent-replace-test", "");
+			const result = await manager.runCommand(sessionId, "agent-replace-test", "");
 			assert.ok(result.sessionId, "replacement session id reported to the caller");
 			assert.notEqual(result.sessionId, sessionId, "replacement is a new session");
 
-			const replacementEntries = await manager.sessionEntries(result.sessionId!);
+			const replacementEntries = await manager.sessionEntries(result.sessionId);
 			assert.ok(
 				replacementEntries.some((entry) => entry.type === "custom" && entry.customType === "agent.setup.test"),
 				"setup callback write landed durably on the replacement",
@@ -404,7 +407,7 @@ describe("agent trust and replacement", () => {
 				(candidate) => candidate.id === result.sessionId,
 			);
 			assert.ok(replacementMetadata, "replacement metadata is listed after close");
-			const reopened = await AgentWorkerSession.open(replacementMetadata!, {
+			const reopened = await AgentWorkerSession.open(replacementMetadata, {
 				cwd,
 				agentDir,
 				store,
@@ -471,13 +474,16 @@ describe("partial worker startup", () => {
 				await assert.rejects(task, (error) => error === failure);
 				assert.deepEqual(closed, created);
 				assert.equal(created.length, 1);
-				assert.throws(() => failedWorker!.sessionId(), /not attached/u);
+				assert.ok(failedWorker, "attachment reached the worker");
+				const closedWorker = failedWorker;
+				assert.throws(() => closedWorker.sessionId(), /not attached/u);
 				const internals = failedWorker as unknown as { harness?: unknown; laneWatcher?: unknown; laneObservers: Set<unknown> };
 				assert.equal(internals.harness, undefined);
 				assert.equal(internals.laneWatcher, undefined);
 				assert.equal(internals.laneObservers.size, 0);
 				mock.mock.restore();
-				const metadata = (await store.list(context)).find((candidate) => candidate.id === created[0])!;
+				const metadata = (await store.list(context)).find((candidate) => candidate.id === created[0]);
+				assert.ok(metadata, "failed startup retains its session");
 				const reopened = await AgentWorkerSession.open(metadata, options);
 				await reopened.close();
 			} finally { await store.close(context); rmSync(base, { recursive: true, force: true }); }

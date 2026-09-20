@@ -1,5 +1,6 @@
 import { createTestRuntime } from "./test-runtime.mts";
 import assert from "node:assert/strict";
+import { defined } from "./test-assertions.mts";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, type FSWatcher } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -181,13 +182,13 @@ describe("detached run visibility", () => {
 			assert.match(await test.manager.status("session-live"), /no progress record yet/u);
 			runs.writeProgress({ runId: "live", updatedAt: "2026-09-10T00:01:00.000Z", entryCount: 7, currentTool: "read", lastText: "Read the file" });
 			const status = await test.manager.status("session-live");
-			assert.ok(status.startsWith(formatRun(runs.get("live")!)));
+			assert.ok(status.startsWith(formatRun(defined(runs.get("live")))));
 			assert.match(status, /live control unavailable/u);
 			assert.match(status, /recorded observation, not live owner status/u);
 			assert.match(status, /live {2}running {2}session=session-live/u);
 			assert.match(status, /entries=7 {2}tool=read/u);
 			assert.match(status, /Read the file/u);
-			assert.equal(test.manager.runs("live"), formatRun(runs.get("live")!));
+			assert.equal(test.manager.runs("live"), formatRun(defined(runs.get("live"))));
 			recordRun(test, "gone", 2147483647);
 			assert.match(test.manager.runs("gone"), /abandoned/u);
 			assert.match(test.manager.runs("gone"), /retained writer claim blocks reopening/u);
@@ -295,7 +296,7 @@ async function createSession(test: Harness): Promise<string> {
 }
 
 function heldWorker(test: Harness, id: string): AgentWorkerSession {
-	return (test.manager as unknown as { sessions: Map<string, AgentWorkerSession> }).sessions.get(id)!;
+	return defined((test.manager as unknown as { sessions: Map<string, AgentWorkerSession> }).sessions.get(id));
 }
 
 function installRunStart(test: Harness, t: TestContext) {
@@ -384,7 +385,8 @@ describe("manager ownership transitions", () => {
 			finish.resolve();
 			await assert.rejects(creation, /manager is closed/u);
 			await shutdown;
-			assert.throws(() => late!.sessionId(), /not attached/u);
+			const closedWorker = defined(late);
+			assert.throws(() => closedWorker.sessionId(), /not attached/u);
 			await assert.rejects(test.manager.attach("any"), /manager is closed/u);
 		} finally { await test.close(); }
 	});
@@ -417,11 +419,12 @@ describe("command registration", () => {
 			const status = t.mock.method(test.manager, "status", async () => { throw new Error("must not query"); });
 			let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
 			registerAgentExtension({ registerTool() {}, on() {}, registerCommand(_name: string, options: typeof command) { command = options; } } as unknown as ExtensionAPI);
+			const complete = defined(command.getArgumentCompletions);
 			for (const action of ["status", "attach", "fork", "send", "steer", "abort", "rewind", "detach"]) {
-				const result = await command.getArgumentCompletions!(`${action} `);
-				assert.equal(result?.length, 1, action);
-				assert.ok(result![0].value.includes(id));
-				assert.match(result![0].description!, /Stored session/);
+				const result = defined(await complete(`${action} `));
+				assert.equal(result.length, 1, action);
+				assert.ok(result[0].value.includes(id));
+				assert.match(defined(result[0].description), /Stored session/);
 			}
 			assert.equal(open.mock.callCount(), 0);
 			assert.equal(status.mock.callCount(), 0);
@@ -456,13 +459,13 @@ describe("command registration", () => {
 				assert.equal(notices.at(-1), method, input);
 			}
 			assert.deepEqual(calls[0].args, [{ prompt: "Check the parser" }, { cwd: test.cwd, model: { provider: defaultModel.provider, id: defaultModel.id }, thinkingLevel: "high" }, undefined]);
-			assert.deepEqual(calls.find((call) => call.method === "attach")!.args, ["selected", undefined, undefined]);
-			assert.deepEqual(calls.find((call) => call.method === "rewind")!.args, ["selected", "entry", "Use current files", undefined, undefined]);
-			assert.deepEqual(calls.find((call) => call.method === "send")!.args, ["selected", "help with errors"]);
+			assert.deepEqual(defined(calls.find((call) => call.method === "attach")).args, ["selected", undefined, undefined]);
+			assert.deepEqual(defined(calls.find((call) => call.method === "rewind")).args, ["selected", "entry", "Use current files", undefined, undefined]);
+			assert.deepEqual(defined(calls.find((call) => call.method === "send")).args, ["selected", "help with errors"]);
 			const count = calls.length;
 			for (const action of ["console", "ls"]) {
 				await command.handler(action, ctx);
-				assert.match(notices.at(-1)!, /Unknown action/);
+				assert.match(defined(notices.at(-1)), /Unknown action/);
 			}
 			assert.equal(calls.length, count);
 		} finally {
@@ -484,7 +487,7 @@ describe("command registration", () => {
 			const context = { cwd: test.cwd, model: defaultModel, isProjectTrusted: () => true, ui: { custom: async () => { throw new Error("custom UI must stay unopened"); }, notify: (text: string) => notices.push(text) } } as unknown as ExtensionCommandContext;
 			for (const mode of ["tui", "rpc", "print", "json"] as const) {
 				await handler("", { ...context, mode, hasUI: mode === "tui" || mode === "rpc" });
-				assert.match(notices.at(-1)!, /\/agent manages durable sessions/u);
+				assert.match(defined(notices.at(-1)), /\/agent manages durable sessions/u);
 			}
 			assert.equal(new Set(notices).size, 1);
 			assert.deepEqual(await test.manager.listSessions(), []);

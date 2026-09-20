@@ -13,6 +13,8 @@ import { AgentStore } from "./store.ts";
 import { DetachedRuns, detachedRunEntry, formatRun, isProcessAlive, MAX_SUMMARY_CHARS, type DetachedRunProgress, type SpawnLike } from "./detached.ts";
 import { createProgressWriter, executeDetachedRun, progressRecord } from "./detached-run.ts";
 import { withDetachedControl, type DetachedControlServerOptions } from "./detached-control.ts";
+import { defined } from "./test-assertions.mts";
+import type { AgentWorkerSession } from "./worker.ts";
 
 const unusedControls = {
 	sessionMetadata: () => ({ id: "session", createdAt: 0, storageVersion: 1, cwd: "/test", path: "/test/session.jsonl", modifiedAt: 0 }),
@@ -21,6 +23,14 @@ const unusedControls = {
 	steer: async () => { throw new Error("unexpected steer"); },
 };
 const noControlServer = async () => ({ sealAndDrain: async () => undefined, close: async () => undefined });
+
+function operationOutcome(status: "completed" | "failed" | "aborted" | "declined" | "missing"): Awaited<ReturnType<AgentWorkerSession["operationResult"]>> {
+	if (status === "missing") return undefined;
+	return { operationId: "operation", kind: "run", status,
+		...(status === "failed" ? { error: { code: "provider_error", message: "deterministic model failure" } } : {}),
+		...(status === "aborted" ? { error: { code: "aborted", message: "" } } : {}),
+		fromTipId: null, tipId: null, startedAt: 0, endedAt: 1 };
+}
 
 function deferred() {
 	let resolve!: () => void;
@@ -82,9 +92,10 @@ describe("detached run records", () => {
 			const view = runs.get("run-2");
 			assert.equal(view?.state, "abandoned");
 			assert.equal(runs.liveFor("session-2"), undefined, "an abandoned run does not hold its session");
-			assert.match(formatRun(view!), /abandoned {2}session=session-2/u);
-			assert.match(formatRun(view!), /completed work remains; a retained writer claim blocks reopening/u);
-			assert.doesNotMatch(formatRun(view!), /session is reopenable/u);
+			assert.ok(view);
+			assert.match(formatRun(view), /abandoned {2}session=session-2/u);
+			assert.match(formatRun(view), /completed work remains; a retained writer claim blocks reopening/u);
+			assert.doesNotMatch(formatRun(view), /session is reopenable/u);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -100,7 +111,7 @@ describe("detached run records", () => {
 			assert.equal(view?.state, "finished");
 			assert.equal(view?.summary, "the port is renamed");
 			assert.equal(runs.liveFor("session-3"), undefined);
-			assert.match(formatRun(view!), /finished {2}session=session-3.*the port is renamed/su);
+			assert.match(formatRun(defined(view)), /finished {2}session=session-3.*the port is renamed/su);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -152,7 +163,7 @@ describe("detached run records", () => {
 			assert.equal(observed[0].args[1], runs.requestFile("run-4"));
 			assert.equal(observed[0].detached, true);
 			assert.equal(observed[0].cwd, root);
-			assert.equal(JSON.parse(requestAtSpawn!).prompt, "rename the port", "the child's only input exists before it starts");
+			assert.equal(JSON.parse(defined(requestAtSpawn)).prompt, "rename the port", "the child's only input exists before it starts");
 			assert.equal(started.pid, 4321);
 			assert.equal(runs.get("run-4")?.pid, 4321);
 			assert.equal(runs.get("run-4")?.trusted, true);
@@ -176,11 +187,11 @@ describe("detached run records", () => {
 			// A progress-suffixed file with a request shape must still be ignored.
 			writeFileSync(runs.progressFile("orphan"), JSON.stringify(request(runs, root, { runId: "orphan", sessionId: "session", pid: process.pid })));
 			assert.deepEqual(runs.list().map((run) => run.runId), ["progress"]);
-			const live = formatRun(runs.get("progress")!);
+			const live = formatRun(defined(runs.get("progress")));
 			assert.match(live, /entries=12 {2}tool=read {2}updated=2026-01-01T00:00:00.000Z/u);
 			assert.match(live, /read: source text/u);
 			runs.writeResult({ runId: "progress", state: "finished", finishedAt: "2026-01-01T00:00:01.000Z", summary: "The source is correct." });
-			const finished = formatRun(runs.get("progress")!);
+			const finished = formatRun(defined(runs.get("progress")));
 			assert.match(finished, /The source is correct\./u);
 			assert.doesNotMatch(finished, /entries=|tool=|read: source text/u);
 		} finally {
@@ -457,6 +468,24 @@ describe("detached control lifecycle", () => {
 		} finally { test.close(); }
 	});
 
+	it("checks terminal status while retaining the first failure without reading a later error", async (t) => {
+		const test = controlFixture();
+		let statusReads = 0;
+		t.mock.method(test.worker, "setOnUpdate", (callback: Parameters<AgentWorkerSession["setOnUpdate"]>[0]) => {
+			callback?.({ kind: "error", lane: "main", message: "first failure" });
+		});
+		t.mock.method(test.worker, "operationResult", async () => ({
+			...defined(operationOutcome("failed")),
+			get status() { statusReads += 1; return "failed" as const; },
+			get error() { return assert.fail("An earlier failure prevents error fallback evaluation"); },
+		}));
+		try {
+			assert.equal(await executeDetachedRun(test.source, test.options), 1);
+			assert.equal(statusReads, 1);
+			assert.equal(test.runs.get(test.source.runId)?.error, "first failure");
+		} finally { test.close(); }
+	});
+
 	it("preserves failure and current-run summary when endpoint cleanup fails", async (t) => {
 		const test = controlFixture();
 		try {
@@ -552,10 +581,7 @@ describe("detached run process", () => {
 						observeLane: async () => ({ snapshot, subscribe: () => () => undefined, resnapshot: async () => snapshot }),
 						start: async () => "operation", waitForIdle: async () => undefined,
 						lastErrorMessage: () => undefined, abort: async () => false,
-						operationResult: async () => status === "missing" ? undefined : ({ operationId: "operation", kind: "run", status,
-							...(status === "failed" ? { error: { code: "provider_error", message: "deterministic model failure" } } : {}),
-							...(status === "aborted" ? { error: { code: "aborted", message: "" } } : {}),
-							fromTipId: null, tipId: null, startedAt: 0, endedAt: 1 }),
+						operationResult: async () => operationOutcome(status),
 					}), close: async () => undefined,
 				}) });
 				assert.equal(code, status === "completed" ? 0 : 1);
@@ -655,7 +681,7 @@ describe("detached run process", () => {
 			assert.match(runs.get("model-failure")?.error ?? "", /deterministic provider failure/u);
 			const reopenedStore = new AgentStore({ sessionsRoot });
 			try {
-				const metadata = (await reopenedStore.list(BACKGROUND_CONTEXT)).find((entry) => entry.id === created.sessionId)!;
+				const metadata = defined((await reopenedStore.list(BACKGROUND_CONTEXT)).find((entry) => entry.id === created.sessionId));
 				const session = await reopenedStore.open(metadata, BACKGROUND_CONTEXT);
 				try {
 					const entries = await session.findEntries({ order: "asc" }, BACKGROUND_CONTEXT);
@@ -707,18 +733,19 @@ export default function(pi) {
 		let completion: Promise<number> | undefined;
 		try {
 			const created = await manager.spawn({ cwd: root, model: "control-fixture/fixture", trust: true }, { cwd: root, model: null }, undefined, { extensionPaths: [fixture] });
-			const metadata = (await store.list(BACKGROUND_CONTEXT)).find((entry) => entry.id === created.sessionId)!;
+			const metadata = defined((await store.list(BACKGROUND_CONTEXT)).find((entry) => entry.id === created.sessionId));
 			await manager.closeAll();
 			await store.close(BACKGROUND_CONTEXT);
 			const runs = new DetachedRuns(sessionsRoot);
 			const started = await runs.start({ runId: "process-control", sessionId: created.sessionId, sessionsRoot, agentDir, cwd: root, prompt: "test", trusted: true,
 				spawn: (command, args, options) => {
-					child = spawn(command, args, { ...options, env: { PATH: process.env.PATH, HOME: root, PI_AGENT_DIR: agentDir, PI_AGENT_SESSIONS_DIR: sessionsRoot } });
+					const launched = spawn(command, args, { ...options, env: { PATH: process.env.PATH, HOME: root, PI_AGENT_DIR: agentDir, PI_AGENT_SESSIONS_DIR: sessionsRoot } });
+					child = launched;
 					completion = new Promise((resolve, reject) => {
-						child!.on("error", reject);
-						child!.on("exit", (code) => resolve(code ?? -1));
+						launched.on("error", reject);
+						launched.on("exit", (code) => resolve(code ?? -1));
 					});
-					return child;
+					return launched;
 				},
 			});
 			await waitForFile(ready, root);
@@ -732,7 +759,7 @@ export default function(pi) {
 			assert.equal(await withDetachedControl(started, (control) => control.abort()), true);
 			await waitForFile(aborting, root);
 			assert.equal(existsSync(runs.resultFile(started.runId)), false, "provider cleanup precedes the terminal result");
-			assert.equal(child!.exitCode, null);
+			assert.equal(defined(child).exitCode, null);
 			writeFileSync(release, "release");
 			assert.equal(await completion, 1);
 			assert.match(runs.get(started.runId)?.error ?? "", /run stopped by remote abort/u);
@@ -774,7 +801,8 @@ export default function(pi) {
 			assert.equal(view?.progress?.entryCount, 0);
 			assert.equal(view?.progress?.error, view?.error);
 			assert.equal(view?.progress?.currentTool, undefined);
-			assert.ok(Date.parse(view!.progress!.updatedAt) <= Date.parse(view!.finishedAt!));
+			const finishedView = defined(view);
+			assert.ok(Date.parse(defined(finishedView.progress).updatedAt) <= Date.parse(defined(finishedView.finishedAt)));
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

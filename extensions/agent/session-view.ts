@@ -111,6 +111,11 @@ function sameMessage(left: unknown, right: unknown): boolean {
 	}
 }
 
+function nameHistoryEntry(record: Record<string, unknown>, base: { id: string; parentId: string | null; timestamp: string }): SessionInfoEntry | undefined {
+	if (record.name !== undefined && typeof record.name !== "string") return undefined;
+	return { ...base, type: "session_info", ...(record.name === undefined ? {} : { name: record.name }) };
+}
+
 /**
  * Map the worker's reserved mutation-history custom records onto the ordinary
  * typed entries the same mutations produce in ordinary Pi, preserving the
@@ -125,8 +130,7 @@ function historyEntryOf(
 	if (record === undefined || typeof record !== "object") return undefined;
 	switch (entry.customType) {
 		case NAME_CHANGE_ENTRY_TYPE:
-			if (record.name !== undefined && typeof record.name !== "string") return undefined;
-			return { ...base, type: "session_info", ...(record.name === undefined ? {} : { name: record.name }) } satisfies SessionInfoEntry;
+			return nameHistoryEntry(record, base);
 		case LABEL_CHANGE_ENTRY_TYPE:
 			if (typeof record.targetId !== "string") return undefined;
 			return {

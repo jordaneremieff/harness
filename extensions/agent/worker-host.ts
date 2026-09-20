@@ -142,52 +142,56 @@ function templateArguments(source: string): string[] {
 	return values;
 }
 
+function templateValue(target: string, args: string[]): string | undefined {
+	if (target === "@" || target === "ARGUMENTS") return args.join(" ");
+	if (/^\d+$/u.test(target)) return args[Number(target) - 1] ?? "";
+	return undefined;
+}
+
+function templateToken(original: string, braced: string | undefined, plain: string | undefined, args: string[]): string {
+	const token = braced ?? plain ?? "";
+	const fallback = braced?.match(/^(\d+|ARGUMENTS|@):-(.*)$/su);
+	const value = templateValue(fallback?.[1] ?? token, args);
+	if (fallback) return value || fallback[2];
+	const slice = braced?.match(/^@:(\d+)(?::(\d+))?$/u);
+	if (slice) {
+		const start = Math.max(0, Number(slice[1]) - 1);
+		return args.slice(start, slice[2] === undefined ? undefined : start + Number(slice[2])).join(" ");
+	}
+	return braced === undefined && value !== undefined ? value : original;
+}
+
 function templateContent(content: string, args: string[]): string {
 	return content.replace(
 		/\$\{((?:\d+|ARGUMENTS|@):-[^}]*|@:\d+(?::\d+)?)\}|\$(ARGUMENTS|@|\d+)/gu,
-		(original, braced: string | undefined, plain: string | undefined) => {
-			const token = braced ?? plain ?? "";
-			const fallback = braced?.match(/^(\d+|ARGUMENTS|@):-(.*)$/su);
-			const target = fallback?.[1] ?? token;
-			const value =
-				target === "@" || target === "ARGUMENTS"
-					? args.join(" ")
-					: /^\d+$/u.test(target)
-						? (args[Number(target) - 1] ?? "")
-						: undefined;
-			if (fallback) return value || fallback[2];
-			const slice = braced?.match(/^@:(\d+)(?::(\d+))?$/u);
-			if (slice) {
-				const start = Math.max(0, Number(slice[1]) - 1);
-				return args.slice(start, slice[2] === undefined ? undefined : start + Number(slice[2])).join(" ");
-			}
-			return braced === undefined && value !== undefined ? value : original;
-		},
+		(original, braced: string | undefined, plain: string | undefined) => templateToken(original, braced, plain, args),
 	);
 }
 
 /** Expand only known resources. Skill read errors remain visible and preserve the original input. */
-export function expandWorkerInput(text: string, resources: WorkerInputResources, runner: ExtensionRunner): string {
-	let expanded = text;
-	if (expanded.startsWith("/skill:")) {
-		const separator = expanded.indexOf(" ");
-		const name = expanded.slice(7, separator < 0 ? undefined : separator);
-		const skill = resources.skills.find((candidate) => candidate.name === name);
-		if (skill) {
-			try {
-				const body = stripFrontmatter(readFileSync(skill.filePath, "utf8")).trim();
-				const instructions = separator < 0 ? "" : expanded.slice(separator + 1).trim();
-				expanded = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
-				if (instructions) expanded += `\n\n${instructions}`;
-			} catch (error) {
-				runner.emitError({
-					extensionPath: skill.filePath,
-					event: "skill_expansion",
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		}
+function expandWorkerSkill(text: string, skills: readonly Skill[], runner: ExtensionRunner): string {
+	if (!text.startsWith("/skill:")) return text;
+	const separator = text.indexOf(" ");
+	const name = text.slice(7, separator < 0 ? undefined : separator);
+	const skill = skills.find((candidate) => candidate.name === name);
+	if (!skill) return text;
+	try {
+		const body = stripFrontmatter(readFileSync(skill.filePath, "utf8")).trim();
+		const instructions = separator < 0 ? "" : text.slice(separator + 1).trim();
+		const expanded = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
+		return instructions ? `${expanded}\n\n${instructions}` : expanded;
+	} catch (error) {
+		runner.emitError({
+			extensionPath: skill.filePath,
+			event: "skill_expansion",
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return text;
 	}
+}
+
+export function expandWorkerInput(text: string, resources: WorkerInputResources, runner: ExtensionRunner): string {
+	const expanded = expandWorkerSkill(text, resources.skills, runner);
 	const invocation = expanded.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/u);
 	const template = invocation && resources.promptTemplates.find((candidate) => candidate.name === invocation[1]);
 	return template ? templateContent(template.content, templateArguments(invocation?.[2] ?? "")) : expanded;
@@ -210,6 +214,12 @@ function extensionCommand(runner: ExtensionRunner, text: string): boolean {
 	return runner.getCommand(text.slice(1, separator < 0 ? undefined : separator)) !== undefined;
 }
 
+function applyInputTransform(input: WorkerInputContent, result: Awaited<ReturnType<ExtensionRunner["emitInput"]>>): PreparedWorkerInput {
+	if (result.action === "handled") return { kind: "handled" };
+	if (result.action === "transform") return { kind: "prompt", text: result.text, images: result.images ?? input.images };
+	return { kind: "prompt", text: input.text, images: input.images };
+}
+
 /** Ordinary prompt preflight. The caller owns admission, command context, and execution. */
 export async function prepareWorkerInput(
 	runner: ExtensionRunner,
@@ -225,17 +235,10 @@ export async function prepareWorkerInput(
 	const isStreaming = () => (typeof input.streaming === "function" ? input.streaming() : input.streaming);
 	let { text, images } = input;
 	if (runner.hasHandlers("input")) {
-		const result = await runner.emitInput(
-			text,
-			images,
-			input.source ?? "interactive",
-			isStreaming() ? input.streamingBehavior : undefined,
-		);
-		if (result.action === "handled") return { kind: "handled" };
-		if (result.action === "transform") {
-			text = result.text;
-			images = result.images ?? images;
-		}
+		const result = await runner.emitInput(text, images, input.source ?? "interactive", isStreaming() ? input.streamingBehavior : undefined);
+		const transformed = applyInputTransform({ text, images }, result);
+		if (transformed.kind === "handled") return transformed;
+		({ text, images } = transformed);
 	}
 	if (expand) text = expandWorkerInput(text, resources, runner);
 	const streaming = isStreaming();

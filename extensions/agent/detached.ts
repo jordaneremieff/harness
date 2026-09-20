@@ -272,19 +272,21 @@ export class DetachedRuns {
 					cwd: options.cwd,
 				},
 			);
-			await new Promise<void>((resolve, reject) => {
+			const launched = child;
+			const pid = await new Promise<number>((resolve, reject) => {
 				// Keep the error listener after spawn so late process errors never
 				// become uncaught EventEmitter errors. Only launch failure rejects.
-				child!.on("error", reject);
-				child!.stdin?.on("error", reject);
-				child!.once("spawn", () => {
+				launched.on("error", reject);
+				launched.stdin?.on("error", reject);
+				launched.once("spawn", () => {
 					spawned = true;
-					if (!Number.isSafeInteger(child!.pid) || child!.pid! <= 0) reject(new Error("detached process has no valid pid"));
-					else resolve();
+					const pid = launched.pid;
+					if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 0) reject(new Error("detached process has no valid pid"));
+					else resolve(pid);
 				});
 			});
 			if (!child.stdin) throw new Error("detached process has no launch input");
-			request.pid = child.pid!;
+			request.pid = pid;
 			request.launchState = "started";
 			this.writeRequest(request);
 			child.stdin.end();

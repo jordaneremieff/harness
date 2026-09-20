@@ -119,6 +119,16 @@ async function createDetachedHost(request: DetachedRunRequest): Promise<Detached
 	}
 }
 
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function operationFailure(operationId: string | undefined, result: Awaited<ReturnType<DetachedWorker["operationResult"]>>, previous: string | undefined): string | undefined {
+	if (operationId && !result) return previous ?? "admitted operation has no terminal result";
+	if (result && result.status !== "completed") return previous ?? (result.error?.message || `operation ${result.status}`);
+	return previous;
+}
+
 /** Cancellation requests lane abort; terminal publication follows host cleanup. */
 export async function executeDetachedRun(
 	request: DetachedRunRequest,
@@ -181,6 +191,24 @@ export async function executeDetachedRun(
 	if (options.signal?.aborted) stopFromSignal();
 	let priorEntries: Set<string> | undefined;
 	let summary: string | undefined;
+	async function cleanupRun(): Promise<void> {
+		try { await seal(); } catch (error) {
+			const detail = errorText(error);
+			if (failure !== detail) addFailure(`control drain failed: ${detail}`);
+		}
+		settled = true;
+		unsubscribe?.();
+		unsubscribe = undefined;
+		worker?.setOnUpdate(undefined);
+		await abortTask;
+		if (worker && priorEntries) {
+			const previous = priorEntries;
+			summary = finalAssistantText(worker.sessionManager().getEntries().filter((entry) => !previous.has(entry.id)));
+		}
+		try { await control?.close(); } catch (error) { addFailure(`control cleanup failed: ${errorText(error)}`); }
+		try { await host?.close(); } catch (error) { addFailure(`cleanup failed: ${errorText(error)}`); }
+		options.signal?.removeEventListener("abort", stopFromSignal);
+	}
 	try {
 		stopping.signal.throwIfAborted();
 		host = await (options.createHost ?? createDetachedHost)(request);
@@ -236,8 +264,7 @@ export async function executeDetachedRun(
 		await worker.waitForIdle();
 		const finalSnapshot = await observer.resnapshot();
 		const result = operationId ? await worker.operationResult(operationId) : undefined;
-		if (operationId && !result) failure ??= "admitted operation has no terminal result";
-		else if (result && result.status !== "completed") failure ??= result.error?.message || `operation ${result.status}`;
+		failure = operationFailure(operationId, result, failure);
 		failure ??= worker.lastErrorMessage();
 		if (finalSnapshot.queues.length) {
 			addFailure(`${finalSnapshot.queues.length} queued input entries remain unconsumed; durable input is retained`);
@@ -245,26 +272,7 @@ export async function executeDetachedRun(
 	} catch (error) {
 		failure ??= error instanceof Error ? error.message : String(error);
 	} finally {
-		try { await seal(); } catch (error) {
-			const detail = error instanceof Error ? error.message : String(error);
-			if (failure !== detail) addFailure(`control drain failed: ${detail}`);
-		}
-		settled = true;
-		unsubscribe?.();
-		unsubscribe = undefined;
-		worker?.setOnUpdate(undefined);
-		await abortTask;
-		if (worker && priorEntries) {
-			const previous = priorEntries;
-			summary = finalAssistantText(worker.sessionManager().getEntries().filter((entry) => !previous.has(entry.id)));
-		}
-		try { await control?.close(); } catch (error) {
-			addFailure(`control cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
-		}
-		try { await host?.close(); } catch (error) {
-			addFailure(`cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
-		}
-		options.signal?.removeEventListener("abort", stopFromSignal);
+		await cleanupRun();
 	}
 	return failure !== undefined
 		? finish("failed", { error: failure, ...(summary ? { summary } : {}) })
@@ -281,8 +289,8 @@ async function main(): Promise<number> {
 	});
 	const requestPath = process.argv[2];
 	const request = requestPath ? readDetachedRequest(requestPath) : undefined;
-	if (request?.launchState !== "started" || request.pid !== process.pid
-		|| resolve(requestPath!) !== resolve(new DetachedRuns(request.sessionsRoot).requestFile(request.runId))) {
+	if (!requestPath || request?.launchState !== "started" || request.pid !== process.pid
+		|| resolve(requestPath) !== resolve(new DetachedRuns(request.sessionsRoot).requestFile(request.runId))) {
 		process.stderr.write("agent detached run requires a valid request at its run path\n");
 		return 2;
 	}

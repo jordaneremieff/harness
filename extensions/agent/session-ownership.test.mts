@@ -49,7 +49,8 @@ describe("exclusive session ownership", () => {
 			const session = await test.store.create(test.cwd, BACKGROUND_CONTEXT);
 			const denied = child(test.root, session.metadata);
 			assert.equal(denied.opened, false);
-			assert.match(denied.error!, /exclusive writer claim/u);
+			assert.ok(denied.error, "the refused open supplies an error");
+			assert.match(denied.error, /exclusive writer claim/u);
 			assert.notEqual(denied.otherId, session.metadata.id);
 			await session.close(BACKGROUND_CONTEXT);
 			assert.equal(child(test.root, session.metadata).opened, true);

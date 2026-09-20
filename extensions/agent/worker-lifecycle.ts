@@ -6,6 +6,8 @@ import {
 	createBranchSummaryMessage,
 	type Entry,
 	type JsonValue,
+	type HookInvocation,
+	type HookMap,
 	type Session,
 } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -14,6 +16,8 @@ import {
 	type ExtensionRunner,
 	type SessionBeforeCompactEvent,
 	type SessionBeforeTreeEvent,
+	type SessionEntry,
+	type SessionTreeEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { SessionView } from "./session-view.ts";
 import { corePublicImportUrl } from "./store.ts";
@@ -73,6 +77,78 @@ function jsonDetails(value: unknown): JsonValue | undefined {
 	return decoded as JsonValue;
 }
 
+type UnsupportedHook = (event: string, error: string) => { decline: true };
+
+function compactionReplacement(
+	entries: Entry[],
+	replacement: { summary: string; firstKeptEntryId: string; tokensBefore: number; details?: unknown; usage?: Usage },
+	unsupported: UnsupportedHook,
+	accept: (firstKeptEntryId: string) => void,
+): HookMap["before_compaction"]["result"] {
+	const start = replacement.firstKeptEntryId === "" ? entries.length : entries.findIndex((entry) => entry.id === replacement.firstKeptEntryId);
+	if (start < 0) return unsupported("session_before_compact", "The custom firstKeptEntryId is not on the current branch");
+	let details: JsonValue | undefined;
+	try { details = jsonDetails(replacement.details); }
+	catch (error) { return unsupported("session_before_compact", error instanceof Error ? error.message : String(error)); }
+	accept(replacement.firstKeptEntryId);
+	return {
+		compaction: {
+			summary: replacement.summary,
+			tokensBefore: replacement.tokensBefore,
+			retainedTail: entries.slice(start).flatMap((entry) => {
+				const message = entryMessage(entry);
+				return message ? [message] : [];
+			}),
+			...(replacement.usage === undefined ? {} : { usage: replacement.usage }),
+			...(details === undefined ? {} : { details }),
+		},
+	};
+}
+
+function summaryFileLists(details: unknown): { readFiles: string[]; modifiedFiles: string[] } | undefined {
+	if (!details || typeof details !== "object") return undefined;
+	if (!("readFiles" in details) || !("modifiedFiles" in details)) return undefined;
+	if (Array.isArray(details.readFiles) && details.readFiles.every((file): file is string => typeof file === "string") &&
+		Array.isArray(details.modifiedFiles) && details.modifiedFiles.every((file): file is string => typeof file === "string")) {
+		return { readFiles: details.readFiles, modifiedFiles: details.modifiedFiles };
+	}
+	return undefined;
+}
+
+function navigationReplacement(event: HookInvocation<"before_navigation">, summary: NonNullable<WorkerNavigationDecision["summary"]>, pendingDetails: Map<string, JsonValue>, unsupported: UnsupportedHook, accept: () => void): HookMap["before_navigation"]["result"] {
+	const modifiedFiles = [...new Set([...event.preparation.fileOps.written, ...event.preparation.fileOps.edited])].sort();
+	let lists = { readFiles: [...event.preparation.fileOps.read].filter((file) => !modifiedFiles.includes(file)).sort(), modifiedFiles };
+	if (summary.details !== undefined) {
+		let details: JsonValue | undefined;
+		try { details = jsonDetails(summary.details); }
+		catch (error) { return unsupported("session_before_tree", error instanceof Error ? error.message : String(error)); }
+		if (details !== undefined) pendingDetails.set(event.runId, details);
+		lists = summaryFileLists(summary.details) ?? lists;
+	}
+	accept();
+	return { summary: { summary: summary.summary, ...lists, ...(summary.usage === undefined ? {} : { usage: summary.usage }) } };
+}
+
+function navigationSummary(entry: SessionEntry | undefined, details: JsonValue | undefined): Pick<SessionTreeEvent, "summaryEntry"> {
+	if (entry?.type !== "branch_summary") return {};
+	return { summaryEntry: details === undefined ? entry : { ...entry, details } };
+}
+
+function navigationOptionsChanged(result: object | undefined): boolean {
+	return !!result && (("customInstructions" in result && result.customInstructions !== undefined) ||
+		("replaceInstructions" in result && result.replaceInstructions !== undefined) ||
+		("label" in result && result.label !== undefined));
+}
+
+function declinedNavigation(result: WorkerNavigationDecision | undefined, preparation: SessionBeforeTreeEvent["preparation"], original: SessionBeforeTreeEvent["preparation"], unsupported: UnsupportedHook): { decline: true } | undefined {
+	if (result?.cancel) return { decline: true };
+	if (!isDeepStrictEqual(preparation, original))
+		return unsupported("session_before_tree", "The core navigation hook does not persist preparation mutations");
+	if (navigationOptionsChanged(result))
+		return unsupported("session_before_tree", "The core navigation hook cannot patch customInstructions, replaceInstructions, or label; apply these before lane acceptance");
+	return undefined;
+}
+
 /** Install structural hooks and message finalization on one lane. Dispose before the runner is replaced. */
 export function installWorkerLifecycle(options: WorkerLifecycleOptions): () => void {
 	const { harness, session, runner, view, context } = options;
@@ -122,39 +198,14 @@ export function installWorkerLifecycle(options: WorkerLifecycleOptions): () => v
 				signal,
 			});
 			if (result?.cancel) return { decline: true };
-			if (!isDeepStrictEqual(preparation, original) && !(result && "compaction" in result && result.compaction))
+			if (!isDeepStrictEqual(preparation, original) && !result?.compaction)
 				return unsupported(
 					"session_before_compact",
 					"The core compaction hook does not persist preparation mutations; return a complete compaction result instead",
 				);
-			if (!result || !("compaction" in result) || !result.compaction) return undefined;
+			if (!result?.compaction) return undefined;
 			compactedByExtension.set(event.runId, true);
-			const replacement = result.compaction;
-			const start =
-				replacement.firstKeptEntryId === ""
-					? entries.length
-					: entries.findIndex((entry) => entry.id === replacement.firstKeptEntryId);
-			if (start < 0)
-				return unsupported("session_before_compact", "The custom firstKeptEntryId is not on the current branch");
-			let details: JsonValue | undefined;
-			try {
-				details = jsonDetails(replacement.details);
-			} catch (error) {
-				return unsupported("session_before_compact", error instanceof Error ? error.message : String(error));
-			}
-			pendingPointers.set(event.runId, replacement.firstKeptEntryId);
-			return {
-				compaction: {
-					summary: replacement.summary,
-					tokensBefore: replacement.tokensBefore,
-					retainedTail: entries.slice(start).flatMap((entry) => {
-						const message = entryMessage(entry);
-						return message ? [message] : [];
-					}),
-					...(replacement.usage === undefined ? {} : { usage: replacement.usage }),
-					...(details === undefined ? {} : { details }),
-				},
-			};
+			return compactionReplacement(entries, result.compaction, unsupported, (firstKeptEntryId) => pendingPointers.set(event.runId, firstKeptEntryId));
 		}),
 	);
 
@@ -165,29 +216,7 @@ export function installWorkerLifecycle(options: WorkerLifecycleOptions): () => v
 			compactedByExtension.delete(event.runId);
 			const firstKeptEntryId = pendingPointers.get(event.runId);
 			pendingPointers.delete(event.runId);
-			if (event.status === "completed") {
-				if (firstKeptEntryId !== undefined) {
-					await session.mutate(async (mutator, mutationContext) => {
-						await mutator.commit(
-							[setValue(valueAddress<string>(COMPACTION_POINTER_FAMILY, event.entryId), firstKeptEntryId)],
-							mutationContext,
-						);
-					}, context);
-					options.onCompactionPointer?.(event.entryId, firstKeptEntryId);
-				}
-				const entry = view.getEntry(event.entryId);
-				if (entry?.type !== "compaction") {
-					unsupported("session_compact", "The completed compaction entry is absent from the session view");
-					return;
-				}
-				await runner.emit({
-					type: "session_compact",
-					compactionEntry: firstKeptEntryId === undefined ? entry : { ...entry, firstKeptEntryId },
-					fromExtension: entry.fromHook ?? fromExtension,
-					reason: event.reason,
-					willRetry: event.reason === "overflow",
-				});
-			} else {
+			if (event.status !== "completed") {
 				await runner.emit({
 					type: "session_compact_failed",
 					reason: event.reason,
@@ -196,7 +225,29 @@ export function installWorkerLifecycle(options: WorkerLifecycleOptions): () => v
 					aborted: event.status !== "failed",
 					...(event.status === "failed" ? { errorMessage: event.error.message } : {}),
 				});
+				return;
 			}
+			if (firstKeptEntryId !== undefined) {
+				await session.mutate(async (mutator, mutationContext) => {
+					await mutator.commit(
+						[setValue(valueAddress<string>(COMPACTION_POINTER_FAMILY, event.entryId), firstKeptEntryId)],
+						mutationContext,
+					);
+				}, context);
+				options.onCompactionPointer?.(event.entryId, firstKeptEntryId);
+			}
+			const entry = view.getEntry(event.entryId);
+			if (entry?.type !== "compaction") {
+				unsupported("session_compact", "The completed compaction entry is absent from the session view");
+				return;
+			}
+			await runner.emit({
+				type: "session_compact",
+				compactionEntry: firstKeptEntryId === undefined ? entry : { ...entry, firstKeptEntryId },
+				fromExtension: entry.fromHook ?? fromExtension,
+				reason: event.reason,
+				willRetry: event.reason === "overflow",
+			});
 		}),
 	);
 
@@ -221,53 +272,10 @@ export function installWorkerLifecycle(options: WorkerLifecycleOptions): () => v
 			const result = options.takeNavigationDecision
 				? options.takeNavigationDecision()
 				: await runner.emit({ type: "session_before_tree", preparation, signal });
-			if (result?.cancel) return { decline: true };
-			if (!isDeepStrictEqual(preparation, original))
-				return unsupported("session_before_tree", "The core navigation hook does not persist preparation mutations");
-			if (
-				result &&
-				(("customInstructions" in result && result.customInstructions !== undefined) ||
-					("replaceInstructions" in result && result.replaceInstructions !== undefined) ||
-					("label" in result && result.label !== undefined))
-			)
-				return unsupported(
-					"session_before_tree",
-					"The core navigation hook cannot patch customInstructions, replaceInstructions, or label; apply these before lane acceptance",
-				);
-			if (!result || !("summary" in result) || !result.summary) return undefined;
-			const modifiedFiles = [
-				...new Set([...event.preparation.fileOps.written, ...event.preparation.fileOps.edited]),
-			].sort();
-			let lists = {
-				readFiles: [...event.preparation.fileOps.read].filter((file) => !modifiedFiles.includes(file)).sort(),
-				modifiedFiles,
-			};
-			if (result.summary.details !== undefined) {
-				let details: JsonValue | undefined;
-				try {
-					details = jsonDetails(result.summary.details);
-				} catch (error) {
-					return unsupported("session_before_tree", error instanceof Error ? error.message : String(error));
-				}
-				if (details !== undefined) pendingDetails.set(event.runId, details);
-				const record = result.summary.details as Record<string, unknown> | null;
-				if (
-					record &&
-					Array.isArray(record.readFiles) &&
-					record.readFiles.every((file) => typeof file === "string") &&
-					Array.isArray(record.modifiedFiles) &&
-					record.modifiedFiles.every((file) => typeof file === "string")
-				)
-					lists = { readFiles: record.readFiles, modifiedFiles: record.modifiedFiles };
-			}
-			navigatedByExtension.set(event.runId, true);
-			return {
-				summary: {
-					summary: result.summary.summary,
-					...lists,
-					...(result.summary.usage === undefined ? {} : { usage: result.summary.usage }),
-				},
-			};
+			const declined = declinedNavigation(result, preparation, original, unsupported);
+			if (declined) return declined;
+			if (!result?.summary) return undefined;
+			return navigationReplacement(event, result.summary, pendingDetails, unsupported, () => navigatedByExtension.set(event.runId, true));
 		}),
 	);
 
@@ -279,14 +287,15 @@ export function installWorkerLifecycle(options: WorkerLifecycleOptions): () => v
 			const details = pendingDetails.get(event.runId);
 			pendingDetails.delete(event.runId);
 			if (event.status !== "completed") return;
-			if (details !== undefined && event.tipId) {
+			const tipId = event.tipId;
+			if (details !== undefined && tipId) {
 				await session.mutate(async (mutator, mutationContext) => {
 					await mutator.commit(
-						[setValue(valueAddress<JsonValue>(BRANCH_DETAILS_FAMILY, event.tipId!), details)],
+						[setValue(valueAddress<JsonValue>(BRANCH_DETAILS_FAMILY, tipId), details)],
 						mutationContext,
 					);
 				}, context);
-				options.onBranchSummaryDetails?.(event.tipId, details);
+				options.onBranchSummaryDetails?.(tipId, details);
 			}
 			view.setLeafFromHarness(event.tipId);
 			const entry = event.tipId ? view.getEntry(event.tipId) : undefined;
@@ -295,9 +304,7 @@ export function installWorkerLifecycle(options: WorkerLifecycleOptions): () => v
 				type: "session_tree",
 				newLeafId: view.getLeafId(),
 				oldLeafId: event.fromTipId,
-				...(entry?.type === "branch_summary"
-					? { summaryEntry: details === undefined ? entry : { ...entry, details } }
-					: {}),
+				...navigationSummary(entry, details),
 				fromExtension,
 			});
 		}),

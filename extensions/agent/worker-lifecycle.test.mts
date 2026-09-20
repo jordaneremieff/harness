@@ -71,6 +71,7 @@ async function fixture(
 	handlers: Record<string, (event: unknown) => unknown> = {},
 	failModel = false,
 	takeNavigationDecision?: () => WorkerNavigationDecision | undefined,
+	beforeInstall?: (harness: AgentHarness) => void,
 ) {
 	const context = BACKGROUND_CONTEXT;
 	const repository = new MemorySessionRepo();
@@ -160,6 +161,7 @@ async function fixture(
 	runner.onError((error) => errors.push(error));
 	const pointers: Array<{ entryId: string; firstKeptEntryId: string }> = [];
 	const detailsUpdates: Array<{ entryId: string; details: unknown }> = [];
+	beforeInstall?.(harness);
 	const remove = installWorkerLifecycle({
 		harness,
 		session,
@@ -345,6 +347,37 @@ describe("worker structural lifecycle", () => {
 		} finally {
 			await f.close();
 		}
+	});
+
+	it("reads default navigation file lists before custom detail validation", async () => {
+		let defaultsRead = false;
+		let detailReads = 0;
+		class ObservedFiles extends Set<string> {
+			override [Symbol.iterator]() {
+				defaultsRead = true;
+				return super[Symbol.iterator]();
+			}
+		}
+		const f = await fixture({}, false, () => ({ summary: {
+			summary: "custom",
+			get details() {
+				assert.equal(defaultsRead, true);
+				detailReads += 1;
+				return { readFiles: ["override.txt"], modifiedFiles: [] };
+			},
+		} }), (harness) => {
+			harness.hooks.on("before_navigation", (event) => {
+				event.preparation.fileOps.read = new ObservedFiles(["default.txt"]);
+				return undefined;
+			});
+		});
+		try {
+			const ids = await f.seed();
+			await f.lane.navigateTree(ids.first, { summarize: true }, f.context);
+			assert.ok(detailReads > 0);
+			assert.deepEqual(f.errors, []);
+			assert.deepEqual(f.view.getLeafEntry()?.type, "branch_summary");
+		} finally { await f.close(); }
 	});
 
 	it("reports native summary failures with the original error", async () => {

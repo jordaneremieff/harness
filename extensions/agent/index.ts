@@ -148,7 +148,7 @@ function trustPromptFrom(ctx: ExtensionContext | ExtensionCommandContext): Trust
 	const ui = (ctx as { ui?: { select?: (title: string, options: string[]) => Promise<string | undefined>; hasUI?: boolean } }).ui;
 	const hasUI = (ctx as { hasUI?: boolean }).hasUI ?? ui?.hasUI ?? false;
 	if (!hasUI || typeof ui?.select !== "function") return undefined;
-	return { select: (title: string, options: string[]) => ui.select!(title, options) };
+	return { select: ui.select.bind(ui) };
 }
 
 interface AgentOwners {
@@ -574,13 +574,7 @@ export class AgentManager {
 		if (bound && !active) lines.push(`  previous session ${bound.sessionId} is gone from the store; bound a new one`);
 		let sessionId: string;
 		if (!active) {
-			const created = await this.spawn(
-				{ cwd: target, name: options.topic ?? basename(target), ...(options.trust === undefined ? {} : { trust: options.trust }) },
-				{ cwd: target, model: from?.model ?? null, ...(from?.thinkingLevel ? { thinkingLevel: from.thinkingLevel } : {}) },
-				promptUi,
-			);
-			sessionId = created.sessionId;
-			this.places.bind(target, sessionId, options.topic);
+			sessionId = await this.createBoundPlace(target, options, promptUi, from);
 			lines.unshift(`place ${target}: created session ${sessionId}`);
 		} else {
 			sessionId = active.sessionId;
@@ -591,6 +585,16 @@ export class AgentManager {
 		}
 		if (options.prompt) lines.push(`  ${await this.send(sessionId, options.prompt)}`);
 		return lines.join("\n");
+	}
+
+	private async createBoundPlace(target: string, options: { topic?: string; trust?: boolean }, promptUi?: TrustPromptUi, from?: { model: { provider: string; id: string } | null; thinkingLevel?: string }): Promise<string> {
+		const created = await this.spawn(
+			{ cwd: target, name: options.topic ?? basename(target), ...(options.trust === undefined ? {} : { trust: options.trust }) },
+			{ cwd: target, model: from?.model ?? null, ...(from?.thinkingLevel ? { thinkingLevel: from.thinkingLevel } : {}) },
+			promptUi,
+		);
+		this.places.bind(target, created.sessionId, options.topic);
+		return created.sessionId;
 	}
 
 	listPlaces(): string {

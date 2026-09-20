@@ -115,10 +115,14 @@ test("worker preserves structured prompt mutations and executable tool selection
 		await worker.start("structured");
 		await worker.waitForIdle();
 		assert.equal(worker.lastErrorMessage(), undefined);
-		assert.deepEqual(getCurrentTools(seen.at(-1)!.messages).map(tool => tool.name), ["read"]);
+		const structuredRequest = seen.at(-1);
+		assert.ok(structuredRequest, "structured prompt reached the provider");
+		assert.deepEqual(getCurrentTools(structuredRequest.messages).map(tool => tool.name), ["read"]);
 		await worker.start("empty");
 		await worker.waitForIdle();
-		assert.deepEqual(getCurrentTools(seen.at(-1)!.messages), []);
+		const emptyRequest = seen.at(-1);
+		assert.ok(emptyRequest, "empty tool selection reached the provider");
+		assert.deepEqual(getCurrentTools(emptyRequest.messages), []);
 		await worker.close();
 		worker = await AgentWorkerSession.open(metadata, options);
 		assert.deepEqual((await worker.status()).activeTools, [], "reopen does not reactivate disabled tools");

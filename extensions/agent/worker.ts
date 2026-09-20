@@ -50,7 +50,6 @@ import {
 	createLsToolDefinition,
 	createPowerShellToolDefinition,
 	type RegisteredTool,
-	type ToolDefinition,
 	createSyntheticSourceInfo,
 	DefaultResourceLoader,
 	estimateTokens,
@@ -64,6 +63,8 @@ import {
 	ModelRegistry,
 	type SessionMessageEntry,
 	type SessionEntry,
+	type SessionBeforeTreeEvent,
+	type SessionBeforeTreeResult,
 	sessionEntryToContextMessages,
 	type ModelRuntime,
 	type ProjectTrustStore,
@@ -279,6 +280,57 @@ function textFragment(text: string, offset: number, maxBytes: number) {
 
 type HostToolContext = ExecutionToolContext;
 
+type SetupCustomEntry = Exclude<SessionEntry, { type: "message" | "branch_summary" | "compaction" | "usage" }>;
+
+function setupCustomPayload(entry: SetupCustomEntry): { customType: string; data: unknown } {
+	switch (entry.type) {
+		case "custom": return { customType: entry.customType, data: entry.data };
+		case "custom_message": return { customType: CUSTOM_MESSAGE_WRAPPER_TYPE, data: { customType: entry.customType, content: entry.content, display: entry.display, ...(entry.details === undefined ? {} : { details: entry.details }) } };
+		case "label": return { customType: LABEL_CHANGE_ENTRY_TYPE, data: { targetId: entry.targetId, ...(entry.label === undefined ? {} : { label: entry.label }) } };
+		case "session_info": return { customType: NAME_CHANGE_ENTRY_TYPE, data: { ...(entry.name === undefined ? {} : { name: entry.name }) } };
+		case "model_change": return { customType: MODEL_CHANGE_ENTRY_TYPE, data: { provider: entry.provider, modelId: entry.modelId } };
+		case "thinking_level_change": return { customType: THINKING_CHANGE_ENTRY_TYPE, data: { thinkingLevel: entry.thinkingLevel } };
+	}
+}
+
+function setupRetainedTail(entry: Extract<SessionEntry, { type: "compaction" }>, manager: SessionManager): AgentMessage[] {
+	const ancestry = entry.parentId ? manager.getBranch(entry.parentId) : [];
+	const index = ancestry.findIndex((candidate) => candidate.id === entry.firstKeptEntryId);
+	return (index < 0 ? [] : ancestry.slice(index)).flatMap((candidate) => {
+		if (candidate.type === "custom_message") return [contentToAgentMessage(candidate.content)];
+		return sessionEntryToContextMessages(candidate);
+	});
+}
+
+function setupEntryWrites(entry: SessionEntry, manager: SessionManager): Write[] {
+	const base = { id: entry.id, parentId: entry.parentId };
+	switch (entry.type) {
+		case "usage": return [];
+		case "message": return [insertEntry({ ...base, type: "message", message: entry.message })];
+		case "branch_summary": return [insertEntry({ ...base, type: "branch_summary", fromId: entry.fromId, summary: entry.summary, fromHook: entry.fromHook ?? false, ...(entry.details === undefined ? {} : { details: entry.details as never }), ...(entry.usage ? { usage: entry.usage } : {}) })];
+		case "compaction": {
+			const retainedTail = setupRetainedTail(entry, manager);
+			return [
+				insertEntry({ ...base, type: "compaction", summary: entry.summary, retainedTail, tokensBefore: entry.tokensBefore, fromHook: entry.fromHook ?? false, ...(entry.details === undefined ? {} : { details: entry.details as never }), ...(entry.usage ? { usage: entry.usage } : {}) }),
+				// Keep the ordinary pointer independently of the message-only retained tail.
+				setValue(valueAddress<string>("agent.setup.first-kept", entry.id), entry.firstKeptEntryId),
+			];
+		}
+		default: {
+			const { customType, data } = setupCustomPayload(entry);
+			return [insertEntry({ ...base, type: "custom", customType, data: data as never })];
+		}
+	}
+}
+
+function newSessionPlan(options: Parameters<WorkerLifecycle["newSession"]>[2] | undefined): Parameters<WorkerLifecycle["newSession"]>[2] {
+	return {
+		...(options?.setup ? { setup: options.setup } : {}),
+		...(options?.parentSession ? { parentSession: options.parentSession } : {}),
+		...(options?.withSession ? { withSession: options.withSession } : {}),
+	};
+}
+
 export class AgentWorkerSession {
 	private readonly options: WorkerCreateOptions;
 	private session: HarnessSession<AgentSessionMetadata> | undefined;
@@ -447,7 +499,7 @@ export class AgentWorkerSession {
 		const event = { type: "project_trust", cwd: this.cwd };
 		for (const extension of extensionsResult.extensions) {
 			const handlers = extension.handlers.get("project_trust");
-			if (!handlers || handlers.length === 0) continue;
+			if (!handlers) continue;
 			for (const handler of handlers) {
 				try {
 					const result = (await handler(event, {
@@ -471,13 +523,11 @@ export class AgentWorkerSession {
 		return undefined;
 	}
 
-	private async attachToSession(session: HarnessSession<AgentSessionMetadata>, metadata: AgentSessionMetadata, reason: "startup" | "reload" = "startup"): Promise<void> {
-		this.session = session;
-		this.closeTask = undefined;
-		this.options.onSessionCreated?.(session.metadata.id);
+	private async restoreSessionMetadata(session: HarnessSession<AgentSessionMetadata>): Promise<void> {
 		const parentAddress = valueAddress<string>("agent.header", "parentSession");
-		if (this.options.parentSessionPath) {
-			await session.mutate(async (mutator, context) => { await mutator.commit([setValue(parentAddress, this.options.parentSessionPath!)], context); }, this.context);
+		const parentSessionPath = this.options.parentSessionPath;
+		if (parentSessionPath) {
+			await session.mutate(async (mutator, context) => { await mutator.commit([setValue(parentAddress, parentSessionPath)], context); }, this.context);
 		} else {
 			this.options.parentSessionPath = (await session.getValue(parentAddress, this.context))?.value;
 		}
@@ -490,6 +540,9 @@ export class AgentWorkerSession {
 			if (typeof data.parentSessionPath === "string") this.options.parentSessionPath ??= data.parentSessionPath;
 		}
 
+	}
+
+	private async loadResources(): Promise<void> {
 		// Extension/resources discovery through the ordinary public resource loader
 		// (agentDir + cwd project + additional paths), with the loader-invoked
 		// project-trust callback running the ordinary resolution order.
@@ -540,6 +593,9 @@ export class AgentWorkerSession {
 			...(promptResources.length > 0 ? { promptTemplates: promptResources } : {}),
 		};
 
+	}
+
+	private async selectSessionModel(session: HarnessSession<AgentSessionMetadata>) {
 		// Durable model choice: the stored agent.meta entry wins; create seeds it
 		// through the lane once the harness configures the branch.
 		this.restoredToolNames = (await session.getValue(laneConfig(MAIN_LANE), this.context))?.value.activeToolNames;
@@ -570,6 +626,17 @@ export class AgentWorkerSession {
 		// before the harness seeds its configuration and again after the lane
 		// restores its own stored configuration.
 		const seededThinking = modelChoice.thinkingLevel ? clampThinkingLevel(model, modelChoice.thinkingLevel) : undefined;
+		return { model, modelChoice, seededThinking, seedMeta, repair };
+	}
+
+	private async attachToSession(session: HarnessSession<AgentSessionMetadata>, metadata: AgentSessionMetadata, reason: "startup" | "reload" = "startup"): Promise<void> {
+		this.session = session;
+		this.closeTask = undefined;
+		this.options.onSessionCreated?.(session.metadata.id);
+		await this.restoreSessionMetadata(session);
+		await this.loadResources();
+		const selection = await this.selectSessionModel(session);
+		const { model, seededThinking } = selection;
 		const { harness } = await AgentHarness.create(
 			{
 				session,
@@ -600,36 +667,71 @@ export class AgentWorkerSession {
 		);
 		this.harness = harness;
 		this.lane = await harness.lane(MAIN_LANE, this.context);
+		await this.configureLaneModel(selection);
+
+		// Synchronous read projection over the durable session branch. Constructed
+		// after the harness/lane exist; initialize() snapshots atomically.
+		await this.initializeSessionView(session, metadata, harness);
+		const view = this.requireView();
+		const extensionsResult = this.extensionsResult;
+		if (!extensionsResult) throw new Error("agent extensions not loaded");
+		this.promptObserver = createWorkerPromptObserver();
+		this.currentPrompt = undefined;
+		const runner = new ExtensionRunner(
+			[...extensionsResult.extensions, this.promptObserver.extension],
+			extensionsResult.runtime,
+			this.cwd,
+			// The runner requires the nominal SessionManager class. Extension writes
+			// use host actions; setup callbacks receive a real SessionManager.
+			view as never,
+			new ModelRegistry(this.options.modelRuntime),
+		);
+		this.runner = runner;
+		runner.onError((error) => {
+			this.lastError = `${error.event}: ${error.error}`;
+			this.options.onUpdate?.({ kind: "error", lane: MAIN_LANE, message: this.lastError });
+		});
+		this.bindExtensionActions(runner);
+		this.bindCommands(runner);
+		this.installInterception(runner);
+		this.installProviderHooks(runner);
+		this.installLifecycleEvents(runner);
+		this.lifecycleDispose = installWorkerLifecycle({ harness, session, runner, view, context: this.context,
+			onCompactionPointer: (entryId, firstKeptEntryId) => view.setCompactionPointer(entryId, firstKeptEntryId),
+			onBranchSummaryDetails: (entryId, details) => view.setBranchSummaryDetails(entryId, details),
+			takeNavigationDecision: () => { const decision = this.navigationDecision; this.navigationDecision = undefined; return decision; },
+			callerOwnsNavigationEvents: true,
+		});
+		await this.installToolSurface(runner);
+		await runner.emit({ ...sessionStartEvent, reason });
+		await this.flushActions();
+		await this.extendResources(reason);
+		const name = await harness.getName(this.context);
+		view.markName(name);
+		if (this.options.name) await harness.setName(this.options.name, this.context);
+		await this.installToolSurface(runner);
+		await this.startQueueWatch();
+	}
+
+	private async configureLaneModel({ model, modelChoice, seededThinking, seedMeta, repair }: Awaited<ReturnType<AgentWorkerSession["selectSessionModel"]>>): Promise<void> {
+		const lane = this.requireLane();
 		if (repair) {
-			await this.lane.setModel({ provider: modelChoice.provider, modelId: modelChoice.modelId }, this.context);
-			await this.lane.setThinkingLevel(seededThinking ?? "off", this.context);
-			await this.lane.appendCustomEntry(MODEL_CHANGE_ENTRY_TYPE, { provider: modelChoice.provider, modelId: modelChoice.modelId }, this.context);
+			await lane.setModel({ provider: modelChoice.provider, modelId: modelChoice.modelId }, this.context);
+			await lane.setThinkingLevel(seededThinking ?? "off", this.context);
+			await lane.appendCustomEntry(MODEL_CHANGE_ENTRY_TYPE, { provider: modelChoice.provider, modelId: modelChoice.modelId }, this.context);
 			this.options.repairModel = undefined;
 		}
-		if (seedMeta) {
-			await this.lane.appendCustomEntry(
-				META_CUSTOM_TYPE,
-				{
-					provider: modelChoice.provider,
-					modelId: modelChoice.modelId,
-					...(seededThinking ? { thinkingLevel: seededThinking } : {}),
-					...(this.options.extensionPaths ? { extensionPaths: this.options.extensionPaths } : {}),
-					...(this.options.skillPaths ? { skillPaths: this.options.skillPaths } : {}),
-					...(this.options.parentSessionPath ? { parentSessionPath: this.options.parentSessionPath } : {}),
-				},
-				this.context,
-			);
-		}
+		if (seedMeta) await this.seedLaneMetadata(modelChoice, seededThinking);
 		// Cache the lane's own configuration so extension getters report live state.
 		const [laneModel, laneThinking] = await Promise.all([
-			this.lane.getModel(this.context),
-			this.lane.getThinkingLevel(this.context),
+			lane.getModel(this.context),
+			lane.getThinkingLevel(this.context),
 		]);
 		// A durable level stored under another model can exceed the selected
 		// model's supported set; clamp the restored lane configuration.
 		const effectiveThinking = laneThinking ? clampThinkingLevel(model, laneThinking) : undefined;
 		if (effectiveThinking && effectiveThinking !== laneThinking) {
-			await this.lane.setThinkingLevel(effectiveThinking, this.context);
+			await lane.setThinkingLevel(effectiveThinking, this.context);
 		}
 		this.modelChoice = {
 			provider: laneModel?.provider ?? modelChoice.provider,
@@ -637,8 +739,20 @@ export class AgentWorkerSession {
 			...(effectiveThinking ? { thinkingLevel: effectiveThinking } : {}),
 		};
 
-		// Synchronous read projection over the durable session branch. Constructed
-		// after the harness/lane exist; initialize() snapshots atomically.
+	}
+
+	private async seedLaneMetadata(modelChoice: WorkerModelChoice, seededThinking: ThinkingLevel | undefined): Promise<void> {
+		await this.requireLane().appendCustomEntry(META_CUSTOM_TYPE, {
+			provider: modelChoice.provider,
+			modelId: modelChoice.modelId,
+			...(seededThinking ? { thinkingLevel: seededThinking } : {}),
+			...(this.options.extensionPaths ? { extensionPaths: this.options.extensionPaths } : {}),
+			...(this.options.skillPaths ? { skillPaths: this.options.skillPaths } : {}),
+			...(this.options.parentSessionPath ? { parentSessionPath: this.options.parentSessionPath } : {}),
+		}, this.context);
+	}
+
+	private async initializeSessionView(session: HarnessSession<AgentSessionMetadata>, metadata: AgentSessionMetadata, harness: AgentHarness): Promise<void> {
 		const identity: SessionViewIdentity = {
 			sessionId: session.metadata.id,
 			cwd: this.cwd,
@@ -676,44 +790,6 @@ export class AgentWorkerSession {
 		this.view = view;
 		await view.initialize();
 
-		this.promptObserver = createWorkerPromptObserver();
-		this.currentPrompt = undefined;
-		const runner = new ExtensionRunner(
-			[...this.extensionsResult.extensions, this.promptObserver.extension],
-			this.extensionsResult.runtime,
-			this.cwd,
-			// The runner parameter is the nominally typed coding-agent SessionManager
-			// class (private constructor): no non-SessionManager value satisfies it
-			// structurally. Extensions receive the synchronous read projection; writes
-			// route through the actions. Full-SessionManager consumers (newSession
-			// setup callbacks) receive a real SessionManager via runSetupHook.
-			view as never,
-			new ModelRegistry(this.options.modelRuntime),
-		);
-		this.runner = runner;
-		runner.onError((error) => {
-			this.lastError = `${error.event}: ${error.error}`;
-			this.options.onUpdate?.({ kind: "error", lane: MAIN_LANE, message: this.lastError });
-		});
-		this.bindExtensionActions(runner);
-		this.bindCommands(runner);
-		this.installInterception(runner);
-		this.installProviderHooks(runner);
-		this.installLifecycleEvents(runner);
-		this.lifecycleDispose = installWorkerLifecycle({ harness, session, runner, view, context: this.context,
-			onCompactionPointer: (entryId, firstKeptEntryId) => view.setCompactionPointer(entryId, firstKeptEntryId),
-			onBranchSummaryDetails: (entryId, details) => view.setBranchSummaryDetails(entryId, details),
-			takeNavigationDecision: () => { const decision = this.navigationDecision; this.navigationDecision = undefined; return decision; },
-			callerOwnsNavigationEvents: true,
-		});
-		await this.installToolSurface(runner);
-		await runner.emit({ ...sessionStartEvent, reason });
-		await this.flushActions();
-		await this.extendResources(reason);		const name = await harness.getName(this.context);
-		view.markName(name);
-		if (this.options.name) await harness.setName(this.options.name, this.context);
-		await this.installToolSurface(runner);
-		await this.startQueueWatch();
 	}
 
 	private async readModelEntry(session: HarnessSession<AgentSessionMetadata>): Promise<WorkerModelChoice | undefined> {
@@ -801,6 +877,11 @@ export class AgentWorkerSession {
 		return this.harness;
 	}
 
+	private requireSession(): HarnessSession<AgentSessionMetadata> {
+		if (!this.session) throw new Error("agent session not attached");
+		return this.session;
+	}
+
 	private requireRunner(): ExtensionRunner {
 		if (!this.runner) throw new Error("agent session runner not attached");
 		return this.runner;
@@ -833,11 +914,14 @@ export class AgentWorkerSession {
 		await runner.emit(event as never);
 	}
 
-	private readonly definitions = new Map<string, RegisteredTool>();
+	private readonly definitions = new Map<string, {
+		definition: Pick<RegisteredTool["definition"], "name" | "label" | "description" | "parameters" | "execute" | "promptSnippet" | "promptGuidelines">;
+		sourceInfo: RegisteredTool["sourceInfo"];
+	}>();
 
 	private async buildToolset(): Promise<Array<AgentHarnessTool<HostToolContext>>> {
 		const settings = SettingsManager.create(this.cwd, this.agentDir);
-		const builtins: ToolDefinition<any, any, any>[] = [
+		const builtins = [
 			createBashToolDefinition(this.cwd, { shellPath: settings.getShellPath(), commandPrefix: settings.getShellCommandPrefix() }),
 			createReadToolDefinition(this.cwd, { autoResizeImages: settings.getImageAutoResize() }),
 			createWriteToolDefinition(this.cwd), createEditToolDefinition(this.cwd),
@@ -933,9 +1017,9 @@ export class AgentWorkerSession {
 			if (event.operation !== "run" || promptRunId === event.runId) return;
 			runOptions = undefined;
 			this.currentPrompt = undefined;
-			const stored = await this.session!.getValue(address, this.context);
+			const stored = await this.requireSession().getValue(address, this.context);
 			if (stored?.value.runId !== event.runId) {
-				const state = (await this.session!.getValue(operationState(event.runId), this.context))?.value;
+				const state = (await this.requireSession().getValue(operationState(event.runId), this.context))?.value;
 				if (state?.at !== "starting") throw new Error("The active run has no recorded prompt state; resume cannot reconstruct missing hook state");
 				return;
 			}
@@ -957,7 +1041,7 @@ export class AgentWorkerSession {
 			const edited = selected.length !== selectedBefore.length || selected.some((name, index) => name !== selectedBefore[index]);
 			result.systemPromptOptions.selectedTools = [...new Set(edited ? selected : this.activeToolNames)].filter((name) => this.definitions.has(name));
 			await this.setActiveToolsAction(result.systemPromptOptions.selectedTools);
-			await this.session!.mutate(async (mutator, context) => { await mutator.commit([setValue(address, { runId: event.runId, options: result.systemPromptOptions })], context); }, this.context);
+			await this.requireSession().mutate(async (mutator, context) => { await mutator.commit([setValue(address, { runId: event.runId, options: result.systemPromptOptions })], context); }, this.context);
 			runOptions = result.systemPromptOptions;
 			this.currentPrompt = () => this.promptObserver.read();
 			promptRunId = event.runId;
@@ -1391,7 +1475,7 @@ export class AgentWorkerSession {
 		const execution = await lane.inspectExecution(this.context);
 		const result = execution.lastOperationId ? await lane.getResult(execution.lastOperationId, this.context) : undefined;
 		if (options.entryId) {
-			const entry = (await this.session!.getEntries([options.entryId], this.context)).get(options.entryId);
+			const entry = (await this.requireSession().getEntries([options.entryId], this.context)).get(options.entryId);
 			if (!entry) throw new Error(`no entry ${options.entryId} in session ${this.sessionId()}`);
 			const text = JSON.stringify(entry);
 			const offset = Math.max(0, options.offset ?? 0);
@@ -1444,7 +1528,8 @@ export class AgentWorkerSession {
 		await attempt(async () => this.bashTask);
 		if (this.lane) await attempt(() => this.abort());
 		await attempt(async () => this.driveTask);
-		if (this.lane) await attempt(() => this.lane!.waitForIdle(this.context));
+		const lane = this.lane;
+		if (lane) await attempt(() => lane.waitForIdle(this.context));
 		const runner = this.runner;
 		this.runner = undefined;
 		if (runner) await attempt(() => runner.emit({ type: "session_shutdown", reason } as never));
@@ -1455,8 +1540,10 @@ export class AgentWorkerSession {
 		this.laneObservers.clear();
 		await attempt(async () => this.laneWatcher?.handle.unsubscribe());
 		this.laneWatcher = undefined;
-		if (this.harness) await attempt(() => this.harness!.close(this.context));
-		if (this.session) await attempt(() => this.session!.close(this.context));
+		const harness = this.harness;
+		if (harness) await attempt(() => harness.close(this.context));
+		const session = this.session;
+		if (session) await attempt(() => session.close(this.context));
 		this.harness = undefined;
 		this.session = undefined;
 		this.lane = undefined;
@@ -1490,8 +1577,8 @@ export class AgentWorkerSession {
 		const lane = this.requireLane();
 		const active = (await lane.inspectExecution(this.context)).current;
 		if (active?.kind === "run") {
-			const state = (await this.session!.getValue(operationState(active.id), this.context))?.value;
-			const stored = await this.session!.getValue(RUN_PROMPT, this.context);
+			const state = (await this.requireSession().getValue(operationState(active.id), this.context))?.value;
+			const stored = await this.requireSession().getValue(RUN_PROMPT, this.context);
 			if (state?.at !== "starting" && stored?.value.runId !== active.id) throw new Error("The active run has no recorded prompt state; resume cannot reconstruct missing hook state");
 		}
 		const result = await lane.resume(this.context);
@@ -1519,43 +1606,7 @@ export class AgentWorkerSession {
 	private async seedSetup(session: HarnessSession<AgentSessionMetadata>, manager: SessionManager): Promise<void> {
 		const entries = manager.getEntries();
 		const writes: Write[] = [];
-		for (const entry of entries) {
-			const base = { id: entry.id, parentId: entry.parentId };
-			const custom = (customType: string, data: unknown): void => {
-				writes.push(insertEntry({ ...base, type: "custom", customType, data: data as never }));
-			};
-			switch (entry.type) {
-				case "message":
-					writes.push(insertEntry({ ...base, type: "message", message: entry.message }));
-					break;
-				case "custom": custom(entry.customType, entry.data); break;
-				case "custom_message":
-					custom(CUSTOM_MESSAGE_WRAPPER_TYPE, { customType: entry.customType, content: entry.content, display: entry.display, ...(entry.details === undefined ? {} : { details: entry.details }) });
-					break;
-				case "label":
-					custom(LABEL_CHANGE_ENTRY_TYPE, { targetId: entry.targetId, ...(entry.label === undefined ? {} : { label: entry.label }) });
-					break;
-				case "session_info": custom(NAME_CHANGE_ENTRY_TYPE, { ...(entry.name === undefined ? {} : { name: entry.name }) }); break;
-				case "model_change": custom(MODEL_CHANGE_ENTRY_TYPE, { provider: entry.provider, modelId: entry.modelId }); break;
-				case "thinking_level_change": custom(THINKING_CHANGE_ENTRY_TYPE, { thinkingLevel: entry.thinkingLevel }); break;
-				case "branch_summary":
-					writes.push(insertEntry({ ...base, type: "branch_summary", fromId: entry.fromId, summary: entry.summary, fromHook: entry.fromHook ?? false, ...(entry.details === undefined ? {} : { details: entry.details as never }), ...(entry.usage ? { usage: entry.usage } : {}) }));
-					break;
-				case "compaction": {
-					const ancestry = entry.parentId ? manager.getBranch(entry.parentId) : [];
-					const index = ancestry.findIndex((candidate) => candidate.id === entry.firstKeptEntryId);
-					const retainedTail = (index < 0 ? [] : ancestry.slice(index)).flatMap((candidate: SessionEntry) => {
-						if (candidate.type === "custom_message") return [contentToAgentMessage(candidate.content)];
-						return sessionEntryToContextMessages(candidate);
-					});
-					writes.push(insertEntry({ ...base, type: "compaction", summary: entry.summary, retainedTail, tokensBefore: entry.tokensBefore, fromHook: entry.fromHook ?? false, ...(entry.details === undefined ? {} : { details: entry.details as never }), ...(entry.usage ? { usage: entry.usage } : {}) }));
-					// Preserve the ordinary pointer, including metadata-only kept entries,
-					// independently of the runtime's message-only retained tail.
-					writes.push(setValue(valueAddress<string>("agent.setup.first-kept", entry.id), entry.firstKeptEntryId));
-					break;
-				}
-			}
-		}
+		for (const entry of entries) writes.push(...setupEntryWrites(entry, manager));
 		for (const entry of entries) {
 			const label = manager.getLabel(entry.id);
 			if (label) writes.push(setValue(entryLabel(entry.id), label));
@@ -1582,10 +1633,7 @@ export class AgentWorkerSession {
 			const preparation = { targetId, oldLeafId: view.getLeafId(), commonAncestorId: selected.commonAncestorId, entriesToSummarize: selected.entries, userWantsSummary: options.summarize ?? false, customInstructions: options.customInstructions, replaceInstructions: options.replaceInstructions, label: options.label };
 			const result = await this.requireRunner().emit({ type: "session_before_tree", preparation, signal: controller.signal });
 			if (result?.cancel || controller.signal.aborted) return { cancelled: true };
-			const instructions = result?.customInstructions ?? preparation.customInstructions;
-			this.branchInstructions = (result?.replaceInstructions ?? preparation.replaceInstructions) && instructions ? instructions : undefined;
-			this.navigationDecision = result?.summary ? { summary: result.summary } : undefined;
-			this.navigationLabel = result?.label ?? preparation.label;
+			const instructions = this.adoptNavigationDecision(result, preparation);
 			const navigation = await this.requireLane().navigateTree(targetId, { summarize: !!result?.summary || preparation.userWantsSummary, customInstructions: instructions }, this.context);
 			if (!navigation.ok) throw new Error(`Tree navigation failed: ${navigation.error._tag}`);
 			if (navigation.value.navigation.status !== "completed") return { cancelled: true };
@@ -1599,6 +1647,14 @@ export class AgentWorkerSession {
 			await this.requireRunner().emit({ type: "session_tree", newLeafId: view.getLeafId(), oldLeafId: preparation.oldLeafId, ...(summaryEntry?.type === "branch_summary" ? { summaryEntry } : {}), fromExtension: !!result?.summary });
 			return { cancelled: false };
 		} finally { this.navigationDecision = undefined; this.navigationController = undefined; this.branchInstructions = undefined; this.branchPrompt = undefined; this.branchRequest = false; this.navigationLabel = undefined; }
+	}
+
+	private adoptNavigationDecision(result: SessionBeforeTreeResult | undefined, preparation: SessionBeforeTreeEvent["preparation"]): string | undefined {
+		const instructions = result?.customInstructions ?? preparation.customInstructions;
+		this.branchInstructions = (result?.replaceInstructions ?? preparation.replaceInstructions) && instructions ? instructions : undefined;
+		this.navigationDecision = result?.summary ? { summary: result.summary } : undefined;
+		this.navigationLabel = result?.label ?? preparation.label;
+		return instructions;
 	}
 
 	async setModelAction(provider: string, modelId: string): Promise<boolean> {
@@ -1708,11 +1764,7 @@ export class AgentWorkerSession {
 						modelId: modelChoice.modelId,
 						...(modelChoice.thinkingLevel ? { thinkingLevel: modelChoice.thinkingLevel } : {}),
 					},
-					{
-						...(options?.setup ? { setup: options.setup } : {}),
-						...(options?.parentSession ? { parentSession: options.parentSession } : {}),
-						...(options?.withSession ? { withSession: options.withSession } : {}),
-					},
+					newSessionPlan(options),
 				);
 				return { cancelled: false };
 			},
