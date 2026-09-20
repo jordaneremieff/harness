@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { mock } from "node:test";
 import { BACKGROUND_CONTEXT, type AgentHarness } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { AgentStore, corePublicImportUrl } from "./store.ts";
@@ -38,8 +39,14 @@ if (mode === "start") {
 	const lane = await harness.lane("main", BACKGROUND_CONTEXT);
 	const admitted = await lane.accept({ kind: "prompt", prompt: "Preserve the current hook state" }, BACKGROUND_CONTEXT);
 	assert.ok(admitted.ok);
-	const driven = await lane.drive({ operationId: admitted.value.operationId, waitForRetry: false }, BACKGROUND_CONTEXT);
-	assert.ok(driven.ok && driven.value.kind === "waiting" && driven.value.reason === "retry", JSON.stringify(driven));
+	// Keep the retry deadline in the future until the durable wait is recorded.
+	mock.timers.enable({ apis: ["Date"], now: Date.now() });
+	try {
+		const driven = await lane.drive({ operationId: admitted.value.operationId, waitForRetry: false }, BACKGROUND_CONTEXT);
+		assert.ok(driven.ok && driven.value.kind === "waiting" && driven.value.reason === "retry", JSON.stringify(driven));
+	} finally {
+		mock.timers.reset();
+	}
 	writeFileSync(join(root, "operation.json"), JSON.stringify({ operationId: admitted.value.operationId }));
 	// The process relinquishes storage without asking the durable operation to abort.
 	await store.close(BACKGROUND_CONTEXT);
