@@ -213,6 +213,21 @@ describe("StashPanel", () => {
 		}
 	});
 
+	it("keeps the selected row visible in a narrow list and after a resize", () => {
+		const entries = Array.from({ length: 12 }, (_, index) => entry(`row-${index}`, `Work ${index}`));
+		const { panel, calls } = rig(entries, 5);
+		panel.render(104);
+		for (let index = 0; index < 9; index++) panel.handleInput("\x1b[B");
+		let lines = panel.render(38);
+		assert.match(lines.join("\n"), /› ○ 2026-07-24 Work 9/);
+		assert.ok(lines.length <= 5);
+		for (let index = 0; index < 8; index++) panel.handleInput("\x1b[A");
+		lines = panel.render(38);
+		assert.match(lines.join("\n"), /› ○ 2026-07-24 Work 1/);
+		panel.handleInput("\r");
+		assert.equal((calls.done as any).selected.meta.id, "row-1");
+	});
+
 	it("shows a useful empty state and never emits untrusted terminal controls", () => {
 		const hostile = entry("safe-id", "bad\x1b]0;title\x07", "body\x1b[31mred\x1b[0m");
 		const rendered = rig([hostile]).panel.render(60).join("\n");

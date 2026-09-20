@@ -24,7 +24,10 @@ function registry(overrides?: { distillSessionFactory?: any; copyText?: (text: s
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		exec: async () => ({ code: 0, stdout: "main\n", stderr: "", killed: false }),
 		sendUserMessage: (content: string, options?: unknown) => sent.push({ content, options }),
-		on: (event: string, handler: any) => events.set(event, handler),
+		on: (event: string, handler: any) => {
+			events.set(event, handler);
+			return () => events.delete(event);
+		},
 	};
 	registerStash(pi, overrides);
 	return { tools, commands, sent, events, pi };
@@ -81,6 +84,22 @@ describe("stash entrypoint", () => {
 			/no stash matches/,
 		);
 		assert.match(await readFile(rotated.details.archivePath, "utf8"), /SUPERSEDED_BODY/);
+	});
+
+	it("rotates oversized artifacts through the tool and command without the read-size cap", async () => {
+		const { tools, commands } = registry();
+		for (const surface of ["tool", "command"]) {
+			const id = `20250717T100000Z-large-${surface}`;
+			const content = `---\nstate: "open"\n---\n${"x".repeat(300 * 1024)}`;
+			await writeFile(join(dir, `${id}.md`), content);
+			if (surface === "tool") {
+				await tools.get("stash_rotate").execute("call", { id }, undefined);
+			} else {
+				await commands.get("stash").handler(`rotate ${id}`, { mode: "json", hasUI: false });
+			}
+			assert.equal(await readFile(join(dir, ".trash", `${id}.md`), "utf8"), content);
+			assert.equal((await readStash(dir, id)).ok, false);
+		}
 	});
 
 	it("refuses to rotate an active stash through stash_rotate", async () => {
@@ -1203,6 +1222,37 @@ describe("stash creation", () => {
 		await shutdownHandler({ type: "session_shutdown", reason: "quit" }, owner);
 		assert.equal(session.aborted, true, "the owning session's shutdown must abort the job");
 		assert.equal(statuses.at(-1), "<clear>", "the owning session's shutdown must clear the status");
+	});
+
+	it("refuses a foreign session's abort command without cancelling the owner's creation", async () => {
+		let aborted = false;
+		const { commands } = registry({
+			distillSessionFactory: async () => ({
+				prompt: () => new Promise<void>(() => {}),
+				getLastAssistantText: () => "",
+				abort: async () => {
+					aborted = true;
+				},
+				dispose: () => {},
+			}),
+		});
+		const owner = creationCtx({ notify: () => {} });
+		const notices: string[] = [];
+		const foreign = creationCtx(
+			{ notify: (text: string) => notices.push(text) },
+			{
+				sessionManager: { getSessionId: () => "foreign", buildContextEntries: () => [] },
+			},
+		);
+		await commands.get("stash").handler("new owner effort", owner);
+		try {
+			await commands.get("stash").handler("abort", foreign);
+			assert.equal(aborted, false);
+			assert.match(notices.join("\n"), /belongs to another session/);
+		} finally {
+			await commands.get("stash").handler("abort", owner);
+		}
+		assert.equal(aborted, true);
 	});
 
 	it("notifies when session shutdown cancels a running creation", async () => {

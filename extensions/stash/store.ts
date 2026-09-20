@@ -225,7 +225,10 @@ function headerUnclosed(text: string): boolean {
 	return !lines.slice(1).some((line) => line.trim() === "---");
 }
 
-async function readPrefix(path: string, maxBytes: number): Promise<{ text: string; truncated: boolean; size: number }> {
+async function readPrefix(
+	path: string,
+	maxBytes: number,
+): Promise<{ text: string; truncated: boolean; size: number; identity: { dev: number; ino: number } }> {
 	const limit = Math.max(0, Math.floor(maxBytes));
 	const { handle, info } = await openRegular(path);
 	try {
@@ -248,6 +251,7 @@ async function readPrefix(path: string, maxBytes: number): Promise<{ text: strin
 			text: buffer.subarray(0, end).toString("utf8"),
 			truncated,
 			size: Math.max(info.size, bytesRead),
+			identity: { dev: info.dev, ino: info.ino },
 		};
 	} finally {
 		await handle.close();
@@ -369,11 +373,16 @@ function locateArtifact(dir: string, dirents: Dirent[], idOrPrefix: string): Loc
 	return { ok: true, id: matches[0], path: join(dir, `${matches[0]}.md`) };
 }
 
-/** Read one regular artifact by exact id or unique id prefix. */
-export async function readStash(dir: string, idOrPrefix: string): Promise<ReadResult> {
+/** Resolve a discovered regular artifact without loading its body or applying the read-size cap. */
+export async function resolveStash(dir: string, idOrPrefix: string): Promise<LocatedArtifact> {
 	const dirents = await secureStore(dir, false);
 	if (!dirents) return { ok: false, error: `stash store not found: ${dir}` };
-	const located = locateArtifact(dir, dirents, idOrPrefix);
+	return locateArtifact(dir, dirents, idOrPrefix);
+}
+
+/** Read one regular artifact by exact id or unique id prefix. */
+export async function readStash(dir: string, idOrPrefix: string): Promise<ReadResult> {
+	const located = await resolveStash(dir, idOrPrefix);
 	if ("error" in located) return located;
 	try {
 		const artifact = await readPrefix(located.path, MAX_STASH_BYTES);
@@ -552,13 +561,14 @@ export async function transitionStash(
 }
 
 /**
- * Operator-initiated rotation: atomically move an open or closed artifact into
+ * Operator-initiated rotation: retain an open or closed artifact under
  * the dot-hidden archive subdirectory (`.trash`). Rotated artifacts disappear
  * from discovery, listing, pickup, and lifecycle changes, but the file is
  * retained byte-for-byte and restoring it is a plain move back into the store.
  * Active artifacts are excluded: a live session owns them and completion is the
- * only close path. The content itself is never read, so oversized historical
- * artifacts remain rotatable; only the bounded header is read for eligibility.
+ * only close path. Only the bounded header is read for eligibility, so oversized
+ * artifacts remain rotatable. Exclusive linking prevents archive replacement;
+ * source removal follows successful archive publication.
  */
 export async function rotateStash(dir: string, idOrPrefix: string): Promise<StashRotateResult> {
 	const dirents = await secureStore(dir, false);
@@ -587,38 +597,47 @@ export async function rotateStash(dir: string, idOrPrefix: string): Promise<Stas
 		throw new Error(`stash ${located.id} is active; complete it before rotation (state: active)`);
 	}
 
-	// Capture the exact regular-file identity under O_NOFOLLOW so the rename
-	// cannot be redirected onto a different file in the window before publish.
-	let identity: { dev: number; ino: number };
-	{
-		const { handle, info } = await openRegular(located.path);
-		try {
-			identity = { dev: info.dev, ino: info.ino };
-		} finally {
-			await handle.close();
-		}
-	}
-
 	const archiveDir = join(dir, ROTATED_STORE_NAME);
 	await mkdir(archiveDir, { recursive: true, mode: 0o700 });
 	const archiveInfo = await lstat(archiveDir);
+	if (!archiveInfo.isDirectory() || archiveInfo.isSymbolicLink()) {
+		throw new Error(`stash archive is not a regular directory: ${archiveDir}`);
+	}
 	if ((archiveInfo.mode & 0o7777) !== 0o700) await chmod(archiveDir, 0o700);
 
 	const archivePath = join(archiveDir, `${located.id}.md`);
-	// A previous archive of the same id must never be silently replaced; the
-	// operator can restore and re-rotate only after removing the old archive.
-	try {
-		await lstat(archivePath);
-		throw new Error(`stash ${located.id} is already rotated`);
-	} catch (error) {
-		if (!hasCode(error, "ENOENT")) throw error;
-	}
-
 	const current = await lstat(located.path);
 	if (current.isSymbolicLink() || !current.isFile()) throw new Error("stash target is no longer a regular file");
-	if (current.dev !== identity.dev || current.ino !== identity.ino) {
+	if (current.dev !== prefix.identity.dev || current.ino !== prefix.identity.ino) {
 		throw new Error("stash target changed before rotation; retry the operation");
 	}
-	await rename(located.path, archivePath);
+	// Publish without replacement, including when another process archives the
+	// same id concurrently. Remove the source name only after its bytes have a
+	// retained archive name; an interrupted move leaves both names recoverable.
+	try {
+		await link(located.path, archivePath);
+	} catch (error) {
+		if (hasCode(error, "EEXIST")) throw new Error(`stash ${located.id} is already rotated`);
+		throw error;
+	}
+	try {
+		const archived = await lstat(archivePath);
+		const source = await lstat(located.path);
+		if (
+			!archived.isFile() ||
+			archived.isSymbolicLink() ||
+			archived.dev !== prefix.identity.dev ||
+			archived.ino !== prefix.identity.ino ||
+			source.dev !== prefix.identity.dev ||
+			source.ino !== prefix.identity.ino
+		) {
+			throw new Error("stash target changed during rotation");
+		}
+		await unlink(located.path);
+	} catch (error) {
+		throw new Error(
+			`stash archive retained at ${archivePath}, but source removal failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 	return { id: located.id, path: located.path, archivePath, state };
 }

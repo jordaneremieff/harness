@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import fs, { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, describe, it } from "node:test";
+import { after, before, describe, it, mock } from "node:test";
 import { listStashes, readStash, resolveStoreDir, rotateStash, transitionStash, writeStash } from "./store.ts";
 
 let dir: string;
@@ -526,6 +527,83 @@ describe("unreadable and invalid lifecycle states", () => {
 });
 
 describe("rotateStash", () => {
+	it("rejects a symbolic-link archive without changing its target permissions", async () => {
+		const store = join(dir, "archive-link-store");
+		const outside = join(dir, "archive-link-target");
+		const { record, path } = await writeStash(store, { title: "Archive link", summary: "retained" });
+		await mkdir(outside, { mode: 0o755 });
+		await chmod(outside, 0o755);
+		await symlink(outside, join(store, ".trash"));
+		await assert.rejects(rotateStash(store, record.id), /archive is not a regular directory/);
+		assert.equal((await stat(outside)).mode & 0o777, 0o755);
+		assert.ok((await stat(path)).isFile());
+	});
+
+	it("rejects a replacement between the header read and the identity check", async (t) => {
+		const store = join(dir, "header-identity-store");
+		const { record, path } = await writeStash(store, { title: "Header identity", summary: "original" });
+		const replacement = join(store, ".replacement");
+		const replacementText = '---\nstate: "active"\n---\nreplacement\n';
+		await writeFile(replacement, replacementText);
+		const originalOpen = fs.open;
+		let replaced = false;
+		const mocked = mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+			const handle = await originalOpen(...args);
+			if (args[0] === path && !replaced) {
+				const originalClose = handle.close.bind(handle);
+				handle.close = async () => {
+					await originalClose();
+					if (!replaced) {
+						replaced = true;
+						await rename(replacement, path);
+					}
+				};
+			}
+			return handle;
+		});
+		syncBuiltinESMExports();
+		t.after(() => {
+			mocked.mock.restore();
+			syncBuiltinESMExports();
+		});
+		await assert.rejects(rotateStash(store, record.id), /target changed before rotation/);
+		assert.equal(await readFile(path, "utf8"), replacementText);
+	});
+
+	it("never overwrites a concurrent archive and preserves both files after source-removal failure", async (t) => {
+		const store = join(dir, "archive-publication-store");
+		const { record, path } = await writeStash(store, { title: "Publication", summary: "retained" });
+		const original = await readFile(path, "utf8");
+		const archivePath = join(store, ".trash", `${record.id}.md`);
+		const realLink = fs.link;
+		const linkMock = mock.method(fs, "link", async (source: string, destination: string) => {
+			await writeFile(destination, "concurrent archive", { flag: "wx" });
+			return realLink(source, destination);
+		});
+		syncBuiltinESMExports();
+		t.after(() => {
+			linkMock.mock.restore();
+			syncBuiltinESMExports();
+		});
+		await assert.rejects(rotateStash(store, record.id), /already rotated/);
+		assert.equal(await readFile(archivePath, "utf8"), "concurrent archive");
+		assert.equal(await readFile(path, "utf8"), original);
+		linkMock.mock.restore();
+		syncBuiltinESMExports();
+		await rm(archivePath);
+		const unlinkMock = mock.method(fs, "unlink", async () => {
+			throw new Error("source removal denied");
+		});
+		syncBuiltinESMExports();
+		t.after(() => {
+			unlinkMock.mock.restore();
+			syncBuiltinESMExports();
+		});
+		await assert.rejects(rotateStash(store, record.id), /archive retained.*source removal failed/);
+		assert.equal(await readFile(archivePath, "utf8"), original);
+		assert.equal(await readFile(path, "utf8"), original);
+	});
+
 	it("moves an open artifact into the dot-hidden archive with identical content", async () => {
 		const { record, path } = await writeStash(
 			dir,

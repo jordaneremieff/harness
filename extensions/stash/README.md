@@ -70,7 +70,7 @@ with its replacement syntax; it is not aliased. Typing `/stash ` autocompletes t
 actions; after an id-bearing action it completes stash id prefixes.
 
 Rotation is the operator-initiated archive path for stale efforts: an open or
-closed artifact moves atomically into the store's dot-hidden `.trash` directory
+closed artifact moves into the store's dot-hidden `.trash` directory
 (see Storage), where it no longer appears in listings, pickup, or lifecycle
 changes. Active artifacts cannot be rotated while a session owns them;
 completion remains the only close path for an active effort, and release the
@@ -140,7 +140,8 @@ The command handler returns immediately; the live agent receives no turn. The
 job is fire-and-forget with hard bounds: zero tools, one prompt, a 180-second
 wall-clock auto-abort, and an AbortController that `/stash abort` and
 `session_shutdown` both trigger. At most one creation runs at a time; a second
-creation dispatch during a run reports the in-flight creation. The result promise
+creation dispatch during a run reports the in-flight creation. A different session
+cannot abort that creation; the abort command requires the owning session. The result promise
 settles exactly once and never rejects, so a detached callback cannot crash
 the host session.
 
@@ -186,7 +187,7 @@ Each artifact is `<utcTimestamp>-<slug>[-<collision>].md` with JSON-valued front
 - Lifecycle changes run through Pi's per-file mutation queue, reread the exact regular file with `O_NOFOLLOW`, preserve unknown frontmatter, write a private dot-hidden temporary file, recheck file identity, and atomically rename the completed revision into place.
 - Symlinks are ignored during discovery and reads. Mutation rechecks reject a selected target that is no longer the same regular file. Ordinary Node APIs cannot make the entire ancestor path descriptor-relative, so this is a private same-user local store rather than a claim of immunity to a hostile process replacing directory ancestors.
 - New artifacts and reads are capped at 256 KiB. Oversized historical files are rejected without being loaded wholesale.
-- Rotation moves an artifact into the dot-hidden `.trash` subdirectory with the same discipline as other mutations: the target is rechecked as the same regular file immediately before an atomic same-filesystem rename, an existing archive of the same id is never replaced, and the archive directory is hardened to `0700` like the store. Rotation reads only the bounded header (for active-state exclusion): an artifact remains rotatable as long as its header closes inside the 16 KiB scan window, and an unreadable header refuses rotation with the state unverified.
+- Rotation validates the `.trash` subdirectory as a real directory before enforcing `0700`; a symlink is rejected without changing its target. The bounded header read captures the file identity used by the publication check. An exclusive same-filesystem hard link publishes the archive without replacing an existing archive, including concurrent publication. Only then is the source name removed. An interruption or source-removal failure retains both names and reports the archive path; no rollback removes the retained archive. Rotation reads only the bounded header through every tool, command, and browser path, so the 256 KiB read limit does not prevent archival. The header must close inside the 16 KiB scan window; an unreadable header refuses rotation with the state unverified.
 - Malformed frontmatter falls back to filename metadata instead of hiding other artifacts.
 
 Artifacts are retained until the operator explicitly removes their exact `.md`
@@ -208,7 +209,7 @@ Up/Down selects artifacts, `b`/Space pages the preview, Enter picks up, `a` pick
 
 The browser does not provide mechanical state cycling. Copy is the only safe lifecycle-independent mutation that can remain inside the overlay. Pickup must inject the handover (plain or with a note — the note needs the host's input dialog), completion must collect an outcome, and reopen or rotation requires deliberate confirmation; release is reachable only through the actions dialog, where it sits behind an explicit choice and loses nothing durable, so those paths resolve to the host and reopen with refreshed store data.
 
-The component derives its row budget from the host TUI and the overlay's height margin. Every framed line paints the full overlay width, the key footer sits above a closing border, and very narrow or short terminals fall back to a bounded list with an explicit close line. Stored terminal and bidi controls are rendered as inert escape text.
+The component derives its row budget from the host TUI and the overlay's height margin. Every framed line paints the full overlay width, the key footer sits above a closing border, and very narrow or short terminals fall back to a bounded list with an explicit close line. The fallback list scrolls with the selected row, including after a resize, whenever a row fits above the footer. Stored terminal and bidi controls are rendered as inert escape text.
 
 ## Files
 
@@ -230,7 +231,7 @@ npm test
 
 npx --yes --package typescript@5.9.3 tsc --noEmit \
   --allowImportingTsExtensions --module ESNext --moduleResolution Bundler \
-  --target ES2022 --types node --skipLibCheck \
+  --target ES2022 --types node --skipLibCheck --strict \
   extensions/stash/*.ts
 
 printf '%s\n' '{"id":"commands","type":"get_commands"}' \

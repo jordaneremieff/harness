@@ -26,6 +26,7 @@ import { buildPickupMessage } from "./pickup.ts";
 import {
 	listStashes,
 	readStash,
+	resolveStash,
 	resolveStoreDir,
 	rotateStash,
 	transitionStash,
@@ -413,7 +414,7 @@ async function withStashTarget<T>(
 ): Promise<T> {
 	if (signal?.aborted) throw new Error("stash lifecycle change cancelled");
 	const dir = storeDir();
-	const target = await readStash(dir, id);
+	const target = await resolveStash(dir, id);
 	if ("error" in target) throw readFailure(target);
 	return withFileMutationQueue(target.path, async () => {
 		if (signal?.aborted) throw new Error("stash lifecycle change cancelled");
@@ -932,6 +933,10 @@ export default function (
 				}
 				if (!inFlight) {
 					notify(ctx, "No stash creation is in flight.", "info");
+					return;
+				}
+				if (ownerSessionId !== sessionKeyOf(ctx)) {
+					fail("The in-flight stash creation belongs to another session. Abort it from that session.");
 					return;
 				}
 				const current = inFlight;

@@ -556,6 +556,10 @@ export class StashPanel {
 			const headerRows = layout.total > 1 ? 1 : 0;
 			if (headerRows) lines.push(paint(`${safeLine(this.deps.title)} · ${position}`));
 			const itemRows = Math.max(0, layout.total - headerRows - 1);
+			if (this.selected < this.listScroll) this.listScroll = this.selected;
+			if (itemRows > 0 && this.selected >= this.listScroll + itemRows) {
+				this.listScroll = this.selected - itemRows + 1;
+			}
 			for (let slot = 0; slot < itemRows; slot++) {
 				const absolute = this.listScroll + slot;
 				const entry = entries[absolute];
