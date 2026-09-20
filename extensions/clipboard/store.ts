@@ -159,7 +159,7 @@ function archiveFiles(dirents: Dirent[], date?: string): string[] {
 		.sort();
 }
 
-function normalizeEntry(value: unknown, fallbackId: string, contentChars: number): ClipboardEntry | null {
+function normalizeEntry(value: unknown, contentChars: number): ClipboardEntry | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 	const record = value as Record<string, unknown>;
 	if (
@@ -169,7 +169,8 @@ function normalizeEntry(value: unknown, fallbackId: string, contentChars: number
 	)
 		return null;
 	if (typeof record.content !== "string") return null;
-	const id = typeof record.id === "string" && SAFE_ID.test(record.id) ? record.id : fallbackId;
+	if (typeof record.id !== "string" || !SAFE_ID.test(record.id)) return null;
+	const id = record.id;
 	const label = typeof record.label === "string" ? characterPrefix(record.label, MAX_LABEL_CHARS) : undefined;
 	const entry = makeEntry(record.content, label, new Date(record.timestamp), id);
 	const content = characterPrefix(entry.content, contentChars);
@@ -190,31 +191,13 @@ async function openArchive(path: string): Promise<{ handle: FileHandle; size: nu
 	}
 }
 
-async function physicalLineNumber(handle: FileHandle, startOffset: number, signal?: AbortSignal): Promise<number> {
-	const buffer = Buffer.alloc(READ_CHUNK_BYTES);
-	let position = 0;
-	let newlines = 0;
-	while (position < startOffset) {
-		signal?.throwIfAborted();
-		const wanted = Math.min(buffer.length, startOffset - position);
-		const { bytesRead } = await handle.read(buffer, 0, wanted, position);
-		if (bytesRead === 0) break;
-		for (let index = 0; index < bytesRead; index++) if (buffer[index] === 0x0a) newlines++;
-		position += bytesRead;
-	}
-	return newlines + 1;
-}
-
-interface ReverseLine {
-	startOffset: number;
-	reverseIndex: number;
-	text?: string;
-}
-
 /** Iterate physical JSONL records from the end with bounded per-record memory. */
-async function* reverseLines(handle: FileHandle, size: number, signal?: AbortSignal): AsyncGenerator<ReverseLine> {
+async function* reverseLines(
+	handle: FileHandle,
+	size: number,
+	signal?: AbortSignal,
+): AsyncGenerator<string | undefined> {
 	let position = size;
-	let reverseIndex = 0;
 	let parts: Buffer[] = [];
 	let partBytes = 0;
 	let oversized = false;
@@ -251,7 +234,7 @@ async function* reverseLines(handle: FileHandle, size: number, signal?: AbortSig
 		for (let index = chunk.length - 1; index >= 0; index--) {
 			if (chunk[index] !== 0x0a) continue;
 			addPart(chunk.subarray(index + 1, end));
-			yield { startOffset: position + index + 1, reverseIndex: reverseIndex++, text: materialize() };
+			yield materialize();
 			parts = [];
 			partBytes = 0;
 			oversized = false;
@@ -259,15 +242,7 @@ async function* reverseLines(handle: FileHandle, size: number, signal?: AbortSig
 		}
 		addPart(chunk.subarray(0, end));
 	}
-	yield { startOffset: 0, reverseIndex, text: materialize() };
-}
-
-function unusedId(fallbackId: string, seenIds: Set<string>): string {
-	if (!seenIds.has(fallbackId)) return fallbackId;
-	for (let suffix = 2; ; suffix++) {
-		const candidate = `${fallbackId}-${suffix}`;
-		if (!seenIds.has(candidate)) return candidate;
-	}
+	yield materialize();
 }
 
 /**
@@ -308,35 +283,12 @@ export async function readEntries(dir: string, options: ReadOptions = {}): Promi
 			throw error;
 		}
 		try {
-			const date = file.replace(/\.jsonl$/, "");
-			let anchorPhysicalLine: number | undefined;
-			let anchorReverseIndex = 0;
-			const numberFor = async (line: ReverseLine): Promise<number> => {
-				if (anchorPhysicalLine === undefined) {
-					anchorPhysicalLine = await physicalLineNumber(opened.handle, line.startOffset, options.signal);
-					anchorReverseIndex = line.reverseIndex;
-				}
-				return anchorPhysicalLine - (line.reverseIndex - anchorReverseIndex);
-			};
 			for await (const line of reverseLines(opened.handle, opened.size, options.signal)) {
 				options.signal?.throwIfAborted();
-				if (!line.text?.trim()) continue;
+				if (!line?.trim()) continue;
 				try {
-					const parsed = JSON.parse(line.text) as unknown;
-					const record =
-						parsed && typeof parsed === "object" && !Array.isArray(parsed)
-							? (parsed as Record<string, unknown>)
-							: undefined;
-					const needsFallback = typeof record?.id !== "string" || !SAFE_ID.test(record.id);
-					let lineNumber = needsFallback ? await numberFor(line) : 0;
-					let fallbackId = `legacy-${date}-${lineNumber}`;
-					let entry = normalizeEntry(parsed, fallbackId, contentChars);
-					if (!entry) continue;
-					if (seenIds.has(entry.id)) {
-						if (lineNumber === 0) lineNumber = await numberFor(line);
-						fallbackId = `legacy-${date}-${lineNumber}`;
-						entry = { ...entry, id: unusedId(fallbackId, seenIds) };
-					}
+					const entry = normalizeEntry(JSON.parse(line), contentChars);
+					if (!entry || seenIds.has(entry.id)) continue;
 					seenIds.add(entry.id);
 					if (options.id) {
 						if (entry.id === options.id) return [entry];

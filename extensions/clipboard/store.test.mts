@@ -82,18 +82,15 @@ describe("appendEntry + readEntries", () => {
 		assert.equal((await readEntries(dir, { limit: 1 })).length, 1);
 	});
 
-	it("normalizes legacy records without ids to stable source ids", async () => {
-		const legacyDate = "2026-07-23";
-		const legacy = { timestamp: "2026-07-23T10:00:00.000Z", label: "old", content: "legacy" };
-		await writeFile(join(dir, `${legacyDate}.jsonl`), `${JSON.stringify(legacy)}\n`, { mode: 0o644 });
-		const first = await readEntries(dir, { date: legacyDate });
-		const second = await readEntries(dir, { date: legacyDate });
-		assert.equal(first.length, 1);
-		assert.equal(first[0].id, second[0].id);
-		assert.match(first[0].id, /^legacy-2026-07-23-1$/);
-		assert.equal(first[0].chars, 6);
-		assert.equal(first[0].preview, "legacy");
-		assert.equal(await fileMode(dir, legacyDate), 0o600);
+	it("skips records without valid ids instead of synthesizing identity", async () => {
+		const date = "2026-07-23";
+		const record = { timestamp: "2026-07-23T10:00:00.000Z", content: "unaddressable" };
+		await writeFile(
+			join(dir, `${date}.jsonl`),
+			`${JSON.stringify(record)}\n${JSON.stringify({ ...record, id: "invalid/id" })}\n`,
+			{ mode: 0o600 },
+		);
+		assert.deepEqual(await readEntries(dir, { date }), []);
 	});
 
 	it("resolves a listed entry by stable id even after a newer append shifts indexes", async () => {
@@ -110,7 +107,7 @@ describe("appendEntry + readEntries", () => {
 		assert.equal(resolved[0].content, target.content);
 	});
 
-	it("assigns deterministic fallback ids to older duplicate ids", async () => {
+	it("keeps only the newest record for a duplicate id", async () => {
 		const duplicateDir = join(dir, "duplicate-id-store");
 		const duplicateId = "11111111-1111-4111-8111-111111111111";
 		assert.equal(
@@ -124,9 +121,9 @@ describe("appendEntry + readEntries", () => {
 		const entries = await readEntries(duplicateDir);
 		assert.deepEqual(
 			entries.map((entry) => entry.id),
-			[duplicateId, "legacy-2026-07-21-1"],
+			[duplicateId],
 		);
-		assert.equal((await readEntries(duplicateDir, { id: "legacy-2026-07-21-1" }))[0]?.content, "older");
+		assert.equal((await readEntries(duplicateDir, { id: duplicateId }))[0]?.content, "newer");
 	});
 
 	it("rehardens an existing archive directory", async () => {

@@ -21,7 +21,7 @@ API has no transient index addressing — stable ids are the only entry handle.
 
 History is one append-only JSONL file per local calendar day at `<agentDir>/clipboard/YYYY-MM-DD.jsonl`. `PI_CLIPBOARD_DIR` overrides the location.
 
-- Each new entry has a UUID. Legacy records receive deterministic ids based on source date and physical line number.
+- Each entry requires a valid stored id. Records without one are skipped, never assigned a synthetic identity. For duplicate ids, only the newest record is visible.
 - Directory and file modes are re-enforced as `0700` and `0600` on use.
 - Appends use one bounded `O_APPEND` write per record and `O_NOFOLLOW` where available. Concurrent large appends do not interleave chunks. Short writes return an archive warning.
 - Reads reject a symlinked store, ignore symlinked archives, skip malformed records, and recompute derived metadata from validated content.
