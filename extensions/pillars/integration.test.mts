@@ -82,8 +82,8 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 		assert.equal((await command.getArgumentCompletions("read p"))?.[0].value, "read principle-example");
 		faux.setResponses([
 			(context) => {
-				assert.ok(context.tools?.some((tool) => tool.name === "pillars"));
-				assert.ok(context.systemPrompt?.includes("pillars"));
+				assert.ok(ai.getCurrentTools(context.messages).some((tool) => tool.name === "pillars"));
+				assert.ok(ai.getCurrentSystemPrompt(context.messages).includes("pillars"));
 				return ai.fauxAssistantMessage(
 					ai.fauxToolCall("pillars", { resource: "principle-example" }, { id: "source-call" }),
 				);

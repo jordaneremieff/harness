@@ -123,6 +123,7 @@ test("source approval covers the command implementation and live doctrine", asyn
 			},
 			on(name, handler) {
 				if (name === "session_shutdown") shutdown.push(handler as unknown as () => Promise<void>);
+				return () => {};
 			},
 		} as Partial<ExtensionAPI> as ExtensionAPI);
 		assert.ok(command);
@@ -163,11 +164,12 @@ test("an adapter failure before shutdown ownership restores the environment and 
 					if (name === "session_shutdown") {
 						if (!armed) {
 							shutdown.push(handler as unknown as () => Promise<void>);
-							return;
+							return () => {};
 						}
 						store = process.env.PI_PILLARS_DIR;
 						throw new Error("shutdown registration refused");
 					}
+					return () => {};
 				},
 			} as Partial<ExtensionAPI> as ExtensionAPI),
 			/shutdown registration refused/,

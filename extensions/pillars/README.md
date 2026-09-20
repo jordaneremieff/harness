@@ -402,7 +402,10 @@ breaking, crash-leftover reconciliation, atomic publication, retention,
 corruption, quotas, full-capacity pagination, memory refusal, export
 publication, free-text command parsing, native argument-completion insertion,
 help rendering at narrow widths, and actual Pi discovery/callback/command/shutdown
-integration with a synthetic provider. Command integration covers operator-only
+integration with a synthetic provider. Provider assertions use Pi's public
+transcript helpers to resolve the effective prompt and tools from system
+messages. Event mocks return the host's unsubscribe function shape.
+Command integration covers operator-only
 help, model-visible check/derive/review requests, and delivery during an active turn.
 It uses no paid model calls or real telemetry exports.
 Full repository gates remain defined in
