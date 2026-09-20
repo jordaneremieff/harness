@@ -25,6 +25,7 @@
     "warmup:jiti": "pi --help --offline --extension extensions/brave/index.ts --extension extensions/statusline/index.ts --extension extensions/clipboard/index.ts --extension extensions/stash/index.ts --extension extensions/subagent/index.ts"
   },
   "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-server": "*",
@@ -51,6 +52,8 @@
     "vitest-evals": "0.16.1"
   },
   "dependencies": {
+    "@earendil-works/chord": "*",
+    "@earendil-works/pi-client": "*",
     "htmlparser2": "12.0.0"
   }
 }
