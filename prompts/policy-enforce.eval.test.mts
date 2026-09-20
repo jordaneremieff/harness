@@ -74,7 +74,14 @@ function createPolicyHarness(extensionFlags: Record<string, boolean | string> | 
 		sessionManager: { getSessionId: () => "policy-eval-session" },
 		getSystemPrompt: () => "policy evaluation",
 	};
-	return { handlers, ctx };
+	return {
+		handler(name: string): Handler {
+			const handler = handlers.get(name);
+			assert.ok(handler, `policy extension must register a ${name} handler`);
+			return handler;
+		},
+		ctx,
+	};
 }
 
 function assistantToolCall(callId: string, command: string): Message {
@@ -113,8 +120,8 @@ async function evidenceFor(
 	let isError = false;
 	try {
 		await writeFile(join(root, fixture.fileName), "observe mode executed the command\n");
-		await run.handlers.get("session_start")!({ type: "session_start", reason: "startup" }, run.ctx);
-		const preflight = await run.handlers.get("tool_call")!(
+		await run.handler("session_start")({ type: "session_start", reason: "startup" }, run.ctx);
+		const preflight = await run.handler("tool_call")(
 			{ type: "tool_call", toolName: "bash", toolCallId: callId, input: { command: fixture.command } },
 			run.ctx,
 		);
@@ -126,7 +133,7 @@ async function evidenceFor(
 		) {
 			resultText = (preflight as { reason: string }).reason;
 			isError = true;
-			await run.handlers.get("tool_execution_end")!(
+			await run.handler("tool_execution_end")(
 				{
 					type: "tool_execution_end",
 					toolName: "bash",
@@ -139,7 +146,7 @@ async function evidenceFor(
 		} else {
 			const executed = await executeFile("/bin/sh", ["-c", fixture.command], { cwd: root, encoding: "utf8" });
 			const original = [{ type: "text" as const, text: `${executed.stdout}${executed.stderr}` }];
-			const patch = (await run.handlers.get("tool_result")!(
+			const patch = (await run.handler("tool_result")(
 				{
 					type: "tool_result",
 					toolName: "bash",
@@ -165,7 +172,7 @@ async function evidenceFor(
 			},
 		]);
 	} finally {
-		await run.handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "test" }, run.ctx);
+		await run.handler("session_shutdown")({ type: "session_shutdown", reason: "test" }, run.ctx);
 		if (previousDir === undefined) delete process.env.PI_POLICY_DIR;
 		else process.env.PI_POLICY_DIR = previousDir;
 		if (previousMode === undefined) delete process.env.PI_POLICY_MODE;

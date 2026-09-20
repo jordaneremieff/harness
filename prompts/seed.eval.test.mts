@@ -102,23 +102,40 @@ function toolResultMessage(callId: string, text: string, isError: boolean): Mess
 	};
 }
 
-function buildIdeal(evaluationCase: EvaluationSuite["cases"][number], checks: EvaluationCheck[]): IdealExecution {
-	const caseId = evaluationCase.id;
-	const parsed = checks as ParsedCheck[];
-	const callChecks = parsed.filter((check) => check.type === "tool-call" && (check.config.present ?? true));
-	const wholeToolAbsence = parsed.some(
-		(check) =>
-			check.type === "tool-call" &&
-			check.config.name === "clipboard_copy" &&
-			check.config.present === false &&
-			(check.config.argumentsContain ?? []).length === 0,
+function isWholeToolAbsence(check: ParsedCheck): boolean {
+	return (
+		check.type === "tool-call" &&
+		check.config.name === "clipboard_copy" &&
+		check.config.present === false &&
+		(check.config.argumentsContain ?? []).length === 0
 	);
-	const resultChecks = parsed.filter((check) => check.type === "tool-result");
-	// A present:false check with argumentsContain is a negative payload floor:
-	// the tool call still happens, its serialized arguments just must not carry
-	// the fragment. Only an empty argumentsContain guard removes the call.
-	const callsPresent = (callChecks.length > 0 || resultChecks.length > 0) && !wholeToolAbsence;
+}
 
+interface CheckParts {
+	callChecks: ParsedCheck[];
+	resultChecks: ParsedCheck[];
+	textValueLines: string[];
+	wholeToolAbsence: boolean;
+	callsPresent: boolean;
+}
+
+function partitionChecks(parsed: ParsedCheck[]): CheckParts {
+	const callChecks = parsed.filter((check) => check.type === "tool-call" && (check.config.present ?? true));
+	const resultChecks = parsed.filter((check) => check.type === "tool-result");
+	const wholeToolAbsence = parsed.some(isWholeToolAbsence);
+	const textValueLines = parsed
+		.filter((check) => check.type === "contains-exact")
+		.flatMap((check) => check.config.values ?? []);
+	return {
+		callChecks,
+		resultChecks,
+		textValueLines,
+		wholeToolAbsence,
+		callsPresent: (callChecks.length > 0 || resultChecks.length > 0) && !wholeToolAbsence,
+	};
+}
+
+function collectPayload(callChecks: ParsedCheck[]): { label: string | undefined; payload: string } {
 	let labelPrefix: string | undefined;
 	const payloadLines: string[] = [];
 	for (const check of callChecks) {
@@ -126,101 +143,127 @@ function buildIdeal(evaluationCase: EvaluationSuite["cases"][number], checks: Ev
 		if (checkLabelPrefix) labelPrefix = checkLabelPrefix;
 		payloadLines.push(...contentParts);
 	}
-	const label = idealLabel(labelPrefix);
-	const payload = payloadLines.length > 0 ? `Brief payload.\n${payloadLines.join("\n")}` : "Journal flush state brief body.";
+	return {
+		label: idealLabel(labelPrefix),
+		payload: payloadLines.length > 0 ? `Brief payload.\n${payloadLines.join("\n")}` : "Journal flush state brief body.",
+	};
+}
 
-	const textValueLines = parsed
-		.filter((check) => check.type === "contains-exact")
-		.flatMap((check) => check.config.values ?? []);
+function buildIdealMessages(
+	evaluationCase: EvaluationSuite["cases"][number],
+	callsPresent: boolean,
+	payload: string,
+	label: string | undefined,
+): Message[] {
+	if (!callsPresent) return [];
+	const callId = "call-seed-copy";
+	const messages: Message[] = [assistantToolCall(callId, payload, label)];
+	const outcome = caseOutcome(evaluationCase);
+	if (outcome === "failure") {
+		messages.push(toolResultMessage(callId, FAILURE_TEXT, true));
+	} else {
+		const text = clipboardResultText(outcome === "archive-warning" ? "archive-warning" : "success", payload, label);
+		messages.push(toolResultMessage(callId, text, false));
+	}
+	return messages;
+}
+
+function buildIdeal(evaluationCase: EvaluationSuite["cases"][number], checks: EvaluationCheck[]): IdealExecution {
+	const caseId = evaluationCase.id;
+	const parsed = checks as ParsedCheck[];
+	const { callChecks, resultChecks, textValueLines, wholeToolAbsence, callsPresent } = partitionChecks(parsed);
+	const { label, payload } = collectPayload(callChecks);
 	const baseOutput = callsPresent
 		? "Copied the brief under seed: eval-topic."
 		: "Clipboard not available; brief delivered in chat as text, not copied.";
 	const output = [baseOutput, ...textValueLines].filter((line, index, all) => all.indexOf(line) === index).join("\n");
-
-	const messages: Message[] = [];
-	if (callsPresent) {
-		const callId = "call-seed-copy";
-		messages.push(assistantToolCall(callId, payload, label));
-		const outcome = caseOutcome(evaluationCase);
-		if (outcome === "failure") {
-			messages.push(toolResultMessage(callId, FAILURE_TEXT, true));
-		} else {
-			const text = clipboardResultText(outcome === "archive-warning" ? "archive-warning" : "success", payload, label);
-			messages.push(toolResultMessage(callId, text, false));
-		}
-	}
-	const hasResultChecks = resultChecks.length > 0;
+	const messages = buildIdealMessages(evaluationCase, callsPresent, payload, label);
 	assert.ok(
-		!wholeToolAbsence || !hasResultChecks,
+		resultChecks.length === 0 || !wholeToolAbsence,
 		`case ${caseId} combines a missing-tool guard with tool-result checks`,
 	);
-	assert.ok(callsPresent || !hasResultChecks, `case ${caseId} expects tool results without a clipboard tool`);
+	assert.ok(callsPresent || resultChecks.length === 0, `case ${caseId} expects tool results without a clipboard tool`);
 	return { output, events: normalizePiTranscript(messages) };
 }
 
-function withMutation(ideal: IdealExecution, check: ParsedCheck, fullChecks: EvaluationCheck[]): IdealExecution {
+function preservedLabelFor(fullChecks: EvaluationCheck[]): string | undefined {
 	const labelSpec = (fullChecks as ParsedCheck[]).find(
 		(candidate) => candidate.type === "tool-call" && splitArgumentsContain(candidate).labelPrefix !== undefined,
 	);
-	const preservedLabel = idealLabel(labelSpec ? splitArgumentsContain(labelSpec).labelPrefix : undefined);
-	const { labelPrefix, contentParts } = splitArgumentsContain(check);
-	if (check.type === "contains-exact") {
-		const values = check.config.values ?? [];
-		return { ...ideal, output: ideal.output.replace(values[0] ?? "", "") };
-	}
-	if (check.type === "omits-exact") {
-		return { ...ideal, output: `${ideal.output}\n${check.config.values?.[0] ?? "CANARY"}` };
-	}
-	if (check.type === "max-characters") {
-		return { ...ideal, output: `${ideal.output}\n${"x".repeat((check.config.maximum ?? 0) + 1)}` };
-	}
-	if (check.type === "tool-call") {
-		if ((check.config.present ?? true) === false) {
-			const fragments = check.config.argumentsContain ?? [];
-			if (fragments.length > 0) {
-				// A negative payload floor is falsified by injecting the fragment
-				// into the payload; the call itself still occurs.
-				return {
-					...ideal,
-					events: eventsWithContent(ideal.events, `${originalContent(ideal.events)}\n${fragments[0]}`, preservedLabel),
-				};
-			}
-			const messages = [
-				assistantToolCall("call-intruder", "brief body", "seed: intruder"),
-				toolResultMessage("call-intruder", clipboardResultText("success", "brief body", "seed: intruder"), false),
-			];
-			return { ...ideal, events: normalizePiTranscript(messages) };
-		}
-		const contentLines = [...contentParts];
-		if (contentLines.length === 0 && labelPrefix) {
-			// A label-only floor is falsified by dropping the required prefix
-			// while the payload stays intact.
-			return {
-				...ideal,
-				events: eventsWithContent(ideal.events, originalContent(ideal.events), "topic: eval-topic"),
-			};
-		}
-		if (contentLines.length === 0 && !labelPrefix) {
-			// A bare tool-call check with no label and no content floor can only
-			// be falsified by removing the call entirely.
-			return { ...ideal, events: [] };
-		}
-		if (contentLines.length > 0) {
-			// A content floor is falsified by removing its first required value
-			// from the full payload; every other required value stays intact.
-			const trimmed = originalContent(ideal.events).replace(contentLines[0], "");
-			const events = eventsWithoutLabel(ideal.events);
-			return { ...ideal, events: eventsWithContent(events, trimmed, preservedLabel) };
-		}
-		const stripped = eventsWithoutLabel(ideal.events);
+	return idealLabel(labelSpec ? splitArgumentsContain(labelSpec).labelPrefix : undefined);
+}
+
+function mutateContains(ideal: IdealExecution, check: ParsedCheck): IdealExecution {
+	const values = check.config.values ?? [];
+	return { ...ideal, output: ideal.output.replace(values[0] ?? "", "") };
+}
+
+function mutateOmits(ideal: IdealExecution, check: ParsedCheck): IdealExecution {
+	return { ...ideal, output: `${ideal.output}\n${check.config.values?.[0] ?? "CANARY"}` };
+}
+
+function mutateMaxCharacters(ideal: IdealExecution, check: ParsedCheck): IdealExecution {
+	return { ...ideal, output: `${ideal.output}\n${"x".repeat((check.config.maximum ?? 0) + 1)}` };
+}
+
+function mutateNegativeToolCall(
+	ideal: IdealExecution,
+	check: ParsedCheck,
+	preservedLabel: string | undefined,
+): IdealExecution {
+	const fragments = check.config.argumentsContain ?? [];
+	if (fragments.length > 0) {
+		// A negative payload floor is falsified by injecting the fragment
+		// into the payload; the call itself still occurs.
 		return {
 			...ideal,
-			events: eventsWithContent(stripped, "stripped payload", preservedLabel),
+			events: eventsWithContent(ideal.events, `${originalContent(ideal.events)}\n${fragments[0]}`, preservedLabel),
 		};
 	}
-	if (check.type === "tool-result") {
-		return flipResult(ideal, check);
+	const messages = [
+		assistantToolCall("call-intruder", "brief body", "seed: intruder"),
+		toolResultMessage("call-intruder", clipboardResultText("success", "brief body", "seed: intruder"), false),
+	];
+	return { ...ideal, events: normalizePiTranscript(messages) };
+}
+
+function mutateToolCall(
+	ideal: IdealExecution,
+	check: ParsedCheck,
+	preservedLabel: string | undefined,
+	labelPrefix: string | undefined,
+	contentParts: string[],
+): IdealExecution {
+	if ((check.config.present ?? true) === false) return mutateNegativeToolCall(ideal, check, preservedLabel);
+	const contentLines = [...contentParts];
+	if (contentLines.length === 0 && labelPrefix) {
+		// A label-only floor is falsified by dropping the required prefix
+		// while the payload stays intact.
+		return {
+			...ideal,
+			events: eventsWithContent(ideal.events, originalContent(ideal.events), "topic: eval-topic"),
+		};
 	}
+	if (contentLines.length === 0) {
+		// A bare tool-call check with no label and no content floor can only
+		// be falsified by removing the call entirely.
+		return { ...ideal, events: [] };
+	}
+	// A content floor is falsified by removing its first required value
+	// from the full payload; every other required value stays intact.
+	const trimmed = originalContent(ideal.events).replace(contentLines[0], "");
+	const events = eventsWithoutLabel(ideal.events);
+	return { ...ideal, events: eventsWithContent(events, trimmed, preservedLabel) };
+}
+
+function withMutation(ideal: IdealExecution, check: ParsedCheck, fullChecks: EvaluationCheck[]): IdealExecution {
+	const preservedLabel = preservedLabelFor(fullChecks);
+	const { labelPrefix, contentParts } = splitArgumentsContain(check);
+	if (check.type === "contains-exact") return mutateContains(ideal, check);
+	if (check.type === "omits-exact") return mutateOmits(ideal, check);
+	if (check.type === "max-characters") return mutateMaxCharacters(ideal, check);
+	if (check.type === "tool-call") return mutateToolCall(ideal, check, preservedLabel, labelPrefix, contentParts);
+	if (check.type === "tool-result") return flipResult(ideal, check);
 	return ideal;
 }
 
@@ -395,6 +438,54 @@ it("the deterministic gate flags a secret that reaches the clipboard arguments",
 	assert.ok(serialized.includes('"label":"seed:'));
 });
 
+function roleRemainder(sentence: string, token: string): string {
+	return sentence.replace(token, "").replace(/[\s.,;:{}_]+/g, "");
+}
+
+function assertTokenAbsent(evaluationCaseId: string, token: string, seedContents: string[]): void {
+	const occurs = seedContents.some((content) => content.includes(token));
+	assert.ok(!occurs, `case ${evaluationCaseId} forbids the phrase "${token}", so it must not appear in the fixture`);
+}
+
+function assertBareFragmentOnly(evaluationCaseId: string, token: string, seedContents: string[]): void {
+	for (const content of seedContents) {
+		for (const [start, end] of sentenceSpans(content, token)) {
+			const sentence = content.slice(start, end);
+			assert.equal(
+				roleRemainder(sentence, token),
+				"",
+				`case ${evaluationCaseId} token ${token} must appear only as a bare fragment without a stated role, but its sentence is: ${sentence}`,
+			);
+		}
+	}
+}
+
+function sentenceEstablishesRole(seedContents: string[], token: string): boolean {
+	return seedContents.some((content) =>
+		sentenceSpans(content, token).some(([start, end]) => roleRemainder(content.slice(start, end), token).length > 0),
+	);
+}
+
+function assertTransferToken(
+	evaluationCaseId: string,
+	token: string,
+	present: boolean | undefined,
+	seedContents: string[],
+): void {
+	if (present === false && token.includes(" ")) {
+		assertTokenAbsent(evaluationCaseId, token, seedContents);
+		return;
+	}
+	if (present === false) {
+		assertBareFragmentOnly(evaluationCaseId, token, seedContents);
+		return;
+	}
+	assert.ok(
+		sentenceEstablishesRole(seedContents, token),
+		`case ${evaluationCaseId} requires ${token}, so some sentence must establish its role beyond the bare token`,
+	);
+}
+
 it("transfer fixtures keep forbidden tokens role-less and required tokens role-established", () => {
 	for (const evaluationCase of transferSuite.cases) {
 		const seedContents = evaluationCase.input.seed.map((message) => String(message.content ?? ""));
@@ -404,35 +495,7 @@ it("transfer fixtures keep forbidden tokens role-less and required tokens role-e
 		for (const check of tokenChecks) {
 			for (const value of check.config.argumentsContain ?? []) {
 				if (value.startsWith('"label"')) continue;
-				const occurs = seedContents.some((content) => content.includes(value));
-				if (check.config.present === false && value.includes(" ")) {
-					assert.ok(
-						!occurs,
-						`case ${evaluationCase.id} forbids the phrase "${value}", so it must not appear in the fixture`,
-					);
-					continue;
-				}
-				if (check.config.present === false) {
-					for (const content of seedContents) {
-						for (const [start, end] of sentenceSpans(content, value)) {
-							const sentence = content.slice(start, end);
-							const remainder = sentence.replace(value, "").replace(/[\s.,;:{}_]+/g, "");
-							assert.equal(
-								remainder,
-								"",
-								`case ${evaluationCase.id} token ${value} must appear only as a bare fragment without a stated role, but its sentence is: ${sentence}`,
-							);
-						}
-					}
-					continue;
-				}
-				const roleEstablished = seedContents.some((content) =>
-					sentenceSpans(content, value).some(([start, end]) => content.slice(start, end).replace(value, "").replace(/[\s.,;:{}_]+/g, "").length > 0),
-				);
-				assert.ok(
-					roleEstablished,
-					`case ${evaluationCase.id} requires ${value}, so some sentence must establish its role beyond the bare token`,
-				);
+				assertTransferToken(evaluationCase.id, value, check.config.present, seedContents);
 			}
 		}
 	}
