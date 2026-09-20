@@ -39,19 +39,18 @@ function thinkingColorKey(level: string): ThemeColor {
 	return `thinking${level.charAt(0).toUpperCase()}${level.slice(1)}` as ThemeColor;
 }
 
-function renderLines(
-	width: number,
+function buildLine1(
 	ctx: ExtensionContext,
-	footerData: ReadonlyFooterDataProvider,
 	fg: Fg,
 	sep: string,
+	width: number,
 	attachedAt: number,
-): string[] {
+): string {
+	// --- Line 1: session metrics ---
 	const metrics = scanSession(ctx.sessionManager.getEntries());
 	const usage = ctx.getContextUsage();
 	const model = ctx.model;
 
-	// --- Line 1: session metrics ---
 	const modelName = sanitizeDisplay(model?.name || model?.id || "no-model");
 	let modelSeg = fg("accent", modelName);
 	// The thinking bracket follows the model's declared reasoning capability,
@@ -64,9 +63,15 @@ function renderLines(
 
 	const parts: Line1Parts = { model: modelSeg };
 	if (usage) {
-		const known = usage.percent !== null && usage.tokens !== null;
-		parts.contextBar = known ? buildBar(usage.percent!, fg) : fg("dim", "context ?");
-		parts.tokens = fg("dim", `${known ? formatTokens(usage.tokens!) : "?"}/${formatTokens(usage.contextWindow)}`);
+		const percent = usage.percent;
+		const tokens = usage.tokens;
+		if (percent !== null && tokens !== null) {
+			parts.contextBar = buildBar(percent, fg);
+			parts.tokens = fg("dim", `${formatTokens(tokens)}/${formatTokens(usage.contextWindow)}`);
+		} else {
+			parts.contextBar = fg("dim", "context ?");
+			parts.tokens = fg("dim", `?/${formatTokens(usage.contextWindow)}`);
+		}
 	} else {
 		parts.contextBar = fg("dim", "context unavailable");
 	}
@@ -84,8 +89,16 @@ function renderLines(
 		parts.cacheRate = fg("dim", `${rate}% hit`);
 	}
 
-	const line1 = composeLine1(parts, sep, width, visibleWidth);
+	return composeLine1(parts, sep, width, visibleWidth);
+}
 
+function buildLine2(
+	ctx: ExtensionContext,
+	footerData: ReadonlyFooterDataProvider,
+	fg: Fg,
+	sep: string,
+	width: number,
+): string {
 	// --- Line 2: project + git + extension statuses ---
 	let project = fg("muted", sanitizeDisplay(folderLabel(ctx.cwd || process.cwd(), process.env.HOME)));
 	const branch = footerData.getGitBranch();
@@ -99,13 +112,27 @@ function renderLines(
 		const clean = sanitizeDisplay(text);
 		if (clean) statuses.push(`${RESET}${clean}${RESET}`);
 	}
-	const line2 = composeLine2(project, statuses, sep, width, visibleWidth);
+	const line = composeLine2(project, statuses, sep, width, visibleWidth);
 
 	// truncateToWidth is ANSI-aware and carries whole sequences, so a sanitized
 	// line cannot come back cut in half; it only needs a closing reset when it
 	// did not truncate and add one itself.
-	const body = truncateToWidth(line2, width);
-	return [truncateToWidth(line1, width), body.endsWith(RESET) ? body : `${body}${RESET}`];
+	const body = truncateToWidth(line, width);
+	return body.endsWith(RESET) ? body : `${body}${RESET}`;
+}
+
+function renderLines(
+	width: number,
+	ctx: ExtensionContext,
+	footerData: ReadonlyFooterDataProvider,
+	fg: Fg,
+	sep: string,
+	attachedAt: number,
+): string[] {
+	return [
+		truncateToWidth(buildLine1(ctx, fg, sep, width, attachedAt), width),
+		buildLine2(ctx, footerData, fg, sep, width),
+	];
 }
 
 export default function registerStatusline(pi: ExtensionAPI) {

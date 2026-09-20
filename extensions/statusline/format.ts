@@ -93,6 +93,64 @@ function endOfControlString(text: string, payloadStart: number): number | null {
 	return match ? payloadStart + match.index + match[0].length : null;
 }
 
+/** One consumed escape step: the next index, and any SGR sequence it keeps. */
+interface EscapeStep {
+	next: number;
+	kept: string;
+}
+
+/** End of a truncated CSI's parameter run, starting at the first byte after the introducer. */
+function truncatedCsiEnd(text: string, start: number): number {
+	let i = start;
+	while (i < text.length && CSI_PARAM_RE.test(text[i])) i++;
+	return i;
+}
+
+/**
+ * Consume an ESC-led sequence at `index` (the ESC itself): a complete SGR is
+ * kept, every other sequence is dropped whole when complete or by its
+ * introducer-and-parameters when truncated, and a lone ESC consumes itself.
+ * The parameter run is dropped because a half-consumed sequence paints its
+ * remaining bytes as literal text.
+ */
+function consumeEscSequence(text: string, index: number): EscapeStep {
+	const rest = text.slice(index);
+	const sgr = SGR_RE.exec(rest);
+	if (sgr) return { next: index + sgr[0].length, kept: sgr[0] };
+	if (text[index + 1] === "[") {
+		const csi = CSI_RE.exec(rest);
+		return { next: csi ? index + csi[0].length : truncatedCsiEnd(text, index + 2), kept: "" };
+	}
+	const opener = text[index + 1];
+	if (opener !== undefined && ESC_STRING_OPENERS.includes(opener)) {
+		return { next: endOfControlString(text, index + 2) ?? index + 2, kept: "" };
+	}
+	// Any other escape sequence: ESC, optional intermediates, one final byte.
+	// Covers charset designators (ESC ( B), cursor save/restore (ESC 7 / ESC 8),
+	// keypad modes, and the single-byte Fe controls.
+	const esc = ESC_SEQ_RE.exec(rest);
+	if (esc) return { next: index + esc[0].length, kept: "" };
+	return { next: index + 1, kept: "" };
+}
+
+/**
+ * Consume an introducer sequence at `index`, or null when the character starts
+ * none. ESC carries the full SGR allowlist; the C1 CSI and control-string
+ * introducers drop their whole (or truncated) sequence.
+ */
+function consumeEscape(text: string, index: number): EscapeStep | null {
+	const c = text[index];
+	if (c === "\x1b") return consumeEscSequence(text, index);
+	if (c === "\x9b") {
+		const m = C1_CSI_RE.exec(text.slice(index));
+		return { next: index + (m ? m[0].length : 1), kept: "" };
+	}
+	if (C1_STRING_OPENERS.includes(c)) {
+		return { next: endOfControlString(text, index + 1) ?? index + 1, kept: "" };
+	}
+	return null;
+}
+
 /**
  * Single-line display sanitize with an SGR allowlist: complete color sequences
  * survive so a pre-colored extension status renders as its author intended,
@@ -113,59 +171,16 @@ export function sanitizeDisplay(input: string): string {
 	let i = 0;
 	const n = text.length;
 	while (i < n) {
+		const step = consumeEscape(text, i);
+		if (step) {
+			out += step.kept;
+			i = step.next;
+			continue;
+		}
 		const c = text[i];
-		if (c === "\x1b") {
-			const rest = text.slice(i);
-			const sgr = SGR_RE.exec(rest);
-			if (sgr) {
-				out += sgr[0];
-				i += sgr[0].length;
-				continue;
-			}
-			if (text[i + 1] === "[") {
-				const csi = CSI_RE.exec(rest);
-				if (csi) {
-					i += csi[0].length;
-				} else {
-					// Truncated CSI: drop ESC [ and its parameter run, leaving no residue.
-					i += 2;
-					while (i < n && CSI_PARAM_RE.test(text[i])) i++;
-				}
-				continue;
-			}
-			const opener = text[i + 1];
-			if (opener !== undefined && ESC_STRING_OPENERS.includes(opener)) {
-				i = endOfControlString(text, i + 2) ?? i + 2;
-				continue;
-			}
-			// Any other escape sequence: ESC, optional intermediates, one final
-			// byte. Covers charset designators (ESC ( B), cursor save/restore
-			// (ESC 7 / ESC 8), keypad modes, and the single-byte Fe controls.
-			const esc = ESC_SEQ_RE.exec(rest);
-			if (esc) {
-				i += esc[0].length;
-				continue;
-			}
-			i += 1; // lone ESC at end of input
-			continue;
-		}
-		if (c === "\x9b") {
-			const m = C1_CSI_RE.exec(text.slice(i));
-			i += m ? m[0].length : 1;
-			continue;
-		}
-		if (C1_STRING_OPENERS.includes(c)) {
-			i = endOfControlString(text, i + 1) ?? i + 1;
-			continue;
-		}
 		// ESC and the C1 introducers are consumed above; the rest of C0/DEL/C1 blanks.
 		const code = c.charCodeAt(0);
-		if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) {
-			out += " ";
-			i++;
-			continue;
-		}
-		out += c;
+		out += code <= 0x1f || (code >= 0x7f && code <= 0x9f) ? " " : c;
 		i++;
 	}
 	return out.replace(/ +/g, " ").trim();

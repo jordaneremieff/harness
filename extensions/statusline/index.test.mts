@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import registerStatusline from "./index.ts";
+import type { SessionEntryLike } from "./metrics.ts";
 
 // --- Fake timers: capture interval create/clear so tick ownership is testable ---
 
@@ -11,15 +13,18 @@ let _clearedTicks = 0;
 const realSetInterval = globalThis.setInterval;
 const realClearInterval = globalThis.clearInterval;
 
+const fakeSetInterval = ((callback: () => void, ms: number) => {
+	const tick: Tick = { callback, ms, unref: () => {} };
+	liveTicks.add(tick);
+	return tick;
+}) as unknown as typeof globalThis.setInterval;
+const fakeClearInterval = ((tick: Tick) => {
+	if (liveTicks.delete(tick)) _clearedTicks++;
+}) as unknown as typeof globalThis.clearInterval;
+
 before(() => {
-	globalThis.setInterval = ((callback: () => void, ms: number) => {
-		const tick: Tick = { callback, ms, unref: () => {} };
-		liveTicks.add(tick);
-		return tick;
-	}) as any;
-	globalThis.clearInterval = ((tick: Tick) => {
-		if (liveTicks.delete(tick)) _clearedTicks++;
-	}) as any;
+	globalThis.setInterval = fakeSetInterval;
+	globalThis.clearInterval = fakeClearInterval;
 });
 
 after(() => {
@@ -29,47 +34,148 @@ after(() => {
 
 // --- Mocks ---
 
+interface MockModel {
+	id?: string;
+	name?: string;
+	api?: string;
+	provider?: string;
+	reasoning?: boolean;
+}
+
+interface ContextUsage {
+	tokens: number | null;
+	contextWindow: number;
+	percent: number | null;
+}
+
+interface MockSessionManager {
+	getEntries(): SessionEntryLike[];
+	getBranch?(): never;
+}
+
+interface MockUi {
+	setFooter(factory: MockFactory | undefined): void;
+	notify(message: string): void;
+}
+
+interface MockCtx {
+	mode: string;
+	hasUI: boolean;
+	cwd: string;
+	model: MockModel;
+	thinkingLevel: string;
+	sessionManager: MockSessionManager;
+	getContextUsage(): ContextUsage | undefined;
+	ui: MockUi;
+}
+
+interface MockFooterData {
+	getGitBranch(): string | null;
+	getExtensionStatuses(): Map<string, string>;
+	onBranchChange(callback: () => void): () => void;
+}
+
+interface MockTheme {
+	fg(color: string, text: string): string;
+}
+
+interface MockTui {
+	renders: number;
+	requestRender(): void;
+}
+
+interface MockFooter {
+	dispose(): void;
+	invalidate(): void;
+	render(width: number): string[];
+}
+
+type MockFactory = (tui: MockTui, theme: MockTheme, footerData: MockFooterData) => MockFooter;
+type SessionHandler = (event: { type: string; reason?: string }, ctx: MockCtx) => unknown;
+
+interface MockCommand {
+	description: string;
+	handler: (args: string, ctx: MockCtx) => unknown;
+}
+
+interface CtxOverrides {
+	mode?: string;
+	hasUI?: boolean;
+	cwd?: string;
+	model?: MockModel;
+	thinkingLevel?: string;
+	entries?: SessionEntryLike[];
+	usage?: ContextUsage;
+	gitBranch?: string | null;
+	statuses?: Map<string, string>;
+	sessionManager?: MockSessionManager;
+	getContextUsage?: () => ContextUsage | undefined;
+}
+
+/** Typed registry that fails on a missing entry instead of yielding undefined at each call site. */
+class Registry<T> {
+	readonly #entries = new Map<string, T>();
+
+	set(name: string, value: T): void {
+		this.#entries.set(name, value);
+	}
+
+	get(name: string): T {
+		const value = this.#entries.get(name);
+		if (value === undefined) throw new Error(`missing entry: ${name}`);
+		return value;
+	}
+
+	has(name: string): boolean {
+		return this.#entries.has(name);
+	}
+}
+
 function makePi() {
-	const handlers = new Map<string, any>();
-	const commands = new Map<string, any>();
+	const handlers = new Registry<SessionHandler>();
+	const commands = new Registry<MockCommand>();
 	const pi = {
-		on: (event: string, handler: any) => handlers.set(event, handler),
-		registerCommand: (name: string, command: any) => commands.set(name, command),
+		on: (event: string, handler: SessionHandler) => handlers.set(event, handler),
+		registerCommand: (name: string, command: MockCommand) => commands.set(name, command),
 	};
-	registerStatusline(pi as any);
+	registerStatusline(pi as unknown as ExtensionAPI);
 	return { handlers, commands };
 }
 
-function makeCtx(over: Record<string, any> = {}) {
-	const footerCalls: any[] = [];
+function makeCtx(over: CtxOverrides = {}) {
+	const footerCalls: (MockFactory | undefined)[] = [];
 	const notifications: string[] = [];
 	const branchChangeCbs: (() => void)[] = [];
-	const ctx: any = {
-		mode: "tui",
-		hasUI: true,
-		cwd: "/tmp/statusline-test",
-		model: { id: "test-model", name: "Test Model", api: "anthropic-messages", provider: "test", reasoning: true },
-		thinkingLevel: "high",
-		sessionManager: { getEntries: () => over.entries ?? [] },
-		getContextUsage: () => over.usage ?? { tokens: 50_000, contextWindow: 200_000, percent: 25 },
-		ui: {
-			setFooter: (factory: any) => footerCalls.push(factory),
-			notify: (msg: string) => notifications.push(msg),
+	const ctx: MockCtx = {
+		mode: over.mode ?? "tui",
+		hasUI: over.hasUI ?? true,
+		cwd: over.cwd ?? "/tmp/statusline-test",
+		model: over.model ?? {
+			id: "test-model",
+			name: "Test Model",
+			api: "anthropic-messages",
+			provider: "test",
+			reasoning: true,
 		},
-		...over,
+		thinkingLevel: over.thinkingLevel ?? "high",
+		sessionManager: over.sessionManager ?? { getEntries: () => over.entries ?? [] },
+		getContextUsage:
+			over.getContextUsage ?? (() => over.usage ?? { tokens: 50_000, contextWindow: 200_000, percent: 25 }),
+		ui: {
+			setFooter: (factory) => footerCalls.push(factory),
+			notify: (msg) => notifications.push(msg),
+		},
 	};
-	delete ctx.entries;
-	delete ctx.usage;
-	const footerData: any = {
+	const footerData: MockFooterData = {
 		getGitBranch: () => (over.gitBranch === undefined ? "main" : over.gitBranch),
 		getExtensionStatuses: () => over.statuses ?? new Map(),
-		onBranchChange: (cb: () => void) => {
-			branchChangeCbs.push(cb);
-			return () => branchChangeCbs.splice(branchChangeCbs.indexOf(cb), 1);
+		onBranchChange: (callback: () => void) => {
+			branchChangeCbs.push(callback);
+			return () => branchChangeCbs.splice(branchChangeCbs.indexOf(callback), 1);
 		},
 	};
-	const theme: any = { fg: (_c: string, t: string) => t };
-	const tui: any = {
+	const theme: MockTheme = { fg: (_c: string, t: string) => t };
+	const tui: MockTui = {
 		renders: 0,
 		requestRender() {
 			this.renders++;
