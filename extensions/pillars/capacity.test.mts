@@ -21,6 +21,21 @@ function result(resourceId = "example"): Cell {
 		bodyVerifiedAtObservation: 1, bodyUnverifiable: 3,
 	} };
 }
+function envelopeShard(day: string) {
+	const shard = emptyShard(day);
+	for (let resource = 0; resource < 63; resource++) {
+		for (let model = 0; model < 4; model++) {
+			for (let digest = 0; digest < 4; digest++) {
+				for (const stage of ["tool_request", "tool_result"] as const) {
+					shard.cells.push({ ...cell(day, `resource-${resource}`), model: `model-${model}`,
+						referenceBodyDigest: String(digest).repeat(64), observationStage: stage,
+						counters: stage === "tool_request" ? cell().counters : result().counters });
+				}
+			}
+		}
+	}
+	return shard;
+}
 
 test("immutable retries account cells, receipt, and detection-day health once", () => {
 	const input = batch();
@@ -87,18 +102,7 @@ test("all thirty dates retain the specified resource/model/digest/stage envelope
 	const snapshot: Snapshot = { shards: {} };
 	for (let ago = 0; ago < LIMITS.days; ago++) {
 		const day = new Date((dayNumber(TODAY) - ago) * 86400000).toISOString().slice(0, 10);
-		const shard = emptyShard(day);
-		for (let resource = 0; resource < 63; resource++) {
-			for (let model = 0; model < 4; model++) {
-				for (let digest = 0; digest < 4; digest++) {
-					for (const stage of ["tool_request", "tool_result"] as const) {
-						shard.cells.push({ ...cell(day, `resource-${resource}`), model: `model-${model}`,
-							referenceBodyDigest: String(digest).repeat(64), observationStage: stage,
-							counters: stage === "tool_request" ? cell().counters : result().counters });
-					}
-				}
-			}
-		}
+		const shard = envelopeShard(day);
 		assert.equal(shard.cells.length, 2016);
 		snapshot.shards[day] = shard;
 	}
@@ -142,7 +146,7 @@ test("safe arithmetic rejects the complete candidate and its receipt", () => {
 test("closed validators reject malformed, duplicated, and semantically impossible data", () => {
 	for (const day of ["2026-02-29", "2026-13-01", "1999-01-01", "2026-09-07x"]) assert.throws(() => dayNumber(day));
 	const mutations: Array<(row: Cell) => void> = [
-		(row) => { (row as any).resourceClass = "foreign"; },
+		(row) => { Object.assign(row, { resourceClass: "foreign" }); },
 		(row) => { row.piVersion = "other"; },
 		(row) => { row.model = "not a model"; },
 		(row) => { row.referenceBodyDigest = "a"; },
