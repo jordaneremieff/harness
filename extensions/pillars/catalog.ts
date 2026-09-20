@@ -55,6 +55,36 @@ export function corpusRoot(): string {
 	return override;
 }
 
+const ENTRY_TARGET = /^(?:principle|pattern|heuristic)-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
+const MAX_TARGETS = 256;
+
+function inventoryTargets(inventory: Buffer): string[] {
+	const targets: string[] = [];
+	for (const match of decodeBody(inventory).matchAll(/\[[^\]\n]*\]\(([^)\s]+)\)/g)) {
+		if (targets.length === MAX_TARGETS) throw new Error("source_unavailable");
+		targets.push(match[1]);
+	}
+	return targets;
+}
+
+async function registerEntry(
+	root: string,
+	target: string,
+	resources: Resource[],
+	paths: Set<string>,
+	ids: Set<string>,
+): Promise<void> {
+	if (target === "GOVERNANCE.md" || target.startsWith("#")) return;
+	if (!ENTRY_TARGET.test(target)) throw new Error("source_unavailable");
+	const id = basename(target, ".md");
+	if (id.length > 64 || ids.has(id) || resources.length === CATALOG_TARGETS) throw new Error("source_unavailable");
+	const path = await realpath(resolve(root, target));
+	if (dirname(path) !== root || paths.has(path)) throw new Error("source_unavailable");
+	paths.add(path);
+	ids.add(id);
+	resources.push({ resourceClass: "entry", resourceId: id, path });
+}
+
 export async function loadCatalog(signal?: AbortSignal): Promise<Catalog> {
 	const root = await realpath(corpusRoot());
 	const inventoryPath = await realpath(resolve(root, "README.md"));
@@ -70,21 +100,8 @@ export async function loadCatalog(signal?: AbortSignal): Promise<Catalog> {
 	const paths = new Set(resources.map((resource) => resource.path));
 	const ids = new Set(resources.map((resource) => resource.resourceId));
 	if (paths.size !== resources.length) throw new Error("source_unavailable");
-	let visits = 0;
-	for (const match of decodeBody(inventory).matchAll(/\[[^\]\n]*\]\(([^)\s]+)\)/g)) {
-		if (++visits > 256) throw new Error("source_unavailable");
-		const target = match[1];
-		if (target === "GOVERNANCE.md" || target.startsWith("#")) continue;
-		if (!/^(?:principle|pattern|heuristic)-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(target)) {
-			throw new Error("source_unavailable");
-		}
-		const id = basename(target, ".md");
-		if (id.length > 64 || ids.has(id) || resources.length === CATALOG_TARGETS) throw new Error("source_unavailable");
-		const path = await realpath(resolve(root, target));
-		if (dirname(path) !== root || paths.has(path)) throw new Error("source_unavailable");
-		paths.add(path);
-		ids.add(id);
-		resources.push({ resourceClass: "entry", resourceId: id, path });
+	for (const target of inventoryTargets(inventory)) {
+		await registerEntry(root, target, resources, paths, ids);
 	}
 	if (resources.length === 2) throw new Error("source_unavailable");
 	return { resources: Object.freeze(resources.map((resource) => Object.freeze(resource))) };

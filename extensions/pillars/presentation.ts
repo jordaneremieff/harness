@@ -31,6 +31,21 @@ function textContent(result: AgentToolResult<unknown>): string {
 		.join("\n");
 }
 
+function accessErrorText(result: AgentToolResult<AccessPage | AccessError | undefined>, context: RenderContext): string {
+	const details = result.details;
+	if (details?.schema === "pillars-source-error") return `pillars: ${details.code}`;
+	if (context.isError) return textContent(result) || "pillars: unavailable";
+	return "pillars: unavailable";
+}
+
+function expandedAccessText(page: AccessPage, theme: Theme): string {
+	if (!page.text) return "";
+	return `\n\n${page.text
+		.split("\n")
+		.map((line) => theme.fg("toolOutput", line))
+		.join("\n")}`;
+}
+
 /** Terminal rendering for the `pillars` tool: compact by default, full source text when expanded. */
 export function accessRenderers(): {
 	renderCall(args: AccessRequest | undefined, theme: Theme): Text;
@@ -51,24 +66,12 @@ export function accessRenderers(): {
 		renderResult(result, options, theme, context) {
 			if (options.isPartial) return new Text(`\n${theme.fg("warning", "Reading the corpus...")}`, 0, 0);
 			const details = result.details;
-			if (context.isError || !details || details.schema === "pillars-source-error") {
-				const structured = details?.schema === "pillars-source-error" ? `pillars: ${details.code}` : "";
-				const message = structured || (context.isError ? textContent(result) : "") || "pillars: unavailable";
-				return new Text(`\n${theme.fg("error", message)}`, 0, 0);
-			}
+			if (context.isError || !details || details.schema === "pillars-source-error")
+				return new Text(`\n${theme.fg("error", accessErrorText(result, context))}`, 0, 0);
 			let text = `\n${theme.fg("success", details.resource)}`;
 			text += theme.fg("dim", ` (${details.endOffset - details.offset} of ${details.bodyBytes} bytes)`);
 			if (details.nextOffset !== undefined) text += theme.fg("warning", " (continuation available)");
-			if (options.expanded) {
-				if (details.text) {
-					text += `\n\n${details.text
-						.split("\n")
-						.map((line) => theme.fg("toolOutput", line))
-						.join("\n")}`;
-				}
-			} else {
-				text += `\n${expandHint(theme)}`;
-			}
+			text += options.expanded ? expandedAccessText(details, theme) : `\n${expandHint(theme)}`;
 			return new Text(text, 0, 0);
 		},
 	};
