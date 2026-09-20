@@ -254,16 +254,71 @@ async function* reverseLines(
  * Malformed and oversized individual records are skipped. Stable-id lookup stops
  * as soon as the newest matching record is found.
  */
+interface ReadState {
+	entries: ClipboardEntry[];
+	seenIds: Set<string>;
+	contentChars: number;
+	requestedLimit: number;
+	lookupId: string | undefined;
+	signal: AbortSignal | undefined;
+}
+
+/** Directory listing, or null when the archive directory does not exist yet. */
+async function listArchiveDirents(dir: string): Promise<Dirent[] | null> {
+	try {
+		return await readdir(dir, { withFileTypes: true });
+	} catch (error) {
+		if (hasCode(error, "ENOENT")) return null;
+		throw error;
+	}
+}
+
+/** Read one archive file newest-first into `state`; "done" when the caller's limit is reached. */
+async function readArchiveEntries(dir: string, file: string, state: ReadState): Promise<"done" | "continue"> {
+	const path = join(dir, file);
+	let opened: { handle: FileHandle; size: number } | undefined;
+	try {
+		opened = await openArchive(path);
+	} catch (error) {
+		if (hasCode(error, "ENOENT") || hasCode(error, "ELOOP")) return "continue";
+		throw error;
+	}
+	try {
+		for await (const line of reverseLines(opened.handle, opened.size, state.signal)) {
+			state.signal?.throwIfAborted();
+			if (!line?.trim()) continue;
+			if (collectLine(line, state) === "done") return "done";
+		}
+	} finally {
+		await opened.handle.close();
+	}
+	return "continue";
+}
+
+function collectLine(line: string, state: ReadState): "done" | "continue" {
+	try {
+		const entry = normalizeEntry(JSON.parse(line), state.contentChars);
+		if (!entry || state.seenIds.has(entry.id)) return "continue";
+		state.seenIds.add(entry.id);
+		if (state.lookupId !== undefined) {
+			if (entry.id !== state.lookupId) return "continue";
+			state.entries.push(entry);
+			return "done";
+		}
+		state.entries.push(entry);
+		return state.entries.length >= state.requestedLimit ? "done" : "continue";
+	} catch {
+		state.signal?.throwIfAborted();
+		// A damaged record must not hide valid recovery data around it.
+		return "continue";
+	}
+}
+
 export async function readEntries(dir: string, options: ReadOptions = {}): Promise<ClipboardEntry[]> {
 	options.signal?.throwIfAborted();
 	if (!(await ensurePrivateDirectory(dir, false))) return [];
-	let dirents: Dirent[];
-	try {
-		dirents = await readdir(dir, { withFileTypes: true });
-	} catch (error) {
-		if (hasCode(error, "ENOENT")) return [];
-		throw error;
-	}
+	const dirents = await listArchiveDirents(dir);
+	if (dirents === null) return [];
 	const files = archiveFiles(dirents, options.date).reverse();
 	const requestedLimit = options.id
 		? 1
@@ -273,43 +328,19 @@ export async function readEntries(dir: string, options: ReadOptions = {}): Promi
 		options.contentChars ?? (options.id ? Number.POSITIVE_INFINITY : DEFAULT_CONTENT_CHARS),
 	);
 	if (requestedLimit === 0 || (options.id !== undefined && !SAFE_ID.test(options.id))) return [];
-
-	const entries: ClipboardEntry[] = [];
-	const seenIds = new Set<string>();
+	const state: ReadState = {
+		entries: [],
+		seenIds: new Set(),
+		contentChars,
+		requestedLimit,
+		lookupId: options.id,
+		signal: options.signal,
+	};
 	for (const file of files) {
 		options.signal?.throwIfAborted();
-		const path = join(dir, file);
-		let opened: { handle: FileHandle; size: number } | undefined;
-		try {
-			opened = await openArchive(path);
-		} catch (error) {
-			if (hasCode(error, "ENOENT") || hasCode(error, "ELOOP")) continue;
-			throw error;
-		}
-		try {
-			for await (const line of reverseLines(opened.handle, opened.size, options.signal)) {
-				options.signal?.throwIfAborted();
-				if (!line?.trim()) continue;
-				try {
-					const entry = normalizeEntry(JSON.parse(line), contentChars);
-					if (!entry || seenIds.has(entry.id)) continue;
-					seenIds.add(entry.id);
-					if (options.id) {
-						if (entry.id === options.id) return [entry];
-						continue;
-					}
-					entries.push(entry);
-					if (entries.length >= requestedLimit) return entries;
-				} catch {
-					options.signal?.throwIfAborted();
-					// A damaged record must not hide valid recovery data around it.
-				}
-			}
-		} finally {
-			await opened.handle.close();
-		}
+		if ((await readArchiveEntries(dir, file, state)) === "done") return state.entries;
 	}
-	return entries;
+	return state.entries;
 }
 
 /** File permission bits of one daily archive, for tests and diagnostics. */

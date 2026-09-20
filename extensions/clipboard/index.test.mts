@@ -3,23 +3,92 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerClipboard from "./index.ts";
 
-function registry() {
-	const tools = new Map<string, any>();
-	const commands = new Map<string, any>();
-	const pi = {
-		registerTool: (tool: any) => tools.set(tool.name, tool),
-		registerCommand: (name: string, command: any) => commands.set(name, command),
+interface ClipboardDetails {
+	id: string;
+	count: number;
+	hasMore: boolean;
+	ids: string[];
+	truncated: boolean;
+	nextOffset: number;
+}
+interface ToolResult {
+	content: Array<{ type: string; text: string }>;
+	details: ClipboardDetails;
+}
+interface Tool {
+	name: string;
+	execute(
+		id: string,
+		params: Record<string, unknown>,
+		signal: AbortSignal,
+		update: unknown,
+		ctx: unknown,
+	): Promise<ToolResult>;
+}
+interface PanelComponent {
+	render(width: number): string[];
+	handleInput(data: string): void;
+}
+type PanelFactory = (
+	tui: unknown,
+	theme: unknown,
+	keybindings: unknown,
+	done: (result: unknown) => void,
+) => PanelComponent;
+interface ClipboardCommandCtx {
+	hasUI: boolean;
+	mode: string;
+	ui: {
+		notify(message: string): void;
+		custom(factory: PanelFactory, options?: unknown): Promise<unknown>;
 	};
-	registerClipboard(pi as any);
+}
+interface MockCommand {
+	description: string;
+	handler(args: string, ctx: ClipboardCommandCtx): unknown;
+}
+interface MockTheme {
+	fg(color: string, text: string): string;
+	bg(color: string, text: string): string;
+	bold(text: string): string;
+}
+
+class Registry<T> {
+	readonly #entries = new Map<string, T>();
+	set(name: string, value: T): void {
+		this.#entries.set(name, value);
+	}
+	get(name: string): T {
+		const value = this.#entries.get(name);
+		if (value === undefined) throw new Error(`missing entry: ${name}`);
+		return value;
+	}
+	has(name: string): boolean {
+		return this.#entries.has(name);
+	}
+	keys(): IterableIterator<string> {
+		return this.#entries.keys();
+	}
+}
+
+function registry(): { tools: Registry<Tool>; commands: Registry<MockCommand> } {
+	const tools = new Registry<Tool>();
+	const commands = new Registry<MockCommand>();
+	const pi = {
+		registerTool: (tool: Tool) => tools.set(tool.name, tool),
+		registerCommand: (name: string, command: MockCommand) => commands.set(name, command),
+	};
+	registerClipboard(pi as unknown as ExtensionAPI);
 	return { tools, commands };
 }
 
-const execute = (tool: any, params: Record<string, unknown>) =>
+const execute = (tool: Tool, params: Record<string, unknown>) =>
 	tool.execute("call", params, new AbortController().signal, undefined, {});
 
-const theme: any = {
+const theme: MockTheme = {
 	fg: (_color: string, text: string) => text,
 	bg: (_color: string, text: string) => text,
 	bold: (text: string) => text,
@@ -181,12 +250,12 @@ describe("clipboard entrypoint", () => {
 		const full = `${"preview ".repeat(5000)}FULL_TAIL`;
 		await execute(tools.get("clipboard_copy"), { content: full, label: "browser-large" });
 		const notifications: string[] = [];
-		const ctx: any = {
+		const ctx: ClipboardCommandCtx = {
 			hasUI: true,
 			mode: "tui",
 			ui: {
 				notify: (message: string) => notifications.push(message),
-				custom: async (factory: any) =>
+				custom: async (factory) =>
 					new Promise((resolve) => {
 						const component = factory({ terminal: { rows: 24 }, requestRender: () => {} }, theme, {}, resolve);
 						assert.match(component.render(72).join("\n"), /preview truncated/);

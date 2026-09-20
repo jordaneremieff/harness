@@ -15,7 +15,7 @@ export function sanitizeTerminalText(input: string): SanitizedText {
 	let text = "";
 	let changed = false;
 	for (const char of input) {
-		const code = char.codePointAt(0)!;
+		const code = char.codePointAt(0) ?? 0;
 		if (char === "\n") {
 			text += char;
 			continue;

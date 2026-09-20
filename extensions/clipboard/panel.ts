@@ -31,6 +31,8 @@ interface Layout {
 	previewRows: number;
 }
 
+type Color = Parameters<Theme["fg"]>[0];
+
 function safeLine(value: string): string {
 	return sanitizeTerminalText(value).text.replace(/\n/g, "↵");
 }
@@ -135,89 +137,118 @@ export class ClipboardPanel {
 		}
 		const entries = this.filtered;
 		if (matchesKey(data, "escape")) {
-			if (this.filter) {
-				this.filter = "";
-				this.selected = 0;
-				this.listScroll = 0;
-				this.previewScroll = 0;
-				this.bump();
-			} else {
-				this.deps.done({});
-			}
+			this.onEscape();
 			return;
 		}
 		this.flash = null;
 		if (matchesKey(data, "up")) {
-			this.selected = Math.max(0, this.selected - 1);
-			this.previewScroll = 0;
-			this.bump();
+			this.onUp();
 			return;
 		}
 		if (matchesKey(data, "down")) {
-			this.selected = Math.min(Math.max(0, entries.length - 1), this.selected + 1);
-			this.previewScroll = 0;
-			this.bump();
+			this.onDown(entries.length);
 			return;
 		}
 		if (matchesKey(data, "left")) {
-			this.previewScroll = Math.max(0, this.previewScroll - this.previewPageSize());
-			this.bump();
+			this.onPreview(-1);
 			return;
 		}
 		if (matchesKey(data, "right")) {
-			this.previewScroll = Math.min(this.previewMaxScroll(), this.previewScroll + this.previewPageSize());
-			this.bump();
+			this.onPreview(1);
 			return;
 		}
 		if (matchesKey(data, "backspace")) {
-			if (this.filter) {
-				this.filter = Array.from(this.filter).slice(0, -1).join("");
-				this.selected = 0;
-				this.listScroll = 0;
-				this.previewScroll = 0;
-				this.bump();
-			}
+			this.onBackspace();
 			return;
 		}
 		if (matchesKey(data, "enter")) {
-			const entry = entries[this.selected];
-			if (!entry) return;
-			this.restoring = true;
-			const controller = new AbortController();
-			this.restoreController = controller;
-			this.bump();
-			void (async () => {
-				let outcome: RestoreOutcome;
-				try {
-					outcome = await this.deps.onRestore(entry, controller.signal);
-				} catch (error) {
-					outcome = { ok: false, error: error instanceof Error ? error.message : String(error) };
-				}
-				this.restoreController = undefined;
-				this.restoring = false;
-				if (this.disposed) return;
-				if ("error" in outcome) {
-					this.flash = `restore failed: ${outcome.error}`;
-					this.bump();
-					return;
-				}
-				this.deps.done(
-					outcome.warning === undefined ? { restored: entry } : { restored: entry, warning: outcome.warning },
-				);
-			})();
+			this.onEnter(entries);
 			return;
 		}
-		// A terminal that negotiated the Kitty keyboard protocol sends CSI-u for
-		// every key, printable ones included. Decode first, the way pi-tui's own
-		// input component does, or typed filter text never arrives.
-		const typed = decodeKittyPrintable(data) ?? data;
-		if (typed.length > 0 && !matchesKey(data, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(typed)) {
-			this.filter += typed;
+		this.handleTyped(data);
+	}
+
+	private onEscape(): void {
+		if (this.filter) {
+			this.filter = "";
 			this.selected = 0;
 			this.listScroll = 0;
 			this.previewScroll = 0;
 			this.bump();
+		} else {
+			this.deps.done({});
 		}
+	}
+
+	private onUp(): void {
+		this.selected = Math.max(0, this.selected - 1);
+		this.previewScroll = 0;
+		this.bump();
+	}
+
+	private onDown(count: number): void {
+		this.selected = Math.min(Math.max(0, count - 1), this.selected + 1);
+		this.previewScroll = 0;
+		this.bump();
+	}
+
+	private onPreview(direction: number): void {
+		const page = this.previewPageSize();
+		this.previewScroll =
+			direction < 0
+				? Math.max(0, this.previewScroll - page)
+				: Math.min(this.previewMaxScroll(), this.previewScroll + page);
+		this.bump();
+	}
+
+	private onBackspace(): void {
+		if (!this.filter) return;
+		this.filter = Array.from(this.filter).slice(0, -1).join("");
+		this.selected = 0;
+		this.listScroll = 0;
+		this.previewScroll = 0;
+		this.bump();
+	}
+
+	private onEnter(entries: ClipboardEntry[]): void {
+		const entry = entries[this.selected];
+		if (!entry) return;
+		this.restoring = true;
+		const controller = new AbortController();
+		this.restoreController = controller;
+		this.bump();
+		void this.restore(entry, controller);
+	}
+
+	private async restore(entry: ClipboardEntry, controller: AbortController): Promise<void> {
+		let outcome: RestoreOutcome;
+		try {
+			outcome = await this.deps.onRestore(entry, controller.signal);
+		} catch (error) {
+			outcome = { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+		this.restoreController = undefined;
+		this.restoring = false;
+		if (this.disposed) return;
+		if ("error" in outcome) {
+			this.flash = `restore failed: ${outcome.error}`;
+			this.bump();
+			return;
+		}
+		this.deps.done(outcome.warning === undefined ? { restored: entry } : { restored: entry, warning: outcome.warning });
+	}
+
+	private handleTyped(data: string): void {
+		// A terminal that negotiated the Kitty keyboard protocol sends CSI-u for
+		// every key, printable ones included. Decode first, the way pi-tui's own
+		// input component does, or typed filter text never arrives.
+		const typed = decodeKittyPrintable(data) ?? data;
+		if (typed.length === 0 || matchesKey(data, "ctrl+c") || !/^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(typed)) return;
+		this.filter += typed;
+		this.selected = 0;
+		this.listScroll = 0;
+		this.previewScroll = 0;
+		this.bump();
 	}
 
 	render(width: number): string[] {
@@ -227,97 +258,153 @@ export class ClipboardPanel {
 			return this.cachedLines;
 		}
 		this.previewScroll = Math.min(this.previewScroll, this.previewMaxScroll());
-		const theme = this.deps.theme;
-		const entries = this.filtered;
-		const total = this.deps.entries.length;
-		const innerWidth = layout.framed ? Math.max(0, width - 2) : width;
-		type Color = Parameters<Theme["fg"]>[0];
-		const styled = (text: string, targetWidth: number, color?: Color, bold = false): string => {
-			let result = fitText(text, targetWidth); // truncate before styling so resets cannot punch through the panel background
-			if (bold) result = theme.bold(result);
-			if (color) result = theme.fg(color, result);
-			return result;
-		};
-		const paint = (text: string, color?: Color, bold = false): string =>
-			theme.bg("customMessageBg", styled(text, width, color, bold));
-		const row = (text: string, color?: Color, bold = false): string =>
-			layout.framed
-				? theme.bg(
-						"customMessageBg",
-						`${theme.fg("borderMuted", "│")}${styled(text, innerWidth, color, bold)}${theme.fg("borderMuted", "│")}`,
-					)
-				: paint(text, color, bold);
-		const footer = (text: string): string =>
-			layout.framed
-				? theme.bg(
-						"customMessageBg",
-						`${theme.fg("borderMuted", "╰")}${styled(text, innerWidth, "dim")}${theme.fg("borderMuted", "╯")}`,
-					)
-				: paint(text, "dim");
-		const lines: string[] = [];
-
-		if (layout.total === 1) {
-			lines.push(footer(" esc close"));
-		} else {
-			if (layout.framed) lines.push(paint(`╭${"─".repeat(innerWidth)}╮`, "borderMuted"));
-			const loadedTotal = `${total}${this.deps.hasMore ? "+" : ""}`;
-			const filterNote = this.filter
-				? this.deps.hasMore
-					? ` — ${entries.length} match in ${loadedTotal} recent`
-					: ` — ${entries.length} of ${total} match`
-				: ` — ${loadedTotal} entries`;
-			lines.push(row(` Clipboard history ${filterNote}`, "accent", true));
-			if (layout.filter) {
-				lines.push(
-					row(this.filter ? ` filter: ${safeLine(this.filter)}▌` : " type to filter", this.filter ? "muted" : "dim"),
-				);
-			}
-
-			if (this.selected < this.listScroll) this.listScroll = this.selected;
-			if (this.selected >= this.listScroll + layout.listRows) {
-				this.listScroll = this.selected - layout.listRows + 1;
-			}
-			const visible = entries.slice(this.listScroll, this.listScroll + layout.listRows);
-			for (let index = 0; index < layout.listRows; index++) {
-				const entry = visible[index];
-				if (!entry) {
-					const empty = index === 0 ? (total === 0 ? " No clipboard history yet." : " No matching entries.") : "";
-					lines.push(row(empty, "dim"));
-					continue;
-				}
-				const absolute = this.listScroll + index;
-				const label = entry.label ? ` [${safeLine(entry.label)}]` : "";
-				const preview = safeLine(entry.preview);
-				const text = `${absolute === this.selected ? "›" : " "} ${localTime(entry.timestamp)}${label} (${entry.lines}L/${entry.chars}c)  ${preview}`;
-				lines.push(row(text, absolute === this.selected ? "accent" : undefined, absolute === this.selected));
-			}
-
-			if (layout.separator) lines.push(row("─".repeat(innerWidth), "borderMuted"));
-			const source = this.previewSource();
-			const page = source.slice(this.previewScroll, this.previewScroll + layout.previewRows);
-			for (let index = 0; index < layout.previewRows; index++) {
-				let text = page[index] ?? "";
-				if (index === layout.previewRows - 1 && source.length > this.previewScroll + layout.previewRows) {
-					text = ` +${source.length - this.previewScroll - layout.previewRows} more · ${text}`;
-				}
-				lines.push(row(text, "muted"));
-			}
-
-			const position =
-				entries.length > 0 ? `${this.selected + 1}/${entries.length}${this.deps.hasMore ? "+" : ""}` : "0/0";
-			const hint = this.restoring
-				? " restoring… · esc cancel"
-				: this.flash
-					? ` esc close · ${safeLine(this.flash)}`
-					: ` enter restore · esc close · ←→ preview · ↑↓ select · ${position}`;
-			lines.push(footer(hint));
-		}
-
+		const lines = this.buildLines(width, layout);
 		this.cachedWidth = width;
 		this.cachedRows = layout.total;
 		this.cachedVersion = this.version;
 		this.cachedLines = lines.slice(0, layout.total);
 		return this.cachedLines;
+	}
+
+	private styleLine(text: string, targetWidth: number, color?: Color, bold = false): string {
+		let result = fitText(text, targetWidth); // truncate before styling so resets cannot punch through the panel background
+		if (bold) result = this.deps.theme.bold(result);
+		if (color) result = this.deps.theme.fg(color, result);
+		return result;
+	}
+
+	private paintLine(width: number, text: string, color?: Color, bold = false): string {
+		return this.deps.theme.bg("customMessageBg", this.styleLine(text, width, color, bold));
+	}
+
+	private rowLine(
+		layout: Layout,
+		width: number,
+		innerWidth: number,
+		text: string,
+		color?: Color,
+		bold = false,
+	): string {
+		if (!layout.framed) return this.paintLine(width, text, color, bold);
+		const theme = this.deps.theme;
+		return theme.bg(
+			"customMessageBg",
+			`${theme.fg("borderMuted", "│")}${this.styleLine(text, innerWidth, color, bold)}${theme.fg("borderMuted", "│")}`,
+		);
+	}
+
+	private footerLine(layout: Layout, width: number, innerWidth: number, text: string): string {
+		if (!layout.framed) return this.paintLine(width, text, "dim");
+		const theme = this.deps.theme;
+		return theme.bg(
+			"customMessageBg",
+			`${theme.fg("borderMuted", "╰")}${this.styleLine(text, innerWidth, "dim")}${theme.fg("borderMuted", "╯")}`,
+		);
+	}
+
+	private buildLines(width: number, layout: Layout): string[] {
+		const entries = this.filtered;
+		const total = this.deps.entries.length;
+		const innerWidth = layout.framed ? Math.max(0, width - 2) : width;
+		if (layout.total === 1) return [this.footerLine(layout, width, innerWidth, " esc close")];
+		const lines: string[] = [];
+		if (layout.framed) lines.push(this.paintLine(width, `╭${"─".repeat(innerWidth)}╮`, "borderMuted"));
+		lines.push(
+			this.rowLine(layout, width, innerWidth, ` Clipboard history ${this.filterNote(entries.length, total)}`, "accent", true),
+		);
+		if (layout.filter) {
+			lines.push(
+				this.rowLine(
+					layout,
+					width,
+					innerWidth,
+					this.filter ? ` filter: ${safeLine(this.filter)}▌` : " type to filter",
+					this.filter ? "muted" : "dim",
+				),
+			);
+		}
+		this.syncListScroll(layout);
+		lines.push(...this.listLines(layout, width, innerWidth, entries, total));
+		if (layout.separator) lines.push(this.rowLine(layout, width, innerWidth, "─".repeat(innerWidth), "borderMuted"));
+		lines.push(...this.previewLines(layout, width, innerWidth));
+		lines.push(this.footerLine(layout, width, innerWidth, this.hintLine(entries.length)));
+		return lines;
+	}
+
+	private filterNote(count: number, total: number): string {
+		const loadedTotal = `${total}${this.deps.hasMore ? "+" : ""}`;
+		if (!this.filter) return ` — ${loadedTotal} entries`;
+		return this.deps.hasMore ? ` — ${count} match in ${loadedTotal} recent` : ` — ${count} of ${total} match`;
+	}
+
+	private syncListScroll(layout: Layout): void {
+		if (this.selected < this.listScroll) this.listScroll = this.selected;
+		if (this.selected >= this.listScroll + layout.listRows) {
+			this.listScroll = this.selected - layout.listRows + 1;
+		}
+	}
+
+	private emptyRow(index: number, total: number): string {
+		if (index !== 0) return "";
+		return total === 0 ? " No clipboard history yet." : " No matching entries.";
+	}
+
+	private entryRowText(entry: ClipboardEntry, absolute: number): string {
+		const label = entry.label ? ` [${safeLine(entry.label)}]` : "";
+		const preview = safeLine(entry.preview);
+		const marker = absolute === this.selected ? "›" : " ";
+		return `${marker} ${localTime(entry.timestamp)}${label} (${entry.lines}L/${entry.chars}c)  ${preview}`;
+	}
+
+	private listLines(
+		layout: Layout,
+		width: number,
+		innerWidth: number,
+		entries: ClipboardEntry[],
+		total: number,
+	): string[] {
+		const lines: string[] = [];
+		const visible = entries.slice(this.listScroll, this.listScroll + layout.listRows);
+		for (let index = 0; index < layout.listRows; index++) {
+			const entry = visible[index];
+			if (!entry) {
+				lines.push(this.rowLine(layout, width, innerWidth, this.emptyRow(index, total), "dim"));
+				continue;
+			}
+			const absolute = this.listScroll + index;
+			lines.push(
+				this.rowLine(
+					layout,
+					width,
+					innerWidth,
+					this.entryRowText(entry, absolute),
+					absolute === this.selected ? "accent" : undefined,
+					absolute === this.selected,
+				),
+			);
+		}
+		return lines;
+	}
+
+	private previewLines(layout: Layout, width: number, innerWidth: number): string[] {
+		const lines: string[] = [];
+		const source = this.previewSource();
+		const page = source.slice(this.previewScroll, this.previewScroll + layout.previewRows);
+		for (let index = 0; index < layout.previewRows; index++) {
+			let text = page[index] ?? "";
+			if (index === layout.previewRows - 1 && source.length > this.previewScroll + layout.previewRows) {
+				text = ` +${source.length - this.previewScroll - layout.previewRows} more · ${text}`;
+			}
+			lines.push(this.rowLine(layout, width, innerWidth, text, "muted"));
+		}
+		return lines;
+	}
+
+	private hintLine(count: number): string {
+		if (this.restoring) return " restoring… · esc cancel";
+		if (this.flash) return ` esc close · ${safeLine(this.flash)}`;
+		const position = count > 0 ? `${this.selected + 1}/${count}${this.deps.hasMore ? "+" : ""}` : "0/0";
+		return ` enter restore · esc close · ←→ preview · ↑↓ select · ${position}`;
 	}
 
 	dispose(): void {
