@@ -8,12 +8,9 @@ export type Fg = (color: string, text: string) => string;
 
 const BAR_WIDTH = 10;
 /**
- * Context-bar color ramp, percent of the model's context window. Pi
- * auto-compacts when tokens exceed window - reserveTokens (default reserve
- * 16384, ~92% of a 200K window), so the failure event is an ill-timed
- * automatic compaction plus its cache rebuild, not a hard stop. Red above 80
- * leaves roughly a tenth of the window to choose the compaction moment
- * deliberately; warning above 60 is the plan-ahead band.
+ * Context-bar display bands, not Pi's configurable compaction thresholds.
+ * Warning and critical colors leave room to plan continuity before the window
+ * fills; neither color establishes a safe remaining token budget.
  */
 export const BAND_WARNING_PERCENT = 60;
 export const BAND_CRITICAL_PERCENT = 80;
@@ -49,11 +46,12 @@ export function bandTone(percent: number): "success" | "warning" | "error" {
  * theme in both dark and light terminals.
  */
 export function buildBar(percent: number, fg: Fg): string {
-	const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+	const rounded = Math.max(0, Math.round(percent));
+	const clamped = Math.min(100, rounded);
 	const filled = Math.round((clamped * BAR_WIDTH) / 100);
 	const tone = bandTone(clamped);
 	const bar = fg(tone, "█".repeat(filled)) + fg("dim", "░".repeat(BAR_WIDTH - filled));
-	return `${bar} ${fg(tone, `${clamped}%`)}`;
+	return `${bar} ${fg(tone, `${rounded}%`)}`;
 }
 
 /** Share of prompt tokens served from cache; null before any usage. */

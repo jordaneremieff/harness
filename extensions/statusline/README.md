@@ -26,26 +26,29 @@ Segments join with a dim `│` separator:
    models, which register `reasoning: false`) simply never show it.
 2. **Context bar + tokens.** A ten-cell block bar (`██████░░░░ 62%`) rendered
    with theme foregrounds so it works in dark and light terminals, plus
-   `tokens/contextWindow`. Shown only when Pi reports a known percentage
-   (it is `null` right after compaction). Color ramp: success through 60%,
-   warning through 80%, error above. Pi auto-compacts at
-   `contextWindow - reserveTokens` (default reserve 16384, ~92% of a 200K
-   window), so red leaves roughly a tenth of the window to choose the
-   compaction moment deliberately.
-3. **Cost.** `~$N.NN` summed over assistant turn usages; hidden below half a
-   cent.
+   `tokens/contextWindow`. Zero usage shows `0%`. Unknown usage after compaction
+   shows `context ?` and `?/contextWindow`; an absent host estimate shows
+   `context unavailable`. Overflow fills the bar but preserves the percentage
+   above 100. Color ramp: success through 60%, warning through 80%, error above.
+   These are display bands, not Pi's configurable compaction threshold or a safe
+   remaining token budget.
+3. **Cost.** `~$N.NN` sums Pi's recorded cost estimates across the whole session,
+   including assistant turns, nested tool calls, compaction, branch summaries,
+   and standalone usage entries such as cache refreshes. Hidden below half a
+   cent. This is recorded model pricing, not a billing statement.
 4. **Duration.** Wall clock since this process attached to the session
    (reset on every `session_start`, including reload). It is an attach
    clock, not a session-age clock.
-5. **Cache telemetry.** Two measured parts: a last-turn hit/miss dot and a
-   session hit-rate percentage. See below.
+5. **Cache telemetry.** Two measured parts: a read/write dot for the most recent
+   cache-active assistant turn and an assistant session hit-rate percentage.
+   See below.
 
-All metrics come from a single pass over `ctx.sessionManager.getBranch()`
-per render. The branch is bounded by compaction and the arithmetic is
-microsecond-scale at the render rates this extension produces, so there is
-deliberately no memoization or incremental accumulator to invalidate. If a
-high-frequency render source is ever added (an animation loop, a sub-second
-tick), revisit this decision first.
+Usage metrics come from one pass over `ctx.sessionManager.getEntries()` per
+render, like Pi's default footer. This includes abandoned branches and
+pre-compaction entries; compaction does not bound retained history. Context
+usage comes separately from `ctx.getContextUsage()` and describes the active
+model context, not cumulative session usage. No second history store or
+incremental accounting cache is maintained.
 
 ## Cache telemetry
 
@@ -55,9 +58,15 @@ estimate provider cache lifetimes or show a TTL countdown.
 - The **dot** reports the most recent cache-active turn: green when it read
   from cache, red when it only wrote. Cache-free turns do not move it.
 - The **hit rate** is `cacheRead / (cacheRead + cacheWrite + input)` across
-  the branch — the physical share of prompt tokens served from cache. A
-  session that warms cache and never reuses it trends toward zero, which is
-  the intended reading.
+  assistant turns across the session, including abandoned branches. Cache
+  refreshes, nested tool calls, and summaries contribute to cost but not this
+  rate or the dot. A refresh must not masquerade as cache reuse by an assistant.
+  Neither signal establishes that a provider cache remains alive now.
+
+Pi owns cache-refresh scheduling and diagnostics through `/session` and its
+transcript notices. The statusline does not add a refresh controller, infer
+cache lifetimes, or override `cache_warming_decision`. Pi also owns the editor
+spinners; replacing the footer does not replace or hide those spinners.
 
 ## Width behavior
 
@@ -75,7 +84,8 @@ following Pi's footer convention) plus the git branch from
 `footerData.getExtensionStatuses()` — the supported host surface through
 which any extension can publish footer text with `ctx.ui.setStatus()`. The
 statusline renders them generically, with no per-key special cases, after
-sanitizing each one.
+sanitizing each one. Model names and project labels use the same sanitizer
+before theme colors are applied.
 
 The sanitize contract is an SGR allowlist. A complete `ESC [ ... m` sequence
 survives, so a status that colors itself renders as its author intended.
@@ -110,7 +120,7 @@ set the window title, write the clipboard, or emit a hyperlink.
 ## Files
 
 - `index.ts`: registration, footer factory, tick ownership, `/statusline`.
-- `metrics.ts`: pure single-pass session-branch scan.
+- `metrics.ts`: pure single-pass session usage scan.
 - `format.ts`: pure formatting, cache telemetry, and width-shedding composition.
 - `*.test.mts`: unit and entrypoint drive tests.
 

@@ -47,12 +47,12 @@ function renderLines(
 	sep: string,
 	attachedAt: number,
 ): string[] {
-	const metrics = scanSession(ctx.sessionManager.getBranch());
+	const metrics = scanSession(ctx.sessionManager.getEntries());
 	const usage = ctx.getContextUsage();
 	const model = ctx.model;
 
 	// --- Line 1: session metrics ---
-	const modelName = model?.name || model?.id || "no-model";
+	const modelName = sanitizeDisplay(model?.name || model?.id || "no-model");
 	let modelSeg = fg("accent", modelName);
 	// The thinking bracket follows the model's declared reasoning capability,
 	// not a provider-name check: providers whose Pi thinking level is inert
@@ -63,9 +63,12 @@ function renderLines(
 	}
 
 	const parts: Line1Parts = { model: modelSeg };
-	if (usage && usage.percent !== null && usage.percent > 0) {
-		parts.contextBar = buildBar(usage.percent, fg);
-		parts.tokens = fg("dim", `${formatTokens(usage.tokens ?? 0)}/${formatTokens(usage.contextWindow)}`);
+	if (usage) {
+		const known = usage.percent !== null && usage.tokens !== null;
+		parts.contextBar = known ? buildBar(usage.percent!, fg) : fg("dim", "context ?");
+		parts.tokens = fg("dim", `${known ? formatTokens(usage.tokens!) : "?"}/${formatTokens(usage.contextWindow)}`);
+	} else {
+		parts.contextBar = fg("dim", "context unavailable");
 	}
 	if (metrics.cost >= 0.005) {
 		parts.cost = fg("dim", `~$${metrics.cost.toFixed(2)}`);
@@ -84,7 +87,7 @@ function renderLines(
 	const line1 = composeLine1(parts, sep, width, visibleWidth);
 
 	// --- Line 2: project + git + extension statuses ---
-	let project = fg("muted", folderLabel(ctx.cwd || process.cwd(), process.env.HOME));
+	let project = fg("muted", sanitizeDisplay(folderLabel(ctx.cwd || process.cwd(), process.env.HOME)));
 	const branch = footerData.getGitBranch();
 	if (branch) {
 		project += fg("dim", ` (${sanitizeDisplay(branch)})`);

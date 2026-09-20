@@ -50,7 +50,7 @@ function makeCtx(over: Record<string, any> = {}) {
 		cwd: "/tmp/statusline-test",
 		model: { id: "test-model", name: "Test Model", api: "anthropic-messages", provider: "test", reasoning: true },
 		thinkingLevel: "high",
-		sessionManager: { getBranch: () => over.branch ?? [] },
+		sessionManager: { getEntries: () => over.entries ?? [] },
 		getContextUsage: () => over.usage ?? { tokens: 50_000, contextWindow: 200_000, percent: 25 },
 		ui: {
 			setFooter: (factory: any) => footerCalls.push(factory),
@@ -58,7 +58,7 @@ function makeCtx(over: Record<string, any> = {}) {
 		},
 		...over,
 	};
-	delete ctx.branch;
+	delete ctx.entries;
 	delete ctx.usage;
 	const footerData: any = {
 		getGitBranch: () => (over.gitBranch === undefined ? "main" : over.gitBranch),
@@ -115,7 +115,7 @@ describe("registration and mode gating", () => {
 describe("footer render", () => {
 	it("renders two width-bounded lines with the full segment set", async () => {
 		const { handlers } = makePi();
-		const branch = [
+		const entries = [
 			{
 				type: "message",
 				timestamp: new Date(Date.now() - 60_000).toISOString(),
@@ -125,7 +125,7 @@ describe("footer render", () => {
 				},
 			},
 		];
-		const mocks = makeCtx({ branch, statuses: new Map([["lint", "lint ok"]]) });
+		const mocks = makeCtx({ entries, statuses: new Map([["lint", "lint ok"]]) });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks);
 		const [line1, line2] = footer.render(120);
@@ -140,6 +140,16 @@ describe("footer render", () => {
 		assert.equal(line2, "/tmp/statusline-test (main) │ \x1b[0mlint ok\x1b[0m");
 	});
 
+	it("includes recorded costs from all session entries, not only the current branch", async () => {
+		const { handlers } = makePi();
+		const usage = { input: 100, output: 20, cacheRead: 900, cacheWrite: 0, cost: { total: 0.25 } };
+		const entries = [{ type: "message", message: { role: "assistant", usage } },
+			{ type: "usage", kind: "cache_warm", usage }];
+		const mocks = makeCtx({ sessionManager: { getEntries: () => entries,
+			getBranch: () => { throw new Error("branch history omits paid work"); } } });
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		assert.match(installFooter(mocks).render(120)[0], /~\$0\.50/);
+	});
 	it("bounds both lines on narrow terminals by shedding then truncating", async () => {
 		const { handlers } = makePi();
 		const mocks = makeCtx({
@@ -157,7 +167,7 @@ describe("footer render", () => {
 		}
 	});
 
-	it("omits the thinking bracket for non-reasoning models and hides unknown context", async () => {
+	it("omits the thinking bracket for non-reasoning models and shows unknown context", async () => {
 		const { handlers } = makePi();
 		const mocks = makeCtx({
 			model: { id: "acp-model", name: "acp-model-high", api: "pi-messages", provider: "acp", reasoning: false },
@@ -169,11 +179,33 @@ describe("footer render", () => {
 		const [line1, line2] = footer.render(120);
 		assert.match(line1, /acp-model-high/);
 		assert.ok(!line1.includes("[high]"), "no bracket without reasoning");
-		assert.ok(!line1.includes("%"), "no context bar when percent is unknown");
+		assert.ok(!line1.includes("%"), "no percentage when usage is unknown");
+		assert.match(line1, /context \?/);
+		assert.match(line1, /\?\/200k/);
 		assert.ok(!line1.includes("cache "), "no estimated cache TTL segment");
 		assert.equal(line2, "/tmp/statusline-test\x1b[0m");
 	});
 
+	it("distinguishes zero usage from an unavailable host estimate", async () => {
+		for (const [usage, expected] of [
+			[{ tokens: 0, contextWindow: 200000, percent: 0 }, /0%.*0\/200k/],
+			[undefined, /context unavailable/],
+		] as const) {
+			const { handlers } = makePi();
+			const mocks = makeCtx({ getContextUsage: () => usage });
+			await handlers.get("session_start")(sessionStart, mocks.ctx);
+			assert.match(installFooter(mocks).render(120)[0], expected);
+		}
+	});
+	it("sanitizes model and project labels before terminal rendering", async () => {
+		const { handlers } = makePi();
+		const mocks = makeCtx({ cwd: "/work/\x1b[2Jproject\nnext", model: { name: "\x1b]0;title\x07Model\nnext" } });
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const lines = installFooter(mocks).render(120);
+		assert.match(lines[0], /Model next/);
+		assert.match(lines[1], /project next/);
+		for (const line of lines) assert.doesNotMatch(line, /\n|\[2J|title/);
+	});
 	it("keeps a pre-colored extension status colored, bounded by resets", async () => {
 		const { handlers } = makePi();
 		const colored = "\x1b[38;2;137;180;250m\u{1F50C} MCP: 10 servers enabled\x1b[39m";
@@ -224,7 +256,7 @@ describe("footer render", () => {
 
 	it("shows measured cache telemetry without a TTL estimate", async () => {
 		const { handlers } = makePi();
-		const branch = [
+		const entries = [
 			{
 				type: "message",
 				timestamp: new Date(Date.now() - 60_000).toISOString(),
@@ -234,7 +266,7 @@ describe("footer render", () => {
 				},
 			},
 		];
-		const mocks = makeCtx({ branch });
+		const mocks = makeCtx({ entries });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks);
 		const [line1] = footer.render(200);

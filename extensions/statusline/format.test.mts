@@ -68,7 +68,7 @@ describe("bandTone", () => {
 });
 
 describe("buildBar", () => {
-	it("fills cells proportionally and labels with the clamped percent", () => {
+	it("fills cells proportionally and labels with the rounded percent", () => {
 		const { calls, fg } = recording();
 		const bar = buildBar(50, fg);
 		assert.equal(visibleWidth(bar), 14); // 10 cells + space + "50%"
@@ -76,6 +76,9 @@ describe("buildBar", () => {
 		assert.deepEqual(calls.map((c) => c.text).join(""), "█████░░░░░50%");
 		assert.equal(calls[0].color, "success");
 		assert.equal(calls[1].color, "dim");
+	});
+	it("bounds the bar but preserves overflow in the label", () => {
+		assert.equal(buildBar(120, plain), `${"█".repeat(10)} 120%`);
 	});
 	it("colors the filled cells and label by band", () => {
 		const warn = recording();

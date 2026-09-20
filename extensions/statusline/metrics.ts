@@ -1,6 +1,6 @@
 /**
  * Pure session-metrics scan for the statusline. Structurally typed over the
- * session-branch entries the extension context exposes, so tests need no Pi
+ * session entries the extension context exposes, so tests need no Pi
  * session manager.
  */
 
@@ -12,8 +12,9 @@ interface UsageLike {
 	cost: { total: number };
 }
 
-export interface BranchEntryLike {
+export interface SessionEntryLike {
 	type: string;
+	usage?: UsageLike;
 	message?: { role?: string; usage?: UsageLike };
 }
 
@@ -42,16 +43,23 @@ export function emptyMetrics(): SessionMetrics {
 }
 
 /**
- * Single pass over the current branch accumulating token, cost, and cache
- * telemetry. The scan runs once per render; the branch is bounded by
- * compaction and the arithmetic is microsecond-scale, so there is no
- * memoization to invalidate.
+ * Cost includes all Pi usage-bearing entry types, including cache warming and
+ * abandoned branches. Cache statistics include only assistant turns, so paid
+ * background refreshes do not masquerade as cache reuse by an assistant.
  */
-export function scanSession(entries: Iterable<BranchEntryLike>): SessionMetrics {
+export function scanSession(entries: Iterable<SessionEntryLike>): SessionMetrics {
 	const m = emptyMetrics();
 	for (const e of entries) {
+		if (e.type === "usage" || e.type === "compaction" || e.type === "branch_summary") {
+			m.cost += e.usage?.cost.total ?? 0;
+			continue;
+		}
 		if (e.type !== "message") continue;
 		const msg = e.message;
+		if (msg?.role === "toolResult") {
+			m.cost += msg.usage?.cost.total ?? 0;
+			continue;
+		}
 		if (msg?.role !== "assistant" || !msg.usage) continue;
 		const u = msg.usage;
 		m.inputTokens += u.input;

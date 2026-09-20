@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { emptyMetrics, scanSession, type BranchEntryLike } from "./metrics.ts";
+import { emptyMetrics, scanSession, type SessionEntryLike } from "./metrics.ts";
 
 function assistant(usage: {
 	input?: number;
@@ -8,7 +8,7 @@ function assistant(usage: {
 	cacheRead?: number;
 	cacheWrite?: number;
 	cost?: number;
-}): BranchEntryLike {
+}): SessionEntryLike {
 	return {
 		type: "message",
 		message: {
@@ -25,12 +25,12 @@ function assistant(usage: {
 }
 
 describe("scanSession", () => {
-	it("returns zeros for an empty branch", () => {
+	it("returns zeros for an empty session", () => {
 		assert.deepEqual(scanSession([]), emptyMetrics());
 	});
 
 	it("ignores non-message entries and non-assistant messages", () => {
-		const entries: BranchEntryLike[] = [
+		const entries: SessionEntryLike[] = [
 			{ type: "compaction" },
 			{ type: "message", message: { role: "user" } },
 			{ type: "message", message: { role: "assistant" } }, // no usage yet (aborted)
@@ -55,6 +55,20 @@ describe("scanSession", () => {
 		assert.equal(m.cacheWrite, 20);
 	});
 
+	it("includes every usage-bearing entry in cost without changing assistant cache statistics", () => {
+		const usage = { input: 50, output: 1, cacheRead: 900, cacheWrite: 0, cost: { total: 0.25 } };
+		const baseline = assistant({ input: 100, output: 10, cacheWrite: 50, cost: 1 });
+		const result = scanSession([baseline,
+			{ type: "usage", usage },
+			{ type: "compaction", usage },
+			{ type: "branch_summary", usage },
+			{ type: "message", message: { role: "toolResult", usage } },
+			{ type: "custom", usage },
+			{ type: "message", message: { role: "user", usage } },
+		]);
+		assert.deepEqual(result, { ...scanSession([baseline]), cost: 2 });
+		assert.equal(result.lastTurnCacheHit, false, "background cache reads must not replace the assistant write-only indicator");
+	});
 	it("tracks the last cache-active turn's hit outcome, unaffected by cache-free turns", () => {
 		const hitThenIdle = scanSession([assistant({ cacheRead: 5 }), assistant({ input: 5 })]);
 		assert.equal(hitThenIdle.lastTurnCacheHit, true);
