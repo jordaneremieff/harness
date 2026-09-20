@@ -25,6 +25,32 @@ interface Reply {
 	error?: string;
 }
 
+/** Emit one mocked HTTP reply into the callback, or its configured error path. */
+function emitReply(
+	request: ClientRequest,
+	reply: Reply,
+	responses: IncomingMessage[],
+	callback: (response: IncomingMessage) => void,
+): void {
+	if (reply.error) {
+		request.emit("error", new Error(reply.error));
+		return;
+	}
+	const response = new IncomingMessage(new Socket());
+	responses.push(response);
+	response.statusCode = reply.status ?? 200;
+	response.headers = reply.headers ?? { "content-type": "text/html" };
+	response.complete = reply.complete ?? true;
+	callback(response);
+	if (response.destroyed) return;
+	if (reply.close) {
+		response.destroy();
+		return;
+	}
+	for (const chunk of reply.chunks ?? [Buffer.from("<p>Page</p>")]) response.push(chunk);
+	if (!reply.stall) response.push(null);
+}
+
 function fixture(replies: Reply[] = [{}], answers: string[][] = [["8.8.8.8"], []]) {
 	const requests: ClientRequest[] = [];
 	const responses: IncomingMessage[] = [];
@@ -60,25 +86,7 @@ function fixture(replies: Reply[] = [{}], answers: string[][] = [["8.8.8.8"], []
 				return request;
 			};
 			request.end = (() => {
-				queueMicrotask(() => {
-					if (reply.error) {
-						request.emit("error", new Error(reply.error));
-						return;
-					}
-					const response = new IncomingMessage(new Socket());
-					responses.push(response);
-					response.statusCode = reply.status ?? 200;
-					response.headers = reply.headers ?? { "content-type": "text/html" };
-					response.complete = reply.complete ?? true;
-					callback(response);
-					if (response.destroyed) return;
-					if (reply.close) {
-						response.destroy();
-						return;
-					}
-					for (const chunk of reply.chunks ?? [Buffer.from("<p>Page</p>")]) response.push(chunk);
-					if (!reply.stall) response.push(null);
-				});
+				queueMicrotask(() => emitReply(request, reply, responses, callback));
 				return request;
 			}) as ClientRequest["end"];
 			requests.push(request);

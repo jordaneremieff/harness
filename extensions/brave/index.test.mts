@@ -1,11 +1,45 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerBraveSearch from "./index.ts";
 
-function registry() {
-	const tools = new Map<string, any>();
-	registerBraveSearch({ registerTool: (tool: any) => tools.set(tool.name, tool) } as any);
-	return tools;
+interface ToolParameter {
+	minLength?: number;
+	maxLength?: number;
+	minimum?: number;
+	maximum?: number;
+	description: string;
+}
+interface RegisteredTool {
+	name: string;
+	description: string;
+	parameters: { properties: Record<string, ToolParameter>; additionalProperties?: boolean };
+	promptGuidelines: string[];
+	execute(
+		id: string,
+		params: unknown,
+		signal: AbortSignal,
+	): Promise<{ content: Array<{ type: string; text: string }>; details?: unknown }>;
+}
+interface ToolRegistry {
+	get(name: string): RegisteredTool;
+	keys(): IterableIterator<string>;
+}
+
+function registry(): ToolRegistry {
+	const tools = new Map<string, RegisteredTool>();
+	const host = {
+		registerTool: (registered: RegisteredTool) => tools.set(registered.name, registered),
+	};
+	registerBraveSearch(host as unknown as ExtensionAPI);
+	return {
+		get: (name) => {
+			const tool = tools.get(name);
+			if (!tool) throw new Error(`missing tool ${name}`);
+			return tool;
+		},
+		keys: () => tools.keys(),
+	};
 }
 
 const originalKey = process.env.PI_BRAVE_API_KEY;

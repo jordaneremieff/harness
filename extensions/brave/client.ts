@@ -192,6 +192,54 @@ async function readBoundedBody(response: FetchResponse): Promise<string> {
 	return buffer.toString("utf8", 0, totalBytes);
 }
 
+interface SearchTiming {
+	signal?: AbortSignal;
+	timedOut: boolean;
+	timeoutMs: number;
+}
+
+async function fetchSearchResponse(
+	fetchImpl: FetchLike,
+	url: URL,
+	apiKey: string,
+	controller: AbortController,
+	timing: SearchTiming,
+): Promise<FetchResponse> {
+	try {
+		return await fetchImpl(url, {
+			headers: { Accept: "application/json", "X-Subscription-Token": apiKey },
+			redirect: "error",
+			signal: controller.signal,
+		});
+	} catch {
+		if (timing.signal?.aborted) throw new Error("Brave web search cancelled.");
+		if (timing.timedOut) throw new Error(`Brave web search timed out after ${timing.timeoutMs}ms.`);
+		throw new Error("Brave Search network request failed.");
+	}
+}
+
+/** Reject an oversized declared body before reading it, then abort the transport. */
+async function enforceDeclaredLength(response: FetchResponse, controller: AbortController): Promise<void> {
+	const declaredLength = Number(response.headers?.get("content-length"));
+	if (!Number.isFinite(declaredLength) || declaredLength <= MAX_RESPONSE_BYTES) return;
+	try {
+		await response.body?.cancel(new Error("response size limit"));
+	} catch {}
+	controller.abort(new Error("response size limit"));
+	throw new ResponseLimitError(`Brave Search response exceeded the ${MAX_RESPONSE_BYTES}-byte safety limit.`);
+}
+
+async function readSearchBody(response: FetchResponse, timing: SearchTiming): Promise<string> {
+	try {
+		return await readBoundedBody(response);
+	} catch (error) {
+		if (error instanceof ResponseLimitError) throw error;
+		if (timing.signal?.aborted) throw new Error("Brave web search cancelled.");
+		if (timing.timedOut) throw new Error(`Brave web search timed out after ${timing.timeoutMs}ms.`);
+		throw new Error("Could not read the Brave Search response.");
+	}
+}
+
 export async function searchBraveWeb(
 	params: BraveWebSearchRequest,
 	signal?: AbortSignal,
@@ -208,11 +256,11 @@ export async function searchBraveWeb(
 	if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Brave web search timeout must be positive.");
 
 	const controller = new AbortController();
-	let timedOut = false;
+	const timing: SearchTiming = { signal, timedOut: false, timeoutMs };
 	const onAbort = () => controller.abort(signal?.reason);
 	signal?.addEventListener("abort", onAbort, { once: true });
 	const timer = setTimeout(() => {
-		timedOut = true;
+		timing.timedOut = true;
 		controller.abort(new Error("request timeout"));
 	}, timeoutMs);
 	timer.unref?.();
@@ -220,41 +268,16 @@ export async function searchBraveWeb(
 	let response: FetchResponse;
 	let body: string;
 	try {
-		try {
-			response = await fetchImpl(url, {
-				headers: { Accept: "application/json", "X-Subscription-Token": apiKey },
-				redirect: "error",
-				signal: controller.signal,
-			});
-		} catch {
-			if (signal?.aborted) throw new Error("Brave web search cancelled.");
-			if (timedOut) throw new Error(`Brave web search timed out after ${timeoutMs}ms.`);
-			throw new Error("Brave Search network request failed.");
-		}
-
-		const declaredLength = Number(response.headers?.get("content-length"));
-		if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
-			try {
-				await response.body?.cancel(new Error("response size limit"));
-			} catch {}
-			controller.abort(new Error("response size limit"));
-			throw new ResponseLimitError(`Brave Search response exceeded the ${MAX_RESPONSE_BYTES}-byte safety limit.`);
-		}
-		try {
-			body = await readBoundedBody(response);
-		} catch (error) {
-			if (error instanceof ResponseLimitError) throw error;
-			if (signal?.aborted) throw new Error("Brave web search cancelled.");
-			if (timedOut) throw new Error(`Brave web search timed out after ${timeoutMs}ms.`);
-			throw new Error("Could not read the Brave Search response.");
-		}
+		response = await fetchSearchResponse(fetchImpl, url, apiKey, controller, timing);
+		await enforceDeclaredLength(response, controller);
+		body = await readSearchBody(response, timing);
 	} finally {
 		clearTimeout(timer);
 		signal?.removeEventListener("abort", onAbort);
 	}
 
 	if (signal?.aborted) throw new Error("Brave web search cancelled.");
-	if (timedOut) throw new Error(`Brave web search timed out after ${timeoutMs}ms.`);
+	if (timing.timedOut) throw new Error(`Brave web search timed out after ${timeoutMs}ms.`);
 	if (!response.ok) throw httpError(response.status);
 
 	let payload: unknown;

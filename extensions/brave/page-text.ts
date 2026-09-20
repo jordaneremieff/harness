@@ -125,7 +125,7 @@ export async function extractPageText(body: Buffer, contentType: string, signal?
 		return { title: "", paragraphs: bucket.paragraphs(), method: "plain-text", truncated: bucket.truncated };
 	}
 	const buckets = { body: new TextBucket(), main: new TextBucket(), article: new TextBucket() };
-	const stack: { name: string; excluded: boolean; main: boolean; article: boolean; title: boolean }[] = [];
+	const stack: ElementState[] = [];
 	let elements = 0;
 	let title = "";
 	let titleSeen = false;
@@ -149,12 +149,7 @@ export async function extractPageText(body: Buffer, contentType: string, signal?
 				if (documentTitle) titleSeen = true;
 				stack.push({
 					name,
-					excluded:
-						parent?.excluded === true ||
-						EXCLUDED.has(name) ||
-						"hidden" in attributes ||
-						attributes["aria-hidden"]?.toLowerCase() === "true" ||
-						/(?:display\s*:\s*none|visibility\s*:\s*hidden)/i.test(attributes.style ?? ""),
+					excluded: isExcludedElement(name, attributes, parent),
 					main: parent?.main === true || name === "main" || attributes.role === "main",
 					article: parent?.article === true || name === "article",
 					title: documentTitle,
@@ -212,26 +207,56 @@ export function makePageExcerpts(page: PageText, finalUrl: string, maxBytes = 16
 	outer: for (const paragraph of page.paragraphs) {
 		// Code points keep excerpt boundaries outside surrogate pairs.
 		const points = Array.from(paragraph);
-		for (let offset = 0; offset < points.length; ) {
-			let text = "";
-			let textBytes = 0;
-			while (offset < points.length) {
-				const point = points[offset];
-				const bytes = Buffer.byteLength(point);
-				if (textBytes + bytes > 800) break;
-				text += point;
-				textBytes += bytes;
-				offset++;
-			}
+		let offset = 0;
+		while (offset < points.length) {
+			const chunk = readExcerptChunk(points, offset);
+			offset = chunk.offset;
 			const reference = `${sourceId}:E${excerpts.length + 1}`;
-			const bytes = Buffer.byteLength(`[${reference}] ${text}\n\n`);
+			const bytes = Buffer.byteLength(`[${reference}] ${chunk.text}\n\n`);
 			if (used + bytes > maxBytes || excerpts.length >= 160) {
 				outputTruncated = true;
 				break outer;
 			}
-			excerpts.push({ reference, text });
+			excerpts.push({ reference, text: chunk.text });
 			used += bytes;
 		}
 	}
 	return { sourceId, excerpts, outputTruncated };
+}
+
+interface ElementState {
+	name: string;
+	excluded: boolean;
+	main: boolean;
+	article: boolean;
+	title: boolean;
+}
+
+/** Inherited exclusion plus the element's own attributes and tag name. */
+function isExcludedElement(
+	name: string,
+	attributes: Record<string, string>,
+	parent: ElementState | undefined,
+): boolean {
+	if (parent?.excluded === true) return true;
+	if (EXCLUDED.has(name)) return true;
+	if ("hidden" in attributes) return true;
+	if (attributes["aria-hidden"]?.toLowerCase() === "true") return true;
+	return /(?:display\s*:\s*none|visibility\s*:\s*hidden)/i.test(attributes.style ?? "");
+}
+
+/** One excerpt chunk up to 800 UTF-8 bytes, or the rest of the paragraph. */
+function readExcerptChunk(points: string[], start: number): { text: string; offset: number } {
+	let text = "";
+	let textBytes = 0;
+	let offset = start;
+	while (offset < points.length) {
+		const point = points[offset];
+		const bytes = Buffer.byteLength(point);
+		if (textBytes + bytes > 800) break;
+		text += point;
+		textBytes += bytes;
+		offset++;
+	}
+	return { text, offset };
 }
