@@ -95,17 +95,22 @@ The harness is a Pi package. `package.json` declares the resources under the
   build step. Pi requires Node 22.19 or newer; Node runs the direct TypeScript
   tests through `node --test` over the glob in the `test` script.
 - `package.json` declares wildcard peers for `@earendil-works/pi-ai`,
-  `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox`, and
-  `@earendil-works/pi-server`. Runtime dependencies include `htmlparser2`
-  for static HTML parsing and `ajv` with `ajv-formats` for policy data validation.
-  Read the manifest for the complete current dependency set.
+  `@earendil-works/pi-agent-core`, `@earendil-works/pi-coding-agent`,
+  `@earendil-works/pi-tui`, `typebox`, and `@earendil-works/pi-server`.
+  Runtime dependencies include `htmlparser2` for static HTML parsing,
+  `ajv` with `ajv-formats` for policy data validation, and
+  `@earendil-works/chord` with `@earendil-works/pi-client` for typed services
+  and connections to detached agent owners. Read the manifest for the
+  complete current dependency set.
 - Pi's extension loader binds the core AI, agent, coding-agent, TUI,
-  and typebox imports to its running installation. `pi-server` is not in that
-  bound set. The manifest still declares it as a peer, but the subagent slice
+  and typebox imports to its running installation. It does not bind Chord,
+  Pi Client, or Pi Server. The [agent slice](../extensions/agent/README.md)
+  uses these public packages for its private Unix control socket and uses
+  AgentHarness from `pi-agent-core` for durable sessions. The subagent slice
   imports neither `pi-server` nor `pi-protocol` and exposes no worker socket.
-  A peer declaration alone does not establish a runtime dependency or loader
-  binding. See [the durable-harness track](pi-durable-harness.md) before
-  selecting a remote integration surface.
+  A peer declaration alone does not establish loader binding. See
+  [the durable-harness track](pi-durable-harness.md) before selecting a
+  remote integration surface.
 - `package-lock.json` pins the development dependency snapshot for reproducible
   standalone checks. Refresh it with the Pi release used to validate the harness.
 - Every change is validated against the installed Pi declarations, not only
