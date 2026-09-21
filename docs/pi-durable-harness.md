@@ -8,22 +8,29 @@ submitted-result retrieval.
 
 ## Checked source boundary
 
-Verified 2026-09-20. Active installation, checkout dependency snapshot, and npm
-`latest` resolve Pi 0.86.0. The manifest retains wildcard Pi peers; the lockfile
-records the resolved dependency graph rather than an older supported target.
-TypeBox resolves to 1.3.27, the version Pi declares for its runtime.
+Verified 2026-09-20. The active installation and npm `latest` resolve Pi 0.86.1;
+the checkout dependency snapshot resolves 0.86.0. The manifest retains wildcard
+Pi peers; the lockfile records the resolved dependency graph rather than a
+supported-version ceiling. TypeBox resolves to 1.3.27 in both installations.
+
+The cited ordinary SDK, session, extension, resource, message, durable-runtime,
+Pico3, and fork implementation files are byte-identical between these installed
+versions. The AI declarations differ only in the known-provider union, not the
+message or transcript types cited here. These comparisons preserve the reviewed
+contract conclusions; they do not establish equivalence of every package path.
 
 | Source | Checked state |
 |---|---|
-| Installed coding agent and agent core | 0.86.0, from package metadata and installed declarations/source |
+| Installed coding agent and agent core | 0.86.1, from package metadata and installed declarations/source |
 | Checkout Pi packages | 0.86.0, from the lockfile and local package metadata |
-| npm publication | Coding-agent, AI, server, and TUI `latest` are 0.86.0 |
-| GitHub release | [v0.86.0][release], published 2026-09-19; tag commit `ecac0a9c4edad3dac5d9f8b40e0c7db7a56471fc` |
-| Checked upstream `main` | [`d1230ea2000d876b479a69b8b061f9d670f262f5`][main] |
+| npm publication | Coding-agent, AI, server, and TUI `latest` are 0.86.1 |
+| GitHub release | [v0.86.1][release], published 2026-09-20; tag commit `13cbf77df2396303013a41646bcfa77b4271ae56` |
+| Checked upstream `main` | [`3390bd93630965a12a0a1a5c36ce890ec22f7e1d`][main] |
 
-The [release-to-main comparison][release-main] changes bug-report UI code and
-changelogs, not agent execution. This track is a targeted contract review, not
-an exhaustive changelog. Its claims use exact files and installed source.
+The [release-to-main comparison][release-main] adds cache-refresh deadline checks
+and updates changelogs. It does not change the defining durable-runtime files
+cited below. This track is a targeted contract review, not an exhaustive
+changelog. Its claims use exact files and installed source.
 
 Installed paths below are relative to the active `@earendil-works/pi-coding-agent`
 package root. `pi-agent-core/` and `pi-ai/` refer to its corresponding packages
@@ -268,19 +275,19 @@ After each Pi upgrade and before a host-dependent decision:
 - Replace dated claims in place. If a defining source is unavailable, mark the
   affected claim unverified rather than preserve a stale verification date.
 
-[release]: https://github.com/earendil-works/pi/releases/tag/v0.86.0
-[main]: https://github.com/earendil-works/pi/commit/d1230ea2000d876b479a69b8b061f9d670f262f5
-[release-main]: https://github.com/earendil-works/pi/compare/ecac0a9c4edad3dac5d9f8b40e0c7db7a56471fc...d1230ea2000d876b479a69b8b061f9d670f262f5
-[sdk]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/coding-agent/src/core/sdk.ts#L368-L432
-[agent-package]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/package.json#L8-L41
-[pico-options]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/src/harness/pico3/harness.ts#L58-L110
-[pico-watch]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/src/harness/pico3/harness.ts#L746-L803
-[pico-chord]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/src/harness/pico3/chord.ts#L22-L145
-[pico-jsonl]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/src/harness/pico3/jsonl.ts#L28-L110
-[wp08]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/work-packages/08-named-branch-streaming-forks.md
-[spec]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/harness.md
-[roadmap]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/post-wp05-roadmap.md
-[mobile]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/mobile-handoff/README.md
-[pico-hardening]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/pico/v3/hardening-handoff.md
-[pico-view-doc]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/pico/v3/view-and-events.md
-[pico-plugin-doc]: https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/agent/docs/pico/v3/plugins.md
+[release]: https://github.com/earendil-works/pi/releases/tag/v0.86.1
+[main]: https://github.com/earendil-works/pi/commit/3390bd93630965a12a0a1a5c36ce890ec22f7e1d
+[release-main]: https://github.com/earendil-works/pi/compare/13cbf77df2396303013a41646bcfa77b4271ae56...3390bd93630965a12a0a1a5c36ce890ec22f7e1d
+[sdk]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/coding-agent/src/core/sdk.ts#L368-L432
+[agent-package]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/agent/package.json#L8-L41
+[pico-options]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/agent/src/harness/pico3/harness.ts#L58-L110
+[pico-watch]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/agent/src/harness/pico3/harness.ts#L746-L803
+[pico-chord]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/agent/src/harness/pico3/chord.ts#L22-L145
+[pico-jsonl]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/agent/src/harness/pico3/jsonl.ts#L28-L110
+[wp08]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/agent/docs/work-packages/08-named-branch-streaming-forks.md
+[spec]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/agent/docs/harness.md
+[roadmap]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/agent/docs/post-wp05-roadmap.md
+[mobile]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/agent/docs/mobile-handoff/README.md
+[pico-hardening]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/agent/docs/pico/v3/hardening-handoff.md
+[pico-view-doc]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/agent/docs/pico/v3/view-and-events.md
+[pico-plugin-doc]: https://github.com/earendil-works/pi/blob/3390bd93630965a12a0a1a5c36ce890ec22f7e1d/packages/agent/docs/pico/v3/plugins.md
