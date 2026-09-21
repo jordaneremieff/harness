@@ -38,6 +38,31 @@ function record(spec: Partial<CommandShapeSpec> = {}): RuleRecord {
 }
 const truth = (command: string, rule = record()) => evaluateCommandRecords("bash", command, [rule], scope).get(rule.id);
 const decode = (command: string) => decodeGitPush(parseStatements(command)[0][0]);
+type PlanContext = Parameters<typeof planInput>[2];
+function selectedEffectDenied(effect: "steer" | "block", input: { command: string }, context: PlanContext): boolean {
+	const selected = record();
+	selected.definition.effect = effect;
+	if (selected.matcher.kind === "declarative" && selected.matcher.language === "command-shape/v1")
+		selected.matcher.onUnavailable = "skip";
+	return planInput([compileRule(selected)], input, context).denied;
+}
+function excludedRuleEvidence(modification: "scope" | "disabled" | "retired" | "unavailable", command: string) {
+	const excluded = record();
+	if (modification === "scope") excluded.definition.scope = { models: ["provider/other"] };
+	if (modification === "retired") excluded.definition.state = "retired";
+	if (modification === "unavailable") excluded.matcherAvailable = false;
+	if (modification === "disabled")
+		excluded.override = {
+			state: "disabled",
+			reason: "Disabled",
+			againstDefinitionRevision: excluded.definition.revision,
+			audit: { at: "2026-09-14", session: "test", model: null, surface: "command" },
+		};
+	return {
+		capture: captureEvidence([compileRule(excluded)], "bash", undefined, scope).get(excluded.id),
+		truth: truth(command, excluded),
+	};
+}
 
 test("Git push grammar distinguishes option occurrences from consumed values and operands", () => {
 	for (const command of [
@@ -170,8 +195,10 @@ test("unknown forms, missing values and dynamic shell data never prove option ab
 	]) {
 		const result = evaluateCommandRecords("bash", command, [record()], scope);
 		assert.equal(result.get("git.force"), "unknown", command);
-		assert.ok(result.reasons.get("git.force")?.length, command);
-		assert.ok(result.reasons.get("git.force")!.every((reason) => /^[a-z0-9.-]{1,80}$/.test(reason)));
+		const reasons = result.reasons.get("git.force");
+		assert.ok(reasons, command);
+		assert.ok(reasons.length, command);
+		assert.ok(reasons.every((reason) => /^[a-z0-9.-]{1,80}$/.test(reason)));
 	}
 });
 
@@ -220,6 +247,11 @@ test("shell and CLI resource limits preserve unavailable evidence across stages"
 	assert.equal(parseShellEvidence("echo x;".repeat(257)).complete, false);
 });
 
+test("a short-option cluster stops at the per-option budget before later invalid options are read", () => {
+	assert.deepEqual(decode(`git push -${"u".repeat(4100)}z`), { status: "unknown", reason: "option-limit" });
+	assert.deepEqual(decode(`git push -${"u".repeat(4093)}z`), { status: "unknown", reason: "unsupported-option" });
+});
+
 test("shell words preserve quoted and escaped literals without expansion", () => {
 	const parsed = parseShellEvidence("git push '$FLAGS' \"\\$FLAGS\" \\$FLAGS $FLAGS \"$FLAGS\" --* '--*'");
 	assert.equal(parsed.complete, true);
@@ -242,13 +274,7 @@ test("approved unknown denial remains subordinate to scope, applicability and se
 	const plan = planInput([compiled], input, context);
 	assert.equal(plan.denied, true);
 	assert.ok(plan.evaluations.some((evaluation) => evaluation.unavailableReasons?.includes("dynamic-word")));
-	for (const effect of ["steer", "block"] as const) {
-		const selected = record();
-		selected.definition.effect = effect;
-		if (selected.matcher.kind === "declarative" && selected.matcher.language === "command-shape/v1")
-			selected.matcher.onUnavailable = "skip";
-		assert.equal(planInput([compileRule(selected)], input, context).denied, false);
-	}
+	for (const effect of ["steer", "block"] as const) assert.equal(selectedEffectDenied(effect, input, context), false);
 	const steered = record();
 	steered.override = {
 		effect: "steer",
@@ -270,19 +296,9 @@ test("approved unknown denial remains subordinate to scope, applicability and se
 		);
 	}
 	for (const modification of ["scope", "disabled", "retired", "unavailable"] as const) {
-		const excluded = record();
-		if (modification === "scope") excluded.definition.scope = { models: ["provider/other"] };
-		if (modification === "retired") excluded.definition.state = "retired";
-		if (modification === "unavailable") excluded.matcherAvailable = false;
-		if (modification === "disabled")
-			excluded.override = {
-				state: "disabled",
-				reason: "Disabled",
-				againstDefinitionRevision: excluded.definition.revision,
-				audit: { at: "2026-09-14", session: "test", model: null, surface: "command" },
-			};
-		assert.equal(captureEvidence([compileRule(excluded)], "bash", undefined, scope).get(excluded.id), false);
-		assert.equal(truth(input.command, excluded), false);
+		const inspected = excludedRuleEvidence(modification, input.command);
+		assert.equal(inspected.capture, false);
+		assert.equal(inspected.truth, false);
 	}
 });
 

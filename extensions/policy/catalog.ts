@@ -10,7 +10,6 @@ export const DEFAULT_LIMITS = {
 	outputBytes: 65_536,
 	outputEvents: 16,
 } as const;
-export const RESULT_ERROR_SCHEMA = "policy.result-errors";
 
 function row(definition: Omit<PackageDefinitionRow, "revision">): PackageDefinitionRow {
 	return { ...definition, revision: packageRowRevision(definition) };
@@ -65,18 +64,7 @@ export const PACKAGE_CATALOG: PackageDefinitionRow[] = [
 			onUnavailable: "skip",
 		},
 	),
-	policy(
-		"results.declared-error",
-		"Preserve failure semantics defined by an approved result contract.",
-		"The result matches the operator-approved failure schema.",
-		{
-			phase: "result",
-			data: [RESULT_ERROR_SCHEMA],
-			when: { op: "matches-schema", path: ["result"], schemaData: RESULT_ERROR_SCHEMA },
-			action: { kind: "assert-error" },
-			onUnavailable: "skip",
-		},
-	),
+
 	policy(
 		"recovery.repeated-errors",
 		"Reconsider the approach after repeated failed tool executions.",

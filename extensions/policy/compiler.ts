@@ -1,9 +1,10 @@
 /** Authoring syntax becomes execution steps and closed, batch-captured evidence. */
 import { captureFor, CommandEvidence, evaluateCommandRecords, ruleScopeMatches } from "./classify.ts";
 export { CommandEvidence } from "./classify.ts";
-import type { FactsProgram, ProgramRule } from "./program.ts";
+import type { FactsProgram, ProgramRule, ProgramStep } from "./program.ts";
 import {
 	declaredAction,
+	type DefinitionEffect,
 	effectiveEffect,
 	factsProgram,
 	permitsEffectChoice,
@@ -21,40 +22,56 @@ export interface RuleEvidence {
 export function compileRule(record: RuleRecord): ProgramRule {
 	const approved = factsProgram(record);
 	const effect = effectiveEffect(record);
-	if (approved) {
-		const program = structuredClone(approved);
-		if (permitsEffectChoice(record)) {
-			program.action =
-				effect === "block"
-					? { kind: "deny" }
-					: program.action.kind === "guide"
-						? program.action
-						: { kind: "guide", text: ruleGuidance(record) };
-			if (effect === "steer") program.onUnavailable = "skip";
-		}
-		const guidance = program.phase === "input" && program.action.kind === "guide" ? program.action : undefined;
-		return {
-			id: record.id,
-			revision: record.definition.revision,
-			program,
-			...(record.definition.applicability ? { applicability: structuredClone(record.definition.applicability) } : {}),
-			...(guidance
-				? {
-						steps: [
-							{
-								phase: "result" as const,
-								...(program.selector ? { selector: program.selector } : {}),
-								...(program.data ? { data: program.data } : {}),
-								requiresMatch: true,
-								when: { op: "eq" as const, path: ["result", "isError"], value: false },
-								action: guidance,
-								onUnavailable: "skip" as const,
-							},
-						],
-					}
-				: {}),
-		};
-	}
+	if (approved) return compileFactsSteps(record, approved, effect);
+	return compileCommandSteps(record, effect);
+}
+
+/** Apply the operator's effect choice to a compiled facts program. */
+function applyEffectChoice(program: FactsProgram, record: RuleRecord, effect: DefinitionEffect): void {
+	if (!permitsEffectChoice(record)) return;
+	program.action =
+		effect === "block"
+			? { kind: "deny" }
+			: program.action.kind === "guide"
+				? program.action
+				: { kind: "guide", text: ruleGuidance(record) };
+	if (effect === "steer") program.onUnavailable = "skip";
+}
+
+/** Build the result-phase guidance step that follows an approved input guide. */
+function makeGuidanceStep(program: FactsProgram, guidance: FactsProgram["action"]): ProgramStep {
+	return {
+		phase: "result",
+		...(program.selector ? { selector: program.selector } : {}),
+		...(program.data ? { data: program.data } : {}),
+		requiresMatch: true,
+		when: { op: "eq", path: ["result", "isError"], value: false },
+		action: guidance,
+		onUnavailable: "skip",
+	};
+}
+
+/** Compile an approved facts program with its effect-selected action and input guidance step. */
+function compileFactsSteps(
+	record: RuleRecord,
+	approved: FactsProgram,
+	effect: DefinitionEffect,
+): ProgramRule {
+	const program = structuredClone(approved);
+	applyEffectChoice(program, record, effect);
+	const guidance = program.phase === "input" && program.action.kind === "guide" ? program.action : undefined;
+	const steps = guidance ? [makeGuidanceStep(program, guidance)] : undefined;
+	return {
+		id: record.id,
+		revision: record.definition.revision,
+		program,
+		...(record.definition.applicability ? { applicability: structuredClone(record.definition.applicability) } : {}),
+		...(steps ? { steps } : {}),
+	};
+}
+
+/** Compile a command-matcher rule into captured evidence plus final gate and guidance steps. */
+function compileCommandSteps(record: RuleRecord, effect: ReturnType<typeof effectiveEffect>): ProgramRule {
 	const action = declaredAction(record);
 	const gate: FactsProgram = {
 		phase: "input",

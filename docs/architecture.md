@@ -96,8 +96,8 @@ The harness is a Pi package. `package.json` declares the resources under the
   tests through `node --test` over the glob in the `test` script.
 - `package.json` declares wildcard peers for `@earendil-works/pi-ai`,
   `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox`, and
-  `@earendil-works/pi-server`. Runtime dependencies include `htmlparser2`
-  for static HTML parsing and `ajv` with `ajv-formats` for policy data validation.
+  `@earendil-works/pi-server`. The runtime dependency `htmlparser2` supplies
+  static HTML parsing. Policy checks registered tool arguments through TypeBox.
   Read the manifest for the complete current dependency set.
 - Pi's extension loader binds the core AI, agent, coding-agent, TUI,
   and typebox imports to its running installation. `pi-server` is not in that

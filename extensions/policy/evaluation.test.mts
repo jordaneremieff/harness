@@ -35,6 +35,8 @@ interface CaseFixture {
 	expectedObserveMisses: string[];
 }
 const suitePath = fileURLToPath(new URL("./policy.eval.mts", import.meta.url));
+type SuiteEntry = (typeof suite)["cases"][number];
+type Harness = ReturnType<typeof harness>;
 
 function harness(mode: "enforce" | "observe") {
 	const hooks = new Map<string, Handler[]>();
@@ -98,7 +100,7 @@ function harness(mode: "enforce" | "observe") {
 		async call(step: FixtureStep) {
 			await emit("turn_start");
 			await context();
-			const tool = tools.get(step.name)!;
+			const tool = tools.get(step.name);
 			assert.ok(tool, step.name);
 			const args = structuredClone(step.args);
 			assert.equal(Compile(tool.parameters).Check(args), true, `outer schema: ${step.name}`);
@@ -144,7 +146,8 @@ function harness(mode: "enforce" | "observe") {
 }
 
 test("suite resources resolve without model execution and variants differ only by mode", () => {
-	piSdkAdapter.validate!({
+	assert.ok(piSdkAdapter.validate, "adapter exposes a validation hook");
+	piSdkAdapter.validate({
 		suitePath,
 		subjectKind: suite.subject.kind,
 		subjectConfig: suite.subject.config,
@@ -174,7 +177,8 @@ test("suite resources resolve without model execution and variants differ only b
 
 test("authoring scripts request policy inspection before proposals", () => {
 	for (const id of ["proposal-authoring", "cli-proposal-authoring"]) {
-		const entry = suite.cases.find((candidate) => candidate.id === id)!;
+		const entry = suite.cases.find((candidate) => candidate.id === id);
+		assert.ok(entry);
 		const fixture = (entry.input as unknown as { fixture: CaseFixture }).fixture;
 		assert.deepEqual(
 			fixture.script.slice(0, 2).map((step) => step.name),
@@ -183,6 +187,62 @@ test("authoring scripts request policy inspection before proposals", () => {
 		assert.deepEqual(fixture.script[0].args, {});
 	}
 });
+
+async function assertCliCase(entry: SuiteEntry, fixture: CaseFixture, mode: "enforce" | "observe", run: Harness) {
+	if (!entry.id.startsWith("cli-")) return;
+	assert.deepEqual(
+		run.inputs,
+		fixture.script.map((step) => step.args),
+	);
+	const denied = mode === "enforce" && fixture.expectedObserveMisses.includes("outcome");
+	const count = await run.call({ name: "policy_eval_count", args: {} });
+	assert.equal(count.text, `COUNT=${denied ? 0 : 1}`, "refusal must prevent inert tool execution");
+}
+
+function assertCaseInputs(entry: SuiteEntry, fixture: CaseFixture, mode: "enforce" | "observe", run: Harness) {
+	if (
+		["folded-conflict", "exact-case", "codec-other-server", "codec-missing-server", "codec-malformed"].includes(
+			entry.id,
+		)
+	)
+		assert.deepEqual(
+			run.inputs[0],
+			fixture.script[0].args,
+			"negative controls must retain the complete original input",
+		);
+	if (entry.id === "codec")
+		assert.deepEqual(
+			run.inputs[0],
+			mode === "enforce"
+				? { server: "primary", operation: "fetch", arguments: '{"room":"room-7"}' }
+				: fixture.script[0].args,
+		);
+	if (entry.id === "effective-deny" || entry.id === "collision")
+		assert.deepEqual(run.inputs[0], fixture.script[0].args, "refusal or observe must preserve original arguments");
+	if (entry.id !== "preview") return;
+	const result = run.events.find((event) => event.type === "tool_result") as { content: string };
+	const view = JSON.parse(result.content);
+	assert.equal(view.stateAdvanced, false);
+	assert.deepEqual(view.input.candidate, { scenario: "rename", room: "room-7" });
+	assert.deepEqual(
+		view.executionInput,
+		mode === "enforce" ? { scenario: "rename", room: "room-7" } : { scenario: "rename", oldRoom: "room-7" },
+	);
+	assert.equal(view.wouldCorrectInput, mode === "enforce");
+	assert.equal(view.mode, mode);
+}
+
+async function assertGuidance(entry: SuiteEntry, fixture: CaseFixture, mode: "enforce" | "observe", run: Harness) {
+	if (fixture.group !== "adaptive") {
+		assert.equal(run.guidance.length, 0);
+		return;
+	}
+	assert.equal(run.guidance.length, mode === "enforce" ? 1 : 0);
+	if (mode === "enforce")
+		assert.match(run.guidance[0], entry.id === "retry-guidance" ? /scenario recover/ : /scenario summary/);
+	await run.context();
+	assert.equal(run.guidance.length, mode === "enforce" ? 1 : 0, "guidance is once per period");
+}
 
 for (const mode of ["enforce", "observe"] as const)
 	for (const entry of suite.cases) {
@@ -209,57 +269,9 @@ for (const mode of ["enforce", "observe"] as const)
 					mode === "observe" ? fixture.expectedObserveMisses : [],
 					JSON.stringify(run.events),
 				);
-				if (entry.id.startsWith("cli-")) {
-					assert.deepEqual(
-						run.inputs,
-						fixture.script.map((step) => step.args),
-					);
-					const denied = mode === "enforce" && fixture.expectedObserveMisses.includes("outcome");
-					const count = await run.call({ name: "policy_eval_count", args: {} });
-					assert.equal(count.text, `COUNT=${denied ? 0 : 1}`, "refusal must prevent inert tool execution");
-				}
-				if (
-					["folded-conflict", "exact-case", "codec-other-server", "codec-missing-server", "codec-malformed"].includes(
-						entry.id,
-					)
-				)
-					assert.deepEqual(
-						run.inputs[0],
-						fixture.script[0].args,
-						"negative controls must retain the complete original input",
-					);
-				if (entry.id === "codec")
-					assert.deepEqual(
-						run.inputs[0],
-						mode === "enforce"
-							? { server: "primary", operation: "fetch", arguments: '{"room":"room-7"}' }
-							: fixture.script[0].args,
-					);
-				if (entry.id === "effective-deny" || entry.id === "collision")
-					assert.deepEqual(
-						run.inputs[0],
-						fixture.script[0].args,
-						"refusal or observe must preserve original arguments",
-					);
-				if (entry.id === "preview") {
-					const result = run.events.find((event) => event.type === "tool_result") as { content: string };
-					const view = JSON.parse(result.content);
-					assert.equal(view.stateAdvanced, false);
-					assert.deepEqual(view.input.candidate, { scenario: "rename", room: "room-7" });
-					assert.deepEqual(
-						view.executionInput,
-						mode === "enforce" ? { scenario: "rename", room: "room-7" } : { scenario: "rename", oldRoom: "room-7" },
-					);
-					assert.equal(view.wouldCorrectInput, mode === "enforce");
-					assert.equal(view.mode, mode);
-				}
-				if (fixture.group === "adaptive") {
-					assert.equal(run.guidance.length, mode === "enforce" ? 1 : 0);
-					if (mode === "enforce")
-						assert.match(run.guidance[0], entry.id === "retry-guidance" ? /scenario recover/ : /scenario summary/);
-					await run.context();
-					assert.equal(run.guidance.length, mode === "enforce" ? 1 : 0, "guidance is once per period");
-				} else assert.equal(run.guidance.length, 0);
+				await assertCliCase(entry, fixture, mode, run);
+				assertCaseInputs(entry, fixture, mode, run);
+				await assertGuidance(entry, fixture, mode, run);
 			} finally {
 				await run.close();
 			}
@@ -275,7 +287,8 @@ test("positive outcomes cannot pass from a final answer without tool evidence", 
 			entry.id,
 		);
 	}
-	const arithmetic = suite.cases.find((entry) => entry.id === "no-tool-task")!;
+	const arithmetic = suite.cases.find((entry) => entry.id === "no-tool-task");
+	assert.ok(arithmetic);
 	assert.ok(
 		runDeterministicChecks(
 			"31.50",

@@ -104,6 +104,11 @@ async function approve(reg: RuleRegistry, candidate = facts()): Promise<Proposal
 	await reg.decide(proposal.id, "approved", undefined, operator, proposalRevision(proposal));
 	return proposal;
 }
+async function recordOf(reg: RuleRegistry, id: string) {
+	const record = (await reg.snapshot()).records.get(id);
+	assert.ok(record, id);
+	return record;
+}
 const summary = { fires: new Map<string, number>(), firesByModel: new Map(), partial: false };
 
 interface Tool {
@@ -134,6 +139,11 @@ function tools(
 	registerRuleTools(pi, { registry: reg, loadRegistry: () => reg.snapshot(), ...(inspect ? { inspect } : {}) });
 	return registered;
 }
+function toolOf(registered: Map<string, Tool>, name: string): Tool {
+	const tool = registered.get(name);
+	assert.ok(tool, name);
+	return tool;
+}
 const call = (tool: Tool, params: Record<string, unknown>) =>
 	tool.execute("inspect-call", params, undefined, undefined, context);
 
@@ -155,6 +165,29 @@ describe("general rule schema and exact authority", () => {
 			{ ...rename, action: { kind: "substitute", path: ["name"], table: "undeclared" } },
 		])
 			assert.throws(() => validateLocalCandidate(facts("local.invalid", program as FactsProgram)), /matcher.spec/);
+	});
+
+	it("refuses retired schema shapes in catalogs and direct candidates", async (t) => {
+		const retired = {
+			id: "operator.retired",
+			purpose: "Refuse unsupported schema shapes.",
+			authority: "steer-or-block",
+			matcher: {
+				kind: "declarative",
+				language: "facts/v1",
+				spec: {
+					phase: "input",
+					when: { op: "matches-schema", path: ["input"], schemaData: "shape" },
+					action: { kind: "deny" },
+					onUnavailable: "skip",
+				},
+			},
+			note: "Prefer bounded search.",
+		};
+		assert.throws(() => validateLocalCandidate(retired), /matcher.spec/);
+		const packageRow = { ...retired, effect: "block", revision: "0123456789ab" };
+		assert.throws(() => validatePackageDefinitionRow(packageRow), /matcher.spec/);
+		await assert.rejects(registry(t, [packageRow as unknown as PackageDefinitionRow]), /matcher.spec/);
 	});
 
 	it("bounds positive purpose and rejects undeclared or unsafe authority", () => {
@@ -185,12 +218,12 @@ describe("general rule schema and exact authority", () => {
 		};
 		const proposal = await reg.proposeAdd(candidate, "Choose the admission effect.", agent);
 		await reg.decide(proposal.id, "approved", "steer", operator);
-		let record = (await reg.snapshot()).records.get(candidate.id)!;
+		let record = await recordOf(reg, candidate.id);
 		assert.equal(effectiveEffect(record), "steer");
 		await reg.setEffect(candidate.id, "block", "Deny the action.", operator);
 		await reg.disable(candidate.id, "Pause the rule.", operator);
 		await reg.enable(candidate.id, "Resume the rule.", operator);
-		record = (await reg.snapshot()).records.get(candidate.id)!;
+		record = await recordOf(reg, candidate.id);
 		assert.equal(effectiveEffect(record), "block");
 		assert.equal(effectiveState(record), "active");
 		assert.match(
@@ -206,7 +239,7 @@ describe("general rule schema and exact authority", () => {
 		await assert.rejects(reg.decide(proposal.id, "approved", "block", operator), /exact proposed action/);
 		await assert.rejects(reg.decide(proposal.id, "approved", undefined, operator), /exact proposal revision/);
 		await reg.decide(proposal.id, "approved", undefined, operator, proposalRevision(proposal));
-		assert.equal(effectiveEffect((await reg.snapshot()).records.get(candidate.id)!), "steer");
+		assert.equal(effectiveEffect(await recordOf(reg, candidate.id)), "steer");
 		await assert.rejects(reg.setEffect(candidate.id, "block", "Convert the action.", operator), /exact replacement/);
 	});
 
@@ -242,7 +275,7 @@ describe("general rule schema and exact authority", () => {
 		const candidate = { ...facts(), applicability };
 		const proposed = await reg.proposeAdd(candidate, "Require an active alternative.", agent);
 		await reg.decide(proposed.id, "approved", undefined, operator, proposalRevision(proposed));
-		const original = (await reg.snapshot()).records.get(candidate.id)!;
+		const original = await recordOf(reg, candidate.id);
 		assert.deepEqual(original.definition.applicability, applicability);
 		const replacement = await reg.proposeReplace(
 			{ ...candidate, applicability: { ...applicability, value: false } },
@@ -255,7 +288,7 @@ describe("general rule schema and exact authority", () => {
 			/exact proposal revision/,
 		);
 		await reg.decide(replacement.id, "approved", undefined, operator, proposalRevision(replacement));
-		const record = (await reg.snapshot()).records.get(candidate.id)!;
+		const record = await recordOf(reg, candidate.id);
 		assert.notEqual(record.definition.revision, original.definition.revision);
 		assert.deepEqual(record.definition.applicability, { ...applicability, value: false });
 		assert.match(formatRulesTool(await reg.snapshot(), context), /applicability:.*context.*read.*false/);
@@ -280,7 +313,7 @@ describe("general rule schema and exact authority", () => {
 			/operator surface/,
 		);
 		await reg.decide(proposed.id, "approved", undefined, operator, proposalRevision(proposed));
-		const record = (await reg.snapshot()).records.get(proposed.ruleId)!;
+		const record = await recordOf(reg, proposed.ruleId);
 		assert.equal(record.definition.effect, "correct");
 		assert.equal(effectiveEffect(record), "correct");
 		assert.equal(record.source.kind, "local");
@@ -291,7 +324,9 @@ describe("general rule schema and exact authority", () => {
 		const reg = await registry(t);
 		const original = await reg.proposeAdd(facts(), "Exact behavior.", agent);
 		const revised = structuredClone(original);
-		revised.candidate!.note = "A different note.";
+		const candidate = revised.candidate;
+		assert.ok(candidate);
+		candidate.note = "A different note.";
 		const reduced = reduceRuleEvents([
 			revised,
 			{
@@ -310,7 +345,7 @@ describe("general rule schema and exact authority", () => {
 	it("replaces current revisions and preserves a disabled override", async (t) => {
 		const reg = await registry(t);
 		await approve(reg);
-		const original = (await reg.snapshot()).records.get("local.rename")!;
+		const original = await recordOf(reg, "local.rename");
 		await reg.disable(original.id, "Pause this rule.", operator);
 		const next = facts(original.id, {
 			...rename,
@@ -320,19 +355,19 @@ describe("general rule schema and exact authority", () => {
 		const replacement = await reg.proposeReplace(next, original.definition.revision, "Replace.", agent);
 		await assert.rejects(reg.decide(replacement.id, "approved", undefined, operator), /exact proposal revision/);
 		await reg.decide(replacement.id, "approved", undefined, operator, proposalRevision(replacement));
-		const changed = (await reg.snapshot()).records.get(original.id)!;
+		const changed = await recordOf(reg, original.id);
 		assert.notEqual(changed.definition.revision, original.definition.revision);
 		assert.equal(effectiveState(changed), "disabled");
 		assert.equal(changed.staleOverride, true);
 		await reg.enable(changed.id, "Resume the exact action.", operator);
-		assert.equal(effectiveState((await reg.snapshot()).records.get(changed.id)!), "active");
+		assert.equal(effectiveState(await recordOf(reg, changed.id)), "active");
 		await assert.rejects(reg.setEffect(changed.id, "block", "Try another effect.", operator), /exact replacement/);
 	});
 
 	it("rejects a stale replacement after target retirement", async (t) => {
 		const reg = await registry(t);
 		await approve(reg);
-		const target = (await reg.snapshot()).records.get("local.rename")!;
+		const target = await recordOf(reg, "local.rename");
 		const proposal = await reg.proposeReplace(
 			{ ...facts(), note: "Another note." },
 			target.definition.revision,
@@ -353,7 +388,7 @@ describe("general rule schema and exact authority", () => {
 		await reg.decide(add.id, "approved", "block", operator);
 		await reg.setEffect(add.ruleId, "steer", "Lower command effect.", operator);
 		await reg.disable(add.ruleId, "Keep disabled.", operator);
-		const old = (await reg.snapshot()).records.get(add.ruleId)!;
+		const old = await recordOf(reg, add.ruleId);
 		const replacement = await reg.proposeReplace(
 			facts(add.ruleId),
 			old.definition.revision,
@@ -361,12 +396,12 @@ describe("general rule schema and exact authority", () => {
 			agent,
 		);
 		await reg.decide(replacement.id, "approved", undefined, operator, proposalRevision(replacement));
-		const record = (await reg.snapshot()).records.get(add.ruleId)!;
+		const record = await recordOf(reg, add.ruleId);
 		assert.equal(record.override?.effect, "steer");
 		assert.equal(effectiveEffect(record), "correct");
 		assert.equal(effectiveState(record), "disabled");
 		await reg.enable(record.id, "Resume exact action.", operator);
-		assert.equal(effectiveEffect((await reg.snapshot()).records.get(record.id)!), "correct");
+		assert.equal(effectiveEffect(await recordOf(reg, record.id)), "correct");
 	});
 
 	it("seeds exact facts and changes them only through ordinary approval or explicit import", async (t) => {
@@ -401,7 +436,9 @@ describe("general rule schema and exact authority", () => {
 		const plan = await nextRegistry.planImport(row.id);
 		await nextRegistry.importCatalog(row.id, plan.revision, operator);
 		assert.equal((await nextRegistry.snapshot()).records.get(row.id)?.definition.revision, updated.revision);
-		assert.equal(effectiveState(next.records.get(row.id)!), "disabled");
+		const nextRecord = next.records.get(row.id);
+		assert.ok(nextRecord);
+		assert.equal(effectiveState(nextRecord), "disabled");
 		assert.equal(next.pending.length, 0);
 	});
 });
@@ -501,7 +538,7 @@ describe("bundled catalog inspection and import approval", () => {
 	};
 	it("validates predicate proposals with exclusive authoring forms and bounded installed references", async (t) => {
 		const reg = await registry(t, [bundled()]);
-		const tool = tools(reg).get("policy_propose")!;
+		const tool = toolOf(tools(reg), "policy_propose");
 		const schema = Compile(PolicyProposeParams);
 		const params = {
 			operation: "replace",
@@ -525,7 +562,7 @@ describe("bundled catalog inspection and import approval", () => {
 	});
 	it("routes catalog inspection through a read-only tool with complete selected rows", async (t) => {
 		const reg = await registry(t, [bundled()]);
-		const tool = tools(reg).get("policy_rules")!;
+		const tool = toolOf(tools(reg), "policy_rules");
 		const before = await reg.snapshot();
 		assert.equal(Compile(PolicyRulesParams).Check({ view: "catalog", id: bundled().id }), true);
 		const result = await call(tool, { view: "catalog", id: bundled().id });
@@ -560,11 +597,13 @@ describe("bundled catalog inspection and import approval", () => {
 		assert.match(preview, /"rows":/);
 		assert.match(preview, /"targets":/);
 		assert.equal(await readFile(reg.path, "utf8"), before);
-		const revision = / exact ([a-f0-9]{12})/.exec(preview)![1];
+		const revisionMatch = / exact ([a-f0-9]{12})/.exec(preview);
+		assert.ok(revisionMatch);
+		const revision = revisionMatch[1];
 		await policyImportCommand(reg, `${bundled().id} exact ${revision}`, operator, async () =>
 			assert.fail("Exact approval does not reopen confirmation"),
 		);
-		assert.equal(effectiveState((await reg.snapshot()).records.get(bundled().id)!), "active");
+		assert.equal(effectiveState(await recordOf(reg, bundled().id)), "active");
 		await assert.rejects(
 			policyImportCommand(reg, `${bundled().id} exact ${revision}`, operator, async () => true),
 			/revision changed/,
@@ -677,12 +716,14 @@ describe("named data controls", () => {
 		assert.equal(shown?.data.source, "operator");
 		assert.equal(shown?.data.capturedAt, Date.parse(operator.at));
 		assert.equal(shown?.data.maxAgeMs, undefined);
-		assert.equal(shown?.data.revision, namedDataRevision(shown!.data));
+		const shownData = shown?.data;
+		assert.ok(shownData);
+		assert.equal(shownData.revision, namedDataRevision(shownData));
 		assert.equal(
-			snapshotData([shown!.data], Date.parse(operator.at) + 100000000000)[request.data.name].status,
+			snapshotData([shownData], Date.parse(operator.at) + 100000000000)[request.data.name].status,
 			"ready",
 		);
-		assert.deepEqual((await reg.snapshot()).data.get(request.data.name), shown!.data);
+		assert.deepEqual((await reg.snapshot()).data.get(request.data.name), shownData);
 	});
 
 	it("supports no-UI exact data approval without a model mutation tool", async (t) => {
@@ -708,7 +749,8 @@ describe("named data controls", () => {
 		await policyDataCommand(reg, `set ${raw}`, operator, async () => {
 			throw new Error("Exact approval does not need a UI");
 		});
-		const saved = (await reg.snapshot()).data.get("static")!;
+		const saved = (await reg.snapshot()).data.get("static");
+		assert.ok(saved);
 		assert.equal(saved.source, "operator");
 		await assert.rejects(
 			policyDataCommand(reg, `set ${raw}`, operator, async () => true),
@@ -724,7 +766,8 @@ describe("named data controls", () => {
 		const reg = await registry(t);
 		await reg.setData(binding(), null, operator);
 		const first = await reg.snapshot();
-		const data = first.data.get("identities")!;
+		const data = first.data.get("identities");
+		assert.ok(data);
 		assert.equal(snapshotData([data], 1001).identities.status, "ready");
 		assert.equal(snapshotData([data], 11000).identities.status, "stale");
 		data.source = "local mutation";
@@ -827,7 +870,7 @@ describe("bounded tools and operator panel", () => {
 	it("keeps general tool proposals inert and supplies exact behavior to inspection", async (t) => {
 		const reg = await registry(t);
 		const registered = tools(reg);
-		const result = await call(registered.get("policy_propose")!, {
+		const result = await call(toolOf(registered, "policy_propose"), {
 			purpose: "Use valid tool arguments.",
 			authority: "exact",
 			operation: "add",
@@ -845,7 +888,7 @@ describe("bounded tools and operator panel", () => {
 		assert.match(text, /rename-key/);
 		assert.match(text, /revision=/);
 		await reg.decide(snap.pending[0].id, "approved", undefined, operator, proposalRevision(snap.pending[0]));
-		const active = (await reg.snapshot()).records.get("local.rename")!;
+		const active = await recordOf(reg, "local.rename");
 		assert.match(formatRulesTool(await reg.snapshot(), context), /effect=correct/);
 		assert.match(ruleDetailLines(active, { cwd: "/work" }, summary).join("\n"), /action:.*rename-key/);
 	});
@@ -853,7 +896,7 @@ describe("bounded tools and operator panel", () => {
 	it("retains the complete command matcher in active inspection after approval", async (t) => {
 		const reg = await registry(t);
 		const registered = tools(reg);
-		await call(registered.get("policy_propose")!, {
+		await call(toolOf(registered, "policy_propose"), {
 			operation: "add",
 			id: "local.force",
 			purpose: "Prevent plain force occurrences.",
@@ -873,10 +916,12 @@ describe("bounded tools and operator panel", () => {
 		const pending = (await reg.snapshot()).pending[0];
 		await reg.decide(pending.id, "approved", "block", operator, proposalRevision(pending));
 		const snapshot = await reg.snapshot();
-		const active = snapshot.records.get("local.force")!;
+		const active = snapshot.records.get("local.force");
+		assert.ok(active);
 		const displayed = formatRulesTool(snapshot, context)
 			.split("\n")
-			.find((row) => row.startsWith("  matcher contract: "))!;
+			.find((row) => row.startsWith("  matcher contract: "));
+		assert.ok(displayed);
 		assert.deepEqual(JSON.parse(displayed.slice("  matcher contract: ".length)), active.matcher);
 		assert.equal(displayed.includes("\u0085"), false);
 		assert.ok(
@@ -896,15 +941,15 @@ describe("bounded tools and operator panel", () => {
 			inspected.push(view);
 			return { view, tool: params.tool, message: "x".repeat(100000) };
 		});
-		const result = await call(registered.get("policy_rules")!, { view: "preview", tool: "sample", input: { old: 1 } });
+		const result = await call(toolOf(registered, "policy_rules"), { view: "preview", tool: "sample", input: { old: 1 } });
 		assert.deepEqual(inspected, ["preview"]);
 		assert.ok(Buffer.byteLength(result.content[0].text) <= 50 * 1024);
 		assert.match(result.content[0].text, /truncated/);
 		assert.equal(await readFile(reg.path, "utf8"), before);
-		assert.match((await call(registered.get("policy_rules")!, { view: "data" })).content[0].text, /identities/);
+		assert.match((await call(toolOf(registered, "policy_rules"), { view: "data" })).content[0].text, /identities/);
 		assert.deepEqual(inspected, ["preview"]);
 		const noCallback = tools(reg);
-		await assert.rejects(call(noCallback.get("policy_rules")!, { view: "state" }), /runtime callback absent/);
+		await assert.rejects(call(toolOf(noCallback, "policy_rules"), { view: "state" }), /runtime callback absent/);
 	});
 
 	it("confirms the complete exact proposal and sends its revision without an effect menu", async (t) => {

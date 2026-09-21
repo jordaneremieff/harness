@@ -13,9 +13,7 @@ import { contentRevision } from "./rule.ts";
 const approvalPrefix = "/policy data set ";
 const presentationLimit = 24 * 1024;
 type DataRequest = {
-	data:
-		| Omit<Extract<NamedData, { kind: "table" }>, "revision">
-		| Omit<Extract<NamedData, { kind: "schema" }>, "revision">;
+	data: Omit<NamedData, "revision">;
 	expectedRevision: string | null;
 };
 type Approval = { data: NamedData; expectedRevision: string | null; approveRevision: string };
@@ -74,7 +72,9 @@ async function setup(t: TestContext, mode: "tui" | "json" = "tui") {
 		async run(command: string) {
 			assert.ok(command.startsWith("/policy "));
 			messages.length = 0;
-			await commands.get("policy")!.handler(command.slice("/policy ".length), ctx);
+			const policy = commands.get("policy");
+			assert.ok(policy);
+			await policy.handler(command.slice("/policy ".length), ctx);
 			assert.equal(messages.length, 1);
 			return messages[0];
 		},
@@ -117,6 +117,43 @@ const controls = String.fromCharCode(
 	...Array.from({ length: 33 }, (_, index) => 0x7f + index),
 );
 const printable = ' boundary: ~\u00a0 café 😀 "quote" \\u0085 \\x85 \\n ';
+type Host = Awaited<ReturnType<typeof setup>>;
+type DisplayedApproval = ReturnType<typeof displayedApproval>;
+function fillPayload(input: DataRequest, unit: string, encodedBytes: number, payloadBytes: number): void {
+	let units = Math.floor(payloadBytes / encodedBytes);
+	for (let index = 0; index < 6; index++) {
+		const count = Math.min(units, 1024);
+		input.data.rows[index].value = unit.repeat(count);
+		units -= count;
+	}
+	assert.equal(units, 0);
+	input.data.rows[6].value = "x".repeat(payloadBytes % encodedBytes);
+}
+async function runAtDelta(
+	host: Host,
+	input: DataRequest,
+	delta: number,
+	unit: string,
+	encodedBytes: number,
+	overhead: number,
+): Promise<DisplayedApproval | undefined> {
+	fillPayload(input, unit, encodedBytes, presentationLimit - overhead + delta);
+	const confirmations = host.confirmations();
+	const output = await host.run(`${approvalPrefix}${JSON.stringify(input)}`);
+	let shown: DisplayedApproval | undefined;
+	if (delta > 0) {
+		assert.equal(output.type, "error");
+		assert.match(output.text, /approval artifact exceeds the command presentation bound/);
+		assert.doesNotMatch(output.text, /Exact approval command/);
+		assert.equal(host.confirmations(), confirmations);
+	} else {
+		shown = displayedApproval(output);
+		assert.equal(Buffer.byteLength(shown.command, "utf8"), presentationLimit + delta);
+		assert.deepEqual(shown.artifact.data, { ...input.data, revision: namedDataRevision(input.data) });
+	}
+	assert.equal((await host.registry.snapshot()).data.size, 0);
+	return shown;
+}
 
 describe("displayed exact data approval commands", () => {
 	for (const mode of ["tui", "json"] as const) {
@@ -139,9 +176,9 @@ describe("displayed exact data approval commands", () => {
 		});
 	}
 
-	it("preserves controls in nested schema keys and values", async (t) => {
+	it("rejects arbitrary schema data without an approval artifact or write", async (t) => {
 		const host = await setup(t);
-		const input: DataRequest = {
+		const input = {
 			data: {
 				name: "schema",
 				kind: "schema",
@@ -155,10 +192,9 @@ describe("displayed exact data approval commands", () => {
 			},
 			expectedRevision: null,
 		};
-		const { command, artifact } = displayedApproval(await host.run(`${approvalPrefix}${JSON.stringify(input)}`));
-		assert.deepEqual(artifact.data, { ...input.data, revision: namedDataRevision(input.data) });
-		assert.match((await host.run(command)).text, /uses revision/);
-		assert.deepEqual((await host.registry.snapshot()).data.get("schema"), artifact.data);
+		assert.match((await host.run(`${approvalPrefix}${JSON.stringify(input)}`)).text, /Invalid named data/);
+		assert.equal((await host.registry.snapshot()).data.size, 0);
+		assert.equal(host.confirmations(), 0);
 	});
 
 	it("binds the displayed command to complete metadata, data, approval, and expected revisions", async (t) => {
@@ -208,31 +244,10 @@ describe("displayed exact data approval commands", () => {
 			input.data.rows = Array.from({ length: 7 }, (_, index) => ({ key: index, value: "" }));
 			const empty = displayedApproval(await host.run(`${approvalPrefix}${JSON.stringify(input)}`));
 			const overhead = Buffer.byteLength(empty.command, "utf8");
-			let exact: ReturnType<typeof displayedApproval> | undefined;
+			let exact: DisplayedApproval | undefined;
 			for (const delta of [-1, 0, 1]) {
-				const payloadBytes = presentationLimit - overhead + delta;
-				let units = Math.floor(payloadBytes / encodedBytes);
-				for (let index = 0; index < 6; index++) {
-					const count = Math.min(units, 1024);
-					input.data.rows[index].value = unit.repeat(count);
-					units -= count;
-				}
-				assert.equal(units, 0);
-				input.data.rows[6].value = "x".repeat(payloadBytes % encodedBytes);
-				const confirmations = host.confirmations();
-				const output = await host.run(`${approvalPrefix}${JSON.stringify(input)}`);
-				if (delta > 0) {
-					assert.equal(output.type, "error");
-					assert.match(output.text, /approval artifact exceeds the command presentation bound/);
-					assert.doesNotMatch(output.text, /Exact approval command/);
-					assert.equal(host.confirmations(), confirmations);
-				} else {
-					const shown = displayedApproval(output);
-					assert.equal(Buffer.byteLength(shown.command, "utf8"), presentationLimit + delta);
-					assert.deepEqual(shown.artifact.data, { ...input.data, revision: namedDataRevision(input.data) });
-					if (delta === 0) exact = shown;
-				}
-				assert.equal((await host.registry.snapshot()).data.size, 0);
+				const shown = await runAtDelta(host, input, delta, unit, encodedBytes, overhead);
+				if (shown !== undefined) exact = shown;
 			}
 			assert.ok(exact);
 			assert.match((await host.run(exact.command)).text, /uses revision/);

@@ -184,9 +184,11 @@ describe("preview correction order", () => {
 			assert.equal(text.includes("Inspect the original input."), mode === "enforce" || mode === "annotate");
 			await f.writer.close();
 			assert.equal(f.telemetry.length, 1);
+			const telemetry = f.telemetry[0];
+			assert.ok(telemetry.policy);
 			assert.deepEqual(
 				evaluations(preview.results),
-				evaluations(f.telemetry[0].policy!.evaluations as ProgramEvaluation[]),
+				evaluations(telemetry.policy.evaluations as ProgramEvaluation[]),
 			);
 		});
 	}
@@ -255,7 +257,8 @@ describe("preview correction order", () => {
 				observationPeriods: Array<{ id: string; count: number; total: number; projected: number; eligible: boolean }>;
 			}
 		).observationPeriods;
-		const original = periods.find((period) => period.id === "guide.original")!;
+		const original = periods.find((period) => period.id === "guide.original");
+		assert.ok(original);
 		assert.equal(original.count, 1);
 		assert.ok(original.total > 0);
 		assert.equal(original.projected, 1);

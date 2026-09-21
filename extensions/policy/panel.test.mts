@@ -40,6 +40,36 @@ const operatorAudit = {
 	surface: "command" as const,
 };
 const agentAudit = { ...operatorAudit, surface: "agent-tool" as const };
+const reviewAllRows = (width: number, rows: number) => {
+	const decisions: boolean[] = [];
+	const artifact = Array.from({ length: 100 }, (_, index) => `artifact-row-${index}`).join("\n");
+	const panel = new PolicyApprovalPanel({
+		title: "Import review",
+		artifact,
+		tui: { requestRender() {} },
+		getMaxRows: () => rows,
+		done: (approved) => decisions.push(approved),
+	});
+	const seen = new Set<string>();
+	panel.handleInput("a");
+	assert.deepEqual(decisions, []);
+	for (let page = 0; page < 200; page++) {
+		const rendered = panel.render(width);
+		assert.ok(rendered.length <= rows);
+		assert.ok(rendered.every((line) => visibleWidth(line) <= width));
+		for (const line of rendered) if (line.trim().startsWith("artifact-row-")) seen.add(line.trim());
+		panel.handleInput("\r");
+		assert.deepEqual(decisions, []);
+		panel.handleInput("a");
+		if (decisions.length) break;
+		panel.handleInput(" ");
+	}
+	assert.equal(seen.size, 100);
+	assert.deepEqual(decisions, [true]);
+	panel.handleInput("a");
+	assert.deepEqual(decisions, [true]);
+	return { seen, decisions };
+};
 const scopeContext: RuleMatchContext = {
 	provider: "openai-codex",
 	model: "openai-codex/gpt-5.6-sol",
@@ -422,32 +452,8 @@ describe("complete policy artifact review", () => {
 			[120, 40],
 			[24, 6],
 		]) {
-			const decisions: boolean[] = [];
-			const artifact = Array.from({ length: 100 }, (_, index) => `artifact-row-${index}`).join("\n");
-			const panel = new PolicyApprovalPanel({
-				title: "Import review",
-				artifact,
-				tui: { requestRender() {} },
-				getMaxRows: () => rows,
-				done: (approved) => decisions.push(approved),
-			});
-			const seen = new Set<string>();
-			panel.handleInput("a");
-			assert.deepEqual(decisions, []);
-			for (let page = 0; page < 200; page++) {
-				const rendered = panel.render(width);
-				assert.ok(rendered.length <= rows);
-				assert.ok(rendered.every((line) => visibleWidth(line) <= width));
-				for (const line of rendered) if (line.trim().startsWith("artifact-row-")) seen.add(line.trim());
-				panel.handleInput("\r");
-				assert.deepEqual(decisions, []);
-				panel.handleInput("a");
-				if (decisions.length) break;
-				panel.handleInput(" ");
-			}
+			const { seen, decisions } = reviewAllRows(width, rows);
 			assert.equal(seen.size, 100);
-			assert.deepEqual(decisions, [true]);
-			panel.handleInput("a");
 			assert.deepEqual(decisions, [true]);
 		}
 	});
@@ -564,6 +570,32 @@ describe("PolicyPanel", () => {
 		assert.match(actions[0] ?? "", /^confirm:Reject policy proposal:Reject disable proposal/);
 		assert.equal(actions[1], "reject");
 		assert.deepEqual(rejected, ["00000000-0000-4000-8000-000000000009"]);
+	});
+
+	it("reaches the operator confirm synchronously when no effect selection applies", () => {
+		const actions: string[] = [];
+		const host: PolicyPanelActionHost = {
+			async confirm(title) {
+				actions.push(`confirm:${title}`);
+				return false;
+			},
+			async select() {
+				throw new Error("exact approval and rejection do not select an effect");
+			},
+			async approve() {
+				throw new Error("declined confirmation must not write");
+			},
+			async reject() {
+				throw new Error("declined confirmation must not write");
+			},
+		};
+		let panel = rig(data(), 24, { actionHost: host, initialView: "proposals" }).panel;
+		panel.handleInput("a");
+		assert.deepEqual(actions, ["confirm:Approve policy proposal"]);
+		actions.length = 0;
+		panel = rig(data(), 24, { actionHost: host, initialView: "proposals" }).panel;
+		panel.handleInput("x");
+		assert.deepEqual(actions, ["confirm:Reject policy proposal"]);
 	});
 
 	it("does not write when panel confirmation is declined", async () => {

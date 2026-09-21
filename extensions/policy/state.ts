@@ -54,6 +54,88 @@ function addTotal(left: ObservedTotal, right: ObservedTotal): ObservedTotal {
 	return left === UNKNOWN || right === UNKNOWN ? UNKNOWN : finiteTotal(left + right);
 }
 
+/** A declared total path supplies the outcome amount; every other outcome counts as one. */
+function outcomeTotal(spec: StateSpec, facts: Record<string, unknown>): ObservedTotal {
+	const value = spec.totalPath ? readPath(facts, spec.totalPath).value : 0;
+	return typeof value === "number" && Number.isFinite(value) ? finiteTotal(value) : UNKNOWN;
+}
+
+/** Period counters saturate at the bound and report saturation instead of wrapping. */
+function countOutcome(period: ObservationPeriod, total: ObservedTotal): void {
+	if (period.count === STATE_LIMITS.total) period.saturated = true;
+	period.count = Math.min(STATE_LIMITS.total, period.count + 1);
+	period.total = addTotal(period.total, total);
+}
+
+/** Turn accounting stops at the turn bound and marks the hidden turns unavailable. */
+function countTurnSample(period: ObservationPeriod, turn: number, total: ObservedTotal): void {
+	let stats = period.turns.get(turn);
+	if (!stats && period.turns.size < STATE_LIMITS.turns) {
+		stats = { count: 0, total: 0 };
+		period.turns.set(turn, stats);
+	}
+	if (!stats) {
+		period.saturated = true;
+		period.turnsUnavailable = true;
+		return;
+	}
+	stats.count = Math.min(STATE_LIMITS.total, stats.count + 1);
+	stats.total = addTotal(stats.total, total);
+}
+
+/** The newest turn stays visible after the turn map saturates. */
+function countCurrentTurn(period: ObservationPeriod, turn: number, total: ObservedTotal): void {
+	const current = period.currentTurn;
+	if (!current || turn > current.turn) {
+		period.currentTurn = { turn, count: 1, total };
+		return;
+	}
+	if (turn !== current.turn) return;
+	current.count = Math.min(STATE_LIMITS.total, current.count + 1);
+	current.total = addTotal(current.total, total);
+}
+
+/** The age bound drops samples before the event bound trims the remaining window. */
+function recordWindow(
+	period: ObservationPeriod,
+	window: NonNullable<StateSpec["window"]>,
+	sample: EventSample,
+): void {
+	period.window = period.window.filter((event) => sample.at - event.at < window.maxAgeMs);
+	period.window.push(sample);
+	if (period.window.length > window.maxEvents) period.window.splice(0, period.window.length - window.maxEvents);
+}
+
+/** An expired period reports an empty period that starts at the reading time. */
+function expiredView(id: string, period: ObservationPeriod, now: number): StateView {
+	return {
+		id,
+		revision: period.revision,
+		generation: period.generation,
+		startedAt: now,
+		resetReason: "expiry",
+		count: 0,
+		total: 0,
+		turns: 0,
+		windowCount: 0,
+		windowTotal: 0,
+		windowTurns: 0,
+		turnCount: 0,
+		turnTotal: 0,
+		projected: 0,
+		eligible: true,
+		saturated: false,
+	};
+}
+
+/** A turn without samples reads as zero, or as unavailable when saturation hid it. */
+function turnCounters(period: ObservationPeriod, turn: number): { count: ObservedTotal; total: ObservedTotal } {
+	const current = period.currentTurn?.turn === turn ? period.currentTurn : period.turns.get(turn);
+	if (current) return { count: current.count, total: current.total };
+	const absent = period.turnsUnavailable && turn < (period.currentTurn?.turn ?? 0) ? UNKNOWN : 0;
+	return { count: absent, total: absent };
+}
+
 export class ObservationState {
 	private readonly periods = new Map<string, ObservationPeriod>();
 	private nextGeneration = 0;
@@ -133,43 +215,23 @@ export class ObservationState {
 		const spec = period.spec;
 		if (!spec) return true;
 		const actual = { ...facts, state: this.view(pin.id, now, turn) };
-		if (spec.resetWhen && evaluateCondition(spec.resetWhen, actual) === true) {
-			const reset = this.fresh(period.id, period.revision, spec, "condition", now);
-			// Outcome resets preserve the admission generation for concurrent completions.
-			reset.generation = period.generation;
-			period = reset;
-			this.periods.set(pin.id, period);
-		}
+		if (spec.resetWhen && evaluateCondition(spec.resetWhen, actual) === true)
+			period = this.resetForOutcome(period, spec, now);
 		if (evaluateCondition(spec.observe, { ...facts, state: this.view(pin.id, now, turn) }) !== true) return true;
-		const value = spec.totalPath ? readPath(facts, spec.totalPath).value : 0;
-		const total = typeof value === "number" && Number.isFinite(value) ? finiteTotal(value) : UNKNOWN;
-		if (period.count === STATE_LIMITS.total) period.saturated = true;
-		period.count = Math.min(STATE_LIMITS.total, period.count + 1);
-		period.total = addTotal(period.total, total);
-		let turnStats = period.turns.get(turn);
-		if (!turnStats && period.turns.size < STATE_LIMITS.turns) {
-			turnStats = { count: 0, total: 0 };
-			period.turns.set(turn, turnStats);
-		}
-		if (turnStats) {
-			turnStats.count = Math.min(STATE_LIMITS.total, turnStats.count + 1);
-			turnStats.total = addTotal(turnStats.total, total);
-		} else {
-			period.saturated = true;
-			period.turnsUnavailable = true;
-		}
-		if (!period.currentTurn || turn > period.currentTurn.turn) period.currentTurn = { turn, count: 1, total };
-		else if (turn === period.currentTurn.turn) {
-			period.currentTurn.count = Math.min(STATE_LIMITS.total, period.currentTurn.count + 1);
-			period.currentTurn.total = addTotal(period.currentTurn.total, total);
-		}
-		if (spec.window) {
-			period.window = period.window.filter((event) => now - event.at < spec.window!.maxAgeMs);
-			period.window.push({ at: now, turn, total });
-			if (period.window.length > spec.window.maxEvents)
-				period.window.splice(0, period.window.length - spec.window.maxEvents);
-		}
+		const total = outcomeTotal(spec, facts);
+		countOutcome(period, total);
+		countTurnSample(period, turn, total);
+		countCurrentTurn(period, turn, total);
+		if (spec.window) recordWindow(period, spec.window, { at: now, turn, total });
 		return true;
+	}
+
+	/** Outcome resets preserve the admission generation for concurrent completions. */
+	private resetForOutcome(period: ObservationPeriod, spec: StateSpec, now: number): ObservationPeriod {
+		const reset = this.fresh(period.id, period.revision, spec, "condition", now);
+		reset.generation = period.generation;
+		this.periods.set(period.id, reset);
+		return reset;
 	}
 
 	private isEligible(period: ObservationPeriod, now: number, turn: number): boolean {
@@ -186,34 +248,29 @@ export class ObservationState {
 	view(id: string, now: number, turn = 0): StateView | undefined {
 		const period = this.periods.get(id);
 		if (!period || !validTime(now)) return undefined;
-		const expired = this.expired(period, now);
-		const events = expired
-			? []
-			: period.window.filter((event) => now - event.at < (period.spec?.window?.maxAgeMs ?? 0));
-		const current = expired
-			? undefined
-			: period.currentTurn?.turn === turn
-				? period.currentTurn
-				: period.turns.get(turn);
-		const absentTurn =
-			!expired && !current && period.turnsUnavailable && turn < (period.currentTurn?.turn ?? 0) ? UNKNOWN : 0;
+		return this.expired(period, now) ? expiredView(id, period, now) : this.liveView(id, period, now, turn);
+	}
+
+	private liveView(id: string, period: ObservationPeriod, now: number, turn: number): StateView {
+		const events = period.window.filter((event) => now - event.at < (period.spec?.window?.maxAgeMs ?? 0));
+		const counters = turnCounters(period, turn);
 		return {
 			id,
 			revision: period.revision,
 			generation: period.generation,
-			startedAt: expired ? now : period.startedAt,
-			resetReason: expired ? "expiry" : period.resetReason,
-			count: expired ? 0 : period.count,
-			total: expired ? 0 : period.total,
-			turns: expired ? 0 : period.turnsUnavailable ? UNKNOWN : period.turns.size,
+			startedAt: period.startedAt,
+			resetReason: period.resetReason,
+			count: period.count,
+			total: period.total,
+			turns: period.turnsUnavailable ? UNKNOWN : period.turns.size,
 			windowCount: events.length,
 			windowTotal: events.reduce<ObservedTotal>((sum, event) => addTotal(sum, event.total), 0),
 			windowTurns: new Set(events.map((event) => event.turn)).size,
-			turnCount: current?.count ?? absentTurn,
-			turnTotal: current?.total ?? absentTurn,
-			projected: expired ? 0 : period.projected,
-			eligible: expired || this.isEligible(period, now, turn),
-			saturated: expired ? false : period.saturated,
+			turnCount: counters.count,
+			turnTotal: counters.total,
+			projected: period.projected,
+			eligible: this.isEligible(period, now, turn),
+			saturated: period.saturated,
 		};
 	}
 	eligible(id: string, now: number, turn: number): boolean {
@@ -234,6 +291,9 @@ export class ObservationState {
 		return true;
 	}
 	snapshot(now: number, turn = 0): StateView[] {
-		return [...this.periods.keys()].sort().map((id) => this.view(id, now, turn)!);
+		return [...this.periods.keys()].sort().flatMap((id) => {
+			const view = this.view(id, now, turn);
+			return view ? [view] : [];
+		});
 	}
 }

@@ -34,7 +34,6 @@ completed work and never infers a retry's cause.
 | `routing.*`, `form.*` | Use appropriate readers, direct command inputs, purpose-built commands, and explicit scope. Their installed predicates select the calls. |
 | `bounds.*` | Require explicit discovery/output limits and identify caps that do not stop the producer. |
 | `arguments.schema` | Refuse a final argument object that violates the available tool schema. This includes mutations from earlier hooks. Unavailable schemas remain unknown. |
-| `results.declared-error` | Assert failure only when the result matches the approved `policy.result-errors` schema. Missing, stale, or invalid bindings produce unknown evidence and no mutation. |
 | `recovery.repeated-errors` | Guide after three execution errors within a five-minute observation period/window. A successful execution resets the period; policy denials do not count as execution errors. |
 | `resources.output-volume` | Guide after 65,536 measured UTF-8 text bytes across at most sixteen executed results within a five-minute period/window. The measurement precedes this extension's guidance. |
 
@@ -50,30 +49,22 @@ caller intended. Key/value correction therefore requires an explicitly approved
 mapping and rule. No package default guesses spelling, invents identifiers, or
 imports an environment's private conventions.
 
-For structured result correction, set `policy.result-errors` through `/policy
-data set`. Its schema matches the policy result facts, including `tool`, `content`,
-`details`, and `isError`. Require the intended tool name and all failure fields;
-a loose schema grants a broader assertion than a tool-specific contract. For
-example, the schema below recognizes only the hypothetical `sample_request`
-tool's declared failure result:
+Structured result correction requires an approved facts program. Select the
+intended tool and test its declared failure fields with ordinary conditions.
+For example, this program recognizes only the hypothetical `sample_request`
+tool's `details.ok:false` result:
 
 ```json
 {
-  "type": "object",
-  "required": ["tool", "details"],
-  "properties": {
-    "tool": {"const": "sample_request"},
-    "details": {
-      "type": "object",
-      "required": ["ok"],
-      "properties": {"ok": {"const": false}}
-    }
-  }
+  "phase": "result",
+  "selector": {"tools": ["sample_request"]},
+  "when": {"op": "eq", "path": ["result", "details", "ok"], "value": false},
+  "action": {"kind": "assert-error"},
+  "onUnavailable": "skip"
 }
 ```
 
-The operator approves that schema as data. The package supplies the error rule;
-no fixture or separate guard supplies its behavior.
+No starter rule guesses an application's failure contract.
 
 ## Authoring a correction
 
@@ -215,10 +206,7 @@ A program declares:
 | `state` | Optional observation condition, reset condition, aggregates, and guidance limits |
 
 Conditions support `all`, `any`, `not`, `eq`, `in`, `exists`, `type`, numeric
-comparisons, bounded string comparisons, exact table lookup status, and
-`matches-schema`. The schema condition declares `path` and `schemaData`; the
-schema name must appear in the program's `data` bindings. It never loads a file or
-remote reference. Paths are
+comparisons, bounded string comparisons, and exact table lookup status. Paths are
 arrays of safe own-property keys, not executable expressions. Unknown evidence
 stays unknown under negation and composition. Missing comparison values are not
 zero or false; `exists` tests actual property presence separately.
@@ -237,13 +225,14 @@ snapshot. Later stages see earlier logical-target corrections; original roots
 retain the input before those corrections. Missing or malformed inner arguments
 remain unknown without hiding available outer fields.
 
-Qualify gateway repairs with an exact physical tool selector, operation selector,
+Qualify gateway conditions with an exact physical tool selector, operation selector,
 and an outer-server condition. Put server qualification in `applicability` when
 missing server evidence must leave the rule inactive even with
 `onUnavailable:"deny"`. For a hypothetical gateway with a `server` field, use
-`{"op":"eq","path":["outer","server"],"value":"alpha"}`. An inner schema
-alone does not establish the intended server. Policy does not discover private
-gateway metadata or supply vendor-specific selectors.
+`{"op":"eq","path":["outer","server"],"value":"alpha"}`. Policy does not discover
+private gateway metadata or supply vendor-specific selectors. Codecs supply
+read-only inner facts, not inner correction authority. A codec permits only
+outer `logical-target` substitution, not decoded key or value corrections.
 
 Public tool availability is available through
 `context.tools.<tool-name>.active` and `.configured`, with
@@ -267,7 +256,7 @@ requires observation state. Session scope still applies at projection time.
 | `observe` | completion | Add an approved metadata label to the common record |
 
 The engine does not independently establish a domain's meaning of failure. The
-rule's approved condition and schema/data contract supply that meaning. Error
+rule's approved conditions and lookup tables supply that meaning. Error
 assertion never clears an existing error. Heuristic text matches remain
 inferences rather than an invented execution status.
 
@@ -282,8 +271,7 @@ by policy, and the candidate committed by policy as distinct views.
 1. Capture the call's approved rules, data, and public tool metadata.
 2. Evaluate original-input prohibitions.
 3. Plan logical-target substitutions, key renames, then value substitutions.
-4. Validate the complete candidate against the outer and any declared inner
-   schemas.
+4. Validate the complete candidate against the registered tool schema.
 5. Evaluate effective-input prohibitions through the same plan before one
    synchronous input commit.
 
@@ -415,7 +403,7 @@ Named data is operator-owned control state in the existing rule log, not a new
 configuration-file loader. Rules refer to approved names, never arbitrary paths,
 skill prose, credential files, or private sibling caches.
 
-A binding contains a table or schema, source, revision, and capture time.
+A binding contains a table, source, revision, and capture time.
 `maxAgeMs` is optional. Snapshots expose `ready`, `missing`, `stale`, or `invalid`
 status. Lookup reports missing, unique, ambiguous, or unavailable. Repeated equal
 destinations are still unique; conflicting destinations never select the first
@@ -444,8 +432,7 @@ Reusing the displayed command preserves the original data and approval revision.
 
 ### Complete data files
 
-Use `/policy data set-file {"path":"table.json"}` for a complete local table or
-schema. Relative paths resolve against the command's working directory. The file
+Use `/policy data set-file {"path":"table.json"}` for a complete local table. Relative paths resolve against the command's working directory. The file
 contains only `data` and `expectedRevision`, with explicit `data.source` and
 `data.capturedAt` metadata. `data.revision` is optional: policy computes a
 content revision and rejects a supplied revision that differs.
@@ -486,18 +473,23 @@ append transaction. There are no chunks, external blobs, compression, or
 automatic compaction. Calls already admitted retain their captured data revision;
 the next call receives the replacement.
 
-Direct-tool schemas come from `pi.getAllTools().parameters`. An explicit argument
-codec can decode a JSON-string argument envelope and select an approved inner
-schema through `selector.codec.schemaData`. The outer gateway schema does not
-establish inner server schemas. Automatic gateway metadata discovery remains
-unavailable without a supported source contract; private cache conventions are
-not such a contract.
+Direct-tool schemas come from `pi.getAllTools().parameters`. Policy checks the
+complete bounded candidate with TypeBox's public `Compile().Check()` operation.
+It does not convert values, insert defaults, or remove properties. Missing
+schemas, unsafe copies, and thrown validation errors produce unavailable
+validation. The compiled schema cache is bounded.
 
-External schemas use Ajv and `ajv-formats`. Default dialect is draft-07; explicit
-draft-2019-09 and draft-2020-12 are supported. Malformed schemas, unknown keywords
-or formats, unsupported dialects, unresolved references, and asynchronous schemas
-produce unavailable validation. No remote schema loader exists. The compiled
-schema cache is bounded. TypeBox validates the engine's own closed rule grammar.
+Registered tool schemas use the host's TypeBox contract. Policy does not provide
+arbitrary schema imports, dialect selection, strict schema-document admission,
+`matches-schema`, or `schemaData`. Unsupported rule and data shapes are rejected
+by authoring and replay validation, without migration or normalization. Existing
+private logs are not rewritten; rejected entries appear in registry health.
+
+A codec decodes a JSON-string envelope for conditions only. Its `schema.valid`
+fact is unavailable because the outer schema does not describe inner arguments.
+Decoded key and value correction rules are rejected. Direct outer-field
+corrections and outer `logical-target` substitutions remain supported, with a
+complete final check against the registered outer tool schema.
 
 ## Tools and operator controls
 
@@ -806,7 +798,7 @@ that store after shutdown. It never exposes real business tools or the operator'
 rule store. This restricted fixture is not active-session resource parity.
 
 This is the `policy-engine` suite. Its recipe-driven cases cover denial, key and
-value correction, composed JSON argument correction, structured error assertion, final-candidate refusal, collisions, missing/stale
+value correction, logical-target operation correction, structured error assertion, final-candidate refusal, collisions, missing/stale
 bindings, ambiguous lookups, unknown conditions, proposals, previews, unrelated
 tasks, and adaptive retry/output-volume guidance. The existing
 [shell enforcement suite](../../prompts/policy-enforce.eval.mts) covers the built-in
@@ -837,9 +829,9 @@ runner's ignored output store, not in this slice.
 
 The `policy-product` suite in [product.eval.mts](product.eval.mts) evaluates the
 starter catalog through the production entrypoint in isolated fresh stores. Its fixture supplies only
-inert tools and approved schema data, never replacement policy definitions.
-Cases cover known-invalid final arguments, declared result errors, repeated
-execution errors, output volume, and near misses. Controlled tests check package
+inert tools and seeds no data or rules, never replacement policy definitions.
+Cases cover known-invalid final arguments, the absence of automatic result
+assertions, repeated execution errors, output volume, and near misses. Controlled tests check package
 provenance, exact intervention thresholds, mode effects, duplicate completion,
 reset/expiry, data absence, and cleanup. Catalog lifecycle tests preserve
 operator edits and retirement across reloads and changed starter definitions;

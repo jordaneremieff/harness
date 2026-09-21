@@ -2,7 +2,7 @@
 
 import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import { ruleScopeVisibility } from "./classify.ts";
 import { snapshotData } from "./data.ts";
 import { dataFileApprovalText, dataReview, normalizeDataArtifact, readDataArtifact, safeJson } from "./data-import.ts";
@@ -17,6 +17,7 @@ import {
 	MAX_RULE_EVENT_BYTES,
 	MAX_RULE_ID_LENGTH,
 	makeRuleAudit,
+	type LocalRuleCandidate,
 	type ProposalEvent,
 	proposalRevision,
 	type RuleRegistry,
@@ -32,8 +33,10 @@ import {
 	effectiveEffect,
 	effectiveState,
 	factsProgram,
+	type AgentRuleAudit,
 	type OperatorRuleAudit,
 	permitsEffectChoice,
+	type RuleRecord,
 } from "./rule.ts";
 
 const StringEntry = Type.String({ minLength: 1, maxLength: MAX_LIST_ENTRY_LENGTH });
@@ -272,6 +275,59 @@ function audit(value: { at: string; session: string; model: string | null; surfa
 	return `${value.surface} ${value.at} session=${value.session} model=${value.model ?? "(none)"}`;
 }
 
+function ruleSourceSummary(record: RuleRecord): string {
+	return record.source.kind === "package"
+		? "package"
+		: record.source.kind === "import"
+			? `catalog import=${record.source.importId}`
+			: `local proposal=${record.source.proposalId}`;
+}
+
+function ruleMatcherSummary(record: RuleRecord): string {
+	return record.matcher.kind === "code" ? `code:${record.matcher.key}` : `declarative:${record.matcher.language}`;
+}
+
+function ruleSummaryLines(record: RuleRecord, context: Pick<ExtensionContext, "cwd" | "model">): string[] {
+	const model = context.model;
+	const lines = [
+		[
+			line(record.id),
+			`source=${ruleSourceSummary(record)}`,
+			`purpose=${line(record.definition.purpose)}`,
+			`authority=${record.definition.authority}`,
+			`matcher=${ruleMatcherSummary(record)}`,
+			`state=${effectiveState(record)}`,
+			`effect=${effectiveEffect(record)}`,
+			`override reason=${record.override ? line(record.override.reason) : "(none)"}`,
+			`stale=${record.staleOverride}`,
+			`available=${record.matcherAvailable}`,
+			`note=${line(record.definition.note)}`,
+		].join(" | "),
+		`  definition: revision=${record.definition.revision} state=${record.definition.state} effect=${record.definition.effect}`,
+		`  suggestion: ${record.definition.suggestion ? line(JSON.stringify(record.definition.suggestion)) : "(none)"}`,
+		`  applicability: ${record.definition.applicability ? line(JSON.stringify(record.definition.applicability)) : "(always)"}`,
+		`  scope: ${record.definition.scope ? line(JSON.stringify(record.definition.scope)) : "(none)"}`,
+		`  ${ruleScopeVisibility(record, {
+			cwd: context.cwd,
+			...(model ? { provider: model.provider, model: `${model.provider}/${model.id}` } : {}),
+		})}`,
+		`  declared action: ${line(JSON.stringify(declaredAction(record)))}`,
+		`  action authority: ${permitsEffectChoice(record) ? "operator selects steer or block; steer never denies; no correction authority" : "exact definition; effect overrides have no authority"}`,
+	];
+	if (record.matcher.kind === "declarative" && record.matcher.language === "command-shape/v1")
+		lines.push(`  matcher contract: ${safeJson(record.matcher)}`);
+	const program = factsProgram(record);
+	if (program) lines.push(`  program: ${line(JSON.stringify(program))}`);
+	if (record.source.kind !== "package") lines.push(`  approved audit: ${line(audit(record.source.approvedAudit))}`);
+	if (record.override) {
+		lines.push(
+			`  override audit: ${line(audit(record.override.audit))}`,
+			`  override against revision: ${record.override.againstDefinitionRevision}`,
+		);
+	}
+	return lines;
+}
+
 export function formatRulesTool(snapshot: RuleSnapshot, context: Pick<ExtensionContext, "cwd" | "model">): string {
 	const model = context.model;
 	const lines = [
@@ -285,56 +341,7 @@ export function formatRulesTool(snapshot: RuleSnapshot, context: Pick<ExtensionC
 		"RULES",
 	];
 	if (snapshot.records.size === 0) lines.push("(none)");
-	for (const record of snapshot.records.values()) {
-		const source =
-			record.source.kind === "package"
-				? "package"
-				: record.source.kind === "import"
-					? `catalog import=${record.source.importId}`
-					: `local proposal=${record.source.proposalId}`;
-		const matcher =
-			record.matcher.kind === "code" ? `code:${record.matcher.key}` : `declarative:${record.matcher.language}`;
-		lines.push(
-			[
-				line(record.id),
-				`source=${source}`,
-				`purpose=${line(record.definition.purpose)}`,
-				`authority=${record.definition.authority}`,
-				`matcher=${matcher}`,
-				`state=${effectiveState(record)}`,
-				`effect=${effectiveEffect(record)}`,
-				`override reason=${record.override ? line(record.override.reason) : "(none)"}`,
-				`stale=${record.staleOverride}`,
-				`available=${record.matcherAvailable}`,
-				`note=${line(record.definition.note)}`,
-			].join(" | "),
-		);
-		lines.push(
-			`  definition: revision=${record.definition.revision} state=${record.definition.state} effect=${record.definition.effect}`,
-			`  suggestion: ${record.definition.suggestion ? line(JSON.stringify(record.definition.suggestion)) : "(none)"}`,
-			`  applicability: ${record.definition.applicability ? line(JSON.stringify(record.definition.applicability)) : "(always)"}`,
-			`  scope: ${record.definition.scope ? line(JSON.stringify(record.definition.scope)) : "(none)"}`,
-			`  ${ruleScopeVisibility(record, {
-				cwd: context.cwd,
-				...(model ? { provider: model.provider, model: `${model.provider}/${model.id}` } : {}),
-			})}`,
-		);
-		lines.push(
-			`  declared action: ${line(JSON.stringify(declaredAction(record)))}`,
-			`  action authority: ${permitsEffectChoice(record) ? "operator selects steer or block; steer never denies; no correction authority" : "exact definition; effect overrides have no authority"}`,
-		);
-		if (record.matcher.kind === "declarative" && record.matcher.language === "command-shape/v1")
-			lines.push(`  matcher contract: ${safeJson(record.matcher)}`);
-		const program = factsProgram(record);
-		if (program) lines.push(`  program: ${line(JSON.stringify(program))}`);
-		if (record.source.kind !== "package") lines.push(`  approved audit: ${line(audit(record.source.approvedAudit))}`);
-		if (record.override) {
-			lines.push(
-				`  override audit: ${line(audit(record.override.audit))}`,
-				`  override against revision: ${record.override.againstDefinitionRevision}`,
-			);
-		}
-	}
+	for (const record of snapshot.records.values()) lines.push(...ruleSummaryLines(record, context));
 	lines.push("", "PENDING PROPOSALS");
 	if (snapshot.pending.length === 0) lines.push("(none)");
 	else {
@@ -350,25 +357,65 @@ export function formatRulesTool(snapshot: RuleSnapshot, context: Pick<ExtensionC
 	return capText(lines.join("\n"));
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Count nodes and depth while confirming every value is finite JSON data. */
+function boundedJsonNodes(entry: unknown, depth: number, nodes: { count: number }): void {
+	if (++nodes.count > 4096 || depth > 16) throw new Error("policy inspection exceeds JSON structural bounds");
+	if (entry === null || typeof entry === "boolean" || typeof entry === "string") return;
+	if (typeof entry === "number" && Number.isFinite(entry)) return;
+	if (Array.isArray(entry)) {
+		for (const child of entry) boundedJsonNodes(child, depth + 1, nodes);
+		return;
+	}
+	if (entry !== null && typeof entry === "object") {
+		for (const child of Object.values(entry)) boundedJsonNodes(child, depth + 1, nodes);
+		return;
+	}
+	throw new Error("policy inspection requires finite JSON data");
+}
+
 function validateBoundedJson(value: unknown): void {
-	let nodes = 0;
-	const visit = (entry: unknown, depth: number): void => {
-		if (++nodes > 4096 || depth > 16) throw new Error("policy inspection exceeds JSON structural bounds");
-		if (entry === null || typeof entry === "boolean" || typeof entry === "string") return;
-		if (typeof entry === "number" && Number.isFinite(entry)) return;
-		if (Array.isArray(entry)) {
-			for (const child of entry) visit(child, depth + 1);
-			return;
-		}
-		if (entry && typeof entry === "object") {
-			for (const child of Object.values(entry)) visit(child, depth + 1);
-			return;
-		}
-		throw new Error("policy inspection requires finite JSON data");
-	};
-	visit(value, 0);
+	boundedJsonNodes(value, 0, { count: 0 });
 	if (Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_RULE_EVENT_BYTES)
 		throw new Error("policy inspection exceeds JSON byte bound");
+}
+
+function previewBlockError(block: unknown): string | undefined {
+	if (!isJsonObject(block)) return "preview content blocks require text objects with type/text only";
+	if (block.type !== "text" || typeof block.text !== "string" || block.text.length > MAX_RULE_EVENT_BYTES)
+		return "preview content blocks require text objects with type/text only";
+	for (const key of Object.keys(block)) {
+		if (key !== "type" && key !== "text") return "preview content blocks require text objects with type/text only";
+	}
+	return undefined;
+}
+
+function validatePreviewParams(params: Record<string, unknown>): void {
+	if (typeof params.tool !== "string" || params.tool.length < 1 || params.tool.length > 200)
+		throw new Error("preview requires a bounded tool name");
+	if (!isJsonObject(params.input)) throw new Error("preview requires input object");
+	if (Object.keys(params.input).length > 128) throw new Error("preview input exceeds the property bound");
+	const result = params.result;
+	if (result === undefined) return;
+	if (!isJsonObject(result) || typeof result.isError !== "boolean")
+		throw new Error("preview result requires isError and optional details or text content only");
+	for (const key of Object.keys(result)) {
+		if (key !== "isError" && key !== "details" && key !== "content")
+			throw new Error("preview result requires isError and optional details or text content only");
+	}
+	const content = result.content;
+	if (content === undefined) return;
+	if (
+		!Array.isArray(content) ||
+		content.length > MAX_PREVIEW_CONTENT_BLOCKS ||
+		content.some((block: unknown) => previewBlockError(block) !== undefined)
+	)
+		throw new Error(
+			`preview content supports at most ${MAX_PREVIEW_CONTENT_BLOCKS} text blocks with type/text only`,
+		);
 }
 
 export function validateInspectionParams(params: Record<string, unknown>): void {
@@ -383,43 +430,7 @@ export function validateInspectionParams(params: Record<string, unknown>): void 
 	if (params.id !== undefined && (typeof params.id !== "string" || params.id.length < 1 || params.id.length > idLimit))
 		throw new Error(`inspection id must contain 1 to ${idLimit} characters`);
 	if (view === "explain" && !params.id) throw new Error("explain requires id");
-	if (view === "preview") {
-		if (typeof params.tool !== "string" || params.tool.length < 1 || params.tool.length > 200)
-			throw new Error("preview requires a bounded tool name");
-		if (!params.input || typeof params.input !== "object" || Array.isArray(params.input))
-			throw new Error("preview requires input object");
-		if (Object.keys(params.input).length > 128) throw new Error("preview input exceeds the property bound");
-		if (params.result !== undefined) {
-			const result = params.result as Record<string, unknown>;
-			if (
-				!result ||
-				typeof result !== "object" ||
-				Array.isArray(result) ||
-				typeof result.isError !== "boolean" ||
-				Object.keys(result).some((key) => key !== "isError" && key !== "details" && key !== "content")
-			)
-				throw new Error("preview result requires isError and optional details or text content only");
-			if (result.content !== undefined) {
-				if (
-					!Array.isArray(result.content) ||
-					result.content.length > MAX_PREVIEW_CONTENT_BLOCKS ||
-					result.content.some((block: unknown) => {
-						if (!block || typeof block !== "object" || Array.isArray(block)) return true;
-						const text = block as Record<string, unknown>;
-						return (
-							text.type !== "text" ||
-							typeof text.text !== "string" ||
-							text.text.length > MAX_RULE_EVENT_BYTES ||
-							Object.keys(text).some((key) => key !== "type" && key !== "text")
-						);
-					})
-				)
-					throw new Error(
-						`preview content supports at most ${MAX_PREVIEW_CONTENT_BLOCKS} text blocks with type/text only`,
-					);
-			}
-		}
-	}
+	if (view === "preview") validatePreviewParams(params);
 }
 
 function boundedInspection(value: unknown): string {
@@ -452,93 +463,115 @@ export async function policyDataCommand(
 	const command = args.trim().match(/^(\S+)(?:\s+([\s\S]*))?$/);
 	const verb = command?.[1] ?? "list";
 	const tail = command?.[2]?.trim() ?? "";
-	if (verb === "list" || verb === "show") {
-		if (verb === "list" && tail) throw new Error("data list does not accept arguments");
-		if (verb === "show" && (!tail || /\s/.test(tail))) throw new Error("data show requires one name");
-		return formatDataView(await registry.snapshot(), verb === "show" ? tail : undefined);
-	}
-	if (verb === "set-file") {
-		const value: unknown = JSON.parse(tail);
-		validateBoundedJson(value);
-		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("set-file requires an object");
-		const request = value as Record<string, unknown>;
-		if (
-			Object.keys(request).some((key) => key !== "path" && key !== "approveRevision") ||
-			typeof request.path !== "string" ||
-			!request.path ||
-			request.path.length > 4096
-		)
-			throw new Error("set-file requires path and optional approveRevision only");
-		if (/^[a-z][a-z0-9+.-]*:\/\//i.test(request.path)) throw new Error("data source requires a local file path");
-		const path = resolve(cwd, request.path);
-		const artifact = await readDataArtifact(path);
-		const approveRevision = contentRevision(artifact);
-		if (request.approveRevision !== undefined && request.approveRevision !== approveRevision)
-			throw new Error("data approval requires the exact complete artifact revision");
-		const review = dataReview(artifact, approveRevision);
-		const approvalText = dataFileApprovalText(path, approveRevision);
-		await registry.preflightData(artifact.data, artifact.expectedRevision, auditValue);
-		const approved = request.approveRevision === approveRevision || (await confirm("Approve policy data", review));
-		if (!approved) return approvalText;
-		await registry.setData(artifact.data, artifact.expectedRevision, auditValue);
-		return `Policy data ${artifact.data.name} uses revision ${artifact.data.revision}.`;
-	}
-	if (verb === "set") {
-		const value: unknown = JSON.parse(tail);
-		validateBoundedJson(value);
-		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("data set requires an object");
-		const request = value as Record<string, unknown>;
-		if (
-			Object.keys(request).some((key) => key !== "data" && key !== "expectedRevision" && key !== "approveRevision") ||
-			!("expectedRevision" in request) ||
-			!request.data ||
-			typeof request.data !== "object" ||
-			Array.isArray(request.data)
-		)
-			throw new Error("data set requires data, expectedRevision, and optional approveRevision only");
-		if (
-			request.expectedRevision !== null &&
-			(typeof request.expectedRevision !== "string" || !/^[a-f0-9]{12}$/.test(request.expectedRevision))
-		)
-			throw new Error("expectedRevision must be null for a new binding or its current revision");
-		const artifact = normalizeDataArtifact(
-			{ data: request.data, expectedRevision: request.expectedRevision },
-			{ source: "operator", capturedAt: Date.parse(auditValue.at) },
-		);
-		const { data } = artifact;
-		const revision = data.revision;
-		const approveRevision = contentRevision(artifact);
-		// JSON leaves DEL/C1 controls literal; terminal display escapes are not valid JSON.
-		const approvalJson = JSON.stringify({ ...artifact, approveRevision }).replace(
-			/[\u007f-\u009f]/g,
-			(character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
-		);
-		const approvalCommand = `/policy data set ${approvalJson}`;
-		if (Buffer.byteLength(approvalCommand, "utf8") > 24 * 1024)
-			throw new Error("data approval artifact exceeds the command presentation bound");
-		if (request.approveRevision !== undefined && request.approveRevision !== approveRevision)
-			throw new Error("data approval requires the exact complete artifact revision");
-		await registry.preflightData(data, artifact.expectedRevision, auditValue);
-		const approved =
-			request.approveRevision === approveRevision ||
-			(await confirm("Approve policy data", dataReview(artifact, approveRevision)));
-		if (!approved) return `Policy data change canceled. No data changed.\nExact approval command:\n${approvalCommand}`;
-		await registry.setData(data, request.expectedRevision as string | null, auditValue);
-		return `Policy data ${data.name} uses revision ${revision}.`;
-	}
-	if (verb === "remove") {
-		const parts = tail.split(/\s+/);
-		if ((parts.length !== 2 && (parts.length !== 3 || parts[2] !== "exact")) || !/^[a-f0-9]{12}$/.test(parts[1]))
-			throw new Error("data remove requires name, current revision, and optional exact");
-		const snapshot = await registry.snapshot();
-		const data = snapshot.data.get(parts[0]);
-		if (!data || data.revision !== parts[1]) throw new Error("data binding absent or revision changed");
-		if (parts[2] !== "exact" && !(await confirm("Remove policy data", JSON.stringify(data, null, 2))))
-			return `Policy data change canceled. No data changed.\nExact approval command: /policy data remove ${parts[0]} ${parts[1]} exact`;
-		await registry.removeData(parts[0], parts[1], auditValue);
-		return `Policy data ${parts[0]} was removed.`;
-	}
+	if (verb === "list" || verb === "show") return dataListShow(registry, verb, tail);
+	if (verb === "set-file") return dataSetFile(registry, tail, auditValue, confirm, cwd);
+	if (verb === "set") return dataSet(registry, tail, auditValue, confirm);
+	if (verb === "remove") return dataRemove(registry, tail, auditValue, confirm);
 	throw new Error("Use /policy data list|show <name>|set <JSON>|set-file <JSON>|remove <name> <revision>.");
+}
+
+async function dataListShow(registry: RuleRegistry, verb: string, tail: string): Promise<string> {
+	if (verb === "list" && tail) throw new Error("data list does not accept arguments");
+	if (verb === "show" && (!tail || /\s/.test(tail))) throw new Error("data show requires one name");
+	return formatDataView(await registry.snapshot(), verb === "show" ? tail : undefined);
+}
+
+async function dataSetFile(
+	registry: RuleRegistry,
+	tail: string,
+	auditValue: OperatorRuleAudit,
+	confirm: (title: string, message: string) => Promise<boolean>,
+	cwd: string,
+): Promise<string> {
+	const value: unknown = JSON.parse(tail);
+	validateBoundedJson(value);
+	if (!isJsonObject(value)) throw new Error("set-file requires an object");
+	if (
+		Object.keys(value).some((key) => key !== "path" && key !== "approveRevision") ||
+		typeof value.path !== "string" ||
+		!value.path ||
+		value.path.length > 4096
+	)
+		throw new Error("set-file requires path and optional approveRevision only");
+	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value.path)) throw new Error("data source requires a local file path");
+	const path = resolve(cwd, value.path);
+	const artifact = await readDataArtifact(path);
+	const approveRevision = contentRevision(artifact);
+	if (value.approveRevision !== undefined && value.approveRevision !== approveRevision)
+		throw new Error("data approval requires the exact complete artifact revision");
+	const review = dataReview(artifact, approveRevision);
+	const approvalText = dataFileApprovalText(path, approveRevision);
+	await registry.preflightData(artifact.data, artifact.expectedRevision, auditValue);
+	const approved = value.approveRevision === approveRevision || (await confirm("Approve policy data", review));
+	if (!approved) return approvalText;
+	await registry.setData(artifact.data, artifact.expectedRevision, auditValue);
+	return `Policy data ${artifact.data.name} uses revision ${artifact.data.revision}.`;
+}
+
+async function dataSet(
+	registry: RuleRegistry,
+	tail: string,
+	auditValue: OperatorRuleAudit,
+	confirm: (title: string, message: string) => Promise<boolean>,
+): Promise<string> {
+	const value: unknown = JSON.parse(tail);
+	validateBoundedJson(value);
+	if (!isJsonObject(value)) throw new Error("data set requires an object");
+	if (
+		Object.keys(value).some((key) => key !== "data" && key !== "expectedRevision" && key !== "approveRevision") ||
+		!("expectedRevision" in value) ||
+		!value.data ||
+		typeof value.data !== "object" ||
+		Array.isArray(value.data)
+	)
+		throw new Error("data set requires data, expectedRevision, and optional approveRevision only");
+	if (
+		value.expectedRevision !== null &&
+		(typeof value.expectedRevision !== "string" || !/^[a-f0-9]{12}$/.test(value.expectedRevision))
+	)
+		throw new Error("expectedRevision must be null for a new binding or its current revision");
+	const artifact = normalizeDataArtifact(
+		{ data: value.data, expectedRevision: value.expectedRevision },
+		{ source: "operator", capturedAt: Date.parse(auditValue.at) },
+	);
+	const { data } = artifact;
+	const revision = data.revision;
+	const approveRevision = contentRevision(artifact);
+	// JSON leaves DEL/C1 controls literal; terminal display escapes are not valid JSON.
+	const approvalJson = JSON.stringify({ ...artifact, approveRevision }).replace(
+		/[\u007f-\u009f]/g,
+		(character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
+	const approvalCommand = `/policy data set ${approvalJson}`;
+	if (Buffer.byteLength(approvalCommand, "utf8") > 24 * 1024)
+		throw new Error("data approval artifact exceeds the command presentation bound");
+	if (value.approveRevision !== undefined && value.approveRevision !== approveRevision)
+		throw new Error("data approval requires the exact complete artifact revision");
+	await registry.preflightData(data, artifact.expectedRevision, auditValue);
+	const approved =
+		value.approveRevision === approveRevision ||
+		(await confirm("Approve policy data", dataReview(artifact, approveRevision)));
+	if (!approved) return `Policy data change canceled. No data changed.\nExact approval command:\n${approvalCommand}`;
+	await registry.setData(data, value.expectedRevision as string | null, auditValue);
+	return `Policy data ${data.name} uses revision ${revision}.`;
+}
+
+async function dataRemove(
+	registry: RuleRegistry,
+	tail: string,
+	auditValue: OperatorRuleAudit,
+	confirm: (title: string, message: string) => Promise<boolean>,
+): Promise<string> {
+	const parts = tail.split(/\s+/);
+	if ((parts.length !== 2 && (parts.length !== 3 || parts[2] !== "exact")) || !/^[a-f0-9]{12}$/.test(parts[1]))
+		throw new Error("data remove requires name, current revision, and optional exact");
+	const snapshot = await registry.snapshot();
+	const data = snapshot.data.get(parts[0]);
+	if (!data || data.revision !== parts[1]) throw new Error("data binding absent or revision changed");
+	if (parts[2] !== "exact" && !(await confirm("Remove policy data", JSON.stringify(data, null, 2))))
+		return `Policy data change canceled. No data changed.\nExact approval command: /policy data remove ${parts[0]} ${parts[1]} exact`;
+	await registry.removeData(parts[0], parts[1], auditValue);
+	return `Policy data ${parts[0]} was removed.`;
 }
 
 export function formatCatalog(registry: RuleRegistry, id?: string): string {
@@ -583,6 +616,82 @@ export async function policyImportCommand(
 	return `Imported ${plan.rows.length} bundled policy definitions. Existing overrides remain unchanged.`;
 }
 
+type PolicyProposeInput = Static<typeof PolicyProposeParams>;
+type PolicyProposeAddOrReplace = Extract<PolicyProposeInput, { operation: "add" | "replace" }>;
+type PolicyRulesInput = Static<typeof PolicyRulesParams>;
+
+/** Build one validated local candidate from an add or replace authoring form. */
+function proposalCandidate(params: PolicyProposeAddOrReplace): LocalRuleCandidate {
+	const matcher =
+		"predicate" in params
+			? { kind: "code" as const, key: params.predicate }
+			: "program" in params
+				? { kind: "declarative" as const, language: "facts/v1" as const, spec: params.program }
+				: {
+						kind: "declarative" as const,
+						language: "command-shape/v1" as const,
+						spec: params.match,
+						...(params.onUnavailable !== undefined ? { onUnavailable: params.onUnavailable } : {}),
+					};
+	return validateLocalCandidate({
+		id: params.id,
+		purpose: params.purpose,
+		authority: params.authority,
+		...(params.applicability !== undefined ? { applicability: params.applicability } : {}),
+		matcher,
+		note: params.note,
+		...("suggestion" in params && params.suggestion ? { suggestion: params.suggestion } : {}),
+		...(params.scope ? { scope: params.scope } : {}),
+	});
+}
+
+/** Submit one proposal through the registry under the agent-tool audit surface. */
+async function submitProposal(
+	registry: RuleRegistry,
+	params: PolicyProposeInput,
+	auditValue: AgentRuleAudit,
+): Promise<ProposalEvent> {
+	if (params.operation === "add" || params.operation === "replace") {
+		const candidate = proposalCandidate(params);
+		return params.operation === "replace"
+			? await registry.proposeReplace(candidate, params.expectedRevision, params.reason, auditValue)
+			: await registry.proposeAdd(candidate, params.reason, auditValue);
+	}
+	return params.operation === "retire"
+		? await registry.proposeRetire(params.id, params.reason, auditValue)
+		: await registry.proposeDisable(params.id, params.reason, auditValue);
+}
+
+/** Render one read-only inspection view as bounded tool text. */
+async function rulesToolOutput(
+	deps: ToolDeps,
+	snapshot: RuleSnapshot,
+	params: PolicyRulesInput,
+	view: string,
+	ctx: ExtensionContext,
+): Promise<string> {
+	if (view === "rules") {
+		if (params.id) {
+			const record = snapshot.records.get(params.id);
+			return record
+				? formatRulesTool(
+						{
+							...snapshot,
+							records: new Map([[record.id, record]]),
+							pending: snapshot.pending.filter((entry) => entry.ruleId === params.id),
+						},
+						ctx,
+					)
+				: `No rule named ${line(params.id)}.`;
+		}
+		return formatRulesTool(snapshot, ctx);
+	}
+	if (view === "catalog") return formatCatalog(deps.registry, params.id);
+	if (view === "data") return formatDataView(snapshot, params.id);
+	if (!deps.inspect) throw new Error(`policy ${view} inspection is unavailable: runtime callback absent`);
+	return boundedInspection(await deps.inspect(view as PolicyInspectionView, params, ctx));
+}
+
 export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 	pi.registerTool<typeof PolicyProposeParams, Record<string, unknown>>({
 		name: "policy_propose",
@@ -598,43 +707,8 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("policy_propose cancelled");
 			await deps.loadRegistry(ctx);
-			const operatorIndependentAudit = makeRuleAudit(ctx, "agent-tool");
-			let event: ProposalEvent;
-			if (params.operation === "add" || params.operation === "replace") {
-				const candidate = validateLocalCandidate({
-					id: params.id,
-					purpose: params.purpose,
-					authority: params.authority,
-					...(params.applicability !== undefined ? { applicability: params.applicability } : {}),
-					matcher:
-						"predicate" in params
-							? { kind: "code", key: params.predicate }
-							: "program" in params
-								? { kind: "declarative", language: "facts/v1", spec: params.program }
-								: {
-										kind: "declarative",
-										language: "command-shape/v1",
-										spec: params.match,
-										...(params.onUnavailable !== undefined ? { onUnavailable: params.onUnavailable } : {}),
-									},
-					note: params.note,
-					...("suggestion" in params && params.suggestion ? { suggestion: params.suggestion } : {}),
-					...(params.scope ? { scope: params.scope } : {}),
-				});
-				event =
-					params.operation === "replace"
-						? await deps.registry.proposeReplace(
-								candidate,
-								params.expectedRevision,
-								params.reason,
-								operatorIndependentAudit,
-							)
-						: await deps.registry.proposeAdd(candidate, params.reason, operatorIndependentAudit);
-			} else
-				event =
-					params.operation === "retire"
-						? await deps.registry.proposeRetire(params.id, params.reason, operatorIndependentAudit)
-						: await deps.registry.proposeDisable(params.id, params.reason, operatorIndependentAudit);
+			const auditValue = makeRuleAudit(ctx, "agent-tool");
+			const event = await submitProposal(deps.registry, params, auditValue);
 			await deps.loadRegistry(ctx);
 			return {
 				content: [
@@ -671,27 +745,7 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 			validateInspectionParams(params);
 			const snapshot = await deps.loadRegistry(ctx);
 			const view = params.view ?? "rules";
-			let output: string;
-			if (view === "rules") {
-				if (params.id) {
-					const record = snapshot.records.get(params.id);
-					output = record
-						? formatRulesTool(
-								{
-									...snapshot,
-									records: new Map([[record.id, record]]),
-									pending: snapshot.pending.filter((entry) => entry.ruleId === params.id),
-								},
-								ctx,
-							)
-						: `No rule named ${line(params.id)}.`;
-				} else output = formatRulesTool(snapshot, ctx);
-			} else if (view === "catalog") output = formatCatalog(deps.registry, params.id);
-			else if (view === "data") output = formatDataView(snapshot, params.id);
-			else {
-				if (!deps.inspect) throw new Error(`policy ${view} inspection is unavailable: runtime callback absent`);
-				output = boundedInspection(await deps.inspect(view as PolicyInspectionView, params, ctx));
-			}
+			const output = await rulesToolOutput(deps, snapshot, params, view, ctx);
 			return {
 				content: [{ type: "text" as const, text: output }],
 				details: {

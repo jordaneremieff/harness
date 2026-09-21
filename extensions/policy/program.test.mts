@@ -245,47 +245,41 @@ test("invalid, ambiguous, and missing-schema corrections preserve the input", ()
 	assert.equal(planInput([required], { team: "blue" }, { tool: "dispatch", data }).denied, true);
 });
 
-test("declared JSON codecs validate composed inner corrections only after all stages", () => {
-	const inner: NamedData = {
-		name: "send-schema",
-		revision: "123456789abc",
-		source: "operator-schema",
-		capturedAt: 1,
-		kind: "schema",
-		schema: {
-			type: "object",
-			properties: { team: { const: "team-2" } },
-			required: ["team"],
-			additionalProperties: false,
-		},
+test("validates the complete final candidate rather than only corrected properties", () => {
+	const action = rule("sub", { kind: "substitute", path: ["team"], table: "teams" }, { data: ["teams"] });
+	const data = snapshotData([table("teams", [{ key: "blue", value: "team-2" }])], 2);
+	const schema = {
+		type: "object",
+		properties: { team: { const: "team-2" }, count: { type: "integer" } },
+		required: ["team", "count"],
+		additionalProperties: false,
 	};
-	const data = snapshotData([inner, table("teams", [{ key: "blue", value: "team-2" }])], 2);
-	const selector = {
-		codec: { argumentsPath: ["arguments"], operationPath: ["operation"], schemaData: "send-schema" },
-		operations: ["send"],
-	};
-	const key = rule(
-		"key",
-		{ kind: "rename-key", path: [], from: "oldTeam", to: "team" },
-		{ selector, data: ["send-schema"] },
-	);
-	const value = rule(
-		"value",
-		{ kind: "substitute", path: ["team"], table: "teams" },
-		{ selector, data: ["send-schema", "teams"] },
-	);
+	const input = { team: "blue", count: "two" };
+	const refused = planInput([action], input, { ...context, schema, data });
+	assert.equal(refused.valid, false);
+	assert.equal(refused.changed, false);
+	assert.deepEqual(refused.candidate, input);
+	assert.deepEqual(Object.keys(refused.candidate).sort(), ["count", "team"]);
+	assert.deepEqual(input, { team: "blue", count: "two" });
+	const accepted = planInput([action], { team: "blue", count: 2 }, { ...context, schema, data });
+	assert.equal(accepted.valid, true);
+	assert.deepEqual(accepted.candidate, { team: "team-2", count: 2 });
+});
+
+test("decoded correction rules are rejected even when the outer tool schema accepts the envelope", () => {
+	const selector = { codec: { argumentsPath: ["arguments"], operationPath: ["operation"] }, operations: ["send"] };
 	const input = { operation: "send", arguments: '{"oldTeam":"blue"}' };
-	const plan = planInput([value, key], input, { ...context, data });
-	assert.equal(plan.valid, true);
-	assert.deepEqual(JSON.parse(String(plan.candidate.arguments)), { team: "team-2" });
-	assert.deepEqual(input, { operation: "send", arguments: '{"oldTeam":"blue"}' });
-	const noSchema = {
-		...key,
-		program: { ...key.program, selector: { codec: { argumentsPath: ["arguments"] } }, data: [] },
-	};
-	assert.equal(planInput([noSchema], input, context).changed, false);
-	assert.equal(planInput([key], { operation: "send", arguments: "not-json" }, { ...context, data }).changed, false);
-	assert.equal(programFacts(key, { ...context, facts: { input }, data }).operation, "send");
+	for (const action of [
+		{ kind: "rename-key" as const, path: [], from: "oldTeam", to: "team" },
+		{ kind: "substitute" as const, path: ["team"], table: "teams" },
+	]) {
+		const rejected = rule("inner", action, { selector, data: ["teams"] });
+		assert.match(validateFactsProgram(rejected.program) ?? "", /Decoded argument corrections are unsupported/);
+		const plan = planInput([rejected], input, context);
+		assert.equal(plan.valid, false);
+		assert.equal(plan.changed, false);
+		assert.deepEqual(plan.candidate, input);
+	}
 });
 
 test("context selectors qualify completed observations and do not invent a current tool", () => {
@@ -302,9 +296,13 @@ test("context selectors qualify completed observations and do not invent a curre
 	assert.equal(validateFactsProgram(scoped.program), undefined);
 	const state = new ObservationState();
 	state.sync([scoped], 0);
-	state.complete(state.pin(scoped.id)!, { outcome: { kind: "success" } }, 1, 1);
+	const pin = state.pin(scoped.id);
+	assert.ok(pin);
+	state.complete(pin, { outcome: { kind: "success" } }, 1, 1);
+	const completed = state.view(scoped.id, 1);
+	assert.ok(completed);
 	assert.equal(
-		evaluatePrograms([scoped], "context", { tool: "", states: { context: state.view(scoped.id, 1)! } })[0].truth,
+		evaluatePrograms([scoped], "context", { tool: "", states: { context: completed } })[0].truth,
 		true,
 	);
 	assert.equal(programFacts(scoped, { tool: "" }).tool, UNKNOWN);
@@ -323,42 +321,16 @@ test("context selectors qualify completed observations and do not invent a curre
 	assert.equal(evaluatePrograms([completion], "completion", { tool: "other", operation: "send" })[0].truth, false);
 });
 
-test("named result schemas require an explicit binding and preserve unavailable evidence", () => {
-	const condition: Condition = { op: "matches-schema", path: ["result"], schemaData: "result-errors" };
-	const program = rule(
-		"semantic-error",
-		{ kind: "assert-error" },
-		{ phase: "result", when: condition, data: ["result-errors"] },
-	);
-	const schema: NamedData = {
-		kind: "schema",
-		name: "result-errors",
-		revision: "123456abcdef",
-		source: "approved-result-shape",
-		capturedAt: 1,
-		schema: {
-			type: "object",
-			properties: {
-				tool: { const: "sample" },
-				details: { type: "object", properties: { failed: { const: true } }, required: ["failed"] },
-			},
-			required: ["tool", "details"],
-		},
-	};
-	const data = snapshotData([schema], 2);
-	assert.equal(validateFactsProgram(program.program), undefined);
-	assert.ok(validateFactsProgram({ ...program.program, data: [] }));
-	for (const extra of [{ table: "result-errors" }, { value: true }, { op: "exists" }])
-		assert.ok(validateFactsProgram({ ...program.program, when: { ...condition, ...extra } }));
-	const result = { tool: "sample", details: { failed: true } };
-	assert.equal(evaluateCondition(condition, { result, data }), true);
-	assert.equal(evaluateCondition(condition, { result: { ...result, tool: "other" }, data }), false);
-	assert.equal(evaluateCondition(condition, { result: { tool: "sample", details: {} }, data }), false);
-	assert.equal(evaluateCondition(condition, { result, data: {} }), "unknown");
-	assert.equal(evaluateCondition({ not: condition }, { result, data: {} }), "unknown");
-	assert.equal(evaluateCondition(condition, { data }), "unknown");
-	const wrong = snapshotData([table("result-errors", [])], 2);
-	assert.equal(evaluateCondition(condition, { result, data: wrong }), "unknown");
+test("removed schema operators and fields fail closed admission at every condition root", () => {
+	const base = rule("unsupported", { kind: "deny" }).program;
+	const removed = { op: "matches-schema", path: ["input"], schemaData: "shape" };
+	for (const condition of [removed, { ...yes, schemaData: "shape" }, { not: removed }]) {
+		assert.ok(validateFactsProgram({ ...base, when: condition }));
+		assert.ok(validateFactsProgram({ ...base, state: { observe: condition } }));
+		assert.ok(validateFactsProgram({ ...base, state: { observe: yes, resetWhen: condition } }));
+	}
+	assert.ok(validateFactsProgram({ ...base, schemaData: "shape" }));
+	assert.ok(validateFactsProgram({ ...base, selector: { codec: { argumentsPath: ["arguments"], schemaData: "shape" } } }));
 });
 
 test("only actual result facts support structural error assertions", () => {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { UNKNOWN } from "./data.ts";
-import { ObservationState, STATE_LIMITS } from "./state.ts";
+import { ObservationState, STATE_LIMITS, type StatePin, type StateView } from "./state.ts";
 import { evaluatePrograms, PROGRAM_LIMITS, type ProgramRule, type StateSpec } from "./program.ts";
 
 const rule = (state: Partial<StateSpec> = {}): ProgramRule => ({
@@ -17,10 +17,24 @@ const rule = (state: Partial<StateSpec> = {}): ProgramRule => ({
 });
 const failed = { outcome: { kind: "execution-error", tokens: 7 } };
 
+/** Return the required pin for a synced rule, failing the test when it is absent. */
+function pinOf(state: ObservationState, id = "failures"): StatePin {
+	const pin = state.pin(id);
+	assert.ok(pin, id);
+	return pin;
+}
+
+/** Return the required state view at the given time. */
+function viewOf(state: ObservationState, id: string, now: number, turn = 0): StateView {
+	const view = state.view(id, now, turn);
+	assert.ok(view, id);
+	return view;
+}
+
 test("completed outcomes count execution failures separately from denied, invalid, and aborted calls", () => {
 	const state = new ObservationState();
 	state.sync([rule({ totalPath: ["outcome", "tokens"] })], 1);
-	const pin = state.pin("failures")!;
+	const pin = pinOf(state);
 	for (const kind of ["denied", "invalid", "aborted", "success"])
 		assert.equal(state.complete(pin, { outcome: { kind } }, 1, 2), true);
 	state.complete(pin, failed, 1, 3);
@@ -35,8 +49,8 @@ test("completed outcomes count execution failures separately from denied, invali
 test("unknown observation evidence does not count, and views are copies", () => {
 	const state = new ObservationState();
 	state.sync([rule()], 1);
-	state.complete(state.pin("failures")!, {}, 1, 2);
-	const view = state.view("failures", 2)!;
+	state.complete(pinOf(state), {}, 1, 2);
+	const view = viewOf(state, "failures", 2);
 	view.count = 999;
 	assert.equal(state.view("failures", 2)?.count, 0);
 });
@@ -44,7 +58,7 @@ test("unknown observation evidence does not count, and views are copies", () => 
 test("unavailable measured totals remain unknown until their affected period or window ends", () => {
 	const state = new ObservationState();
 	state.sync([rule({ totalPath: ["outcome", "tokens"], window: { maxEvents: 4, maxAgeMs: 10 } })], 0);
-	const pin = state.pin("failures")!;
+	const pin = pinOf(state);
 	state.complete(pin, { outcome: { kind: "execution-error", tokens: 0 } }, 1, 1);
 	assert.equal(state.view("failures", 1, 1)?.total, 0);
 	state.complete(pin, { outcome: { kind: "execution-error" } }, 2, 2);
@@ -63,11 +77,11 @@ test("unavailable measured totals remain unknown until their affected period or 
 test("window aggregates use the last-N and age intersection without stale samples", () => {
 	const state = new ObservationState();
 	state.sync([rule({ totalPath: ["outcome", "tokens"], window: { maxEvents: 2, maxAgeMs: 10 } })], 0);
-	const pin = state.pin("failures")!;
+	const pin = pinOf(state);
 	state.complete(pin, failed, 1, 1);
 	state.complete(pin, failed, 1, 2);
 	state.complete(pin, failed, 2, 3);
-	const view = state.view("failures", 3)!;
+	const view = viewOf(state, "failures", 3);
 	assert.equal(view.count, 3);
 	assert.equal(view.windowCount, 2);
 	assert.equal(view.windowTotal, 14);
@@ -90,12 +104,12 @@ test("success reset clears failure windows, turn totals, and guidance flags", ()
 		],
 		0,
 	);
-	const pin = state.pin("failures")!;
+	const pin = pinOf(state);
 	state.complete(pin, failed, 1, 1);
 	assert.equal(state.project("failures", 2, 1), true);
 	assert.equal(state.eligible("failures", 2, 1), false);
 	state.complete(pin, { outcome: { kind: "success" } }, 2, 3);
-	const view = state.view("failures", 3, 1)!;
+	const view = viewOf(state, "failures", 3, 1);
 	for (const field of [
 		"count",
 		"total",
@@ -130,7 +144,7 @@ test("semantic and lifecycle resets reject stale generations; ordinary sync pres
 	for (const reason of ["load", "reload", "new", "resume", "fork", "tree-navigation"]) {
 		const state = new ObservationState();
 		state.sync([rule()], 1);
-		const pin = state.pin("failures")!;
+		const pin = pinOf(state);
 		state.complete(pin, failed, 1, 2);
 		state.sync([rule()], 3);
 		assert.equal(state.view("failures", 3)?.count, 1);
@@ -141,10 +155,10 @@ test("semantic and lifecycle resets reject stale generations; ordinary sync pres
 	}
 	const state = new ObservationState();
 	state.sync([rule()], 1);
-	const old = state.pin("failures")!;
+	const old = pinOf(state);
 	state.sync([{ ...rule(), revision: "two" }], 2);
 	assert.equal(state.complete(old, failed, 1, 3), false);
-	const revised = state.pin("failures")!;
+	const revised = pinOf(state);
 	state.sync([], 4);
 	state.sync([{ ...rule(), revision: "two" }], 5);
 	assert.equal(state.complete(revised, failed, 1, 6), false);
@@ -153,7 +167,7 @@ test("semantic and lifecycle resets reject stale generations; ordinary sync pres
 test("expiry previews do not mutate state; long calls enter the new completion period", () => {
 	const state = new ObservationState();
 	state.sync([rule({ expiresAfterMs: 10, once: "period" })], 1);
-	const pin = state.pin("failures")!;
+	const pin = pinOf(state);
 	state.complete(pin, failed, 1, 2);
 	state.project("failures", 2, 1);
 	assert.equal(state.view("failures", 11)?.count, 0);
@@ -173,7 +187,7 @@ test("rule reset affects only its rule and stateless programs still receive pins
 	delete plain.program.state;
 	plain.id = "plain";
 	state.sync([rule(), plain], 1);
-	const retained = state.pin("plain")!;
+	const retained = pinOf(state, "plain");
 	state.reset("operator", 2, "failures");
 	assert.deepEqual(state.pin("plain"), retained);
 	assert.equal(state.complete(retained, failed, 1, 3), true);
@@ -183,9 +197,9 @@ test("rule reset affects only its rule and stateless programs still receive pins
 test("turn bounds retain exact current totals and expose unavailable historical counts", () => {
 	const state = new ObservationState();
 	state.sync([rule({ totalPath: ["outcome", "tokens"] })], 0);
-	const pin = state.pin("failures")!;
+	const pin = pinOf(state);
 	for (let turn = 1; turn <= STATE_LIMITS.turns + 2; turn++) state.complete(pin, failed, turn, turn);
-	const latest = state.view("failures", 2000, STATE_LIMITS.turns + 2)!;
+	const latest = viewOf(state, "failures", 2000, STATE_LIMITS.turns + 2);
 	assert.equal(latest.turnCount, 1);
 	assert.equal(latest.turnTotal, 7);
 	assert.equal(latest.turns, UNKNOWN);
@@ -227,8 +241,8 @@ test("invalid times and overbound rule sets do not enter state", () => {
 	assert.throws(() => state.sync([rule()], NaN));
 	assert.throws(() => state.sync([rule(), rule()], 0));
 	state.sync([rule()], 1);
-	assert.equal(state.complete(state.pin("failures")!, failed, 1, 0), false);
-	assert.equal(state.complete(state.pin("failures")!, failed, -1, 2), false);
+	assert.equal(state.complete(pinOf(state), failed, 1, 0), false);
+	assert.equal(state.complete(pinOf(state), failed, -1, 2), false);
 	assert.equal(state.project("failures", NaN, 1), false);
 	assert.equal(state.view("missing", 2), undefined);
 });

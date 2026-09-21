@@ -78,7 +78,8 @@ async function setup(t: TestContext) {
 		},
 	);
 	await registry.snapshot();
-	const tool = registered.get("policy_propose")!;
+	const tool = registered.get("policy_propose");
+	assert.ok(tool);
 	return {
 		registry,
 		registered,
@@ -110,7 +111,8 @@ describe("command-aware proposal admission", () => {
 	});
 	it("serializes exact-length literal arrays for both CLI operations without changing admission", async (t) => {
 		const { registered } = await setup(t);
-		const tool = registered.get("policy_propose")!;
+		const tool = registered.get("policy_propose");
+		assert.ok(tool);
 		const schema = JSON.parse(JSON.stringify(tool.parameters));
 		const branches = schema.anyOf.filter(
 			(branch: { properties: { match?: { properties: { cli?: unknown } } } }) =>
@@ -149,7 +151,7 @@ describe("command-aware proposal admission", () => {
 				};
 				const accepted = Array.isArray(subcommand) && subcommand.length === 1 && subcommand[0] === "push";
 				assert.equal(transport.Check(input), accepted, JSON.stringify(input));
-				const validate = () =>
+				const validate = (): unknown =>
 					validateToolArguments(
 						{ ...tool, parameters: schema },
 						{
@@ -278,9 +280,12 @@ describe("finite proposal description and recursive admission", () => {
 		).result();
 		assert.match(result.errorMessage ?? "", /schema inspection complete/);
 		assert.ok(payload);
-		const tool = registered.get("policy_propose")!;
+		const tool = registered.get("policy_propose");
+		assert.ok(tool);
 		const schema = JSON.parse(JSON.stringify(tool.parameters));
-		const projected = payload.tools.find((item) => item.name === tool.name)!.input_schema;
+		const projectedTool = payload.tools.find((item) => item.name === tool.name);
+		assert.ok(projectedTool);
+		const projected = projectedTool.input_schema;
 		assert.deepEqual(
 			Object.keys(projected.properties).sort(),
 			[
@@ -335,7 +340,10 @@ describe("finite proposal description and recursive admission", () => {
 			const snapshot = await fixture.registry.snapshot();
 			assert.equal(snapshot.records.size, 0);
 			assert.equal(snapshot.pending.length, 1);
-			const candidate = snapshot.pending[0].candidate!;
+			const pending = snapshot.pending[0];
+			assert.ok(pending);
+			const candidate = pending.candidate;
+			assert.ok(candidate);
 			assert.deepEqual(candidate.applicability, input.applicability);
 			assert.equal(candidate.matcher.kind, "declarative");
 			if (candidate.matcher.kind === "declarative") assert.deepEqual(candidate.matcher.spec, input.program);

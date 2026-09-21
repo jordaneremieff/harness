@@ -9,7 +9,7 @@ import type { RuleRecord } from "./rule.ts";
 import { hasCodeMatcher } from "./shell-rules.ts";
 
 function installed(id: string): RuleRecord {
-	const row = PACKAGE_CATALOG.find((entry) => entry.id === id)!;
+	const row = PACKAGE_CATALOG.find((entry) => entry.id === id);
 	assert.ok(row, id);
 	return {
 		id,
@@ -31,7 +31,6 @@ test("every installed policy has a validated purpose, action authority, and sour
 	}
 	for (const id of [
 		"arguments.schema",
-		"results.declared-error",
 		"recovery.repeated-errors",
 		"resources.output-volume",
 	])

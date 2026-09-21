@@ -149,7 +149,9 @@ describe("strict rule events", () => {
 		]);
 		assert.equal(reduced.records.has(add.ruleId), false);
 		assert.equal(reduced.pending.length, 1);
-		assert.equal(effectiveState(reduced.records.get(initial.id)!), "active");
+		const active = reduced.records.get(initial.id);
+		assert.ok(active);
+		assert.equal(effectiveState(active), "active");
 	});
 	it("retains the explicit audit source and exact time", () => {
 		assert.deepEqual(
@@ -205,8 +207,12 @@ describe("starter catalog ownership", () => {
 		for (const nextRows of [[], [row(a.id, "Changed source."), row("operator.c")], [a, b]]) {
 			const next = await registry(dir, nextRows).snapshot();
 			assert.equal(next.records.get(a.id)?.definition.revision, a.revision);
-			assert.equal(effectiveState(next.records.get(a.id)!), "disabled");
-			assert.equal(effectiveState(next.records.get(b.id)!), "retired");
+			const disabled = next.records.get(a.id);
+			const retired = next.records.get(b.id);
+			assert.ok(disabled);
+			assert.ok(retired);
+			assert.equal(effectiveState(disabled), "disabled");
+			assert.equal(effectiveState(retired), "retired");
 			assert.equal(next.records.size, 2);
 			assert.equal(await readFile(reg.path, "utf8"), before);
 		}
@@ -225,16 +231,20 @@ describe("starter catalog ownership", () => {
 		);
 		await assert.rejects(reg.decide(replacement.id, "approved", "block", sessionAudit()), /exact proposal revision/);
 		await reg.decide(replacement.id, "approved", "block", sessionAudit(), proposalRevision(replacement));
-		let record = (await registry(dir, [initial]).snapshot()).records.get(initial.id)!;
+		let record = (await registry(dir, [initial]).snapshot()).records.get(initial.id);
+		assert.ok(record);
 		assert.equal(record.definition.note, candidate().note);
 		assert.equal(effectiveState(record), "disabled");
 		assert.equal(effectiveEffect(record), "steer");
 		await reg.enable(initial.id, "Resume.", sessionAudit());
-		assert.equal(effectiveEffect((await reg.snapshot()).records.get(initial.id)!), "steer");
+		const enabled = (await reg.snapshot()).records.get(initial.id);
+		assert.ok(enabled);
+		assert.equal(effectiveEffect(enabled), "steer");
 		const retirement = await reg.proposeRetire(initial.id, "Retire.", agent);
 		await reg.decide(retirement.id, "approved", undefined, sessionAudit());
 		await importRows(reg, initial.id);
-		record = (await reg.snapshot()).records.get(initial.id)!;
+		record = (await reg.snapshot()).records.get(initial.id);
+		assert.ok(record);
 		assert.equal(record.source.kind, "import");
 		assert.equal(record.definition.revision, initial.revision);
 		const edit = await reg.proposeReplace(candidate(initial.id), initial.revision, "Edit imported rule.", agent);
@@ -357,7 +367,8 @@ describe("atomic explicit catalog import", () => {
 		const { revision: _revision, ...definition } = value;
 		const next = registry(dir, [{ ...definition, revision: packageRowRevision(definition) }]);
 		await importRows(next, a.id);
-		const record = (await next.snapshot()).records.get(a.id)!;
+		const record = (await next.snapshot()).records.get(a.id);
+		assert.ok(record);
 		assert.equal(record.override?.effect, "steer");
 		assert.equal(effectiveEffect(record), "correct");
 		await assert.rejects(next.setEffect(a.id, "block", "Change effect.", sessionAudit()), /exact replacement/);
@@ -415,7 +426,9 @@ describe("atomic explicit catalog import", () => {
 		assert.equal(snapshot.health.status, "ok");
 		assert.equal(snapshot.records.size, MAX_RULES);
 		assert.equal(snapshot.pending[0]?.id, second.id);
-		assert.equal(effectiveState(snapshot.records.get(rows[0].id)!), "disabled");
+		const disabled = snapshot.records.get(rows[0].id);
+		assert.ok(disabled);
+		assert.equal(effectiveState(disabled), "disabled");
 		await reg.decide(second.id, "rejected", undefined, sessionAudit());
 		assert.equal((await reg.snapshot()).pending.length, 0);
 	});
@@ -452,6 +465,46 @@ describe("unreadable and partial stores", () => {
 			await reg.snapshot();
 			assert.equal(notices.length, 1);
 		}
+	});
+	it("rejects retired facts shapes during replay without fallback rules or writes", async (t) => {
+		const dir = await directory(t);
+		await mkdir(dir, { mode: 0o700 });
+		const invalid = {
+			kind: "proposal",
+			id: randomUUID(),
+			operation: "add",
+			ruleId: "operator.retired",
+			reason: "Bound output.",
+			audit: agent,
+			candidate: {
+				purpose: "Keep search output bounded.",
+				authority: "steer-or-block",
+				matcher: {
+					kind: "declarative",
+					language: "facts/v1",
+					spec: {
+						phase: "input",
+						when: { op: "matches-schema", path: ["input"], schemaData: "shape" },
+						action: { kind: "deny" },
+						onUnavailable: "skip",
+					},
+				},
+				note: "Prefer bounded search.",
+			},
+		};
+		const bytes = `${JSON.stringify(catalog())}\n${JSON.stringify(invalid)}\n`;
+		await writeFile(join(dir, RULES_FILE), bytes, { mode: 0o600 });
+		const notices: string[] = [];
+		const reg = new RuleRegistry(dir, { catalog: [], onNotice: (notice) => notices.push(notice) });
+		const snapshot = await reg.snapshot();
+		assert.equal(snapshot.health.status, "degraded");
+		assert.equal(snapshot.records.size, 0);
+		assert.equal(snapshot.pending.length, 0);
+		assert.match(ruleStoreHealthLine(snapshot.health), /No rules are active/);
+		await assert.rejects(reg.proposeAdd(candidate(), "Add rule.", agent), /writes are refused/);
+		assert.equal(await readFile(reg.path, "utf8"), bytes);
+		await reg.snapshot();
+		assert.equal(notices.length, 1);
 	});
 	it("reports a seed directory failure without publishing a store", async (t) => {
 		const dir = await directory(t);

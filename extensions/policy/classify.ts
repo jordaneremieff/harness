@@ -10,7 +10,7 @@ import {
 	type RuleRecord,
 	type RuleScope,
 } from "./rule.ts";
-import { parseShellEvidence, type Stage } from "./shell.ts";
+import { parseShellEvidence, type ShellEvidence, type Stage, type Statement } from "./shell.ts";
 import {
 	type CodeMatcher,
 	captureShell,
@@ -54,6 +54,62 @@ export function ruleScopeVisibility(record: Pick<RuleRecord, "definition">, cont
 	return `scope matches this session: ${excludingField ? `no (${excludingField})` : "yes"}`;
 }
 
+/** Fixed indirect commands whose declared evidence cannot prove a literal Git push. */
+const INDIRECT_COMMANDS = new Set([
+	"eval",
+	"source",
+	".",
+	"sh",
+	"bash",
+	"zsh",
+	"dash",
+	"ksh",
+	"xargs",
+	"for",
+	"select",
+	"case",
+	"function",
+]);
+
+function pipeEvidenceMatches(
+	pipe: CommandShapeSpec["pipe"],
+	stage: Stage,
+	position: number,
+	statement: readonly Stage[],
+): boolean {
+	if (pipe === undefined) return true;
+	if (pipe.from !== undefined && stage.fromPipe !== pipe.from) return false;
+	if (pipe.to !== undefined && stage.toPipe !== pipe.to) return false;
+	if (pipe.fromRedirect !== undefined && stage.fromRedirect !== pipe.fromRedirect) return false;
+	if (pipe.toRedirect !== undefined && stage.toRedirect !== pipe.toRedirect) return false;
+	if (pipe.next && !pipe.next.includes(statement[position + 1]?.command ?? "")) return false;
+	const later = pipe.later;
+	if (later && !statement.slice(position + 1).some((entry) => later.includes(entry.command))) return false;
+	return true;
+}
+
+function flagsEvidenceMatches(flags: readonly string[], match: CommandShapeSpec): boolean {
+	if (match.flags && !match.flags.every((flag) => flags.includes(flag))) return false;
+	if (match.anyFlags && !match.anyFlags.some((flag) => flags.includes(flag))) return false;
+	if (match.absentFlags?.some((flag) => flags.includes(flag))) return false;
+	return true;
+}
+
+function operandsEvidenceMatch(operands: readonly string[], match: CommandShapeSpec): boolean {
+	if (match.operands?.min !== undefined && operands.length < match.operands.min) return false;
+	if (match.operands?.max !== undefined && operands.length > match.operands.max) return false;
+	if (match.operands?.any) {
+		const any = match.operands.any;
+		if (!operands.some((operand) => any.includes(operand))) return false;
+	}
+	if (match.operands?.at) {
+		for (const [index, choices] of Object.entries(match.operands.at)) {
+			if (!choices.includes(operands[Number(index)])) return false;
+		}
+	}
+	return true;
+}
+
 function declarativeStageMatches(
 	stage: Stage,
 	position: number,
@@ -64,28 +120,35 @@ function declarativeStageMatches(
 	if (match.cli && stage.commandLiteral === false) return "unknown";
 	if (stage.command !== match.command) return false;
 	if (cli?.status === "unrelated") return false;
-	const pipe = match.pipe;
-	if (pipe?.from !== undefined && stage.fromPipe !== pipe.from) return false;
-	if (pipe?.to !== undefined && stage.toPipe !== pipe.to) return false;
-	if (pipe?.fromRedirect !== undefined && stage.fromRedirect !== pipe.fromRedirect) return false;
-	if (pipe?.toRedirect !== undefined && stage.toRedirect !== pipe.toRedirect) return false;
-	if (pipe?.next && !pipe.next.includes(statement[position + 1]?.command ?? "")) return false;
-	if (pipe?.later && !statement.slice(position + 1).some((later) => pipe.later!.includes(later.command))) return false;
+	if (!pipeEvidenceMatches(match.pipe, stage, position, statement)) return false;
 	if (cli?.status === "unknown") return "unknown";
 	const flags = cli?.status === "known" ? cli.options.map((option) => option.spelling) : stage.args;
-	if (match.flags && !match.flags.every((flag) => flags.includes(flag))) return false;
-	if (match.anyFlags && !match.anyFlags.some((flag) => flags.includes(flag))) return false;
-	if (match.absentFlags?.some((flag) => flags.includes(flag))) return false;
+	if (!flagsEvidenceMatches(flags, match)) return false;
 	const operands = cli?.status === "known" ? cli.operands : stage.args.filter((arg) => !arg.startsWith("-"));
-	if (match.operands?.min !== undefined && operands.length < match.operands.min) return false;
-	if (match.operands?.max !== undefined && operands.length > match.operands.max) return false;
-	if (match.operands?.any && !operands.some((operand) => match.operands!.any!.includes(operand))) return false;
-	if (match.operands?.at) {
-		for (const [index, choices] of Object.entries(match.operands.at)) {
-			if (!choices.includes(operands[Number(index)])) return false;
+	return operandsEvidenceMatch(operands, match);
+}
+
+/** Decode CLI evidence for statements that a CLI candidate will read. */
+function decodeStatementOptions(
+	statements: readonly Statement[],
+	needed: boolean,
+	decoded: Map<Stage, CliEvidence>,
+	parsed: ShellEvidence,
+): void {
+	if (!needed) return;
+	let options = 0;
+	for (const statement of statements) {
+		for (const stage of statement) {
+			const cli = decodeGitPush(stage);
+			decoded.set(stage, cli);
+			if (cli.status === "known") options += cli.globals.length + cli.options.length;
 		}
 	}
-	return true;
+	if (parsed.wordCount + options <= 4096) return;
+	parsed.complete = false;
+	parsed.reasons.push("option-limit");
+	for (const [stage, cli] of decoded)
+		if (cli.status === "known") decoded.set(stage, { status: "unknown", reason: "option-limit" });
 }
 
 /**
@@ -114,97 +177,113 @@ export function evaluateCommandRecords(
 	const parsed = parseShellEvidence(captured);
 	const statements = parsed.statements;
 	const decoded = new Map<Stage, CliEvidence>();
-	if (
+	decodeStatementOptions(
+		statements,
 		candidates.some(
 			(record) =>
 				record.matcher.kind === "declarative" &&
 				record.matcher.language === "command-shape/v1" &&
 				record.matcher.spec.cli,
-		)
-	) {
-		let options = 0;
-		for (const statement of statements) {
-			for (const stage of statement) {
-				const cli = decodeGitPush(stage);
-				decoded.set(stage, cli);
-				if (cli.status === "known") options += cli.globals.length + cli.options.length;
-			}
-		}
-		if (parsed.wordCount + options > 4096) {
-			parsed.complete = false;
-			parsed.reasons.push("option-limit");
-			for (const [stage, cli] of decoded)
-				if (cli.status === "known") decoded.set(stage, { status: "unknown", reason: "option-limit" });
-		}
-	}
+		),
+		decoded,
+		parsed,
+	);
 	for (const record of candidates) {
-		let applies: Truth = false;
-		const reasons = new Set<string>();
 		if (record.matcher.kind === "code") {
-			const predicate = resolveMatcher(record.matcher.key);
-			if (!predicate) continue;
-			for (const statement of statements) {
-				for (let index = 0; index < statement.length; index++) {
-					const stage = statement[index];
-					if (!codeMatcherStageEligible(stage)) continue;
-					if (predicate({ statement, stage, index })) {
-						applies = true;
-						break;
-					}
-				}
-				if (applies) break;
-			}
-		} else if (record.matcher.language === "command-shape/v1") {
-			const spec = record.matcher.spec;
-			if (spec.cli && !parsed.complete) {
-				applies = "unknown";
-				for (const reason of parsed.reasons) reasons.add(reason);
-			}
-			for (const statement of statements) {
-				for (let index = 0; index < statement.length; index++) {
-					const stage = statement[index];
-					let cli: CliEvidence | undefined;
-					if (spec.cli) {
-						cli = decoded.get(stage)!;
-					}
-					const indirect =
-						spec.cli &&
-						(stage.commandLiteral === false ||
-							stage.shellReasons?.includes("unresolved-command") ||
-							[
-								"eval",
-								"source",
-								".",
-								"sh",
-								"bash",
-								"zsh",
-								"dash",
-								"ksh",
-								"xargs",
-								"for",
-								"select",
-								"case",
-								"function",
-							].includes(stage.command));
-					const truth = indirect ? "unknown" : declarativeStageMatches(stage, index, statement, spec, cli);
-					if (truth === true) {
-						applies = true;
-						break;
-					}
-					if (truth === "unknown") {
-						applies = "unknown";
-						reasons.add(
-							indirect ? "unresolved-command" : cli?.status === "unknown" ? cli.reason : "shell-evidence-unavailable",
-						);
-					}
-				}
-				if (applies === true) break;
-			}
+			result.set(record.id, evaluateCodeRecord(record, statements, resolveMatcher));
+			continue;
 		}
-		result.set(record.id, applies);
-		if (applies === "unknown") result.reasons.set(record.id, [...reasons].slice(0, 16));
+		if (record.matcher.language === "command-shape/v1") {
+			const evaluated = evaluateDeclarativeRecord(record, statements, decoded, parsed);
+			result.set(record.id, evaluated.applies);
+			if (evaluated.applies === "unknown") result.reasons.set(record.id, evaluated.reasons);
+		}
 	}
 	return result;
+}
+
+/** Evaluate one code matcher against every eligible parsed stage. */
+function evaluateCodeRecord(
+	record: RuleRecord,
+	statements: readonly Statement[],
+	resolveMatcher: CodeMatcherResolver,
+): Truth {
+	const predicate = record.matcher.kind === "code" ? resolveMatcher(record.matcher.key) : undefined;
+	if (!predicate) return false;
+	for (const statement of statements) {
+		for (let index = 0; index < statement.length; index++) {
+			const stage = statement[index];
+			if (!codeMatcherStageEligible(stage)) continue;
+			if (predicate({ statement, stage, index })) return true;
+		}
+	}
+	return false;
+}
+
+/** Truth and fixed reason for one stage of one declarative candidate. */
+function declarativeStageTruth(
+	spec: CommandShapeSpec,
+	statement: readonly Stage[],
+	index: number,
+	decoded: ReadonlyMap<Stage, CliEvidence>,
+): { truth: Truth; reason: string | undefined } {
+	const stage = statement[index];
+	let cli: CliEvidence | undefined;
+	if (spec.cli) {
+		cli = decoded.get(stage);
+		if (cli === undefined) cli = { status: "unknown", reason: "option-limit" };
+	}
+	const indirect =
+		spec.cli &&
+		(stage.commandLiteral === false ||
+			stage.shellReasons?.includes("unresolved-command") ||
+			INDIRECT_COMMANDS.has(stage.command));
+	if (indirect) return { truth: "unknown", reason: "unresolved-command" };
+	const truth = declarativeStageMatches(stage, index, statement, spec, cli);
+	if (truth === "unknown")
+		return { truth, reason: cli?.status === "unknown" ? cli.reason : "shell-evidence-unavailable" };
+	return { truth, reason: undefined };
+}
+
+function declarativeStatementApplies(
+	spec: CommandShapeSpec,
+	statement: readonly Stage[],
+	decoded: ReadonlyMap<Stage, CliEvidence>,
+	reasons: Set<string>,
+): Truth {
+	let applies: Truth = false;
+	for (let index = 0; index < statement.length; index++) {
+		const evaluated = declarativeStageTruth(spec, statement, index, decoded);
+		if (evaluated.truth === true) return true;
+		if (evaluated.truth === "unknown") {
+			applies = "unknown";
+			if (evaluated.reason) reasons.add(evaluated.reason);
+		}
+	}
+	return applies;
+}
+
+/** Evaluate one command-shape matcher with fixed decoded Git evidence. */
+function evaluateDeclarativeRecord(
+	record: RuleRecord,
+	statements: readonly Statement[],
+	decoded: ReadonlyMap<Stage, CliEvidence>,
+	parsed: ShellEvidence,
+): { applies: Truth; reasons: string[] } {
+	const spec = record.matcher.kind === "declarative" && record.matcher.language === "command-shape/v1" ? record.matcher.spec : undefined;
+	if (!spec) return { applies: false, reasons: [] };
+	const reasons = new Set<string>();
+	let applies: Truth = false;
+	if (spec.cli && !parsed.complete) {
+		applies = "unknown";
+		for (const reason of parsed.reasons) reasons.add(reason);
+	}
+	for (const statement of statements) {
+		const statementTruth = declarativeStatementApplies(spec, statement, decoded, reasons);
+		if (statementTruth === true) return { applies: true, reasons: [] };
+		if (statementTruth === "unknown") applies = "unknown";
+	}
+	return { applies, reasons: [...reasons].slice(0, 16) };
 }
 
 /** True-only convenience view over the same evidence evaluator. */

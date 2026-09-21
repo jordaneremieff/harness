@@ -3,7 +3,6 @@ import { readFile, stat } from "node:fs/promises";
 import { test } from "node:test";
 import { Compile } from "typebox/compile";
 import { validateFactsProgram } from "./program.ts";
-import { checkSchema } from "./data.ts";
 import { PolicyProposeParams, validateInspectionParams } from "./tools.ts";
 
 const proposal = Compile(PolicyProposeParams);
@@ -25,10 +24,7 @@ test("documented JSON requests satisfy the current policy contracts", async () =
 		} else if (value.view) {
 			validateInspectionParams(value);
 			exercised.add("inspection");
-		} else if (value.type) {
-			assert.notEqual(checkSchema(value, {}), "unknown");
-			exercised.add("schema");
 		}
 	}
-	assert.deepEqual(exercised, new Set(["inspection", "proposal", "program", "schema"]));
+	assert.deepEqual(exercised, new Set(["inspection", "proposal", "program"]));
 });

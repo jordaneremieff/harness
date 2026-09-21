@@ -94,11 +94,8 @@ export async function readDataArtifact(path: string): Promise<DataArtifact> {
 
 export function dataReview(artifact: DataArtifact, approvalRevision: string): string {
 	const { data, expectedRevision } = artifact;
-	let body: string;
-	if (data.kind === "table") {
-		const { rows, ...metadata } = data;
-		body = `${safeJson({ expectedRevision, approveRevision: approvalRevision, data: metadata }, 2)}\nrows (${rows.length}):\n${rows.map((row) => safeJson(row)).join("\n")}`;
-	} else body = safeJson({ ...artifact, approveRevision: approvalRevision }, 2);
+	const { rows, ...metadata } = data;
+	const body = `${safeJson({ expectedRevision, approveRevision: approvalRevision, data: metadata }, 2)}\nrows (${rows.length}):\n${rows.map((row) => safeJson(row)).join("\n")}`;
 	if (Buffer.byteLength(body, "utf8") > MAX_DATA_REVIEW_BYTES)
 		throw new Error("complete data review exceeds byte bound");
 	return body;

@@ -60,6 +60,21 @@ class FakePi {
 	): void {
 		this.commands.set(name, command);
 	}
+	command() {
+		const command = this.commands.get("policy");
+		assert.ok(command, "policy command registered");
+		return command;
+	}
+	tool(name: string): RegisteredTool {
+		const tool = this.tools.get(name);
+		assert.ok(tool, name);
+		return tool;
+	}
+	completions() {
+		const complete = this.command().getArgumentCompletions;
+		assert.ok(complete, "policy command completions registered");
+		return complete;
+	}
 	on(name: string, handler: (event: never, ctx: never) => unknown): void {
 		const entries = this.handlers.get(name) ?? [];
 		entries.push(handler);
@@ -208,7 +223,7 @@ describe("registration and lazy catalog use", () => {
 
 	it("seeds the absent registry with the complete starter catalog on first use", async () => {
 		const { dir, pi, ctx } = await setup();
-		await callTool(pi.tools.get("policy_rules")!, {}, ctx);
+		await callTool(pi.tool("policy_rules"), {}, ctx);
 		const events = await storedEvents(dir);
 		assert.equal(events.length, 1);
 		assert.equal(events[0].kind, "catalog");
@@ -224,7 +239,7 @@ describe("registration and lazy catalog use", () => {
 describe("unified tools and command gates", () => {
 	it("validates command previews with the same bounded inspection contract as the tool", async () => {
 		const { dir, pi, ctx, notifications } = await setup("enforce");
-		const command = pi.commands.get("policy")!;
+		const command = pi.command();
 		const input = { tool: "read", input: { path: "sample.txt" }, result: { isError: false } };
 		await command.handler(`preview ${JSON.stringify(input)}`, ctx as never);
 		assert.equal(notifications.at(-1)?.type, "info");
@@ -253,9 +268,9 @@ describe("unified tools and command gates", () => {
 
 	it("completes data actions, stored names, exact revisions, and whole-state reset", async () => {
 		const { pi, ctx, notifications } = await setup();
-		const command = pi.commands.get("policy")!;
+		const command = pi.command();
 		const completions = (prefix: string) =>
-			(command.getArgumentCompletions!(prefix) as Array<{ value: string }>).map((item) => item.value);
+			(pi.completions()(prefix) as Array<{ value: string }>).map((item) => item.value);
 		assert.deepEqual(completions("data "), ["data list", "data show", "data set", "data set-file", "data remove"]);
 		assert.deepEqual(completions("data show "), []);
 		assert.deepEqual(completions("reset --"), ["reset --all"]);
@@ -296,7 +311,7 @@ describe("unified tools and command gates", () => {
 			}),
 		);
 		const ctx = context(notifications, { cwd, mode: "rpc", hasUI: true });
-		const command = pi.commands.get("policy")!;
+		const command = pi.command();
 		await command.handler('data set-file {"path":"table.json"}', ctx as never);
 		assert.equal(
 			(await storedEvents(dir)).some((event) => event.kind === "data" && event.operation === "set"),
@@ -318,9 +333,9 @@ describe("unified tools and command gates", () => {
 	});
 	it("policy_rules reports record definitions, overrides, proposals, context, and health", async () => {
 		const { pi, ctx } = await setup();
-		await pi.commands.get("policy")!.handler("effect routing.cat-read steer operator calibration", ctx as never);
+		await pi.command().handler("effect routing.cat-read steer operator calibration", ctx as never);
 		const proposed = await callTool(
-			pi.tools.get("policy_propose")!,
+			pi.tool("policy_propose"),
 			{
 				operation: "add",
 				id: "local.pending",
@@ -333,7 +348,7 @@ describe("unified tools and command gates", () => {
 			ctx,
 		);
 		const proposalId = (proposed.details as { proposalId: string }).proposalId;
-		const result = await callTool(pi.tools.get("policy_rules")!, {}, ctx);
+		const result = await callTool(pi.tool("policy_rules"), {}, ctx);
 		const text = (result.content as Array<{ text: string }>)[0].text;
 		assert.match(text, /SESSION CONTEXT/);
 		assert.match(text, /model provider: openai-codex/);
@@ -355,7 +370,7 @@ describe("unified tools and command gates", () => {
 
 	it("agent add remains inert until exact operator approval, then declarative matching joins package dispatch", async () => {
 		const { pi, ctx, notifications } = await setup("enforce");
-		const propose = pi.tools.get("policy_propose")!;
+		const propose = pi.tool("policy_propose");
 		const result = await callTool(
 			propose,
 			{
@@ -382,9 +397,9 @@ describe("unified tools and command gates", () => {
 			undefined,
 		);
 
-		await pi.commands.get("policy")!.handler(`approve ${proposalId}`, ctx as never);
+		await pi.command().handler(`approve ${proposalId}`, ctx as never);
 		assert.match(notifications.at(-1)?.message ?? "", /requires.*steer\|block/);
-		await pi.commands.get("policy")!.handler(`approve ${proposalId} block`, ctx as never);
+		await pi.command().handler(`approve ${proposalId} block`, ctx as never);
 		assert.match(notifications.at(-1)?.message ?? "", /Approved add proposal/);
 		const blocked = (await pi.emit(
 			"tool_call",
@@ -398,7 +413,7 @@ describe("unified tools and command gates", () => {
 	it("keeps a rule named all distinct from the explicit whole-runtime reset", async () => {
 		const { pi, ctx } = await setup();
 		const proposed = await callTool(
-			pi.tools.get("policy_propose")!,
+			pi.tool("policy_propose"),
 			{
 				operation: "add",
 				id: "all",
@@ -411,10 +426,10 @@ describe("unified tools and command gates", () => {
 			ctx,
 		);
 		const proposalId = (proposed.details as { proposalId: string }).proposalId;
-		const command = pi.commands.get("policy")!;
+		const command = pi.command();
 		await command.handler(`approve ${proposalId} block`, ctx as never);
 		const periods = async () => {
-			const result = await callTool(pi.tools.get("policy_rules")!, { view: "state" }, ctx);
+			const result = await callTool(pi.tool("policy_rules"), { view: "state" }, ctx);
 			return (
 				JSON.parse((result.content as Array<{ text: string }>)[0].text) as {
 					observationPeriods: Array<{ id: string; generation: number }>;
@@ -428,7 +443,8 @@ describe("unified tools and command gates", () => {
 			selected.find((entry) => entry.id === "all")?.generation,
 			before.find((entry) => entry.id === "all")?.generation,
 		);
-		const other = before.find((entry) => entry.id !== "all")!;
+		const other = before.find((entry) => entry.id !== "all");
+		assert.ok(other);
 		assert.equal(selected.find((entry) => entry.id === other.id)?.generation, other.generation);
 		await command.handler("reset --all whole runtime", ctx as never);
 		assert.notEqual((await periods()).find((entry) => entry.id === other.id)?.generation, other.generation);
@@ -436,7 +452,7 @@ describe("unified tools and command gates", () => {
 
 	it("approves command replacements only with both effect and exact revision", async () => {
 		const { pi, ctx, notifications } = await setup("enforce");
-		const proposalTool = pi.tools.get("policy_propose")!;
+		const proposalTool = pi.tool("policy_propose");
 		const added = await callTool(
 			proposalTool,
 			{
@@ -451,9 +467,9 @@ describe("unified tools and command gates", () => {
 			ctx,
 		);
 		const addId = (added.details as { proposalId: string }).proposalId;
-		const command = pi.commands.get("policy")!;
+		const command = pi.command();
 		await command.handler(`approve ${addId} block`, ctx as never);
-		const inspected = await callTool(pi.tools.get("policy_rules")!, {}, ctx);
+		const inspected = await callTool(pi.tool("policy_rules"), {}, ctx);
 		const rulesText = (inspected.content as Array<{ text: string }>)[0].text;
 		const revision = /local\.replace[^\n]*\n\s+definition: revision=([0-9a-f]{12})/.exec(rulesText)?.[1];
 		assert.ok(revision);
@@ -474,7 +490,7 @@ describe("unified tools and command gates", () => {
 		const details = replaced.details as { proposalId: string; proposalRevision: string };
 		await command.handler(`approve ${details.proposalId} exact ${details.proposalRevision}`, ctx as never);
 		assert.match(notifications.at(-1)?.message ?? "", /Selectable replacement approval requires/);
-		const completions = command.getArgumentCompletions!(`approve ${details.proposalId} `) as Array<{ value: string }>;
+		const completions = pi.completions()(`approve ${details.proposalId} `) as Array<{ value: string }>;
 		assert.deepEqual(
 			completions.map((row) => row.value),
 			[`approve ${details.proposalId} steer`, `approve ${details.proposalId} block`],
@@ -496,18 +512,18 @@ describe("unified tools and command gates", () => {
 	it("the agent can only leave a disable proposal pending", async () => {
 		const { pi, ctx } = await setup();
 		const result = await callTool(
-			pi.tools.get("policy_propose")!,
+			pi.tool("policy_propose"),
 			{ operation: "disable", id: "routing.cat-read", reason: "Context-specific false positive" },
 			ctx,
 		);
 		const proposalId = (result.details as { proposalId: string }).proposalId;
-		const rules = await callTool(pi.tools.get("policy_rules")!, {}, ctx);
+		const rules = await callTool(pi.tool("policy_rules"), {}, ctx);
 		assert.match((rules.content as Array<{ text: string }>)[0].text, new RegExp(proposalId));
 	});
 
 	it("requires reasons for every direct change and composes package overrides", async () => {
 		const { dir, pi, ctx, notifications } = await setup();
-		const command = pi.commands.get("policy")!;
+		const command = pi.command();
 		for (const verb of ["disable routing.cat-read", "enable routing.cat-read", "retire local.missing"] as const) {
 			await command.handler(verb, ctx as never);
 			assert.match(notifications.at(-1)?.message ?? "", new RegExp(`Usage: /policy ${verb.split(" ")[0]}`));
@@ -518,24 +534,24 @@ describe("unified tools and command gates", () => {
 
 		await command.handler("effect routing.cat-read steer calibrated failure cost", ctx as never);
 		await command.handler("disable routing.cat-read temporary context", ctx as never);
-		let result = await callTool(pi.tools.get("policy_rules")!, {}, ctx);
+		let result = await callTool(pi.tool("policy_rules"), {}, ctx);
 		let text = (result.content as Array<{ text: string }>)[0].text;
 		assert.match(text, /routing\.cat-read.*state=disabled.*effect=steer.*override reason=temporary context/);
 		await command.handler("enable routing.cat-read context restored", ctx as never);
-		result = await callTool(pi.tools.get("policy_rules")!, {}, ctx);
+		result = await callTool(pi.tool("policy_rules"), {}, ctx);
 		text = (result.content as Array<{ text: string }>)[0].text;
 		assert.match(text, /routing\.cat-read.*state=active.*effect=steer.*override reason=context restored/);
 	});
 
 	it("completes references and effects at each command token position", async () => {
 		const { pi, ctx } = await setup();
-		const command = pi.commands.get("policy")!;
-		const complete = command.getArgumentCompletions!;
+		const command = pi.command();
+		const complete = pi.completions();
 		const completions = (prefix: string): string[] =>
 			(complete(prefix) as Array<{ value: string }>).map((item) => item.value);
-		await callTool(pi.tools.get("policy_rules")!, {}, ctx);
+		await callTool(pi.tool("policy_rules"), {}, ctx);
 		const proposed = await callTool(
-			pi.tools.get("policy_propose")!,
+			pi.tool("policy_propose"),
 			{
 				operation: "add",
 				id: "local.scan",
@@ -577,9 +593,9 @@ describe("unified tools and command gates", () => {
 
 	it("approves disable through the panel with panel audit and preserves an effect override", async () => {
 		const { dir, pi, ctx } = await setup();
-		await pi.commands.get("policy")!.handler("effect routing.cat-read steer panel composition setup", ctx as never);
+		await pi.command().handler("effect routing.cat-read steer panel composition setup", ctx as never);
 		const proposed = await callTool(
-			pi.tools.get("policy_propose")!,
+			pi.tool("policy_propose"),
 			{ operation: "disable", id: "routing.cat-read", reason: "Panel-approved pause" },
 			ctx,
 		);
@@ -632,12 +648,12 @@ describe("unified tools and command gates", () => {
 				},
 			},
 		};
-		await pi.commands.get("policy")!.handler("", panelCtx as never);
+		await pi.command().handler("", panelCtx as never);
 		const events = await storedEvents(dir);
 		const panelDecision = events.find((event) => event.kind === "decision" && event.proposalId === proposalId);
 		assert.equal(panelDecision?.kind, "decision");
 		if (panelDecision?.kind === "decision") assert.equal(panelDecision.audit.surface, "panel");
-		const rules = await callTool(pi.tools.get("policy_rules")!, {}, panelCtx);
+		const rules = await callTool(pi.tool("policy_rules"), {}, panelCtx);
 		assert.match(
 			(rules.content as Array<{ text: string }>)[0].text,
 			/routing\.cat-read.*state=disabled.*effect=steer.*override reason=Panel-approved pause/,
@@ -646,7 +662,7 @@ describe("unified tools and command gates", () => {
 
 	it("does not construct the custom panel outside TUI mode", async () => {
 		const { pi, ctx, notifications } = await setup();
-		await pi.commands.get("policy")!.handler("", {
+		await pi.command().handler("", {
 			...ctx,
 			mode: "rpc",
 			ui: {
@@ -659,7 +675,7 @@ describe("unified tools and command gates", () => {
 
 	it("emits successful and failed command text as JSON custom entries without a UI", async () => {
 		const { pi, ctx, notifications } = await setup();
-		const command = pi.commands.get("policy")!;
+		const command = pi.command();
 		const jsonCtx = { ...ctx, mode: "json", hasUI: false };
 		await command.handler("mode", jsonCtx as never);
 		await command.handler("mode extra", jsonCtx as never);
@@ -677,7 +693,7 @@ describe("unified tools and command gates", () => {
 
 	it("writes successful and failed command text to print-mode streams without a UI", async () => {
 		const { pi, ctx, notifications } = await setup();
-		const command = pi.commands.get("policy")!;
+		const command = pi.command();
 		const printCtx = { ...ctx, mode: "print", hasUI: false };
 		const stdout: string[] = [];
 		const stderr: string[] = [];
@@ -709,7 +725,7 @@ describe("unified tools and command gates", () => {
 
 	it("lists exact help and rejects state mutation through the inspection verb", async () => {
 		const { pi, ctx, notifications } = await setup();
-		const command = pi.commands.get("policy")!;
+		const command = pi.command();
 		await command.handler("help", ctx as never);
 		const usage = notifications.at(-1)?.message ?? "";
 		assert.match(usage, /\/policy disable <id> <reason\.\.\.>/);
@@ -740,9 +756,10 @@ describe("catalog command controls", () => {
 				if (decision === undefined) panel.handleInput(" ");
 			}
 			assert.equal(decision, true);
-			return decision!;
+			if (decision === undefined) throw new Error("panel did not return a decision");
+			return decision;
 		};
-		await pi.commands.get("policy")!.handler("import --all", ctx as never);
+		await pi.command().handler("import --all", ctx as never);
 		assert.ok(pages > 1);
 		const imports = (await storedEvents(dir)).filter((event) => event.kind === "import");
 		assert.equal(imports.length, 1);
@@ -752,16 +769,18 @@ describe("catalog command controls", () => {
 	it("inspects bundled rows and imports with revision-bound no-UI authority", async () => {
 		const { dir, pi, notifications } = await setup();
 		const ctx = context(notifications, { mode: "json", hasUI: false });
-		const command = pi.commands.get("policy")!;
+		const command = pi.command();
 		await command.handler("catalog routing.cat-read", ctx as never);
 		assert.match(JSON.stringify(pi.entries.at(-1)?.data), /bundled starter catalog/);
-		const inspected = await callTool(pi.tools.get("policy_rules")!, { view: "catalog", id: "routing.cat-read" }, ctx);
+		const inspected = await callTool(pi.tool("policy_rules"), { view: "catalog", id: "routing.cat-read" }, ctx);
 		assert.match(JSON.stringify(inspected), /routing.cat-read/);
 		await command.handler("retire routing.cat-read Remove this rule.", ctx as never);
 		await command.handler("import routing.cat-read", ctx as never);
 		const preview = JSON.stringify(pi.entries.at(-1)?.data);
 		assert.match(preview, /No rules changed/);
-		const exact = /\/policy import routing\.cat-read exact ([a-f0-9]{12})/.exec(preview)![1];
+		const exactMatch = /\/policy import routing\.cat-read exact ([a-f0-9]{12})/.exec(preview);
+		assert.ok(exactMatch);
+		const exact = exactMatch[1];
 		await command.handler(`import routing.cat-read exact ${exact}`, ctx as never);
 		assert.match(JSON.stringify(pi.entries.at(-1)?.data), /Imported 1/);
 		assert.equal((await storedEvents(dir)).at(-1)?.kind, "import");
@@ -803,7 +822,7 @@ describe("dispatch and telemetry", () => {
 
 	it("prevents a disabled package rule from affecting enforcement", async () => {
 		const { pi, ctx } = await setup("enforce");
-		await pi.commands.get("policy")!.handler("disable routing.cat-read intentional exception", ctx as never);
+		await pi.command().handler("disable routing.cat-read intentional exception", ctx as never);
 		assert.equal(
 			await pi.emit("tool_call", { toolName: "bash", toolCallId: "c1", input: { command: "cat notes.md" } }, ctx),
 			undefined,
@@ -865,7 +884,7 @@ describe("dispatch and telemetry", () => {
 
 	it("annotates steer rules once per session and never annotates an errored result", async () => {
 		const { pi, ctx } = await setup("enforce");
-		await pi.commands.get("policy")!.handler("effect routing.cat-read steer lower cost", ctx as never);
+		await pi.command().handler("effect routing.cat-read steer lower cost", ctx as never);
 		await pi.emit("tool_call", { toolName: "bash", toolCallId: "c1", input: { command: "cat notes.md" } }, ctx);
 		const first = (await pi.emit(
 			"tool_result",

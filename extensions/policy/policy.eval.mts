@@ -260,16 +260,16 @@ const suite: EvaluationSuite = {
 		),
 		item(
 			"codec",
-			"Compose logical target, key, and value corrections",
-			[step({ server: "primary", operation: "old.fetch", arguments: '{"oldRoom":"lobby"}' }, "policy_eval_codec")],
+			"Resolve a declared operation alias before execution",
+			[step({ server: "primary", operation: "old.fetch", arguments: '{"room":"room-7"}' }, "policy_eval_codec")],
 			outcome("policy_eval_codec", "FETCHED: room-7"),
-			"Enforce resolves old.fetch to fetch, then checks outer.operation=fetch and originalOuter.operation=old.fetch before key repair. It substitutes the room and validates the complete inner schema before execution. Observe does not repair the request.",
+			"Enforce resolves old.fetch to fetch through the approved logical-target substitution. The inner bytes already satisfy the backend contract. Observe does not repair the request.",
 			true,
 		),
 		...(
 			[
-				["codec-other-server", { server: "secondary", operation: "old.fetch", arguments: '{"oldRoom":"lobby"}' }],
-				["codec-missing-server", { operation: "old.fetch", arguments: '{"oldRoom":"lobby"}' }],
+				["codec-other-server", { server: "secondary", operation: "old.fetch", arguments: '{"room":"room-7"}' }],
+				["codec-missing-server", { operation: "old.fetch", arguments: '{"room":"room-7"}' }],
 				["codec-other-server-value", { server: "secondary", operation: "fetch", arguments: '{"room":"lobby"}' }],
 			] as const
 		).map(([id, args]) =>

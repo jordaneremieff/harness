@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-	checkSchema,
+	checkToolSchema,
 	cloneJson,
 	DATA_LIMITS,
 	lookupData,
@@ -112,7 +112,7 @@ test("data snapshots own independent copies and reject repeated names", () => {
 	assert.ok(validateNamedData({ ...binding(), command: "execute" }));
 });
 
-test("schema checks use full public validation without conversion or default mutation", () => {
+test("registered tool checks do not convert, remove properties, or insert defaults", () => {
 	const schema = {
 		type: "object",
 		properties: { size: { type: "integer", minimum: 2 }, mode: { enum: ["brief", "full"], default: "brief" } },
@@ -120,12 +120,14 @@ test("schema checks use full public validation without conversion or default mut
 		additionalProperties: false,
 	};
 	const input = { size: "2" };
-	assert.equal(checkSchema(schema, input), false);
+	assert.equal(checkToolSchema(schema, input), false);
 	assert.deepEqual(input, { size: "2" });
-	assert.equal(checkSchema(schema, { size: 2 }), true);
-	assert.equal(checkSchema(schema, { size: 2, extra: true }), false);
+	const valid = { size: 2 };
+	assert.equal(checkToolSchema(schema, valid), true);
+	assert.deepEqual(valid, { size: 2 });
+	assert.equal(checkToolSchema(schema, { size: 2, extra: true }), false);
 	assert.equal(
-		checkSchema(
+		checkToolSchema(
 			{
 				anyOf: [
 					{ type: "string", minLength: 2 },
@@ -136,10 +138,10 @@ test("schema checks use full public validation without conversion or default mut
 		),
 		false,
 	);
-	assert.equal(checkSchema({ allOf: [{ type: "number" }, { minimum: 3 }], not: { const: 4 } }, 4), false);
-	assert.equal(checkSchema({ type: "array", uniqueItems: true, items: { type: "number" } }, [1, 1]), false);
-	assert.equal(checkSchema(undefined, {}), "unknown");
-	assert.equal(checkSchema({ type: "object" }, UNKNOWN), "unknown");
+	assert.equal(checkToolSchema({ allOf: [{ type: "number" }, { minimum: 3 }], not: { const: 4 } }, 4), false);
+	assert.equal(checkToolSchema({ type: "array", uniqueItems: true, items: { type: "number" } }, [1, 1]), false);
+	assert.equal(checkToolSchema(undefined, {}), "unknown");
+	assert.equal(checkToolSchema({ type: "object" }, UNKNOWN), "unknown");
 	let reads = 0;
 	const getter = Object.defineProperty({}, "size", {
 		enumerable: true,
@@ -148,67 +150,21 @@ test("schema checks use full public validation without conversion or default mut
 			return 2;
 		},
 	});
-	assert.equal(checkSchema(schema, getter), "unknown");
+	assert.equal(checkToolSchema(schema, getter), "unknown");
 	assert.equal(reads, 0);
-	assert.equal(checkSchema(false, {}), false);
-	assert.equal(checkSchema(true, {}), true);
 });
 
-test("malformed schemas, unsupported contracts, and remote references remain unavailable", () => {
-	for (const schema of [
-		{ type: "unknown-type" },
-		{ type: 4 },
-		{ minimum: "bad" },
-		{ type: "string", format: "undeclared-format" },
-		{ type: "string", minLenght: 4 },
-		{ $schema: "https://json-schema.org/draft/unknown/schema", type: "object" },
-		{ $schema: "http://json-schema.org/draft-04/schema#", type: "object" },
-		{ $ref: "https://example.invalid/schema.json" },
-		{ $async: true, type: "number" },
-	])
-		assert.equal(checkSchema(schema, {}), "unknown", JSON.stringify(schema));
-	assert.equal(checkSchema({ type: "string", format: "email" }, "not-an-address"), false);
-	assert.equal(checkSchema({ type: "string", format: "email" }, "reader@example.test"), true);
+test("tool checks retain bounded copies and cache eviction", () => {
+	const cycle: Record<string, unknown> = { type: "object" };
+	cycle.properties = cycle;
+	assert.equal(checkToolSchema(cycle, {}), "unknown");
+	for (let index = 0; index <= 64; index++) assert.equal(checkToolSchema({ const: index }, index), true);
+	assert.equal(checkToolSchema({ const: 0 }, 1), false);
 });
 
-test("declared JSON Schema drafts use their matching public validators", () => {
-	const tuple = { type: "array", items: [{ type: "string" }], additionalItems: false };
-	assert.equal(checkSchema(tuple, ["yes"]), true);
-	assert.equal(checkSchema({ ...tuple, $schema: "https://json-schema.org/draft-07/schema#" }, [1]), false);
-	const modern = {
-		$schema: "https://json-schema.org/draft/2020-12/schema",
-		type: "array",
-		prefixItems: [{ type: "string" }],
-		items: false,
-	};
-	assert.equal(checkSchema(modern, ["yes"]), true);
-	assert.equal(checkSchema(modern, [1]), false);
-	assert.equal(checkSchema({ ...tuple, $schema: "https://json-schema.org/draft/2020-12/schema" }, ["yes"]), "unknown");
-	const prior = {
-		$schema: "https://json-schema.org/draft/2019-09/schema",
-		type: "object",
-		properties: { a: { type: "number" } },
-		dependentRequired: { a: ["b"] },
-	};
-	assert.equal(checkSchema(prior, { a: 1 }), false);
-	assert.equal(checkSchema(prior, { a: 1, b: 2 }), true);
-	for (let index = 0; index < 70; index++) assert.equal(checkSchema({ const: index }, index), true);
-	assert.equal(checkSchema(modern, ["yes"]), true);
-});
-
-test("schema data uses an approved named copy and schema tables are not alias tables", () => {
-	const data: NamedData = {
-		name: "arguments",
-		revision: "123456789abc",
-		source: "operator-schema",
-		capturedAt: 1,
-		maxAgeMs: 1000,
-		kind: "schema",
-		schema: { type: "object" },
-	};
-	assert.equal(validateNamedData(data), undefined);
-	const snapshot = snapshotData([data], 2).arguments;
-	assert.deepEqual(lookupData(snapshot, "x"), { status: "unavailable" });
+test("named data rejects schema bindings and extra schema fields", () => {
+	assert.ok(validateNamedData({ ...binding(), kind: "schema", schema: { type: "object" } }));
+	assert.ok(validateNamedData({ ...binding(), schema: { type: "object" } }));
 });
 
 test("JSON copies reject cycles, getters, nonfinite values, unsafe keys, and oversized data", () => {

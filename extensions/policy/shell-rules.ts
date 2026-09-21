@@ -72,6 +72,22 @@ function hasFlag(stage: Stage, ...names: string[]): boolean {
 	return names.some((name) => present.includes(name));
 }
 
+/** True when the first value-taking letter of a short cluster is also its last. */
+function shortClusterConsumesNext(arg: string, flagsWithValue: Set<string>): boolean {
+	const letters = arg.slice(1);
+	for (let index = 0; index < letters.length; index++) {
+		if (!flagsWithValue.has(letters[index])) continue;
+		return index === letters.length - 1;
+	}
+	return false;
+}
+
+/** True when a long option takes its value from the next argument. */
+function longOptionConsumesNext(arg: string, flagsWithValue: Set<string>): boolean {
+	const [name, attached] = arg.slice(2).split("=", 2);
+	return flagsWithValue.has(name) && attached === undefined;
+}
+
 /** Operands that are neither flags nor values consumed by named flags. */
 export function operands(stage: Stage, flagsWithValue: Set<string> = new Set()): string[] {
 	const result: string[] = [];
@@ -87,17 +103,11 @@ export function operands(stage: Stage, flagsWithValue: Set<string> = new Set()):
 			continue;
 		}
 		if (!literal && arg.startsWith("--")) {
-			const [name, attached] = arg.slice(2).split("=", 2);
-			if (flagsWithValue.has(name) && attached === undefined) skipNext = true;
+			skipNext = longOptionConsumesNext(arg, flagsWithValue);
 			continue;
 		}
 		if (!literal && arg.startsWith("-") && arg.length > 1) {
-			const letters = arg.slice(1);
-			for (let index = 0; index < letters.length; index++) {
-				if (!flagsWithValue.has(letters[index])) continue;
-				if (index === letters.length - 1) skipNext = true;
-				break;
-			}
+			skipNext = shortClusterConsumesNext(arg, flagsWithValue);
 			continue;
 		}
 		result.push(arg);

@@ -175,7 +175,8 @@ const guide = () =>
 	});
 
 function shellRule(effect: "block" | "steer" = "block"): RuleRecord {
-	const row = PACKAGE_CATALOG.find((record) => record.id === "routing.cat-read")!;
+	const row = PACKAGE_CATALOG.find((record) => record.id === "routing.cat-read");
+	assert.ok(row, "routing.cat-read");
 	return {
 		id: row.id,
 		source: { kind: "package" },
@@ -242,13 +243,14 @@ describe("effective command checks", () => {
 		assert.ok(preview.input.evaluations.some((entry) => entry.id === "routing.cat-read" && entry.deny));
 		const decision = await f.call("corrected", input);
 		assert.equal(decision?.block, true);
+		assert.ok(decision);
 		assert.deepEqual(input, { command: "printf safe" });
 		await f.runtime.toolEnd(
 			{
 				toolName: "bash",
 				toolCallId: "corrected",
 				isError: true,
-				result: { content: [{ type: "text", text: decision!.reason }] },
+				result: { content: [{ type: "text", text: decision.reason }] },
 			},
 			f.ctx,
 		);
@@ -333,13 +335,14 @@ describe("normalized execution plans", () => {
 		const input = { command: "printf safe" };
 		const decision = await f.call("mixed", input);
 		assert.equal(decision?.block, true);
+		assert.ok(decision);
 		assert.deepEqual(input, { command: "printf safe" });
 		await f.runtime.toolEnd(
 			{
 				toolName: "bash",
 				toolCallId: "mixed",
 				isError: true,
-				result: { content: [{ type: "text", text: decision!.reason }] },
+				result: { content: [{ type: "text", text: decision.reason }] },
 			},
 			f.ctx,
 		);
@@ -411,41 +414,21 @@ describe("normalized execution plans", () => {
 			assert.equal(result?.content !== undefined, mode === "enforce");
 			await f.writer.close();
 		});
-	it("omits absent result fields and shares text-content schema evidence between preview and execution", async () => {
-		const check = rule("result.schema", {
+	it("shares ordinary result conditions between preview and execution and tolerates absent optionals", async () => {
+		const check = rule("result.fields", {
 			phase: "result",
-			when: { op: "matches-schema", path: ["result"], schemaData: "errors" },
-			data: ["errors"],
+			when: {
+				all: [
+					{ op: "eq", path: ["result", "tool"], value: "sample" },
+					{ op: "eq", path: ["result", "isError"], value: false },
+					{ op: "eq", path: ["result", "details", "failed"], value: true },
+					{ op: "eq", path: ["result", "content", "0", "type"], value: "text" },
+				],
+			},
 			action: { kind: "assert-error" },
 			onUnavailable: "skip",
 		});
 		const f = fixture([check]);
-		f.snapshot.data.set("errors", {
-			kind: "schema",
-			name: "errors",
-			revision: "abcdef123456",
-			source: "approved-result-contract",
-			capturedAt: Date.now(),
-			schema: {
-				type: "object",
-				properties: {
-					tool: { const: "sample" },
-					isError: { const: false },
-					details: { type: "object", properties: { failed: { const: true } }, required: ["failed"] },
-					content: {
-						type: "array",
-						items: {
-							type: "object",
-							properties: { type: { const: "text" }, text: { const: "body" } },
-							required: ["type", "text"],
-						},
-						minItems: 1,
-					},
-				},
-				required: ["tool", "isError", "details", "content"],
-				additionalProperties: false,
-			},
-		});
 		const preview = (await f.runtime.inspect(
 			"preview",
 			{ tool: "sample", input: {}, result: { details: { failed: true }, content: [{ type: "text", text: "body" }] } },
@@ -455,6 +438,8 @@ describe("normalized execution plans", () => {
 		assert.equal(preview.results[0].truth, true);
 		await f.call("absent-optionals", {});
 		assert.equal((await f.result("absent-optionals", false, { failed: true }))?.isError, true);
+		await f.call("missing-optionals", {});
+		assert.equal((await f.result("missing-optionals", false))?.isError, undefined);
 		await f.writer.close();
 	});
 	it("uses common applicability before captured matches, guidance, and completed observations", async () => {
@@ -491,7 +476,10 @@ describe("normalized execution plans", () => {
 			f.pi.getAllTools = () => [];
 			const decision = await f.call("unavailable", {});
 			assert.equal(decision?.block, required ? true : undefined);
-			if (required) assert.match(decision!.reason, /Rule schema.check/);
+			if (required) {
+				assert.ok(decision);
+				assert.match(decision.reason, /Rule schema.check/);
+			}
 			await f.finish("unavailable", required);
 			await f.writer.close();
 			assert.deepEqual(f.records[0].classes, []);
@@ -771,6 +759,35 @@ describe("input transactions and modes", () => {
 	});
 });
 
+type RuntimeFixture = ReturnType<typeof fixture>;
+type LifecyclePhase = "start" | "call" | "result" | "end" | "context";
+async function prepareLifecyclePhase(f: RuntimeFixture, phase: LifecyclePhase, input: Record<string, unknown>) {
+	if (phase === "call") await f.runtime.toolStart({ toolName: "sample", toolCallId: "deferred", args: input }, f.ctx);
+	if (phase === "result" || phase === "end" || phase === "context") await f.call("deferred", input);
+	if (phase === "end" || phase === "context") await f.result("deferred");
+	if (phase === "context") await f.finish("deferred");
+}
+function invokeLifecyclePhase(f: RuntimeFixture, phase: LifecyclePhase, input: Record<string, unknown>) {
+	if (phase === "start") return f.runtime.toolStart({ toolName: "sample", toolCallId: "deferred", args: input }, f.ctx);
+	if (phase === "call")
+		return f.runtime.toolCall({ type: "tool_call", toolName: "sample", toolCallId: "deferred", input }, f.ctx);
+	if (phase === "result") return f.result("deferred", false, { failed: true });
+	if (phase === "end") return f.finish("deferred");
+	return f.runtime.context(f.ctx);
+}
+async function assertLifecycleSettled(f: RuntimeFixture, phase: LifecyclePhase, input: Record<string, unknown>) {
+	if (phase === "start")
+		assert.equal(
+			((await f.runtime.inspect("health", {}, f.ctx)) as { observations: { pending: number } }).observations.pending,
+			0,
+		);
+	if (phase === "call") assert.deepEqual(input, { old: "x" });
+	assert.equal((await f.views()).find((view) => view.id === "guide")?.count, 0);
+	assert.equal((await f.views()).find((view) => view.id === "guide")?.projected, 0);
+	await f.writer.close();
+	assert.equal(f.records.length, phase === "context" ? 1 : 0);
+}
+
 describe("asynchronous lifecycle boundaries", () => {
 	for (const phase of ["start", "call", "result", "end", "context"] as const)
 		it(`does not commit a stale ${phase} callback after a deferred registry read`, async () => {
@@ -785,41 +802,18 @@ describe("asynchronous lifecycle boundaries", () => {
 				}),
 			]);
 			const input = { old: "x" };
-			if (phase === "call")
-				await f.runtime.toolStart({ toolName: "sample", toolCallId: "deferred", args: input }, f.ctx);
-			if (phase === "result" || phase === "end" || phase === "context") await f.call("deferred", input);
-			if (phase === "end" || phase === "context") await f.result("deferred");
-			if (phase === "context") await f.finish("deferred");
+			await prepareLifecyclePhase(f, phase, input);
 			let release = () => {};
 			const gate = new Promise<void>((resolve) => {
 				release = resolve;
 			});
 			f.setLoadGate(gate);
-			const callback =
-				phase === "start"
-					? f.runtime.toolStart({ toolName: "sample", toolCallId: "deferred", args: input }, f.ctx)
-					: phase === "call"
-						? f.runtime.toolCall({ type: "tool_call", toolName: "sample", toolCallId: "deferred", input }, f.ctx)
-						: phase === "result"
-							? f.result("deferred", false, { failed: true })
-							: phase === "end"
-								? f.finish("deferred")
-								: f.runtime.context(f.ctx);
+			const callback = invokeLifecyclePhase(f, phase, input);
 			await f.handlers.get("session_tree")?.({}, f.ctx);
 			release();
 			assert.equal(await callback, undefined);
 			f.setLoadGate(undefined);
-			if (phase === "start")
-				assert.equal(
-					((await f.runtime.inspect("health", {}, f.ctx)) as { observations: { pending: number } }).observations
-						.pending,
-					0,
-				);
-			if (phase === "call") assert.deepEqual(input, { old: "x" });
-			assert.equal((await f.views()).find((view) => view.id === "guide")?.count, 0);
-			assert.equal((await f.views()).find((view) => view.id === "guide")?.projected, 0);
-			await f.writer.close();
-			assert.equal(f.records.length, phase === "context" ? 1 : 0);
+			await assertLifecycleSettled(f, phase, input);
 		});
 });
 
@@ -897,7 +891,7 @@ describe("final observations and guidance", () => {
 		assert.deepEqual(input, { old: "Lobby" });
 		await f.writer.close();
 	});
-	it("retains bounded pinned data identities and freshness without table or schema payloads", async () => {
+	it("retains bounded pinned data identities and freshness without row payloads", async () => {
 		const correction = rule("value.correction", {
 			phase: "input",
 			when: yes,
@@ -922,18 +916,20 @@ describe("final observations and guidance", () => {
 			maxAgeMs: 60000,
 			rows: [{ key: "payload-input", value: "payload-output" }],
 		});
-		f.snapshot.data.set("shape", {
-			kind: "schema",
-			name: "shape",
+		f.snapshot.data.set("unused", {
+			kind: "table",
+			name: "unused",
 			revision: "444455556666",
-			source: "approved-schema",
+			source: "approved-unused",
 			capturedAt: Date.now() - 1000,
-			schema: { type: "object", properties: { privateSchemaMarker: { const: "schema-payload" } } },
+			rows: [{ key: "unused-key", value: "unused-value" }],
 		});
 		const input = { name: "payload-input" };
 		await f.call("data", input);
 		assert.deepEqual(input, { name: "payload-output" });
-		f.snapshot.data.set("values", { ...f.snapshot.data.get("values")!, revision: "aaaabbbbcccc" });
+		const values = f.snapshot.data.get("values");
+		assert.ok(values);
+		f.snapshot.data.set("values", { ...values, revision: "aaaabbbbcccc" });
 		await f.result("data");
 		await f.finish("data");
 		await f.writer.close();
@@ -949,7 +945,7 @@ describe("final observations and guidance", () => {
 			coverage: { dataSnapshots: { total: number; omitted: number } };
 		};
 		assert.equal(policy.dataSnapshots.find((row) => row.name === "values")?.revision, "111122223333");
-		assert.equal(policy.dataSnapshots.find((row) => row.name === "shape")?.revision, "444455556666");
+		assert.equal(policy.dataSnapshots.find((row) => row.name === "unused")?.revision, "444455556666");
 		assert.equal(policy.dataSnapshots.find((row) => row.name === "values")?.status, "ready");
 		assert.equal(policy.dataSnapshots.find((row) => row.name === "values")?.maxAgeMs, 60000);
 		assert.equal(typeof policy.dataSnapshots.find((row) => row.name === "values")?.snapshotAt, "number");
@@ -959,7 +955,7 @@ describe("final observations and guidance", () => {
 		assert.ok(Buffer.byteLength(JSON.stringify(policy.dataSnapshots)) <= 32768);
 		assert.doesNotMatch(
 			JSON.stringify(f.records),
-			/payload-input|payload-output|schema-payload|privateSchemaMarker|aaaabbbbcccc/,
+			/payload-input|payload-output|unused-key|unused-value|aaaabbbbcccc/,
 		);
 	});
 	it("reports omitted named-data snapshots within the serialized byte bound", async () => {
@@ -1166,14 +1162,20 @@ describe("final observations and guidance", () => {
 			const f = fixture([guide(), rename()]);
 			await f.call("a", { old: "x" });
 			if (change === "reset") f.runtime.reset(undefined, "operator reset");
-			else if (change === "revision") f.snapshot.records.get("guide")!.definition.revision = "abcdef123456";
-			else
-				f.snapshot.records.get("guide")!.override = {
+			else if (change === "revision") {
+				const record = f.snapshot.records.get("guide");
+				assert.ok(record);
+				record.definition.revision = "abcdef123456";
+			} else {
+				const record = f.snapshot.records.get("guide");
+				assert.ok(record);
+				record.override = {
 					state: "disabled",
 					reason: "test",
 					againstDefinitionRevision: "123456abcdef",
 					audit: { surface: "command", session: "session", model: null, at: new Date().toISOString() },
 				};
+			}
 			await f.result("a");
 			await f.finish("a");
 			assert.equal((await f.views()).find((v) => v.id === "guide")?.count ?? 0, 0);

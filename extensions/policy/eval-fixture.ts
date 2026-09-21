@@ -23,6 +23,13 @@ const eq = (path: string[], value: string | number | boolean): Condition => ({ o
 const scenario = (value: string) => eq(["input", "scenario"], value);
 const selected = { tools: ["policy_eval_call"] };
 const note = "Synthetic policy fixture refused this call.";
+const callOutcomes: Record<string, () => { text: string; details?: Record<string, unknown> }> = {
+	recover: () => ({ text: "RECEIPT: DEMO-7" }),
+	volume: () => ({ text: `VOLUME:${"x".repeat(1500)}` }),
+	summary: () => ({ text: "SUMMARY: 2 items" }),
+	"semantic-error": () => ({ text: "APPLICATION REFUSED", details: { ok: false } }),
+	"semantic-success": () => ({ text: "SUCCESS: zero failure records", details: { ok: true } }),
+};
 
 async function seed(dir: string): Promise<void> {
 	const registry = new RuleRegistry(dir);
@@ -90,19 +97,6 @@ async function seed(dir: string): Promise<void> {
 			name: "operations",
 			kind: "table",
 			rows: [{ key: "old.fetch", value: "fetch" }],
-			source: "synthetic",
-			capturedAt: 0,
-			revision: "000000000000",
-		},
-		{
-			name: "fetch-shape",
-			kind: "schema",
-			schema: {
-				type: "object",
-				properties: { room: { const: "room-7" } },
-				required: ["room"],
-				additionalProperties: false,
-			},
 			source: "synthetic",
 			capturedAt: 0,
 			revision: "000000000000",
@@ -266,43 +260,6 @@ async function seed(dir: string): Promise<void> {
 			},
 		],
 	];
-	const codec = {
-		tools: ["policy_eval_codec"],
-		operations: ["fetch"],
-		codec: { argumentsPath: ["arguments"], operationPath: ["operation"], schemaData: "fetch-shape" },
-	};
-	programs.push(
-		[
-			"codec-key",
-			{
-				phase: "input",
-				selector: codec,
-				when: {
-					all: [
-						eq(["outer", "server"], "primary"),
-						eq(["originalOuter", "server"], "primary"),
-						eq(["outer", "operation"], "fetch"),
-						eq(["originalOuter", "operation"], "old.fetch"),
-						{ op: "exists", path: ["input", "oldRoom"] },
-					],
-				},
-				data: ["fetch-shape"],
-				action: { kind: "rename-key", path: [], from: "oldRoom", to: "room" },
-				onUnavailable: "skip",
-			},
-		],
-		[
-			"codec-value",
-			{
-				phase: "input",
-				selector: codec,
-				when: { all: [eq(["outer", "server"], "primary"), eq(["input", "room"], "lobby")] },
-				data: ["fetch-shape", "rooms"],
-				action: { kind: "substitute", path: ["room"], table: "rooms" },
-				onUnavailable: "skip",
-			},
-		],
-	);
 	const cliProposal = await registry.proposeAdd(
 		{
 			id: "eval.cli-force",
@@ -397,11 +354,11 @@ export default function policyEvalFixture(pi: ExtensionAPI): void {
 		async execute(_id, args) {
 			calls++;
 			if (args.scenario === "retry") throw new Error("NO RECEIPT");
-			if (args.scenario === "recover") return result("RECEIPT: DEMO-7");
-			if (args.scenario === "volume") return result(`VOLUME:${"x".repeat(1500)}`);
-			if (args.scenario === "summary") return result("SUMMARY: 2 items");
-			if (args.scenario === "semantic-error") return result("APPLICATION REFUSED", { ok: false });
-			if (args.scenario === "semantic-success") return result("SUCCESS: zero failure records", { ok: true });
+			const outcome = callOutcomes[args.scenario];
+			if (outcome !== undefined) {
+				const { text, details } = outcome();
+				return result(text, details);
+			}
 			if (["rename", "map", "folded"].includes(args.scenario) && (args.room !== "room-7" || args.oldRoom !== undefined))
 				throw new Error("BACKEND REJECTED ARGUMENTS");
 			return result(`EXECUTED:${JSON.stringify(args)}`);

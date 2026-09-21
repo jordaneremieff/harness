@@ -351,78 +351,93 @@ function validateAudit(value: unknown): RuleAudit {
 	};
 }
 
+function validateShapeFlags(value: Record<string, unknown>, spec: CommandShapeSpec): void {
+	if (value.flags !== undefined) spec.flags = stringList(value.flags, "matcher.spec.flags");
+	if (value.anyFlags !== undefined) spec.anyFlags = stringList(value.anyFlags, "matcher.spec.anyFlags");
+	if (value.absentFlags !== undefined) spec.absentFlags = stringList(value.absentFlags, "matcher.spec.absentFlags");
+}
+
+function validateCommandShapeCli(value: Record<string, unknown>, spec: CommandShapeSpec): void {
+	const cli = value.cli;
+	if (cli === undefined) return;
+	if (!object(cli)) throw new Error("matcher.spec.cli must be an object");
+	exact(cli, ["profile", "subcommand"]);
+	if (
+		cli.profile !== "git" ||
+		!Array.isArray(cli.subcommand) ||
+		cli.subcommand.length !== 1 ||
+		cli.subcommand[0] !== "push" ||
+		spec.command !== "git"
+	)
+		throw new Error("matcher.spec.cli requires command git, profile git, and subcommand [push]");
+	spec.cli = { profile: "git", subcommand: ["push"] };
+}
+
+function validateCliFlagSpellings(spec: CommandShapeSpec): void {
+	if (!spec.cli) return;
+	for (const field of ["flags", "anyFlags", "absentFlags"] as const)
+		if (spec[field]?.some((flag) => !isGitPushFlag(flag)))
+			throw new Error(`matcher.spec.${field} requires supported Git push option spellings`);
+}
+
+function validateOperandIndexes(raw: Record<string, unknown>, operands: NonNullable<CommandShapeSpec["operands"]>): void {
+	const at = raw.at;
+	if (at === undefined) return;
+	if (!object(at) || Object.keys(at).length > MAX_LIST_ENTRIES)
+		throw new Error(`matcher.spec.operands.at must be an object with at most ${MAX_LIST_ENTRIES} indexes`);
+	operands.at = {};
+	for (const [index, choices] of Object.entries(at)) {
+		if (!/^(0|[1-9][0-9]*)$/.test(index) || Number(index) > 100_000)
+			throw new Error("matcher.spec.operands.at keys must be non-negative integer indexes");
+		operands.at[index] = stringList(choices, `matcher.spec.operands.at.${index}`);
+	}
+}
+
+function validateShapeOperands(value: Record<string, unknown>, spec: CommandShapeSpec): void {
+	const raw = value.operands;
+	if (raw === undefined) return;
+	if (!object(raw)) throw new Error("matcher.spec.operands must be an object");
+	exact(raw, [], ["min", "max", "any", "at"]);
+	const operands: NonNullable<CommandShapeSpec["operands"]> = {};
+	for (const bound of ["min", "max"] as const) {
+		const number = raw[bound];
+		if (number === undefined) continue;
+		if (typeof number !== "number" || !Number.isSafeInteger(number) || number < 0 || number > 100_000)
+			throw new Error(`matcher.spec.operands.${bound} must be a non-negative integer`);
+		operands[bound] = number;
+	}
+	if (operands.min !== undefined && operands.max !== undefined && operands.min > operands.max)
+		throw new Error("matcher.spec.operands.min must not exceed max");
+	if (raw.any !== undefined) operands.any = stringList(raw.any, "matcher.spec.operands.any");
+	validateOperandIndexes(raw, operands);
+	spec.operands = operands;
+}
+
+function validateShapePipe(value: Record<string, unknown>, spec: CommandShapeSpec): void {
+	const raw = value.pipe;
+	if (raw === undefined) return;
+	if (!object(raw)) throw new Error("matcher.spec.pipe must be an object");
+	exact(raw, [], ["from", "to", "fromRedirect", "toRedirect", "next", "later"]);
+	const pipe: NonNullable<CommandShapeSpec["pipe"]> = {};
+	for (const flag of ["from", "to", "fromRedirect", "toRedirect"] as const) {
+		if (raw[flag] === undefined) continue;
+		if (typeof raw[flag] !== "boolean") throw new Error(`matcher.spec.pipe.${flag} must be boolean`);
+		pipe[flag] = raw[flag];
+	}
+	if (raw.next !== undefined) pipe.next = stringList(raw.next, "matcher.spec.pipe.next", MAX_COMMAND_LENGTH);
+	if (raw.later !== undefined) pipe.later = stringList(raw.later, "matcher.spec.pipe.later", MAX_COMMAND_LENGTH);
+	spec.pipe = pipe;
+}
+
 function validateCommandShape(value: unknown): CommandShapeSpec {
 	if (!object(value)) throw new Error("matcher.spec must be an object");
 	exact(value, ["command"], ["flags", "anyFlags", "absentFlags", "operands", "pipe", "cli"]);
 	const spec: CommandShapeSpec = { command: text(value.command, "matcher.spec.command", MAX_COMMAND_LENGTH) };
-	if (value.flags !== undefined) spec.flags = stringList(value.flags, "matcher.spec.flags");
-	if (value.anyFlags !== undefined) spec.anyFlags = stringList(value.anyFlags, "matcher.spec.anyFlags");
-	if (value.cli !== undefined) {
-		if (!object(value.cli)) throw new Error("matcher.spec.cli must be an object");
-		exact(value.cli, ["profile", "subcommand"]);
-		if (
-			value.cli.profile !== "git" ||
-			!Array.isArray(value.cli.subcommand) ||
-			value.cli.subcommand.length !== 1 ||
-			value.cli.subcommand[0] !== "push" ||
-			spec.command !== "git"
-		)
-			throw new Error("matcher.spec.cli requires command git, profile git, and subcommand [push]");
-		spec.cli = { profile: "git", subcommand: ["push"] };
-	}
-	if (value.absentFlags !== undefined) spec.absentFlags = stringList(value.absentFlags, "matcher.spec.absentFlags");
-	if (spec.cli) {
-		for (const field of ["flags", "anyFlags", "absentFlags"] as const)
-			if (spec[field]?.some((flag) => !isGitPushFlag(flag)))
-				throw new Error(`matcher.spec.${field} requires supported Git push option spellings`);
-	}
-	if (value.operands !== undefined) {
-		if (!object(value.operands)) throw new Error("matcher.spec.operands must be an object");
-		exact(value.operands, [], ["min", "max", "any", "at"]);
-		const operands: NonNullable<CommandShapeSpec["operands"]> = {};
-		for (const bound of ["min", "max"] as const) {
-			const number = value.operands[bound];
-			if (number !== undefined) {
-				if (!Number.isSafeInteger(number) || (number as number) < 0 || (number as number) > 100_000) {
-					throw new Error(`matcher.spec.operands.${bound} must be a non-negative integer`);
-				}
-				operands[bound] = number as number;
-			}
-		}
-		if (operands.min !== undefined && operands.max !== undefined && operands.min > operands.max) {
-			throw new Error("matcher.spec.operands.min must not exceed max");
-		}
-		if (value.operands.any !== undefined) operands.any = stringList(value.operands.any, "matcher.spec.operands.any");
-		if (value.operands.at !== undefined) {
-			if (!object(value.operands.at) || Object.keys(value.operands.at).length > MAX_LIST_ENTRIES) {
-				throw new Error(`matcher.spec.operands.at must be an object with at most ${MAX_LIST_ENTRIES} indexes`);
-			}
-			operands.at = {};
-			for (const [index, choices] of Object.entries(value.operands.at)) {
-				if (!/^(0|[1-9][0-9]*)$/.test(index) || Number(index) > 100_000) {
-					throw new Error("matcher.spec.operands.at keys must be non-negative integer indexes");
-				}
-				operands.at[index] = stringList(choices, `matcher.spec.operands.at.${index}`);
-			}
-		}
-		spec.operands = operands;
-	}
-	if (value.pipe !== undefined) {
-		if (!object(value.pipe)) throw new Error("matcher.spec.pipe must be an object");
-		exact(value.pipe, [], ["from", "to", "fromRedirect", "toRedirect", "next", "later"]);
-		const pipe: NonNullable<CommandShapeSpec["pipe"]> = {};
-		for (const flag of ["from", "to", "fromRedirect", "toRedirect"] as const) {
-			if (value.pipe[flag] !== undefined) {
-				if (typeof value.pipe[flag] !== "boolean") throw new Error(`matcher.spec.pipe.${flag} must be boolean`);
-				pipe[flag] = value.pipe[flag] as boolean;
-			}
-		}
-		if (value.pipe.next !== undefined)
-			pipe.next = stringList(value.pipe.next, "matcher.spec.pipe.next", MAX_COMMAND_LENGTH);
-		if (value.pipe.later !== undefined)
-			pipe.later = stringList(value.pipe.later, "matcher.spec.pipe.later", MAX_COMMAND_LENGTH);
-		spec.pipe = pipe;
-	}
+	validateShapeFlags(value, spec);
+	validateCommandShapeCli(value, spec);
+	validateCliFlagSpellings(spec);
+	validateShapeOperands(value, spec);
+	validateShapePipe(value, spec);
 	return spec;
 }
 
@@ -594,149 +609,121 @@ function boundedCatalogRows(value: unknown, name: string): PackageDefinitionRow[
 	return value.map((row) => validatePackageDefinitionRow(row));
 }
 
-export function validateRuleEvent(value: unknown): RuleEvent {
-	if (!object(value)) throw new Error("event must be an object");
-	const kind = oneOf(
-		value.kind,
-		["catalog", "import", "proposal", "decision", "override", "definition", "data"] as const,
-		"event kind",
-	);
-	if (kind === "data") {
-		const operation = oneOf(value.operation, ["set", "remove"] as const, "data operation");
-		exact(value, ["kind", "id", "operation", "expectedRevision", "audit", operation === "set" ? "data" : "name"]);
-		const audit = validateAudit(value.audit);
-		if (audit.surface === "package") throw new Error("data audit must name a session surface");
-		const id = eventId(value.id, "data.id");
-		if (operation === "remove")
-			return {
-				kind,
-				id,
-				operation,
-				name: validateRuleId(value.name),
-				expectedRevision: validateRevision(value.expectedRevision, "expectedRevision"),
-				audit,
-			};
-		const error = validateNamedData(value.data);
-		if (error) throw new Error(`data: ${error}`);
-		const data = structuredClone(value.data) as NamedData;
-		validateRuleId(data.name);
-		if (data.revision !== namedDataRevision(data))
-			throw new Error("data revision does not describe its complete contract");
+function validateDataEvent(value: Record<string, unknown>): Extract<RuleEvent, { kind: "data" }> {
+	const operation = oneOf(value.operation, ["set", "remove"] as const, "data operation");
+	exact(value, ["kind", "id", "operation", "expectedRevision", "audit", operation === "set" ? "data" : "name"]);
+	const audit = validateAudit(value.audit);
+	if (audit.surface === "package") throw new Error("data audit must name a session surface");
+	const id = eventId(value.id, "data.id");
+	if (operation === "remove")
 		return {
-			kind,
+			kind: "data",
 			id,
 			operation,
-			data,
-			expectedRevision:
-				value.expectedRevision === null ? null : validateRevision(value.expectedRevision, "expectedRevision"),
+			name: validateRuleId(value.name),
+			expectedRevision: validateRevision(value.expectedRevision, "expectedRevision"),
 			audit,
 		};
-	}
-	if (kind === "catalog") {
-		exact(value, ["kind", "rows", "audit"]);
-		const audit = validateAudit(value.audit);
-		if (audit.surface !== "package") throw new Error("catalog audit surface must be package");
-		const rows = boundedCatalogRows(value.rows, "catalog.rows");
-		if (new Set(rows.map((row) => row.id)).size !== rows.length) throw new Error("catalog row ids must be unique");
-		return { kind, rows, audit };
-	}
-	if (kind === "import") {
-		exact(value, ["kind", "id", "rows", "targets", "revision", "audit"]);
-		const audit = validateAudit(value.audit);
-		if (audit.surface === "package") throw new Error("import audit must name a session surface");
-		const rows = boundedCatalogRows(value.rows, "import.rows");
-		if (!rows.length || new Set(rows.map((row) => row.id)).size !== rows.length)
-			throw new Error("import requires nonempty unique rows");
-		if (!Array.isArray(value.targets) || value.targets.length !== rows.length)
-			throw new Error("import targets must match selected rows");
-		const targets = value.targets.map((target: unknown, index: number): CatalogImportTarget => {
-			if (!object(target)) throw new Error("import target must be an object");
-			exact(target, ["id", "identity"]);
-			if (target.id !== rows[index].id) throw new Error("import target ids must match row order");
-			return {
-				id: rows[index].id,
-				identity: target.identity === null ? null : validateRevision(target.identity, "target identity"),
-			};
-		});
-		const revision = validateRevision(value.revision, "import revision");
-		if (revision !== contentRevision({ rows, targets }))
-			throw new Error("import revision does not describe its complete plan");
-		return { kind, id: eventId(value.id, "import.id"), rows, targets, revision, audit };
-	}
-	if (kind === "proposal") {
-		exact(value, ["kind", "id", "operation", "ruleId", "reason", "audit"], ["candidate", "expectedRevision"]);
-		const audit = validateAudit(value.audit);
-		if (audit.surface !== "agent-tool") throw new Error("proposal audit surface must be agent-tool");
-		const operation = oneOf(value.operation, ["add", "replace", "retire", "disable"] as const, "proposal operation");
-		const event: ProposalEvent = {
-			kind,
-			id: eventId(value.id, "proposal.id"),
-			operation,
-			ruleId: validateRuleId(value.ruleId),
-			reason: text(value.reason, "reason", MAX_REASON_LENGTH),
-			audit: audit as AgentRuleAudit,
+	const error = validateNamedData(value.data);
+	if (error) throw new Error(`data: ${error}`);
+	const data = structuredClone(value.data) as NamedData;
+	validateRuleId(data.name);
+	if (data.revision !== namedDataRevision(data))
+		throw new Error("data revision does not describe its complete contract");
+	return {
+		kind: "data",
+		id,
+		operation,
+		data,
+		expectedRevision:
+			value.expectedRevision === null ? null : validateRevision(value.expectedRevision, "expectedRevision"),
+		audit,
+	};
+}
+
+function validateCatalogEvent(value: Record<string, unknown>): Extract<RuleEvent, { kind: "catalog" }> {
+	exact(value, ["kind", "rows", "audit"]);
+	const audit = validateAudit(value.audit);
+	if (audit.surface !== "package") throw new Error("catalog audit surface must be package");
+	const rows = boundedCatalogRows(value.rows, "catalog.rows");
+	if (new Set(rows.map((row) => row.id)).size !== rows.length) throw new Error("catalog row ids must be unique");
+	return { kind: "catalog", rows, audit };
+}
+
+function validateImportEvent(value: Record<string, unknown>): Extract<RuleEvent, { kind: "import" }> {
+	exact(value, ["kind", "id", "rows", "targets", "revision", "audit"]);
+	const audit = validateAudit(value.audit);
+	if (audit.surface === "package") throw new Error("import audit must name a session surface");
+	const rows = boundedCatalogRows(value.rows, "import.rows");
+	if (!rows.length || new Set(rows.map((row) => row.id)).size !== rows.length)
+		throw new Error("import requires nonempty unique rows");
+	if (!Array.isArray(value.targets) || value.targets.length !== rows.length)
+		throw new Error("import targets must match selected rows");
+	const targets = value.targets.map((target: unknown, index: number): CatalogImportTarget => {
+		if (!object(target)) throw new Error("import target must be an object");
+		exact(target, ["id", "identity"]);
+		if (target.id !== rows[index].id) throw new Error("import target ids must match row order");
+		return {
+			id: rows[index].id,
+			identity: target.identity === null ? null : validateRevision(target.identity, "target identity"),
 		};
-		if (operation === "add" || operation === "replace") event.candidate = validatePersistedCandidate(value.candidate);
-		else if (value.candidate !== undefined) throw new Error(`${operation} proposal must not contain a candidate`);
-		if (operation === "replace") event.expectedRevision = validateRevision(value.expectedRevision, "expectedRevision");
-		else if (value.expectedRevision !== undefined)
-			throw new Error(`${operation} proposal must not contain expectedRevision`);
-		return event;
-	}
-	if (kind === "decision") {
-		exact(value, ["kind", "id", "proposalId", "decision", "audit"], ["effect", "proposalRevision"]);
-		const audit = validateAudit(value.audit);
-		if (audit.surface === "package") throw new Error("decision audit must name a session surface");
-		const event: DecisionEvent = {
-			kind,
-			id: eventId(value.id, "decision.id"),
-			proposalId: eventId(value.proposalId, "decision.proposalId"),
-			decision: oneOf(value.decision, ["approved", "rejected"] as const, "decision"),
-			audit,
-		};
-		if (value.effect !== undefined) event.effect = oneOf(value.effect, EFFECTS, "effect");
-		if (value.proposalRevision !== undefined)
-			event.proposalRevision = validateRevision(value.proposalRevision, "proposalRevision");
-		if (event.decision === "rejected" && (event.effect !== undefined || event.proposalRevision !== undefined))
-			throw new Error("rejected decision must not contain an effect or proposal revision");
-		return event;
-	}
-	if (kind === "override") {
-		const operation = oneOf(value.operation, ["set", "clear"] as const, "override operation");
-		const id = eventId(value.id, "override.id");
-		const ruleId = validateRuleId(value.ruleId);
-		if (operation === "set") {
-			exact(value, ["kind", "id", "ruleId", "operation", "override"]);
-			if (!object(value.override)) throw new Error("override set requires an override object");
-			exact(value.override, ["reason", "audit", "againstDefinitionRevision"], ["state", "effect"]);
-			const audit = validateAudit(value.override.audit);
-			if (audit.surface === "package") throw new Error("override audit must name a session surface");
-			const slot: OverrideEventSlot = {
-				reason: text(value.override.reason, "override.reason", MAX_REASON_LENGTH),
-				audit,
-				againstDefinitionRevision: text(
-					value.override.againstDefinitionRevision,
-					"override.againstDefinitionRevision",
-					12,
-				),
-			};
-			if (!REVISION.test(slot.againstDefinitionRevision)) {
-				throw new Error("override.againstDefinitionRevision must be 12 lowercase hexadecimal characters");
-			}
-			if (value.override.state !== undefined) {
-				if (value.override.state !== "disabled") throw new Error("override.state must be disabled");
-				slot.state = "disabled";
-			}
-			if (value.override.effect !== undefined) slot.effect = oneOf(value.override.effect, EFFECTS, "override.effect");
-			if (slot.state === undefined && slot.effect === undefined)
-				throw new Error("override set requires state or effect");
-			return { kind, id, ruleId, operation, override: slot };
-		}
+	});
+	const revision = validateRevision(value.revision, "import revision");
+	if (revision !== contentRevision({ rows, targets }))
+		throw new Error("import revision does not describe its complete plan");
+	return { kind: "import", id: eventId(value.id, "import.id"), rows, targets, revision, audit };
+}
+
+function validateProposalEvent(value: Record<string, unknown>): Extract<RuleEvent, { kind: "proposal" }> {
+	exact(value, ["kind", "id", "operation", "ruleId", "reason", "audit"], ["candidate", "expectedRevision"]);
+	const audit = validateAudit(value.audit);
+	if (audit.surface !== "agent-tool") throw new Error("proposal audit surface must be agent-tool");
+	const operation = oneOf(value.operation, ["add", "replace", "retire", "disable"] as const, "proposal operation");
+	const event: ProposalEvent = {
+		kind: "proposal",
+		id: eventId(value.id, "proposal.id"),
+		operation,
+		ruleId: validateRuleId(value.ruleId),
+		reason: text(value.reason, "reason", MAX_REASON_LENGTH),
+		audit: audit as AgentRuleAudit,
+	};
+	if (operation === "add" || operation === "replace") event.candidate = validatePersistedCandidate(value.candidate);
+	else if (value.candidate !== undefined) throw new Error(`${operation} proposal must not contain a candidate`);
+	if (operation === "replace") event.expectedRevision = validateRevision(value.expectedRevision, "expectedRevision");
+	else if (value.expectedRevision !== undefined)
+		throw new Error(`${operation} proposal must not contain expectedRevision`);
+	return event;
+}
+
+function validateDecisionEvent(value: Record<string, unknown>): Extract<RuleEvent, { kind: "decision" }> {
+	exact(value, ["kind", "id", "proposalId", "decision", "audit"], ["effect", "proposalRevision"]);
+	const audit = validateAudit(value.audit);
+	if (audit.surface === "package") throw new Error("decision audit must name a session surface");
+	const event: DecisionEvent = {
+		kind: "decision",
+		id: eventId(value.id, "decision.id"),
+		proposalId: eventId(value.proposalId, "decision.proposalId"),
+		decision: oneOf(value.decision, ["approved", "rejected"] as const, "decision"),
+		audit,
+	};
+	if (value.effect !== undefined) event.effect = oneOf(value.effect, EFFECTS, "effect");
+	if (value.proposalRevision !== undefined)
+		event.proposalRevision = validateRevision(value.proposalRevision, "proposalRevision");
+	if (event.decision === "rejected" && (event.effect !== undefined || event.proposalRevision !== undefined))
+		throw new Error("rejected decision must not contain an effect or proposal revision");
+	return event;
+}
+
+function validateOverrideEvent(value: Record<string, unknown>): Extract<RuleEvent, { kind: "override" }> {
+	const operation = oneOf(value.operation, ["set", "clear"] as const, "override operation");
+	const id = eventId(value.id, "override.id");
+	const ruleId = validateRuleId(value.ruleId);
+	if (operation === "clear") {
 		exact(value, ["kind", "id", "ruleId", "operation", "reason", "audit"]);
 		const audit = validateAudit(value.audit);
 		if (audit.surface === "package") throw new Error("override audit must name a session surface");
 		return {
-			kind,
+			kind: "override",
 			id,
 			ruleId,
 			operation,
@@ -744,18 +731,61 @@ export function validateRuleEvent(value: unknown): RuleEvent {
 			audit,
 		};
 	}
+	exact(value, ["kind", "id", "ruleId", "operation", "override"]);
+	if (!object(value.override)) throw new Error("override set requires an override object");
+	exact(value.override, ["reason", "audit", "againstDefinitionRevision"], ["state", "effect"]);
+	const audit = validateAudit(value.override.audit);
+	if (audit.surface === "package") throw new Error("override audit must name a session surface");
+	const slot: OverrideEventSlot = {
+		reason: text(value.override.reason, "override.reason", MAX_REASON_LENGTH),
+		audit,
+		againstDefinitionRevision: text(
+			value.override.againstDefinitionRevision,
+			"override.againstDefinitionRevision",
+			12,
+		),
+	};
+	if (!REVISION.test(slot.againstDefinitionRevision))
+		throw new Error("override.againstDefinitionRevision must be 12 lowercase hexadecimal characters");
+	if (value.override.state !== undefined) {
+		if (value.override.state !== "disabled") throw new Error("override.state must be disabled");
+		slot.state = "disabled";
+	}
+	if (value.override.effect !== undefined) slot.effect = oneOf(value.override.effect, EFFECTS, "override.effect");
+	if (slot.state === undefined && slot.effect === undefined)
+		throw new Error("override set requires state or effect");
+	return { kind: "override", id, ruleId, operation, override: slot };
+}
+
+function validateDefinitionEvent(value: Record<string, unknown>): Extract<RuleEvent, { kind: "definition" }> {
 	exact(value, ["kind", "id", "ruleId", "state", "reason", "audit"]);
 	const audit = validateAudit(value.audit);
 	if (audit.surface === "package") throw new Error("definition audit must name a session surface");
 	if (value.state !== "retired") throw new Error("definition state must be retired");
 	return {
-		kind,
+		kind: "definition",
 		id: eventId(value.id, "definition.id"),
 		ruleId: validateRuleId(value.ruleId),
 		state: "retired",
 		reason: text(value.reason, "reason", MAX_REASON_LENGTH),
 		audit,
 	};
+}
+
+export function validateRuleEvent(value: unknown): RuleEvent {
+	if (!object(value)) throw new Error("event must be an object");
+	const kind = oneOf(
+		value.kind,
+		["catalog", "import", "proposal", "decision", "override", "definition", "data"] as const,
+		"event kind",
+	);
+	if (kind === "data") return validateDataEvent(value);
+	if (kind === "catalog") return validateCatalogEvent(value);
+	if (kind === "import") return validateImportEvent(value);
+	if (kind === "proposal") return validateProposalEvent(value);
+	if (kind === "decision") return validateDecisionEvent(value);
+	if (kind === "override") return validateOverrideEvent(value);
+	return validateDefinitionEvent(value);
 }
 
 function clone<T>(value: T): T {
@@ -847,226 +877,335 @@ function assertActiveCapacity(records: ReadonlyMap<string, RuleRecord>, addition
 	if (active > PROGRAM_LIMITS.rules) throw new Error(`active policy definitions exceed ${PROGRAM_LIMITS.rules}`);
 }
 
+interface ReductionState {
+	records: Map<string, RuleRecord>;
+	data: Map<string, NamedData>;
+	pending: Map<string, ProposalEvent>;
+	pendingByRule: Map<string, string>;
+	recordLines: Map<string, number>;
+	pendingLines: Map<string, number>;
+}
+
+function reduceDataEvent(state: ReductionState, event: Extract<RuleEvent, { kind: "data" }>): void {
+	if (isAgentSurface(event.audit)) return;
+	const name = event.operation === "set" ? event.data.name : event.name;
+	if ((state.data.get(name)?.revision ?? null) !== event.expectedRevision) return;
+	if (event.operation === "remove") state.data.delete(name);
+	else {
+		if (!state.data.has(name) && state.data.size >= MAX_NAMED_DATA)
+			throw new Error(`data store exceeds ${MAX_NAMED_DATA} bindings`);
+		state.data.set(name, clone(event.data));
+	}
+}
+
+function reduceCatalogEvent(
+	state: ReductionState,
+	event: Extract<RuleEvent, { kind: "catalog" }>,
+	eventIndex: number,
+	eventLine: number | undefined,
+	available: (key: string) => boolean,
+): void {
+	if (eventIndex !== 0) throw new Error("starter catalog must be the first event");
+	for (const row of event.rows) {
+		state.records.set(row.id, packageRecord(row, undefined, available));
+		if (eventLine !== undefined) state.recordLines.set(row.id, eventLine);
+	}
+}
+
+function reduceImportEvent(
+	state: ReductionState,
+	event: Extract<RuleEvent, { kind: "import" }>,
+	eventLine: number | undefined,
+	available: (key: string) => boolean,
+): void {
+	if (isAgentSurface(event.audit) || !importTargetsMatch(event, state.records)) return;
+	const selected = new Set(event.rows.map((row) => row.id));
+	const count = state.records.size + event.rows.filter((row) => !state.records.has(row.id)).length;
+	const active =
+		[...state.records.values()].filter((record) => !selected.has(record.id) && effectiveState(record) === "active")
+			.length + event.rows.filter((row) => state.records.get(row.id)?.override?.state !== "disabled").length;
+	if (count > MAX_RULES || active > PROGRAM_LIMITS.rules) return;
+	const next = importedRecords(event, state.records, available, {
+		kind: "import",
+		importId: event.id,
+		approvedAudit: clone(operatorAudit(event.audit)),
+	});
+	for (const row of event.rows) {
+		const record = next.get(row.id);
+		if (record !== undefined) state.records.set(row.id, record);
+		if (eventLine !== undefined && !state.recordLines.has(row.id)) state.recordLines.set(row.id, eventLine);
+	}
+}
+
+function reduceProposalEvent(
+	state: ReductionState,
+	event: Extract<RuleEvent, { kind: "proposal" }>,
+	eventLine: number | undefined,
+): void {
+	if (state.pendingByRule.has(event.ruleId)) return;
+	const existing = state.records.get(event.ruleId);
+	if (event.operation === "add" && existing) return;
+	if (
+		event.operation === "replace" &&
+		(!existing ||
+			existing.definition.revision !== event.expectedRevision ||
+			existing.definition.state === "retired")
+	)
+		return;
+	if (event.operation === "retire" && !existing) return;
+	if (event.operation === "disable" && !existing) return;
+	state.pending.set(event.id, clone(event));
+	state.pendingByRule.set(event.ruleId, event.id);
+	if (eventLine !== undefined) state.pendingLines.set(event.id, eventLine);
+}
+
+function approvalTargetValid(proposal: ProposalEvent, existing: RuleRecord | undefined): boolean {
+	if (proposal.operation === "add") return !existing;
+	return (
+		existing !== undefined &&
+		existing.definition.state === "active" &&
+		existing.definition.revision === proposal.expectedRevision
+	);
+}
+
+function approvalRevisionValid(
+	proposal: ProposalEvent,
+	event: Extract<RuleEvent, { kind: "decision" }>,
+): boolean {
+	const exactApproval = !candidatePermitsEffectChoice(proposal.candidate) || proposal.operation === "replace";
+	return !exactApproval || event.proposalRevision === proposalRevision(proposal);
+}
+
+function applyApproval(
+	state: ReductionState,
+	proposal: ProposalEvent,
+	event: Extract<RuleEvent, { kind: "decision" }>,
+	eventLine: number | undefined,
+	available: (key: string) => boolean,
+): boolean {
+	if (proposal.operation !== "add" && proposal.operation !== "replace") return false;
+	const candidate = proposal.candidate;
+	const existing = state.records.get(proposal.ruleId);
+	const effect = candidate ? candidateEffect(candidate, event.effect) : undefined;
+	if (!candidate || !effect) return false;
+	if (!approvalTargetValid(proposal, existing) || !approvalRevisionValid(proposal, event)) return false;
+	if (!candidatePermitsEffectChoice(candidate) && event.effect !== undefined) return false;
+	const revision = ruleDefinitionRevision({ id: proposal.ruleId, ...candidate, effect });
+	state.records.set(
+		proposal.ruleId,
+		refreshDerived(
+			{
+				id: proposal.ruleId,
+				source: { kind: "local", proposalId: proposal.id, approvedAudit: clone(operatorAudit(event.audit)) },
+				matcher: clone(candidate.matcher),
+				definition: {
+					purpose: candidate.purpose,
+					authority: candidate.authority,
+					...(candidate.applicability ? { applicability: clone(candidate.applicability) } : {}),
+					revision,
+					state: "active",
+					effect,
+					note: candidate.note,
+					...(candidate.suggestion ? { suggestion: clone(candidate.suggestion) } : {}),
+					...(candidate.scope ? { scope: clone(candidate.scope) } : {}),
+				},
+				...(existing?.override ? { override: clone(existing.override) } : {}),
+				matcherAvailable: true,
+				staleOverride: false,
+			},
+			available,
+		),
+	);
+	if (eventLine !== undefined && !state.recordLines.has(proposal.ruleId))
+		state.recordLines.set(proposal.ruleId, eventLine);
+	return true;
+}
+
+function applyRetireDecision(
+	state: ReductionState,
+	proposal: ProposalEvent,
+	event: Extract<RuleEvent, { kind: "decision" }>,
+	available: (key: string) => boolean,
+): boolean {
+	if (event.effect !== undefined) return false;
+	const existing = state.records.get(proposal.ruleId);
+	if (!existing) return false;
+	state.records.set(
+		proposal.ruleId,
+		refreshDerived({ ...existing, definition: { ...existing.definition, state: "retired" } }, available),
+	);
+	return true;
+}
+
+function applyDisableDecision(
+	state: ReductionState,
+	proposal: ProposalEvent,
+	event: Extract<RuleEvent, { kind: "decision" }>,
+	available: (key: string) => boolean,
+): boolean {
+	if (event.effect !== undefined) return false;
+	const existing = state.records.get(proposal.ruleId);
+	if (!existing) return false;
+	state.records.set(
+		proposal.ruleId,
+		refreshDerived(
+			{
+				...existing,
+				override: {
+					state: "disabled",
+					...(existing.override?.effect ? { effect: existing.override.effect } : {}),
+					reason: proposal.reason,
+					audit: clone(operatorAudit(event.audit)),
+					againstDefinitionRevision: existing.definition.revision,
+				},
+			},
+			available,
+		),
+	);
+	return true;
+}
+
+function applyDecisionEvent(
+	state: ReductionState,
+	event: Extract<RuleEvent, { kind: "decision" }>,
+	eventLine: number | undefined,
+	available: (key: string) => boolean,
+): void {
+	if (isAgentSurface(event.audit)) return;
+	const proposal = state.pending.get(event.proposalId);
+	if (!proposal) return;
+	let decided = event.decision === "rejected";
+	if (event.decision === "approved" && applyApproval(state, proposal, event, eventLine, available)) decided = true;
+	if (event.decision === "approved" && proposal.operation === "retire" && !decided)
+		decided = applyRetireDecision(state, proposal, event, available);
+	if (event.decision === "approved" && proposal.operation === "disable" && !decided)
+		decided = applyDisableDecision(state, proposal, event, available);
+	if (decided) {
+		state.pending.delete(proposal.id);
+		state.pendingByRule.delete(proposal.ruleId);
+		state.pendingLines.delete(proposal.id);
+	}
+}
+
+function reduceOverrideEvent(
+	state: ReductionState,
+	event: Extract<RuleEvent, { kind: "override" }>,
+	available: (key: string) => boolean,
+): void {
+	const audit = event.operation === "set" ? event.override.audit : event.audit;
+	if (isAgentSurface(audit)) return;
+	const existing = state.records.get(event.ruleId);
+	if (!existing) return;
+	if (event.operation === "clear") {
+		const cleared = { ...existing };
+		delete cleared.override;
+		state.records.set(event.ruleId, refreshDerived(cleared, available));
+		return;
+	}
+	state.records.set(
+		event.ruleId,
+		refreshDerived(
+			{
+				...existing,
+				override: {
+					...clone(event.override),
+					audit: clone(operatorAudit(event.override.audit)),
+				},
+			},
+			available,
+		),
+	);
+}
+
+function reduceDefinitionEvent(
+	state: ReductionState,
+	event: Extract<RuleEvent, { kind: "definition" }>,
+	available: (key: string) => boolean,
+): void {
+	if (isAgentSurface(event.audit)) return;
+	const existing = state.records.get(event.ruleId);
+	if (!existing) return;
+	state.records.set(
+		event.ruleId,
+		refreshDerived({ ...existing, definition: { ...existing.definition, state: "retired" } }, available),
+	);
+}
+
+function applyRuleEvent(
+	state: ReductionState,
+	event: RuleEvent,
+	eventIndex: number,
+	eventLine: number | undefined,
+	available: (key: string) => boolean,
+): void {
+	if (event.kind === "data") {
+		reduceDataEvent(state, event);
+		return;
+	}
+	if (event.kind === "catalog") {
+		reduceCatalogEvent(state, event, eventIndex, eventLine, available);
+		return;
+	}
+	if (event.kind === "import") {
+		reduceImportEvent(state, event, eventLine, available);
+		return;
+	}
+	if (event.kind === "proposal") {
+		reduceProposalEvent(state, event, eventLine);
+		return;
+	}
+	if (event.kind === "decision") {
+		applyDecisionEvent(state, event, eventLine, available);
+		return;
+	}
+	if (event.kind === "override") {
+		reduceOverrideEvent(state, event, available);
+		return;
+	}
+	reduceDefinitionEvent(state, event, available);
+}
+
 /** Reduce valid events in file order into the single rule map. */
 export function reduceRuleEvents(
 	events: readonly RuleEvent[],
 	available: (key: string) => boolean = hasCodeMatcher,
 	eventLines?: readonly number[],
 ): RuleReduction {
-	const records = new Map<string, RuleRecord>();
-	const data = new Map<string, NamedData>();
-	const pending = new Map<string, ProposalEvent>();
-	const pendingByRule = new Map<string, string>();
-	const recordLines = new Map<string, number>();
-	const pendingLines = new Map<string, number>();
+	const state: ReductionState = {
+		records: new Map(),
+		data: new Map(),
+		pending: new Map(),
+		pendingByRule: new Map(),
+		recordLines: new Map(),
+		pendingLines: new Map(),
+	};
 	for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
 		const event = events[eventIndex];
 		const eventLine = eventLines?.[eventIndex];
 		try {
-			if (event.kind === "data") {
-				if (isAgentSurface(event.audit)) continue;
-				const name = event.operation === "set" ? event.data.name : event.name;
-				if ((data.get(name)?.revision ?? null) !== event.expectedRevision) continue;
-				if (event.operation === "remove") data.delete(name);
-				else {
-					if (!data.has(name) && data.size >= MAX_NAMED_DATA)
-						throw new Error(`data store exceeds ${MAX_NAMED_DATA} bindings`);
-					data.set(name, clone(event.data));
-				}
-				continue;
-			}
-			if (event.kind === "catalog") {
-				if (eventIndex !== 0) throw new Error("starter catalog must be the first event");
-				for (const row of event.rows) {
-					records.set(row.id, packageRecord(row, undefined, available));
-					if (eventLine !== undefined) recordLines.set(row.id, eventLine);
-				}
-				continue;
-			}
-			if (event.kind === "import") {
-				if (isAgentSurface(event.audit) || !importTargetsMatch(event, records)) continue;
-				const selected = new Set(event.rows.map((row) => row.id));
-				const count = records.size + event.rows.filter((row) => !records.has(row.id)).length;
-				const active =
-					[...records.values()].filter((record) => !selected.has(record.id) && effectiveState(record) === "active")
-						.length + event.rows.filter((row) => records.get(row.id)?.override?.state !== "disabled").length;
-				if (count > MAX_RULES || active > PROGRAM_LIMITS.rules) continue;
-				const next = importedRecords(event, records, available, {
-					kind: "import",
-					importId: event.id,
-					approvedAudit: clone(operatorAudit(event.audit)),
-				});
-				for (const row of event.rows) {
-					records.set(row.id, next.get(row.id)!);
-					if (eventLine !== undefined && !recordLines.has(row.id)) recordLines.set(row.id, eventLine);
-				}
-				continue;
-			}
-			if (event.kind === "proposal") {
-				if (pendingByRule.has(event.ruleId)) continue;
-				const existing = records.get(event.ruleId);
-				if (event.operation === "add" && existing) continue;
-				if (
-					event.operation === "replace" &&
-					(!existing ||
-						existing.definition.revision !== event.expectedRevision ||
-						existing.definition.state === "retired")
-				)
-					continue;
-				if (event.operation === "retire" && !existing) continue;
-				if (event.operation === "disable" && !existing) continue;
-				pending.set(event.id, clone(event));
-				pendingByRule.set(event.ruleId, event.id);
-				if (eventLine !== undefined) pendingLines.set(event.id, eventLine);
-				continue;
-			}
-			if (event.kind === "decision") {
-				if (isAgentSurface(event.audit)) continue;
-				const proposal = pending.get(event.proposalId);
-				if (!proposal) continue;
-				let decided = event.decision === "rejected";
-				if (event.decision === "approved" && (proposal.operation === "add" || proposal.operation === "replace")) {
-					const candidate = proposal.candidate;
-					const existing = records.get(proposal.ruleId);
-					const targetValid =
-						proposal.operation === "add"
-							? !existing
-							: existing !== undefined &&
-								existing.definition.state === "active" &&
-								existing.definition.revision === proposal.expectedRevision;
-					const exactApproval = !candidatePermitsEffectChoice(candidate) || proposal.operation === "replace";
-					const approvalValid = !exactApproval || event.proposalRevision === proposalRevision(proposal);
-					const effect = candidate && candidateEffect(candidate, event.effect);
-					if (
-						candidate &&
-						effect &&
-						targetValid &&
-						approvalValid &&
-						(candidatePermitsEffectChoice(candidate) || event.effect === undefined)
-					) {
-						const revision = ruleDefinitionRevision({ id: proposal.ruleId, ...candidate, effect });
-						records.set(
-							proposal.ruleId,
-							refreshDerived(
-								{
-									id: proposal.ruleId,
-									source: { kind: "local", proposalId: proposal.id, approvedAudit: clone(operatorAudit(event.audit)) },
-									matcher: clone(candidate.matcher),
-									definition: {
-										purpose: candidate.purpose,
-										authority: candidate.authority,
-										...(candidate.applicability ? { applicability: clone(candidate.applicability) } : {}),
-										revision,
-										state: "active",
-										effect,
-										note: candidate.note,
-										...(candidate.suggestion ? { suggestion: clone(candidate.suggestion) } : {}),
-										...(candidate.scope ? { scope: clone(candidate.scope) } : {}),
-									},
-									...(existing?.override ? { override: clone(existing.override) } : {}),
-									matcherAvailable: true,
-									staleOverride: false,
-								},
-								available,
-							),
-						);
-						if (eventLine !== undefined && !recordLines.has(proposal.ruleId))
-							recordLines.set(proposal.ruleId, eventLine);
-						decided = true;
-					}
-				} else if (event.decision === "approved" && proposal.operation === "retire") {
-					const existing = records.get(proposal.ruleId);
-					if (event.effect === undefined && existing) {
-						records.set(
-							proposal.ruleId,
-							refreshDerived({ ...existing, definition: { ...existing.definition, state: "retired" } }, available),
-						);
-						decided = true;
-					}
-				} else if (event.decision === "approved" && proposal.operation === "disable") {
-					const existing = records.get(proposal.ruleId);
-					if (event.effect === undefined && existing) {
-						records.set(
-							proposal.ruleId,
-							refreshDerived(
-								{
-									...existing,
-									override: {
-										state: "disabled",
-										...(existing.override?.effect ? { effect: existing.override.effect } : {}),
-										reason: proposal.reason,
-										audit: clone(operatorAudit(event.audit)),
-										againstDefinitionRevision: existing.definition.revision,
-									},
-								},
-								available,
-							),
-						);
-						decided = true;
-					}
-				}
-				if (decided) {
-					pending.delete(proposal.id);
-					pendingByRule.delete(proposal.ruleId);
-					pendingLines.delete(proposal.id);
-				}
-				continue;
-			}
-			if (event.kind === "override") {
-				const audit = event.operation === "set" ? event.override.audit : event.audit;
-				if (isAgentSurface(audit)) continue;
-				const existing = records.get(event.ruleId);
-				if (!existing) continue;
-				if (event.operation === "clear") {
-					const cleared = { ...existing };
-					delete cleared.override;
-					records.set(event.ruleId, refreshDerived(cleared, available));
-				} else {
-					records.set(
-						event.ruleId,
-						refreshDerived(
-							{
-								...existing,
-								override: {
-									...clone(event.override),
-									audit: clone(operatorAudit(event.override.audit)),
-								},
-							},
-							available,
-						),
-					);
-				}
-				continue;
-			}
-			if (isAgentSurface(event.audit)) continue;
-			const existing = records.get(event.ruleId);
-			if (!existing) continue;
-			records.set(
-				event.ruleId,
-				refreshDerived({ ...existing, definition: { ...existing.definition, state: "retired" } }, available),
-			);
+			applyRuleEvent(state, event, eventIndex, eventLine, available);
 		} catch (error) {
 			if (eventLine === undefined) throw error;
 			const reason = error instanceof Error ? error.message : String(error);
 			throw new RuleLineError(eventLine, reason);
 		}
 	}
-	if (records.size > MAX_RULES) {
-		const line = [...recordLines.values()].sort((left, right) => left - right)[MAX_RULES];
+	if (state.records.size > MAX_RULES) {
+		const line = [...state.recordLines.values()].sort((left, right) => left - right)[MAX_RULES];
 		if (line !== undefined) throw new RuleLineError(line, `rule store exceeds ${MAX_RULES} rules`);
 		throw new Error(`rule store exceeds ${MAX_RULES} rules`);
 	}
-	if (pending.size > MAX_PENDING_PROPOSALS) {
-		const line = [...pendingLines.values()].sort((left, right) => left - right)[MAX_PENDING_PROPOSALS];
+	if (state.pending.size > MAX_PENDING_PROPOSALS) {
+		const line = [...state.pendingLines.values()].sort((left, right) => left - right)[MAX_PENDING_PROPOSALS];
 		if (line !== undefined)
 			throw new RuleLineError(line, `rule store exceeds ${MAX_PENDING_PROPOSALS} pending proposals`);
 		throw new Error(`rule store exceeds ${MAX_PENDING_PROPOSALS} pending proposals`);
 	}
-	assertActiveCapacity(records);
+	assertActiveCapacity(state.records);
 	return {
-		data,
-		records: orderedRecords(records),
-		pending: [...pending.values()].sort(
+		data: state.data,
+		records: orderedRecords(state.records),
+		pending: [...state.pending.values()].sort(
 			(left, right) => left.ruleId.localeCompare(right.ruleId) || left.id.localeCompare(right.id),
 		),
 	};
@@ -1150,6 +1289,35 @@ interface ReadEventsResult {
 	incompleteFinalLine?: number;
 }
 
+function parseEventLines(content: Buffer): ReadEventsResult {
+	const events: RuleEvent[] = [];
+	const eventLines: number[] = [];
+	let start = 0;
+	let lineNumber = 0;
+	for (let index = 0; index < content.length; index++) {
+		if (content[index] !== 0x0a) continue;
+		lineNumber++;
+		const line = content.subarray(start, index);
+		start = index + 1;
+		if (line.length === 0) throw new RuleLineError(lineNumber, "line is empty");
+		if (line.length + 1 > Math.max(MAX_CATALOG_EVENT_BYTES, MAX_DATA_EVENT_BYTES))
+			throw new RuleLineError(lineNumber, "line exceeds maximum policy event byte bound");
+		try {
+			const event = validateRuleEvent(JSON.parse(UTF8.decode(line)) as unknown);
+			const limit = eventByteLimit(event);
+			if (line.length + 1 > limit) throw new Error(`line exceeds ${limit} bytes`);
+			events.push(event);
+			eventLines.push(lineNumber);
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			throw new RuleLineError(lineNumber, reason);
+		}
+	}
+	return start < content.length
+		? { events, eventLines, incompleteFinalLine: lineNumber + 1 }
+		: { events, eventLines };
+}
+
 async function readEvents(dir: string, path: string): Promise<ReadEventsResult> {
 	await checkExistingDirectory(dir);
 	let handle: Awaited<ReturnType<typeof open>>;
@@ -1182,33 +1350,7 @@ async function readEvents(dir: string, path: string): Promise<ReadEventsResult> 
 			if (result.bytesRead === 0) break;
 			offset += result.bytesRead;
 		}
-		const content = buffer.subarray(0, offset);
-		const events: RuleEvent[] = [];
-		const eventLines: number[] = [];
-		let start = 0;
-		let lineNumber = 0;
-		for (let index = 0; index < content.length; index++) {
-			if (content[index] !== 0x0a) continue;
-			lineNumber++;
-			const line = content.subarray(start, index);
-			start = index + 1;
-			if (line.length === 0) throw new RuleLineError(lineNumber, "line is empty");
-			if (line.length + 1 > Math.max(MAX_CATALOG_EVENT_BYTES, MAX_DATA_EVENT_BYTES)) {
-				throw new RuleLineError(lineNumber, "line exceeds maximum policy event byte bound");
-			}
-			try {
-				const event = validateRuleEvent(JSON.parse(UTF8.decode(line)) as unknown);
-				if (line.length + 1 > eventByteLimit(event)) throw new Error(`line exceeds ${eventByteLimit(event)} bytes`);
-				events.push(event);
-				eventLines.push(lineNumber);
-			} catch (error) {
-				const reason = error instanceof Error ? error.message : String(error);
-				throw new RuleLineError(lineNumber, reason);
-			}
-		}
-		return start < content.length
-			? { events, eventLines, incompleteFinalLine: lineNumber + 1 }
-			: { events, eventLines };
+		return parseEventLines(buffer.subarray(0, offset));
 	} finally {
 		await handle.close();
 	}
@@ -1229,109 +1371,164 @@ function assertWritableAuthority(event: RuleEvent): void {
 	}
 }
 
-function assertTransition(event: Exclude<RuleEvent, CatalogEvent>, reduction: RuleReduction): void {
-	if (event.kind === "import") {
-		if (!importTargetsMatch(event, reduction.records))
-			throw new Error("import target identity changed; inspect a fresh import plan");
-		importedRecords(event, reduction.records, hasCodeMatcher);
+function assertImportTransition(
+	event: Extract<RuleEvent, { kind: "import" }>,
+	reduction: RuleReduction,
+): void {
+	if (!importTargetsMatch(event, reduction.records))
+		throw new Error("import target identity changed; inspect a fresh import plan");
+	importedRecords(event, reduction.records, hasCodeMatcher);
+}
+
+function assertDataTransition(
+	event: Extract<RuleEvent, { kind: "data" }>,
+	reduction: RuleReduction,
+): void {
+	const name = event.operation === "set" ? event.data.name : event.name;
+	const current = reduction.data.get(name);
+	if ((current?.revision ?? null) !== event.expectedRevision)
+		throw new Error(`data "${name}" revision changed; inspect the current binding`);
+	if (event.operation === "set" && !current && reduction.data.size >= MAX_NAMED_DATA)
+		throw new Error(`data store already contains ${MAX_NAMED_DATA} bindings`);
+}
+
+function assertAddProposal(existing: RuleRecord | undefined, ruleId: string, reduction: RuleReduction): void {
+	if (existing) throw new Error(`rule id "${ruleId}" is already taken`);
+	if (reduction.records.size >= MAX_RULES) throw new Error(`rule store already contains ${MAX_RULES} rules`);
+}
+
+function assertReplaceProposal(
+	existing: RuleRecord | undefined,
+	event: Extract<RuleEvent, { kind: "proposal" }>,
+): void {
+	if (!existing) throw new Error(`no rule named "${event.ruleId}" exists`);
+	if (existing.definition.state === "retired") throw new Error(`rule "${event.ruleId}" is retired`);
+	if (existing.definition.revision !== event.expectedRevision)
+		throw new Error(`replacement target "${event.ruleId}" revision changed`);
+}
+
+function assertRetireProposal(existing: RuleRecord | undefined, ruleId: string): void {
+	if (!existing) throw new Error(`no rule named "${ruleId}" exists`);
+	if (effectiveState(existing) === "retired") throw new Error(`rule "${ruleId}" is already retired`);
+}
+
+function assertProposalTransition(
+	event: Extract<RuleEvent, { kind: "proposal" }>,
+	reduction: RuleReduction,
+): void {
+	if (reduction.pending.some((proposal) => proposal.ruleId === event.ruleId))
+		throw new Error(`a proposal is already pending for "${event.ruleId}"`);
+	const existing = reduction.records.get(event.ruleId);
+	if (event.operation === "add") assertAddProposal(existing, event.ruleId, reduction);
+	else if (event.operation === "replace") assertReplaceProposal(existing, event);
+	else if (event.operation === "retire") assertRetireProposal(existing, event.ruleId);
+	else if (!existing) throw new Error(`no rule named "${event.ruleId}" exists`);
+	if (reduction.pending.length >= MAX_PENDING_PROPOSALS)
+		throw new Error(`rule store already contains ${MAX_PENDING_PROPOSALS} pending proposals`);
+}
+
+function assertApprovalShape(
+	event: Extract<RuleEvent, { kind: "decision" }>,
+	proposal: ProposalEvent,
+): void {
+	if (event.decision !== "approved" || (proposal.operation !== "add" && proposal.operation !== "replace")) return;
+	const choice = candidatePermitsEffectChoice(proposal.candidate);
+	if (!choice && event.effect !== undefined)
+		throw new Error("exact approval uses the exact proposed action, not steer or block");
+	if (choice && !event.effect)
+		throw new Error("approving a steer-or-block proposal requires effect steer or block");
+	if ((!choice || proposal.operation === "replace") && event.proposalRevision !== proposalRevision(proposal))
+		throw new Error("approval requires the current exact proposal revision");
+	if (event.proposalRevision !== undefined && event.proposalRevision !== proposalRevision(proposal))
+		throw new Error("proposal revision changed");
+}
+
+function assertApprovalTargets(
+	event: Extract<RuleEvent, { kind: "decision" }>,
+	proposal: ProposalEvent,
+	reduction: RuleReduction,
+): void {
+	if (event.decision !== "approved" || (proposal.operation !== "add" && proposal.operation !== "replace")) return;
+	assertActiveCapacity(
+		reduction.records,
+		reduction.records.get(proposal.ruleId)?.override?.state === "disabled" ? 0 : 1,
+		proposal.ruleId,
+	);
+	if (proposal.operation === "add") {
+		if (reduction.records.has(proposal.ruleId)) throw new Error(`rule id "${proposal.ruleId}" is already taken`);
+		if (reduction.records.size >= MAX_RULES) throw new Error(`rule store already contains ${MAX_RULES} rules`);
 		return;
 	}
-	if (event.kind === "data") {
-		const name = event.operation === "set" ? event.data.name : event.name;
-		const current = reduction.data.get(name);
-		if ((current?.revision ?? null) !== event.expectedRevision)
-			throw new Error(`data "${name}" revision changed; inspect the current binding`);
-		if (event.operation === "set" && !current && reduction.data.size >= MAX_NAMED_DATA)
-			throw new Error(`data store already contains ${MAX_NAMED_DATA} bindings`);
-		return;
+	const current = reduction.records.get(proposal.ruleId);
+	if (!current || current.definition.revision !== proposal.expectedRevision)
+		throw new Error("replacement target revision changed");
+}
+
+function assertDecisionTransition(
+	event: Extract<RuleEvent, { kind: "decision" }>,
+	reduction: RuleReduction,
+): void {
+	const proposal = reduction.pending.find((entry) => entry.id === event.proposalId);
+	if (!proposal) throw new Error(`no pending proposal with id "${event.proposalId}"`);
+	if (event.decision === "approved" && proposal.operation !== "add") {
+		const target = reduction.records.get(proposal.ruleId);
+		if (target && effectiveState(target) === "retired")
+			throw new Error(`cannot approve ${proposal.operation} proposal: target "${proposal.ruleId}" is retired`);
 	}
-	if (event.kind === "proposal") {
-		if (reduction.pending.some((proposal) => proposal.ruleId === event.ruleId)) {
-			throw new Error(`a proposal is already pending for "${event.ruleId}"`);
-		}
-		const existing = reduction.records.get(event.ruleId);
-		if (event.operation === "add") {
-			if (existing) throw new Error(`rule id "${event.ruleId}" is already taken`);
-			if (reduction.records.size >= MAX_RULES) throw new Error(`rule store already contains ${MAX_RULES} rules`);
-		} else if (event.operation === "replace") {
-			if (!existing) throw new Error(`no rule named "${event.ruleId}" exists`);
-			if (existing.definition.state === "retired") throw new Error(`rule "${event.ruleId}" is retired`);
-			if (existing.definition.revision !== event.expectedRevision)
-				throw new Error(`replacement target "${event.ruleId}" revision changed`);
-		} else if (event.operation === "retire") {
-			if (!existing) throw new Error(`no rule named "${event.ruleId}" exists`);
-			if (effectiveState(existing) === "retired") throw new Error(`rule "${event.ruleId}" is already retired`);
-		} else if (!existing) throw new Error(`no rule named "${event.ruleId}" exists`);
-		if (reduction.pending.length >= MAX_PENDING_PROPOSALS) {
-			throw new Error(`rule store already contains ${MAX_PENDING_PROPOSALS} pending proposals`);
-		}
-		return;
+	if (event.decision === "approved" && (proposal.operation === "add" || proposal.operation === "replace")) {
+		assertApprovalShape(event, proposal);
+		assertApprovalTargets(event, proposal, reduction);
+	} else if (event.effect !== undefined || event.proposalRevision !== undefined) {
+		throw new Error(
+			`${event.decision === "approved" ? `approving a ${proposal.operation} proposal` : "rejecting a proposal"} does not accept an effect or proposal revision`,
+		);
 	}
-	if (event.kind === "decision") {
-		const proposal = reduction.pending.find((entry) => entry.id === event.proposalId);
-		if (!proposal) throw new Error(`no pending proposal with id "${event.proposalId}"`);
-		if (event.decision === "approved" && proposal.operation !== "add") {
-			const target = reduction.records.get(proposal.ruleId);
-			if (target && effectiveState(target) === "retired") {
-				throw new Error(`cannot approve ${proposal.operation} proposal: target "${proposal.ruleId}" is retired`);
-			}
-		}
-		if (event.decision === "approved" && (proposal.operation === "add" || proposal.operation === "replace")) {
-			const choice = candidatePermitsEffectChoice(proposal.candidate);
-			if (!choice && event.effect !== undefined)
-				throw new Error("exact approval uses the exact proposed action, not steer or block");
-			if (choice && !event.effect)
-				throw new Error("approving a steer-or-block proposal requires effect steer or block");
-			if ((!choice || proposal.operation === "replace") && event.proposalRevision !== proposalRevision(proposal))
-				throw new Error("approval requires the current exact proposal revision");
-			if (event.proposalRevision !== undefined && event.proposalRevision !== proposalRevision(proposal))
-				throw new Error("proposal revision changed");
-			assertActiveCapacity(
-				reduction.records,
-				reduction.records.get(proposal.ruleId)?.override?.state === "disabled" ? 0 : 1,
-				proposal.ruleId,
-			);
-			if (proposal.operation === "add") {
-				if (reduction.records.has(proposal.ruleId)) throw new Error(`rule id "${proposal.ruleId}" is already taken`);
-				if (reduction.records.size >= MAX_RULES) throw new Error(`rule store already contains ${MAX_RULES} rules`);
-			}
-			if (proposal.operation === "replace") {
-				const current = reduction.records.get(proposal.ruleId);
-				if (!current || current.definition.revision !== proposal.expectedRevision)
-					throw new Error("replacement target revision changed");
-			}
-		} else if (event.effect !== undefined || event.proposalRevision !== undefined) {
-			throw new Error(
-				`${event.decision === "approved" ? `approving a ${proposal.operation} proposal` : "rejecting a proposal"} does not accept an effect or proposal revision`,
-			);
-		}
-		return;
+}
+
+function assertOverrideTransition(
+	event: Extract<RuleEvent, { kind: "override" }>,
+	existing: RuleRecord,
+	reduction: RuleReduction,
+): void {
+	if (existing.definition.state === "active") {
+		assertActiveCapacity(
+			reduction.records,
+			event.operation === "set" && event.override.state === "disabled" ? 0 : 1,
+			existing.id,
+		);
 	}
+	if (event.operation === "clear" && !existing.override)
+		throw new Error(`rule "${event.ruleId}" has no override to clear`);
+	if (event.operation === "set" && event.override.againstDefinitionRevision !== existing.definition.revision)
+		throw new Error(`override for "${event.ruleId}" must target its current definition revision`);
+	if (
+		event.operation === "set" &&
+		!permitsEffectChoice(existing) &&
+		event.override.effect !== undefined &&
+		event.override.effect !== existing.override?.effect
+	)
+		throw new Error("this action requires an exact replacement proposal; steer/block overrides do not change it");
+}
+
+function assertRuleTransition(
+	event: Extract<RuleEvent, { kind: "override" } | { kind: "definition" }>,
+	reduction: RuleReduction,
+): void {
 	const existing = reduction.records.get(event.ruleId);
 	if (!existing) throw new Error(`no rule named "${event.ruleId}" exists`);
 	if (event.kind === "override") {
-		if (existing.definition.state === "active") {
-			assertActiveCapacity(
-				reduction.records,
-				event.operation === "set" && event.override.state === "disabled" ? 0 : 1,
-				existing.id,
-			);
-		}
-		if (event.operation === "clear" && !existing.override)
-			throw new Error(`rule "${event.ruleId}" has no override to clear`);
-		if (event.operation === "set" && event.override.againstDefinitionRevision !== existing.definition.revision) {
-			throw new Error(`override for "${event.ruleId}" must target its current definition revision`);
-		}
-		if (
-			event.operation === "set" &&
-			!permitsEffectChoice(existing) &&
-			event.override.effect !== undefined &&
-			event.override.effect !== existing.override?.effect
-		)
-			throw new Error("this action requires an exact replacement proposal; steer/block overrides do not change it");
+		assertOverrideTransition(event, existing, reduction);
 		return;
 	}
 	if (existing.definition.state === "retired") throw new Error(`rule "${event.ruleId}" is already retired`);
+}
+
+function assertTransition(event: Exclude<RuleEvent, CatalogEvent>, reduction: RuleReduction): void {
+	if (event.kind === "import") assertImportTransition(event, reduction);
+	else if (event.kind === "data") assertDataTransition(event, reduction);
+	else if (event.kind === "proposal") assertProposalTransition(event, reduction);
+	else if (event.kind === "decision") assertDecisionTransition(event, reduction);
+	else assertRuleTransition(event, reduction);
 }
 
 export interface RuleRegistryOptions {
@@ -1379,8 +1576,9 @@ export class RuleRegistry {
 		}
 	}
 
-	private degrade(error: unknown): void {
-		if (this.degradedHealth) return;
+	/** Record the first failure as degraded health and return the stored health. */
+	private degrade(error: unknown): RuleStoreHealth {
+		if (this.degradedHealth) return this.degradedHealth;
 		const reason = error instanceof Error ? error.message : String(error);
 		const line = error instanceof RuleLineError ? error.line : undefined;
 		const property = line === undefined ? (error instanceof RuleFileError ? error.property : "file access") : undefined;
@@ -1401,6 +1599,7 @@ export class RuleRegistry {
 			repair,
 		};
 		this.notice(message);
+		return this.degradedHealth;
 	}
 
 	private reportIncomplete(line: number): string {
@@ -1449,27 +1648,36 @@ export class RuleRegistry {
 		}
 	}
 
+	/** Inspect a held lock path; a vanished lock file permits another attempt. */
+	private async inspectLock(path: string): Promise<void> {
+		try {
+			privateFile(await lstat(path), path);
+		} catch (inspection) {
+			if ((inspection as NodeJS.ErrnoException).code !== "ENOENT") throw inspection;
+		}
+	}
+
+	/** Acquire the exclusive transaction lock, or undefined when every attempt saw it held. */
+	private async acquireLock(path: string): Promise<Awaited<ReturnType<typeof open>> | undefined> {
+		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+		for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt++) {
+			try {
+				return await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+				await this.inspectLock(path);
+				if (attempt + 1 < LOCK_ATTEMPTS) await delay(LOCK_RETRY_MS);
+			}
+		}
+		return undefined;
+	}
+
 	/** Serialize reload, validation, and append across instances and processes. */
 	private async transaction<T>(action: () => Promise<T>): Promise<T> {
 		await checkExistingDirectory(this.dir);
 		await ensurePrivateDirectory(this.dir);
 		const path = join(this.dir, RULES_LOCK_FILE);
-		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-		let handle: Awaited<ReturnType<typeof open>> | undefined;
-		for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt++) {
-			try {
-				handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600);
-				break;
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-				try {
-					privateFile(await lstat(path), path);
-				} catch (inspection) {
-					if ((inspection as NodeJS.ErrnoException).code !== "ENOENT") throw inspection;
-				}
-				if (attempt + 1 < LOCK_ATTEMPTS) await delay(LOCK_RETRY_MS);
-			}
-		}
+		const handle = await this.acquireLock(path);
 		if (!handle) {
 			throw new RuleFileError(
 				"transaction lock",
@@ -1539,7 +1747,9 @@ export class RuleRegistry {
 	}
 
 	private ensureFirstUse(): Promise<void> {
-		this.firstUse ??= this.transaction(() => this.seedAbsentStore()).catch((error: unknown) => this.degrade(error));
+		this.firstUse ??= this.transaction(() => this.seedAbsentStore()).catch((error: unknown) => {
+			this.degrade(error);
+		});
 		return this.firstUse;
 	}
 
@@ -1557,8 +1767,7 @@ export class RuleRegistry {
 			}
 			return { ...reduction, health };
 		} catch (error) {
-			this.degrade(error);
-			return { records: new Map(), pending: [], data: new Map(), health: clone(this.degradedHealth!) };
+			return { records: new Map(), pending: [], data: new Map(), health: clone(this.degrade(error)) };
 		}
 	}
 
@@ -1566,52 +1775,56 @@ export class RuleRegistry {
 		build: (reduction: RuleReduction) => { event: Exclude<RuleEvent, CatalogEvent>; result: T },
 	): Promise<T> {
 		await this.ensureFirstUse();
-		const action = async (): Promise<T> => {
-			if (this.degradedHealth) throw new Error(this.degradedHealth.message);
-			let read: Awaited<ReturnType<RuleRegistry["readReduction"]>>;
-			try {
-				read = await this.readReduction();
-			} catch (error) {
-				this.degrade(error);
-				throw new Error(this.degradedHealth!.message);
-			}
-			if (read.incompleteFinalLine) throw new Error(this.reportIncomplete(read.incompleteFinalLine));
-			const reduction = read.reduction;
-			const built = build(reduction);
-			const event = validateRuleEvent(built.event) as Exclude<RuleEvent, CatalogEvent>;
-			assertWritableAuthority(event);
-			if (event.kind === "import") {
-				for (const row of event.rows) {
-					if (this.catalog.find((installed) => installed.id === row.id)?.revision !== row.revision)
-						throw new Error(`import source "${row.id}" changed or is not in the bundled catalog`);
-				}
-			}
-			if (
-				event.kind === "proposal" &&
-				event.candidate?.matcher.kind === "code" &&
-				!this.matcherAvailable(event.candidate.matcher.key)
-			)
-				throw new Error(`installed predicate "${event.candidate.matcher.key}" is unavailable`);
-			assertTransition(event, reduction);
-			await this.append(event);
-			if (event.kind === "import") {
-				const committed = await this.readReduction();
-				if (
-					!event.rows.every((row) => {
-						const source = committed.reduction.records.get(row.id)?.source;
-						return source?.kind === "import" && source.importId === event.id;
-					})
-				)
-					throw new Error("import conflict: selected targets changed; inspect the current rules");
-			}
-			return built.result;
-		};
+		const action = () => this.applyMutation(build);
 		const running = this.mutationTail.then(() => this.transaction(action));
 		this.mutationTail = running.then(
 			() => undefined,
 			() => undefined,
 		);
 		return running;
+	}
+
+	/** Validate one built event against the fresh reduction, then append it. */
+	private async applyMutation<T>(
+		build: (reduction: RuleReduction) => { event: Exclude<RuleEvent, CatalogEvent>; result: T },
+	): Promise<T> {
+		if (this.degradedHealth) throw new Error(this.degradedHealth.message);
+		let read: Awaited<ReturnType<RuleRegistry["readReduction"]>>;
+		try {
+			read = await this.readReduction();
+		} catch (error) {
+			throw new Error(this.degrade(error).message);
+		}
+		if (read.incompleteFinalLine) throw new Error(this.reportIncomplete(read.incompleteFinalLine));
+		const reduction = read.reduction;
+		const built = build(reduction);
+		const event = validateRuleEvent(built.event) as Exclude<RuleEvent, CatalogEvent>;
+		assertWritableAuthority(event);
+		if (event.kind === "import") {
+			for (const row of event.rows) {
+				if (this.catalog.find((installed) => installed.id === row.id)?.revision !== row.revision)
+					throw new Error(`import source "${row.id}" changed or is not in the bundled catalog`);
+			}
+		}
+		if (
+			event.kind === "proposal" &&
+			event.candidate?.matcher.kind === "code" &&
+			!this.matcherAvailable(event.candidate.matcher.key)
+		)
+			throw new Error(`installed predicate "${event.candidate.matcher.key}" is unavailable`);
+		assertTransition(event, reduction);
+		await this.append(event);
+		if (event.kind === "import") {
+			const committed = await this.readReduction();
+			if (
+				!event.rows.every((row) => {
+					const source = committed.reduction.records.get(row.id)?.source;
+					return source?.kind === "import" && source.importId === event.id;
+				})
+			)
+				throw new Error("import conflict: selected targets changed; inspect the current rules");
+		}
+		return built.result;
 	}
 
 	catalogRows(id?: string): PackageDefinitionRow[] {
@@ -1636,11 +1849,11 @@ export class RuleRegistry {
 		return {
 			...plan,
 			current: plan.rows.map((row) => clone(snapshot.records.get(row.id) ?? null)),
-			resulting: plan.rows.map((row) => ({
-				id: row.id,
-				state: effectiveState(next.get(row.id)!),
-				effect: effectiveEffect(next.get(row.id)!),
-			})),
+			resulting: plan.rows.map((row) => {
+				const record = next.get(row.id);
+				if (!record) throw new Error(`import plan lost rule "${row.id}"`);
+				return { id: row.id, state: effectiveState(record), effect: effectiveEffect(record) };
+			}),
 		};
 	}
 

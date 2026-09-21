@@ -96,53 +96,157 @@ export function isGitPushFlag(flag: string): boolean {
 	return pushOptions.has(flag);
 }
 
-/** Decode one shell stage; all occurrence indexes refer to the original argument vector. */
-export function decodeGitPush(stage: Stage): CliEvidence {
-	if (stage.commandLiteral === false) return { status: "unknown", reason: "dynamic-command" };
-	if (stage.command !== "git") return { status: "unrelated" };
-	const args = stage.args;
-	const literal = (index: number) => stage.argLiterals?.[index] !== false;
-	const unknown = (reason: string): CliEvidence => ({ status: "unknown", reason });
-	if (stage.shellReasons?.length) return unknown(stage.shellReasons[0]);
-	if (args.length > 4096) return unknown("word-limit");
+/** Decode one global option word; an empty advance signals the end of the global run. */
+function decodeGlobalWord(
+	args: readonly string[],
+	index: number,
+	literal: (index: number) => boolean,
+): { advance: number; options: OptionOccurrence[] } | CliEvidence {
+	const arg = args[index];
+	if (!literal(index)) return { status: "unknown", reason: "dynamic-word" };
+	if (!arg.startsWith("-")) return { advance: 0, options: [] };
+	if (globalQueries.has(arg) || arg.startsWith("--list-cmds=")) return { status: "unrelated" };
+	const equals = arg.indexOf("=");
+	const name = equals < 0 ? arg : arg.slice(0, equals);
+	const attached = equals < 0 ? undefined : arg.slice(equals + 1);
+	if (name === "--exec-path") {
+		if (attached === undefined) return { status: "unrelated" };
+		return {
+			advance: 1,
+			options: [{ spelling: name, canonical: name.slice(2), value: attached, argumentIndex: index, polarity: "set" }],
+		};
+	}
+	if (globalFlags.has(arg)) return { advance: 1, options: [{ spelling: arg, canonical: arg, argumentIndex: index, polarity: "set" }] };
+	if (globalValues.has(name)) return decodeGlobalValue(name, attached, args, index, literal);
+	return { status: "unknown", reason: "unsupported-global-option" };
+}
+
+function decodeGlobalValue(
+	name: string,
+	attached: string | undefined,
+	args: readonly string[],
+	index: number,
+	literal: (index: number) => boolean,
+): { advance: number; options: OptionOccurrence[] } | CliEvidence {
+	if (attached !== undefined && (!name.startsWith("--") || name === "--shallow-file"))
+		return { status: "unknown", reason: "invalid-option-form" };
+	const nextIndex = attached === undefined ? index + 1 : index;
+	const value = attached ?? args[nextIndex];
+	if (value === undefined) return { status: "unknown", reason: "missing-value" };
+	if (!literal(nextIndex)) return { status: "unknown", reason: "dynamic-word" };
+	return {
+		advance: nextIndex - index + 1,
+		options: [{ spelling: name, canonical: name, value, argumentIndex: index, polarity: "set" }],
+	};
+}
+
+/** Decode the leading Git global option run; index points at the first non-option word. */
+function decodeGlobalArgs(
+	args: readonly string[],
+	literal: (index: number) => boolean,
+): { globals: OptionOccurrence[]; nextIndex: number } | CliEvidence {
 	const globals: OptionOccurrence[] = [];
 	let index = 0;
 	for (; index < args.length; index++) {
-		if (!literal(index)) return unknown("dynamic-word");
-		const arg = args[index];
-		if (!arg.startsWith("-")) break;
-		if (globalQueries.has(arg) || arg.startsWith("--list-cmds=")) return { status: "unrelated" };
-		const equals = arg.indexOf("=");
-		const name = equals < 0 ? arg : arg.slice(0, equals);
-		const attached = equals < 0 ? undefined : arg.slice(equals + 1);
-		if (name === "--exec-path") {
-			if (attached === undefined) return { status: "unrelated" };
-			globals.push({
-				spelling: name,
-				canonical: name.slice(2),
-				value: attached,
-				argumentIndex: index,
-				polarity: "set",
-			});
-		} else if (globalFlags.has(arg)) {
-			globals.push({ spelling: arg, canonical: arg, argumentIndex: index, polarity: "set" });
-		} else if (globalValues.has(name)) {
-			if (attached !== undefined && (!name.startsWith("--") || name === "--shallow-file"))
-				return unknown("invalid-option-form");
-			const argumentIndex = index;
-			const value = attached ?? args[++index];
-			if (value === undefined) return unknown("missing-value");
-			if (!literal(index)) return unknown("dynamic-word");
-			globals.push({ spelling: name, canonical: name, value, argumentIndex, polarity: "set" });
-		} else return unknown("unsupported-global-option");
+		const decoded = decodeGlobalWord(args, index, literal);
+		if ("status" in decoded) return decoded;
+		if (decoded.advance === 0) break;
+		globals.push(...decoded.options);
+		index += decoded.advance - 1;
 	}
-	if (index === args.length) return unknown("missing-subcommand");
-	if (args[index] !== "push") return { status: "unrelated" };
-	index++;
-	if (args.slice(index).some((_, offset) => !literal(index + offset))) return unknown("dynamic-word");
+	return { globals, nextIndex: index };
+}
+
+function pushOccurrence(
+	spelling: string,
+	descriptor: Descriptor,
+	argumentIndex: number,
+	value?: string,
+): OptionOccurrence {
+	return {
+		spelling,
+		canonical: descriptor.canonical,
+		polarity: descriptor.polarity,
+		argumentIndex,
+		...(value === undefined ? {} : { value }),
+	};
+}
+
+function decodeLongPushOption(
+	args: readonly string[],
+	index: number,
+	arg: string,
+): { options: OptionOccurrence[]; consumedNext: boolean } | CliEvidence {
+	const equals = arg.indexOf("=");
+	const spelling = equals < 0 ? arg : arg.slice(0, equals);
+	const descriptor = pushOptions.get(spelling);
+	if (!descriptor) return { status: "unknown", reason: "unsupported-option" };
+	const attached = equals < 0 ? undefined : arg.slice(equals + 1);
+	if (attached !== undefined && descriptor.arity === "none") return { status: "unknown", reason: "invalid-option-form" };
+	if (attached === undefined && descriptor.arity === "required") {
+		const value = args[index + 1];
+		if (value === undefined) return { status: "unknown", reason: "missing-value" };
+		return { options: [pushOccurrence(spelling, descriptor, index, value)], consumedNext: true };
+	}
+	return { options: [pushOccurrence(spelling, descriptor, index, attached)], consumedNext: false };
+}
+
+/** One bound covers argument words and decoded option occurrences together. */
+const PUSH_WORD_BUDGET = 4096;
+
+function decodeShortPushCluster(
+	args: readonly string[],
+	index: number,
+	arg: string,
+	collected: number,
+): { options: OptionOccurrence[]; consumedNext: boolean } | CliEvidence {
+	const cluster: OptionOccurrence[] = [];
+	let consumedNext = false;
+	for (let position = 1; position < arg.length; position++) {
+		const spelling = `-${arg[position]}`;
+		const descriptor = pushOptions.get(spelling);
+		if (!descriptor) return { status: "unknown", reason: "unsupported-option" };
+		let value: string | undefined;
+		if (descriptor.arity === "required") {
+			const attached = arg.slice(position + 1);
+			if (attached !== "") {
+				value = attached;
+			} else {
+				const next = args[index + 1];
+				if (next === undefined) return { status: "unknown", reason: "missing-value" };
+				value = next;
+				consumedNext = true;
+			}
+		}
+		cluster.push(pushOccurrence(spelling, descriptor, index, value));
+		if (collected + cluster.length + args.length > PUSH_WORD_BUDGET)
+			return { status: "unknown", reason: "option-limit" };
+		if (descriptor.arity !== "none") break;
+	}
+	return { options: cluster, consumedNext };
+}
+
+/** Decode one push option word, including a short-option cluster. */
+function decodePushOption(
+	args: readonly string[],
+	index: number,
+	collected: number,
+): { options: OptionOccurrence[]; consumedNext: boolean } | CliEvidence {
+	const arg = args[index];
+	return arg.startsWith("--")
+		? decodeLongPushOption(args, index, arg)
+		: decodeShortPushCluster(args, index, arg, collected);
+}
+
+function collectPushOptions(
+	args: readonly string[],
+	start: number,
+	unknown: (reason: string) => CliEvidence,
+): { options: OptionOccurrence[]; operands: string[] } | CliEvidence {
 	const options: OptionOccurrence[] = [];
 	const operands: string[] = [];
 	let terminated = false;
+	let index = start;
 	for (; index < args.length; index++) {
 		const arg = args[index];
 		if (!terminated && arg === "--") {
@@ -153,47 +257,31 @@ export function decodeGitPush(stage: Stage): CliEvidence {
 			operands.push(arg);
 			continue;
 		}
-		const argumentIndex = index;
-		if (arg.startsWith("--")) {
-			const equals = arg.indexOf("=");
-			const spelling = equals < 0 ? arg : arg.slice(0, equals);
-			const descriptor = pushOptions.get(spelling);
-			if (!descriptor) return unknown("unsupported-option");
-			let value = equals < 0 ? undefined : arg.slice(equals + 1);
-			if (value !== undefined && descriptor.arity === "none") return unknown("invalid-option-form");
-			if (value === undefined && descriptor.arity === "required") {
-				value = args[++index];
-				if (value === undefined) return unknown("missing-value");
-			}
-			options.push({
-				spelling,
-				canonical: descriptor.canonical,
-				polarity: descriptor.polarity,
-				argumentIndex,
-				...(value === undefined ? {} : { value }),
-			});
-		} else {
-			for (let position = 1; position < arg.length; position++) {
-				const spelling = `-${arg[position]}`;
-				const descriptor = pushOptions.get(spelling);
-				if (!descriptor) return unknown("unsupported-option");
-				let value: string | undefined;
-				if (descriptor.arity === "required") {
-					value = arg.slice(position + 1) || args[++index];
-					if (value === undefined) return unknown("missing-value");
-				}
-				options.push({
-					spelling,
-					canonical: descriptor.canonical,
-					polarity: descriptor.polarity,
-					argumentIndex,
-					...(value === undefined ? {} : { value }),
-				});
-				if (options.length + args.length > 4096) return unknown("option-limit");
-				if (descriptor.arity !== "none") break;
-			}
-		}
-		if (options.length + args.length > 4096) return unknown("option-limit");
+		const decoded = decodePushOption(args, index, options.length);
+		if ("status" in decoded) return decoded;
+		options.push(...decoded.options);
+		if (decoded.consumedNext) index++;
+		if (options.length + args.length > PUSH_WORD_BUDGET) return unknown("option-limit");
 	}
-	return { status: "known", subcommand: ["push"], globals, options, operands };
+	return { options, operands };
+}
+
+/** Decode one shell stage; all occurrence indexes refer to the original argument vector. */
+export function decodeGitPush(stage: Stage): CliEvidence {
+	if (stage.commandLiteral === false) return { status: "unknown", reason: "dynamic-command" };
+	if (stage.command !== "git") return { status: "unrelated" };
+	const args = stage.args;
+	const literal = (index: number) => stage.argLiterals?.[index] !== false;
+	const unknown = (reason: string): CliEvidence => ({ status: "unknown", reason });
+	if (stage.shellReasons?.length) return unknown(stage.shellReasons[0]);
+	if (args.length > PUSH_WORD_BUDGET) return unknown("word-limit");
+	const leading = decodeGlobalArgs(args, literal);
+	if ("status" in leading) return leading;
+	const index = leading.nextIndex;
+	if (index === args.length) return unknown("missing-subcommand");
+	if (args[index] !== "push") return { status: "unrelated" };
+	if (args.slice(index + 1).some((_, offset) => !literal(index + 1 + offset))) return unknown("dynamic-word");
+	const rest = collectPushOptions(args, index + 1, unknown);
+	if ("status" in rest) return rest;
+	return { status: "known", subcommand: ["push"], globals: leading.globals, options: rest.options, operands: rest.operands };
 }

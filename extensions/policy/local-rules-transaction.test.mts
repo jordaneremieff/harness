@@ -183,7 +183,9 @@ function worker(t: TestContext, config: ChildConfig) {
 	});
 	const next = inbox(child);
 	let stderr = "";
-	child.stderr!.on("data", (chunk: Buffer) => {
+	const stderrStream = child.stderr;
+	assert.ok(stderrStream, "worker requires a piped stderr stream");
+	stderrStream.on("data", (chunk: Buffer) => {
 		stderr = (stderr + String(chunk)).slice(-4000);
 	});
 	const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
@@ -197,12 +199,14 @@ function worker(t: TestContext, config: ChildConfig) {
 
 if (process.argv[2] === "--transaction-child") {
 	const config = JSON.parse(process.argv[3]) as ChildConfig;
+	const send = process.send?.bind(process);
+	if (send === undefined) throw new Error("transaction child requires an IPC channel");
 	const reg = registry(config.dir, config.catalog);
 	if (config.event) await reg.snapshot();
 	const next = inbox(process as unknown as ChildProcess);
 	const gate = config.hold ? pause(reg, config.hold) : undefined;
 	if (gate) {
-		void gate.entered.then(() => process.send!({ type: "held" }));
+		void gate.entered.then(() => send({ type: "held" }));
 		void next("release").then(() => gate.release());
 	}
 	const original = fsPromises.open;
@@ -213,20 +217,20 @@ if (process.argv[2] === "--transaction-child") {
 		} catch (error) {
 			if (!notified && String(args[0]).endsWith(lockName) && (error as NodeJS.ErrnoException).code === "EEXIST") {
 				notified = true;
-				process.send!({ type: "contended" });
+				send({ type: "contended" });
 			}
 			throw error;
 		}
 	}) as typeof fsPromises.open;
 	syncBuiltinESMExports();
-	process.send!({ type: "ready" });
+	send({ type: "ready" });
 	await next("start");
 	try {
 		if (config.event) await reg.writeEvent(config.event as Exclude<RuleEvent, { kind: "catalog" }>);
 		else assert.equal((await reg.snapshot()).health.status, "ok");
-		process.send!({ type: "result" });
+		send({ type: "result" });
 	} catch (error) {
-		process.send!({ type: "result", error: String(error) });
+		send({ type: "result", error: String(error) });
 	}
 	process.disconnect();
 } else {

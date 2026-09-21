@@ -244,27 +244,45 @@ export function ruleDetailLines(record: RuleRecord, context: RuleMatchContext, s
 		"fires by model:",
 		...fireBreakdownLines(summary, record.id),
 	];
-	if (record.matcher.kind === "declarative" && record.matcher.language === "command-shape/v1")
-		lines.push(`matcher contract: ${JSON.stringify(record.matcher)}`);
-	const program = factsProgram(record);
-	if (program)
-		lines.push(
-			`phase: ${program.phase}`,
-			`action: ${JSON.stringify(program.action)}`,
-			`program: ${JSON.stringify(program)}`,
-		);
-	if (record.source.kind !== "package") lines.push(...auditLines("approved audit", record.source.approvedAudit));
-	if (record.override) {
-		lines.push(
-			`override state: ${record.override.state ?? "(none)"}`,
-			`override effect: ${record.override.effect ?? "(none)"}`,
-			`override reason: ${record.override.reason}`,
-			`override against revision: ${record.override.againstDefinitionRevision}`,
-			...auditLines("override audit", record.override.audit),
-		);
-	} else lines.push("override: (none)");
+	lines.push(
+		...matcherContractLine(record),
+		...programLines(record),
+		...provenanceAuditLines(record),
+		...overrideLines(record),
+	);
 	if (summary.partial) lines.push("", "[fire counts partial: store scan incomplete]");
 	return lines;
+}
+
+function matcherContractLine(record: RuleRecord): string[] {
+	if (record.matcher.kind !== "declarative" || record.matcher.language !== "command-shape/v1") return [];
+	return [`matcher contract: ${JSON.stringify(record.matcher)}`];
+}
+
+function programLines(record: RuleRecord): string[] {
+	const program = factsProgram(record);
+	if (!program) return [];
+	return [
+		`phase: ${program.phase}`,
+		`action: ${JSON.stringify(program.action)}`,
+		`program: ${JSON.stringify(program)}`,
+	];
+}
+
+function provenanceAuditLines(record: RuleRecord): string[] {
+	if (record.source.kind === "package") return [];
+	return auditLines("approved audit", record.source.approvedAudit);
+}
+
+function overrideLines(record: RuleRecord): string[] {
+	if (!record.override) return ["override: (none)"];
+	return [
+		`override state: ${record.override.state ?? "(none)"}`,
+		`override effect: ${record.override.effect ?? "(none)"}`,
+		`override reason: ${record.override.reason}`,
+		`override against revision: ${record.override.againstDefinitionRevision}`,
+		...auditLines("override audit", record.override.audit),
+	];
 }
 
 export function proposalDetailLines(proposal: PendingProposal): string[] {
@@ -404,101 +422,133 @@ export function formatPolicyShow(
 	return undefined;
 }
 
+const DECISION_SCALAR_NAMES = ["decision", "inputCorrected", "resultCorrected"] as const;
+const ENTRY_GROUP_NAMES = ["evaluations", "corrections", "generations", "metadata", "dataSnapshots"] as const;
+const RETAINED_ENTRY_KEYS = [
+	"id",
+	"revision",
+	"phase",
+	"inputView",
+	"applicable",
+	"truth",
+	"action",
+	"stage",
+	"unavailable",
+	"deny",
+	"generation",
+	"label",
+	"name",
+	"status",
+	"capturedAt",
+	"ageMs",
+	"maxAgeMs",
+	"snapshotAt",
+] as const;
+
+function retainedScalar(field: unknown): boolean {
+	return typeof field === "boolean" || (typeof field === "string" && field.length <= 80);
+}
+
+function retainedEntryField(field: unknown): boolean {
+	return (
+		typeof field === "boolean" ||
+		(typeof field === "number" && Number.isFinite(field)) ||
+		(typeof field === "string" && field.length <= 160)
+	);
+}
+
+function validReasonCodes(value: unknown): value is string[] {
+	return (
+		Array.isArray(value) &&
+		value.length <= 16 &&
+		value.every((reason: unknown) => typeof reason === "string" && reason.length <= 80 && /^[a-z0-9.-]+$/.test(reason))
+	);
+}
+
+function validPath(value: unknown): value is string[] {
+	return (
+		Array.isArray(value) &&
+		value.length <= 16 &&
+		value.every((key: unknown) => typeof key === "string" && key.length <= 128)
+	);
+}
+
+function retainedEntry(entry: unknown, name: string): Record<string, unknown> {
+	if (!isObject(entry)) return {};
+	const item: Record<string, unknown> = {};
+	for (const key of RETAINED_ENTRY_KEYS) {
+		const field = entry[key];
+		if (retainedEntryField(field)) item[key] = field;
+	}
+	if (name === "evaluations" && validReasonCodes(entry.unavailableReasons)) item.unavailableReasons = [...entry.unavailableReasons];
+	if (validPath(entry.path)) item.path = [...entry.path];
+	return item;
+}
+
+function retainedEntries(name: string, entries: unknown[]): unknown[] {
+	return entries.slice(0, 64).flatMap((entry: unknown) => {
+		if (!isObject(entry)) return [];
+		return [retainedEntry(entry, name)];
+	});
+}
+
+function coverageMatches(entries: unknown, counts: unknown): counts is { total: number; omitted: number } {
+	if (!isObject(counts) || !Array.isArray(entries)) return false;
+	if (typeof counts.total !== "number" || typeof counts.omitted !== "number") return false;
+	if (!Number.isSafeInteger(counts.total) || !Number.isSafeInteger(counts.omitted)) return false;
+	return counts.omitted >= 0 && counts.total === entries.length + counts.omitted;
+}
+
+function readCoverage(value: Record<string, unknown>, result: Record<string, unknown>): void {
+	const raw = value.coverage;
+	if (!isObject(raw)) return;
+	const coverage: Record<string, unknown> = {};
+	for (const name of ENTRY_GROUP_NAMES) {
+		const counts = raw[name];
+		const entries = value[name];
+		if (coverageMatches(entries, counts)) coverage[name] = { total: counts.total, omitted: counts.omitted };
+		else if (counts !== undefined) result.coverageUnavailable = true;
+	}
+	result.recordedCoverage = coverage;
+}
+
 function readDecisionSummary(value: unknown): Record<string, unknown> | undefined {
 	if (!isObject(value)) return undefined;
 	const result: Record<string, unknown> = {};
-	for (const name of ["decision", "inputCorrected", "resultCorrected"]) {
+	for (const name of DECISION_SCALAR_NAMES) {
 		const field = value[name];
-		if (typeof field === "boolean" || (typeof field === "string" && field.length <= 80)) result[name] = field;
+		if (retainedScalar(field)) result[name] = field;
 	}
-	for (const name of ["evaluations", "corrections", "generations", "metadata", "dataSnapshots"]) {
+	for (const name of ENTRY_GROUP_NAMES) {
 		const entries = value[name];
 		if (!Array.isArray(entries)) continue;
-		result[name] = entries.slice(0, 64).flatMap((entry: unknown) => {
-			if (!isObject(entry)) return [];
-			const item: Record<string, unknown> = {};
-			for (const key of [
-				"id",
-				"revision",
-				"phase",
-				"inputView",
-				"applicable",
-				"truth",
-				"action",
-				"stage",
-				"unavailable",
-				"deny",
-				"generation",
-				"label",
-				"name",
-				"status",
-				"capturedAt",
-				"ageMs",
-				"maxAgeMs",
-				"snapshotAt",
-			]) {
-				const field = entry[key];
-				if (
-					typeof field === "boolean" ||
-					(typeof field === "number" && Number.isFinite(field)) ||
-					(typeof field === "string" && field.length <= 160)
-				)
-					item[key] = field;
-			}
-			if (
-				name === "evaluations" &&
-				Array.isArray(entry.unavailableReasons) &&
-				entry.unavailableReasons.length <= 16 &&
-				entry.unavailableReasons.every(
-					(reason: unknown) => typeof reason === "string" && reason.length <= 80 && /^[a-z0-9.-]+$/.test(reason),
-				)
-			)
-				item.unavailableReasons = [...entry.unavailableReasons];
-			if (
-				Array.isArray(entry.path) &&
-				entry.path.length <= 16 &&
-				entry.path.every((key: unknown) => typeof key === "string" && key.length <= 128)
-			)
-				item.path = [...entry.path];
-			return [item];
-		});
+		result[name] = retainedEntries(name, entries);
 		if (entries.length > 64) result[`${name}OmittedFromView`] = entries.length - 64;
 	}
-	if (
-		typeof value.preGuidanceBytes === "number" &&
-		Number.isSafeInteger(value.preGuidanceBytes) &&
-		value.preGuidanceBytes >= 0
-	)
-		result.preGuidanceBytes = value.preGuidanceBytes;
-	if (isObject(value.coverage)) {
-		const coverage: Record<string, unknown> = {};
-		for (const name of ["evaluations", "corrections", "generations", "metadata", "dataSnapshots"]) {
-			const counts = value.coverage[name];
-			const entries = value[name];
-			if (
-				isObject(counts) &&
-				Array.isArray(entries) &&
-				typeof counts.total === "number" &&
-				typeof counts.omitted === "number" &&
-				Number.isSafeInteger(counts.total) &&
-				Number.isSafeInteger(counts.omitted) &&
-				counts.omitted >= 0 &&
-				counts.total === entries.length + counts.omitted
-			)
-				coverage[name] = { total: counts.total, omitted: counts.omitted };
-			else if (counts !== undefined) result.coverageUnavailable = true;
-		}
-		result.recordedCoverage = coverage;
-	}
+	const preGuidanceBytes = value.preGuidanceBytes;
+	if (typeof preGuidanceBytes === "number" && Number.isSafeInteger(preGuidanceBytes) && preGuidanceBytes >= 0)
+		result.preGuidanceBytes = preGuidanceBytes;
+	readCoverage(value, result);
 	return result;
 }
 
+function retainedClasses(classes: unknown[]): string[] {
+	return [...new Set(classes.filter((entry): entry is string => typeof entry === "string" && entry.length > 0))];
+}
+
+function attachOptionalFields(value: Record<string, unknown>, record: PolicyActivityRecord): void {
+	if (typeof value.captured === "string") record.captured = value.captured;
+	if (typeof value.callId === "string" && value.callId.length <= 256) record.callId = value.callId;
+	if (typeof value.outcome === "string" && value.outcome.length <= 40) record.outcome = value.outcome;
+	if (typeof value.abortRequested === "boolean") record.abortRequested = value.abortRequested;
+	if (typeof value.observationComplete === "boolean") record.observationComplete = value.observationComplete;
+}
+
 function readActivityRecord(value: unknown, includeUnmatched = false): PolicyActivityRecord | undefined {
-	if (!isObject(value) || typeof value.at !== "string" || Number.isNaN(Date.parse(value.at))) return undefined;
+	if (!isObject(value)) return undefined;
+	if (typeof value.at !== "string" || Number.isNaN(Date.parse(value.at))) return undefined;
 	if (!Array.isArray(value.classes)) return undefined;
-	const classes = [
-		...new Set(value.classes.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)),
-	];
+	const classes = retainedClasses(value.classes);
 	if (classes.length === 0 && !includeUnmatched) return undefined;
 	const record: PolicyActivityRecord = {
 		at: value.at,
@@ -512,11 +562,7 @@ function readActivityRecord(value: unknown, includeUnmatched = false): PolicyAct
 		session: typeof value.session === "string" ? value.session : "(unknown)",
 		ruleStoreDegraded: value.ruleStoreDegraded === true,
 	};
-	if (typeof value.captured === "string") record.captured = value.captured;
-	if (typeof value.callId === "string" && value.callId.length <= 256) record.callId = value.callId;
-	if (typeof value.outcome === "string" && value.outcome.length <= 40) record.outcome = value.outcome;
-	if (typeof value.abortRequested === "boolean") record.abortRequested = value.abortRequested;
-	if (typeof value.observationComplete === "boolean") record.observationComplete = value.observationComplete;
+	attachOptionalFields(value, record);
 	const policy = readDecisionSummary(value.policy);
 	if (policy) record.policy = policy;
 	return record;
@@ -553,6 +599,53 @@ async function readFileTail(
 	}
 }
 
+function normalizeBound(value: number, fallback: number): number {
+	return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
+}
+
+/** Daily store files newest first; undefined means the directory itself could not be read. */
+async function listDailyFiles(dir: string): Promise<string[] | undefined> {
+	try {
+		return (await readdir(dir))
+			.filter((name) => DAILY_STORE_FILE.test(name))
+			.sort()
+			.reverse();
+	} catch (error) {
+		return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT" ? [] : undefined;
+	}
+}
+
+/** Record matching the activity filter, or undefined for malformed or filtered lines. */
+function matchingRecord(line: string, filter: ActivityFilter): PolicyActivityRecord | undefined {
+	try {
+		const record = readActivityRecord(JSON.parse(line) as unknown, filter.includeUnmatched);
+		if (!record) return undefined;
+		if (filter.session !== undefined && record.session !== filter.session) return undefined;
+		if (filter.callId !== undefined && record.callId !== filter.callId) return undefined;
+		return record;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Keep only the part after the first newline so a cut first record cannot be counted twice. */
+function trimTailBuffer(buffer: Buffer): Buffer {
+	const newline = buffer.indexOf(0x0a);
+	return newline === -1 ? Buffer.alloc(0) : buffer.subarray(newline + 1);
+}
+
+function collectActivityLines(buffer: Buffer, filter: ActivityFilter, matched: PolicyActivityRecord[]): void {
+	for (const line of buffer.toString("utf8").split(/\r?\n/).reverse()) {
+		if (!line) continue;
+		const record = matchingRecord(line, filter);
+		if (record) matched.push(record);
+	}
+}
+
+function sortByTimeDescending(records: PolicyActivityRecord[]): void {
+	records.sort((left, right) => Date.parse(right.at) - Date.parse(left.at));
+}
+
 /** Read newest daily-record tails only, then order matched records by timestamp. */
 export async function readRecentActivity(
 	dir: string,
@@ -560,20 +653,13 @@ export async function readRecentActivity(
 	recordLimit: number = MAX_ACTIVITY_RECORDS,
 	filter: ActivityFilter = {},
 ): Promise<ActivityReadResult> {
-	const normalizedBytes = Number.isFinite(byteBound) ? Math.max(0, Math.floor(byteBound)) : MAX_ACTIVITY_SCAN_BYTES;
-	const normalizedRecords = Number.isFinite(recordLimit) ? Math.max(0, Math.floor(recordLimit)) : MAX_ACTIVITY_RECORDS;
-	let files: string[];
-	try {
-		files = (await readdir(dir))
-			.filter((name) => DAILY_STORE_FILE.test(name))
-			.sort()
-			.reverse();
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
-			return { records: [], partial: false, byteLimited: false, recordLimited: false, bytesRead: 0 };
-		}
+	const normalizedBytes = normalizeBound(byteBound, MAX_ACTIVITY_SCAN_BYTES);
+	const normalizedRecords = normalizeBound(recordLimit, MAX_ACTIVITY_RECORDS);
+	const files = await listDailyFiles(dir);
+	if (files === undefined)
 		return { records: [], partial: true, byteLimited: false, recordLimited: false, bytesRead: 0 };
-	}
+	if (files.length === 0)
+		return { records: [], partial: false, byteLimited: false, recordLimited: false, bytesRead: 0 };
 	const matched: PolicyActivityRecord[] = [];
 	let remaining = normalizedBytes;
 	let bytesRead = 0;
@@ -587,8 +673,9 @@ export async function readRecentActivity(
 		try {
 			tail = await readFileTail(join(dir, files[fileIndex]), remaining);
 		} catch {
+			sortByTimeDescending(matched);
 			return {
-				records: matched.sort((left, right) => Date.parse(right.at) - Date.parse(left.at)).slice(0, normalizedRecords),
+				records: matched.slice(0, normalizedRecords),
 				partial: true,
 				byteLimited,
 				recordLimited: matched.length > normalizedRecords,
@@ -597,32 +684,15 @@ export async function readRecentActivity(
 		}
 		bytesRead += tail.bytesRead;
 		remaining -= tail.bytesRead;
-		let buffer = tail.buffer;
 		if (!tail.complete) {
 			byteLimited = true;
-			const newline = buffer.indexOf(0x0a);
-			buffer = newline === -1 ? Buffer.alloc(0) : buffer.subarray(newline + 1);
+			collectActivityLines(trimTailBuffer(tail.buffer), filter, matched);
+			break;
 		}
-		const lines = buffer.toString("utf8").split(/\r?\n/);
-		for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex--) {
-			const line = lines[lineIndex];
-			if (!line) continue;
-			try {
-				const record = readActivityRecord(JSON.parse(line) as unknown, filter.includeUnmatched);
-				if (
-					record &&
-					(filter.session === undefined || record.session === filter.session) &&
-					(filter.callId === undefined || record.callId === filter.callId)
-				)
-					matched.push(record);
-			} catch {
-				// One malformed telemetry record does not hide valid activity around it.
-			}
-		}
-		if (!tail.complete) break;
+		collectActivityLines(tail.buffer, filter, matched);
 		if (fileIndex < files.length - 1 && remaining === 0) byteLimited = true;
 	}
-	matched.sort((left, right) => Date.parse(right.at) - Date.parse(left.at));
+	sortByTimeDescending(matched);
 	const recordLimited = matched.length > normalizedRecords;
 	return {
 		records: matched.slice(0, normalizedRecords),
@@ -631,6 +701,37 @@ export async function readRecentActivity(
 		recordLimited,
 		bytesRead,
 	};
+}
+
+function mergeLine(fragments: Buffer[], fragmentBytes: number, tail: Buffer): Buffer {
+	if (fragments.length === 0) return tail;
+	if (tail.length > 0) fragments.push(tail);
+	return Buffer.concat(fragments, fragmentBytes + tail.length);
+}
+
+/** Feed whole lines from one chunk, returning the fragment state the caller owns. */
+function consumeChunk(
+	chunk: Buffer,
+	fragments: Buffer[],
+	fragmentBytes: number,
+	consumeLine: (line: Buffer) => void,
+): { fragments: Buffer[]; fragmentBytes: number } {
+	let next = fragments;
+	let nextBytes = fragmentBytes;
+	let start = 0;
+	for (let index = 0; index < chunk.length; index++) {
+		if (chunk[index] !== 0x0a) continue;
+		consumeLine(mergeLine(next, nextBytes, chunk.subarray(start, index)));
+		next = [];
+		nextBytes = 0;
+		start = index + 1;
+	}
+	if (start < chunk.length) {
+		const tail = chunk.subarray(start);
+		next.push(tail);
+		nextBytes += tail.length;
+	}
+	return { fragments: next, fragmentBytes: nextBytes };
 }
 
 async function scanJsonlPrefix(
@@ -655,26 +756,9 @@ async function scanJsonlPrefix(
 			const buffer = Buffer.allocUnsafe(length);
 			const result = await handle.read(buffer, 0, length, position);
 			if (result.bytesRead === 0) break;
-			const chunk = buffer.subarray(0, result.bytesRead);
-			let start = 0;
-			for (let index = 0; index < chunk.length; index++) {
-				if (chunk[index] !== 0x0a) continue;
-				const tail = chunk.subarray(start, index);
-				let line = tail;
-				if (fragments.length > 0) {
-					if (tail.length > 0) fragments.push(tail);
-					line = Buffer.concat(fragments, fragmentBytes + tail.length);
-				}
-				consumeLine(line);
-				fragments = [];
-				fragmentBytes = 0;
-				start = index + 1;
-			}
-			if (start < chunk.length) {
-				const tail = chunk.subarray(start);
-				fragments.push(tail);
-				fragmentBytes += tail.length;
-			}
+			const state = consumeChunk(buffer.subarray(0, result.bytesRead), fragments, fragmentBytes, consumeLine);
+			fragments = state.fragments;
+			fragmentBytes = state.fragmentBytes;
 			position += result.bytesRead;
 			bytesRead += result.bytesRead;
 		}
@@ -693,33 +777,51 @@ async function scanJsonlPrefix(
 	return { bytesRead, complete };
 }
 
-/** Count rule firings through one bounded scan of daily store files. */
-export async function readFireSummary(dir: string, byteBound: number = MAX_FIRE_SCAN_BYTES): Promise<RuleFireSummary> {
-	const fires = new Map<string, number>();
-	const firesByModel = new Map<string, Map<string | null, number>>();
-	const countLine = (line: Buffer): void => {
+function countFireRecord(
+	classes: unknown[],
+	model: string | null,
+	fires: Map<string, number>,
+	firesByModel: Map<string, Map<string | null, number>>,
+): void {
+	for (const id of classes) {
+		if (typeof id !== "string") continue;
+		fires.set(id, (fires.get(id) ?? 0) + 1);
+		let models = firesByModel.get(id);
+		if (!models) {
+			models = new Map();
+			firesByModel.set(id, models);
+		}
+		models.set(model, (models.get(model) ?? 0) + 1);
+	}
+}
+
+/** Parse one telemetry line and add its class ids to the fire maps. */
+function makeFireCounter(
+	fires: Map<string, number>,
+	firesByModel: Map<string, Map<string | null, number>>,
+): (line: Buffer) => void {
+	return (line: Buffer): void => {
 		if (line.length === 0) return;
 		try {
 			const value: unknown = JSON.parse(line.toString("utf8"));
 			if (!isObject(value) || !Array.isArray(value.classes)) return;
-			const model = typeof value.model === "string" ? value.model : null;
-			for (const id of value.classes) {
-				if (typeof id !== "string") continue;
-				fires.set(id, (fires.get(id) ?? 0) + 1);
-				let models = firesByModel.get(id);
-				if (!models) {
-					models = new Map();
-					firesByModel.set(id, models);
-				}
-				models.set(model, (models.get(model) ?? 0) + 1);
-			}
+			countFireRecord(value.classes, typeof value.model === "string" ? value.model : null, fires, firesByModel);
 		} catch {
 			// One malformed telemetry record does not hide valid counts around it.
 		}
 	};
+}
+
+/** Count rule firings through one bounded scan of daily store files. */
+export async function readFireSummary(dir: string, byteBound: number = MAX_FIRE_SCAN_BYTES): Promise<RuleFireSummary> {
+	const fires = new Map<string, number>();
+	const firesByModel = new Map<string, Map<string | null, number>>();
+	const countLine = makeFireCounter(fires, firesByModel);
 	try {
-		const files = (await readdir(dir)).filter((name) => DAILY_STORE_FILE.test(name)).sort();
-		let remaining = Number.isFinite(byteBound) ? Math.max(0, Math.floor(byteBound)) : MAX_FIRE_SCAN_BYTES;
+		const files = (await readdir(dir))
+			.filter((name) => DAILY_STORE_FILE.test(name))
+			.sort();
+		let remaining = normalizeBound(byteBound, MAX_FIRE_SCAN_BYTES);
 		for (const file of files) {
 			const scanned = await scanJsonlPrefix(join(dir, file), remaining, countLine);
 			remaining -= scanned.bytesRead;
@@ -991,12 +1093,13 @@ export class PolicyPanel {
 	}
 
 	private finish(): void {
+		const activity = this.currentActivity();
 		this.deps.done({
 			view: this.view,
 			filter: this.filter,
 			selectedRuleId: this.currentRule()?.id,
 			selectedProposalId: this.currentProposal()?.id,
-			selectedActivityKey: this.currentActivity() ? activityKey(this.currentActivity()!) : undefined,
+			selectedActivityKey: activity ? activityKey(activity) : undefined,
 		});
 	}
 
@@ -1008,26 +1111,11 @@ export class PolicyPanel {
 		this.outcome = "working…";
 		this.bump();
 		try {
-			let effect: RuleEffect | undefined;
-			const choice = candidatePermitsEffectChoice(proposal.candidate);
-			const exact = (proposal.candidate !== undefined && !choice) || proposal.operation === "replace";
-			if (action === "approve" && (proposal.operation === "add" || proposal.operation === "replace") && choice) {
-				const selected = await host.select(`Choose effect for ${proposal.ruleId}`, ["steer", "block"]);
-				if (selected !== "steer" && selected !== "block") return;
-				effect = selected;
-			}
-			const decision = action === "approve" ? "approve" : "reject";
-			const effectText = effect ? ` with effect ${effect}` : "";
-			const confirmed = await host.confirm(
-				`${decision === "approve" ? "Approve" : "Reject"} policy proposal`,
-				`${decision === "approve" ? "Approve" : "Reject"} ${proposal.operation} proposal ${proposal.id} for ${proposal.ruleId}${effectText}?\n\n${proposalDetailLines(proposal).map(terminalSafe).join("\n")}`,
-			);
-			if (!confirmed) return;
-			const result =
-				action === "approve"
-					? await host.approve(proposal.id, effect, exact ? proposalRevision(proposal) : undefined)
-					: await host.reject(proposal.id);
-			this.applyResult(result);
+			const selection = this.requestEffect(host, action, proposal);
+			const effect = selection === undefined ? undefined : await selection;
+			if (effect === null) return;
+			const result = await this.confirmAndRun(host, action, proposal, effect);
+			if (result !== undefined) this.applyResult(result);
 		} catch (error) {
 			this.outcome = `Action failed: ${terminalSafe(error instanceof Error ? error.message : String(error))}`;
 		} finally {
@@ -1036,6 +1124,45 @@ export class PolicyPanel {
 			this.detailScroll = 0;
 			this.bump();
 		}
+	}
+
+	/**
+	 * Begin the effect selection synchronously. Returns undefined when no selection
+	 * applies, or a pending choice that resolves to the selected effect, or null when
+	 * the operator cancels the selection.
+	 */
+	private requestEffect(
+		host: PolicyPanelActionHost,
+		action: "approve" | "reject",
+		proposal: PendingProposal,
+	): RuleEffect | undefined | Promise<RuleEffect | null> {
+		if (action !== "approve") return undefined;
+		if (proposal.operation !== "add" && proposal.operation !== "replace") return undefined;
+		if (!candidatePermitsEffectChoice(proposal.candidate)) return undefined;
+		return host.select(`Choose effect for ${proposal.ruleId}`, ["steer", "block"]).then((selected) =>
+			selected === "steer" || selected === "block" ? selected : null,
+		);
+	}
+
+	/** Confirm with the operator, then write; undefined means the operator declined. */
+	private async confirmAndRun(
+		host: PolicyPanelActionHost,
+		action: "approve" | "reject",
+		proposal: PendingProposal,
+		effect: RuleEffect | undefined,
+	): Promise<PanelActionResult | undefined> {
+		const exact =
+			(proposal.candidate !== undefined && !candidatePermitsEffectChoice(proposal.candidate)) ||
+			proposal.operation === "replace";
+		const decision = action === "approve" ? "approve" : "reject";
+		const effectText = effect ? ` with effect ${effect}` : "";
+		const title = decision === "approve" ? "Approve policy proposal" : "Reject policy proposal";
+		const message = `${decision === "approve" ? "Approve" : "Reject"} ${proposal.operation} proposal ${proposal.id} for ${proposal.ruleId}${effectText}?\n\n${proposalDetailLines(proposal).map(terminalSafe).join("\n")}`;
+		const confirmed = await host.confirm(title, message);
+		if (!confirmed) return undefined;
+		return action === "approve"
+			? await host.approve(proposal.id, effect, exact ? proposalRevision(proposal) : undefined)
+			: await host.reject(proposal.id);
 	}
 
 	private applyResult(result: PanelActionResult): void {
@@ -1062,50 +1189,145 @@ export class PolicyPanel {
 		const decoded = decodeKittyPrintable(raw);
 		const data = decoded ?? raw;
 		if (this.filtering) {
-			if (matchesKey(raw, "escape") || matchesKey(raw, "enter")) this.filtering = false;
-			else if (matchesKey(raw, "backspace")) {
-				this.filter = Array.from(this.filter).slice(0, -1).join("");
-				this.selectedRule = 0;
-				this.selectedProposal = 0;
-				this.listScroll = 0;
-			} else if (matchesKey(raw, "up")) this.move(-1);
-			else if (matchesKey(raw, "down")) this.move(1);
-			else if (data.length > 0 && !matchesKey(raw, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(data)) {
-				this.filter += data;
-				this.selectedRule = 0;
-				this.selectedProposal = 0;
-				this.listScroll = 0;
-			} else return;
-			this.detailScroll = 0;
-			this.bump();
+			if (this.consumeFilterInput(raw, data)) {
+				this.detailScroll = 0;
+				this.bump();
+			}
 			return;
 		}
+		if (this.consumeNavigation(raw, data)) this.bump();
+	}
+
+	private consumeFilterInput(raw: string, data: string): boolean {
+		if (matchesKey(raw, "escape") || matchesKey(raw, "enter")) {
+			this.filtering = false;
+			return true;
+		}
+		if (matchesKey(raw, "backspace")) {
+			this.filter = Array.from(this.filter)
+				.slice(0, -1)
+				.join("");
+			this.resetFilterSelection();
+			return true;
+		}
+		if (matchesKey(raw, "up")) {
+			this.move(-1);
+			return true;
+		}
+		if (matchesKey(raw, "down")) {
+			this.move(1);
+			return true;
+		}
+		if (data.length > 0 && !matchesKey(raw, "ctrl+c") && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(data)) {
+			this.filter += data;
+			this.resetFilterSelection();
+			return true;
+		}
+		return false;
+	}
+
+	private resetFilterSelection(): void {
+		this.selectedRule = 0;
+		this.selectedProposal = 0;
+		this.listScroll = 0;
+	}
+
+	private consumeNavigation(raw: string, data: string): boolean {
 		if (matchesKey(raw, "escape")) {
 			this.finish();
-			return;
+			return false;
 		}
-		if (matchesKey(raw, "up")) this.move(-1);
-		else if (matchesKey(raw, "down")) this.move(1);
-		else if (data === "v") {
-			this.view = this.view === "rules" ? "proposals" : this.view === "proposals" ? "activity" : "rules";
-			this.listScroll = 0;
-			this.detailScroll = 0;
-		} else if (data === "b") this.detailScroll = Math.max(0, this.detailScroll - this.pageSize());
-		else if (matchesKey(raw, "space"))
+		if (matchesKey(raw, "up")) {
+			this.move(-1);
+			return true;
+		}
+		if (matchesKey(raw, "down")) {
+			this.move(1);
+			return true;
+		}
+		if (this.consumeViewKey(raw, data)) return true;
+		return this.consumeActionKey(data);
+	}
+
+	private consumeViewKey(raw: string, data: string): boolean {
+		if (data === "v") {
+			this.cycleView();
+			return true;
+		}
+		if (data === "b") {
+			this.detailScroll = Math.max(0, this.detailScroll - this.pageSize());
+			return true;
+		}
+		if (matchesKey(raw, "space")) {
 			this.detailScroll = Math.min(this.detailMaxScroll(), this.detailScroll + this.pageSize());
-		else if ((this.view === "rules" || this.view === "proposals") && data === "/") this.filtering = true;
-		else if (this.view === "proposals" && data === "a") void this.runProposalAction("approve");
-		else if (this.view === "proposals" && data === "x") void this.runProposalAction("reject");
-		else if (this.view === "rules" && data === "d") this.showRuleActionCommand("disable");
-		else if (this.view === "rules" && data === "n") this.showRuleActionCommand("enable");
-		else if (this.view === "rules" && data === "e") this.showRuleActionCommand("effect");
-		else if (this.view === "rules" && data === "r") this.showRuleActionCommand("retire");
-		else if (this.view === "rules" && data === "z") this.showRuleActionCommand("reset");
-		else if (this.view === "rules" && data === "i") this.showRuleActionCommand("explain");
-		else if (data === "t") this.outcome = "Run: /policy data list";
-		else if (data === "s") this.outcome = "Run: /policy state";
-		else return;
-		this.bump();
+			return true;
+		}
+		if ((this.view === "rules" || this.view === "proposals") && data === "/") {
+			this.filtering = true;
+			return true;
+		}
+		return false;
+	}
+
+	private cycleView(): void {
+		this.view = this.view === "rules" ? "proposals" : this.view === "proposals" ? "activity" : "rules";
+		this.listScroll = 0;
+		this.detailScroll = 0;
+	}
+
+	private consumeActionKey(data: string): boolean {
+		if (this.view === "proposals" && this.consumeProposalKey(data)) return true;
+		if (this.view === "rules" && this.consumeRuleKey(data)) return true;
+		return this.consumeSharedKey(data);
+	}
+
+	private consumeProposalKey(data: string): boolean {
+		if (data === "a") {
+			void this.runProposalAction("approve");
+			return true;
+		}
+		if (data === "x") {
+			void this.runProposalAction("reject");
+			return true;
+		}
+		return false;
+	}
+
+	private consumeRuleKey(data: string): boolean {
+		switch (data) {
+			case "d":
+				this.showRuleActionCommand("disable");
+				return true;
+			case "n":
+				this.showRuleActionCommand("enable");
+				return true;
+			case "e":
+				this.showRuleActionCommand("effect");
+				return true;
+			case "r":
+				this.showRuleActionCommand("retire");
+				return true;
+			case "z":
+				this.showRuleActionCommand("reset");
+				return true;
+			case "i":
+				this.showRuleActionCommand("explain");
+				return true;
+			default:
+				return false;
+		}
+	}
+
+	private consumeSharedKey(data: string): boolean {
+		if (data === "t") {
+			this.outcome = "Run: /policy data list";
+			return true;
+		}
+		if (data === "s") {
+			this.outcome = "Run: /policy state";
+			return true;
+		}
+		return false;
 	}
 
 	private keyPair(key: string, label: string): string {
@@ -1146,16 +1368,24 @@ export class PolicyPanel {
 	}
 
 	private listRow(index: number, _width: number): string {
-		if (this.view === "rules") {
-			const record = this.rules[index];
-			if (!record) return "";
-			return `${index === this.selectedRule ? "› " : "  "}${record.id} · ${record.source.kind} · ${effectiveState(record)} · ${effectiveEffect(record)} · ${this.deps.data.fireSummary.fires.get(record.id) ?? 0}`;
-		}
-		if (this.view === "proposals") {
-			const proposal = this.proposals[index];
-			if (!proposal) return "";
-			return `${index === this.selectedProposal ? "› " : "  "}${proposal.id} · ${proposal.operation} · ${proposal.ruleId}`;
-		}
+		if (this.view === "rules") return this.ruleRow(index);
+		if (this.view === "proposals") return this.proposalRow(index);
+		return this.activityRow(index);
+	}
+
+	private ruleRow(index: number): string {
+		const record = this.rules[index];
+		if (!record) return "";
+		return `${index === this.selectedRule ? "› " : "  "}${record.id} · ${record.source.kind} · ${effectiveState(record)} · ${effectiveEffect(record)} · ${this.deps.data.fireSummary.fires.get(record.id) ?? 0}`;
+	}
+
+	private proposalRow(index: number): string {
+		const proposal = this.proposals[index];
+		if (!proposal) return "";
+		return `${index === this.selectedProposal ? "› " : "  "}${proposal.id} · ${proposal.operation} · ${proposal.ruleId}`;
+	}
+
+	private activityRow(index: number): string {
 		const record = this.deps.data.activity.records[index];
 		if (!record) return "";
 		const time = record.at.match(/T(\d{2}:\d{2}:\d{2})/)?.[1] ?? record.at;
@@ -1171,70 +1401,91 @@ export class PolicyPanel {
 		const selected = this.selectedIndex();
 		const position = count === 0 ? "0/0" : `${selected + 1}/${count}`;
 		const label = this.view === "rules" ? "Rules" : this.view === "proposals" ? "Proposals" : "Activity";
-		const healthLabel =
-			this.deps.data.snapshot.health.status === "degraded"
-				? "degraded"
-				: this.deps.data.snapshot.health.incompleteFinalLine !== undefined
-					? "append-in-flight"
-					: "healthy";
+		const healthLabel = this.healthLabel();
 		const paint = (text: string) => this.deps.theme.bg("customMessageBg", fitText(text, width));
-		if (!layout.framed) {
-			const lines = [paint(`Policy · ${label} · ${position} · ${healthLabel}`), paint(this.listHeader(width))];
-			const available = Math.max(0, layout.total - 3);
-			if (selected < this.listScroll) this.listScroll = selected;
-			if (selected >= this.listScroll + available) this.listScroll = Math.max(0, selected - available + 1);
-			for (let slot = 0; slot < available; slot++) lines.push(paint(this.listRow(this.listScroll + slot, width)));
-			lines.push(paint(this.footerText(width)));
-			this.cachedLines = lines.slice(0, layout.total);
-		} else {
-			const title = `┌─ ◆ Policy · ${label} · ${position} · ${healthLabel} `;
-			const top = `${title}${"─".repeat(Math.max(0, width - visibleWidth(title) - 1))}┐`;
-			const lines = [this.deps.theme.bg("customMessageBg", this.deps.theme.fg("borderMuted", top))];
-			const listRows = Math.max(0, layout.bodyRows - 1);
-			if (selected < this.listScroll) this.listScroll = selected;
-			if (selected >= this.listScroll + listRows) this.listScroll = Math.max(0, selected - listRows + 1);
-			this.detailScroll = Math.min(this.detailScroll, this.detailMaxScroll());
-			const detail = this.detailSource(layout.detailWidth).slice(
-				this.detailScroll,
-				this.detailScroll + layout.bodyRows,
-			);
-			for (let body = 0; body < layout.bodyRows; body++) {
-				const absolute = this.listScroll + body - 1;
-				const list =
-					body === 0
-						? this.deps.theme.bold(this.deps.theme.fg("dim", this.listHeader(layout.listWidth)))
-						: this.deps.theme.fg(absolute === selected ? "accent" : "text", this.listRow(absolute, layout.listWidth));
-				lines.push(
-					this.deps.theme.bg(
-						"customMessageBg",
-						`${this.deps.theme.fg("borderMuted", "│ ")}${fitText(list, layout.listWidth)}${this.deps.theme.fg("borderMuted", " │ ")}${fitText(detail[body] ?? "", layout.detailWidth)}${this.deps.theme.fg("borderMuted", " │")}`,
-					),
-				);
-			}
-			lines.push(
-				this.deps.theme.bg(
-					"customMessageBg",
-					this.deps.theme.fg("borderMuted", `├${"─".repeat(Math.max(0, width - 2))}┤`),
-				),
-			);
-			lines.push(
-				this.deps.theme.bg(
-					"customMessageBg",
-					`${this.deps.theme.fg("borderMuted", "│ ")}${fitText(this.footerText(layout.innerWidth), layout.innerWidth)}${this.deps.theme.fg("borderMuted", " │")}`,
-				),
-			);
-			lines.push(
-				this.deps.theme.bg(
-					"customMessageBg",
-					this.deps.theme.fg("borderMuted", `└${"─".repeat(Math.max(0, width - 2))}┘`),
-				),
-			);
-			this.cachedLines = lines.slice(0, layout.total);
-		}
+		this.cachedLines = layout.framed
+			? this.renderFramed(width, layout, label, position, healthLabel, selected)
+			: this.renderUnframed(width, layout, paint, label, position, healthLabel, selected);
 		this.cachedWidth = width;
 		this.cachedRows = layout.total;
 		this.cachedVersion = this.version;
 		return this.cachedLines;
+	}
+
+	private healthLabel(): string {
+		if (this.deps.data.snapshot.health.status === "degraded") return "degraded";
+		return this.deps.data.snapshot.health.incompleteFinalLine !== undefined ? "append-in-flight" : "healthy";
+	}
+
+	private renderUnframed(
+		width: number,
+		layout: Layout,
+		paint: (text: string) => string,
+		label: string,
+		position: string,
+		healthLabel: string,
+		selected: number,
+	): string[] {
+		const lines = [paint(`Policy · ${label} · ${position} · ${healthLabel}`), paint(this.listHeader(width))];
+		const available = Math.max(0, layout.total - 3);
+		if (selected < this.listScroll) this.listScroll = selected;
+		if (selected >= this.listScroll + available) this.listScroll = Math.max(0, selected - available + 1);
+		for (let slot = 0; slot < available; slot++) lines.push(paint(this.listRow(this.listScroll + slot, width)));
+		lines.push(paint(this.footerText(width)));
+		return lines.slice(0, layout.total);
+	}
+
+	private renderFramed(
+		width: number,
+		layout: Layout,
+		label: string,
+		position: string,
+		healthLabel: string,
+		selected: number,
+	): string[] {
+		const title = `┌─ ◆ Policy · ${label} · ${position} · ${healthLabel} `;
+		const top = `${title}${"─".repeat(Math.max(0, width - visibleWidth(title) - 1))}┐`;
+		const lines = [this.deps.theme.bg("customMessageBg", this.deps.theme.fg("borderMuted", top))];
+		const listRows = Math.max(0, layout.bodyRows - 1);
+		if (selected < this.listScroll) this.listScroll = selected;
+		if (selected >= this.listScroll + listRows) this.listScroll = Math.max(0, selected - listRows + 1);
+		this.detailScroll = Math.min(this.detailScroll, this.detailMaxScroll());
+		const detail = this.detailSource(layout.detailWidth).slice(
+			this.detailScroll,
+			this.detailScroll + layout.bodyRows,
+		);
+		for (let body = 0; body < layout.bodyRows; body++) {
+			const absolute = this.listScroll + body - 1;
+			const list =
+				body === 0
+					? this.deps.theme.bold(this.deps.theme.fg("dim", this.listHeader(layout.listWidth)))
+					: this.deps.theme.fg(absolute === selected ? "accent" : "text", this.listRow(absolute, layout.listWidth));
+			lines.push(
+				this.deps.theme.bg(
+					"customMessageBg",
+					`${this.deps.theme.fg("borderMuted", "│ ")}${fitText(list, layout.listWidth)}${this.deps.theme.fg("borderMuted", " │ ")}${fitText(detail[body] ?? "", layout.detailWidth)}${this.deps.theme.fg("borderMuted", " │")}`,
+				),
+			);
+		}
+		lines.push(
+			this.deps.theme.bg(
+				"customMessageBg",
+				this.deps.theme.fg("borderMuted", `├${"─".repeat(Math.max(0, width - 2))}┤`),
+			),
+		);
+		lines.push(
+			this.deps.theme.bg(
+				"customMessageBg",
+				`${this.deps.theme.fg("borderMuted", "│ ")}${fitText(this.footerText(layout.innerWidth), layout.innerWidth)}${this.deps.theme.fg("borderMuted", " │")}`,
+			),
+		);
+		lines.push(
+			this.deps.theme.bg(
+				"customMessageBg",
+				this.deps.theme.fg("borderMuted", `└${"─".repeat(Math.max(0, width - 2))}┘`),
+			),
+		);
+		return lines.slice(0, layout.total);
 	}
 
 	dispose(): void {}

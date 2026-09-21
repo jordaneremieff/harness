@@ -120,6 +120,27 @@ function boundedRows(rows: readonly unknown[], maxBytes = 32768): { rows: unknow
 	}
 	return { rows: retained, total: rows.length, omitted: rows.length - retained.length };
 }
+
+interface RowBundle {
+	rows: unknown[];
+	total: number;
+	omitted: number;
+}
+
+/** Convert one missing-input evaluation into its unavailable form, honoring deny decisions. */
+function markUnavailable(rules: ProgramRule[]): (evaluation: ProgramEvaluation) => ProgramEvaluation {
+	return (evaluation) => {
+		if (evaluation.applicable !== true || evaluation.truth === false || evaluation.action.kind === "deny")
+			return evaluation;
+		const rule = rules.find((candidate) => candidate.id === evaluation.id);
+		return {
+			...evaluation,
+			truth: "unknown" as const,
+			unavailable: true,
+			deny: rule?.program.onUnavailable === "deny",
+		};
+	};
+}
 function publicState(views: ReturnType<ObservationState["snapshot"]>): unknown[] {
 	return views.map((view) =>
 		Object.fromEntries(Object.entries(view).map(([key, value]) => [key, value === UNKNOWN ? "unavailable" : value])),
@@ -302,7 +323,7 @@ export class PolicyRuntime {
 	}
 	private inputPlan(call: ObservedCall, applyCorrections = true): InputPlan {
 		const current = new Set(this.currentRules(call).map((rule) => rule.id));
-		return planInput(call.rules, call.input!, {
+		return planInput(call.rules, call.input ?? {}, {
 			...this.contextFor(call),
 			applyCorrections,
 			staleRules: new Set(call.rules.filter((rule) => !current.has(rule.id)).map((rule) => rule.id)),
@@ -442,25 +463,8 @@ export class PolicyRuntime {
 			this.track(call);
 		} else call.input = inputSnapshot(event.input);
 		call.prepared = true;
-		if (!call.input) {
-			call.complete = false;
-			this.incomplete++;
-			const rules = this.currentRules(call);
-			const context = this.contextFor(call);
-			const evidence = captureProgramEvidence(rules, context);
-			const evaluations = evaluatePrograms(rules, "input", { ...context, evidence }).map((e) => {
-				if (e.applicable !== true || e.truth === false || e.action.kind === "deny") return e;
-				const rule = rules.find((rule) => rule.id === e.id)!;
-				return { ...e, truth: "unknown" as const, unavailable: true, deny: rule.program.onUnavailable === "deny" };
-			});
-			this.collect(call, evaluations);
-			this.notice(call, ctx);
-			if (this.effectiveMode() === "enforce" && evaluations.some((e) => e.deny)) {
-				call.decision = "[policy] An approved input check refused unavailable input.";
-				return { block: true, reason: call.decision };
-			}
-			return;
-		}
+		const refused = this.refuseUnavailableInput(call, ctx);
+		if (refused) return refused;
 		const plan = this.inputPlan(call, this.effectiveMode() === "enforce");
 		for (const id of plan.matches) {
 			call.matches.add(id);
@@ -469,28 +473,62 @@ export class PolicyRuntime {
 		this.collect(call, plan.evaluations);
 		call.corrections = plan.corrections;
 		const activeMode = this.effectiveMode();
-		let denied = plan.denied || !plan.valid;
-		if (activeMode === "enforce" && !denied && plan.changed) {
-			if (commitInput(event.input as Record<string, unknown>, plan.candidate)) {
-				call.input = plan.candidate;
-				call.effects.policy = { inputCorrected: true };
-			} else denied = true;
-		}
+		const denied = this.applyInputCorrections(call, event, plan, plan.denied || !plan.valid);
 		if (activeMode === "enforce" && denied) {
-			const notes = [
-				...new Set([
-					...call.classes,
-					...plan.evaluations.filter((evaluation) => evaluation.deny).map((evaluation) => evaluation.id),
-				]),
-			]
-				.map((id) => snapshot.records.get(id))
-				.filter((r): r is RuleRecord => r !== undefined)
-				.map(ruleGuidance);
-			call.decision = guidanceText(notes) ?? "[policy] The approved input checks refused this call.";
+			call.decision =
+				guidanceText(this.refusalNotes(call, plan, snapshot)) ??
+				"[policy] The approved input checks refused this call.";
 			this.notice(call, ctx);
 			return { block: true, reason: call.decision };
 		}
 		this.notice(call, ctx);
+	}
+
+	/** Refuse missing input after one evaluation pass, or leave the call for normal planning. */
+	private refuseUnavailableInput(
+		call: ObservedCall,
+		ctx: ExtensionContext,
+	): { block: true; reason: string } | undefined {
+		if (call.input) return undefined;
+		call.complete = false;
+		this.incomplete++;
+		const rules = this.currentRules(call);
+		const context = this.contextFor(call);
+		const evidence = captureProgramEvidence(rules, context);
+		const evaluations = evaluatePrograms(rules, "input", { ...context, evidence }).map(markUnavailable(rules));
+		this.collect(call, evaluations);
+		this.notice(call, ctx);
+		if (this.effectiveMode() !== "enforce" || !evaluations.some((evaluation) => evaluation.deny)) return undefined;
+		call.decision = "[policy] An approved input check refused unavailable input.";
+		return { block: true, reason: call.decision };
+	}
+
+	/** Commit approved corrections into the live input, or report the call as denied. */
+	private applyInputCorrections(
+		call: ObservedCall,
+		event: ToolCallEvent,
+		plan: InputPlan,
+		denied: boolean,
+	): boolean {
+		if (this.effectiveMode() !== "enforce" || denied || !plan.changed) return denied;
+		if (commitInput(event.input as Record<string, unknown>, plan.candidate)) {
+			call.input = plan.candidate;
+			call.effects.policy = { inputCorrected: true };
+			return false;
+		}
+		return true;
+	}
+
+	/** Guidance lines for the rules behind one denied input plan, deduplicated in class order. */
+	private refusalNotes(call: ObservedCall, plan: InputPlan, snapshot: RuleSnapshot): string[] {
+		const ids = new Set([
+			...call.classes,
+			...plan.evaluations.filter((evaluation) => evaluation.deny).map((evaluation) => evaluation.id),
+		]);
+		return [...ids]
+			.map((id) => snapshot.records.get(id))
+			.filter((record): record is RuleRecord => record !== undefined)
+			.map(ruleGuidance);
 	}
 	private resultPlan(call: ObservedCall, result: Result) {
 		const rules = this.currentRules(call);
@@ -517,11 +555,7 @@ export class PolicyRuntime {
 		if (!this.live(generation)) return;
 		const call = this.pending.get(event.toolCallId);
 		if (!call) return;
-		call.resultSeen = true;
-		call.preGuidanceBytes = textContentBytes(event.content);
-		const actual = inputSnapshot(event.input);
-		if (actual) call.input = actual;
-		else call.complete = false;
+		this.recordResult(call, event);
 		const { correction, semantic, guides } = this.resultPlan(call, {
 			content: event.content,
 			details: event.details,
@@ -533,9 +567,26 @@ export class PolicyRuntime {
 		this.notice(call, ctx);
 		if (text) {
 			call.effects.annotationBytes = Buffer.byteLength(text, "utf8");
-			return { ...(correction ? { isError: true as const } : {}), content: [...event.content, { type: "text", text }] };
+			return this.annotatedResult(text, event.content, correction);
 		}
 		if (correction) return { isError: true };
+	}
+
+	/** Record the observed result before result-phase evaluations run. */
+	private recordResult(call: ObservedCall, event: ToolResultEvent): void {
+		call.resultSeen = true;
+		call.preGuidanceBytes = textContentBytes(event.content);
+		const actual = inputSnapshot(event.input);
+		if (actual) call.input = actual;
+		else call.complete = false;
+	}
+
+	private annotatedResult(
+		text: string,
+		content: ToolResultEvent["content"],
+		correction: boolean,
+	): { isError?: true; content: ToolResultEvent["content"] } {
+		return { ...(correction ? { isError: true as const } : {}), content: [...content, { type: "text", text }] };
 	}
 	private guidance(evaluations: ProgramEvaluation[]): string | undefined {
 		if (this.effectiveMode() !== "annotate" && this.effectiveMode() !== "enforce") return;
@@ -566,91 +617,17 @@ export class PolicyRuntime {
 		const call = this.pending.get(event.toolCallId);
 		if (!call) return;
 		this.pending.delete(event.toolCallId);
-		if (this.ended.size >= MAX_FINAL_IDS) {
-			const oldest = this.ended.values().next().value;
-			if (oldest !== undefined) this.ended.delete(oldest);
-		}
+		this.evictEndedId();
 		this.ended.add(event.toolCallId);
 		const result = { ...object(event.result), isError: event.isError } as Result;
-		const text = (result.content ?? []).map((p) => p.text ?? "").join("");
-		call.abortRequested = ctx.signal?.aborted === true;
-		call.outputBytes = textContentBytes(result.content);
-		const outcome: CallOutcome = call.resultSeen
-			? event.isError
-				? "execution-error"
-				: "success"
-			: call.decision && text === call.decision
-				? "denied"
-				: "unexecuted";
-		const rules = this.currentRules(call);
-		const completion = evaluatePrograms(rules, "completion", this.contextFor(call, result, outcome));
-		this.collect(call, completion);
-		const completionContext = this.contextFor(call, result, outcome);
-		this.stale += call.rules.length - rules.length;
-		for (const rule of rules) {
-			const selected = observationSelected(rule, completionContext);
-			const pin = call.pins.get(rule.id);
-			if (
-				pin &&
-				selected === true &&
-				!this.state.complete(pin, programFacts(rule, completionContext), call.turn, Date.now())
-			)
-				this.stale++;
-		}
+		const outcome = this.finishOutcome(call, result, event, ctx);
+		const completion = this.completeCall(call, result, outcome);
 		this.notice(call, ctx);
 		const details = object(result.details);
 		const truncation = object(details?.truncation);
 		const usage = object(result.usage);
-		const evaluations = boundedRows(metadata(call.evaluations));
-		const corrections = boundedRows(call.corrections);
-		const generations = boundedRows([...call.pins.values()]);
-		const dataNames = new Set([
-			...Object.keys(call.context.data ?? {}),
-			...call.rules.flatMap(programSteps).flatMap((rule) => rule.program.data ?? []),
-		]);
-		const dataSnapshots = boundedRows(
-			[...dataNames].sort().map((name) => {
-				const binding = call.context.data?.[name];
-				return {
-					name,
-					status: binding?.status ?? "missing",
-					...(binding?.revision !== undefined ? { revision: binding.revision } : {}),
-					...(binding?.capturedAt !== undefined ? { capturedAt: binding.capturedAt } : {}),
-					...(binding?.ageMs !== undefined ? { ageMs: binding.ageMs } : {}),
-					...(binding?.data?.maxAgeMs !== undefined ? { maxAgeMs: binding.data.maxAgeMs } : {}),
-					...(call.context.now !== undefined ? { snapshotAt: call.context.now } : {}),
-				};
-			}),
-		);
-		const observed = boundedRows(
-			completion
-				.filter((e) => e.truth === true && e.action.kind === "observe")
-				.map((e) => ({ id: e.id, label: e.action.kind === "observe" ? e.action.label : "" })),
-		);
-		const effects: CallEffects = {
-			...call.effects,
-			outcome,
-			abortRequested: call.abortRequested,
-			blocked: outcome === "denied",
-			observationComplete: call.complete && outcome !== "unexecuted",
-			policy: {
-				...call.effects.policy,
-				decision: call.decision ? "deny" : "none",
-				...(call.preGuidanceBytes !== undefined ? { preGuidanceBytes: call.preGuidanceBytes } : {}),
-				evaluations: evaluations.rows,
-				corrections: corrections.rows,
-				generations: generations.rows,
-				dataSnapshots: dataSnapshots.rows,
-				metadata: observed.rows,
-				coverage: {
-					evaluations: { total: evaluations.total, omitted: evaluations.omitted },
-					corrections: { total: corrections.total, omitted: corrections.omitted },
-					generations: { total: generations.total, omitted: generations.omitted },
-					dataSnapshots: { total: dataSnapshots.total, omitted: dataSnapshots.omitted },
-					metadata: { total: observed.total, omitted: observed.omitted },
-				},
-			},
-		};
+		const rows = this.finishRows(call, completion);
+		const effects = this.finishEffects(call, outcome, rows);
 		this.writer.enqueue(
 			finishCall(
 				call,
@@ -665,6 +642,124 @@ export class PolicyRuntime {
 				effects,
 			),
 		);
+	}
+
+	private evictEndedId(): void {
+		if (this.ended.size < MAX_FINAL_IDS) return;
+		const oldest = this.ended.values().next().value;
+		if (oldest !== undefined) this.ended.delete(oldest);
+	}
+
+	/** Record the final call shape and classify the outcome from observed evidence. */
+	private finishOutcome(call: ObservedCall, result: Result, event: { isError: boolean }, ctx: ExtensionContext): CallOutcome {
+		const text = (result.content ?? [])
+			.map((part) => part.text ?? "")
+			.join("");
+		call.abortRequested = ctx.signal?.aborted === true;
+		call.outputBytes = textContentBytes(result.content);
+		return call.resultSeen
+			? event.isError
+				? "execution-error"
+				: "success"
+			: call.decision && text === call.decision
+				? "denied"
+				: "unexecuted";
+	}
+
+	/** Run completion-phase evaluations and observation completion once. */
+	private completeCall(call: ObservedCall, result: Result, outcome: CallOutcome): ProgramEvaluation[] {
+		const rules = this.currentRules(call);
+		const completion = evaluatePrograms(rules, "completion", this.contextFor(call, result, outcome));
+		this.collect(call, completion);
+		const completionContext = this.contextFor(call, result, outcome);
+		this.stale += call.rules.length - rules.length;
+		for (const rule of rules) {
+			const selected = observationSelected(rule, completionContext);
+			const pin = call.pins.get(rule.id);
+			if (pin && selected === true && !this.state.complete(pin, programFacts(rule, completionContext), call.turn, Date.now()))
+				this.stale++;
+		}
+		return completion;
+	}
+
+	private dataSnapshotRows(call: ObservedCall): RowBundle {
+		const dataNames = new Set([
+			...Object.keys(call.context.data ?? {}),
+			...call.rules.flatMap(programSteps).flatMap((rule) => rule.program.data ?? []),
+		]);
+		return boundedRows(
+			[...dataNames].sort().map((name) => {
+				const binding = call.context.data?.[name];
+				return {
+					name,
+					status: binding?.status ?? "missing",
+					...(binding?.revision !== undefined ? { revision: binding.revision } : {}),
+					...(binding?.capturedAt !== undefined ? { capturedAt: binding.capturedAt } : {}),
+					...(binding?.ageMs !== undefined ? { ageMs: binding.ageMs } : {}),
+					...(binding?.data?.maxAgeMs !== undefined ? { maxAgeMs: binding.data.maxAgeMs } : {}),
+					...(call.context.now !== undefined ? { snapshotAt: call.context.now } : {}),
+				};
+			}),
+		);
+	}
+
+	private metadataRows(completion: ProgramEvaluation[]): RowBundle {
+		return boundedRows(
+			completion
+				.filter((e) => e.truth === true && e.action.kind === "observe")
+				.map((e) => ({ id: e.id, label: e.action.kind === "observe" ? e.action.label : "" })),
+		);
+	}
+
+	private finishRows(
+		call: ObservedCall,
+		completion: ProgramEvaluation[],
+	): {
+		evaluations: RowBundle;
+		corrections: RowBundle;
+		generations: RowBundle;
+		dataSnapshots: RowBundle;
+		metadata: RowBundle;
+	} {
+		return {
+			evaluations: boundedRows(metadata(call.evaluations)),
+			corrections: boundedRows(call.corrections),
+			generations: boundedRows([...call.pins.values()]),
+			dataSnapshots: this.dataSnapshotRows(call),
+			metadata: this.metadataRows(completion),
+		};
+	}
+
+	/** Build the recorded effect summary with bounded coverage accounts. */
+	private finishEffects(
+		call: ObservedCall,
+		outcome: CallOutcome,
+		rows: ReturnType<PolicyRuntime["finishRows"]>,
+	): CallEffects {
+		return {
+			...call.effects,
+			outcome,
+			abortRequested: call.abortRequested,
+			blocked: outcome === "denied",
+			observationComplete: call.complete && outcome !== "unexecuted",
+			policy: {
+				...call.effects.policy,
+				decision: call.decision ? "deny" : "none",
+				...(call.preGuidanceBytes !== undefined ? { preGuidanceBytes: call.preGuidanceBytes } : {}),
+				evaluations: rows.evaluations.rows,
+				corrections: rows.corrections.rows,
+				generations: rows.generations.rows,
+				dataSnapshots: rows.dataSnapshots.rows,
+				metadata: rows.metadata.rows,
+				coverage: {
+					evaluations: { total: rows.evaluations.total, omitted: rows.evaluations.omitted },
+					corrections: { total: rows.corrections.total, omitted: rows.corrections.omitted },
+					generations: { total: rows.generations.total, omitted: rows.generations.omitted },
+					dataSnapshots: { total: rows.dataSnapshots.total, omitted: rows.dataSnapshots.omitted },
+					metadata: { total: rows.metadata.total, omitted: rows.metadata.omitted },
+				},
+			},
+		};
 	}
 	async context(ctx: ExtensionContext): Promise<string | undefined> {
 		if (this.closed || !this.enabled()) return;
@@ -700,99 +795,116 @@ export class PolicyRuntime {
 	}
 	async inspect(view: string, params: Record<string, unknown>, ctx: ExtensionContext): Promise<unknown> {
 		const snapshot = view === "preview" && this.snapshot ? this.snapshot : await this.load(ctx);
-		if (view === "state")
-			return {
-				observationPeriods: publicState(this.state.snapshot(Date.now(), this.turn)),
-				turn: this.turn,
-				incomplete: this.incomplete,
-				staleCompletions: this.stale,
-			};
-		if (view === "health")
-			return {
-				authority: snapshot.health,
-				telemetry: this.telemetryFailure ? { status: "failed", reason: this.telemetryFailure } : { status: "ready" },
-				observations: { incomplete: this.incomplete, pending: this.pending.size, recentCompletedIds: this.ended.size },
-			};
-		if (view === "capabilities") {
-			const catalog = this.catalog();
-			return {
-				phases: ["input", "result", "completion", "context"],
-				actions: ["deny", "rename-key", "substitute", "assert-error", "guide", "observe"],
-				mode: this.mode(),
-				effectiveMode: this.effectiveMode(),
-				schemas: {
-					available: catalog.available,
-					tools: catalog.tools.map((t) => ({
-						name: t.name,
-						active: catalog.active.includes(t.name),
-						configured: true,
-					})),
-				},
-				innerSchemas: "Approved named schema bindings only",
-				observationStorage: "memory",
-				projection: "context, no new turn",
-			};
-		}
-		if (view === "explain") {
-			if (typeof params.id === "string" && params.id.startsWith("call:")) {
-				const callId = params.id.slice(5);
-				if (!callId || callId.length > 256) throw new Error("A bounded call identifier is required");
-				const activity = await readRecentActivity(this.dir, undefined, 1, {
-					session: ctx.sessionManager.getSessionId(),
-					callId,
-					includeUnmatched: true,
-				});
-				return {
-					callId,
-					scope: "current-session",
-					evidence: "untrusted recorded policy observations",
-					...activity,
-					boundary:
-						"A missing record may be outside this bounded read or not yet persisted. It does not prove no decision occurred.",
-				};
-			}
-			const record = typeof params.id === "string" ? snapshot.records.get(params.id) : undefined;
-			if (!record) throw new Error("An existing rule id is required");
-			const period = this.state.view(record.id, Date.now(), this.turn);
-			return {
-				id: record.id,
-				revision: record.definition.revision,
-				active: effectiveState(record),
-				programs: programSteps(compileRule(record)).map((rule) => rule.program),
-				scope: record.definition.scope,
-				observationPeriod: period ? publicState([period])[0] : undefined,
-			};
-		}
-		if (view === "preview") {
-			if (typeof params.tool !== "string" || !params.tool || params.tool.length > 200)
-				throw new Error("A bounded preview tool name is required");
-			const input = inputSnapshot(params.input);
-			if (!input) throw new Error("Preview input must be bounded JSON");
-			const call = this.makeCall(params.tool, "preview", input, ctx, snapshot);
-			const plan = this.inputPlan(call, this.effectiveMode() === "enforce");
-			for (const id of plan.matches) call.matches.add(id);
-			if (this.effectiveMode() === "enforce" && plan.valid && !plan.denied) call.input = plan.candidate;
-			const result = object(params.result);
-			const results = result
-				? this.resultPlan(call, {
-						content: Array.isArray(result.content) ? result.content : undefined,
-						details: result.details,
-						isError: result.isError === true,
-					})
-				: undefined;
-			return {
-				preview: true,
-				stateAdvanced: false,
-				mode: this.effectiveMode(),
-				executionInput: call.input,
-				wouldCorrectInput: this.effectiveMode() === "enforce" && plan.valid && !plan.denied && plan.changed,
-				input: plan,
-				results: results ? [...results.semantic, ...results.guides] : [],
-				resultCorrected: results?.correction ?? false,
-				boundary: "No simulated tool executes. The actual inspection call retains ordinary telemetry.",
-			};
-		}
+		if (view === "state") return this.inspectState();
+		if (view === "health") return this.inspectHealth(snapshot);
+		if (view === "capabilities") return this.inspectCapabilities();
+		if (view === "explain") return this.inspectExplain(params, ctx, snapshot);
+		if (view === "preview") return this.inspectPreview(params, ctx, snapshot);
 		throw new Error(`Unknown policy view: ${view}`);
+	}
+
+	private inspectState(): unknown {
+		return {
+			observationPeriods: publicState(this.state.snapshot(Date.now(), this.turn)),
+			turn: this.turn,
+			incomplete: this.incomplete,
+			staleCompletions: this.stale,
+		};
+	}
+
+	private inspectHealth(snapshot: RuleSnapshot): unknown {
+		return {
+			authority: snapshot.health,
+			telemetry: this.telemetryFailure ? { status: "failed", reason: this.telemetryFailure } : { status: "ready" },
+			observations: { incomplete: this.incomplete, pending: this.pending.size, recentCompletedIds: this.ended.size },
+		};
+	}
+
+	private inspectCapabilities(): unknown {
+		const catalog = this.catalog();
+		return {
+			phases: ["input", "result", "completion", "context"],
+			actions: ["deny", "rename-key", "substitute", "assert-error", "guide", "observe"],
+			mode: this.mode(),
+			effectiveMode: this.effectiveMode(),
+			schemas: {
+				available: catalog.available,
+				tools: catalog.tools.map((t) => ({
+					name: t.name,
+					active: catalog.active.includes(t.name),
+					configured: true,
+				})),
+			},
+			innerSchemas: "Unavailable; decoded argument corrections are unsupported",
+			dataKinds: ["table"],
+			observationStorage: "memory",
+			projection: "context, no new turn",
+		};
+	}
+
+	private async inspectExplain(
+		params: Record<string, unknown>,
+		ctx: ExtensionContext,
+		snapshot: RuleSnapshot,
+	): Promise<unknown> {
+		if (typeof params.id === "string" && params.id.startsWith("call:")) {
+			const callId = params.id.slice(5);
+			if (!callId || callId.length > 256) throw new Error("A bounded call identifier is required");
+			const activity = await readRecentActivity(this.dir, undefined, 1, {
+				session: ctx.sessionManager.getSessionId(),
+				callId,
+				includeUnmatched: true,
+			});
+			return {
+				callId,
+				scope: "current-session",
+				evidence: "untrusted recorded policy observations",
+				...activity,
+				boundary:
+					"A missing record may be outside this bounded read or not yet persisted. It does not prove no decision occurred.",
+			};
+		}
+		const record = typeof params.id === "string" ? snapshot.records.get(params.id) : undefined;
+		if (!record) throw new Error("An existing rule id is required");
+		const period = this.state.view(record.id, Date.now(), this.turn);
+		return {
+			id: record.id,
+			revision: record.definition.revision,
+			active: effectiveState(record),
+			programs: programSteps(compileRule(record)).map((rule) => rule.program),
+			scope: record.definition.scope,
+			observationPeriod: period ? publicState([period])[0] : undefined,
+		};
+	}
+
+	private inspectPreview(params: Record<string, unknown>, ctx: ExtensionContext, snapshot: RuleSnapshot): unknown {
+		if (typeof params.tool !== "string" || !params.tool || params.tool.length > 200)
+			throw new Error("A bounded preview tool name is required");
+		const input = inputSnapshot(params.input);
+		if (!input) throw new Error("Preview input must be bounded JSON");
+		const call = this.makeCall(params.tool, "preview", input, ctx, snapshot);
+		const plan = this.inputPlan(call, this.effectiveMode() === "enforce");
+		for (const id of plan.matches) call.matches.add(id);
+		if (this.effectiveMode() === "enforce" && plan.valid && !plan.denied) call.input = plan.candidate;
+		const result = object(params.result);
+		const results = result
+			? this.resultPlan(call, {
+					content: Array.isArray(result.content) ? result.content : undefined,
+					details: result.details,
+					isError: result.isError === true,
+				})
+			: undefined;
+		return {
+			preview: true,
+			stateAdvanced: false,
+			mode: this.effectiveMode(),
+			executionInput: call.input,
+			wouldCorrectInput: this.effectiveMode() === "enforce" && plan.valid && !plan.denied && plan.changed,
+			input: plan,
+			results: results ? [...results.semantic, ...results.guides] : [],
+			resultCorrected: results?.correction ?? false,
+			boundary: "No simulated tool executes. The actual inspection call retains ordinary telemetry.",
+		};
 	}
 	attach(): void {
 		this.pi.on("session_start", (event) => {

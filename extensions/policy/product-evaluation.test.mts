@@ -7,11 +7,11 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { Compile } from "typebox/compile";
 import type { TranscriptEvent } from "vitest-evals";
 import { piSdkAdapter, runDeterministicChecks } from "../../evals/subjects/pi-sdk.mts";
-import { DEFAULT_LIMITS, PACKAGE_CATALOG, RESULT_ERROR_SCHEMA } from "./catalog.ts";
+import { DEFAULT_LIMITS, PACKAGE_CATALOG } from "./catalog.ts";
 import { proposalRevision, RuleRegistry } from "./local-rules.ts";
 import { packageRowRevision } from "./rule.ts";
 import type { PolicyMode } from "./mode.ts";
-import { PRODUCT_TOOLS, type ProductFixtureOptions, registerProductFixture } from "./product-fixture.ts";
+import { PRODUCT_TOOLS, registerProductFixture } from "./product-fixture.ts";
 import suite, { type ProductCaseFixture, type ProductStep } from "./product.eval.mts";
 
 type Event = Record<string, unknown>;
@@ -47,7 +47,7 @@ const success: ProductStep = { name: "policy_product_recover", args: { path: "al
 const volume = (bytes: number): ProductStep => ({ name: "policy_product_volume", args: { bytes } });
 
 /** Public hook order, not an SDK inference run or a model response simulation. */
-function harness(mode: PolicyMode, options: ProductFixtureOptions = {}) {
+function harness(mode: PolicyMode) {
 	const hooks = new Map<string, Handler[]>();
 	const tools = new Map<string, Tool>();
 	const commands = new Map<string, Command>();
@@ -89,8 +89,17 @@ function harness(mode: PolicyMode, options: ProductFixtureOptions = {}) {
 				active = [...names];
 			},
 		} as unknown as ExtensionAPI,
-		options,
 	);
+	const tool = (name: string): Tool => {
+		const found = tools.get(name);
+		assert.ok(found, name);
+		return found;
+	};
+	const command = (): Command => {
+		const found = commands.get("policy");
+		assert.ok(found, "policy command registered");
+		return found;
+	};
 	const emit = async (name: string, event: Event = {}): Promise<Event> => {
 		let current = { ...event };
 		for (const handler of hooks.get(name) ?? []) {
@@ -112,9 +121,13 @@ function harness(mode: PolicyMode, options: ProductFixtureOptions = {}) {
 		return text;
 	};
 	const inspect = async (args: Record<string, unknown>) => {
-		const output = await tools
-			.get("policy_rules")!
-			.execute("inspection", args, new AbortController().signal, undefined, ctx);
+		const output = await tool("policy_rules").execute(
+			"inspection",
+			args,
+			new AbortController().signal,
+			undefined,
+			ctx,
+		);
 		return { ...output, text: output.content.map((part) => part.text).join("\n") };
 	};
 	return {
@@ -133,16 +146,18 @@ function harness(mode: PolicyMode, options: ProductFixtureOptions = {}) {
 		close: () => emit("session_shutdown", { reason: "quit" }),
 		tree: () => emit("session_tree"),
 		async reset(id: string) {
-			await commands.get("policy")!.handler(`reset ${id} Synthetic reset`, ctx as ExtensionCommandContext);
+			await command().handler(`reset ${id} Synthetic reset`, ctx as ExtensionCommandContext);
 		},
 		async command(args: string) {
 			const start = notices.length;
-			await commands.get("policy")!.handler(args, ctx as ExtensionCommandContext);
+			await command().handler(args, ctx as ExtensionCommandContext);
 			return notices.slice(start).join("\n");
 		},
 		async period(id: string): Promise<Period> {
 			const state = JSON.parse((await inspect({ view: "state" })).text) as { observationPeriods: Period[] };
-			return state.observationPeriods.find((period) => period.id === id)!;
+			const period = state.observationPeriods.find((entry) => entry.id === id);
+			assert.ok(period, id);
+			return period;
 		},
 		async duplicateEnd() {
 			assert.ok(lastEnd);
@@ -152,12 +167,12 @@ function harness(mode: PolicyMode, options: ProductFixtureOptions = {}) {
 			await emit("turn_start");
 			await project();
 			assert.ok(active.includes(step.name), `active tool: ${step.name}`);
-			const tool = tools.get(step.name)!;
+			const fixtureTool = tool(step.name);
 			const args = structuredClone(step.args);
 			const id = `call-${events.length}`;
 			events.push({ type: "tool_call", id, name: step.name, arguments: structuredClone(args) });
 			await emit("tool_execution_start", { toolName: step.name, toolCallId: id, args });
-			assert.equal(Compile(tool.parameters).Check(args), true, "host input validation precedes tool_call hooks");
+			assert.equal(Compile(fixtureTool.parameters).Check(args), true, "host input validation precedes tool_call hooks");
 			const decision = await emit("tool_call", { toolName: step.name, toolCallId: id, input: args });
 			inputs.push(structuredClone(args));
 			let output: Result;
@@ -167,7 +182,7 @@ function harness(mode: PolicyMode, options: ProductFixtureOptions = {}) {
 				output = { content: [{ type: "text", text: String(decision.reason) }], details: {} };
 			} else {
 				try {
-					output = await tool.execute(id, args, new AbortController().signal, undefined, ctx);
+					output = await fixtureTool.execute(id, args, new AbortController().signal, undefined, ctx);
 				} catch (error) {
 					isError = true;
 					output = { content: [{ type: "text", text: (error as Error).message }], details: {} };
@@ -198,7 +213,8 @@ function harness(mode: PolicyMode, options: ProductFixtureOptions = {}) {
 }
 
 test("product resources resolve, retain human review, and differ only by mode", () => {
-	piSdkAdapter.validate!({
+	assert.ok(piSdkAdapter.validate, "adapter exposes a validation hook");
+	piSdkAdapter.validate({
 		suitePath,
 		subjectKind: suite.subject.kind,
 		subjectConfig: suite.subject.config,
@@ -270,7 +286,8 @@ test("product fixtures retain package provenance and contain no local policy eve
 		const snapshot = await new RuleRegistry(dir).snapshot();
 		assert.deepEqual([...snapshot.records.keys()].sort(), PACKAGE_CATALOG.map((row) => row.id).sort());
 		for (const row of PACKAGE_CATALOG) {
-			const record = snapshot.records.get(row.id)!;
+			const record = snapshot.records.get(row.id);
+			assert.ok(record, row.id);
 			assert.equal(record.source.kind, "package");
 			assert.equal(record.definition.revision, row.revision);
 			assert.equal(record.definition.purpose, row.purpose);
@@ -279,15 +296,12 @@ test("product fixtures retain package provenance and contain no local policy eve
 			assert.equal(record.override, undefined);
 		}
 		assert.deepEqual(snapshot.pending, []);
-		assert.deepEqual([...snapshot.data.keys()], [RESULT_ERROR_SCHEMA]);
-		const contract = snapshot.data.get(RESULT_ERROR_SCHEMA)!;
-		assert.equal(contract.kind, "schema");
+		assert.deepEqual([...snapshot.data.keys()], []);
 		const events = (await readFile(health.authority.path, "utf8"))
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line));
-		assert.ok(events.every((event) => event.kind === "catalog" || event.kind === "data"));
-		assert.equal(events.filter((event) => event.kind === "data").length, 1);
+		assert.ok(events.every((event) => event.kind === "catalog"));
 		await access(dir);
 	} finally {
 		await run.close();
@@ -308,7 +322,8 @@ test("stored rule choices survive reload and starter changes until an exact impo
 		const dir = dirname(health.authority.path);
 		const registry = new RuleRegistry(dir);
 		const initial = await registry.snapshot();
-		const record = initial.records.get(id)!;
+		const record = initial.records.get(id);
+		assert.ok(record);
 		assert.equal(record.matcher.kind, "declarative");
 		assert.ok(record.matcher.kind === "declarative" && record.matcher.language === "facts/v1");
 		const matcher = structuredClone(record.matcher);
@@ -329,16 +344,23 @@ test("stored rule choices survive reload and starter changes until an exact impo
 		await registry.disable("arguments.schema", "Preserve an explicit disabled choice", operator);
 		await registry.retire("resources.output-volume", "Remove the seeded volume rule", operator);
 		await run.start();
-		const changed = { ...PACKAGE_CATALOG.find((row) => row.id === id)!, note: "Different bundled advice." };
+		const catalogRow = PACKAGE_CATALOG.find((row) => row.id === id);
+		assert.ok(catalogRow);
+		const changed = { ...catalogRow, note: "Different bundled advice." };
 		const { revision: _priorRevision, ...changedDefinition } = changed;
 		changed.revision = packageRowRevision(changedDefinition);
 		const reloaded = await new RuleRegistry(dir, { catalog: [changed] }).snapshot();
 		assert.equal(reloaded.health.status, "ok");
-		assert.deepEqual(reloaded.records.get(id)!.matcher, matcher);
-		assert.equal(reloaded.records.get("arguments.schema")!.override?.state, "disabled");
-		assert.equal(reloaded.records.get("arguments.schema")!.definition.state, "active");
-		assert.equal(reloaded.records.get("resources.output-volume")!.definition.state, "retired");
-		assert.equal(reloaded.records.get("results.declared-error")!.definition.state, "active");
+		const reloadedRecord = reloaded.records.get(id);
+		const reloadedSchema = reloaded.records.get("arguments.schema");
+		const reloadedVolume = reloaded.records.get("resources.output-volume");
+		assert.ok(reloadedRecord);
+		assert.ok(reloadedSchema);
+		assert.ok(reloadedVolume);
+		assert.deepEqual(reloadedRecord.matcher, matcher);
+		assert.equal(reloadedSchema.override?.state, "disabled");
+		assert.equal(reloadedSchema.definition.state, "active");
+		assert.equal(reloadedVolume.definition.state, "retired");
 		assert.deepEqual([...reloaded.data], [...initial.data]);
 		const noBundle = await new RuleRegistry(dir, { catalog: [] }).snapshot();
 		assert.deepEqual([...noBundle.records], [...reloaded.records]);
@@ -346,10 +368,18 @@ test("stored rule choices survive reload and starter changes until an exact impo
 		await run.command(`import ${id} exact ${plan.revision}`);
 		const imported = await new RuleRegistry(dir).snapshot();
 		assert.equal(imported.health.status, "ok");
-		assert.equal(imported.records.get(id)!.source.kind, "import");
-		assert.deepEqual(imported.records.get(id)!.matcher, PACKAGE_CATALOG.find((row) => row.id === id)!.matcher);
-		assert.equal(imported.records.get("arguments.schema")!.override?.state, "disabled");
-		assert.equal(imported.records.get("resources.output-volume")!.definition.state, "retired");
+		const importedRecord = imported.records.get(id);
+		const importedSchema = imported.records.get("arguments.schema");
+		const importedVolume = imported.records.get("resources.output-volume");
+		const packageRow = PACKAGE_CATALOG.find((row) => row.id === id);
+		assert.ok(importedRecord);
+		assert.ok(importedSchema);
+		assert.ok(importedVolume);
+		assert.ok(packageRow);
+		assert.equal(importedRecord.source.kind, "import");
+		assert.deepEqual(importedRecord.matcher, packageRow.matcher);
+		assert.equal(importedSchema.override?.state, "disabled");
+		assert.equal(importedVolume.definition.state, "retired");
 		assert.deepEqual([...imported.data], [...initial.data]);
 	} finally {
 		await run.close();
@@ -436,32 +466,6 @@ for (const mode of ["enforce", "observe"] as const) {
 			await run.close();
 		}
 	});
-
-	for (const resultContract of ["missing", "stale"] as const)
-		test(`${mode}: ${resultContract} result contract stays unavailable rather than asserting errors`, async () => {
-			const run = harness(mode, { resultContract });
-			try {
-				await run.start();
-				const outcome = await run.call({ name: "policy_product_result", args: { scenario: "declared-error" } });
-				assert.equal(outcome.isError, false);
-				const preview = JSON.parse(
-					(
-						await run.inspect({
-							view: "preview",
-							tool: "policy_product_result",
-							input: { scenario: "declared-error" },
-							result: { isError: false, details: { status: "refused", code: "DEMO_REFUSAL" } },
-						})
-					).text,
-				);
-				const evaluated = preview.results.find((row: { id: string }) => row.id === "results.declared-error");
-				assert.equal(evaluated.truth, "unknown");
-				assert.equal(evaluated.unavailable, true);
-				assert.equal(preview.resultCorrected, false);
-			} finally {
-				await run.close();
-			}
-		});
 }
 
 test("policy denials do not count as executed errors or result volume", async () => {

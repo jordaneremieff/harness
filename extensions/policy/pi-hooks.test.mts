@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Type } from "typebox";
-import { namedDataRevision, proposalRevision, RuleRegistry } from "./local-rules.ts";
+import { proposalRevision, RuleRegistry } from "./local-rules.ts";
 import type { FactsProgram } from "./program.ts";
 
 const piRoot = process.env.PI_POLICY_TEST_PI_ROOT
@@ -217,7 +217,7 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 				...(options.stop ? { shouldStopAfterTurn: () => true } : {}),
 			},
 			async (event: { type: string; toolCallId?: string }) => {
-				if (event.type === "tool_execution_end") endings.push(event.toolCallId!);
+				if (event.type === "tool_execution_end" && event.toolCallId) endings.push(event.toolCallId);
 				if (event.type === "message_end") await runner.emitMessageEnd(event);
 				else await runner.emit(event);
 			},
@@ -290,15 +290,14 @@ const contextProgram: FactsProgram = {
 };
 
 describe(`ordinary Pi ${version} policy hooks`, () => {
-	it("qualifies decoded repairs with exact raw server and operation facts", async () => {
+	it("qualifies decoded conditions with exact raw server and operation facts", async () => {
 		const program: FactsProgram = {
 			phase: "input",
 			selector: {
 				tools: ["gateway"],
 				operations: ["send"],
-				codec: { argumentsPath: ["arguments"], operationPath: ["operation"], schemaData: "gateway-schema" },
+				codec: { argumentsPath: ["arguments"], operationPath: ["operation"] },
 			},
-			data: ["gateway-schema"],
 			when: {
 				all: [
 					{ op: "eq", path: ["outer", "server"], value: "alpha" },
@@ -306,27 +305,11 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 					{ op: "exists", path: ["input", "old"] },
 				],
 			},
-			action: { kind: "rename-key", path: [], from: "old", to: "name" },
+			action: { kind: "deny" },
 			onUnavailable: "skip",
 		};
-		const f = await setup([["gateway-repair", program]]);
+		const f = await setup([["gateway-gate", program]]);
 		try {
-			const schema = {
-				name: "gateway-schema",
-				kind: "schema" as const,
-				source: "controlled",
-				capturedAt: 1,
-				schema: {
-					type: "object",
-					properties: { name: { type: "string" } },
-					required: ["name"],
-					additionalProperties: false,
-				},
-			};
-			await f.registry.setData({ ...schema, revision: namedDataRevision(schema) }, null, {
-				...audit,
-				surface: "command",
-			});
 			const received: Array<Record<string, unknown>> = [];
 			f.setTools([
 				{
@@ -351,13 +334,12 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				{ id: "malformed", name: "gateway", arguments: { server: "alpha", operation: "send", arguments: "invalid" } },
 			]);
 			assert.deepEqual(received, [
-				{ server: "alpha", operation: "send", arguments: '{"name":"value"}' },
 				{ server: "beta", operation: "send", arguments: raw },
 				{ operation: "send", arguments: raw },
 				{ server: "alpha", operation: "send", arguments: "invalid" },
 			]);
 			const records = await f.telemetry();
-			assert.equal(records.find((row) => row.callId === "alpha").policy.inputCorrected, true);
+			assert.equal(records.find((row) => row.callId === "alpha").outcome, "denied");
 			assert.deepEqual(f.errors, []);
 		} finally {
 			await f.cleanup();

@@ -12,34 +12,16 @@ import {
 	validateFactsProgram,
 } from "./program.ts";
 
-const innerSchema: NamedData = {
-	name: "request-schema",
-	kind: "schema",
-	source: "operator",
-	capturedAt: 1,
-	revision: "123456abcdef",
-	schema: {
-		type: "object",
-		properties: { name: { type: "string" } },
-		required: ["name"],
-		additionalProperties: false,
-	},
-};
 const outerSchema = {
 	type: "object",
-	properties: {
-		server: { type: "string" },
-		operation: { type: "string" },
-		arguments: { type: "string" },
-	},
+	properties: { server: { type: "string" }, operation: { type: "string" }, arguments: { type: "string" } },
 	required: ["operation", "arguments"],
 	additionalProperties: false,
 };
-const data = snapshotData([innerSchema], 2);
-const context = { tool: "gateway", schema: outerSchema, data };
+const context = { tool: "gateway", schema: outerSchema };
 const exactServer: Condition = { op: "eq", path: ["outer", "server"], value: "alpha" };
-const repair: ProgramRule = {
-	id: "repair",
+const gate: ProgramRule = {
+	id: "gate",
 	revision: "123456abcdef",
 	applicability: exactServer,
 	program: {
@@ -47,163 +29,92 @@ const repair: ProgramRule = {
 		selector: {
 			tools: ["gateway"],
 			operations: ["send"],
-			codec: { argumentsPath: ["arguments"], operationPath: ["operation"], schemaData: "request-schema" },
+			codec: { argumentsPath: ["arguments"], operationPath: ["operation"] },
 		},
-		data: ["request-schema"],
-		when: { op: "exists", path: ["input", "oldName"] },
-		action: { kind: "rename-key", path: [], from: "oldName", to: "name" },
+		when: { op: "eq", path: ["input", "name"], value: "forbidden" },
+		action: { kind: "deny" },
 		onUnavailable: "skip",
 	},
 };
-const input = { server: "alpha", operation: "send", arguments: '{"oldName":"room"}' };
+const input = { server: "alpha", operation: "send", arguments: '{"name":"forbidden"}' };
 
-test("raw outer roots coexist with decoded original and current facts", () => {
-	const current = { ...input, server: "beta", arguments: '{"name":"room"}' };
-	const facts = programFacts(repair, context, current, input);
+test("raw outer roots coexist with decoded facts without inner schema evidence", () => {
+	const current = { ...input, server: "beta", arguments: '{"name":"safe"}' };
+	const facts = programFacts(gate, context, current, input);
 	assert.deepEqual(facts.outer, current);
 	assert.deepEqual(facts.originalOuter, input);
-	assert.deepEqual(facts.input, { name: "room" });
-	assert.deepEqual(facts.original, { oldName: "room" });
+	assert.deepEqual(facts.input, { name: "safe" });
+	assert.deepEqual(facts.original, { name: "forbidden" });
+	assert.deepEqual(facts.schema, { valid: UNKNOWN });
 	assert.equal(facts.operation, "send");
-	assert.equal(validateApplicability(exactServer, repair.program), undefined);
-	assert.equal(
-		validateFactsProgram({ ...repair.program, when: { op: "eq", path: ["originalOuter", "server"], value: "alpha" } }),
-		undefined,
-	);
-	assert.equal(programFacts(repair, { tool: "gateway" }).outer, UNKNOWN);
-	assert.equal(programFacts(repair, { tool: "gateway" }).originalOuter, UNKNOWN);
-	const noCodec = { ...repair, program: { ...repair.program, selector: { tools: ["gateway"] } } };
-	const direct = programFacts(noCodec, { ...context, facts: { input: current, original: input } });
-	assert.deepEqual(direct.outer, direct.input);
-	assert.deepEqual(direct.originalOuter, direct.original);
+	assert.equal(validateApplicability(exactServer, gate.program), undefined);
+	assert.equal(validateFactsProgram(gate.program), undefined);
+	assert.equal(programFacts(gate, { tool: "gateway" }).outer, UNKNOWN);
+	const direct = { ...gate, program: { ...gate.program, selector: { tools: ["gateway"] } } };
+	assert.deepEqual(programFacts(direct, context, input).schema, { valid: true });
 });
 
-test("exact tool, server, and operation qualify inner repairs independently", () => {
-	const accepted = planInput([repair], input, context);
-	assert.equal(accepted.valid, true);
-	assert.equal(accepted.changed, true);
-	assert.deepEqual(accepted.candidate, { ...input, arguments: '{"name":"room"}' });
+test("exact tool, server, and operation qualify read-only inner conditions", () => {
+	assert.equal(planInput([gate], input, context).denied, true);
 	for (const [candidate, tool, applicable] of [
 		[{ ...input, server: "beta" }, "gateway", false],
 		[{ operation: "send", arguments: input.arguments }, "gateway", "unknown"],
 		[{ ...input, operation: "read" }, "gateway", true],
 		[input, "other-gateway", true],
 	] as const) {
-		const plan = planInput([repair], candidate, { ...context, tool });
+		const plan = planInput([gate], candidate, { ...context, tool });
 		assert.equal(plan.valid, true);
 		assert.equal(plan.changed, false);
 		assert.equal(plan.denied, false);
 		assert.deepEqual(plan.candidate, candidate);
 		assert.equal(plan.evaluations[0].applicable, applicable);
 	}
-	assert.deepEqual(input, { server: "alpha", operation: "send", arguments: '{"oldName":"room"}' });
 });
 
-test("malformed inner arguments retain raw qualification without repair authority", () => {
+test("malformed inner arguments retain raw facts and explicit unavailable handling", () => {
 	for (const argumentsValue of ["not-json", "null", "[]", "42", '"text"']) {
 		const candidate = { ...input, arguments: argumentsValue };
-		const facts = programFacts(repair, context, candidate);
+		const facts = programFacts(gate, context, candidate);
 		assert.equal(facts.input, UNKNOWN);
+		assert.deepEqual(facts.schema, { valid: UNKNOWN });
 		assert.equal(evaluateCondition(exactServer, facts), true);
-		const plan = planInput([repair], candidate, context);
+		const plan = planInput([gate], candidate, context);
 		assert.equal(plan.changed, false);
 		assert.equal(plan.evaluations[0].truth, "unknown");
 		assert.deepEqual(plan.candidate, candidate);
-		const required = { ...repair, program: { ...repair.program, onUnavailable: "deny" as const } };
+		const required = { ...gate, program: { ...gate.program, onUnavailable: "deny" as const } };
 		assert.equal(planInput([required], candidate, context).denied, true);
 		assert.equal(planInput([required], { ...candidate, server: "beta" }, context).denied, false);
-		assert.equal(planInput([required], { operation: "send", arguments: argumentsValue }, context).denied, false);
 	}
 });
 
-test("logical target changes qualify later stages against current outer and fixed original outer", () => {
+test("outer logical-target substitutions preserve inner bytes and feed effective gates", () => {
 	const servers: NamedData = {
-		name: "servers",
-		kind: "table",
-		source: "operator",
-		capturedAt: 1,
-		revision: "123456abcdef",
+		name: "servers", kind: "table", source: "operator", capturedAt: 1, revision: "123456abcdef",
 		rows: [{ key: "friendly", value: "alpha" }],
 	};
 	const target: ProgramRule = {
-		id: "target",
-		revision: "123456abcdef",
+		id: "target", revision: "123456abcdef",
 		program: {
-			phase: "input",
-			selector: { tools: ["gateway"] },
-			data: ["servers"],
+			phase: "input", selector: gate.program.selector, data: ["servers"],
 			when: { op: "lookup", path: ["outer", "server"], table: "servers", value: "unique" },
 			action: { kind: "substitute", path: ["server"], table: "servers", stage: "logical-target" },
 			onUnavailable: "skip",
 		},
 	};
+	assert.equal(validateFactsProgram(target.program), undefined);
 	const original = { ...input, server: "friendly" };
-	const key: ProgramRule = {
-		...repair,
-		applicability: {
-			all: [exactServer, { op: "eq", path: ["originalOuter", "server"], value: "friendly" }],
-		},
-	};
-	const ctx = { ...context, data: snapshotData([innerSchema, servers], 2) };
-	const plan = planInput([key, target], original, ctx);
-	assert.equal(plan.valid, true);
-	assert.equal(plan.changed, true);
-	assert.deepEqual(plan.candidate, { ...input, arguments: '{"name":"room"}' });
-	assert.deepEqual(
-		plan.corrections.map((entry) => entry.stage),
-		["logical-target", "keys"],
-	);
-	const gate = (inputView: "original" | "effective"): ProgramRule => ({
-		id: "gate",
-		revision: "123456abcdef",
-		program: {
-			phase: "input",
-			inputView,
-			selector: repair.program.selector,
-			data: ["request-schema"],
-			when: {
-				all: [exactServer, { op: "eq", path: ["originalOuter", "server"], value: "friendly" }],
-			},
-			action: { kind: "deny" },
-			onUnavailable: "skip",
-		},
-	});
-	assert.equal(planInput([target, key, gate("original")], original, ctx).denied, false);
-	const denied = planInput([target, key, gate("effective")], original, ctx);
+	const ctx = { ...context, data: snapshotData([servers], 2) };
+	const corrected = planInput([target], original, ctx);
+	assert.equal(corrected.valid, true);
+	assert.equal(corrected.changed, true);
+	assert.deepEqual(corrected.candidate, input);
+	assert.deepEqual(planInput([target, gate], original, ctx).candidate, input);
+	const effective = { ...gate, program: { ...gate.program, inputView: "effective" as const } };
+	const denied = planInput([target, effective], original, ctx);
 	assert.equal(denied.denied, true);
 	assert.deepEqual(denied.candidate, original);
-	assert.equal(
-		planInput([target, key, gate("effective")], original, { ...ctx, applyCorrections: false }).denied,
-		false,
-	);
-});
-
-test("all repairs within one stage read the same outer snapshot", () => {
-	const gate: ProgramRule = {
-		...repair,
-		id: "not-yet-renamed",
-		program: {
-			...repair.program,
-			when: { op: "contains", path: ["outer", "arguments"], value: '"name"' },
-			action: { kind: "rename-key", path: [], from: "name", to: "other" },
-		},
-	};
-	const plan = planInput([repair, gate], input, context);
-	assert.equal(plan.valid, true);
-	assert.deepEqual(plan.candidate, { ...input, arguments: '{"name":"room"}' });
-	assert.equal(plan.evaluations.find((entry) => entry.id === gate.id)?.truth, false);
-	const resultRule: ProgramRule = {
-		...repair,
-		program: {
-			...repair.program,
-			phase: "result",
-			when: { all: [exactServer, { op: "exists", path: ["original", "oldName"] }] },
-			action: { kind: "assert-error" },
-		},
-	};
-	assert.equal(
-		evaluatePrograms([resultRule], "result", { ...context, facts: { input: plan.candidate, original: input } })[0]
-			.truth,
-		true,
-	);
+	assert.equal(planInput([target, effective], original, { ...ctx, applyCorrections: false }).denied, false);
+	const result = { ...gate, program: { ...gate.program, phase: "result" as const, action: { kind: "assert-error" as const } } };
+	assert.equal(evaluatePrograms([result], "result", { ...ctx, facts: { input, original } })[0].truth, true);
 });

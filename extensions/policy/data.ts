@@ -1,10 +1,6 @@
 /** Approved structured data and bounded, noncoercing JSON operations. */
 import { createHash } from "node:crypto";
-import { Ajv, type AnySchema, type ValidateFunction } from "ajv";
-import { Ajv2019 } from "ajv/dist/2019.js";
-import { Ajv2020 } from "ajv/dist/2020.js";
-import addFormats from "ajv-formats";
-import { Type } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
 import { Compile } from "typebox/compile";
 
 export type Scalar = string | number | boolean | null;
@@ -24,35 +20,18 @@ const metadata = {
 	capturedAt: Type.Number({ minimum: 0 }),
 	maxAgeMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2592000000 })),
 };
-export const NamedDataSchema = Type.Union([
-	Type.Object(
-		{
-			...metadata,
-			kind: Type.Literal("table"),
-			collation: Type.Optional(Type.Union([Type.Literal("exact"), Type.Literal("ascii-case-insensitive")])),
-			rows: Type.Array(Type.Object({ key: ScalarSchema, value: ScalarSchema }, { additionalProperties: false }), {
-				maxItems: DATA_LIMITS.rows,
-			}),
-		},
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{ ...metadata, kind: Type.Literal("schema"), schema: Type.Record(Type.String(), Type.Unknown()) },
-		{ additionalProperties: false },
-	),
-]);
-interface DataMetadata {
-	name: string;
-	revision: string;
-	source: string;
-	capturedAt: number;
-	maxAgeMs?: number;
-}
-export type NamedData = DataMetadata &
-	(
-		| { kind: "table"; collation?: "exact" | "ascii-case-insensitive"; rows: { key: Scalar; value: Scalar }[] }
-		| { kind: "schema"; schema: Record<string, unknown> }
-	);
+export const NamedDataSchema = Type.Object(
+	{
+		...metadata,
+		kind: Type.Literal("table"),
+		collation: Type.Optional(Type.Union([Type.Literal("exact"), Type.Literal("ascii-case-insensitive")])),
+		rows: Type.Array(Type.Object({ key: ScalarSchema, value: ScalarSchema }, { additionalProperties: false }), {
+			maxItems: DATA_LIMITS.rows,
+		}),
+	},
+	{ additionalProperties: false },
+);
+export type NamedData = Static<typeof NamedDataSchema>;
 export interface DataSnapshot {
 	name: string;
 	status: "ready" | "missing" | "stale" | "invalid";
@@ -78,54 +57,90 @@ export function validPath(path: unknown, allowEmpty = false): path is string[] {
 	);
 }
 
+/** One descriptor read keeps the checked property and the copied value identical. */
+function jsonPropertyValue(entry: object, key: string): unknown {
+	const descriptor = Object.getOwnPropertyDescriptor(entry, key);
+	if (!descriptor || !("value" in descriptor) || !safeKey(key)) throw new Error("Unsafe JSON property");
+	return descriptor.value;
+}
+
+function copyOwnProperties(
+	entry: object,
+	result: unknown[] | Record<string, unknown>,
+	visit: (value: unknown, depth: number) => unknown,
+	depth: number,
+	track: (bytes: number) => void,
+): void {
+	for (const key in entry) {
+		if (!Object.hasOwn(entry, key)) continue;
+		const value = jsonPropertyValue(entry, key);
+		if (Array.isArray(entry) && !/^(0|[1-9][0-9]*)$/.test(key)) throw new Error("Non-JSON array property");
+		track(Buffer.byteLength(key, "utf8") + 3);
+		Object.defineProperty(result, key, {
+			value: visit(value, depth + 1),
+			enumerable: true,
+			writable: true,
+			configurable: true,
+		});
+	}
+}
+
+/** Copy one scalar JSON value, or report that the entry needs object handling. */
+function copyScalar(entry: unknown, track: (bytes: number) => void): { value: unknown; done: boolean } {
+	if (entry === null || typeof entry === "boolean") {
+		track(5);
+		return { value: entry, done: true };
+	}
+	if (typeof entry === "number" && Number.isFinite(entry)) {
+		track(32);
+		return { value: entry, done: true };
+	}
+	if (typeof entry === "string") {
+		track(Buffer.byteLength(entry, "utf8") + 2);
+		return { value: entry, done: true };
+	}
+	return { value: entry, done: false };
+}
+
+/** Copy one plain object or array after its prototype and cycle checks pass. */
+function copyJsonObject(
+	entry: object,
+	depth: number,
+	track: (bytes: number) => void,
+	seen: Set<object>,
+	visit: (value: unknown, depth: number) => unknown,
+): unknown {
+	const prototype = Object.getPrototypeOf(entry);
+	if (!Array.isArray(entry) && prototype !== Object.prototype && prototype !== null)
+		throw new Error("Policy requires plain JSON objects");
+	seen.add(entry);
+	const result: unknown[] | Record<string, unknown> = Array.isArray(entry) ? [] : {};
+	copyOwnProperties(entry, result, visit, depth, track);
+	if (Array.isArray(entry) && Object.keys(result).length !== entry.length) throw new Error("Sparse JSON array");
+	seen.delete(entry);
+	return result;
+}
+
 /** Reject accessors and non-JSON objects before a private copy reads values. */
 export function cloneJson<T>(value: T): T {
 	let nodes = 0;
 	let bytes = 0;
 	const seen = new Set<object>();
+	const track = (entry: number) => {
+		bytes += entry;
+		if (bytes > DATA_LIMITS.bytes) throw new Error("JSON exceeds policy byte bound");
+	};
 	const visit = (entry: unknown, depth: number): unknown => {
 		if (++nodes > DATA_LIMITS.nodes || depth > DATA_LIMITS.depth)
 			throw new Error("JSON structure exceeds policy bounds");
-		if (entry === null || typeof entry === "boolean") {
-			bytes += 5;
-			return entry;
-		}
-		if (typeof entry === "number" && Number.isFinite(entry)) {
-			bytes += 32;
-			return entry;
-		}
-		if (typeof entry === "string") {
-			bytes += Buffer.byteLength(entry, "utf8") + 2;
-			if (bytes > DATA_LIMITS.bytes) throw new Error("JSON exceeds policy byte bound");
-			return entry;
-		}
+		const scalar = copyScalar(entry, track);
+		if (scalar.done) return scalar.value;
 		if (typeof entry !== "object" || entry === null || seen.has(entry))
 			throw new Error("Policy requires acyclic JSON values");
-		const prototype = Object.getPrototypeOf(entry);
-		if (!Array.isArray(entry) && prototype !== Object.prototype && prototype !== null)
-			throw new Error("Policy requires plain JSON objects");
-		seen.add(entry);
-		const result: unknown[] | Record<string, unknown> = Array.isArray(entry) ? [] : {};
-		for (const key in entry) {
-			if (!Object.hasOwn(entry, key)) continue;
-			const descriptor = Object.getOwnPropertyDescriptor(entry, key)!;
-			if (!("value" in descriptor) || !safeKey(key)) throw new Error("Unsafe JSON property");
-			if (Array.isArray(entry) && !/^(0|[1-9][0-9]*)$/.test(key)) throw new Error("Non-JSON array property");
-			bytes += Buffer.byteLength(key, "utf8") + 3;
-			if (bytes > DATA_LIMITS.bytes) throw new Error("JSON exceeds policy byte bound");
-			Object.defineProperty(result, key, {
-				value: visit(descriptor.value, depth + 1),
-				enumerable: true,
-				writable: true,
-				configurable: true,
-			});
-		}
-		if (Array.isArray(entry) && Object.keys(result).length !== entry.length) throw new Error("Sparse JSON array");
-		seen.delete(entry);
-		return result;
+		return copyJsonObject(entry, depth, track, seen, visit);
 	};
 	const result = visit(value, 0);
-	if (bytes > DATA_LIMITS.bytes) throw new Error("JSON exceeds policy byte bound");
+	track(0);
 	return result as T;
 }
 
@@ -145,80 +160,22 @@ export function readPath(value: unknown, path: readonly string[]): { exists: boo
 }
 
 export const SCHEMA_CACHE_LIMIT = 64;
-const schemaValidators = new Map<string, ValidateFunction | undefined>();
+const schemaValidators = new Map<string, ReturnType<typeof Compile>>();
 
-function compileSchema(schema: unknown): ValidateFunction | undefined {
-	const copied = cloneJson(schema) as Record<string, unknown> | boolean;
-	const declared = typeof copied === "object" ? copied.$schema : undefined;
-	let dialect: "draft-07" | "2019-09" | "2020-12";
-	if (
-		declared === undefined ||
-		declared === "http://json-schema.org/draft-07/schema#" ||
-		declared === "http://json-schema.org/draft-07/schema" ||
-		declared === "https://json-schema.org/draft-07/schema#" ||
-		declared === "https://json-schema.org/draft-07/schema"
-	)
-		dialect = "draft-07";
-	else if (
-		declared === "https://json-schema.org/draft/2019-09/schema" ||
-		declared === "https://json-schema.org/draft/2019-09/schema#"
-	)
-		dialect = "2019-09";
-	else if (
-		declared === "https://json-schema.org/draft/2020-12/schema" ||
-		declared === "https://json-schema.org/draft/2020-12/schema#"
-	)
-		dialect = "2020-12";
-	else return undefined;
-	if (typeof copied === "object" && declared !== undefined)
-		copied.$schema =
-			dialect === "draft-07"
-				? "http://json-schema.org/draft-07/schema#"
-				: `https://json-schema.org/draft/${dialect}/schema`;
-	const options = {
-		strictSchema: true,
-		strictNumbers: true,
-		strictTypes: false,
-		strictTuples: false,
-		strictRequired: false,
-		allowUnionTypes: true,
-		allowMatchingProperties: true,
-		allErrors: false,
-		validateSchema: true,
-		validateFormats: true,
-		coerceTypes: false,
-		useDefaults: false,
-		removeAdditional: false,
-		ownProperties: true,
-		logger: false as const,
-		addUsedSchema: false,
-	};
-	const validator =
-		dialect === "2020-12" ? new Ajv2020(options) : dialect === "2019-09" ? new Ajv2019(options) : new Ajv(options);
-	addFormats.default(validator);
-	const compiled = validator.compile(copied as AnySchema);
-	return "$async" in compiled && compiled.$async ? undefined : (compiled as ValidateFunction);
-}
-
-/** Validate the schema itself, then check values without conversion, removal, or defaults. */
-export function checkSchema(schema: unknown, value: unknown): Truth {
-	if (typeof schema !== "boolean" && (typeof schema !== "object" || schema === null || Array.isArray(schema)))
-		return "unknown";
+/** Check a registered tool contract without conversion, property removal, or defaults. */
+export function checkToolSchema(schema: TSchema | undefined, value: unknown): Truth {
+	if (schema === undefined) return "unknown";
 	try {
 		const copied = cloneJson(schema);
 		const key = createHash("sha256").update(JSON.stringify(copied)).digest("hex");
 		if (!schemaValidators.has(key)) {
-			let validator: ValidateFunction | undefined;
-			try {
-				validator = compileSchema(copied);
-			} catch {
-				validator = undefined;
-			}
-			if (schemaValidators.size >= SCHEMA_CACHE_LIMIT) schemaValidators.delete(schemaValidators.keys().next().value!);
+			const validator = Compile(copied);
+			const oldest = schemaValidators.keys().next().value;
+			if (schemaValidators.size >= SCHEMA_CACHE_LIMIT && oldest !== undefined) schemaValidators.delete(oldest);
 			schemaValidators.set(key, validator);
 		}
 		const validator = schemaValidators.get(key);
-		return validator ? validator(cloneJson(value)) === true : "unknown";
+		return validator ? validator.Check(cloneJson(value)) : "unknown";
 	} catch {
 		return "unknown";
 	}
@@ -230,8 +187,6 @@ export function validateNamedData(value: unknown): string | undefined {
 		if (!dataValidator.Check(copied)) return "Invalid named data definition";
 		if (Buffer.byteLength(JSON.stringify(copied), "utf8") > DATA_LIMITS.bytes)
 			return "Named data exceeds serialized byte bound";
-		const data = copied as NamedData;
-		if (data.kind === "schema" && checkSchema(data.schema, null) === "unknown") return "Unavailable schema validator";
 		return undefined;
 	} catch {
 		return "Named data exceeds bounds or contains unsafe JSON";

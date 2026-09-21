@@ -77,6 +77,33 @@ function sizedData(bytes: number): NamedData {
 	raw.rows[0].value += "x".repeat(remaining);
 	return { ...raw, revision: namedDataRevision(raw) };
 }
+type ReplayKind = "data" | "proposal";
+function replayEvent(kind: ReplayKind, registry: RuleRegistry) {
+	if (kind === "data") return registry.setData(normalizeDataArtifact(source(1)).data, null, audit);
+	return registry.proposeAdd(
+		{
+			id: "sample.rule",
+			purpose: "Protect output.",
+			authority: "steer-or-block",
+			matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "sample" } },
+			note: "Use bounded output.",
+		},
+		"Protect output.",
+		{ ...audit, surface: "agent-tool" },
+	);
+}
+async function snapshotReplay(dir: string, kind: ReplayKind, json: string, limit: number, delta: number) {
+	const target = join(dir, `${kind}-${delta}`);
+	await mkdir(target, { mode: 0o700 });
+	await writeFile(join(target, "rules.jsonl"), `${json}${" ".repeat(limit - Buffer.byteLength(json) - 1 + delta)}\n`, {
+		mode: 0o600,
+	});
+	return new RuleRegistry(target, { catalog: [], onNotice() {} }).snapshot();
+}
+function assertReplayBounds(snapshot: Awaited<ReturnType<typeof snapshotReplay>>, kind: ReplayKind, delta: number): void {
+	assert.equal(snapshot.health.status, delta > 0 ? "degraded" : "ok");
+	if (delta <= 0) assert.equal(kind === "data" ? snapshot.data.size : snapshot.pending.length, 1);
+}
 
 describe("complete named-data file import", () => {
 	it("keeps safely escaped long source paths inside one complete approval command", () => {
@@ -101,7 +128,8 @@ describe("complete named-data file import", () => {
 		const { path, input, registry, command } = await setup(t);
 		let reviewed = "";
 		const preview = await command({ path: "source.json" }, async (_title?: string, message?: string) => {
-			reviewed = message!;
+			assert.ok(message);
+			reviewed = message;
 			return false;
 		});
 		assert.equal(reviewed, terminalSafe(reviewed));
@@ -124,7 +152,8 @@ describe("complete named-data file import", () => {
 		assert.ok(Buffer.byteLength(dataLines[0]) > MAX_RULE_EVENT_BYTES);
 		assert.ok(Buffer.byteLength(dataLines[0]) < MAX_DATA_EVENT_BYTES);
 		const reloaded = new RuleRegistry(dirname(registry.path), { catalog: [] });
-		const persisted = (await reloaded.snapshot()).data.get("aliases")!;
+		const persisted = (await reloaded.snapshot()).data.get("aliases");
+		assert.ok(persisted);
 		assert.deepEqual(persisted, artifact.data);
 		assert.equal(persisted.capturedAt, 1000);
 		const captured = snapshotData([persisted], 1001);
@@ -171,7 +200,8 @@ describe("complete named-data file import", () => {
 			await writeFile(path, JSON.stringify(source(1)));
 			return true;
 		});
-		const persisted = (await registry.snapshot()).data.get("aliases")!;
+		const persisted = (await registry.snapshot()).data.get("aliases");
+		assert.ok(persisted);
 		assert.equal(persisted.kind === "table" && persisted.rows.length, input.data.rows.length);
 	});
 
@@ -220,7 +250,11 @@ describe("complete named-data file import", () => {
 			const data = sizedData(DATA_LIMITS.bytes + delta);
 			assert.equal(Buffer.byteLength(JSON.stringify(data)), DATA_LIMITS.bytes + delta);
 			if (delta <= 0) assert.equal(validateNamedData(data), undefined);
-			else assert.match(validateNamedData(data)!, /serialized byte bound/);
+			else {
+				const error = validateNamedData(data);
+				assert.ok(error);
+				assert.match(error, /serialized byte bound/);
+			}
 		}
 		const data = sizedData(DATA_LIMITS.bytes);
 		await writeFile(path, JSON.stringify({ data, expectedRevision: null }));
@@ -231,33 +265,12 @@ describe("complete named-data file import", () => {
 	it("applies the same inclusive data and ordinary event bounds during replay", async (t) => {
 		for (const kind of ["data", "proposal"] as const) {
 			const { registry, dir } = await setup(t);
-			const event =
-				kind === "data"
-					? await registry.setData(normalizeDataArtifact(source(1)).data, null, audit)
-					: await registry.proposeAdd(
-							{
-								id: "sample.rule",
-								purpose: "Protect output.",
-								authority: "steer-or-block",
-								matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "sample" } },
-								note: "Use bounded output.",
-							},
-							"Protect output.",
-							{ ...audit, surface: "agent-tool" },
-						);
+			const event = await replayEvent(kind, registry);
 			const json = JSON.stringify(event);
 			const limit = kind === "data" ? MAX_DATA_EVENT_BYTES : MAX_RULE_EVENT_BYTES;
 			for (const delta of [-1, 0, 1]) {
-				const target = join(dir, `${kind}-${delta}`);
-				await mkdir(target, { mode: 0o700 });
-				await writeFile(
-					join(target, "rules.jsonl"),
-					`${json}${" ".repeat(limit - Buffer.byteLength(json) - 1 + delta)}\n`,
-					{ mode: 0o600 },
-				);
-				const snapshot = await new RuleRegistry(target, { catalog: [], onNotice() {} }).snapshot();
-				assert.equal(snapshot.health.status, delta > 0 ? "degraded" : "ok");
-				if (delta <= 0) assert.equal(kind === "data" ? snapshot.data.size : snapshot.pending.length, 1);
+				const snapshot = await snapshotReplay(dir, kind, json, limit, delta);
+				assertReplayBounds(snapshot, kind, delta);
 			}
 		}
 	});
@@ -269,7 +282,9 @@ describe("complete named-data file import", () => {
 		const review = dataReview(artifact, contentRevision(artifact));
 		assert.equal(terminalSafe(review), review);
 		assert.doesNotMatch(review, /[\u007f-\u009f\u2028-\u202e\u2066-\u2069]/);
-		assert.deepEqual(JSON.parse(review.split("\n").at(-1)!), input.data.rows[0]);
+		const lastRow = review.split("\n").at(-1);
+		assert.ok(lastRow);
+		assert.deepEqual(JSON.parse(lastRow), input.data.rows[0]);
 	});
 
 	it("preflights capacity before review and rechecks capacity after approval", async (t) => {
@@ -316,7 +331,8 @@ describe("complete named-data file import", () => {
 		const pending = registry.setData(replacement, artifact.data.revision, audit);
 		if (replacement.kind === "table") replacement.rows[0].value = "unapproved";
 		await pending;
-		const stored = (await registry.snapshot()).data.get("aliases")!;
+		const stored = (await registry.snapshot()).data.get("aliases");
+		assert.ok(stored);
 		assert.notEqual(stored.kind === "table" && stored.rows[0].value, "unapproved");
 	});
 
