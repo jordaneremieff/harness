@@ -1925,6 +1925,21 @@ describe("panel frame and input boundaries", () => {
 			);
 		}
 	});
+	it("draws only the focused input row when the pane is one row tall", async () => {
+		await panel(
+			deps(),
+			async (component, terminal) => {
+				component.handleInput("/");
+				await flush();
+				terminal.rows = 3;
+				const lines = component.render(80).map(stripTerminalSequences);
+				assert.equal(lines.length, 1, "a one-row pane draws exactly one body row");
+				assert.match(lines[0], /esc/, "the single row keeps the Escape hint");
+			},
+			framedTheme,
+			"overview",
+		);
+	});
 	it("preserves the native Unicode input cursor inside all enclosing frame rows", async () => {
 		await panel(
 			deps(),

@@ -9,7 +9,7 @@ import type { AgentSession, ExtensionContext, ModelRuntime, ToolDefinition } fro
 /** The host fields a directly-executed tool reads from this sparse fixture context. */
 type ToolContextFixture = Pick<ExtensionContext, "cwd" | "modelRegistry"> & {
 	thinkingLevel?: ExtensionContext["thinkingLevel"];
-	model: unknown;
+	model?: Pick<NonNullable<ExtensionContext["model"]>, "provider" | "id">;
 	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">;
 	ui: Pick<ExtensionContext["ui"], "setStatus">;
 	isProjectTrusted(): boolean;

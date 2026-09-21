@@ -1700,7 +1700,6 @@ class SubagentConsole {
 			const hint = contentWidth >= 8 ? " esc" : "";
 			return [
 				plainLine(`${input.render(Math.max(1, contentWidth - hint.length))[0] ?? ""}${hint}`, contentWidth),
-				footer,
 			];
 		}
 		return [...(height > 1 ? [this.tinyInputLine(input, contentWidth)] : []), footer];
