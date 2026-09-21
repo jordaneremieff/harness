@@ -261,7 +261,7 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 	}
 	pi.registerCommand("pillars", {
 		description:
-			"Check alignment, derive candidates, review guidance, or browse Pillars. Use /pillars for help; judgment actions accept an optional hint.",
+			"Check alignment and continue the corrected work, derive candidates, review guidance, or browse Pillars. Use /pillars for help; judgment actions accept an optional hint.",
 		getArgumentCompletions: async (prefix) => {
 			if (/^read\s+[^\s]*$/.test(prefix)) await discover();
 			return commandCompletions(prefix, catalog);

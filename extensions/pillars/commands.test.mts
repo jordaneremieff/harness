@@ -29,8 +29,18 @@ for (const action of ["check", "derive", "review"] as const) {
 	});
 }
 
-test("judgment scaffolds distinguish assessment, derivation, and diagnosis", () => {
-	assert.match(judgmentPrompt({ action: "check", hint: "" }), /assessment, not automatic edits/);
+test("judgment scaffolds distinguish corrected continuation, derivation, and diagnosis", () => {
+	const check = judgmentPrompt({ action: "check", hint: "" });
+	assert.match(check, /recommend any needed change/);
+	assert.match(check, /do not turn this into a recital or scorecard/);
+	assert.match(check, /correct its affected reasoning, plans, and artifacts within the existing authorization/);
+	assert.match(check, /continue that task in this turn/);
+	assert.match(check, /Do not stop at the assessment or ask for permission to resume work the operator already authorized/);
+	assert.match(check, /continue the task unchanged rather than manufacture one/);
+	assert.match(check, /If no task is in progress, the assessment completes this request/);
+	assert.match(check, /name that exact boundary, hold only the actions that depend on it, and complete the rest/);
+	assert.match(check, /does not authorize corpus edits or approve corpus proposals/);
+	assert.match(check, /no authority for new surfaces, destructive acts, publication, or credential use/);
 	const derive = judgmentPrompt({ action: "derive", hint: "" });
 	assert.match(derive, /Document Types.*Mutation Rules/);
 	assert.match(derive, /no fixed derivation procedure/);

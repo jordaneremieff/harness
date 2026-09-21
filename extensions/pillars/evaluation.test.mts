@@ -55,7 +55,25 @@ test("the maintained suite validates and keeps semantic judgment with the operat
 				{ name: "edit", present: false },
 			],
 		);
-		assert.ok(!item.checks.some(({ type }) => type === "contains-exact"));
+		// A lexical floor may grade only a compact artifact whose serialization the seeded task fixes.
+		// Free prose stays ungraded, so no check may match response wording the task never pinned.
+		for (const check of item.checks.filter(({ type }) => type !== "tool-call" && type !== "tool-result")) {
+			assert.equal(check.type, "contains-exact", check.id);
+			const values = (check.config as { values?: string[] }).values ?? [];
+			assert.ok(
+				values.length > 0 && values.every((value) => value.startsWith('{"') && !/[:,]\s/.test(value)),
+				check.id,
+			);
+			assert.ok(
+				item.input.seed.some(
+					({ role, content }) =>
+						role === "user" &&
+						content.includes("compact JSON line") &&
+						content.includes("no whitespace outside string values"),
+				),
+				check.id,
+			);
+		}
 	}
 });
 

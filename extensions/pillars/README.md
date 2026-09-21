@@ -17,7 +17,8 @@ the model when to consult the corpus, and it reads the
 /pillars review agents keep asking permission despite Committed Contribution
 ```
 
-`check` asks the agent to assess Pillars alignment. `derive` asks it to identify
+`check` asks the agent to assess Pillars alignment and then continue the work it
+was already doing under that assessment. `derive` asks it to identify
 a transferable candidate, an adjustment to an existing entry, or no candidate
 when the evidence does not warrant one. `review` asks whether existing guidance
 expresses the intended behavior and supports its use. For observed mismatches,
@@ -32,9 +33,17 @@ delivery. The agent keeps control of the reasoning depth and response form.
 The scaffold points to the live inventory, governance, and relevant entries;
 [governance](../../pillars/GOVERNANCE.md) owns document types, consultation, and
 mutation rules. The extension neither copies those rules nor scans session
-history to choose a target. `check` requests an assessment rather than automatic
-edits. `derive` and `review` keep proposals provisional in chat and grant no
-corpus-change approval. These actions do not compute an alignment score.
+history to choose a target. `check` requests the assessment and then the
+correction: the agent applies what the check found to the affected reasoning,
+plans, and artifacts of the task in progress and continues that task in the same
+turn, inside the authority the task already carried. It does not stop at the
+verdict and does not ask to resume authorized work. When no correction is
+warranted the task continues unchanged, and when no task is in progress the
+assessment is the whole result. A genuine operator decision or an ungranted
+authority stops only the actions that depend on it. `check` grants no corpus
+edits, new surfaces, destructive acts, publication, or credential use. `derive`
+and `review` keep proposals provisional in chat and grant no corpus-change
+approval. These actions do not compute an alignment score.
 
 For recurring misses, `review` compares expected and observed behavior against
 source and delivery evidence. Delivery, recognition, interpretation, application,
@@ -272,6 +281,17 @@ Review cases distinguish delivery gaps, application gaps, recognition scope,
 operator expectations, sparse evidence, defective drafts, routine maintenance,
 and absent context.
 
+Check cases also cover corrected continuation: a misplaced recommendation whose
+corrected form must still be delivered, a corrected premise that must reach its
+dependent conclusion, an ungranted authority that stops only the action that
+depends on it, and a completed subject where the assessment alone is the whole
+answer. Those cases use a requested chat artifact as a fixture-compatible proxy
+for continuation. The exact-artifact check is a floor: it rejects a reply that
+omits the requested record, and it does not establish that the agent resumed a
+live edit, process, or session. Human adjudication decides whether the delivered
+work reflects the assessment and whether a reply that shows the artifact only as
+a future example still withheld the work.
+
 Validate the suite without model inference:
 
 ```sh
@@ -286,6 +306,7 @@ framework's ignored evidence store; semantic quality requires human adjudication
 Source-access checks and rejected mutation attempts are structural evidence,
 not proof that an assessment or candidate is good. Reviewers derive the relevant
 Pillars from the source and task rather than treat fixture gold as a closed list.
+Lexical floors grade only an artifact that the seeded task requests verbatim.
 No exact response wording, alignment score, or candidate quota is required.
 
 The evaluation-only [`evaluation.ts`](evaluation.ts) wrapper calls the real

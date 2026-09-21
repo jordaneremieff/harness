@@ -2,7 +2,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { Catalog } from "./catalog.ts";
 
 const actions = [
-	{ value: "check", label: "check [hint]", description: "Ask the agent to check Pillars alignment" },
+	{ value: "check", label: "check [hint]", description: "Check Pillars alignment, then correct and continue the work" },
 	{ value: "derive", label: "derive [hint]", description: "Ask the agent to identify a Pillar candidate" },
 	{ value: "review", label: "review [hint]", description: "Review existing guidance and its use" },
 	{ value: "help", label: "help", description: "Show command help and examples" },
@@ -20,7 +20,7 @@ const actions = [
 
 export const COMMAND_HELP = `# Pillars commands
 
-- \`/pillars check [hint]\`: Ask the agent to check a decision, artifact, or approach for Pillars alignment.
+- \`/pillars check [hint]\`: Ask the agent to check a decision, artifact, or approach for Pillars alignment, then correct the affected work in progress and continue it under that assessment.
 - \`/pillars derive [hint]\`: Ask the agent to identify a useful Pillar candidate or an adjustment to an existing entry.
 - \`/pillars review [hint]\`: Ask the agent to review existing guidance or investigate unexpected agent behavior.
 
@@ -83,7 +83,7 @@ export function judgmentPrompt({ action, hint }: JudgmentRequest): string {
 			: "Infer the subject from the current conversation and state it briefly. Ask only if the context does not identify a useful subject.",
 		'Use the pillars tool to read the live inventory and resource:"governance", then consult the relevant entries under that governance. If source access is unavailable, state the gap rather than invent doctrine.',
 		action === "check"
-			? "Check the subject for Pillars alignment. Explain the consequential matches or tensions with evidence and recommend any needed change. Use judgment about depth and form; do not turn this into a recital or scorecard. This request asks for an assessment, not automatic edits."
+			? "Check the subject for Pillars alignment. Explain the consequential matches or tensions with evidence and recommend any needed change. Use judgment about depth and form; do not turn this into a recital or scorecard. If a task is in progress, use this assessment to correct its affected reasoning, plans, and artifacts within the existing authorization, then continue that task in this turn. Do not stop at the assessment or ask for permission to resume work the operator already authorized. If no correction is warranted, continue the task unchanged rather than manufacture one. If no task is in progress, the assessment completes this request; do not invent follow-on work. If a genuine operator decision or an authority you were not granted blocks part of the task, name that exact boundary, hold only the actions that depend on it, and complete the rest. This invocation does not authorize corpus edits or approve corpus proposals, and it grants no authority for new surfaces, destructive acts, publication, or credential use."
 			: action === "review"
 				? 'Review whether the existing Pillars guidance expresses the intended behavior and supports its use. For an observed-behavior concern, compare expected and observed behavior with the actual source and delivery evidence; test applicability, valid exceptions, and competing constraints. Consider delivery, recognition, interpretation, application, and the doctrine itself as possible causes for that concern, not a mandatory checklist. Do not infer recurrence or a cause beyond the available examples. Repeated misses do not by themselves justify stronger wording or a corpus rewrite. Missing examples limit causal claims, not all source review. For maintenance, examine useful dimensions such as clarity, scope, overlap, and consistency without inventing failures or imposing a fixed checklist. Distinguish established findings from hypotheses and name the evidence needed for unresolved conclusions. Recommend the correction at the layer that owns the problem, or explain why no change is warranted. Follow governance for evidence attribution and corpus proposals, including its "Mutation Rules". Use "Contradiction Handling" when the concern is an apparent violation or falsifying application. Keep proposals in chat; this invocation does not authorize edits or corpus changes.'
 				: 'Explore whether the subject contains a transferable candidate for the corpus. Use governance\'s "Document Types" and "Mutation Rules" to choose its type and treatment. Let the evidence guide the reasoning; no fixed derivation procedure or quota is required. Offer useful candidate wording, why it matters, where it applies or does not, and its relationship to the nearest existing entries. An adjustment to an existing entry or no candidate is a valid result. Keep the proposal provisional in chat; this invocation does not authorize corpus changes.',
