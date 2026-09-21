@@ -1584,9 +1584,10 @@ export class RuleRegistry {
 		const property = line === undefined ? (error instanceof RuleFileError ? error.property : "file access") : undefined;
 		const location = line !== undefined ? `line ${line}` : `failing property "${property}"`;
 		const repair =
-			line !== undefined
+			"Use the harness skill for repair guidance. " +
+			(line !== undefined
 				? `Repair ${this.path}: the file is append-only JSONL with one event per line; edit or remove line ${line}, then start a new policy session.`
-				: `Repair ${this.path}: ${error instanceof RuleFileError ? error.repairAction : `restore current-user access to ${this.path}`}, then start a new policy session.`;
+				: `Repair ${this.path}: ${error instanceof RuleFileError ? error.repairAction : `restore current-user access to ${this.path}`}, then start a new policy session.`);
 		const message =
 			`Policy rule store unreadable: ${this.path}, ${location}: ${reason}. ${repair} ` +
 			"No rules are active; mechanisms are capped at notice and rule writes are refused.";

@@ -500,6 +500,8 @@ describe("unreadable and partial stores", () => {
 		assert.equal(snapshot.health.status, "degraded");
 		assert.equal(snapshot.records.size, 0);
 		assert.equal(snapshot.pending.length, 0);
+		assert.match(snapshot.health.repair ?? "", /Use the harness skill for repair guidance\./);
+		assert.match(notices[0], /Use the harness skill for repair guidance\./);
 		assert.match(ruleStoreHealthLine(snapshot.health), /No rules are active/);
 		await assert.rejects(reg.proposeAdd(candidate(), "Add rule.", agent), /writes are refused/);
 		assert.equal(await readFile(reg.path, "utf8"), bytes);
@@ -514,6 +516,8 @@ describe("unreadable and partial stores", () => {
 		assert.equal(snapshot.health.status, "degraded");
 		assert.equal(snapshot.records.size, 0);
 		assert.equal(snapshot.health.property, "directory type");
+		assert.match(snapshot.health.repair ?? "", /Use the harness skill for repair guidance\./);
+		assert.match(ruleStoreHealthLine(snapshot.health), /Use the harness skill for repair guidance\./);
 		assert.equal(await readFile(dir, "utf8"), "not a directory");
 		assert.deepEqual(await readdir(dirname(dir)), ["store"]);
 	});

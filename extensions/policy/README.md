@@ -757,8 +757,9 @@ A missing registry receives the starter seed. An existing empty registry is a
 healthy empty catalog. An incomplete final line is reported as an append
 in flight, skipped during reduction, and blocks writes until resolved. A malformed
 complete line, invalid filesystem property, exceeded bound, or reduction invariant
-latches degraded authority. Policy exposes the concrete repair, refuses control
-writes, exposes no fallback rules, and caps mechanisms at notice. An unavailable
+latches degraded authority. Policy refers to the harness skill for repair guidance,
+exposes the concrete repair, refuses control writes, exposes no fallback rules,
+and caps mechanisms at notice. An unavailable
 catalog is not an intentionally empty one. Observe still applies no effect.
 A new session is required after repair.
 
