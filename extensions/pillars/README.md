@@ -288,7 +288,10 @@ depends on it, and a completed subject where the assessment alone is the whole
 answer. Those cases use a requested chat artifact as a fixture-compatible proxy
 for continuation. The exact-artifact check is a floor: it rejects a reply that
 omits the requested record, and it does not establish that the agent resumed a
-live edit, process, or session. Human adjudication decides whether the delivered
+live edit, process, or session. The task and output format appear before later
+factual exchanges, so the final seeded turn does not repeat the deliverable
+request. These checks measure completion under the selected command text, not
+improvement caused by that text. Human adjudication decides whether the delivered
 work reflects the assessment and whether a reply that shows the artifact only as
 a future example still withheld the work.
 
