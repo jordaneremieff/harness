@@ -273,8 +273,9 @@ project trust, and task permissions remain unchanged.
   same way a tool the parent never loaded is not inheritable. Before session
   construction, the worker receives every config-form and native provider
   registration exposed by the parent's public registry facade. After extension
-  binding, the worker checks the selected model against its actual runtime and
-  fails before provider work if resolution or auth changed. An extension may
+  binding, the worker checks the selected model against its actual runtime.
+  Resolution changes fail before provider work. Missing authentication advances
+  a declared fallback roster, or fails when no usable candidate remains. An extension may
   switch the session model during `session_start`; the worker record then names
   the model the run actually uses. The record also keeps the parent-resolvable
   bootstrap model. A continuation uses that bootstrap model to construct its
@@ -283,6 +284,19 @@ project trust, and task permissions remain unchanged.
   Target `session_start` hooks can then select the actual model and thinking
   level again. Persisted and environment credentials resolve in workers. A
   parent-only runtime API-key override remains local to the parent's runtime.
+- **fallbackModels** — optional ordered array of at most four exact
+  `provider/model` identities. A task list replaces the dispatch-level list.
+  Either explicit list replaces the configured roster; `[]` disables fallback.
+  Entries must be distinct and must not repeat the resolved primary model.
+  Every identity and explicit thinking level is validated before selection.
+  Unknown identities, invalid configuration, unsupported explicit thinking,
+  missing tools, and tool-registration mismatches fail rather than substitute.
+- **taskClass** — optional lowercase class name, beginning with a letter and
+  containing letters, digits, or hyphens, at most 64 characters. A task value
+  replaces the dispatch-level class. It selects a roster from
+  `PI_SUBAGENT_FALLBACK_MODELS` only when no explicit fallback list exists.
+  Without a class, the `default` entry applies. An explicit unknown class fails.
+  Profiles do not provide fallback lists or classes.
 - **thinking** — `off|minimal|low|medium|high|xhigh|max`. Declared: checked
   against the levels the model supports (pi's own
   `getSupportedThinkingLevels`); an unsupported level fails that task and names
@@ -308,10 +322,14 @@ project trust, and task permissions remain unchanged.
   tool that is not in the current registry fails the dispatch with its name. A
   registration without a loadable source fails before worker creation. The
   worker's active names, registration sources, and public tool metadata are
-  compared with the parent snapshot before any prompt token is spent. A
-  mismatch names each changed metadata field and lists active tool names as a
-  separate fact. If an extension source changed after the parent session loaded
-  it, run `/reload` and retry. If no source changed, keep public registration
+  compared with the parent snapshot before any prompt token is spent. Dispatch
+  captures immutable registration values: names, descriptions, serialized
+  parameters and guidelines, and source metadata. Later parent mutations do not
+  rewrite that expectation. This is not a source-byte snapshot or a guarantee
+  that unchanged metadata means unchanged executable code. A mismatch names each
+  changed metadata field, identifies both registration source paths, and lists
+  active tool names as a separate fact. If an extension source changed after
+  the parent session loaded it, run `/reload` and retry. If no source changed, keep public registration
   metadata independent of the worker cwd and configuration.
 - **cwd** — worker working directory. Without an explicit or profile value:
   session cwd.
@@ -323,6 +341,54 @@ project trust, and task permissions remain unchanged.
 - **budgetUsd** — optional dollar allowance for this task. Omitted: the
   `PI_SUBAGENT_BUDGET_USD` setting, which is unset by default — a budget applies
   only when the task or the operator asks for one. `0` removes it.
+
+### Model availability and declared fallbacks
+
+`PI_SUBAGENT_FALLBACK_MODELS` is an optional JSON object of class names to
+ordered model arrays. It permits at most 32 classes and 16 KiB of UTF-8; each
+array follows the `fallbackModels` bounds above. An unset variable or an absent
+`default` entry means no fallback. An empty array disables that class. Invalid
+JSON or a malformed entry fails dispatches that use this configuration.
+Explicit fallback lists do not read or validate the configuration. The harness
+ships no model preference or default roster.
+
+The following example uses placeholder identities, not installed models:
+
+```json
+{"default":["provider-b/model-b"],"review":["provider-c/model-c"]}
+```
+
+Preflight uses the host's cached catalog and configured-auth facts. It makes no
+provider request or paid health probe. A known model without configured auth
+is skipped in roster order; a missing model is a configuration error. Worker
+construction checks authentication again after tool parity passes, since a
+parent-only credential override does not transfer. Cached availability does
+not establish remaining credit or remote service health.
+
+During execution, Pi completes its own retry and settlement before fallback.
+Only an assistant error with a recognized quota, credit, rate-limit, or
+credential failure advances the roster. Recognition uses Pi's error text,
+including HTTP 401/402/429 prefixes and explicit quota or authentication
+phrases. Unknown errors, generic permission errors, network failures, tool
+errors, and context limits remain failures. A submitted result, cancellation,
+pause, breached allowance, or owner-session replacement prevents recovery.
+
+Each candidate is selected at most once per worker. Substitution uses Pi's
+public model setter in the same session, preserves the transcript and completed
+tool results, and sends a continuation message rather than replaying the task.
+The worker keeps its id, accumulated usage, deadline, and budget. Exhaustion
+ends the worker with the recorded reasons. No narrower tool surface is tried.
+
+`modelFallback` in the worker record and returned details retains the requested
+model, ordered candidates, current index, class, explicit-thinking flag,
+exhaustion flag, and bounded preflight/runtime failure reasons. Dispatch,
+completion, inspection, and exact collection text expose requested and actual
+models and the fallback history. A linked continuation starts a fresh bounded
+attempt sequence from the stored bootstrap model and carries the other
+declared identities in their original order, rather than reading a new
+environment roster. It preserves whether the thinking level was explicit or
+inherited, so inherited levels still clamp across models. The source record
+and transcript remain unchanged.
 
 There is no foreground run mode. The dispatch call completes worker setup
 trust resolution, resource loading, session construction, and extension start

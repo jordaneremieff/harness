@@ -37,6 +37,7 @@ Current consumers:
 | `PI_SUBAGENT_IDLE_MINUTES` | subagent | Release deadline for an interrupted idle worker; default 30 minutes, `0` disables the deadline. |
 | `PI_SUBAGENT_DEADLINE_MINUTES` | subagent | Default run-leg deadline for a dispatch that declares none; default 30 minutes, `0` runs unbounded. |
 | `PI_SUBAGENT_BUDGET_USD` | subagent | Default run-leg budget for a dispatch that declares none; unset by default, so no budget applies. |
+| `PI_SUBAGENT_FALLBACK_MODELS` | subagent | Optional JSON object mapping task classes (including `default`) to ordered provider/model arrays. Explicit `fallbackModels`, including `[]`, replaces the selected configured roster. Unset means no fallback. See the slice README for bounds and failure eligibility. |
 | `PI_SUBAGENT_PANEL_MAX_ROWS` | subagent | Fixed cap on worker-console height; unset (or `0`) keeps the content-fit default (85% of terminal rows, floor 44 rows). |
 | `PI_SESSION_ID` | Pi-injected | Parent session id; the stash extension reads it only as a fallback when the session manager supplies no id. |
 

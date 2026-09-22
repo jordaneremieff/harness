@@ -55,6 +55,14 @@
  *     record and dispatch line report the requested and the effective level.
  */
 
+import {
+	availabilityFailure,
+	fallbackModelsFor,
+	fallbackSummary,
+	MAX_FALLBACK_MODELS,
+	type ModelFallback,
+	normalizeFallback,
+} from "./fallback.ts";
 import { createHash, randomBytes } from "node:crypto";
 import {
 	accessSync,
@@ -374,6 +382,8 @@ export interface WorkerRecord {
 	 * extension can replace it during session_start without making continuation
 	 * depend on a provider that exists only inside the target directory. */
 	bootstrapModel: string;
+	/** Declared model roster and bounded availability decisions, never inferred preferences. */
+	modelFallback?: ModelFallback;
 	/** Level the worker actually runs at, after pi's clamp. */
 	thinking: string;
 	/** Level the dispatch asked for, explicit or inherited. It differs from
@@ -650,6 +660,7 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 		task: asString(o.task),
 		model: asString(o.model, "?"),
 		bootstrapModel: asString(o.bootstrapModel, asString(o.model, "?")),
+		modelFallback: normalizeFallback(o.modelFallback),
 		thinking: asString(o.thinking, "medium"),
 		thinkingRequested: asString(o.thinkingRequested),
 		tools: asStrArrayOrNull(o.tools),
@@ -770,7 +781,11 @@ export interface DispatchTask {
 	/** Presentation label resolved by execute(); carried through continuation. */
 	label?: string;
 	model?: string;
+	fallbackModels?: string[];
+	taskClass?: string;
 	thinking?: ThinkingLevel;
+	/** Continuation keeps an inherited level without making it an explicit constraint. */
+	inheritedThinking?: ThinkingLevel;
 	tools?: string[];
 	cwd?: string;
 	deadlineMinutes?: number;
@@ -790,6 +805,11 @@ export interface DispatchOutcome {
 interface ResolvedModel {
 	provider: string;
 	id: string;
+}
+
+function modelReference(identity: string): ResolvedModel {
+	const slash = identity.indexOf("/");
+	return { provider: identity.slice(0, slash), id: identity.slice(slash + 1) };
 }
 
 const MODEL_INPUT_MAX_LENGTH = 256;
@@ -855,7 +875,17 @@ export function suggestModels(raw: string, models: ReadonlyArray<{ provider: str
 		.map(({ full }) => full);
 }
 
-function resolveModel(ctx: ExtensionContext, raw: string | undefined): ResolvedModel | { error: string } {
+function resolveBareModel(ctx: ExtensionContext, raw: string, requireAuth: boolean) {
+	const catalog = requireAuth ? ctx.modelRegistry.getAvailable() : ctx.modelRegistry.getAll();
+	const matches = catalog.filter((model) => model.id === raw);
+	return matches.find((model) => ctx.modelRegistry.hasConfiguredAuth(model)) ?? matches[0] ?? null;
+}
+
+function resolveModel(
+	ctx: ExtensionContext,
+	raw: string | undefined,
+	requireAuth = true,
+): ResolvedModel | { error: string } {
 	const registry = ctx.modelRegistry;
 	if (raw) {
 		if (raw.length > MODEL_INPUT_MAX_LENGTH) {
@@ -868,10 +898,7 @@ function resolveModel(ctx: ExtensionContext, raw: string | undefined): ResolvedM
 		if (slash > 0) {
 			found = registry.find(raw.slice(0, slash), raw.slice(slash + 1));
 		} else {
-			const matches = registry.getAvailable().filter((m) => m.id === raw);
-			// Prefer a match with configured auth over an earlier auth-less one;
-			// fall back to the first match (the auth error below then applies).
-			found = matches.find((m) => registry.hasConfiguredAuth(m)) ?? matches[0] ?? null;
+			found = resolveBareModel(ctx, raw, requireAuth);
 		}
 		if (!found) {
 			const available = registry.getAvailable();
@@ -883,7 +910,7 @@ function resolveModel(ctx: ExtensionContext, raw: string | undefined): ResolvedM
 					`${correction} Check the id with: pi --list-models`,
 			};
 		}
-		if (!registry.hasConfiguredAuth(found)) {
+		if (requireAuth && !registry.hasConfiguredAuth(found)) {
 			return {
 				error: `model "${raw}" is registered but has no configured authentication (pi auth check --model ${raw}).`,
 			};
@@ -948,10 +975,29 @@ interface ParentToolSurface {
 	all: ToolInfo[];
 }
 
+export interface ToolRegistrationSnapshot {
+	readonly name: string;
+	readonly description: string;
+	readonly parametersJson: string;
+	readonly promptGuidelinesJson: string;
+	readonly sourceInfo: Readonly<ToolInfo["sourceInfo"]>;
+}
+
 interface ResolvedTools {
 	tools: string[];
 	extensionPaths: string[];
-	metadata: Map<string, ToolInfo>;
+	metadata: ReadonlyMap<string, ToolRegistrationSnapshot>;
+}
+
+/** Capture public registration values, not mutable host objects or later source bytes. */
+export function snapshotToolRegistration(tool: ToolInfo): ToolRegistrationSnapshot {
+	return Object.freeze({
+		name: tool.name,
+		description: tool.description,
+		parametersJson: JSON.stringify(tool.parameters),
+		promptGuidelinesJson: JSON.stringify(tool.promptGuidelines ?? []),
+		sourceInfo: Object.freeze({ ...tool.sourceInfo }),
+	});
 }
 
 export function parentToolSurface(ctx: ExtensionContext): ParentToolSurface | null {
@@ -991,13 +1037,13 @@ export function resolveToolSurface(
 	}
 
 	const extensionPaths = new Set<string>();
-	const metadata = new Map<string, ToolInfo>();
+	const metadata = new Map<string, ToolRegistrationSnapshot>();
 	const unavailable: string[] = [];
 	for (const name of declaredSet) {
 		if (name === "submit_result") continue;
 		const info = byName.get(name);
 		if (!info) continue;
-		metadata.set(name, info);
+		metadata.set(name, snapshotToolRegistration(info));
 		if (info.sourceInfo.source === "builtin") continue;
 		const sourcePath = info.sourceInfo.path;
 		if (sourcePath && !sourcePath.startsWith("<") && existsSync(sourcePath)) {
@@ -1030,7 +1076,10 @@ function resolveTools(ctx: ExtensionContext, declared: string[] | undefined): Re
 
 type RegistrationDifference = "source" | "description" | "parameters" | "promptGuidelines";
 
-export function registrationDifferenceFields(expected: ToolInfo, actual: ToolInfo): RegistrationDifference[] {
+export function registrationDifferenceFields(
+	expected: ToolRegistrationSnapshot,
+	actual: ToolInfo,
+): RegistrationDifference[] {
 	const differences: RegistrationDifference[] = [];
 	const expectedPath = expected.sourceInfo.path;
 	const actualPath = actual.sourceInfo.path;
@@ -1040,8 +1089,8 @@ export function registrationDifferenceFields(expected: ToolInfo, actual: ToolInf
 			: !expectedPath.startsWith("<") && !actualPath.startsWith("<") && resolve(expectedPath) === resolve(actualPath);
 	if (!sameSource) differences.push("source");
 	if (expected.description !== actual.description) differences.push("description");
-	if (JSON.stringify(expected.parameters) !== JSON.stringify(actual.parameters)) differences.push("parameters");
-	if (JSON.stringify(expected.promptGuidelines ?? []) !== JSON.stringify(actual.promptGuidelines ?? [])) {
+	if (expected.parametersJson !== JSON.stringify(actual.parameters)) differences.push("parameters");
+	if (expected.promptGuidelinesJson !== JSON.stringify(actual.promptGuidelines ?? [])) {
 		differences.push("promptGuidelines");
 	}
 	return differences;
@@ -1050,6 +1099,8 @@ export function registrationDifferenceFields(expected: ToolInfo, actual: ToolInf
 interface RegistrationChange {
 	name: string;
 	fields: RegistrationDifference[];
+	expectedSource: string;
+	actualSource: string;
 }
 
 export function toolSurfaceMismatchMessage(input: {
@@ -1064,7 +1115,10 @@ export function toolSurfaceMismatchMessage(input: {
 		...(input.changed.length > 0
 			? [
 					`registration changed: ${input.changed
-						.map(({ name, fields }) => `${name} (${fields.join(", ")})`)
+						.map(
+							({ name, fields, expectedSource, actualSource }) =>
+								`${name} (${fields.join(", ")}) [parent source: ${expectedSource}; worker source: ${actualSource}]`,
+						)
 						.join(", ")}`,
 				]
 			: []),
@@ -1362,7 +1416,8 @@ export function notifyCompletion(
 			`${elapsed}s · ${record.usage?.turns ?? 0} turns · ${cost}` +
 			// A tool that failed during the run is invisible in the deliverable, so
 			// the parent gets it here: a blocked tool changes how the result reads.
-			(failedTools ? `\nTool failures: ${failedTools}` : "");
+			(failedTools ? `\nTool failures: ${failedTools}` : "") +
+			(record.modelFallback ? `\n${fallbackSummary(record.modelFallback, record.model)}` : "");
 		// Provenance is load-bearing. This arrives as a steering message with
 		// triggerTurn:true, which puts worker-authored text in the position the
 		// operator's own words occupy. The 50KB cap bounds size, not authority, so
@@ -1380,6 +1435,7 @@ export function notifyCompletion(
 				model: record.model,
 				thinking: record.thinking,
 				thinkingRequested: record.thinkingRequested,
+				modelFallback: record.modelFallback ?? null,
 				elapsedSeconds: elapsed,
 				usage: record.usage,
 				toolErrors: record.toolErrors,
@@ -1872,6 +1928,8 @@ interface LiveWorker {
 	 * settle callback and be disposed by it.
 	 */
 	leg: Promise<void> | null;
+	/** Availability recovery stays inside the existing run leg and allowance. */
+	recover?: () => Promise<void>;
 	/** Owned cleanup for a queued resume that is waiting for the abort to land. */
 	cancelResume?: (() => void) | null;
 }
@@ -2385,10 +2443,14 @@ function beginWorkerLeg(
 		finishWorkerLeg(live, error);
 	};
 	live.settle = settle;
-	live.leg = start().then(
-		() => settle(successError?.()),
-		(cause: unknown) => settle(`the worker run failed: ${errText(cause)}`),
-	);
+	live.leg = start()
+		.then(async () => {
+			if (!successError?.()) await live.recover?.();
+		})
+		.then(
+			() => settle(successError?.()),
+			(cause: unknown) => settle(`the worker run failed: ${errText(cause)}`),
+		);
 }
 
 /**
@@ -3233,6 +3295,8 @@ export function workerSessionManager(cwd: string, continuation?: WorkerRecord): 
  */
 type DispatchDefaults = {
 	model?: string;
+	fallbackModels?: string[];
+	taskClass?: string;
 	thinking?: ThinkingLevel;
 	cwd: string;
 	deadlineMinutes?: number;
@@ -3240,7 +3304,7 @@ type DispatchDefaults = {
 };
 
 type DispatchSetup = {
-	model: ResolvedModel;
+	modelFallback?: ModelFallback;
 	modelId: string;
 	thinking: ThinkingLevel;
 	cwd: string;
@@ -3253,21 +3317,154 @@ type DispatchSetup = {
 	snapshotId: string | null;
 };
 
+function validateFallbackIdentity(ctx: ExtensionContext, candidate: string, thinking: ThinkingLevel | undefined): void {
+	const resolved = resolveModel(ctx, candidate, false);
+	if ("error" in resolved) throw new Error(resolved.error);
+	const levels = modelCapabilities(ctx, candidate)?.thinkingLevels;
+	if (thinking && levels && !levels.includes(thinking))
+		throw new Error(`thinking "${thinking}" is not supported by ${candidate}; supported levels: ${levels.join(", ")}.`);
+}
+
+function preflightModels(
+	ctx: ExtensionContext,
+	task: DispatchTask,
+	defaults: DispatchDefaults,
+): { modelId: string; modelFallback?: ModelFallback } {
+	const taskClass = task.taskClass ?? defaults.taskClass;
+	const roster = fallbackModelsFor(
+		task.fallbackModels ?? defaults.fallbackModels,
+		taskClass,
+		process.env.PI_SUBAGENT_FALLBACK_MODELS,
+	);
+	const primary = resolveModel(ctx, task.model ?? defaults.model, roster.length === 0);
+	if ("error" in primary) throw new Error(primary.error);
+	const primaryId = `${primary.provider}/${primary.id}`;
+	if (roster.includes(primaryId)) throw new Error("fallbackModels repeats the primary model");
+	if (roster.length === 0) return { modelId: primaryId };
+	const candidates = [primaryId, ...roster];
+	const thinking = task.thinking ?? defaults.thinking;
+	for (const candidate of candidates) validateFallbackIdentity(ctx, candidate, thinking);
+	const modelFallback: ModelFallback = {
+		requested: primaryId,
+		candidates,
+		index: 0,
+		taskClass,
+		thinkingExplicit: thinking !== undefined,
+		exhausted: false,
+		events: [],
+	};
+	for (const candidate of candidates) {
+		const ref = modelReference(candidate);
+		const found = ctx.modelRegistry.find(ref.provider, ref.id);
+		if (found && ctx.modelRegistry.hasConfiguredAuth(found)) return { modelId: candidate, modelFallback };
+		modelFallback.events.push({ model: candidate, phase: "preflight", reason: "no-auth" });
+		modelFallback.index++;
+	}
+	modelFallback.exhausted = true;
+	throw new Error(fallbackSummary(modelFallback, "none"));
+}
+
+async function selectFallbackCandidate(
+	target: AgentSession,
+	candidate: string,
+	thinking: ThinkingLevel | undefined,
+): Promise<"no-auth" | "authentication" | null> {
+	const ref = modelReference(candidate);
+	const next = target.modelRuntime.getModel(ref.provider, ref.id);
+	if (!next) throw new Error(`fallback model ${candidate} disappeared from the worker runtime`);
+	if (thinking && !getSupportedThinkingLevels(next).includes(thinking))
+		throw new Error(`fallback model ${candidate} no longer supports thinking ${thinking}`);
+	if (!target.modelRuntime.hasConfiguredAuth(ref.provider)) return "no-auth";
+	try {
+		await target.setModel(next);
+		return null;
+	} catch (cause) {
+		if (availabilityFailure(errText(cause)) !== "authentication") throw cause;
+		return "authentication";
+	}
+}
+
+function fallbackPermitted(record: WorkerRecord): boolean {
+	return (
+		record.state === "running" &&
+		!record.cancelRequestedAt &&
+		!record.interruptedAt &&
+		!record.pausedReason &&
+		!replacingSessions.has(record.ownerSession ?? "") &&
+		!existsSync(workerFiles(record.id).result)
+	);
+}
+
+async function ensureWorkerAuthentication(
+	target: AgentSession,
+	record: WorkerRecord,
+	thinking: ThinkingLevel,
+): Promise<void> {
+	const model = modelReference(record.bootstrapModel);
+	if (target.modelRuntime.hasConfiguredAuth(model.provider)) return;
+	if (record.modelFallback) {
+		record.modelFallback.events.push({ model: record.bootstrapModel, phase: "preflight", reason: "no-auth" });
+		if (await advanceFallback(target, record, thinking, "preflight", () => fallbackPermitted(record))) return;
+		throw new Error(record.error ?? "model fallback exhausted during setup");
+	}
+	throw new Error(
+		`model "${model.provider}/${model.id}" has no configured authentication in the worker runtime after extension binding`,
+	);
+}
+
+/** Advance a declared roster once per candidate. Public setters retain Pi history and model hooks. */
+async function advanceFallback(
+	target: AgentSession,
+	record: WorkerRecord,
+	thinking: ThinkingLevel,
+	phase: "preflight" | "runtime",
+	eligible: () => boolean,
+): Promise<boolean> {
+	const plan = record.modelFallback;
+	if (!plan || plan.exhausted) return false;
+	while (eligible() && ++plan.index < plan.candidates.length) {
+		const candidate = plan.candidates[plan.index];
+		const reason = await selectFallbackCandidate(target, candidate, plan.thinkingExplicit ? thinking : undefined);
+		if (reason) {
+			plan.events.push({ model: candidate, phase, reason });
+			continue;
+		}
+		if (!eligible()) return false;
+		target.setThinkingLevel(thinking);
+		if (!eligible()) return false;
+		record.bootstrapModel = candidate;
+		record.error = null;
+		record.stopReason = null;
+		writeActiveSessionRecord(record, target);
+		return true;
+	}
+	if (eligible()) {
+		plan.exhausted = true;
+		record.error = fallbackSummary(plan, record.model);
+		writeWorker(record);
+	}
+	return false;
+}
+
 /** Validate a dispatch and resolve its model, cwd, tools, limits, and snapshot. */
 function prepareDispatch(
 	task: DispatchTask,
 	defaults: DispatchDefaults,
 	ctx: ExtensionContext,
 ): { error: DispatchOutcome } | { setup: DispatchSetup } {
-	const model = resolveModel(ctx, task.model ?? defaults.model);
-	if ("error" in model) return { error: { id: "", state: "failed", error: model.error, record: null } };
-	const modelId = `${model.provider}/${model.id}`;
+	let selection: { modelId: string; modelFallback?: ModelFallback };
+	try {
+		selection = preflightModels(ctx, task, defaults);
+	} catch (cause) {
+		return { error: { id: "", state: "failed", error: errText(cause), record: null } };
+	}
+	const { modelId, modelFallback } = selection;
 	// An explicit level the model cannot run is a feasibility error, not a
 	// preference: pi clamps silently, and a model without reasoning support lands
 	// on "off" — the dispatch would report a level nobody asked for. An inherited
 	// level still clamps; the record keeps both values so the parent sees it.
 	const requestedThinking = task.thinking ?? defaults.thinking;
-	const thinking = requestedThinking ?? ctx.thinkingLevel ?? "medium";
+	const thinking = requestedThinking ?? task.inheritedThinking ?? ctx.thinkingLevel ?? "medium";
 	const supportedThinking = modelCapabilities(ctx, modelId)?.thinkingLevels;
 	if (requestedThinking && supportedThinking && !supportedThinking.includes(requestedThinking)) {
 		return {
@@ -3308,7 +3505,7 @@ function prepareDispatch(
 	const snapshotId = sharedContext ? sharedContextSnapshotId(sharedContext) : null;
 	return {
 		setup: {
-			model,
+			modelFallback,
 			modelId,
 			thinking,
 			cwd,
@@ -3488,7 +3685,7 @@ export async function dispatchWorker(
 	const preparation = prepareDispatch(task, defaults, ctx);
 	if ("error" in preparation) return preparation.error;
 	const {
-		model,
+		modelFallback,
 		modelId,
 		thinking,
 		cwd,
@@ -3533,6 +3730,7 @@ export async function dispatchWorker(
 		sharedContextBytes,
 		ownerSession: ctx.sessionManager.getSessionId(),
 	});
+	record.modelFallback = modelFallback;
 	// Persist the accepted worker before starting provider work.
 	writeWorker(record);
 
@@ -3581,6 +3779,7 @@ export async function dispatchWorker(
 		restoreSelectedProfile(session, task, continuation);
 
 	const createWorkerSession: CreateAgentSessionRuntimeFactory = async (options) => {
+		const model = modelReference(record.bootstrapModel);
 		const targetCwd = resolve(options.cwd);
 		const sameDirectoryAsSession = targetCwd === resolve(ctx.cwd);
 		const parentTrust = sameDirectoryAsSession ? ctx.isProjectTrusted?.() : undefined;
@@ -3646,16 +3845,12 @@ export async function dispatchWorker(
 	};
 
 	const validateBoundSession = async (target: AgentSession): Promise<void> => {
+		const model = modelReference(record.bootstrapModel);
 		await target.modelRuntime.refresh({ providers: [model.provider], allowNetwork: false });
 		const boundModel = target.modelRuntime.getModel(model.provider, model.id);
 		if (!boundModel) {
 			throw new Error(
 				`model "${model.provider}/${model.id}" did not resolve in the worker runtime after extension binding`,
-			);
-		}
-		if (!target.modelRuntime.hasConfiguredAuth(model.provider)) {
-			throw new Error(
-				`model "${model.provider}/${model.id}" has no configured authentication in the worker runtime after extension binding`,
 			);
 		}
 		const actualModel = target.model;
@@ -3671,14 +3866,24 @@ export async function dispatchWorker(
 			const actual = actualMetadata.get(name);
 			if (!actual) return [];
 			const fields = registrationDifferenceFields(expected, actual);
-			return fields.length > 0 ? [{ name, fields }] : [];
+			return fields.length > 0
+				? [
+						{
+							name,
+							fields,
+							expectedSource: `${expected.sourceInfo.source}/${expected.sourceInfo.path}`,
+							actualSource: `${actual.sourceInfo.source}/${actual.sourceInfo.path}`,
+						},
+					]
+				: [];
 		});
-		if (missing.length === 0 && unexpected.length === 0 && mismatched.length === 0) return;
+		if (missing.length === 0 && unexpected.length === 0 && mismatched.length === 0) {
+			await ensureWorkerAuthentication(target, record, thinking);
+			return;
+		}
 
-		const surface = parentToolSurface(ctx);
-		const sourceOf = new Map((surface?.all ?? []).map((tool) => [tool.name, tool.sourceInfo]));
 		const withSource = missing.map((name) => {
-			const source = sourceOf.get(name);
+			const source = tools.metadata.get(name)?.sourceInfo;
 			return source?.source && source.path && source.source !== "builtin"
 				? `${name} (from ${source.source}/${source.path})`
 				: name;
@@ -3822,6 +4027,24 @@ export async function dispatchWorker(
 		disposeSession,
 		settle: () => {},
 		leg: null,
+	};
+	liveWorker.recover = async () => {
+		const eligible = () => liveWorkers.get(id) === liveWorker && fallbackPermitted(record) && !sessionControlError;
+		while (eligible() && record.modelFallback && record.stopReason === "error") {
+			const reason = availabilityFailure(record.error ?? "");
+			if (!reason) return;
+			enforceRunLimits(id);
+			if (!eligible()) return;
+			const plan = record.modelFallback;
+			plan.events.push({ model: record.model, phase: "runtime", reason });
+			if (!(await advanceFallback(liveWorker.session, record, thinking, "runtime", eligible))) return;
+			publishSubagentStatus();
+			await runtime.deliverCustomMessage({
+				customType: "subagent_model_fallback",
+				content: `${fallbackSummary(plan, record.model)}. Continue the existing task from the preserved history. Do not repeat completed tool actions.`,
+				display: true,
+			});
+		}
 	};
 	const ownsWorker = (): boolean => liveWorkers.get(id) === liveWorker;
 	const disposeUnownedReplacement = (next: AgentSession): void => {
@@ -4316,6 +4539,19 @@ function continuationToolProblem(recorded: string | undefined, current: ToolInfo
 	}
 }
 
+function continuationModels(
+	record: WorkerRecord,
+	thinking: ThinkingLevel,
+): Pick<DispatchTask, "model" | "fallbackModels" | "taskClass" | "thinking" | "inheritedThinking"> {
+	return {
+		model: record.bootstrapModel,
+		fallbackModels: record.modelFallback?.candidates.filter((model) => model !== record.bootstrapModel) ?? [],
+		taskClass: record.modelFallback?.taskClass,
+		thinking: record.modelFallback?.thinkingExplicit === false ? undefined : thinking,
+		inheritedThinking: thinking,
+	};
+}
+
 /** Fork a terminal worker's session into a new linked background worker. */
 export async function continueWorker(id: string, message: string, ctx: ExtensionContext): Promise<DispatchOutcome> {
 	const source = readWorker(id);
@@ -4414,8 +4650,7 @@ export async function continueWorker(id: string, message: string, ctx: Extension
 	return dispatchWorker(
 		{
 			task: message.trim(),
-			model: terminal.bootstrapModel,
-			thinking: bootstrapThinking,
+			...continuationModels(terminal, bootstrapThinking),
 			tools,
 			cwd: terminal.cwd,
 			// A stored null is an explicit "no limit": carry it as 0 so the
@@ -4423,11 +4658,7 @@ export async function continueWorker(id: string, message: string, ctx: Extension
 			deadlineMinutes: terminal.deadlineMinutes ?? 0,
 			budgetUsd: terminal.budgetUsd ?? 0,
 		},
-		{
-			model: terminal.bootstrapModel,
-			thinking: bootstrapThinking,
-			cwd: terminal.cwd,
-		},
+		{ cwd: terminal.cwd },
 		ctx,
 		terminal,
 	);
@@ -4789,6 +5020,7 @@ function inspectionRecordLines(
 		`Worker ${inspectInline(record.id, 256)}`,
 		`state: ${record.state}${record.state === "running" && record.interruptedAt ? " (interrupted and resumable)" : ""}`,
 		`model: ${inspectInline(record.model)}`,
+		...(record.modelFallback ? [inspectInline(fallbackSummary(record.modelFallback, record.model), 4096)] : []),
 		inspectInline(thinkingLabel(record), 256),
 		`task: ${task || "(empty)"}`,
 		`profile: ${record.profile ? `${inspectInline(record.profile.path, 512)} · sha256:${record.profile.sha256}` : "none"}`,
@@ -4852,7 +5084,7 @@ function collectEntry(worker: WorkerRecord, result: string | undefined): Collect
 
 /** The status header shared by every exact-id collection body. */
 function collectedHeader(worker: WorkerRecord): string {
-	return `Worker ${worker.id} (${worker.model}) · ${worker.state}${worker.error ? ` · ${worker.error}` : ""}`;
+	return `Worker ${worker.id} (${worker.model}) · ${worker.state}${worker.error ? ` · ${worker.error}` : ""}${worker.modelFallback ? `\n${fallbackSummary(worker.modelFallback, worker.model)}` : ""}`;
 }
 
 function submittedResultText(worker: WorkerRecord, result: string): string {
@@ -5255,6 +5487,18 @@ function applyProfileMutation(
 	}
 }
 
+const fallbackModelsSchema = Type.Array(Type.String({ minLength: 3, maxLength: 256, pattern: "^[^\\s/]+/\\S+$" }), {
+	maxItems: MAX_FALLBACK_MODELS,
+	uniqueItems: true,
+	description:
+		"Ordered availability fallbacks, exact provider/model identities. [] disables configured fallbacks. Never used for tool or configuration failures.",
+});
+const taskClassSchema = Type.String({
+	pattern: "^[a-z][a-z0-9-]{0,63}$",
+	maxLength: 64,
+	description: "Select an operator-configured PI_SUBAGENT_FALLBACK_MODELS task-class roster.",
+});
+
 const taskSchema = Type.Object({
 	profile: Type.Optional(profileSchema),
 	task: Type.String({ minLength: 1 }),
@@ -5266,6 +5510,8 @@ const taskSchema = Type.Object({
 		}),
 	),
 	model: Type.Optional(modelSchema),
+	fallbackModels: Type.Optional(fallbackModelsSchema),
+	taskClass: Type.Optional(taskClassSchema),
 	thinking: Type.Optional(thinkingSchema),
 	tools: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 	cwd: Type.Optional(Type.String({ minLength: 1 })),
@@ -5278,6 +5524,8 @@ type TaskParams = {
 	task: string;
 	purpose?: string;
 	model?: string;
+	fallbackModels?: string[];
+	taskClass?: string;
 	thinking?: ThinkingLevel;
 	tools?: string[];
 	cwd?: string;
@@ -5290,6 +5538,8 @@ type SubagentParams = {
 	task?: string;
 	tasks?: TaskParams[];
 	model?: string;
+	fallbackModels?: string[];
+	taskClass?: string;
 	thinking?: ThinkingLevel;
 	tools?: string[];
 	cwd?: string;
@@ -5357,6 +5607,8 @@ function expandedConfigLines(args: SubagentParams): string[] {
 	return [
 		`profile:  ${args.profile ?? "none"} (a task profile replaces this; the result reports effective values)`,
 		`model:    ${args.model ?? "selected profile default, otherwise parent"}`,
+		`fallback: ${args.fallbackModels === undefined ? "operator-configured roster, otherwise disabled" : args.fallbackModels.join(", ") || "disabled"}`,
+		`class:    ${args.taskClass ?? "default"}`,
 		`thinking: ${args.thinking ?? "selected profile default, otherwise parent"}`,
 		`tools:    ${args.tools ? (args.tools.length ? args.tools.join(", ") : "submit_result only") : "inherit (parent active surface)"}`,
 		`cwd:      ${args.cwd ?? "selected profile default, otherwise session cwd"}`,
@@ -5398,10 +5650,13 @@ function renderExpandedCall(args: SubagentParams, theme: Theme, text: Text): voi
 
 /** One result line per dispatched worker, with the optional provenance suffix. */
 function outcomeLine(outcome: DispatchOutcome): string {
+	const fallback = outcome.record?.modelFallback
+		? `\n    ${fallbackSummary(outcome.record.modelFallback, outcome.record.model)}`
+		: "";
 	if (outcome.error) {
 		const worker = outcome.id ? `${outcome.id} · ` : "";
 		const setup = setupDiagnosticsLine(outcome.record);
-		return `✗ ${worker}${outcome.state}: ${outcome.error}${setup ? ` · ${setup}` : ""}`;
+		return `✗ ${worker}${outcome.state}: ${outcome.error}${setup ? ` · ${setup}` : ""}${fallback}`;
 	}
 	const thinking = outcome.record ? thinkingLabel(outcome.record) : "thinking:?";
 	const setup = setupDiagnosticsLine(outcome.record);
@@ -5412,7 +5667,7 @@ function outcomeLine(outcome: DispatchOutcome): string {
 	const profileLabel = profile ? ` · profile:${inspectInline(profile.path, 512)} sha256:${profile.sha256}` : "";
 	const label =
 		outcome.record?.label && outcome.record.label !== outcome.id ? ` · ${inspectInline(outcome.record.label, 64)}` : "";
-	return `${outcome.id} · background${label}${profileLabel} · ${outcome.record?.model ?? "?"} · ${thinking} · cwd:${outcome.record?.cwd ?? "?"}${shared}${setup ? `\n    ${setup}` : ""}`;
+	return `${outcome.id} · background${label}${profileLabel} · ${outcome.record?.model ?? "?"} · ${thinking} · cwd:${outcome.record?.cwd ?? "?"}${shared}${setup ? `\n    ${setup}` : ""}${fallback}`;
 }
 
 const subagentTool = defineTool({
@@ -5423,6 +5678,7 @@ const subagentTool = defineTool({
 		"Choose exactly one form. Single mode: pass `task` (plus optional model/thinking/tools/cwd). Batch mode: pass a non-empty `tasks` array for parallel dispatch; each task may carry its own fields, otherwise it inherits the top-level defaults.",
 		"Every worker runs in the BACKGROUND: the call completes worker setup and returns stable worker ids, then the model run proceeds in the background under this session's control; a subagent_result message arrives when a worker settles without explicit cancellation (steering delivery before the next model call, triggers a turn when idle). Explicit cancellation is acknowledged by its control response and adds no duplicate follow-up. submit_result stores at most 50KB and marks larger submissions [truncated].",
 		"Model: explicit `model` (bare id or provider/id) is checked against registry availability and configured auth only. Without an explicit or profile model, the worker inherits the parent's current model. Extension-registered providers are copied into the worker through Pi's public registration facade. Persisted and environment auth resolve; a parent-only runtime API-key override does not transfer. Without an explicit or profile cwd, the worker inherits the session cwd.",
+		"Fallback: optional ordered fallbackModels (at most four exact provider/model identities) replaces the taskClass or default roster in PI_SUBAGENT_FALLBACK_MODELS; [] disables it. Task fields override dispatch defaults. Offline catalog and configured-auth checks do not probe provider health. Only recognized provider quota, rate-limit, or authentication failures permit runtime substitution, after Pi settles. The same transcript and allowance continue. Every substitution or exhausted roster is reported; tool, parity, configuration, cancellation, and ordinary errors never trigger fallback.",
 		"Thinking: an explicit level the model cannot run fails that task and names the levels the model supports. Without an explicit or profile level, the worker inherits the parent's level, is clamped to the model, and reports the effective level with the requested one.",
 		"Profile: optional managed name or explicit JSON file path at top level or per task. Use subagent_profiles to manage names. Disabled profiles refuse the whole batch before setup. A task profile replaces the top-level profile. Explicit task fields beat explicit top-level fields, then selected profile defaults, then ordinary session defaults. Profile model/thinking/cwd, instructions, and source pointers are snapshotted; profiles never select tools or confer authority. Workers also carry a presentation label: a profile `name` or a task-derived fallback.",
 		"Tools: omitted `tools` reproduces this session's active tool surface exactly. Built-ins are rebuilt for the worker cwd, and extension registration files are reloaded from their registered source paths. The constructed surface is checked before provider work. Provided `tools` restricts the worker to exactly that set plus the submit_result protocol tool; a tool name that is not in the current registry fails the dispatch. `tools: []` is a declared EMPTY allowlist, not an omission: it yields a worker that has submit_result and nothing else.",
@@ -5457,6 +5713,8 @@ const subagentTool = defineTool({
 			}),
 		),
 		model: Type.Optional(modelSchema),
+		fallbackModels: Type.Optional(fallbackModelsSchema),
+		taskClass: Type.Optional(taskClassSchema),
 		thinking: Type.Optional(thinkingSchema),
 		tools: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 		cwd: Type.Optional(Type.String({ minLength: 1 })),
@@ -5502,6 +5760,8 @@ const subagentTool = defineTool({
 		}
 		const defaults = {
 			model: params.model,
+			fallbackModels: params.fallbackModels,
+			taskClass: params.taskClass,
 			thinking: params.thinking,
 			tools: params.tools,
 			// A profile cwd slots between an explicit dispatch cwd and the session cwd.
@@ -5545,6 +5805,8 @@ const subagentTool = defineTool({
 				label,
 				cwd: resolved.cwd ?? ctx.cwd,
 				tools: task.tools ?? defaults.tools,
+				fallbackModels: task.fallbackModels ?? defaults.fallbackModels,
+				taskClass: task.taskClass ?? defaults.taskClass,
 				deadlineMinutes: task.deadlineMinutes ?? defaults.deadlineMinutes,
 				budgetUsd: task.budgetUsd ?? defaults.budgetUsd,
 				sharedContext,
@@ -5590,6 +5852,7 @@ const subagentTool = defineTool({
 					label: outcome.record?.label ?? null,
 					state: outcome.state,
 					model: outcome.record?.model ?? null,
+					modelFallback: outcome.record?.modelFallback ?? null,
 					thinking: outcome.record?.thinking ?? null,
 					thinkingRequested: outcome.record?.thinkingRequested ?? null,
 					cwd: outcome.record?.cwd ?? null,

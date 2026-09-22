@@ -55,6 +55,7 @@ import type {
 
 const agentDir = mkdtempSync(join(tmpdir(), "subagent-test-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
+delete process.env.PI_SUBAGENT_FALLBACK_MODELS;
 // Real sessions discover user resources under $HOME. An empty home keeps the
 // in-process session tests deterministic on any machine, like the child
 // fixtures.
@@ -115,6 +116,7 @@ const {
 	renderTranscriptTail,
 	resolveRunLimits,
 	resolveToolSurface,
+	snapshotToolRegistration,
 	registrationDifferenceFields,
 	sessionWriteAge,
 	registerWorkerCompactionVeto,
@@ -4370,9 +4372,10 @@ describe("registered tool surface", () => {
 			parameters: { type: "object", maxProperties: 2 },
 			promptGuidelines: ["new guideline"],
 		};
-		assert.deepEqual(registrationDifferenceFields(expected, actual), ["description", "parameters", "promptGuidelines"]);
+		const snapshot = snapshotToolRegistration(expected);
+		assert.deepEqual(registrationDifferenceFields(snapshot, actual), ["description", "parameters", "promptGuidelines"]);
 		assert.deepEqual(
-			registrationDifferenceFields(expected, {
+			registrationDifferenceFields(snapshot, {
 				...expected,
 				sourceInfo: { ...sourceInfo, path: join(agentDir, "other-extension.ts") },
 			}),
@@ -4386,12 +4389,22 @@ describe("registered tool surface", () => {
 				missing: [],
 				unexpected: [],
 				changed: [
-					{ name: "probe_tool", fields: ["description", "parameters", "promptGuidelines"] },
-					{ name: "status_tool", fields: ["description"] },
+					{
+						name: "probe_tool",
+						fields: ["description", "parameters", "promptGuidelines"],
+						expectedSource: "local/path/to/probe.ts",
+						actualSource: "local/path/to/probe.ts",
+					},
+					{
+						name: "status_tool",
+						fields: ["source", "description"],
+						expectedSource: "local/path/to/status.ts",
+						actualSource: "local/path/to/replacement.ts",
+					},
 				],
 				active: ["subagent", "probe_tool", "status_tool", "submit_result"],
 			}),
-			"the worker session could not reproduce the requested tool surface; registration changed: probe_tool (description, parameters, promptGuidelines), status_tool (description). Worker active tool names: subagent, probe_tool, status_tool, submit_result. The worker reloaded registration source that differs from this session. Run /reload after extension source changes, then retry. If no source changed, keep registration metadata independent of cwd and configuration.",
+			"the worker session could not reproduce the requested tool surface; registration changed: probe_tool (description, parameters, promptGuidelines) [parent source: local/path/to/probe.ts; worker source: local/path/to/probe.ts], status_tool (source, description) [parent source: local/path/to/status.ts; worker source: local/path/to/replacement.ts]. Worker active tool names: subagent, probe_tool, status_tool, submit_result. The worker reloaded registration source that differs from this session. Run /reload after extension source changes, then retry. If no source changed, keep registration metadata independent of cwd and configuration.",
 		);
 		assert.equal(
 			toolSurfaceMismatchMessage({
@@ -4424,6 +4437,52 @@ describe("registered tool surface", () => {
 		} finally {
 			rmSync(childCoverageDir, { recursive: true, force: true });
 		}
+	});
+
+	it("keeps dispatch registration values after the parent mutates its registry objects", () => {
+		const extensionPath = join(agentDir, "snapshot-extension.ts");
+		writeFileSync(extensionPath, "export default function () {}\n", "utf-8");
+		const parameters = { type: "object", properties: { value: { type: "string", maxLength: 20 } } };
+		const guidelines = ["original guideline"];
+		const info: ToolInfo = {
+			name: "snapshot_tool",
+			description: "original description",
+			parameters,
+			promptGuidelines: guidelines,
+			sourceInfo: { path: extensionPath, source: "local", scope: "temporary", origin: "top-level" },
+		};
+		const active = [info.name];
+		const all = [info];
+		const surface = resolveToolSurface({ active, all }, undefined);
+		assert.ok(!("error" in surface));
+		const snapshot = surface.metadata.get("snapshot_tool");
+		assert.ok(snapshot);
+		assert.equal(Object.isFrozen(snapshot), true);
+		assert.equal(Object.isFrozen(snapshot.sourceInfo), true);
+		assert.deepEqual(registrationDifferenceFields(snapshot, info), []);
+
+		active[0] = "replacement_tool";
+		info.name = "replacement_tool";
+		info.description = "changed description";
+		parameters.properties.value.maxLength = 40;
+		guidelines.push("another guideline");
+		info.sourceInfo.path = join(agentDir, "replacement-extension.ts");
+		all.length = 0;
+		writeFileSync(extensionPath, "export default function () { throw new Error('changed bytes'); }\n", "utf-8");
+
+		assert.deepEqual(surface.tools, ["snapshot_tool", "submit_result"]);
+		assert.deepEqual(surface.extensionPaths, [extensionPath]);
+		assert.equal(snapshot.name, "snapshot_tool");
+		assert.equal(snapshot.description, "original description");
+		assert.equal(snapshot.sourceInfo.path, extensionPath);
+		assert.equal(snapshot.parametersJson, '{"type":"object","properties":{"value":{"type":"string","maxLength":20}}}');
+		assert.equal(snapshot.promptGuidelinesJson, '["original guideline"]');
+		assert.deepEqual(registrationDifferenceFields(snapshot, info), [
+			"source",
+			"description",
+			"parameters",
+			"promptGuidelines",
+		]);
 	});
 
 	it("reloads file-backed registrations from their source paths", () => {

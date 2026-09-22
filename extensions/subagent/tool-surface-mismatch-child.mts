@@ -36,9 +36,11 @@ const model = {
 };
 
 const providerPath = join(agentDir, "surface-provider.mjs");
+const providerCallsPath = join(agentDir, "provider-calls.txt");
 writeFileSync(
 	providerPath,
-	`import { fauxAssistantMessage, fauxProvider, fauxToolCall } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
+	`import { appendFileSync } from "node:fs";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
 const model = ${JSON.stringify(model)};
 export default function (pi) {
   const faux = fauxProvider({ api: model.api, provider: model.provider, models: [model] });
@@ -50,7 +52,10 @@ export default function (pi) {
     apiKey: "not-used",
     baseUrl: model.baseUrl,
     models: [model],
-    streamSimple: faux.provider.streamSimple,
+    streamSimple(...args) {
+      appendFileSync(${JSON.stringify(providerCallsPath)}, "request\\n", "utf8");
+      return faux.provider.streamSimple(...args);
+    },
   });
 }
 `,
@@ -139,6 +144,9 @@ try {
 
 	const dispatch = parentSession.extensionRunner.getToolDefinition("subagent");
 	assert.ok(dispatch);
+	const probeRegistration = parentSession.getAllTools().find((tool) => tool.name === "probe_tool");
+	assert.ok(probeRegistration);
+	const expectedSource = `${probeRegistration.sourceInfo.source}/${probeRegistration.sourceInfo.path}`;
 	// The extension reads only these context fields when its tool runs directly here.
 	const ctx = {
 		cwd: parentCwd,
@@ -181,11 +189,15 @@ try {
 	assert.equal(existsSync(resultPath), true);
 	assert.equal(readFileSync(resultPath, "utf8"), "SURFACE_OK");
 
+	const callsBeforeMismatch = readFileSync(providerCallsPath, "utf8");
+	assert.match(callsBeforeMismatch, /^(request\n)+$/);
 	const differentCwdError = await rejectedDispatch(dispatch, ctx, differentCwd, "different-cwd");
 	const sameCwdAfterError = await rejectedDispatch(dispatch, ctx, parentCwd, "same-cwd-after");
+	assert.equal(readFileSync(providerCallsPath, "utf8"), callsBeforeMismatch);
 	for (const message of [differentCwdError, sameCwdAfterError]) {
 		assert.match(message, /Started 0 of 1 subagent worker\(s\)/);
 		assert.match(message, /registration changed: probe_tool \(description, parameters, promptGuidelines\)/);
+		assert.ok(message.includes(`parent source: ${expectedSource}; worker source: ${expectedSource}`), message);
 		assert.match(message, /Worker active tool names: subagent, probe_tool, submit_result/);
 		assert.match(message, /Run \/reload after extension source changes, then retry/);
 	}
