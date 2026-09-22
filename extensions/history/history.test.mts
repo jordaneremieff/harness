@@ -372,6 +372,112 @@ test("tool arguments remain available by pointer while provider payloads and red
 	assert.equal(readHistory(sm, { entryId: "a", pointer: "/message/content", offset: 1, maxItems: 1 }).status, "page");
 });
 
+test("context-edit replacement blocks withhold payloads and signatures in direct reads and manifests", () => {
+	const cases = [
+		{
+			block: { type: "thinking", thinking: "synthetic redacted text", thinkingSignature: "synthetic thinking signature", redacted: true },
+			keys: ["thinking", "thinkingSignature"],
+		},
+		{
+			block: { type: "text", text: "readable replacement", textSignature: "synthetic text signature" },
+			keys: ["textSignature"],
+		},
+		{
+			block: { type: "image", data: "synthetic image payload", mimeType: "image/png" },
+			keys: ["data"],
+		},
+		{
+			block: {
+				type: "toolCall", id: "call", name: "synthetic_tool",
+				arguments: { data: "readable input" }, thoughtSignature: "synthetic call signature",
+			},
+			keys: ["thoughtSignature"],
+		},
+	];
+	for (const { block, keys } of cases) {
+		const entry = {
+			id: "edit", parentId: null, timestamp: "2026-01-01", type: "context_edit",
+			targetId: "target", replacement: { content: [block] },
+		} as unknown as SessionEntry;
+		const sm = source([entry]);
+		const manifest = readHistory(sm, { entryId: "edit", pointer: "/replacement/content/0" });
+		for (const key of keys) {
+			const pointer = `/replacement/content/0/${key}`;
+			for (const selected of [pointer, `${pointer}/nested`]) {
+				const result = readHistory(sm, { entryId: "edit", pointer: selected });
+				assert.equal(result.status, "withheld", selected);
+				assert.equal(result.reason, "Image payloads, opaque provider signatures, and redacted thinking are not exposed.");
+				assert.equal(result.text, undefined);
+			}
+			assert.ok((manifest.items as Record<string, unknown>[]).some(
+				(item) => item.pointer === pointer && item.kind === "withheld" &&
+					item.reason === "Image payload, provider signature, or redacted thinking.",
+			));
+			assert.ok(!JSON.stringify(toolResult(manifest)).includes(Reflect.get(block, key)));
+		}
+	}
+});
+
+test("context-edit manifests expose replacement content and preserve ordinary selectors", () => {
+	const sm = source([{
+		id: "edit", parentId: null, timestamp: "2026-01-01", type: "context_edit", targetId: "target",
+		replacement: { content: [
+			{ type: "text", text: "readable replacement" },
+			{ type: "thinking", thinking: "readable thinking", redacted: false },
+			{ type: "thinking", thinking: "synthetic redacted text", redacted: true },
+			{ type: "image", data: "synthetic image payload", mimeType: "image/png" },
+			{ type: "toolCall", id: "call", name: "synthetic_tool", arguments: { data: "readable input", textSignature: "ordinary field" } },
+		] },
+	} as unknown as SessionEntry]);
+	const root = readHistory(sm, { entryId: "edit" });
+	assert.ok((root.items as Record<string, unknown>[]).some((item) => item.pointer === "/replacement" && item.kind === "object"));
+	assert.equal((root.entry as Record<string, unknown>).targetId, "target");
+	const replacement = readHistory(sm, { entryId: "edit", pointer: "/replacement" });
+	assert.equal(replacement.status, "complete");
+	assert.deepEqual((replacement.items as Record<string, unknown>[]).map((item) => item.pointer), ["/replacement/content"]);
+	const first = readHistory(sm, { entryId: "edit", pointer: "/replacement/content", maxItems: 1 });
+	assert.equal(first.status, "page");
+	assert.equal((first.items as Record<string, unknown>[])[0].pointer, "/replacement/content/0");
+	const rest = readHistory(sm, next(first));
+	assert.equal(rest.status, "complete");
+	assert.equal((rest.items as Record<string, unknown>[]).length, 4);
+	for (const [pointer, text] of [
+		["/replacement/content/0/text", "readable replacement"],
+		["/replacement/content/1/thinking", "readable thinking"],
+		["/replacement/content/3/mimeType", "image/png"],
+		["/replacement/content/4/arguments/data", "readable input"],
+		["/replacement/content/4/arguments/textSignature", "ordinary field"],
+	]) {
+		const result = readHistory(sm, { entryId: "edit", pointer });
+		assert.equal(result.status, "complete");
+		assert.equal(result.text, text);
+	}
+	assert.equal(readHistory(sm, { entryId: "edit", pointer: "/replacement/content/2/redacted" }).value, true);
+	assert.equal(matches(searchHistory(sm, { query: "readable replacement" })).length, 0);
+});
+
+test("context edits preserve null, string and empty replacements without withholding ordinary custom data", () => {
+	for (const replacement of [null, { content: "replacement text" }, { content: [] }]) {
+		const sm = source([{
+			id: "edit", parentId: null, timestamp: "2026-01-01", type: "context_edit", targetId: "target", replacement,
+		} as unknown as SessionEntry]);
+		const result = readHistory(sm, { entryId: "edit", pointer: "/replacement" });
+		assert.equal(result.status, "complete");
+		if (replacement === null) {
+			assert.equal(result.value, null);
+		} else {
+			const content = readHistory(sm, { entryId: "edit", pointer: "/replacement/content" });
+			assert.equal(content.status, "complete");
+			if (typeof replacement.content === "string") assert.equal(content.text, replacement.content);
+			else assert.deepEqual(content.items, []);
+		}
+		assert.equal(readHistory(sm, { entryId: "edit", pointer: "/replacement/content/0/thinkingSignature" }).status, "field_absent");
+	}
+	const sm = SessionManager.inMemory();
+	const id = sm.appendCustomEntry("ordinary-data", { replacement: { content: [{ type: "image", data: "ordinary data" }] } });
+	assert.equal(readHistory(sm, { entryId: id, pointer: "/data/replacement/content/0/data" }).text, "ordinary data");
+});
+
 test("stored bash truncation stays distinct from a read page", () => {
 	const sm = SessionManager.inMemory();
 	const id = sm.appendMessage({

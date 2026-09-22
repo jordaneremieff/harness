@@ -25,8 +25,14 @@ A compaction entry exposes its stored prompt and tool checkpoint at
 `/systemMessage`; for example, `/systemMessage/sections/rules` reads a known
 section. Sections and tool definitions remain structured fields, excluded from
 literal search. These reads report stored changes and checkpoints, not a replay
-of the current effective prompt or new instruction authority. JSON pointers
-escape `~` as `~0` and `/` as `~1` in property names.
+of the current effective prompt or new instruction authority.
+
+A context-edit entry exposes `/targetId` and `/replacement`. A null replacement
+records an omission from model context. Otherwise, `/replacement/content`
+selects the stored replacement string or content blocks; for example,
+`/replacement/content/0/text`. These reads expose the edit itself, not the
+current effective message. Literal search does not search replacement content.
+JSON pointers escape `~` as `~0` and `/` as `~1` in property names.
 
 A string read returns exact stored text, `offset`, exclusive `endOffset`,
 `totalCodeUnits`, and a continuation when text remains. String offsets use
@@ -72,7 +78,7 @@ returns `field_absent`. Malformed arguments or entries cause a bounded error.
 
 ## Structured content and upstream limits
 
-Root, message, and content-block manifests expose a fixed set of standard
+Root, message, replacement, and content-block manifests expose a fixed set of standard
 fields. Arrays return bounded child descriptors. String descriptors give their
 length and an exact pointer rather than copying text into metadata. The tools
 never enumerate arbitrary object keys or serialize a complete source object.
@@ -83,7 +89,8 @@ Read a known child key directly; object-key discovery is not provided. This boun
 regardless of an opaque object's size. Ordinary fields named `data` inside
 those objects remain readable. Provider signatures, image payloads, and
 redacted thinking are withheld at typed content-block locations, including
-compaction checkpoints. Direct pointers retain the same exclusions. Redaction flags remain visible as metadata.
+compaction checkpoints and context-edit replacements. Direct pointers retain
+the same exclusions. Redaction flags remain visible as metadata.
 
 Stored `isError`, bash `truncated`, cancellation, and context-exclusion flags
 remain distinct from the history tool's own page status. Tool-specific
@@ -129,7 +136,8 @@ node --test extensions/history/*.test.mts
 The colocated tests exercise real `SessionManager.inMemory()` entries and
 synthetic malformed sources, including compaction, alternate ancestry,
 continuations, Unicode, output bounds, structured omissions, cancellation,
-argument validation, and the adapter's invocation-owned session context.
+argument validation, context-edit replacement manifests and withholding, and
+the adapter's invocation-owned session context.
 Repository gates and runtime discovery remain separate evidence layers.
 
 The adapter uses the public `ExtensionAPI` and `ExtensionContext` contracts.
