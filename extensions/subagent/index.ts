@@ -1108,7 +1108,7 @@ function workerSystemPrompt(): string {
 		"- Your task's deadline and budget bounds the whole task, including idle time between turns: the wall-clock deadline keeps running while you wait. An owner resuming you grants a fresh allowance; event activation carries the remaining one.",
 		"- Resolve or hand over your children before submit_result: submit_result ends your run, and your unfinished children are aborted by teardown.",
 		"- submit_result stores up to 50KB; keep the deliverable within that limit or it is truncated with a [truncated] marker.",
-		"- Call submit_result exactly once when your work is complete; it ends your run. Make it the ONLY tool call of that final turn — never batch another tool call alongside it (a sibling call in the same batch can be dropped when the run aborts, leaving a corrupt transcript). Do not emit a closing message.",
+		"- Call submit_result exactly once when your work is complete; it ends your run after every tool in that batch finishes. Do not emit a closing message.",
 		"- A tool that fails with an environment, authorization, or initialization error is a defect the parent must see. Name the tool, quote the exact error, and say what it blocked — in your result, even when you found another way. Reporting it is what gets it fixed.",
 		"- Use only alternatives already authorized by the task and environment. Do not use another account, credential, or privileged path. State the blocked tool and the non-secret alternative you used, such as an authorized direct API or cached artifact, so the parent can judge the result.",
 		"- Date your evidence. A cached file, an exported dump, or an old transcript describes the moment it was written; give its age where you rely on it, and do not present it as the current state.",
@@ -2693,20 +2693,29 @@ export function registerWorkerCompactionVeto(pi: ExtensionAPI): void {
 	pi.on("session_before_compact", (event, ctx) => compactionVeto(ctx.sessionManager.getSessionId(), event.reason));
 }
 
-export function clearQueueBeforeAbort(session: Pick<AgentSession, "clearQueue" | "abort">): void {
-	session.clearQueue();
-	void session.abort().catch(() => {});
+/** Preserve Pi's persisted turn boundary, then close a submitted worker after its complete batch. */
+export function installWorkerCompletionBoundary(session: AgentSession): void {
+	const finishTurn = session.agent.finishTurn;
+	session.agent.finishTurn = async (turn, signal) => {
+		const decision = await finishTurn?.(turn, signal);
+		if (!sharedWorkerState.submittedSessionIds.has(session.sessionManager.getSessionId())) return decision ?? undefined;
+		session.clearQueue();
+		// End the outer AgentSession run too: finishTurn alone does not suppress
+		// recovery, agent_end queues, or agent_before_settle continuation. All tool
+		// results are persisted here. Awaiting abort would wait on this callback.
+		void session.abort().catch(() => {});
+		return { action: "end" };
+	};
 }
 
-export function submitResultTool(resultPath: string, endRun: () => void, sessionId: () => string) {
+export function submitResultTool(resultPath: string, sessionId: () => string) {
 	return defineTool({
 		name: "submit_result",
 		label: "Submit Result",
 		description: [
 			"Submit your final deliverable to the parent session that dispatched you.",
 			"Call this exactly ONCE when your work is complete. Put the complete deliverable in `content`; up to 50KB is stored verbatim, and larger submissions are truncated with a [truncated] marker.",
-			"Calling this ends your run immediately after the tool returns. Do not produce a closing acknowledgement message.",
-			"Call it alone: it must be the ONLY tool call in your final turn, with no other tool call batched alongside it — a sibling call in the same batch can be dropped when the run aborts, leaving a corrupt transcript.",
+			"An accepted submission ends your run after every tool in the current batch finishes. Do not produce a closing acknowledgement message.",
 		].join(" "),
 		promptSnippet:
 			"submit_result(content) — REQUIRED final call. Store the complete deliverable (50KB maximum; larger content is truncated).",
@@ -2749,38 +2758,13 @@ export function submitResultTool(resultPath: string, endRun: () => void, session
 			} finally {
 				rmSync(tmp, { force: true });
 			}
-			// End the WORKER's run. Never ctx.shutdown() here: the worker shares this
-			// process with the parent session, so a shutdown would take the operator's
-			// session down too.
-			//
-			// Two mechanisms, in this order:
-			//
-			// 1. `terminate: true` is pi's own early-stop hint. The agent loop reads it
-			//    from the finalized batch (shouldTerminateToolBatch) and leaves the
-			//    inner loop WITHOUT issuing another provider request — a clean end,
-			//    with no aborted assistant message in the worker's session file.
-			// 2. A synchronous queue clear and abort, so a queued steer cannot drive
-			//    one more turn.
-			//
-			// The abort must not be deferred with setImmediate: a macrotask can land
-			// after the loop opens the next provider request. Calling it here sets the run's
-			// AbortController synchronously (AgentSession.abort calls agent.abort()
-			// before its first await) while still returning this result intact — the
-			// loop creates and emits the tool result before it rechecks the signal.
-			// That last point holds for the SEQUENTIAL tool path; in the PARALLEL
-			// path (pi's default) the signal recheck happens before execution and the
-			// result is emitted after Promise.all — the result is safe either way, by
-			// a different mechanism.
-			// The deliverable is safely on disk: arm the post-run compaction veto
-			// before the run ends, so the settle that follows submit_result is not
-			// stalled by pi's threshold compaction of a disposable conversation.
-			// A missing session id never enters the set (an empty key could not
-			// be cleaned up — finalize deletes the persisted session id).
+			// Mark acceptance only after the atomic claim. The session's finishTurn
+			// boundary closes the run after sibling tools and their results finish.
+			// An absent identity must not leave an uncollectable process-state key.
 			const submittedSessionId = sessionId();
 			if (submittedSessionId) {
 				sharedWorkerState.submittedSessionIds.add(submittedSessionId);
 			}
-			endRun();
 			return {
 				content: [
 					{
@@ -2791,7 +2775,6 @@ export function submitResultTool(resultPath: string, endRun: () => void, session
 					},
 				],
 				details: {},
-				terminate: true,
 			};
 		},
 	});
@@ -3457,18 +3440,6 @@ function releaseUnbuiltWorker(
 	if (forkedSessionFile) rmSync(forkedSessionFile, { force: true });
 }
 
-/**
- * End a worker run without awaiting the abort. AgentSession.abort() awaits waitForIdle(), which cannot
- * resolve until the run finishes, and the run cannot finish until submit_result's execute() returns;
- * awaiting here would deadlock the worker. The queue clear is synchronous, and the abort rejection stays
- * contained so it never surfaces in the parent as an unhandled rejection.
- */
-function endWorkerRun(live: { session: AgentSession | null }): void {
-	const workerSession = live.session;
-	if (!workerSession) return;
-	clearQueueBeforeAbort(workerSession);
-}
-
 /** Registered extension paths for a worker, including this extension's own source. */
 function workerExtensionPaths(
 	ctx: ExtensionContext,
@@ -3584,10 +3555,6 @@ export async function dispatchWorker(
 	const constructedSessionIds = new Set<string>();
 	// Pi's runtime host keeps a session-only trust answer when it revisits a cwd.
 	const workerProjectTrustByCwd = new Map<string, boolean>();
-	// The submit tool is built before the session exists, so ending the run goes
-	// through a holder rather than a direct reference.
-	const live: { session: AgentSession | null } = { session: null };
-	const endRun = () => endWorkerRun(live);
 	// Every extension factory registers the same handlers. The session id marks
 	// this session as a worker before bindExtensions emits session_start, which
 	// avoids any process-wide construction window or cross-session load race.
@@ -3660,8 +3627,9 @@ export async function dispatchWorker(
 			model: workerModel,
 			thinkingLevel: thinking,
 			tools: resolvedTools,
-			customTools: [submitResultTool(files.result, endRun, () => live.session?.sessionManager.getSessionId() ?? "")],
+			customTools: [submitResultTool(files.result, () => options.sessionManager.getSessionId())],
 		});
+		installWorkerCompletionBoundary(created.session);
 		try {
 			await restoreProfileContext(created.session);
 		} catch (error) {
@@ -3797,7 +3765,6 @@ export async function dispatchWorker(
 			sessionManager,
 		});
 		session = sessionHost.session;
-		live.session = session;
 		disposeSession = disposeOnce(() => {
 			const ownedHost = sessionHost;
 			if (ownedHost) void ownedHost.dispose().catch(() => {});
@@ -3889,7 +3856,6 @@ export async function dispatchWorker(
 		unlinkWorkerOwner(previous.sessionManager.getSessionId());
 		session = next;
 		sessionManager = next.sessionManager;
-		live.session = next;
 		liveWorker.session = next;
 		runtime.replaceSession(next);
 		untrack = disposeOnce(trackSession(record, next));

@@ -576,8 +576,9 @@ alone establishes general autonomous task reliability.
   `AgentSession` through one exact-once owner, so Pi's per-session resources are
   released after terminal evidence is persisted.
 - The worker's deliverable is written by its `submit_result` tool to
-  `result.txt` through an atomic first-writer claim, and the tool then ends the
-  worker's run. A second submission fails without replacing the accepted result,
+  `result.txt` through an atomic first-writer claim. Submission marks acceptance;
+  the worker ends only after every tool in the batch and its result finish.
+  A second submission fails without replacing the accepted result,
   and every temporary write is removed.
   The write is capped at 50KB of UTF-8 including a `[truncated]` marker. The
   parent never extracts results heuristically.
@@ -590,10 +591,14 @@ alone establishes general autonomous task reliability.
   for current state. A worker that cannot finish submits what it established and
   names the blocker. The extension captures the friction signal (`toolErrors`)
   and leaves the judgment call with the operator.
-- A worker should call `submit_result` alone in its final turn. If it is
-  batched with a sequential tool such as `subagent_steer`/`subagent_kill`, the
-  sibling call can be dropped on abort, leaving an unanswered toolCall in the
-  worker's session file.
+- The worker composes Pi's `finishTurn` hook after session construction. Pi's
+  existing hook persists turn-boundary entries before the submitted worker
+  clears queued input and returns `{ action: "end" }`. A non-awaited session
+  abort at that completed-batch boundary also stops outer recovery and
+  continuation. It never interrupts siblings during submission. A low-level
+  end decision alone does not suppress `agent_end` queues or
+  `agent_before_settle` continuation. Explicit cancellation still aborts active
+  work. The submitted-session threshold-compaction veto remains in place.
 - Completion is persisted before any notification. While the owning session is
   alive, a natural completion or failure delivers a `subagent_result` steering
   message after the current tool batch and before the next model call. An idle
@@ -655,11 +660,12 @@ alone establishes general autonomous task reliability.
   worker protocol prompt.
 - A worker is a full session: ending an ordinary assistant turn without calling
   `submit_result` leaves it live and idle in the same session, ready for a later
-  peer message, child completion, or owner resume. A turn that ends in a
-  transport error or abort without a submitted result and without a session
-  switch is recorded as `no_result_submitted` — distinct from `failed`, because
-  billing errors, thinking and tool-surface mismatches, and completed-in-substance
-  work need different responses. The final message is retained and surfaced by
+  peer message, child completion, or owner resume. No automatic submit reminder
+  starts another provider request during that intentional idle state. Without
+  an accepted result, a terminal run with a recorded error is `failed`; one
+  without a recorded error is `no_result_submitted`. Explicit cancellation,
+  idle expiry, and owner loss retain their separate states. For
+  `no_result_submitted`, the final message is retained and surfaced by
   `subagent_collect` behind an explicit UNPROTOCOLLED OUTPUT banner, never
   presented as the result, with the session file for the full record. Every
   other terminal no-result state also points to `subagent_inspect` before

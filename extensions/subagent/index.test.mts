@@ -121,7 +121,7 @@ const {
 	ownToolSourcePath,
 	sharedWorkerState,
 	submitResultTool,
-	clearQueueBeforeAbort,
+	installWorkerCompletionBoundary,
 	subtractUsage,
 	statusLine,
 	statusView,
@@ -2557,16 +2557,8 @@ describe("compaction veto", () => {
 		const dir = join(storeDir, "w-veto-marks");
 		mkdirSync(dir, { recursive: true });
 		const resultPath = join(dir, "result.txt");
-		let ended = 0;
-		const tool = submitResultTool(
-			resultPath,
-			() => {
-				ended++;
-			},
-			() => "sess-veto-marks",
-		);
+		const tool = submitResultTool(resultPath, () => "sess-veto-marks");
 		await tool.execute("call-1", { content: "the deliverable" }, undefined, undefined, undefined as never);
-		assert.equal(ended, 1);
 		assert.equal(readFileSync(resultPath, "utf-8"), "the deliverable");
 		// The default set argument is the module-level submitted set.
 		assert.deepEqual(compactionVeto("sess-veto-marks", "threshold"), {
@@ -2578,11 +2570,7 @@ describe("compaction veto", () => {
 		const dir = join(storeDir, "w-first-result");
 		mkdirSync(dir, { recursive: true });
 		const resultPath = join(dir, "result.txt");
-		const tool = submitResultTool(
-			resultPath,
-			() => {},
-			() => "sess-first-result",
-		);
+		const tool = submitResultTool(resultPath, () => "sess-first-result");
 		await tool.execute("call-first", { content: "first" }, undefined, undefined, undefined as never);
 		await assert.rejects(
 			() => tool.execute("call-second", { content: "second" }, undefined, undefined, undefined as never),
@@ -2595,21 +2583,36 @@ describe("compaction veto", () => {
 		);
 	});
 
-	it("clears queued messages before submit_result aborts the worker", async () => {
-		const session = new FakeSession();
-		await session.steer("queued steer");
-		await session.followUp("queued follow-up");
+	it("preserves Pi's boundary and clears queues only after the submitted batch", async () => {
+		const events: string[] = [];
+		const session = {
+			agent: {
+				finishTurn: async (..._args: unknown[]) => {
+					events.push("boundary");
+					return { action: "continue" };
+				},
+			},
+			sessionManager: { getSessionId: () => "sess-clear-submit" },
+			clearQueue: () => {
+				events.push("clear");
+			},
+			abort: () => {
+				events.push("abort");
+				return new Promise<void>(() => {});
+			},
+		};
+		installWorkerCompletionBoundary(session as never);
+		assert.deepEqual(await session.agent.finishTurn({}, undefined), { action: "continue" });
+		assert.deepEqual(events, ["boundary"]);
+		events.length = 0;
 		const dir = join(storeDir, "w-clear-submit");
 		mkdirSync(dir, { recursive: true });
-		const tool = submitResultTool(
-			join(dir, "result.txt"),
-			() => clearQueueBeforeAbort(session as never),
-			() => "sess-clear-submit",
-		);
+		const tool = submitResultTool(join(dir, "result.txt"), () => "sess-clear-submit");
 		await tool.execute("call-clear-submit", { content: "the deliverable" }, undefined, undefined, undefined as never);
-		assert.deepEqual(session.abortQueueSnapshots, [{ steering: [], followUp: [] }]);
-		assert.deepEqual(session.getSteeringMessages(), []);
-		assert.deepEqual(session.getFollowUpMessages(), []);
+		assert.deepEqual(events, [], "submission only marks acceptance");
+		assert.deepEqual(await session.agent.finishTurn({}, undefined), { action: "end" });
+		assert.deepEqual(events, ["boundary", "clear", "abort"]);
+		sharedWorkerState.submittedSessionIds.delete("sess-clear-submit");
 	});
 
 	it("clears queued messages before the abort used by kill", async () => {

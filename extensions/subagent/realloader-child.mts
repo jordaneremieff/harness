@@ -43,13 +43,7 @@ async function main(): Promise<void> {
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(),
 			tools: ["read", "bash", "submit_result"],
-			customTools: [
-				submitResultTool(
-					join(agentDir, "unused-result.txt"),
-					() => undefined,
-					() => "unused",
-				),
-			],
+			customTools: [submitResultTool(join(agentDir, "unused-result.txt"), () => "unused")],
 		});
 		session = created.session;
 
