@@ -19,6 +19,11 @@ Current consumers:
 |---|---|---|
 | `PI_BRAVE_API_KEY` | brave | Brave Web Search subscription token. Precedence: explicit client option, then this variable. |
 | `PI_STASH_DIR` | stash | Stash store directory override; default `<agentDir>/stash`. |
+| `PI_STASH_CAPACITY` | stash | `1` or unset enables capacity requests; `0` disables them. |
+| `PI_STASH_CHECKPOINT_PERCENT` | stash | Checkpoint threshold; default `60`, positive and below the decision threshold. |
+| `PI_STASH_DECISION_PERCENT` | stash | Continuity-decision threshold; default `70`, above the checkpoint threshold and at most `100`. |
+| `PI_STASH_INTAKE_TOKEN_BUDGET` | stash | Optional positive integer text-intake estimate budget when host usage is unknown; never a context percentage. |
+| `PI_STASH_CHECKPOINT_DIR` | stash | Working-checkpoint destination; default `<stashDir>/checkpoints`, separate from handover discovery. |
 | `PI_STASH_MODEL` | stash | Optional model for `/stash new` distillation (`provider/id` or bare id). Unset inherits the parent session model. Set but missing or unauthenticated fails creation; no silent fallback. |
 | `PI_STASH_THINKING` | stash | Optional thinking level for `/stash new` distillation. Unset inherits the parent session level (default `low` when the parent has none). An explicit unsupported level fails creation; an inherited unsupported level clamps to the model. |
 | `PI_CLIPBOARD_DIR` | clipboard | Clipboard archive directory override; default `<agentDir>/clipboard`. |

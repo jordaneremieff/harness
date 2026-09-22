@@ -7,6 +7,8 @@ import registerStash from "./index.ts";
 import { listStashes, readStash, transitionStash, writeStash } from "./store.ts";
 
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { SessionManager, type ExtensionContext, type SessionShutdownEvent } from "@earendil-works/pi-coding-agent";
+import { CAPACITY_STATE, capacityReset, readCapacityState } from "./capacity.ts";
 import type { DistillSession, DistillSessionFactory } from "./distill.ts";
 import type { PanelTheme } from "./panel.ts";
 import {
@@ -41,8 +43,11 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 			assert.ok(typeof content === "string");
 			sent.push({ content, options });
 		},
+		appendEntry: () => {},
 		on: (event, handler) => {
-			events.set(event, (_event, ctx) => handler({ type: "session_shutdown", reason: "quit" }, hostContext(ctx)));
+			if (event !== "session_shutdown") return () => {};
+			const shutdown = handler as (event: SessionShutdownEvent, ctx: ExtensionContext) => Promise<void>;
+			events.set(event, (_event, ctx) => shutdown({ type: "session_shutdown", reason: "quit" }, hostContext(ctx)));
 			return () => {
 				events.delete(event);
 			};
@@ -63,10 +68,13 @@ const theme: PanelTheme = {
 
 let dir: string;
 let oldStore: string | undefined;
+let oldCheckpoint: string | undefined;
 
 before(async () => {
 	dir = await mkdtemp(join(tmpdir(), "stash-index-test-"));
 	oldStore = process.env.PI_STASH_DIR;
+	oldCheckpoint = process.env.PI_STASH_CHECKPOINT_DIR;
+	delete process.env.PI_STASH_CHECKPOINT_DIR;
 	process.env.PI_STASH_DIR = dir;
 	await writeStash(dir, { title: "Large", summary: "x".repeat(70 * 1024) }, new Date("2026-07-24T10:00:00Z"));
 	await writeStash(dir, { title: "Pickup target", summary: "UNIQUE_PICKUP_BODY" }, new Date("2027-07-24T10:00:00Z"));
@@ -75,6 +83,8 @@ before(async () => {
 after(async () => {
 	if (oldStore === undefined) delete process.env.PI_STASH_DIR;
 	else process.env.PI_STASH_DIR = oldStore;
+	if (oldCheckpoint === undefined) delete process.env.PI_STASH_CHECKPOINT_DIR;
+	else process.env.PI_STASH_CHECKPOINT_DIR = oldCheckpoint;
 	await rm(dir, { recursive: true, force: true });
 });
 
@@ -83,6 +93,101 @@ describe("stash entrypoint", () => {
 		const { tools, commands } = registry();
 		assert.deepEqual([...tools.keys()], ["stash_write", "stash_list", "stash_read", "stash_complete", "stash_rotate"]);
 		assert.ok(commands.has("stash"));
+	});
+
+	it("saves a private working checkpoint outside the handover listing", async () => {
+		const { tools } = registry();
+		const result = await tools.get("stash_write").execute(
+			"checkpoint",
+			{
+				title: "Working synthesis",
+				summary: "Decision and next step.",
+				checkpoint: true,
+			},
+			undefined,
+			undefined,
+			{
+				cwd: "/workspace",
+				sessionManager: {
+					getSessionId: () => "checkpoint-owner",
+					buildContextEntries: () => [],
+				},
+			},
+		);
+		assert.equal(result.details.checkpoint, true);
+		assert.equal(result.details.id, undefined);
+		assert.ok(typeof result.details.path === "string");
+		assert.match(result.details.path, /checkpoints/);
+		assert.match(await readFile(result.details.path, "utf8"), /Decision and next step/);
+		assert.ok(!(await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Working synthesis"));
+	});
+
+	it("honors the checkpoint destination and refuses the handover directory", async () => {
+		const previous = process.env.PI_STASH_CHECKPOINT_DIR;
+		const { tools } = registry();
+		const ctx: TestContext = {
+			cwd: dir,
+			sessionManager: { getSessionId: () => "checkpoint-owner", buildContextEntries: () => [] },
+		};
+		try {
+			process.env.PI_STASH_CHECKPOINT_DIR = "working";
+			const result = await tools
+				.get("stash_write")
+				.execute(
+					"save",
+					{ title: "Override checkpoint", summary: "Checked synthesis.", checkpoint: true },
+					undefined,
+					undefined,
+					ctx,
+				);
+			assert.ok(typeof result.details.path === "string");
+			assert.equal(result.details.path.startsWith(join(dir, "working")), true);
+			process.env.PI_STASH_CHECKPOINT_DIR = join(dir, "child", "..");
+			await assert.rejects(
+				tools
+					.get("stash_write")
+					.execute(
+						"save",
+						{ title: "Refused checkpoint", summary: "No artifact.", checkpoint: true },
+						undefined,
+						undefined,
+						ctx,
+					),
+				/must differ/,
+			);
+		} finally {
+			if (previous === undefined) delete process.env.PI_STASH_CHECKPOINT_DIR;
+			else process.env.PI_STASH_CHECKPOINT_DIR = previous;
+		}
+	});
+
+	it("inspects capacity state and explicitly resets it through the command", async () => {
+		const { commands, pi } = registry();
+		const sessionManager = SessionManager.inMemory(dir);
+		const messages: string[] = [];
+		const ctx: TestContext = {
+			mode: "rpc",
+			hasUI: true,
+			sessionManager,
+			ui: { notify: (message) => messages.push(message) },
+		};
+		pi.appendEntry = (kind, data) => {
+			sessionManager.appendCustomEntry(kind, data);
+		};
+		sessionManager.appendCustomEntry(CAPACITY_STATE, {
+			...capacityReset({ sessionManager }),
+			checkpointRequested: true,
+		});
+		await commands.get("stash").handler("capacity", ctx);
+		assert.match(messages.join("\n"), /checkpoint true/);
+		await commands.get("stash").handler("capacity reset", ctx);
+		assert.equal(readCapacityState({ sessionManager }).checkpointRequested, false);
+		await commands.get("stash").handler("capacity invalid", ctx);
+		assert.match(messages.join("\n"), /Usage: \/stash capacity/);
+		await assert.rejects(
+			commands.get("stash").handler("capacity", { ...ctx, mode: "print", hasUI: false }),
+			/Stash capacity:/,
+		);
 	});
 
 	it("archives a superseded open stash through stash_rotate", async () => {
@@ -1302,7 +1407,7 @@ describe("stash command grammar", () => {
 		const actions = await complete("");
 		assert.deepEqual(
 			actions?.map((item) => item.value),
-			["new", "get", "complete", "release", "reopen", "rotate", "abort", "help"],
+			["new", "get", "complete", "release", "reopen", "rotate", "abort", "capacity", "help"],
 		);
 		assert.equal(await complete("20270724"), null, "bare ids must not autocomplete as actions");
 		const ids = await complete("get 20270724");

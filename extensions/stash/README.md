@@ -6,7 +6,7 @@ The agent distills an effort into a durable Markdown handover. The extension own
 
 | Surface | Kind | Purpose |
 |---|---|---|
-| `stash_write` | tool | Persist a self-contained handover with project, branch, and session metadata. |
+| `stash_write` | tool | Persist a self-contained handover with project, branch, and session metadata; `checkpoint: true` saves a working synthesis outside handover discovery. |
 | `stash_list` | tool | List recent artifacts by stable id, optionally filtered by tag or lifecycle state. |
 | `stash_read` | tool | Read by exact id or unique prefix. Results are capped at 50 KiB or 2000 lines and include the path when truncated. |
 | `stash_complete` | tool | Close an active effort with a required concrete outcome. |
@@ -17,6 +17,7 @@ The agent distills an effort into a durable Markdown handover. The extension own
 | `/stash get <id> <note>` | command | Pick up with an operator note: material recalled after the stash was written, delivered ahead of the artifact and authoritative on conflict. The artifact itself is never rewritten. |
 | `/stash release <id>` | command | Return an active stash to open (dead-session cleanup). |
 | `/stash abort` | command | Cancel the in-flight creation job. |
+| `/stash capacity [reset]` | command | Inspect the last capacity observation and request latches, or explicitly start a new pressure episode. |
 
 Pickup is one system action. The command reads the selected artifact and sends it as the next user message through `pi.sendUserMessage()`. The agent does not need to orchestrate a second `stash_read` call. The current working directory is never changed implicitly; the pickup message names both the current workspace and the recorded project, and calls out a mismatch before edits begin. An optional operator note (`/stash get <id> <note…>`, or the browser's `a` key) rides along in the same message as a distinct amendment block placed ahead of the artifact, marked newer than it and authoritative on conflict; the note is trusted operator input, terminal-sanitized, capped at 20,000 characters, and never persisted — the stashed core material stays byte-identical. `stash_write` emits the equivalent fresh-session shortcut:
 
@@ -78,6 +79,100 @@ changes. Active artifacts cannot be rotated while a session owns them;
 completion remains the only close path for an active effort, and release the
 only way back to open. The file is retained byte-for-byte and restoring it is
 a plain move back into the store.
+
+## Capacity checkpoints
+
+The `turn_end` hook reads Pi's context estimate once per enabled turn. At the
+checkpoint threshold it adds a short model-visible request to preserve a working
+synthesis with `stash_write({ checkpoint: true, ... })`. At the decision threshold
+it requests an authorized continuity choice before further broad intake: checked
+compaction for the same effort, or a discoverable handover for a fresh session.
+The active agent decides the content and continuity path. The hook does not run
+a separate distiller or call a model below threshold.
+
+A pressure episode allows at most one checkpoint request and one decision
+request. A jump past both thresholds combines them in one message. Each new
+request returns `continue: true` through Pi's actionable boundary; a natural tool
+continuation already satisfies that request. Ordinary turns never request extra
+continuation. Falling usage does not re-arm a latch. Committed compaction, a new
+session identity, or `/stash capacity reset` starts a new episode. Reload retains
+latches; forks ignore the parent session's latches. The hook preserves earlier
+boundary drafts and does not evaluate a pre-compaction percentage against an
+earlier compaction draft.
+
+The session owns compact custom state entries, not handover prose. Each state
+records the session identity, source assistant entry, request latches, usage
+availability, and text-intake estimate. Restoration walks at most 4096 active
+ancestors to the nearest state or compaction. A malformed state, missing ancestor,
+or exhausted scan reports an error instead of inventing an empty episode. Inspect
+it, then use `/stash capacity reset` to establish a new starting point. Invalid
+configuration disables the capacity action without disabling other stash tools;
+the hook reports its first error through Pi, and the capacity command reports the
+current error. No diagnostic writes to protocol stdout.
+
+Requests precede their state entries and also retain their latch metadata, so a
+partial append after a request does not automatically repeat it. Pi validates
+boundary drafts but does not commit them transactionally. A persisted request is
+not evidence that an agent read it, that the next provider call succeeded, or that
+a checkpoint exists. The write tool's successful result establishes the saved
+file. Aborted/error turns and an already-aborted signal do not request or latch
+an intervention. An abort after dispatch can leave a retained notice without a
+completed checkpoint; the next user prompt retains that notice unless compaction
+or navigation removes it.
+
+Unknown context usage stays unknown, including missing, invalid, or throwing
+host telemetry. The optional intake budget is a separate trigger, never a
+fabricated context percentage. It sums user, tool-result, and other custom-message
+text since the episode boundary, estimates tokens as UTF-16 text length divided
+by four (rounded up), and requests checkpoint plus decision when that budget is
+reached while host usage is unknown. It excludes assistant text, the governor's
+own notices, images, system prompts, and tool declarations. It is not a tokenizer
+or a safe remaining budget. Without an explicit intake budget, unknown usage
+produces no automatic request; governing manual checkpoint instructions still
+apply.
+
+### Capacity configuration
+
+Environment variables are read when the hook or command runs. Defaults are
+portable; choose local thresholds and a checkpoint directory through the
+[extension configuration convention](../../docs/conventions/extension-config.md).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PI_STASH_CAPACITY` | `1` | `0` disables observation and requests; only `0` and `1` are accepted. |
+| `PI_STASH_CHECKPOINT_PERCENT` | `60` | Positive checkpoint threshold, strictly below the decision threshold. |
+| `PI_STASH_DECISION_PERCENT` | `70` | Continuity-decision threshold, at most `100`. |
+| `PI_STASH_INTAKE_TOKEN_BUDGET` | Unset | Positive safe integer for the unknown-usage text-intake trigger. |
+| `PI_STASH_CHECKPOINT_DIR` | `<stashDir>/checkpoints` | Working-checkpoint directory. Relative overrides resolve against the invoking session's cwd. |
+
+A working checkpoint uses the same bounded Markdown format, redaction, private
+permissions, and no-clobber publication as a handover. It lives in a separate
+directory and returns a file path, not a pickup id. Read that path to recover the
+synthesis. `stash_list`, the browser, and lifecycle commands operate only on the
+handover store. Keep the checkpoint directory separate from that store. No
+checkpoint is automatically pruned or converted into a handover. Omit
+`checkpoint` when a future session needs normal discovery and pickup.
+
+`/stash capacity` labels its usage value as the last boundary observation, not a
+live reading. Reset appends state without deleting history. Reset deliberately
+allows another request even if usage remains high; ordinary checkpoint writes do
+not reset the latches. In TUI/RPC the command notifies; in print/JSON it returns
+its text through the existing command-error channel because those modes have no
+command-result notification surface.
+
+This is a request mechanism, not a hard stop at 80% or any other percentage.
+Ordinary boundary results do not suppress natural tool work or queued messages.
+The decision notice refers to governing stop instructions, but this extension
+does not abort the agent, compact automatically, replace sessions, cancel
+workers, or omit tool results. Those semantic and authority decisions remain
+with the agent and operator. A later stop-threshold crossing does not produce an
+additional notice after the decision request was already latched.
+
+The stash slice owns this mechanism. Evaluate it with the focused boundary and
+SDK tests below and observed checkpoint outcomes, not invocation counts alone.
+Disable it if it fails to reduce missed checkpoints; remove it when Pi supplies
+the same checkpoint-and-decision contract. Synthetic provider tests establish
+bounded dispatch and persistence, not real-model compliance or long-term utility.
 
 ## Background distillation
 
@@ -216,7 +311,8 @@ The component derives its row budget from the host TUI and the overlay's height 
 
 ## Files
 
-- `index.ts`: tool registrations, `/stash` host, and the creation slot/status lifecycle.
+- `index.ts`: tool registrations, `/stash` host, capacity hook, and the creation slot/status lifecycle.
+- `capacity.ts`: bounded session-state restoration, context observations, configuration, and latched continuity requests.
 - `store.ts`: private, collision-safe filesystem store, atomic lifecycle transitions, and the rotation archive.
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.
 - `panel.ts`: interactive browser state and rendering.
@@ -251,4 +347,6 @@ repeating any version-specific claim.
 
 ## Deliberate omission
 
-There is no automatic stash on shutdown or compaction. Distillation timing and content require agent judgment; deterministic pickup does not.
+There is no automatic stash on shutdown or compaction. Capacity thresholds request
+agent-authored checkpoints; the hook itself never writes a synthesis or chooses a
+continuity path. Context omission and hard-stop control are not part of this slice.

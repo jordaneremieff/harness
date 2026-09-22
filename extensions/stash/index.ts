@@ -1,16 +1,18 @@
 /** Session continuity tools plus the interactive /stash pickup workflow. */
 
+import { mkdir, realpath } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	copyToClipboard,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
-	type SessionShutdownEvent,
 	getAgentDir,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { CAPACITY_STATE, capacityConfig, capacityReset, capacityStatus, capacityTurnEnd } from "./capacity.ts";
 import {
 	type DistillJob,
 	type DistillOutcome,
@@ -38,14 +40,29 @@ import { boundedOutput, formatTokenCount, sanitizeTerminalText } from "./text.ts
 
 type StashExecutionApi = Pick<ExtensionAPI, "exec">;
 type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage">;
-type StashExtensionApi = Pick<ExtensionAPI, "exec" | "registerCommand" | "registerTool" | "sendUserMessage"> & {
-	on(
-		event: "session_shutdown",
-		handler: (event: SessionShutdownEvent, ctx: ExtensionContext) => Promise<void>,
-	): () => void;
-};
+type StashExtensionApi = Pick<
+	ExtensionAPI,
+	"exec" | "registerCommand" | "registerTool" | "sendUserMessage" | "on" | "appendEntry"
+>;
 
 const storeDir = () => resolveStoreDir(process.env, getAgentDir());
+
+async function checkpointDirectory(cwd: string): Promise<string> {
+	const handovers = resolve(storeDir());
+	const override = process.env.PI_STASH_CHECKPOINT_DIR?.trim();
+	const directory = override ? resolve(cwd, override) : join(handovers, "checkpoints");
+	if (directory === handovers) throw new Error("The checkpoint directory must differ from PI_STASH_DIR.");
+	await mkdir(directory, { recursive: true, mode: 0o700 });
+	const checkpointPath = await realpath(directory);
+	let handoverPath: string | undefined;
+	try {
+		handoverPath = await realpath(handovers);
+	} catch (error) {
+		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+	}
+	if (checkpointPath === handoverPath) throw new Error("The checkpoint directory must differ from PI_STASH_DIR.");
+	return directory;
+}
 const safe = (value: string) => sanitizeTerminalText(value).text;
 const safeLine = (value: string) => safe(value).replace(/\n/g, "↵");
 
@@ -362,6 +379,12 @@ const itemList = (description: string) =>
 	Type.Optional(Type.Array(Type.String({ maxLength: 20_000 }), { description, maxItems: 200 }));
 
 const WriteParams = Type.Object({
+	checkpoint: Type.Optional(
+		Type.Boolean({
+			description:
+				"Save a working checkpoint in the configured checkpoint directory instead of a discoverable handover. Returns a file path, not a pickup id.",
+		}),
+	),
 	title: shortText("Short human title for the handover"),
 	summary: Type.String({
 		description: "Distilled state of the effort: what is true now, what was done, what matters. Prose, self-contained.",
@@ -454,6 +477,11 @@ const STASH_VERBS: ReadonlyArray<{ value: string; label: string; description: st
 	{ value: "reopen", label: "reopen", description: "<id> · return a closed stash to open" },
 	{ value: "rotate", label: "rotate", description: "<id> · archive a stale stash (recoverable)" },
 	{ value: "abort", label: "abort", description: "cancel an in-flight stash creation" },
+	{
+		value: "capacity",
+		label: "capacity",
+		description: "[reset] · inspect capacity requests or explicitly start a new episode",
+	},
 	{ value: "help", label: "help", description: "show /stash usage" },
 ];
 
@@ -479,6 +507,7 @@ const STASH_USAGE = [
 	"  /stash release <id>         return an active stash to open (dead-session cleanup)",
 	"  /stash reopen <id>          return a closed stash to open",
 	"  /stash rotate <id>          archive a stale stash (recoverable)",
+	"  /stash capacity [reset]     inspect capacity requests or start a new episode",
 	"  /stash help                 show this usage",
 	"",
 	"  <id> may be a full stash id or a unique prefix.",
@@ -740,6 +769,16 @@ export default function (
 	pi: StashExtensionApi,
 	overrides?: { distillSessionFactory?: DistillSessionFactory; copyText?: (text: string) => Promise<void> },
 ) {
+	let capacityErrorReported = false;
+	pi.on("turn_end", (event, ctx) => {
+		try {
+			return capacityTurnEnd(event, ctx, capacityConfig(process.env));
+		} catch (error) {
+			if (capacityErrorReported) return;
+			capacityErrorReported = true;
+			throw error;
+		}
+	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		// Each session's shutdown fires this handler with that session's context,
 		// and worker sessions share this module instance: only the session that
@@ -758,7 +797,7 @@ export default function (
 		name: "stash_write",
 		label: "Stash Write",
 		description:
-			"Distill the current effort into a durable handover artifact (markdown) stored on disk outside the session. Use when handing work to a future session, before major context loss, or when the operator asks to stash.",
+			"Distill the current effort into a durable handover artifact (markdown) stored on disk outside the session. Use when handing work to a future session, before major context loss, or when the operator asks to stash. Set checkpoint: true for a working synthesis instead of a discoverable handover.",
 		promptSnippet: "Distill the current effort into a durable, discoverable handover artifact",
 		promptGuidelines: [
 			"Use stash_write when the operator asks to stash, when an effort reaches a resumable state, or before a session ends with open loops. Make the summary self-contained for a fresh session.",
@@ -773,12 +812,25 @@ export default function (
 				// The same deterministic redaction applies to model-supplied stash_write
 				// params: an artifact is durable, so no credential-shaped value may be
 				// published on the model's discretion on any write path.
-				const { record, path } = await writeStash(storeDir(), {
+				const destination = params.checkpoint ? await checkpointDirectory(ctx.cwd) : storeDir();
+				if (signal?.aborted) throw new Error("stash_write cancelled");
+				const { record, path } = await writeStash(destination, {
 					...redactPayload(params),
 					project: ctx.cwd,
 					branch,
 					sessionId,
 				});
+				if (params.checkpoint) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Saved working checkpoint "${safeLine(record.title)}".\n${safeLine(path)}\nRead this file to recover the synthesis. It is not listed by stash_list and has no /stash pickup shortcut.`,
+							},
+						],
+						details: { path, checkpoint: true },
+					};
+				}
 				const text = [
 					`Stashed "${safeLine(record.title)}" as ${record.id}`,
 					safeLine(path),
@@ -950,6 +1002,8 @@ async function handleStashCommand(
 			return abortCommand(ctx, parts, fail);
 		case "help":
 			return helpCommand(ctx, parts, fail);
+		case "capacity":
+			return capacityCommand(pi, ctx, parts, fail);
 		case "get":
 			return getCommand(pi, ctx, parts, fail);
 		case "complete":
@@ -968,6 +1022,29 @@ async function handleStashCommand(
 }
 
 type CommandFailure = (message: string) => void;
+
+function capacityCommand(
+	pi: StashExtensionApi,
+	ctx: ExtensionCommandContext,
+	parts: string[],
+	fail: CommandFailure,
+): void {
+	if (parts.length > 2 || (parts[1] !== undefined && parts[1] !== "reset")) {
+		fail("Usage: /stash capacity [reset]");
+		return;
+	}
+	let message: string;
+	try {
+		const config = capacityConfig(process.env);
+		if (parts[1] === "reset") pi.appendEntry(CAPACITY_STATE, capacityReset(ctx));
+		message = capacityStatus(ctx, config);
+	} catch (error) {
+		fail(error instanceof Error ? error.message : String(error));
+		return;
+	}
+	if (ctx.hasUI) ctx.ui.notify(message, "info");
+	else throw new Error(message);
+}
 
 async function createCommand(
 	pi: StashExecutionApi,
