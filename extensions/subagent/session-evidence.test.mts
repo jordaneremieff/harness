@@ -68,6 +68,91 @@ test("usage entries retain the selected conversation without entering its transc
 	});
 });
 
+test("context edits retain original history and edit entries without changing source bytes", () => {
+	const first = entry("first");
+	const second = entry("second", "first");
+	const omit = {
+		type: "context_edit", id: "omit", parentId: "second", timestamp,
+		targetId: "first", replacement: null,
+	};
+	const replace = {
+		type: "context_edit", id: "replace", parentId: "omit", timestamp,
+		targetId: "second", replacement: { content: "replacement" },
+	};
+	const entries = [first, second, omit, replace];
+	withFile(content(...entries), (path) => {
+		const before = readFileSync(path);
+		const snapshot = readSelectedSession(path, id);
+		assert.deepEqual(snapshot.notices, []);
+		assert.deepEqual(snapshot.entries, entries);
+		assert.deepEqual(readFileSync(path), before);
+		assert.equal(snapshot.bytes, before.length);
+	});
+});
+
+test("context replacement content accepts the current typed block arrays", () => {
+	for (const replacementContent of [
+		[],
+		[{ type: "text", text: "replacement", textSignature: "signature" }],
+		[{ type: "text", text: "caption" }, { type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+		[
+			{ type: "thinking", thinking: "", thinkingSignature: "signature", redacted: true },
+			{ type: "text", text: "replacement" },
+			{ type: "toolCall", id: "call", name: "example", arguments: { values: [1, null, true] },
+				thoughtSignature: "signature", namespace: "example" },
+		],
+	]) {
+		const edit = {
+			type: "context_edit", id: "edit", parentId: "first", timestamp,
+			targetId: "first", replacement: { content: replacementContent },
+		};
+		withFile(content(entry("first"), edit), (path) => {
+			const snapshot = readSelectedSession(path, id);
+			assert.deepEqual(snapshot.notices, []);
+			assert.deepEqual(snapshot.entries, [entry("first"), edit]);
+		});
+	}
+});
+
+test("malformed context edits fail closed without source repair", () => {
+	const edit = {
+		type: "context_edit", id: "edit", parentId: "first", timestamp,
+		targetId: "first", replacement: null,
+	};
+	const malformedContents = [
+		null, 1, {}, [null], ["text"], [{ type: "unknown" }],
+		[{ type: "text" }], [{ type: "text", text: 1 }],
+		[{ type: "text", text: "body", textSignature: 1 }],
+		[{ type: "image", data: "image" }], [{ type: "image", data: 1, mimeType: "image/png" }],
+		[{ type: "thinking" }], [{ type: "thinking", thinking: "body", redacted: "yes" }],
+		[{ type: "thinking", thinking: "body", thinkingSignature: 1 }],
+		[{ type: "toolCall", id: "call", name: "example", arguments: [] }],
+		[{ type: "toolCall", id: "call", name: "example", arguments: null }],
+		[{ type: "toolCall", name: "example", arguments: {} }],
+		[{ type: "toolCall", id: "call", arguments: {} }],
+		[{ type: "toolCall", id: "call", name: "example", arguments: {}, thoughtSignature: 1 }],
+		[{ type: "toolCall", id: "call", name: "example", arguments: {}, namespace: 1 }],
+		[{ type: "image", data: "image", mimeType: "image/png" }, { type: "thinking", thinking: "body" }],
+	];
+	const edits = [
+		{ ...edit, targetId: undefined }, { ...edit, targetId: 1 }, { ...edit, targetId: "" },
+		{ ...edit, targetId: "missing" }, { ...edit, targetId: "edit" }, { ...edit, targetId: "later" },
+		{ ...edit, replacement: undefined }, { ...edit, replacement: "text" },
+		{ ...edit, replacement: [] }, { ...edit, replacement: {} },
+		...malformedContents.map((content) => ({ ...edit, replacement: { content } })),
+	];
+	for (const malformed of edits) {
+		withFile(content(entry("first"), malformed, entry("later", "edit")), (path) => {
+			const before = readFileSync(path);
+			const snapshot = readSelectedSession(path, id);
+			assert.deepEqual(snapshot.entries, []);
+			assert.equal(snapshot.notices.length, 1);
+			assert.match(snapshot.notices[0], /^History unavailable: malformed context edit/);
+			assert.deepEqual(readFileSync(path), before);
+		});
+	}
+});
+
 test("size cap rejects before reading bytes or invoking the public parser", (t) => {
 	withFile(content(entry("one")), (path) => {
 		let reads = 0;

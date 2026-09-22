@@ -69,7 +69,45 @@ function validateEntryIdentity(entry: unknown, seen: Set<string>): asserts entry
 	seen.add(entry.id);
 }
 
-function validateEntryContent(entry: Record<string, unknown>): void {
+function validContextBlock(block: unknown): boolean {
+	if (!object(block)) return false;
+	switch (block.type) {
+		case "text":
+			return typeof block.text === "string" &&
+				(block.textSignature === undefined || typeof block.textSignature === "string");
+		case "image":
+			return typeof block.data === "string" && typeof block.mimeType === "string";
+		case "thinking":
+			return typeof block.thinking === "string" &&
+				(block.thinkingSignature === undefined || typeof block.thinkingSignature === "string") &&
+				(block.redacted === undefined || typeof block.redacted === "boolean");
+		case "toolCall":
+			return typeof block.id === "string" && typeof block.name === "string" && object(block.arguments) &&
+				(block.thoughtSignature === undefined || typeof block.thoughtSignature === "string") &&
+				(block.namespace === undefined || typeof block.namespace === "string");
+		default:
+			return false;
+	}
+}
+
+function validContextContent(content: unknown): boolean {
+	if (typeof content === "string") return true;
+	if (!Array.isArray(content) || !content.every(validContextBlock)) return false;
+	return content.every((block) => block.type === "text" || block.type === "image") ||
+		content.every((block) => block.type === "text" || block.type === "thinking" || block.type === "toolCall");
+}
+
+function validateContextEdit(entry: Record<string, unknown>, seen: Set<string>): void {
+	if (
+		typeof entry.targetId !== "string" || entry.targetId === entry.id || !seen.has(entry.targetId) ||
+		(entry.replacement !== null &&
+			(!object(entry.replacement) || !validContextContent(entry.replacement.content)))
+	) {
+		throw new Error("malformed context edit target or replacement");
+	}
+}
+
+function validateEntryContent(entry: Record<string, unknown>, seen: Set<string>): void {
 	switch (entry.type) {
 			case "message":
 				if (
@@ -88,6 +126,9 @@ function validateEntryContent(entry: Record<string, unknown>): void {
 					(typeof entry.content !== "string" && !Array.isArray(entry.content))
 				)
 					throw new Error("malformed custom message");
+				break;
+			case "context_edit":
+				validateContextEdit(entry, seen);
 				break;
 			case "custom":
 				if (typeof entry.customType !== "string") throw new Error("malformed custom entry");
@@ -112,7 +153,7 @@ function validateEntries(entries: unknown[], physicalLines: number, expectedId: 
 	const seen = new Set<string>();
 	for (const entry of entries.slice(1)) {
 		validateEntryIdentity(entry, seen);
-		validateEntryContent(entry);
+		validateEntryContent(entry, seen);
 	}
 }
 

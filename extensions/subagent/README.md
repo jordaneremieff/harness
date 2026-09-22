@@ -805,6 +805,10 @@ Pi's repair-capable file loader. Symlinks, non-regular files, changed files,
 malformed input, identity/version mismatches, and incomplete final lines produce
 an explicit unavailable notice without source repair. Current usage entries,
 including cache-warming costs, remain valid ancestry without becoming chat text.
+Context edits with an earlier target and valid omission or replacement content
+also remain valid ancestry. Inspection preserves original messages and does not
+apply model-context edits to raw history. Malformed edits and unknown entry types
+produce an unavailable notice.
 Selected ancestry stops at 4096 entries with an omission notice. These are bounded snapshots, not a
 complete archive or proof of later state. Every worker-controlled line has a visible quote prefix, and
 direction controls are removed, so worker text cannot imitate the renderer's
