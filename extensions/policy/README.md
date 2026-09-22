@@ -917,7 +917,18 @@ acceptance by a remote endpoint.
 
 The Pi hook tests drive the real extension runner and agent loop with controlled
 tools. They cover correction delivery, result chaining, completion order,
-preflight outcomes, and context projection without an extra request. Ordinary
-callback fakes do not establish those host behaviors. Use
-`PI_POLICY_TEST_PI_ROOT` to exercise a different installed Pi package rather than
-assume the repository dependency snapshot represents it.
+preflight outcomes, and context projection without an extra request. The fixture
+uses Pi's `finishTurn` contract to end a completed batch, checks that the hook
+made the decision, and preserves error and aborted response exits. A matching
+batch without the end decision makes its normal follow-up request.
+
+The fixture sends message completion through `emitMessageEnd` and turn boundaries
+through `emitBoundary`, with session entry IDs and context previews. It rejects
+message replacement, boundary drafts, and boundary continuation rather than
+silently ignoring effects outside these policy checks. It drives the low-level
+loop, not the full session settlement lifecycle.
+
+These tests require the current Pi APIs introduced in 0.87.0. Ordinary callback
+fakes do not establish those host behaviors. Use `PI_POLICY_TEST_PI_ROOT` to
+exercise a different installed Pi package rather than assume the repository
+dependency snapshot represents it.

@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { AgentEvent, AgentTurnContext } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, SessionBoundaryDraft, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { PACKAGE_CATALOG } from "./catalog.ts";
 import { proposalRevision, RuleRegistry } from "./local-rules.ts";
@@ -155,9 +158,18 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 	const endings: string[] = [];
 	const run = async (
 		calls: Array<{ id: string; name?: string; arguments: Record<string, unknown> }>,
-		options: { stop?: boolean; stopReason?: string } = {},
+		options: { endAfterTurn?: boolean; stopReason?: AssistantMessage["stopReason"] } = {},
 	) => {
 		let supplied = false;
+		let turnIndex = -1;
+		const initialRequests = requestCount;
+		const messageIds = new WeakMap<object, string>();
+		const finishedTurns: Array<{ stopReason: AssistantMessage["stopReason"]; action: "end" | undefined }> = [];
+		const entryId = (message: object) => {
+			const id = messageIds.get(message);
+			assert.ok(id, "Boundary messages must already have session entries");
+			return id;
+		};
 		const stream = async (_model: unknown, context: { messages: unknown[] }) => {
 			requestCount++;
 			requestContexts.push(context.messages);
@@ -182,12 +194,16 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 			supplied = true;
 			return {
 				async *[Symbol.asyncIterator]() {
-					yield { type: "done", reason: message.stopReason, message };
+					if (message.stopReason === "error" || message.stopReason === "aborted") {
+						yield { type: "error", reason: message.stopReason, error: message };
+					} else {
+						yield { type: "done", reason: message.stopReason, message };
+					}
 				},
 				result: async () => message,
 			};
 		};
-		return runAgentLoop(
+		const messages = await runAgentLoop(
 			[{ role: "user", content: "Run controlled tools", timestamp: Date.now() }],
 			{ systemPrompt: "Controlled test", messages: [], tools },
 			{
@@ -215,16 +231,70 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 						...result,
 						isError,
 					}),
-				...(options.stop ? { shouldStopAfterTurn: () => true } : {}),
+				finishTurn: ({ message, toolResults }: AgentTurnContext) => {
+					assert.ok(toolResults.every((result) => endings.includes(result.toolCallId)));
+					const hardExit = message.stopReason === "error" || message.stopReason === "aborted";
+					const action = options.endAfterTurn && !hardExit ? "end" : undefined;
+					finishedTurns.push({ stopReason: message.stopReason, action });
+					return action ? { action } : undefined;
+				},
 			},
-			async (event: { type: string; toolCallId?: string }) => {
-				if (event.type === "tool_execution_end" && event.toolCallId) endings.push(event.toolCallId);
-				if (event.type === "message_end") await runner.emitMessageEnd(event);
-				else await runner.emit(event);
+			async (event: AgentEvent) => {
+				switch (event.type) {
+				case "tool_execution_end":
+					endings.push(event.toolCallId);
+					await runner.emit(event);
+					break;
+				case "message_end": {
+					const replacement = await runner.emitMessageEnd(event);
+					assert.equal(replacement, undefined, "This fixture does not apply message replacements");
+					messageIds.set(event.message, session.appendMessage(event.message));
+					break;
+				}
+				case "turn_end": {
+					const stopReason = (event.message as AssistantMessage).stopReason;
+					const outcome = stopReason === "error" || stopReason === "aborted" ? stopReason : "completed";
+					const boundary = await runner.emitBoundary(
+						{
+							...event,
+							turnIndex,
+							messageEntryId: entryId(event.message),
+							toolResultEntryIds: event.toolResults.map(entryId),
+							outcome,
+						},
+						(entries: SessionBoundaryDraft[]) => {
+							assert.deepEqual(entries, [], "Policy hook tests do not apply boundary drafts");
+							const projection = session.buildSessionProjection();
+							return {
+								contextEntries: projection.entries,
+								contextMessages: projection.messages,
+								llmMessages: host.convertToLlm(projection.messages),
+								pendingMessages: [],
+								canContinue: outcome === "completed" && !controller.signal.aborted,
+							};
+						},
+					);
+					assert.equal(boundary.valid, true);
+					assert.equal(boundary.continue, false, "Policy must not request boundary continuation");
+					break;
+				}
+				case "turn_start":
+					await runner.emit({ ...event, turnIndex: ++turnIndex, timestamp: Date.now() });
+					break;
+				default:
+					await runner.emit(event);
+				}
 			},
 			controller.signal,
 			stream,
 		);
+		if (options.endAfterTurn) {
+			const stopReason = options.stopReason ?? "toolUse";
+			const hardExit = stopReason === "error" || stopReason === "aborted";
+			assert.deepEqual(finishedTurns, [{ stopReason, action: hardExit ? undefined : "end" }]);
+			assert.equal(requestCount - initialRequests, 1, "The loop must not make a request after the end decision");
+		}
+		return { messages, finishedTurns };
 	};
 	const telemetry = async () => {
 		await runner.emit({ type: "session_shutdown", reason: "quit" });
@@ -291,6 +361,80 @@ const contextProgram: FactsProgram = {
 };
 
 describe(`ordinary Pi ${version} policy hooks`, () => {
+	it("ends a complete nonterminating tool batch through finishTurn and dispatches a populated turn boundary", async () => {
+		const boundaries: TurnEndEvent[] = [];
+		const f = await setup([], "enforce", (pi) => {
+			(pi as ExtensionAPI).on("turn_end", (event, ctx) => {
+				boundaries.push(event);
+				assert.deepEqual(event.entries, []);
+				assert.equal(event.continue, false);
+				assert.equal(event.outcome, "completed");
+				assert.equal(event.turnIndex, 0);
+				const messageEntry = ctx.sessionManager.getEntry(event.messageEntryId);
+				assert.ok(messageEntry?.type === "message");
+				assert.deepEqual(messageEntry.message, event.message);
+				assert.deepEqual(messageEntry,
+					event.context.contextEntries.find((entry) => entry.sourceEntry.id === event.messageEntryId)?.sourceEntry);
+				assert.deepEqual(event.toolResultEntryIds.map((id) => {
+					const entry = ctx.sessionManager.getEntry(id);
+					assert.ok(entry?.type === "message");
+					return entry.message;
+				}), event.toolResults);
+				assert.deepEqual(event.context.contextMessages.slice(-2), event.toolResults);
+				assert.deepEqual(event.context.llmMessages.slice(-2), event.toolResults);
+				assert.deepEqual(event.context.pendingMessages, []);
+				assert.equal(event.context.canContinue, true);
+			});
+		});
+		try {
+			f.setTools([{ name: "sample", description: "controlled", parameters: inputSchema,
+				execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) }]);
+			const calls = [{ id: "first", arguments: {} }, { id: "second", arguments: {} }];
+			const stopped = await f.run(calls, { endAfterTurn: true });
+			assert.deepEqual(stopped.finishedTurns, [{ stopReason: "toolUse", action: "end" }]);
+			assert.equal(f.requests(), 1);
+			assert.equal(boundaries.length, 1);
+			assert.deepEqual(boundaries[0].toolResults.map((result) => result.toolCallId), ["first", "second"]);
+			assert.deepEqual(stopped.messages.slice(-2), boundaries[0].toolResults);
+			await f.telemetry();
+			assert.deepEqual(f.errors, []);
+		} finally { await f.cleanup(); }
+
+		const natural = await setup([]);
+		try {
+			natural.setTools([{ name: "sample", description: "controlled", parameters: inputSchema,
+				execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) }]);
+			const result = await natural.run([{ id: "first", arguments: {} }, { id: "second", arguments: {} }]);
+			assert.equal(natural.requests(), 2);
+			assert.deepEqual(result.finishedTurns, [
+				{ stopReason: "toolUse", action: undefined },
+				{ stopReason: "stop", action: undefined },
+			]);
+			await natural.telemetry();
+			assert.deepEqual(natural.errors, []);
+		} finally { await natural.cleanup(); }
+	});
+
+	for (const stopReason of ["error", "aborted"] as const) {
+		it(`preserves the ${stopReason} response hard exit without an end decision`, async () => {
+			const boundaries: TurnEndEvent[] = [];
+			const f = await setup([], "enforce", (pi) => {
+				(pi as ExtensionAPI).on("turn_end", (event) => { boundaries.push(event); });
+			});
+			try {
+				const result = await f.run([], { endAfterTurn: true, stopReason });
+				assert.deepEqual(result.finishedTurns, [{ stopReason, action: undefined }]);
+				assert.equal(f.requests(), 1);
+				assert.equal(boundaries.length, 1);
+				assert.equal(boundaries[0].outcome, stopReason);
+				assert.equal(boundaries[0].context.canContinue, false);
+				assert.deepEqual(boundaries[0].toolResultEntryIds, []);
+				await f.telemetry();
+				assert.deepEqual(f.errors, []);
+			} finally { await f.cleanup(); }
+		});
+	}
+
 	it("retains final chained failures through later same-batch success before the next real model request", async () => {
 		let releaseSecond = () => {};
 		let releaseSuccess = () => {};
@@ -337,7 +481,7 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 		try {
 			f.setTools([{ name: "sample", description: "controlled", parameters: inputSchema,
 				execute: async () => { throw new Error("controlled failure"); } }]);
-			await f.run([{ id: "first", arguments: {} }, { id: "second", arguments: {} }], { stop: true });
+			await f.run([{ id: "first", arguments: {} }, { id: "second", arguments: {} }], { endAfterTurn: true });
 			assert.equal(f.requests(), 1);
 			assert.equal((await f.states()).retainedGuidance.length, 1);
 			await f.runner.emit({ type: "session_start", reason: "reload" });
@@ -446,7 +590,7 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 					{ id: "first", arguments: { old: "private-input", order: 1 } },
 					{ id: "second", arguments: { old: "other", order: 2, fail: true } },
 				],
-				{ stop: true },
+				{ endAfterTurn: true },
 			);
 			assert.deepEqual(received, [
 				{ name: "private-input", order: 1 },
@@ -496,9 +640,9 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 					{ id: "invalid", arguments: { bad: 1 } },
 					{ id: "unknown", name: "missing", arguments: {} },
 				],
-				{ stop: true },
+				{ endAfterTurn: true },
 			);
-			await f.run([{ id: "truncated", arguments: { name: "ok" } }], { stop: true, stopReason: "length" });
+			await f.run([{ id: "truncated", arguments: { name: "ok" } }], { endAfterTurn: true, stopReason: "length" });
 			const rows = await f.telemetry();
 			assert.equal(executions, 0);
 			assert.deepEqual(
@@ -524,7 +668,7 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 				},
 			]);
-			await f.run([{ id: "first", arguments: {} }], { stop: true });
+			await f.run([{ id: "first", arguments: {} }], { endAfterTurn: true });
 			assert.equal(f.requests(), 1);
 			assert.equal(
 				(await f.states()).observationPeriods.find((row: { id: string }) => row.id === "context").projected,
@@ -570,7 +714,7 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				controller.abort();
 				return decision;
 			};
-			await f.run([{ id: "aborted", arguments: {} }], { stop: true });
+			await f.run([{ id: "aborted", arguments: {} }], { endAfterTurn: true });
 			const rows = await f.telemetry();
 			assert.equal(rows.length, 1);
 			assert.equal(rows[0].outcome, "unexecuted");
