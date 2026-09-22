@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Type } from "typebox";
+import { PACKAGE_CATALOG } from "./catalog.ts";
 import { proposalRevision, RuleRegistry } from "./local-rules.ts";
 import type { FactsProgram } from "./program.ts";
 
@@ -290,6 +291,62 @@ const contextProgram: FactsProgram = {
 };
 
 describe(`ordinary Pi ${version} policy hooks`, () => {
+	it("retains final chained failures through later same-batch success before the next real model request", async () => {
+		let releaseSecond = () => {};
+		let releaseSuccess = () => {};
+		const firstEnded = new Promise<void>((resolve) => { releaseSecond = resolve; });
+		const secondEnded = new Promise<void>((resolve) => { releaseSuccess = resolve; });
+		const f = await setup([], "enforce", (pi: unknown) => {
+			const api = pi as { on: (name: string, handler: (event: { toolCallId: string }) => unknown) => void };
+			api.on("tool_result", (event) => ({ isError: event.toolCallId !== "success" }));
+			api.on("tool_execution_end", (event) => {
+				if (event.toolCallId === "first") releaseSecond();
+				if (event.toolCallId === "second") releaseSuccess();
+			});
+		});
+		try {
+			f.setTools(["sample", "other"].map((name) => ({
+				name, description: "controlled", parameters: inputSchema,
+				execute: async (id: string) => {
+					if (id === "second") await firstEnded;
+					if (id === "success") await secondEnded;
+					return { content: [{ type: "text" as const, text: "body" }], details: {} };
+				},
+			})));
+			await f.run([
+				{ id: "success", arguments: {} },
+				{ id: "second", name: "other", arguments: {} },
+				{ id: "first", arguments: {} },
+			]);
+			assert.deepEqual(f.endings, ["first", "second", "success"]);
+			assert.equal(f.requests(), 2);
+			assert.match(JSON.stringify(f.requestContexts[1]), /actual failed assumption or tool contract/);
+			const state = (await f.states()).observationPeriods.find((row: { id: string }) => row.id === "recovery.repeated-errors");
+			assert.equal(state.count, 0);
+			await f.run([]);
+			assert.doesNotMatch(JSON.stringify(f.requestContexts[2]), /actual failed assumption or tool contract/);
+			await f.telemetry();
+			assert.deepEqual(f.errors, []);
+		} finally { await f.cleanup(); }
+	});
+
+	it("does not force a model request for a stopped failing batch and clears retained guidance on reload", async () => {
+		const row = PACKAGE_CATALOG.find((entry) => entry.id === "recovery.repeated-errors");
+		assert.ok(row?.matcher.kind === "declarative" && row.matcher.language === "facts/v1");
+		const f = await setup([]);
+		try {
+			f.setTools([{ name: "sample", description: "controlled", parameters: inputSchema,
+				execute: async () => { throw new Error("controlled failure"); } }]);
+			await f.run([{ id: "first", arguments: {} }, { id: "second", arguments: {} }], { stop: true });
+			assert.equal(f.requests(), 1);
+			assert.equal((await f.states()).retainedGuidance.length, 1);
+			await f.runner.emit({ type: "session_start", reason: "reload" });
+			await f.run([]);
+			assert.doesNotMatch(JSON.stringify(f.requestContexts[1]), /actual failed assumption or tool contract/);
+			await f.telemetry();
+			assert.deepEqual(f.errors, []);
+		} finally { await f.cleanup(); }
+	});
 	it("qualifies decoded conditions with exact raw server and operation facts", async () => {
 		const program: FactsProgram = {
 			phase: "input",

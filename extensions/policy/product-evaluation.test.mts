@@ -257,7 +257,7 @@ for (const mode of ["enforce", "observe"] as const)
 				);
 				assert.equal(run.guidance.length, fixture.group === "adaptive" && mode === "enforce" ? 1 : 0);
 				if (fixture.group === "adaptive" && mode === "enforce")
-					assert.match(run.guidance[0], entry.id === "recovery-guidance" ? /failed repeatedly/ : /substantial text/);
+					assert.match(run.guidance[0], entry.id === "recovery-guidance" ? /consecutive completed tool executions failed/ : /substantial text/);
 				if (entry.id === "schema-denial") {
 					assert.equal(run.inputs[0].count, "not-an-integer");
 					const output = run.events[1] as { content: string };
@@ -432,12 +432,12 @@ for (const mode of ["enforce", "observe"] as const) {
 			assert.equal((await run.project()).length, mode === "enforce" ? 1 : 0);
 			assert.equal((await run.period("recovery.repeated-errors")).windowCount, DEFAULT_LIMITS.errorCount);
 			await run.call(failure());
-			assert.deepEqual(await run.project(), []);
+			assert.equal((await run.project()).length, mode === "enforce" ? 1 : 0);
 			await run.call(success);
 			assert.equal((await run.period("recovery.repeated-errors")).windowCount, 0);
 			for (let index = 1; index <= DEFAULT_LIMITS.errorCount; index++) await run.call(failure(index));
 			assert.equal((await run.project()).length, mode === "enforce" ? 1 : 0);
-			assert.equal(run.guidance.length, mode === "enforce" ? 2 : 0);
+			assert.equal(run.guidance.length, mode === "enforce" ? 3 : 0);
 		} finally {
 			await run.close();
 		}
@@ -517,7 +517,7 @@ test("package periods expire exactly at the declared age and tree navigation res
 		await run.start();
 		for (let index = 1; index <= DEFAULT_LIMITS.errorCount; index++) await run.call(failure(index));
 		await run.project();
-		now += DEFAULT_LIMITS.periodMs - 1;
+		now += DEFAULT_LIMITS.errorWindowMs - 1;
 		assert.equal((await run.period("recovery.repeated-errors")).windowCount, DEFAULT_LIMITS.errorCount);
 		now++;
 		assert.equal((await run.period("recovery.repeated-errors")).windowCount, 0);

@@ -5,11 +5,15 @@ import { RULES } from "./shell-rules.ts";
 
 /** Conservative intervention bounds, not estimates of an optimal workload. */
 export const DEFAULT_LIMITS = {
-	errorCount: 3,
+	errorCount: 2,
+	errorWindowMs: 30_000,
 	periodMs: 300_000,
 	outputBytes: 65_536,
 	outputEvents: 16,
 } as const;
+
+const RECOVERY_GUIDANCE =
+	"Two consecutive completed tool executions failed within 30 seconds. Check the actual failed assumption or tool contract before another attempt. Verify a recovery, then assess whether it is repeatable and warrants a narrowly scoped policy candidate. Use policy_propose only for a supported candidate; activation requires explicit operator approval.";
 
 function row(definition: Omit<PackageDefinitionRow, "revision">): PackageDefinitionRow {
 	return { ...definition, revision: packageRowRevision(definition) };
@@ -67,21 +71,24 @@ export const PACKAGE_CATALOG: PackageDefinitionRow[] = [
 
 	policy(
 		"recovery.repeated-errors",
-		"Reconsider the approach after repeated failed tool executions.",
-		"Recent tool executions failed repeatedly. Check the errors and revise the arguments or approach before another attempt.",
+		"Diagnose consecutive tool failures and assess verified repeatable recovery for a scoped policy candidate.",
+		RECOVERY_GUIDANCE,
 		{
-			phase: "context",
-			when: { op: "gte", path: ["state", "windowCount"], value: DEFAULT_LIMITS.errorCount },
+			phase: "completion",
+			when: {
+				all: [
+					{ op: "eq", path: ["outcome", "kind"], value: "execution-error" },
+					{ op: "gte", path: ["state", "windowCount"], value: DEFAULT_LIMITS.errorCount },
+				],
+			},
 			state: {
 				observe: { op: "eq", path: ["outcome", "kind"], value: "execution-error" },
 				resetWhen: { op: "eq", path: ["outcome", "kind"], value: "success" },
-				window: { maxEvents: DEFAULT_LIMITS.errorCount, maxAgeMs: DEFAULT_LIMITS.periodMs },
-				expiresAfterMs: DEFAULT_LIMITS.periodMs,
-				once: "period",
+				window: { maxEvents: DEFAULT_LIMITS.errorCount, maxAgeMs: DEFAULT_LIMITS.errorWindowMs },
 			},
 			action: {
 				kind: "guide",
-				text: "Recent tool executions failed repeatedly. Check the errors and revise the arguments or approach before another attempt.",
+				text: RECOVERY_GUIDANCE,
 			},
 			onUnavailable: "skip",
 		},

@@ -3,6 +3,8 @@
 import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
+import { Compile } from "typebox/compile";
+import { authoringGuide, checkDraft, DraftCasesSchema, type ParsedDraft, validateDraftCases } from "./authoring.ts";
 import { ruleScopeVisibility } from "./classify.ts";
 import { snapshotData } from "./data.ts";
 import { dataFileApprovalText, dataReview, normalizeDataArtifact, readDataArtifact, safeJson } from "./data-import.ts";
@@ -235,12 +237,21 @@ export const PolicyRulesParams = Type.Object(
 	{
 		view: Type.Optional(
 			Type.Union(
-				["rules", "catalog", "capabilities", "state", "health", "explain", "preview", "data"].map((value) =>
-					Type.Literal(value),
+				["rules", "catalog", "capabilities", "state", "health", "explain", "preview", "data", "authoring", "check"].map(
+					(value) => Type.Literal(value),
 				),
 			),
 		),
 		id: Type.Optional(Type.String({ minLength: 1, maxLength: 261 })),
+		draft: Type.Optional(
+			Type.Record(Type.String(), Type.Unknown(), {
+				maxProperties: 16,
+				description:
+					"An existing policy_propose add/replace object, not a new rule format. Full proposal and candidate validation returns admission diagnostics. Read view=authoring for the check workflow.",
+			}),
+		),
+		effect: Type.Optional(Type.Union([Type.Literal("steer"), Type.Literal("block")])),
+		cases: Type.Optional(DraftCasesSchema),
 		tool: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
 		input: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { maxProperties: 128 })),
 		result: Type.Optional(
@@ -413,17 +424,39 @@ function validatePreviewParams(params: Record<string, unknown>): void {
 		content.length > MAX_PREVIEW_CONTENT_BLOCKS ||
 		content.some((block: unknown) => previewBlockError(block) !== undefined)
 	)
-		throw new Error(
-			`preview content supports at most ${MAX_PREVIEW_CONTENT_BLOCKS} text blocks with type/text only`,
-		);
+		throw new Error(`preview content supports at most ${MAX_PREVIEW_CONTENT_BLOCKS} text blocks with type/text only`);
+}
+
+function inspectionFields(view: string): string[] {
+	if (view === "preview") return ["view", "tool", "input", "result"];
+	if (view === "check") return ["view", "draft", "effect", "cases"];
+	return view === "authoring" ? ["view"] : ["view", "id"];
+}
+
+function validateCheckParams(params: Record<string, unknown>): void {
+	if (!isJsonObject(params.draft)) throw new Error("check requires a draft proposal object");
+	if (params.effect !== undefined && params.effect !== "steer" && params.effect !== "block")
+		throw new Error("check effect must be steer or block");
+	validateDraftCases(params.cases ?? []);
 }
 
 export function validateInspectionParams(params: Record<string, unknown>): void {
 	validateBoundedJson(params);
 	const view = params.view ?? "rules";
-	const views = ["rules", "catalog", "capabilities", "state", "health", "explain", "preview", "data"];
+	const views = [
+		"rules",
+		"catalog",
+		"capabilities",
+		"state",
+		"health",
+		"explain",
+		"preview",
+		"data",
+		"authoring",
+		"check",
+	];
 	if (typeof view !== "string" || !views.includes(view)) throw new Error("unknown policy inspection view");
-	const allowed = view === "preview" ? ["view", "tool", "input", "result"] : ["view", "id"];
+	const allowed = inspectionFields(view);
 	for (const key of Object.keys(params))
 		if (!allowed.includes(key)) throw new Error(`field "${key}" is not valid for ${view}`);
 	const idLimit = view === "explain" && typeof params.id === "string" && params.id.startsWith("call:") ? 261 : 80;
@@ -431,6 +464,7 @@ export function validateInspectionParams(params: Record<string, unknown>): void 
 		throw new Error(`inspection id must contain 1 to ${idLimit} characters`);
 	if (view === "explain" && !params.id) throw new Error("explain requires id");
 	if (view === "preview") validatePreviewParams(params);
+	if (view === "check") validateCheckParams(params);
 }
 
 function boundedInspection(value: unknown): string {
@@ -645,6 +679,22 @@ function proposalCandidate(params: PolicyProposeAddOrReplace): LocalRuleCandidat
 	});
 }
 
+const proposalValidator = Compile(PolicyProposeParams);
+
+/** Use the public proposal grammar and candidate admission without a registry write. */
+export function parseAuthoringDraft(value: unknown): ParsedDraft {
+	if (!proposalValidator.Check(value)) throw new Error("Draft does not satisfy the policy_propose schema");
+	const params = value as PolicyProposeInput;
+	if (params.operation !== "add" && params.operation !== "replace")
+		throw new Error("Draft checks accept add or replace only");
+	return {
+		candidate: proposalCandidate(params),
+		operation: params.operation,
+		reason: params.reason,
+		...(params.operation === "replace" ? { expectedRevision: params.expectedRevision } : {}),
+	};
+}
+
 /** Submit one proposal through the registry under the agent-tool audit surface. */
 async function submitProposal(
 	registry: RuleRegistry,
@@ -664,6 +714,7 @@ async function submitProposal(
 
 /** Render one read-only inspection view as bounded tool text. */
 async function rulesToolOutput(
+	pi: ExtensionAPI,
 	deps: ToolDeps,
 	snapshot: RuleSnapshot,
 	params: PolicyRulesInput,
@@ -686,6 +737,9 @@ async function rulesToolOutput(
 		}
 		return formatRulesTool(snapshot, ctx);
 	}
+	if (view === "authoring") return authoringGuide();
+	if (view === "check")
+		return boundedInspection(JSON.stringify(await checkDraft(params, snapshot, pi, ctx, parseAuthoringDraft)));
 	if (view === "catalog") return formatCatalog(deps.registry, params.id);
 	if (view === "data") return formatDataView(snapshot, params.id);
 	if (!deps.inspect) throw new Error(`policy ${view} inspection is unavailable: runtime callback absent`);
@@ -700,7 +754,7 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 			"Submit one inert policy rule proposal. add and replace require id, purpose, authority, reason, note, and exactly one authoring form: match (command-shape/v1), predicate (an installed bounded matcher key from policy_rules view=catalog), or language=facts/v1 with a complete program. purpose states the positive outcome. authority is exact or steer-or-block. Compact match authoring supports flags (AND), anyFlags (OR), and absentFlags. match.cli with profile git and subcommand [push] uses command-aware options and requires explicit top-level onUnavailable skip or deny. Literal matching defaults to skip. Compact match authoring declares guidance from note and suggestion; the operator selects steer or block only with steer-or-block authority. Only input guide/deny actions permit steer-or-block authority; it never authorizes correction. Selected steer never denies, including unavailable evidence. Optional applicability is a bounded condition; only true permits rule evaluation, and false or unavailable skips the rule. Exact actions require approval of the complete proposal revision. replace also requires the current expectedRevision and exact proposal revision at approval. Programs declare applicability phase and selector, bounded evidence conditions, action parameters, unavailable behavior, optional data names and observation state. retire and disable accept only id and reason. Scope uses exact provider/model identities and absolute cwd prefixes. Inspect policy_rules before authoring scope or data-dependent rules. Proposals cannot approve actions, write data, reset state, or invoke tools.",
 		promptSnippet: "Propose an inert policy rule for operator review",
 		promptGuidelines: [
-			"Use policy_propose only when the operator asks for a policy rule change. A proposal is inert until operator approval.",
+			"Use policy_propose when the operator asks for a rule change, or when automatic policy diagnostics identify a verified repeatable recovery that warrants a narrowly scoped candidate. Diagnose the actual failed assumption or tool contract first; do not propose a rule from an unverified guess. A proposal is inert until explicit operator approval.",
 			"Use policy_rules to inspect all rules, pending proposals, health, and exact session scope values before proposing a change.",
 		],
 		parameters: PolicyProposeParams,
@@ -737,15 +791,18 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 		name: "policy_rules",
 		label: "Policy rules",
 		description:
-			"Inspect policy rules (default), bundled starter catalog, capabilities, state, health, named data, explain, or preview. id selects a rule or data name; explain also accepts call:<callId> for bounded current-session decision evidence. Preview requires tool and bounded input, with optional result (isError, details, and text-only content); it never executes a simulated tool or changes simulated/live policy state or data. The real inspection call retains ordinary telemetry. Views report exact revisions, authority, availability, and unavailable boundaries. This tool has no control mutation action.",
+			"Inspect policy rules (default), bundled starter catalog, capabilities, state, health, named data, explain, preview, authoring guidance, or a read-only draft check. authoring returns the canonical guide. check accepts an existing add/replace draft, optional bounded cases, and an explicit simulated effect for steer-or-block drafts; it validates and simulates with isolated state, without tool execution, proposals, or approval. id selects a rule or data name; explain also accepts call:<callId> for bounded current-session decision evidence. Preview requires tool and bounded input, with optional result (isError, details, and text-only content); it never executes a simulated tool or changes simulated/live policy state or data. The real inspection call retains ordinary telemetry. Views report exact revisions, authority, availability, and unavailable boundaries. This tool has no control mutation action.",
 		promptSnippet: "Inspect unified policy rules, pending proposals, and health",
+		promptGuidelines: [
+			"Read policy_rules view=authoring before authoring policies. Use view=check for read-only draft admission and bounded synthetic cases before proposal submission; checks never grant approval.",
+		],
 		parameters: PolicyRulesParams,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("policy_rules cancelled");
 			validateInspectionParams(params);
 			const snapshot = await deps.loadRegistry(ctx);
 			const view = params.view ?? "rules";
-			const output = await rulesToolOutput(deps, snapshot, params, view, ctx);
+			const output = await rulesToolOutput(pi, deps, snapshot, params, view, ctx);
 			return {
 				content: [{ type: "text" as const, text: output }],
 				details: {

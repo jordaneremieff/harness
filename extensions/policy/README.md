@@ -34,11 +34,13 @@ completed work and never infers a retry's cause.
 | `routing.*`, `form.*` | Use appropriate readers, direct command inputs, purpose-built commands, and explicit scope. Their installed predicates select the calls. |
 | `bounds.*` | Require explicit discovery/output limits and identify caps that do not stop the producer. |
 | `arguments.schema` | Refuse a final argument object that violates the available tool schema. This includes mutations from earlier hooks. Unavailable schemas remain unknown. |
-| `recovery.repeated-errors` | Guide after three execution errors within a five-minute observation period/window. A successful execution resets the period; policy denials do not count as execution errors. |
+| `recovery.repeated-errors` | Diagnose two consecutive completed execution errors less than 30 seconds apart, across tools. Each further qualifying error triggers guidance again. Success resets future streaks without erasing a triggered notice; policy denials and unexecuted calls do not count. |
 | `resources.output-volume` | Guide after 65,536 measured UTF-8 text bytes across at most sixteen executed results within a five-minute period/window. The measurement precedes this extension's guidance. |
 
-Both context guides project at most once per period, before a real model request.
-They never force another turn. These are conservative intervention bounds, not
+Recovery guidance is captured at completion and delivered before the next real
+model request. Multiple triggers before that request coalesce into one notice.
+The output-volume guide projects at most once per period. Neither guide forces
+another turn. These are conservative intervention bounds, not
 measured optimal thresholds or claims of cost savings. Observe mode applies no
 effects. The operator can replace, retire, or disable any seeded rule. Command
 defaults also declare an
@@ -65,6 +67,24 @@ tool's `details.ok:false` result:
 ```
 
 No starter rule guesses an application's failure contract.
+
+## Draft checks and authoring guidance
+
+Use `policy_rules {"view":"authoring"}` for the on-demand
+[authoring guide](AUTHORING.md). This is the canonical reference for authoring
+forms, facts and phases, unknown evidence, scope, examples, and authority.
+The guide is not injected into ordinary model context.
+
+Use `policy_rules {"view":"check","draft":{...},"cases":[...]}` to check an
+existing add/replace proposal shape without saving a proposal. Selectable drafts
+also require an explicit simulated `effect`. Cases use copied current rules/data,
+public tool schemas, fresh observation state, and an isolated clock. They drive
+the production runtime without executing tools or changing live policy state.
+
+Admission diagnostics are separate from case outcomes and expectation mismatches.
+Checks neither infer intent nor grant approval. The actual inspection invocation
+retains ordinary telemetry. Read the guide for complete bounded requests,
+completion/context sequence examples, and the limits of synthetic evidence.
 
 ## Authoring a correction
 
@@ -171,7 +191,7 @@ Authority is independent of authoring syntax:
   when evidence is unavailable. It never grants correction authority.
 
 Both compact shapes and eligible facts programs support selectable authority.
-Result/context guidance and corrections require exact authority. Every stored
+Result/completion/context guidance and corrections require exact authority. Every stored
 rule supports complete replacement proposals, regardless of origin. Engine
 invariants, including bounded grammar, approval checks, and all-or-nothing
 corrections, remain mandatory code rather than optional catalog entries.
@@ -252,7 +272,7 @@ requires observation state. Session scope still applies at projection time.
 | `rename-key` | input | Move a value between approved keys without changing the value |
 | `substitute` | input | Replace a value through a unique approved table lookup |
 | `assert-error` | result | Assert `isError:true` when the approved condition matches |
-| `guide` | input, result, or context | Supply bounded policy guidance; an input condition admits guidance after a successful result |
+| `guide` | input, result, completion, or context | Supply bounded policy guidance; an input condition admits guidance after a successful result; completion guidance retains a notice for the next model input |
 | `observe` | completion | Add an approved metadata label to the common record |
 
 The engine does not independently establish a domain's meaning of failure. The
@@ -288,7 +308,10 @@ conflicting plan does not partially modify the original arguments.
 Result corrections precede stateless annotations. Completed-call counters and
 records update once at `tool_execution_end`, after the result chain. Calls that
 skip `tool_result` still reach this observation path. Partial progress does not
-count as a completed outcome.
+count as a completed outcome. Completion metadata observes the prior counters;
+completion guidance evaluates after that call updates its counters. Guidance
+uses the final execution error flag, including approved result reclassification,
+not guesses from error-like text.
 
 The record distinguishes successful execution, execution error, confirmed own
 policy denial, and unexecuted outcomes whose exact preflight cause is unknown.
@@ -344,9 +367,28 @@ prefix. Text is deduplicated and terminal-safe. Only guidance actually selected
 for projection consumes its once/cooldown allowance. Current command rules guide
 at most once per observation period and only after a successful result.
 
-Stateful guidance enters the next actual `context` request. It does not queue a
-steering message or create another model turn. A projection attempt does not
-establish provider delivery, understanding, or compliance.
+Completion-triggered guidance enters the next actual `context` request. Pi's
+`tool_result` hook precedes final error classification, and `tool_execution_end`
+has no result-patch return. Policy therefore retains the triggered notice rather
+than attaching premature guidance to a result. Success or window expiry does not
+erase that notice. It does not queue a steering message or create another model
+turn. A projection attempt does not establish provider delivery, understanding,
+or compliance.
+
+Retained notices occupy at most one slot per active rule, within the existing
+rule and text bounds. Projection removes only selected notices; the shared text
+bound leaves other notices for a later context. Revision, disablement, explicit
+reset, session lifecycle reset, or loss of scope invalidates retained notices.
+Observe/notice mode and degraded authority discard retained model guidance.
+Annotate/enforce mode projects it in TUI, RPC, JSON, and print sessions.
+`policy_rules` with `view:"state"` exposes retained notice identities.
+
+The recovery diagnostic asks the agent to inspect the actual failed assumption
+or tool contract, verify a recovery, and assess whether it warrants a repeatable,
+narrowly scoped policy candidate. The agent need not inspect state to receive
+this diagnostic. A candidate is inert; activation still requires explicit operator
+approval. Reload picks up engine and tool-guideline changes, but an existing
+stored recovery rule requires an exact import or approved replacement.
 
 ## Bounded observation state
 
@@ -534,7 +576,9 @@ requires the alternative reader:
 ### `policy_rules`
 
 Views are `rules` (default), `catalog`, `capabilities`, `state`, `health`, `data`,
-`explain`, and `preview`. The catalog view shows bundled starter definitions;
+`explain`, `preview`, `authoring`, and `check`. The authoring view returns the
+[authoring guide](AUTHORING.md); check validates a draft and runs bounded isolated
+examples through the production runtime. The catalog view shows bundled starter definitions;
 it does not make them active or replace the stored catalog. Active command-shape
 rules retain their complete matcher in rule inspection and `/policy show`,
 including CLI selection, flag clauses, and unavailable behavior.

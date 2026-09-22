@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { PACKAGE_CATALOG } from "./catalog.ts";
+import { DEFAULT_LIMITS, PACKAGE_CATALOG } from "./catalog.ts";
 import type { NamedData } from "./data.ts";
 import type { RuleSnapshot } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
@@ -152,6 +152,7 @@ function fixture(
 		notifications,
 		handlers,
 		failures,
+		setMode: (next: PolicyMode) => { mode = next; },
 		setLoadGate: (gate: Promise<void> | undefined) => {
 			loadGate = gate;
 		},
@@ -224,6 +225,158 @@ function correctedBash(blocker: RuleRecord, mode: PolicyMode = "enforce", target
 	f.snapshot.data.set("commands", commandTable(target));
 	return f;
 }
+
+function recoveryRule(): RuleRecord {
+	const row = PACKAGE_CATALOG.find((entry) => entry.id === "recovery.repeated-errors");
+	assert.ok(row?.matcher.kind === "declarative" && row.matcher.language === "facts/v1");
+	return rule(row.id, row.matcher.spec);
+}
+
+async function completed(f: ReturnType<typeof fixture>, id: string, error: boolean) {
+	await f.call(id, {});
+	await f.result(id, error);
+	await f.finish(id, error);
+}
+
+describe("completion-triggered recovery guidance", () => {
+	it("counts final failures across tools and retains a triggered notice through same-batch success", async () => {
+		const f = fixture([recoveryRule()]);
+		await f.call("first", {});
+		await f.runtime.toolStart({ toolName: "other", toolCallId: "second", args: {} }, f.ctx);
+		await f.runtime.toolCall({ type: "tool_call", toolName: "other", toolCallId: "second", input: {} }, f.ctx);
+		await f.call("success", {});
+		await f.result("first", true);
+		await f.finish("first", true);
+		assert.equal(await f.runtime.context(f.ctx), undefined);
+		await f.runtime.toolResult({ type: "tool_result", toolName: "other", toolCallId: "second", input: {},
+			isError: true, content: [{ type: "text", text: "failure" }], details: {} }, f.ctx);
+		await f.runtime.toolEnd({ toolName: "other", toolCallId: "second", isError: true, result: {} }, f.ctx);
+		await f.result("success");
+		await f.finish("success");
+		assert.equal((await f.views())[0].count, 0);
+		assert.match((await f.runtime.context(f.ctx)) ?? "", /actual failed assumption or tool contract/);
+		assert.equal(await f.runtime.context(f.ctx), undefined);
+		await completed(f, "third", true);
+		assert.equal(await f.runtime.context(f.ctx), undefined);
+		await completed(f, "fourth", true);
+		assert.match((await f.runtime.context(f.ctx)) ?? "", /explicit operator approval/);
+		await completed(f, "fifth", true);
+		assert.match((await f.runtime.context(f.ctx)) ?? "", /repeatable/);
+		await f.finish("fifth", true);
+		assert.equal(await f.runtime.context(f.ctx), undefined);
+	});
+
+	it("coalesces continued failures and preserves notices through compaction without repeating idle context", async () => {
+		const f = fixture([recoveryRule()]);
+		for (let i = 0; i < 5; i++) await completed(f, `failure-${i}`, true);
+		const before = await f.runtime.inspect("state", {}, f.ctx) as { retainedGuidance: unknown[] };
+		assert.equal(before.retainedGuidance.length, 1);
+		await f.handlers.get("session_compact")?.({}, f.ctx);
+		await f.handlers.get("turn_start")?.({}, f.ctx);
+		assert.match((await f.runtime.context(f.ctx)) ?? "", /Two consecutive/);
+		assert.equal(await f.runtime.context(f.ctx), undefined);
+	});
+
+	it("retains notices omitted by the shared projection byte bound", async () => {
+		const a = recoveryRule();
+		const b = recoveryRule();
+		b.id = "second-guide";
+		assert.ok(a.matcher.kind === "declarative" && a.matcher.language === "facts/v1");
+		assert.ok(b.matcher.kind === "declarative" && b.matcher.language === "facts/v1");
+		a.matcher = structuredClone(a.matcher);
+		b.matcher = structuredClone(b.matcher);
+		a.matcher.spec.action = { kind: "guide", text: "a".repeat(1500) };
+		b.matcher.spec.action = { kind: "guide", text: "b".repeat(1500) };
+		const f = fixture([a, b]);
+		await completed(f, "first", true);
+		await completed(f, "second", true);
+		assert.match((await f.runtime.context(f.ctx)) ?? "", /a{1500}/);
+		assert.match((await f.runtime.context(f.ctx)) ?? "", /b{1500}/);
+		assert.equal(await f.runtime.context(f.ctx), undefined);
+	});
+
+	it("counts the final flag rather than an earlier result error", async () => {
+		const f = fixture([recoveryRule()]);
+		await completed(f, "first", true);
+		await f.call("patched", {});
+		await f.result("patched", true);
+		await f.finish("patched", false);
+		await completed(f, "third", true);
+		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal((await f.views())[0].count, 1);
+	});
+
+	it("uses a rolling strict age bound without expiring an already triggered notice", async (t) => {
+		let now = Date.now();
+		t.mock.method(Date, "now", () => now);
+		const f = fixture([recoveryRule()]);
+		await completed(f, "old", true);
+		now += DEFAULT_LIMITS.errorWindowMs;
+		await completed(f, "new", true);
+		assert.equal(await f.runtime.context(f.ctx), undefined);
+		now += DEFAULT_LIMITS.errorWindowMs - 1;
+		await completed(f, "pair", true);
+		now += DEFAULT_LIMITS.errorWindowMs * 2;
+		assert.match((await f.runtime.context(f.ctx)) ?? "", /Two consecutive/);
+		await completed(f, "fresh", true);
+		assert.equal(await f.runtime.context(f.ctx), undefined);
+	});
+
+	it("ignores error-like success text, preflight failure, partial results, and duplicate endings", async () => {
+		const f = fixture([recoveryRule()]);
+		await f.call("unexecuted", {});
+		await f.finish("unexecuted", true);
+		await f.call("partial", {});
+		await f.handlers.get("tool_execution_update")?.({}, f.ctx);
+		await f.call("text", {});
+		await f.runtime.toolResult({ type: "tool_result", toolName: "sample", toolCallId: "text", input: {},
+			isError: false, content: [{ type: "text", text: "ERROR failed invalid" }], details: {} }, f.ctx);
+		await f.finish("text", false);
+		await completed(f, "failure", true);
+		await f.finish("failure", true);
+		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal((await f.views())[0].count, 1);
+	});
+
+	for (const hostMode of ["tui", "rpc", "json", "print"] as const)
+		for (const mode of ["observe", "notice", "annotate", "enforce"] as const)
+			it(`${hostMode}/${mode}: completion guidance follows the effect matrix`, async () => {
+				const f = fixture([recoveryRule()], mode);
+				const ctx = { ...f.ctx, mode: hostMode, hasUI: hostMode === "tui" || hostMode === "rpc" };
+				await completed(f, "first", true);
+				await completed(f, "second", true);
+				const output = await f.handlers.get("context")?.({ messages: [] }, ctx);
+				assert.equal(output !== undefined, mode === "annotate" || mode === "enforce");
+			});
+
+	for (const change of ["revision", "disable", "retire", "scope", "reset", "mode", "degraded", "tree", "shutdown", "reload", "new", "resume", "fork"])
+		it(`${change}: invalidates retained guidance`, async () => {
+			const r = recoveryRule();
+			const f = fixture([r]);
+			await completed(f, "first", true);
+			await completed(f, "second", true);
+			switch (change) {
+				case "revision": r.definition.revision = "fedcba654321"; break;
+				case "disable":
+					r.override = { state: "disabled", reason: "test", againstDefinitionRevision: r.definition.revision,
+						audit: { surface: "command", session: "session", model: null, at: new Date().toISOString() } };
+					break;
+				case "retire": r.definition.state = "retired"; break;
+				case "scope": r.definition.scope = { cwdPrefixes: ["/elsewhere"] }; break;
+				case "reset": f.runtime.reset([r.id], "operator reset"); break;
+				case "mode": f.setMode("observe"); break;
+				case "degraded": f.snapshot.health = { ...f.snapshot.health, status: "degraded" }; break;
+				case "tree": await f.handlers.get("session_tree")?.({}, f.ctx); break;
+				case "shutdown": await f.handlers.get("session_shutdown")?.({}, f.ctx); break;
+				default: await f.handlers.get("session_start")?.({ reason: change }, f.ctx);
+			}
+			assert.equal(await f.runtime.context(f.ctx), undefined);
+			delete r.definition.scope;
+			f.setMode("enforce");
+			f.snapshot.health = { status: "ok", path: "rules.jsonl" };
+			assert.equal(await f.runtime.context(f.ctx), undefined);
+		});
+});
 
 describe("effective command checks", () => {
 	it("blocks an approved correction that introduces a package-denied command without mutating input", async () => {

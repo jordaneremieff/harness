@@ -325,7 +325,7 @@ function programActionError(program: FactsProgram): string | undefined {
 		"rename-key": ["input"],
 		substitute: ["input"],
 		"assert-error": ["result"],
-		guide: ["input", "result", "context"],
+		guide: ["input", "result", "completion", "context"],
 		observe: ["completion"],
 	};
 	if (!permitted[program.action.kind].includes(program.phase)) return "Action is unavailable in this phase";

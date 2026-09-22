@@ -1412,7 +1412,7 @@ function assertRetireProposal(existing: RuleRecord | undefined, ruleId: string):
 	if (effectiveState(existing) === "retired") throw new Error(`rule "${ruleId}" is already retired`);
 }
 
-function assertProposalTransition(
+export function assertProposalTransition(
 	event: Extract<RuleEvent, { kind: "proposal" }>,
 	reduction: RuleReduction,
 ): void {

@@ -175,6 +175,7 @@ export class PolicyRuntime {
 	private readonly state = new ObservationState();
 	private readonly pending = new Map<string, ObservedCall>();
 	private readonly ended = new Set<string>();
+	private readonly retainedGuidance = new Map<string, { pin: StatePin; evaluation: ProgramEvaluation }>();
 	private snapshot?: RuleSnapshot;
 	private effectiveActions = new Map<string, ReturnType<typeof effectiveEffect>>();
 	private generation = 0;
@@ -183,25 +184,28 @@ export class PolicyRuntime {
 	private telemetryFailure?: string;
 	private incomplete = 0;
 	private stale = 0;
-	private readonly writer: PolicyWriter;
+	private readonly writer: Pick<PolicyWriter, "enqueue" | "close">;
 	private readonly dir: string;
 	private readonly pi: ExtensionAPI;
 	private readonly load: (ctx?: ExtensionContext) => Promise<RuleSnapshot>;
 	private readonly mode: () => PolicyMode;
 	private readonly enabled: () => boolean;
+	private readonly now: () => number;
 	constructor(
 		pi: ExtensionAPI,
 		load: (ctx?: ExtensionContext) => Promise<RuleSnapshot>,
 		mode: () => PolicyMode,
 		dir: string,
 		enabled: () => boolean = () => true,
-		writer?: PolicyWriter,
+		writer?: Pick<PolicyWriter, "enqueue" | "close">,
+		now: () => number = () => Date.now(),
 	) {
 		this.dir = dir;
 		this.pi = pi;
 		this.load = load;
 		this.mode = mode;
 		this.enabled = enabled;
+		this.now = now;
 		this.writer = writer ?? new PolicyWriter(dir, (reason) => this.recordingFailed(reason));
 	}
 	private recordingFailed(reason: string): void {
@@ -222,13 +226,16 @@ export class PolicyRuntime {
 			[...snapshot.records.values()]
 				.filter((r) => effectiveState(r) === "active" && r.matcherAvailable)
 				.map(compileRule),
-			Date.now(),
+			this.now(),
 		);
 		for (const record of snapshot.records.values()) {
 			const previous = prior.get(record.id);
 			if (previous !== undefined && previous !== effectiveEffect(record))
-				this.state.reset("effective-action-change", Date.now(), record.id);
+				this.state.reset("effective-action-change", this.now(), record.id);
 		}
+		if (this.effectiveMode() !== "annotate" && this.effectiveMode() !== "enforce") this.retainedGuidance.clear();
+		for (const [id, notice] of this.retainedGuidance)
+			if (!samePin(notice.pin, this.state.pin(id))) this.retainedGuidance.delete(id);
 	}
 	reset(ids: string[] | undefined, reason: string): void {
 		if (!reason.trim() || reason.length > 1000) throw new Error("A bounded reset reason is required");
@@ -236,20 +243,25 @@ export class PolicyRuntime {
 			for (const id of ids) {
 				if (!this.state.pin(id)) throw new Error(`No active rule named ${id}`);
 			}
-		if (ids) for (const id of ids) this.state.reset(reason, Date.now(), id);
+		if (ids) for (const id of ids) {
+			this.state.reset(reason, this.now(), id);
+			this.retainedGuidance.delete(id);
+		}
 		else {
+			this.retainedGuidance.clear();
 			this.generation++;
 			for (const call of this.pending.values()) call.complete = false;
-			this.state.reset(reason, Date.now());
+			this.state.reset(reason, this.now());
 		}
 	}
 	private live(generation: number): boolean {
 		return !this.closed && generation === this.generation;
 	}
 	private resetSession(reason: string): void {
+		this.retainedGuidance.clear();
 		this.generation++;
 		this.turn = 0;
-		this.state.reset(reason, Date.now());
+		this.state.reset(reason, this.now());
 		for (const call of this.pending.values()) call.complete = false;
 		this.ended.clear();
 	}
@@ -257,7 +269,7 @@ export class PolicyRuntime {
 		return this.snapshot?.health.status === "degraded" && this.mode() !== "observe" ? "notice" : this.mode();
 	}
 	private states() {
-		return Object.fromEntries(this.state.snapshot(Date.now(), this.turn).map((view) => [view.id, view]));
+		return Object.fromEntries(this.state.snapshot(this.now(), this.turn).map((view) => [view.id, view]));
 	}
 	private catalog(): { tools: Catalog; active: string[]; available: boolean } {
 		try {
@@ -313,8 +325,8 @@ export class PolicyRuntime {
 			facts: { input, context: this.publicContext(snapshot, catalog) },
 			states: this.states(),
 			schema: catalog.tools.find((t) => t.name === tool)?.parameters,
-			data: snapshotData([...snapshot.data.values()], Date.now()),
-			now: Date.now(),
+			data: snapshotData([...snapshot.data.values()], this.now()),
+			now: this.now(),
 		};
 	}
 	private currentRules(call: ObservedCall): ProgramRule[] {
@@ -358,7 +370,7 @@ export class PolicyRuntime {
 		};
 	}
 	private contextFor(call: ObservedCall, result?: Result, outcome?: CallOutcome): EvaluationContext {
-		const now = Date.now();
+		const now = this.now();
 		const data = snapshotData(
 			Object.values(call.context.data ?? {}).flatMap((source) => (source.data ? [source.data] : [])),
 			now,
@@ -392,7 +404,7 @@ export class PolicyRuntime {
 			[...captureProgramEvidence(rules, context, input)].filter(([, truth]) => truth === true).map(([id]) => id),
 		);
 		return {
-			...startCall(tool, id, input ?? {}, new Date(), performance.now(), captured ?? null),
+			...startCall(tool, id, input ?? {}, new Date(this.now()), performance.now(), captured ?? null),
 			classes: [...matches],
 			requested: input,
 			input,
@@ -588,10 +600,10 @@ export class PolicyRuntime {
 	): { isError?: true; content: ToolResultEvent["content"] } {
 		return { ...(correction ? { isError: true as const } : {}), content: [...content, { type: "text", text }] };
 	}
-	private guidance(evaluations: ProgramEvaluation[]): string | undefined {
+	private guidance(evaluations: ProgramEvaluation[], projected?: (id: string) => void): string | undefined {
 		if (this.effectiveMode() !== "annotate" && this.effectiveMode() !== "enforce") return;
 		const eligible = evaluations.filter(
-			(e) => e.truth === true && e.action.kind === "guide" && this.state.eligible(e.id, Date.now(), this.turn),
+			(e) => e.truth === true && e.action.kind === "guide" && this.state.eligible(e.id, this.now(), this.turn),
 		);
 		const selected: ProgramEvaluation[] = [];
 		const lines: string[] = [];
@@ -603,7 +615,10 @@ export class PolicyRuntime {
 			selected.push(entry);
 		}
 		const text = guidanceText(lines);
-		if (text) for (const entry of selected) this.state.project(entry.id, Date.now(), this.turn);
+		if (text) for (const entry of selected) {
+			this.state.project(entry.id, this.now(), this.turn);
+			projected?.(entry.id);
+		}
 		return text;
 	}
 	async toolEnd(
@@ -669,16 +684,26 @@ export class PolicyRuntime {
 	/** Run completion-phase evaluations and observation completion once. */
 	private completeCall(call: ObservedCall, result: Result, outcome: CallOutcome): ProgramEvaluation[] {
 		const rules = this.currentRules(call);
-		const completion = evaluatePrograms(rules, "completion", this.contextFor(call, result, outcome));
-		this.collect(call, completion);
+		const completion = evaluatePrograms(rules, "completion", this.contextFor(call, result, outcome))
+			.filter((entry) => entry.action.kind !== "guide");
 		const completionContext = this.contextFor(call, result, outcome);
 		this.stale += call.rules.length - rules.length;
 		for (const rule of rules) {
 			const selected = observationSelected(rule, completionContext);
 			const pin = call.pins.get(rule.id);
-			if (pin && selected === true && !this.state.complete(pin, programFacts(rule, completionContext), call.turn, Date.now()))
+			if (pin && selected === true && !this.state.complete(pin, programFacts(rule, completionContext), call.turn, this.now()))
 				this.stale++;
 		}
+		const guides = evaluatePrograms(rules, "completion", this.contextFor(call, result, outcome))
+			.filter((entry) => entry.action.kind === "guide");
+		completion.push(...guides);
+		this.collect(call, completion);
+		if (this.effectiveMode() === "annotate" || this.effectiveMode() === "enforce")
+			for (const evaluation of guides) {
+				const pin = this.state.pin(evaluation.id);
+				if (pin && evaluation.truth === true && this.state.eligible(evaluation.id, this.now(), this.turn))
+					this.retainedGuidance.set(evaluation.id, { pin, evaluation });
+			}
 		return completion;
 	}
 
@@ -776,13 +801,13 @@ export class PolicyRuntime {
 			tool: "",
 			facts: { context: this.publicContext(snapshot) },
 			states: this.states(),
-			data: snapshotData([...snapshot.data.values()], Date.now()),
-			now: Date.now(),
+			data: snapshotData([...snapshot.data.values()], this.now()),
+			now: this.now(),
 			mode: this.effectiveMode(),
 		});
 		if (this.effectiveMode() === "notice" && ctx.mode === "tui") {
 			const ids = evaluation
-				.filter((e) => e.truth === true && this.state.eligible(e.id, Date.now(), this.turn))
+				.filter((e) => e.truth === true && this.state.eligible(e.id, this.now(), this.turn))
 				.map((e) => e.id);
 			if (ids.length)
 				try {
@@ -791,7 +816,11 @@ export class PolicyRuntime {
 					/* Notice does not change guidance state. */
 				}
 		}
-		return this.guidance(evaluation);
+		for (const [id, notice] of this.retainedGuidance)
+			if (!rules.some((rule) => rule.id === id) || !samePin(notice.pin, this.state.pin(id)))
+				this.retainedGuidance.delete(id);
+		const retained = [...this.retainedGuidance.values()].map(({ evaluation: entry }) => entry);
+		return this.guidance([...retained, ...evaluation], (id) => this.retainedGuidance.delete(id));
 	}
 	async inspect(view: string, params: Record<string, unknown>, ctx: ExtensionContext): Promise<unknown> {
 		const snapshot = view === "preview" && this.snapshot ? this.snapshot : await this.load(ctx);
@@ -805,10 +834,11 @@ export class PolicyRuntime {
 
 	private inspectState(): unknown {
 		return {
-			observationPeriods: publicState(this.state.snapshot(Date.now(), this.turn)),
+			observationPeriods: publicState(this.state.snapshot(this.now(), this.turn)),
 			turn: this.turn,
 			incomplete: this.incomplete,
 			staleCompletions: this.stale,
+			retainedGuidance: [...this.retainedGuidance.values()].map(({ pin }) => pin),
 		};
 	}
 
@@ -866,7 +896,7 @@ export class PolicyRuntime {
 		}
 		const record = typeof params.id === "string" ? snapshot.records.get(params.id) : undefined;
 		if (!record) throw new Error("An existing rule id is required");
-		const period = this.state.view(record.id, Date.now(), this.turn);
+		const period = this.state.view(record.id, this.now(), this.turn);
 		return {
 			id: record.id,
 			revision: record.definition.revision,
@@ -926,7 +956,7 @@ export class PolicyRuntime {
 				return {
 					messages: [
 						...event.messages,
-						{ role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() },
+						{ role: "user" as const, content: [{ type: "text" as const, text }], timestamp: this.now() },
 					],
 				};
 		});
