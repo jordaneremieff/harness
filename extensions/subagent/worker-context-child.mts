@@ -15,6 +15,10 @@ type ToolContextFixture = Pick<ExtensionContext, "cwd" | "modelRegistry"> & {
 	ui: Pick<ExtensionContext["ui"], "setStatus">;
 };
 
+const hostClaims: boolean[] = [];
+const hostClaimKey = Symbol.for("subagent-test.host-claims");
+const hostGlobals = globalThis as unknown as Record<symbol, typeof hostClaims>;
+hostGlobals[hostClaimKey] = hostClaims;
 const runtimeErrors: unknown[] = [];
 const captureRuntimeError = (error: unknown) => {
 	runtimeErrors.push(error);
@@ -53,6 +57,17 @@ function seedProject(cwd: string, label: string): void {
 export default function (pi) {
   appendFileSync(${JSON.stringify(marker)}, "factory\\n");
   pi.on("session_start", async (_event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    const query = () => {
+      let claimed = false;
+      const off = pi.events.on("harness:session-host:role", value => {
+        if (value?.version === 1 && value.sessionId === sessionId && value.role === "managed-child") claimed = true;
+      });
+      pi.events.emit("harness:session-host:request", {version:1,sessionId});
+      off();
+      return claimed;
+    };
+    globalThis[Symbol.for("subagent-test.host-claims")].push(query());
     appendFileSync(${JSON.stringify(marker)}, "start\\n");
     appendFileSync(${JSON.stringify(sessionMarkerPath(label))}, ctx.sessionManager.getSessionId() + "\\n");
     const profileEntry = ctx.sessionManager.getBranch().find((entry) => entry.type === "custom_message" && entry.customType === "subagent_profile");
@@ -701,9 +716,12 @@ try {
 
 	sub.shutdownWorkerSession(parentSession);
 	parentSession = null;
+	assert.ok(hostClaims.length > 0);
+	assert.ok(hostClaims.every(Boolean), "native startup, reload, and replacement all retain the exact host claim");
 	assert.deepEqual(runtimeErrors, []);
 	console.log("worker context child: PASS");
 } finally {
+	delete hostGlobals[hostClaimKey];
 	try {
 		parentSession?.dispose();
 	} catch {}

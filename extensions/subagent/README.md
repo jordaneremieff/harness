@@ -1024,7 +1024,13 @@ under the [package snapshot contract](../../docs/conventions/status-keys.md#nest
 Its extension-owned process state shares read-only activity observations and
 publication callbacks across module instances. Each session removes its request
 listener and publishes unavailable evidence at shutdown. No observer owns worker
-execution, and no polling loop or additional store is involved. Pi's default
+execution, and no polling loop or additional store is involved. Each native
+worker host separately answers the package's
+[host identity exchange](../../docs/conventions/session-host-roles.md) before
+extension startup. Only its exact currently claimed session receives a managed-child
+answer. The host retains that responder across extension reload and removes it
+on replacement, failed construction, or release. This prevents consumers from
+treating a managed child as an independent primary. Pi's default
 footer and the custom statusline consume the text status map generically.
 
 ### Collaboration dashboard

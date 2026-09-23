@@ -125,6 +125,7 @@ import {
 } from "./collaboration.ts";
 import { stripTerminalSequences } from "./console.ts";
 import { formatSubtreeStatus, subtreeStatus, UsageEvidence } from "./footer.ts";
+import { createManagedHostBus } from "./host-role.ts";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
 import { type PeerEnvelope, PeerHub, type PeerReceipt } from "./peers.ts";
 import {
@@ -3878,7 +3879,14 @@ export async function dispatchWorker(
 	// Persist the accepted worker before starting provider work.
 	writeWorker(record);
 
+	const roleDisposers = new Set<() => void>();
+	const sessionRoles = new WeakMap<AgentSession, () => void>();
+	const clearHostRoles = (): void => {
+		for (const dispose of roleDisposers) dispose();
+		roleDisposers.clear();
+	};
 	const fail = (error: string): DispatchOutcome => {
+		clearHostRoles();
 		record.state = "failed";
 		record.error = error;
 		record.exitedAt = Date.now();
@@ -3945,47 +3953,58 @@ export async function dispatchWorker(
 			};
 		}
 		const modelRuntime = await createWorkerModelRuntime(ctx, options.agentDir);
-		const builtServices = await createAgentSessionServices({
-			cwd: targetCwd,
-			agentDir: options.agentDir,
-			settingsManager: trust.settingsManager,
-			modelRuntime,
-			resourceLoaderReloadOptions: trust.reloadOptions,
-			resourceLoaderOptions: {
-				additionalExtensionPaths: extensionPaths(),
-				appendSystemPrompt: [prompt],
-			},
-		});
-		services = builtServices;
-		rememberSetupDiagnostics(...serviceDiagnostics(builtServices));
-		const workerModel =
-			builtServices.modelRuntime.getModel(model.provider, model.id) ?? ctx.modelRegistry.find(model.provider, model.id);
-		if (!workerModel) {
-			throw new Error(`model "${model.provider}/${model.id}" disappeared before worker construction`);
-		}
-		const created = await createAgentSessionFromServices({
-			services: builtServices,
-			sessionManager: options.sessionManager,
-			sessionStartEvent: options.sessionStartEvent,
-			model: workerModel,
-			thinkingLevel: thinking,
-			tools: resolvedTools,
-			customTools: [submitResultTool(files.result, () => options.sessionManager.getSessionId())],
-		});
-		installWorkerCompletionBoundary(created.session);
+		const nativeId = options.sessionManager.getSessionId();
+		const roleHost = createManagedHostBus(nativeId, () => sharedWorkerState.workerSessionIds.has(nativeId));
+		roleDisposers.add(roleHost.dispose);
 		try {
-			await restoreProfileContext(created.session);
+			const builtServices = await createAgentSessionServices({
+				cwd: targetCwd,
+				agentDir: options.agentDir,
+				settingsManager: trust.settingsManager,
+				modelRuntime,
+				resourceLoaderReloadOptions: trust.reloadOptions,
+				resourceLoaderOptions: {
+					eventBus: roleHost.bus,
+					additionalExtensionPaths: extensionPaths(),
+					appendSystemPrompt: [prompt],
+				},
+			});
+			services = builtServices;
+			rememberSetupDiagnostics(...serviceDiagnostics(builtServices));
+			const workerModel =
+				builtServices.modelRuntime.getModel(model.provider, model.id) ?? ctx.modelRegistry.find(model.provider, model.id);
+			if (!workerModel) {
+				throw new Error(`model "${model.provider}/${model.id}" disappeared before worker construction`);
+			}
+			const created = await createAgentSessionFromServices({
+				services: builtServices,
+				sessionManager: options.sessionManager,
+				sessionStartEvent: options.sessionStartEvent,
+				model: workerModel,
+				thinkingLevel: thinking,
+				tools: resolvedTools,
+				customTools: [submitResultTool(files.result, () => options.sessionManager.getSessionId())],
+			});
+			sessionRoles.set(created.session, roleHost.dispose);
+			installWorkerCompletionBoundary(created.session);
+			try {
+				await restoreProfileContext(created.session);
+			} catch (error) {
+				created.session.dispose();
+				throw error;
+			}
+			const createdSessionId = options.sessionManager.getSessionId();
+			constructedSessionIds.add(createdSessionId);
+			sharedWorkerState.workerSessionIds.add(createdSessionId);
+			// Pi's extension message methods dispatch through this instance. Install
+			// ownership before bindExtensions gives any hook access to those methods.
+			trackCommandStartedTurns(created.session);
+			return { ...created, services: builtServices, diagnostics: builtServices.diagnostics };
 		} catch (error) {
-			created.session.dispose();
+			roleHost.dispose();
+			roleDisposers.delete(roleHost.dispose);
 			throw error;
 		}
-		const createdSessionId = options.sessionManager.getSessionId();
-		constructedSessionIds.add(createdSessionId);
-		sharedWorkerState.workerSessionIds.add(createdSessionId);
-		// Pi's extension message methods dispatch through this instance. Install
-		// ownership before bindExtensions gives any hook access to those methods.
-		trackCommandStartedTurns(created.session);
-		return { ...created, services: builtServices, diagnostics: builtServices.diagnostics };
 	};
 
 	const validateBoundSession = async (target: AgentSession): Promise<void> => {
@@ -4116,7 +4135,8 @@ export async function dispatchWorker(
 		session = sessionHost.session;
 		disposeSession = disposeOnce(() => {
 			const ownedHost = sessionHost;
-			if (ownedHost) void ownedHost.dispose().catch(() => {});
+			if (ownedHost) void ownedHost.dispose().catch(() => {}).finally(clearHostRoles);
+			else clearHostRoles();
 		});
 		await bindWorkerSession(session);
 	} catch (err) {
@@ -4199,6 +4219,10 @@ export async function dispatchWorker(
 		// the replacement during terminal cleanup. Only an unattached result needs
 		// direct disposal here.
 		if (liveWorker.session === next) return;
+		const role = sessionRoles.get(next);
+		role?.();
+		if (role) roleDisposers.delete(role);
+		sessionRoles.delete(next);
 		try {
 			next.dispose();
 		} catch {
@@ -4221,8 +4245,13 @@ export async function dispatchWorker(
 			usageBaselines.delete(id);
 		}
 		usageEvidence.set(next, new UsageEvidence(next.sessionManager.getEntries().length));
+		const previousRole = sessionRoles.get(previous);
+		previousRole?.();
+		if (previousRole) roleDisposers.delete(previousRole);
+		sessionRoles.delete(previous);
 		untrack();
 		sharedWorkerState.workerSessionIds.delete(previous.sessionManager.getSessionId());
+		sharedWorkerState.workerSessionIds.add(next.sessionManager.getSessionId());
 		sharedWorkerState.workerSurfaces.delete(previous.sessionManager.getSessionId());
 		unlinkWorkerOwner(previous.sessionManager.getSessionId());
 		session = next;
