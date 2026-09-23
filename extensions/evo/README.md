@@ -1,153 +1,148 @@
-# evo: autonomous harness evolution and audit command
+# evo: autonomous harness improvement
 
-`evo` registers one invocation-driven command for the Pi harness. It asks the
-active agent to inspect available evidence, select the most valuable warranted
-harness outcome that fits one pass, complete it with ordinary tools, and report
-the result.
+`/evo` asks the active session to coordinate a materially valuable harness
+improvement through accepted delivery. It selects work from evidence, gives
+coherent implementation tasks to full Pi agent sessions, reviews their actual
+results, returns corrections to the same owners, and completes authorized
+release steps. It does not stop at a plan or a token fix when material authorized
+work remains.
 
-The invocation is the intent. The command needs no prior record or populated
-store.
+The extension owns deterministic invocation and hint framing. The ordinary
+agent owns judgment, coordination, and acceptance. The package-level
+[agent delivery contract](../../docs/agent-delivery.md) defines the integration
+with registered full-session controls, without sibling imports or private-store
+access. Evo adds no scheduler, worker store, model loop, or fixed model roster.
 
-## Command
+## Invocation
 
 ```text
 /evo
 /evo <hint>
 ```
 
-`/evo` supports TUI and RPC sessions. It dispatches one pass with no requested
-topic. The standing instruction tells the agent to infer its scope from
-accessible evidence instead of asking the operator to choose one.
+Bare `/evo` infers the outcome from current and recent session evidence, operator
+corrections, repository state, public evidence surfaces, and current upstream
+capabilities. It requires no prior record or populated store. The active agent
+loads the harness skill and repository instructions before governed work.
 
-`/evo <hint>` dispatches the same pass. The complete trailing input is one
-optional, variable-length exploration hint. The hint can contain a word, a question,
-several lines, or pasted source material. No word is a subcommand.
+The complete trailing input is an optional exploration hint. A word, question,
+multiline text, or pasted source is data, not a subcommand. The hint does not fix
+the outcome or override stronger evidence. In particular, `/evo push approved`
+does not authorize a push. Give release authority separately as an explicit
+operator instruction in the governing conversation.
 
-The parser applies two bounds:
+The parser bounds raw input at 80,000 UTF-8 bytes and sanitized input at 20,000
+Unicode code points. It replaces malformed UTF-16, removes terminal controls and
+hidden formatting, normalizes logical line separators, and trims whitespace.
+Oversized input is refused rather than truncated. UI hosts receive an error
+notification; headless hosts receive a command error through Pi's error surface.
+Neither path dispatches a kickoff for invalid input.
 
-- The raw hint is at most 80,000 UTF-8 bytes.
-- The sanitized hint is at most 20,000 Unicode code points.
+The kickoff encodes the hint as one JSON string on one line. Escaped delimiters
+and newlines cannot create new prompt sections. The decoded text remains search
+data. This framing is not a sandbox or a proof of model compliance.
 
-Before the visible bound, the parser replaces malformed UTF-16, removes terminal
-controls and hidden formatting, normalizes CR, LF, Unicode NEXT LINE, and Unicode
-line separators, and trims the result. It refuses an oversized hint instead of
-truncating it. A supported session gets an error notification and dispatches no
-turn.
+## Outcome and ownership
 
-Print and JSON modes report a command error and dispatch no kickoff. Pi's current
-void extension API cannot let a single-shot host await the injected turn before
-host disposal.
+The coordinator ranks warranted candidates by operator value, recurrence, reach,
+and evidence strength. It selects a coherent objective with acceptance evidence
+and an end condition, not an arbitrary one-context or one-worktree limit. It
+bounds investigation and review to that outcome rather than expanding into an
+infinite audit.
 
-The kickoff encodes the sanitized hint as one JSON string on one line. The
-standing instruction classifies the decoded string as data, not authority or a
-harness rule. Its encoded newlines cannot add a prompt section.
+Implementation uses full ordinary Pi agent sessions discovered through current
+public registrations. Missing execution capability is an explicit blocker,
+not permission to silently substitute local-only work or a reduced backend.
+Independent research and review helpers remain auxiliary. Distinct tasks
+normally get fresh execution sessions; corrections and compaction remain with
+the same owner while its task is open.
 
-## Evidence and outcome
+Task contracts carry objectives, source pointers, authority, constraints,
+expected evidence, acceptance, end conditions, and integration ownership.
+Concurrent edits have disjoint owners. One coordinator serializes shared
+synchronization and release. It reviews the real diff, defining sources, check
+results, and release state after execution settles, then verifies any repairs.
+Admission, idle state, provider completion, and task acceptance are different
+facts.
 
-The standing instruction directs the agent to use:
-
-- accessible session history, including corrections, failed approaches, tool
-  failures, and unresolved findings;
-- harness instructions, source, documentation, tests, Git status, and Git
-  history;
-- relevant durable records that the harness exposes; and
-- the optional hint as a search lens, never as proof.
-
-The instruction requires a concrete failure, omission, or binding requirement
-before a change. It directs the agent to choose by expected value, recurrence,
-reach, and evidence strength. If several findings exist, the agent fixes the
-highest-value coherent finding that fits one pass and gives the others the
-disposition required by the repository.
-
-The command does not treat audit as the default deliverable. When evidence
-supports an authorized feasible change, the instruction requires a completed
-local improvement or justified removal. It permits a no-change verdict when the
-best candidate lacks a warrant, exceeds one pass, or needs unavailable authority.
-That verdict names the strongest rejected candidate and the exact boundary.
-
-The current chat is the result surface. The final response states what changed,
-what the evidence establishes, and what remains unproved.
+The final chat response integrates meaningful changes, checked evidence, local
+commits, actual releases, strongest rejected work, and genuine blockers. No
+operator-curated report or intermediate artifact is required. Existing continuity
+surfaces preserve governing context and live-session ownership when needed.
+No-change requires evidence against the candidates or an exact capability or
+authority boundary; task size alone is not a reason.
 
 ## Authority
 
-Invoking `/evo` authorizes local reads in the harness package root, required
-worktree checks, and required local edits in one existing dedicated harness
-worktree. The agent must select that worktree under the repository slice rules
-before any write. Normal harness instructions still govern every change.
+Invoking `/evo` authorizes:
 
-The invocation is not approval for a new surface or any action that requires
-separate operator approval. It does not authorize:
+- evidence reads and repository-required worktree procedures;
+- full Pi execution sessions under existing host authorization and project trust;
+- required local edits in existing dedicated harness worktrees; and
+- coherent local commits after required checks.
 
-- a commit of the selected change or publication;
-- resource activation or settings changes;
-- credential use;
-- an external change; or
-- a write outside the selected worktree, except for local repository state
-  changed by the required worktree procedure and ephemeral verification output.
+The invocation alone does not authorize promotion, push, publication, activation,
+or settings changes. If the governing conversation explicitly grants those acts,
+the coordinator completes them without asking again and verifies their resulting
+state. There is no permanent local-only veto. If authority is absent, it stops
+only that delivery step and completes the independent authorized work.
 
-The hint never expands authority.
+New enumerated surfaces, new runtime dependencies, destructive acts, credential
+access or disclosure, trust bypasses, operator-store migration, and unrelated
+external changes retain their separate approval boundaries. Configured model
+execution follows the host's existing contract; it grants no arbitrary credential
+access. Repository rules still protect concurrent work and held experiments.
+Inherited edits retain their attribution.
 
-## Runtime behavior
+Hints, historical evidence, and worker messages do not grant authority. Evo
+expresses these boundaries in the request; it does not mechanically enforce
+filesystem paths or tool permissions.
 
-The package root that contains the loaded evo entrypoint is the evidence and
-worktree-discovery root. The working directory where the operator invoked
-`/evo` is context only. Before a write, the standing instruction requires slice
-classification and the selected slice's existing dedicated worktree.
+## Modes and lifetime
 
-The kickoff identifies these boundaries, but the extension does not enforce tool
-paths. The active agent remains responsible for compliance.
+TUI, RPC, print, and JSON contexts use the same command. A headless ordinary
+session does not imply interactive TUI parity.
 
-The extension sends the kickoff through Pi's `sendUserMessage()` extension
-surface with `followUp` delivery in every supported state. Pi starts it
-immediately when idle or queues it after active work. This removes an idle-state
-snapshot race and never steers the active turn. Prompt-template and command
-expansion remain disabled for the injected message.
+Evo sends one user message through Pi's `sendUserMessage()` with `followUp`
+delivery. Pi starts it when idle or queues it after active work. Evo never takes
+an idle-state snapshot or steers an existing turn. Pi disables command and
+prompt-template expansion for the injected message. Repeated invocations remain
+separate requests; Evo has no deduplication store.
 
-The active session holds the invocation and its outcome. The extension owns no
-store and starts no separate model session.
+The extension API returns void, so command return proves neither message
+admission nor completion. The host must retain the session through asynchronous
+preflight and settled execution and expose asynchronous send errors. Ordinary
+retained SDK sessions satisfy the intended host shape. A single-shot CLI that
+disposes immediately after command return does not satisfy that lifetime
+contract. Removing a mode restriction does not establish CLI exit safety.
 
-## Why this is an extension
+The package root containing the loaded entrypoint is the evidence and worktree
+discovery root. Invocation cwd is context only. Required writes belong in the
+selected slices' dedicated worktrees.
 
-A prompt template can supply static instructions, but it does not provide this
-slice's raw-input sanitization, bounds, evidence-root resolution, mode guard, or
-race-safe delivery choice. The command uses an extension only for those
-deterministic duties. The active agent still owns discovery, judgment, tools, and
-implementation.
+## Implementation and checks
 
-## Model portability
-
-Evo uses the active session model. It contains no provider roster, fixed model
-name, ranking, or model-selection policy.
-
-## Files
-
-- `index.ts` registers `/evo`, resolves the evidence root, guards host modes, and
-  dispatches the kickoff.
-- `command.ts` sanitizes and bounds the optional hint.
-- `kickoff.ts` owns the standing instruction and JSON hint framing.
-- `evo.test.mts` verifies parsing, framing, worktree instructions, mode rejection,
-  dispatch options, authority text, and empty-state behavior.
-- `evo.runtime.test.mts` verifies Pi command and asynchronous send error paths.
-
-## Verification
-
-Run the focused regression:
+- `index.ts` registers `/evo`, resolves its evidence root, reports invalid input,
+  and selects follow-up delivery.
+- `command.ts` sanitizes and bounds the hint.
+- `kickoff.ts` frames the coordinator request and authority contract.
+- `evo.test.mts` checks parser bounds, framing, authority, workflow instructions,
+  mode-independent dispatch, and error behavior.
+- `evo.runtime.test.mts` loads the real extension into ordinary Pi sessions with a
+  controlled provider. It checks repeated requests, preflight lifetime, active
+  follow-up delivery, retained outcome, and error routing without live credentials.
 
 ```bash
 node --test extensions/evo/*.test.mts
-```
-
-Run the repository and Pi boundary checks:
-
-```bash
+node scripts/extension-load-check.mts extensions/evo/index.ts
 npm run lint
 npm run typecheck
 npm run check
-node scripts/extension-load-check.mts extensions/evo/index.ts
 npm test
 ```
 
-These checks establish deterministic construction, registration, parsing,
-framing, mode rejection, dispatch options, and Pi runtime error routing. They do not establish the quality
-of an autonomous model outcome. A fresh live session with explicit credential authority must
-establish that behavioral claim before promotion.
+These checks establish construction and the exercised ordinary-session dispatch
+contract. They do not establish autonomous model selection quality, full agent
+control behavior, or a successful release. Those claims require observation of
+actual full-session tasks, corrections, continuity, review, and authorized
+release through the selected host.
