@@ -9,6 +9,26 @@ import { AgentManager } from "./index.ts";
 import { AgentStore } from "./store.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
+test("detached directory absence is empty but read failure remains unknown", async () => {
+	const root = mkdtempSync(join(tmpdir(), "agent-detached-footer-"));
+	const cwd = join(root, "work"); const agentDir = join(root, "agent");
+	mkdirSync(cwd); mkdirSync(agentDir);
+	const runtime = await createTestRuntime();
+	const store = new AgentStore({ sessionsRoot: join(root, "sessions") });
+	const manager = new AgentManager(store, runtime, new ProjectTrustStore(agentDir), undefined, agentDir);
+	const statuses: Array<string | undefined> = [];
+	try {
+		manager.registerPrimary("owner", cwd, () => {}, (text) => statuses.push(text));
+		assert.equal(manager.runs(), "detached runs (0):\n(none)");
+		assert.equal(statuses.at(-1), undefined);
+		mkdirSync(store.root, { recursive: true });
+		writeFileSync(join(store.root, "detached"), "not a directory");
+		assert.throws(() => manager.runs(), { code: "ENOTDIR" });
+		assert.match(statuses.at(-1) ?? "", /detached \? recorded\/\? lost\/\$\?/u);
+		await manager.unregisterPrimary("owner");
+	} finally { await manager.closeAll(); await store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 // A real provider stream holds execution until the test supplies the final response.
 test("manager publishes activity and price to every primary through settlement, forks, errors, and shutdown", async () => {
 	const root = mkdtempSync(join(tmpdir(), "agent-footer-host-"));

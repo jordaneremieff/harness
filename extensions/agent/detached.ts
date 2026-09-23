@@ -203,8 +203,9 @@ export class DetachedRuns {
 		let names: string[];
 		try {
 			names = readdirSync(this.root);
-		} catch {
-			return [];
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+			throw error;
 		}
 		const runs: DetachedRunView[] = [];
 		for (const name of names) {

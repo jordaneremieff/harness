@@ -59,8 +59,9 @@ The price is reported native usage observed after ownership begins. It includes
 assistant responses, reported tool usage, compaction, branch summaries, and
 cache warming. It excludes inherited history on attach, fork, or replacement.
 Reload and replacement of a worker retain already observed spend; idle or closed
-hosts retain their observed spend until the manager closes. Primary shutdown or
-reload closes that manager and clears the status. These are local observation
+hosts retain their observed spend until the manager closes. Each departing primary
+clears its own status cell. Shutdown or reload of the last primary closes the
+manager. These are local observation
 intervals, not session-lifetime totals or provider invoices. Missing or malformed
 usage adds `+?` to the known price rather than becoming zero.
 
@@ -77,8 +78,11 @@ Detached work does not enter local active counts or prices. A separate
 counts abandoned records. These are recorded states, not live activity queries.
 Detached spend remains unavailable, including after a run finishes. Existing
 run-directory notifications and explicit run queries refresh this projection;
-there is no extra poller or telemetry store. A failed directory observation
-leaves uncertainty explicit.
+there is no extra poller or telemetry store. An absent run directory means no
+recorded runs. Other directory read errors leave counts unknown and make the
+run query fail explicitly. A watch error stops automatic refresh; recorded
+state remains at its last observation until an explicit run query or primary
+registration refreshes it.
 
 The publisher sends short status text through Pi's UI API. Headless worker
 status calls remain no-ops; numeric snapshots use the session's event bus.

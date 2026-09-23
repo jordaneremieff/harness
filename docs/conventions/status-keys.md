@@ -85,8 +85,9 @@ snapshot supplies a comparison baseline; subsequent increases add known spend,
 but the gap remains. Later data never retroactively establishes zero spend for
 the unobserved interval. Decreasing
 reported totals retain known spend and mark the observation incomplete. The
-consumer unsubscribes at host close. Primary shutdown closes the
-manager; primary reload therefore starts a fresh observation interval. Each
+consumer unsubscribes at host close. Each departing primary clears its own cell.
+Shutdown or reload of the last primary closes the manager; a later manager
+starts a fresh observation interval. Each
 primary attached to the same manager sees the same explicitly local scope.
 
 ## Rules
