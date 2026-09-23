@@ -392,6 +392,18 @@ describe("manager ownership transitions", () => {
 		} finally { await test.close(); }
 	});
 
+	it("observes held workers without entering the session-open path", async (t) => {
+		const test = await harness();
+		try {
+			const id = await createSession(test);
+			const manager = test.manager as unknown as { openWorker(): Promise<AgentWorkerSession> };
+			const open = t.mock.method(manager, "openWorker", async () => { throw new Error("must not enter session-open path"); });
+			const rows = await test.manager.sessionSummaries();
+			assert.equal(rows.find((row) => row.sessionId === id)?.live, true);
+			assert.equal(open.mock.callCount(), 0);
+		} finally { await test.close(); }
+	});
+
 	it("reads the detached inventory once for all session rows without opening workers", async (t) => {
 		const test = await harness();
 		try {
@@ -475,7 +487,7 @@ describe("command registration", () => {
 		}
 	});
 
-	it("uses native notifications for bare commands in every mode without opening a session", async (t) => {
+	it("routes bare commands by host mode without opening a session", async (t) => {
 		const test = await harness();
 		const previous = process.env.PI_AGENT_SESSIONS_DIR;
 		process.env.PI_AGENT_SESSIONS_DIR = test.sessionsRoot;
@@ -485,12 +497,18 @@ describe("command registration", () => {
 			t.mock.method(AgentWorkerSession, "open", async () => { throw new Error("must not open"); });
 			t.mock.method(AgentWorkerSession, "create", async () => { throw new Error("must not create"); });
 			const notices: string[] = [];
-			const context = { cwd: test.cwd, model: defaultModel, isProjectTrusted: () => true, ui: { custom: async () => { throw new Error("custom UI must stay unopened"); }, notify: (text: string) => notices.push(text) } } as unknown as ExtensionCommandContext;
+			let customCalls = 0;
+			const stderr: string[] = [];
+			t.mock.method(process.stderr, "write", (text: string) => { stderr.push(text); return true; });
+			const context = { cwd: test.cwd, model: defaultModel, isProjectTrusted: () => true, ui: { custom: async () => { customCalls++; }, notify: (text: string) => notices.push(text) } } as unknown as ExtensionCommandContext;
 			for (const mode of ["tui", "rpc", "print", "json"] as const) {
 				await handler("", { ...context, mode, hasUI: mode === "tui" || mode === "rpc" });
-				assert.match(defined(notices.at(-1)), /\/agent manages durable sessions/u);
 			}
-			assert.equal(new Set(notices).size, 1);
+			assert.equal(customCalls, 1);
+			assert.equal(notices.length, 1);
+			assert.match(notices[0], /Agent dashboard/u);
+			assert.equal(stderr.length, 2);
+			assert.ok(stderr.every((text) => text.includes("Agent dashboard")));
 			assert.deepEqual(await test.manager.listSessions(), []);
 		} finally {
 			if (previous === undefined) delete process.env.PI_AGENT_SESSIONS_DIR; else process.env.PI_AGENT_SESSIONS_DIR = previous;

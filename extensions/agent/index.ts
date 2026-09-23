@@ -24,6 +24,7 @@ import { getAgentDir, hasTrustRequiringProjectResources, type ModelRuntime, Proj
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import { createAgentCommand, type AgentSessionSummary } from "./command.ts";
+import { renderSendCall, renderSendResult } from "./presentation.ts";
 import { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
 import { DetachedRuns, formatRun, MAX_SUMMARY_CHARS, type DetachedRunView } from "./detached.ts";
 import { withDetachedControl, type DetachedControlClient } from "./detached-control.ts";
@@ -848,7 +849,7 @@ export class AgentManager {
 		const rows = await Promise.all(
 			all.map(async (metadata): Promise<AgentSessionSummary> => {
 				const worker = this.sessions.get(metadata.id);
-				const status = worker && !this.closing && !this.transfers.has(metadata.id) ? await this.withWorker(metadata.id, (held) => held.status()) : undefined;
+				const status = worker && !this.closing && !this.transfers.has(metadata.id) ? await this.trackControl(metadata.id, () => worker.status()) : undefined;
 				const detached = worker ? undefined : detachedBySession.get(metadata.id);
 				return {
 					sessionId: metadata.id,
@@ -1006,6 +1007,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			"Admit labeled peer data to a session. Idle recipients start a turn; active recipients receive steering. Preflight or settlement can refuse admission. A receipt does not confirm action. Use agent_command for explicit command execution.",
 		promptSnippet: "Send a task to an agent session",
 		parameters: SendParams,
+		renderCall: renderSendCall,
+		renderResult: renderSendResult,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			void ctx;
 			const manager = await getManager();

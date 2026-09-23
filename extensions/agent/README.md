@@ -6,13 +6,15 @@ Pi owns resources, context, model requests, extension events, queues, and
 compaction. The primary session stays available while the agent works. The
 separate `subagent` extension remains independent.
 
-This extension provides runtime tools and a native `/agent` command. It does
-not provide a session browser, conversation editor, workspace, or custom TUI.
+This extension provides runtime tools and a native `/agent` command with a
+read-only session and detached-run dashboard. It does not provide a
+conversation editor or workspace.
 
 ## Start and control sessions
 
-Enter `/agent` for help. Add a space to see actions in Pi's native completion
-menu. For separate work, describe the task directly:
+Enter `/agent` for the dashboard or `/agent help` for actions. Add a space to
+see actions in Pi's native completion menu. For separate work, describe the
+task directly:
 
 ```text
 /agent new Check the error handling
@@ -24,13 +26,33 @@ uses native host notifications. RPC receives these notifications; Pi's
 print/JSON no-UI context discards them. Model-facing tools return their output
 as tool results instead.
 
+### Observe sessions and runs
+
+Bare `/agent` reads the existing session inventory and detached-run records
+without opening sessions or starting work. The interactive dashboard uses a native overlay, independent of editor widgets
+and footer height. It shows active work first, then recent records, with totals
+and explicit omissions.
+Each section displays at most 50 records. Stored sessions have no live owner
+status; detached progress is a recorded observation, not a live status query.
+Empty and unavailable sources appear separately.
+
+Use **Tab** to switch sections, **j/k**, arrow keys, or page keys to change
+pages, **r** to refresh, and **q** or the configured cancel key to close.
+The dashboard does not poll. Use `/agent status <session>` for a live status
+request or `/agent help` for actions.
+
+RPC receives a text snapshot through a native notification. Print/JSON mode
+writes the snapshot to stderr, leaving protocol stdout and model context
+unchanged. This fallback applies to the bare dashboard command; action output
+retains the native notification behavior described above.
+
 ### Discover an action
 
 - `/agent help` lists actions with plain outcome descriptions.
 - `/agent help send` or `/agent send --help` shows that action's syntax and
   guidance. `-h` also requests help. Missing or extra arguments show the relevant
   help before any operation starts.
-- Type part of an action or outcome, such as `/agent stop`, then press Tab to
+- Type part of an action or outcome, such as `/agent stop current`, then press Tab to
   choose **abort** without running it. Arrow keys select another suggestion.
   After native Tab completion closes the menu, type part of the next argument.
 - For a session argument, type part of a known name, directory, or ID. Tab
@@ -45,7 +67,9 @@ appear for **status**, **steer**, **abort**, **compact**, and **command**, which
 contact the owning process.
 Other operations enforce trust and ownership at invocation. Unavailable
 metadata supplies no choices; an explicit command reports the underlying error.
-Prompts and messages remain free text, without placeholder or model-ID suggestions.
+Multiword outcome searches apply before a recognized action. After a recognized
+action, completion retains that action's argument rules. Prompts and messages
+remain free text, without placeholder or model-ID suggestions.
 
 | Action | Result |
 |---|---|
@@ -278,6 +302,14 @@ retains the sender, recipient, message ID, and optional `replyTo` reference.
 An idle recipient starts a turn; an active recipient receives the message
 through its steering queue. A peer report also reaches a primary Pi session.
 
+In the native TUI, a collapsed `agent_send` call shows its target, optional reply
+reference, and a short message preview. The configured tool-expansion key shows
+the submitted multiline message as literal text. Terminal controls appear as
+visible escapes. Expansion displays at most 32,000 UTF-16 code units without
+splitting a surrogate pair; an explicit notice reports any omitted text. The
+full arguments remain in Pi's native tool call. Display bounds never change the
+transmitted message. Results distinguish admission receipts from send errors.
+
 Admission means the message entered the recipient's execution path. It does
 not mean that the recipient replied, understood the message, or acted on it.
 Peer content remains reported data, not operator authority. Ask a collaborating
@@ -385,8 +417,10 @@ opt-in real-provider setup, compaction, and reopen check with configured
 authentication. The normal suite does not establish a live provider run.
 It uses synthetic providers and isolated processes for native session
 boundaries, persistence, ownership, detached controls, and cleanup. Native
-editor tests cover command completion. No custom interface or visual
-acceptance claim belongs to this surface.
+editor tests cover command completion. Component tests cover dashboard paging,
+refresh, disposal, source failures, and send-call expansion. Native TUI changes
+also require an isolated interactive or PTY check for keys, focus, resize, and
+tool expansion; component snapshots alone do not establish those behaviors.
 
 Repository gates are `npm test`, `npm run lint`, `npm run typecheck`, and
 `npm run check`.

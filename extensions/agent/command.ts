@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionCommandContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
-import type { DetachedRunView } from "./detached.ts";
+import { showAgentDashboard, type AgentObservationSources } from "./dashboard.ts";
 
 export interface AgentSessionSummary {
 	sessionId: string;
@@ -27,11 +27,6 @@ export interface AgentCommandAction {
 	args: CommandArgument[];
 	help?: string;
 	run(args: string[], ctx: ExtensionCommandContext): Promise<string | undefined>;
-}
-
-interface CommandSources {
-	sessions(): Promise<AgentSessionSummary[]>;
-	runs(): Promise<DetachedRunView[]>;
 }
 
 function plain(text: string): string {
@@ -70,7 +65,7 @@ function sessionChoice(row: AgentSessionSummary, sessions: AgentSessionSummary[]
 	};
 }
 
-async function metadataChoices(sources: CommandSources, action: AgentCommandAction, completion: CommandArgument["complete"], rest: string, before: string): Promise<SearchChoice[] | null> {
+async function metadataChoices(sources: AgentObservationSources, action: AgentCommandAction, completion: CommandArgument["complete"], rest: string, before: string): Promise<SearchChoice[] | null> {
 	const firstWord = rest.split(/\s+/, 1)[0];
 	const afterId = /\s/.test(rest);
 	const suffix = action.args.length > 1 ? " " : "";
@@ -100,7 +95,7 @@ function argumentHelp(action: AgentCommandAction, args: string[]): string | unde
 }
 
 /** The same actions own execution, argument validation, help, and native completion. */
-export function createAgentCommand(actions: AgentCommandAction[], sources: CommandSources): Omit<RegisteredCommand, "name" | "sourceInfo"> {
+export function createAgentCommand(actions: AgentCommandAction[], sources: AgentObservationSources): Omit<RegisteredCommand, "name" | "sourceInfo"> {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) => `Unknown action "${plain(name).slice(0, 80)}". Use /agent help, or type /agent and a space to choose an action.`;
 	const overview = () => [
@@ -131,12 +126,12 @@ export function createAgentCommand(actions: AgentCommandAction[], sources: Comma
 			const split = /^(\S+)\s+([\s\S]*)$/.exec(text);
 			if (!split) return actionItems(text);
 			const action = find(split[1]);
-			if (!action) return null;
+			if (!action) return actionItems(text);
 			const rest = split[2];
 			const argument = action.args[0];
 			if (!argument?.complete) return null;
 			const before = `${split[1]} `;
-			if (argument.complete === "command") return /\s/.test(rest) ? null : actionItems(rest, before);
+			if (argument.complete === "command") return actionItems(rest, before);
 			try {
 				const choices = await metadataChoices(sources, action, argument.complete, rest, before);
 				if (!choices) return null;
@@ -150,7 +145,8 @@ export function createAgentCommand(actions: AgentCommandAction[], sources: Comma
 			const [name, ...args] = input.trim().split(/\s+/);
 			const notify = (text: string) => ctx.ui.notify(text, "info");
 			try {
-				if (!name || name === "--help" || name === "-h") return notify(overview());
+				if (!name) return await showAgentDashboard(sources, ctx);
+				if (["--help", "-h"].includes(name)) return notify(overview());
 				const action = find(name);
 				if (!action) return notify(unknown(name));
 				const help = argumentHelp(action, args);

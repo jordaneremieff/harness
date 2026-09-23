@@ -68,6 +68,9 @@ describe("agent command discovery and help", () => {
 			["/agent ne", "new", "/agent new "],
 			["/agent stop", "abort", "/agent abort "],
 			["/agent help rew", "rewind", "/agent help rewind"],
+			["/agent stop current", "abort", "/agent abort "],
+			["/agent separate work", "new", "/agent new "],
+			["/agent help stop current", "abort", "/agent help abort"],
 		]) {
 			const result = defined(await suggest(native, input));
 			const selected = result.items.find((item) => item.label === choice);
@@ -80,7 +83,7 @@ describe("agent command discovery and help", () => {
 		const runtime = t.mock.method(ModelRuntime, "create", async () => { throw new Error("runtime must stay unopened"); });
 		const command = registration();
 		const { ctx, notices } = context();
-		for (const input of ["", "help", "--help", "-h"]) {
+		for (const input of ["help", "--help", "-h"]) {
 			await command.handler(input, ctx);
 			const notice = defined(notices.at(-1));
 			assert.match(notice.text, /\/agent manages durable sessions/);
@@ -115,9 +118,18 @@ describe("agent command discovery and help", () => {
 
 	it("leaves prompts, messages, directory arguments and entry IDs as text, not invented choices", async () => {
 		const complete = defined(registration().getArgumentCompletions);
-		for (const text of ["new ", "new check errors", "place ", "unbind ", "unknown ", "help new extra"]) {
+		for (const text of ["new ", "new check errors", "place ", "unbind "])  {
 			assert.equal(await complete(text), null, text);
 		}
+	});
+
+	it("searches multiword descriptions without metadata reads or action execution", async () => {
+		const forbidden = async (): Promise<never> => { throw new Error("must not execute"); };
+		const command = createAgentCommand([{ name: "send", description: "Give a session its next task", args: [{ name: "message", rest: true }], run: forbidden }], { sessions: forbidden, runs: forbidden });
+		const complete = defined(command.getArgumentCompletions);
+		assert.equal(defined(await complete("next task"))[0].value, "send ");
+		assert.equal(await complete("send next task"), null);
+		assert.deepEqual(await complete("zzzzzz unknown"), []);
 	});
 
 	it("preserves text that contains help words and reports invocation errors", async () => {
