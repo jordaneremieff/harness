@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PACKAGE_CATALOG } from "./catalog.ts";
 import registerPolicy from "./index.ts";
-import { RULES_FILE, type RuleEvent, validateRuleEvent } from "./local-rules.ts";
-import { PolicyApprovalPanel } from "./panel.ts";
+import { RULES_FILE, type RuleEvent, RuleRegistry, validateRuleEvent } from "./local-rules.ts";
+import { PolicyApprovalPanel, PolicyPanel } from "./panel.ts";
 import { PolicyProposeParams } from "./tools.ts";
 
 interface RegisteredTool {
@@ -21,6 +22,7 @@ class FakePi {
 		string,
 		{ handler: (args: string, ctx: never) => Promise<void>; getArgumentCompletions?: (prefix: string) => unknown }
 	>();
+	readonly shortcuts = new Map<string, Parameters<ExtensionAPI["registerShortcut"]>[1]>();
 	readonly tools = new Map<string, RegisteredTool>();
 	readonly flags = new Map<string, unknown>();
 	readonly entries: Array<{ customType: string; data: unknown }> = [];
@@ -59,6 +61,14 @@ class FakePi {
 		},
 	): void {
 		this.commands.set(name, command);
+	}
+	registerShortcut(key: string, shortcut: Parameters<ExtensionAPI["registerShortcut"]>[1]): void {
+		this.shortcuts.set(key, shortcut);
+	}
+	shortcut() {
+		const shortcut = this.shortcuts.get("ctrl+alt+p");
+		assert.ok(shortcut, "policy shortcut registered");
+		return shortcut;
 	}
 	command() {
 		const command = this.commands.get("policy");
@@ -234,6 +244,165 @@ describe("registration and lazy catalog use", () => {
 			);
 		}
 	});
+});
+
+describe("panel command and shortcut", () => {
+	it("registers the direct panel shortcut", async () => {
+		const { pi } = await setup();
+		assert.deepEqual([...pi.shortcuts.keys()], ["ctrl+alt+p"]);
+		assert.equal(pi.shortcut().description, "Open the policy panel");
+	});
+
+	for (const mode of ["observe", "notice", "annotate", "enforce"]) {
+		it(`opens with only extension context and leaves existing rules unchanged in ${mode} mode`, async () => {
+			const { dir, pi, ctx, notifications } = await setup(mode);
+			await new RuleRegistry(dir).snapshot();
+			const before = await readFile(join(dir, RULES_FILE), "utf8");
+			const signal = new AbortController().signal;
+			const shortcutContext = { ...ctx, signal, isIdle: () => false } as unknown as ExtensionContext;
+			assert.equal("waitForIdle" in shortcutContext, false);
+			assert.equal("sendUserMessage" in shortcutContext, false);
+			await pi.shortcut().handler(shortcutContext);
+			assert.equal(signal.aborted, false);
+			assert.deepEqual(notifications, []);
+			assert.deepEqual(pi.entries, []);
+			assert.equal(await readFile(join(dir, RULES_FILE), "utf8"), before);
+			assert.deepEqual(await readdir(dir), [RULES_FILE]);
+		});
+	}
+
+	it("retains the panel view, filter, and selection between command and shortcut opens", async () => {
+		const { pi, ctx } = await setup();
+		const frames: string[][] = [];
+		let rules: string[] = [];
+		ctx.ui.custom = async <T,>(
+			factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
+		): Promise<T> => new Promise<T>((resolve) => {
+			const panel = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, {}, resolve);
+			assert.ok(panel instanceof PolicyPanel);
+			if (frames.length === 0) {
+				panel.handleInput("/");
+				panel.handleInput("routing");
+				panel.handleInput("\r");
+				panel.handleInput("\u001b[B");
+				rules = panel.render(120);
+				panel.handleInput("v");
+			}
+			frames.push(panel.render(120));
+			if (frames.length === 2) {
+				panel.handleInput("v");
+				panel.handleInput("v");
+				assert.deepEqual(panel.render(120), rules);
+			}
+			panel.handleInput("\u001b");
+		});
+		await pi.command().handler("", ctx as never);
+		await pi.shortcut().handler(ctx as unknown as ExtensionContext);
+		assert.deepEqual(frames[1], frames[0]);
+	});
+
+	for (const first of ["command", "shortcut"] as const) {
+		it(`excludes overlapping opens while the ${first} loads and displays its panel`, async (t) => {
+			const { pi, ctx } = await setup();
+			let releaseLoad!: () => void;
+			const loading = new Promise<void>((resolve) => { releaseLoad = resolve; });
+			const original = RuleRegistry.prototype.snapshot;
+			let reads = 0;
+			const snapshot = mock.method(RuleRegistry.prototype, "snapshot", async function (this: RuleRegistry) {
+				reads++;
+				await loading;
+				return original.call(this);
+			});
+			t.after(() => snapshot.mock.restore());
+			let opened!: () => void;
+			const ready = new Promise<void>((resolve) => { opened = resolve; });
+			let close!: () => void;
+			let panels = 0;
+			ctx.ui.custom = async <T,>(
+				factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
+			): Promise<T> => new Promise<T>((resolve) => {
+				const panel = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, {}, resolve);
+				assert.ok(panel instanceof PolicyPanel);
+				panels++;
+				close = () => panel.handleInput("\u001b");
+				opened();
+				if (panels > 1) close();
+			});
+			const command = () => pi.command().handler("", ctx as never);
+			const shortcut = () => pi.shortcut().handler(ctx as unknown as ExtensionContext);
+			const pending = first === "command" ? command() : shortcut();
+			await command();
+			await shortcut();
+			assert.equal(reads, 1);
+			assert.equal(panels, 0);
+			releaseLoad();
+			await ready;
+			await command();
+			await shortcut();
+			assert.equal(reads, 1);
+			assert.equal(panels, 1);
+			close();
+			await pending;
+			await shortcut();
+			assert.equal(reads, 2);
+			assert.equal(panels, 2);
+		});
+	}
+
+	it("reports load and UI failures and releases the opener after each failure", async (t) => {
+		const { pi, ctx, notifications } = await setup();
+		const original = RuleRegistry.prototype.snapshot;
+		let reads = 0;
+		const snapshot = mock.method(RuleRegistry.prototype, "snapshot", async function (this: RuleRegistry) {
+			if (++reads === 1) throw new Error("snapshot unavailable");
+			return original.call(this);
+		});
+		t.after(() => snapshot.mock.restore());
+		await pi.shortcut().handler(ctx as unknown as ExtensionContext);
+		assert.deepEqual(notifications.at(-1), {
+			message: "Policy registry action failed: snapshot unavailable", type: "error",
+		});
+		const custom = ctx.ui.custom;
+		ctx.ui.custom = async () => { throw new Error("panel unavailable"); };
+		await pi.command().handler("", ctx as never);
+		assert.deepEqual(notifications.at(-1), {
+			message: "Policy registry action failed: panel unavailable", type: "error",
+		});
+		ctx.ui.custom = custom;
+		await pi.shortcut().handler(ctx as unknown as ExtensionContext);
+		assert.equal(reads, 3);
+		assert.equal(notifications.length, 2);
+	});
+
+	it("rejects invalid mode configuration through both entrypoints before store access", async (t) => {
+		const { dir, pi, ctx, notifications } = await setup("invalid");
+		const warn = mock.method(console, "warn", () => {});
+		t.after(() => warn.mock.restore());
+		await pi.shortcut().handler(ctx as unknown as ExtensionContext);
+		await pi.command().handler("", ctx as never);
+		assert.equal(warn.mock.callCount(), 1);
+		assert.equal(notifications.length, 2);
+		assert.ok(notifications.every(({ message, type }) => /mode configuration is invalid/.test(message) && type === "error"));
+		await assert.rejects(stat(dir), /ENOENT/);
+	});
+
+	for (const [mode, hasUI] of [["rpc", true], ["json", false], ["print", false], ["tui", false]] as const) {
+		it(`keeps the panel out of ${mode} mode with hasUI=${hasUI}`, async (t) => {
+			const { dir, pi, notifications } = await setup();
+			const ctx = context(notifications, { mode, hasUI });
+			ctx.ui.custom = async () => assert.fail("No custom UI outside a usable TUI");
+			const errors: string[] = [];
+			const stderr = mock.method(process.stderr, "write", (value: string) => { errors.push(value); return true; });
+			t.after(() => stderr.mock.restore());
+			await pi.command().handler("", ctx as never);
+			await pi.shortcut().handler(ctx as unknown as ExtensionContext);
+			const messages = hasUI ? notifications.map(({ message }) => message)
+				: mode === "json" ? pi.entries.map(({ data }) => (data as { text: string }).text) : errors;
+			assert.equal(messages.length, 2);
+			assert.ok(messages.every((text) => /requires TUI mode.*\/policy list/.test(text)));
+			await assert.rejects(stat(dir), /ENOENT/);
+		});
+	}
 });
 
 describe("telemetry operator command", () => {
@@ -624,7 +793,7 @@ describe("unified tools and command gates", () => {
 		assert.ok(completions("enable routing.").includes("enable routing.cat-read"));
 	});
 
-	it("approves disable through the panel with panel audit and preserves an effect override", async () => {
+	it("approves disable through the shortcut panel with panel audit and preserves an effect override", async () => {
 		const { dir, pi, ctx } = await setup();
 		await pi.command().handler("effect routing.cat-read steer panel composition setup", ctx as never);
 		const proposed = await callTool(
@@ -681,7 +850,7 @@ describe("unified tools and command gates", () => {
 				},
 			},
 		};
-		await pi.command().handler("", panelCtx as never);
+		await pi.shortcut().handler(panelCtx as unknown as ExtensionContext);
 		const events = await storedEvents(dir);
 		const panelDecision = events.find((event) => event.kind === "decision" && event.proposalId === proposalId);
 		assert.equal(panelDecision?.kind, "decision");

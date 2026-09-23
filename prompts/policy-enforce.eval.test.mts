@@ -47,6 +47,7 @@ function createPolicyHarness(extensionFlags: Record<string, boolean | string> | 
 		},
 		registerTool() {},
 		registerCommand() {},
+		registerShortcut() {},
 		getAllTools: () => [
 			{
 				name: "bash",

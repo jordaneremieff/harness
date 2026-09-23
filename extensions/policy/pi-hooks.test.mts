@@ -98,6 +98,7 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 		else process.env.PI_POLICY_DIR = previous;
 	}
 	assert.deepEqual(loaded.errors, []);
+	assert.equal(loaded.extensions[0]?.shortcuts.get("ctrl+alt+p")?.description, "Open the policy panel");
 	if (later) {
 		const loader = await import(pathToFileURL(join(piRoot, "dist/core/extensions/loader.js")).href);
 		loaded.extensions.push(

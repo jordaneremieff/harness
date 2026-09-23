@@ -61,6 +61,7 @@ function harness(mode: "enforce" | "observe") {
 		},
 		registerFlag() {},
 		registerCommand() {},
+		registerShortcut() {},
 		getFlag: () => mode,
 		getAllTools: () => [...tools.values()].map(({ name, parameters }) => ({ name, parameters })),
 		getActiveTools: () => active,

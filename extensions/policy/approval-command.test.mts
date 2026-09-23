@@ -29,6 +29,7 @@ async function setup(t: TestContext, mode: "tui" | "json" = "tui") {
 		registerFlag() {},
 		getFlag: () => "observe",
 		registerTool() {},
+		registerShortcut() {},
 		on() {},
 		registerCommand(name: string, command: Command) {
 			commands.set(name, command);

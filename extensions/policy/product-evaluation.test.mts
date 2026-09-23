@@ -73,6 +73,7 @@ function harness(mode: PolicyMode) {
 				tools.set(tool.name, tool);
 			},
 			registerFlag() {},
+			registerShortcut() {},
 			registerCommand(name: string, command: Command) {
 				commands.set(name, command);
 			},

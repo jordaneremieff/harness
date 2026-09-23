@@ -175,14 +175,13 @@ function completionChoicesForPosition(
 }
 
 interface PolicyCommandEnv {
-	output: (ctx: ExtensionCommandContext, text: string, error?: boolean) => void;
+	output: (ctx: ExtensionContext, text: string, error?: boolean) => void;
 	loadRegistry: (ctx?: ExtensionContext) => Promise<RuleSnapshot>;
 	registry: RuleRegistry;
 	runtime: PolicyRuntime;
 	dir: string;
 	modeText: () => { mode: PolicyMode; source: string };
-	reviewArtifact: (ctx: ExtensionCommandContext, title: string, artifact: string) => Promise<boolean>;
-	openPanel: (ctx: ExtensionCommandContext) => Promise<void>;
+	reviewArtifact: (ctx: ExtensionContext, title: string, artifact: string) => Promise<boolean>;
 }
 
 type PolicyVerbHandler = (
@@ -551,7 +550,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 	registerRuleTools(pi, { registry, loadRegistry, inspect: (view, params, ctx) => runtime.inspect(view, params, ctx) });
 	runtime.attach();
 	let panelState: PolicyPanelResult = { view: "rules", filter: "" };
-	const output = (ctx: ExtensionCommandContext, text: string, error = false): void => {
+	const output = (ctx: ExtensionContext, text: string, error = false): void => {
 		const safe = capText(terminalSafe(text), 32768);
 		if (ctx.hasUI) {
 			ctx.ui.notify(safe, error ? "error" : "info");
@@ -563,7 +562,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		}
 		(error ? process.stderr : process.stdout).write(`${safe}\n`);
 	};
-	const reviewArtifact = (ctx: ExtensionCommandContext, title: string, artifact: string): Promise<boolean> =>
+	const reviewArtifact = (ctx: ExtensionContext, title: string, artifact: string): Promise<boolean> =>
 		ctx.mode === "tui" && ctx.hasUI
 			? ctx.ui.custom<boolean>(
 					(tui, _theme, _keys, done) =>
@@ -577,7 +576,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 					{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
 				)
 			: Promise.resolve(false);
-	const openPanel = async (ctx: ExtensionCommandContext): Promise<void> => {
+	const showPanel = async (ctx: ExtensionContext): Promise<void> => {
 		const [snapshot, fireSummary, activity] = await Promise.all([
 			loadRegistry(ctx),
 			readFireSummary(dir),
@@ -629,6 +628,25 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 			},
 		);
 	};
+	let panelOpen = false;
+	const openPanel = async (ctx: ExtensionContext): Promise<void> => {
+		if (panelOpen) return;
+		panelOpen = true;
+		try {
+			if (!ensureMode()) return output(ctx, "Policy is stopped because its mode configuration is invalid.", true);
+			if (ctx.mode !== "tui" || !ctx.hasUI)
+				return output(ctx, "The policy panel requires TUI mode. Run: /policy list", true);
+			await showPanel(ctx);
+		} catch (error) {
+			output(ctx, `Policy registry action failed: ${failureText(error)}`, true);
+		} finally {
+			panelOpen = false;
+		}
+	};
+	pi.registerShortcut("ctrl+alt+p", {
+		description: "Open the policy panel",
+		handler: openPanel,
+	});
 	const commandEnv: PolicyCommandEnv = {
 		output,
 		loadRegistry,
@@ -637,7 +655,6 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		dir,
 		modeText: () => ({ mode, source: modeSource }),
 		reviewArtifact,
-		openPanel,
 	};
 	const POLICY_VERB_HANDLERS: Readonly<Record<string, PolicyVerbHandler>> = {
 		help: policyHelpVerb,
@@ -676,16 +693,13 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 			return choices.filter((v) => v.startsWith(partial)).map(complete);
 		},
 		async handler(args, ctx) {
+			if (!args.trim()) return openPanel(ctx);
 			if (!ensureMode()) return output(ctx, "Policy is stopped because its mode configuration is invalid.", true);
 			try {
 				const trimmed = args.trim();
 				const [verb = "", ...parts] = trimmed.split(/\s+/);
 				if (verb === "telemetry") return await policyTelemetryVerb(commandEnv, ctx, parts);
 				const snapshot = await loadRegistry(ctx);
-				if (!trimmed) {
-					if (ctx.mode !== "tui") return output(ctx, "The policy panel requires TUI mode. Run: /policy list", true);
-					return await openPanel(ctx);
-				}
 				const run = POLICY_VERB_HANDLERS[verb];
 				if (run) return await run(commandEnv, ctx, verb, parts, trimmed, snapshot);
 				return output(ctx, `Unknown /policy action "${verb}". Use /policy help.`, true);

@@ -718,6 +718,13 @@ partial import. There is no automatic reimport, external catalog-file loader,
 or update daemon. Large imports require smaller explicit selections rather than
 truncated approval artifacts.
 
+Press `ctrl+alt+p` in the TUI editor to open the same panel as `/policy` without
+submitting or replacing the editor draft. The panel retains its view, filter,
+and selection across closes. Repeated command or shortcut requests do not open
+another panel while the current request loads or remains open. Opening the panel
+makes no approval or rule edit; the normal first-use catalog initialization still
+applies when no registry exists.
+
 The panel shares rule/proposal details and operator gates with the command. It
 shows exact actions and revisions, presents complete approval artifacts, and
 provides command hints for disable/enable, effect, retire, reset, explain, and
