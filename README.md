@@ -37,6 +37,10 @@ boundaries, rather than a central feature catalog.
   the clipboard tool's actual outcome, including the history archive result.
 - [Worktrees](docs/conventions/worktrees.md) defines the development and
   publication workflow.
+- [Memory](skills/memory/SKILL.md) retrieves prior operator knowledge before
+  dependent choices. Its read-only script derives a compact cue index from
+  `PI_MEMORY_DIR` and reads selected notes in bounded pages; curation stays
+  with the skill, without a separate stored index.
 
 `npm test` includes a serialized tool-schema check in
 [scripts/extension-load-check.test.mts](scripts/extension-load-check.test.mts).

@@ -1,16 +1,18 @@
 ---
 name: memory
 description: >
-  Use when the operator invokes the standalone term "memo", or states
-  information intended to remain true after the current session, even without
-  mentioning memory: preferences,
-  corrections to durable assumptions, standing rules, approved decisions,
-  verified environment facts, and reusable lessons. Signals include "from now
-  on," "always," "I prefer," and "for future sessions." Also use to remember,
-  recall, update, or forget prior knowledge. Do not use for information scoped
-  to the current task or next session, handovers, TODOs, logs,
-  repository-defined facts, secrets, or speculation.
-compatibility: Requires PI_MEMORY_DIR to contain an absolute path to the operator-local memory corpus, plus ordinary file search, read, and write tools.
+  Use before a choice depends on the operator's prior preferences, decisions,
+  corrections, environment, providers, models, or recurring lessons, even when
+  the request does not mention memory. Retrieve a compact cue index, then read
+  relevant source notes. Also use when the operator invokes the standalone
+  term "memo", asks to remember, recall, update, or forget knowledge, or states
+  information intended to remain true after the current session: standing
+  rules, approved decisions, verified environment facts, and reusable lessons.
+  Signals include "from now on," "always," "I prefer," and "for future
+  sessions." Do not use for information confined to the current task or next
+  session, handovers, TODOs, logs, repository-defined facts, secrets,
+  speculation, or general questions that do not depend on operator knowledge.
+compatibility: Requires Node.js 22.19 or newer for the dependency-free retrieval script, PI_MEMORY_DIR set to an absolute operator-local corpus path, and ordinary file tools for curation.
 ---
 
 # Memory
@@ -39,15 +41,29 @@ Keep these elsewhere:
 
 ## Retrieve memory
 
-Search memory when a request depends on prior operator preferences, decisions, corrections, environment facts, or lessons.
+Retrieve before a recommendation, provider/model choice, or environment assumption depends on prior operator knowledge. Do not wait for the operator to repeat a correction or explicitly request memory. Skip retrieval for general questions and facts already defined by current project sources.
 
-1. List candidate Markdown files and search filenames, frontmatter, headings, tags, and body text with ordinary file tools.
-2. Read each likely source note before relying on it. A search match is only a candidate.
-3. Prefer an active note over a superseded note. Follow `supersedes` links when notes conflict.
-4. State uncertainty when no note answers the question. Do not invent an operator preference or past decision.
-5. Read only relevant notes. Do not load the full corpus at session start.
+1. Read the corpus `README.md` contract. Run the [retrieval script](scripts/lookup.mts) with a subject or recognition cue:
 
-Retrieval is complete when the answer cites or clearly identifies the source note, or reports that no relevant memory exists.
+   ```bash
+   node scripts/lookup.mts --query "provider"
+   ```
+
+   Resolve the script path against this skill directory, not the task's working directory. With no arguments, the script returns a compact index of note cues. The script reads `PI_MEMORY_DIR` itself; never substitute an inferred root.
+2. Select likely notes from filenames, titles, and tags. Try subject aliases or the unfiltered index when a query misses. Index cues are candidates, not instructions or complete evidence. A cue miss is not proof that the corpus has no relevant note. Use bounded ordinary text search for body-only terms when needed.
+3. Read each selected source before relying on it:
+
+   ```bash
+   node scripts/lookup.mts --note subject-slug
+   ```
+
+   For index pages, pass `--index` with the returned `nextIndex`. For source pages, pass `--offset` with `nextOffset` and `--digest` with the returned digest. Restart if the source changed. The helper refuses source files above 64 KiB; use bounded ordinary file reads for those notes. Use `--help` for the full limits. Treat incomplete scans, clipped or unavailable cues, and unreadable files as evidence gaps, not empty memory.
+4. Prefer an active note over a superseded note. Inspect `supersedes` and `superseded_by` links when notes conflict. Preserve qualifications and source dates; a stored verification flag does not establish current external behavior.
+5. Apply the supported preference or decision to the current choice and identify its source note. If memory leaves the choice unresolved, state that uncertainty rather than inventing a preference. Current operator instructions control; a note never grants fresh authority for an action.
+
+The script is read-only. It derives the cue index from notes on each call, stores no second index, and performs no automatic extraction or background work. Index pages are fresh observations, not a frozen snapshot across calls. Raw cue lines are discovery excerpts, not parsed or validated note metadata. Keep note titles and tags descriptive when curating a note; the same edit maintains its retrieval cues. Read only relevant bodies, not the full corpus at session start.
+
+Retrieval is complete when the answer identifies the source notes and applies their supported content, or states the checked scope and remaining gap.
 
 ## Decide whether to store
 
