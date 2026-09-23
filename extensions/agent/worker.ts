@@ -5,11 +5,12 @@ import type { Context, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getCurrentSystemMessage, type ImageContent } from "@earendil-works/pi-ai";
 import {
 	createAgentSessionServices, createAgentSessionFromServices, createAgentSessionRuntime,
-	getAgentDir, hasTrustRequiringProjectResources, ModelRegistry, SessionManager, SettingsManager,
+	createEventBus, getAgentDir, hasTrustRequiringProjectResources, ModelRegistry, SessionManager, SettingsManager,
 	type AgentSession, type AgentSessionEvent, type AgentSessionRuntime, type CreateAgentSessionRuntimeFactory,
 	type LoadExtensionsResult, type ModelRuntime, type ProjectTrustStore, type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
+import { NestedStatus, OwnedSpend, type AgentFooterState } from "./footer.ts";
 import type { AgentSessionMetadata, AgentStore, StoredAgentSession } from "./store.ts";
 
 export const META_CUSTOM_TYPE = "agent.meta";
@@ -30,6 +31,7 @@ export interface WorkerCreateOptions {
 	onUpdate?: (update: WorkerUpdate) => void;
 }
 export type WorkerUpdate =
+	| { kind: "status" }
 	| { kind: "replaced"; previousId: string; sessionId: string }
 	| { kind: "entry"; entry: SessionEntry }
 	| { kind: "error"; message: string }
@@ -179,6 +181,14 @@ export class AgentWorkerSession {
 	private readonly toolsRunning = new Map<string, string>();
 	private lastText: string | undefined;
 	private readonly options: WorkerCreateOptions;
+	private readonly spend = new OwnedSpend();
+	private readonly nested = new NestedStatus();
+	private eventBus = createEventBus();
+	footerState(): AgentFooterState {
+		const active = !this.terminal && Boolean(this.operation || this.tasks.size || this.controlTask || this.preflight || this.nativePreflights || (this.runtime && (!this.runtime.session.isIdle || this.runtime.session.isBashRunning || this.runtime.session.pendingMessageCount)));
+		return { active, spend: { ...this.spend.total }, nested: this.nested.snapshot() };
+	}
+	private publishFooter(): void { this.spend.sync(); this.notify({ kind: "status" }); }
 	private constructor(options: WorkerCreateOptions) { this.options = options; }
 	private get session(): AgentSession {
 		if (this.terminal || this.replacementFailed || this.stopping) throw new Error("agent session host is closed");
@@ -240,6 +250,9 @@ export class AgentWorkerSession {
 	}
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
 		await this.adoptReplacement(sessionManager);
+		this.spend.bind(sessionManager);
+		this.eventBus = createEventBus();
+		this.nested.bind(this.eventBus, this.sessionId(), () => this.publishFooter());
 		const stored = sessionManager.getBranch().findLast((entry) => entry.type === "custom" && entry.customType === META_CUSTOM_TYPE);
 		const metadata = stored?.type === "custom" ? stored.data as { extensionPaths?: string[]; skillPaths?: string[] } | undefined : undefined;
 		const settings = SettingsManager.create(cwd, this.agentDir, { projectTrusted: false });
@@ -247,7 +260,7 @@ export class AgentWorkerSession {
 		inheritProviders(modelRuntime, new ModelRegistry(this.options.modelRuntime), (this.lastChoice ?? this.options.model)?.provider);
 		const services = await createAgentSessionServices({
 			cwd, agentDir: this.agentDir, settingsManager: settings, modelRuntime,
-			resourceLoaderOptions: { additionalExtensionPaths: this.options.extensionPaths ?? metadata?.extensionPaths ?? [], additionalSkillPaths: this.options.skillPaths ?? metadata?.skillPaths ?? [] },
+			resourceLoaderOptions: { eventBus: this.eventBus, additionalExtensionPaths: this.options.extensionPaths ?? metadata?.extensionPaths ?? [], additionalSkillPaths: this.options.skillPaths ?? metadata?.skillPaths ?? [] },
 			resourceLoaderReloadOptions: { resolveProjectTrust: async ({ extensionsResult }) => this.resolveTrust(cwd, extensionsResult, settings) },
 		});
 		const errors = [...services.diagnostics.filter((item) => item.type === "error").map((item) => item.message), ...services.resourceLoader.getExtensions().errors.map((item) => `${item.path}: ${item.error}`)];
@@ -339,6 +352,8 @@ export class AgentWorkerSession {
 			onError: (error) => this.reportError(`${error.event}: ${error.error}`),
 			shutdownHandler: () => { void this.close().catch((error) => this.reportError(String(error))); },
 		});
+		this.nested.request(this.eventBus);
+		this.publishFooter();
 	}
 	/** Native user sends enter prompt; custom sends have their own admission path. */
 	private trackNativePrompts(session: AgentSession): void {
@@ -421,6 +436,7 @@ export class AgentWorkerSession {
 		this.operation = id; this.lastError = undefined; this.operationAborted = false; this.lastText = undefined;
 		this.operationStart = this.sessionManager().getEntries().length;
 		this.sessionManager().appendCustomEntry(START_TYPE, { operationId: id });
+		this.publishFooter();
 		return id;
 	}
 	private finish(): void {
@@ -442,13 +458,15 @@ export class AgentWorkerSession {
 		if (event.type === "message_update" && event.message.role === "assistant") this.lastText = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("");
 		if (event.type === "entry_appended") this.notify({ kind: "entry", entry: event.entry });
 		if (event.type === "agent_settled" && !this.ownedRun) this.finish();
+		if (event.type !== "message_update") this.publishFooter();
 		for (const observer of this.observers) {
 			try { observer(event); } catch (error) { this.lastError = `Host observer failed: ${String(error)}`; }
 		}
 	}
 	private track<T>(task: Promise<T>): Promise<T> {
 		this.tasks.add(task);
-		void task.finally(() => this.tasks.delete(task)).catch(() => undefined);
+		void task.finally(() => { this.tasks.delete(task); this.publishFooter(); }).catch(() => undefined);
+		this.publishFooter();
 		return task;
 	}
 	async start(prompt: string, images?: ImageContent[]): Promise<string | undefined> {
@@ -511,7 +529,7 @@ export class AgentWorkerSession {
 		return this.track(task.finally(() => { if (this.controlTask === task) this.controlTask = undefined; }));
 	}
 	async compact(instructions?: string) { return this.control(() => this.session.compact(instructions)); }
-	async reload(): Promise<void> { await this.control(() => this.session.reload()); }
+	async reload(): Promise<void> { await this.control(() => this.session.reload()); this.nested.request(this.eventBus); }
 	async appendCustomEntry(type: string, data: unknown): Promise<void> { this.sessionManager().appendCustomEntry(type, data); }
 	async setSessionName(name: string | undefined): Promise<void> { this.session.setSessionName(name ?? ""); }
 	async setModelAction(provider: string, modelId: string): Promise<boolean> {
@@ -575,11 +593,13 @@ export class AgentWorkerSession {
 			await attempt(() => { session.dispose(); this.invalidated = true; disposed = true; });
 			await attempt(async () => { await this.drainNative(session); cleanupComplete = disposed; });
 		}
-		this.unsubscribe?.(); this.observers.clear();
+		this.spend.sync();
+		this.unsubscribe?.(); this.observers.clear(); this.nested.close();
 		if (!cleanupComplete) throw new AggregateError(errors, "agent host cleanup incomplete; writer claims retained");
 		await attempt(() => this.reserved?.close());
 		await attempt(() => this.held?.close());
 		this.terminal = true;
+		this.publishFooter();
 		await attempt(() => this.options.onSessionClosed?.(this.sessionId()));
 		if (errors.length) throw new AggregateError(errors, "agent host cleanup failed");
 	}

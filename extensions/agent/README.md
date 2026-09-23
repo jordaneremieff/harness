@@ -46,6 +46,45 @@ writes the snapshot to stderr, leaving protocol stdout and model context
 unchanged. This fallback applies to the bare dashboard command; action output
 retains the native notification behavior described above.
 
+### Footer activity and price
+
+The `agent` status key reports `agents: 2 active · $0.37 local`. The scope is
+this process's manager for the configured agent store, not the current parent's
+children. Multiple primary sessions see the same totals. Each ordinary host
+counts once, including ordinary agents created by other agents or subagents.
+Active means pending host work through final settlement, including commands,
+compaction, and queued input. Idle hosts do not count as active.
+
+The price is reported native usage observed after ownership begins. It includes
+assistant responses, reported tool usage, compaction, branch summaries, and
+cache warming. It excludes inherited history on attach, fork, or replacement.
+Reload and replacement of a worker retain already observed spend; idle or closed
+hosts retain their observed spend until the manager closes. Primary shutdown or
+reload closes that manager and clears the status. These are local observation
+intervals, not session-lifetime totals or provider invoices. Missing or malformed
+usage adds `+?` to the known price rather than becoming zero.
+
+`subs 1/$0.12` reports those ordinary hosts' subagent subtrees separately. The
+package's [snapshot contract](../../docs/conventions/status-keys.md#nested-work-snapshots)
+follows only subagent ownership edges. It excludes ordinary hosts and their own
+subagent roots from each subagent subtree. The primary's separate `subagents`
+cell does not overlap these subtrees. An absent or stopped publisher produces
+`+?`, not a claim of zero nested work. Subagent prices use an initial observation
+baseline, so retained historical worker spend is not charged again on attach.
+
+Detached work does not enter local active counts or prices. A separate
+`detached N recorded/$?` suffix counts launching/running records; `M lost`
+counts abandoned records. These are recorded states, not live activity queries.
+Detached spend remains unavailable, including after a run finishes. Existing
+run-directory notifications and explicit run queries refresh this projection;
+there is no extra poller or telemetry store. A failed directory observation
+leaves uncertainty explicit.
+
+The publisher sends short status text through Pi's UI API. Headless worker
+status calls remain no-ops; numeric snapshots use the session's event bus.
+The statusline remains a generic consumer. A narrow terminal still applies the
+footer's normal whole-cell truncation rules.
+
 ### Discover an action
 
 - `/agent help` lists actions with plain outcome descriptions.
