@@ -362,7 +362,35 @@ Every event phase obeys this matrix. Downstream live predicates use actual input
 and result state, never a suppressed hypothetical correction. Preview is a
 separately labeled simulation.
 
-Projected guidance shares a 2048-byte UTF-8 bound, including its `[policy]`
+### Shell guidance before command selection
+
+In annotate/enforce mode, the first eligible `before_agent_start` supplies one
+hidden custom message with a shell-contract snapshot. Bash must be active, the
+public tool catalog must be available, and rule authority must be healthy. A
+`tool_call` trigger occurs after the model selects its command, so it cannot
+teach that first selection without another call.
+
+[shell-card.ts](shell-card.ts) derives every command note and suggested form
+from the current stored definitions, not a hardcoded copy of bundled defaults.
+It selects active, available, in-scope command predicates and command-shape
+rules with known true applicability. Identical notes appear once. Whole notes
+and coverage counts share a 4096-byte UTF-8 bound. Disabled and retired rules
+contribute nothing. Arbitrary facts programs are not translated into prose;
+`policy_rules` remains the complete current-definition surface.
+
+The message supplies preparation guidance, not a denial response or permission
+to execute. It does not evaluate a candidate command, change rule state, force
+a turn, or replace other instructions. Observe/notice mode and degraded
+authority produce no model message. An in-memory latch limits delivery attempts
+to one per session load. Reload, new session, resume, and fork reset it;
+ordinary prompts, tree navigation, rule resets, and compaction do not.
+The host retains and compacts the message normally. Later rule changes still
+control execution; the earlier message remains a labeled snapshot, not live
+rule authority. Injection does not establish provider receipt or compliance.
+
+### Matched-rule and recovery guidance
+
+Matched-rule and recovery guidance share a 2048-byte UTF-8 bound, including the `[policy]`
 prefix. Text is deduplicated and terminal-safe. Only guidance actually selected
 for projection consumes its once/cooldown allowance. Current command rules guide
 at most once per observation period and only after a successful result.
@@ -623,6 +651,7 @@ telemetry; it is not a promise that the complete invocation performs no writes.
 /policy effect <selectable-rule-id> <steer|block> <reason...>
 /policy retire <rule-id> <reason...>
 /policy mode
+/policy telemetry <from YYYY-MM-DD> <to YYYY-MM-DD>
 /policy capabilities
 /policy state
 /policy health
@@ -644,6 +673,30 @@ historical records. `--all` is distinct from every valid rule id. Command comple
 includes `reset --all`, data actions, stored data names, and the current revision
 for removal. Completion supplies syntax, not approval; the command still validates
 authority and the current revision.
+
+### Date-bounded telemetry
+
+Use `/policy telemetry 2026-09-01 2026-09-07` to read an inclusive date range.
+The dates name the writer's local-calendar day files, not UTC timestamp filters.
+The command reports retained tool volume, error classes, confirmed denials and
+rule attribution, text-output bytes, truncation, and coverage gaps in plain text.
+It reads existing files only. It neither seeds a missing rule registry nor
+creates telemetry files, aggregate stores, background work, or retention changes.
+
+[telemetry.ts](telemetry.ts) defines date, byte, line, metadata, group, and output
+limits. Reads proceed oldest first. Every missing, unreadable, changed, or
+partially read day stays visible. Counts describe accepted records within those
+bounds, not all live activity or lost writes. Error classes are the recorded
+text inference, not proof of the error's cause. Denial attribution uses recorded
+input decisions, not matched rule names. A call with several denying rules
+contributes to each rule, so those rule totals are not distinct-call totals.
+
+Worker outcomes are unavailable because policy does not record them. Tool
+success does not prove worker success. The report reads no sibling store or
+private worker protocol. It shows no captured commands, raw malformed lines,
+session identifiers, cwd paths, or model identities. TUI/RPC use the existing
+command notification path; JSON uses non-context custom entries; print mode
+uses textual output. The report does not request a model response.
 
 ### Explicit catalog import
 

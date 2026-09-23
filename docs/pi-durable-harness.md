@@ -6,6 +6,27 @@ contracts preserve its capabilities. An exported kernel does not by itself
 replace ordinary extension loading, project trust, resource discovery, or
 submitted-result retrieval.
 
+## Policy pre-call guidance boundary
+
+Verified 2026-09-23. The active installation and policy worktree still resolve
+coding-agent 0.87.0. Its `before_agent_start` handler returns a custom message
+before command selection: installed `dist/core/extensions/runner.js`
+`emitBeforeAgentStart()` awaits handlers and collects messages;
+`dist/core/agent-session.js` appends them before `_runAgentPrompt()`.
+The public contract is `BeforeAgentStartEventResult.message` in
+`dist/core/extensions/types.d.ts` and installed `docs/extensions.md`.
+Policy uses that ordinary hook for its bounded shell-contract snapshot rather
+than a tool-call interception that occurs after the model selects a command.
+The policy hook tests exercise the real runner, custom-message conversion, and
+first controlled model request. They do not establish model compliance.
+
+The same date's metadata checks resolve npm coding-agent `latest` to 0.87.1,
+[release v0.87.1](https://github.com/earendil-works/pi/releases/tag/v0.87.1),
+and upstream main to `898ab804050730e9dcefb4443875d5a932aa6a32`.
+Those metadata checks do not establish changed host contracts or upgrade the
+installation. The wider program review below retains its explicit source
+snapshot; it does not describe the newly observed upstream revisions.
+
 ## Checked source boundary
 
 Verified 2026-09-22. The active installation, npm `latest`, and checkout

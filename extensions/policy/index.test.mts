@@ -236,6 +236,39 @@ describe("registration and lazy catalog use", () => {
 	});
 });
 
+describe("telemetry operator command", () => {
+	it("reports an explicit date range without creating a rule or telemetry store", async () => {
+		const { dir, pi, ctx, notifications } = await setup();
+		await pi.command().handler("telemetry 2026-02-01 2026-02-02", ctx as never);
+		assert.match(notifications.at(-1)?.message ?? "", /2026-02-01 through 2026-02-02/);
+		assert.match(notifications.at(-1)?.message ?? "", /unavailable/);
+		await assert.rejects(stat(dir), /ENOENT/);
+		assert.deepEqual(pi.completions()("tele"), [{ value: "telemetry", label: "telemetry" }]);
+	});
+
+	it("rejects missing, invalid, reversed, and overlong ranges", async () => {
+		const { dir, pi, ctx, notifications } = await setup();
+		for (const args of ["telemetry", "telemetry 2026-02-30 2026-03-01", "telemetry 2026-03-01 2026-02-01", "telemetry 2026-01-01 2026-03-01"]) {
+			await pi.command().handler(args, ctx as never);
+			assert.equal(notifications.at(-1)?.type, "error");
+		}
+		await assert.rejects(stat(dir), /ENOENT/);
+	});
+
+	it("uses protocol notifications in RPC and non-context entries in JSON mode", async () => {
+		const { pi, notifications } = await setup();
+		await pi.command().handler("telemetry 2026-02-01 2026-02-01",
+			context(notifications, { mode: "rpc", hasUI: true }) as never);
+		assert.match(notifications.at(-1)?.message ?? "", /Policy telemetry/);
+		await pi.command().handler("telemetry 2026-02-01 2026-02-01",
+			context(notifications, { mode: "json", hasUI: false }) as never);
+		const entry = pi.entries.at(-1);
+		assert.ok(entry);
+		assert.equal(entry.customType, "policy_command");
+		assert.match((entry.data as { text: string }).text, /Policy telemetry/);
+	});
+});
+
 describe("unified tools and command gates", () => {
 	it("validates command previews with the same bounded inspection contract as the tool", async () => {
 		const { dir, pi, ctx, notifications } = await setup("enforce");

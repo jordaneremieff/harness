@@ -29,6 +29,7 @@ import {
 import { effectiveState, permitsEffectChoice, type RuleRecord } from "./rule.ts";
 import { PolicyRuntime } from "./runtime.ts";
 import { resolvePolicyDir } from "./store.ts";
+import { formatTelemetry, readTelemetry } from "./telemetry.ts";
 import {
 	formatCatalog,
 	policyDataCommand,
@@ -60,6 +61,7 @@ const POLICY_USAGE = [
 	"  /policy reset <id|--all> <reason...>          Start a new observation period",
 	"  /policy data list|show <name>|set <JSON>|remove <name> <revision>",
 	"  /policy data set-file <JSON>                 Review and import one complete local data file",
+	"  /policy telemetry <from> <to>                Summarize local day files (YYYY-MM-DD, inclusive)",
 	"  /policy mode                                Report the session mode",
 	"  /policy help                                Show this usage",
 ].join("\n");
@@ -82,6 +84,7 @@ const VERBS = [
 	"reset",
 	"data",
 	"mode",
+	"telemetry",
 	"help",
 ];
 const MODE_EFFECT: Readonly<Record<PolicyMode, string>> = {
@@ -190,6 +193,14 @@ type PolicyVerbHandler = (
 	trimmed: string,
 	snapshot: RuleSnapshot,
 ) => void | Promise<void>;
+
+async function policyTelemetryVerb(env: PolicyCommandEnv, ctx: ExtensionCommandContext, parts: string[]): Promise<void> {
+	if (parts.length !== 2) {
+		env.output(ctx, "Usage: /policy telemetry <from YYYY-MM-DD> <to YYYY-MM-DD> (inclusive, at most 31 days)", true);
+		return;
+	}
+	env.output(ctx, formatTelemetry(await readTelemetry(env.dir, parts[0], parts[1])));
+}
 
 function policyHelpVerb(env: PolicyCommandEnv, ctx: ExtensionCommandContext): void {
 	env.output(ctx, POLICY_USAGE);
@@ -667,13 +678,14 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		async handler(args, ctx) {
 			if (!ensureMode()) return output(ctx, "Policy is stopped because its mode configuration is invalid.", true);
 			try {
-				const snapshot = await loadRegistry(ctx);
 				const trimmed = args.trim();
+				const [verb = "", ...parts] = trimmed.split(/\s+/);
+				if (verb === "telemetry") return await policyTelemetryVerb(commandEnv, ctx, parts);
+				const snapshot = await loadRegistry(ctx);
 				if (!trimmed) {
 					if (ctx.mode !== "tui") return output(ctx, "The policy panel requires TUI mode. Run: /policy list", true);
 					return await openPanel(ctx);
 				}
-				const [verb = "", ...parts] = trimmed.split(/\s+/);
 				const run = POLICY_VERB_HANDLERS[verb];
 				if (run) return await run(commandEnv, ctx, verb, parts, trimmed, snapshot);
 				return output(ctx, `Unknown /policy action "${verb}". Use /policy help.`, true);

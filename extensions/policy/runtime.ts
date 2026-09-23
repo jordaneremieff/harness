@@ -33,6 +33,7 @@ import {
 	trackPending,
 } from "./record.ts";
 import { effectiveEffect, effectiveState, type RuleRecord, ruleGuidance } from "./rule.ts";
+import { shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin } from "./state.ts";
 import { PolicyWriter } from "./store.ts";
 
@@ -181,6 +182,7 @@ export class PolicyRuntime {
 	private generation = 0;
 	private turn = 0;
 	private closed = false;
+	private shellCardSent = false;
 	private telemetryFailure?: string;
 	private incomplete = 0;
 	private stale = 0;
@@ -786,6 +788,19 @@ export class PolicyRuntime {
 			},
 		};
 	}
+	async beforeAgentStart(ctx: ExtensionContext): Promise<string | undefined> {
+		if (this.closed || !this.enabled() || this.shellCardSent) return;
+		if (this.mode() !== "annotate" && this.mode() !== "enforce") return;
+		const generation = this.generation;
+		const snapshot = await this.load(ctx);
+		if (!this.live(generation) || this.shellCardSent) return;
+		if (this.effectiveMode() !== "annotate" && this.effectiveMode() !== "enforce") return;
+		const catalog = this.catalog();
+		if (!catalog.available || !catalog.active.includes("bash")) return;
+		const text = shellContractCard(snapshot.records.values(), sessionScope(ctx), this.publicContext(snapshot, catalog));
+		if (text) this.shellCardSent = true;
+		return text;
+	}
 	async context(ctx: ExtensionContext): Promise<string | undefined> {
 		if (this.closed || !this.enabled()) return;
 		const generation = this.generation;
@@ -939,8 +954,13 @@ export class PolicyRuntime {
 	attach(): void {
 		this.pi.on("session_start", (event) => {
 			this.closed = false;
+			this.shellCardSent = false;
 			this.resetSession(event.reason ?? "startup");
 			this.enabled();
+		});
+		this.pi.on("before_agent_start", async (_event, ctx) => {
+			const content = await this.beforeAgentStart(ctx);
+			if (content) return { message: { customType: "policy_shell_contract", content, display: false } };
 		});
 		this.pi.on("session_tree", () => this.resetSession("tree"));
 		this.pi.on("turn_start", () => {

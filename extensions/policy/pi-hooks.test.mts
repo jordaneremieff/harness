@@ -203,8 +203,14 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 				result: async () => message,
 			};
 		};
+		const prepared = await runner.emitBeforeAgentStart("Run controlled tools", undefined, {
+			cwd: base, selectedTools: tools.map((tool) => tool.name),
+		});
+		const preparationMessages = prepared.messages.map((message: Record<string, unknown>) => ({
+			...message, role: "custom", timestamp: Date.now(),
+		}));
 		const messages = await runAgentLoop(
-			[{ role: "user", content: "Run controlled tools", timestamp: Date.now() }],
+			[{ role: "user", content: "Run controlled tools", timestamp: Date.now() }, ...host.convertToLlm(preparationMessages)],
 			{ systemPrompt: "Controlled test", messages: [], tools },
 			{
 				model,
@@ -361,6 +367,27 @@ const contextProgram: FactsProgram = {
 };
 
 describe(`ordinary Pi ${version} policy hooks`, () => {
+	it("supplies the installed shell contract before the first bash selection without another request", async () => {
+		const f = await setup([]);
+		try {
+			let executions = 0;
+			f.setTools([{ name: "bash", description: "inert shell fixture", parameters: Type.Object({ command: Type.String() }),
+				execute: async () => {
+					assert.match(JSON.stringify(f.requestContexts[0]), /Shell contract snapshot/);
+					executions++;
+					return { content: [{ type: "text", text: "ok" }], details: {} };
+				} }]);
+			await f.run([{ id: "shell-first", name: "bash", arguments: { command: "printf safe" } }], { endAfterTurn: true });
+			assert.equal(executions, 1);
+			assert.equal(f.requests(), 1);
+			assert.match(JSON.stringify(f.requestContexts[0]), /Bound rg --files/);
+			await f.run([], { endAfterTurn: true });
+			assert.equal(f.requests(), 2);
+			assert.doesNotMatch(JSON.stringify(f.requestContexts[1]), /Shell contract snapshot/);
+			await f.telemetry();
+			assert.deepEqual(f.errors, []);
+		} finally { await f.cleanup(); }
+	});
 	it("ends a complete nonterminating tool batch through finishTurn and dispatches a populated turn boundary", async () => {
 		const boundaries: TurnEndEvent[] = [];
 		const f = await setup([], "enforce", (pi) => {

@@ -238,6 +238,67 @@ async function completed(f: ReturnType<typeof fixture>, id: string, error: boole
 	await f.finish(id, error);
 }
 
+describe("pre-call shell guidance", () => {
+	const shellFixture = (mode: PolicyMode = "enforce") => fixture(
+		[shellRule()], mode, Type.Object({ command: Type.String() }), false, "/unused", "bash",
+	);
+	it("projects once before tools, without consuming rule guidance state", async () => {
+		const f = shellFixture();
+		const before = await f.views();
+		const result = await f.handlers.get("before_agent_start")?.({}, f.ctx) as {
+			message: { customType: string; content: string; display: boolean };
+		};
+		assert.equal(result.message.customType, "policy_shell_contract");
+		assert.equal(result.message.display, false);
+		assert.match(result.message.content, /Shell contract snapshot/);
+		assert.deepEqual(await f.views(), before);
+		assert.equal(await f.runtime.beforeAgentStart(f.ctx), undefined);
+		await f.handlers.get("session_tree")?.({}, f.ctx);
+		await f.handlers.get("session_compact")?.({}, f.ctx);
+		f.runtime.reset(undefined, "Operator reset");
+		assert.equal(await f.runtime.beforeAgentStart(f.ctx), undefined);
+		await f.handlers.get("session_start")?.({ reason: "reload" }, f.ctx);
+		assert.match((await f.runtime.beforeAgentStart(f.ctx)) ?? "", /Shell contract snapshot/);
+	});
+
+	it("honors modes and authority health without consuming the latch", async () => {
+		for (const mode of ["observe", "notice"] as const) {
+			const f = shellFixture(mode);
+			assert.equal(await f.runtime.beforeAgentStart(f.ctx), undefined);
+			f.setMode("annotate");
+			assert.match((await f.runtime.beforeAgentStart(f.ctx)) ?? "", /Shell contract snapshot/);
+		}
+		const f = shellFixture();
+		f.snapshot.health = { status: "degraded", path: "rules.jsonl", message: "unreadable", repair: "repair" };
+		assert.equal(await f.runtime.beforeAgentStart(f.ctx), undefined);
+		f.snapshot.health = { status: "ok", path: "rules.jsonl" };
+		assert.match((await f.runtime.beforeAgentStart(f.ctx)) ?? "", /Shell contract snapshot/);
+	});
+
+	it("requires active bash and retries when the active tool set changes", async () => {
+		const f = fixture([shellRule()]);
+		assert.equal(await f.runtime.beforeAgentStart(f.ctx), undefined);
+		f.pi.getActiveTools = () => ["bash"];
+		assert.match((await f.runtime.beforeAgentStart(f.ctx)) ?? "", /Shell contract snapshot/);
+	});
+
+	it("has one latch across overlapping callbacks and rejects stale work", async () => {
+		const f = shellFixture();
+		let release: () => void = () => {};
+		f.setLoadGate(new Promise<void>((resolve) => { release = resolve; }));
+		const first = f.runtime.beforeAgentStart(f.ctx);
+		const second = f.runtime.beforeAgentStart(f.ctx);
+		release();
+		assert.equal((await Promise.all([first, second])).filter(Boolean).length, 1);
+		const stale = shellFixture();
+		stale.setLoadGate(new Promise<void>((resolve) => { release = resolve; }));
+		const pending = stale.runtime.beforeAgentStart(stale.ctx);
+		await stale.handlers.get("session_shutdown")?.({}, stale.ctx);
+		release();
+		assert.equal(await pending, undefined);
+	});
+});
+
 describe("completion-triggered recovery guidance", () => {
 	it("counts final failures across tools and retains a triggered notice through same-batch success", async () => {
 		const f = fixture([recoveryRule()]);
