@@ -133,6 +133,13 @@ headless ordinary sessions use the same invocation. A single-shot CLI that exits
 on command return does not satisfy the lifetime contract merely because its mode
 is `print` or `json`.
 
+Pi caches extension factories by path within a process's current cwd and cache
+generation. A fresh SDK session in an existing process therefore does not ensure
+refreshed extension code. Before live candidate verification, use the intended
+idle session's native reload: an already-loaded resource loader clears the
+factory cache on reload. Verify candidate behavior after that reload. Do not
+reload or interrupt unrelated owned sessions.
+
 See [Evo](../extensions/evo/README.md), [worktrees](conventions/worktrees.md), and
 [Pi host contracts](pi-durable-harness.md) for invocation, delivery, and runtime
 boundaries.
