@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { BOUNDARY_LINES, boundResult, isoTime, oneLine, type Block, type Outcome } from "./format.ts";
 import type { ModelSnapshot } from "./models.ts";
+import { catalogHealth, HEALTH_BOUNDARIES, healthCoverage, type HealthFinding } from "./health.ts";
 import { encodeCursor, paginate, type Page, type Query } from "./query.ts";
 import type { ObservationSnapshot } from "./records.ts";
 
@@ -88,8 +89,13 @@ function discoveryBlocks(records: Record<string, unknown>[], stale: boolean): Bl
 			"",
 			`${String(record.kind).toUpperCase()} ${oneLine(String(record.name))}`,
 			...Object.entries(record)
-				.filter(([key]) => key !== "name" && key !== "kind")
+				.filter(([key]) => key !== "name" && key !== "kind" && key !== "findings")
 				.map(([key, value]) => `  ${key}: ${oneLine(JSON.stringify(value))}`),
+			...((record.findings ?? []) as HealthFinding[]).flatMap((finding) => [
+				`  ${finding.code}: ${finding.reason}`,
+				`    boundary: ${finding.boundary}`,
+				...(finding.fields ? [`    conflicting fields: ${finding.fields.join(", ")} | duplicate records: ${finding.duplicateRecords}`] : []),
+			]),
 		],
 		detail: record,
 	}));
@@ -113,6 +119,10 @@ function discoveryHeader(
 			"Model catalog and availability are synchronous local snapshots. Configured auth is presence only, not valid credentials or remote health.",
 			"Model fields are capability metadata, not a remote probe. No catalog refresh or auth resolution occurred.",
 		);
+		if (request.query.health) {
+			lines.push(...HEALTH_BOUNDARIES);
+			if (!stale && !unavailable && !partial) lines.push("No flagged records means no supported signal matched the requested filters, not that the catalog is healthy.");
+		}
 	} else {
 		lines.push(
 			observation
@@ -150,25 +160,41 @@ function discoveryDetails(
 	};
 }
 
+function discoveryOutcome(stale: boolean, unavailable: boolean, partial: boolean, hasResults: boolean): Outcome {
+	if (stale) return "stale_cursor";
+	if (unavailable) return "unavailable";
+	if (partial) return "partial";
+	return hasResults ? "ok" : "missing";
+}
+
 /** Page the host's existing metadata, without a second index or source reads. */
 export function discoveryPage(request: DiscoveryRequest) {
 	const { query, models, observation } = request;
 	const modelQuery = query.kind === "model";
 	const unavailable = discoveryUnavailable(query, models, observation, modelQuery);
-	const partial = discoveryPartial(models, observation, modelQuery);
+	const partial = discoveryPartial(models, observation, modelQuery) ||
+		Boolean(query.health && models?.records.some((record) => record.selected && record.configuredAuth === null));
 	const all = discoveryRecords(models, observation, modelQuery);
 	const fingerprint = discoveryFingerprint(all, modelQuery, unavailable, partial, models);
 	const stale = request.expectedFingerprint !== undefined && request.expectedFingerprint !== fingerprint;
-	const selected = all.filter((record) => matchesDiscovery(record, query));
+	const candidates = query.health ? catalogHealth(models).map((record) => ({ ...record })) : all;
+	const matched = all.filter((record) => matchesDiscovery(record, query));
+	const selected = candidates.filter((record) => matchesDiscovery(record, query));
 	const page = paginate(selected, request.offset, query.limit);
-	const outcome: Outcome = stale ? "stale_cursor" : unavailable ? "unavailable" : partial ? "partial" : selected.length ? "ok" : "missing";
+	const outcome = discoveryOutcome(stale, unavailable, partial, selected.length > 0 || query.health === true);
 	const result = boundResult({
 		header: discoveryHeader(outcome, request, modelQuery, observation, stale, unavailable, partial),
 		blocks: discoveryBlocks(page.items, stale),
 		footer: ["", ...BOUNDARY_LINES],
-		details: discoveryDetails(outcome, query, selected, page, modelQuery, models, observation, partial),
+		details: {
+			...discoveryDetails(outcome, query, selected, page, modelQuery, models, observation, partial),
+			...(query.health ? { health: { ...healthCoverage(models), matchedRecords: matched.length,
+				unflaggedRecords: matched.length - selected.length, boundaries: HEALTH_BOUNDARIES } } : {}),
+		},
+		...(query.health ? { pageSummary: (kept: number) =>
+			`flagged records: ${kept} shown of ${selected.length} | matched records: ${matched.length} | unflagged records: ${matched.length - selected.length}` } : {}),
 		continuation: (kept) =>
-			!stale && request.offset + kept < selected.length
+			outcome === "ok" && request.offset + kept < selected.length
 				? encodeCursor({ query, offset: request.offset + kept, fingerprint, epoch: request.epoch })
 				: undefined,
 	});

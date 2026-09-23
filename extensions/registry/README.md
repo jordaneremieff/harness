@@ -29,6 +29,7 @@ embedding's configured agent directory.
 | `detail` | Optional boolean. Requires `kind: "tool"` and an exact name, without `search` or `contains`. `true` returns that tool's complete parameters and prompt guidelines as bounded data. Lists omit them. |
 | `provider` | Optional exact provider ID, 1–256 characters. Requires `kind: "model"`. |
 | `available` | Optional boolean filter on the cached availability snapshot. Requires `kind: "model"`. |
+| `health` | Optional boolean. With `kind: "model"`, `true` returns only records with offline catalog review signals; `false` keeps the ordinary model query. |
 | `contains` | Optional literal text, 1–1024 characters. Case-insensitive search over one uniquely resolved file-backed skill or prompt. No regular expressions. |
 | `limit` | Integer, 1–100; default 20. Applies to record, ambiguity, and content-match pages. |
 | `cursor` | Opaque continuation text, at most 16 KiB of UTF-8. Supply it as the only argument. |
@@ -41,11 +42,53 @@ Examples:
 {"search":"file contents","kind":"tool"}
 {"kind":"model","provider":"example-provider","available":true}
 {"kind":"model","name":"example-provider/example-model"}
+{"kind":"model","health":true}
 {"kind":"context_file","limit":10}
 {"name":"example","kind":"skill","contains":"instruction"}
 {"kind":"prompt","limit":10}
 {"cursor":"<cursor from the preceding result>"}
 ```
+
+## Offline catalog health
+
+Use `{"kind":"model","health":true}` for an on-demand review of the same local
+model snapshot. Name, provider, search, availability, limit, and cursor retain
+their model-query meanings. The report returns human-readable reasons and
+boundaries plus structured `details.records[].findings` and `details.health`.
+Each returned row counts once even when it carries several findings.
+
+The supported signals are:
+
+- An explicit `expires-on-` marker followed by a date-shaped suffix in an ID.
+  Ordinary version dates do not qualify. The marker is a review cue, not proof
+  of expiry: no retirement date is validated and no year is inferred from a
+  four-digit suffix.
+- The selected provider/model identity is absent from the returned catalog,
+  provided the catalog read answered and no catalog error was reported. This
+  does not establish removal: Pi can silently omit a provider whose getter fails.
+- The selected model has `configuredAuth: false`. Selection is not dispatch
+  history, and configuration presence is not credential validity. Unselected
+  unauthenticated models are not flagged merely because Pi lists them.
+- Duplicate rows with the same provider and model ID disagree on reasoning,
+  input modalities, context/output limits, or supported thinking levels. Array
+  order and display names do not count as conflicts. Different providers are
+  distinct identities, so their different limits are not flagged.
+
+Comparison uses all returned catalog rows before query filters. The report
+pages flagged rows, states matched and unflagged row counts, and retains the
+normal complete-result bounds. A changed snapshot invalidates its cursor;
+query time alone does not. `ok` with no flagged rows means no supported signal
+matched the filters, not a healthy or complete catalog. Failed catalog access
+returns `unavailable`; reported catalog errors or unavailable selected-auth
+presence return `partial`, with independently known signals preserved.
+Incomplete reports have no continuation cursor; narrow the filters or reissue
+the query after the unavailable source recovers.
+
+Provider-refresh membership and timestamps, recent dispatch use, and dispatch
+age are explicitly unavailable. Public synchronous registry getters do not
+expose that history. The report does not open provider stores or sibling stores,
+resolve credentials, refresh models, probe providers, modify configuration, or
+add timers. Remote model resolution remains unchecked.
 
 ## Current context usage
 
@@ -242,7 +285,10 @@ These tests establish component and adapter behavior, not model-backed utility
 or global activation. Adapter tests also require zero host probes after caller
 or session cancellation. Current-context tests cover fresh reads, zero and overflow,
 post-compaction unknown state, accessor failures, and no estimate probes on
-resource pages, continuations, or rejected queries.
+resource pages, continuations, or rejected queries. Catalog-health tests cover
+expiry cues, selected-model gaps, same-identity conflicts, cross-provider
+non-conflicts, clean and incomplete reports, filters, continuation changes,
+whole-record output bounds, privacy, and no additional host probes.
 
 ### Task evaluation
 

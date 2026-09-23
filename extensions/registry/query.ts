@@ -32,6 +32,7 @@ export interface Query {
 	detail?: boolean;
 	provider?: string;
 	available?: boolean;
+	health?: boolean;
 	contains?: string;
 	limit: number;
 }
@@ -63,6 +64,7 @@ export interface RawParams {
 	detail?: boolean;
 	provider?: string;
 	available?: boolean;
+	health?: boolean;
 	contains?: string;
 	limit?: number;
 	cursor?: string;
@@ -77,7 +79,7 @@ export class QueryError extends Error {
 	}
 }
 
-const SELECTOR_KEYS = ["name", "match", "kind", "contains", "limit", "search", "detail", "provider", "available"] as const;
+const SELECTOR_KEYS = ["name", "match", "kind", "contains", "limit", "search", "detail", "provider", "available", "health"] as const;
 
 export function hasAnySelector(params: RawParams): boolean {
 	return SELECTOR_KEYS.some((key) => params[key] !== undefined);
@@ -131,8 +133,8 @@ function assertSelectorShape(params: RawParams): void {
 	) {
 		throw new QueryError("invalid_arguments", "detail requires kind tool and an exact name, without search or contains");
 	}
-	if ((params.provider !== undefined || params.available !== undefined) && params.kind !== "model") {
-		throw new QueryError("invalid_arguments", "provider and available require kind model");
+	if ((params.provider !== undefined || params.available !== undefined || params.health !== undefined) && params.kind !== "model") {
+		throw new QueryError("invalid_arguments", "provider, available, and health require kind model");
 	}
 	if (params.contains !== undefined && (params.kind === "model" || params.kind === "context_file")) {
 		throw new QueryError("invalid_arguments", "contains accepts only file-backed skills or prompts");
@@ -156,6 +158,7 @@ function buildQuery(params: RawParams, limit: number): Query {
 	if (params.detail !== undefined) query.detail = params.detail;
 	if (params.provider !== undefined) query.provider = params.provider;
 	if (params.available !== undefined) query.available = params.available;
+	if (params.health !== undefined) query.health = params.health;
 	return query;
 }
 
@@ -171,6 +174,7 @@ export function parseQuery(params: RawParams): Query {
 	assertBoundedString(params.provider, "provider", 1, NAME_MAX);
 	assertBoolean(params.detail, "detail");
 	assertBoolean(params.available, "available");
+	assertBoolean(params.health, "health");
 	assertSelectorShape(params);
 	return buildQuery(params, parseLimit(params.limit));
 }
