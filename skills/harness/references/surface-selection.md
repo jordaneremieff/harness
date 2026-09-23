@@ -37,7 +37,7 @@ A custom tool, command, provider, or UI is therefore usually an extension-owned 
 - **RPC mode:** control Pi through a language-neutral JSONL protocol over standard input and output.
 - **JSON event mode:** consume structured print-mode events without an interactive terminal.
 
-These modes integrate with Pi from another process. They do not become package resources merely because a package ships the caller.
+The SDK embeds Pi within its caller's process. RPC and JSON modes expose a Pi process to an external caller. These integration surfaces do not become package resources merely because a package ships the caller.
 
 ### Configuration surfaces
 
