@@ -10,15 +10,15 @@
  * is executed by Node directly and registers nothing with Pi.
  */
 
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { BACKGROUND_CONTEXT, reduceLaneSnapshot, type HarnessEvent, type LaneSnapshot } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import { ProjectTrustStore, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DetachedRuns, MAX_SUMMARY_CHARS, readDetachedRequest, type DetachedRunProgress, type DetachedRunRequest } from "./detached.ts";
 import { createDetachedControlServer } from "./detached-control.ts";
 import { AgentManager, createAgentModelRuntime } from "./index.ts";
 import { AgentStore } from "./store.ts";
-import type { AgentWorkerSession } from "./worker.ts";
+import type { AgentWorkerSession, WorkerObservation } from "./worker.ts";
 
 /** Latest durable assistant text or tool line, without guesses about tool execution. */
 export function progressText(entries: SessionEntry[]): string | undefined {
@@ -34,21 +34,19 @@ export function progressText(entries: SessionEntry[]): string | undefined {
 	return undefined;
 }
 
-/** Execution state comes from the lane; durable text and counts come from the session view. */
+/** Native session events supply transient execution state; SessionManager supplies stored text. */
 export function progressRecord(
 	runId: string,
 	entries: SessionEntry[],
-	operation: LaneSnapshot["operation"],
+	operation: WorkerObservation | null,
 	error?: string,
 ): Omit<DetachedRunProgress, "updatedAt"> {
-	const tool = operation?.runningTools.find((candidate) => candidate.status === "running");
-	const content = tool?.result?.content ?? operation?.streamingMessage?.content;
-	const text = content?.map((part) => part.type === "text" ? part.text : "").join("").trim();
-	const lastText = tool ? `${tool.toolName}${text ? `: ${text}` : ""}` : text || progressText(entries);
+	const tool = operation?.currentTool;
+	const lastText = operation?.lastText || progressText(entries);
 	return {
 		runId,
 		entryCount: entries.length,
-		...(tool ? { currentTool: tool.toolName } : {}),
+		...(tool ? { currentTool: tool } : {}),
 		...(lastText ? { lastText: lastText.slice(0, MAX_SUMMARY_CHARS) } : {}),
 		...(error ? { error: error.slice(0, 2000) } : {}),
 	};
@@ -59,15 +57,15 @@ export function createProgressWriter(
 	readProgress: () => Omit<DetachedRunProgress, "updatedAt">,
 	writeProgress: (progress: DetachedRunProgress) => void,
 	now: () => number = Date.now,
-): (final?: boolean) => void {
+): (final?: boolean, immediate?: boolean) => void {
 	let lastWrite = Number.NEGATIVE_INFINITY;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let closed = false;
-	return function publishProgress(final = false): void {
+	return function publishProgress(final = false, immediate = false): void {
 		if (closed) return;
 		const time = now();
 		const remaining = 500 - (time - lastWrite);
-		if (!final && remaining > 0) {
+		if (!final && !immediate && remaining > 0) {
 			timer ??= setTimeout(() => { timer = undefined; publishProgress(); }, remaining);
 			return;
 		}
@@ -94,7 +92,7 @@ function finalAssistantText(entries: SessionEntry[]): string | undefined {
 	return undefined;
 }
 
-type DetachedWorker = Pick<AgentWorkerSession, "setOnUpdate" | "observeLane" | "start" | "waitForIdle" | "lastErrorMessage" | "operationResult" | "abort" | "status" | "inspect" | "steer" | "sessionMetadata"> & {
+type DetachedWorker = Pick<AgentWorkerSession, "setOnUpdate" | "observe" | "observation" | "start" | "waitForIdle" | "lastErrorMessage" | "operationResult" | "abort" | "status" | "inspect" | "steer" | "sessionMetadata" | "compact" | "runCommand"> & {
 	sessionManager(): { getEntries(): SessionEntry[] };
 };
 
@@ -106,11 +104,12 @@ interface DetachedHost {
 async function createDetachedHost(request: DetachedRunRequest): Promise<DetachedHost> {
 	const store = new AgentStore({ sessionsRoot: request.sessionsRoot });
 	try {
-		const manager = new AgentManager(store, await createAgentModelRuntime(), new ProjectTrustStore(request.agentDir), undefined, request.agentDir);
+		const manager = new AgentManager(store, await createAgentModelRuntime({ authPath: join(request.agentDir, "auth.json"), modelsPath: join(request.agentDir, "models.json") }), new ProjectTrustStore(request.agentDir), undefined, request.agentDir);
 		return {
 			open: () => manager.openDetachedRun(request.runId, request.sessionId, request.trusted),
 			close: async () => {
-				try { await manager.closeAll(); } finally { await store.close(BACKGROUND_CONTEXT); }
+				await manager.closeAll();
+				await store.close(BACKGROUND_CONTEXT);
 			},
 		};
 	} catch (error) {
@@ -129,7 +128,7 @@ function operationFailure(operationId: string | undefined, result: Awaited<Retur
 	return previous;
 }
 
-/** Cancellation requests lane abort; terminal publication follows host cleanup. */
+/** Cancellation requests native session abort; terminal publication follows host cleanup. */
 export async function executeDetachedRun(
 	request: DetachedRunRequest,
 	options: {
@@ -141,7 +140,6 @@ export async function executeDetachedRun(
 	const runs = new DetachedRuns(request.sessionsRoot);
 	let host: DetachedHost | undefined;
 	let worker: DetachedWorker | undefined;
-	let snapshot: LaneSnapshot | undefined;
 	let control: Awaited<ReturnType<typeof createDetachedControlServer>> | undefined;
 	let sealTask: Promise<void> | undefined;
 	let admissionComplete = false;
@@ -157,7 +155,7 @@ export async function executeDetachedRun(
 	};
 	let unsubscribe: (() => void) | undefined;
 	const publishProgress = createProgressWriter(
-		() => progressRecord(request.runId, worker?.sessionManager().getEntries() ?? [], settled ? null : snapshot?.operation ?? null, failure),
+		() => ({ ...progressRecord(request.runId, worker?.sessionManager().getEntries() ?? [], settled ? null : worker?.observation() ?? null, failure), ...(worker ? { currentSessionId: worker.sessionMetadata().id } : {}) }),
 		(progress) => runs.writeProgress(progress),
 	);
 	const finish = (state: "finished" | "failed", detail: { error?: string; summary?: string }): number => {
@@ -168,6 +166,7 @@ export async function executeDetachedRun(
 		publishProgress(true);
 		runs.writeResult({
 			runId: request.runId,
+			...(worker ? { currentSessionId: worker.sessionMetadata().id } : {}),
 			state,
 			finishedAt: new Date().toISOString(),
 			...(state === "failed" ? { error: (detail.error || "detached run failed").slice(0, 2000) } : {}),
@@ -217,35 +216,9 @@ export async function executeDetachedRun(
 		// WorkerUpdate carries stored entries, not tool execution state.
 		worker.setOnUpdate((update) => {
 			if (update.kind === "error") failure ??= update.message;
-			publishProgress();
+			publishProgress(false, update.kind === "replaced");
 		});
-		const observer = await worker.observeLane();
-		snapshot = observer.snapshot;
-		let heldEvents: HarnessEvent[] | undefined;
-		const receive = (event: HarnessEvent): void => {
-			if (settled || !snapshot) return;
-			if (heldEvents) { heldEvents.push(event); return; }
-			if (reduceLaneSnapshot(snapshot, event) === "rebase") {
-				heldEvents = [];
-				void observer.resnapshot().then((next) => {
-					if (settled) return;
-					snapshot = next;
-					const events = heldEvents ?? [];
-					heldEvents = undefined;
-					for (const held of events) receive(held);
-					publishProgress();
-				}).catch((error: unknown) => {
-					if (settled) return;
-					heldEvents = undefined;
-					failure ??= error instanceof Error ? error.message : String(error);
-					publishProgress();
-				});
-				return;
-			}
-			if (event.type === "run_end") failure ??= snapshot.lastResult?.error?.message;
-			publishProgress();
-		};
-		unsubscribe = observer.subscribe(receive);
+		unsubscribe = worker.observe(() => publishProgress());
 		publishProgress();
 		control = await (options.createControlServer ?? createDetachedControlServer)({
 			request, worker, metadata: worker.sessionMetadata(),
@@ -262,12 +235,12 @@ export async function executeDetachedRun(
 		await worker.waitForIdle();
 		await seal();
 		await worker.waitForIdle();
-		const finalSnapshot = await observer.resnapshot();
+		const finalSnapshot = worker.observation();
 		const result = operationId ? await worker.operationResult(operationId) : undefined;
 		failure = operationFailure(operationId, result, failure);
 		failure ??= worker.lastErrorMessage();
-		if (finalSnapshot.queues.length) {
-			addFailure(`${finalSnapshot.queues.length} queued input entries remain unconsumed; durable input is retained`);
+		if (finalSnapshot.pending) {
+			addFailure(`${finalSnapshot.pending} queued messages remain unconsumed; ordinary queues do not survive process exit`);
 		}
 	} catch (error) {
 		failure ??= error instanceof Error ? error.message : String(error);

@@ -1,9 +1,10 @@
 # agent
 
-Create and control durable Pi sessions from another Pi session. Each session
-uses AgentHarness, Pi's durable execution core, with the ordinary extension
-loader and extension host. The primary session stays available while the agent
-works. The separate `subagent` extension remains independent.
+Create and control ordinary Pi sessions from another Pi session. Each session
+uses Pi's public session services, `AgentSessionRuntime`, and `SessionManager`.
+Pi owns resources, context, model requests, extension events, queues, and
+compaction. The primary session stays available while the agent works. The
+separate `subagent` extension remains independent.
 
 This extension provides runtime tools and a native `/agent` command. It does
 not provide a session browser, conversation editor, workspace, or custom TUI.
@@ -40,7 +41,8 @@ as tool results instead.
   use run records, not reopened sessions.
 
 Completion reads metadata without opening stored workers. Detached sessions
-appear for **status**, **steer**, and **abort**, which contact the owning process.
+appear for **status**, **steer**, **abort**, **compact**, and **command**, which
+contact the owning process.
 Other operations enforce trust and ownership at invocation. Unavailable
 metadata supplies no choices; an explicit command reports the underlying error.
 Prompts and messages remain free text, without placeholder or model-ID suggestions.
@@ -51,8 +53,10 @@ Prompts and messages remain free text, without placeholder or model-ID suggestio
 | `list`, `status [session]` | List sessions or request one session's status. |
 | `attach session [provider/model]` | Reopen a session without starting work; optionally repair its idle model choice. |
 | `send session message` | Start the session's next task; active work refuses another task. |
-| `steer session message` | Redirect current work through its durable queue. |
+| `steer session message` | Queue a redirection in the running session. |
 | `abort session` | Stop the operation without deleting the session. |
+| `compact session [instructions]` | Run native compaction; abort active work without resuming it. |
+| `command session name [args]` | Invoke a registered extension command, or the host's `reload` or `tree` control. |
 | `fork session` | Create a separate conversation and preserve its source. |
 | `rewind session entry-id correction` | Redo work from a corrected decision in a fork. |
 | `detach session prompt` | Start a task in a separate process from an idle session. |
@@ -64,12 +68,23 @@ Prompts and messages remain free text, without placeholder or model-ID suggestio
 The `agent_spawn` tool accepts an explicit cwd, model, thinking level, name,
 prompt, and project-trust decision. `agent_list`, `agent_status`, `agent_send`,
 `agent_steer`, `agent_abort`, `agent_fork`, and `agent_attach` expose discovery,
-communication, and control to models. Pi's tool schemas define their parameters.
+communication, and control to models. `agent_compact` and `agent_command`
+provide explicit compaction and command invocation through the session owner.
+Pi's tool schemas define their parameters. An extension command that replaces
+the session returns its new ID. The SDK does not interpret every interactive
+built-in slash command; `agent_command` is not a terminal-input emulator.
+
+The model-facing `agent_abort`, `agent_compact`, and `agent_command` tools
+refuse their own calling session, including its detached route alias. These
+controls wait for native idle, so self-invocation would wait for the calling
+tool itself. Use another session's controller for these operations.
 
 `agent_inspect` reads actual session entries and execution/result state. Its
 bounded previews retain entry IDs and roles. Use an entry ID and the returned
 offset to read a complete entry in chunks; use the returned cursor for older
-entries. This reads the harness's public session data, not raw files.
+entries. This reads ordinary Pi session entries through the session owner.
+Host operation and result entries record observed outcomes, not a second
+execution engine or a crash-replay log.
 
 ## Repair at the cause
 
@@ -103,8 +118,8 @@ files or guarantee that compaction preserves every past decision.
 
 ## Runs that outlive this session
 
-A durable session keeps its state on disk, but its execution belongs to the
-process that owns the store. `agent_detach` and `/agent detach` start a new
+A session keeps its transcript on disk, but its execution belongs to the
+process that owns it. `agent_detach` and `/agent detach` start a new
 prompt on an idle session in a separate operating-system process. The primary
 session releases its open worker before the child takes ownership. This
 session can then exit without stopping the detached run. Active sessions refuse
@@ -118,8 +133,9 @@ machine. It supplies no remote computer, wake-up scheduler, or execution during
 host sleep.
 
 The run process owns the session while it runs. Nothing else may open that
-session for writing. Status, inspect, steer, and abort reach that existing
-owner through Pi's public client/server transport and Chord service endpoints.
+session for writing. Status, inspect, steer, abort, compact, and command reach
+that existing owner through Pi's public client/server transport and Chord
+service endpoints.
 They do not reopen the session or construct another worker. Attach, send, fork,
 rewind, place resolution that reopens the bound session, and a second detached
 run remain refused. Those operations become available after the run closes its
@@ -133,12 +149,19 @@ abort after admission if necessary. A client disconnect or canceled control
 request does not abort the run. Failed controls are never replayed automatically
 or retried by opening a local writer. A lost response leaves admission unknown.
 
-A successful steer confirms durable queue admission, not delivery or action.
-At finalization, the run seals controls, drains admitted calls, checks idle
-again, and reads a fresh lane snapshot. If input remains queued, the result is
-failed with an explanation; the entries remain durable for later inspection.
-The run does not delete them or start another operation automatically. Endpoint
-and worker cleanup finish before the terminal result is published.
+A successful steer confirms admission to the owner's in-memory queue, not
+delivery or action. Native pending queues and in-flight operations do not
+survive process loss. At finalization, the run seals controls, drains admitted
+calls, checks idle again, and reads current session state. Remaining queued
+input causes an explicit failure; the host does not promise to recover that
+queue or start another operation automatically. Endpoint and worker cleanup
+finish before the terminal result is published.
+
+A detached run retains its original session ID as the transport route.
+Progress and result records identify the current native session with
+`currentSessionId`. After a command replaces the session, controls accept
+either identity and reach the same owner. Inspection reports the actual
+current session; a stable route does not rename the saved native conversation.
 
 `agent_runs` and `/agent runs [run-id]` show each run's state. A pending launch
 shows `launching`, not abandonment. The child waits until the launcher
@@ -176,7 +199,10 @@ state and does not replace the writer claim. The client checks its run,
 session, process, server identity, and private socket before use. The services
 expose only this run's session, not general discovery or session creation.
 
-Control requests have a 15-second deadline. Steering text is limited to 128 KiB;
+Observation, steer, and abort requests have a 15-second deadline. Compact and
+command requests have a five-minute deadline. A timeout or client cancellation
+ends the wait, not accepted work; use explicit abort to stop the owner. Steering
+text is limited to 128 KiB;
 optional image data is limited to 2 MiB in total. Observation serialization is
 limited to 1 MiB, while `agent_inspect` retains its page and text bounds. A limit
 failure affects that control, not the run's execution. These local Unix
@@ -190,7 +216,10 @@ because a dead process writes nothing. A later run query, session start, or
 runs-directory change detects it.
 
 Each open session holds an exclusive local-filesystem writer claim under
-`<store>/.claims/`. Normal close releases it only after session storage closes.
+`<store>/native/.claims/`. Close and replacement reject new native user and
+custom-message input before teardown. The host waits for outgoing native work
+after shutdown hooks before releasing its claim. Failed disposal or incomplete
+cleanup retains the claim; a failed close permits another cleanup attempt.
 An abrupt process exit retains the claim, so reopening then fails closed.
 The error names the claim file. Confirm that no writer survives before manual
 removal; the extension never guesses that another process is safe to replace.
@@ -207,8 +236,15 @@ through its steering queue. A peer report also reaches a primary Pi session.
 Admission means the message entered the recipient's execution path. It does
 not mean that the recipient replied, understood the message, or acted on it.
 Peer content remains reported data, not operator authority. Ask a collaborating
-session to send its result to the intended recipient. A normal terminal result
-does not impose a separate submission protocol.
+session to send a report to the intended recipient. The host also announces
+settled in-process operation results to registered primary sessions. Settlement
+is an execution outcome, not coordinator acceptance of the task. A normal
+terminal result does not impose a separate submission protocol.
+
+Peer messages remain data even when their text starts with a slash command.
+Use `agent_command` for explicit command execution. The native `/agent send`
+action starts a new input on an idle session; the model-facing `agent_send`
+preserves sender identity and uses steering for an active peer.
 
 ## Resources and continuity
 
@@ -219,7 +255,7 @@ through the ordinary public host APIs. Project resources use ordinary trust
 decisions and hooks. The primary session supplies a native trust prompt when
 available; an undecided trust-gated project remains untrusted otherwise.
 
-Worker extensions use Pi's native headless `ExtensionRunner` context:
+Worker extensions use Pi's ordinary headless session context:
 `mode: "print"` and `hasUI: false`, including after reload. Their notifications,
 widgets, and editor writes have no terminal effect. Dialogs return the native
 no-UI values, such as `false` for confirmation and `undefined` for selection or
@@ -227,72 +263,63 @@ input. A worker does not borrow its primary session's editor, dialogs, status,
 shortcuts, or custom renderers. Runtime hooks and extension commands remain
 available through the ordinary host execution paths.
 
-The worker sends structured prompt options through Pi's ordinary
-`before_agent_start` chain. Context files, skills, tool snippets, tool rules,
-custom sections, and exact prompt replacements retain their native meanings.
-The worker reads Pi's rendered event prompt after the complete handler chain;
-it does not copy Pi's prompt renderer or import private modules. Changes to
-selected tools also change the executable lane tools. Explicit structured
-selection takes precedence over a simultaneous `setActiveTools()` call.
-The stored tool selection survives reopen, including an empty selection.
-A render-only public ExtensionRunner supplies the base and recovered prompts;
-there is no separate local prompt renderer.
+Pi's ordinary session owns structured prompts, full-transcript context hooks,
+context edits, tool declarations, actionable `turn_end` and
+`agent_before_settle` boundaries, compaction, retries, and queues. The extension
+does not reconstruct those semantics in an adapter. Native session entries
+supply extension history and projection APIs.
 
-Each new run records its final structured prompt inputs with that operation's
-ID in the session store. A recovered operation restores those inputs without
-repeating extension hooks or their side effects. Current tools still come from
-the durable lane configuration. Missing required recovery state causes an
-explicit resume refusal; the host never guesses retired prompt state. The next
-new run replaces the previous prompt record.
+Each in-process session has its own model runtime. It inherits provider
+registrations through the primary's public model registry, then discovers
+providers at its own cwd. One session's provider registration does not change
+another session's runtime. Primary runtime-only API keys remain at their
+owner and resolve at request time, including after key rotation; session and
+run records contain no credential snapshot.
 
-AgentHarness still accepts a rendered prompt string at its context hook.
-This adapter does not claim the ordinary Agent's persisted section-patch or
-prompt-cache behavior. The native lane remains the execution and storage owner.
+Detached processes rediscover their resources and configured authentication.
+Function closures and runtime-only credentials from the launching process do
+not cross that boundary. A detached provider therefore needs a discoverable
+source and authentication available in the child process.
 
-Model choice is explicit or inherited at creation, then retained in the durable
-session. A requested or inherited thinking level is clamped to the selected
-model's supported levels, and a model switch clamps the retained level again.
-Reopening does not substitute a fallback model. If the stored model is
-unavailable, `agent_status` reports its exact identity and directory without
-starting work. `agent_attach` accepts an optional explicit `model` value in
-`provider/model` form; `/agent attach <session> [provider/model]` supplies the
-same repair. The choice must exist in the current runtime and have configured
-authentication. Repair preserves the conversation and changes only an idle
-session with no queued input. An active operation retains its captured model;
-repair does not abort it or replace that model. Restore that provider to resume
-such an operation. Failed model validation leaves the stored choice unchanged.
+Model choice is explicit or inherited at creation, then retained in native
+model entries. A requested or inherited thinking level is clamped to the
+selected model's supported levels. Reopening does not substitute a fallback
+model. If the stored model is unavailable, `agent_status` reports its exact
+identity and directory without starting work. `agent_attach` accepts an
+optional explicit `model` in `provider/model` form; `/agent attach` supplies
+the same repair. Repair requires an available authenticated model and an idle
+session with no pending input. Failed validation leaves the stored choice
+unchanged.
 
-Forks retain the source context and reconstruct cwd-bound resources. Setup
-callbacks use Pi's real in-memory `SessionManager`. The final setup identity
-and tree populate the durable session before AgentHarness takes ownership of
-its execution state. The configured agent store determines the saved file
-location; selecting an ordinary session file during setup imports its state
-rather than relocating the durable store.
+Native tool selections persist through transcript declarations after a request.
+An unsent in-memory `setActiveTools` change is not a saved selection. The next
+request uses Pi's current resource and tool-selection rules.
 
-The synchronous extension view contains committed entries. An AgentHarness
-append commits asynchronously, so an immediate read in the same callback does
-not expose the pending entry. The host flushes pending actions at command and
-model boundaries. It does not invent an entry ID, parent, or timestamp to
-imitate a synchronous durable write.
+Forks retain native context and rebuild cwd-bound resources. Setup uses a real
+`SessionManager`, including ordinary context edits. Extension command actions
+for new, fork, and switch use `AgentSessionRuntime`: outgoing shutdown and
+context invalidation precede fresh services and bindings. Switch targets must
+belong to this agent store so the host can reserve their writer claims.
+Replacement failure after teardown does not restore the outgoing runtime.
 
-`message_end` replacements apply to finalized assistant responses. Native
-user, custom, and tool-result completion events are notification-only;
-returning a replacement reports an extension error. Use the ordinary `input`
-and `tool_result` hooks to transform user input and tool output before storage.
-Structural hooks use complete replacement compaction or summary results.
-Preparation-only mutations without a native result mapping are declined with
-an extension error. These host boundaries differ from ordinary `AgentSession`
-behavior; this extension does not claim exact API parity.
+Current native JSONL files live under `<store>/native/`. The host persists a
+valid new header and setup entries before the first model response, so an idle
+session remains reopenable and detachable. It does not invent assistant
+messages to force persistence. Existing files outside this native directory
+remain untouched; there is no migration or retired-format reader.
 
-The harness owns the session tree, stored values, ordered inbox, model loop,
-operation records, lane observation, and tool progress. The extension supplies
-host integration and a synchronous view for ordinary extension APIs.
+Reopening retains persisted conversation history. It does not replay an
+interrupted model request, tool call, or pending queue. Inspection identifies
+an interrupted host operation when its recorded start lacks a result. Continue
+from the retained history with a new explicit task after resolving ownership.
+Closed host objects retain readable identity and history; execution and live
+status require an open owner.
 
 ## Configuration
 
 | Variable | Purpose |
 |---|---|
-| `PI_AGENT_SESSIONS_DIR` | Durable session store root, including `places.json`, `detached/` run records, and `.claims/` writer claims. Default: `<agentDir>/agent-sessions`. |
+| `PI_AGENT_SESSIONS_DIR` | Store root, including `native/` sessions, `native/.claims/` writer claims, `places.json`, and `detached/` run records. Default: `<agentDir>/agent-sessions`. |
 | `PI_AGENT_DIR` | Agent directory for session discovery, settings, and trust. Default: Pi's `getAgentDir()`. |
 | `PI_AGENT_LIVE` | Set to `1` to run the opt-in real-provider tests. It is a test switch, not a runtime capability limit. |
 
@@ -308,16 +335,13 @@ Run the focused tests from the repository root:
 node --test "extensions/agent/*.test.mts"
 ```
 
-`PI_AGENT_LIVE=1 node --test extensions/agent/live.test.mts` exercises a real
-provider with configured authentication, including the detached run process and
-a rewind that re-derives work. The normal suite does not establish a live
-provider run. It covers detached launch, ownership, and cleanup with isolated
-processes and synthetic providers. Public Unix client/server tests cover
-attachment, owner controls, cancellation, disconnection, route validation, and
-cleanup. Separate-process recovery tests cover suspended operations, recorded
-prompt restoration, and refusal of missing prompt state. Native editor tests
-cover command completion; worker tests cover headless UI behavior through
-reload. No custom interface or visual acceptance claim belongs to this surface.
+`PI_AGENT_LIVE=1 node --test extensions/agent/setup.test.mts` enables the
+opt-in real-provider setup, compaction, and reopen check with configured
+authentication. The normal suite does not establish a live provider run.
+It uses synthetic providers and isolated processes for native session
+boundaries, persistence, ownership, detached controls, and cleanup. Native
+editor tests cover command completion. No custom interface or visual
+acceptance claim belongs to this surface.
 
 Repository gates are `npm test`, `npm run lint`, `npm run typecheck`, and
 `npm run check`.

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -10,22 +9,20 @@ import { AgentManager } from "./index.ts";
 import { AgentStore } from "./store.ts";
 import { AgentWorkerSession } from "./worker.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
+import { fixture } from "./native-fixture.mts";
 
-test("explicit model repair does not replace the captured model of a suspended operation", { timeout: 20000 }, async () => {
-	const root = mkdtempSync(join(tmpdir(), "agent-model-active-"));
-	const cwd = join(root, "work"); const agentDir = join(root, "agent");
-	mkdirSync(cwd); mkdirSync(agentDir);
-	writeFileSync(join(root, "extension.ts"), "export default function() {}\n");
-	execFileSync(process.execPath, [join(import.meta.dirname, "prompt-recovery-child.mts"), root, "start"], { timeout: 12000, maxBuffer: 128000 });
-	const runtime = await createTestRuntime();
-	runtime.unregisterProvider(testModel.provider);
-	const store = new AgentStore({ sessionsRoot: join(root, "sessions") });
-	const manager = new AgentManager(store, runtime, new ProjectTrustStore(agentDir), undefined, agentDir);
+test("interrupted native history reopens without replay and permits explicit idle model repair", async () => {
+	const f = await fixture();
 	try {
-		const id = (await store.list(BACKGROUND_CONTEXT))[0].id;
-		await assert.rejects(manager.attach(id, undefined, undefined, "replacement/model"), /requires an idle session/u);
-		assert.match(await manager.status(id), /model=agent-test\/model/u);
-	} finally { await manager.closeAll(); await store.close(BACKGROUND_CONTEXT); rmSync(root, { recursive: true, force: true }); }
+		await f.worker.appendCustomEntry("agent.operation", { operationId: "interrupted" });
+		const metadata = f.worker.sessionMetadata();
+		await f.worker.close();
+		const reopened = await AgentWorkerSession.open(metadata, { ...f.options, model: undefined });
+		assert.match((await reopened.inspect()).execution.recovery, /interrupted.*no in-flight replay/u);
+		assert.equal(f.requests.length, 0);
+		assert.equal(await reopened.operationResult("interrupted"), undefined);
+		await reopened.close();
+	} finally { await f.close(); }
 });
 
 test("an unavailable stored model remains visible and changes only through explicit idle repair", async () => {

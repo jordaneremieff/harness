@@ -106,7 +106,8 @@ The harness is a Pi package. `package.json` declares the resources under the
   and typebox imports to its running installation. It does not bind Chord,
   Pi Client, or Pi Server. The [agent slice](../extensions/agent/README.md)
   uses these public packages for its private Unix control socket and uses
-  AgentHarness from `pi-agent-core` for durable sessions. The subagent slice
+  coding-agent's ordinary session services, `AgentSessionRuntime`, and
+  `SessionManager` for execution and native history. The subagent slice
   imports neither `pi-server` nor `pi-protocol` and exposes no worker socket.
   A peer declaration alone does not establish loader binding. See
   [the durable-harness track](pi-durable-harness.md) before selecting a

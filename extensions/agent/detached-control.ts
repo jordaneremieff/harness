@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { createRemoteServiceBinding, createRemoteServiceEndpoint, defineService, RemoteServiceError, RemoteServiceProvider, type Context, type ServiceCall } from "@earendil-works/chord";
 import { awaitWithContext, BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import type { SessionMetadata } from "@earendil-works/pi-agent-core";
+import type { AgentSessionMetadata } from "./store.ts";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { Client, createClientServiceTransport } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
@@ -16,7 +16,7 @@ import type { AgentWorkerSession, WorkerStatus } from "./worker.ts";
 
 type InspectOptions = { cursor?: number; limit?: number; entryId?: string; offset?: number };
 type Inspection = Awaited<ReturnType<AgentWorkerSession["inspect"]>>;
-type ControlWorker = Pick<AgentWorkerSession, "status" | "inspect" | "steer">;
+type ControlWorker = Pick<AgentWorkerSession, "status" | "inspect" | "steer" | "compact" | "runCommand">;
 
 interface AttachmentService {
 	attach(sessionId: string, context: Context): Promise<void>;
@@ -26,6 +26,8 @@ interface ControlService {
 	inspect(options: InspectOptions, context: Context): Promise<string>;
 	steer(message: string, images: ImageContent[] | null, context: Context): Promise<void>;
 	abort(context: Context): Promise<boolean>;
+	compact(instructions: string | null, context: Context): Promise<string>;
+	command(name: string, args: string, context: Context): Promise<string>;
 }
 const Attachment = defineService<AttachmentService>("agent.run-attachment");
 const Control = defineService<ControlService>("agent.run-control");
@@ -133,25 +135,25 @@ function checkSteer(message: unknown, images: unknown): void {
 }
 function checkCall(call: ServiceCall, serviceId: string): void {
 	if (call.serviceId !== serviceId) return;
-	const counts: Record<string, number> = serviceId === Attachment.id ? { attach: 1 } : { status: 0, inspect: 1, steer: 2, abort: 0 };
+	const counts: Record<string, number> = serviceId === Attachment.id ? { attach: 1 } : { status: 0, inspect: 1, steer: 2, abort: 0, compact: 1, command: 2 };
 	if (Object.hasOwn(counts, call.member) && call.args.length !== counts[call.member]) invalid("invalid detached control argument count");
 }
 function observation(value: unknown, sessionId: string): string {
-	if (!object(value) || value.sessionId !== sessionId) invalid("detached observation has the wrong session identity");
-	const serialized = JSON.stringify(value);
+	if (!object(value) || !text(value.sessionId, 256)) invalid("detached observation has no native session identity");
+	const serialized = JSON.stringify({ routeSessionId: sessionId, value });
 	if (Buffer.byteLength(serialized) > MAX_OBSERVATION_BYTES) invalid("detached observation exceeds its byte limit");
 	return serialized;
 }
 function parseObservation<T>(serialized: string, sessionId: string): T {
 	if (!text(serialized, MAX_OBSERVATION_BYTES)) throw new Error("invalid detached observation or observation exceeds its byte limit");
 	const value: unknown = JSON.parse(serialized);
-	if (!object(value) || value.sessionId !== sessionId) throw new Error("detached observation has the wrong session identity");
-	return value as T;
+	if (!object(value) || value.routeSessionId !== sessionId || !object(value.value) || !text(value.value.sessionId, 256)) throw new Error("detached observation has the wrong route or no native session identity");
+	return value.value as T;
 }
 
 export interface DetachedControlServerOptions {
 	request: DetachedRunRequest;
-	metadata: SessionMetadata;
+	metadata: AgentSessionMetadata;
 	worker: ControlWorker;
 	requestAbort(): Promise<boolean> | Promise<void> | boolean | void;
 	canSteer(): boolean;
@@ -192,6 +194,16 @@ export async function createDetachedControlServer(options: DetachedControlServer
 			await worker.steer(message, images ?? undefined);
 		},
 		abort: async () => (await options.requestAbort()) !== false,
+		compact: async (instructions) => {
+			checkInstructions(instructions);
+			if (!options.canSteer()) throw new ServerDrainingError();
+			return boundedReply(await worker.compact(instructions ?? undefined));
+		},
+		command: async (name, args) => {
+			checkCommand(name, args);
+			if (!options.canSteer()) throw new ServerDrainingError();
+			return boundedReply(await worker.runCommand(name, args));
+		},
 	});
 	const endpointAttachment = (source: RemoteServiceProvider, serviceId: string): RoutedSessionAttachment => {
 		const endpoint = createRemoteServiceEndpoint(source);
@@ -216,7 +228,7 @@ export async function createDetachedControlServer(options: DetachedControlServer
 		},
 		async resolveSession(sessionId) {
 			if (sessionId !== request.sessionId) throw new SessionNotFoundError();
-			return options.metadata;
+			return { ...options.metadata, storageVersion: 3 };
 		},
 		async openSession() {
 			return { attachClient: () => endpointAttachment(provider, Control.id), close: async () => {} };
@@ -263,13 +275,27 @@ export interface DetachedControlClient {
 	inspect(options?: InspectOptions): Promise<Inspection>;
 	steer(message: string, images?: ImageContent[]): Promise<void>;
 	abort(): Promise<boolean>;
+	compact(instructions?: string): Promise<string>;
+	command(name: string, args: string): Promise<Awaited<ReturnType<AgentWorkerSession["runCommand"]>>>;
+}
+
+function checkInstructions(value: unknown): asserts value is string | null {
+	if (value !== null && (typeof value !== "string" || Buffer.byteLength(value) > MAX_INPUT_BYTES)) invalid("invalid compaction instructions");
+}
+function checkCommand(name: unknown, args: unknown): void {
+	if (!text(name, 256) || !/^\S+$/u.test(name) || typeof args !== "string" || Buffer.byteLength(args) > MAX_INPUT_BYTES) invalid("invalid command input");
+}
+function boundedReply(value: unknown): string {
+	const serialized = JSON.stringify(value);
+	if (!text(serialized, MAX_OBSERVATION_BYTES)) invalid("detached control reply exceeds its byte limit");
+	return serialized;
 }
 
 /** One bounded connection, no replay, and no implicit cancellation of remote work. */
-export async function withDetachedControl<T>(request: DetachedRunRequest, callback: (control: DetachedControlClient) => Promise<T>, signal?: AbortSignal): Promise<T> {
+export async function withDetachedControl<T>(request: DetachedRunRequest, callback: (control: DetachedControlClient) => Promise<T>, signal?: AbortSignal, timeoutMs = CONTROL_TIMEOUT_MS): Promise<T> {
 	const endpoint = readControlEndpoint(request);
 	if (!endpoint) throw new Error(`detached control endpoint is not ready for run ${request.runId}`);
-	const timeout = AbortSignal.timeout(CONTROL_TIMEOUT_MS);
+	const timeout = AbortSignal.timeout(timeoutMs);
 	const cancellation = signal ? AbortSignal.any([signal, timeout]) : timeout;
 	const context = withAbortSignal(cancellation, BACKGROUND_CONTEXT);
 	const client = new Client({ serverId: endpoint.serverId, transportFactory: createUnixTransportFactory({ path: endpoint.path }), maxFrameLength: MAX_FRAME_BYTES });
@@ -292,6 +318,15 @@ export async function withDetachedControl<T>(request: DetachedRunRequest, callba
 			inspect: async (input = {}) => { checkInspect(input); return parseObservation<Inspection>(await remote.inspect(input, context), request.sessionId); },
 			steer: async (message, images) => { checkSteer(message, images ?? null); await remote.steer(message, images ?? null, context); },
 			abort: async () => remote.abort(context),
+			compact: async (instructions) => { checkInstructions(instructions ?? null); const result = await remote.compact(instructions ?? null, context); if (!text(result, MAX_OBSERVATION_BYTES)) throw new Error("invalid compact reply"); return result; },
+			command: async (name, args) => {
+				checkCommand(name, args);
+				const result = await remote.command(name, args, context);
+				if (!text(result, MAX_OBSERVATION_BYTES)) throw new Error("invalid command reply");
+				const value: unknown = JSON.parse(result);
+				if (!object(value) || !text(value.text, MAX_OBSERVATION_BYTES) || (value.sessionId !== undefined && !text(value.sessionId, 256))) throw new Error("invalid command result");
+				return { text: value.text, ...(typeof value.sessionId === "string" ? { sessionId: value.sessionId } : {}) };
+			},
 		};
 		return await awaitWithContext(callback(control), context);
 	} finally {

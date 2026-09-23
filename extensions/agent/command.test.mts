@@ -49,7 +49,7 @@ describe("agent command discovery and help", () => {
 		const actions = await suggest(native, "/agent ");
 		assert.ok(actions);
 		assert.ok(actions.items.length > 0);
-		assert.deepEqual(actions.items.map((item) => item.label), ["new", "status", "send", "steer", "abort", "list", "runs", "attach", "fork", "rewind", "detach", "place", "places", "unbind", "help"]);
+		assert.deepEqual(actions.items.map((item) => item.label), ["new", "status", "send", "steer", "abort", "compact", "command", "list", "runs", "attach", "fork", "rewind", "detach", "place", "places", "unbind", "help"]);
 		assert.ok(actions.items.every((item) => item.description && !item.description.includes(" | ")));
 		assert.equal(actions.items.filter((item) => item.label === "list").length, 1);
 		assert.ok(!actions.items.some((item) => item.label === "ls"));

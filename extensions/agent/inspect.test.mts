@@ -27,7 +27,7 @@ test("inspection pages preserve entry identity and bounded UTF-8 detail reconstr
 			for (const entry of page.entries) { assert.ok(!ids.has(entry.id)); ids.add(entry.id); }
 			cursor = page.nextCursor ?? undefined;
 		} while (cursor !== undefined);
-		assert.equal(ids.size, 16);
+		assert.deepEqual(ids, new Set(worker.sessionManager().getEntries().map((entry) => entry.id)));
 		const target = worker.sessionManager().getEntries().find((entry) => entry.type === "custom" && entry.customType === "inspection.record");
 		assert.ok(target);
 		let offset: number | undefined = 0;

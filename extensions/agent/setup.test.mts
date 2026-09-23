@@ -19,14 +19,7 @@ function directories() {
 }
 
 async function settled(worker: AgentWorkerSession): Promise<void> {
-	const observer = await worker.observeLane();
-	if (!observer.snapshot.operation) {
-		const unsubscribe = observer.subscribe(() => {}); unsubscribe(); return;
-	}
-	await new Promise<void>((resolve, reject) => {
-		const timer = setTimeout(() => { unsubscribe(); reject(new Error("run did not settle")); }, 15000);
-		const unsubscribe = observer.subscribe((event) => { if (event.type === "run_end") { clearTimeout(timer); unsubscribe(); resolve(); } });
-	});
+	await worker.waitForIdle();
 }
 
 function textOf(message: AgentMessage): string {

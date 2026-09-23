@@ -386,7 +386,8 @@ describe("manager ownership transitions", () => {
 			await assert.rejects(creation, /manager is closed/u);
 			await shutdown;
 			const closedWorker = defined(late);
-			assert.throws(() => closedWorker.sessionId(), /not attached/u);
+			assert.ok(closedWorker.sessionId());
+			await assert.rejects(closedWorker.status(), /host is closed/u);
 			await assert.rejects(test.manager.attach("any"), /manager is closed/u);
 		} finally { await test.close(); }
 	});
@@ -503,7 +504,7 @@ describe("command registration", () => {
 			const id = await createSession(test);
 			const worker = heldWorker(test, id);
 			const seed = worker.sessionManager().getBranch()[0];
-			await assert.rejects(test.manager.rewind(id, seed.id, "correction"), /durable model entry/u);
+			await assert.rejects(test.manager.rewind(id, seed.id, "correction"), /retained native model entry/u);
 			assert.equal((await test.manager.listSessions()).length, 1);
 		} finally { await test.close(); }
 	});

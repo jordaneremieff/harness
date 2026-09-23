@@ -5,7 +5,7 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { BACKGROUND_CONTEXT, type LaneSnapshot } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import { ModelRuntime, ProjectTrustStore, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { AgentManager } from "./index.ts";
@@ -14,22 +14,23 @@ import { DetachedRuns, detachedRunEntry, formatRun, isProcessAlive, MAX_SUMMARY_
 import { createProgressWriter, executeDetachedRun, progressRecord } from "./detached-run.ts";
 import { withDetachedControl, type DetachedControlServerOptions } from "./detached-control.ts";
 import { defined } from "./test-assertions.mts";
-import type { AgentWorkerSession } from "./worker.ts";
+import type { AgentWorkerSession, WorkerObservation } from "./worker.ts";
 
 const unusedControls = {
 	sessionMetadata: () => ({ id: "session", createdAt: 0, storageVersion: 1, cwd: "/test", path: "/test/session.jsonl", modifiedAt: 0 }),
 	status: async () => { throw new Error("unexpected status read"); },
 	inspect: async () => { throw new Error("unexpected inspect read"); },
 	steer: async () => { throw new Error("unexpected steer"); },
+	compact: async () => { throw new Error("unexpected compact"); },
+	runCommand: async () => { throw new Error("unexpected command"); },
 };
 const noControlServer = async () => ({ sealAndDrain: async () => undefined, close: async () => undefined });
 
-function operationOutcome(status: "completed" | "failed" | "aborted" | "declined" | "missing"): Awaited<ReturnType<AgentWorkerSession["operationResult"]>> {
+function operationOutcome(status: "completed" | "failed" | "aborted" | "missing"): Awaited<ReturnType<AgentWorkerSession["operationResult"]>> {
 	if (status === "missing") return undefined;
-	return { operationId: "operation", kind: "run", status,
-		...(status === "failed" ? { error: { code: "provider_error", message: "deterministic model failure" } } : {}),
-		...(status === "aborted" ? { error: { code: "aborted", message: "" } } : {}),
-		fromTipId: null, tipId: null, startedAt: 0, endedAt: 1 };
+	return { operationId: "operation", status,
+		...(status === "failed" ? { error: { message: "deterministic model failure" } } : {}),
+		...(status === "aborted" ? { error: { message: "" } } : {}) };
 }
 
 function deferred() {
@@ -320,19 +321,16 @@ describe("detached progress publication", () => {
 		assert.equal(idle.lastText, "x".repeat(MAX_SUMMARY_CHARS));
 		assert.equal(idle.error, "reported error");
 		assert.equal("currentTool" in idle, false);
-		const operation: NonNullable<LaneSnapshot["operation"]> = {
-			id: "operation", kind: "run", startedAt: 0, fromTipId: null, status: "open",
-			runningTools: [{ status: "running", toolCallId: "call", toolName: "read", args: {} }],
-		};
+		const operation: WorkerObservation = { pending: 0, currentTool: "read", lastText: "read" };
 		assert.equal(progressRecord("run", entries, operation).currentTool, "read");
 		assert.equal(progressRecord("run", entries, operation).lastText, "read");
-		operation.runningTools[0].result = { content: [{ type: "text", text: "partial output" }], details: {} };
+		operation.lastText = "read: partial output";
 		assert.equal(progressRecord("run", entries, operation).lastText, "read: partial output");
-		operation.runningTools = [{ status: "settled", toolCallId: "call", toolName: "read", args: {}, result: { content: [{ type: "text", text: "done" }], details: {} }, isError: false }];
+		operation.currentTool = undefined;
 		assert.equal("currentTool" in progressRecord("run", entries, operation), false);
 		entries.push({ type: "message", id: "result", parentId: "assistant", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "toolResult", toolCallId: "call", toolName: "read", content: [{ type: "text", text: "file text" }], isError: false, timestamp: 1 } });
 		assert.equal(progressRecord("run", entries, null).lastText, "read: file text");
-		operation.streamingMessage = { role: "assistant", content: [{ type: "text", text: "live text" }] } as NonNullable<typeof operation.streamingMessage>;
+		operation.lastText = "live text";
 		assert.equal(progressRecord("run", entries, operation).lastText, "live text");
 		assert.equal("currentTool" in progressRecord("run", entries, operation), false);
 	});
@@ -372,12 +370,13 @@ function controlFixture() {
 	runs.writeRequest(source);
 	const calls: string[] = [];
 	const entries: SessionEntry[] = [];
-	const snapshot = { operation: null, queues: [] } as unknown as LaneSnapshot;
+	const snapshot: WorkerObservation = { pending: 0 };
 	const worker = {
 		...unusedControls,
 		sessionManager: () => ({ getEntries: () => entries }),
 		setOnUpdate: (_callback: unknown) => undefined,
-		observeLane: async () => ({ snapshot, subscribe: (_listener: unknown) => () => { calls.push("unsubscribe"); }, resnapshot: async () => { calls.push("snapshot"); return snapshot; } }),
+		observe: (_listener: unknown) => () => { calls.push("unsubscribe"); },
+		observation: () => snapshot,
 		start: async () => { calls.push("start"); return "initial"; },
 		waitForIdle: async () => { calls.push("idle"); },
 		lastErrorMessage: (): string | undefined => undefined,
@@ -402,7 +401,7 @@ describe("detached control lifecycle", () => {
 		const test = controlFixture();
 		try {
 			assert.equal(await executeDetachedRun(test.source, test.options), 0);
-			assert.deepEqual(test.calls, ["listen", "start", "idle", "seal", "idle", "snapshot", "result:initial", "unsubscribe", "control-close", "host-close"]);
+			assert.deepEqual(test.calls, ["listen", "start", "idle", "seal", "idle", "result:initial", "unsubscribe", "control-close", "host-close"]);
 			assert.equal(test.runs.get(test.source.runId)?.state, "finished");
 		} finally { test.close(); }
 	});
@@ -459,12 +458,12 @@ describe("detached control lifecycle", () => {
 			assert.equal(control.canSteer(), false);
 			assert.equal(test.calls.filter((call) => call === "idle").length, 1);
 			assert.equal(existsSync(test.runs.resultFile(test.source.runId)), false);
-			test.snapshot.queues.push({ entryId: "queued", kind: "steer", type: "message", message: { role: "user", content: "late input", timestamp: 0 } });
+			test.snapshot.pending = 1;
 			drained.resolve();
 			assert.equal(await execution, 1);
 			assert.equal(test.calls.filter((call) => call === "idle").length, 2);
-			assert.equal(test.snapshot.queues[0].entryId, "queued");
-			assert.match(test.runs.get(test.source.runId)?.error ?? "", /1 queued input entries remain unconsumed; durable input is retained/u);
+			assert.equal(test.snapshot.pending, 1);
+			assert.match(test.runs.get(test.source.runId)?.error ?? "", /1 queued messages remain unconsumed; ordinary queues do not survive process exit/u);
 		} finally { test.close(); }
 	});
 
@@ -472,7 +471,7 @@ describe("detached control lifecycle", () => {
 		const test = controlFixture();
 		let statusReads = 0;
 		t.mock.method(test.worker, "setOnUpdate", (callback: Parameters<AgentWorkerSession["setOnUpdate"]>[0]) => {
-			callback?.({ kind: "error", lane: "main", message: "first failure" });
+			callback?.({ kind: "error", message: "first failure" });
 		});
 		t.mock.method(test.worker, "operationResult", async () => ({
 			...defined(operationOutcome("failed")),
@@ -537,13 +536,13 @@ describe("detached run process", () => {
 			const closing = deferred();
 			const cleaned = deferred();
 			let aborts = 0;
-			const snapshot = { operation: null, queues: [] } as unknown as LaneSnapshot;
+			const snapshot: WorkerObservation = { pending: 0 };
 			const result = executeDetachedRun(source, { signal: abort.signal, createControlServer: noControlServer, createHost: async () => ({
 				open: async () => ({
 					...unusedControls,
 					sessionManager: () => ({ getEntries: () => [] }),
 					setOnUpdate: () => undefined,
-					observeLane: async () => ({ snapshot, subscribe: () => () => undefined, resnapshot: async () => snapshot }),
+					observe: () => () => undefined, observation: () => snapshot,
 					start: async () => { started.resolve(); return "operation"; },
 					waitForIdle: () => idle.promise,
 					lastErrorMessage: () => undefined,
@@ -570,15 +569,15 @@ describe("detached run process", () => {
 		const root = base();
 		try {
 			const runs = new DetachedRuns(root);
-			for (const status of ["completed", "failed", "aborted", "declined", "missing"] as const) {
+			for (const status of ["completed", "failed", "aborted", "missing"] as const) {
 				const source = request(runs, root, { runId: status, sessionId: "session", pid: process.pid });
 				runs.writeRequest(source);
-				const snapshot = { operation: null, queues: [] } as unknown as LaneSnapshot;
+				const snapshot: WorkerObservation = { pending: 0 };
 				const code = await executeDetachedRun(source, { createControlServer: noControlServer, createHost: async () => ({
 					open: async () => ({
 						...unusedControls,
 						sessionManager: () => ({ getEntries: () => [] }), setOnUpdate: () => undefined,
-						observeLane: async () => ({ snapshot, subscribe: () => () => undefined, resnapshot: async () => snapshot }),
+						observe: () => () => undefined, observation: () => snapshot,
 						start: async () => "operation", waitForIdle: async () => undefined,
 						lastErrorMessage: () => undefined, abort: async () => false,
 						operationResult: async () => operationOutcome(status),
@@ -601,12 +600,12 @@ describe("detached run process", () => {
 				runs.writeRequest(source);
 				const reply = (id: string, text: string) => ({ id, type: "message", message: { role: "assistant", content: [{ type: "text", text }] } }) as SessionEntry;
 				const entries = [reply("prior", "This belongs to an earlier run")];
-				const snapshot = { operation: null, queues: [] } as unknown as LaneSnapshot;
+				const snapshot: WorkerObservation = { pending: 0 };
 				const code = await executeDetachedRun(source, { createControlServer: noControlServer, createHost: async () => ({
 					open: async () => ({
 						...unusedControls,
 						sessionManager: () => ({ getEntries: () => entries }), setOnUpdate: () => undefined,
-						observeLane: async () => ({ snapshot, subscribe: () => () => undefined, resnapshot: async () => snapshot }),
+						observe: () => () => undefined, observation: () => snapshot,
 						start: async () => {
 							if (outcome === "completed") entries.push(reply("current", "Current result"));
 							return outcome === "handled" ? undefined : "operation";
@@ -684,7 +683,7 @@ describe("detached run process", () => {
 				const metadata = defined((await reopenedStore.list(BACKGROUND_CONTEXT)).find((entry) => entry.id === created.sessionId));
 				const session = await reopenedStore.open(metadata, BACKGROUND_CONTEXT);
 				try {
-					const entries = await session.findEntries({ order: "asc" }, BACKGROUND_CONTEXT);
+					const entries = session.manager.getEntries();
 					assert.equal(entries.filter((entry) => entry.type === "custom" && entry.customType === "fixture.start").length, 2);
 					assert.equal(entries.filter((entry) => entry.type === "custom" && entry.customType === "fixture.stop").length, 2);
 				} finally { await session.close(BACKGROUND_CONTEXT); }
@@ -696,7 +695,7 @@ describe("detached run process", () => {
 		}
 	});
 
-	it("keeps a child active after client disconnect and waits for abort cleanup", { timeout: 60000 }, async () => {
+	it("keeps a child active after client disconnect and waits for abort cleanup", { timeout: 60000 }, async (t) => {
 		const root = base();
 		const sessionsRoot = join(root, "sessions");
 		const agentDir = join(root, "agent");
@@ -706,7 +705,7 @@ describe("detached run process", () => {
 		const release = join(root, "provider-release");
 		const fixture = join(root, "control-provider.ts");
 		writeFileSync(fixture, `import { createAssistantMessageEventStream } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
-import { existsSync, watch, writeFileSync } from "node:fs";
+import { existsSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 export default function(pi) {
 	pi.registerProvider("control-fixture", {
 		baseUrl: "https://example.invalid", apiKey: "synthetic", api: "openai-completions",
@@ -718,9 +717,16 @@ export default function(pi) {
 			writeFileSync(${JSON.stringify(ready)}, "ready");
 			const stop = () => {
 				writeFileSync(${JSON.stringify(aborting)}, "aborting");
-				const watcher = watch(${JSON.stringify(root)}, () => { if (existsSync(${JSON.stringify(release)})) finish(); });
-				const finish = () => { watcher.close(); stream.push({ type: "error", reason: "aborted", error: response }); stream.end(response); };
-				if (existsSync(${JSON.stringify(release)})) finish();
+				let finished = false;
+				const finish = () => {
+					if (finished || !existsSync(${JSON.stringify(release)})) return;
+					finished = true;
+					unwatchFile(${JSON.stringify(release)}, finish);
+					stream.push({ type: "error", reason: "aborted", error: response }); stream.end(response);
+				};
+				// Cleanup follows the release file's state, not a lossy directory notification.
+				watchFile(${JSON.stringify(release)}, { interval: 10 }, finish);
+				finish();
 			};
 			if (options?.signal?.aborted) stop(); else options?.signal?.addEventListener("abort", stop, { once: true });
 			return stream;
@@ -731,6 +737,10 @@ export default function(pi) {
 		const manager = new AgentManager(store, await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(root, "models-cache"), refreshOnCreate: false }), new ProjectTrustStore(agentDir), undefined, agentDir);
 		let child: ReturnType<typeof spawn> | undefined;
 		let completion: Promise<number> | undefined;
+		// A test timeout does not unwind an unresolved await in the test body.
+		t.after(async () => {
+			if (child && child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await completion; }
+		});
 		try {
 			const created = await manager.spawn({ cwd: root, model: "control-fixture/fixture", trust: true }, { cwd: root, model: null }, undefined, { extensionPaths: [fixture] });
 			const metadata = defined((await store.list(BACKGROUND_CONTEXT)).find((entry) => entry.id === created.sessionId));

@@ -14,7 +14,7 @@
  * an abandoned run; these records do not provide cross-process session locks.
  */
 
-import { openSync, closeSync, existsSync, mkdirSync, fstatSync, readSync, readdirSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
+import { constants, openSync, closeSync, existsSync, mkdirSync, fstatSync, readSync, readdirSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,6 +46,8 @@ export interface DetachedRunRequest {
  */
 export interface DetachedRunProgress {
 	runId: string;
+	/** Current native session after replacement; absent before the worker opens. */
+	currentSessionId?: string;
 	updatedAt: string;
 	entryCount: number;
 	/** Tool the run executes now; absent between tool calls. */
@@ -58,6 +60,8 @@ export interface DetachedRunProgress {
 /** Run-process-written outcome of one detached run. */
 export interface DetachedRunResult {
 	runId: string;
+	/** Final native session; absent if startup never acquired a session. */
+	currentSessionId?: string;
 	state: "finished" | "failed";
 	finishedAt: string;
 	error?: string;
@@ -73,6 +77,7 @@ export interface DetachedRunResult {
 export type DetachedRunState = "launching" | "running" | "finished" | "failed" | "abandoned";
 
 export interface DetachedRunView extends DetachedRunRequest {
+	currentSessionId?: string;
 	state: DetachedRunState;
 	finishedAt?: string;
 	error?: string;
@@ -176,6 +181,7 @@ export class DetachedRuns {
 		const common = {
 			...request,
 			...(progress?.runId ? { progress } : {}),
+			currentSessionId: progress?.currentSessionId,
 			...(acknowledged ? { acknowledged } : {}),
 		};
 		const result = readJson(this.resultFile(runId), MAX_RECORD_BYTES);
@@ -183,6 +189,7 @@ export class DetachedRuns {
 			return {
 				...common,
 				state: result.state,
+				currentSessionId: result.currentSessionId ?? progress?.currentSessionId,
 				finishedAt: result.finishedAt,
 				...(result.error ? { error: result.error } : {}),
 				...(result.summary ? { summary: result.summary } : {}),
@@ -212,7 +219,7 @@ export class DetachedRuns {
 
 	/** The run that currently owns a session's execution, if any. */
 	liveFor(sessionId: string): DetachedRunView | undefined {
-		return this.list().find((run) => run.sessionId === sessionId && (run.state === "running" || run.state === "launching"));
+		return this.list().find((run) => (run.sessionId === sessionId || run.currentSessionId === sessionId) && (run.state === "running" || run.state === "launching"));
 	}
 
 	/**
@@ -348,15 +355,15 @@ function validRequest(value: unknown): value is DetachedRunRequest {
 }
 
 function validProgress(value: unknown, runId: string): value is DetachedRunProgress {
-	return record(value, ["runId", "updatedAt", "entryCount", "currentTool", "lastText", "error"])
-		&& validRunId(value.runId) && value.runId === runId && timestamp(value.updatedAt)
+	return record(value, ["runId", "currentSessionId", "updatedAt", "entryCount", "currentTool", "lastText", "error"])
+		&& validRunId(value.runId) && value.runId === runId && timestamp(value.updatedAt) && optionalText(value.currentSessionId, 256)
 		&& Number.isSafeInteger(value.entryCount) && (value.entryCount as number) >= 0
 		&& optionalText(value.currentTool, 256) && optionalText(value.lastText, MAX_SUMMARY_CHARS) && optionalText(value.error, 2000);
 }
 
 function validResult(value: unknown, runId: string): value is DetachedRunResult {
-	return record(value, ["runId", "state", "finishedAt", "error", "summary"])
-		&& validRunId(value.runId) && value.runId === runId && timestamp(value.finishedAt)
+	return record(value, ["runId", "currentSessionId", "state", "finishedAt", "error", "summary"])
+		&& validRunId(value.runId) && value.runId === runId && timestamp(value.finishedAt) && optionalText(value.currentSessionId, 256)
 		&& (value.state === "finished" || value.state === "failed")
 		&& (value.state === "finished" ? value.error === undefined : text(value.error, 2000))
 		&& optionalText(value.summary, MAX_SUMMARY_CHARS);
@@ -371,7 +378,7 @@ export function readDetachedRequest(path: string): DetachedRunRequest | undefine
 function readJson(path: string, maxBytes: number): unknown {
 	let fd: number | undefined;
 	try {
-		fd = openSync(path, "r");
+		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 		const stat = fstatSync(fd);
 		if (!stat.isFile() || stat.size > maxBytes) return undefined;
 		const buffer = Buffer.alloc(maxBytes + 1);
@@ -407,7 +414,7 @@ function writeJson(path: string, value: unknown, maxBytes: number): void {
 /** Operator-facing description of a run: what it is doing now, or what it did. */
 export function formatRun(run: DetachedRunView): string {
 	const detail = run.state === "finished" || run.state === "failed" ? ` finished=${run.finishedAt}` : ` pid=${run.pid}`;
-	const lines = [`${run.runId}  ${run.state}  session=${run.sessionId}  started=${run.startedAt}${detail}`];
+	const lines = [`${run.runId}  ${run.state}  session=${run.currentSessionId ?? run.sessionId}  route=${run.sessionId}  started=${run.startedAt}${detail}`];
 	if (run.state === "running" && run.progress) {
 		lines.push(
 			`    entries=${run.progress.entryCount}${run.progress.currentTool ? `  tool=${run.progress.currentTool}` : ""}  updated=${run.progress.updatedAt}`,

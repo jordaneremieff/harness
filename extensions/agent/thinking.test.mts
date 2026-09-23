@@ -166,7 +166,6 @@ describe("thinking-level clamping", () => {
 		});
 		try {
 			assert.equal(await worker.abort(), false, "an idle session has nothing to abort");
-			assert.equal(await worker.resume(), false, "an idle session has nothing to resume");
 			const bash = worker.start("!sleep 30");
 			let aborted = false;
 			const deadline = Date.now() + 4000;

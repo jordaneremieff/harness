@@ -32,16 +32,18 @@ async function fixture(inspect?: () => Promise<void>) {
 	const request: DetachedRunRequest = { runId, sessionId: randomUUID(), sessionsRoot: store.root, agentDir, cwd, prompt: "work", logFile: runs.logFile(runId), startedAt: new Date().toISOString(), pid: process.pid, launchState: "started" };
 	runs.writeRequest(request);
 	const calls: string[] = [];
-	const status: WorkerStatus = { sessionId: request.sessionId, cwd, lane: "main", tipId: "tip", model: { provider: "synthetic", modelId: "test", thinkingLevel: "off" }, operation: "operation", tools: ["read"], activeTools: ["read"], extensions: [], entryCount: 3 };
+	const status: WorkerStatus = { sessionId: request.sessionId, cwd, tipId: "tip", model: { provider: "synthetic", modelId: "test", thinkingLevel: "off" }, operation: "operation", tools: ["read"], activeTools: ["read"], extensions: [], entryCount: 3 };
 	const worker = {
 		status: async () => { calls.push("status"); return status; },
 		inspect: async (options: Parameters<AgentWorkerSession["inspect"]>[0]) => {
 			calls.push("inspect"); await inspect?.();
 			return { sessionId: request.sessionId, entries: [], nextCursor: null, options } as unknown as Awaited<ReturnType<AgentWorkerSession["inspect"]>>;
 		},
-		steer: async (text: string) => { calls.push(`steer:${text}`); return "queued-entry"; },
+		steer: async (text: string) => { calls.push(`steer:${text}`); },
+		compact: async () => { calls.push("compact"); return { summary: "native", firstKeptEntryId: "tip", tokensBefore: 10 }; },
+		runCommand: async () => { calls.push("command"); return { text: "done", sessionId: "replacement" }; },
 	};
-	const server = await createDetachedControlServer({ request, metadata: { id: request.sessionId, createdAt: 1, storageVersion: 4 }, worker, canSteer: () => true, requestAbort: () => { calls.push("abort"); return true; } });
+	const server = await createDetachedControlServer({ request, metadata: { id: request.sessionId, cwd: root, path: join(root, "session.jsonl"), createdAt: 1, modifiedAt: 1 }, worker, canSteer: () => true, requestAbort: () => { calls.push("abort"); return true; } });
 	return { root, store, manager, request, runs, calls, server, close: async () => {
 		await server.close(); await manager.closeAll(); await store.close(BACKGROUND_CONTEXT); rmSync(root, { recursive: true, force: true });
 	} };
@@ -56,7 +58,9 @@ test("manager controls reach the detached owner without a second session open", 
 		assert.deepEqual(await f.manager.inspect(f.request.sessionId, { limit: 2 }), { sessionId: f.request.sessionId, entries: [], nextCursor: null, options: { limit: 2 } });
 		assert.match(await f.manager.steer(f.request.sessionId, "new direction"), /Queue admission does not confirm delivery/u);
 		assert.match(await f.manager.abort(f.request.sessionId), /abort requested/u);
-		assert.deepEqual(f.calls, ["status", "inspect", "steer:new direction", "abort"]);
+		assert.match(await f.manager.compact(f.request.sessionId), /native/u);
+		assert.equal((await f.manager.runCommand(f.request.sessionId, "replace", "")).sessionId, "replacement");
+		assert.deepEqual(f.calls, ["status", "inspect", "steer:new direction", "abort", "compact", "command"]);
 		assert.equal(open.mock.callCount(), 0); assert.equal(list.mock.callCount(), 0);
 		await assert.rejects(f.manager.attach(f.request.sessionId), /running detached/u);
 		await assert.rejects(f.manager.send(f.request.sessionId, "another task"), /running detached/u);

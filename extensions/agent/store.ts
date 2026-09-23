@@ -1,84 +1,44 @@
-/**
- * agent/store: durable session placement for agent sessions.
- *
- * One JsonlSessionRepo (harness format-4 files) under a configurable root
- * (default <agentDir>/agent-sessions). Identity, fork, list, and open all come
- * from the public harness session repo; no parallel index is kept.
- *
- * Execution environments are per working directory: every agent session gets
- * an ExecutionEnv bound to its own cwd, so harness-native tools resolve
- * relative paths and run commands in the session's working directory.
- */
-
-import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+/** Ordinary Pi JSONL sessions with exclusive local writer claims. */
+import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import type { Context, ExecutionEnv, Session } from "@earendil-works/pi-agent-core";
-import {
-	JsonlSessionRepo,
-	type JsonlSessionMetadata,
-} from "@earendil-works/pi-agent-core";
-// The loader aliases the package root but not its subpaths. Resolve only the
-// package's declared public import target; no private dist path is assumed.
-export function corePublicImportUrl(subpath: "./harness/env/nodejs" | "./harness/session"): string {
-	const require = createRequire(import.meta.url);
-	const manifestPath = require.resolve("@earendil-works/pi-agent-core/package.json");
-	const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { exports: Record<string, { import?: string }> };
-	const target = manifest.exports[subpath]?.import;
-	if (!target?.startsWith("./")) throw new Error(`agent core does not export ${subpath} for import`);
-	return pathToFileURL(resolve(dirname(manifestPath), target)).href;
+import type { Context } from "@earendil-works/pi-agent-core";
+import { CURRENT_SESSION_VERSION, SessionManager } from "@earendil-works/pi-coding-agent";
+
+export interface AgentSessionMetadata {
+	id: string;
+	cwd: string;
+	path: string;
+	createdAt: number;
+	modifiedAt: number;
 }
-const { NodeExecutionEnv } = await import(corePublicImportUrl("./harness/env/nodejs")) as typeof import("@earendil-works/pi-agent-core/harness/env/nodejs");
-
-export type AgentSessionMetadata = JsonlSessionMetadata;
-
-export interface AgentStoreOptions {
-	sessionsRoot: string;
+export interface StoredAgentSession {
+	manager: SessionManager;
+	metadata: AgentSessionMetadata;
+	close(context?: Context): Promise<void>;
 }
-
 export class AgentStore {
 	readonly root: string;
-	private readonly repo: JsonlSessionRepo;
-	private readonly envs = new Map<string, ExecutionEnv>();
-	private readonly sessions = new Map<string, Session<JsonlSessionMetadata>>();
-	private readonly pending = new Set<Promise<Session<JsonlSessionMetadata>>>();
-	private readonly sourceReads = new Map<string, Set<Promise<unknown>>>();
-	private readonly closingSessions = new Set<string>();
+	readonly nativeRoot: string;
+	private readonly sessions = new Map<string, StoredAgentSession>();
 	private closed = false;
-	private closeTask: Promise<void> | undefined;
-
-	constructor(options: AgentStoreOptions) {
+	constructor(options: { sessionsRoot: string }) {
 		mkdirSync(options.sessionsRoot, { recursive: true });
 		this.root = realpathSync(options.sessionsRoot);
-		this.repo = new JsonlSessionRepo({ fileSystem: this.envFor(this.root), sessionsRoot: this.root });
+		this.nativeRoot = join(this.root, "native");
+		mkdirSync(this.nativeRoot, { recursive: true });
 	}
 
-	/** One ExecutionEnv per working directory, shared by sessions with equal cwd. */
-	envFor(cwd: string): ExecutionEnv {
-		const key = resolve(cwd);
-		let env = this.envs.get(key);
-		if (!env) {
-			env = new NodeExecutionEnv({ cwd: key, shellEnv: process.env });
-			this.envs.set(key, env);
-		}
-		return env;
-	}
-
-	/** Exclusive local-filesystem claims remain after crashes; recovery requires an operator to establish that no writer survives. */
 	private claim(cwd: string, id: string): () => void {
-		const directory = join(this.root, ".claims");
+		const directory = join(this.nativeRoot, ".claims");
 		mkdirSync(directory, { recursive: true });
-		const key = this.key(cwd, id);
+		const key = createHash("sha256").update(JSON.stringify([resolve(cwd), id])).digest("hex");
 		const path = join(directory, `${key}.lock`);
 		const token = randomUUID();
 		let fd: number;
 		try { fd = openSync(path, "wx", 0o600); } catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-				throw new Error(`session ${id} has an exclusive writer claim at ${path}. Claims are never removed automatically; establish that no writer survives before manual removal.`, { cause: error });
-			}
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`session ${id} has an exclusive writer claim at ${path}. Claims are never removed automatically; establish that no writer survives before manual removal.`, { cause: error });
 			throw error;
 		}
 		try { writeFileSync(fd, JSON.stringify({ token, pid: process.pid, host: hostname(), sessionId: id, cwd: resolve(cwd), createdAt: new Date().toISOString() })); }
@@ -91,88 +51,125 @@ export class AgentStore {
 		};
 	}
 
-	private key(cwd: string, id: string): string {
-		return createHash("sha256").update(JSON.stringify([resolve(cwd), id])).digest("hex");
-	}
-
-	private acquire(cwd: string, id: string, context: Context, factory: () => Promise<Session<JsonlSessionMetadata>>): Promise<Session<JsonlSessionMetadata>> {
-		if (this.closed) return Promise.reject(new Error("agent store is closed"));
-		const task = (async () => {
-			const release = this.claim(cwd, id);
-			let session: Session<JsonlSessionMetadata>;
-			try { session = await factory(); } catch (error) {
-				try { release(); } catch (cleanup) { throw new AggregateError([error, cleanup], "session acquisition failed; claim cleanup failed", { cause: error }); }
-				throw error;
+	/** Runtime-created sessions enter the same ownership boundary as direct opens. */
+	adopt(manager: SessionManager): StoredAgentSession {
+		if (this.closed) throw new Error("agent store is closed");
+		const id = manager.getSessionId();
+		const held = this.sessions.get(id);
+		if (held?.manager === manager) return held;
+		const release = this.claim(manager.getCwd(), id);
+		try {
+			const path = manager.getSessionFile();
+			if (!path || resolve(dirname(path)) !== this.nativeRoot) throw new Error("agent session must use the native session directory");
+			// Pi defers initial persistence until an assistant response. Opening a
+			// new file with the public native header and entries enables idle
+			// persistence without a fabricated assistant response.
+			if (!existsSync(path)) {
+				const leaf = manager.getLeafId();
+				writeFileSync(path, `${[manager.getHeader(), ...manager.getEntries()].map((entry) => JSON.stringify(entry)).join("\n")}\n`, { flag: "wx", mode: 0o600 });
+				manager.setSessionFile(path);
+				if (leaf) manager.branch(leaf);
 			}
-			const key = this.key(cwd, id);
-			const close = session.close.bind(session);
-			let closeTask: Promise<void> | undefined;
-			session.close = (closeContext) => {
-				if (closeTask) return closeTask;
-				this.closingSessions.add(key);
-				closeTask ??= (async () => {
-					await Promise.allSettled(this.sourceReads.get(key) ?? []);
-					await close(closeContext);
-					release();
-					this.sessions.delete(key);
-					this.closingSessions.delete(key);
-				})();
-				return closeTask;
-			};
-			this.sessions.set(key, session);
-			if (this.closed) { await session.close(context); throw new Error("agent store is closed"); }
+			const metadata = this.metadata(manager);
+			let closed = false;
+			const session: StoredAgentSession = { manager, metadata, close: async () => {
+				if (closed) return;
+				release();
+				closed = true;
+				this.sessions.delete(id);
+			} };
+			this.sessions.set(id, session);
 			return session;
-		})();
-		this.pending.add(task);
-		void task.finally(() => this.pending.delete(task)).catch(() => undefined);
-		return task;
+		} catch (error) { release(); throw error; }
 	}
 
-	create(cwd: string, context: Context, id: string = randomUUID()): Promise<Session<JsonlSessionMetadata>> {
-		return this.acquire(cwd, id, context, () => this.repo.create({ cwd, id }, context));
+	metadata(manager: SessionManager): AgentSessionMetadata {
+		const path = manager.getSessionFile();
+		const header = manager.getHeader();
+		if (!path || !header) throw new Error("agent session has no file or header");
+		return { id: manager.getSessionId(), cwd: manager.getCwd(), path, createdAt: Date.parse(header.timestamp), modifiedAt: existsSync(path) ? statSync(path).mtimeMs : Date.now() };
 	}
 
-	open(metadata: AgentSessionMetadata, context: Context): Promise<Session<JsonlSessionMetadata>> {
-		return this.acquire(metadata.cwd, metadata.id, context, () => this.repo.open(metadata, context));
+	async create(cwd: string, _context?: Context, id?: string): Promise<StoredAgentSession> {
+		return this.adopt(SessionManager.create(cwd, this.nativeRoot, id ? { id } : undefined));
 	}
 
-	async list(context: Context): Promise<AgentSessionMetadata[]> {
-		return this.repo.list(undefined, context);
+	/** Validate location and current native header before Pi's write-capable open. */
+	private validate(metadata: AgentSessionMetadata): void {
+		if (resolve(dirname(metadata.path)) !== this.nativeRoot) throw new Error("not a native agent session path");
+		if (!existsSync(metadata.path)) throw new Error(`session file does not exist: ${metadata.path}`);
+		const fd = openSync(metadata.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+		try {
+			if (!fstatSync(fd).isFile()) throw new Error("native session path is not a regular file");
+			const buffer = Buffer.alloc(16384);
+			let bytes = 0;
+			let newline = -1;
+			while (bytes < buffer.length && newline < 0) {
+				const count = readSync(fd, buffer, bytes, buffer.length - bytes, null);
+				if (!count) break;
+				bytes += count; newline = buffer.indexOf(10, 0);
+			}
+			if (newline < 0) throw new Error("native session header exceeds its limit or is unfinished");
+			const header = JSON.parse(buffer.toString("utf8", 0, newline));
+			if (header?.type !== "session" || header.version !== CURRENT_SESSION_VERSION || header.id !== metadata.id || header.cwd !== metadata.cwd || !Number.isFinite(Date.parse(header.timestamp))) throw new Error("not a current ordinary Pi agent session");
+		} finally { closeSync(fd); }
 	}
 
-	fork(
-		source: AgentSessionMetadata,
-		branch: string,
-		context: Context,
-		options: { entryId?: string; id?: string; position?: "before" | "at" } = {},
-	): Promise<Session<JsonlSessionMetadata>> {
-		const id = options.id ?? randomUUID();
-		const sourceKey = this.key(source.cwd, source.id);
-		if (this.closingSessions.has(sourceKey)) return Promise.reject(new Error(`session ${source.id} is closing`));
-		const task = this.acquire(source.cwd, id, context, async () => {
-			const releaseSource = this.sessions.has(sourceKey) ? undefined : this.claim(source.cwd, source.id);
-			try { return await this.repo.fork(source, { scope: "branch", branch, ...options, id }, context); }
-			finally { releaseSource?.(); }
+	async open(metadata: AgentSessionMetadata, _context?: Context): Promise<StoredAgentSession> {
+		if (this.closed) throw new Error("agent store is closed");
+		this.validate(metadata);
+		// Claim before open: SessionManager repairs unfinished tails.
+		const release = this.claim(metadata.cwd, metadata.id);
+		try {
+			const manager = SessionManager.open(metadata.path, this.nativeRoot);
+			let closed = false;
+			const session: StoredAgentSession = { manager, metadata: this.metadata(manager), close: async () => {
+				if (closed) return;
+				release(); closed = true; this.sessions.delete(metadata.id);
+			} };
+			this.sessions.set(metadata.id, session);
+			return session;
+		} catch (error) { release(); throw error; }
+	}
+
+	/** Replace a reserved manager after the native runtime opens the same file. */
+	rebind(held: StoredAgentSession, manager: SessionManager): StoredAgentSession {
+		if (held.metadata.id !== manager.getSessionId() || held.metadata.path !== manager.getSessionFile()) throw new Error("session reservation does not match runtime replacement");
+		held.manager = manager;
+		return held;
+	}
+
+	async list(_context?: Context): Promise<AgentSessionMetadata[]> {
+		const rows = await SessionManager.listAll(this.nativeRoot);
+		return rows.flatMap((row) => {
+			const metadata = { id: row.id, cwd: row.cwd, path: row.path, createdAt: row.created.getTime(), modifiedAt: row.modified.getTime() };
+			try { this.validate(metadata); return [metadata]; } catch { return []; }
 		});
-		const reads = this.sourceReads.get(sourceKey) ?? new Set<Promise<unknown>>();
-		this.sourceReads.set(sourceKey, reads);
-		reads.add(task);
-		void task.finally(() => { reads.delete(task); if (!reads.size) this.sourceReads.delete(sourceKey); }).catch(() => undefined);
-		return task;
 	}
 
-	close(context: Context): Promise<void> {
-		if (this.closeTask) return this.closeTask;
+	async fork(source: AgentSessionMetadata, context: Context, options: { entryId?: string; position?: "before" | "at"; requireModel?: boolean } = {}): Promise<StoredAgentSession> {
+		const held = this.sessions.get(source.id);
+		const reservation = held ?? await this.open(source, context);
+		try {
+			const manager = SessionManager.open(source.path, this.nativeRoot);
+			let tip = options.entryId ?? manager.getLeafId();
+			if (options.entryId && options.position === "before") {
+				const entry = manager.getEntry(options.entryId);
+				if (!entry) throw new Error(`no entry ${options.entryId}`);
+				tip = entry.parentId;
+			}
+			const branch = tip ? manager.getBranch(tip) : [];
+			if (options.requireModel && !branch.some((entry) => entry.type === "model_change")) throw new Error("fork requires a retained native model entry");
+			if (tip) manager.createBranchedSession(tip);
+			else manager.newSession({ parentSession: source.path });
+			return this.adopt(manager);
+		} finally { if (!held) await reservation.close(); }
+	}
+
+	async close(_context?: Context): Promise<void> {
 		this.closed = true;
-		this.closeTask = (async () => {
-			await Promise.allSettled(this.pending);
-			const results = await Promise.allSettled([...this.sessions.values()].map((session) => session.close(context)));
-			await this.repo.close(context);
-			for (const env of this.envs.values()) await env.cleanup(context).catch(() => undefined);
-			this.envs.clear();
-			const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
-			if (errors.length) throw new AggregateError(errors, "agent store cleanup failed; writer claims retained");
-		})();
-		return this.closeTask;
+		const results = await Promise.allSettled([...this.sessions.values()].map((session) => session.close()));
+		const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+		if (errors.length) throw new AggregateError(errors, "agent store cleanup failed; writer claims retained");
 	}
 }

@@ -28,7 +28,7 @@ function fixture() {
 	};
 	runs.writeRequest(request);
 	const status: WorkerStatus = {
-		sessionId: request.sessionId, cwd: root, lane: "main", tipId: null,
+		sessionId: request.sessionId, cwd: root, tipId: null,
 		model: { provider: "test", modelId: "test", thinkingLevel: "off" }, operation: "operation-control",
 		tools: ["read"], activeTools: ["read"], extensions: [], entryCount: 2,
 	};
@@ -37,9 +37,11 @@ function fixture() {
 	const worker: DetachedControlServerOptions["worker"] = {
 		status: async () => status,
 		inspect: async (options) => { calls.inspections.push(options); return inspection; },
-		steer: async (message, images) => { calls.steers.push({ message, images }); return "queued-entry"; },
+		steer: async (message, images) => { calls.steers.push({ message, images }); },
+		compact: async () => { throw new Error("unexpected compact"); },
+		runCommand: async () => { throw new Error("unexpected command"); },
 	};
-	const options: DetachedControlServerOptions = { request, metadata: { id: request.sessionId, createdAt: 1000, storageVersion: 4 }, worker, requestAbort: () => { calls.aborts += 1; return true; }, canSteer: () => true };
+	const options: DetachedControlServerOptions = { request, metadata: { id: request.sessionId, cwd: root, path: join(root, "session.jsonl"), createdAt: 1000, modifiedAt: 1000 }, worker, requestAbort: () => { calls.aborts += 1; return true; }, canSteer: () => true };
 	return { root, request, worker, status, inspection, options, calls, descriptor: `${runs.requestFile(request.runId)}.control.json`, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 async function rawClient(request: DetachedRunRequest) {
@@ -162,7 +164,7 @@ describe("detached control over public Unix transport", () => {
 		const f = fixture();
 		const entered = deferred();
 		const finish = deferred();
-		f.worker.steer = async () => { entered.resolve(); await finish.promise; return "queued-entry"; };
+		f.worker.steer = async () => { entered.resolve(); await finish.promise; };
 		const server = await createDetachedControlServer(f.options);
 		const client = await rawClient(f.request);
 		try {
@@ -225,11 +227,13 @@ describe("detached control over public Unix transport", () => {
 		} finally { await server.close(); f.cleanup(); }
 	});
 
-	it("rejects observations with a different session identity", async () => {
+	it("retains the route across replacement and rejects a missing native identity", async () => {
 		const f = fixture();
 		const server = await createDetachedControlServer(f.options);
 		try {
-			f.status.sessionId = "wrong-session";
+			f.status.sessionId = "replacement-session";
+			assert.equal((await withDetachedControl(f.request, (control) => control.status())).sessionId, "replacement-session");
+			f.status.sessionId = "";
 			await assert.rejects(withDetachedControl(f.request, (control) => control.status()), /session identity/iu);
 		} finally { await server.close(); f.cleanup(); }
 	});
