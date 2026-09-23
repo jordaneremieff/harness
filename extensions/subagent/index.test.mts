@@ -34,12 +34,13 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import type {
-	ExtensionContext,
-	ProjectTrustContext,
-	Theme,
-	ToolDefinition,
-	ToolInfo,
+import {
+	createEventBus,
+	type ExtensionContext,
+	type ProjectTrustContext,
+	type Theme,
+	type ToolDefinition,
+	type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import type { ConsoleMessage } from "./console.ts";
@@ -2702,6 +2703,7 @@ describe("compaction veto", () => {
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
 		const sessionId = "sess-missing-maps";
 		registerSubagent({
+			events: createEventBus(),
 			registerMessageRenderer: () => undefined,
 			registerTool: () => undefined,
 			registerCommand: () => undefined,
@@ -2746,6 +2748,7 @@ describe("compaction veto", () => {
 		const deliveryOptions: unknown[] = [];
 		let activeNames = ["initial_tool"];
 		registerSubagent({
+			events: createEventBus(),
 			registerMessageRenderer: () => undefined,
 			registerTool: (tool: RegisteredFixtureTool) => tools.push(tool),
 			registerCommand: () => undefined,
@@ -2830,6 +2833,7 @@ describe("compaction veto", () => {
 		const workerStatus: unknown[][] = [];
 		const active = ["primary_tool"];
 		registerSubagent({
+			events: createEventBus(),
 			registerMessageRenderer: () => undefined,
 			registerTool: (tool: RegisteredFixtureTool) => {
 				if (tool.name === "subagent") dispatchTool = tool;
@@ -2850,6 +2854,7 @@ describe("compaction veto", () => {
 				state: "done",
 				exitedAt: Date.now(),
 				ownerSession: primaryId,
+				sessionId: "primary-status-child",
 				usage: { cost: 1 },
 			}),
 		);
@@ -2859,6 +2864,7 @@ describe("compaction veto", () => {
 				state: "done",
 				exitedAt: Date.now(),
 				ownerSession: workerId,
+				sessionId: "worker-status-child",
 				usage: { cost: 2 },
 			}),
 		);
@@ -2885,6 +2891,7 @@ describe("compaction veto", () => {
 				state: "done",
 				exitedAt: Date.now(),
 				ownerSession: primaryId,
+				sessionId: "primary-status-child",
 				usage: { cost: 3 },
 			}),
 		);

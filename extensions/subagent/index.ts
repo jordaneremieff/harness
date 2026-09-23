@@ -124,6 +124,7 @@ import {
 	createCollaborationReader,
 } from "./collaboration.ts";
 import { stripTerminalSequences } from "./console.ts";
+import { formatSubtreeStatus, subtreeStatus, UsageEvidence } from "./footer.ts";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
 import { type PeerEnvelope, PeerHub, type PeerReceipt } from "./peers.ts";
 import {
@@ -371,6 +372,8 @@ const THINKING_LEVELS = [
 ] as const satisfies readonly ThinkingLevel[];
 
 export interface WorkerUsage {
+	/** At least one native usage observation was unavailable. */
+	incomplete?: boolean;
 	input: number;
 	output: number;
 	cacheRead: number;
@@ -465,6 +468,8 @@ export interface WorkerRecord {
 	setupDiagnosticsDropped: number;
 	/** The worker's own session id — attach with this, and read its transcript. */
 	sessionId: string;
+	/** Prior native sessions owned by this worker; their descendants retain the same subtree. */
+	previousSessionIds?: string[];
 	/** The worker's session file, for transcripts after the worker is gone. */
 	sessionFile: string | null;
 	/** Session that dispatched this worker (ctx.sessionManager.getSessionId()). */
@@ -654,6 +659,8 @@ function validateWorkerUsage(v: unknown): WorkerUsage | null {
 		cacheRead: asNumber(u.cacheRead),
 		cacheWrite: asNumber(u.cacheWrite),
 		cost: asNumber(u.cost),
+		...(u.incomplete === true || typeof u.cost !== "number" || !Number.isFinite(u.cost) || u.cost < 0
+			? { incomplete: true } : {}),
 		turns: asNumber(u.turns),
 		toolCalls: asNumber(u.toolCalls),
 	};
@@ -663,6 +670,8 @@ function validateWorkerUsage(v: unknown): WorkerUsage | null {
 function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 	if (!isRecord(obj)) return null;
 	const o = obj;
+	if (o.previousSessionIds !== undefined &&
+		(!Array.isArray(o.previousSessionIds) || o.previousSessionIds.some((id) => typeof id !== "string" || !id))) return null;
 	const id = asString(o.id);
 	if (!WORKER_ID_RE.test(id)) return null;
 	const state = asString(o.state);
@@ -706,6 +715,7 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 		setupDiagnostics: asStrArray(o.setupDiagnostics),
 		setupDiagnosticsDropped: asNumber(o.setupDiagnosticsDropped),
 		sessionId: asString(o.sessionId),
+		...(Array.isArray(o.previousSessionIds) ? { previousSessionIds: o.previousSessionIds.filter((id): id is string => typeof id === "string" && id.length > 0) } : {}),
 		sessionFile: asStrOrNull(o.sessionFile),
 		ownerSession: asStrOrNull(o.ownerSession),
 		ownerPid: asNumber(o.ownerPid),
@@ -732,8 +742,13 @@ function writeWorker(record: WorkerRecord): void {
 }
 
 function listWorkerIds(): string[] {
-	if (!existsSync(STORE_DIR)) return [];
-	return readdirSync(STORE_DIR).filter((name) => {
+	let names: string[];
+	try { names = readdirSync(STORE_DIR); }
+	catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+	return names.filter((name) => {
 		if (!WORKER_ID_RE.test(name)) return false;
 		return existsSync(join(STORE_DIR, name, "worker.json"));
 	});
@@ -747,8 +762,14 @@ export function listWorkers(): WorkerRecord[] {
 }
 
 function refreshStatusRecordCache(): void {
-	statusRecordCache.clear();
-	for (const record of listWorkers()) statusRecordCache.set(record.id, record);
+	try {
+		const records = listWorkerIds().map(readWorker);
+		sharedWorkerState.statusRecordsIncomplete = records.some((record) => record === null);
+		if (!sharedWorkerState.statusRecordsIncomplete) statusRecordCache.clear();
+		for (const record of records) if (record) statusRecordCache.set(record.id, record);
+	} catch {
+		sharedWorkerState.statusRecordsIncomplete = true;
+	}
 }
 
 export function workerFiles(id: string): { result: string; prompt: string } {
@@ -1643,6 +1664,11 @@ interface WorkerRuntimeState {
 	peerSessionOwners: Map<string, symbol>;
 	/** Existing record cache shared across per-cwd instances for complete nested families. */
 	statusRecords: Map<string, WorkerRecord>;
+	statusRecordsIncomplete: boolean;
+	/** Read-only activity probes owned and removed by each live worker's module. */
+	statusActivity: Map<string, () => boolean>;
+	/** Session-owned projections notified across per-cwd module instances. */
+	statusObservers: Set<() => void>;
 }
 
 /** Immediate-parent link a running worker reports through. */
@@ -1693,6 +1719,9 @@ export function initializeWorkerRuntimeState(state: Partial<WorkerRuntimeState> 
 	state.peerHub ??= new PeerHub();
 	state.peerSessionOwners ??= new Map();
 	state.statusRecords ??= new Map();
+	state.statusRecordsIncomplete ??= false;
+	state.statusActivity ??= new Map();
+	state.statusObservers ??= new Set();
 	return state as WorkerRuntimeState;
 }
 const stateOnGlobal = initializeWorkerRuntimeState(sharedStateHost[WORKER_STATE_KEY]);
@@ -2057,54 +2086,102 @@ const DEFAULT_DEADLINE_MINUTES = envNumber("PI_SUBAGENT_DEADLINE_MINUTES") ?? 30
 const DEFAULT_BUDGET_USD = envNumber("PI_SUBAGENT_BUDGET_USD");
 
 const liveWorkers = new Map<string, LiveWorker>();
-const statusBindings = new Map<string, { ctx: ExtensionContext; published: string | undefined }>();
+const statusBindings = new Map<string, {
+	ctx: ExtensionContext;
+	published: string | undefined;
+	dispose?: () => void;
+}>();
 
 export function formatSubagentStatus(
 	records: WorkerRecord[],
 	ownerSession: string,
 	activeIds: ReadonlySet<string>,
 ): string | undefined {
-	const owned = records.filter((record) => record.ownerSession === ownerSession);
-	const active = owned.filter((record) => record.state === "running" && activeIds.has(record.id)).length;
-	const cost = owned.reduce((sum, record) => {
-		const value = record.usage?.cost ?? 0;
-		return sum + (Number.isFinite(value) && value > 0 ? value : 0);
-	}, 0);
-	if (active === 0 && cost === 0) return undefined;
-	const spend = cost > 0 && cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2);
-	return `subagents: ${active} active · $${spend}`;
+	return formatSubtreeStatus(subtreeStatus(records, ownerSession, activeIds));
+}
+
+function currentSubtreeStatus(ownerSession: string) {
+	const active = new Set<string>();
+	const observed = new Set<string>();
+	for (const [id, probe] of sharedWorkerState.statusActivity) {
+		try {
+			if (probe()) active.add(id);
+			observed.add(id);
+		} catch {
+			// An unavailable owner is not evidence of idleness.
+		}
+	}
+	const status = subtreeStatus([...statusRecordCache.values()], ownerSession, active, observed);
+	status.incomplete ||= sharedWorkerState.statusRecordsIncomplete || [...statusRecordCache.values()].some((record) => !record.ownerSession);
+	return status;
 }
 
 function publishSubagentStatus(): void {
-	if (statusBindings.size === 0) return;
-	const records = [...statusRecordCache.values()];
-	const activeIds = new Set(liveWorkers.keys());
+	for (const publish of sharedWorkerState.statusObservers) {
+		try { publish(); } catch { /* Projections never control worker execution. */ }
+	}
 	for (const [ownerSession, binding] of statusBindings) {
 		try {
-			const text = formatSubagentStatus(records, ownerSession, activeIds);
+			const text = formatSubtreeStatus(currentSubtreeStatus(ownerSession));
 			if (text === binding.published) continue;
 			binding.ctx.ui.setStatus("subagent", text);
 			binding.published = text;
-		} catch {
-			// Status is a projection only; lifecycle remains authoritative.
-		}
+		} catch { /* Session teardown continues. */ }
 	}
+}
+
+function bindStatusPublisher(ctx: ExtensionContext, pi: ExtensionAPI): void {
+	const sessionId = ctx.sessionManager.getSessionId();
+	bindStatusContext(ctx);
+	const binding = statusBindings.get(sessionId);
+	if (!binding) throw new Error("Subagent status context was not bound");
+	binding.dispose?.();
+	const publish = () => {
+		const status = currentSubtreeStatus(sessionId);
+		const { workers: _workers, ...snapshot } = status;
+		pi.events.emit("harness:work-status:snapshot", {
+			version: 1, publisher: "subagent", sessionId, available: true, ...snapshot,
+		});
+		const text = formatSubtreeStatus(status);
+		if (text !== binding.published) {
+			try {
+				binding.ctx.ui.setStatus("subagent", text);
+				binding.published = text;
+			} catch { /* The numeric snapshot is independent of presentation. */ }
+		}
+	};
+	const off = pi.events.on("harness:work-status:request", (request: unknown) => {
+		if (!request || typeof request !== "object") return;
+		const value = request as Record<string, unknown>;
+		if (value.version === 1 && value.publisher === "subagent" && value.sessionId === sessionId) publish();
+	});
+	sharedWorkerState.statusObservers.add(publish);
+	binding.dispose = () => {
+		off();
+		sharedWorkerState.statusObservers.delete(publish);
+		pi.events.emit("harness:work-status:snapshot", {
+			version: 1, publisher: "subagent", sessionId, available: false,
+		});
+	};
+	publish();
 }
 
 function bindStatusContext(ctx: ExtensionContext): void {
 	const ownerSession = ctx.sessionManager.getSessionId();
 	const current = statusBindings.get(ownerSession);
 	refreshStatusRecordCache();
-	statusBindings.set(ownerSession, {
-		ctx,
-		published: current?.ctx === ctx ? current.published : undefined,
-	});
+	if (current) {
+		current.ctx = ctx;
+	} else {
+		statusBindings.set(ownerSession, { ctx, published: undefined });
+	}
 	publishSubagentStatus();
 }
 
 function clearSubagentStatus(ownerSession: string): void {
 	const binding = statusBindings.get(ownerSession);
 	statusBindings.delete(ownerSession);
+	binding?.dispose?.();
 	try {
 		binding?.ctx.ui.setStatus("subagent", undefined);
 	} catch {
@@ -2129,6 +2206,7 @@ function releaseLiveWorker(id: string): void {
 	// Remove ownership before calling cleanup hooks: a synchronous callback that
 	// re-enters finalization must not see and dispose the same session again.
 	liveWorkers.delete(id);
+	sharedWorkerState.statusActivity.delete(id);
 	try {
 		live.untrackSession();
 	} catch {
@@ -2464,6 +2542,11 @@ function beginWorkerLeg(
 		// flag before starting the resumed leg).
 		if (live.record.interruptedAt && !live.record.cancelRequestedAt) {
 			live.leg = null;
+			try {
+				syncUsageFromSession(live.record, live.session);
+				writeActiveSessionRecord(live.record, live.session);
+			} catch { /* The idle projection still clears after an observation error. */ }
+			publishSubagentStatus();
 			return;
 		}
 		// Once guard AFTER the interrupt check: an interrupted settle is a no-op
@@ -2481,6 +2564,7 @@ function beginWorkerLeg(
 			() => settle(successError?.()),
 			(cause: unknown) => settle(`the worker run failed: ${errText(cause)}`),
 		);
+	publishSubagentStatus();
 }
 
 /**
@@ -2890,6 +2974,7 @@ export function messageCost(message: { usage?: { cost?: Usage["cost"] } } | unde
 const usageBaselines = new Map<string, WorkerUsage>();
 /** Usage completed in earlier AgentSession instances of the same live worker. */
 const usageOffsets = new Map<string, WorkerUsage>();
+const usageEvidence = new WeakMap<AgentSession, UsageEvidence>();
 
 function sessionUsage(session: AgentSession): WorkerUsage {
 	// Match pi's getSessionStats accounting exactly. It includes assistant and
@@ -2917,6 +3002,7 @@ export function subtractUsage(total: WorkerUsage, baseline: WorkerUsage | undefi
 		cost: floor(total.cost - baseline.cost),
 		turns: floor(total.turns - baseline.turns),
 		toolCalls: floor(total.toolCalls - baseline.toolCalls),
+		...(total.incomplete ? { incomplete: true } : {}),
 	};
 }
 
@@ -2930,11 +3016,22 @@ function addUsage(left: WorkerUsage | undefined, right: WorkerUsage): WorkerUsag
 		cost: left.cost + right.cost,
 		turns: left.turns + right.turns,
 		toolCalls: left.toolCalls + right.toolCalls,
+		...(left.incomplete || right.incomplete ? { incomplete: true } : {}),
 	};
 }
 
 function syncUsageFromSession(record: WorkerRecord, session: AgentSession): void {
-	const current = subtractUsage(sessionUsage(session), usageBaselines.get(record.id));
+	let current: WorkerUsage;
+	try { current = subtractUsage(sessionUsage(session), usageBaselines.get(record.id)); }
+	catch (error) {
+		if (record.usage) record.usage.incomplete = true;
+		throw error;
+	}
+	let evidence = usageEvidence.get(session);
+	if (!evidence) { evidence = new UsageEvidence(); usageEvidence.set(session, evidence); }
+	evidence.observe(session.sessionManager.getEntries());
+	current.cost = evidence.cost;
+	if (evidence.incomplete) current.incomplete = true;
 	record.usage = addUsage(usageOffsets.get(record.id), current);
 }
 
@@ -3036,6 +3133,17 @@ function trackSession(record: WorkerRecord, session: AgentSession): () => void {
 			switch (event.type) {
 				case "message_end":
 					trackCompletedMessage(record, session, event.message);
+					deferRecordUsage(record, session);
+					break;
+				case "entry_appended":
+					syncUsageFromSession(record, session);
+					writeProgress();
+					publishSubagentStatus();
+					enforceRunLimits(record.id);
+					break;
+				case "agent_start":
+				case "agent_settled":
+					publishSubagentStatus();
 					break;
 				case "compaction_end": {
 					// The compaction entry is persisted before compaction_end fires.
@@ -3619,7 +3727,11 @@ function applyLiveSessionRecord(
 	linkTarget(target);
 	refreshActiveSessionRecord(record, target);
 	record.cwd = target.sessionManager.getCwd();
-	record.sessionId = target.sessionManager.getSessionId();
+	const nextId = target.sessionManager.getSessionId();
+	if (record.sessionId && record.sessionId !== nextId) {
+		record.previousSessionIds = [...new Set([...(record.previousSessionIds ?? []), record.sessionId])];
+	}
+	record.sessionId = nextId;
 	record.sessionFile = target.sessionManager.getSessionFile() ?? null;
 	refreshDiagnostics();
 	writeWorker(record);
@@ -4031,6 +4143,8 @@ export async function dispatchWorker(
 			onSessionStateChange: (target) => handleSessionStateChange(id, record, target),
 		});
 		if (continuation) usageBaselines.set(id, sessionUsage(session));
+		usageEvidence.set(session, new UsageEvidence(continuation ? session.sessionManager.getEntries().length : 0));
+		syncUsageFromSession(record, session);
 		untrack = disposeOnce(trackSession(record, session));
 	} catch (err) {
 		untrack();
@@ -4106,6 +4220,7 @@ export async function dispatchWorker(
 		} catch {
 			usageBaselines.delete(id);
 		}
+		usageEvidence.set(next, new UsageEvidence(next.sessionManager.getEntries().length));
 		untrack();
 		sharedWorkerState.workerSessionIds.delete(previous.sessionManager.getSessionId());
 		sharedWorkerState.workerSurfaces.delete(previous.sessionManager.getSessionId());
@@ -4142,6 +4257,7 @@ export async function dispatchWorker(
 		}
 	});
 	liveWorkers.set(id, liveWorker);
+	sharedWorkerState.statusActivity.set(id, () => liveWorker.leg !== null || liveWorker.runtime.getPhase() !== "idle");
 	publishSubagentStatus();
 
 	const start = () => {
@@ -6753,6 +6869,7 @@ export default function (pi: ExtensionAPI) {
 			);
 			if (!sent) throw new Error("the dispatching session no longer accepts messages");
 		});
+		bindStatusPublisher(ctx, pi);
 		if (sharedWorkerState.workerSessionIds.has(sessionId)) {
 			recordWorkerSurface(sessionId, pi.getActiveTools(), pi.getAllTools());
 			return;
