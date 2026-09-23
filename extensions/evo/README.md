@@ -27,9 +27,10 @@ loads the harness skill and repository instructions before governed work.
 
 The complete trailing input is an optional exploration hint. A word, question,
 multiline text, or pasted source is data, not a subcommand. The hint does not fix
-the outcome or override stronger evidence. In particular, `/evo push approved`
-does not authorize a push. Give release authority separately as an explicit
-operator instruction in the governing conversation.
+the outcome or override stronger evidence. In `/evo push approved`, the hint
+adds no release authority. The invocation itself grants the bounded
+established-resource promotion and push path below. Give authority for acts
+outside that path separately in the governing conversation.
 
 The parser bounds raw input at 80,000 UTF-8 bytes and sanitized input at 20,000
 Unicode code points. It replaces malformed UTF-16, removes terminal controls and
@@ -78,14 +79,35 @@ Invoking `/evo` authorizes:
 
 - evidence reads and repository-required worktree procedures;
 - full Pi execution sessions under existing host authorization and project trust;
-- required local edits in existing dedicated harness worktrees; and
-- coherent local commits after required checks.
+- required local edits in existing dedicated harness worktrees;
+- coherent local commits after required checks; and
+- promotion and push of accepted high-confidence local commits for existing
+  harness resources already published on the established remote main branch.
 
-The invocation alone does not authorize promotion, push, publication, activation,
-or settings changes. If the governing conversation explicitly grants those acts,
-the coordinator completes them without asking again and verifies their resulting
-state. There is no permanent local-only veto. If authority is absent, it stops
-only that delivery step and completes the independent authorized work.
+For that established-resource path, the coordinator completes promotion and push
+without another approval unless the current operator explicitly restricts release.
+Before release, it verifies the established remote main and resource scope from
+current Git evidence, inspects the accepted local commits and complete outgoing
+diff, and establishes high confidence through required tests and review. It uses
+the repository promotion procedure and its required gates. Prior publication
+establishes eligibility, not confidence or permission to ship unrelated commits.
+New or provisional resources and unrelated commits are outside this grant.
+If a candidate commit already appears on remote main, the coordinator reports
+that verified state without replaying it.
+
+The coordinator preserves configured activation for already-active resources.
+It does not activate new or provisional resources or alter unrelated settings by
+inference. Delivery outside this bounded promotion/push path, including other
+publication, activation, or settings changes, requires separate explicit operator
+authority. The coordinator completes already-granted acts without asking again.
+Current explicit operator restrictions take priority over the invocation's release grant.
+If a required fact, check, or authority is missing, it stops only the affected
+step, reports the exact boundary, and completes independent authorized work.
+
+A local commit alone is not completion for an eligible accepted high-confidence
+improvement. Completion requires acceptance and verified authorized delivery,
+including promotion and push to the established remote main, unless an exact
+unresolved boundary blocks the remaining work.
 
 New enumerated surfaces, new runtime dependencies, destructive acts, credential
 access or disclosure, trust bypasses, operator-store migration, and unrelated
@@ -129,8 +151,9 @@ selected slices' dedicated worktrees.
 - `evo.test.mts` checks parser bounds, framing, authority, workflow instructions,
   mode-independent dispatch, and error behavior.
 - `evo.runtime.test.mts` loads the real extension into ordinary Pi sessions with a
-  controlled provider. It checks repeated requests, preflight lifetime, active
-  follow-up delivery, retained outcome, and error routing without live credentials.
+  controlled provider. It checks delivery of the bounded release grant and its
+  restrictions, repeated requests, preflight lifetime, active follow-up delivery,
+  retained outcome, and error routing without live credentials.
 
 ```bash
 node --test extensions/evo/*.test.mts

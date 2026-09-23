@@ -183,6 +183,29 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
 			const texts = userTexts(runtime.requests[1]);
 			assert.equal(texts.length, 2);
 			assert.match(texts[0], /Coordinate one bounded autonomous harness improvement effort/);
+			for (const text of texts) {
+				assert.match(
+					text,
+					/This invocation also authorizes promotion and push of accepted high-confidence local commits/,
+				);
+				assert.match(text, /existing harness resources already published on the established remote main branch/);
+				assert.match(
+					text,
+					/Complete this path without another approval unless the current operator explicitly restricts release/,
+				);
+				assert.match(
+					text,
+					/Before release, verify the established remote main and resource scope from current Git evidence/,
+				);
+				assert.match(text, /establish high confidence through required tests and review/);
+				assert.match(text, /New or provisional resources and unrelated commits are outside this grant/);
+				assert.match(text, /Current explicit operator restrictions take priority/);
+				assert.match(text, /A local commit alone is not completion/);
+				assert.match(
+					text,
+					/all authorized delivery, including promotion and push to the established remote main, is verified complete/,
+				);
+			}
 			assert.match(texts[1], /<evo-hint-json>\n"\/ignored-command/);
 			assert.match(texts[1], /hint never expands authority/);
 			assert.equal(runtime.session.getLastAssistantText(), "Controlled response.");
