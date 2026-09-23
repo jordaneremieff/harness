@@ -57,7 +57,10 @@ establish acceptance by a live provider. No runtime sanitizer changes schemas.
 
 The harness follows Pi's own capabilities rather than maintaining a parallel
 agent core. The [durable-harness track](docs/pi-durable-harness.md) records the
-upstream contracts and the conditions for adopting them here.
+upstream contracts and the conditions for adopting them here. The lockfile records
+the dependency versions used for repository checks; the Pi peer ranges remain
+wildcards. Run `npm ci` in each affected checkout after a lockfile update.
+Worktree source synchronization does not install dependencies.
 
 Released under the [MIT license](LICENSE). Feel free to copy anything useful or
 fork it for your own setup. I do not provide support or accept unsolicited

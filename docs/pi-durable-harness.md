@@ -8,8 +8,8 @@ submitted-result retrieval.
 
 ## Standalone distillation boundary
 
-Verified 2026-09-23 against the active installation and stash worktree, both
-coding-agent 0.87.0. Installed `docs/extensions.md`,
+Verified 2026-09-23 against active and checkout coding-agent 0.87.1.
+Installed `docs/extensions.md`,
 `dist/core/model-registry.{js,d.ts}`, and `dist/core/model-runtime.js` establish
 that `ModelRegistry.streamSimple()` uses the configured provider and resolves
 request-time authentication, including extension registrations. The shipped
@@ -34,9 +34,9 @@ cancellation, and storage boundaries, not live-model output quality.
 
 ## Policy pre-call guidance boundary
 
-Verified 2026-09-23. The active installation and policy worktree still resolve
-coding-agent 0.87.0. Its `before_agent_start` handler returns a custom message
-before command selection: installed `dist/core/extensions/runner.js`
+Verified 2026-09-23 against active and checkout coding-agent 0.87.1.
+Policy's `before_agent_start` handler returns a custom message before command
+selection: installed `dist/core/extensions/runner.js`
 `emitBeforeAgentStart()` awaits handlers and collects messages;
 `dist/core/agent-session.js` appends them before `_runAgentPrompt()`.
 The public contract is `BeforeAgentStartEventResult.message` in
@@ -46,42 +46,54 @@ than a tool-call interception that occurs after the model selects a command.
 The policy hook tests exercise the real runner, custom-message conversion, and
 first controlled model request. They do not establish model compliance.
 
-The same date's metadata checks resolve npm coding-agent `latest` to 0.87.1,
-[release v0.87.1](https://github.com/earendil-works/pi/releases/tag/v0.87.1),
-and upstream main to `898ab804050730e9dcefb4443875d5a932aa6a32`.
-Those metadata checks do not establish changed host contracts or upgrade the
-installation. The wider program review below retains its explicit source
-snapshot; it does not describe the newly observed upstream revisions.
-
 ## Checked source boundary
 
-Verified 2026-09-22. The active installation, npm `latest`, and checkout
-lockfile resolve Pi 0.87.0. The manifest retains wildcard Pi peers; the lockfile
-records the resolved dependency graph rather than a supported-version ceiling.
-TypeBox resolves to 1.3.27 in the active installation and checkout.
+Verified 2026-09-23. The active installation, npm `latest`, checkout
+dependencies, and the lockfile resolve Pi 0.87.1. The manifest retains wildcard
+Pi peers; the lockfile records the resolved dependency graph rather than a
+supported-version ceiling. TypeBox resolves to 1.3.27 in both. Dependency
+installation is separate from worktree source synchronization; each checkout
+needs `npm ci` after a lockfile update. Repository tests and controlled runtime
+checks establish their exercised contracts, not host-wide compatibility with
+every provider or interactive flow.
 
 | Source | Checked state |
 |---|---|
-| Installed coding agent and agent core | 0.87.0, from package metadata and installed declarations/source |
-| Checkout Pi packages | 0.87.0, from the lockfile and local package metadata |
-| npm publication | Coding-agent, AI, server, and TUI `latest` are 0.87.0 |
-| GitHub release | [v0.87.0][release], published 2026-09-21; tag commit `16787ad5b2dc748047f314ca1bfe7708f30f54f3` |
-| Checked upstream `main` | [`d201760ffee16564aa8d9a759e0c85b70db33674`][main] |
+| Installed coding agent and agent core | 0.87.1, from package metadata and installed declarations/source |
+| Checkout Pi packages | 0.87.1, from the lockfile and local package metadata |
+| npm publication | Coding-agent, AI, server, TUI, and durable `latest` are 0.87.1 |
+| GitHub release | [v0.87.1][release], published 2026-09-22; tag commit `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` |
+| Checked upstream `main` | [`898ab804050730e9dcefb4443875d5a932aa6a32`][main] |
 
-The [previous-boundary-to-release comparison][boundary-release] includes
-canonical session projection, append-only context edits, actionable boundaries,
-the split context hooks, image input limits, and transactional Chord updates.
-These are released 0.87.0 contracts, not unreleased changes. The
-[release-to-main comparison][release-main] adds multimodal empty-text handling,
-Grok 4.7 support, invalid `--mode` rejection, versioned document storage under
-`packages/durable`, and changelog updates. It changes neither the ordinary
-session boundary implementations nor the lane/Pico3 implementations cited below.
+The [0.87.0-to-0.87.1 comparison][previous-release] includes model support,
+multimodal empty-text handling, invalid `--mode` rejection, revised split-turn
+compaction instructions, and a documentation rewrite. The
+[previous-source-boundary-to-release comparison][boundary-release] preserves
+the ordinary session, extension runner, lane, and Pico3 implementations cited
+below. Compaction's changed prompt text does not change its session recovery
+ownership.
 
-This track is a targeted contract review, not an exhaustive changelog or a
-package-wide equivalence claim. Its claims use exact files and installed source.
+This is a targeted contract review, not an exhaustive changelog or package-wide
+equivalence claim. Current installed SDK, extension, and keybinding documents
+were read separately from source. Source equality establishes unchanged checked
+implementations, not a new runtime regression result.
+
 The separate [`@earendil-works/pi-durable` root][durable-exports] exports
-`MemoryStorage` and storage records at checked main. Those source exports do not
-establish a replacement ordinary-session runtime or change Pico3's contracts.
+`MemoryStorage` and conversation, task, submission, and document record types.
+Its [release manifest][durable-package] adds memory and SQLite storage subpaths;
+[`storage/sqlite`][durable-sqlite] exports the portable synchronous database
+interface, migrations, and `SqliteStorage`. The
+[Node adapter][durable-sqlite-node] exports `openNodeSqliteStorage` and configures
+WAL with `synchronous = NORMAL`. These are release source and export contracts,
+not a local backend adoption or a crash-test result. They do not replace the
+ordinary SDK, agent-core lane runtime, or Pico3 runtime.
+
+The [release-to-main comparison][release-main] adds separate durable environment
+and JSONL source modules. The [main manifest][durable-main-package] exposes
+`./env`, `./env/node`, `./storage/jsonl`, and `./storage/jsonl/node`; those are
+not 0.87.1 release exports. This metadata and source review does not establish
+ordinary extension/resource parity or submitted-result retrieval through that
+package.
 
 Installed paths below are relative to the active `@earendil-works/pi-coding-agent`
 package root. `pi-agent-core/` and `pi-ai/` refer to its corresponding packages
@@ -111,7 +123,7 @@ that every loaded extension resolves the same dependency instance.
 
 ## Current ordinary-session contracts
 
-Verified 2026-09-22 against installed `docs/sdk.md`,
+Verified 2026-09-23 against installed 0.87.1 `docs/sdk.md`,
 `dist/core/{sdk,agent-session}.js`, `dist/core/extensions/{types.d.ts,runner.js}`,
 `dist/core/session-manager.d.ts`, `pi-ai/dist/types.d.ts`, and
 `pi-agent-core/dist/{agent.d.ts,agent-loop.js}`.
@@ -160,7 +172,7 @@ current provider transcripts, lifecycle registration, or session replacement.
 
 ## Configuration and source context
 
-Verified 2026-09-22 against installed `dist/core/resource-loader.js`,
+Verified 2026-09-23 against installed 0.87.1 `dist/core/resource-loader.js`,
 `dist/core/messages.js`, the ordinary SDK, and [Pico3 options][pico-options].
 
 - Ordinary discovery accepts additional skill paths. Reusable source selection
@@ -180,10 +192,10 @@ Verified 2026-09-22 against installed `dist/core/resource-loader.js`,
 
 ## Resource contributions and interactive lifecycle
 
-Verified 2026-09-23 against coding-agent 0.87.0 in the active installation and
-checkout lockfile. Read-only metadata checks still resolve npm `latest` to
-0.87.1 and upstream main to `898ab804050730e9dcefb4443875d5a932aa6a32`;
-those refs do not change the installed contracts below.
+Verified 2026-09-23 against active and checkout coding-agent 0.87.1.
+Current installed extension and keybinding documents supply the public guidance;
+resource, skill, runner, cache-warmer, session, and extension type files define
+the detailed behavior below.
 
 - `resources_discover` contributes paths after `session_start`. Installed
   `dist/core/resource-loader.js` appends those paths to its existing lists.
@@ -220,7 +232,7 @@ checks through the interactive host, not merely a successful registration.
 
 ## Current-session evidence retrieval
 
-Verified 2026-09-22 against installed `dist/core/session-manager.d.ts`,
+Verified 2026-09-23 against installed 0.87.1 `dist/core/session-manager.d.ts`,
 `dist/core/session-manager.js`, and `dist/core/extensions/types.d.ts`.
 
 - `ExtensionContext.sessionManager` exposes `ReadonlySessionManager`.
@@ -249,7 +261,7 @@ Verified 2026-09-22 against installed `dist/core/session-manager.d.ts`,
 
 ## Collaboration observation
 
-Verified 2026-09-22 against installed durable-lane and Pico3 implementations.
+Verified 2026-09-23 against installed 0.87.1 durable-lane and Pico3 implementations.
 Their observation contracts are not interchangeable.
 
 **Durable AgentHarness lanes.** `LaneSnapshot` carries configuration, transcript,
@@ -288,7 +300,7 @@ reply establish different facts; none alone proves understanding or action.
 
 ## Ordinary-session completion delivery
 
-Verified 2026-09-22 against installed `dist/core/agent-session.js`,
+Verified 2026-09-23 against installed 0.87.1 `dist/core/agent-session.js`,
 `dist/core/messages.js`, and `dist/core/extensions/{runner.js,types.d.ts}`.
 
 - `turn_end` and `agent_before_settle` are actionable extension boundaries.
@@ -322,7 +334,7 @@ Verified 2026-09-22 against installed `dist/core/agent-session.js`,
 
 ## Pico3 storage and ownership
 
-Verified 2026-09-22 by inspection of [Pico3 JSONL source][pico-jsonl] and installed
+Verified 2026-09-23 against [Pico3 JSONL source][pico-jsonl] and installed 0.87.1
 `pi-agent-core/dist/harness/pico3/{harness,jsonl,chord}.js`. The fsync and ownership
 claims describe source contracts, not crash or power-loss test results.
 
@@ -348,7 +360,7 @@ the need for an owner of process control, resources, and external side effects.
 
 ## Fork and result boundaries
 
-Verified 2026-09-22 against the current [WP08 handoff][wp08], installed
+Verified 2026-09-23 against the release [WP08 handoff][wp08], installed 0.87.1
 `pi-agent-core/dist/harness/session/{types.d.ts,jsonl/fork.js}`, and the ordinary
 session APIs.
 
@@ -359,7 +371,8 @@ JSONL's structural maps and copied-entry set still grow with source state;
 streaming does not mean constant auxiliary memory. Its fork read discards a
 torn tail without repairing the source. The handoff retains SQLite and
 benchmark/documentation completion as separate obligations. Do not infer
-backend convergence from the Memory or JSONL implementation.
+backend convergence from the Memory or JSONL implementation. The separate
+`pi-durable` SQLite storage exports do not complete this agent-core work package.
 
 Ordinary `/fork`, `/clone`, and `--fork` still use `SessionManager`. Pico3
 conversation forks belong to its own storage and document model. Neither
@@ -387,7 +400,7 @@ current defects without checking the implementation.
 
 ## Convergence decisions
 
-Verified 2026-09-22. Use the ordinary SDK as the default host for current
+Verified 2026-09-23. Use the ordinary SDK as the default host for current
 extension/resource behavior. Check its boundary and context controls before
 considering a kernel migration. Match the selected host, not only a shared name.
 
@@ -418,21 +431,26 @@ After each Pi upgrade and before a host-dependent decision:
 - Replace dated claims in place. If a defining source is unavailable, mark the
   affected claim unverified rather than preserve a stale verification date.
 
-[release]: https://github.com/earendil-works/pi/releases/tag/v0.87.0
-[main]: https://github.com/earendil-works/pi/commit/d201760ffee16564aa8d9a759e0c85b70db33674
-[boundary-release]: https://github.com/earendil-works/pi/compare/3390bd93630965a12a0a1a5c36ce890ec22f7e1d...16787ad5b2dc748047f314ca1bfe7708f30f54f3
-[release-main]: https://github.com/earendil-works/pi/compare/16787ad5b2dc748047f314ca1bfe7708f30f54f3...d201760ffee16564aa8d9a759e0c85b70db33674
+[release]: https://github.com/earendil-works/pi/releases/tag/v0.87.1
+[main]: https://github.com/earendil-works/pi/commit/898ab804050730e9dcefb4443875d5a932aa6a32
+[previous-release]: https://github.com/earendil-works/pi/compare/16787ad5b2dc748047f314ca1bfe7708f30f54f3...f07218c4d4bbc12bef056a7058c3dd49dfe41abe
+[boundary-release]: https://github.com/earendil-works/pi/compare/d201760ffee16564aa8d9a759e0c85b70db33674...f07218c4d4bbc12bef056a7058c3dd49dfe41abe
+[release-main]: https://github.com/earendil-works/pi/compare/f07218c4d4bbc12bef056a7058c3dd49dfe41abe...898ab804050730e9dcefb4443875d5a932aa6a32
 [sdk]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/coding-agent/src/core/sdk.ts#L368-L439
 [session-projection]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/coding-agent/src/core/agent-session.ts#L608-L685
 [context-hooks]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/coding-agent/src/core/extensions/runner.ts#L1185-L1251
 [boundary-runner]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/coding-agent/src/core/extensions/runner.ts#L928-L977
-[durable-exports]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/durable/src/index.ts#L1-L31
+[durable-exports]: https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/durable/src/index.ts#L1-L30
+[durable-package]: https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/durable/package.json#L8-L30
+[durable-sqlite]: https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/durable/src/storage/sqlite/index.ts#L1-L8
+[durable-sqlite-node]: https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/durable/src/storage/sqlite/node.ts#L79-L121
+[durable-main-package]: https://github.com/earendil-works/pi/blob/898ab804050730e9dcefb4443875d5a932aa6a32/packages/durable/package.json#L8-L50
 [agent-package]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/agent/package.json#L8-L41
 [pico-options]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/agent/src/harness/pico3/harness.ts#L58-L110
 [pico-watch]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/agent/src/harness/pico3/harness.ts#L746-L803
 [pico-chord]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/agent/src/harness/pico3/chord.ts#L41-L150
 [pico-jsonl]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/agent/src/harness/pico3/jsonl.ts#L28-L110
-[wp08]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/agent/docs/work-packages/08-named-branch-streaming-forks.md
+[wp08]: https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/agent/docs/work-packages/08-named-branch-streaming-forks.md
 [spec]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/agent/docs/harness.md
 [roadmap]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/agent/docs/post-wp05-roadmap.md
 [mobile]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/agent/docs/mobile-handoff/README.md
