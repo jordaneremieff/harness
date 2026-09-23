@@ -10,6 +10,7 @@ import {
 	type Usage,
 } from "@earendil-works/pi-ai";
 import type {
+	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
 	ExtensionUIContext,
@@ -117,7 +118,7 @@ export interface TestContext {
 }
 
 // These entrypoint drives supply only the context members each exercised path reads.
-// The adapter is the sole boundary to Pi's full host context; omitted services are not simulated.
+// The adapters bridge to Pi's full host context; omitted services are not simulated.
 export function hostContext(ctx: TestContext = {}): ExtensionCommandContext {
 	return ctx as ExtensionCommandContext;
 }
@@ -130,6 +131,21 @@ export function captureCommand(command: Omit<RegisteredCommand, "name" | "source
 			return command.getArgumentCompletions(text);
 		},
 		handler: (args: string, ctx: TestContext) => command.handler(args, hostContext(ctx)),
+	};
+}
+
+export function captureShortcut(shortcut: Parameters<ExtensionAPI["registerShortcut"]>[1]) {
+	return {
+		...shortcut,
+		handler: async (ctx: TestContext) =>
+			shortcut.handler(
+				new Proxy(ctx, {
+					get(target, key) {
+						assert.ok(key in target, `shortcut context does not supply ${String(key)}`);
+						return Reflect.get(target, key);
+					},
+				}) as ExtensionContext,
+			),
 	};
 }
 

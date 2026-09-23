@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, before, describe, it, mock } from "node:test";
@@ -26,9 +26,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { CAPACITY_STATE, capacityReset, readCapacityState } from "./capacity.ts";
 import type { DistillStreamFunction } from "./distill.ts";
-import type { PanelTheme } from "./panel.ts";
+import type { PanelTheme, StashPanelResult } from "./panel.ts";
 import {
 	captureCommand,
+	captureShortcut,
 	captureTool,
 	completedDistillStream,
 	controlledDistillStream,
@@ -46,6 +47,7 @@ import {
 function registry(overrides?: Parameters<typeof registerStash>[1]) {
 	const tools = new RequiredMap<string, ReturnType<typeof captureTool>>();
 	const commands = new RequiredMap<string, ReturnType<typeof captureCommand>>();
+	const shortcuts = new RequiredMap<string, ReturnType<typeof captureShortcut>>();
 	const sent: Array<{ content: string; options?: unknown }> = [];
 	const events = new RequiredMap<
 		string,
@@ -57,6 +59,9 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 		},
 		registerCommand: (name, command) => {
 			commands.set(name, captureCommand(command));
+		},
+		registerShortcut: (key, shortcut) => {
+			shortcuts.set(key, captureShortcut(shortcut));
 		},
 		exec: async () => ({ code: 0, stdout: "main\n", stderr: "", killed: false }),
 		sendUserMessage: (content, options) => {
@@ -74,7 +79,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 		},
 	};
 	registerStash(pi, overrides);
-	return { tools, commands, sent, events, pi };
+	return { tools, commands, shortcuts, sent, events, pi };
 }
 
 const theme: PanelTheme = {
@@ -109,10 +114,216 @@ after(async () => {
 });
 
 describe("stash entrypoint", () => {
-	it("registers lifecycle-aware tools and the /stash command", () => {
-		const { tools, commands } = registry();
+	it("registers lifecycle-aware tools, the /stash command, and the browser shortcut", () => {
+		const { tools, commands, shortcuts } = registry();
 		assert.deepEqual([...tools.keys()], ["stash_write", "stash_list", "stash_read", "stash_complete", "stash_rotate"]);
 		assert.ok(commands.has("stash"));
+		assert.deepEqual([...shortcuts.keys()], ["ctrl+alt+s"]);
+		assert.equal(shortcuts.get("ctrl+alt+s").description, "Open the stash browser");
+	});
+
+	it("opens and closes from the shortcut without pickup, creation, or editor changes", async () => {
+		const unexpected = () => {
+			throw new Error("opening the browser must not perform this action");
+		};
+		const { shortcuts, sent, pi } = registry({ distillStream: unexpected, copyText: unexpected });
+		pi.exec = unexpected;
+		pi.appendEntry = unexpected;
+		const entries = await listStashes(dir, { limit: 50 });
+		const before = await Promise.all(entries.map((entry) => readFile(entry.path, "utf8")));
+		const names = await readdir(dir);
+		let panels = 0;
+		for (const idle of [true, false]) {
+			await shortcuts.get("ctrl+alt+s").handler({
+				mode: "tui",
+				hasUI: true,
+				isIdle: () => idle,
+				ui: {
+					notify: unexpected,
+					setEditorText: unexpected,
+					pasteToEditor: unexpected,
+					setEditorComponent: unexpected,
+					custom: async (factory, options) => {
+						assert.equal(options?.overlay, true);
+						return new Promise((resolve) => {
+							const component = factory({ terminal: { rows: 30 }, requestRender() {} }, theme, {}, resolve);
+							assert.match(component.render(120).join("\n"), /Stashes/);
+							panels++;
+							component.handleInput("\x1b");
+						});
+					},
+				},
+			});
+		}
+		assert.equal(panels, 2);
+		assert.deepEqual(sent, []);
+		assert.deepEqual(await readdir(dir), names);
+		assert.deepEqual(await Promise.all(entries.map((entry) => readFile(entry.path, "utf8"))), before);
+	});
+
+	it("keeps deliberate shortcut pickup immediate when idle and queued while busy", async () => {
+		for (const idle of [true, false]) {
+			const title = `Shortcut pickup ${idle ? "idle" : "busy"}`;
+			const { record } = await writeStash(
+				dir,
+				{ title, summary: "SELECTED_SHORTCUT_HANDOVER" },
+				new Date("2025-01-01T00:00:00Z"),
+			);
+			const { shortcuts, sent } = registry();
+			const notices: string[] = [];
+			await shortcuts.get("ctrl+alt+s").handler({
+				mode: "tui",
+				hasUI: true,
+				cwd: "/workspace",
+				isIdle: () => idle,
+				ui: {
+					notify: (message) => {
+						notices.push(message);
+					},
+					custom: async (factory) =>
+						new Promise((resolve) => {
+							const component = factory({ terminal: { rows: 30 }, requestRender() {} }, theme, {}, resolve);
+							component.handleInput("/");
+							for (const character of title) component.handleInput(character);
+							component.handleInput("\r");
+							component.handleInput("\r");
+						}),
+				},
+			});
+			assert.equal(sent.length, 1);
+			assert.match(sent[0].content, /SELECTED_SHORTCUT_HANDOVER/);
+			assert.deepEqual(sent[0].options, idle ? undefined : { deliverAs: "followUp" });
+			const result = await readStash(dir, record.id);
+			assert.ok(result.ok);
+			assert.match(result.content, /^state: "active"$/m);
+			assert.equal(notices.length, idle ? 0 : 1);
+		}
+	});
+
+	it("ignores the shortcut outside TUI without a UI or store access", async () => {
+		const { shortcuts, sent } = registry();
+		const previous = process.env.PI_STASH_DIR;
+		process.env.PI_STASH_DIR = join(dir, "20260724T100000Z-large.md");
+		try {
+			for (const mode of ["rpc", "json", "print"] as const) {
+				await shortcuts.get("ctrl+alt+s").handler({ mode });
+			}
+		} finally {
+			process.env.PI_STASH_DIR = previous;
+		}
+		assert.deepEqual(sent, []);
+	});
+
+	for (const first of ["command", "shortcut"] as const) {
+		it(`shares the pending browser guard from ${first} through close and reopen`, async () => {
+			const { commands, shortcuts, sent } = registry();
+			let panels = 0;
+			let close: (result: StashPanelResult) => void = () => assert.fail("panel not open");
+			let ready: () => void = () => {};
+			let opened = new Promise<void>((resolve) => {
+				ready = resolve;
+			});
+			const ctx: TestContext = {
+				mode: "tui",
+				hasUI: true,
+				ui: {
+					custom: async () => {
+						panels++;
+						return new Promise((resolve) => {
+							close = resolve;
+							ready();
+						});
+					},
+				},
+			};
+			const command = () => commands.get("stash").handler("", ctx);
+			const shortcut = () => shortcuts.get("ctrl+alt+s").handler(ctx);
+			const pending = first === "command" ? command() : shortcut();
+			// Both calls arrive before the store load reaches the custom UI.
+			await Promise.all([command(), shortcut()]);
+			await opened;
+			await Promise.all([command(), shortcut()]);
+			assert.equal(panels, 1);
+			close({});
+			await pending;
+			opened = new Promise<void>((resolve) => {
+				ready = resolve;
+			});
+			const reopened = first === "command" ? shortcut() : command();
+			await opened;
+			assert.equal(panels, 2);
+			close({});
+			await reopened;
+			assert.deepEqual(sent, []);
+		});
+	}
+
+	it("releases the browser guard after UI rejection and store failure", async () => {
+		const { commands, shortcuts } = registry();
+		const notices: string[] = [];
+		let rejectPanel = true;
+		let panels = 0;
+		const ctx: TestContext = {
+			mode: "tui",
+			hasUI: true,
+			ui: {
+				notify: (message) => {
+					notices.push(message);
+				},
+				custom: async () => {
+					panels++;
+					if (rejectPanel) throw new Error("panel failed");
+					return {};
+				},
+			},
+		};
+		await assert.rejects(shortcuts.get("ctrl+alt+s").handler(ctx), /panel failed/);
+		rejectPanel = false;
+		await commands.get("stash").handler("", ctx);
+		const previous = process.env.PI_STASH_DIR;
+		process.env.PI_STASH_DIR = join(dir, "20260724T100000Z-large.md");
+		try {
+			await commands.get("stash").handler("", ctx);
+			assert.match(notices.join("\n"), /Could not open stash store/);
+		} finally {
+			process.env.PI_STASH_DIR = previous;
+		}
+		await shortcuts.get("ctrl+alt+s").handler(ctx);
+		assert.equal(panels, 3);
+	});
+
+	it("keeps browser guards local to each extension instance", async () => {
+		const first = registry();
+		const second = registry();
+		let close: (result: StashPanelResult) => void = () => assert.fail("panel not open");
+		let ready: () => void = () => {};
+		const opened = new Promise<void>((resolve) => {
+			ready = resolve;
+		});
+		const pending = first.shortcuts.get("ctrl+alt+s").handler({
+			mode: "tui",
+			ui: {
+				custom: async () =>
+					new Promise((resolve) => {
+						close = resolve;
+						ready();
+					}),
+			},
+		});
+		await opened;
+		let panels = 0;
+		await second.shortcuts.get("ctrl+alt+s").handler({
+			mode: "tui",
+			ui: {
+				custom: async () => {
+					panels++;
+					return {};
+				},
+			},
+		});
+		assert.equal(panels, 1);
+		close({});
+		await pending;
 	});
 
 	it("saves a private working checkpoint outside the handover listing", async () => {

@@ -12,6 +12,7 @@ The agent distills an effort into a durable Markdown handover. The extension own
 | `stash_complete` | tool | Close an active effort with a required concrete outcome. |
 | `stash_rotate` | tool | Archive a stale open or closed effort so it no longer appears in listings or pickup; the file moves to the store's dot-hidden `.trash` directory and remains recoverable. |
 | `/stash` | command | Browse and pick up efforts (TUI overlay); bare invocation opens the browser. |
+| `ctrl+alt+s` | shortcut | Open the same browser directly in TUI mode without submitting or replacing the editor draft. |
 | `/stash new <hint>` | command | Stream a separate model response to distill the live session plus the hint into a new stash. |
 | `/stash get <id>` | command | Pick up a stash by full id or unique prefix. |
 | `/stash get <id> <note>` | command | Pick up with an operator note: material recalled after the stash was written, delivered ahead of the artifact and authoritative on conflict. The artifact itself is never rewritten. |
@@ -318,6 +319,15 @@ and lifecycle changes; nothing ever deletes continuity data automatically.
 
 ## Browser behavior
 
+Press `ctrl+alt+s` to open the same browser as bare `/stash`, including while the
+agent works. The shortcut leaves the editor draft in place and does not stop the
+agent. Opening or closing the browser does not pick up, create, close, release,
+reopen, or rotate an artifact. Those actions still require an explicit choice.
+Repeated shortcut or bare command invocations do nothing while this browser or
+one of its action dialogs is open. Closing the workflow or an error releases the
+guard. The shortcut does nothing outside TUI mode; direct commands keep their
+existing mode behavior.
+
 The overlay loads the newest 200 artifacts and marks the count with `+` when older stashes exist. It is a framed, side-by-side browser: the left pane keeps the newest-first stash list visible while the right pane renders the selected handover as Markdown. The top border carries the supplied title and live position. Rows use `›` for selection plus a colored lifecycle glyph, date, and title: `○` open, `◐` active, `●` closed, and `◈` unknown (an unrecognized lifecycle value or an unreadable header). The preview includes state, creation and lifecycle timestamps, outcome, tags, session, project, branch, and artifact path above the body.
 
 `/` enters filter mode. Typing filters across id, title, tags, project, branch, lifecycle state/timestamps/outcome, and preview text; Up/Down still selects matches, and Enter or Escape returns to browsing with the query intact. The browser preserves the query and selected stash across outcome or action-dialog round trips.
@@ -330,7 +340,7 @@ The component derives its row budget from the host TUI and the overlay's height 
 
 ## Files
 
-- `index.ts`: tool registrations, `/stash` host, capacity hook, and the creation slot/status lifecycle.
+- `index.ts`: tool registrations, `/stash` and shortcut host, capacity hook, and the creation slot/status lifecycle.
 - `capacity.ts`: bounded session-state restoration, context observations, configuration, and latched continuity requests.
 - `store.ts`: private, collision-safe filesystem store, atomic lifecycle transitions, and the rotation archive.
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.

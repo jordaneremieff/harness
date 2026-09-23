@@ -42,7 +42,7 @@ type StashExecutionApi = Pick<ExtensionAPI, "exec">;
 type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage">;
 type StashExtensionApi = Pick<
 	ExtensionAPI,
-	"exec" | "registerCommand" | "registerTool" | "sendUserMessage" | "on" | "appendEntry"
+	"exec" | "registerCommand" | "registerShortcut" | "registerTool" | "sendUserMessage" | "on" | "appendEntry"
 >;
 
 const storeDir = () => resolveStoreDir(process.env, getAgentDir());
@@ -565,7 +565,7 @@ async function stashArgumentCompletions(argumentText: string): Promise<StashComp
 /** Activate a stash and inject its handover as the next user message. Shared by `get` and the browser. */
 async function deliverPickup(
 	pi: StashMessageApi,
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	id: string,
 	fail: (message: string) => void,
 	note?: string,
@@ -598,10 +598,10 @@ async function deliverPickup(
 	}
 }
 
-/** Bare `/stash` (TUI): browse stashes and act on them; a selected entry is picked up. */
+/** Browse stashes and act on them; a selected entry is picked up. */
 async function browseAndPickup(
 	pi: StashMessageApi,
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	fail: (message: string) => void,
 	copyText?: (text: string) => Promise<void>,
 ): Promise<void> {
@@ -664,7 +664,7 @@ async function browseAndPickup(
 
 type BrowserAction = { kind: "stop" | "continue" } | { kind: "pickup"; id: string; note?: string };
 
-async function closeFromBrowser(ctx: ExtensionCommandContext, id: string): Promise<void> {
+async function closeFromBrowser(ctx: ExtensionContext, id: string): Promise<void> {
 	const outcome = await ctx.ui.input("Concrete outcome for this stashed effort:");
 	if (outcome?.trim()) {
 		const transitioned = await changeLifecycle(id, { action: "close", outcome });
@@ -673,7 +673,7 @@ async function closeFromBrowser(ctx: ExtensionCommandContext, id: string): Promi
 }
 
 async function browserAction(
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	result: StashPanelResult | undefined,
 	fail: (message: string) => void,
 ): Promise<BrowserAction> {
@@ -703,7 +703,7 @@ async function browserAction(
 }
 
 async function manageBrowserEntry(
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	managed: NonNullable<StashPanelResult["manage"]>,
 	fail: (message: string) => void,
 ): Promise<BrowserAction> {
@@ -733,7 +733,7 @@ async function manageBrowserEntry(
 	}
 }
 
-async function applyBrowserAction(ctx: ExtensionCommandContext, id: string, action: string): Promise<BrowserAction> {
+async function applyBrowserAction(ctx: ExtensionContext, id: string, action: string): Promise<BrowserAction> {
 	if (action === "Pick up") {
 		return { kind: "pickup", id };
 	} else if (action === "Close with outcome") {
@@ -966,10 +966,36 @@ export default function (
 		},
 	});
 
+	let browserOpen = false;
+	async function openBrowser(ctx: ExtensionContext): Promise<void> {
+		if (browserOpen) return;
+		browserOpen = true;
+		try {
+			await browseAndPickup(
+				pi,
+				ctx,
+				(message) => {
+					if (ctx.hasUI) ctx.ui.notify(message, "error");
+					else throw new Error(message);
+				},
+				overrides?.copyText,
+			);
+		} finally {
+			browserOpen = false;
+		}
+	}
+
 	pi.registerCommand("stash", {
 		description: "Create, browse, get, complete, release, reopen, or rotate stashed efforts",
 		getArgumentCompletions: stashArgumentCompletions,
-		handler: (args, ctx) => handleStashCommand(pi, args, ctx, overrides),
+		handler: (args, ctx) => handleStashCommand(pi, args, ctx, openBrowser, overrides),
+	});
+	pi.registerShortcut("ctrl+alt+s", {
+		description: "Open the stash browser",
+		handler: async (ctx) => {
+			if (ctx.mode !== "tui") return;
+			await openBrowser(ctx);
+		},
 	});
 }
 
@@ -977,6 +1003,7 @@ async function handleStashCommand(
 	pi: StashExtensionApi,
 	args: string,
 	ctx: ExtensionCommandContext,
+	openBrowser: (ctx: ExtensionContext) => Promise<void>,
 	overrides?: { distillStream?: DistillStreamFunction; copyText?: (text: string) => Promise<void> },
 ): Promise<void> {
 	const raw = args.trim();
@@ -1017,7 +1044,7 @@ async function handleStashCommand(
 		fail(`Pick up with: /stash get ${verb}`);
 		return;
 	}
-	if (!verb) return browseAndPickup(pi, ctx, fail, overrides?.copyText);
+	if (!verb) return openBrowser(ctx);
 	fail(`Unknown /stash action "${safeLine(verb)}". Create with /stash new <hint>, or use /stash help.`);
 }
 
