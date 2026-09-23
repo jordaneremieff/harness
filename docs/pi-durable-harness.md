@@ -178,6 +178,46 @@ Verified 2026-09-22 against installed `dist/core/resource-loader.js`,
   precedence, source applicability, and delivery semantics. Kernel adoption
   alone does not supply these application contracts.
 
+## Resource contributions and interactive lifecycle
+
+Verified 2026-09-23 against coding-agent 0.87.0 in the active installation and
+checkout lockfile. Read-only metadata checks still resolve npm `latest` to
+0.87.1 and upstream main to `898ab804050730e9dcefb4443875d5a932aa6a32`;
+those refs do not change the installed contracts below.
+
+- `resources_discover` contributes paths after `session_start`. Installed
+  `dist/core/resource-loader.js` appends those paths to its existing lists.
+  `dist/core/skills.js` and the loader's prompt deduplication keep the first
+  same-name resource and report collisions. A returned path is not proof that
+  its resource became the selected command or skill. Keep normal skills and
+  prompts on the [worktree promotion boundary](conventions/worktrees.md#pi-configuration).
+  Pi's explicit `--skill` and `--prompt-template` paths support isolated draft
+  loading without an automatic worktree discovery hook.
+- Installed `dist/core/extensions/runner.js` wraps extension `select`,
+  `confirm`, `input`, `editor`, and `custom` calls in `ui_prompt_start` and
+  `ui_prompt_end`. Nested or overlapping calls share one span, which ends after
+  all of those calls settle. These notification-only events describe an open UI
+  span, not proof that an operator response is necessary: custom UI also hosts
+  asynchronous work.
+- `cache_warming_decision` reports the host's proposed action and estimates.
+  The runner uses the last handler override; handlers still receive the original
+  event. Installed `dist/core/cache-warmer.js` checks cancellation and deadlines
+  after that hook, then records `cache_warm` usage only after a successful
+  response. A decision event establishes neither completion nor current cache
+  state. Pi owns the schedule and exposes its status through `/session`.
+- Installed `dist/core/agent-session.js` reloads resources and the extension
+  runtime while retaining its SessionManager. It emits shutdown and startup
+  events with reason `reload`. Reload does not select another conversation or
+  establish that a separately stored handover belongs to the current effort.
+- `registerShortcut` handlers receive `ExtensionContext`, not the command-only
+  context. Panel helpers invoked from a shortcut must use that actual contract;
+  a cast does not supply command-only session controls. Installed
+  `dist/core/extensions/types.d.ts`, `docs/extensions.md`, and
+  `docs/keybindings.md` define the registration and key formats.
+
+These are installed-source boundaries. UI focus and input behavior require
+checks through the interactive host, not merely a successful registration.
+
 ## Current-session evidence retrieval
 
 Verified 2026-09-22 against installed `dist/core/session-manager.d.ts`,
