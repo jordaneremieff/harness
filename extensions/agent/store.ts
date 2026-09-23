@@ -1,10 +1,10 @@
 /** Ordinary Pi JSONL sessions with exclusive local writer claims. */
-import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Context } from "@earendil-works/pi-agent-core";
-import { CURRENT_SESSION_VERSION, SessionManager } from "@earendil-works/pi-coding-agent";
+import { CURRENT_SESSION_VERSION, parseSessionEntries, SessionManager } from "@earendil-works/pi-coding-agent";
 
 export interface AgentSessionMetadata {
 	id: string;
@@ -17,6 +17,29 @@ export interface StoredAgentSession {
 	manager: SessionManager;
 	metadata: AgentSessionMetadata;
 	close(context?: Context): Promise<void>;
+}
+
+/** Largest native session file a read-only observation will capture. */
+export const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
+
+/** True only when the final bytes are an incomplete entry that `parseSessionEntries` drops. */
+function hasUnfinishedTail(content: string): boolean {
+	if (!content || content.endsWith("\n")) return false;
+	const finalLine = content.slice(content.lastIndexOf("\n") + 1);
+	if (!finalLine.trim()) return false;
+	try { JSON.parse(finalLine); return false; } catch { return true; }
+}
+
+/**
+ * A point-in-time snapshot of a native session file, read without a writer claim.
+ * `manager` holds the parsed entries; `unavailable` names a bound that refused the capture.
+ */
+export interface ReadOnlySessionCapture {
+	manager: SessionManager;
+	cwd: string;
+	bytes: number;
+	unfinishedTail: boolean;
+	unavailable?: string;
 }
 export class AgentStore {
 	readonly root: string;
@@ -112,6 +135,80 @@ export class AgentStore {
 			if (newline < 0) throw new Error("native session header exceeds its limit or is unfinished");
 			const header = JSON.parse(buffer.toString("utf8", 0, newline));
 			if (header?.type !== "session" || header.version !== CURRENT_SESSION_VERSION || header.id !== metadata.id || header.cwd !== metadata.cwd || !Number.isFinite(Date.parse(header.timestamp))) throw new Error("not a current ordinary Pi agent session");
+		} finally { closeSync(fd); }
+	}
+
+	/** Read only the bounded first header line of a native session file; repairs nothing. */
+	private readHeader(path: string): { id?: unknown; cwd?: unknown; timestamp?: unknown; version?: unknown } | undefined {
+		let fd: number;
+		try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+		catch { return undefined; }
+		try {
+			if (!fstatSync(fd).isFile()) return undefined;
+			const buffer = Buffer.alloc(16384);
+			let bytes = 0;
+			let newline = -1;
+			while (bytes < buffer.length && newline < 0) {
+				const count = readSync(fd, buffer, bytes, buffer.length - bytes, null);
+				if (!count) break;
+				bytes += count;
+				newline = buffer.indexOf(10, 0);
+			}
+			if (newline < 0) return undefined;
+			return JSON.parse(buffer.toString("utf8", 0, newline)) as { id?: unknown; cwd?: unknown; timestamp?: unknown; version?: unknown };
+		} catch { return undefined; } finally { closeSync(fd); }
+	}
+
+	/**
+	 * Locate one native session by id without loading transcript bodies.
+	 *
+	 * This reads headers only, so a session too large to capture is still
+	 * discoverable and reported through `readOnly` instead of being loaded.
+	 */
+	locate(id: string): AgentSessionMetadata | undefined {
+		let files: string[];
+		try { files = readdirSync(this.nativeRoot); } catch { return undefined; }
+		for (const file of files) {
+			if (!file.endsWith(".jsonl")) continue;
+			const path = join(this.nativeRoot, file);
+			const header = this.readHeader(path);
+			if (!header || header.id !== id) continue;
+			const stat = statSync(path, { throwIfNoEntry: false });
+			if (!stat?.isFile()) continue;
+			const metadata: AgentSessionMetadata = { id, cwd: String(header.cwd), path, createdAt: Date.parse(String(header.timestamp)), modifiedAt: stat.mtimeMs };
+			try { this.validate(metadata); } catch { continue; }
+			return metadata;
+		}
+		return undefined;
+	}
+
+	/**
+	 * Read one native session file as a point-in-time snapshot.
+	 *
+	 * This path takes no writer claim and calls no `SessionManager.open`, so it
+	 * never repairs, rewrites, or truncates another owner's file. A file above
+	 * the byte bound is reported unavailable instead of being loaded, and an
+	 * unfinished tail is skipped and reported.
+	 */
+	readOnly(metadata: AgentSessionMetadata): ReadOnlySessionCapture {
+		const unavailable = (reason: string): ReadOnlySessionCapture => ({ manager: SessionManager.inMemory(metadata.cwd), cwd: metadata.cwd, bytes: 0, unfinishedTail: false, unavailable: reason });
+		if (resolve(dirname(metadata.path)) !== this.nativeRoot) return unavailable("not a native agent session path");
+		let fd: number;
+		try { fd = openSync(metadata.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+		catch (error) { return unavailable(`session file is not readable (${(error as NodeJS.ErrnoException).code ?? String(error)})`); }
+		try {
+			const stat = fstatSync(fd);
+			if (!stat.isFile()) return unavailable("native session path is not a regular file");
+			if (stat.size > MAX_CAPTURE_BYTES) return unavailable(`session file exceeds the ${MAX_CAPTURE_BYTES}-byte read-only capture bound`);
+			const buffer = Buffer.alloc(stat.size);
+			let bytes = 0;
+			while (bytes < buffer.length) {
+				const count = readSync(fd, buffer, bytes, buffer.length - bytes, null);
+				if (!count) break;
+				bytes += count;
+			}
+			const content = buffer.toString("utf8", 0, bytes);
+			return { manager: SessionManager.inMemory(metadata.cwd, undefined, parseSessionEntries(content)), cwd: metadata.cwd, bytes, unfinishedTail: hasUnfinishedTail(content) };
 		} finally { closeSync(fd); }
 	}
 

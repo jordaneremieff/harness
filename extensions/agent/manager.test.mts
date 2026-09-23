@@ -1,13 +1,13 @@
 import { createTestRuntime } from "./test-runtime.mts";
 import assert from "node:assert/strict";
 import { defined } from "./test-assertions.mts";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, type FSWatcher } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, type FSWatcher } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "@earendil-works/pi-agent-core";
-import { type ExtensionAPI, type ExtensionCommandContext, type RegisteredCommand, type ModelRuntime, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionCommandContext, type RegisteredCommand, type ModelRuntime, ProjectTrustStore, SessionManager } from "@earendil-works/pi-coding-agent";
 import { DetachedRuns, formatRun } from "./detached.ts";
 import registerAgentExtension, { AgentManager } from "./index.ts";
 import { AgentWorkerSession } from "./worker.ts";
@@ -533,5 +533,84 @@ describe("rewind", () => {
 		} finally {
 			await test.close();
 		}
+	});
+});
+
+describe("read-only observation", () => {
+	it("inspects a claimed session from persisted entries without a second claim or SessionManager.open", async (t) => {
+		const test = await harness();
+		try {
+			const held = await test.store.create(test.cwd, test.context);
+			const ids = [0, 1, 2].map((index) => held.manager.appendCustomEntry("observed.record", { index }));
+			const claims = join(test.store.nativeRoot, ".claims");
+			assert.equal(readdirSync(claims).length, 1);
+			const open = t.mock.method(SessionManager, "open", () => { throw new Error("SessionManager.open is forbidden for observation"); });
+			const page = await test.manager.inspect(held.metadata.id, { limit: 12 });
+			assert.equal(page.liveOwner, false);
+			assert.ok("capture" in page && page.capture);
+			assert.equal(page.capture.available, true);
+			assert.equal(page.capture.mode, "read-only");
+			assert.ok("entries" in page && page.entries);
+			assert.deepEqual(page.entries.map((entry) => entry.id), [...ids].reverse());
+			assert.equal(open.mock.callCount(), 0);
+			assert.equal(readdirSync(claims).length, 1);
+			await held.close(test.context);
+		} finally { await test.close(); }
+	});
+
+	it("reports stored metadata for an unheld session without creating a writer claim", async (t) => {
+		const test = await harness();
+		try {
+			const held = await test.store.create(test.cwd, test.context);
+			const id = held.metadata.id;
+			await held.close(test.context);
+			const claims = join(test.store.nativeRoot, ".claims");
+			assert.equal(readdirSync(claims).length, 0);
+			const open = t.mock.method(SessionManager, "open", () => { throw new Error("SessionManager.open is forbidden for observation"); });
+			const text = await test.manager.status(id);
+			assert.match(text, /read-only capture/u);
+			assert.match(text, /live owner status unavailable/u);
+			assert.match(text, new RegExp(`cwd=${test.cwd.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u"));
+			assert.equal(open.mock.callCount(), 0);
+			assert.equal(readdirSync(claims).length, 0);
+		} finally { await test.close(); }
+	});
+
+	it("keeps a complete final entry that has no trailing newline and reports no unfinished tail", async () => {
+		const test = await harness();
+		try {
+			const held = await test.store.create(test.cwd, test.context);
+			const finalId = held.manager.appendCustomEntry("observed.record", { index: 0 });
+			const path = held.metadata.path;
+			await held.close(test.context);
+			const content = readFileSync(path, "utf8");
+			assert.ok(content.endsWith("\n"));
+			writeFileSync(path, content.slice(0, -1));
+			const page = await test.manager.inspect(held.metadata.id, { limit: 12 });
+			assert.ok("capture" in page && page.capture);
+			assert.equal(page.capture.available, true);
+			assert.equal(page.capture.unfinishedTail, false);
+			assert.ok("entries" in page && page.entries);
+			assert.ok(page.entries.some((entry) => entry.id === finalId), "the complete final entry stays readable");
+			assert.doesNotMatch(await test.manager.status(held.metadata.id), /ends mid-entry/u);
+		} finally { await test.close(); }
+	});
+
+	it("omits an incomplete final line and reports the unfinished tail", async () => {
+		const test = await harness();
+		try {
+			const held = await test.store.create(test.cwd, test.context);
+			const finalId = held.manager.appendCustomEntry("observed.record", { index: 0 });
+			const path = held.metadata.path;
+			await held.close(test.context);
+			appendFileSync(path, '{"type":"custom","id":"incomplete"');
+			const page = await test.manager.inspect(held.metadata.id, { limit: 12 });
+			assert.ok("capture" in page && page.capture);
+			assert.equal(page.capture.unfinishedTail, true);
+			assert.ok("entries" in page && page.entries);
+			assert.ok(page.entries.some((entry) => entry.id === finalId));
+			assert.ok(!page.entries.some((entry) => entry.id === "incomplete"), "the incomplete final line is not an entry");
+			assert.match(await test.manager.status(held.metadata.id), /ends mid-entry/u);
+		} finally { await test.close(); }
 	});
 });

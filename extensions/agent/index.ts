@@ -30,7 +30,7 @@ import { withDetachedControl, type DetachedControlClient } from "./detached-cont
 import { PlaceBook } from "./places.ts";
 import { planRewind } from "./rewind.ts";
 import { type AgentSessionMetadata, AgentStore } from "./store.ts";
-import { AgentWorkerSession, UnavailableAgentModelError, type WorkerCommandResult, type WorkerStatus, type WorkerModelChoice } from "./worker.ts";
+import { AgentWorkerSession, projectInspection, type WorkerCommandResult, type WorkerStatus, type WorkerModelChoice } from "./worker.ts";
 
 /** Canonical reasoning levels. The worker clamps the level to the selected model. */
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
@@ -280,6 +280,30 @@ export class AgentManager {
 
 	private assertOpen(): void {
 		if (this.closing) throw new Error("agent manager is closed");
+	}
+
+	/**
+	 * Observation never takes a writer claim for a session this process does not
+	 * already hold. A held worker serves the live path, a detached run keeps its
+	 * public transport, and every other session is read from a bounded snapshot
+	 * of its persisted entries. No writer is opened and no claim is removed.
+	 */
+	private withObservation<T>(
+		sessionId: string,
+		local: (worker: AgentWorkerSession) => Promise<T>,
+		remote: (client: DetachedControlClient) => Promise<T>,
+		capture: (metadata: AgentSessionMetadata) => T,
+		signal?: AbortSignal,
+	): Promise<T> {
+		return this.trackControl(sessionId, async () => {
+			const held = this.sessions.get(sessionId);
+			if (held) return local(held);
+			const run = this.detachedOwner(sessionId);
+			if (run) return withDetachedControl(run, remote, signal);
+			const metadata = this.store.locate(sessionId);
+			if (!metadata) throw new Error(`no agent session ${sessionId}`);
+			return capture(metadata);
+		});
 	}
 
 	/** Every startup remains owned until admission or cleanup completes. */
@@ -714,10 +738,15 @@ export class AgentManager {
 
 	async status(sessionId: string | undefined, signal?: AbortSignal): Promise<string> {
 		if (sessionId) {
-			return this.withSessionControl(sessionId, async (worker) => formatStatus(await worker.status(), "status"), async (client) => formatStatus(await client.status(), "detached owner status"), signal).catch((error: unknown) => {
+			return this.withObservation(
+				sessionId,
+				async (worker) => formatStatus(await worker.status(), "status"),
+				async (client) => formatStatus(await client.status(), "detached owner status"),
+				(metadata) => this.formatCaptureStatus(metadata),
+				signal,
+			).catch((error: unknown) => {
 				this.assertOpen();
 				if (this.transfers.has(sessionId) || signal?.aborted) throw error;
-				if (error instanceof UnavailableAgentModelError) return `session ${error.sessionId}: stored model unavailable\n    cwd=${error.cwd}\n    model=${error.model.provider}/${error.model.modelId}\n    no model was substituted and no work started\n    use agent_attach with an explicit available provider/model to repair an idle session`;
 				const live = this.detachedOwner(sessionId);
 				if (!live) throw error;
 				const detail = error instanceof Error ? error.message : String(error);
@@ -730,6 +759,49 @@ export class AgentManager {
 		);
 		for (const [id, primary] of this.primary) lines.push(`${id}  cwd=${primary.cwd}  primary=true`);
 		return `agent sessions (${lines.length}):\n${lines.join("\n") || "(none)"}`;
+	}
+
+	/**
+	 * Stored metadata plus a bounded read-only snapshot for a session this
+	 * process does not own. Live fields exist only in that owner and are labeled
+	 * unavailable; a writer claim is never removed to make status succeed.
+	 */
+	private formatCaptureStatus(metadata: AgentSessionMetadata): string {
+		const capture = this.store.readOnly(metadata);
+		if (capture.unavailable) {
+			return [
+				`session ${metadata.id}: read-only capture unavailable (live owner status unavailable)`,
+				`    cwd=${metadata.cwd}`,
+				`    ${capture.unavailable}`,
+				"    no writer was opened and no claim was removed",
+			].join("\n");
+		}
+		const lines = [
+			`session ${metadata.id}: read-only capture (live owner status unavailable)`,
+			`    cwd=${metadata.cwd}  modified=${new Date(metadata.modifiedAt).toISOString()}  bytes=${capture.bytes}`,
+		];
+		if (capture.unfinishedTail) lines.push("    the file ends mid-entry; the capture omits that incomplete final line");
+		const model = capture.manager.buildSessionContext().model;
+		if (model) {
+			lines.push(`    model=${model.provider}/${model.modelId}`);
+			if (!this.modelRuntime.getModel(model.provider, model.modelId)) {
+				lines.push("    stored model unavailable; no model was substituted and no work started");
+				lines.push("    use agent_attach with an explicit available provider/model to repair an idle session");
+			}
+		}
+		lines.push("    a writer claim, if present, is not removed; live state requires the session owner");
+		return lines.join("\n");
+	}
+
+	/** Read a persisted inspection when no local owner and no detached run exists. */
+	private captureInspection(metadata: AgentSessionMetadata, options: { cursor?: number; limit?: number; entryId?: string; offset?: number }) {
+		const capture = this.store.readOnly(metadata);
+		return projectInspection(capture.manager, metadata.id, options, undefined, {
+			available: capture.unavailable === undefined,
+			bytes: capture.bytes,
+			unfinishedTail: capture.unfinishedTail,
+			...(capture.unavailable ? { reason: capture.unavailable } : {}),
+		});
 	}
 
 	closeAll(): Promise<void> {
@@ -801,7 +873,13 @@ export class AgentManager {
 	}
 
 	async inspect(sessionId: string, options: { cursor?: number; limit?: number; entryId?: string; offset?: number } = {}, signal?: AbortSignal) {
-		return this.withSessionControl(sessionId, (worker) => worker.inspect(options), (client) => client.inspect(options), signal);
+		return this.withObservation(
+			sessionId,
+			(worker) => worker.inspect(options),
+			(client) => client.inspect(options),
+			(metadata) => this.captureInspection(metadata, options),
+			signal,
+		);
 	}
 
 	/** Projected durable entries of one live session (diagnostics and tests). */

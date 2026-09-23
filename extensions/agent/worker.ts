@@ -75,6 +75,83 @@ function fragment(text: string, offset: number, maxBytes: number) {
 	return { text: text.slice(offset, end), nextOffset: end < text.length ? end : null, truncated: end < text.length };
 }
 
+/** Owner-only inspection state. Omitted for a read-only snapshot of persisted entries. */
+export interface InspectionOwner {
+	operation: string | null;
+	lastError: string | undefined;
+}
+
+/** Capture bounds attached to a read-only inspection. */
+export interface InspectionCapture {
+	available: boolean;
+	bytes: number;
+	unfinishedTail: boolean;
+	reason?: string;
+}
+
+interface InspectionBase {
+	sessionId: string;
+	execution: { current: { id: string } | null; recovery: string };
+	liveOwner: boolean;
+	capture?: { mode: "read-only"; snapshot: true; available: boolean; bytes: number; unfinishedTail: boolean; liveState: "unavailable"; reason?: string };
+	lastError?: { text: string; nextOffset: number | null; truncated: boolean };
+}
+
+function lastCustom(entries: SessionEntry[], customType: string): SessionEntry | undefined {
+	return entries.findLast((entry) => entry.type === "custom" && entry.customType === customType);
+}
+
+function inspectionExecution(all: SessionEntry[], result: SessionEntry | undefined, owner?: InspectionOwner) {
+	if (!owner) return { current: null, recovery: "read-only snapshot; live operation and owner result unavailable" };
+	const lastStart = lastCustom(all, START_TYPE);
+	const interrupted = !owner.operation && lastStart?.type === "custom" && (!result || all.indexOf(lastStart) > all.indexOf(result));
+	return { current: owner.operation ? { id: owner.operation } : null, recovery: interrupted ? "interrupted; persisted history retained, no in-flight replay" : "ordinary persisted history; no in-flight replay" };
+}
+
+function inspectionCapture(capture: InspectionCapture) {
+	return { mode: "read-only" as const, snapshot: true as const, available: capture.available, bytes: capture.bytes, unfinishedTail: capture.unfinishedTail, liveState: "unavailable" as const, ...(capture.reason ? { reason: capture.reason } : {}) };
+}
+
+function inspectionEntry(manager: SessionManager, sessionId: string, base: InspectionBase, entryId: string, offset?: number) {
+	const entry = manager.getEntry(entryId);
+	if (!entry) throw new Error(`no entry ${entryId} in session ${sessionId}`);
+	const start = Math.max(0, offset ?? 0);
+	return { ...base, entryId: entry.id, offset: start, ...fragment(JSON.stringify(entry), start, 12000) };
+}
+
+function inspectionPage(all: SessionEntry[], base: InspectionBase, result: SessionEntry | undefined, options: { cursor?: number; limit?: number }) {
+	const end = Math.min(all.length, options.cursor ?? all.length);
+	const start = Math.max(0, end - Math.max(1, Math.min(12, options.limit ?? 6)));
+	const entries = all.slice(start, end).reverse().map((entry) => ({ id: entry.id, parentId: entry.parentId, type: entry.type, role: entry.type === "message" ? entry.message.role : undefined, ...fragment(JSON.stringify(entry), 0, 1200) }));
+	return { ...base, result: result?.type === "custom" ? fragment(JSON.stringify(result.data), 0, 2400) : undefined, entries, nextCursor: start || null, order: "newestFirst" as const, detail: "Use entryId and offset for the complete serialized entry." };
+}
+
+/**
+ * Project one session's persisted entries into a bounded inspection.
+ *
+ * Both the live owner and a read-only snapshot use this projection. When
+ * `owner` is omitted, owner-only fields such as the current operation and last
+ * error are reported unavailable instead of being guessed from stored history.
+ */
+export function projectInspection(
+	manager: SessionManager,
+	sessionId: string,
+	options: { cursor?: number; limit?: number; entryId?: string; offset?: number },
+	owner?: InspectionOwner,
+	capture?: InspectionCapture,
+) {
+	const all = manager.getEntries();
+	const result = lastCustom(all, RESULT_TYPE);
+	const base: InspectionBase = {
+		sessionId,
+		execution: inspectionExecution(all, result, owner),
+		liveOwner: owner !== undefined,
+		...(capture ? { capture: inspectionCapture(capture) } : {}),
+		...(owner?.lastError ? { lastError: fragment(owner.lastError, 0, 2400) } : {}),
+	};
+	return options.entryId ? inspectionEntry(manager, sessionId, base, options.entryId, options.offset) : inspectionPage(all, base, result, options);
+}
+
 export class AgentWorkerSession {
 	private runtime!: AgentSessionRuntime;
 	private held!: StoredAgentSession;
@@ -478,22 +555,7 @@ export class AgentWorkerSession {
 		return { sessionId: this.sessionId(), cwd: session.sessionManager.getCwd(), name: session.sessionManager.getSessionName(), tipId: session.sessionManager.getLeafId(), model: { provider: model.provider, modelId: model.id, thinkingLevel: session.thinkingLevel }, operation: this.operation ?? null, tools: session.getAllTools().map((tool) => tool.name), activeTools: session.getActiveToolNames(), extensions: session.resourceLoader.getExtensions().extensions.map((extension) => extension.path), entryCount: session.sessionManager.getEntries().length, ...(this.lastError ? { lastError: this.lastError.slice(0, 2000) } : {}) };
 	}
 	async inspect(options: { cursor?: number; limit?: number; entryId?: string; offset?: number } = {}) {
-		const all = this.sessionManager().getEntries();
-		const result = all.findLast((entry) => entry.type === "custom" && entry.customType === RESULT_TYPE);
-		const lastStart = all.findLast((entry) => entry.type === "custom" && entry.customType === START_TYPE);
-		const interrupted = !this.operation && lastStart?.type === "custom" && (!result || all.indexOf(lastStart) > all.indexOf(result));
-		const execution = { current: this.operation ? { id: this.operation } : null, recovery: interrupted ? "interrupted; persisted history retained, no in-flight replay" : "ordinary persisted history; no in-flight replay" };
-		const base = { sessionId: this.sessionId(), execution, lastError: this.lastError ? fragment(this.lastError, 0, 2400) : undefined };
-		if (options.entryId) {
-			const entry = this.sessionManager().getEntry(options.entryId);
-			if (!entry) throw new Error(`no entry ${options.entryId} in session ${this.sessionId()}`);
-			const offset = Math.max(0, options.offset ?? 0);
-			return { ...base, entryId: entry.id, offset, ...fragment(JSON.stringify(entry), offset, 12000) };
-		}
-		const end = Math.min(all.length, options.cursor ?? all.length);
-		const start = Math.max(0, end - Math.max(1, Math.min(12, options.limit ?? 6)));
-		const entries = all.slice(start, end).reverse().map((entry) => ({ id: entry.id, parentId: entry.parentId, type: entry.type, role: entry.type === "message" ? entry.message.role : undefined, ...fragment(JSON.stringify(entry), 0, 1200) }));
-		return { ...base, result: result?.type === "custom" ? fragment(JSON.stringify(result.data), 0, 2400) : undefined, entries, nextCursor: start || null, order: "newestFirst", detail: "Use entryId and offset for the complete serialized entry." };
+		return projectInspection(this.sessionManager(), this.sessionId(), options, { operation: this.operation ?? null, lastError: this.lastError });
 	}
 	async waitForIdle(): Promise<void> {
 		while (this.tasks.size) await Promise.allSettled(this.tasks);

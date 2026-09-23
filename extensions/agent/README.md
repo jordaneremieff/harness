@@ -82,9 +82,15 @@ tool itself. Use another session's controller for these operations.
 `agent_inspect` reads actual session entries and execution/result state. Its
 bounded previews retain entry IDs and roles. Use an entry ID and the returned
 offset to read a complete entry in chunks; use the returned cursor for older
-entries. This reads ordinary Pi session entries through the session owner.
-Host operation and result entries record observed outcomes, not a second
-execution engine or a crash-replay log.
+entries. For a session this process already holds, it reads ordinary Pi session
+entries through the live owner. For any other session with no detached run, it
+reads a bounded point-in-time snapshot of the persisted entries instead: no
+writer claim is taken, `SessionManager.open` is not called, and the source file
+is never repaired, rewritten, or truncated. A file above the capture bound, or
+an unfinished tail, is reported explicitly. Live owner fields (the current
+operation and last error) stay unavailable and are labeled that way. Host
+operation and result entries record observed outcomes, not a second execution
+engine or a crash-replay log.
 
 ## Repair at the cause
 
@@ -174,7 +180,11 @@ progress record, the view says that no progress record exists yet.
 `agent_status` and `/agent status <session-id>` request live status from the
 owning process. If that control is unavailable, they explicitly label the
 run-record view as a recorded observation, not live status. `agent_inspect`
-reads bounded entries and execution state from the owner. After settlement,
+reads bounded entries and execution state from the owner. When this process
+holds neither the worker nor a detached run, `agent_status` reports stored
+metadata from a bounded read-only snapshot and both tools state that live owner
+state is unavailable. They never open a writer or remove a claim to make an
+observation succeed. After settlement,
 the run view shows its summary or error when present. The last progress record
 remains visible. Progress snapshots are throttled, not a complete event stream.
 
@@ -223,6 +233,10 @@ cleanup retains the claim; a failed close permits another cleanup attempt.
 An abrupt process exit retains the claim, so reopening then fails closed.
 The error names the claim file. Confirm that no writer survives before manual
 removal; the extension never guesses that another process is safe to replace.
+Read-only observation does not take a claim, so `agent_status` and
+`agent_inspect` can report a session that another process owns; they read a
+bounded point-in-time snapshot of its persisted entries and do not remove the
+owner's claim.
 Claims coordinate agent-extension processes on the same local filesystem;
 they do not fence arbitrary programs that bypass the store.
 
