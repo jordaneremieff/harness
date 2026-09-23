@@ -6,6 +6,32 @@ contracts preserve its capabilities. An exported kernel does not by itself
 replace ordinary extension loading, project trust, resource discovery, or
 submitted-result retrieval.
 
+## Standalone distillation boundary
+
+Verified 2026-09-23 against the active installation and stash worktree, both
+coding-agent 0.87.0. Installed `docs/extensions.md`,
+`dist/core/model-registry.{js,d.ts}`, and `dist/core/model-runtime.js` establish
+that `ModelRegistry.streamSimple()` uses the configured provider and resolves
+request-time authentication, including extension registrations. The shipped
+`examples/extensions/summarize.ts` uses the same registry for a standalone
+completion. Stash uses this ordinary extension interface rather than constructing
+an AgentSession for a fixed, tool-free request.
+
+Installed pi-ai `dist/utils/retry.{js,d.ts}` supplies `retryAssistantCall`;
+`dist/core/settings-manager.js` supplies the existing retry and request settings.
+Stash retains transient retries, excludes context overflow from that loop, and
+sums each attempt's reported usage once. Model adapters retain their output
+defaults. These controls do not establish a universal provider token cap or
+complete invoice accounting.
+
+AgentSession also owns automatic overflow/length recovery and cache warming
+(`dist/core/agent-session.js`, `dist/core/compaction/compaction.js`, and
+`dist/core/sdk.js`). A registry stream does not supply those services. Stash
+keeps its captured transcript fixed and returns overflow or incomplete-output
+failure instead of inheriting session recovery. Its controlled stream tests and
+real-registry synthetic-provider command test establish the request, usage,
+cancellation, and storage boundaries, not live-model output quality.
+
 ## Policy pre-call guidance boundary
 
 Verified 2026-09-23. The active installation and policy worktree still resolve

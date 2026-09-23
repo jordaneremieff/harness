@@ -16,7 +16,7 @@ import { CAPACITY_STATE, capacityConfig, capacityReset, capacityStatus, capacity
 import {
 	type DistillJob,
 	type DistillOutcome,
-	type DistillSessionFactory,
+	type DistillStreamFunction,
 	type DistillUsage,
 	resolveDistillModel,
 	resolveDistillThinking,
@@ -267,7 +267,7 @@ async function startCreation(
 	pi: StashExecutionApi,
 	ctx: ExtensionCommandContext,
 	hint: string,
-	sessionFactory: DistillSessionFactory | undefined,
+	streamSimple: DistillStreamFunction | undefined,
 ): Promise<void> {
 	// Synchronous failures must be visible in every mode: notify in TUI/RPC, throw in JSON/print.
 	const surface = (message: string, level: "info" | "warning" | "error"): void => {
@@ -336,7 +336,7 @@ async function startCreation(
 			branch,
 			sessionId,
 			storeDir: storeDir(),
-			sessionFactory,
+			streamSimple: streamSimple ?? ctx.modelRegistry.streamSimple.bind(ctx.modelRegistry),
 		});
 		slot.job = job;
 		controller.signal.addEventListener("abort", () => job.abort(), { once: true });
@@ -767,7 +767,7 @@ async function applyBrowserAction(ctx: ExtensionCommandContext, id: string, acti
 
 export default function (
 	pi: StashExtensionApi,
-	overrides?: { distillSessionFactory?: DistillSessionFactory; copyText?: (text: string) => Promise<void> },
+	overrides?: { distillStream?: DistillStreamFunction; copyText?: (text: string) => Promise<void> },
 ) {
 	let capacityErrorReported = false;
 	pi.on("turn_end", (event, ctx) => {
@@ -977,7 +977,7 @@ async function handleStashCommand(
 	pi: StashExtensionApi,
 	args: string,
 	ctx: ExtensionCommandContext,
-	overrides?: { distillSessionFactory?: DistillSessionFactory; copyText?: (text: string) => Promise<void> },
+	overrides?: { distillStream?: DistillStreamFunction; copyText?: (text: string) => Promise<void> },
 ): Promise<void> {
 	const raw = args.trim();
 	const parts = raw.split(/\s+/).filter(Boolean);
@@ -997,7 +997,7 @@ async function handleStashCommand(
 
 	switch (verb) {
 		case "new":
-			return createCommand(pi, ctx, parts, fail, overrides?.distillSessionFactory);
+			return createCommand(pi, ctx, parts, fail, overrides?.distillStream);
 		case "abort":
 			return abortCommand(ctx, parts, fail);
 		case "help":
@@ -1051,11 +1051,11 @@ async function createCommand(
 	ctx: ExtensionCommandContext,
 	parts: string[],
 	fail: CommandFailure,
-	factory?: DistillSessionFactory,
+	streamSimple?: DistillStreamFunction,
 ): Promise<void> {
 	const hint = parts.slice(1).join(" ");
 	if (!hint) return fail("Usage: /stash new <hint>");
-	await startCreation(pi, ctx, hint, factory);
+	await startCreation(pi, ctx, hint, streamSimple);
 }
 
 function abortCommand(ctx: ExtensionCommandContext, parts: string[], fail: CommandFailure): void {

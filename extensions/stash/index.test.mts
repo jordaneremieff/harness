@@ -6,18 +6,38 @@ import { after, afterEach, before, describe, it, mock } from "node:test";
 import registerStash from "./index.ts";
 import { listStashes, readStash, transitionStash, writeStash } from "./store.ts";
 
-import type { Api, Model } from "@earendil-works/pi-ai";
-import { SessionManager, type ExtensionContext, type SessionShutdownEvent } from "@earendil-works/pi-coding-agent";
+import {
+	createAssistantMessageEventStream,
+	getCurrentSystemPrompt,
+	getCurrentTools,
+	InMemoryCredentialStore,
+	InMemoryModelsStore,
+	type Api,
+	type Model,
+	type Provider,
+	type Usage,
+} from "@earendil-works/pi-ai";
+import {
+	ModelRegistry,
+	ModelRuntime,
+	SessionManager,
+	type ExtensionContext,
+	type SessionShutdownEvent,
+} from "@earendil-works/pi-coding-agent";
 import { CAPACITY_STATE, capacityReset, readCapacityState } from "./capacity.ts";
-import type { DistillSession, DistillSessionFactory } from "./distill.ts";
+import type { DistillStreamFunction } from "./distill.ts";
 import type { PanelTheme } from "./panel.ts";
 import {
 	captureCommand,
 	captureTool,
+	completedDistillStream,
+	controlledDistillStream,
 	hostContext,
 	RequiredMap,
 	stringArray,
+	testAssistantMessage,
 	testModel,
+	transcriptEntries,
 	type CustomOptions,
 	type TestContext,
 	type TestUi,
@@ -686,30 +706,26 @@ describe("stash entrypoint", () => {
 	});
 });
 
-/** A canned distillation reply that resolves immediately. */
-function fakeDistillFactory(reply: string, opts?: { session?: { aborted?: boolean; instance?: DistillSession } }) {
-	const session = {
-		prompt: async () => {},
-		getLastAssistantText: () => reply,
-		abort: async () => {
-			if (opts?.session) opts.session.aborted = true;
-		},
-		dispose: () => {},
-	};
-	if (opts?.session) opts.session.instance = session;
-	return async () => session;
-}
+const DISTILL_USAGE: Usage = {
+	input: 1_000,
+	output: 2_000,
+	cacheRead: 30_000,
+	cacheWrite: 4_000,
+	totalTokens: 37_000,
+	cost: { input: 0.01, output: 0.1, cacheRead: 0.01, cacheWrite: 0.003, total: 0.123 },
+};
 
 const DISTILL_PAYLOAD = JSON.stringify({
 	title: "Distilled handover",
 	summary: "Background distillation state.",
-	decisions: ["Use the SDK session for distillation"],
+	decisions: ["Use the model registry for distillation"],
 	nextActions: ["Run the suite"],
 	tags: ["distill"],
 });
 
 function creationCtx(ui: TestUi, extra: TestContext & { registryModels?: Model<Api>[] } = {}): TestContext {
-	const parentModel = extra.model === undefined && !("model" in extra) ? testModel() : extra.model;
+	const parentModel =
+		extra.model === undefined && !("model" in extra) ? testModel({ contextWindow: 100_000 }) : extra.model;
 	const available = extra.registryModels ?? (parentModel ? [parentModel] : []);
 	const registry = extra.modelRegistry ?? {
 		find(provider: string, id: string) {
@@ -777,7 +793,7 @@ describe("stash creation", () => {
 	});
 
 	it("dispatches a background distillation without touching the live session", async () => {
-		const { commands, sent } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
+		const { commands, sent } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
 		const statuses: string[] = [];
 		const notifications: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
@@ -802,18 +818,98 @@ describe("stash creation", () => {
 		assert.ok((await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Distilled handover"));
 	});
 
-	it("names the distiller model and thinking level and reports usage", async () => {
-		const factory = async () => ({
-			prompt: async () => {},
-			getLastAssistantText: () => DISTILL_PAYLOAD,
-			abort: async () => {},
-			dispose: () => {},
-			getSessionStats: () => ({
-				tokens: { input: 1_000, output: 2_000, cacheRead: 30_000, cacheWrite: 4_000 },
-				cost: 0.123,
-			}),
+	it("uses the command context registry for a registered-only provider", { timeout: 10_000 }, async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: new InMemoryCredentialStore(),
+			modelsStore: new InMemoryModelsStore(),
+			modelsPath: join(dir, "isolated-models.json"),
+			allowModelNetwork: false,
+			refreshOnCreate: false,
 		});
-		const { commands } = registry({ distillSessionFactory: factory });
+		const modelRegistry = new ModelRegistry(runtime);
+		const model = testModel({
+			id: "registry-distiller",
+			name: "Registry distiller",
+			provider: "stash-synthetic-provider",
+			api: "stash-synthetic-api",
+			contextWindow: 100_000,
+		});
+		let received: Parameters<Provider["streamSimple"]> | undefined;
+		let requests = 0;
+		const reply = JSON.stringify({ title: "Registry-backed handover", summary: "REGISTERED_PROVIDER_RESULT" });
+		const provider: Provider = {
+			id: model.provider,
+			name: "Synthetic stash provider",
+			auth: {
+				apiKey: {
+					name: "Synthetic in-memory auth",
+					check: async () => ({ type: "api_key", source: "synthetic" }),
+					resolve: async () => ({ auth: { headers: { "x-stash-test-auth": "synthetic" } } }),
+				},
+			},
+			getModels: () => [model],
+			stream: () => {
+				throw new Error("The command must use provider-neutral streaming");
+			},
+			streamSimple: (...args) => {
+				received = args;
+				requests++;
+				return completedDistillStream(reply, DISTILL_USAGE)(...args);
+			},
+		};
+		assert.equal(modelRegistry.find(model.provider, model.id), undefined);
+		modelRegistry.registerProvider(provider);
+		const refresh = await modelRegistry.refresh({ allowNetwork: false, providers: [model.provider] });
+		assert.equal(refresh.errors.size, 0);
+		assert.equal(modelRegistry.find(model.provider, model.id), model);
+		assert.equal(modelRegistry.hasConfiguredAuth(model), true);
+
+		const { commands, sent, events } = registry();
+		const notices: string[] = [];
+		const { done, notify } = settledNotify((message: string) => notices.push(message));
+		const entries = transcriptEntries([
+			{ type: "message", message: { role: "user", content: "REGISTRY_CONTEXT_BODY" } },
+		]);
+		const ctx = creationCtx(
+			{ notify },
+			{
+				cwd: dir,
+				model,
+				modelRegistry,
+				thinkingLevel: "off",
+				sessionManager: { getSessionId: () => "registry-owner", buildContextEntries: () => entries },
+			},
+		);
+		try {
+			await commands.get("stash").handler("new registry binding", ctx);
+			await done;
+			assert.equal(requests, 1);
+			assert.ok(received);
+			assert.equal(received[0], model);
+			assert.match(getCurrentSystemPrompt(received[1].messages), /stash/i);
+			assert.deepEqual(getCurrentTools(received[1].messages), []);
+			assert.match(JSON.stringify(received[1].messages), /Operator hint: registry binding/);
+			assert.match(JSON.stringify(received[1].messages), /REGISTRY_CONTEXT_BODY/);
+			assert.equal(received[2]?.reasoning, undefined);
+			assert.equal(received[2]?.headers?.["x-stash-test-auth"], "synthetic");
+			assert.ok(received[2]?.signal instanceof AbortSignal);
+			assert.equal(sent.length, 0);
+			assert.match(notices.join("\n"), /Stashed "Registry-backed handover"/);
+			assert.match(notices.join("\n"), /35k in · 2\.0k out · ~\$0\.12/);
+			const artifact = (await listStashes(dir, { limit: 50 })).find(
+				(entry) => entry.meta.title === "Registry-backed handover",
+			);
+			assert.ok(artifact);
+			const stored = await readStash(dir, artifact.meta.id);
+			assert.ok(stored.ok);
+			assert.match(stored.content, /REGISTERED_PROVIDER_RESULT/);
+		} finally {
+			await events.get("session_shutdown")({}, ctx);
+		}
+	});
+
+	it("names the distiller model and thinking level and reports usage", async () => {
+		const { commands } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD, DISTILL_USAGE) });
 		const statuses: string[] = [];
 		const notifications: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
@@ -840,17 +936,7 @@ describe("stash creation", () => {
 	});
 
 	it("reports the distiller and usage on a skip", async () => {
-		const factory = async () => ({
-			prompt: async () => {},
-			getLastAssistantText: () => "SKIP_STASH",
-			abort: async () => {},
-			dispose: () => {},
-			getSessionStats: () => ({
-				tokens: { input: 1_000, output: 2_000, cacheRead: 30_000, cacheWrite: 4_000 },
-				cost: 0.123,
-			}),
-		});
-		const { commands } = registry({ distillSessionFactory: factory });
+		const { commands } = registry({ distillStream: completedDistillStream("SKIP_STASH", DISTILL_USAGE) });
 		const notifications: string[] = [];
 		const statuses: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
@@ -870,17 +956,7 @@ describe("stash creation", () => {
 	});
 
 	it("reports the distiller and usage on a distillation failure", async () => {
-		const factory = async () => ({
-			prompt: async () => {},
-			getLastAssistantText: () => "not json at all",
-			abort: async () => {},
-			dispose: () => {},
-			getSessionStats: () => ({
-				tokens: { input: 1_000, output: 2_000, cacheRead: 30_000, cacheWrite: 4_000 },
-				cost: 0.123,
-			}),
-		});
-		const { commands } = registry({ distillSessionFactory: factory });
+		const { commands } = registry({ distillStream: completedDistillStream("not json at all", DISTILL_USAGE) });
 		const notifications: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		await commands.get("stash").handler(
@@ -893,12 +969,12 @@ describe("stash creation", () => {
 		await done;
 		assert.match(
 			notifications.join("\n"),
-			/Stash distillation failed:.*\n\nDistiller: test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/s,
+			/Stash distillation failed:.*did not return valid JSON.*\n\nDistiller: test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/s,
 		);
 	});
 
 	it("labels a non-reasoning model by name without a thinking bracket", async () => {
-		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
+		const { commands } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
 		const notifications: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		const ctx = creationCtx({ notify }, { model: testModel({ name: "Custom Model", reasoning: false }) });
@@ -910,7 +986,7 @@ describe("stash creation", () => {
 	});
 
 	it("sanitizes a hostile configured model name in status and notifications", async () => {
-		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
+		const { commands } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
 		const statuses: string[] = [];
 		const notifications: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
@@ -940,7 +1016,7 @@ describe("stash creation", () => {
 	});
 
 	it("names the distiller in the RPC start notification", async () => {
-		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
+		const { commands } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
 		const notifications: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		const ctx = creationCtx({ notify }, { mode: "rpc" });
@@ -958,14 +1034,7 @@ describe("stash creation", () => {
 		const execGate = new Promise<ExecResult>((resolve) => {
 			releaseExec = resolve;
 		});
-		const never = () => new Promise<void>(() => {});
-		const factory = async () => ({
-			prompt: never,
-			getLastAssistantText: () => "",
-			abort: async () => {},
-			dispose: () => {},
-		});
-		const { commands, pi } = registry({ distillSessionFactory: factory });
+		const { commands, pi } = registry({ distillStream: controlledDistillStream() });
 		pi.exec = async () => execGate;
 		const notifications: string[] = [];
 		const ctx = creationCtx({ notify: (message: string) => notifications.push(message) });
@@ -982,14 +1051,7 @@ describe("stash creation", () => {
 	it("does not let aborted setup clear a replacement creation slot", async () => {
 		type ExecResult = { code: number; stdout: string; stderr: string; killed: boolean };
 		const releases: Array<(result: ExecResult) => void> = [];
-		const never = () => new Promise<void>(() => {});
-		const factory = async () => ({
-			prompt: never,
-			getLastAssistantText: () => "",
-			abort: async () => {},
-			dispose: () => {},
-		});
-		const { commands, pi } = registry({ distillSessionFactory: factory });
+		const { commands, pi } = registry({ distillStream: controlledDistillStream() });
 		pi.exec = () =>
 			new Promise<ExecResult>((resolve) => {
 				releases.push(resolve);
@@ -1026,17 +1088,13 @@ describe("stash creation", () => {
 	it("uses PI_STASH_MODEL without a parent model and fails a missing override without starting a job", async () => {
 		const oldModel = process.env.PI_STASH_MODEL;
 		const override = testModel({ id: "cheap-model", name: "cheap-model", provider: "cheap", reasoning: true });
-		let factoryCalls = 0;
-		const factory = async () => {
-			factoryCalls++;
-			return {
-				prompt: async () => {},
-				getLastAssistantText: () => DISTILL_PAYLOAD,
-				abort: async () => {},
-				dispose: () => {},
-			};
+		let streamCalls = 0;
+		const stream: DistillStreamFunction = (...args) => {
+			streamCalls++;
+			assert.equal(args[0], override);
+			return completedDistillStream(DISTILL_PAYLOAD)(...args);
 		};
-		const { commands } = registry({ distillSessionFactory: factory });
+		const { commands } = registry({ distillStream: stream });
 		try {
 			process.env.PI_STASH_MODEL = "cheap/cheap-model";
 			const notifications: string[] = [];
@@ -1045,7 +1103,7 @@ describe("stash creation", () => {
 				.get("stash")
 				.handler("new use explicit model", creationCtx({ notify }, { model: undefined, registryModels: [override] }));
 			await done;
-			assert.equal(factoryCalls, 1);
+			assert.equal(streamCalls, 1);
 			assert.match(notifications.join("\n"), /Stash distillation started/);
 
 			process.env.PI_STASH_MODEL = "missing/model";
@@ -1059,7 +1117,7 @@ describe("stash creation", () => {
 						{ model: undefined, registryModels: [override] },
 					),
 				);
-			assert.equal(factoryCalls, 1, "a missing override must not start the distiller");
+			assert.equal(streamCalls, 1, "a missing override must not start the distiller");
 			assert.match(notifications.join("\n"), /not in the current registry/);
 		} finally {
 			if (oldModel === undefined) delete process.env.PI_STASH_MODEL;
@@ -1067,19 +1125,14 @@ describe("stash creation", () => {
 		}
 	});
 
-	it("passes inherited thinking through the factory and rejects an unsupported explicit level", async () => {
+	it("passes inherited thinking through the stream and rejects an unsupported explicit level", async () => {
 		const oldThinking = process.env.PI_STASH_THINKING;
-		let received: Parameters<DistillSessionFactory>[0] | undefined;
-		const factory: DistillSessionFactory = async (options) => {
+		let received: Parameters<DistillStreamFunction>[2];
+		const stream: DistillStreamFunction = (model, context, options) => {
 			received = options;
-			return {
-				prompt: async () => {},
-				getLastAssistantText: () => DISTILL_PAYLOAD,
-				abort: async () => {},
-				dispose: () => {},
-			};
+			return completedDistillStream(DISTILL_PAYLOAD)(model, context, options);
 		};
-		const { commands } = registry({ distillSessionFactory: factory });
+		const { commands } = registry({ distillStream: stream });
 		try {
 			delete process.env.PI_STASH_THINKING;
 			const inherited = settledNotify(() => {});
@@ -1088,7 +1141,7 @@ describe("stash creation", () => {
 				.handler("new inherit thinking", creationCtx({ notify: inherited.notify }, { thinkingLevel: "high" }));
 			await inherited.done;
 			assert.ok(received);
-			assert.equal(received.thinkingLevel, "high");
+			assert.equal(received.reasoning, "high");
 
 			process.env.PI_STASH_THINKING = "high";
 			const notifications: string[] = [];
@@ -1112,17 +1165,12 @@ describe("stash creation", () => {
 	});
 
 	it("aborts an in-flight creation, clears the status, and frees the slot", async () => {
-		const session: { aborted?: boolean } = {};
-		const never = () => new Promise<void>(() => {});
-		const factory = async () => ({
-			prompt: never,
-			getLastAssistantText: () => "",
-			abort: async () => {
-				session.aborted = true;
-			},
-			dispose: () => {},
+		let aborted = false;
+		const { commands } = registry({
+			distillStream: controlledDistillStream(() => {
+				aborted = true;
+			}),
 		});
-		const { commands } = registry({ distillSessionFactory: factory });
 		const statuses: string[] = [];
 		const notifications: string[] = [];
 		const ctx = creationCtx({
@@ -1132,7 +1180,7 @@ describe("stash creation", () => {
 		await commands.get("stash").handler("new create one", ctx);
 		assert.ok(statuses.some((text) => text.startsWith("stash: running")));
 		await commands.get("stash").handler("abort", ctx);
-		assert.equal(session.aborted, true, "the job must receive the abort");
+		assert.equal(aborted, true, "the provider stream must receive the abort");
 		assert.equal(statuses.at(-1), "<clear>", "abort must clear the status");
 		assert.match(notifications.join("\n"), /Stash creation cancelled/);
 
@@ -1146,16 +1194,23 @@ describe("stash creation", () => {
 		// abort that lands after that check still publishes the artifact, so the
 		// operator must hear about the file instead of only "cancelled".
 		let abortNow: (() => void) | null = null;
-		const factory = async () => ({
-			prompt: async () => {},
-			getLastAssistantText: () => {
-				abortNow?.();
-				return DISTILL_PAYLOAD;
-			},
-			abort: async () => {},
-			dispose: () => {},
-		});
-		const { commands } = registry({ distillSessionFactory: factory });
+		const stream: DistillStreamFunction = (model) => {
+			const events = createAssistantMessageEventStream();
+			const message = testAssistantMessage(DISTILL_PAYLOAD, model);
+			message.content = [
+				{
+					type: "text",
+					get text() {
+						abortNow?.();
+						return DISTILL_PAYLOAD;
+					},
+				},
+			];
+			events.push({ type: "done", reason: "stop", message });
+			events.end();
+			return events;
+		};
+		const { commands } = registry({ distillStream: stream });
 		const notifications: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		const ctx = creationCtx({
@@ -1177,20 +1232,12 @@ describe("stash creation", () => {
 		mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
 		// Job 1 settles on microtasks only (SKIP path), so synchronous ticks drive
 		// its lifecycle; job 2 stays stuck, so its own clear timer never competes.
-		const never = () => new Promise<void>(() => {});
-		const stuckSession = () =>
-			Promise.resolve({
-				prompt: never,
-				getLastAssistantText: () => "",
-				abort: async () => {},
-				dispose: () => {},
-			});
 		let calls = 0;
-		const factory = async () => {
+		const stream: DistillStreamFunction = (...args) => {
 			calls++;
-			return calls === 1 ? await fakeDistillFactory("SKIP_STASH")() : await stuckSession();
+			return calls === 1 ? completedDistillStream("SKIP_STASH")(...args) : controlledDistillStream()(...args);
 		};
-		const { commands } = registry({ distillSessionFactory: factory });
+		const { commands } = registry({ distillStream: stream });
 		const statuses: string[] = [];
 		const ctx = creationCtx({
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
@@ -1212,7 +1259,7 @@ describe("stash creation", () => {
 
 	it("clears the status after the held state expires", async () => {
 		mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
-		const { commands } = registry({ distillSessionFactory: fakeDistillFactory("SKIP_STASH") });
+		const { commands } = registry({ distillStream: completedDistillStream("SKIP_STASH") });
 		const statuses: string[] = [];
 		const ctx = creationCtx({
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
@@ -1226,7 +1273,7 @@ describe("stash creation", () => {
 	});
 
 	it("writes the artifact in RPC mode without a spinner and without a live turn", async () => {
-		const { commands, sent } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
+		const { commands, sent } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
 		const notifications: string[] = [];
 		const statuses: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
@@ -1245,7 +1292,7 @@ describe("stash creation", () => {
 
 	it("reports distillation failures and writes nothing", async () => {
 		const { commands } = registry({
-			distillSessionFactory: fakeDistillFactory("not json at all"),
+			distillStream: completedDistillStream("not json at all"),
 		});
 		const before = (await listStashes(dir, { limit: 200 })).length;
 		const notifications: string[] = [];
@@ -1265,7 +1312,7 @@ describe("stash creation", () => {
 	});
 
 	it("skips writing when the distiller finds nothing worth preserving", async () => {
-		const { commands } = registry({ distillSessionFactory: fakeDistillFactory("SKIP_STASH") });
+		const { commands } = registry({ distillStream: completedDistillStream("SKIP_STASH") });
 		const before = (await listStashes(dir, { limit: 200 })).length;
 		const notifications: string[] = [];
 		const statuses: string[] = [];
@@ -1282,17 +1329,12 @@ describe("stash creation", () => {
 	});
 
 	it("aborts the in-flight job on session shutdown", async () => {
-		const session: { aborted?: boolean } = {};
-		const never = () => new Promise<void>(() => {});
-		const factory = async () => ({
-			prompt: never,
-			getLastAssistantText: () => "",
-			abort: async () => {
-				session.aborted = true;
-			},
-			dispose: () => {},
+		let aborted = false;
+		const { commands, events } = registry({
+			distillStream: controlledDistillStream(() => {
+				aborted = true;
+			}),
 		});
-		const { commands, events } = registry({ distillSessionFactory: factory });
 		const statuses: string[] = [];
 		const ctx = creationCtx({
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
@@ -1301,7 +1343,7 @@ describe("stash creation", () => {
 		const shutdownHandler = events.get("session_shutdown");
 		assert.equal(typeof shutdownHandler, "function", "a session_shutdown handler must be registered");
 		await shutdownHandler({}, ctx);
-		assert.equal(session.aborted, true, "session shutdown must abort the in-flight job");
+		assert.equal(aborted, true, "session shutdown must abort the provider stream");
 		assert.equal(statuses.at(-1), "<clear>", "session shutdown must clear the status");
 	});
 
@@ -1310,17 +1352,12 @@ describe("stash creation", () => {
 		// shutdown fires the same handler with their own context: the in-flight
 		// job belongs to the session that reserved it and must survive the foreign
 		// shutdown untouched.
-		const session: { aborted?: boolean } = {};
-		const never = () => new Promise<void>(() => {});
-		const factory = async () => ({
-			prompt: never,
-			getLastAssistantText: () => "",
-			abort: async () => {
-				session.aborted = true;
-			},
-			dispose: () => {},
+		let aborted = false;
+		const { commands, events } = registry({
+			distillStream: controlledDistillStream(() => {
+				aborted = true;
+			}),
 		});
-		const { commands, events } = registry({ distillSessionFactory: factory });
 		const statuses: string[] = [];
 		const owner = creationCtx({
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
@@ -1334,23 +1371,18 @@ describe("stash creation", () => {
 		await commands.get("stash").handler("new race probe", owner);
 		const shutdownHandler = events.get("session_shutdown");
 		await shutdownHandler({ type: "session_shutdown", reason: "quit" }, foreign);
-		assert.equal(session.aborted, undefined, "a foreign session's shutdown must not abort the job");
+		assert.equal(aborted, false, "a foreign session's shutdown must not abort the job");
 		assert.ok(statuses.at(-1)?.startsWith("stash: running"), "a foreign shutdown must not clear the status");
 		await shutdownHandler({ type: "session_shutdown", reason: "quit" }, owner);
-		assert.equal(session.aborted, true, "the owning session's shutdown must abort the job");
+		assert.equal(aborted, true, "the owning session's shutdown must abort the job");
 		assert.equal(statuses.at(-1), "<clear>", "the owning session's shutdown must clear the status");
 	});
 
 	it("refuses a foreign session's abort command without cancelling the owner's creation", async () => {
 		let aborted = false;
 		const { commands } = registry({
-			distillSessionFactory: async () => ({
-				prompt: () => new Promise<void>(() => {}),
-				getLastAssistantText: () => "",
-				abort: async () => {
-					aborted = true;
-				},
-				dispose: () => {},
+			distillStream: controlledDistillStream(() => {
+				aborted = true;
 			}),
 		});
 		const owner = creationCtx({ notify: () => {} });
@@ -1376,15 +1408,12 @@ describe("stash creation", () => {
 		// /stash abort reports itself synchronously; a shutdown does not, so the
 		// cancelled outcome is the operator's only notice that the creation died.
 		let shutdownNow: (() => void) | null = null;
-		const factory = async () => ({
-			prompt: async () => {
-				shutdownNow?.();
-			},
-			getLastAssistantText: () => "",
-			abort: async () => {},
-			dispose: () => {},
-		});
-		const { commands, events } = registry({ distillSessionFactory: factory });
+		const stream: DistillStreamFunction = (...args) => {
+			const events = controlledDistillStream()(...args);
+			queueMicrotask(() => shutdownNow?.());
+			return events;
+		};
+		const { commands, events } = registry({ distillStream: stream });
 		const notifications: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		const ctx = creationCtx({
@@ -1430,7 +1459,7 @@ describe("stash command grammar", () => {
 	});
 
 	it("creates through /stash new and preserves an action-shaped hint", async () => {
-		const { commands } = registry({ distillSessionFactory: fakeDistillFactory(DISTILL_PAYLOAD) });
+		const { commands } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
 		const notifications: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		await commands.get("stash").handler("new abort the plan", creationCtx({ notify }));

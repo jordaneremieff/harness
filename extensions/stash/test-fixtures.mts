@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import type { Api, Model, TextContent, ThinkingContent, ToolCall } from "@earendil-works/pi-ai";
+import {
+	createAssistantMessageEventStream,
+	type Api,
+	type AssistantMessage,
+	type Model,
+	type TextContent,
+	type ThinkingContent,
+	type ToolCall,
+	type Usage,
+} from "@earendil-works/pi-ai";
 import type {
 	ExtensionCommandContext,
 	ExtensionContext,
@@ -11,7 +20,7 @@ import type {
 import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
 import type { StashPanel, StashPanelResult, PanelTheme } from "./panel.ts";
-import type { DistillModelRegistry } from "./distill.ts";
+import type { DistillModelRegistry, DistillStreamFunction } from "./distill.ts";
 
 export function testModel(overrides: Partial<Model<Api>> = {}): Model<Api> {
 	return {
@@ -26,6 +35,54 @@ export function testModel(overrides: Partial<Model<Api>> = {}): Model<Api> {
 		contextWindow: 10000,
 		maxTokens: 1000,
 		...overrides,
+	};
+}
+
+export function testAssistantMessage(reply: string, model = testModel(), usage?: Usage): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: reply }],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		stopReason: "stop",
+		timestamp: 0,
+		usage: usage ?? {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	};
+}
+
+export function completedDistillStream(reply: string, usage?: Usage): DistillStreamFunction {
+	return (model) => {
+		const stream = createAssistantMessageEventStream();
+		stream.push({ type: "done", reason: "stop", message: testAssistantMessage(reply, model, usage) });
+		stream.end();
+		return stream;
+	};
+}
+
+/** A pending provider stream settles only when the job aborts its request signal. */
+export function controlledDistillStream(onAbort: () => void = () => {}): DistillStreamFunction {
+	return (model, _context, options) => {
+		assert.ok(options?.signal, "the distiller must supply a request abort signal");
+		const stream = createAssistantMessageEventStream();
+		const abort = () => {
+			onAbort();
+			const message = testAssistantMessage("", model);
+			message.stopReason = "aborted";
+			message.errorMessage = "Request aborted";
+			stream.push({ type: "error", reason: "aborted", error: message });
+			stream.end();
+		};
+		if (options.signal.aborted) abort();
+		else options.signal.addEventListener("abort", abort, { once: true });
+		return stream;
 	};
 }
 
@@ -55,7 +112,7 @@ export interface TestContext {
 	ui?: TestUi;
 	model?: Model<Api>;
 	thinkingLevel?: ExtensionContext["thinkingLevel"];
-	modelRegistry?: DistillModelRegistry;
+	modelRegistry?: DistillModelRegistry & Partial<Pick<ExtensionContext["modelRegistry"], "streamSimple">>;
 	sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionId" | "buildContextEntries">;
 }
 

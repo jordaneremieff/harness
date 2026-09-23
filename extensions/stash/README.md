@@ -1,6 +1,6 @@
 # stash: session continuity
 
-The agent distills an effort into a durable Markdown handover. The extension owns deterministic storage, discovery, and pickup. The active agent distills its own effort through `stash_write`; a separate bounded agent can distill the live session on request through `/stash new <hint>`, which adds no turn to the live session.
+The agent distills an effort into a durable Markdown handover. The extension owns deterministic storage, discovery, and pickup. The active agent distills its own effort through `stash_write`; a separate bounded model request can distill the live session on request through `/stash new <hint>`, which adds no turn to the live session.
 
 ## Surfaces
 
@@ -12,7 +12,7 @@ The agent distills an effort into a durable Markdown handover. The extension own
 | `stash_complete` | tool | Close an active effort with a required concrete outcome. |
 | `stash_rotate` | tool | Archive a stale open or closed effort so it no longer appears in listings or pickup; the file moves to the store's dot-hidden `.trash` directory and remains recoverable. |
 | `/stash` | command | Browse and pick up efforts (TUI overlay); bare invocation opens the browser. |
-| `/stash new <hint>` | command | Dispatch a separate agent to distill the live session plus the hint into a new stash. |
+| `/stash new <hint>` | command | Stream a separate model response to distill the live session plus the hint into a new stash. |
 | `/stash get <id>` | command | Pick up a stash by full id or unique prefix. |
 | `/stash get <id> <note>` | command | Pick up with an operator note: material recalled after the stash was written, delivered ahead of the artifact and authoritative on conflict. The artifact itself is never rewritten. |
 | `/stash release <id>` | command | Return an active stash to open (dead-session cleanup). |
@@ -177,9 +177,11 @@ bounded dispatch and persistence, not real-model compliance or long-term utility
 ## Background distillation
 
 `/stash new <hint>` captures the compaction-aware active-path entries from the
-live session, then runs one bounded, tool-free agent session in-process through
-the Pi SDK (`createAgentSession`, `SessionManager.inMemory()`, `tools: []`). The
-distiller receives a system prompt plus a single user message: the operator hint
+live session, then calls the current session's configured
+`modelRegistry.streamSimple()` with no tools. Registered providers and their
+request-time authentication remain available without a child session, resource
+loader, or separate model registry. The distiller receives the explicit system
+instructions plus a single user message: the operator hint
 first as the sole effort the artifact may cover, then the bounded transcript
 (first quarter and last three quarters, marked at the cut). Concurrent or prior
 mainline work in the same live session is out of scope for a hinted stash even
@@ -225,18 +227,35 @@ notification and the running footer status name the model and thinking level in
 statusline form (`claude-sonnet-4-5 [medium]`, the thinking bracket only for
 reasoning models), and the settled notification plus the `stash: done` status
 report the run's token and cost totals (`35k in · 2.0k out · ~$0.12`, with `in`
-counting input, cache-read, and cache-write tokens) whenever the distill
-session reports stats. Totals come from the distill session's own stats, so
-they cover exactly what that one-shot run billed, including provider retries.
-Skip and failure notifications carry the totals too whenever usage was
-collected. The surfaced label is sanitized to a single control-free line:
+counting input, cache-read, and cache-write tokens). Totals sum the final
+reported usage of every model attempt exactly once, including failed attempts
+before a successful retry. Skip and failure notifications carry the totals too.
+Cancellation retains usage received before the outcome settles; a provider that
+ignores cancellation can return usage too late to include. Provider-internal
+retries expose only the usage the provider reports, so these totals are not an
+invoice-completeness guarantee. The surfaced label is sanitized to a single control-free line:
 configured model names are free-form, and every string this module interpolates
 into a status or notification goes through the same sanitization.
 
+Transient retries use Pi's public `retryAssistantCall` with the on-disk global
+and project retry settings. Provider retry controls, transport, HTTP timeout,
+WebSocket timeout, and thinking budgets use the corresponding SettingsManager
+getters. Defaults permit three outer retries with exponential waits starting at
+two seconds; quota errors and context overflow do not retry. All attempts retain
+the same prompt and a separate request-cache identity. Model adapters retain
+their default output-token limits; the extension adds no universal token cap.
+
+The request does not run AgentSession compaction, length recovery, or cache
+warming. Context overflow fails without rewriting the transcript. Length-limited
+or tool-request responses fail validation even if their text contains valid JSON.
+Only a completed text response reaches the parser and store.
+
 The command handler returns immediately; the live agent receives no turn. The
-job is fire-and-forget with hard bounds: zero tools, one prompt, a 180-second
-wall-clock auto-abort, and an AbortController that `/stash abort` and
-`session_shutdown` both trigger. At most one creation runs at a time; a second
+job uses zero tools, one fixed prompt, a 180-second wall-clock auto-abort across
+requests and retry waits, and an AbortController that `/stash abort` and
+`session_shutdown` both trigger. Cancellation settles the job even if a provider
+ignores its signal; stopping the underlying request still requires provider
+cooperation. Late responses never write an artifact. At most one creation runs at a time; a second
 creation dispatch during a run reports the in-flight creation. A different session
 cannot abort that creation; the abort command requires the owning session. The result promise
 settles exactly once and never rejects, so a detached callback cannot crash
@@ -317,7 +336,7 @@ The component derives its row budget from the host TUI and the overlay's height 
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.
 - `panel.ts`: interactive browser state and rendering.
 - `pickup.ts`: self-contained pickup message, operator amendment block, and already-active ownership handoff.
-- `distill.ts`: transcript capture, prompt building, payload validation, and the bounded SDK session seam.
+- `distill.ts`: transcript capture, prompt building, payload validation, configured model streaming, retry usage, and cancellation.
 - `redact.ts`: deterministic credential redaction for transcript, references, payloads, and lifecycle outcomes.
 - `text.ts`: terminal-safe text and output bounds local to this extension.
 - `test-fixtures.mts`: typed model and transcript fixtures, registration capture, and the partial host context for entrypoint tests.
@@ -337,6 +356,12 @@ npx --yes --package typescript@5.9.3 tsc --noEmit \
 printf '%s\n' '{"id":"commands","type":"get_commands"}' \
   | pi -e . --mode rpc --no-session --offline
 ```
+
+Controlled streams cover timeout, cancellation, late results, retry exhaustion,
+usage totals, invalid responses, and byte-exact artifact output. An entrypoint
+test registers a synthetic provider in a real isolated ModelRuntime and invokes
+the command without a stream override. It checks registry binding, request-time
+authentication, tool-free input, storage, and no turn in the live session.
 
 The stash files type-check clean against the installed Pi declarations.
 Lifecycle behavior is covered by the focused and full tests in

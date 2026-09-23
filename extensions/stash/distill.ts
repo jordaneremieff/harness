@@ -1,26 +1,25 @@
 /**
  * Background distillation for /stash new <hint>.
  *
- * One bounded, tool-free agent session distills the live session transcript
- * plus an operator hint into a stash payload. The extension owns the whole
- * job: transcript capture, session spawn, payload validation, and the store
+ * A bounded, tool-free model stream distills the live session transcript
+ * plus an operator hint into a stash payload. The extension owns transcript
+ * capture, cancellation, payload validation, and the store
  * write. The live session receives no turn; the job reports through a result
  * promise that never rejects.
  */
 
-import {
-	createAgentSession,
-	DefaultResourceLoader,
-	getAgentDir,
-	SessionManager,
-	type SessionEntry,
-} from "@earendil-works/pi-coding-agent";
+import { type ModelRegistry, type SessionEntry, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
 	type Api,
+	type AssistantMessage,
 	clampThinkingLevel,
 	getSupportedThinkingLevels,
+	isContextOverflow,
 	type Model,
 	type ModelThinkingLevel,
+	retryAssistantCall,
+	type Usage,
+	uuidv7,
 } from "@earendil-works/pi-ai";
 import type { StashRecord } from "./format.ts";
 import { redactPayload, redactSecrets, REDACTED } from "./redact.ts";
@@ -110,21 +109,18 @@ export interface DistillJob {
 	abort(): void;
 }
 
-/** Minimal session surface the job needs; AgentSession satisfies it structurally. */
-export interface DistillSession {
-	prompt(text: string): Promise<void>;
-	getLastAssistantText(): string | undefined;
-	abort(): Promise<void>;
-	dispose(): void;
-	/** Token and cost totals; optional so minimal fake sessions stay valid. */
-	getSessionStats?(): DistillSessionStats;
-}
+/** The caller binds this function to the current session's configured registry. */
+export type DistillStreamFunction = ModelRegistry["streamSimple"];
 
-/** Structural slice of AgentSession.getSessionStats the job reads. */
-interface DistillSessionStats {
-	tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
-	cost: number;
-}
+type DistillSettings = Pick<
+	SettingsManager,
+	| "getRetrySettings"
+	| "getProviderRetrySettings"
+	| "getHttpIdleTimeoutMs"
+	| "getWebSocketConnectTimeoutMs"
+	| "getTransport"
+	| "getThinkingBudgets"
+>;
 
 /** Token and cost totals for one distillation run, reported on the outcome. */
 export interface DistillUsage {
@@ -135,28 +131,15 @@ export interface DistillUsage {
 	costUsd: number;
 }
 
-function collectUsage(session: DistillSession | null): DistillUsage | undefined {
-	try {
-		const stats = session?.getSessionStats?.();
-		if (!stats) return undefined;
-		return {
-			inputTokens: stats.tokens.input,
-			outputTokens: stats.tokens.output,
-			cacheReadTokens: stats.tokens.cacheRead,
-			cacheWriteTokens: stats.tokens.cacheWrite,
-			costUsd: stats.cost,
-		};
-	} catch {
-		// Usage visibility must never turn a finished distillation into a failure.
-		return undefined;
-	}
+function addUsage(total: DistillUsage | undefined, usage: Usage): DistillUsage {
+	return {
+		inputTokens: (total?.inputTokens ?? 0) + usage.input,
+		outputTokens: (total?.outputTokens ?? 0) + usage.output,
+		cacheReadTokens: (total?.cacheReadTokens ?? 0) + usage.cacheRead,
+		cacheWriteTokens: (total?.cacheWriteTokens ?? 0) + usage.cacheWrite,
+		costUsd: (total?.costUsd ?? 0) + usage.cost.total,
+	};
 }
-
-export type DistillSessionFactory = (options: {
-	model: Model<Api>;
-	cwd: string;
-	thinkingLevel: ModelThinkingLevel;
-}) => Promise<DistillSession>;
 
 interface DistillJobOptions {
 	model: Model<Api>;
@@ -169,7 +152,8 @@ interface DistillJobOptions {
 	sessionId?: string;
 	storeDir: string;
 	timeoutMs?: number;
-	sessionFactory?: DistillSessionFactory;
+	streamSimple: DistillStreamFunction;
+	settings?: DistillSettings;
 	now?: () => Date;
 }
 
@@ -564,31 +548,6 @@ export function validatePayload(value: unknown): DistillPayload {
 	};
 }
 
-/** Spawn one bounded, tool-free session against the provided transcript. */
-const defaultDistillSessionFactory: DistillSessionFactory = async ({ model, cwd, thinkingLevel }) => {
-	const loader = new DefaultResourceLoader({
-		cwd,
-		agentDir: getAgentDir(),
-		noExtensions: true,
-		noSkills: true,
-		noPromptTemplates: true,
-		noThemes: true,
-		noContextFiles: true,
-		systemPromptOverride: () => DISTILL_SYSTEM_PROMPT,
-		appendSystemPromptOverride: () => [],
-	});
-	await loader.reload();
-	const { session } = await createAgentSession({
-		model,
-		thinkingLevel,
-		tools: [],
-		resourceLoader: loader,
-		sessionManager: SessionManager.inMemory(),
-		cwd,
-	});
-	return session;
-};
-
 /** Start a distillation job. The result promise settles exactly once and never rejects. */
 export function startDistillJob(options: DistillJobOptions): DistillJob {
 	const controller = new AbortController();
@@ -598,40 +557,42 @@ export function startDistillJob(options: DistillJobOptions): DistillJob {
 	};
 }
 
-interface DistillResources {
-	session: DistillSession | null;
-	creationWindowClosed: boolean;
+interface DistillReply {
+	response: AssistantMessage;
+	usage?: DistillUsage;
 }
 
-function disposeQuietly(session: DistillSession | null): void {
-	try {
-		session?.dispose();
-	} catch {
-		// Resource cleanup never replaces the settled outcome.
+function classifyDistillReply(
+	response: AssistantMessage,
+	usage: DistillUsage | undefined,
+): DistillOutcome | DistillReply {
+	if (response.stopReason === "aborted") return { ok: false, reason: "aborted", usage };
+	if (response.stopReason === "error") {
+		return { ok: false, reason: "failed", message: response.errorMessage || "distillation failed", usage };
 	}
+	if (response.stopReason !== "stop") {
+		return { ok: false, reason: "invalid", message: `distillation ended with ${response.stopReason}`, usage };
+	}
+	return { response, usage };
 }
 
 async function promptDistiller(
 	options: DistillJobOptions,
 	signal: AbortSignal,
 	prompt: string,
-	resources: DistillResources,
-): Promise<DistillOutcome | undefined> {
-	const factory = options.sessionFactory ?? defaultDistillSessionFactory;
+): Promise<DistillOutcome | DistillReply> {
+	const controller = new AbortController();
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	let timedOut = false;
-	let interrupt: ((error: Error) => void) | undefined;
+	let usage: DistillUsage | undefined;
+	let interrupt!: (error: Error) => void;
 	const interrupted = new Promise<never>((_resolve, reject) => {
 		interrupt = reject;
 	});
 	interrupted.catch(() => {});
 	const onAbort = () => {
-		interrupt?.(new Error("distillation interrupted"));
-		try {
-			void resources.session?.abort().catch(() => {});
-		} catch {
-			// The interrupted outcome remains authoritative.
-		}
+		controller.abort();
+		interrupt(new Error("distillation interrupted"));
 	};
 	if (signal.aborted) onAbort();
 	else signal.addEventListener("abort", onAbort, { once: true });
@@ -641,40 +602,75 @@ async function promptDistiller(
 	}, timeoutMs);
 	timeout.unref?.();
 	try {
-		const creating = factory({ model: options.model, cwd: options.cwd, thinkingLevel: options.thinkingLevel });
-		void creating.then(
-			(created) => {
-				if (resources.creationWindowClosed && created !== resources.session) disposeQuietly(created);
-			},
-			() => {},
-		);
-		resources.session = await Promise.race([creating, interrupted]);
-		if (signal.aborted || timedOut) throw new Error("distillation interrupted");
-		await Promise.race([resources.session.prompt(prompt), interrupted]);
+		const settings = options.settings ?? SettingsManager.create(options.cwd);
+		const providerRetry = settings.getProviderRetrySettings();
+		const idleTimeout = settings.getHttpIdleTimeoutMs();
+		const requestOptions = {
+			...providerRetry,
+			timeoutMs: providerRetry.timeoutMs ?? (idleTimeout === 0 ? 2147483647 : idleTimeout),
+			websocketConnectTimeoutMs: settings.getWebSocketConnectTimeoutMs(),
+			transport: settings.getTransport(),
+			reasoning: options.thinkingLevel === "off" ? undefined : options.thinkingLevel,
+			thinkingBudgets: settings.getThinkingBudgets(),
+			sessionId: uuidv7(),
+			signal: controller.signal,
+		};
+		const timestamp = Date.now();
+		const produce = async (): Promise<AssistantMessage> => {
+			controller.signal.throwIfAborted();
+			const stream = options.streamSimple(
+				options.model,
+				{
+					messages: [
+						{ role: "system", content: DISTILL_SYSTEM_PROMPT, toolsAdded: [], timestamp },
+						{ role: "user", content: prompt, timestamp },
+					],
+				},
+				requestOptions,
+			);
+			const result = stream.result().then((response) => {
+				usage = addUsage(usage, response.usage);
+				return response;
+			});
+			// Consume events so the stream does not retain an unread event queue.
+			for await (const _event of stream) {
+				if (controller.signal.aborted) break;
+			}
+			const response = await result;
+			// A fixed distillation transcript is never compacted or silently replaced.
+			if (response.stopReason === "error" && isContextOverflow(response, options.model.contextWindow)) {
+				throw new Error(response.errorMessage || "distillation context overflow");
+			}
+			return response;
+		};
+		const response = await Promise.race([
+			retryAssistantCall(produce, settings.getRetrySettings(), controller.signal),
+			interrupted,
+		]);
+		if (controller.signal.aborted) throw new Error("distillation interrupted");
+		return classifyDistillReply(response, usage);
 	} catch (error) {
-		if (signal.aborted || timedOut) {
+		if (controller.signal.aborted) {
 			return {
 				ok: false,
 				reason: "aborted",
 				message: timedOut ? `distillation timed out after ${Math.round(timeoutMs / 1000)}s` : undefined,
+				usage,
 			};
 		}
-		return {
-			ok: false,
-			reason: "failed",
-			message: errorMessage(error),
-			usage: collectUsage(resources.session),
-		};
+		return { ok: false, reason: "failed", message: errorMessage(error), usage };
 	} finally {
-		resources.creationWindowClosed = true;
 		clearTimeout(timeout);
 		signal.removeEventListener("abort", onAbort);
 	}
 }
 
-async function saveDistillReply(session: DistillSession, options: DistillJobOptions): Promise<DistillOutcome> {
-	const usage = collectUsage(session);
-	const text = session.getLastAssistantText() ?? "";
+async function saveDistillReply(reply: DistillReply, options: DistillJobOptions): Promise<DistillOutcome> {
+	const { usage } = reply;
+	const text = reply.response.content
+		.filter((part) => part.type === "text")
+		.map((part) => part.text)
+		.join("");
 	const parsed = parseDistillPayload(text);
 	if (parsed.kind === "skip")
 		return { ok: false, reason: "skip", message: "the distiller found nothing worth stashing", usage };
@@ -705,7 +701,6 @@ async function saveDistillReply(session: DistillSession, options: DistillJobOpti
 
 async function runDistill(options: DistillJobOptions, signal: AbortSignal): Promise<DistillOutcome> {
 	if (signal.aborted) return { ok: false, reason: "aborted" };
-	const resources: DistillResources = { session: null, creationWindowClosed: false };
 	try {
 		// Credential-shaped values are removed deterministically before the
 		// distiller sees the transcript or the observed references, and again
@@ -719,15 +714,11 @@ async function runDistill(options: DistillJobOptions, signal: AbortSignal): Prom
 		const transcript = boundTranscript(redactSecrets(entriesToTranscript(options.entries)));
 		const artifacts = extractArtifacts(toolResultTexts(options.entries).map(redactSecrets)).map(redactSecrets);
 		const prompt = buildDistillPrompt(options.hint, transcript, artifacts);
-		const outcome = await promptDistiller(options, signal, prompt, resources);
-		if (outcome) return outcome;
-		if (signal.aborted) return { ok: false, reason: "aborted" };
-		if (!resources.session) throw new Error("distiller session unavailable");
-		return await saveDistillReply(resources.session, options);
+		const reply = await promptDistiller(options, signal, prompt);
+		if (!("response" in reply)) return reply;
+		if (signal.aborted) return { ok: false, reason: "aborted", usage: reply.usage };
+		return await saveDistillReply(reply, options);
 	} catch (error) {
 		return { ok: false, reason: "failed", message: errorMessage(error) };
-	} finally {
-		resources.creationWindowClosed = true;
-		disposeQuietly(resources.session);
 	}
 }

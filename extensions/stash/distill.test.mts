@@ -18,12 +18,25 @@ import {
 	startDistillJob,
 	validatePayload,
 	type DistillPayload,
-	type DistillSession,
-	type DistillSessionFactory,
+	type DistillStreamFunction,
 } from "./distill.ts";
 import { listStashes } from "./store.ts";
-import { testModel, transcriptEntries } from "./test-fixtures.mts";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import {
+	completedDistillStream,
+	controlledDistillStream,
+	testAssistantMessage,
+	testModel,
+	transcriptEntries,
+} from "./test-fixtures.mts";
+import {
+	createAssistantMessageEventStream,
+	getCurrentSystemPrompt,
+	getCurrentTools,
+	type Api,
+	type Model,
+	type Usage,
+} from "@earendil-works/pi-ai";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 
 const NOW = new Date("2027-03-01T08:00:00Z");
 
@@ -55,25 +68,13 @@ function sessionEntries() {
 	]);
 }
 
-function fakeFactory(reply: string, opts?: { promptReject?: Error; neverResolves?: boolean; onAbort?: () => void }) {
-	const calls: { prompted: string[]; aborts: number; disposed: number } = { prompted: [], aborts: 0, disposed: 0 };
-	const factory = async (): Promise<DistillSession> => {
-		const session: DistillSession = {
-			prompt: async (text: string) => {
-				calls.prompted.push(text);
-				if (opts?.neverResolves) await new Promise<void>(() => {});
-				if (opts?.promptReject) throw opts.promptReject;
-			},
-			getLastAssistantText: () => reply,
-			abort: async () => {
-				calls.aborts++;
-				opts?.onAbort?.();
-			},
-			dispose: () => {
-				calls.disposed++;
-			},
-		};
-		return session;
+function fakeFactory(reply: string) {
+	const calls: { prompted: string[] } = { prompted: [] };
+	const factory: DistillStreamFunction = (model, context, options) => {
+		const user = context.messages.find((message) => message.role === "user");
+		assert.ok(user && typeof user.content === "string");
+		calls.prompted.push(user.content);
+		return completedDistillStream(reply)(model, context, options);
 	};
 	return { factory, calls };
 }
@@ -119,10 +120,10 @@ const VALID_PAYLOAD: DistillPayload = {
 };
 
 const baseOptions = (
-	factory: DistillSessionFactory,
+	factory: DistillStreamFunction,
 	extra: Partial<Parameters<typeof startDistillJob>[0]> = {},
 ): Parameters<typeof startDistillJob>[0] => ({
-	model: testModel(),
+	model: testModel({ contextWindow: 100000 }),
 	cwd: "/workspace",
 	thinkingLevel: "low" as const,
 	hint: "port the first tool",
@@ -132,7 +133,8 @@ const baseOptions = (
 	sessionId: "sess-9",
 	storeDir: dir,
 	timeoutMs: 60_000,
-	sessionFactory: factory,
+	streamSimple: factory,
+	settings: SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } }),
 	now: () => NOW,
 	...extra,
 });
@@ -453,7 +455,6 @@ describe("distill job", () => {
 		assert.equal(calls.prompted.length, 1);
 		assert.match(calls.prompted[0], /Operator hint: port the first tool/);
 		assert.match(calls.prompted[0], /\[USER\]\nStart the migration work/);
-		assert.equal(calls.disposed, 1);
 		const listed = await listStashes(dir, { limit: 50 });
 		assert.ok(listed.some((entry) => entry.meta.id === outcome.record.id));
 	});
@@ -546,24 +547,52 @@ describe("distill job", () => {
 		assert.match(artifact, /rotate it soon/);
 	});
 
-	it("passes the model, cwd, and thinking level to the session factory", async () => {
-		let received: Parameters<DistillSessionFactory>[0] | undefined;
-		const factory: DistillSessionFactory = async (options) => {
-			received = options;
-			return {
-				prompt: async () => {},
-				getLastAssistantText: () => JSON.stringify(VALID_PAYLOAD),
-				abort: async () => {},
-				dispose: () => {},
-			};
+	it("passes the selected model, exact instructions, no tools, and configured stream controls", async () => {
+		const model = testModel();
+		let received: Parameters<DistillStreamFunction> | undefined;
+		const streamSimple: DistillStreamFunction = (...args) => {
+			received = args;
+			return completedDistillStream(JSON.stringify(VALID_PAYLOAD))(...args);
 		};
-		const job = startDistillJob(baseOptions(factory, { thinkingLevel: "high" }));
-		const outcome = await job.result;
+		const settings = SettingsManager.inMemory({
+			retry: { enabled: false, provider: { maxRetries: 2, timeoutMs: 1234, maxRetryDelayMs: 5678 } },
+			transport: "sse",
+			websocketConnectTimeoutMs: 2345,
+			thinkingBudgets: { high: 4567 },
+		});
+		const outcome = await startDistillJob(baseOptions(streamSimple, { model, settings, thinkingLevel: "high" })).result;
 		assert.equal(outcome.ok, true);
 		assert.ok(received);
-		assert.equal(received.model.id, "test-model");
-		assert.equal(received.cwd, "/workspace");
-		assert.equal(received.thinkingLevel, "high");
+		assert.equal(received[0], model);
+		assert.equal(getCurrentSystemPrompt(received[1].messages), DISTILL_SYSTEM_PROMPT);
+		assert.deepEqual(getCurrentTools(received[1].messages), []);
+		assert.equal(received[1].messages.length, 2);
+		assert.equal(
+			received[1].messages[1].content,
+			buildDistillPrompt("port the first tool", entriesToTranscript(sessionEntries())),
+		);
+		assert.equal(received[2]?.reasoning, "high");
+		assert.equal(received[2]?.thinkingBudgets?.high, 4567);
+		assert.equal(received[2]?.transport, "sse");
+		assert.equal(received[2]?.timeoutMs, 1234);
+		assert.equal(received[2]?.maxRetries, 2);
+		assert.equal(received[2]?.maxRetryDelayMs, 5678);
+		assert.equal(received[2]?.websocketConnectTimeoutMs, 2345);
+		assert.equal(received[2]?.maxTokens, undefined, "the provider retains its model-specific output default");
+		assert.ok(received[2]?.signal instanceof AbortSignal);
+		assert.notEqual(received[2]?.sessionId, "sess-9", "the one-shot request owns a separate cache identity");
+	});
+
+	it("disables reasoning and preserves zero HTTP timeout semantics", async () => {
+		const streamSimple: DistillStreamFunction = (model, context, options) => {
+			assert.equal(options?.reasoning, undefined);
+			assert.equal(options?.timeoutMs, 2147483647);
+			return completedDistillStream("SKIP_STASH")(model, context, options);
+		};
+		const settings = SettingsManager.inMemory({ httpIdleTimeoutMs: 0 });
+		const outcome = await startDistillJob(baseOptions(streamSimple, { thinkingLevel: "off", settings })).result;
+		assert.equal(outcome.ok, false);
+		if (!outcome.ok) assert.equal(outcome.reason, "skip");
 	});
 
 	it("skips the write when the distiller says SKIP", async () => {
@@ -586,164 +615,261 @@ describe("distill job", () => {
 		assert.match(outcome.message ?? "", /"title" must be a string/);
 	});
 
-	it("reports distiller token and cost totals on every post-prompt outcome", async () => {
-		const statsFactory = (reply: string) => async (): Promise<DistillSession> => ({
-			prompt: async () => {},
-			getLastAssistantText: () => reply,
-			abort: async () => {},
-			dispose: () => {},
-			getSessionStats: () => ({
-				tokens: { input: 1_000, output: 2_000, cacheRead: 30_000, cacheWrite: 4_000 },
-				cost: 0.123,
+	const usage: Usage = {
+		input: 1000,
+		output: 2000,
+		cacheRead: 30000,
+		cacheWrite: 4000,
+		totalTokens: 37000,
+		cost: { input: 0.01, output: 0.02, cacheRead: 0.03, cacheWrite: 0.063, total: 0.123 },
+	};
+	const expectedUsage = {
+		inputTokens: 1000,
+		outputTokens: 2000,
+		cacheReadTokens: 30000,
+		cacheWriteTokens: 4000,
+		costUsd: 0.123,
+	};
+
+	it("reports final usage on successful, skipped, invalid, and failed writes", async () => {
+		for (const reply of [JSON.stringify(VALID_PAYLOAD), "SKIP_STASH", "not json"]) {
+			const outcome = await startDistillJob(baseOptions(completedDistillStream(reply, usage))).result;
+			assert.deepEqual(outcome.usage, expectedUsage);
+		}
+		const outcome = await startDistillJob(
+			baseOptions(completedDistillStream(JSON.stringify(VALID_PAYLOAD), usage), {
+				storeDir: join(dir, "absent", "\0invalid"),
 			}),
-		});
-		const expected = {
-			inputTokens: 1_000,
-			outputTokens: 2_000,
-			cacheReadTokens: 30_000,
-			cacheWriteTokens: 4_000,
-			costUsd: 0.123,
-		};
-		const written = await startDistillJob(baseOptions(statsFactory(JSON.stringify(VALID_PAYLOAD)))).result;
-		assert.equal(written.ok, true);
-		if (written.ok) assert.deepEqual(written.usage, expected);
-		const invalid = await startDistillJob(baseOptions(statsFactory("not json"))).result;
-		assert.equal(invalid.ok, false);
-		if (!invalid.ok) assert.deepEqual(invalid.usage, expected);
-	});
-
-	it("omits usage when the session reports no stats", async () => {
-		const { factory } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
-		const outcome = await startDistillJob(baseOptions(factory)).result;
-		assert.equal(outcome.ok, true);
-		if (outcome.ok) assert.equal(outcome.usage, undefined);
-	});
-
-	it("omits usage when getSessionStats throws, without failing the run", async () => {
-		const factory = async (): Promise<DistillSession> => ({
-			prompt: async () => {},
-			getLastAssistantText: () => JSON.stringify(VALID_PAYLOAD),
-			abort: async () => {},
-			dispose: () => {},
-			getSessionStats: () => {
-				throw new Error("stats unavailable");
-			},
-		});
-		const outcome = await startDistillJob(baseOptions(factory)).result;
-		assert.equal(outcome.ok, true, "a throwing stats reader must not fail a finished distillation");
-		if (outcome.ok) assert.equal(outcome.usage, undefined);
-	});
-
-	it("reports usage when the prompt rejects after the session ran", async () => {
-		const factory = async (): Promise<DistillSession> => ({
-			prompt: async () => {
-				throw new Error("provider exploded");
-			},
-			getLastAssistantText: () => "",
-			abort: async () => {},
-			dispose: () => {},
-			getSessionStats: () => ({
-				tokens: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 },
-				cost: 0.01,
-			}),
-		});
-		const outcome = await startDistillJob(baseOptions(factory)).result;
+		).result;
 		assert.equal(outcome.ok, false);
-		if (!outcome.ok) {
-			assert.equal(outcome.reason, "failed");
-			assert.deepEqual(outcome.usage, {
-				inputTokens: 100,
-				outputTokens: 10,
-				cacheReadTokens: 0,
-				cacheWriteTokens: 0,
-				costUsd: 0.01,
-			});
+		if (!outcome.ok) assert.match(outcome.message ?? "", /stash write failed/);
+		assert.deepEqual(outcome.usage, expectedUsage);
+	});
+
+	function failedStream(message: string, reportedUsage = usage): DistillStreamFunction {
+		return (model) => {
+			const stream = createAssistantMessageEventStream();
+			const response = {
+				...testAssistantMessage("", model, reportedUsage),
+				stopReason: "error" as const,
+				errorMessage: message,
+			};
+			stream.push({ type: "error", reason: "error", error: response });
+			stream.end();
+			return stream;
+		};
+	}
+
+	it("retries transient errors with identical input and sums each attempt exactly once", async () => {
+		let attempts = 0;
+		let first: Parameters<DistillStreamFunction> | undefined;
+		const streamSimple: DistillStreamFunction = (...args) => {
+			if (first) assert.deepEqual(args, first);
+			else first = args;
+			attempts++;
+			return (
+				attempts === 1
+					? failedStream("503 service unavailable")
+					: completedDistillStream(JSON.stringify(VALID_PAYLOAD), usage)
+			)(...args);
+		};
+		const outcome = await startDistillJob(baseOptions(streamSimple)).result;
+		assert.equal(outcome.ok, true);
+		assert.equal(attempts, 2);
+		assert.deepEqual(outcome.usage, {
+			inputTokens: 2000,
+			outputTokens: 4000,
+			cacheReadTokens: 60000,
+			cacheWriteTokens: 8000,
+			costUsd: 0.246,
+		});
+	});
+
+	it("enforces retry exhaustion and does not retry deterministic or overflow errors", async () => {
+		for (const [message, expectedCalls] of [
+			["503 service unavailable", 4],
+			["insufficient_quota", 1],
+			["maximum context length exceeded; 503", 1],
+		] as const) {
+			let attempts = 0;
+			const streamSimple: DistillStreamFunction = (...args) => {
+				attempts++;
+				return failedStream(message)(...args);
+			};
+			const outcome = await startDistillJob(baseOptions(streamSimple)).result;
+			assert.equal(outcome.ok, false);
+			if (!outcome.ok) assert.equal(outcome.reason, "failed");
+			assert.equal(attempts, expectedCalls);
+			assert.equal(outcome.usage?.inputTokens, 1000 * expectedCalls);
 		}
 	});
 
-	it("reports a prompt failure without writing", async () => {
-		const { factory } = fakeFactory("", { promptReject: new Error("provider exploded") });
-		const outcome = await startDistillJob(baseOptions(factory)).result;
-		assert.equal(outcome.ok, false);
-		if (outcome.ok) return;
-		assert.equal(outcome.reason, "failed");
-		assert.match(outcome.message ?? "", /provider exploded/);
-	});
-
-	it("settles a session factory failure as a failed outcome", async () => {
-		const factory = async (): Promise<DistillSession> => {
-			throw new Error("session creation failed");
+	it("honors disabled outer retries", async () => {
+		let attempts = 0;
+		const streamSimple: DistillStreamFunction = (...args) => {
+			attempts++;
+			return failedStream("503")(...args);
 		};
-		const outcome = await startDistillJob(baseOptions(factory)).result;
-		assert.equal(outcome.ok, false);
-		if (outcome.ok) return;
-		assert.equal(outcome.reason, "failed");
-		assert.match(outcome.message ?? "", /session creation failed/);
+		await startDistillJob(
+			baseOptions(streamSimple, { settings: SettingsManager.inMemory({ retry: { enabled: false } }) }),
+		).result;
+		assert.equal(attempts, 1);
 	});
 
-	it("times out session creation and disposes a late session", async () => {
-		let resolveFactory: ((session: DistillSession) => void) | undefined;
-		let disposed = 0;
-		const factory = () =>
-			new Promise<DistillSession>((resolve) => {
-				resolveFactory = resolve;
-			});
-		const outcome = await withWatchdog(startDistillJob(baseOptions(factory, { timeoutMs: 30 })).result);
+	it("settles a synchronous stream setup exception without writing", async () => {
+		const before = (await listStashes(dir, { limit: 200 })).length;
+		const outcome = await startDistillJob(
+			baseOptions(() => {
+				throw new Error("stream setup failed");
+			}),
+		).result;
 		assert.equal(outcome.ok, false);
-		if (outcome.ok) return;
-		assert.equal(outcome.reason, "aborted");
-		assert.match(outcome.message ?? "", /timed out/);
-		resolveFactory?.({
-			prompt: async () => {},
-			getLastAssistantText: () => "",
-			abort: async () => {},
-			dispose: () => {
-				disposed++;
-			},
-		});
+		if (!outcome.ok) {
+			assert.equal(outcome.reason, "failed");
+			assert.match(outcome.message ?? "", /stream setup failed/);
+		}
+		assert.equal(outcome.usage, undefined);
+		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
+	});
+
+	it("rejects incomplete or tool-request output even when its text is valid JSON", async () => {
+		const before = (await listStashes(dir, { limit: 200 })).length;
+		for (const stopReason of ["length", "toolUse"] as const) {
+			const streamSimple: DistillStreamFunction = (model) => {
+				const stream = createAssistantMessageEventStream();
+				const message = { ...testAssistantMessage(JSON.stringify(VALID_PAYLOAD), model, usage), stopReason };
+				stream.push({ type: "done", reason: stopReason, message });
+				stream.end();
+				return stream;
+			};
+			const outcome = await startDistillJob(baseOptions(streamSimple)).result;
+			assert.equal(outcome.ok, false);
+			if (!outcome.ok) assert.equal(outcome.reason, "invalid");
+			assert.deepEqual(outcome.usage, expectedUsage);
+		}
+		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
+	});
+
+	it("cancels an active stream, retains its terminal usage, and never writes", async () => {
+		let aborts = 0;
+		const before = (await listStashes(dir, { limit: 200 })).length;
+		const streamSimple: DistillStreamFunction = (model, _context, options) => {
+			const stream = createAssistantMessageEventStream();
+			const partial = testAssistantMessage("partial", model, usage);
+			stream.push({ type: "text_delta", contentIndex: 0, delta: "partial", partial });
+			options?.signal?.addEventListener(
+				"abort",
+				() => {
+					aborts++;
+					stream.push({ type: "error", reason: "aborted", error: { ...partial, stopReason: "aborted" } });
+					stream.end();
+				},
+				{ once: true },
+			);
+			return stream;
+		};
+		const job = startDistillJob(baseOptions(streamSimple));
 		await new Promise((resolve) => setImmediate(resolve));
-		assert.equal(disposed, 1);
-	});
-
-	it("aborts before the prompt when the job is cancelled during creation", async () => {
-		const { factory, calls } = fakeFactory("", { neverResolves: true });
-		const job = startDistillJob(baseOptions(factory));
 		job.abort();
-		const outcome = await job.result;
-		assert.equal(outcome.ok, false);
-		if (outcome.ok) return;
-		assert.equal(outcome.reason, "aborted");
-		assert.equal(calls.prompted.length, 0, "a cancelled job must not prompt");
-		assert.equal(calls.disposed, 1);
-	});
-
-	it("aborts an in-flight prompt and settles without writing", async () => {
-		const { factory, calls } = fakeFactory("", { neverResolves: true });
-		const job = startDistillJob(baseOptions(factory));
-		await new Promise((resolve) => setTimeout(resolve, 10));
 		job.abort();
-		const outcome = await job.result;
+		const outcome = await withWatchdog(job.result);
 		assert.equal(outcome.ok, false);
-		if (outcome.ok) return;
-		assert.equal(outcome.reason, "aborted");
-		assert.equal(calls.aborts, 1, "the session abort must be triggered");
-		assert.equal(calls.prompted.length, 1);
+		if (!outcome.ok) assert.equal(outcome.reason, "aborted");
+		assert.equal(aborts, 1);
+		assert.deepEqual(outcome.usage, expectedUsage);
+		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
 	});
 
-	it("times out a stuck prompt with an aborted outcome", async () => {
-		const { factory } = fakeFactory("", { neverResolves: true });
-		const outcome = await withWatchdog(startDistillJob(baseOptions(factory, { timeoutMs: 30 })).result);
+	it("cancels during retry backoff without duplicating usage or starting another attempt", async () => {
+		let attempts = 0;
+		const streamSimple: DistillStreamFunction = (...args) => {
+			attempts++;
+			return failedStream("503")(...args);
+		};
+		const settings = SettingsManager.inMemory({ retry: { baseDelayMs: 60000 } });
+		const job = startDistillJob(baseOptions(streamSimple, { settings }));
+		await new Promise((resolve) => setImmediate(resolve));
+		job.abort();
+		const outcome = await withWatchdog(job.result);
 		assert.equal(outcome.ok, false);
-		if (outcome.ok) return;
-		assert.equal(outcome.reason, "aborted");
-		assert.match(outcome.message ?? "", /timed out/);
+		if (!outcome.ok) assert.equal(outcome.reason, "aborted");
+		assert.equal(attempts, 1);
+		assert.deepEqual(outcome.usage, expectedUsage);
 	});
 
-	it("disposes the session on every path", async () => {
-		const { factory, calls } = fakeFactory("not json");
-		const outcome = await startDistillJob(baseOptions(factory)).result;
+	it("times out cooperative work and clears the provider signal", async () => {
+		let aborted = false;
+		const outcome = await withWatchdog(
+			startDistillJob(
+				baseOptions(
+					controlledDistillStream(() => {
+						aborted = true;
+					}),
+					{ timeoutMs: 20 },
+				),
+			).result,
+		);
 		assert.equal(outcome.ok, false);
-		assert.equal(calls.disposed, 1);
+		if (!outcome.ok) {
+			assert.equal(outcome.reason, "aborted");
+			assert.match(outcome.message ?? "", /timed out/);
+		}
+		assert.equal(aborted, true);
+	});
+
+	it("settles a noncooperative stream and discards a late valid result", async () => {
+		const stream = createAssistantMessageEventStream();
+		const before = (await listStashes(dir, { limit: 200 })).length;
+		const outcome = await withWatchdog(startDistillJob(baseOptions(() => stream, { timeoutMs: 20 })).result);
+		assert.equal(outcome.ok, false);
+		if (!outcome.ok) assert.equal(outcome.reason, "aborted");
+		const message = testAssistantMessage(JSON.stringify(VALID_PAYLOAD));
+		stream.push({ type: "done", reason: "stop", message });
+		stream.end();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
+	});
+
+	it("preserves artifact bytes and joins multiple text blocks without adding separators", async () => {
+		const streamSimple: DistillStreamFunction = (model) => {
+			const stream = createAssistantMessageEventStream();
+			const message = testAssistantMessage("", model);
+			message.content = [
+				{ type: "text", text: '{"title":"Byte parity",' },
+				{ type: "thinking", thinking: "not output" },
+				{ type: "text", text: '"summary":"Saved state.","files":["src/a.ts"]}' },
+			];
+			stream.push({ type: "done", reason: "stop", message });
+			stream.end();
+			return stream;
+		};
+		const outcome = await startDistillJob(baseOptions(streamSimple)).result;
+		assert.equal(outcome.ok, true);
+		if (!outcome.ok) return;
+		assert.equal(
+			await readFile(outcome.path, "utf8"),
+			[
+				"---",
+				'id: "20270301T080000Z-byte-parity"',
+				'title: "Byte parity"',
+				'created: "20270301T080000Z"',
+				'project: "/workspace"',
+				'branch: "main"',
+				'sessionId: "sess-9"',
+				"tags: []",
+				'state: "open"',
+				"---",
+				"",
+				"# Byte parity",
+				"",
+				"Saved state.",
+				"",
+				"## Files",
+				"",
+				"- src/a.ts",
+				"",
+			].join("\n"),
+		);
 	});
 });
 
