@@ -125,7 +125,17 @@ import {
 } from "./collaboration.ts";
 import { stripTerminalSequences } from "./console.ts";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
-import { type PeerEnvelope, PeerHub } from "./peers.ts";
+import { type PeerEnvelope, PeerHub, type PeerReceipt } from "./peers.ts";
+import {
+	compilePlan,
+	planFields,
+	workerPlanSnapshot,
+	sendWithinPlan,
+	wirePlan,
+	type CompiledPlan,
+	type PlanFrame,
+	type WorkerPlan,
+} from "./plans.ts";
 import { openProfilePanel } from "./profile-panel.ts";
 import {
 	applyProfile,
@@ -372,6 +382,8 @@ export interface WorkerUsage {
 
 export interface WorkerRecord {
 	id: string;
+	/** Named-plan membership and its successful peer-send allowance. */
+	collaboration?: WorkerPlan;
 	/** Presentation label: a profile name or a task-derived fallback. It is
 	 * never an identity; exact ids stay in details. */
 	label: string | null;
@@ -657,6 +669,7 @@ function normalizeWorkerRecord(obj: unknown): WorkerRecord | null {
 	return {
 		id,
 		label: asStrOrNull(o.label),
+		collaboration: workerPlanSnapshot(o.collaboration),
 		task: asString(o.task),
 		model: asString(o.model, "?"),
 		bootstrapModel: asString(o.bootstrapModel, asString(o.model, "?")),
@@ -796,6 +809,8 @@ export interface DispatchTask {
 }
 
 export interface DispatchOutcome {
+	/** Internal staged startup. Configuration completes for all peers before any task starts. */
+	prepareStart?: (contract: { task: string; collaboration: WorkerPlan }) => () => void;
 	id: string;
 	state: WorkerState;
 	error?: string;
@@ -1646,6 +1661,8 @@ export interface WorkerOwnerLink {
 	/** Read-only evidence handles, resolved against the current live worker. */
 	collaborationManager?: () => EntryReader | null;
 	collaborationRecord?: () => WorkerRecord | null;
+	/** Send through the owning module so plan allowances use the authoritative record. */
+	sendPeer?: (to: string, message: string, replyTo?: string, reference?: WorkReference) => PeerReceipt;
 }
 
 /** One rendered, bounded interim report ready for the parent session. */
@@ -1707,6 +1724,17 @@ export function linkWorkerOwner(workerSessionId: string, link: Omit<WorkerOwnerL
 		deliverEvent: (input) => deliverWorkerEvent(workerSessionId, link.workerId, input),
 		collaborationManager: () => liveWorkers.get(link.workerId)?.session.sessionManager ?? null,
 		collaborationRecord: () => liveWorkers.get(link.workerId)?.record ?? null,
+		sendPeer: (to, message, replyTo, reference) => {
+			const live = liveWorkers.get(link.workerId);
+			if (!live || live.startPending)
+				throw new Error("The worker is not ready to send peer messages; nothing was sent.");
+			return sendWithinPlan(
+				live.record.collaboration,
+				to,
+				() => sharedWorkerState.peerHub.send(workerSessionId, to, message, replyTo, reference),
+				() => writeWorker(live.record),
+			);
+		},
 	});
 }
 
@@ -1898,6 +1926,8 @@ const replacingSessions = new Set<string>();
 // ---------------------------------------------------------------------------
 
 interface LiveWorker {
+	/** A named plan owns startup until all peer sessions and contracts exist. */
+	startPending?: boolean;
 	record: WorkerRecord;
 	session: AgentSession;
 	runtime: WorkerRuntime;
@@ -2637,12 +2667,13 @@ export function deliverWorkerEvent(sessionId: string, workerId: string, input: W
 	const live = liveWorkers.get(workerId);
 	if (
 		!live ||
+		live.startPending ||
 		live.record.sessionId !== sessionId ||
 		live.record.state !== "running" ||
 		live.record.cancelRequestedAt ||
 		sharedWorkerState.submittedSessionIds.has(sessionId)
 	) {
-		return { ok: false, error: `${input.describe}: the worker is closed; nothing was sent` };
+		return { ok: false, error: `${input.describe}: the worker is closed or not ready; nothing was sent` };
 	}
 	if (live.record.interruptedAt) return deliverPausedWorkerEvent(live, input);
 	if (live.leg) {
@@ -3681,6 +3712,7 @@ export async function dispatchWorker(
 	defaults: DispatchDefaults,
 	ctx: ExtensionContext,
 	continuation?: WorkerRecord,
+	deferStart = false,
 ): Promise<DispatchOutcome> {
 	const preparation = prepareDispatch(task, defaults, ctx);
 	if ("error" in preparation) return preparation.error;
@@ -4020,6 +4052,7 @@ export async function dispatchWorker(
 		return fail("worker session was created without a disposal owner");
 	}
 	const liveWorker: LiveWorker = {
+		startPending: deferStart,
 		record,
 		session,
 		runtime,
@@ -4109,16 +4142,150 @@ export async function dispatchWorker(
 		}
 	});
 	liveWorkers.set(id, liveWorker);
-	armRunLimits(id);
 	publishSubagentStatus();
 
-	beginWorkerLeg(
-		liveWorker,
-		() => runtime.prompt({ text: composeWorkerPrompt(task.task, sharedContext, snapshotId) }),
-		() => sessionControlError ?? undefined,
-	);
+	const start = () => {
+		if (
+			!ownsWorker() ||
+			(deferStart && !liveWorker.startPending) ||
+			record.cancelRequestedAt ||
+			record.interruptedAt ||
+			replacingSessions.has(record.ownerSession ?? "")
+		)
+			throw new Error(`Worker ${id} lost its startup owner.`);
+		liveWorker.startPending = false;
+		armRunLimits(id);
+		beginWorkerLeg(
+			liveWorker,
+			() => runtime.prompt({ text: composeWorkerPrompt(record.task, sharedContext, snapshotId) }),
+			() => sessionControlError ?? undefined,
+		);
+	};
+	if (!deferStart) {
+		start();
+		return { id, state: "running", record };
+	}
+	return {
+		id,
+		state: "running",
+		record,
+		prepareStart(contract) {
+			if (!ownsWorker() || !liveWorker.startPending || record.cancelRequestedAt || record.interruptedAt)
+				throw new Error(`Worker ${id} is no longer available for plan startup.`);
+			record.task = contract.task;
+			record.collaboration = contract.collaboration;
+			writeWorker(record);
+			return start;
+		},
+	};
+}
 
-	return { id, state: "running", record };
+/** A named plan reuses worker setup and controls; it owns only the startup barrier. */
+async function executeNamedPlan(
+	plan: CompiledPlan<TaskParams>,
+	tasks: DispatchTask[],
+	defaults: DispatchDefaults,
+	ctx: ExtensionContext,
+	dryRun: boolean,
+	signal?: AbortSignal,
+) {
+	const members = tasks.map((task, index) => {
+		const prepared = prepareDispatch(task, defaults, ctx);
+		if ("error" in prepared)
+			throw new Error(`${plan.members[index].role}: ${prepared.error.error}. No plan worker was dispatched.`);
+		const setup = prepared.setup;
+		if (!setup.resolvedTools.includes("subagent_message"))
+			throw new Error(
+				`${plan.members[index].role} requires subagent_message in its selected tool surface. No tools were added and no plan worker was dispatched.`,
+			);
+		const ref = modelReference(setup.modelId);
+		const model = ctx.modelRegistry.find(ref.provider, ref.id);
+		return {
+			role: plan.members[index].role,
+			messageLimit: plan.members[index].messageLimit,
+			task: task.task,
+			label: task.label,
+			model: setup.modelId,
+			modelFallback: setup.modelFallback ?? null,
+			thinking: model ? clampThinkingLevel(model, setup.thinking) : setup.thinking,
+			thinkingRequested: setup.thinking,
+			tools: setup.resolvedTools,
+			cwd: setup.cwd,
+			...setup.limits,
+			profile: task.profile ?? null,
+		};
+	});
+	const preview = {
+		name: plan.name,
+		rounds: plan.rounds,
+		integration: plan.integration,
+		members,
+		sharedContext: tasks[0].sharedContext ?? "",
+		workerProtocol: workerSystemPrompt(),
+		boundary:
+			"Local preflight only, not provider health or target-session validation. Execution assigns exact worker addresses before task startup. The parent integrates results and verifies acceptance; no automatic synthesis or publication occurs.",
+	};
+	const serialized = JSON.stringify(preview, null, 2);
+	if (Buffer.byteLength(serialized, "utf8") > 48 * 1024)
+		throw new Error(
+			"The complete expanded plan exceeds 48KiB. Shorten its contracts, profiles, or shared context. No worker was dispatched.",
+		);
+	signal?.throwIfAborted();
+	if (dryRun)
+		return { content: [{ type: "text" as const, text: serialized }], details: { dryRun: true, plan: preview } };
+
+	const outcomes = await Promise.all(
+		tasks.map(async (task): Promise<DispatchOutcome> => {
+			try {
+				return await dispatchWorker(task, defaults, ctx, undefined, true);
+			} catch (cause) {
+				return { id: "", state: "failed", error: errText(cause), record: null };
+			}
+		}),
+	);
+	try {
+		signal?.throwIfAborted();
+		if (outcomes.some((outcome) => !outcome.prepareStart)) throw new Error("A plan member failed setup.");
+		const contracts = wirePlan(
+			plan,
+			outcomes.map((outcome) => outcome.id),
+		);
+		const starts = outcomes.map((outcome, index) => {
+			if (!outcome.prepareStart) throw new Error("Plan startup is unavailable.");
+			return outcome.prepareStart(contracts[index]);
+		});
+		signal?.throwIfAborted();
+		for (const start of starts) start();
+	} catch (cause) {
+		const cleanup = await Promise.all(
+			outcomes
+				.filter((outcome) => outcome.state === "running" && outcome.id)
+				.map((outcome) => cancelWorker(outcome.id, ctx.sessionManager.getSessionId())),
+		);
+		throw new Error(
+			`${errText(cause)}\nPlan startup stopped.\n${outcomes.map(outcomeLine).join("\n")}\n${cleanup.map((result) => result.text).join("\n")}`,
+		);
+	}
+	const workers = outcomes.map((outcome) => ({
+		id: outcome.id,
+		state: outcome.state,
+		label: outcome.record?.label,
+		model: outcome.record?.model,
+		thinking: outcome.record?.thinking,
+		sessionId: outcome.record?.sessionId,
+		collaboration: outcome.record?.collaboration,
+		setupDiagnostics: outcome.record?.setupDiagnostics,
+		error: outcome.error ?? null,
+	}));
+	return {
+		content: [
+			{
+				type: "text" as const,
+				text: `Started ${plan.name}:\n${outcomes.map(outcomeLine).join("\n")}\n\n${workers.map((worker) => `${worker.collaboration?.role}: ${worker.id}`).join("\n")}\n\nThe parent must integrate submitted results at ${plan.integration.destination} and check: ${plan.integration.acceptance}\nUse existing inspect, steer, interrupt, kill, continue, and collect controls by worker id. If a member fails or pauses, resolve dependent work before concluding. No automatic group cancellation, synthesis, acceptance, or publication occurs.`,
+			},
+		],
+		details: { dryRun: false, plan: { name: plan.name, rounds: plan.rounds, integration: plan.integration }, workers },
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -4141,6 +4308,7 @@ export async function steerWorker(
 	requesterSession: string,
 ): Promise<{ ok: boolean; text: string }> {
 	const live = liveWorkerOwnedBy(id, requesterSession);
+	if (live?.startPending) return { ok: false, text: `Worker ${id} awaits plan setup; no message was sent.` };
 	if (!live) {
 		if (foreignLiveOwner(id, requesterSession)) {
 			return {
@@ -4150,12 +4318,6 @@ export async function steerWorker(
 		}
 		const record = readWorker(id);
 		if (!record) return { ok: false, text: `No worker with id ${id} in the store.` };
-		if (record.state !== "running") {
-			return {
-				ok: false,
-				text: `Worker ${id} is ${record.state}; steering requires a live worker.`,
-			};
-		}
 		// Not ours, but maybe stale: use the same gate cancelWorker does. If the
 		// owning session died, finalizeIfStale transitions the record, and we
 		// report the transitioned state instead of a false live-owner claim.
@@ -4649,7 +4811,9 @@ export async function continueWorker(id: string, message: string, ctx: Extension
 	const bootstrapThinking = clampThinkingLevel(bootstrap, sourceThinking);
 	return dispatchWorker(
 		{
-			task: message.trim(),
+			task: terminal.collaboration
+				? `This is a standalone follow-up, not a restart of the previous named plan. Previous peer addresses and exchange rounds are historical evidence only. Follow this new task:\n\n${message.trim()}`
+				: message.trim(),
 			...continuationModels(terminal, bootstrapThinking),
 			tools,
 			cwd: terminal.cwd,
@@ -5534,6 +5698,8 @@ type TaskParams = {
 };
 
 type SubagentParams = {
+	plan?: PlanFrame & { members: TaskParams[] };
+	dryRun?: boolean;
 	profile?: string;
 	task?: string;
 	tasks?: TaskParams[];
@@ -5579,7 +5745,9 @@ async function abortBounded(runtime: WorkerRuntime): Promise<void> {
 }
 
 function renderCollapsedCall(args: SubagentParams, theme: Theme, text: Text): void {
-	const spec = args.task ?? (args.tasks?.length ? `batch: ${args.tasks.length} tasks` : "(no task)");
+	const spec = args.plan
+		? `${args.dryRun ? "preview" : "plan"}: ${args.plan.name}`
+		: (args.task ?? (args.tasks?.length ? `batch: ${args.tasks.length} tasks` : "(no task)"));
 	const snippet = spec.replace(/\s+/g, " ").slice(0, 90);
 	const tail = spec.length > 90 ? "…" : "";
 	text.setText(
@@ -5615,7 +5783,9 @@ function expandedConfigLines(args: SubagentParams): string[] {
 		deadlineConfigLine(args),
 		budgetConfigLine(args),
 		`shared:   ${args.sharedContext ? `${sharedContextSnapshotId(args.sharedContext)} (${Buffer.byteLength(args.sharedContext, "utf-8")} bytes, every worker)` : "none"}`,
-		"mode:     background + subagent_result notification",
+		args.plan && args.dryRun
+			? "mode:     preview only; no workers or model calls"
+			: "mode:     background + subagent_result notification",
 	];
 }
 
@@ -5631,11 +5801,11 @@ function expandedBatchLines(args: SubagentParams, theme: Theme): string {
 
 function renderExpandedCall(args: SubagentParams, theme: Theme, text: Text): void {
 	text.setText(
-		theme.fg("toolTitle", theme.bold("subagent dispatch")) +
+		theme.fg("toolTitle", theme.bold(args.plan && args.dryRun ? "subagent plan preview" : "subagent dispatch")) +
 			"\n\n" +
 			theme.fg("muted", "task") +
 			"\n" +
-			(args.task ?? "(batch dispatch)") +
+			(args.plan ? JSON.stringify(args.plan, null, 2) : (args.task ?? "(batch dispatch)")) +
 			expandedBatchLines(args, theme) +
 			"\n\n" +
 			theme.fg("muted", "config") +
@@ -5675,7 +5845,7 @@ const subagentTool = defineTool({
 	label: "Subagent",
 	description: [
 		"Dispatch isolated Pi worker sessions for independent work: verification, investigation, review, research, drafting, or bounded implementation.",
-		"Choose exactly one form. Single mode: pass `task` (plus optional model/thinking/tools/cwd). Batch mode: pass a non-empty `tasks` array for parallel dispatch; each task may carry its own fields, otherwise it inherits the top-level defaults.",
+		"Choose exactly one form. Single mode: pass `task` (plus optional model/thinking/tools/cwd). Batch mode: pass a non-empty `tasks` array for parallel dispatch. Named plans: pass `plan` for panel-review, adversarial-debate, or advisor-to-implementer, with ordered members, objective, sources, boundaries, and integration destination/acceptance. Each member may override top-level defaults. `dryRun: true` returns a complete named-plan preview without workers or model calls. Plans accept 2–4 reviewers or exactly two ordered debate/advisor members, 1–3 critique rounds, at most 8192 UTF-8 input bytes, and a 48KiB expanded preview. Execution prepares every peer before task startup; setup failure or cancellation cancels the constructed group. Successful peer sends have a persisted per-worker cap; semantic turn order and acceptance remain agent responsibilities. Existing controls and result storage apply, with parent-owned integration rather than automatic synthesis.",
 		"Every worker runs in the BACKGROUND: the call completes worker setup and returns stable worker ids, then the model run proceeds in the background under this session's control; a subagent_result message arrives when a worker settles without explicit cancellation (steering delivery before the next model call, triggers a turn when idle). Explicit cancellation is acknowledged by its control response and adds no duplicate follow-up. submit_result stores at most 50KB and marks larger submissions [truncated].",
 		"Model: explicit `model` (bare id or provider/id) is checked against registry availability and configured auth only. Without an explicit or profile model, the worker inherits the parent's current model. Extension-registered providers are copied into the worker through Pi's public registration facade. Persisted and environment auth resolve; a parent-only runtime API-key override does not transfer. Without an explicit or profile cwd, the worker inherits the session cwd.",
 		"Fallback: optional ordered fallbackModels (at most four exact provider/model identities) replaces the taskClass or default roster in PI_SUBAGENT_FALLBACK_MODELS; [] disables it. Task fields override dispatch defaults. Offline catalog and configured-auth checks do not probe provider health. Only recognized provider quota, rate-limit, or authentication failures permit runtime substitution, after Pi settles. The same transcript and allowance continue. Every substitution or exhausted roster is reported; tool, parity, configuration, cancellation, and ordinary errors never trigger fallback.",
@@ -5697,6 +5867,7 @@ const subagentTool = defineTool({
 		"When evidence settles a subagent task or changes its premise, immediately use subagent_kill for work with no remaining use, or subagent_steer for a specific remaining question. Inspect uncertain work before that decision. Do not leave superseded workers active until their deadline.",
 		"Before a final conclusion, integrate needed subagent results and resolve live workers: await useful work, redirect changed work, or cancel superseded work. An interim reply is not task closure. Never poll with sleeps; completion messages arrive automatically.",
 		"For multiple independent checks, use the tasks array (parallel) instead of serial dispatches.",
+		"Use a named plan for a bounded panel review, adversarial debate, or advisor-to-implementer exchange. Preview with dryRun before execution when the contracts need inspection. The parent integrates all results and checks the declared acceptance criteria; peer agreement is not acceptance.",
 		"Provision context as pointers (file paths, URLs, query strings); the worker fetches content itself with its own tools.",
 		"If a worker's tool fails or its declared authority does not work, that is a bug to surface to the operator — do not route around it with narrower tool lists.",
 		"Workers live in this session. If work must survive your own exit, do not dispatch it in the background and end the turn.",
@@ -5704,6 +5875,23 @@ const subagentTool = defineTool({
 		"Set `deadlineMinutes` from the task you actually wrote: a quick lookup or review is minutes, a broad investigation or implementation is longer. A paused worker is the signal that your estimate or the task was wrong — inspect its transcript, then resume, redirect, or kill it instead of blindly resuming.",
 	],
 	parameters: Type.Object({
+		plan: Type.Optional(
+			Type.Object({
+				...planFields,
+				members: Type.Array(taskSchema, {
+					minItems: 2,
+					maxItems: 4,
+					description:
+						"Ordered members: reviewers; advocate/challenger; or advisor/implementer. Each task states its perspective or assignment.",
+				}),
+			}),
+		),
+		dryRun: Type.Optional(
+			Type.Boolean({
+				description:
+					"Named plans only: return complete contracts and effective configuration without creating workers or making model calls.",
+			}),
+		),
 		profile: Type.Optional(profileSchema),
 		task: Type.Optional(Type.String({ minLength: 1 })),
 		tasks: Type.Optional(
@@ -5741,14 +5929,16 @@ const subagentTool = defineTool({
 		_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
 		ctx: ExtensionContext,
 	) {
-		void _signal;
+		_signal?.throwIfAborted();
 		void _onUpdate;
 		bindStatusContext(ctx);
-		const hasTask = Boolean(params.task?.trim());
-		const hasTasks = Boolean(params.tasks?.length);
-		if (hasTask === hasTasks) {
-			throw new Error("Provide exactly one dispatch form: `task` for one worker or non-empty `tasks` for a batch.");
+		if (
+			[Boolean(params.task?.trim()), Boolean(params.tasks?.length), Boolean(params.plan)].filter(Boolean).length !== 1
+		) {
+			throw new Error("Provide exactly one dispatch form: `task`, non-empty `tasks`, or a named `plan`.");
 		}
+		if (params.dryRun !== undefined && !params.plan) throw new Error("dryRun is only available for named plans.");
+		const plan = params.plan ? compilePlan(params.plan) : undefined;
 		const sharedContext = params.sharedContext ?? "";
 		const sharedContextBytes = Buffer.byteLength(sharedContext, "utf-8");
 		if (sharedContextBytes > SHARED_CONTEXT_CAP_BYTES) {
@@ -5778,7 +5968,9 @@ const subagentTool = defineTool({
 			ownerWorkers.map((worker) => worker.label).filter((label): label is string => typeof label === "string"),
 		);
 		let nextLabelOrdinal = ownerWorkers.length;
-		const tasks: DispatchTask[] = (params.tasks?.length ? params.tasks : [{ task: params.task ?? "" }]).map((task) => {
+		const tasks: DispatchTask[] = (
+			plan?.members ?? (params.tasks?.length ? params.tasks : [{ task: params.task ?? "" }])
+		).map((task) => {
 			const selected = task.profile ?? params.profile;
 			let profile: ProfileSnapshot | undefined;
 			if (selected !== undefined) {
@@ -5818,6 +6010,16 @@ const subagentTool = defineTool({
 			// ignored and the failure would read as a successful tool result.
 			throw new Error("Every task needs a non-empty `task` prompt.");
 		}
+
+		if (plan)
+			return executeNamedPlan(
+				plan,
+				tasks,
+				{ ...defaults, cwd: defaults.cwd ?? ctx.cwd },
+				ctx,
+				params.dryRun === true,
+				_signal,
+			);
 
 		const outcomes = await Promise.all(
 			tasks.map((task) =>
@@ -5953,7 +6155,10 @@ const peerMessageTool = defineTool({
 			if ("error" in result) throw new Error(`reference rejected: ${result.error}`);
 			reference = result.reference;
 		}
-		const details = sharedWorkerState.peerHub.send(sessionId, params.to, params.message, params.replyTo, reference);
+		const send = sharedWorkerState.workerOwners.get(sessionId)?.sendPeer;
+		const details = send
+			? send(params.to, params.message, params.replyTo, reference)
+			: sharedWorkerState.peerHub.send(sessionId, params.to, params.message, params.replyTo, reference);
 		return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 	},
 });

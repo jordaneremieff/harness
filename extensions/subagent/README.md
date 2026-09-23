@@ -18,15 +18,15 @@ application's persistence authority; the parent's own tools manage workers.
 Pi's loader binds this extension's imports of `@earendil-works/pi-coding-agent`,
 `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`,
 `@earendil-works/pi-ai` and its `/compat`, `/oauth`, and `/providers/all`
-subpaths, and `typebox` to the running installation. The extension imports
-nothing else from the Pi packages, so a worker runs on the installed release
+subpaths, and `typebox` with its `/value` subpath to the running installation.
+The extension imports nothing else from the Pi packages, so a worker runs on the installed release
 and the repository pins no Pi version.
 
 ## Tools
 
 | Tool | Mode | Purpose |
 |---|---|---|
-| `subagent` | parallel | Dispatch one task or a `tasks[]` batch. The call returns a stable id after worker setup; the model run starts in the background. Per-task `deadlineMinutes` (defaulted) and `budgetUsd` (opt-in) pause a worker that overruns the agent's own estimate. An optional per-task `purpose` names the worker; the exact id stays the identity. |
+| `subagent` | parallel | Dispatch one task, a `tasks[]` batch, or a named collaboration `plan`. `dryRun` previews a named plan without dispatch. The call returns a stable id after worker setup; the model run starts in the background. Per-task `deadlineMinutes` (defaulted) and `budgetUsd` (opt-in) pause a worker that overruns the agent's own estimate. An optional per-task `purpose` names the worker; the exact id stays the identity. |
 | `subagent_profiles` | sequential | List, read, create, replace, remove, enable, or disable managed dispatch profiles. Updates, removal, and toggles require the digest from a prior read. |
 | `subagent_report` | parallel | Send a bounded, nonterminal report to the immediate parent. Worker-only; a returned call reports `sent_unconfirmed`, not acknowledged receipt. |
 | `subagent_peers` | parallel | Discover the parent, siblings, and nested workers in this dispatch family, with exact addresses and paginated task labels. |
@@ -82,9 +82,93 @@ determines what the worker can do there.
 { "task": "Verify that MODEL_BASE has a unique constraint on ID_FIELD. Cite file:line.", "model": "provider/model-id", "thinking": "medium" }
 ```
 
-Use exactly one dispatch form: `task` for one worker or a non-empty `tasks`
-array for a batch. Per-task fields: `task` (required), `profile`, `model`,
+Use exactly one dispatch form: `task` for one worker, a non-empty `tasks`
+array for a batch, or `plan` for a named collaboration. Per-task fields:
+`task` (required), `profile`, `purpose`, `model`, `fallbackModels`, `taskClass`,
 `thinking`, `tools`, `cwd`, `deadlineMinutes`, `budgetUsd`.
+
+### Named collaboration plans
+
+A named plan compiles a shared objective, source guidance, boundaries, member
+assignments, and integration criteria into ordinary worker contracts. It reuses
+profiles, shared context, direct peer messages, worker controls, and result
+storage. It creates no scheduler, separate result store, or automatic synthesis.
+
+```json
+{
+  "plan": {
+    "name": "panel-review",
+    "objective": "Decide whether the parser change satisfies its documented contract.",
+    "sources": "Read src/parser.ts and its tests. Cite exact source locations.",
+    "boundaries": "Read only. Do not edit or publish.",
+    "integration": {
+      "destination": "The parent's review response",
+      "acceptance": "Resolve each reported defect against source and tests; retain evidence for any disagreement."
+    },
+    "rounds": 1,
+    "members": [
+      { "task": "Review parser semantics." },
+      { "task": "Review malformed-input behavior." }
+    ]
+  },
+  "dryRun": true
+}
+```
+
+Set `dryRun` to `false`, or omit it, to execute. `dryRun` is valid only with
+`plan`. The preview includes complete worker contracts, the ordinary worker
+protocol, shared context, selected profile snapshots, and effective local
+configuration. It creates no workers and makes no model calls. Local catalog,
+auth configuration, directory, and tool checks do not establish provider health
+or target-session registration parity; execution still validates each session.
+
+Members appear in role order:
+
+| Plan | Members | Exchange |
+| --- | --- | --- |
+| `panel-review` | Two to four reviewers, with caller-supplied perspectives | Independent source checks, initial positions to every peer, then bounded critique rounds |
+| `adversarial-debate` | Advocate, then challenger | Evidence-backed affirmative and counter-cases, then bounded rebuttal rounds; disagreement remains visible |
+| `advisor-to-implementer` | Advisor, then implementer | Initial advice before changes, then implementation reports and advisor feedback; final unreviewed corrections remain explicit |
+
+`rounds` defaults to one and accepts one through three. Panel and debate members
+have `(rounds + 1) × other members` successful sends to plan peers. The advisor
+has `rounds + 1`; the implementer has `rounds`. The existing worker record stores
+the membership, exact peer addresses, integration criteria, and send count.
+The send count persists across worker reload, replacement, pause, and resume.
+The extension reserves a send before delivery and refunds a refused send.
+Parent reports, receipt reads, and messages outside the named plan do not use
+this allowance. The bound is a collaboration aid, not a permission sandbox.
+
+The complete `plan` input must fit within 8192 UTF-8 bytes; each member task must
+fit within 2048 characters. The complete expanded preview, including profiles
+and shared context, must fit within 48KiB. Oversize inputs fail before setup,
+rather than silently losing parts of a contract.
+
+All members use the normal configuration precedence and exact tool-surface
+rules. Each member needs `subagent_message`; a missing capability refuses the
+whole plan rather than silently adding tools. The extension prepares every
+session and assigns exact peer addresses before it starts any plan task. Setup
+failure or cancellation cancels constructed members through existing controls.
+Ordinary Pi startup hooks still run during construction.
+
+Workers follow the declared round order and end their turn while a required
+message is absent. The extension enforces the send limit, not semantic order,
+source quality, or agreement. Each member submits a self-contained result.
+The parent combines results, resolves disagreements, verifies acceptance, and
+delivers to the declared destination within existing authority. A destination
+never grants permission to publish. Receipt or peer agreement is not acceptance.
+
+After startup, use existing controls by worker id. A member's pause or failure
+does not automatically stop its peers; the parent must redirect or cancel
+dependent work. Continuing a terminal member creates a standalone follow-up,
+not a restarted group; previous addresses and rounds remain historical context.
+
+The subagent slice owns this request-driven capability. Reassess it against
+manual collaboration setup and result quality; replace it when native Pi
+support covers the contract, or remove it if named plans do not reduce setup
+without reducing verification quality. Controlled SDK regressions exercise the
+runtime paths with scripted providers; they do not establish general model
+adherence or comparative quality.
 
 ### Dispatch profiles
 
