@@ -50,7 +50,11 @@ retains the native notification behavior described above.
 
 The `agent` status key reports `agents: 2 active · $0.37 local`. The scope is
 this process's manager for the configured agent store, not the current parent's
-children. Multiple primary sessions see the same totals. Each ordinary host
+children. Multiple primary sessions see the same totals. A positively identified
+managed child is not registered as a primary; the package's
+[host identity contract](../../docs/conventions/session-host-roles.md) prevents
+unrelated completion turns during child startup and cyclic manager lifetimes.
+Each ordinary host
 counts once, including ordinary agents created by other agents or subagents.
 Active means pending host work through final settlement, including commands,
 compaction, and queued input. Idle hosts do not count as active.

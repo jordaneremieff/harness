@@ -62,7 +62,9 @@ known spend remains visible and is not an invoice total. Snapshots replace
 previous snapshots; they are never additive deltas.
 
 A subtree starts with workers whose owner is `sessionId`, then follows only
-subagent-owned worker-session edges. Each worker occurs once. It excludes
+subagent-owned worker-session edges, including prior native session identities
+retained on the same worker after replacement. Copied fork ancestry creates no
+ownership edge. Each worker occurs once. It excludes
 ordinary agents and subagent roots owned by those ordinary agents. Thus the
 primary's subagent subtree and every ordinary host's subagent subtree are
 disjoint, even for mixed agent/subagent depth. Ordinary hosts share one agent

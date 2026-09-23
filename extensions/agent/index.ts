@@ -26,6 +26,7 @@ import { type Static, Type } from "typebox";
 import { createAgentCommand, type AgentSessionSummary } from "./command.ts";
 import { renderSendCall, renderSendResult } from "./presentation.ts";
 import { formatAgentFooter, type AgentFooterState, type DetachedFooterState } from "./footer.ts";
+import { isManagedChild } from "./host-role.ts";
 import { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
 import { DetachedRuns, formatRun, MAX_SUMMARY_CHARS, type DetachedRunView } from "./detached.ts";
 import { withDetachedControl, type DetachedControlClient } from "./detached-control.ts";
@@ -978,6 +979,7 @@ function formatStatus(status: WorkerStatus, action: string): string {
 }
 
 export default function registerAgentExtension(pi: ExtensionAPI) {
+	const registeredPrimaries = new Set<string>();
 	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
 	pi.on("agent_settled", () => { selfCompaction.clear(); });
 	pi.on("session_start", () => { selfCompaction.clear(); });
@@ -1283,7 +1285,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 	}));
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (owners.workers.has(ctx.sessionManager.getSessionId())) return;
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (owners.workers.has(sessionId) || isManagedChild(pi.events, sessionId)) return;
 		primaryRegistry = ctx.modelRegistry;
 		primaryProvider = ctx.model?.provider;
 		const owner = await getManager();
@@ -1291,9 +1294,11 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		owner.registerPrimary(ctx.sessionManager.getSessionId(), ctx.cwd, (content, details) => {
 			pi.sendMessage({ customType: "agent.peer", content, display: true, details }, { deliverAs: "steer", triggerTurn: true });
 		}, (text) => ctx.ui.setStatus("agent", text));
-		owner.reportSettledRuns(ctx.sessionManager.getSessionId());
+		registeredPrimaries.add(sessionId);
+		owner.reportSettledRuns(sessionId);
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
-		if (!owners.workers.has(ctx.sessionManager.getSessionId())) await manager?.unregisterPrimary(ctx.sessionManager.getSessionId());
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (registeredPrimaries.delete(sessionId)) await manager?.unregisterPrimary(sessionId);
 	});
 }
