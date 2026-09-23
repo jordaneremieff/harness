@@ -83,11 +83,18 @@ open findings, owned sessions, and the next action through an existing continuit
 surface if the session alone does not suffice. Do not create a second scheduler,
 worker store, model loop, telemetry stream, or permanent task journal.
 
-Self-target wait/abort/compaction controls can be refused because the caller owns
-the operation they would wait on. Use the coordinator or host-native continuity
-path; do not retry a refused self-control through another name. A compaction
-request can stop active work and need explicit resumption. Inspect the registered
-contract and preserve the same task's scope and owner across that transition.
+Use the registered self-compaction path for continuity within an active task.
+The agent tool accepts a bounded agent-authored summary for the current native
+session ID. Pi applies it at the completed tool boundary and continues that
+same run, retaining the requesting batch. Preserve the governing frame in the
+summary; the mechanism neither reconstructs omitted decisions nor certifies
+completion. Do not type a slash command into the operator's editor.
+
+Other owner-wait controls still refuse self-targets. Do not retry a refused
+self-control through another name. Compaction through another session's
+controller uses native summarization, stops active work, and needs explicit
+resumption. Inspect the registered contract and preserve the same task's scope
+and owner across either transition.
 
 Before coordinator exit, resolve every live worker: await useful work, redirect
 changed work, or stop superseded work with its public control. A saved handover

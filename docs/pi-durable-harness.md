@@ -313,7 +313,14 @@ Verified 2026-09-23 against installed 0.87.1 `dist/core/agent-session.js`,
 - `continue: true` requests one next provider call per boundary invocation;
   natural tool or queue continuation satisfies that request. `continue: false`
   does not suppress natural work. Guard repeated requests rather than return
-  unconditional continuation.
+  unconditional continuation. `emitBoundary()` replaces accumulated draft
+  entries when a handler returns `entries`; an additive handler must include
+  the preceding drafts. Agent self-compaction consumes an explicit tool request
+  once at `turn_end`, retains that complete tool batch, and proposes the supplied
+  summary through this native boundary. Its boundary subscription exists only
+  while a request is pending; it leaves the continuation flag unchanged and
+  relies on normal tool-result continuation. It does not call manual `compact()`,
+  which aborts the active run, or start a replacement run from a callback.
 - `agent_before_settle` follows ordinary retries, recovery, and queued work.
   `agent_settled` is notification-only: runs requested there wait until all
   settled handlers finish. Abort during pre-settle handlers preserves valid

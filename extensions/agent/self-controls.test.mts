@@ -9,11 +9,13 @@ import { fixture } from "./native-fixture.mts";
 import { DetachedRuns } from "./detached.ts";
 import { createDetachedControlServer, withDetachedControl } from "./detached-control.ts";
 
-for (const action of ["abort", "compact", "command"]) {
-	test(`the registered ${action} tool rejects its own session without an idle wait cycle`, { timeout: 15000 }, () => {
+for (const action of ["abort", "compact", "compact-alias", "command"]) {
+	test(`the registered ${action} tool rejects an unsupported self request without an idle wait cycle`, { timeout: 15000 }, () => {
 		const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
 			import assert from "node:assert/strict";
 			import { writeFileSync } from "node:fs";
+			import { randomUUID } from "node:crypto";
+			import { DetachedRuns } from ${JSON.stringify(new URL("./detached.ts", import.meta.url).href)};
 			import { fixture } from ${JSON.stringify(new URL("./native-fixture.mts", import.meta.url).href)};
 			import { AgentManager } from ${JSON.stringify(new URL("./index.ts", import.meta.url).href)};
 			import { testModel } from ${JSON.stringify(new URL("./test-runtime.mts", import.meta.url).href)};
@@ -25,13 +27,14 @@ for (const action of ["abort", "compact", "command"]) {
 			process.env.PI_AGENT_SESSIONS_DIR = f.store.root;
 			const extensionPath = f.path + ".controls.ts";
 			writeFileSync(extensionPath, 'import register from ' + ${JSON.stringify(JSON.stringify(fileURLToPath(new URL("./index.ts", import.meta.url))))} + '; export default pi => { register(pi); pi.registerCommand("replace-self", {handler: async (_args, ctx) => { await ctx.newSession(); }}); };');
-			let self = "", calls = 0;
+			let self = "", calls = 0, controlCalls = 0;
+			const route = randomUUID();
 			const stream = () => {
 				calls++;
 				assert.ok(calls <= 2);
 				const first = calls === 1;
 				const message = { role: "assistant", api: testModel.api, provider: testModel.provider, model: testModel.id,
-					content: first ? [{type: "toolCall", id: "self-control", name: ${JSON.stringify(`agent_${action}`)}, arguments: {sessionId: self, ${action === "command" ? 'name: "replace-self"' : ""}}}] : [{type: "text", text: "Control refused"}],
+					content: first ? [{type: "toolCall", id: "self-control", name: ${JSON.stringify(action === "compact-alias" ? "agent_compact" : `agent_${action}`)}, arguments: {sessionId: ${action === "compact-alias" ? "route" : "self"}, ${action === "command" ? 'name: "replace-self"' : action === "compact-alias" ? 'summary: "Bounded continuity contract"' : ""}}}] : [{type: "text", text: "Control refused"}],
 					stopReason: first ? "toolUse" : "stop", timestamp: Date.now(),
 					usage: {input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}} };
 				const events = createAssistantMessageEventStream();
@@ -42,15 +45,26 @@ for (const action of ["abort", "compact", "command"]) {
 			try {
 				self = (await manager.spawn({cwd: f.cwd}, {cwd: f.cwd, model: testModel}, undefined, {extensionPaths: [extensionPath]})).sessionId;
 				const worker = manager.sessions.get(self);
+				const originalCompact = manager.compact.bind(manager);
+				manager.compact = (...args) => { controlCalls++; return originalCompact(...args); };
+				if (${JSON.stringify(action)} === "compact-alias") {
+					const runs = new DetachedRuns(f.store.root), runId = randomUUID();
+					runs.writeRequest({ runId, sessionId: route, sessionsRoot: f.store.root, agentDir: f.agentDir, cwd: f.cwd, prompt: "work", logFile: runs.logFile(runId), startedAt: new Date().toISOString(), pid: process.pid, launchState: "started" });
+					runs.writeProgress({ runId, currentSessionId: self, entryCount: 0, updatedAt: new Date().toISOString() });
+					assert.equal(runs.liveFor(route)?.currentSessionId, self);
+				}
 				await manager.send(self, "Exercise self control");
 				await worker.waitForIdle();
 				const results = worker.sessionManager().getEntries().filter(entry => entry.type === "message" && entry.message.role === "toolResult");
 				assert.equal(results.length, 1);
 				assert.equal(results[0].message.isError, true);
-				assert.match(JSON.stringify(results[0].message.content), /cannot target their calling session/);
+				assert.match(JSON.stringify(results[0].message.content), ${action === "compact" ? "/requires a nonblank summary/" : action === "compact-alias" ? "/summary is accepted only for the calling session/" : "/cannot target their calling session/"});
 				assert.equal(calls, 2);
 				assert.equal(worker.sessionId(), self);
 				assert.equal(manager.controls.size, 0);
+				assert.equal(controlCalls, 0);
+				assert.equal(worker.sessionManager().getEntries().filter(entry => entry.type === "compaction").length, 0);
+				assert.equal(worker.session.extensionRunner.hasHandlers("turn_end"), false);
 			} finally { await manager.closeAll(); await f.close(); }
 			console.log("self-control-refused");
 		`], { cwd: fileURLToPath(new URL("../../", import.meta.url)), timeout: 12000, killSignal: "SIGKILL", encoding: "utf8", maxBuffer: 32768 });

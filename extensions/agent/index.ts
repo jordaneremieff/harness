@@ -28,6 +28,7 @@ import { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
 import { DetachedRuns, formatRun, MAX_SUMMARY_CHARS, type DetachedRunView } from "./detached.ts";
 import { withDetachedControl, type DetachedControlClient } from "./detached-control.ts";
 import { PlaceBook } from "./places.ts";
+import { MAX_CONTINUITY_SUMMARY, SelfCompaction } from "./self-compaction.ts";
 import { planRewind } from "./rewind.ts";
 import { type AgentSessionMetadata, AgentStore } from "./store.ts";
 import { AgentWorkerSession, projectInspection, type WorkerCommandResult, type WorkerStatus, type WorkerModelChoice } from "./worker.ts";
@@ -79,7 +80,11 @@ const SendParams = Type.Object(
 	{ sessionId: Type.String({ minLength: 1 }), message: Type.String({ minLength: 1 }), replyTo: Type.Optional(Type.String({ minLength: 1 })) },
 	{ additionalProperties: false },
 );
-const CompactParams = Type.Object({ sessionId: Type.String({ minLength: 1 }), instructions: Type.Optional(Type.String()) }, { additionalProperties: false });
+const CompactParams = Type.Object({
+	sessionId: Type.String({ minLength: 1 }),
+	instructions: Type.Optional(Type.String({ description: "Instructions for native summarization of another session. Not accepted for self-compaction." })),
+	summary: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_CONTINUITY_SUMMARY, description: "Required for the calling session only: a complete bounded continuity summary with objective, authority, explicit exclusions, source and brief pointers, source qualifications, acceptance, owners, and next action. Replaces older context without another summarizer." })),
+}, { additionalProperties: false });
 const CommandParams = Type.Object({ sessionId: Type.String({ minLength: 1 }), name: Type.String({ minLength: 1 }), args: Type.Optional(Type.String()) }, { additionalProperties: false });
 const InspectParams = Type.Object({ sessionId: Type.String({ minLength: 1 }), cursor: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })), entryId: Type.Optional(Type.String({ minLength: 1 })), offset: Type.Optional(Type.Integer({ minimum: 0 })) }, { additionalProperties: false });
 const ForkParams = Type.Object(
@@ -936,6 +941,10 @@ function formatStatus(status: WorkerStatus, action: string): string {
 }
 
 export default function registerAgentExtension(pi: ExtensionAPI) {
+	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
+	pi.on("agent_settled", () => { selfCompaction.clear(); });
+	pi.on("session_start", () => { selfCompaction.clear(); });
+	pi.on("session_shutdown", () => { selfCompaction.clear(); });
 	let manager: AgentManager | undefined;
 	let primaryRegistry: ModelRegistry | undefined;
 	let primaryProvider: string | undefined;
@@ -1058,8 +1067,17 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool<typeof CompactParams, unknown>({
-		name: "agent_compact", label: "Agent compact", description: "Compact another ordinary Pi session through its native hooks and current owner, including a detached process. Self-targets are refused. This aborts active work and does not resume it.", parameters: CompactParams,
-		execute: async (_id, params, signal, _onUpdate, ctx) => textResult(await (await getManager()).compact(params.sessionId, params.instructions, signal, ctx.sessionManager.getSessionId())),
+		name: "agent_compact", label: "Agent compact", description: "Compact an ordinary Pi session. For your own current session ID, supply summary: Pi applies it after this tool batch and continues the same run, without terminal input or a new session. This is an agent-authored summary, not native summarization or a completeness check. Abort suppresses continuation. For another session, omit summary; native compaction aborts its work and does not resume it.", parameters: CompactParams,
+		execute: async (id, params, signal, _onUpdate, ctx) => {
+			if (params.sessionId === ctx.sessionManager.getSessionId()) {
+				if (params.instructions !== undefined) throw new Error("Self-compaction accepts summary, not summarizer instructions.");
+				signal?.throwIfAborted();
+				selfCompaction.request(params.sessionId, id, params.summary);
+				return textResult("Self-compaction requested for the end of this tool batch. Pi will retain the summary and this complete batch, then continue the same task. This receipt does not establish that compaction occurred. An aborted or failed turn cancels the request.");
+			}
+			if (params.summary !== undefined) throw new Error("A continuity summary is accepted only for the calling session's current ID.");
+			return textResult(await (await getManager()).compact(params.sessionId, params.instructions, signal, ctx.sessionManager.getSessionId()));
+		},
 	});
 	pi.registerTool<typeof CommandParams, unknown>({
 		name: "agent_command", label: "Agent command", description: "Invoke one registered extension command through another agent session's owner, or reload/tree. Self-targets are refused. This is explicit command authority, separate from peer message text. Replacement returns the new session ID.", parameters: CommandParams,

@@ -74,10 +74,41 @@ Pi's tool schemas define their parameters. An extension command that replaces
 the session returns its new ID. The SDK does not interpret every interactive
 built-in slash command; `agent_command` is not a terminal-input emulator.
 
-The model-facing `agent_abort`, `agent_compact`, and `agent_command` tools
-refuse their own calling session, including its detached route alias. These
-controls wait for native idle, so self-invocation would wait for the calling
-tool itself. Use another session's controller for these operations.
+The model-facing `agent_abort` and `agent_command` tools refuse their own
+calling session, including its detached route alias. These controls wait for
+native idle, so self-invocation would wait for the calling tool itself. Use
+another session's controller for these operations.
+
+`agent_compact` accepts the calling session's current native ID with `summary`
+instead of `instructions`. Supply a complete continuity summary of at most
+32,000 characters: objective, authority, explicit exclusions, source and brief
+pointers, source qualifications, acceptance, owned sessions, open review
+findings, and next action. Pi applies this
+agent-authored text as a native compaction entry at the end of the successful
+tool batch. Older context leaves the next model request; raw history remains.
+The complete requesting batch remains, including sibling tool results. The
+same native run continues without a terminal command, editor change, new
+session, or separate summarizer. Summary quality remains the caller's
+responsibility; the tool does not certify scope or task completion. The summary
+appears both in the compaction entry and in the retained tool-call arguments.
+Its length cap is not a bound on the complete model request.
+
+The tool receipt confirms a request, not applied compaction. An aborted or
+failed turn, failed tool result, or session change discards that request.
+Pi suppresses continuation after an abort even when a later boundary handler
+aborts after the compaction draft exists. The request is consumed once, never
+retried automatically. The tool subscribes to `turn_end` only while its request
+is pending and unsubscribes on consumption or lifecycle cleanup. It relies on
+normal tool-result continuation and does not replace an earlier handler's
+continuation flag. Earlier boundary drafts remain intact; if an earlier handler
+already proposed compaction, the tool adds a visible conflict notice instead of
+a second compaction. Later handlers retain Pi's ordinary draft-composition
+control. Normal resource and instruction loading remains Pi-owned. A self request without `summary`, with `instructions`, or through a
+detached route alias is refused. Use the current native session ID.
+
+For another session, omit `summary`. The existing native summarizer uses
+optional `instructions`, aborts active work, and does not resume it. The
+`/agent compact` command retains that controller behavior.
 
 `agent_inspect` reads actual session entries and execution/result state. Its
 bounded previews retain entry IDs and roles. Use an entry ID and the returned
