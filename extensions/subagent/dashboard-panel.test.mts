@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, KeybindingsManager, visibleWidth } from "@earendil-works/pi-tui";
 import type {
 	CollaborationEvent,
@@ -162,7 +162,7 @@ async function panel(
 				}
 			},
 		},
-	} as unknown as ExtensionCommandContext;
+	} as unknown as ExtensionContext;
 	await openSubagentPanel(ctx, dependencies);
 }
 function text(component: Component, width = 140): string {

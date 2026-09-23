@@ -1655,6 +1655,7 @@ describe("status and collection", () => {
 			registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
 			registerMessageRenderer: (name: string, renderer: unknown) => renderers.set(name, renderer),
 			registerCommand() {},
+			registerShortcut() {},
 			on() {},
 		} as never);
 		assert.deepEqual([...renderers.keys()], ["subagent_result", "subagent_report", "subagent_paused"]);
@@ -2704,6 +2705,7 @@ describe("compaction veto", () => {
 			registerMessageRenderer: () => undefined,
 			registerTool: () => undefined,
 			registerCommand: () => undefined,
+			registerShortcut() {},
 			on: (name: string, handler: (event: unknown, ctx: unknown) => Promise<void>) => handlers.set(name, handler),
 			getActiveTools: () => [],
 			getAllTools: () => [],
@@ -2747,6 +2749,7 @@ describe("compaction veto", () => {
 			registerMessageRenderer: () => undefined,
 			registerTool: (tool: RegisteredFixtureTool) => tools.push(tool),
 			registerCommand: () => undefined,
+			registerShortcut() {},
 			on: (event: string, handler: unknown) => handlers.set(event, handler),
 			getActiveTools: () => [...activeNames],
 			getAllTools: () => [],
@@ -2832,6 +2835,7 @@ describe("compaction veto", () => {
 				if (tool.name === "subagent") dispatchTool = tool;
 			},
 			registerCommand: () => undefined,
+			registerShortcut() {},
 			on: (event: string, handler: unknown) => handlers.set(event, handler),
 			getActiveTools: () => active,
 			getAllTools: () => [],
@@ -4607,6 +4611,7 @@ describe("registered tool surface", () => {
 			registerMessageRenderer: () => undefined,
 			registerTool: (tool: RegisteredFixtureTool) => tools.push(tool),
 			registerCommand: () => undefined,
+			registerShortcut() {},
 			on: () => undefined,
 			getActiveTools: () => ["root_tool"],
 			getAllTools: () => [
@@ -4744,6 +4749,7 @@ describe("registered tool surface", () => {
 			registerCommand: (name: string, value: RegisteredCommand) => {
 				commands.set(name, value);
 			},
+			registerShortcut() {},
 			on: () => undefined,
 			appendEntry: (customType: string, data: unknown) => entries.push({ customType, data }),
 			getActiveTools: () => [],
@@ -4780,6 +4786,7 @@ describe("managed profile adapters", () => {
 		registerSubagent({
 			registerTool: (tool: RegisteredFixtureTool) => tools.push(tool),
 			registerCommand: (name: string, command: Command) => commands.set(name, command),
+			registerShortcut() {},
 			registerMessageRenderer() {},
 			on() {},
 			getActiveTools: () => [],

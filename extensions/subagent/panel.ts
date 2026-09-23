@@ -1,6 +1,6 @@
 /** Worker and communication readers, with control through the owning runtime. */
 import { execFile } from "node:child_process";
-import type { ExtensionCommandContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import {
 	decodeKittyPrintable,
 	Input,
@@ -2727,7 +2727,7 @@ class SubagentConsole {
 }
 
 export function openSubagentPanel(
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	deps: SubagentPanelDeps,
 	initialFilter?: string,
 ): Promise<void> {

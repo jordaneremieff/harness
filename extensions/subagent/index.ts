@@ -6593,7 +6593,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	/** The interactive dashboard's store and live-session view, wired once per open. */
-	function dashboardDeps(ctx: ExtensionCommandContext): Parameters<typeof openSubagentPanel>[1] {
+	function dashboardDeps(ctx: ExtensionContext): Parameters<typeof openSubagentPanel>[1] {
 		return {
 			collaboration: createCollaborationReader({
 				current: ctx.sessionManager,
@@ -6638,6 +6638,23 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
+	let dashboardOpen = false;
+	async function openDashboard(ctx: ExtensionContext, filter?: string): Promise<void> {
+		if (ctx.mode !== "tui" || dashboardOpen) return;
+		dashboardOpen = true;
+		try {
+			bindStatusContext(ctx);
+			await openSubagentPanel(ctx, dashboardDeps(ctx), filter);
+		} finally {
+			dashboardOpen = false;
+		}
+	}
+
+	pi.registerShortcut("ctrl+alt+a", {
+		description: "Open the subagent dashboard",
+		handler: (ctx) => openDashboard(ctx),
+	});
+
 	pi.registerCommand("subagent", {
 		description:
 			"Worker dashboard with an optional filter. Use profiles [filter] to manage reusable dispatch profiles. RPC and JSON publish structured lists; print emits text.",
@@ -6672,13 +6689,11 @@ export default function (pi: ExtensionAPI) {
 				await runProfilesCommand(ctx, pi, profilesArgument[1]?.trim() || undefined);
 				return;
 			}
-			bindStatusContext(ctx);
 			if (ctx.mode === "tui") {
-				// Interactive dashboard — a view over the store and the live worker
-				// sessions; acts through the existing cancel/status paths.
-				await openSubagentPanel(ctx, dashboardDeps(ctx), args.trim() || undefined);
+				await openDashboard(ctx, args.trim() || undefined);
 				return;
 			}
+			bindStatusContext(ctx);
 			const filter = args.trim() || undefined;
 			publishStatus(ctx, pi, filter, statusView(filter));
 		},

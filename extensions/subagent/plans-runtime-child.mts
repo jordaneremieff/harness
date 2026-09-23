@@ -239,6 +239,7 @@ try {
 		registerTool: (definition: ToolDefinition) => tools.set(definition.name, definition),
 		registerMessageRenderer() {},
 		registerCommand() {},
+		registerShortcut() {},
 		on() {},
 	} as never);
 	const dispatch = tools.get("subagent");

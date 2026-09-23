@@ -39,7 +39,10 @@ and the repository pins no Pi version.
 | `subagent_kill` | sequential | Cancel a live worker by aborting its run. Cancel intent is recorded first, so the terminal state is `cancelled` rather than whatever shape the interrupted run left. |
 | `subagent_collect` | parallel | Terminal results from the store. With `id`: the stored result (50KB maximum). Without `id`: the eight most recent terminal workers. Works after the dispatching session is gone. |
 
-Command: `/subagent` opens the dashboard in the TUI. `/subagent profiles [filter]`
+Command: `/subagent` opens the dashboard in the TUI. `Ctrl+Alt+A` opens the same
+dashboard without a filter and preserves the current editor draft. Opening the
+dashboard does not dispatch or control workers. Repeated command or shortcut
+requests keep one dashboard open until it closes. `/subagent profiles [filter]`
 opens the profile manager; other arguments retain the dashboard filter behavior.
 Profile names never dispatch workers through the command. Argument completion
 suggests `profiles`, then managed names as filters, including disabled and
