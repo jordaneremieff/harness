@@ -320,9 +320,10 @@ delivery or action. Native pending queues and in-flight operations do not
 survive process loss. At finalization, the run seals controls, drains admitted
 calls, checks idle again, and reads current session state. Remaining queued
 input causes an explicit failure; the host does not promise to recover that
-queue or start another operation automatically. The host also names every
-hosted session that still had active work when it closed, so an aborted peer
-turn is visible in the run result rather than silent. Endpoint and worker cleanup
+queue or start another operation automatically. The host also reports every
+hosted session that had active or queued work at shutdown, with the affected
+total, so that work stays visible in the run result; the host does not wait for
+it and does not claim a terminal outcome for each session. Endpoint and worker cleanup
 finish before the terminal result is published.
 
 A detached run retains its original session ID as the transport route.

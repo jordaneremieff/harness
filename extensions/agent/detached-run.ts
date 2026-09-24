@@ -130,12 +130,69 @@ function operationFailure(operationId: string | undefined, result: Awaited<Retur
 	return previous;
 }
 
-/** Report hosted sessions still working at close; undefined when none or unavailable. */
-function hostedWorkFailure(host: DetachedHost | undefined): string | undefined {
+/** Largest durable run error; the hosted-work suffix reserves room inside it. */
+const RUN_ERROR_BOUND = 2000;
+/** Identifier list kept in the durable report; the affected total still appears. */
+const HOSTED_ID_LIMIT = 5;
+/** Separator between a bounded primary failure and the hosted-work suffix. */
+const ERROR_JOIN = " ...; ";
+
+interface HostedWorkReport {
+	total: number;
+	ids: string[];
+}
+
+/** Truncate to a UTF-8 byte bound without splitting a code point. */
+function truncateUtf8(text: string, maxBytes: number): string {
+	let bytes = 0;
+	let end = 0;
+	for (const character of text) {
+		const size = Buffer.byteLength(character);
+		if (bytes + size > maxBytes) break;
+		bytes += size;
+		end += character.length;
+	}
+	return text.slice(0, end);
+}
+
+/** Observed state at shutdown, not a claim about each session's terminal outcome. */
+function hostedWorkText(report: HostedWorkReport): string {
+	const omitted = report.total - report.ids.length;
+	const listed = report.ids.length ? ` (${report.ids.join(", ")}${omitted > 0 ? `; ${omitted} more omitted` : ""})` : "";
+	return `hosted sessions with active or queued work at shutdown: ${report.total}${listed}; the host does not wait for that work`;
+}
+
+/** Bound the durable error while preserving the hosted-work evidence. */
+function boundedRunError(failure: string | undefined, hosted: HostedWorkReport | undefined): string {
+	const primary = failure ?? "detached run failed";
+	if (!hosted) return truncateUtf8(primary, RUN_ERROR_BOUND);
+	const suffix = hostedWorkText(hosted);
+	const suffixBytes = Buffer.byteLength(suffix);
+	if (Buffer.byteLength(primary) + suffixBytes + ERROR_JOIN.length <= RUN_ERROR_BOUND) return `${primary}${ERROR_JOIN}${suffix}`;
+	const room = RUN_ERROR_BOUND - suffixBytes - ERROR_JOIN.length;
+	return room > 0 ? `${truncateUtf8(primary, room)}${ERROR_JOIN}${suffix}` : truncateUtf8(suffix, RUN_ERROR_BOUND);
+}
+
+/** Collect the hosted-work snapshot; an inspection failure reports instead of hiding. */
+function collectHostedWork(host: DetachedHost | undefined): { report?: HostedWorkReport; failure?: string } {
 	try {
-		const hosted = host?.activeHostedSessionIds?.() ?? [];
-		return hosted.length ? `hosted sessions closed with active work: ${hosted.join(", ")}; their in-flight turns are aborted` : undefined;
-	} catch (error) { return `hosted session inspection failed: ${errorText(error)}`; }
+		const ids = host?.activeHostedSessionIds?.() ?? [];
+		return ids.length ? { report: { total: ids.length, ids: ids.slice(0, HOSTED_ID_LIMIT) } } : {};
+	} catch (error) { return { failure: `hosted session inspection failed: ${errorText(error)}` }; }
+}
+
+/** Close the host after collecting its hosted-work snapshot; a close failure reports. */
+async function closeHostWithReport(host: DetachedHost | undefined, addFailure: (message: string) => void): Promise<HostedWorkReport | undefined> {
+	const collected = collectHostedWork(host);
+	if (collected.failure) addFailure(collected.failure);
+	try { await host?.close(); } catch (error) { addFailure(`cleanup failed: ${errorText(error)}`); }
+	return collected.report;
+}
+
+/** Terminal outcome for the durable record: hosted evidence alone fails the run. */
+function runOutcome(failure: string | undefined, hosted: HostedWorkReport | undefined, summary: string | undefined): { state: "finished" | "failed"; detail: { error?: string; summary?: string } } {
+	if (failure === undefined && hosted === undefined) return { state: "finished", detail: { ...(summary ? { summary } : {}) } };
+	return { state: "failed", detail: { error: boundedRunError(failure, hosted), ...(summary ? { summary } : {}) } };
 }
 
 /** Cancellation requests native session abort; terminal publication follows host cleanup. */
@@ -154,6 +211,7 @@ export async function executeDetachedRun(
 	let sealTask: Promise<void> | undefined;
 	let admissionComplete = false;
 	let failure: string | undefined;
+	let hosted: HostedWorkReport | undefined;
 	let settled = false;
 	const addFailure = (message: string): void => {
 		failure = failure === undefined ? message : `${failure}; ${message}`;
@@ -165,7 +223,7 @@ export async function executeDetachedRun(
 	};
 	let unsubscribe: (() => void) | undefined;
 	const publishProgress = createProgressWriter(
-		() => ({ ...progressRecord(request.runId, worker?.sessionManager().getEntries() ?? [], settled ? null : worker?.observation() ?? null, failure), ...(worker ? { currentSessionId: worker.sessionMetadata().id } : {}) }),
+		() => ({ ...progressRecord(request.runId, worker?.sessionManager().getEntries() ?? [], settled ? null : worker?.observation() ?? null, boundedRunError(failure, hosted)), ...(worker ? { currentSessionId: worker.sessionMetadata().id } : {}) }),
 		(progress) => runs.writeProgress(progress),
 	);
 	const finish = (state: "finished" | "failed", detail: { error?: string; summary?: string }): number => {
@@ -179,7 +237,7 @@ export async function executeDetachedRun(
 			...(worker ? { currentSessionId: worker.sessionMetadata().id } : {}),
 			state,
 			finishedAt: new Date().toISOString(),
-			...(state === "failed" ? { error: (detail.error || "detached run failed").slice(0, 2000) } : {}),
+			...(state === "failed" ? { error: boundedRunError(failure, hosted) } : {}),
 			...(detail.summary ? { summary: detail.summary } : {}),
 		});
 		return state === "finished" ? 0 : 1;
@@ -215,9 +273,8 @@ export async function executeDetachedRun(
 			summary = finalAssistantText(worker.sessionManager().getEntries().filter((entry) => !previous.has(entry.id)));
 		}
 		try { await control?.close(); } catch (error) { addFailure(`control cleanup failed: ${errorText(error)}`); }
-		const hostedFailure = hostedWorkFailure(host);
-		if (hostedFailure) addFailure(hostedFailure);
-		try { await host?.close(); } catch (error) { addFailure(`cleanup failed: ${errorText(error)}`); }
+		const hostedResult = await closeHostWithReport(host, addFailure);
+		hosted = hostedResult;
 		options.signal?.removeEventListener("abort", stopFromSignal);
 	}
 	try {
@@ -259,9 +316,8 @@ export async function executeDetachedRun(
 	} finally {
 		await cleanupRun();
 	}
-	return failure !== undefined
-		? finish("failed", { error: failure, ...(summary ? { summary } : {}) })
-		: finish("finished", { ...(summary ? { summary } : {}) });
+	const outcome = runOutcome(failure, hosted, summary);
+	return finish(outcome.state, outcome.detail);
 }
 
 async function main(): Promise<number> {

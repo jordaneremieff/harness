@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, SessionManager } from "@earendil-works/pi-coding-agent";
 import { AgentManager } from "./index.ts";
 import { fixture } from "./native-fixture.mts";
 import { testModel } from "./test-runtime.mts";
-import { AgentWorkerSession } from "./worker.ts";
+import { AgentWorkerSession, projectInspection } from "./worker.ts";
 
 const managerFor = async (f: Awaited<ReturnType<typeof fixture>>): Promise<AgentManager> =>
 	new AgentManager(f.store, f.runtime, new ProjectTrustStore(f.agentDir), undefined, f.agentDir);
@@ -65,5 +65,15 @@ describe("session summaries and descriptions", () => {
 			const previews = entries.flatMap((entry) => entry.preview ? [entry.preview] : []);
 			assert.ok(previews.some((preview) => /inspectable request/u.test(preview.text)), "a page preview carries the request text");
 		} finally { await manager.closeAll(); await f.close(); }
+	});
+
+	it("bounds a stored session-info name preview by bytes", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendSessionInfo("界".repeat(1000));
+		const page = projectInspection(manager, manager.getSessionId(), { limit: 1 }) as { entries: { preview?: { text: string; truncated: boolean } }[] };
+		const preview = page.entries[0]?.preview;
+		assert.ok(preview);
+		assert.ok(Buffer.byteLength(preview.text) <= 1200, `name preview bytes=${Buffer.byteLength(preview.text)}`);
+		assert.equal(preview.truncated, true);
 	});
 });

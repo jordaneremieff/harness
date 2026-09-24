@@ -222,6 +222,11 @@ export class AgentManager {
 	private readonly retiredFooterStates: AgentFooterState[] = [];
 	private detachedFooter: DetachedFooterState = { recorded: 0, unavailable: 0, exists: false };
 	private readonly opening = new Map<string, Promise<AgentWorkerSession>>();
+	/**
+	 * Workers another caller obtained while an open was in flight. A control that
+	 * created a worker must not close it while such a consumer is admitting work.
+	 */
+	private readonly joinedWorkers = new WeakSet<AgentWorkerSession>();
 	private readonly sessions = new Map<string, AgentWorkerSession>();
 	private readonly controls = new Map<string, Set<Promise<unknown>>>();
 	private readonly transfers = new Map<string, Promise<unknown>>();
@@ -611,8 +616,7 @@ export class AgentManager {
 				const hadEdge = !requireActive || !parentId || this.childrenOf(parentId).has(sessionId);
 				const opened = await this.openWorker(sessionId, undefined, undefined, undefined, true);
 				if (requireActive && !held && !joined && !opened.hasActiveWork()) {
-					await this.discardRefusedOpen(sessionId, opened, hadEdge ? undefined : parentId);
-					throw new Error(`agent steer requires an active session; ${sessionId} is idle with no queued input; use agent send to start a turn`);
+					return this.refuseIdleSteer(sessionId, opened, hadEdge ? undefined : parentId);
 				}
 				return opened;
 			})().then((worker) => {
@@ -701,7 +705,7 @@ export class AgentManager {
 			);
 		}
 		const pending = this.opening.get(sessionId);
-		if (pending) { const worker = await pending; this.associate(worker); return worker; }
+		if (pending) { const worker = await pending; this.joinedWorkers.add(worker); this.associate(worker); return worker; }
 		const promise = this.loadWorker(sessionId, trust, promptUi, repairModel);
 		this.opening.set(sessionId, promise);
 		try { return await promise; } finally { this.opening.delete(sessionId); }
@@ -887,6 +891,12 @@ export class AgentManager {
 		this.sessions.delete(sessionId);
 		owners.workers.delete(sessionId);
 		this.publishFooter();
+	}
+
+	/** Release an idle worker this control opened unless another caller joined it, then refuse. */
+	private async refuseIdleSteer(sessionId: string, opened: AgentWorkerSession, createdEdgeFor: string | undefined): Promise<never> {
+		if (!this.joinedWorkers.has(opened)) await this.discardRefusedOpen(sessionId, opened, createdEdgeFor);
+		throw new Error(`agent steer requires an active session; ${sessionId} is idle with no queued input; use agent send to start a turn`);
 	}
 
 	/**

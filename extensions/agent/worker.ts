@@ -87,7 +87,11 @@ function textOf(content: unknown): string {
 
 /** Readable page preview from the entry's own content; message text, tool result text, or a stored name. */
 function entryPreview(entry: SessionEntry): { text: string; truncated: boolean } | undefined {
-	if (entry.type === "session_info") return entry.name ? { text: entry.name, truncated: false } : undefined;
+	if (entry.type === "session_info") {
+		if (!entry.name) return undefined;
+		const cut = fragment(entry.name, 0, 1200);
+		return { text: cut.text, truncated: cut.truncated };
+	}
 	if (entry.type !== "message") return undefined;
 	const role = entry.message.role;
 	if (role !== "user" && role !== "assistant" && role !== "toolResult") return undefined;

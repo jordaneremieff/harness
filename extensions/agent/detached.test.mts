@@ -406,7 +406,7 @@ describe("detached control lifecycle", () => {
 		} finally { test.close(); }
 	});
 
-	it("names hosted sessions closed with active work", async () => {
+	it("reports hosted sessions with active or queued work at shutdown", async () => {
 		const test = controlFixture();
 		try {
 			const code = await executeDetachedRun(test.source, {
@@ -416,6 +416,38 @@ describe("detached control lifecycle", () => {
 			assert.equal(code, 1);
 			assert.equal(test.runs.get(test.source.runId)?.state, "failed");
 			assert.match(test.runs.get(test.source.runId)?.error ?? "", /peer-session/u);
+			assert.match(test.runs.get(test.source.runId)?.error ?? "", /active or queued work at shutdown/u);
+			assert.doesNotMatch(test.runs.get(test.source.runId)?.error ?? "", /in-flight turns are aborted/u);
+		} finally { test.close(); }
+	});
+
+	it("keeps hosted evidence in the durable error after a long prior failure", async (t) => {
+		const test = controlFixture();
+		t.mock.method(test.worker, "operationResult", async () => ({ ...defined(operationOutcome("failed")), error: { message: "prior-error ".repeat(220) } }));
+		try {
+			const code = await executeDetachedRun(test.source, {
+				...test.options,
+				createHost: async () => ({ open: async () => test.worker, close: async () => { test.calls.push("host-close"); }, activeHostedSessionIds: () => ["affected-peer"] }),
+			});
+			assert.equal(code, 1);
+			const error = test.runs.get(test.source.runId)?.error ?? "";
+			assert.match(error, /prior-error/u);
+			assert.match(error, /affected-peer/u);
+			assert.ok(error.length <= 2000, `durable error length ${error.length}`);
+		} finally { test.close(); }
+	});
+
+	it("keeps the hosted report when host cleanup fails", async () => {
+		const test = controlFixture();
+		try {
+			const code = await executeDetachedRun(test.source, {
+				...test.options,
+				createHost: async () => ({ open: async () => test.worker, close: async () => { test.calls.push("host-close"); throw new Error("host close failed"); }, activeHostedSessionIds: () => ["cleanup-peer"] }),
+			});
+			assert.equal(code, 1);
+			const error = test.runs.get(test.source.runId)?.error ?? "";
+			assert.match(error, /cleanup failed/u);
+			assert.match(error, /cleanup-peer/u);
 		} finally { test.close(); }
 	});
 

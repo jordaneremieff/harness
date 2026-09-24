@@ -89,4 +89,46 @@ describe("idle steer refusal", () => {
 			assert.equal(openedWorker(manager, targetId), undefined);
 		} finally { await manager.closeAll(); await f.close(); }
 	});
+
+	it("does not close a worker another caller joins during the refusal open", { timeout: 20000 }, async () => {
+		const f = await fixture();
+		const targetId = await storedTarget(f.options);
+		const manager = await managerFor(f);
+		interface Internal {
+			readonly opening: Map<string, Promise<AgentWorkerSession>>;
+			loadWorker: (...args: unknown[]) => Promise<AgentWorkerSession>;
+			openWorker: (...args: unknown[]) => Promise<AgentWorkerSession>;
+		}
+		const internal = manager as unknown as Internal;
+		const deferred = () => {
+			let resolve!: () => void;
+			const promise = new Promise<void>((done) => { resolve = done; });
+			return { promise, resolve };
+		};
+		const entered = deferred();
+		const release = deferred();
+		const joined = deferred();
+		const originalLoad = internal.loadWorker.bind(manager);
+		const originalOpen = internal.openWorker.bind(manager);
+		internal.loadWorker = async (...args) => { entered.resolve(); await release.promise; return originalLoad(...args); };
+		internal.openWorker = (...args) => {
+			const isJoined = internal.opening.has(String(args[0]));
+			const result = originalOpen(...args);
+			if (isJoined) joined.resolve();
+			return result;
+		};
+		try {
+			const steer = manager.steer(targetId, "refuse or preserve").then((value) => ({ value }), (error: unknown) => ({ error: String(error) }));
+			await entered.promise;
+			const send = manager.send(targetId, "concurrent wake").then((value) => ({ value }), (error: unknown) => ({ error: String(error) }));
+			await joined.promise;
+			release.resolve();
+			const [steerOutcome, sendOutcome] = await Promise.all([steer, send]);
+			assert.equal("error" in sendOutcome, false, JSON.stringify({ steerOutcome, sendOutcome }));
+			const worker = openedWorker(manager, targetId);
+			assert.ok(worker);
+			await worker.waitForIdle();
+			assert.equal(f.requests.length, 1, "the joined send started one turn");
+		} finally { release.resolve(); await manager.closeAll(); await f.close(); }
+	});
 });
