@@ -158,6 +158,8 @@ interface AgentOwners {
 	creating: Map<string, Promise<AgentManager>>;
 	workers: Set<string>;
 }
+/** Tool-facing contract version of AgentManager. A mismatch means two agent-extension copies share one process-global cache. */
+const MANAGER_PROTOCOL = 1;
 const ownerKey = Symbol.for("pi.extension.agent.owners");
 const shared = globalThis as typeof globalThis & { [ownerKey]?: AgentOwners };
 if (!shared[ownerKey]) shared[ownerKey] = { managers: new Map(), creating: new Map(), workers: new Set() };
@@ -190,6 +192,8 @@ export class AgentManager {
 	private readonly transfers = new Map<string, Promise<unknown>>();
 	private readonly creations = new Set<Promise<AgentWorkerSession>>();
 	private closing = false;
+	/** Identify instances for the process-global manager cache; see MANAGER_PROTOCOL. */
+	readonly managerProtocol = MANAGER_PROTOCOL;
 	private closeTask: Promise<void> | undefined;
 	private readonly rootContext: Context;
 	private readonly store: AgentStore;
@@ -1217,13 +1221,28 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 	let primaryRegistry: ModelRegistry | undefined;
 	let primaryProvider: string | undefined;
 
+	const isCompatibleManager = (candidate: AgentManager): boolean => candidate.managerProtocol === MANAGER_PROTOCOL;
+
+	const requireManagerProtocol = (candidate: AgentManager, root: string): AgentManager => {
+		if (!isCompatibleManager(candidate)) {
+			const found = String((candidate as { managerProtocol?: unknown }).managerProtocol);
+			throw new Error(`agent manager cache at ${root} holds a manager from a different agent extension copy (manager protocol ${found} != ${MANAGER_PROTOCOL}); restart the host process before using agent controls`);
+		}
+		return candidate;
+	};
+
 	const getManager = async (): Promise<AgentManager> => {
 		const agentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
 		const configuredRoot = resolve(process.env.PI_AGENT_SESSIONS_DIR ?? join(agentDir, "agent-sessions"));
 		mkdirSync(configuredRoot, { recursive: true });
 		const root = realpathSync(configuredRoot);
 		const existing = owners.managers.get(root);
-		if (existing) { manager = existing; if (primaryRegistry) existing.inheritProviders(primaryRegistry, primaryProvider); return existing; }
+		if (existing) {
+			const compatible = requireManagerProtocol(existing, root);
+			manager = compatible;
+			if (primaryRegistry) compatible.inheritProviders(primaryRegistry, primaryProvider);
+			return compatible;
+		}
 		let pending = owners.creating.get(root);
 		if (!pending) {
 			pending = (async () => {
@@ -1233,7 +1252,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			})();
 			owners.creating.set(root, pending);
 		}
-		try { const resolved = await pending; manager = resolved; return resolved; } finally { owners.creating.delete(root); }
+		try { const resolved = requireManagerProtocol(await pending, root); manager = resolved; return resolved; } finally { owners.creating.delete(root); }
 	};
 
 	const admit = async <T>(ctx: ExtensionContext, action: () => Promise<T>): Promise<T> => {
@@ -1573,7 +1592,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		if (failures.length) ctx.ui.notify(`Agent restoration failed for:\n${failures.join("\n")}`, "warning");
 		owner.reportSettledRuns(sessionId);
 	});
-	const retainedOwner = (id: string): AgentManager | undefined => manager?.hasPrimary(id) ? manager : [...owners.managers.values()].find((candidate) => candidate.hasPrimary(id));
+	const retainedOwner = (id: string): AgentManager | undefined => manager?.hasPrimary(id) ? manager : [...owners.managers.values()].find((candidate) => isCompatibleManager(candidate) && candidate.hasPrimary(id));
 	pi.on("session_shutdown", async (event, ctx) => {
 		let sessionId: string | undefined;
 		try { sessionId = ctx.sessionManager.getSessionId(); } catch { /* Failed reload retains an invalidated runner. */ }
