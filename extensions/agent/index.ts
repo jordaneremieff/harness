@@ -25,7 +25,7 @@ import { getAgentDir, hasTrustRequiringProjectResources, type ModelRuntime, Proj
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import { createAgentCommand, type AgentSessionSummary, type AgentCommandAction } from "./command.ts";
-import { renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
+import { renderAgentCall, renderAgentResult, renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
 import { aggregateFooter, FOOTER_ENTRY, formatAgentTotals, restoreFooter, SessionFooter, WORK_STATUS_REQUEST, WORK_STATUS_SNAPSHOT, type AgentFooterState, type DetachedFooterState, type FooterCheckpoint, type FooterTotals } from "./footer.ts";
 import { isManagedChild } from "./host-role.ts";
 import { ASSOCIATION_ENTRY, associatedSessions, associationReaches, type AssociationEntry, type AssociationSource } from "./associations.ts";
@@ -1400,6 +1400,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			"Create one ordinary Pi agent session at a working directory and optionally start it with a prompt. The session runs in the background; observe, steer, and abort it with the other agent_* tools.",
 		promptSnippet: "Spawn a background full agent session",
 		parameters: SpawnParams,
+		renderCall: (args, theme, context) => renderAgentCall("agent_spawn", args, theme, context),
+		renderResult: renderAgentResult,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const manager = await getManager();
 			const created = await manager.spawn(params, { cwd: ctx.cwd, model: hostModel(ctx), thinkingLevel: pi.getThinkingLevel() }, trustPromptFrom(ctx));
@@ -1468,6 +1470,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			"Fork one agent session into a new durable session with the transcript up to its tip (side work without disturbing the original).",
 		promptSnippet: "Fork an agent session for side work",
 		parameters: ForkParams,
+		renderCall: (args, theme, context) => renderAgentCall("agent_fork", args, theme, context),
+		renderResult: renderAgentResult,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const manager = await getManager();
 			const forked = await manager.fork(params.sessionId, params.entryId, params.trust, trustPromptFrom(ctx));
@@ -1482,6 +1486,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			"Show the live status and tool surface of one agent session, or list all sessions when no id is given.",
 		promptSnippet: "Show agent session status",
 		parameters: MaybeByIdParams,
+		renderCall: (args, theme, context) => renderAgentCall("agent_status", args, theme, context),
+		renderResult: renderAgentResult,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			void ctx;
 			const manager = await getManager();
@@ -1529,6 +1535,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			"Repair an agent session at the entry that went wrong instead of arguing with its reply. The named entry and everything after it are dropped in a fork, which then redoes the remaining work under your corrected decision and the instructions that followed it. The source session is untouched, so both results stay comparable. The fork works on the current files, not the files as they were at that entry.",
 		promptSnippet: "Rewind an agent session to an entry and re-derive the work",
 		parameters: RewindParams,
+		renderCall: (args, theme, context) => renderAgentCall("agent_rewind", args, theme, context),
+		renderResult: renderAgentResult,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const manager = await getManager();
 			const rewound = await manager.rewind(params.sessionId, params.entryId, params.correction, params.trust, trustPromptFrom(ctx));
@@ -1543,6 +1551,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			"Address the durable session that owns a working area, and create it on first use. The binding is durable and resolves by longest matching directory, so the reasoning about an area accumulates in one session instead of being briefed again. An optional prompt starts work there.",
 		promptSnippet: "Work in the session bound to an area",
 		parameters: PlaceParams,
+		renderCall: (args, theme, context) => renderAgentCall("agent_place", args, theme, context),
+		renderResult: renderAgentResult,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const manager = await getManager();
 			let preview: SessionPreview | undefined;
@@ -1558,6 +1568,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			"Start new work in an idle agent session in its own operating-system process, so it survives this session's exit. Active work must finish or be explicitly aborted first. The run owns the session until it settles; agent tools that reopen that session are refused while it runs. Its result waits in the durable session and in the run record. Use agent_runs to read state and outcome.",
 		promptSnippet: "Start an agent run that outlives this session",
 		parameters: DetachParams,
+		renderCall: (args, theme, context) => renderAgentCall("agent_detach", args, theme, context),
+		renderResult: renderAgentResult,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const manager = await getManager();
 			let preview: SessionPreview | undefined;
@@ -1585,6 +1597,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		description: "Reopen a durable agent session from the store. An explicit model repairs the stored selection only when idle; no model fallback or task starts automatically.",
 		promptSnippet: "Attach to a stored agent session",
 		parameters: AttachParams,
+		renderCall: (args, theme, context) => renderAgentCall("agent_attach", args, theme, context),
+		renderResult: renderAgentResult,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const manager = await getManager();
 			const text = await manager.attach(params.sessionId, params.trust, trustPromptFrom(ctx), params.model);

@@ -26,6 +26,24 @@ uses native host notifications. RPC receives these notifications; Pi's
 print/JSON no-UI context discards them. Model-facing tools return their output
 as tool results instead.
 
+### Tool previews
+
+Session tools place requested model and thinking configuration below the call
+heading when those fields apply. Omitted values remain unresolved rather than
+borrowing a model from the parent display. Result previews use structured
+session snapshots for spawn, fork, rewind, attach, place, and status. Detach
+labels its snapshot **Selected before transfer**; it does not establish the
+child runtime's later model selection. Missing metadata remains unknown.
+
+Native tool expansion reveals arguments, returned text, and snapshot identifiers.
+Each expanded text block retains at most 32,000 source UTF-16 code units without
+splitting a surrogate pair. Escaping terminal controls expands that prefix to at
+most 256,000 code units, excluding the truncation notice and native layout.
+These are per-block limits, not a total-view limit. Collapsed results keep a
+short excerpt below the configuration. Full machine-readable results remain
+intact. Terminal controls display as escaped text. Preview rendering neither
+opens a session nor changes task admission, delivery, or lifecycle behavior.
+
 ### Observe sessions and runs
 
 Bare `/agent` reads the existing session inventory and detached-run records

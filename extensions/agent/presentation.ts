@@ -102,6 +102,75 @@ export const renderPeerMessage: MessageRenderer = (message, { expanded }, theme)
 	return box;
 };
 
+function requestedConfiguration(name: string, args: Record<string, unknown>): string {
+	const retained = name !== "agent_spawn" && (name !== "agent_detach" || Boolean(peerField(args, "sessionId")));
+	const unresolved = name === "agent_place" ? "bound session or inherited" : retained ? "retained session" : "inherited";
+	const model = peerField(args, "model");
+	const thinking = peerField(args, "thinkingLevel");
+	if (!model && !thinking) return `Requested model and thinking: ${unresolved} (unresolved)`;
+	return `Requested: ${model ? displayPreview(model, 240) : `${unresolved} (unresolved)`} · thinking ${thinking ? displayPreview(thinking, 40) : "unresolved"}`;
+}
+function toolExpansionHint(subject: string): string {
+	const key = keyText("app.tools.expand");
+	return key ? `${key} to expand ${subject}` : `Expand for full ${subject}`;
+}
+
+/** Requests and status snapshots are separate evidence; rendering never opens a session. */
+export function renderAgentCall(name: string, value: unknown, theme: Theme, context: { expanded: boolean; argsComplete: boolean; lastComponent?: Component }): Component {
+	const args = peerRecord(value);
+	const subject = peerField(args, "name") || peerField(args, "topic") || peerField(args, "prompt") || peerField(args, "correction") || peerField(args, "sessionId") || peerField(args, "runId");
+	const lines = [theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${displayPreview(subject, 120)}`) : "")];
+	if (["agent_spawn", "agent_detach", "agent_attach", "agent_place", "agent_fork", "agent_rewind"].includes(name)) {
+		lines.push(theme.fg("muted", requestedConfiguration(name, args)));
+	}
+	if (context.expanded) lines.push(theme.fg("toolOutput", boundedMessage(JSON.stringify(args, null, 2))));
+	else lines.push(theme.fg("dim", toolExpansionHint("arguments")));
+	return textComponent(lines.join("\n"), context.lastComponent);
+}
+
+function snapshotLines(preview: Record<string, unknown>, theme: Theme): string[] {
+	const model = peerRecord(preview.model);
+	const provider = peerField(model, "provider");
+	const modelId = peerField(model, "modelId");
+	const thinking = peerField(model, "thinkingLevel");
+	const phase = peerField(preview, "phase");
+	const name = peerField(preview, "name");
+	const lines = name ? [theme.fg("accent", displayPreview(name, 120))] : [];
+	lines.push(theme.fg("muted", `${phase === "session snapshot" ? "Session snapshot" : "Selected before transfer"}: ${provider && modelId ? displayPreview(`${provider}/${modelId}`, 300) : "model unknown"} · thinking ${thinking ? displayPreview(thinking, 40) : "unknown"}`));
+	if (phase === "selected before transfer") lines.push(theme.fg("dim", "Child runtime selection is not confirmed by this snapshot"));
+	return lines;
+}
+
+function resultPreview(value: string, limit: number): string {
+	const prefix = displayPrefix(value, limit);
+	const lines = prefix.split("\n").slice(0, 3).join("\n");
+	return displayText(lines) + (lines.length < value.length ? "\n…" : "");
+}
+
+function boundedResult(value: string): string {
+	const prefix = displayPrefix(value, MESSAGE_DISPLAY_LIMIT);
+	return displayText(prefix) + (prefix.length < value.length ? "\n[Display limit; full result remains in native tool history.]" : "");
+}
+
+export function renderAgentResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; lastComponent?: Component }): Component {
+	const preview = peerRecord(peerRecord(result.details).preview);
+	const phase = peerField(preview, "phase");
+	const knownPhase = phase === "session snapshot" || phase === "selected before transfer";
+	const lines: string[] = [];
+	if (context.isError) lines.push(theme.fg("error", "Tool error"));
+	else if (options.isPartial) lines.push(theme.fg("muted", "Partial result"));
+	if (knownPhase) lines.push(...snapshotLines(preview, theme));
+	const output = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+	if (options.expanded) {
+		lines.push(theme.fg("toolOutput", boundedResult(output)));
+		if (knownPhase) lines.push(theme.fg("dim", boundedResult(JSON.stringify(preview, null, 2))));
+	} else {
+		lines.push(theme.fg(context.isError ? "error" : "toolOutput", resultPreview(output, knownPhase ? 240 : 600)));
+		if (knownPhase || output.length > 600 || output.includes("\n")) lines.push(theme.fg("dim", toolExpansionHint("result and identifiers")));
+	}
+	return textComponent(lines.join("\n"), context.lastComponent);
+}
+
 interface SendDisplayArgs { sessionId: string; message: string; replyTo?: string }
 
 export function renderSendCall(args: Partial<SendDisplayArgs>, theme: Theme, context: { expanded: boolean; argsComplete: boolean; lastComponent?: Component }): Component {

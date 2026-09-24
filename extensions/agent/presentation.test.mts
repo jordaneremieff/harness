@@ -4,7 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text, visibleWidth, getKeybindings, setKeybindings, KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import registerAgentExtension from "./index.ts";
-import { displayPreview, displayText, renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
+import { displayPreview, displayText, renderAgentCall, renderAgentResult, renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
 
 const theme = { fg: (_color: string, value: string) => value, bg: (_color: string, value: string) => value, getBgAnsi: () => "", bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): string[] }, width = 100) => component.render(width).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
@@ -61,6 +61,88 @@ describe("received peer presentation", () => {
 		assert.ok(malformed);
 		assert.match(screen(malformed), /kind unavailable/);
 		assert.match(screen(malformed), /source unavailable/);
+	});
+});
+
+describe("agent session tool presentation", () => {
+	it("registers session call and snapshot result renderers for every metadata producer", () => {
+		const tools: ToolDefinition[] = [];
+		registerAgentExtension({ on() {}, registerCommand() {}, registerMessageRenderer() {}, registerTool: (tool: ToolDefinition) => tools.push(tool) } as unknown as ExtensionAPI);
+		for (const name of ["agent_spawn", "agent_fork", "agent_rewind", "agent_attach", "agent_place", "agent_detach", "agent_status"]) {
+			const tool = tools.find((item) => item.name === name);
+			assert.equal(tool?.renderResult, renderAgentResult);
+			assert.equal(typeof tool?.execute, "function");
+			assert.ok(tool?.renderCall);
+			const rendered = tool.renderCall({}, theme, { expanded: false, argsComplete: true } as never);
+			assert.ok(rendered);
+			assert.ok(screen(rendered).includes(name));
+		}
+	});
+
+	it("bounds expanded source units and escape expansion separately", () => {
+		const render = (text: string) => screen(renderAgentResult({ content: [{ type: "text", text }], details: undefined }, { expanded: true, isPartial: false }, theme, { isError: false }), 800).replace(/\n/gu, "");
+		const source = "\u202e".repeat(32_000);
+		const escaped = "\\u{202e}".repeat(32_000);
+		const notice = "[Display limit; full result remains in native tool history.]";
+		assert.equal(escaped.length, 256_000);
+		assert.equal(render(source), escaped);
+		assert.equal(render(`${source}OMITTED`), escaped + notice);
+		assert.equal(render(`${"x".repeat(31_999)}\u{e0001}OMITTED`), "x".repeat(31_999) + notice);
+	});
+
+	it("keeps requested, retained, and unresolved configuration distinct", () => {
+		const context = { expanded: false, argsComplete: true };
+		const spawn = screen(renderAgentCall("agent_spawn", { name: "Parser review", model: "provider/model", thinkingLevel: "high" }, theme, context), 160);
+		assert.match(spawn, /agent_spawn · Parser review/);
+		assert.match(spawn, /Requested: provider\/model · thinking high/);
+		assert.doesNotMatch(spawn, /Session snapshot|completed/);
+		assert.match(screen(renderAgentCall("agent_spawn", {}, theme, context)), /inherited \(unresolved\)/);
+		assert.match(screen(renderAgentCall("agent_detach", { sessionId: "existing" }, theme, context)), /retained session/);
+		assert.match(screen(renderAgentCall("agent_place", { area: "project" }, theme, context)), /bound session or inherited/);
+		assert.doesNotMatch(screen(renderAgentCall("agent_status", {}, theme, context)), /Requested:/);
+	});
+
+	it("shows snapshot metadata ahead of technical output and qualifies detached selection", () => {
+		const result = { content: [{ type: "text" as const, text: "run-id\nsession-id\nlog-path\nFull troubleshooting" }], details: { preview: { name: "Parser review", sessionId: "session-id", runId: "run-id", phase: "selected before transfer", model: { provider: "provider", modelId: "model", thinkingLevel: "high" } } } };
+		const before = structuredClone(result);
+		const options = { expanded: false, isPartial: false };
+		const context = { isError: false };
+		const text = screen(renderAgentResult(result, options, theme, context), 160);
+		assert.match(text, /Selected before transfer: provider\/model · thinking high/);
+		assert.match(text, /Child runtime selection is not confirmed/);
+		assert.ok(text.indexOf("provider/model") < text.indexOf("run-id"));
+		const expanded = screen(renderAgentResult(result, { ...options, expanded: true }, theme, context), 160);
+		assert.match(expanded, /Full troubleshooting/);
+		assert.match(expanded, /log-path/);
+		assert.deepEqual(result, before);
+	});
+
+	it("uses only known snapshot shapes and does not infer configuration from text", () => {
+		for (const preview of [null, {}, { phase: "other", model: { provider: "p", modelId: "fake" } }]) {
+			const text = screen(renderAgentResult({ content: [{ type: "text", text: "provider/model high" }], details: { preview } }, { expanded: false, isPartial: false }, theme, { isError: false }));
+			assert.doesNotMatch(text, /Session snapshot|Selected before transfer|thinking/);
+		}
+		const missing = screen(renderAgentResult({ content: [], details: { preview: { phase: "session snapshot", model: { provider: 2 } } } }, { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(missing, /model unknown · thinking unknown/);
+	});
+
+	it("handles partial arguments, controls, long identities, resize, and expansion without mutation", () => {
+		const unsafe = "日本語 😀\x1b]52;c;data\x07\u202e";
+		const args = { model: `provider/${"long-".repeat(80)}`, thinkingLevel: "max", prompt: unsafe, cwd: "/project/location" };
+		for (const expanded of [false, true]) {
+			const view = renderAgentCall("agent_spawn", args, theme, { expanded, argsComplete: false });
+			for (const width of [12, 24, 80, 160]) {
+				assert.ok(view.render(width).every((line) => visibleWidth(line) <= width));
+				assert.doesNotMatch(screen(view, width), /[\x1b\x07\u202e]/u);
+			}
+		}
+		const initial = renderAgentCall("agent_spawn", null, theme, { expanded: false, argsComplete: false });
+		const final = renderAgentCall("agent_spawn", args, theme, { expanded: true, argsComplete: true, lastComponent: initial });
+		assert.equal(initial, final);
+		assert.match(screen(final), /project\/location/);
+		const result = { content: [{ type: "text" as const, text: unsafe }], details: undefined };
+		assert.match(screen(renderAgentResult(result, { expanded: false, isPartial: true }, theme, { isError: false })), /Partial result/);
+		assert.match(screen(renderAgentResult(result, { expanded: true, isPartial: false }, theme, { isError: true })), /Tool error/);
 	});
 });
 
