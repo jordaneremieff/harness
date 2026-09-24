@@ -824,9 +824,22 @@ alone establishes general autonomous task reliability.
   Starting a leg, resuming, or terminating clears the deadline.
 - A worker that fails after dispatch reports its death with the same completion
   notification as a success: state `failed` plus the error.
-- The `subagent` tool row renders the crafted dispatch spec in the standard pi
-  tool expansion (ctrl+o): task, batch summary, resolved config, and the
-  worker protocol prompt.
+- Tool previews keep task labels and model/thinking configuration near the
+  heading. Dispatch calls label values as requested; omitted values remain
+  unresolved until worker records supply them. Batch and plan calls show
+  per-member overrides rather than one model for the whole group. Native tool
+  expansion reveals all submitted arguments, defaults, and the worker protocol
+  prompt. Results for dispatch, continue, status, inspect, and collect show
+  recorded worker configuration, thinking clamps, and fallback history. Plan
+  dry runs label local preflight selection separately from started workers.
+  Collapsed results keep a short evidence excerpt; expansion retains complete
+  returned text and structured details. Each expanded text block retains at most
+  64,000 source UTF-16 code units without splitting a surrogate pair. Escaping
+  terminal controls expands that prefix to at most 512,000 code units, excluding
+  the truncation notice and native layout. These are per-block limits, not a
+  total-view limit. Full machine-readable results remain unchanged. Long
+  identifiers and paths remain available through expansion. Terminal controls
+  display as escaped text.
 - A worker is a full session: ending an ordinary assistant turn without calling
   `submit_result` leaves it live and idle in the same session, ready for a later
   peer message, child completion, or owner resume. No automatic submit reminder

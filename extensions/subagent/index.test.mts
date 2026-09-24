@@ -174,8 +174,8 @@ type RegisteredFixtureTool = {
 	renderCall(
 		args: Record<string, unknown>,
 		theme: unknown,
-		context: { expanded: boolean; lastComponent: unknown },
-	): void;
+		context: { expanded: boolean; argsComplete: boolean; lastComponent?: unknown },
+	): { render(width: number): string[] };
 };
 
 /** One profile entry or fault as the adapter tool returns it. */
@@ -4783,26 +4783,28 @@ describe("registered tool surface", () => {
 			/idle interrupted worker.*fresh run/,
 		);
 
-		let rendered = "";
-		const component = { setText: (text: string) => (rendered = text) };
 		const theme = {
 			fg: (_color: string, text: string) => text,
 			bold: (text: string) => text,
 		};
-		dispatch.renderCall({ tools: [] }, theme, {
+		const component = dispatch.renderCall({ tools: [] }, theme, {
 			expanded: true,
+			argsComplete: true,
+		});
+		assert.match(component.render(120).join("\n"), /tools:\s+submit_result only/);
+		const inherited = dispatch.renderCall({}, theme, {
+			expanded: true,
+			argsComplete: true,
 			lastComponent: component,
 		});
-		assert.match(rendered, /tools:\s+submit_result only/);
-		dispatch.renderCall({}, theme, {
+		assert.equal(inherited, component);
+		assert.match(inherited.render(120).join("\n"), /tools:\s+inherit \(parent active surface\)/);
+		const explicit = dispatch.renderCall({ tools: ["read"] }, theme, {
 			expanded: true,
+			argsComplete: true,
 			lastComponent: component,
 		});
-		assert.match(rendered, /tools:\s+inherit \(parent active surface\)/);
-		dispatch.renderCall({ tools: ["read"] }, theme, {
-			expanded: true,
-			lastComponent: component,
-		});
+		const rendered = explicit.render(120).join("\n");
 		assert.match(rendered, /tools:\s+read/);
 		assert.match(rendered, /Do not use another account, credential/);
 		assert.doesNotMatch(rendered, /credential source|do not need permission/i);

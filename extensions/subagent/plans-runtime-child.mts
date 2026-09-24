@@ -279,7 +279,7 @@ try {
 		{ expanded: true } as never,
 	);
 	assert.ok(card);
-	assert.match(card.render(120).join("\n"), /preview only; no workers or model calls/);
+	assert.match(card.render(120).join("\n"), /Preview only; no workers or model calls/);
 	const largeProfile = join(cwd, "large.json");
 	writeFileSync(largeProfile, JSON.stringify({ instructions: "x".repeat(13000) }));
 	await assert.rejects(

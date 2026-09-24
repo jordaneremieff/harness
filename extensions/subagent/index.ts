@@ -124,6 +124,7 @@ import {
 	createCollaborationReader,
 } from "./collaboration.ts";
 import { stripTerminalSequences } from "./console.ts";
+import { renderDispatchCall, renderWorkerCall, renderWorkerResult } from "./tool-presentation.ts";
 import { FOOTER_ENTRY, formatSubtreeStatus, restoreFooter, SessionFooter, subtreeStatus, UsageEvidence } from "./footer.ts";
 import { createManagedHostBus } from "./host-role.ts";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
@@ -4445,6 +4446,8 @@ async function executeNamedPlan(
 		label: outcome.record?.label,
 		model: outcome.record?.model,
 		thinking: outcome.record?.thinking,
+		thinkingRequested: outcome.record?.thinkingRequested,
+		modelFallback: outcome.record?.modelFallback,
 		sessionId: outcome.record?.sessionId,
 		collaboration: outcome.record?.collaboration,
 		setupDiagnostics: outcome.record?.setupDiagnostics,
@@ -5917,80 +5920,6 @@ async function abortBounded(runtime: WorkerRuntime): Promise<void> {
 	}
 }
 
-function renderCollapsedCall(args: SubagentParams, theme: Theme, text: Text): void {
-	const spec = args.plan
-		? `${args.dryRun ? "preview" : "plan"}: ${args.plan.name}`
-		: (args.task ?? (args.tasks?.length ? `batch: ${args.tasks.length} tasks` : "(no task)"));
-	const snippet = spec.replace(/\s+/g, " ").slice(0, 90);
-	const tail = spec.length > 90 ? "…" : "";
-	text.setText(
-		theme.fg("toolTitle", theme.bold("subagent ")) +
-			theme.fg("muted", `${args.model ?? "inherit"} · `) +
-			theme.fg("dim", `"${snippet}${tail}"`) +
-			" " +
-			theme.fg("dim", `[${keyHint("app.tools.expand", "expand")}]`),
-	);
-}
-
-function deadlineConfigLine(args: SubagentParams): string {
-	const value = args.deadlineMinutes;
-	if (value === undefined) return `deadline: default (${DEFAULT_DEADLINE_MINUTES}m)`;
-	return `deadline: ${value === 0 ? "none" : `${value}m`}`;
-}
-
-function budgetConfigLine(args: SubagentParams): string {
-	const value = args.budgetUsd;
-	if (value === undefined) return `budget:   ${DEFAULT_BUDGET_USD ? `default ($${DEFAULT_BUDGET_USD})` : "none"}`;
-	return `budget:   ${value === 0 ? "none" : `$${value}`}`;
-}
-
-function expandedConfigLines(args: SubagentParams): string[] {
-	return [
-		`profile:  ${args.profile ?? "none"} (a task profile replaces this; the result reports effective values)`,
-		`model:    ${args.model ?? "selected profile default, otherwise parent"}`,
-		`fallback: ${args.fallbackModels === undefined ? "operator-configured roster, otherwise disabled" : args.fallbackModels.join(", ") || "disabled"}`,
-		`class:    ${args.taskClass ?? "default"}`,
-		`thinking: ${args.thinking ?? "selected profile default, otherwise parent"}`,
-		`tools:    ${args.tools ? (args.tools.length ? args.tools.join(", ") : "submit_result only") : "inherit (parent active surface)"}`,
-		`cwd:      ${args.cwd ?? "selected profile default, otherwise session cwd"}`,
-		deadlineConfigLine(args),
-		budgetConfigLine(args),
-		`shared:   ${args.sharedContext ? `${sharedContextSnapshotId(args.sharedContext)} (${Buffer.byteLength(args.sharedContext, "utf-8")} bytes, every worker)` : "none"}`,
-		args.plan && args.dryRun
-			? "mode:     preview only; no workers or model calls"
-			: "mode:     background + subagent_result notification",
-	];
-}
-
-function expandedBatchLines(args: SubagentParams, theme: Theme): string {
-	if (!args.tasks?.length) return "";
-	return (
-		"\n\n" +
-		theme.fg("muted", `batch: ${args.tasks.length} task(s), parallel`) +
-		"\n" +
-		args.tasks.map((task, index) => `  ${index + 1}. ${task.task.replace(/\s+/g, " ").slice(0, 160)}`).join("\n")
-	);
-}
-
-function renderExpandedCall(args: SubagentParams, theme: Theme, text: Text): void {
-	text.setText(
-		theme.fg("toolTitle", theme.bold(args.plan && args.dryRun ? "subagent plan preview" : "subagent dispatch")) +
-			"\n\n" +
-			theme.fg("muted", "task") +
-			"\n" +
-			(args.plan ? JSON.stringify(args.plan, null, 2) : (args.task ?? "(batch dispatch)")) +
-			expandedBatchLines(args, theme) +
-			"\n\n" +
-			theme.fg("muted", "config") +
-			"\n" +
-			expandedConfigLines(args).join("\n") +
-			"\n\n" +
-			theme.fg("muted", "worker protocol prompt") +
-			"\n" +
-			workerSystemPrompt(),
-	);
-}
-
 /** One result line per dispatched worker, with the optional provenance suffix. */
 function outcomeLine(outcome: DispatchOutcome): string {
 	const fallback = outcome.record?.modelFallback
@@ -6084,17 +6013,17 @@ const subagentTool = defineTool({
 		sharedContext: Type.Optional(sharedContextSchema),
 	}),
 	executionMode: "parallel",
-	// Standard pi tool-rendering pattern: the tool row shows the crafted
-	// dispatch spec, expandable (ctrl+o) to the full task, resolved config,
-	// and the worker protocol prompt.
 	renderCall(args, theme, context) {
-		// SAFETY: This renderer always returns Text, so lastComponent is its own
-		// previous Text instance or undefined.
-		const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-		if (!context.expanded) renderCollapsedCall(args, theme, text);
-		else renderExpandedCall(args, theme, text);
-		return text;
+		return renderDispatchCall(args, theme, context, context.expanded ? [
+			"Defaults: model/thinking/cwd use the selected profile, then the parent. Task fields override dispatch fields.",
+			"Tools: omitted inherits the active parent surface; [] supplies submit_result only.",
+			"Fallback: omitted uses the configured roster; [] disables substitution.",
+			`Deadline default: ${DEFAULT_DEADLINE_MINUTES}m. Budget default: ${DEFAULT_BUDGET_USD ? `$${DEFAULT_BUDGET_USD}` : "none"}. Zero disables the limit.`,
+			"Mode: background workers; natural completion reports through subagent_result. dryRun is preview only.",
+			"worker protocol prompt", workerSystemPrompt(),
+		].join("\n") : "");
 	},
+	renderResult: renderWorkerResult,
 	async execute(
 		_toolCallId: string,
 		params: SubagentParams,
@@ -6390,6 +6319,8 @@ const reportTool = defineTool({
 const statusTool = defineTool({
 	name: "subagent_status",
 	label: "Subagent Status",
+	renderCall: (args, theme, context) => renderWorkerCall("subagent_status", args, theme, context),
+	renderResult: renderWorkerResult,
 	description: [
 		"Show progress and activity for live subagent workers and recent terminal workers: id, state, model, thinking, elapsed, turns, tool count, current tool, session-file write age, cost, last output preview, and error.",
 		"Live status for workers owned by this session comes from the worker session's own events (cumulative usage, current tool); session-file write age is neutral activity evidence, not a timeout verdict.",
@@ -6439,6 +6370,8 @@ const statusTool = defineTool({
 const inspectTool = defineTool({
 	name: "subagent_inspect",
 	label: "Subagent Inspect",
+	renderCall: (args, theme, context) => renderWorkerCall("subagent_inspect", args, theme, context),
+	renderResult: renderWorkerResult,
 	description: [
 		"Inspect one subagent worker's durable record and recent session content.",
 		"Returns worker state, session path, and a bounded human-readable transcript tail with recent turns, tool-call inputs, tool outcomes, assistant errors, and explicit truncation markers.",
@@ -6510,6 +6443,8 @@ const steerTool = defineTool({
 const collectTool = defineTool({
 	name: "subagent_collect",
 	label: "Subagent Collect",
+	renderCall: (args, theme, context) => renderWorkerCall("subagent_collect", args, theme, context),
+	renderResult: renderWorkerResult,
 	description: [
 		"Return terminal subagent results from the durable store. Works in any session: the dispatching parent does not need to be alive.",
 		"With id: returns the stored result of that worker (up to 50KB; larger submissions carry a [truncated] marker). Every terminal worker without a submitted result points to its retained session transcript for inspection before continuation. For state no_result_submitted, retained final text is FLAGGED as unprotocolled — it is NOT the result.",
@@ -6537,6 +6472,10 @@ const collectTool = defineTool({
 					id: w.id,
 					state: w.state,
 					model: w.record.model,
+					label: w.record.label ?? null,
+					thinking: w.record.thinking ?? null,
+					thinkingRequested: w.record.thinkingRequested ?? null,
+					modelFallback: w.record.modelFallback ?? null,
 					error: w.error ?? null,
 					resultBytes: w.record.resultBytes,
 					resultPreview: w.record.resultPreview,
@@ -6577,6 +6516,8 @@ const interruptTool = defineTool({
 const continueTool = defineTool({
 	name: "subagent_continue",
 	label: "Subagent Continue",
+	renderCall: (args, theme, context) => renderWorkerCall("subagent_continue", args, theme, context),
+	renderResult: renderWorkerResult,
 	description: [
 		"Continue a terminal subagent as a new linked background worker while preserving the source record, result, and transcript.",
 		"The new worker forks the retained Pi session, uses its parent-resolvable bootstrap model, and inherits thinking, cwd, and the source's full recorded tool surface. Missing recorded tools or source metadata, changed registration sources, and unreadable source files fail before provider work, naming each unavailable tool and source. Continuation never runs on a narrowed surface or substitutes a same-name source. Target session_start hooks can select the source's actual target-only model again. It returns a new stable id after setup completes. Running workers must be steered or interrupted instead.",
