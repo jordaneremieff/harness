@@ -17,7 +17,9 @@ const held = new Promise<void>((resolve) => { release = resolve; });
 const snapshots = new Map<string, Array<Record<string, unknown>>>();
 const sessionIds = new Map<string, string>();
 const errors: unknown[] = [];
-const state = { held, snapshots, sessionIds, dirs };
+const status = new Map<string, string | undefined>();
+const checkpoints = new Map<string, () => Array<{ data: unknown }>>();
+const state = { held, snapshots, sessionIds, dirs, checkpoints };
 const globalState = globalThis as Record<symbol, typeof state | undefined>;
 globalState[key] = state;
 let owner: AgentSession | undefined;
@@ -43,6 +45,7 @@ export default function(pi) {
     cwd = ctx.cwd;
     state.sessionIds.set(cwd, ctx.sessionManager.getSessionId());
     state.snapshots.set(cwd, []);
+    state.checkpoints.set(cwd, () => ctx.sessionManager.getEntries().filter(entry => entry.type === "custom" && entry.customType === "subagent.footer"));
   });
   pi.events.on("harness:work-status:snapshot", value => { state.snapshots.get(cwd)?.push(value); });
   pi.registerTool({name:"fixture_hold", label:"Fixture Hold", description:"Hold a synthetic request.", parameters:Type.Object({}),
@@ -81,13 +84,18 @@ try {
 	await loader.reload();
 	owner = (await createAgentSession({ cwd: dirs[0], agentDir, settingsManager, resourceLoader: loader,
 		sessionManager: SessionManager.create(dirs[0]), model: model as never, thinkingLevel: "off" })).session;
-	await owner.bindExtensions({ onError: (error) => errors.push(error) });
+	await owner.bindExtensions({ onError: (error) => errors.push(error), uiContext: { setStatus: (key: string, text: string | undefined) => status.set(key, text) } as never });
 	const ownerId = owner.sessionManager.getSessionId();
 	await owner.prompt("Start nested footer work");
 	const latest = () => snapshots.get(dirs[0])?.at(-1);
 	await until(() => sub.listWorkers().length === 2 && latest()?.active === 1 && latest()?.cost === 0.75, "idle parent plus executing grandchild");
 	assert.equal(latest()?.incomplete, false);
 	assert.equal(sessionIds.size, 3, "three distinct working directories load session-owned publishers");
+	for (const [cwd, read] of checkpoints) {
+		const entries = read();
+		assert.ok(entries.length < 20, `${cwd}: changed observations append bounded checkpoints, got ${entries.length}`);
+		for (let index = 1; index < entries.length; index++) assert.notDeepEqual(entries[index].data, entries[index - 1].data, "synchronous entry observers do not append duplicate checkpoints");
+	}
 	assert.equal(sub.sharedWorkerState.statusActivity.size, 2);
 	assert.equal(sub.sharedWorkerState.statusObservers.size, 3);
 	bus.emit("harness:work-status:request", {version:1,publisher:"subagent",sessionId:ownerId});
@@ -95,6 +103,12 @@ try {
 	release();
 	await until(() => latest()?.active === 0 && latest()?.cost === 1, "both retained workers settle without active work");
 	assert.equal(sub.listWorkers().filter((record) => record.state === "running").length, 2, "retained running records are not active");
+	for (const read of checkpoints.values()) {
+		const entries = read();
+		assert.ok(entries.length < 20, "settlement appends bounded changed checkpoints");
+		for (let index = 1; index < entries.length; index++) assert.notDeepEqual(entries[index].data, entries[index - 1].data);
+	}
+	console.log("changed checkpoint counts", JSON.stringify(dirs.map((cwd) => checkpoints.get(cwd)?.().length)));
 	assert.equal(latest()?.incomplete, false);
 	await owner.reload();
 	bus.emit("harness:work-status:request", {version:1,publisher:"subagent",sessionId:ownerId});
@@ -109,6 +123,42 @@ try {
 	bus.emit("harness:work-status:request", {version:1,publisher:"subagent",sessionId:ownerId});
 	assert.equal(latest()?.cost, 1, "off-branch costs remain incurred");
 	assert.equal(owner.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "subagent.footer").length, checkpointCount, "unchanged observations append no checkpoints");
+	const manager = owner.sessionManager;
+	const append = manager.appendCustomEntry.bind(manager);
+	for (const partial of [false, true]) {
+		let attempts = 0;
+		manager.appendCustomEntry = (type, data) => {
+			if (type !== "subagent.footer") return append(type, data);
+			attempts++;
+			if (attempts === 1) {
+				if (partial) append(type, data);
+				throw new Error("controlled checkpoint append failure");
+			}
+			return append(type, data);
+		};
+		bus.emit("harness:work-status:snapshot", {version:1,publisher:"agent",sessionId:ownerId,available:true,active:0,cost:partial ? 3 : 2,incomplete:false});
+		assert.equal(attempts, 1);
+		bus.emit("harness:work-status:request", {version:1,publisher:"subagent",sessionId:ownerId});
+		assert.equal(attempts, 2, "failed appends remain retryable, including native in-memory partial writes");
+		bus.emit("harness:work-status:request", {version:1,publisher:"subagent",sessionId:ownerId});
+		assert.equal(attempts, 2, "successful retries restore checkpoint deduplication");
+	}
+	manager.appendCustomEntry = append;
+	const before = checkpoints.get(dirs[0])?.().length ?? 0;
+	let updateDuringAppend = true;
+	const unsubscribe = owner.subscribe((event) => {
+		if (event.type !== "entry_appended" || event.entry.type !== "custom" || event.entry.customType !== "subagent.footer" || !updateDuringAppend) return;
+		updateDuringAppend = false;
+		bus.emit("harness:work-status:snapshot", {version:1,publisher:"agent",sessionId:ownerId,available:true,active:0,cost:4.5,incomplete:false});
+	});
+	bus.emit("harness:work-status:snapshot", {version:1,publisher:"agent",sessionId:ownerId,available:true,active:0,cost:4,incomplete:false});
+	unsubscribe();
+	const changed = checkpoints.get(dirs[0])?.() ?? [];
+	assert.equal(changed.length - before, 2, "a changed synchronous observation appends once after the current append returns");
+	const last = changed.at(-1);
+	assert.ok(last);
+	assert.equal((last.data as { agent: { cost: number } }).agent.cost, 4.5);
+	assert.equal(status.get("subagent"), "subagents 0 · $5.50", "display reflects the latest synchronous observation");
 	await owner.extensionRunner?.emit({type:"session_shutdown", reason:"quit"});
 	await until(() => sub.sharedWorkerState.statusActivity.size === 0 && sub.sharedWorkerState.statusObservers.size === 0, "shutdown releases cross-instance observations");
 	assert.equal(latest()?.available, false);

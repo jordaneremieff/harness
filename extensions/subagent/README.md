@@ -1014,10 +1014,13 @@ contract. It never includes ordinary agents' own price. Missing usage, unreadabl
 records, or unavailable live ownership add `+?` beside the count and known price.
 Only session shutdown clears the cell, not idle or zero work.
 
-Native custom entries retain exact-session totals outside model context. Reload,
-reopening, and tree navigation keep incurred spend. New sessions and copied forks
-start fresh. If raw records lose observed costs, the total stays visible with
-uncertainty; later observed increases still add to it. These checkpoints retain
+Native custom entries retain exact-session totals outside model context.
+Same-process reload retains in-memory checkpoints. Reopening restores checkpoints
+only from a native session file Pi actually saved. Before the first assistant
+message, Pi buffers custom entries in memory without creating the file; the first
+assistant message flushes those entries. Tree navigation keeps incurred spend.
+New sessions and copied forks start fresh. If raw records lose observed costs,
+the total stays visible with uncertainty; later observed increases still add to it. These checkpoints retain
 observations, not unobserved historical charges.
 
 Native accounting includes assistant and reported tool usage, standalone usage

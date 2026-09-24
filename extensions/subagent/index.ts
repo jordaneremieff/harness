@@ -2125,8 +2125,9 @@ function publishSubagentStatus(): void {
 	}
 	for (const [ownerSession, binding] of statusBindings) {
 		try {
-			const text = formatSubtreeStatus(binding.footer.display(currentSubtreeStatus(ownerSession)));
+			currentSubtreeStatus(ownerSession);
 			binding.persist?.();
+			const text = formatSubtreeStatus(binding.footer.display(currentSubtreeStatus(ownerSession)));
 			if (text === binding.published) continue;
 			binding.ctx.ui.setStatus("subagent", text);
 			binding.published = text;
@@ -2141,13 +2142,24 @@ function bindStatusPublisher(ctx: ExtensionContext, pi: ExtensionAPI): void {
 	if (!binding) throw new Error("Subagent status context was not bound");
 	binding.dispose?.();
 	let persisted = JSON.stringify(restoreFooter(ctx.sessionManager.getEntries(), sessionId) ?? new SessionFooter(sessionId).saved);
+	let appending = false;
 	binding.persist = () => {
-		const serialized = JSON.stringify(binding.footer.saved);
-		if (serialized !== persisted) { pi.appendEntry(FOOTER_ENTRY, structuredClone(binding.footer.saved)); persisted = serialized; }
+		if (appending) return;
+		appending = true;
+		try {
+			let serialized = JSON.stringify(binding.footer.saved);
+			while (serialized !== persisted) {
+				// Native append emits entry_appended synchronously. Commit only after it returns.
+				pi.appendEntry(FOOTER_ENTRY, structuredClone(binding.footer.saved));
+				persisted = serialized;
+				serialized = JSON.stringify(binding.footer.saved);
+			}
+		} finally { appending = false; }
 	};
 	const render = () => {
-		const text = formatSubtreeStatus(binding.footer.display(currentSubtreeStatus(sessionId)));
+		currentSubtreeStatus(sessionId);
 		binding.persist?.();
+		const text = formatSubtreeStatus(binding.footer.display(currentSubtreeStatus(sessionId)));
 		if (text !== binding.published) {
 			try { binding.ctx.ui.setStatus("subagent", text); binding.published = text; } catch { /* Presentation is not execution. */ }
 		}
