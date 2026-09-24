@@ -36,7 +36,7 @@ test("primary shutdown follows actual registration rather than a later host clai
 	const unregister = t.mock.method(AgentManager.prototype, "unregisterPrimary");
 	const bus = createEventBus();
 	const handlers = new Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>();
-	registerAgentExtension({ events: bus, registerTool() {}, registerCommand() {},
+	registerAgentExtension({ events: bus, registerTool() {}, registerCommand() {}, registerMessageRenderer() {},
 		on(name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) {
 			const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list);
 		},

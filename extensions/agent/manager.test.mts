@@ -53,6 +53,34 @@ async function harness(): Promise<Harness> {
 	};
 }
 
+describe("peer notification metadata", () => {
+	it("distinguishes direct messages from recorded operation outcomes", { timeout: 5000 }, async () => {
+		const test = await harness();
+		try {
+			const notices: Array<{ content: string; details: unknown }> = [];
+			let resolve!: () => void;
+			const settled = new Promise<void>((done) => { resolve = done; });
+			test.manager.registerPrimary("primary", test.cwd, (content, details) => {
+				notices.push({ content, details });
+				if ((details as { kind: string }).kind === "operation") resolve();
+			});
+			await test.manager.send("primary", "peer body", "source", "reply");
+			assert.equal((notices[0].details as { kind: string }).kind, "message");
+			assert.equal((notices[0].details as { fromSessionId: string }).fromSessionId, "source");
+			await test.manager.place(test.cwd, {}, undefined, { model: { provider: "agent-test", id: "model" } });
+			const [id] = await test.manager.listSessions();
+			await test.manager.send(id, "operation body");
+			await settled;
+			const notice = notices.find((item) => (item.details as { kind: string }).kind === "operation");
+			assert.ok(notice);
+			const details = notice.details as { sessionId: string; operationId: string; status: string };
+			assert.equal(details.sessionId, id);
+			assert.ok(details.operationId);
+			assert.match(notice.content, new RegExp(`Agent session ${id} ${details.status}\\.`));
+		} finally { await test.close(); }
+	});
+});
+
 describe("place sessions", () => {
 	it("creates one session for an area, binds it durably, and reuses it with its accumulated context", async () => {
 		const test = await harness();
@@ -204,13 +232,15 @@ describe("detached run visibility", () => {
 			runs.writeResult({ runId: "finished", state: "finished", finishedAt: "2026-09-10T00:01:00.000Z", summary: "All work\ncomplete" });
 			runs.writeResult({ runId: "failed", state: "failed", finishedAt: "2026-09-10T00:01:00.000Z", error: "Model\nfailed" });
 			const messages: string[] = [];
+			const metadata: unknown[] = [];
 			t.mock.method(test.store, "list", () => { throw new Error("session store must stay closed"); });
-			test.manager.registerPrimary("primary", test.cwd, (content) => messages.push(content));
+			test.manager.registerPrimary("primary", test.cwd, (content, details) => { messages.push(content); metadata.push(details); });
 			test.manager.reportSettledRuns("primary");
 			assert.deepEqual(messages, [
 				"Detached run failed failed, session session-failed: Model failed\n" +
 				"Detached run finished finished, session session-finished: All work complete",
 			]);
+			assert.deepEqual(metadata, [{ kind: "runs", runIds: ["failed", "finished"], outcomes: [{ runId: "failed", sessionId: "session-failed", status: "failed" }, { runId: "finished", sessionId: "session-finished", status: "finished" }] }]);
 			assert.equal(runs.get("finished")?.acknowledged, true);
 			assert.equal(runs.get("failed")?.acknowledged, true);
 			assert.equal(runs.get("live")?.acknowledged, undefined);
@@ -431,7 +461,7 @@ describe("command registration", () => {
 			const open = t.mock.method(AgentWorkerSession, "open", async () => { throw new Error("must not open"); });
 			const status = t.mock.method(test.manager, "status", async () => { throw new Error("must not query"); });
 			let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
-			registerAgentExtension({ registerTool() {}, on() {}, registerCommand(_name: string, options: typeof command) { command = options; } } as unknown as ExtensionAPI);
+			registerAgentExtension({ registerTool() {}, registerMessageRenderer() {}, on() {}, registerCommand(_name: string, options: typeof command) { command = options; } } as unknown as ExtensionAPI);
 			const complete = defined(command.getArgumentCompletions);
 			for (const action of ["status", "attach", "fork", "send", "steer", "abort", "rewind", "detach"]) {
 				const result = defined(await complete(`${action} `));
@@ -457,7 +487,7 @@ describe("command registration", () => {
 				t.mock.method(test.manager, method, (...args: unknown[]) => { calls.push({ method, args }); return ["spawn", "fork", "rewind", "detach"].includes(method) ? { sessionId: "created", runId: "run", text: method } : method; });
 			}
 			let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
-			registerAgentExtension({ registerTool() {}, on() {}, getThinkingLevel: () => "high", registerCommand(_name: string, options: typeof command) { command = options; } } as unknown as ExtensionAPI);
+			registerAgentExtension({ registerTool() {}, registerMessageRenderer() {}, on() {}, getThinkingLevel: () => "high", registerCommand(_name: string, options: typeof command) { command = options; } } as unknown as ExtensionAPI);
 			const notices: string[] = [];
 			const ctx = { cwd: test.cwd, model: defaultModel, mode: "tui", hasUI: true, isProjectTrusted: () => true, ui: { custom: () => { throw new Error("custom UI must stay unopened"); }, notify: (text: string) => notices.push(text) } } as unknown as ExtensionCommandContext;
 			for (const [input, method] of [
@@ -493,7 +523,7 @@ describe("command registration", () => {
 		process.env.PI_AGENT_SESSIONS_DIR = test.sessionsRoot;
 		try {
 			let handler!: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
-			registerAgentExtension({ registerTool() {}, on() {}, getThinkingLevel: () => "high", registerCommand(_name: string, options: { handler: typeof handler }) { handler = options.handler; } } as unknown as ExtensionAPI);
+			registerAgentExtension({ registerTool() {}, registerMessageRenderer() {}, on() {}, getThinkingLevel: () => "high", registerCommand(_name: string, options: { handler: typeof handler }) { handler = options.handler; } } as unknown as ExtensionAPI);
 			t.mock.method(AgentWorkerSession, "open", async () => { throw new Error("must not open"); });
 			t.mock.method(AgentWorkerSession, "create", async () => { throw new Error("must not create"); });
 			const notices: string[] = [];

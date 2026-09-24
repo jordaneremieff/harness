@@ -366,6 +366,23 @@ splitting a surrogate pair; an explicit notice reports any omitted text. The
 full arguments remain in Pi's native tool call. Display bounds never change the
 transmitted message. Results distinguish admission receipts from send errors.
 
+Received peer messages use Pi's native custom-message expansion. The collapsed
+view shows the message kind, source session ID, literal excerpt, provenance,
+and configured expansion hint. Peer-operation outcomes come from execution
+metadata; they do not describe primary-session state or task acceptance.
+Detached-run batches identify their aggregate outcomes and expose individual
+run/session IDs on expansion. Identity and failure information precede optional
+text and are not width-truncated. Malformed identity metadata is labeled
+unavailable rather than presented as a shortened source.
+
+Expansion exposes the sanitized notification and its message/reply references.
+An explicit display-limit notice preserves access through native history;
+`agent_inspect` retains the stored operation outcome and `agent_runs` retains
+run outcomes. The renderer changes neither provider content nor delivery timing.
+Global expansion intentionally permits full blocks. Compact defaults reduce
+late-message footprint, but do not pin the primary answer or guarantee its
+visibility after arbitrary arrivals.
+
 Admission means the message entered the recipient's execution path. It does
 not mean that the recipient replied, understood the message, or acted on it.
 Peer content remains reported data, not operator authority. Ask a collaborating

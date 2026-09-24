@@ -170,6 +170,30 @@ These changes apply to the ordinary SDK without a durable-kernel migration.
 Do not treat an AgentHarness or Pico3 cutover as a prerequisite for fixing
 current provider transcripts, lifecycle registration, or session replacement.
 
+## Ordinary custom-message presentation
+
+Verified 2026-09-24 against installed coding-agent 0.87.1
+`dist/modes/interactive/components/custom-message.js`,
+`dist/modes/interactive/interactive-mode.js`, `dist/core/agent-session.js`,
+`dist/core/messages.js`, and the public `MessageRenderer` declarations.
+`registerMessageRenderer` receives native expansion state. The default custom
+message component displays its complete body even when collapsed; a registered
+renderer supplies a compact view without altering the retained message.
+The host applies its global tool-expansion state to these components.
+Renderer failure falls back to the default body, so malformed metadata must
+produce an explicit safe view rather than throw.
+
+Display and delivery are separate contracts. An idle custom message with
+`triggerTurn: true` starts a provider turn; active steering preserves the host
+queue. Provider conversion includes message content but omits display metadata.
+Agent and subagent use the native rendering boundary, not queue changes, to
+limit the default footprint of late peer evidence. Peer-operation outcomes
+remain separate from primary-session state and task acceptance. Native
+expansion and arbitrary message arrivals prevent a permanent-visibility
+promise. Controlled provider tests establish content and turn behavior;
+isolated terminal trials establish display and expansion behavior, not model
+judgment about the evidence.
+
 ## Configuration and source context
 
 Verified 2026-09-23 against installed 0.87.1 `dist/core/resource-loader.js`,
