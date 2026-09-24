@@ -4,8 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "node:test";
-import { createAgentSessionRuntime, createAgentSessionServices, createAgentSessionFromServices, ProjectTrustStore, SessionManager, type AgentSession, type AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
+import { mock, test } from "node:test";
+import { createAgentSessionRuntime, createAgentSessionServices, createAgentSessionFromServices, ModelRuntime, ProjectTrustStore, SessionManager, type AgentSession, type AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
 import { ASSOCIATION_ENTRY, associatedSessions } from "./associations.ts";
 import { AgentStore } from "./store.ts";
 import type { AgentManager } from "./index.ts";
@@ -23,7 +23,7 @@ async function fixture() {
 	const key = `reload${randomUUID()}`;
 	const release = deferred();
 	const events: Event[] = [], listeners = new Set<() => void>();
-	const state = { omit: false, release: release.promise, event: (event: Event) => { events.push(event); for (const listener of listeners) listener(); } };
+	const state = { omit: false, response: undefined as string | undefined, request: undefined as { sessionId: string; name: string; args: Record<string, unknown> } | undefined, release: release.promise, event: (event: Event) => { events.push(event); for (const listener of listeners) listener(); } };
 	const globals = globalThis as unknown as Record<string, unknown>;
 	globals[key] = state;
 	const provider = join(root, "provider.mjs"), entry = join(root, "agent-entry.mjs");
@@ -48,7 +48,9 @@ async function fixture() {
 			const stream=(model,context)=>{if(!open) throw new Error("provider resource closed");pi.getThinkingLevel();
 				event("model",{context:JSON.stringify(context)});const text=JSON.stringify(context.messages);
 				const hold=ctx.cwd===${JSON.stringify(child)} && calls++===0 && text.includes("HOLD");
-				const m=hold ? fauxAssistantMessage(fauxToolCall("hold",{}),{stopReason:"toolUse"}) : fauxAssistantMessage("DONE-v"+version);
+				const request=state.request?.sessionId===ctx.sessionManager.getSessionId() ? state.request : undefined;
+				if(request) state.request=undefined;
+				const m=request ? fauxAssistantMessage(fauxToolCall(request.name,request.args),{stopReason:"toolUse"}) : hold ? fauxAssistantMessage(fauxToolCall("hold",{}),{stopReason:"toolUse"}) : fauxAssistantMessage(state.response ?? "DONE-v"+version);
 				Object.assign(m,{api:model.api,provider:model.provider,model:model.id,usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:.25,output:0,cacheRead:0,cacheWrite:0,total:.25}}});
 				const out=createAssistantMessageEventStream();queueMicrotask(()=>{out.push({type:"start",partial:m});out.push({type:"done",reason:m.stopReason,message:m});out.end(m);});return out;};
 			pi.registerProvider({id:"reload-local",name:"Reload",getModels:()=>[{id:"controlled",name:"Controlled",provider:"reload-local",api:"reload-local",baseUrl:"https://invalid.test",reasoning:false,input:["text"],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:128000,maxTokens:4096}],auth:{apiKey:{name:"Synthetic",check:async()=>({type:"api_key"}),resolve:async()=>({auth:{}})}},stream,streamSimple:stream});
@@ -67,6 +69,13 @@ async function fixture() {
 		}, { cwd, agentDir, sessionManager });
 		runtime.setRebindSession(bind); runtimes.push(runtime); await bind(runtime.session); return runtime;
 	};
+	const refreshes = new Set<ReturnType<ModelRuntime["refresh"]>>(), refreshFailures: unknown[] = [];
+	const refresh = ModelRuntime.prototype.refresh;
+	const refreshMock = mock.method(ModelRuntime.prototype, "refresh", function (this: ModelRuntime, ...args: Parameters<ModelRuntime["refresh"]>) {
+		const pending = refresh.apply(this, args); refreshes.add(pending);
+		void pending.then(() => { refreshes.delete(pending); }, (error) => { refreshes.delete(pending); refreshFailures.push(error); });
+		return pending;
+	});
 	const runtime = await create();
 	const owners = globalThis as unknown as { [key: symbol]: { managers: Map<string, AgentManager> } };
 	const owner = () => owners[Symbol.for("pi.extension.agent.owners")].managers.get(store);
@@ -92,14 +101,19 @@ async function fixture() {
 	const childSession = (id: string) => (worker(id) as unknown as { runtime: AgentSessionRuntime }).runtime.session;
 	return { worker, childSession, root, agentDir, cwd, child, store, runtime, create, state, events, errors, notices, statuses, writeProvider, owner, wait, tool, spawn, inspect, claims, release: release.resolve,
 		close: async () => {
-			release.resolve();
-			for (const runtime of runtimes.reverse()) await runtime.dispose();
-			// Factory omission removes the native cleanup hook. The fixture owns explicit cleanup.
-			await owner()?.unregisterPrimary(runtime.session.sessionId);
-			assert.equal(owner(), undefined); assert.equal(claims().length, 0);
+			try {
+				release.resolve();
+				for (const runtime of runtimes.reverse()) await runtime.dispose();
+				// Factory omission removes the native cleanup hook. The fixture owns explicit cleanup.
+				await owner()?.unregisterPrimary(runtime.session.sessionId);
+				assert.equal(owner(), undefined); assert.equal(claims().length, 0);
+				// Provider registration starts refreshes that outlive native session disposal.
+				while (refreshes.size > 0) await Promise.allSettled([...refreshes]);
+			} finally { refreshMock.mock.restore(); }
 			if (previous.agentDir === undefined) delete process.env.PI_AGENT_DIR; else process.env.PI_AGENT_DIR = previous.agentDir;
 			if (previous.store === undefined) delete process.env.PI_AGENT_SESSIONS_DIR; else process.env.PI_AGENT_SESSIONS_DIR = previous.store;
 			delete globals[key]; rmSync(root, { recursive: true, force: true });
+			assert.deepEqual(refreshFailures, []);
 		},
 	};
 }
@@ -365,6 +379,208 @@ test("a failed association append refuses the task and releases its native claim
 		assert.equal(f.claims().length, 0);
 		assert.equal(associatedSessions(native.getEntries(), native.getSessionId(), f.store).size, 0);
 		assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
+});
+
+test("native self and ancestor messages preserve queues without ownership backedges", { timeout: 30_000 }, async () => {
+	const f = await fixture();
+	try {
+		const parent = await f.spawn("HOLD"); await f.wait(() => f.events.some((event) => event.type === "tool"));
+		const childText = await f.tool("agent_spawn", { cwd: f.child, trust: true }, f.childSession(parent));
+		const child = /agent session ([^ :]+)/u.exec(childText)?.[1]; assert.ok(child);
+		const grandchildText = await f.tool("agent_spawn", { cwd: f.child, trust: true }, f.childSession(child));
+		const grandchild = /agent session ([^ :]+)/u.exec(grandchildText)?.[1]; assert.ok(grandchild);
+		await f.tool("agent_steer", { sessionId: parent, message: "SELF_STEER" }, f.childSession(parent));
+		await f.tool("agent_send", { sessionId: parent, message: "SELF_SEND" }, f.childSession(parent));
+		await f.tool("agent_send", { sessionId: parent, message: "ANCESTOR_SEND" }, f.childSession(grandchild));
+		await f.tool("agent_steer", { sessionId: parent, message: "ANCESTOR_STEER" }, f.childSession(child));
+		assert.deepEqual([...associatedSessions(f.worker(parent).sessionManager().getEntries(), parent, f.store)], [child]);
+		assert.equal(associatedSessions(f.worker(grandchild).sessionManager().getEntries(), grandchild, f.store).size, 0);
+		await assert.rejects(f.tool("agent_attach", { sessionId: parent }, f.childSession(grandchild)), /cycle/u);
+		await assert.rejects(f.tool("agent_abort", { sessionId: parent }, f.childSession(parent)), /Owner-wait/u);
+		await assert.rejects(f.tool("agent_command", { sessionId: parent, name: "replace" }, f.childSession(parent)), /Owner-wait/u);
+		const owner = f.owner(); assert.ok(owner);
+		await assert.rejects(owner.compact(parent, undefined, undefined, parent), /Owner-wait/u);
+		f.release(); await f.worker(parent).waitForIdle();
+		const context = f.events.filter((event) => event.type === "model" && event.sessionId === parent).map((event) => String(event.context)).join("\n");
+		for (const message of ["SELF_STEER", "SELF_SEND", "ANCESTOR_SEND", "ANCESTOR_STEER"]) assert.ok(context.includes(message), message);
+		assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
+});
+
+test("post-mutation association failure blocks retries and reload without further native writes", { timeout: 30_000 }, async (t) => {
+	const f = await fixture();
+	try {
+		await f.runtime.session.prompt("SAVED_PARENT_CONTEXT");
+		const owner = f.owner(), native = f.runtime.session.sessionManager, file = f.runtime.session.sessionFile; assert.ok(owner); assert.ok(file);
+		const candidate = (await owner.spawn({ cwd: f.child }, { cwd: f.cwd, model: { provider: "reload-local", id: "controlled" } })).sessionId;
+		const saved = SessionManager.open(file).getEntries(), context = SessionManager.open(file).buildSessionContext().messages;
+		const persist = native._persist.bind(native); let attempts = 0;
+		t.mock.method(native, "_persist", (entry: Parameters<typeof persist>[0]) => {
+			if (entry.type === "custom" && entry.customType === ASSOCIATION_ENTRY) { attempts++; throw new Error("post-mutation persistence failure"); }
+			persist(entry);
+		});
+		await assert.rejects(f.tool("agent_attach", { sessionId: candidate }), /post-mutation persistence failure/u);
+		assert.ok(associatedSessions(native.getEntries(), native.getSessionId(), f.store).has(candidate), "native memory advanced before persistence failed");
+		for (const name of ["agent_attach", "agent_send"]) await assert.rejects(f.tool(name, { sessionId: candidate, message: "REFUSED" }), /association write failed/u);
+		await assert.rejects(f.spawn("REFUSED"), /association write failed/u);
+		const remote = t.mock.method(owner as unknown as { detachedOwner(id: string): never }, "detachedOwner", () => { throw new Error("detached route selected"); });
+		for (const name of ["agent_steer", "agent_compact", "agent_command"]) {
+			await assert.rejects(f.tool(name, { sessionId: "remote-session", message: "REFUSED", name: "replace" }), /association write failed/u);
+		}
+		assert.equal(remote.mock.callCount(), 0, "caller refusal precedes local/detached route selection"); remote.mock.restore();
+		await f.runtime.session.reload();
+		await assert.rejects(f.tool("agent_send", { sessionId: candidate, message: "REFUSED_AFTER_RELOAD" }), /association write failed/u);
+		assert.equal(attempts, 1);
+		assert.deepEqual(SessionManager.open(file).getEntries(), saved);
+		assert.deepEqual(SessionManager.open(file).buildSessionContext().messages, context);
+		assert.equal((await f.inspect(candidate)).execution.current, null);
+		await f.runtime.dispose();
+		const reopened = await f.create(SessionManager.open(file));
+		assert.deepEqual(reopened.session.sessionManager.buildSessionContext().messages, context);
+		assert.equal(JSON.parse(await f.tool("agent_inspect", { sessionId: candidate }, reopened.session)).liveOwner, false);
+		await f.tool("agent_attach", { sessionId: candidate }, reopened.session);
+		assert.deepEqual(SessionManager.open(file).buildSessionContext().messages, context);
+		assert.ok(associatedSessions(SessionManager.open(file).getEntries(), native.getSessionId(), f.store).has(candidate));
+		assert.equal(JSON.parse(await f.tool("agent_inspect", { sessionId: candidate }, reopened.session)).execution.current, null);
+		assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
+});
+
+for (const settlement of ["complete", "abort"] as const) test(`association refusal preserves ${settlement}, live totals, and pending results without primary writes`, { timeout: 30_000 }, async (t) => {
+	const f = await fixture();
+	try {
+		await f.runtime.session.prompt("SAVED_PARENT_CONTEXT");
+		const active = await f.spawn("HOLD"); await f.wait(() => f.events.some((event) => event.type === "tool"));
+		const owner = f.owner(), native = f.runtime.session.sessionManager, file = f.runtime.session.sessionFile; assert.ok(owner); assert.ok(file);
+		const candidate = (await owner.spawn({ cwd: f.child }, { cwd: f.cwd, model: { provider: "reload-local", id: "controlled" } })).sessionId;
+		const saved = SessionManager.open(file).getEntries(), persist = native._persist.bind(native);
+		t.mock.method(native, "_persist", (entry: Parameters<typeof persist>[0]) => {
+			if (entry.type === "custom" && entry.customType === ASSOCIATION_ENTRY) throw new Error("post-mutation persistence failure");
+			persist(entry);
+		});
+		await assert.rejects(f.tool("agent_attach", { sessionId: candidate }), /association write failed/u);
+		await assert.rejects(owner.send(native.getSessionId(), "REFUSED_PEER", active), /association write failed/u);
+		await assert.rejects(owner.runCommand(active, "replace", ""), /association write failed/u);
+		await assert.rejects((owner as unknown as { release(id: string): Promise<void> }).release(active), /association write failed/u);
+		assert.equal(f.worker(active).sessionId(), active); assert.equal(f.claims().length, 2);
+		if (settlement === "abort") {
+			await f.runtime.session.reload();
+			await f.tool("agent_abort", { sessionId: active });
+			const result = (await f.inspect(active)).result; assert.ok(result);
+			assert.equal(JSON.parse(result.text).status, "aborted");
+		} else f.release();
+		await f.worker(active).waitForIdle();
+		assert.equal(f.statuses.at(-1), settlement === "abort" ? "agents 0 · $0.25" : "agents 0 · $0.50");
+		const primaries = (owner as unknown as { primary: Map<string, { pending: Map<string, unknown> }> }).primary;
+		assert.equal(primaries.get(native.getSessionId())?.pending.size, 1);
+		await f.runtime.session.reload();
+		assert.equal(primaries.get(native.getSessionId())?.pending.size, 1);
+		assert.deepEqual(SessionManager.open(file).getEntries(), saved, "agent footer and delivery do not append through the uncertain leaf");
+		assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
+});
+
+for (const action of ["replace", "detach"] as const) test(`post-mutation ${action} association failure preserves truthful native ownership`, { timeout: 30_000 }, async (t) => {
+	const f = await fixture();
+	try {
+		await f.runtime.session.prompt("SAVED_PARENT_CONTEXT"); const id = await f.spawn();
+		const owner = f.owner(), native = f.runtime.session.sessionManager, file = f.runtime.session.sessionFile; assert.ok(owner); assert.ok(file);
+		const saved = SessionManager.open(file).getEntries(), persist = native._persist.bind(native); let attempts = 0;
+		t.mock.method(native, "_persist", (entry: Parameters<typeof persist>[0]) => {
+			if (entry.type === "custom" && entry.customType === ASSOCIATION_ENTRY) { attempts++; throw new Error("post-mutation persistence failure"); }
+			persist(entry);
+		});
+		if (action === "replace") {
+			await assert.rejects(owner.runCommand(id, "replace", ""), /command completed on session .*saved parent association failed/u);
+			const sessions = (owner as unknown as { sessions: Map<string, AgentWorkerSession> }).sessions;
+			assert.equal(sessions.has(id), false); assert.equal(sessions.size, 1);
+			const current = [...sessions.values()][0]; assert.notEqual(current.sessionId(), id);
+			assert.equal((await current.status()).operation, null); assert.equal(f.claims().length, 1);
+		} else {
+			await assert.rejects((owner as unknown as { release(id: string): Promise<void> }).release(id), /closed; saved parent association update failed; no detached run started/u);
+			assert.equal((await f.inspect(id)).liveOwner, false); assert.equal(f.claims().length, 0);
+		}
+		await f.runtime.session.reload();
+		await assert.rejects(f.tool("agent_attach", { sessionId: id }), /association write failed/u);
+		assert.equal(attempts, 1); assert.deepEqual(SessionManager.open(file).getEntries(), saved);
+		assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
+});
+
+for (const action of ["replace", "detach"] as const) test(`deferred ${action} association failure refuses replay across later reload`, { timeout: 30_000 }, async (t) => {
+	const f = await fixture(), entered = deferred(), finishReload = deferred();
+	try {
+		await f.runtime.session.prompt("SAVED_PARENT_CONTEXT"); const id = await f.spawn();
+		const owner = f.owner(), native = f.runtime.session.sessionManager, file = f.runtime.session.sessionFile; assert.ok(owner); assert.ok(file);
+		const loader = f.runtime.services.resourceLoader, reload = loader.reload.bind(loader);
+		t.mock.method(loader, "reload", async (...args: Parameters<typeof reload>) => { entered.resolve(); await finishReload.promise; return reload(...args); });
+		const pending = f.runtime.session.reload(); await entered.promise;
+		if (action === "replace") await owner.runCommand(id, "replace", "");
+		else await (owner as unknown as { release(id: string): Promise<void> }).release(id);
+		const saved = SessionManager.open(file).getEntries(), persist = native._persist.bind(native); let attempts = 0;
+		t.mock.method(native, "_persist", (entry: Parameters<typeof persist>[0]) => {
+			if (entry.type === "custom" && entry.customType === ASSOCIATION_ENTRY) { attempts++; throw new Error("deferred persistence failure"); }
+			persist(entry);
+		});
+		finishReload.resolve(); await pending;
+		await assert.rejects(f.tool("agent_attach", { sessionId: id }), /association write failed/u);
+		await f.runtime.session.reload();
+		await assert.rejects(f.spawn("REFUSED"), /association write failed/u);
+		assert.equal(attempts, 1); assert.deepEqual(SessionManager.open(file).getEntries(), saved);
+		assert.equal((owner as unknown as { associationChanges: Map<string, unknown[]> }).associationChanges.get(native.getSessionId())?.length, 1);
+		assert.ok(f.notices.some((notice) => notice.includes("deferred persistence failure"))); assert.deepEqual(f.errors, []);
+	} finally { finishReload.resolve(); await f.close(); }
+});
+
+for (const target of ["primary", "worker"] as const) test(`native ${target} tool-result continuation exposes the unrepaired history boundary`, { timeout: 30_000 }, async (t) => {
+	const f = await fixture();
+	try {
+		const id = target === "worker" ? await f.spawn() : f.runtime.session.sessionId;
+		const session = target === "worker" ? f.childSession(id) : f.runtime.session;
+		await session.prompt("SAVED_CONTEXT_BEFORE_FAULT"); await session.waitForIdle();
+		const owner = f.owner(), native = session.sessionManager, file = session.sessionFile; assert.ok(owner); assert.ok(file);
+		const candidate = (await owner.spawn({ cwd: f.child }, { cwd: f.cwd, model: { provider: "reload-local", id: "controlled" } })).sessionId;
+		const saved = SessionManager.open(file).buildSessionContext().messages;
+		assert.ok(JSON.stringify(saved).includes("SAVED_CONTEXT_BEFORE_FAULT"));
+		const persist = native._persist.bind(native); let failedId = "", calls = 0;
+		t.mock.method(native, "_persist", (entry: Parameters<typeof persist>[0]) => {
+			if (entry.type === "custom" && entry.customType === ASSOCIATION_ENTRY) { failedId = entry.id; calls++; throw new Error("native tool persistence failure"); }
+			persist(entry);
+		});
+		f.state.request = { sessionId: id, name: "agent_attach", args: { sessionId: candidate } };
+		if (target === "worker") f.state.response = "RESULT_TEXT_".repeat(1500);
+		await session.prompt("REQUEST_ATTACH"); await session.waitForIdle();
+		if (target === "worker") await f.worker(id).waitForIdle();
+		const disk = SessionManager.open(file), entries = disk.getEntries();
+		assert.ok(failedId); assert.equal(disk.getEntry(failedId), undefined);
+		assert.ok(entries.some((entry) => entry.parentId === failedId), "native continuation persisted an orphan child after the failed append");
+		assert.ok(entries.some((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.isError));
+		assert.equal(JSON.stringify(disk.buildSessionContext().messages).includes("SAVED_CONTEXT_BEFORE_FAULT"), false);
+		assert.equal(associatedSessions(entries, id, f.store).has(candidate), false);
+		if (target === "worker") {
+			const inspection = JSON.parse(await f.tool("agent_inspect", { sessionId: id }));
+			assert.match(inspection.resultPersistence, /not saved/u);
+			let complete = inspection.result.text, next = inspection.result.nextOffset;
+			assert.equal(inspection.result.truncated, true);
+			while (next !== null) {
+				const page = JSON.parse(await f.tool("agent_inspect", { sessionId: id, offset: next }));
+				assert.equal(page.resultOffset, next); complete += page.result.text; next = page.result.nextOffset;
+			}
+			const result = JSON.parse(complete); assert.equal(result.status, "failed"); assert.equal(result.text, f.state.response);
+			assert.match(result.error.message, /Operation result not saved/u);
+			assert.deepEqual(await f.worker(id).operationResult(result.operationId), result);
+			assert.equal(entries.some((entry) => entry.type === "custom" && entry.customType === "agent.result" && (entry.data as { operationId?: string })?.operationId === result.operationId), false);
+			await assert.rejects(f.tool("agent_send", { sessionId: id, message: "REFUSED" }), /association write failed/u);
+			const count = native.getEntries().length;
+			assert.throws(() => (f.worker(id) as unknown as { begin(): string }).begin(), /association write failed/u);
+			assert.equal(native.getEntries().length, count);
+			assert.equal((await f.worker(id).status()).operation, null);
+		}
+		await session.reload();
+		await assert.rejects(f.tool("agent_send", { sessionId: candidate, message: "REFUSED" }, session), /association write failed/u);
+		await assert.rejects(f.tool("agent_compact", { sessionId: id, summary: "REFUSED" }, session), /association write failed/u);
+		assert.equal(calls, 1); assert.deepEqual(f.errors, []);
 	} finally { await f.close(); }
 });
 

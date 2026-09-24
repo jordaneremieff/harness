@@ -291,6 +291,24 @@ store. Reopening reconstructs idle ownership; it never restarts requests, tools,
 or pending queues. The native persistence boundary above still applies to an
 unflushed or in-memory parent.
 
+The installed `session-manager.js` mutates entries and the leaf before `_persist`.
+The public `ReadonlySessionManager` in `extensions/types.d.ts` exposes no rollback;
+command-only navigation and writable SDK branching do not supply tool-context
+repair. After an association append exception, agent retains a refusal for that
+parent across reload instead of trusting the failed in-memory entry or appending
+a fresh retry through its uncertain leaf. Deferred association updates remain
+pending. Agent-owned primary footer writes and message delivery pause; live totals
+and pending results remain observable in memory. A managed worker settles with
+an explicitly unsaved, pageable result rather than persisting its operation result
+after that failure.
+
+Native-host tests separate two histories: without intervening native writes,
+reopening preserves the prior saved branch and context; ordinary tool-error
+continuation writes a native tool result and assistant response after the missing
+entry, leaving an unrepaired parent chain on disk. Reopening does not repair that
+chain. The extension's refusal prevents false association/task admission, not
+arbitrary native disk-failure recovery.
+
 Failure paths differ. A reload rejection before runtime replacement leaves the
 old runner invalidated, but its registered event handlers still dispatch. Its
 context accessors reject stale use. Captured plain identity permits later retry

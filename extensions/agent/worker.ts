@@ -30,13 +30,14 @@ export interface WorkerCreateOptions {
 	trustPrompt?: (cwd: string) => Promise<boolean | undefined>;
 	store: AgentStore; modelRuntime: ModelRuntime; rootContext: Context;
 	onUpdate?: (update: WorkerUpdate) => void;
+	associationFailure?: (sessionId: string) => Error | undefined;
 }
 export type WorkerUpdate =
 	| { kind: "status" }
 	| { kind: "replaced"; previousId: string; sessionId: string }
 	| { kind: "entry"; entry: SessionEntry }
 	| { kind: "error"; message: string }
-	| { kind: "settled"; sessionId: string; result: WorkerResult };
+	| { kind: "settled"; sessionId: string; result: WorkerResult; saved?: boolean };
 export interface WorkerResult {
 	operationId: string; status: "completed" | "failed" | "aborted";
 	text?: string; error?: { message: string };
@@ -164,6 +165,7 @@ export class AgentWorkerSession {
 	private readonly tasks = new Set<Promise<unknown>>();
 	private readonly observers = new Set<(event: AgentSessionEvent) => void>();
 	private operation: string | undefined;
+	private unsavedResult: WorkerResult | undefined;
 	private operationStart = 0;
 	private operationAborted = false;
 	private preflight = false;
@@ -437,6 +439,9 @@ export class AgentWorkerSession {
 		this.notify({ kind: "error", message });
 	}
 	private begin(): string {
+		const failure = this.options.associationFailure?.(this.sessionId());
+		if (failure) throw failure;
+		this.unsavedResult = undefined;
 		const id = randomUUID();
 		this.operation = id; this.lastError = undefined; this.operationAborted = false; this.lastText = undefined;
 		this.operationStart = this.sessionManager().getEntries().length;
@@ -449,12 +454,15 @@ export class AgentWorkerSession {
 		const operationId = this.operation;
 		const assistant = this.sessionManager().getEntries().slice(this.operationStart).findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
 		const message = assistant?.type === "message" && assistant.message.role === "assistant" ? assistant.message : undefined;
+		const failure = this.options.associationFailure?.(this.sessionId());
+		if (failure) this.lastError = `Operation result not saved after association failure: ${failure.message}`;
 		const error = this.lastError ?? (message?.stopReason === "error" ? message.errorMessage ?? "model request failed" : undefined);
 		const text = message?.content.map((part) => part.type === "text" ? part.text : "").join("");
 		const result: WorkerResult = { operationId, status: this.operationAborted || message?.stopReason === "aborted" ? "aborted" : error ? "failed" : "completed", ...(text ? { text } : {}), ...(error ? { error: { message: error } } : {}) };
-		this.sessionManager().appendCustomEntry(RESULT_TYPE, result);
+		if (failure) this.unsavedResult = result;
+		else this.sessionManager().appendCustomEntry(RESULT_TYPE, result);
 		this.operation = undefined;
-		this.notify({ kind: "settled", sessionId: this.sessionId(), result });
+		this.notify({ kind: "settled", sessionId: this.sessionId(), result, saved: !failure });
 	}
 	private receive(event: AgentSessionEvent): void {
 		if (event.type === "agent_start" && !this.operation) this.begin();
@@ -569,6 +577,7 @@ export class AgentWorkerSession {
 	hasPendingHostWork(): boolean { return !this.session.isIdle || this.session.isBashRunning || this.tasks.size > 0 || this.session.pendingMessageCount > 0; }
 	lastErrorMessage(): string | undefined { return this.lastError; }
 	async operationResult(id: string): Promise<WorkerResult | undefined> {
+		if (this.unsavedResult?.operationId === id) return this.unsavedResult;
 		const entry = this.sessionManager().getEntries().findLast((entry) => entry.type === "custom" && entry.customType === RESULT_TYPE && (entry.data as WorkerResult)?.operationId === id);
 		return entry?.type === "custom" ? entry.data as WorkerResult : undefined;
 	}
@@ -578,7 +587,8 @@ export class AgentWorkerSession {
 		return { sessionId: this.sessionId(), cwd: session.sessionManager.getCwd(), name: session.sessionManager.getSessionName(), tipId: session.sessionManager.getLeafId(), model: { provider: model.provider, modelId: model.id, thinkingLevel: session.thinkingLevel }, operation: this.operation ?? null, tools: session.getAllTools().map((tool) => tool.name), activeTools: session.getActiveToolNames(), extensions: session.resourceLoader.getExtensions().extensions.map((extension) => extension.path), entryCount: session.sessionManager.getEntries().length, ...(this.lastError ? { lastError: this.lastError.slice(0, 2000) } : {}) };
 	}
 	async inspect(options: { cursor?: number; limit?: number; entryId?: string; offset?: number } = {}) {
-		return projectInspection(this.sessionManager(), this.sessionId(), options, { operation: this.operation ?? null, lastError: this.lastError });
+		const inspection = projectInspection(this.sessionManager(), this.sessionId(), options, { operation: this.operation ?? null, lastError: this.lastError });
+		return this.unsavedResult && !options.entryId ? { ...inspection, result: fragment(JSON.stringify(this.unsavedResult), Math.max(0, options.offset ?? 0), 12000), resultOffset: Math.max(0, options.offset ?? 0), resultPersistence: "not saved; retained only by the live owner", detail: "Continue the unsaved result with offset=result.nextOffset and no entryId. Native entries remain separately readable by entryId." } : inspection;
 	}
 	async waitForIdle(): Promise<void> {
 		while (this.tasks.size) await Promise.allSettled(this.tasks);

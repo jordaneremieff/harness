@@ -510,7 +510,35 @@ the exact native parent and configured store. Copied forks and new sessions do
 not inherit another parent's ownership. Associations cover all native branches;
 tree navigation does not undo ownership. There is no inference from session
 names, transcript text, the store inventory, or historical records without an
-association.
+association. Existing self and ancestor send/steer controls do not add ownership
+backedges. Explicit attachment still rejects cycles; owner-wait controls still
+reject self-targets.
+
+An association append exception blocks further association and task admission
+for that parent in its retained owner, including across reload. An in-memory
+entry left by Pi is not proof of a successful save. Deferred replacement and
+detach updates remain pending; reload does not replay them after a write failure.
+Agent-owned primary footer persistence and message delivery pause, while visible
+totals and pending results remain in memory. Replacement or detach refused before
+mutation leaves ownership intact. If its association write fails after the native
+transition, the error reports the completed replacement or closed child rather
+than claiming rollback or starting a detached run.
+
+If the affected parent is itself a managed worker, the host refuses a new
+operation start and does not append its operation result through the uncertain
+history. The settled result remains available only from that live owner;
+`agent_inspect` labels it unsaved and pages it with `offset=result.nextOffset`
+without `entryId`. It is lost when that owner closes. Native entries remain
+separately readable by their entry IDs.
+
+This refusal is not native-history repair. Pi 0.87.1 advances its in-memory leaf
+before persistence and exposes no rollback through a tool context. A failed tool
+can still be followed by native tool-result and assistant writes that refer to
+an entry absent from disk. Those later writes can break the saved context chain.
+With no intervening native writes, reopening reads the prior saved context;
+a new process does not repair a file whose later writes already broke that chain.
+Resolve the native history and ownership boundary before further work. The
+extension neither patches Pi nor edits its private history state.
 
 Reopening the exact saved primary through `--session <UUID>` or `-r` opens its
 associated ordinary children idle, including their saved nested associations.
