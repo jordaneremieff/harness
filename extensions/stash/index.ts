@@ -421,13 +421,13 @@ const ReadParams = Type.Object({
 
 const CompleteParams = Type.Object({
 	id: Type.String({
-		description: "Active stash id or unique id prefix",
+		description: "Open or active stash id or unique id prefix",
 		minLength: 1,
 		maxLength: 200,
 		pattern: "^[A-Za-z0-9._-]+$",
 	}),
 	outcome: Type.String({
-		description: "Concrete terminal outcome of the resumed effort",
+		description: "Concrete terminal outcome of the stashed effort",
 		minLength: 1,
 		maxLength: 20_000,
 	}),
@@ -472,7 +472,7 @@ const rotateLifecycle = (id: string, signal?: AbortSignal) =>
 const STASH_VERBS: ReadonlyArray<{ value: string; label: string; description: string }> = [
 	{ value: "new", label: "new", description: "<hint> · distill the live session into a new stash" },
 	{ value: "get", label: "get", description: "<id> [note] · pick up, optionally with an operator note" },
-	{ value: "complete", label: "complete", description: "<id> <outcome> · close an active stash" },
+	{ value: "complete", label: "complete", description: "<id> <outcome> · close an open or active stash" },
 	{ value: "release", label: "release", description: "<id> · return an active stash to open" },
 	{ value: "reopen", label: "reopen", description: "<id> · return a closed stash to open" },
 	{ value: "rotate", label: "rotate", description: "<id> · archive a stale stash (recoverable)" },
@@ -503,7 +503,7 @@ const STASH_USAGE = [
 	"Retrieve & manage:",
 	"  /stash                      browse & pick up (TUI overlay)",
 	"  /stash get <id> [note]      pick up a stash; the note amends it at pickup time",
-	"  /stash complete <id> <out>  close an active stash with a concrete outcome",
+	"  /stash complete <id> <out>  close an open or active stash with a concrete outcome",
 	"  /stash release <id>         return an active stash to open (dead-session cleanup)",
 	"  /stash reopen <id>          return a closed stash to open",
 	"  /stash rotate <id>          archive a stale stash (recoverable)",
@@ -893,7 +893,7 @@ export default function (
 		name: "stash_read",
 		label: "Stash Read",
 		description:
-			"Read one stashed handover artifact by id or unique id prefix. Output is capped at 50 KiB or 2000 lines; a truncated result includes the artifact path for continued reading.",
+			"Read one stashed handover artifact by id or unique id prefix without changing its lifecycle state. Output is capped at 50 KiB or 2000 lines; a truncated result includes the artifact path for continued reading.",
 		promptSnippet: "Read one stashed handover artifact",
 		parameters: ReadParams,
 		async execute(_toolCallId, params, signal) {
@@ -919,10 +919,10 @@ export default function (
 		name: "stash_complete",
 		label: "Stash Complete",
 		description:
-			"Close an active stashed effort with a concrete terminal outcome. Use the id named in the pickup instruction after the resumed work is complete. The artifact is retained and can be deliberately reopened later.",
-		promptSnippet: "Close an active stashed effort with its concrete outcome",
+			"Close an open or active stashed effort with a concrete terminal outcome, including work resumed through stash_read without pickup. Use its id or unique prefix. The artifact is retained; an existing closed outcome is never overwritten. Deliberate reopening uses /stash reopen <id>.",
+		promptSnippet: "Close an open or active stashed effort with its concrete outcome",
 		promptGuidelines: [
-			"Use stash_complete with the picked-up stash id when the resumed effort reaches a terminal outcome; state what completed, failed, or was deliberately abandoned.",
+			"Use stash_complete with the stash id when its effort reaches a terminal outcome, whether loaded through stash_read or pickup; state what completed, failed, or was deliberately abandoned.",
 		],
 		executionMode: "sequential",
 		parameters: CompleteParams,

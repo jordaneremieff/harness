@@ -603,6 +603,37 @@ describe("stash entrypoint", () => {
 		assert.ok((await listStashes(dir, { state: "active" })).some((entry) => entry.meta.id === record.id));
 	});
 
+	it("closes an open stash after read-only retrieval without pickup", async () => {
+		const { record, path } = await writeStash(
+			dir,
+			{ title: "Read then complete", summary: "Finish the retrieved effort." },
+			new Date("2025-07-24T09:00:00Z"),
+		);
+		const original = await readFile(path, "utf8");
+		const { tools, sent } = registry();
+		const signal = new AbortController().signal;
+		const prefix = record.id.slice(0, -3);
+		const read = await tools.get("stash_read").execute("read", { id: prefix }, signal);
+		assert.match(read.content[0].text, /Finish the retrieved effort/);
+		assert.equal(await readFile(path, "utf8"), original, "retrieval must not claim an effort");
+		const completed = await tools.get("stash_complete").execute(
+			"complete",
+			{ id: prefix, outcome: "The retrieved work is complete and its checks pass." },
+			signal,
+		);
+		assert.equal(completed.details.id, record.id);
+		assert.equal(completed.details.state, "closed");
+		assert.equal(completed.details.outcome, "The retrieved work is complete and its checks pass.");
+		assert.equal(typeof completed.details.closedAt, "string");
+		assert.match(completed.content[0].text, /Closed stash/);
+		const retained = await readFile(path, "utf8");
+		assert.match(retained, /^state: "closed"$/m);
+		assert.doesNotMatch(retained, /^activatedAt:/m);
+		const open = await tools.get("stash_list").execute("list", { state: "open", limit: 50 }, signal);
+		assert.ok(!stringArray(open.details.ids).includes(record.id));
+		assert.deepEqual(sent, [], "completion must not inject a pickup message");
+	});
+
 	it("closes an active stash with an outcome and reopens it only through an explicit action", async () => {
 		const { record } = await writeStash(
 			dir,
@@ -734,25 +765,38 @@ describe("stash entrypoint", () => {
 		assert.match(notifications.join("\n"), /Usage: \/stash release/);
 	});
 
-	it("serializes competing completions so one outcome cannot overwrite the other", async () => {
-		const { record } = await writeStash(
-			dir,
-			{ title: "Concurrent completion target", summary: "close once" },
-			new Date("2025-07-22T10:00:00Z"),
-		);
-		await transitionStash(dir, record.id, { action: "activate" });
-		const { tools } = registry();
-		const complete = tools.get("stash_complete");
-		const results = await Promise.allSettled([
-			complete.execute("call-a", { id: record.id, outcome: "Outcome A" }, new AbortController().signal),
-			complete.execute("call-b", { id: record.id, outcome: "Outcome B" }, new AbortController().signal),
-		]);
-		assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
-		assert.equal(results.filter((result) => result.status === "rejected").length, 1);
-		const target = (await listStashes(dir, { limit: 50 })).find((entry) => entry.meta.id === record.id);
-		assert.ok(target);
-		assert.equal(target.meta.state, "closed");
-		assert.ok(target.meta.outcome === "Outcome A" || target.meta.outcome === "Outcome B");
+	for (const state of ["open", "active"] as const) {
+		it(`serializes competing completions of ${state} stashes without overwriting outcomes`, async () => {
+			const { record } = await writeStash(
+				dir,
+				{ title: `Concurrent completion ${state}`, summary: "close once" },
+				new Date("2025-07-22T10:00:00Z"),
+			);
+			if (state === "active") await transitionStash(dir, record.id, { action: "activate" });
+			const { tools } = registry();
+			const complete = tools.get("stash_complete");
+			const results = await Promise.allSettled([
+				complete.execute("call-a", { id: record.id, outcome: "Outcome A" }, new AbortController().signal),
+				complete.execute("call-b", { id: record.id, outcome: "Outcome B" }, new AbortController().signal),
+			]);
+			assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+			assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+			const refused = results.find((result) => result.status === "rejected");
+			assert.ok(refused?.status === "rejected");
+			assert.match(String(refused.reason), /already closed; use stash_read.*\/stash reopen/);
+			const target = (await listStashes(dir, { limit: 50 })).find((entry) => entry.meta.id === record.id);
+			assert.ok(target);
+			assert.equal(target.meta.state, "closed");
+			assert.ok(target.meta.outcome === "Outcome A" || target.meta.outcome === "Outcome B");
+		});
+	}
+
+	it("closes an open stash through the direct command without pickup", async () => {
+		const { record, path } = await writeStash(dir, { title: "Direct open completion", summary: "Already done." });
+		const { commands, sent } = registry();
+		await commands.get("stash").handler(`complete ${record.id} Completed outside pickup.`, { mode: "print" });
+		assert.match(await readFile(path, "utf8"), /^state: "closed"$/m);
+		assert.deepEqual(sent, []);
 	});
 
 	it("does not construct a custom panel outside TUI mode", async () => {

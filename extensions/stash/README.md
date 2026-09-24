@@ -8,8 +8,8 @@ The agent distills an effort into a durable Markdown handover. The extension own
 |---|---|---|
 | `stash_write` | tool | Persist a self-contained handover with project, branch, and session metadata; `checkpoint: true` saves a working synthesis outside handover discovery. |
 | `stash_list` | tool | List recent artifacts by stable id, optionally filtered by tag or lifecycle state. |
-| `stash_read` | tool | Read by exact id or unique prefix. Results are capped at 50 KiB or 2000 lines and include the path when truncated. |
-| `stash_complete` | tool | Close an active effort with a required concrete outcome. |
+| `stash_read` | tool | Read by exact id or unique prefix without changing lifecycle state. Results are capped at 50 KiB or 2000 lines and include the path when truncated. |
+| `stash_complete` | tool | Close an open or active effort with a required concrete outcome. |
 | `stash_rotate` | tool | Archive a stale open or closed effort so it no longer appears in listings or pickup; the file moves to the store's dot-hidden `.trash` directory and remains recoverable. |
 | `/stash` | command | Browse and pick up efforts (TUI overlay); bare invocation opens the browser. |
 | `ctrl+alt+s` | shortcut | Open the same browser directly in TUI mode without submitting or replacing the editor draft. |
@@ -37,9 +37,17 @@ predecessor. `release` returns an active artifact to pristine `open` — the
 operator-initiated inverse of pickup for a session that died or polluted its
 context; it keeps every durable byte and clears the activation claim. The
 pickup message names `stash_complete` and the exact id so the resumed
-agent has a deterministic closure path. `stash_complete` accepts only active artifacts,
-requires an outcome, and records `closed`, `closedAt`, and the outcome. A closed effort
-cannot be picked up until the operator deliberately reopens it.
+agent has a deterministic closure path. `stash_read` only reads; it does not activate
+or claim an effort. `stash_complete` accepts open or active artifacts, requires an
+outcome, and records `closed`, `closedAt`, and the outcome. Work resumed through
+`stash_read` therefore closes without a separate pickup. Direct closure of an open
+artifact does not invent an activation timestamp. Activation records pickup, not
+proof of completion or an exclusive session lock.
+
+A closed effort rejects repeated completion without changing its recorded outcome.
+Read it with `stash_read` to inspect that outcome. Deliberately use `/stash reopen <id>`
+before further pickup or replacement of the outcome. Unknown lifecycle state still
+refuses completion; inspect and repair the artifact header before retrying.
 
 Artifacts require an explicit JSON-encoded lifecycle state. Missing headers, missing states,
 and malformed state values remain visible as unknown but cannot authorize pickup or lifecycle changes.
@@ -55,7 +63,7 @@ Command forms are:
 /stash new <hint>              distill the live session into a new stash
 /stash abort                   cancel an in-flight creation
 /stash get <id> [note]         pick up a stash, optionally with an operator note
-/stash complete <id> <outcome> close an active stash with a concrete outcome
+/stash complete <id> <outcome> close an open or active stash with a concrete outcome
 /stash release <id>            return an active stash to open
 /stash reopen <id>             return a closed stash to open
 /stash rotate <id>             archive a stale stash (recoverable)
@@ -63,6 +71,12 @@ Command forms are:
 ```
 
 Every `<id>` may be a full stash id or a unique prefix.
+
+Writing a new handover never changes earlier artifacts. The write contract has no
+predecessor id or explicit supersession field; matching titles, tags, session metadata,
+or prose references do not authorize closure. Close a finished effort explicitly
+with `stash_complete` and its outcome. Archive an obsolete handover through the
+operator-initiated rotation path when that action is authorized.
 
 The first token always selects an action. Creation therefore requires `new`, so
 hints such as `abort the plan` and `help me` remain unambiguous as

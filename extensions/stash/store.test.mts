@@ -5,6 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it, mock } from "node:test";
+import { parseFrontmatter } from "./format.ts";
 import { listStashes, readStash, resolveStoreDir, rotateStash, transitionStash, writeStash } from "./store.ts";
 
 let dir: string;
@@ -226,6 +227,50 @@ describe("artifact replaced by a FIFO after discovery", () => {
 });
 
 describe("stash lifecycle transitions", () => {
+	it("closes open artifacts without activation and preserves their body and unknown metadata", async () => {
+		const store = join(dir, "open-completion-store");
+		const { record, path } = await writeStash(store, { title: "Open completion", summary: "Retain this body." });
+		const original = (await readFile(path, "utf8")).replace('state: "open"', 'custom: {"keep":true}\nstate: "open"');
+		await writeFile(path, original);
+		const closed = await transitionStash(
+			store,
+			record.id,
+			{ action: "close", outcome: "  Completed after direct retrieval.  " },
+			at("2026-07-26T12:00:00Z"),
+		);
+		assert.equal(closed.changed, true);
+		assert.equal(closed.meta.state, "closed");
+		assert.equal(closed.meta.closedAt, "20260726T120000Z");
+		assert.equal(closed.meta.outcome, "Completed after direct retrieval.");
+		assert.equal(closed.meta.activatedAt, undefined);
+		assert.match(closed.content, /^custom: \{"keep":true\}$/m);
+		assert.equal(parseFrontmatter(closed.content).body, parseFrontmatter(original).body);
+		assert.equal((await stat(path)).mode & 0o777, 0o600);
+		await assert.rejects(
+			transitionStash(store, record.id, { action: "close", outcome: "Replace the outcome." }),
+			/already closed; use stash_read.*first use \/stash reopen/,
+		);
+		assert.equal(await readFile(path, "utf8"), closed.content);
+	});
+
+	for (const state of ["open", "active"] as const) {
+		it(`rejects invalid outcomes without changing an ${state} artifact`, async () => {
+			const store = join(dir, `invalid-outcome-${state}`);
+			const { record, path } = await writeStash(store, { title: "Outcome required", summary: "Retain this." });
+			if (state === "active") await transitionStash(store, record.id, { action: "activate" });
+			const before = await readFile(path, "utf8");
+			await assert.rejects(
+				transitionStash(store, record.id, { action: "close", outcome: " \n\t " }),
+				/outcome must not be empty; supply a concrete terminal outcome/,
+			);
+			await assert.rejects(
+				transitionStash(store, record.id, { action: "close", outcome: "x".repeat(20_001) }),
+				/exceeds 20000 characters; shorten the outcome and retry/,
+			);
+			assert.equal(await readFile(path, "utf8"), before);
+		});
+	}
+
 	it("moves open to active to closed, requires an outcome, and deliberately reopens", async () => {
 		const lifecycleDir = join(dir, "lifecycle-store");
 		const { record, path } = await writeStash(
@@ -316,6 +361,10 @@ describe("stash lifecycle transitions", () => {
 		assert.equal(entry.meta.invalidState, "missing");
 		assert.deepEqual(await listStashes(store, { state: "open" }), []);
 		await assert.rejects(transitionStash(store, id, { action: "activate" }), /invalid lifecycle state/);
+		await assert.rejects(
+			transitionStash(store, id, { action: "close", outcome: "Done." }),
+			/invalid lifecycle state.*repair its JSON-encoded state/,
+		);
 		await assert.rejects(rotateStash(store, id), /invalid lifecycle state/);
 		assert.equal(await readFile(path, "utf8"), content);
 	});
@@ -326,6 +375,10 @@ describe("stash lifecycle transitions", () => {
 		const id = "20260726T140000Z-invalid-state";
 		await writeFile(join(lifecycleDir, `${id}.md`), '---\nstate: "mystery"\n---\nbody\n', "utf8");
 		await assert.rejects(transitionStash(lifecycleDir, id, { action: "activate" }), /invalid lifecycle state/i);
+		await assert.rejects(
+			transitionStash(lifecycleDir, id, { action: "close", outcome: "Done." }),
+			/invalid lifecycle state.*repair its JSON-encoded state/,
+		);
 	});
 
 	it("redacts credential-shaped completion outcomes before they are stored", async () => {

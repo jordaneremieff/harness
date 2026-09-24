@@ -464,14 +464,18 @@ async function readMutationSource(path: string): Promise<{
 }
 
 function currentState(meta: Partial<StashMeta> & Record<string, unknown>): StashState {
-	if (!isStashState(meta.state)) throw new Error(`stash has invalid lifecycle state: ${String(meta.state)}`);
+	if (!isStashState(meta.state))
+		throw new Error(
+			`stash has invalid lifecycle state: ${String(meta.state)}; inspect the artifact header and repair its JSON-encoded state before retrying`,
+		);
 	return meta.state;
 }
 
 function completionOutcome(raw: string): string {
 	const outcome = redactSecrets(raw.trim());
-	if (!outcome) throw new Error("stash completion outcome must not be empty");
-	if (outcome.length > 20_000) throw new Error("stash completion outcome exceeds 20000 characters");
+	if (!outcome) throw new Error("stash completion outcome must not be empty; supply a concrete terminal outcome");
+	if (outcome.length > 20_000)
+		throw new Error("stash completion outcome exceeds 20000 characters; shorten the outcome and retry");
 	return outcome;
 }
 
@@ -482,20 +486,29 @@ function lifecyclePatch(
 	stamp: string,
 ): Record<string, unknown> | null {
 	if (change.action === "activate") {
-		if (state === "closed") throw new Error(`stash ${id} is closed; reopen it before pickup`);
+		if (state === "closed") throw new Error(`stash ${id} is closed; reopen it before pickup with /stash reopen ${id}`);
 		if (state === "active") return null;
 		return { state: "active", activatedAt: stamp, closedAt: undefined, outcome: undefined };
 	}
 	if (change.action === "close") {
 		const outcome = completionOutcome(change.outcome);
-		if (state !== "active") throw new Error(`stash ${id} must be active before it can be closed (state: ${state})`);
+		if (state === "closed")
+			throw new Error(
+				`stash ${id} is already closed; use stash_read with this id to inspect its outcome. To replace the outcome deliberately, first use /stash reopen ${id}`,
+			);
 		return { state: "closed", closedAt: stamp, outcome };
 	}
 	if (change.action === "release") {
-		if (state !== "active") throw new Error(`stash ${id} can be released only from active state (state: ${state})`);
+		if (state !== "active")
+			throw new Error(
+				`stash ${id} can be released only from active state (state: ${state}); use /stash get ${id} to resume an open effort, or /stash reopen ${id} to return a closed effort to open`,
+			);
 		return { state: "open", activatedAt: undefined };
 	}
-	if (state !== "closed") throw new Error(`stash ${id} can be reopened only from closed state (state: ${state})`);
+	if (state !== "closed")
+		throw new Error(
+			`stash ${id} can be reopened only from closed state (state: ${state}); use /stash release ${id} to return an active effort to open, or /stash get ${id} to resume an open effort`,
+		);
 	return { state: "open", closedAt: undefined, outcome: undefined };
 }
 
@@ -521,7 +534,7 @@ export async function transitionStash(
 	// must not be mutated as if it were a verified state.
 	if (headerUnclosed(source.content)) {
 		throw new Error(
-			`stash ${located.id} has a header that never closes; its state cannot be verified for lifecycle changes`,
+			`stash ${located.id} has a header that never closes; its state cannot be verified for lifecycle changes. Inspect the artifact and repair the frontmatter delimiter before retrying`,
 		);
 	}
 	const state = currentState(parsed.meta);
