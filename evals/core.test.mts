@@ -162,6 +162,8 @@ describe("maintained /wtf suite", () => {
 				"explicit-three-sentence-summary",
 				"bare-repair-retains-details",
 				"summary-preserves-approval-artifact",
+				"summary-keeps-unchanged-access",
+				"two-sentence-preview-approval",
 				"caught-up",
 				"return",
 				"correction",

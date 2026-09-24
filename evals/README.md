@@ -103,8 +103,8 @@ context. `prompts/wtf.eval.mts` tests reply repair, including explicit selection
 of an earlier reply, administrative notices after substantive answers, short
 answers, unrelated context, later permission limits, and absent targets. It
 also contrasts explicit summaries with bare repairs and checks retention of
-complete approval artifacts under a sentence budget. Both use human-required
-semantic review. Their empty tool lists isolate text behavior; they do not prove that a
+explicit unchanged state, the target's language, and complete approval artifacts
+within a feasible sentence budget. Both use human-required semantic review. Their empty tool lists isolate text behavior; they do not prove that a
 model declines an available tool.
 
 `prompts/templates.test.mts` checks discovery through the public Pi resource

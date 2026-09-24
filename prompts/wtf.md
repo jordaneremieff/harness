@@ -48,15 +48,21 @@ constraint on the rewrite. Then inspect the full target reply and the visible
 session context it depends on.
 
 A request for a gist, summary, or short sentence budget selects a summary of
-that target. Keep the result, why it matters, and the actual next step or
-pending decision. Omit implementation mechanics, examples, and repetition
-that those points do not need; do not pack them into long clause chains or
-append a full rewrite after the summary. Keep reported check results and
-what those checks cover. Keep the claim's source, scope, uncertainty, explicit negative facts, and
-permission limits. Keep any complete artifact needed for approval and exact
-text needed for the next step. If these do not fit the requested budget,
-exceed it only enough to preserve them. A bare /wtf or a request for clearer
-wording does not select a summary.
+that target. Before drafting, separate required content from supporting detail.
+Required content includes the result, why it matters, reported check results
+and their coverage, source qualifications, uncertainty, each explicit negative
+fact, permission limits, and the actual next step or pending decision. Keep
+any complete artifact needed for approval and exact text needed for the next
+step. Omit implementation mechanics, examples, and repetition that these points
+do not need. A bare /wtf or a request for clearer wording does not select a summary.
+
+Build the summary within the requested sentence count. Put a short approval
+artifact inline, with its purpose, and fit the limits and approval request
+within the same budget. Do not add standalone labels, a separate command
+paragraph, or an extra closing sentence merely to satisfy the proposal or ending guidance.
+Exceed the budget only when required content cannot fit in readable sentences,
+not because the original reply gave each fact its own sentence. Do not pack
+supporting detail into long clause chains or append a full rewrite.
 
 ## The reader
 
@@ -92,10 +98,12 @@ Find any other cause that blocks comprehension or action. Do not inventory
 every surface form. Keep the diagnosis out of the delivered message.
 
 For a proposal, lead with the recommended change, not a definition of its
-abstract concept. Explain its job, what happens in use, what existing parts
-already do, and what the proposal adds. Retain its concrete proposed interfaces,
-placement, evidence, limits, and requested decision. Use only what the selected
-answer and necessary same-task context establish; do not design missing parts.
+abstract concept. Within the selected summary or full-rewrite scope, explain
+its job, what happens in use, what existing parts already do, and what the
+proposal adds. Retain its concrete proposed interfaces, placement, evidence,
+limits, and requested decision unless the summary rules permit their omission.
+Use only what the selected answer and necessary same-task context establish;
+do not design missing parts.
 
 ## Preserve the meaning
 
@@ -129,8 +137,9 @@ basis instead of changing the claim silently.
 ## Write the replacement
 
 When the target is visible, your next message contains the replacement and
-nothing else. Do not add a preface, diagnosis, fault list, or commentary about
-the old reply.
+nothing else. Use the language the operator requests; otherwise, keep the
+target reply's language. A summary request alone does not request translation.
+Do not add a preface, diagnosis, fault list, or commentary about the old reply.
 
 Rebuild a sentence whose shape caused the fault. Merge repeated claims. State
 each fact, warning, and action once. Delete sentences that only announce
@@ -149,10 +158,12 @@ first use only when the session has not established it. Do not carry any cause
 of the original failure into the replacement.
 
 Before sending, compare the replacement with the selected answer and its later
-constraints. Restore any lost negative fact, permission limit, uncertainty, or
-evidence needed to support the result. Remove added claims and task
-continuation. A promise in the old reply to start work is not permission to
-start it now or to renew that promise in the replacement.
+constraints. Check each explicit negative fact separately: work not done and
+state left unchanged must both remain explicit, even when another fact seems
+to imply them. Restore any lost permission limit, uncertainty, or evidence
+needed to support the result. Check the requested sentence count and language.
+Remove added claims and task continuation. A promise in the old reply to start
+work is not permission to start it now or to renew that promise in the replacement.
 
 End with the operator's actual next step, pending decision, or blocker when one
 exists. Otherwise, end with the answer or result. Do not invent a question or

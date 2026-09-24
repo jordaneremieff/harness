@@ -70,8 +70,11 @@ of the corpus.
   its task. The optional account identifies the fault or target and supplies
   corrections. An explicit gist, summary, or short sentence budget permits
   omission of supporting detail, not lost check results, source qualifications, uncertainty,
-  negative facts, permission limits, or a complete approval artifact. A bare
-  invocation remains a full meaning-preserving repair. Without an explicit
+  negative facts, permission limits, or a complete approval artifact. The
+  replacement keeps the target's language unless the operator requests another.
+  Short approval artifacts stay inline within a feasible sentence budget,
+  together with their limits and pending decision. A bare invocation remains
+  a full meaning-preserving repair. Without an explicit
   target, a mere administrative notice points back to the nearest visible
   answer for the same task. Short genuine answers
   remain targets. The replacement preserves meaning, later same-task limits,
