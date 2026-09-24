@@ -140,6 +140,33 @@ function textResult(text: string): AgentToolResult<unknown> {
 	return { content: [{ type: "text", text }], details: undefined };
 }
 
+export interface SessionPreview {
+	name?: string;
+	sessionId: string;
+	runId?: string;
+	model?: { provider: string; modelId: string; thinkingLevel: string };
+	phase: "session snapshot" | "selected before transfer";
+}
+
+/** Preview fields from one authoritative status shape; fields it does not carry stay absent. */
+function previewFromStatus(
+	status: { sessionId: string; name?: string; model?: { provider: string; modelId: string; thinkingLevel: string } },
+	phase: SessionPreview["phase"],
+	runId?: string,
+): SessionPreview {
+	return {
+		...(status.name ? { name: status.name } : {}),
+		sessionId: status.sessionId,
+		...(runId ? { runId } : {}),
+		...(status.model ? { model: { provider: status.model.provider, modelId: status.model.modelId, thinkingLevel: status.model.thinkingLevel } } : {}),
+		phase,
+	};
+}
+
+function previewText(text: string, preview: SessionPreview): AgentToolResult<unknown> {
+	return { content: [{ type: "text", text }], details: { preview } };
+}
+
 /** Minimal primary-UI handle for trust prompts. */
 interface TrustPromptUi {
 	select(title: string, options: string[]): Promise<string | undefined>;
@@ -793,6 +820,7 @@ export class AgentManager {
 		options: { topic?: string; prompt?: string; trust?: boolean } = {},
 		promptUi?: TrustPromptUi,
 		from?: { model: { provider: string; id: string } | null; thinkingLevel?: string },
+		onSnapshot?: (preview: SessionPreview) => void,
 	): Promise<string> {
 		const target = resolve(area);
 		if (!statSync(target, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`no directory ${target}`);
@@ -813,6 +841,7 @@ export class AgentManager {
 			lines.push(`  ${status.entryCount} entries of accumulated context, model ${status.model.provider}/${status.model.modelId}`);
 		}
 		if (options.prompt) lines.push(`  ${await this.send(sessionId, options.prompt)}`);
+		onSnapshot?.(await this.preview(sessionId, "session snapshot"));
 		return lines.join("\n");
 	}
 
@@ -895,6 +924,7 @@ export class AgentManager {
 		params: { sessionId?: string; prompt: string; cwd?: string; model?: string; thinkingLevel?: ThinkingLevel; trust?: boolean },
 		from: { cwd: string; model: { provider: string; id: string } | null; thinkingLevel?: string },
 		promptUi?: TrustPromptUi,
+		onSnapshot?: (preview: SessionPreview) => void,
 	): Promise<{ runId: string; text: string }> {
 		this.assertOpen();
 		let sessionId = params.sessionId;
@@ -924,7 +954,9 @@ export class AgentManager {
 			const metadata = await this.findMetadata(sessionId);
 			const trusted = await this.resolveTrust(metadata.cwd, params.trust, promptUi);
 			const held = await this.openWorker(sessionId, params.trust, promptUi);
-			if ((await held.status()).operation || held.hasPendingHostWork()) throw new Error(`session ${sessionId} has active work; finish or abort existing work before detach`);
+			const heldStatus = await held.status();
+			if (heldStatus.operation || held.hasPendingHostWork()) throw new Error(`session ${sessionId} has active work; finish or abort existing work before detach`);
+			onSnapshot?.(previewFromStatus(heldStatus, "selected before transfer"));
 			await this.release(sessionId);
 			this.assertOpen();
 			const request = await this.detachedRuns.start({
@@ -1018,6 +1050,23 @@ export class AgentManager {
 		return (await this.withSessionControl(sessionId, (worker) => worker.abort(), (client) => client.abort(), signal, undefined, callerSessionId, true))
 			? `session ${sessionId}: abort requested.`
 			: `session ${sessionId}: no active operation to abort.`;
+	}
+
+	/** Authoritative preview fields for one session; reads only a held worker, a live run, or a read-only capture. */
+	async preview(sessionId: string, phase: SessionPreview["phase"]): Promise<SessionPreview> {
+		const worker = this.sessions.get(sessionId);
+		if (worker) return previewFromStatus(await worker.status(), phase);
+		const run = this.detachedRuns.liveFor(sessionId);
+		if (run) {
+			try { return previewFromStatus(await withDetachedControl(run, (client) => client.status()), phase, run.runId); }
+			catch { return { sessionId, runId: run.runId, phase }; }
+		}
+		const metadata = this.store.locate(sessionId);
+		if (!metadata) return { sessionId, phase };
+		const capture = this.store.readOnly(metadata);
+		let name: string | undefined;
+		try { name = capture.manager.getSessionName() || undefined; } catch { name = undefined; }
+		return { ...(name ? { name } : {}), sessionId, phase };
 	}
 
 	async status(sessionId: string | undefined, signal?: AbortSignal): Promise<string> {
@@ -1311,7 +1360,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		parameters: SpawnParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const manager = await getManager();
-			return textResult((await manager.spawn(params, { cwd: ctx.cwd, model: hostModel(ctx), thinkingLevel: pi.getThinkingLevel() }, trustPromptFrom(ctx))).text);
+			const created = await manager.spawn(params, { cwd: ctx.cwd, model: hostModel(ctx), thinkingLevel: pi.getThinkingLevel() }, trustPromptFrom(ctx));
+			return previewText(created.text, await manager.preview(created.sessionId, "session snapshot"));
 		},
 	});
 
@@ -1378,7 +1428,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		parameters: ForkParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const manager = await getManager();
-			return textResult((await manager.fork(params.sessionId, params.entryId, params.trust, trustPromptFrom(ctx))).text);
+			const forked = await manager.fork(params.sessionId, params.entryId, params.trust, trustPromptFrom(ctx));
+			return previewText(forked.text, await manager.preview(forked.sessionId, "session snapshot"));
 		},
 	});
 
@@ -1392,7 +1443,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			void ctx;
 			const manager = await getManager();
-			return textResult(await manager.status(params.sessionId, _signal));
+			const text = await manager.status(params.sessionId, _signal);
+			return params.sessionId ? previewText(text, await manager.preview(params.sessionId, "session snapshot")) : textResult(text);
 		},
 	});
 
@@ -1437,7 +1489,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		parameters: RewindParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const manager = await getManager();
-			return textResult((await manager.rewind(params.sessionId, params.entryId, params.correction, params.trust, trustPromptFrom(ctx))).text);
+			const rewound = await manager.rewind(params.sessionId, params.entryId, params.correction, params.trust, trustPromptFrom(ctx));
+			return previewText(rewound.text, await manager.preview(rewound.sessionId, "session snapshot"));
 		},
 	});
 
@@ -1450,9 +1503,9 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		parameters: PlaceParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const manager = await getManager();
-			return textResult(
-				await manager.place(params.area ?? ctx.cwd, params, trustPromptFrom(ctx), { model: hostModel(ctx), thinkingLevel: pi.getThinkingLevel() }),
-			);
+			let preview: SessionPreview | undefined;
+			const text = await manager.place(params.area ?? ctx.cwd, params, trustPromptFrom(ctx), { model: hostModel(ctx), thinkingLevel: pi.getThinkingLevel() }, (value) => { preview = value; });
+			return preview ? previewText(text, preview) : textResult(text);
 		},
 	});
 
@@ -1465,9 +1518,9 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		parameters: DetachParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const manager = await getManager();
-			return textResult(
-				(await manager.detach(params, { cwd: ctx.cwd, model: hostModel(ctx), thinkingLevel: pi.getThinkingLevel() }, trustPromptFrom(ctx))).text,
-			);
+			let preview: SessionPreview | undefined;
+			const text = (await manager.detach(params, { cwd: ctx.cwd, model: hostModel(ctx), thinkingLevel: pi.getThinkingLevel() }, trustPromptFrom(ctx), (value) => { preview = value; })).text;
+			return preview ? previewText(text, preview) : textResult(text);
 		},
 	});
 
@@ -1492,7 +1545,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		parameters: AttachParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const manager = await getManager();
-			return textResult(await manager.attach(params.sessionId, params.trust, trustPromptFrom(ctx), params.model));
+			const text = await manager.attach(params.sessionId, params.trust, trustPromptFrom(ctx), params.model);
+			return previewText(text, await manager.preview(params.sessionId, "session snapshot"));
 		},
 	});
 
