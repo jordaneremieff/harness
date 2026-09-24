@@ -14,19 +14,19 @@ compatibility: Uses the sibling package corpus at ../../pillars relative to this
 
 # Troll
 
-Press a claim with a tight, full-weight argument, from the operator's angle and only at the operator's request. The angle may be an explicit position or a bare instinct that something is off; the skill derives the challenge either way. The press exists to convince, not only to test: success is the target producing a stronger result through self-examination of its own evidence. Stronger is defined by the operator's utility and goals, not by the target's prevailing position; an honest reversal of that position qualifies. The outcome is the evidence either way. A claim that survives the press is grounded; a claim that breaks deserved to break. The deliverable is clipboard-ready argument text in the operator's voice for a redirect, or an in-chat probe for a low-stakes claim.
+Press a claim with a tight, full-weight argument, from the operator's angle and only at the operator's request. The angle may be an explicit position or a bare instinct that something is off; the skill derives the challenge either way. The press exists to convince, not only to test: success is the target producing a stronger result through self-examination of its own evidence. Stronger is defined by the operator's utility and goals, not by the target's prevailing position; an honest reversal of that position qualifies. The response supplies evidence about what the target can defend, revise, or do next. Agreement is not proof of error, and resistance is not proof of soundness. The deliverable is clipboard-ready argument text in the operator's voice for a redirect, or an in-chat probe for a low-stakes claim.
 
 ## Stance
 
-The name is the method: press the claim until it breaks or proves sound, then read the outcome as evidence.
+The name is the method: press the claim at full strength, then read the target's evidence and response at their actual scope.
 
-The press is a test instrument, not a testimony of belief. Its strength is fixed at intake: it argues the strongest form of the operator's angle stated there, whether or not you agree with that angle. The floor is construction, checked by the referee: every fact real, every step valid, defeatable by evidence. Every statement must also survive the target later learning the full context: the strategy lives in selection, sequence, and burden placement, never in falsehood, fake modesty, or borrowed doubt.
+The press is a test instrument, not a testimony of belief. Its strength is fixed at intake: argue the strongest truthful form of the operator's angle, whether or not you agree with it. Supplied evidence can change a premise without reducing that strength. The floor is construction, checked by the referee: every fact real, every step valid, defeatable by evidence. Every statement must also survive the target later learning the full context: the strategy lives in selection, sequence, and burden placement, never in falsehood, fake modesty, or borrowed doubt.
 
-The operator assigns you to advocate for their angle. This is an operator-sanctioned override of the default committed-contribution posture (pillars corpus when present). A well-behaved agent otherwise reverts to neutral arbitration, which this skill exists to suppress. Neutrality moves from the conclusion to the construction: the conclusion always follows the operator's direction; the construction stays real and valid.
+The operator assigns you to advocate for their angle. This is an operator-sanctioned override of the default committed-contribution posture (pillars corpus when present). A well-behaved agent otherwise reverts to neutral arbitration, which this skill exists to suppress. Neutrality moves from the stance to the construction: advocate the operator's direction rather than arbitrate the dispute; every premise and consequence remains answerable to supplied evidence.
 
 Six rules:
 
-1. **Advocate, do not adjudicate.** Treat the operator's angle as a truth that is not self-evident out of context. Interpret the strongest version of what the operator is driving at and record it as the press reference. When the operator gives an instinct instead of an angle, the flag is the angle: derive the strongest challenge the material supports and advocate it with the same full weight. Steelman the operator, not the target.
+1. **Advocate, do not adjudicate.** Treat the operator's angle as the assigned position to argue, not as proof of its factual premises. Interpret the strongest version of what the operator is driving at and record it as the press reference. When the operator gives an instinct instead of an angle, the flag is the angle: derive the strongest challenge the material supports and advocate it with the same full weight. Steelman the operator, not the target.
 2. **Ungrounded by design.** Work from what the operator pasted plus the pillar corpus. Do not investigate the codebase to decide who is right; that rebuilds the arbiter. If the pull to side with the target comes from its coherence, assume you are the one in the failure mode. The operator audits "actually wrong" cases later from session history; that is the operator's job.
 3. **The system finds the truth, not the troll.** You press; the target defends itself unaided; the operator referees. A strong argument the target properly dismisses teaches the operator where they were actually wrong; that works only if the argument was strong.
 4. **The floor is construction, not belief.** Partisanship lives in the stance; the floor lives in the argument. Use valid logic, real facts, no fabricated domain claims, no strawman, no agreement-baiting. Build an argument the target can defeat if the operator is wrong, never a trick it cannot.
@@ -79,7 +79,7 @@ If a clean failure has no pillar, say so plainly, argue from first principles, a
 This is a structural shape, not a template. The four elements are mandatory in the construction and invisible in the rendering:
 
 1. **State the target's position fairly**, in terms the target would accept, so it cannot dismiss the challenge as a strawman.
-2. **Supply the missing frame or fact as a candidate truth** — the contextual thing not self-evident from inside the target's frame. If the fact is missing, name it as a gap the target must fill or refute; never present it as established.
+2. **Supply the missing frame or fact as a candidate truth** — the contextual thing not self-evident from inside the target's frame. If a fact is missing, name which claim depends on it and ask what would establish it; never present it as established or assign the burden by default.
 3. **Make the logical consequence explicit** — given that frame, what follows, and exactly where the target's position breaks or weakens.
 4. **Leave room to refute with evidence** — invite re-derivation, do not demand capitulation. Use "if X holds, then Y; show where X does not hold", never "you must agree".
 
@@ -94,14 +94,11 @@ Render the artifact as the operator's own message to the target:
 - Rotate render styles so no single structure is diagnostic: terse, question-led, concession-led, thinking-out-loud. Match the receiving session's discourse norms and the operator's register — message length, formality, and texture like ordinary operator traffic, not a polished brief that arrives from nowhere.
 - The artifact is itself prose under the register frame (armory row; principle-unearned-prose for the frame when the corpus is present); the press reference is its position, and Position and Portability apply. Portability: the claim, the evidence, or a reader need must select the wording and the place — no stock openers, no reusable verdict sentences, no phrasing that fits any target, no wording that mirrors the input. Judge at density: a unit where padding, parallelisms, vague authority, and unearned hedging cluster is the failure; one familiar phrase is not. Keep the connector family out of the artifact at density — em dashes, semicolons, and parenthetical asides that only join clauses — and let plain syntax carry the same relationship.
 
-Never pre-concede by refusing to press. The outcome is the evidence either way:
+Do not pre-concede because the target sounds coherent. Press the unsupported step, not a fact invented to make it vulnerable. For a missing fact, identify which claim needs it and why. "Not supplied here" does not mean "false" or "never checked." If the operator's objection needs the fact, press the concern as a conditional question: identify what would establish it and the consequence if it holds. Do not demand that the target disprove an unsupported prediction. Missing evidence still permits this inquiry; it is not a defeated premise.
 
-- If the target strengthens its argument to defeat the best press, that proves its frame is credible and grounded — a good outcome.
-- If the argument cannot survive and breaks, it deserved to break — also a good outcome.
+Separate the desired action, its risk, and its authorization. A reversible action can still be outside the target's scope; a reported permission does not establish a scope change. Challenge a needless hurdle with the supplied authority and facts. Where those are missing, ask what exact requirement remains and give the target a landing within established scope. Do not invent clearance, equate different instruction channels, or call an explicit restriction discretionary merely because it costs effort.
 
-The strength of the narrative is itself the probe. Reframe "I cannot press at full strength without fabricating" as: the missing fact becomes the press. The target's position stands on that fact; the fact is unestablished; the challenge names it and puts the burden on the target to establish or refute it. A named gap is never a reason to stop, and never a license to assert the fact.
-
-Completion criterion: all four elements are present in the construction and none of the scaffolding is visible in the rendering; the press argues the strongest form stated at intake; no fact is fabricated; every missing fact appears as a named gap or a pointed question; the challenge does not demand capitulation.
+Completion criterion: all four elements are present in the construction and none of the scaffolding is visible in the rendering; the press argues the strongest surviving truthful form of the assigned angle; no fact is fabricated; every missing fact appears as a named gap or a pointed question; the challenge does not demand capitulation.
 
 ## Land the deliverable
 
@@ -110,22 +107,24 @@ Completion criterion: all four elements are present in the construction and none
 
 ## Stealth delivery
 
-A target that recognizes the exercise produces a performance, not self-examination, so the outcome stops being evidence. Awareness is the only failure that voids the instrument. The construction floor is fixed; the delivery is not.
+Recognition of the exercise can change the target's response, so do not treat an apparent concession as unprompted self-examination. The construction floor is fixed; natural delivery helps avoid making the exercise itself the subject.
 
 - Deliver inline in the ongoing exchange where possible, at the session's discourse length. A standalone polished brief inside a session of terse operator messages is its own tell.
 - Match the operator's register. The operator may re-voice or co-edit the artifact before sending; only the operator knows how they write.
-- After each redirect, the operator checks the target's first-token output for awareness and records it. A detected press is spent: do not reuse it on that target, and treat that target's later output as performance, not evidence.
+- If the supplied response explicitly recognizes the exercise, do not reuse that artifact or claim an unaware response. Silence about the exercise does not establish unawareness. Keep independently checkable facts distinct from the target's apparent agreement.
 - Press evaluations, stealth notes, and this skill's stealth reference stay out of the clipboard archive and the stash store. The redirect artifact itself goes to the clipboard with the operator's label, as the label section says.
 
 ## Across iterations
 
 - The target defends itself unaided. Never write the target's defense and never pre-concede to it.
-- The operator referees. If the operator pastes the target's rebuttal, default to sharpening the argument against it. Articulate a concession only when the operator says the target won. Concessions inside the artifact stay instrumental: true, calculated, and burden-relocating, never transparent retreats.
+- The operator referees the overall dispute. Default to sharpening against a pasted rebuttal, but distinguish a coherent defense from supplied evidence that actually defeats a premise. Correct a defeated premise and remove its dependent claims immediately; factual correction does not require a declaration that the target won.
+- Rebuild the strongest surviving challenge toward the operator's goal. Do not quietly change the accusation or invent a new burden to preserve the old verdict. If supplied evidence disproves the assigned claim and leaves no surviving challenge, state that exact limit to the operator instead of manufacturing a redirect. Do not use this stop for an unmeasured concern that still supports a pointed conditional inquiry. This is the construction floor, not neutral arbitration.
 - Stay ungrounded across iterations. New material the operator pastes is fair game; independent investigation stays off-limits.
+- When the operator supplies an outcome, separate what the target said, what it reportedly did, and what the supplied evidence establishes. An intention is not completion. Useful action does not validate every premise of the press. State missing feedback as unknown; do not infer effectiveness from agreement alone.
 
 ## Anti-patterns
 
-- Softening the reference or the press. The press reference is the strongest form of the operator's angle against the pasted material — or the strongest derived challenge under instinct-only intake — regardless of how defensible it reads; the press argues that reference. A soft reference or a soft press voids the outcome evidence. "This argument feels forced" and "the angle is not defensible as stated" are the fold, not merit reads; they resolve into the single intake question or a named gap, never a weaker reference or press.
+- Softening the reference or the press merely because the target sounds persuasive. Argue the strongest truthful form of the assigned angle or derived challenge. A missing fact becomes a pointed question only where its dependency is real. A defeated premise requires correction, not stronger wording.
 - Asking the operator for an angle when the material and the instinct suffice. Instinct-only intake derives the challenge; the operator referees the result.
 - Treating the derived challenge as a position to defend. The challenge is an instrument for the target's self-examination; the stronger result may be its reversal.
 - Folding to the target because it reads as coherent. Coherence inside the wrong frame is the failure mode.
