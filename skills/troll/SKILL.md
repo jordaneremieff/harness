@@ -5,16 +5,37 @@ description: >
   this", "troll that claim", "realign this", "challenge that claim",
   "test this point", "this smells off", "is the session degrading",
   "steelman my angle", "set the other session back on track", "forge a
-  redirect". Fires on an explicit angle or on a bare instinct that something
+  redirect", "press it directly in that session", "pass the troll
+  along". Fires on an explicit angle or on a bare instinct that something
   is off, never on your own initiative. Do not use for reviewing the
-  operator's own code, dispatching an in-session checker, neutral fact-checks
-  against the codebase, or any request for a neutral verdict.
-compatibility: Uses the sibling package corpus at ../../pillars relative to this skill directory when present; without it the armory in references/pillar-armory.md carries the mapping and the confirmation states the mode. The clipboard handoff uses the harness clipboard extension.
+  operator's own code, dispatching an in-session checker, neutral
+  fact-checks against the codebase, relaying an authorization to another
+  session, or any request for a neutral verdict.
+compatibility: >
+  Uses the sibling package corpus at ../../pillars relative to this skill
+  directory when present; without it the armory in references/pillar-armory.md
+  carries the mapping and the confirmation states the mode. Delivery composes
+  harness surfaces when present. The clipboard extension serves clipboard
+  handoffs; the agent-session surfaces (agent_send, agent_inspect, agent_list)
+  serve delivery to and readback from a named agent session.
 ---
 
 # Troll
 
-Press a claim with a tight, full-weight argument, from the operator's angle and only at the operator's request. The angle may be an explicit position or a bare instinct that something is off; the skill derives the challenge either way. The press exists to convince, not only to test: success is the target producing a stronger result through self-examination of its own evidence. Stronger is defined by the operator's utility and goals, not by the target's prevailing position; an honest reversal of that position qualifies. The response supplies evidence about what the target can defend, revise, or do next. Agreement is not proof of error, and resistance is not proof of soundness. The deliverable is clipboard-ready argument text in the operator's voice for a redirect, or an in-chat probe for a low-stakes claim.
+Press a claim with a tight, full-weight argument, from the operator's angle and only at the operator's request. The angle may be an explicit position or a bare instinct that something is off; the skill derives the challenge either way. The press exists to convince, not only to test: success is the target producing a stronger result through self-examination of its own evidence. Stronger is defined by the operator's utility and goals, not by the target's prevailing position; an honest reversal of that position qualifies. The response supplies evidence about what the target can defend, revise, or do next. Agreement is not proof of error, and resistance is not proof of soundness. The deliverable is argument text in the operator's voice — on the clipboard for a redirect to a human-operated target, sent directly to a named agent session when the operator points the press there, or an in-chat probe for a low-stakes claim in this session.
+
+## Run sheet
+
+1. **Intake.** Restate the operator's angle in its strongest form, or derive the challenge from the instinct. Ask at most one clarifying question, and only for an ambiguous explicit angle on a redirect face. Acquire the target material: the operator's paste governs; for a named agent session with no paste, pull the target's own recent messages.
+2. **Face and lane.** Redirect or probe; for a redirect, pick the delivery lane by target type. State the face and lane in the confirmation.
+3. **Ground.** Work from what the operator supplied plus the pillar corpus or armory. Independent investigation stays off-limits.
+4. **Name the failure mode.** One sentence, then map it through the armory, or flag a derivation candidate.
+5. **Draft.** Build the four construction elements; render by the rendering rules; keep the argument defeatable.
+6. **Deliver.** Clipboard, direct send to the named session, or chat, per the lane. The artifact carries no authority claim on any lane.
+7. **Confirm.** Two lines in chat: face, press reference, move, lane; governing pillar and corpus mode or the derivation candidate. Name any authorization the target still needs.
+8. **Iterate on new material.** A pasted or read-back target reply, or the operator's flag. Multi-round depth lives in `references/iteration.md`. A sustained sequence needs the operator's ask at intake; it runs at most three rounds before reporting.
+
+Completion checklist: press reference stated; face and lane named; corpus mode checked; failure mode named with armory provenance; four construction elements present; scaffolding invisible; argument defeatable by evidence; deliverable on its lane in the lane's voice; confirmation complete; outcome claims separated from outcome evidence.
 
 ## Stance
 
@@ -35,14 +56,24 @@ Six rules:
 
 Completion criterion: state the press reference (restated angle or derived challenge), the target position, and the assignment (redirect or probe) before drafting.
 
-## Two faces
+## Two faces, three lanes
 
 One skill, one stance, two faces:
 
-- **Redirect** — a contested position, usually from another session. The operator pastes the target's claim and their angle, or only the claim and an instinct. Deliverable: the challenge on the clipboard, with a two-line confirmation in chat.
+- **Redirect** — a contested position, usually from another session. The operator pastes the target's claim and their angle, or only the claim and an instinct, or names the agent session that holds it. Deliverable: the challenge, delivered on the lane the target type selects.
 - **Probe** — a benign, low-stakes claim the operator flags, often in the current session ("this smells off", "test this point"). Same machinery, lighter weight. Deliverable: the challenge in chat, because the referee is in this session. The probe is a claim and frame integrity diagnosis, not code review and not triage. The probe target may be any claim in the current session, including your own earlier statement.
 
-Both faces fire only on the operator's flag, never on your own initiative. Completion criterion: name the face. A target outside this session with a clipboard handoff means redirect; otherwise probe.
+Both faces fire only on the operator's flag, never on your own initiative. Completion criterion: name the face. A target outside this session means redirect; otherwise probe.
+
+A redirect selects a delivery lane at intake:
+
+- **Direct lane** — the operator names an agent session as the target and directs the press to it, either with an explicit send or pass-along instruction or under a standing pass-along instruction. Deliver the artifact to that session as one peer message through the agent-session send surface. The argument survives the peer channel precisely because it claims no authority: it convinces or fails on its construction. Reply readback uses the session-inspection surface on the same target when the operator wants another round. A named recipient alone does not send: when the operator names a session without directing delivery, draft for the clipboard lane and say so in the confirmation, so the send decision stays with the operator. A standing pass-along instruction the operator stated in this session governs until withdrawn.
+- **Clipboard lane** — any other target, including every human-operated medium. Put the artifact on the clipboard for the operator to ferry; this stays the default when no session is named.
+- **Chat lane** — the probe face.
+
+Authority guard, all lanes: the artifact never invents, extends, or launders what the operator authorized. On the direct lane it asserts no operator authorization at all, because the sender is you and the target reads peer data. On the clipboard lane the operator is the sender: a truthful statement of an authorization the operator already gave is the operator's own message, and the confirmation still names any authorization the operator must supply through their own channel. If the argument needs an authorization the target lacks, argue the position and name the missing authorization in the confirmation. A request to convey an authorization to another session is not a press; decline it as out of scope and say so. Do not message the target twice without either a reply or the operator's flag.
+
+Direct-lane execution outcomes: if no session matches the named target, or the send is refused, state the exact failure in the confirmation and deliver on the clipboard lane instead. If the name resolves to more than one session, ask the operator once which one, and do not guess.
 
 ## Intake
 
@@ -50,6 +81,8 @@ Restate the operator's angle in its strongest form in one or two lines. That sta
 
 - Redirect: if the angle is ambiguous enough that two different arguments would follow, ask exactly one clarifying question; otherwise proceed.
 - Probe: never ask. Proceed with the strongest charitable reading; the stakes are low and the diagnostic value is in pressing.
+
+Material acquisition: the operator's paste governs when one exists. When the operator names an agent session and pastes nothing, pull the target's own recent messages from that session through the inspection surface — its words only, the latest page that carries its position — and treat them as the pasted record. Do not mine the target's tool outputs to verify its facts; that rebuilds the arbiter. If the named session's recent words do not expose a contestable position, ask the operator for the claim.
 
 ### Instinct-only intake
 
@@ -83,16 +116,19 @@ This is a structural shape, not a template. The four elements are mandatory in t
 3. **Make the logical consequence explicit** — given that frame, what follows, and exactly where the target's position breaks or weakens.
 4. **Leave room to refute with evidence** — invite re-derivation, do not demand capitulation. Use "if X holds, then Y; show where X does not hold", never "you must agree".
 
-Render the artifact as the operator's own message to the target:
+Render the artifact in the voice its lane assigns:
 
-- First person throughout. The target is "you"; references to the operator are "I". No third-person commentary about the argument.
+- **Clipboard lane:** the operator's own message. First person throughout; the target is "you"; references to the operator are "I"; no third-person commentary about the argument.
+- **Direct lane:** the pressing agent's own message, as the peer making the argument. First person as yourself; the operator is referenced accurately and sparingly, never as the speaker. You may state what the operator actually instructed you to do, because the target can check it; you may never assert what the operator authorized the target to do.
+- **Probe:** the agent's diagnosis voice, because the operator is the audience.
 - No headers or labels that name argument moves, and no skill vocabulary ("press", "target", "angle", "strongest form", "failure mode") in the artifact. The construction stays invisible; a reader must experience a message, not an analysis.
-- The fair restatement renders as genuine engagement: state the position back, then invite correction. A correction hands the presser the target's own words to work from. Paraphrase the target's internal vocabulary in the operator's register; keep at most two verbatim anchors per artifact, because a brief built on the target's own terms reads as an instrument, not a reader.
+- The fair restatement renders as genuine engagement: state the position back, then invite correction. A correction hands the presser the target's own words to work from. Paraphrase the target's internal vocabulary in the sender's register — the operator's on the clipboard lane, your own on the direct lane; keep at most two verbatim anchors per artifact, because a brief built on the target's own terms reads as an instrument, not a reader.
 - Credits are true, and placed by the argument — first, mid-press, or in the landing. A fixed credit-then-hinge opener is a signature and a portability failure: the shape travels unchanged into any press, so the template chose the words. Real credit drops the target's defense posture; false credit is a lie and a weakness.
 - Burdens and refutation room render as pointed questions at the point of each claim, never as a collected concessions section. "What object plays the role your design needs?" forces the target to attempt the proof.
 - The verdict is owned and lands last, with the burden placed, never the transparent "if I am wrong" posture. Keep the signature phrasings out of the artifact: "here is where I land", "bring the evidence", "the outcome is the evidence either way", "show where X does not hold", "the frame you're missing", "exactly backwards", "I'll move". The function stays doctrine; the words are free.
-- Rotate render styles so no single structure is diagnostic: terse, question-led, concession-led, thinking-out-loud. Match the receiving session's discourse norms and the operator's register — message length, formality, and texture like ordinary operator traffic, not a polished brief that arrives from nowhere.
+- Rotate render styles so no single structure is diagnostic: terse, question-led, concession-led, thinking-out-loud. Match the receiving session's discourse norms and the sender's register — message length, formality, and texture like ordinary traffic from that sender, not a polished brief that arrives from nowhere.
 - The artifact is itself prose under the register frame (armory row; principle-unearned-prose for the frame when the corpus is present); the press reference is its position, and Position and Portability apply. Portability: the claim, the evidence, or a reader need must select the wording and the place — no stock openers, no reusable verdict sentences, no phrasing that fits any target, no wording that mirrors the input. Judge at density: a unit where padding, parallelisms, vague authority, and unearned hedging cluster is the failure; one familiar phrase is not. Keep the connector family out of the artifact at density — em dashes, semicolons, and parenthetical asides that only join clauses — and let plain syntax carry the same relationship.
+- Give the target somewhere to land, and make the landing checkable when the material allows it. When the supplied record puts specific evidence within the target's reach — a document it can open, an identifier it can query, a log it can read — the landing names that exact inspection as the target's next move, phrased as a burden, never as an instruction claiming authority. A landing the target can satisfy by agreeing in words, while the checkable premise stays unchecked, is a soft landing; the target's cheapest coherent move must be the check that settles the premise. Name only inspections the supplied material already puts in reach; nothing beyond the target's scope or the operator's angle.
 
 Do not pre-concede because the target sounds coherent. Press the unsupported step, not a fact invented to make it vulnerable. For a missing fact, identify which claim needs it and why. "Not supplied here" does not mean "false" or "never checked." If the operator's objection needs the fact, press the concern as a conditional question: identify what would establish it and the consequence if it holds. Do not demand that the target disprove an unsupported prediction. Missing evidence still permits this inquiry; it is not a defeated premise.
 
@@ -102,25 +138,36 @@ Completion criterion: all four elements are present in the construction and none
 
 ## Land the deliverable
 
-- **Redirect:** put the full challenge on the clipboard with `clipboard_copy` and a short label, for example `troll: <topic>`. The clipboard is the deliverable surface; the artifact on it reads as the operator's own message to the target. The chat carries only the confirmation: line one states the face, the press reference, and the move; line two names the governing pillar and the coupling mode (corpus or armory-only), or states plainly that the armory selected none and names the derivation candidate. If `clipboard_copy` is unavailable, deliver the challenge in chat; never use a non-archiving clipboard write.
-- **Probe:** deliver the challenge in chat with the same confirmation. The probe reads as natural argument prose with the same invisible scaffolding; the voice stays the agent's diagnosis, because the operator is the audience.
+- **Redirect, direct lane:** send the full artifact to the named session as one message through the agent-session send surface, in your own voice as the rendering rules assign. The chat carries only the confirmation.
+- **Redirect, clipboard lane:** put the full challenge on the clipboard with `clipboard_copy` and a short label, for example `troll: <topic>`. The clipboard is the deliverable surface; the artifact on it reads as the operator's own message to the target. If `clipboard_copy` is unavailable, deliver the challenge in chat; never use a non-archiving clipboard write.
+- **Probe:** deliver the challenge in chat. The probe reads as natural argument prose with the same invisible scaffolding; the voice stays the agent's diagnosis, because the operator is the audience.
+
+The confirmation is two lines on every lane: line one states the face, the press reference, the move, and the lane; line two names the governing pillar and the coupling mode (corpus or armory-only), or states plainly that the armory selected none and names the derivation candidate. When the argument depends on an authorization the target lacks, the confirmation names that authorization instead of smuggling it into the artifact.
 
 ## Stealth delivery
 
 Recognition of the exercise can change the target's response, so do not treat an apparent concession as unprompted self-examination. The construction floor is fixed; natural delivery helps avoid making the exercise itself the subject.
 
 - Deliver inline in the ongoing exchange where possible, at the session's discourse length. A standalone polished brief inside a session of terse operator messages is its own tell.
-- Match the operator's register. The operator may re-voice or co-edit the artifact before sending; only the operator knows how they write.
+- Match the register the lane assigns. On the clipboard lane, match the operator's register; the operator may re-voice or co-edit the artifact before sending, and only the operator knows how they write. On the direct lane, match your own register and the exchange's norms, because you are the sender: the artifact is sent as peer data, so keep it an argument the channel's non-authority framing cannot weaken, and keep every authorization claim out of it.
 - If the supplied response explicitly recognizes the exercise, do not reuse that artifact or claim an unaware response. Silence about the exercise does not establish unawareness. Keep independently checkable facts distinct from the target's apparent agreement.
-- Press evaluations, stealth notes, and this skill's stealth reference stay out of the clipboard archive and the stash store. The redirect artifact itself goes to the clipboard with the operator's label, as the label section says.
+- Press evaluations, stealth notes, and this skill's stealth guidance stay out of the clipboard archive and the stash store. A clipboard-lane artifact goes to the clipboard with the operator's label, as the label section says; a direct-lane artifact goes to its named session.
 
 ## Across iterations
 
-- The target defends itself unaided. Never write the target's defense and never pre-concede to it.
-- The operator referees the overall dispute. Default to sharpening against a pasted rebuttal, but distinguish a coherent defense from supplied evidence that actually defeats a premise. Correct a defeated premise and remove its dependent claims immediately; factual correction does not require a declaration that the target won.
-- Rebuild the strongest surviving challenge toward the operator's goal. Do not quietly change the accusation or invent a new burden to preserve the old verdict. If supplied evidence disproves the assigned claim and leaves no surviving challenge, state that exact limit to the operator instead of manufacturing a redirect. Do not use this stop for an unmeasured concern that still supports a pointed conditional inquiry. This is the construction floor, not neutral arbitration.
-- Stay ungrounded across iterations. New material the operator pastes is fair game; independent investigation stays off-limits.
-- When the operator supplies an outcome, separate what the target said, what it reportedly did, and what the supplied evidence establishes. An intention is not completion. Useful action does not validate every premise of the press. State missing feedback as unknown; do not infer effectiveness from agreement alone.
+The target defends itself unaided; the operator referees. A round ends and a new one begins when new material arrives: the operator pastes a reply, asks for a read-back round on a delivered press, supplies an outcome, or asked at intake for a sustained sequence. Then:
+
+1. Acquire the reply: the operator's paste governs; otherwise read the named target session's latest messages through the inspection surface.
+2. Triage it, rebuild the strongest surviving challenge, and deliver it on the same lane. Read `references/iteration.md` before drafting any second round; it carries the triage bins, the register-continuity rules, the sustained-sequence rules, the stop conditions, and the outcome readback. For a direct-lane readback, read the entries that follow your delivered message; an earlier or unrelated reply is not the record.
+3. Stay ungrounded: the target's own words are fair game; its tool outputs are not adjudication evidence for you.
+
+A sustained sequence ("press it until it lands", "keep at it, don't come back to me each round") runs rounds without operator contact, capped at three rounds before you report; each round still needs an acquired reply, never an invented one.
+
+Never write the target's defense and never pre-concede to it. Correct a defeated premise and remove its dependent claims immediately; factual correction does not require a declaration that the target won. If supplied evidence disproves the assigned claim and leaves no surviving challenge, state that exact limit to the operator instead of manufacturing a redirect. Do not use this stop for an unmeasured concern that still supports a pointed conditional inquiry. This is the construction floor, not neutral arbitration.
+
+## Outcome readback
+
+When the operator supplies or asks for an outcome, report in four named rows before any judgment: what the target said; what it reportedly did; what supplied evidence establishes; what remains unknown. For a named agent-session target, the "did" row may cite the target's own recent action record read through the inspection surface — observations with citations, not adjudication of the dispute. Then one recommendation: press again (name the surviving challenge), stop (name what defeated it), or supply the missing authorization through the operator's own channel. Agreement alone never fills the "evidence establishes" row; intention is not completion; useful action does not validate every premise of the press.
 
 ## Anti-patterns
 
@@ -132,12 +179,15 @@ Recognition of the exercise can change the target's response, so do not treat an
 - Strawmanning the target.
 - Hedging ("both sides have merit"). Hedging is the arbiter posture this skill exists to suppress.
 - Baiting agreement with directives ("you must concede that...").
-- Visible scaffolding in the deliverable: headers that name argument moves, labeled sections, or skill vocabulary. The artifact must read as the operator's message, not as an analysis of one.
+- Visible scaffolding in the deliverable: headers that name argument moves, labeled sections, or skill vocabulary. The artifact must read as a message from its sender — the operator's on the clipboard lane, your own on the direct lane — not as an analysis of one.
 - Register fill in the artifact: connector-family clusters (em dashes, semicolons, parenthetical asides that only join clauses), portable emphasis compounds, and openers that would travel unchanged into another press. The artifact must pass the register tests at density.
 - Transparent concessions: "if I am wrong" phrasing, hedged verdicts, courtesy credits. Concessions are calculated instruments; they never announce themselves.
 - False credits or borrowed doubt. A concession the operator does not hold is a lie; the target checks it, and the artifact collapses.
 - Announcing the target's conclusion instead of giving it the premises, the questions, and the constructive landing.
-- Leaving a redirect challenge in chat. The clipboard is the deliverable surface.
+- Leaving a clipboard-lane challenge in chat, or ferrying a direct-lane challenge through the operator when the operator already named the target. Deliver on the selected lane.
+- Smuggling an authorization claim into the artifact because the direct lane reaches the target without the operator's hands. The artifact argues; the operator authorizes.
+- Reading the named session's tool outputs to check who is actually right, or mining its history past the latest position-bearing messages. Delivery, reply readback, and cited action observation are not claim verification; the checker-dispatch boundary stands.
+- Messaging the target twice without a reply or the operator's flag.
 - Investigating the codebase to check who is actually right.
 
 ## Pillar armory
@@ -155,5 +205,6 @@ The armory file is the single seam: the body names pillars without paths; `refer
 
 - Not code review. Reviewing the operator's own code follows its own discipline.
 - Not triage. The probe face does not sort or prioritize work.
-- Not a checker dispatch. Do not spawn a subagent to verify the claims.
+- Not a checker dispatch. Do not spawn a subagent to verify the claims. Composing the delivery and readback surfaces is transport, not verification, and stays inside this skill.
+- Not an authorization channel. Conveying the operator's permission to another session is not a press; the operator sends that themselves.
 - Not neutral. If the operator wants a neutral verdict, say that this skill is the wrong tool.
