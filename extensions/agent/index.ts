@@ -1233,8 +1233,10 @@ export class AgentManager {
 	/**
 	 * Session rows for command completion, oldest modification first.
 	 *
-	 * Stored metadata supplies every row. Name and operation come only from a
-	 * worker this process already holds open, so listing sessions opens none,
+	 * Stored metadata supplies every row, including a stored name and first
+	 * message. Live fields, such as the model selection, operation, and a
+	 * fresher name, come only from a worker this process already holds open;
+	 * the stored name appears when no worker does. Listing opens no session,
 	 * and a session under a live detached run carries that run's id.
 	 */
 	async sessionSummaries(): Promise<AgentSessionSummary[]> {
