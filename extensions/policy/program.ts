@@ -527,7 +527,10 @@ export interface EvaluationContext {
 	mode?: PolicyMode;
 	scope?: RuleMatchContext;
 	/** Input evidence uses a fixed snapshot; later phases use admitted matches. */
-	evidence?: ReadonlyMap<string, Truth> & { readonly reasons?: ReadonlyMap<string, readonly string[]> };
+	evidence?: ReadonlyMap<string, Truth> & {
+		readonly reasons?: ReadonlyMap<string, readonly string[]>;
+		readonly segments?: ReadonlyMap<string, string>;
+	};
 	matched?: ReadonlySet<string>;
 	staleRules?: ReadonlySet<string>;
 }
@@ -542,6 +545,8 @@ export interface ProgramEvaluation {
 	unavailable: boolean;
 	/** Fixed evidence codes only, without raw arguments or command text. */
 	unavailableReasons?: readonly string[];
+	/** Immediate inspection only; metadata projection excludes command text. */
+	matchedSegment?: string;
 	deny: boolean;
 }
 export interface InputPlan {
@@ -673,6 +678,9 @@ function evaluationResult(
 		unavailable: truth === "unknown",
 		...(truth === "unknown" && context.evidence?.reasons?.has(rule.id)
 			? { unavailableReasons: context.evidence.reasons.get(rule.id) }
+			: {}),
+		...(truth === true && context.evidence?.segments?.has(rule.id)
+			? { matchedSegment: context.evidence.segments.get(rule.id) }
 			: {}),
 		deny:
 			applicable === true &&

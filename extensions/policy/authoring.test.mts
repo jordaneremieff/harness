@@ -156,6 +156,24 @@ test("draft checks share proposal admission without proposal or data writes", as
 	assert.match(pending.diagnostics[0].message, /pending/);
 });
 
+test("a command draft returns step outcomes with the complete starter catalog", async (t) => {
+	const dir = await mkdtemp(join(tmpdir(), "policy-authoring-catalog-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const f = fixture();
+	f.snapshot = await new RuleRegistry(dir).snapshot();
+	const { program: _program, language: _language, ...common } = draft();
+	const result = await check(
+		{ ...common, authority: "steer-or-block", match: { command: "sleep" }, onUnavailable: "skip" },
+		[{ name: "sleep blocked", steps: [{ ...call("sleep 5"), expect: { denied: true, correctedInput: false, guidance: false } }] }],
+		f,
+		{ effect: "block" },
+	);
+	noMismatches(result);
+	assert.equal(result.cases[0].rows[0].denied, true);
+	assert.ok(Buffer.byteLength(JSON.stringify(result)) < 8000);
+	assert.equal(f.executions(), 0);
+});
+
 test("the real inspection invocation produces only its ordinary completion record", async () => {
 	const f = fixture();
 	const records: PolicyRecord[] = [];

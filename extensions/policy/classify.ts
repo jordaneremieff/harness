@@ -22,6 +22,21 @@ import {
 /** Truth and fixed reason codes share the same captured input snapshot. */
 export class CommandEvidence extends Map<string, Truth> {
 	readonly reasons = new Map<string, string[]>();
+	/** Bounded normalized command segments for immediate inspection, never telemetry. */
+	readonly segments = new Map<string, string>();
+}
+
+function commandSegment(stage: Stage): string {
+	const words = [stage.command, ...stage.args].map((word) =>
+		/^[A-Za-z0-9_./:=+-]+$/.test(word) ? word : JSON.stringify(word),
+	);
+	const safe = redactShell("bash", words.join(" ")).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+	let excerpt = "";
+	for (const char of safe) {
+		if (Buffer.byteLength(excerpt + char, "utf8") > 237) return `${excerpt}…`;
+		excerpt += char;
+	}
+	return excerpt;
 }
 
 export type CodeMatcherResolver = (key: string) => CodeMatcher | undefined;
@@ -189,12 +204,13 @@ export function evaluateCommandRecords(
 		parsed,
 	);
 	for (const record of candidates) {
+		const onMatch = (stage: Stage) => result.segments.set(record.id, commandSegment(stage));
 		if (record.matcher.kind === "code") {
-			result.set(record.id, evaluateCodeRecord(record, statements, resolveMatcher));
+			result.set(record.id, evaluateCodeRecord(record, statements, resolveMatcher, onMatch));
 			continue;
 		}
 		if (record.matcher.language === "command-shape/v1") {
-			const evaluated = evaluateDeclarativeRecord(record, statements, decoded, parsed);
+			const evaluated = evaluateDeclarativeRecord(record, statements, decoded, parsed, onMatch);
 			result.set(record.id, evaluated.applies);
 			if (evaluated.applies === "unknown") result.reasons.set(record.id, evaluated.reasons);
 		}
@@ -207,6 +223,7 @@ function evaluateCodeRecord(
 	record: RuleRecord,
 	statements: readonly Statement[],
 	resolveMatcher: CodeMatcherResolver,
+	onMatch: (stage: Stage) => void,
 ): Truth {
 	const predicate = record.matcher.kind === "code" ? resolveMatcher(record.matcher.key) : undefined;
 	if (!predicate) return false;
@@ -214,7 +231,10 @@ function evaluateCodeRecord(
 		for (let index = 0; index < statement.length; index++) {
 			const stage = statement[index];
 			if (!codeMatcherStageEligible(stage)) continue;
-			if (predicate({ statement, stage, index })) return true;
+			if (predicate({ statement, stage, index })) {
+				onMatch(stage);
+				return true;
+			}
 		}
 	}
 	return false;
@@ -250,11 +270,15 @@ function declarativeStatementApplies(
 	statement: readonly Stage[],
 	decoded: ReadonlyMap<Stage, CliEvidence>,
 	reasons: Set<string>,
+	onMatch: (stage: Stage) => void,
 ): Truth {
 	let applies: Truth = false;
 	for (let index = 0; index < statement.length; index++) {
 		const evaluated = declarativeStageTruth(spec, statement, index, decoded);
-		if (evaluated.truth === true) return true;
+		if (evaluated.truth === true) {
+			onMatch(statement[index]);
+			return true;
+		}
 		if (evaluated.truth === "unknown") {
 			applies = "unknown";
 			if (evaluated.reason) reasons.add(evaluated.reason);
@@ -269,6 +293,7 @@ function evaluateDeclarativeRecord(
 	statements: readonly Statement[],
 	decoded: ReadonlyMap<Stage, CliEvidence>,
 	parsed: ShellEvidence,
+	onMatch: (stage: Stage) => void,
 ): { applies: Truth; reasons: string[] } {
 	const spec = record.matcher.kind === "declarative" && record.matcher.language === "command-shape/v1" ? record.matcher.spec : undefined;
 	if (!spec) return { applies: false, reasons: [] };
@@ -279,7 +304,7 @@ function evaluateDeclarativeRecord(
 		for (const reason of parsed.reasons) reasons.add(reason);
 	}
 	for (const statement of statements) {
-		const statementTruth = declarativeStatementApplies(spec, statement, decoded, reasons);
+		const statementTruth = declarativeStatementApplies(spec, statement, decoded, reasons, onMatch);
 		if (statementTruth === true) return { applies: true, reasons: [] };
 		if (statementTruth === "unknown") applies = "unknown";
 	}

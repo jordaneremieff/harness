@@ -32,7 +32,7 @@ import {
 	textContentBytes,
 	trackPending,
 } from "./record.ts";
-import { effectiveEffect, effectiveState, type RuleRecord, ruleGuidance } from "./rule.ts";
+import { effectiveEffect, effectiveState, ruleGuidance } from "./rule.ts";
 import { shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin } from "./state.ts";
 import { PolicyWriter } from "./store.ts";
@@ -110,6 +110,13 @@ function metadata(evaluations: ProgramEvaluation[]): unknown[] {
 		}),
 	);
 }
+/** Inspection omits false evaluations without changing execution or retained metadata. */
+export function relevantEvaluations<T extends { id: string; truth: unknown; unavailable?: boolean; deny?: boolean }>(
+	evaluations: readonly T[],
+): T[] {
+	return evaluations.filter((entry) => entry.truth !== false || entry.unavailable || entry.deny);
+}
+
 function boundedRows(rows: readonly unknown[], maxBytes = 32768): { rows: unknown[]; total: number; omitted: number } {
 	const retained: unknown[] = [];
 	let bytes = 2;
@@ -533,16 +540,22 @@ export class PolicyRuntime {
 		return true;
 	}
 
-	/** Guidance lines for the rules behind one denied input plan, deduplicated in class order. */
+	/** Guidance lines and safe command segments for the rules behind one denied input plan. */
 	private refusalNotes(call: ObservedCall, plan: InputPlan, snapshot: RuleSnapshot): string[] {
-		const ids = new Set([
-			...call.classes,
-			...plan.evaluations.filter((evaluation) => evaluation.deny).map((evaluation) => evaluation.id),
-		]);
-		return [...ids]
-			.map((id) => snapshot.records.get(id))
-			.filter((record): record is RuleRecord => record !== undefined)
-			.map(ruleGuidance);
+		const denials = plan.evaluations.filter((evaluation) => evaluation.deny);
+		const ids = new Set(denials.length ? denials.map((evaluation) => evaluation.id) : call.classes);
+		return [...ids].flatMap((id) => {
+			const record = snapshot.records.get(id);
+			if (!record) return [];
+			const segments = new Set(denials.filter((entry) => entry.id === id).flatMap((entry) => {
+				if (!entry.matchedSegment) return [];
+				const segment = entry.inputView === "effective" && plan.corrections.length > 0
+					? "[corrected input omitted]"
+					: entry.matchedSegment;
+				return [`Matched command: ${segment}`];
+			}));
+			return [ruleGuidance(record), ...segments];
+		});
 	}
 	private resultPlan(call: ObservedCall, result: Result) {
 		const rules = this.currentRules(call);
@@ -939,14 +952,26 @@ export class PolicyRuntime {
 					isError: result.isError === true,
 				})
 			: undefined;
+		const inputEvaluations = relevantEvaluations(plan.evaluations);
+		const allResults = results ? [...results.semantic, ...results.guides] : [];
+		const resultEvaluations = relevantEvaluations(allResults);
+		const relevantIds = new Set([...plan.matches, ...inputEvaluations.map((e) => e.id), ...resultEvaluations.map((e) => e.id)]);
+		const evaluatedIds = new Set([...plan.evaluations, ...allResults].map((e) => e.id));
+		const wouldCorrectInput = this.effectiveMode() === "enforce" && plan.valid && !plan.denied && plan.changed;
 		return {
+			decision: {
+				denied: this.effectiveMode() === "enforce" && (plan.denied || !plan.valid),
+				correctedInput: wouldCorrectInput,
+				resultCorrected: results?.correction ?? false,
+			},
 			preview: true,
 			stateAdvanced: false,
 			mode: this.effectiveMode(),
+			nonMatchingRules: [...evaluatedIds].filter((id) => !relevantIds.has(id)).length,
 			executionInput: call.input,
-			wouldCorrectInput: this.effectiveMode() === "enforce" && plan.valid && !plan.denied && plan.changed,
-			input: plan,
-			results: results ? [...results.semantic, ...results.guides] : [],
+			wouldCorrectInput,
+			input: { ...plan, evaluations: inputEvaluations },
+			results: resultEvaluations,
 			resultCorrected: results?.correction ?? false,
 			boundary: "No simulated tool executes. The actual inspection call retains ordinary telemetry.",
 		};

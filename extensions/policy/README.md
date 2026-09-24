@@ -82,6 +82,12 @@ public tool schemas, fresh observation state, and an isolated clock. They drive
 the production runtime without executing tools or changing live policy state.
 
 Admission diagnostics are separate from case outcomes and expectation mismatches.
+Each call step reports actual denial, input correction, result error, guidance,
+and expectation mismatches from one runtime execution. Evaluation lists retain
+matches and unavailable evidence, with a distinct non-matching-rule count and
+telemetry coverage. Case state shows only the draft rule's observation period
+and retained guidance; unrelated catalog state is not repeated. Genuinely large
+case output still reports the aggregate byte boundary and omitted cases.
 Checks neither infer intent nor grant approval. The actual inspection invocation
 retains ordinary telemetry. Read the guide for complete bounded requests,
 completion/context sequence examples, and the limits of synthetic evidence.
@@ -616,6 +622,8 @@ unmatched calls. Call explanations expose selected metadata, not arbitrary store
 payloads. Evaluation metadata includes phase and input view, so original and
 final checks retain distinct evidence even when they share a rule id. Unavailable
 command evidence also carries bounded reason codes without raw command text.
+Preview omits false evaluations; recorded call explanations retain the bounded
+per-evaluation metadata, including false original and effective checks.
 Missing records may lie outside the read bound or await persistence;
 absence does not prove that no decision occurred. Records remain untrusted
 historical evidence, not current rule authority.
@@ -627,6 +635,13 @@ error-correction-before-guidance sequence. The tool and `/policy preview` comman
 apply the same bounded inspection validation, including result types, allowed
 fields, text-only content, and total JSON size. Invalid result flags are rejected,
 not converted to successful results.
+
+Preview starts with the effective denial and correction decision. Its evaluation
+lists show only matched, denied, or unavailable evaluations, including guidance
+and correction actions. `nonMatchingRules` counts distinct evaluated rule ids
+with no retained evaluation or command match, not original/effective passes.
+Matched command ids remain in `input.matches`, including command guidance that
+needs a successful result. False evaluations do not occupy a full per-rule list.
 
 Preview neither executes a simulated tool nor changes simulated policy state or
 data. Its response deliberately shows the supplied candidate. That response can
@@ -753,7 +768,19 @@ scope {modelProviders?, models?, cwdPrefixes?}
 ```
 
 Every supplied command constraint must hold in one parsed stage. Command names
-match basenames. `flags` requires all spellings, `anyFlags` requires at least one,
+match basenames. A matched command denial keeps the rule note first and adds
+`Matched command:` with the first matching stage for that rule and input view.
+The segment uses normalized command words, not an exact shell-source slice:
+quotes are normalized, wrappers and redirects are omitted, and nested
+substitutions remain separate stages. Each excerpt is terminal-safe, uses
+best-effort credential redaction, and stays within 240 UTF-8 bytes. The complete
+denial keeps the shared guidance bound, so later excerpts can be omitted.
+Denial notes identify denying rules, not unrelated matched guidance rules.
+A segment from a corrected candidate is labeled `[corrected input omitted]`
+in denials to avoid echoing values from approved data that the caller did not
+supply. Unavailable evidence has no matched segment. Evaluation telemetry excludes
+these excerpts; preview and denial responses expose them only as immediate
+inspection output. `flags` requires all spellings, `anyFlags` requires at least one,
 and `absentFlags` requires none. Without `cli`, the current literal mode matches
 flags literally and treats arguments without a leading hyphen as operands.
 `next` selects the immediate next stage; `later` selects a later stage. Nested

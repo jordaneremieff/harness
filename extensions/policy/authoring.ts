@@ -14,7 +14,7 @@ import {
 } from "./local-rules.ts";
 import type { PolicyRecord } from "./record.ts";
 import { actionEffect, declaredAction, ruleDefinitionRevision, type RuleRecord } from "./rule.ts";
-import { PolicyRuntime } from "./runtime.ts";
+import { PolicyRuntime, relevantEvaluations } from "./runtime.ts";
 import { hasCodeMatcher } from "./shell-rules.ts";
 
 export const AUTHORING_LIMITS = {
@@ -294,11 +294,6 @@ async function runCase(
 			continue;
 		}
 		const input = structuredClone(step.input);
-		const preview = (await runtime.inspect(
-			"preview",
-			{ tool: step.tool, input, ...(step.result ? { result: step.result } : {}) },
-			context,
-		)) as { wouldCorrectInput: boolean; input: { evaluations: unknown[] }; results: unknown[] };
 		const identity = { toolName: step.tool, toolCallId: `check-${index}` };
 		await runtime.toolStart({ ...identity, args: input }, context);
 		const denied = await runtime.toolCall(
@@ -324,31 +319,46 @@ async function runCase(
 		const latest = records.at(-1);
 		const actual = {
 			denied: !!denied,
-			correctedInput: preview.wouldCorrectInput,
+			correctedInput: latest?.policy?.inputCorrected === true,
 			resultError: result.isError,
 			guidance: latest?.annotated === true,
 		};
+		const evaluations = (latest?.policy?.evaluations ?? []) as Array<{
+			id: string; phase: string; truth: unknown; unavailable: boolean; deny: boolean;
+		}>;
+		const relevant = relevantEvaluations(evaluations);
+		const relevantIds = new Set(relevant.map((entry) => entry.id));
 		rows.push({
 			kind: step.kind,
 			at: step.at,
 			turn: step.turn,
 			...actual,
 			input,
-			inputEvaluations: preview.input.evaluations,
-			resultEvaluations: preview.results,
-			completion: latest?.policy,
+			inputEvaluations: relevant.filter((entry) => entry.phase === "input"),
+			resultEvaluations: relevant.filter((entry) => entry.phase === "result"),
+			completionEvaluations: relevant.filter((entry) => entry.phase === "completion"),
+			nonMatchingRules: new Set(evaluations.filter((entry) => !relevantIds.has(entry.id)).map((entry) => entry.id)).size,
+			coverage: latest?.policy?.coverage,
+			corrections: latest?.policy?.corrections,
+			metadata: latest?.policy?.metadata,
 			outcome: latest?.outcome,
 			mismatches: expectations(step, actual),
 		});
 	}
-	const state = await runtime.inspect("state", {}, context);
+	const state = await runtime.inspect("state", {}, context) as {
+		observationPeriods: Array<{ id: string }>;
+		retainedGuidance: Array<{ id: string }>;
+	};
 	await hooks.get("session_shutdown")?.({}, context);
 	return {
 		name: entry.name,
 		scope: caseScope(context),
 		scopeMatches: ruleScopeMatches(record.definition.scope, caseScope(context)),
 		rows,
-		state,
+		state: {
+			observationPeriods: state.observationPeriods.filter((entry) => entry.id === record.id),
+			retainedGuidance: state.retainedGuidance.filter((entry) => entry.id === record.id),
+		},
 	};
 }
 

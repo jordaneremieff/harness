@@ -194,6 +194,68 @@ function shellRule(effect: "block" | "steer" = "block"): RuleRecord {
 		staleOverride: false,
 	};
 }
+describe("compact command inspection", () => {
+	it("omits non-matching evaluations and counts rules once across input views", async (t) => {
+		const records = PACKAGE_CATALOG.map(({ id, matcher, ...definition }): RuleRecord => ({
+			id,
+			source: { kind: "package" },
+			matcher,
+			definition: { ...definition, state: "active" },
+			matcherAvailable: true,
+			staleOverride: false,
+		}));
+		const f = fixture(records, "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+		t.after(() => f.writer.close());
+		for (const command of ["rg -n -m 12 'x' dir/", "cd /x && rg -n 'a' index.ts | head; echo done"]) {
+			const preview = await f.runtime.inspect("preview", { tool: "bash", input: { command } }, f.ctx) as {
+				decision: { denied: boolean }; nonMatchingRules: number;
+				input: { evaluations: unknown[] }; results: unknown[];
+			};
+			assert.ok(Buffer.byteLength(JSON.stringify(preview)) < 2500);
+			assert.equal(preview.decision.denied, false);
+			assert.deepEqual(preview.input.evaluations, []);
+			assert.deepEqual(preview.results, []);
+			assert.equal(preview.nonMatchingRules, records.filter((row) => row.matcher.kind === "code").length + 1);
+		}
+	});
+
+	it("names the matched nested segment without unrelated command text", async (t) => {
+		const f = fixture([shellRule()], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+		t.after(() => f.writer.close());
+		const denied = await f.call("nested", { command: "printf safe && echo ready | wc -c; printf '%s' $(cat notes.md)" });
+		assert.ok(denied);
+		assert.ok(denied.reason.startsWith(`[policy] ${shellRule().definition.note}`));
+		assert.match(denied.reason, /Matched command: cat notes\.md/);
+		assert.doesNotMatch(denied.reason, /printf safe|echo ready/);
+		await f.finish("nested", true);
+		await f.writer.close();
+		assert.doesNotMatch(JSON.stringify(f.records[0].policy), /notes\.md/);
+	});
+
+	it("does not attribute a denial to a matched guidance-only rule", async (t) => {
+		const guide = shellRule("steer");
+		const blocker = rule("restriction", {
+			phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "skip",
+		});
+		const f = fixture([guide, blocker], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+		t.after(() => f.writer.close());
+		const denied = await f.call("mixed", { command: "cat notes.md" });
+		assert.equal(denied?.reason, "[policy] Rule restriction.");
+	});
+
+	it("bounds and redacts segments before denial projection", async (t) => {
+		const blocker: RuleRecord = { ...shellRule(), matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "scan" } } };
+		const f = fixture([blocker], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+		t.after(() => f.writer.close());
+		const denied = await f.call("bounded", { command: `echo unrelated; scan --token sample-private-value ${"界".repeat(500)}` });
+		assert.ok(denied);
+		assert.match(denied.reason, /Matched command: scan --token \[redacted\]/);
+		assert.doesNotMatch(denied.reason, /sample-private-value|unrelated/);
+		assert.ok(Buffer.byteLength(denied.reason.split("Matched command: ")[1]) <= 240);
+		assert.ok(Buffer.byteLength(denied.reason) <= 2048);
+	});
+});
+
 function commandTable(value: string): NamedData {
 	return {
 		kind: "table",
@@ -458,6 +520,8 @@ describe("effective command checks", () => {
 		const decision = await f.call("corrected", input);
 		assert.equal(decision?.block, true);
 		assert.ok(decision);
+		assert.match(decision.reason, /Matched command: \[corrected input omitted\]/);
+		assert.doesNotMatch(decision.reason, /cat notes\.md/);
 		assert.deepEqual(input, { command: "printf safe" });
 		await f.runtime.toolEnd(
 			{
@@ -624,7 +688,7 @@ describe("normalized execution plans", () => {
 			await f.call("previewed", input);
 			const result = await f.result("previewed", false, { failed: true });
 			assert.equal(preview.resultCorrected, result?.isError === true);
-			assert.equal(preview.results.find((row) => row.id === guide.id)?.truth, mode === "enforce");
+			assert.equal(preview.results.find((row) => row.id === guide.id)?.truth, mode === "enforce" ? true : undefined);
 			assert.equal(result?.content !== undefined, mode === "enforce");
 			await f.writer.close();
 		});

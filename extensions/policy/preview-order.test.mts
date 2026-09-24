@@ -143,7 +143,7 @@ function fixture(mode: PolicyMode = "enforce", records = rules()) {
 
 function evaluations(rows: Array<{ id: string; truth: unknown; action: unknown }>) {
 	return rows
-		.filter((row) => row.id !== "rename")
+		.filter((row) => row.id !== "rename" && row.truth !== false)
 		.map(({ id, truth }) => ({ id, truth }))
 		.sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -157,6 +157,7 @@ async function inspectState(f: ReturnType<typeof fixture>) {
 
 describe("preview correction order", () => {
 	for (const mode of ["observe", "notice", "annotate", "enforce"] as const) {
+		const expectedErrorGuide = mode === "enforce" ? true : undefined;
 		it(`${mode} preserves original input and matches runtime result conditions`, async (t) => {
 			const f = fixture(mode);
 			t.after(() => f.writer.close());
@@ -169,7 +170,7 @@ describe("preview correction order", () => {
 			assert.equal(preview.input.denied, false);
 			if (mode === "enforce") assert.deepEqual(preview.input.candidate, { name: "x" });
 			assert.equal(preview.results.find((row) => row.id === "result.error")?.truth, true);
-			assert.equal(preview.results.find((row) => row.id === "guide.error")?.truth, mode === "enforce");
+			assert.equal(preview.results.find((row) => row.id === "guide.error")?.truth, expectedErrorGuide);
 			assert.equal(
 				preview.results.find((row) => row.id === "guide.input")?.truth,
 				mode === "enforce" ? true : "unknown",
@@ -198,8 +199,8 @@ describe("preview correction order", () => {
 		t.after(() => f.writer.close());
 		const result = { isError: false, details: { failed: false } };
 		const preview = await f.preview({ old: "x" }, result);
-		assert.equal(preview.results.find((row) => row.id === "result.error")?.truth, false);
-		assert.equal(preview.results.find((row) => row.id === "guide.error")?.truth, false);
+		assert.equal(preview.results.find((row) => row.id === "result.error"), undefined);
+		assert.equal(preview.results.find((row) => row.id === "guide.error"), undefined);
 		assert.equal((await f.live({ old: "x" }, result))?.isError, undefined);
 	});
 
@@ -208,7 +209,7 @@ describe("preview correction order", () => {
 		t.after(() => f.writer.close());
 		const result = { isError: true, details: { failed: false } };
 		const preview = await f.preview({ old: "x" }, result);
-		assert.equal(preview.results.find((row) => row.id === "result.error")?.truth, false);
+		assert.equal(preview.results.find((row) => row.id === "result.error"), undefined);
 		assert.equal(preview.results.find((row) => row.id === "guide.error")?.truth, true);
 		const patch = await f.live({ old: "x" }, result);
 		assert.equal(patch?.isError, undefined);
