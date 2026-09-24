@@ -571,9 +571,12 @@ export class AgentManager {
 				return remote(client);
 			}, signal, timeoutMs) : (async () => {
 				if (existing) return existing;
+				const held = this.sessions.has(sessionId);
+				const joined = this.opening.has(sessionId);
+				const hadEdge = !requireActive || !parentId || this.childrenOf(parentId).has(sessionId);
 				const opened = await this.openWorker(sessionId, undefined, undefined, undefined, true);
-				if (requireActive && !opened.hasActiveWork()) {
-					await opened.close("steer-refused");
+				if (requireActive && !held && !joined && !opened.hasActiveWork()) {
+					await this.discardRefusedOpen(sessionId, opened, hadEdge ? undefined : parentId);
 					throw new Error(`agent steer requires an active session; ${sessionId} is idle with no queued input; use agent send to start a turn`);
 				}
 				return opened;
@@ -840,6 +843,31 @@ export class AgentManager {
 			: `place ${target}: no binding.`;
 	}
 
+	/** Remove the process-local records for a worker this manager releases. */
+	private retireWorker(sessionId: string, worker: AgentWorkerSession): void {
+		this.associationParents.delete(sessionId);
+		this.retiredFooterStates.push(worker.footerState());
+		this.sessions.delete(sessionId);
+		owners.workers.delete(sessionId);
+		this.publishFooter();
+	}
+
+	/**
+	 * Release a worker this control attempt opened without touching work the
+	 * manager did not create: held workers, joined opens, and pre-existing
+	 * parent edges stay. Only an edge this attempt appended is detached.
+	 */
+	private async discardRefusedOpen(sessionId: string, worker: AgentWorkerSession, createdEdgeFor?: string): Promise<void> {
+		await worker.close("steer-refused");
+		const errors: unknown[] = [];
+		if (createdEdgeFor) {
+			try { if (this.childrenOf(createdEdgeFor).has(sessionId)) this.changeAssociation(createdEdgeFor, sessionId, false); }
+			catch (error) { errors.push(error); }
+		}
+		this.retireWorker(sessionId, worker);
+		if (errors.length) throw new AggregateError(errors, `session ${sessionId} refused; parent association update failed; the session stays stored`);
+	}
+
 	/** Close one session in this process without touching its durable state. */
 	private async release(sessionId: string): Promise<void> {
 		const worker = this.sessions.get(sessionId);
@@ -852,11 +880,7 @@ export class AgentManager {
 			if (!this.childrenOf(parentId).has(sessionId)) continue;
 			try { this.changeAssociation(parentId, sessionId, false); } catch (error) { errors.push(error); }
 		}
-		this.associationParents.delete(sessionId);
-		this.retiredFooterStates.push(worker.footerState());
-		this.sessions.delete(sessionId);
-		owners.workers.delete(sessionId);
-		this.publishFooter();
+		this.retireWorker(sessionId, worker);
 		if (errors.length) throw new AggregateError(errors, `session ${sessionId} closed; saved parent association update failed; no detached run started`);
 	}
 

@@ -164,7 +164,7 @@ remain free text, without placeholder or model-ID suggestions.
 | `list`, `status [session]` | List sessions or request one session's status. |
 | `attach session [provider/model]` | Reopen a session without starting work; optionally repair its idle model choice. |
 | `send session message` | Start the session's next task; active work refuses another task. |
-| `steer session message` | Queue a redirection in the running session. |
+| `steer session message` | Queue a redirection in the running session. A stored session with no live owner and no open worker refuses and names `send` as the turn-start action. |
 | `abort session` | Stop the operation without deleting the session. |
 | `compact session [instructions]` | Run native compaction; abort active work without resuming it. |
 | `command session name [args]` | Invoke a registered extension command, or the host's `reload` or `tree` control. |
