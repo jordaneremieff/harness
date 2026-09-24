@@ -32,7 +32,7 @@ boundaries, rather than a central feature catalog.
   covers model-specific compaction, cache warming, and bug-report privacy without
   adding parallel harness mechanisms.
 - [Prompt templates](docs/conventions/prompts.md) supply the operator's `/`
-  commands, including `/seed [hint]`, which puts a quick next-session brief
+  commands, including `/seed [hint]`, which puts a quick brief for another session
   on the clipboard labeled `seed: <topic>`; its chat confirmation follows
   the clipboard tool's actual outcome, including the history archive result.
 - [Worktrees](docs/conventions/worktrees.md) defines the development and

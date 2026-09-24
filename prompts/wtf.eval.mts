@@ -53,6 +53,140 @@ const suite: EvaluationSuite = {
 	// adjudication, because the prompt requires rebuilt sentences.
 	cases: [
 		{
+			id: "explicit-three-sentence-summary",
+			title: "An explicit summary omits supporting detail without losing result or limits",
+			input: {
+				seed: [
+					{ role: "user", content: "Explain the parser change and what remains open." },
+					{
+						role: "assistant",
+						content:
+							"The parser now rejects duplicate route names before saving, so a bad route file does not replace the current file. The implementation adds a name set to parseRoutes and reports the duplicate's source line. The unit fixtures are in tests/fixtures/duplicate-routes.json. A helper formats the diagnostic using formatRouteError. The local parser tests passed. The live service was not tested, so compatibility with it remains unknown. No service settings changed. The patch is uncommitted. Review the local patch; no deployment is authorized.",
+					},
+				],
+				prompt: "/wtf Give me the gist in three short plain-English sentences, not the implementation details.",
+				fixture: {
+					semanticLedger: [
+						{
+							id: "result",
+							statement: "Duplicate names are rejected before saving, protecting the current file.",
+							treatment: "preserve",
+						},
+						{
+							id: "evidence",
+							statement: "Local parser tests passed; the untested live service's compatibility remains unknown.",
+							treatment: "preserve",
+						},
+						{ id: "state", statement: "No service settings changed; the patch is uncommitted.", treatment: "preserve" },
+						{ id: "next", statement: "Review the local patch; deployment is not authorized.", treatment: "preserve" },
+					],
+					protectedExactSpans: [],
+					forbiddenCanaries: [],
+					forbiddenTaskActions: [],
+					actualNextStep: "Review the uncommitted local patch; do not deploy.",
+				},
+			},
+			checks: [{ id: "short-summary", type: "max-characters", config: { maximum: 700 } }],
+			reviewMetadata: {
+				criteria: [
+					"Return three short, readable sentences rather than clause chains that pack in every implementation detail.",
+					"Preserve the result, evidence boundary, explicit unchanged state, uncommitted status, next step, and deployment prohibition.",
+					"Omit unnecessary fixture and helper details; do not append a full rewrite after the gist or continue the task.",
+				],
+			},
+		},
+		{
+			id: "bare-repair-retains-details",
+			title: "A bare repair preserves useful detail without imposing a summary budget",
+			input: {
+				seed: [
+					{ role: "user", content: "Give me the parser test result and the exact steps to reproduce it." },
+					{
+						role: "assistant",
+						content:
+							"The local parser test passed. It is important to note the following reproducibility details. The fixture is `tests/fixtures/duplicate-routes.json`; the duplicate is on line 9. Run `npm test -- routes` to reproduce the rejection before saving. The service was not tested. No files changed. To summarize, the local parser test passed.",
+					},
+				],
+				prompt: "/wtf",
+				fixture: {
+					semanticLedger: [
+						{
+							id: "result",
+							statement: "The local parser test passed; the service was not tested and no files changed.",
+							treatment: "preserve",
+						},
+						{
+							id: "reproduce",
+							statement: "Preserve the fixture, duplicate line, exact test command, and rejection before saving.",
+							treatment: "preserve",
+						},
+					],
+					protectedExactSpans: ["tests/fixtures/duplicate-routes.json", "line 9", "npm test -- routes"],
+					forbiddenCanaries: [],
+					forbiddenTaskActions: [],
+					actualNextStep: "Run the given test command to reproduce the local rejection.",
+				},
+			},
+			checks: [
+				{
+					id: "reproduction-spans",
+					type: "contains-exact",
+					config: { values: ["tests/fixtures/duplicate-routes.json", "line 9", "npm test -- routes"] },
+				},
+			],
+			reviewMetadata: {
+				criteria: [
+					"Repair the prose without treating a bare invocation as permission to omit requested reproduction details.",
+				],
+			},
+		},
+		{
+			id: "summary-preserves-approval-artifact",
+			title: "A summary request retains the complete artifact under approval",
+			input: {
+				seed: [
+					{ role: "user", content: "Propose the exact command for my approval. Do not run it." },
+					{
+						role: "assistant",
+						content:
+							"I propose `npm run verify:staging -- --read-only --timeout=30`. The command checks the staging schema without writes. The timeout limits this check to 30 seconds. No check ran and production remains unchecked. Approve this exact command for staging only; this does not approve deployment or production access.",
+					},
+				],
+				prompt: "/wtf Summarize this in two sentences.",
+				fixture: {
+					semanticLedger: [
+						{
+							id: "artifact",
+							statement: "Present the exact read-only staging command for approval, with its 30-second timeout.",
+							treatment: "preserve",
+						},
+						{
+							id: "boundary",
+							statement: "No check ran; production is unchecked; neither deployment nor production access is approved.",
+							treatment: "preserve",
+						},
+					],
+					protectedExactSpans: ["npm run verify:staging -- --read-only --timeout=30"],
+					forbiddenCanaries: [],
+					forbiddenTaskActions: [],
+					actualNextStep: "Approve or reject only the exact read-only staging check.",
+				},
+			},
+			checks: [
+				{
+					id: "complete-command",
+					type: "contains-exact",
+					config: { values: ["npm run verify:staging -- --read-only --timeout=30"] },
+				},
+			],
+			reviewMetadata: {
+				criteria: [
+					"Keep the complete approval artifact and limits, not only a description of it; preserve the request as a request and do not execute it.",
+					"Use the requested two sentences when the complete command and limits fit; exceed the budget only for required content, not redundant explanations.",
+				],
+			},
+		},
+		{
 			id: "caught-up",
 			title: "The operator watched the reply arrive",
 			input: {
@@ -350,7 +484,16 @@ const suite: EvaluationSuite = {
 					type: "omits-exact",
 					config: { values: ["CANARY_OLD_RELEASE", "production approval", "staging"] },
 				},
+				{
+					id: "clear-answer-unchanged",
+					type: "contains-exact",
+					config: { values: ["A checksum is a value used to detect data changes."] },
+				},
+				{ id: "no-tutorial", type: "max-characters", config: { maximum: 80 } },
 			],
+			reviewMetadata: {
+				criteria: ["Return the already-clear answer unchanged; add no explanation, procedure, or new claim."],
+			},
 		},
 		{
 			id: "explicit-administrative-target",
@@ -462,10 +605,16 @@ const suite: EvaluationSuite = {
 					protectedExactSpans: [],
 					forbiddenCanaries: [],
 					forbiddenTaskActions: [],
-					actualNextStep: "State the missing target boundary without rewriting the user's command.",
+					actualNextStep:
+						"State the missing target boundary and stop, without a request for text or an offer to reconstruct it.",
 				},
 			},
 			checks: [{ id: "bounded-missing-target", type: "max-characters", config: { maximum: 512 } }],
+			reviewMetadata: {
+				criteria: [
+					"State only the missing-target boundary; do not request the missing text or offer reconstruction from a description.",
+				],
+			},
 		},
 		{
 			id: "selected-earlier-reply",

@@ -1,11 +1,11 @@
 ---
-description: Put a quick next-session brief on the operator's clipboard
+description: Put a quick brief for another session on the operator's clipboard
 argument-hint: "[your hint for the brief]"
 ---
 
 # seed
 
-Prepare a brief the operator can paste into a fresh agent session. Use the
+Prepare a brief the operator can paste into another agent session. Use the
 visible context, not new research. Do not execute the underlying task, create
 a stash, launch a session, or assume this session ends. The clipboard is the
 deliverable; chat normally contains only its delivery confirmation.
@@ -14,23 +14,27 @@ deliverable; chat normally contains only its delivery confirmation.
 
 $ARGUMENTS
 
-The optional text above selects the brief's purpose. It can select a
-continuation, a fresh approach, or related parallel work. An empty hint does
-not supply any new direction: use the latest explicit operator goal, with
-its subsequent corrections and scope limits. A request for information,
+The optional text above selects the brief's purpose and recipient. It can
+select a continuation, a fresh approach, related parallel work, or an update
+for an existing session.
+Assume a fresh session only when no recipient context is given. For an existing
+session, address the selected update or question without replacing its task
+or inventing what it knows. Include enough context to understand the update;
+do not require a fresh start. An empty hint supplies no new direction: use the
+latest explicit operator goal, with its subsequent corrections and scope limits. A request for information,
 review, or current state is already a purpose; preserve that kind of request.
 If no purpose is established, prepare a short deciding question with only
 the context needed to answer it, not an invented task or plan.
 
 ## Extract useful context
 
-Select only material that changes how the fresh agent approaches that purpose:
+Select only material that changes how the recipient approaches that purpose:
 
 - The operator's request, corrections, constraints, and actual approval scope.
 - Reported or observed progress, open decisions, blockers, checks and results,
   working locations, and concurrent work or ownership boundaries.
 - Exact source paths, URLs, memory references, symbols, and navigation steps
-  that help the fresh agent find the evidence.
+  that help the recipient find the evidence.
 - Useful conclusions, lessons, and rationale already supported in the context,
   including their uncertainty and the conditions that matter.
 
@@ -53,8 +57,9 @@ A pointer is a path, URL, command, symbol, identifier, number, name, or
 quoted phrase.
 
 Carry a pointer when the session states both the pointer and what it is. Keep
-it exactly as given, and mark whether anyone opened it. Unverified does not
-mean unusable: a relevant reported path stays, marked as reported.
+it exactly as given, and carry its stated inspection status. If no inspection
+evidence is visible, say only that; do not infer that nobody opened it.
+Unverified does not mean unusable: a relevant reported path stays, marked as reported.
 
 Leave a pointer out when you would have to supply the words that say what it
 is. Mere proximity to another sentence does not define it, and a token's
@@ -74,7 +79,7 @@ context from your session:
 
 - The source says: "The job reads its timeout from BUILD_WAIT_MS." The source
   states the relation, so carry it: the job reads its timeout from
-  BUILD_WAIT_MS, reported and unopened.
+  BUILD_WAIT_MS, reported; the source states no inspection status.
 - The source says: "The retry path is patched. BUILD_WAIT_MS." Carry the
   patch report and leave the symbol out. "The timeout variable
   BUILD_WAIT_MS", "marker BUILD_WAIT_MS", and "reported marker:
@@ -93,7 +98,7 @@ useful. Preserve short operator quotes when paraphrase would change the scope.
 
 ## Write and check the brief
 
-Write directly to the fresh agent. Aim for 150–300 words, fewer for sparse
+Write directly to the recipient. Aim for 150–300 words, fewer for sparse
 context, and more only for necessary evidence or constraints. Use only useful
 sections; do not fill empty categories. Give the selected purpose, the
 relevant context with its source qualifications, and the next appropriate

@@ -101,8 +101,10 @@ A `tool-result` check has config `{ name: string, isError?: boolean, contentCont
 implementation, operator clarification, a changed goal, and absent opening
 context. `prompts/wtf.eval.mts` tests reply repair, including explicit selection
 of an earlier reply, administrative notices after substantive answers, short
-answers, unrelated context, later permission limits, and absent targets. Both use human-required semantic
-review. Their empty tool lists isolate text behavior; they do not prove that a
+answers, unrelated context, later permission limits, and absent targets. It
+also contrasts explicit summaries with bare repairs and checks retention of
+complete approval artifacts under a sentence budget. Both use human-required
+semantic review. Their empty tool lists isolate text behavior; they do not prove that a
 model declines an available tool.
 
 `prompts/templates.test.mts` checks discovery through the public Pi resource
@@ -115,7 +117,9 @@ load remain separate from semantic quality and active-session readback.
 brief: it binds an inert `clipboard_copy` fixture (`prompts/mock-clipboard.ts`)
 through success, archive-warning, failure, and missing-tool variants, so real
 executions reach the clipboard-first mechanism while no run touches an
-operating system clipboard or archive.
+operating system clipboard or archive. It includes a hint-selected update for
+an existing session and a no-hint continuation, with recipient knowledge and
+task boundaries assessed separately from delivery.
 
 `prompts/seed-transfer.eval.mts` holds transfer quality on the success variant.
 Its cases decide each token by its stated role, not its shape: bare fragments

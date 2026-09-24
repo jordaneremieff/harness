@@ -41,11 +41,14 @@ of the corpus.
   advancing the task. Operator clarification informs that reconstruction;
   a later goal change does not replace the opening intent. Missing opening
   context produces an explicit evidence boundary, not an invented intent.
-- `/seed [hint]` puts a quick next-session brief on the operator's clipboard
-  without advancing the task. The optional free-text hint selects the work
-  the brief serves: a continuation, a reset of a faulty frame, or related
-  parallel work. Without a hint, the template selects the latest intent the
-  visible operator context still supports. The brief preserves decisive
+- `/seed [hint]` puts a quick brief for another session on the operator's
+  clipboard without advancing the task. The optional free-text hint selects
+  the purpose and recipient: a continuation, a reset of a faulty frame, or
+  an update for an existing session. An existing recipient gets the selected
+  update without an invented account of its knowledge or a task restart.
+  Without recipient context, the template assumes a fresh session. Without
+  a hint, it selects the latest intent the visible operator context still
+  supports. The brief preserves decisive
   sources with links, navigation that worked, relevant memory references,
   lessons with their basis, and task state marked as last observed. It
   separates operator direction from agent inference; references only what
@@ -53,6 +56,8 @@ of the corpus.
   speakers; and excludes secrets and their fragments, unexplained markers,
   transcript bulk, unsupported frames, and self-praise. It preserves reported
   work as unverified state rather than treating missing evidence as no work.
+  Inspection status stays source-qualified; no visible check does not establish
+  that nobody opened or verified a source.
   It never claims to remove bias. The clipboard is the deliverable, labeled
   `seed: <topic>`; the chat confirmation follows the clipboard tool's actual outcome, including its
   history archive result, and never claims success after a failed write.
@@ -63,15 +68,21 @@ of the corpus.
   [evaluation application](../../evals/README.md).
 - `/wtf [account]` replaces a hard-to-use assistant reply without continuing
   its task. The optional account identifies the fault or target and supplies
-  corrections. Without an explicit target, a mere administrative notice points
-  back to the nearest visible answer for the same task. Short genuine answers
+  corrections. An explicit gist, summary, or short sentence budget permits
+  omission of supporting detail, not lost check results, source qualifications, uncertainty,
+  negative facts, permission limits, or a complete approval artifact. A bare
+  invocation remains a full meaning-preserving repair. Without an explicit
+  target, a mere administrative notice points back to the nearest visible
+  answer for the same task. Short genuine answers
   remain targets. The replacement preserves meaning, later same-task limits,
   permissions, exact copy spans, and successful earlier repairs. Missing target text produces an
   explicit boundary, not a rewrite of the command or a tool result.
 
 These jobs remain separate: `/drift` restores intent; `/wtf` repairs a reply;
-`/seed` briefs a fresh session. None of them executes the underlying work or
-changes persistent configuration.
+`/seed` briefs another session. None of them executes the underlying work or
+changes persistent configuration. Ordinary requests for current status or a
+short explanation need no command. These templates do not make clear, concise
+answers an opt-in behavior.
 
 ## Discovery and changes
 

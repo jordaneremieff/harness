@@ -21,20 +21,23 @@ answer, carrying forward any later correction, changed state, or permission
 limit from the same task. Do not return another notice that the answer exists.
 
 Select by purpose, not length: a short answer, refusal, blocker, or decision is
-still a target. If it is already clear, return it unchanged rather than expand
-it into a tutorial or a new action. Do not skip it for an older, longer reply. Do not cross an
-intervening change of subject or combine independent answers. If the operator
+still a target. With no account, return an already-clear answer unchanged and
+stop. If the account supplies a correction or requests a different form,
+apply only that change; do not add a tutorial or a new action.
+Do not skip it for an older, longer reply. Do not cross an intervening change
+of subject or combine independent answers. If the operator
 explicitly selects an administrative notice, rewrite that notice.
 
 If the target answer is not visible or the reference does not identify one,
-state that boundary without inventing a replacement. Do not treat the operator's command, a tool result, or quoted
-third-party text as the assistant reply. Use other messages only to identify the
+state that boundary and stop. Do not invent a replacement, request the missing
+text, or offer reconstruction. Do not treat the operator's command, a tool
+result, or quoted third-party text as the assistant reply. Use other messages only to identify the
 target, apply operator corrections, or recover necessary session context. Do
 not merge unrelated text from other replies into the replacement.
 
 If the target reply is already a /wtf rewrite, keep every successful repair.
 Use the original failed reply only to recover meaning the rewrite lost. Fix the
-remaining faults without adding repetition or dropping content.
+remaining faults without adding repetition or losing required meaning.
 
 ## The operator's account
 
@@ -43,6 +46,17 @@ $ARGUMENTS
 If text appears above, use it as the primary account of the problem and a
 constraint on the rewrite. Then inspect the full target reply and the visible
 session context it depends on.
+
+A request for a gist, summary, or short sentence budget selects a summary of
+that target. Keep the result, why it matters, and the actual next step or
+pending decision. Omit implementation mechanics, examples, and repetition
+that those points do not need; do not pack them into long clause chains or
+append a full rewrite after the summary. Keep reported check results and
+what those checks cover. Keep the claim's source, scope, uncertainty, explicit negative facts, and
+permission limits. Keep any complete artifact needed for approval and exact
+text needed for the next step. If these do not fit the requested budget,
+exceed it only enough to preserve them. A bare /wtf or a request for clearer
+wording does not select a summary.
 
 ## The reader
 
@@ -85,7 +99,8 @@ answer and necessary same-task context establish; do not design missing parts.
 
 ## Preserve the meaning
 
-Apply corrections from the operator's account. Preserve the target reply's other
+Apply corrections from the operator's account. Except for supporting detail
+omitted under an explicit summary request, preserve the target reply's other
 facts, decisions, instructions, conditions, permissions, comparisons, warnings,
 limitations, and uncertainty. Keep each claim's speaker, strength, scope, and
 time. Keep every qualifier that limits permission, scope, certainty, or safety.
