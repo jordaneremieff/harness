@@ -584,6 +584,71 @@ for (const target of ["primary", "worker"] as const) test(`native ${target} tool
 	} finally { await f.close(); }
 });
 
+test("healthy callers can abort an active target after its own association failure", { timeout: 30_000 }, async (t) => {
+	const f = await fixture();
+	try {
+		const id = await f.spawn("HOLD"); await f.wait(() => f.events.some((event) => event.type === "tool" && event.sessionId === id));
+		const owner = f.owner(); assert.ok(owner);
+		const candidate = (await owner.spawn({ cwd: f.child }, { cwd: f.cwd, model: { provider: "reload-local", id: "controlled" } })).sessionId;
+		const worker = f.worker(id), session = f.childSession(id), native = session.sessionManager, persist = native._persist.bind(native);
+		t.mock.method(native, "_persist", (entry: Parameters<typeof persist>[0]) => {
+			if (entry.type === "custom" && entry.customType === ASSOCIATION_ENTRY) throw new Error("active target association failure");
+			persist(entry);
+		});
+		await assert.rejects(f.tool("agent_attach", { sessionId: candidate }, session), /association write failed/u);
+		assert.equal(owner.associationFailure(f.runtime.session.sessionId), undefined);
+		assert.ok(owner.associationFailure(id));
+		const before = await f.inspect(id), claims = f.claims(); assert.ok(before.execution.current);
+		await assert.rejects(f.tool("agent_detach", { sessionId: id, prompt: "REFUSED" }), /association write failed/u);
+		assert.deepEqual((await f.inspect(id)).execution.current, before.execution.current);
+		assert.match(await f.tool("agent_abort", { sessionId: id }), /abort requested/u);
+		await worker.waitForIdle();
+		const after = JSON.parse(await f.tool("agent_inspect", { sessionId: id }));
+		assert.equal(after.liveOwner, true); assert.equal(after.execution.current, null);
+		assert.match(after.resultPersistence, /not saved/u); assert.equal(JSON.parse(after.result.text).status, "aborted");
+		assert.equal(f.worker(id), worker); assert.deepEqual(f.claims(), claims);
+		assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
+});
+
+test("healthy callers cannot transfer a failed target or discard its unsaved result", { timeout: 30_000 }, async (t) => {
+	const f = await fixture();
+	try {
+		await f.runtime.session.prompt("SAVED_PRIMARY");
+		const id = await f.spawn(), worker = f.worker(id), session = f.childSession(id);
+		await session.prompt("SAVED_WORKER"); await worker.waitForIdle();
+		const owner = f.owner(); assert.ok(owner);
+		const candidate = (await owner.spawn({ cwd: f.child }, { cwd: f.cwd, model: { provider: "reload-local", id: "controlled" } })).sessionId;
+		const native = session.sessionManager, persist = native._persist.bind(native);
+		t.mock.method(native, "_persist", (entry: Parameters<typeof persist>[0]) => {
+			if (entry.type === "custom" && entry.customType === ASSOCIATION_ENTRY) throw new Error("target association failure");
+			persist(entry);
+		});
+		f.state.request = { sessionId: id, name: "agent_attach", args: { sessionId: candidate } };
+		await session.prompt("REQUEST_ATTACH"); await worker.waitForIdle();
+		assert.equal(owner.associationFailure(f.runtime.session.sessionId), undefined);
+		const failure = owner.associationFailure(id); assert.ok(failure);
+		const before = JSON.parse(await f.tool("agent_inspect", { sessionId: id })), claims = f.claims();
+		assert.equal(before.liveOwner, true); assert.match(before.resultPersistence, /not saved/u);
+		assert.equal(JSON.parse(before.result.text).status, "failed");
+		const close = t.mock.method(worker, "close");
+		const launch = t.mock.method((owner as unknown as { detachedRuns: { start(): Promise<never> } }).detachedRuns, "start", async () => { throw new Error("unexpected detached launch"); });
+		const calls: Array<[string, Record<string, unknown>]> = [
+			["agent_detach", { prompt: "REFUSED" }], ["agent_attach", {}], ["agent_attach", { model: "reload-local/controlled" }],
+			["agent_fork", {}], ["agent_rewind", { entryId: "unused", correction: "REFUSED" }],
+			["agent_send", { message: "REFUSED" }], ["agent_steer", { message: "REFUSED" }],
+			["agent_compact", {}], ["agent_command", { name: "replace", args: "" }],
+		];
+		for (const [name, params] of calls) await assert.rejects(f.tool(name, { sessionId: id, ...params }), /association write failed/u, name);
+		assert.match(await f.tool("agent_abort", { sessionId: id }), /no active operation/u);
+		assert.equal(launch.mock.callCount(), 0); assert.equal(close.mock.callCount(), 0);
+		assert.equal(f.worker(id), worker); assert.deepEqual(f.claims(), claims);
+		assert.equal(owner.associationFailure(id), failure);
+		assert.deepEqual(JSON.parse(await f.tool("agent_inspect", { sessionId: id })), before);
+		assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
+});
+
 test("native parent forks and new sessions do not inherit copied ownership entries", { timeout: 30_000 }, async () => {
 	const f = await fixture();
 	try {

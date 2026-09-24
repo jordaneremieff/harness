@@ -634,12 +634,12 @@ export class AgentManager {
 
 	private async openWorker(sessionId: string, trust: boolean | undefined, promptUi?: TrustPromptUi, repairModel?: WorkerModelChoice, control = false): Promise<AgentWorkerSession> {
 		this.assertOpen();
+		this.assertAssociationWriter(sessionId);
 		const parentId = this.admissionParent.getStore();
 		if (parentId) this.assertAssociationWriter(parentId);
 		const existing = this.sessions.get(sessionId);
 		if (existing) {
 			if (repairModel) {
-				this.assertAssociationWriter(sessionId);
 				if ((await existing.status()).operation || existing.hasPendingHostWork()) throw new Error("Model repair requires an idle session with no queued input");
 				if (!(await existing.setModelAction(repairModel.provider, repairModel.modelId))) throw new Error(`Authentication is not configured for ${repairModel.provider}; the stored model is unchanged`);
 			}
@@ -834,6 +834,7 @@ export class AgentManager {
 	private async release(sessionId: string): Promise<void> {
 		const worker = this.sessions.get(sessionId);
 		if (!worker) return;
+		this.assertAssociationWriter(sessionId);
 		this.assertAssociationParents(sessionId);
 		await worker.close("detach");
 		const errors: unknown[] = [];
