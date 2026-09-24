@@ -7,6 +7,10 @@ import { showAgentDashboard, type AgentObservationSources, type DashboardTarget 
 export interface AgentSessionSummary {
 	sessionId: string;
 	name?: string;
+	firstMessage?: string;
+	model?: { provider: string; modelId: string; thinkingLevel: string };
+	provenance?: "live" | "stored";
+	parentSessionIds?: string[];
 	cwd: string;
 	modifiedAt: number;
 	live: boolean;

@@ -1175,6 +1175,43 @@ export class AgentManager {
 		return all.map((metadata) => metadata.id);
 	}
 
+	/** Known parents of one session from live association sources; no store scan. */
+	parentSessionIds(sessionId: string): string[] {
+		const parents: string[] = [];
+		for (const parentId of this.associationParents.keys()) {
+			try { if (this.childrenOf(parentId).has(sessionId)) parents.push(parentId); }
+			catch { /* Unreadable association history reports through its own errors. */ }
+		}
+		return parents;
+	}
+
+	/** Authoritative description of one selected session; reads a live worker or one read-only capture. */
+	async describe(sessionId: string): Promise<{ name?: string; model?: { provider: string; modelId: string; thinkingLevel: string }; provenance: "live" | "stored"; parentSessionIds: string[] }> {
+		const parentSessionIds = this.parentSessionIds(sessionId);
+		const worker = this.sessions.get(sessionId);
+		if (worker) {
+			const status = await worker.status();
+			return {
+				...(status.name ? { name: status.name } : {}),
+				model: { provider: status.model.provider, modelId: status.model.modelId, thinkingLevel: status.model.thinkingLevel },
+				provenance: "live",
+				parentSessionIds,
+			};
+		}
+		const metadata = this.store.locate(sessionId);
+		if (!metadata) return { provenance: "stored", parentSessionIds };
+		const capture = this.store.readOnly(metadata);
+		let name: string | undefined;
+		try { name = capture.manager.getSessionName() || undefined; } catch { name = undefined; }
+		const entries = capture.manager.getEntries();
+		const modelChange = entries.findLast((entry) => entry.type === "model_change");
+		const levelChange = entries.findLast((entry) => entry.type === "thinking_level_change");
+		const model = modelChange?.type === "model_change" && levelChange?.type === "thinking_level_change"
+			? { provider: modelChange.provider, modelId: modelChange.modelId, thinkingLevel: levelChange.thinkingLevel }
+			: undefined;
+		return { ...(name ? { name } : {}), ...(model ? { model } : {}), provenance: "stored", parentSessionIds };
+	}
+
 	/**
 	 * Session rows for command completion, oldest modification first.
 	 *
@@ -1190,12 +1227,17 @@ export class AgentManager {
 				const worker = this.sessions.get(metadata.id);
 				const status = worker && !this.closing && !this.transfers.has(metadata.id) ? await this.trackControl(metadata.id, () => worker.status()) : undefined;
 				const detached = worker ? undefined : detachedBySession.get(metadata.id);
+				const parentSessionIds = this.parentSessionIds(metadata.id);
 				return {
 					sessionId: metadata.id,
 					cwd: metadata.cwd,
 					modifiedAt: metadata.modifiedAt,
 					live: worker !== undefined,
-					...(status?.name ? { name: status.name } : {}),
+					...((status?.name ?? metadata.name) ? { name: status?.name ?? metadata.name } : {}),
+					...(metadata.firstMessage ? { firstMessage: metadata.firstMessage } : {}),
+					...(status ? { model: { provider: status.model.provider, modelId: status.model.modelId, thinkingLevel: status.model.thinkingLevel } } : {}),
+					provenance: status ? "live" as const : "stored" as const,
+					...(parentSessionIds.length ? { parentSessionIds } : {}),
 					...(status ? { operation: status.operation } : {}),
 					...(detached ? { detachedRunId: detached.runId } : {}),
 				};
@@ -1627,6 +1669,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			run: async (args, ctx) => (await getManager()).unbindPlace(resolve(ctx.cwd, args[0])),
 		},
 	]), {
+		describe: async (sessionId) => (await getManager()).describe(sessionId),
 		sessions: async () => (await getManager()).sessionSummaries(),
 		runs: async () => (await getManager()).detachedRunViews(),
 		inspect: async (sessionId, options) => (await getManager()).inspect(sessionId, options),

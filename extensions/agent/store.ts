@@ -12,6 +12,9 @@ export interface AgentSessionMetadata {
 	path: string;
 	createdAt: number;
 	modifiedAt: number;
+	/** Native display name and first message text, when the stored session records them. */
+	name?: string;
+	firstMessage?: string;
 }
 export interface StoredAgentSession {
 	manager: SessionManager;
@@ -239,7 +242,11 @@ export class AgentStore {
 	async list(_context?: Context): Promise<AgentSessionMetadata[]> {
 		const rows = await SessionManager.listAll(this.nativeRoot);
 		return rows.flatMap((row) => {
-			const metadata = { id: row.id, cwd: row.cwd, path: row.path, createdAt: row.created.getTime(), modifiedAt: row.modified.getTime() };
+			const metadata: AgentSessionMetadata = {
+				id: row.id, cwd: row.cwd, path: row.path, createdAt: row.created.getTime(), modifiedAt: row.modified.getTime(),
+				...(row.name ? { name: row.name } : {}),
+				...(row.firstMessage ? { firstMessage: row.firstMessage } : {}),
+			};
 			try { this.validate(metadata); return [metadata]; } catch { return []; }
 		});
 	}

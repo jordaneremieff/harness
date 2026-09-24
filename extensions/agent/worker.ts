@@ -79,6 +79,24 @@ function fragment(text: string, offset: number, maxBytes: number) {
 	return { text: text.slice(offset, end), nextOffset: end < text.length ? end : null, truncated: end < text.length };
 }
 
+function textOf(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content.flatMap((part) => part && typeof part === "object" && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string" ? [(part as { text: string }).text] : []).join("\n");
+}
+
+/** Readable page preview from the entry's own content; message text, tool result text, or a stored name. */
+function entryPreview(entry: SessionEntry): { text: string; truncated: boolean } | undefined {
+	if (entry.type === "session_info") return entry.name ? { text: entry.name, truncated: false } : undefined;
+	if (entry.type !== "message") return undefined;
+	const role = entry.message.role;
+	if (role !== "user" && role !== "assistant" && role !== "toolResult") return undefined;
+	const text = textOf((entry.message as { content?: unknown }).content);
+	if (!text) return undefined;
+	const cut = fragment(text, 0, 1200);
+	return { text: cut.text, truncated: cut.truncated };
+}
+
 /** Owner-only inspection state. Omitted for a read-only snapshot of persisted entries. */
 export interface InspectionOwner {
 	operation: string | null;
@@ -126,7 +144,10 @@ function inspectionEntry(manager: SessionManager, sessionId: string, base: Inspe
 function inspectionPage(all: SessionEntry[], base: InspectionBase, result: SessionEntry | undefined, options: { cursor?: number; limit?: number }) {
 	const end = Math.min(all.length, options.cursor ?? all.length);
 	const start = Math.max(0, end - Math.max(1, Math.min(12, options.limit ?? 6)));
-	const entries = all.slice(start, end).reverse().map((entry) => ({ id: entry.id, parentId: entry.parentId, type: entry.type, role: entry.type === "message" ? entry.message.role : undefined, ...fragment(JSON.stringify(entry), 0, 1200) }));
+	const entries = all.slice(start, end).reverse().map((entry) => {
+		const preview = entryPreview(entry);
+		return { id: entry.id, parentId: entry.parentId, type: entry.type, role: entry.type === "message" ? entry.message.role : undefined, ...fragment(JSON.stringify(entry), 0, 1200), ...(preview ? { preview } : {}) };
+	});
 	return { ...base, result: result?.type === "custom" ? fragment(JSON.stringify(result.data), 0, 2400) : undefined, entries, nextCursor: start || null, order: "newestFirst" as const, detail: "Use entryId and offset for the complete serialized entry." };
 }
 
