@@ -10,6 +10,14 @@ reopen as a primary session with `pi --session <file>`. Stored results (up to
 50KB, with larger submissions marked `[truncated]`) persist in a private store
 that any later session can read.
 
+Use this surface for bounded assistance when the parent retains integration and
+acceptance. Use registered agent session controls for a coherent effort with its
+own continuing owner. Both use ordinary Pi sessions; ownership, not implementation
+ability or words such as "dispatch" and "probe", selects the surface. Honor
+explicit requests for a subagent or independent verification. Work that must
+survive the parent process requires an explicitly detached execution contract;
+background execution alone does not provide it.
+
 No gates, no enterprise controls, no supervisor, no daemon. The store is the
 application's persistence authority; the parent's own tools manage workers.
 

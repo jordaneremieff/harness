@@ -4364,6 +4364,38 @@ describe("ambient subagent status", () => {
 });
 
 describe("registered tool surface", () => {
+	it("delivers ownership-based delegation guidance through native registration and the system prompt", async () => {
+		const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import(
+			"@earendil-works/pi-coding-agent"
+		);
+		const expected =
+			"Use subagent for bounded assistance such as research, independent review, or implementation when the parent retains integration and acceptance. Honor explicit requests for a subagent or independent verification. For a coherent effort that needs its own continuing owner, use the registered agent session controls instead. Both surfaces use ordinary Pi sessions; task ownership, not intelligence or implementation ability, decides the choice. Words such as 'dispatch' or 'probe' alone do not select the surface. Work that must survive the parent process requires an explicitly detached execution contract, not merely a background session.";
+		const settingsManager = SettingsManager.create(agentDir, agentDir);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: agentDir,
+			agentDir,
+			settingsManager,
+			additionalExtensionPaths: [join(dirname(fileURLToPath(import.meta.url)), "index.ts")],
+		});
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd: agentDir,
+			agentDir,
+			settingsManager,
+			resourceLoader,
+			sessionManager: SessionManager.inMemory(),
+			tools: ["subagent"],
+		});
+		try {
+			const registered = session.getAllTools().find((tool) => tool.name === "subagent");
+			assert.ok(registered, "Pi discovers the subagent registration");
+			assert.equal(registered.promptGuidelines?.[0], expected);
+			assert.ok(session.systemPrompt.includes(expected), "the active tool guideline reaches Pi's system prompt");
+		} finally {
+			session.dispose();
+		}
+	});
+
 	it("identifies changed registration fields", () => {
 		const sourceInfo: ToolInfo["sourceInfo"] = {
 			path: join(agentDir, "probe-extension.ts"),
