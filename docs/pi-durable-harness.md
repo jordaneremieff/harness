@@ -237,9 +237,16 @@ Verified 2026-09-24 against active coding-agent 0.87.1
 `dist/core/extensions/types.d.ts`, and `docs/session-format.md`.
 `AgentSession.reload()` retains the SessionManager and emits lifecycle events
 with reason `reload`. `appendEntry()` appends a native custom entry outside
-model context. `getEntries()` covers all branches; session identity changes on
-new sessions and forks. Footer checkpoints therefore use exact native IDs and
-all-branch observations instead of a separate store or branch-relative totals.
+model context, then synchronously emits `entry_appended` to session subscribers.
+Checkpoint callbacks guard reentry and mark an append complete only after it
+returns, so an exception leaves the observation retryable. `SessionManager`
+mutates its in-memory entries before persistence; a failed write can leave an
+in-memory entry. Before the first assistant message, an unflushed manager buffers
+custom entries without creating its session file. The first assistant message
+flushes the buffer. Same-process reload retains these entries; reopening restores
+only files Pi actually saved. `getEntries()` covers all branches; session identity
+changes on new sessions and forks. Footer checkpoints therefore use exact native
+IDs and all-branch observations instead of a separate store or branch-relative totals.
 Controlled native-host and regular/fullscreen terminal checks exercise reload,
 reopening, fork/new isolation, mixed nesting, and visible idle totals. These
 observations do not establish retrospective spend or power-loss durability.

@@ -1,11 +1,32 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { createAgentSessionRuntime, createAgentSessionServices, createAgentSessionFromServices, SessionManager, type AgentSession } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { FOOTER_ENTRY, restoreFooter } from "./footer.ts";
+
+test("native checkpoints stay in memory until the first assistant flushes the session file", () => {
+	const root = mkdtempSync(join(tmpdir(), "footer-native-flush-"));
+	try {
+		const manager = SessionManager.create(root, join(root, "native"));
+		const file = manager.getSessionFile();
+		assert.ok(file);
+		const saved = restoreFooter([], manager.getSessionId());
+		saved.spend.cost = 0.25;
+		manager.appendCustomEntry(FOOTER_ENTRY, saved);
+		assert.deepEqual(restoreFooter(manager.getEntries(), manager.getSessionId()), saved);
+		assert.equal(existsSync(file), false, "a custom checkpoint does not create an unflushed native file");
+		manager.appendMessage(fauxAssistantMessage("done"));
+		assert.equal(existsSync(file), true);
+		assert.deepEqual(restoreFooter(SessionManager.open(file).getEntries(), manager.getSessionId()), saved);
+		saved.spend.cost = 0.5;
+		manager.appendCustomEntry(FOOTER_ENTRY, saved);
+		assert.deepEqual(restoreFooter(SessionManager.open(file).getEntries(), manager.getSessionId()), saved, "later checkpoints append to the saved file");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("native primary reload, tree navigation, fork, new, and reopen keep exact-session totals", { timeout: 30_000 }, async () => {
 	const root = mkdtempSync(join(tmpdir(), "agent-footer-retention-"));
@@ -50,11 +71,23 @@ test("native primary reload, tree navigation, fork, new, and reopen keep exact-s
 	try {
 		await bind(runtime.session);
 		assert.equal(status.get("agent"), "agents 0 · $0.00");
+		const manager = runtime.session.sessionManager;
+		const append = manager.appendCustomEntry.bind(manager);
+		let attempts = 0;
+		manager.appendCustomEntry = (type, data) => {
+			if (type === FOOTER_ENTRY && ++attempts === 1) {
+				append(type, data);
+				throw new Error("controlled checkpoint append failure after in-memory mutation");
+			}
+			return append(type, data);
+		};
 		await runtime.session.prompt("start");
 		const end = Date.now() + 10_000;
 		while (status.get("agent") !== "agents 0 · $0.25" && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 10));
 		assert.equal(status.get("agent"), "agents 0 · $0.25");
 		await runtime.session.waitForIdle();
+		assert.ok(attempts >= 2, "native append failure does not suppress later retries");
+		manager.appendCustomEntry = append;
 		const sessionId = runtime.session.sessionId;
 		const sessionFile = runtime.session.sessionFile;
 		assert.ok(sessionFile);

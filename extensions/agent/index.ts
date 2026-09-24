@@ -1315,6 +1315,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		owner.setHostUI(ctx.hasUI ? ctx.ui : undefined, ctx.mode);
 		const checkpoint = restoreFooter(ctx.sessionManager.getEntries(), sessionId);
 		let persisted = JSON.stringify(checkpoint);
+		let appending = false;
 		let snapshot = { version: 1, publisher: "agent", sessionId, available: true, active: 0, cost: checkpoint.nested.cost, incomplete: checkpoint.nested.incomplete };
 		const publish = () => pi.events.emit(WORK_STATUS_SNAPSHOT, snapshot);
 		footerDisposers.get(sessionId)?.();
@@ -1327,8 +1328,17 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		}, (text) => ctx.ui.setStatus("agent", text), { checkpoint, observe: (totals, saved) => {
 			snapshot = { ...snapshot, active: totals.nested.active, cost: totals.nested.cost, incomplete: saved.nested.incomplete || totals.nested.incomplete || !totals.nested.available };
 			publish();
-			const serialized = JSON.stringify(saved);
-			if (serialized !== persisted) { pi.appendEntry(FOOTER_ENTRY, structuredClone(saved)); persisted = serialized; }
+			if (appending) return;
+			appending = true;
+			try {
+				let serialized = JSON.stringify(saved);
+				while (serialized !== persisted) {
+					// Native append emits entry_appended synchronously. Commit only after it returns.
+					pi.appendEntry(FOOTER_ENTRY, structuredClone(saved));
+					persisted = serialized;
+					serialized = JSON.stringify(saved);
+				}
+			} finally { appending = false; }
 		} });
 		registeredPrimaries.add(sessionId);
 		owner.reportSettledRuns(sessionId);

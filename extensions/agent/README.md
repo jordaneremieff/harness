@@ -65,8 +65,11 @@ assistant responses, reported tool usage, compaction, branch summaries, and
 cache warming. It excludes inherited history on attach, fork, or replacement.
 Reload and replacement of a worker retain already observed spend. Idle and
 completion do not clear totals. Native custom entries save each primary's totals
-under its exact session ID, outside model context. Reload and reopening restore
-that session's totals; tree navigation does not undo incurred costs. New sessions
+under its exact session ID, outside model context. Same-process reload retains
+in-memory checkpoints. Reopening restores checkpoints only from a native session
+file Pi actually saved. Before the first assistant message, Pi buffers custom
+entries in memory without creating the file; the first assistant message flushes
+those entries. Tree navigation does not undo incurred costs. New sessions
 and copied forks start at zero. Multiple primaries have separate checkpoints and
 attachment baselines, so a later primary does not inherit earlier manager spend.
 Each departing primary clears its cell. Last-primary shutdown closes the manager

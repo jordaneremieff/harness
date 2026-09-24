@@ -22,8 +22,8 @@ key, and a consumer must not parse a sibling's status text.
 | Key | Publisher | Meaning | Current texts | Cleared by |
 |---|---|---|---|---|
 | `stash` | `extensions/stash` | Stash distillation progress for `/stash new <hint>`. The publisher owns the animation; the footer renders the text generically. | `stash: running <spinner frame> · <distiller model [thinking]>` while a distillation runs (TUI, 120 ms animation); then `stash: done <id> · <in> in · <out> out · ~$<cost>`, `stash: skipped`, or `stash: failed`. The done totals appear when the distill session reports stats. | 3 seconds after the terminal text, on `/stash abort`, and on `session_shutdown`. |
-| `agent` | `extensions/agent` | Active manager-local ordinary hosts and each primary's cumulative observed native price. Includes nested ordinary hosts, not their subagent price. | `agents 2 · $0.37`; `agents 0 · $0.00` before work. Missing usage adds `+?`. Nonzero or unavailable detached records add a separate `$?` suffix. | Session shutdown clears the cell. Exact-session custom checkpoints restore totals on reload/reopen. Idle and zero stay visible. |
-| `subagent` | `extensions/subagent` | Executing subagent workers and cumulative observed price from two disjoint domains: the session's raw subtree and ordinary-host subagent subtrees. | `subagents 2 · $0.37`; `subagents 0 · $0.00` before work. Missing usage/ownership adds `+?` to count and price. | Session shutdown clears the cell. Exact-session custom checkpoints restore totals on reload/reopen. Idle and zero stay visible. |
+| `agent` | `extensions/agent` | Active manager-local ordinary hosts and each primary's cumulative observed native price. Includes nested ordinary hosts, not their subagent price. | `agents 2 · $0.37`; `agents 0 · $0.00` before work. Missing usage adds `+?`. Nonzero or unavailable detached records add a separate `$?` suffix. | Session shutdown clears the cell. Exact-session checkpoints survive reload; reopen restores saved native files only. Idle and zero stay visible. |
+| `subagent` | `extensions/subagent` | Executing subagent workers and cumulative observed price from two disjoint domains: the session's raw subtree and ordinary-host subagent subtrees. | `subagents 2 · $0.37`; `subagents 0 · $0.00` before work. Missing usage/ownership adds `+?` to count and price. | Session shutdown clears the cell. Exact-session checkpoints survive reload; reopen restores saved native files only. Idle and zero stay visible. |
 
 ## Nested work snapshots
 
@@ -99,9 +99,12 @@ remains incomplete in the checkpoint. Each departing primary clears its own cell
 Shutdown or reload of the last primary closes the manager after final accounting.
 
 Both publishers save meaningful changes through native custom entries, outside
-model context. Checkpoints carry the exact native session ID: same-session
-reload and reopening restore them, while new sessions and copied forks reject
-them. Restore examines all session entries, not just the selected branch;
+model context. Checkpoints carry the exact native session ID. Same-process reload
+retains in-memory checkpoints; reopening restores only a native session file Pi
+actually saved. Before the first assistant message, Pi buffers custom entries in
+memory without creating the file. The first assistant message flushes the buffered
+entries. New sessions and copied forks reject another session's checkpoints.
+Restore examines all session entries, not just the selected branch;
 tree navigation does not undo incurred cost. A restored primary establishes a
 new manager baseline, adding only subsequent observed changes. Separate primaries
 retain separate histories. These totals do not reconstruct unobserved intervals
