@@ -99,6 +99,7 @@ type DetachedWorker = Pick<AgentWorkerSession, "setOnUpdate" | "observe" | "obse
 interface DetachedHost {
 	open(): Promise<DetachedWorker>;
 	close(): Promise<void>;
+	activeHostedSessionIds?(): string[];
 }
 
 async function createDetachedHost(request: DetachedRunRequest): Promise<DetachedHost> {
@@ -107,6 +108,7 @@ async function createDetachedHost(request: DetachedRunRequest): Promise<Detached
 		const manager = new AgentManager(store, await createAgentModelRuntime({ authPath: join(request.agentDir, "auth.json"), modelsPath: join(request.agentDir, "models.json") }), new ProjectTrustStore(request.agentDir), undefined, request.agentDir);
 		return {
 			open: () => manager.openDetachedRun(request.runId, request.sessionId, request.trusted),
+			activeHostedSessionIds: () => manager.activeSessionIds(),
 			close: async () => {
 				await manager.closeAll();
 				await store.close(BACKGROUND_CONTEXT);
@@ -126,6 +128,14 @@ function operationFailure(operationId: string | undefined, result: Awaited<Retur
 	if (operationId && !result) return previous ?? "admitted operation has no terminal result";
 	if (result && result.status !== "completed") return previous ?? (result.error?.message || `operation ${result.status}`);
 	return previous;
+}
+
+/** Report hosted sessions still working at close; undefined when none or unavailable. */
+function hostedWorkFailure(host: DetachedHost | undefined): string | undefined {
+	try {
+		const hosted = host?.activeHostedSessionIds?.() ?? [];
+		return hosted.length ? `hosted sessions closed with active work: ${hosted.join(", ")}; their in-flight turns are aborted` : undefined;
+	} catch (error) { return `hosted session inspection failed: ${errorText(error)}`; }
 }
 
 /** Cancellation requests native session abort; terminal publication follows host cleanup. */
@@ -205,6 +215,8 @@ export async function executeDetachedRun(
 			summary = finalAssistantText(worker.sessionManager().getEntries().filter((entry) => !previous.has(entry.id)));
 		}
 		try { await control?.close(); } catch (error) { addFailure(`control cleanup failed: ${errorText(error)}`); }
+		const hostedFailure = hostedWorkFailure(host);
+		if (hostedFailure) addFailure(hostedFailure);
 		try { await host?.close(); } catch (error) { addFailure(`cleanup failed: ${errorText(error)}`); }
 		options.signal?.removeEventListener("abort", stopFromSignal);
 	}

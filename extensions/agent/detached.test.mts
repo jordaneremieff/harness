@@ -406,6 +406,19 @@ describe("detached control lifecycle", () => {
 		} finally { test.close(); }
 	});
 
+	it("names hosted sessions closed with active work", async () => {
+		const test = controlFixture();
+		try {
+			const code = await executeDetachedRun(test.source, {
+				...test.options,
+				createHost: async () => ({ open: async () => test.worker, close: async () => { test.calls.push("host-close"); }, activeHostedSessionIds: () => ["peer-session"] }),
+			});
+			assert.equal(code, 1);
+			assert.equal(test.runs.get(test.source.runId)?.state, "failed");
+			assert.match(test.runs.get(test.source.runId)?.error ?? "", /peer-session/u);
+		} finally { test.close(); }
+	});
+
 	it("cleans up startup failures without admitting input", async () => {
 		const test = controlFixture();
 		try {

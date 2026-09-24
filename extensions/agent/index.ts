@@ -21,7 +21,7 @@ import type {
 	ExtensionUIContext,
 	ModelRegistry,
 } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, hasTrustRequiringProjectResources, type ModelRuntime, ProjectTrustStore, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, hasTrustRequiringProjectResources, type ModelRuntime, ProjectTrustStore, SettingsManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import { createAgentCommand, type AgentSessionSummary, type AgentCommandAction } from "./command.ts";
@@ -165,6 +165,14 @@ function previewFromStatus(
 
 function previewText(text: string, preview: SessionPreview): AgentToolResult<unknown> {
 	return { content: [{ type: "text", text }], details: { preview } };
+}
+
+/** Retained model selection from stored entries; absent unless both records exist. */
+function storedModel(entries: SessionEntry[]): { provider: string; modelId: string; thinkingLevel: string } | undefined {
+	const modelChange = entries.findLast((entry) => entry.type === "model_change");
+	const levelChange = entries.findLast((entry) => entry.type === "thinking_level_change");
+	if (modelChange?.type !== "model_change" || levelChange?.type !== "thinking_level_change") return undefined;
+	return { provider: modelChange.provider, modelId: modelChange.modelId, thinkingLevel: levelChange.thinkingLevel };
 }
 
 /** Minimal primary-UI handle for trust prompts. */
@@ -1137,6 +1145,11 @@ export class AgentManager {
 		});
 	}
 
+	/** Sessions this manager holds with active work, for finalization reporting. */
+	activeSessionIds(): string[] {
+		return [...this.sessions.entries()].filter(([, worker]) => worker.hasActiveWork()).map(([id]) => id);
+	}
+
 	closeAll(): Promise<void> {
 		if (this.closeTask) return this.closeTask;
 		this.closing = true;
@@ -1203,12 +1216,7 @@ export class AgentManager {
 		const capture = this.store.readOnly(metadata);
 		let name: string | undefined;
 		try { name = capture.manager.getSessionName() || undefined; } catch { name = undefined; }
-		const entries = capture.manager.getEntries();
-		const modelChange = entries.findLast((entry) => entry.type === "model_change");
-		const levelChange = entries.findLast((entry) => entry.type === "thinking_level_change");
-		const model = modelChange?.type === "model_change" && levelChange?.type === "thinking_level_change"
-			? { provider: modelChange.provider, modelId: modelChange.modelId, thinkingLevel: levelChange.thinkingLevel }
-			: undefined;
+		const model = storedModel(capture.manager.getEntries());
 		return { ...(name ? { name } : {}), ...(model ? { model } : {}), provenance: "stored", parentSessionIds };
 	}
 
@@ -1222,28 +1230,30 @@ export class AgentManager {
 	async sessionSummaries(): Promise<AgentSessionSummary[]> {
 		const all = await this.store.list(this.rootContext);
 		const detachedBySession = new Map(this.detachedRuns.list().filter((run) => run.state === "running" || run.state === "launching").map((run) => [run.sessionId, run]));
-		const rows = await Promise.all(
-			all.map(async (metadata): Promise<AgentSessionSummary> => {
-				const worker = this.sessions.get(metadata.id);
-				const status = worker && !this.closing && !this.transfers.has(metadata.id) ? await this.trackControl(metadata.id, () => worker.status()) : undefined;
-				const detached = worker ? undefined : detachedBySession.get(metadata.id);
-				const parentSessionIds = this.parentSessionIds(metadata.id);
-				return {
-					sessionId: metadata.id,
-					cwd: metadata.cwd,
-					modifiedAt: metadata.modifiedAt,
-					live: worker !== undefined,
-					...((status?.name ?? metadata.name) ? { name: status?.name ?? metadata.name } : {}),
-					...(metadata.firstMessage ? { firstMessage: metadata.firstMessage } : {}),
-					...(status ? { model: { provider: status.model.provider, modelId: status.model.modelId, thinkingLevel: status.model.thinkingLevel } } : {}),
-					provenance: status ? "live" as const : "stored" as const,
-					...(parentSessionIds.length ? { parentSessionIds } : {}),
-					...(status ? { operation: status.operation } : {}),
-					...(detached ? { detachedRunId: detached.runId } : {}),
-				};
-			}),
-		);
+		const rows = await Promise.all(all.map((metadata) => this.summaryRow(metadata, detachedBySession)));
 		return rows.sort((left, right) => left.modifiedAt - right.modifiedAt);
+	}
+
+	/** One command-completion row from stored metadata and optional live state. */
+	private async summaryRow(metadata: AgentSessionMetadata, detachedBySession: Map<string, DetachedRunView>): Promise<AgentSessionSummary> {
+		const worker = this.sessions.get(metadata.id);
+		const status = worker && !this.closing && !this.transfers.has(metadata.id) ? await this.trackControl(metadata.id, () => worker.status()) : undefined;
+		const detached = worker ? undefined : detachedBySession.get(metadata.id);
+		const parentSessionIds = this.parentSessionIds(metadata.id);
+		const name = status?.name ?? metadata.name;
+		return {
+			sessionId: metadata.id,
+			cwd: metadata.cwd,
+			modifiedAt: metadata.modifiedAt,
+			live: worker !== undefined,
+			...(name ? { name } : {}),
+			...(metadata.firstMessage ? { firstMessage: metadata.firstMessage } : {}),
+			...(status ? { model: { provider: status.model.provider, modelId: status.model.modelId, thinkingLevel: status.model.thinkingLevel } } : {}),
+			provenance: status ? "live" : "stored",
+			...(parentSessionIds.length ? { parentSessionIds } : {}),
+			...(status ? { operation: status.operation } : {}),
+			...(detached ? { detachedRunId: detached.runId } : {}),
+		};
 	}
 
 	/** Detached run records for command completion; no session is opened. */
