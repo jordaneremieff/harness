@@ -7,12 +7,12 @@ import { createAgentCommand } from "./command.ts";
 import type { DetachedRunView } from "./detached.ts";
 import { defined } from "./test-assertions.mts";
 
-const theme = { fg: (_color: string, value: string) => value } as Theme;
+const theme = { fg: (_color: string, value: string) => value, bg: (_color: string, value: string) => value } as Theme;
 const keys = new Keys(TUI_KEYBINDINGS) as KeybindingsManager;
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const run: DetachedRunView = { runId: "run-1", sessionId: "original", currentSessionId: "current", sessionsRoot: "/sessions", agentDir: "/agent", cwd: "/work", prompt: "Audit parser", logFile: "/log", startedAt: "2026-01-01", pid: 1, launchState: "started", state: "failed", error: "Failure sentinel", summary: "Result sentinel", progress: { runId: "run-1", updatedAt: "2026-01-02", entryCount: 4, lastText: "Progress sentinel" } };
 function inspection(sessionId = "active"): AgentInspection {
-	return { sessionId, liveOwner: false, execution: { current: null, recovery: "read-only snapshot" }, capture: { mode: "read-only", snapshot: true, available: true, bytes: 12, unfinishedTail: true, liveState: "unavailable" }, result: { text: "Retained sentinel", nextOffset: 20, truncated: true }, entries: [{ id: "source-entry", parentId: null, type: "message", role: "assistant", text: "Preview sentinel", nextOffset: 12, truncated: true }], nextCursor: 5, order: "newestFirst", detail: "Use entryId and offset" };
+	return { sessionId, liveOwner: false, execution: { current: null, recovery: "read-only snapshot" }, capture: { mode: "read-only", snapshot: true, available: true, bytes: 12, unfinishedTail: true, liveState: "unavailable" }, result: { text: "Retained sentinel", nextOffset: 20, truncated: true }, entries: [{ id: "source-entry", parentId: null, type: "message", role: "assistant", preview: { text: "Preview sentinel", truncated: true }, text: "Preview sentinel", nextOffset: 12, truncated: true }], nextCursor: 5, order: "newestFirst", detail: "Use entryId and offset" };
 }
 function sources(): AgentObservationSources {
 	return { sessions: async () => [
@@ -33,7 +33,7 @@ describe("agent dashboard observations", () => {
 		const snapshot = await readAgentDashboard(sources());
 		assert.equal(snapshot.sessions.records.length, 2);
 		const text = dashboardText(snapshot);
-		for (const value of ["Active work", "Stored; owner state unavailable", "Session: current", "Failure sentinel", "Result sentinel", "Progress sentinel", "recorded, not a live query", "/agent help"]) assert.ok(text.includes(value), value);
+		for (const value of ["Active", "Stored; owner state unavailable", "Session: current", "Failure sentinel", "Result sentinel", "Progress sentinel", "recorded, not a live query", "/agent help"]) assert.ok(text.includes(value), value);
 	});
 	it("distinguishes empty and unavailable sources and preserves the full error for the reader", async () => {
 		const empty = dashboardText(await readAgentDashboard({ sessions: async () => [], runs: async () => [] }));
@@ -84,7 +84,7 @@ describe("agent dashboard interaction", () => {
 			for (const width of [1, 30, 48, 100]) {
 				const lines = f.panel.render(width);
 				assert.ok(lines.length <= rows - 2); assert.ok(lines.every((line) => visibleWidth(line) <= width));
-				if (width >= 30) assert.match(defined(lines.at(-1)), /q close/);
+				if (width >= 30) assert.match(lines.slice(-3).join("\n"), /q close/);
 			}
 		}
 		f.panel.handleInput("\r"); await tick(); f.dimensions.rows = 6;

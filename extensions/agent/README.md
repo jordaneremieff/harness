@@ -48,23 +48,32 @@ opens a session nor changes task admission, delivery, or lifecycle behavior.
 
 Bare `/agent` reads the existing session inventory and detached-run records
 without opening stored sessions for writing or starting work. Its native overlay
-stays independent of editor widgets and footer height. Compact selectable rows
-show active work first, then recent records. Selection follows the exact ID across
-refreshes. Wide terminals show selected metadata beside the list; narrow terminals
-use one column and the same explicit reader.
+stays independent of editor widgets and footer height. The framed browser puts
+session names first, then the first message or directory when no name exists.
+A second row shows execution state and available model/thinking information.
+Active work precedes recent records. Selection follows the exact ID across
+refreshes. Wide terminals place selected configuration, known parents, first
+message, and exact identity beside the list. Narrow terminals retain a single
+list with the selected configuration below it. The footer shows controls for
+the current view, including return and close.
 
-Use **/** to filter by name, task, directory, or ID, then **Enter** to leave the
-filter. The filter searches the entire returned inventory before the display cap.
+Use **/** to filter by name, first message, task, directory, or ID. **Enter** keeps
+the filter; **Escape** clears it while the filter input has focus. The filter
+searches the entire returned inventory before the display cap.
 The heading separates total, matching, shown, and omitted records. Stored sessions
 have no live owner status; detached progress is a recorded observation, not a live
 status query. Empty and unavailable sources appear separately. Open an unavailable
 source to read its complete error rather than a clipped list preview.
 
 - **Tab** changes sections. **j/k**, configured selection keys, and page keys move
-  the selected row. **Enter** opens its evidence.
-- A session reader shows the owner/capture boundary, current operation when known,
-  retained result preview, owner error, and recent entries with their exact IDs.
-  **[ / ]** selects an entry; **Enter** opens its serialized source. **o** reads an
+  the selected row. **Home/End** jumps to the first/last displayed record.
+  **Enter** opens its evidence.
+- A session reader puts readable message text before serialized source. Its header
+  identifies the session and the owner-state boundary. **[ / ]** selects an entry;
+  **Enter** opens its exact serialized source. Non-text entries without a readable
+  preview explicitly direct the reader to the source. The scrollable detail also
+  includes capture limits, current operation when known, retained result source,
+  owner errors, configuration, and known parents. **o** reads an
   older page and **n** reads the next source chunk. Each request uses the inspection
   service's exact cursor or offset. A final chunk does not include earlier chunks.
 - A run reader shows recorded error, result summary, and progress independently,
@@ -74,15 +83,27 @@ source to read its complete error rather than a clipped list preview.
   endpoint. Read source entries for retained evidence, not an invented full result.
 - **j/k** and page keys scroll readers and help. **b** or the configured cancel key
   returns to the previous view. **q** closes the dashboard. **?** shows key help.
-- **r** refreshes the inventory or requests the newest session inspection. It
-  returns a run reader to a refreshed inventory. There is no poller.
+- **r** refreshes the inventory or requests the newest session inspection and
+  selected configuration. It returns a run reader to a refreshed inventory.
+  There is no poller.
 - **a** opens the native action menu. The dashboard closes its overlay before a
   native dialog and restores the selected view afterward. The same command table,
   validator, and action closures serve slash input and dashboard actions. Only a
   correctly typed session or run argument receives a selected ID; directory and
   creation actions prompt for their own arguments. Interruptive actions require
   confirmation. Cancel leaves work untouched. Results and refusals appear in a
-  scrollable reader. A returned receipt is not proof of task completion.
+  scrollable reader. Without a selected target, the footer labels the chooser
+  **all actions**, and target-dependent actions prompt for an ID. A returned
+  receipt is not proof of task completion.
+
+Selection reads configuration through the manager's read-only description path.
+A live model/thinking pair comes from the local owner. A stored pair appears only
+when the retained session contains both model and thinking-level records; it does
+not imply a live owner. Unread stored rows say **select for model**. The selected
+description supplies the row and detail without a scan of every session file.
+Known parents come only from association sources available to the manager,
+not from directory or name guesses.
+An empty parent list does not establish that the session has no parent elsewhere.
 
 Inspection never takes a writer claim on a stored session. Explicit actions keep
 all existing trust, ownership, cancellation, and refusal rules. Status action text

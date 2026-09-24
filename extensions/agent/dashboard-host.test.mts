@@ -10,7 +10,7 @@ import { projectInspection } from "./worker.ts";
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const keys = new Keys(TUI_KEYBINDINGS) as KeybindingsManager;
-const theme = { fg: (_color: string, text: string) => text } as Theme;
+const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text } as Theme;
 type Factory = (tui: TUI, theme: Theme, keys: KeybindingsManager, done: (request: unknown) => void) => Component;
 
 it("closes and disposes each native overlay before dialogs, then restores selection and the reader", async () => {

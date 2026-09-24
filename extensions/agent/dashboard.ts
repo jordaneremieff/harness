@@ -8,7 +8,14 @@ import type { projectInspection } from "./worker.ts";
 
 export type AgentInspection = ReturnType<typeof projectInspection>;
 export type AgentInspectionOptions = Parameters<typeof projectInspection>[2];
+export interface AgentSessionDescription {
+	name?: string;
+	model?: { provider: string; modelId: string; thinkingLevel: string };
+	provenance: "live" | "stored";
+	parentSessionIds: string[];
+}
 export interface AgentObservationSources {
+	describe?(sessionId: string): Promise<AgentSessionDescription>;
 	sessions(): Promise<AgentSessionSummary[]>;
 	runs(): Promise<DetachedRunView[]>;
 	inspect(sessionId: string, options: AgentInspectionOptions): Promise<AgentInspection>;
@@ -48,25 +55,44 @@ const sessionIdOf = (target: DashboardTarget) => target.kind === "session" ? tar
 function label(target: DashboardTarget): string {
 	if (target.kind === "run") return `${target.run.state} · ${target.run.prompt}`;
 	const row = target.session;
-	return `${row.operation ? "Active work" : row.detachedRunId ? "Detached owner" : row.live ? "Open here" : "Stored; owner state unavailable"} · ${row.name || row.cwd}`;
+	return `${stateOf(target)}${!row.live && !row.detachedRunId ? "; owner state unavailable" : ""} · ${titleOf(target)}`;
 }
-function rosterLabel(target: DashboardTarget): string {
-	const state = target.kind === "run" ? target.run.state : target.session.operation ? "Active" : target.session.detachedRunId ? "Detached" : target.session.live ? "Open" : "Stored";
-	const name = target.kind === "run" ? target.run.prompt : target.session.name || target.session.cwd;
-	return `${displayPreview(idOf(target), 12)} · ${state} · ${displayPreview(name, 300)}`;
+function titleOf(target: DashboardTarget): string {
+	return target.kind === "run" ? target.run.prompt : target.session.name || target.session.firstMessage || target.session.cwd;
+}
+function stateOf(target: DashboardTarget): string {
+	return target.kind === "run" ? target.run.state : target.session.operation ? "Active" : target.session.detachedRunId ? "Detached" : target.session.live ? "Open here" : "Stored";
+}
+function configuration(data?: Partial<Pick<AgentSessionDescription, "model" | "provenance">>): string {
+	return data?.model ? `${data.model.provider}/${data.model.modelId} · ${data.model.thinkingLevel} · ${data.provenance ?? "live"}` : "Model unavailable";
+}
+function descriptionLines(data: AgentSessionDescription): string[] {
+	return [configuration(data), data.parentSessionIds.length ? `Known parents: ${data.parentSessionIds.join(", ")}` : "No parent association in the available records"];
 }
 
+function sessionMetadata(target: Extract<DashboardTarget, { kind: "session" }>): string[] {
+	const row = target.session;
+	return [label(target), `Session: ${row.sessionId}`, `Directory: ${row.cwd}`, `Modified: ${new Date(row.modifiedAt).toISOString()}`, ...(row.operation ? [`Operation: ${row.operation}`] : []), ...(row.detachedRunId ? [`Run: ${row.detachedRunId}`] : []), ...(row.model ? [`Model: ${configuration(row)}`] : []), ...(row.parentSessionIds?.length ? [`Known parents: ${row.parentSessionIds.join(", ")}`] : [])];
+}
 function metadata(target: DashboardTarget): string[] {
-	if (target.kind === "session") {
-		const row = target.session;
-		return [label(target), `Session: ${row.sessionId}`, `Directory: ${row.cwd}`, `Modified: ${new Date(row.modifiedAt).toISOString()}`, ...(row.operation ? [`Operation: ${row.operation}`] : []), ...(row.detachedRunId ? [`Run: ${row.detachedRunId}`] : [])];
-	}
+	if (target.kind === "session") return sessionMetadata(target);
 	const row = target.run;
 	return [label(target), `Run: ${row.runId}`, `Session: ${sessionIdOf(target)}`, `Directory: ${row.cwd}`, `Started: ${row.startedAt}`, ...(row.finishedAt ? [`Finished: ${row.finishedAt}`] : []),
 		"Recorded run data, not a live owner query. Result and progress text are retained summaries, not complete session results.",
 		...(row.error ? [`Error: ${row.error}`] : []), ...(row.summary ? [`Result summary: ${row.summary}`] : []),
 		...(row.progress ? [`Progress recorded: ${row.progress.updatedAt}`, `Entries recorded: ${row.progress.entryCount}`, ...(row.progress.currentTool ? [`Tool: ${row.progress.currentTool}`] : []), ...(row.progress.lastText ? [`Text: ${row.progress.lastText}`] : []), ...(row.progress.error ? [`Progress error: ${row.progress.error}`] : [])] : ["No progress record"]),
 	];
+}
+
+function runPreview(target: Extract<DashboardTarget, { kind: "run" }>): string[] {
+	const run = target.run;
+	return [titleOf(target), `Recorded ${run.state} · not a live query`, "Run summaries are not complete session results.", "", ...(run.error ? [`Error: ${run.error}`] : []), ...(run.progress?.lastText ? ["Latest recorded progress", run.progress.lastText, `Progress recorded: ${run.progress.updatedAt}`, ""] : ["No progress text recorded"]), ...(run.summary ? ["Result summary", run.summary, ""] : []), `Run: ${run.runId}`, `Session: ${sessionIdOf(target)}`, `Directory: ${run.cwd}`, `Started: ${run.startedAt}`, ...(run.finishedAt ? [`Finished: ${run.finishedAt}`] : []), ...(run.progress ? [`Entries recorded: ${run.progress.entryCount}`, ...(run.progress.currentTool ? [`Tool: ${run.progress.currentTool}`] : []), ...(run.progress.error ? [`Progress error: ${run.progress.error}`] : [])] : [])];
+}
+function readerState(reader: Reader): string {
+	const data = reader.inspection;
+	if (!data) return reader.title;
+	if (!data.liveOwner) return "Live owner state unavailable";
+	return data.execution.current ? "Active operation" : "Owner reports no current operation";
 }
 
 /** Independent inventory reads never open a stored session for writing. */
@@ -81,7 +107,7 @@ export async function readAgentDashboard(sources: Pick<AgentObservationSources, 
 
 export function dashboardRecords(section: DashboardSection | undefined, filter: string) {
 	const query = filter.trim().toLocaleLowerCase();
-	const matches = section?.records.filter((target) => `${idOf(target)} ${sessionIdOf(target)} ${target.kind === "session" ? `${target.session.name ?? ""} ${target.session.cwd}` : `${target.run.prompt} ${target.run.cwd}`}`.toLocaleLowerCase().includes(query)) ?? [];
+	const matches = section?.records.filter((target) => `${idOf(target)} ${sessionIdOf(target)} ${target.kind === "session" ? `${target.session.name ?? ""} ${target.session.firstMessage ?? ""} ${target.session.cwd}` : `${target.run.prompt} ${target.run.cwd}`}`.toLocaleLowerCase().includes(query)) ?? [];
 	return { total: section?.records.length ?? 0, matching: matches.length, records: matches.slice(0, ROW_LIMIT), omitted: Math.max(0, matches.length - ROW_LIMIT) };
 }
 export function dashboardText(snapshot: AgentDashboardSnapshot): string {
@@ -105,17 +131,24 @@ function inspectionLines(data: AgentInspection, entryIndex = 0): string[] {
 	const lines = ownerLines(data);
 	if ("entryId" in data) return [...lines, `Entry: ${data.entryId} · offset ${data.offset}`, data.truncated ? `Partial entry; next offset ${data.nextOffset}. n reads the next chunk.` : "Final entry chunk (earlier chunks are not repeated).", data.text];
 	const entry = data.entries[entryIndex];
-	return [...lines, ...(data.result ? [`Retained result${data.result.truncated ? " (partial preview; open its source entry below)" : ""}:`, data.result.text] : ["No retained result in this inspection."]),
-		`Entries: ${data.entries.length}, newest first. ${data.nextCursor === null ? "No older page." : `Older cursor: ${data.nextCursor}. o reads it.`}`,
-		...data.entries.map((item, index) => `${index === entryIndex ? ">" : " "} ${item.id} · ${item.role ?? item.type}${item.truncated ? " · partial preview" : ""}`),
-		...(entry ? [`Selected entry: ${entry.id}. [/] selects; Enter opens its serialized source.`, entry.text] : []),
+	return [
+		...(entry ? [`${entry.role ?? entry.type} · entry ${entryIndex + 1}/${data.entries.length}${entry.truncated ? " · partial preview" : ""}`, entry.preview?.text ?? "Readable preview unavailable. Enter opens the exact source.", ...(entry.preview?.truncated ? ["Partial text. Enter opens the source; n continues it."] : [])] : ["No entries in this snapshot."]),
+		"", `Entries: ${data.entries.length}, newest first. ${data.nextCursor === null ? "No older page." : `Older cursor: ${data.nextCursor}. o reads it.`}`,
+		...data.entries.map((item, index) => `${index === entryIndex ? ">" : " "} ${item.role ?? item.type} · ${item.id}${item.truncated ? " · partial preview" : ""}`),
+		"", ...lines,
+		...(data.result ? ["", `Retained result source${data.result.truncated ? " (partial preview; open its source entry)" : ""}:`, data.result.text] : []),
 	];
 }
 
 /** A component owns only one snapshot and one bounded inspection page/chunk at a time. */
 export class AgentDashboard implements Component {
 	readonly state: DashboardState;
-	private readonly input = new Input({ prompt: "Filter: " });
+	private readonly input = new Input({ prompt: "/ " });
+	private hostFocused = false;
+	private description?: { sessionId: string; data?: AgentSessionDescription; error?: string };
+	private descriptionGeneration = 0;
+	get focused(): boolean { return this.hostFocused; }
+	set focused(value: boolean) { this.hostFocused = value; this.input.focused = value && this.filtering; }
 	private filtering = false;
 	private loading = false;
 	private reading = false;
@@ -138,6 +171,7 @@ export class AgentDashboard implements Component {
 		this.state = state ?? { tab: "sessions", filter: "", selected: {} };
 		this.input.setValue(this.state.filter);
 		if (!this.state.snapshot) void this.refresh();
+		else this.updateDescription();
 	}
 	private view() { return dashboardRecords(this.state.snapshot?.[this.state.tab], this.state.filter); }
 	private selected(): DashboardTarget | undefined {
@@ -151,7 +185,21 @@ export class AgentDashboard implements Component {
 		this.loading = true; this.tui.requestRender();
 		const snapshot = await readAgentDashboard(this.sources);
 		if (this.closed) return;
-		this.state.snapshot = snapshot; this.selected(); this.loading = false; this.tui.requestRender();
+		this.state.snapshot = snapshot; this.selected(); this.loading = false; this.updateDescription(true); this.tui.requestRender();
+	}
+	private updateDescription(force = false, target = this.selected()): void {
+		if (!target || !this.sources.describe) return;
+		const sessionId = sessionIdOf(target);
+		if (!force && this.description?.sessionId === sessionId) return;
+		const generation = ++this.descriptionGeneration;
+		this.description = { sessionId };
+		void this.sources.describe(sessionId).then((data) => {
+			if (this.closed || generation !== this.descriptionGeneration) return;
+			this.description = { sessionId, data }; this.tui.requestRender();
+		}, (error) => {
+			if (this.closed || generation !== this.descriptionGeneration) return;
+			this.description = { sessionId, error: errorText(error) }; this.tui.requestRender();
+		});
 	}
 	private async inspect(sessionId: string, options: AgentInspectionOptions = {}, parent?: Reader): Promise<void> {
 		const generation = ++this.generation;
@@ -178,7 +226,7 @@ export class AgentDashboard implements Component {
 		if (section?.error !== undefined) { this.state.reader = { title: "Source unavailable", lines: [section.error], scroll: 0 }; return; }
 		if (!target) return;
 		if (target.kind === "session") void this.inspect(target.session.sessionId);
-		else this.state.reader = { title: "Detached run record", target, lines: metadata(target), scroll: 0 };
+		else this.state.reader = { title: "Detached run record", target, lines: runPreview(target), scroll: 0 };
 	}
 	handleInput(data: string): void {
 		if (this.closed) return;
@@ -193,16 +241,22 @@ export class AgentDashboard implements Component {
 		else if (matchesKey(data, "a") && this.actions && !this.reading) { this.openActions(); return; }
 		else if (this.state.reader) this.readerInput(data);
 		else this.listInput(data);
+		this.updateListDescription();
 		this.tui.requestRender();
+	}
+	private updateListDescription(): void {
+		if (!this.state.reader) this.updateDescription();
 	}
 	private openActions(): void {
 		const target = this.state.reader?.target ?? this.selected();
 		this.dispose(); this.done({ target });
 	}
 	private filterInput(data: string, cancel: boolean): void {
-		if (cancel || this.keys.matches(data, "tui.select.confirm")) this.filtering = false;
-		else { this.input.handleInput(data); this.state.filter = this.input.getValue(); this.selected(); }
-		this.tui.requestRender();
+		if (cancel || this.keys.matches(data, "tui.select.confirm")) {
+			this.filtering = false; this.input.focused = false;
+			if (cancel) { this.state.filter = ""; this.input.setValue(""); }
+		} else { this.input.handleInput(data); this.state.filter = this.input.getValue(); }
+		this.selected(); this.updateDescription(); this.tui.requestRender();
 	}
 	private helpInput(data: string, cancel: boolean): void {
 		if (cancel || matchesKey(data, "?") || matchesKey(data, "b")) this.help = false;
@@ -210,16 +264,18 @@ export class AgentDashboard implements Component {
 		this.tui.requestRender();
 	}
 	private listInput(data: string): void {
-		if (matchesKey(data, "/")) { this.filtering = true; this.input.setValue(this.state.filter); }
+		if (matchesKey(data, "/")) { this.filtering = true; this.input.focused = this.hostFocused; this.input.setValue(this.state.filter); }
 		else if (matchesKey(data, "r")) void this.refresh();
 		else if (matchesKey(data, "tab")) { this.state.tab = this.state.tab === "sessions" ? "runs" : "sessions"; this.selected(); }
 		else if (this.keys.matches(data, "tui.select.confirm")) this.open();
-		else {
-			const records = this.view().records; const target = this.selected();
-			const index = target ? records.indexOf(target) : 0;
-			const delta = this.direction(data);
-			if (records.length && delta) this.state.selected[this.state.tab] = idOf(records[Math.max(0, Math.min(records.length - 1, index + delta))]);
-		}
+		else this.moveSelection(data);
+	}
+	private moveSelection(data: string): void {
+		const records = this.view().records; const target = this.selected();
+		const index = target ? records.indexOf(target) : 0;
+		const delta = this.direction(data);
+		const next = matchesKey(data, "home") ? 0 : matchesKey(data, "end") ? records.length - 1 : Math.max(0, Math.min(records.length - 1, index + delta));
+		if (records.length && (delta || next !== index)) this.state.selected[this.state.tab] = idOf(records[next]);
 	}
 	private direction(data: string): number {
 		if (this.keys.matches(data, "tui.select.pageDown")) return this.pageSize;
@@ -239,6 +295,7 @@ export class AgentDashboard implements Component {
 		else this.scrollReader(data, reader);
 	}
 	private refreshReader(reader: Reader): void {
+		this.updateDescription(true, reader.target);
 		if (!reader.sessionId) { this.back(); void this.refresh(); return; }
 		const parent = reader.inspection && "entryId" in reader.inspection ? reader.parent?.parent : reader.parent;
 		void this.inspect(reader.sessionId, {}, parent);
@@ -261,52 +318,120 @@ export class AgentDashboard implements Component {
 	private scrollReader(data: string, reader: Reader): void {
 		reader.scroll = Math.max(0, Math.min(Math.max(0, this.readerLength - this.readerHeight), reader.scroll + this.direction(data)));
 	}
+	private controls(width: number): string[] {
+		if (this.filtering) return ["Type to filter · Enter keep · Esc clear"];
+		if (this.help) return ["↑↓ scroll · PgUp/PgDn page", "b back · q close"];
+		if (this.state.reader) return this.readerControls(this.state.reader);
+		const action = this.actionHint(this.selected());
+		return width >= 90 ? ["↑↓ select · Enter open · / filter · Tab runs/sessions · r refresh", `q close · ? help${action} · Home/End jump`]
+			: ["Enter open · / filter · Tab section", `q close · ? help${action} · r refresh`];
+	}
+	private actionHint(target?: DashboardTarget): string {
+		if (!this.actions || this.reading) return "";
+		return target ? " · a actions" : " · a all actions";
+	}
+	private readerControls(reader: Reader): string[] {
+		const data = reader.inspection;
+		let navigation = "↑↓ scroll";
+		if (data && "entries" in data) navigation = `${data.entries.length ? "[/] entry · Enter source" : "No entries"}${data.nextCursor !== null ? " · o older" : ""}`;
+		else if (data && "entryId" in data) navigation = `${data.nextOffset !== null ? "n next chunk · " : ""}r newest`;
+		else if (reader.target?.kind === "run") navigation = "s session · r refresh";
+		return [navigation, `b back · q close · ? help${this.actionHint(reader.target)}`];
+	}
 	render(width: number): string[] {
 		width = Math.max(1, width);
 		const height = Math.max(1, this.tui.terminal.rows - 2);
-		const controls = this.filtering ? "Enter apply · Esc back · type filter" : this.help ? "b back · q close" : this.state.reader ? "b back · q close · ? help" : "Enter open · q close · ? help";
-		if (height === 1) return [truncateToWidth(controls, width)];
-		const contentHeight = height - 1;
-		const lines = this.help ? this.renderHelp(width, contentHeight) : this.state.reader ? this.renderReader(width, contentHeight, this.state.reader) : this.renderList(width, contentHeight);
-		return [...lines.slice(0, contentHeight), this.theme.fg("muted", controls)].map((line) => truncateToWidth(line, width));
+		const framed = width >= 12 && height >= 8;
+		const inner = Math.max(1, width - (framed ? 4 : 0));
+		const controls = this.controls(inner);
+		if (height < 4) return [truncateToWidth(this.state.reader ? "b back · q close · ? help" : "q close · ? help", width)];
+		const footer = height >= 8 ? controls : controls.slice(-1);
+		const contentHeight = height - footer.length - (framed ? 3 : 0);
+		const content = this.help ? this.renderHelp(inner, contentHeight) : this.state.reader ? this.renderReader(inner, contentHeight, this.state.reader) : this.renderList(inner, contentHeight);
+		const pad = (line: string) => { const clipped = truncateToWidth(line, inner); return clipped + " ".repeat(Math.max(0, inner - visibleWidth(clipped))); };
+		const body = Array.from({ length: contentHeight }, (_, i) => content[i] ?? "");
+		if (!framed) return [...body, ...footer].map((line) => truncateToWidth(line, width));
+		const heading = this.help ? " Agent help " : this.state.reader ? " Agents / Detail " : " Agents ";
+		const border = (left: string, text: string, right: string) => this.theme.fg("border", left + truncateToWidth(text, width - 2) + "─".repeat(Math.max(0, width - 2 - visibleWidth(text))) + right);
+		return [border("┌", heading, "┐"), ...body.map((line) => `│ ${pad(line)} │`), border("├", "", "┤"), ...footer.map((line) => `│ ${pad(this.theme.fg("muted", line))} │`), border("└", "", "┘")];
 	}
 	private renderHelp(width: number, contentHeight: number): string[] {
-		let lines = ["Agent dashboard keys", "List: ↑/↓ or j/k select; PgUp/PgDn move; Tab changes section.", "/ filters name, directory or exact ID before the display limit.", "Enter opens evidence; a opens actions; r refreshes; q closes.", "Reader: ↑/↓ or j/k scroll; [/] selects an entry; Enter opens it.", "o reads older entries; n reads the next source chunk; r reads newest.", "s inspects the current session of a detached run record.", "b or configured cancel returns; configured confirm opens.", "Actions use native dialogs, then return here. Escape cancels dialogs.", "Stored owner state is unavailable. Run progress is recorded.", "Result previews and run summaries are not complete source entries."];
+		let lines = ["Find a session", "↑/↓ or j/k selects. PgUp/PgDn pages. Home/End jumps. Tab switches sessions and detached runs.", "/ filters the complete inventory by name, first message, directory or ID. Enter keeps the filter. Escape clears it.", "", "Read the work", "Enter opens the selected session. [/] selects a message. ↑/↓ scrolls. Enter opens exact serialized source; n continues a source chunk. o reads older entries. r reads newest.", "s opens the session from a detached run. b or configured cancel returns one level. q closes the dashboard.", "", "Act without losing context", "a opens native action dialogs for the exact selected target. Escape cancels a dialog. The dashboard returns to the same selection and filter.", "", "Evidence boundaries", "Live describes an owner snapshot, not continuous monitoring. Stored configuration comes from retained entries; its owner state is unknown. Known parents come only from recorded associations.", "Run progress and result summaries are recorded, not a live owner query. Readable entry previews are bounded. Exact source remains available. r refreshes explicitly."];
 		lines = lines.flatMap((line) => wrapTextWithAnsi(line, width));
 		this.helpLength = lines.length; this.pageSize = contentHeight;
 		this.helpScroll = Math.max(0, Math.min(Math.max(0, lines.length - contentHeight), this.helpScroll));
 		return lines.slice(this.helpScroll, this.helpScroll + contentHeight);
 	}
 	private renderReader(width: number, contentHeight: number, reader: Reader): string[] {
-		const body = reader.lines.flatMap((line) => wrapTextWithAnsi(clean(line), width));
-		this.readerHeight = Math.max(1, contentHeight - (contentHeight > 3 ? 2 : 0)); this.pageSize = this.readerHeight; this.readerLength = body.length;
+		const selectedDescription = reader.sessionId && reader.sessionId === this.description?.sessionId ? this.description : undefined;
+		const description = selectedDescription?.data;
+		const heading = reader.target ? displayPreview(titleOf(reader.target), 300) : reader.title;
+		const info = this.readerDescription(selectedDescription);
+		const body = [...info, ...reader.lines].flatMap((line) => wrapTextWithAnsi(clean(line), width));
+		const headerSize = contentHeight > 5 ? 3 : contentHeight > 3 ? 2 : 0;
+		this.readerHeight = Math.max(1, contentHeight - headerSize); this.pageSize = this.readerHeight; this.readerLength = body.length;
 		reader.scroll = Math.max(0, Math.min(Math.max(0, body.length - this.readerHeight), reader.scroll));
-		const entry = reader.inspection && "entries" in reader.inspection ? reader.inspection.entries[reader.entryIndex ?? 0]?.id : undefined;
-		const title = entry ? `${reader.title} · Selected entry: ${entry}` : reader.title;
-		return [...(contentHeight > 3 ? [title, `Lines ${reader.scroll + 1}-${Math.min(body.length, reader.scroll + this.readerHeight)}/${body.length}${this.reading ? " · Read in progress" : ""}`] : []), ...body.slice(reader.scroll, reader.scroll + this.readerHeight)];
+		const selected = reader.inspection && "entries" in reader.inspection ? reader.inspection.entries[reader.entryIndex ?? 0] : undefined;
+		const position = `Lines ${reader.scroll + 1}-${Math.min(body.length, reader.scroll + this.readerHeight)}/${body.length}`;
+		const state = readerState(reader);
+		const header = [this.theme.fg("accent", heading), this.theme.fg("muted", clean(`${state === heading ? "" : state}${description ? ` · ${configuration(description)}` : ""}`)), this.theme.fg("muted", `${selected ? `Selected entry: ${selected.id} · ` : ""}${position}${this.reading ? " · Read in progress" : ""}`)];
+		return [...header.slice(0, headerSize), ...body.slice(reader.scroll, reader.scroll + this.readerHeight)];
+	}
+	private readerDescription(selected?: { data?: AgentSessionDescription; error?: string }): string[] {
+		if (selected?.error) return [`Configuration unavailable: ${selected.error}`, ""];
+		if (selected?.data) return [descriptionLines(selected.data)[1], ""];
+		return selected ? ["Configuration read in progress…", ""] : [];
+	}
+	private previewLines(target: DashboardTarget): string[] {
+		if (target.kind === "run") return runPreview(target);
+		const session = target.session;
+		const current = this.description?.sessionId === session.sessionId ? this.description : undefined;
+		return [titleOf(target), label(target).split(" · ")[0], "", ...(current?.data ? descriptionLines(current.data) : [configuration(session), current?.error ? `Configuration unavailable: ${current.error}` : current ? "Read in progress…" : "Enter reads session details"]), "", ...(session.firstMessage ? ["First message", session.firstMessage, ""] : []), `Directory: ${session.cwd}`, `Session: ${session.sessionId}`, ...(session.operation ? [`Operation: ${session.operation}`] : []), ...(session.detachedRunId ? [`Run: ${session.detachedRunId}`] : []), `Modified: ${new Date(session.modifiedAt).toISOString()}`, "", "Enter reads messages · a opens actions"];
 	}
 	private renderList(width: number, contentHeight: number): string[] {
 		const view = this.view(); const target = this.selected(); const section = this.state.snapshot?.[this.state.tab];
-		const chrome = [this.theme.fg("accent", `Agent dashboard · ${this.state.tab}${this.loading ? " · Read in progress" : ""}`), section?.error !== undefined ? "Source unavailable · Enter reads the error" : `${view.total} total · ${view.matching} matching · ${view.records.length} shown · ${view.omitted} omitted`, `Filter: ${displayPreview(this.state.filter || "(none)", 160)} · ${this.state.snapshot?.observedAt ?? "No snapshot"}`];
-		const header = chrome.slice(0, Math.max(0, Math.min(3, contentHeight - 1)));
-		if (this.filtering) { this.input.focused = true; header.splice(Math.max(0, header.length - 1), 1, ...this.input.render(width)); }
-		this.pageSize = Math.max(1, contentHeight - header.length);
-		const index = target ? view.records.indexOf(target) : 0; const start = Math.floor(index / this.pageSize) * this.pageSize;
-		const roster = view.records.slice(start, start + this.pageSize).map((row) => `${row === target ? ">" : " "} ${rosterLabel(row)}`);
+		const index = target ? view.records.indexOf(target) : 0;
+		const count = `${view.total} total · ${view.matching} matching · ${view.records.length} shown · ${view.omitted} omitted`;
+		const chrome = [this.theme.fg("accent", `${this.state.tab === "sessions" ? "SESSIONS" : "DETACHED RUNS"} · ${target ? index + 1 : 0}/${view.records.length}${this.loading ? " · Read in progress" : ""}`), section?.error !== undefined ? "Source unavailable · Enter reads the error" : count];
+		if (this.filtering) chrome.push(...this.input.render(width));
+		else if (this.state.filter) chrome.push(`Filter: ${displayPreview(this.state.filter, 160)} · / edits or clears`);
+		const header = chrome.slice(0, Math.max(0, Math.min(chrome.length, contentHeight - 1)));
+		const remaining = Math.max(1, contentHeight - header.length);
+		const split = width >= 96;
+		const detailHeight = !split && target && remaining >= 7 ? Math.min(4, Math.floor(remaining / 3)) : 0;
+		const listHeight = remaining - detailHeight;
+		this.pageSize = Math.max(1, Math.floor(listHeight / 2));
+		const start = Math.floor(index / this.pageSize) * this.pageSize;
+		const leftWidth = split ? Math.floor(width * 0.43) : width;
+		const roster = view.records.slice(start, start + this.pageSize).flatMap((row) => this.rosterLines(row, row === target, leftWidth));
 		if (!roster.length) roster.push(this.emptyLabel(section));
-		if (width >= 90 && target) {
-			const leftWidth = Math.floor(width * 0.48); const rightWidth = width - leftWidth - 3;
-			const preview = metadata(target).flatMap((line) => wrapTextWithAnsi(clean(line), rightWidth));
-			return [...header, ...Array.from({ length: this.pageSize }, (_, i) => { const left = truncateToWidth(roster[i] ?? "", leftWidth); return `${left}${" ".repeat(Math.max(0, leftWidth - visibleWidth(left)))} │ ${preview[i] ?? ""}`; })];
+		if (split && target) {
+			const rightWidth = width - leftWidth - 3;
+			const preview = this.previewLines(target).flatMap((line) => wrapTextWithAnsi(clean(line), rightWidth));
+			return [...header, ...Array.from({ length: remaining }, (_, i) => { const left = roster[i] ?? ""; return `${left}${" ".repeat(Math.max(0, leftWidth - visibleWidth(left)))} │ ${preview[i] ?? ""}`; })];
 		}
-		return [...header, ...roster];
+		const detail = target && detailHeight ? this.compactDetail(target, width).slice(0, detailHeight) : [];
+		return [...header, ...Array.from({ length: listHeight }, (_, i) => roster[i] ?? ""), ...detail];
+	}
+	private rosterLines(row: DashboardTarget, selected: boolean, width: number): string[] {
+		const session = row.kind === "session" ? row.session : undefined;
+		const description = selected && this.description?.sessionId === sessionIdOf(row) ? this.description : undefined;
+		const model = description?.data?.model ?? session?.model;
+		const config = model ? `${model.modelId} · ${model.thinkingLevel}` : row.kind === "run" ? "recorded" : description?.data || description?.error ? "model unavailable" : "select for model";
+		const title = truncateToWidth(`${selected ? "›" : " "} ${displayPreview(titleOf(row), 300)}`, width);
+		const line = title + " ".repeat(Math.max(0, width - visibleWidth(title)));
+		return [selected ? this.theme.bg("selectedBg", this.theme.fg("accent", line)) : title, this.theme.fg("muted", truncateToWidth(clean(`  ${stateOf(row)} · ${config}`), width))];
+	}
+	private compactDetail(target: DashboardTarget, width: number): string[] {
+		const current = this.description?.sessionId === sessionIdOf(target) ? this.description.data : undefined;
+		return ["─".repeat(width), clean(target.kind === "session" ? configuration(current ?? target.session) : `Recorded ${target.run.state} · not a live query`), clean(label(target))];
 	}
 	private emptyLabel(section?: DashboardSection): string {
 		if (section?.error !== undefined) return "Enter reads the source error";
 		return this.loading ? "Read in progress…" : "None found.";
 	}
 	invalidate(): void { this.input.invalidate(); }
-	dispose(): void { this.closed = true; this.generation++; }
+	dispose(): void { this.closed = true; this.generation++; this.descriptionGeneration++; this.input.focused = false; }
 }
 
 async function interactiveDashboard(sources: AgentObservationSources, ctx: ExtensionCommandContext, actions?: DashboardActions): Promise<void> {
