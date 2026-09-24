@@ -20,11 +20,11 @@ test("detached directory absence is empty but read failure remains unknown", asy
 	try {
 		manager.registerPrimary("owner", cwd, () => {}, (text) => statuses.push(text));
 		assert.equal(manager.runs(), "detached runs (0):\n(none)");
-		assert.equal(statuses.at(-1), undefined);
+		assert.equal(statuses.at(-1), "agents 0 · $0.00");
 		mkdirSync(store.root, { recursive: true });
 		writeFileSync(join(store.root, "detached"), "not a directory");
 		assert.throws(() => manager.runs(), { code: "ENOTDIR" });
-		assert.match(statuses.at(-1) ?? "", /detached \? recorded\/\? lost\/\$\?/u);
+		assert.match(statuses.at(-1) ?? "", /detached \?\/\? lost\/\$\?/u);
 		await manager.unregisterPrimary("owner");
 	} finally { await manager.closeAll(); await store.close(); rmSync(root, { recursive: true, force: true }); }
 });
@@ -53,7 +53,7 @@ test("manager publishes activity and price to every primary through settlement, 
 	runtime.registerNativeProvider({ id: testModel.provider, name: "Footer test", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
 	const store = new AgentStore({ sessionsRoot: join(root, "sessions") });
 	const manager = new AgentManager(store, runtime, new ProjectTrustStore(agentDir), undefined, agentDir);
-	const statuses: Array<string | undefined> = []; const mirror: Array<string | undefined> = [];
+	const statuses: Array<string | undefined> = []; const mirror: Array<string | undefined> = []; const late: Array<string | undefined> = [];
 	const waitFor = async (predicate: () => boolean) => {
 		while (!predicate()) await new Promise<void>((resolve) => { changed = resolve; });
 	};
@@ -61,23 +61,29 @@ test("manager publishes activity and price to every primary through settlement, 
 	manager.registerPrimary("second", cwd, () => {}, (text) => mirror.push(text));
 	try {
 		const first = await manager.spawn({}, { cwd, model: { provider: testModel.provider, id: testModel.id } });
-		assert.match(statuses.at(-1) ?? "", /agents: 0 active · \$0.00 local · subs 0\+\?\/\$0.00\+\?/u);
+		assert.match(statuses.at(-1) ?? "", /agents 0 · \$0.00/u);
 		await manager.send(first.sessionId, "one");
-		assert.match(statuses.at(-1) ?? "", /agents: 1 active/u);
+		assert.match(statuses.at(-1) ?? "", /agents 1/u);
 		await waitFor(() => pending.length === 1);
 		pending.shift()?.(0.25);
-		await waitFor(() => /agents: 0 active · \$0.25/u.test(statuses.at(-1) ?? ""));
+		await waitFor(() => /agents 0 · \$0.25/u.test(statuses.at(-1) ?? ""));
+		manager.registerPrimary("late", cwd, () => {}, (text) => late.push(text));
+		assert.equal(late.at(-1), "agents 0 · $0.00", "later primaries exclude previous manager spend");
 		const fork = await manager.fork(first.sessionId);
-		assert.match(statuses.at(-1) ?? "", /\$0.25 local/u, "fork history is not charged twice");
+		assert.match(statuses.at(-1) ?? "", /\$0.25/u, "fork history is not charged twice");
 		await manager.send(fork.sessionId, "two");
 		await waitFor(() => pending.length === 1);
 		pending.shift()?.(0.125, true);
-		await waitFor(() => /agents: 0 active · \$0.38/u.test(statuses.at(-1) ?? ""));
+		await waitFor(() => /agents 0 · \$0.38/u.test(statuses.at(-1) ?? ""));
 		assert.equal(statuses.at(-1), mirror.at(-1));
+		assert.equal(late.at(-1), "agents 0 · $0.13");
 		await manager.unregisterPrimary("first");
 		assert.equal(statuses.at(-1), undefined);
 		assert.match(mirror.at(-1) ?? "", /\$0.38/u, "another primary retains the manager");
 		await manager.unregisterPrimary("second");
 		assert.equal(mirror.at(-1), undefined);
+		assert.equal(late.at(-1), "agents 0 · $0.13");
+		await manager.unregisterPrimary("late");
+		assert.equal(late.at(-1), undefined);
 	} finally { await manager.closeAll(); await store.close(); rmSync(root, { recursive: true, force: true }); }
 });

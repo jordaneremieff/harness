@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createEventBus, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
-import { formatAgentFooter, NestedStatus, OwnedSpend, WORK_STATUS_REQUEST, WORK_STATUS_SNAPSHOT } from "./footer.ts";
+import { aggregateFooter, FOOTER_ENTRY, formatAgentFooter, NestedStatus, OwnedSpend, restoreFooter, SessionFooter, WORK_STATUS_REQUEST, WORK_STATUS_SNAPSHOT } from "./footer.ts";
 import { fixture } from "./native-fixture.mts";
 
 const usage = (cost: number): Usage => ({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } });
@@ -67,10 +67,41 @@ test("late first snapshots expose unanchored spend instead of subtracting alread
 
 test("footer distinguishes active, observed zero, missing nested evidence, and detached records", () => {
 	const detached = { exists: false, recorded: 0, unavailable: 0 };
-	assert.equal(formatAgentFooter([], detached), undefined);
+	assert.equal(formatAgentFooter([], detached), "agents 0 · $0.00");
 	const state = { active: true, spend: { cost: 0.0001, incomplete: false }, nested: { active: 0, cost: 0, available: false, incomplete: false } };
-	assert.equal(formatAgentFooter([state], detached), "agents: 1 active · $0.0001 local · subs 0+?/$0.00+?");
-	assert.match(formatAgentFooter([{ ...state, active: false }], { exists: true, recorded: 2, unavailable: 1 }) ?? "", /agents: 0 active.*detached 2 recorded\/1 lost\/\$\?/u);
+	assert.equal(formatAgentFooter([state], detached), "agents 1 · $0.0001");
+	assert.match(formatAgentFooter([{ ...state, active: false }], { exists: true, recorded: 2, unavailable: 1 }) ?? "", /agents 0.*detached 2\/1 lost\/\$\?/u);
+});
+
+test("session checkpoints retain costs across reload and tree navigation but reject copied forks", () => {
+	const manager = SessionManager.inMemory();
+	const id = manager.getSessionId();
+	const first = manager.appendMessage(message(0));
+	const empty = aggregateFooter([]);
+	const footer = new SessionFooter(restoreFooter([], id), empty);
+	const current = { ...empty, spend: { cost: 2, incomplete: false }, nested: { active: 1, cost: 3, incomplete: false, available: true } };
+	footer.observe(current); footer.observe(current);
+	manager.appendCustomEntry(FOOTER_ENTRY, structuredClone(footer.saved));
+	manager.branch(first);
+	assert.equal(restoreFooter(manager.getEntries(), id).spend.cost, 2);
+	assert.equal(restoreFooter(manager.getEntries(), "fork").spend.cost, 0);
+	const restored = new SessionFooter(restoreFooter(manager.getEntries(), id), empty);
+	assert.equal(restored.observe({ ...empty, spend: { cost: 1, incomplete: false } }).spend.cost, 3);
+	const separate = new SessionFooter(restoreFooter([], "second"), current);
+	assert.equal(separate.observe(current).spend.cost, 0);
+	assert.equal(formatAgentFooter([], { exists: true, recorded: 0, unavailable: 0 }), "agents 0 · $0.00");
+});
+
+test("transient nested evidence resolves without poisoning the retained primary total", () => {
+	const empty = aggregateFooter([]);
+	const footer = new SessionFooter(restoreFooter([], "primary"), empty);
+	const pending = { ...empty, nested: { active: 1, cost: 0, incomplete: true, available: true } };
+	assert.equal(footer.observe(pending).nested.incomplete, true);
+	assert.equal(footer.observe({ ...pending, nested: { ...pending.nested, cost: 1, incomplete: false } }).nested.incomplete, false);
+	assert.equal(footer.saved.nested.cost, 1);
+	footer.saved.nested.incomplete = true;
+	assert.equal(footer.observe(empty).nested.incomplete, true, "sealed missing evidence survives source loss");
+	assert.equal(footer.saved.nested.cost, 1);
 });
 
 test("ordinary host receives package snapshots through its real headless extension bus and preserves native spend on reload", async () => {

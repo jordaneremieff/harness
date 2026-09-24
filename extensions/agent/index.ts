@@ -25,7 +25,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import { createAgentCommand, type AgentSessionSummary } from "./command.ts";
 import { renderSendCall, renderSendResult } from "./presentation.ts";
-import { formatAgentFooter, type AgentFooterState, type DetachedFooterState } from "./footer.ts";
+import { aggregateFooter, FOOTER_ENTRY, formatAgentTotals, restoreFooter, SessionFooter, WORK_STATUS_REQUEST, WORK_STATUS_SNAPSHOT, type AgentFooterState, type DetachedFooterState, type FooterCheckpoint, type FooterTotals } from "./footer.ts";
 import { isManagedChild } from "./host-role.ts";
 import { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
 import { DetachedRuns, formatRun, MAX_SUMMARY_CHARS, type DetachedRunView } from "./detached.ts";
@@ -164,7 +164,7 @@ const owners = shared[ownerKey];
 export class AgentManager {
 	private ui: ExtensionUIContext | undefined;
 	private mode: ExtensionContext["mode"] = "print";
-	private readonly primary = new Map<string, { send(message: string, details: unknown): void; cwd: string; status?: (text: string | undefined) => void; published?: string }>();
+	private readonly primary = new Map<string, { send(message: string, details: unknown): void; cwd: string; status?: (text: string | undefined) => void; published?: string; footer: SessionFooter; observe?: (totals: FooterTotals, checkpoint: FooterCheckpoint) => void }>();
 	private readonly retiredFooterStates: AgentFooterState[] = [];
 	private detachedFooter: DetachedFooterState = { recorded: 0, unavailable: 0, exists: false };
 	private readonly opening = new Map<string, Promise<AgentWorkerSession>>();
@@ -196,17 +196,28 @@ export class AgentManager {
 		owners.managers.set(store.root, this);
 	}
 
-	registerPrimary(sessionId: string, cwd: string, send: (message: string, details: unknown) => void, status?: (text: string | undefined) => void): void {
+	registerPrimary(sessionId: string, cwd: string, send: (message: string, details: unknown) => void, status?: (text: string | undefined) => void, retention?: { checkpoint: FooterCheckpoint; observe: (totals: FooterTotals, checkpoint: FooterCheckpoint) => void }): void {
 		if (owners.workers.has(sessionId)) return;
-		this.primary.set(sessionId, { cwd, send, status });
+		const footer = new SessionFooter(retention?.checkpoint ?? restoreFooter([], sessionId), this.footerTotals());
+		this.primary.set(sessionId, { cwd, send, status, footer, observe: retention?.observe });
 		this.refreshDetachedFooter();
 		this.watchRuns();
 	}
 
-	private publishFooter(): void {
-		const states = [...this.retiredFooterStates, ...[...this.sessions.values()].map((worker) => worker.footerState())];
-		const text = formatAgentFooter(states, this.detachedFooter);
+	private footerTotals(): FooterTotals {
+		return aggregateFooter([...this.retiredFooterStates, ...[...this.sessions.values()].map((worker) => worker.footerState())]);
+	}
+
+	private publishFooter(final = false): void {
+		const current = this.footerTotals();
 		for (const primary of this.primary.values()) {
+			const totals = primary.footer.observe(current);
+			if (final) {
+				primary.footer.saved.nested.incomplete ||= totals.nested.incomplete;
+				totals.nested.available = true;
+			}
+			try { primary.observe?.(totals, primary.footer.saved); } catch { /* Observation never controls execution. */ }
+			const text = formatAgentTotals(totals, this.detachedFooter);
 			if (primary.published === text) continue;
 			try { primary.status?.(text); primary.published = text; } catch { /* Presentation does not own execution. */ }
 		}
@@ -246,12 +257,17 @@ export class AgentManager {
 	}
 
 	async unregisterPrimary(sessionId: string): Promise<void> {
-		try { this.primary.get(sessionId)?.status?.(undefined); } catch { /* Continue teardown. */ }
-		this.primary.delete(sessionId);
-		if (this.primary.size === 0) {
-			this.stopRunWatcher();
+		if (!this.primary.has(sessionId)) return;
+		if (this.primary.size === 1) {
 			await this.closeAll();
 			await this.store.close(this.rootContext);
+		} else {
+			const departing = this.primary.get(sessionId);
+			const nested = this.footerTotals().nested;
+			if (departing && (!nested.available || nested.incomplete)) departing.footer.saved.nested.incomplete = true;
+			this.publishFooter();
+			try { this.primary.get(sessionId)?.status?.(undefined); } catch { /* Continue teardown. */ }
+			this.primary.delete(sessionId);
 		}
 	}
 
@@ -852,12 +868,17 @@ export class AgentManager {
 
 	private async closeSessions(): Promise<void> {
 		this.stopRunWatcher();
+		const nested = this.footerTotals().nested;
+		if (!nested.available || nested.incomplete) {
+			for (const primary of this.primary.values()) primary.footer.saved.nested.incomplete = true;
+		}
 		const initial = [...this.sessions.values()].map((worker) => worker.close());
 		void Promise.allSettled(initial);
 		await Promise.allSettled([...this.transfers.values(), ...[...this.controls.values()].flatMap((pending) => [...pending]), ...this.opening.values(), ...this.creations]);
 		const results = await Promise.allSettled(new Set([...initial, ...[...this.sessions.values()].map((worker) => worker.close())]));
 		const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
 		if (errors.length) throw new AggregateError(errors, "agent session cleanup failed; failed owners retain their claims");
+		this.publishFooter(true);
 		for (const id of this.sessions.keys()) owners.workers.delete(id);
 		this.sessions.clear();
 		this.retiredFooterStates.length = 0;
@@ -980,6 +1001,7 @@ function formatStatus(status: WorkerStatus, action: string): string {
 
 export default function registerAgentExtension(pi: ExtensionAPI) {
 	const registeredPrimaries = new Set<string>();
+	const footerDisposers = new Map<string, () => void>();
 	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
 	pi.on("agent_settled", () => { selfCompaction.clear(); });
 	pi.on("session_start", () => { selfCompaction.clear(); });
@@ -1291,14 +1313,29 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		primaryProvider = ctx.model?.provider;
 		const owner = await getManager();
 		owner.setHostUI(ctx.hasUI ? ctx.ui : undefined, ctx.mode);
-		owner.registerPrimary(ctx.sessionManager.getSessionId(), ctx.cwd, (content, details) => {
+		const checkpoint = restoreFooter(ctx.sessionManager.getEntries(), sessionId);
+		let persisted = JSON.stringify(checkpoint);
+		let snapshot = { version: 1, publisher: "agent", sessionId, available: true, active: 0, cost: checkpoint.nested.cost, incomplete: checkpoint.nested.incomplete };
+		const publish = () => pi.events.emit(WORK_STATUS_SNAPSHOT, snapshot);
+		footerDisposers.get(sessionId)?.();
+		footerDisposers.set(sessionId, pi.events.on(WORK_STATUS_REQUEST, (request: unknown) => {
+			const value = request as { version?: unknown; publisher?: unknown; sessionId?: unknown } | null;
+			if (value?.version === 1 && value.publisher === "agent" && value.sessionId === sessionId) publish();
+		}));
+		owner.registerPrimary(sessionId, ctx.cwd, (content, details) => {
 			pi.sendMessage({ customType: "agent.peer", content, display: true, details }, { deliverAs: "steer", triggerTurn: true });
-		}, (text) => ctx.ui.setStatus("agent", text));
+		}, (text) => ctx.ui.setStatus("agent", text), { checkpoint, observe: (totals, saved) => {
+			snapshot = { ...snapshot, active: totals.nested.active, cost: totals.nested.cost, incomplete: saved.nested.incomplete || totals.nested.incomplete || !totals.nested.available };
+			publish();
+			const serialized = JSON.stringify(saved);
+			if (serialized !== persisted) { pi.appendEntry(FOOTER_ENTRY, structuredClone(saved)); persisted = serialized; }
+		} });
 		registeredPrimaries.add(sessionId);
 		owner.reportSettledRuns(sessionId);
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
 		if (registeredPrimaries.delete(sessionId)) await manager?.unregisterPrimary(sessionId);
+		footerDisposers.get(sessionId)?.(); footerDisposers.delete(sessionId);
 	});
 }

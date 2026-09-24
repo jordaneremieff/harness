@@ -48,9 +48,10 @@ retains the native notification behavior described above.
 
 ### Footer activity and price
 
-The `agent` status key reports `agents: 2 active · $0.37 local`. The scope is
-this process's manager for the configured agent store, not the current parent's
-children. Multiple primary sessions see the same totals. A positively identified
+The `agent` status key reports `agents 2 · $0.37`, including `agents 0 · $0.00`
+before work starts. The active count covers this process's manager for the
+configured agent store, not only the current parent's children. Each primary
+retains its own cumulative price from the intervals when it observes that manager. A positively identified
 managed child is not registered as a primary; the package's
 [host identity contract](../../docs/conventions/session-host-roles.md) prevents
 unrelated completion turns during child startup and cyclic manager lifetimes.
@@ -62,28 +63,33 @@ compaction, and queued input. Idle hosts do not count as active.
 The price is reported native usage observed after ownership begins. It includes
 assistant responses, reported tool usage, compaction, branch summaries, and
 cache warming. It excludes inherited history on attach, fork, or replacement.
-Reload and replacement of a worker retain already observed spend; idle or closed
-hosts retain their observed spend until the manager closes. Each departing primary
-clears its own status cell. Shutdown or reload of the last primary closes the
-manager. These are local observation
-intervals, not session-lifetime totals or provider invoices. Missing or malformed
+Reload and replacement of a worker retain already observed spend. Idle and
+completion do not clear totals. Native custom entries save each primary's totals
+under its exact session ID, outside model context. Reload and reopening restore
+that session's totals; tree navigation does not undo incurred costs. New sessions
+and copied forks start at zero. Multiple primaries have separate checkpoints and
+attachment baselines, so a later primary does not inherit earlier manager spend.
+Each departing primary clears its cell. Last-primary shutdown closes the manager
+after it saves final observations. These are cumulative observed session costs,
+not retrospective historical charges or provider invoices. Missing or malformed
 usage adds `+?` to the known price rather than becoming zero.
 
-`subs 1/$0.12` reports those ordinary hosts' subagent subtrees separately. The
-package's [snapshot contract](../../docs/conventions/status-keys.md#nested-work-snapshots)
-follows only subagent ownership edges. It excludes ordinary hosts and their own
-subagent roots from each subagent subtree. The primary's separate `subagents`
-cell does not overlap these subtrees. An absent or stopped publisher produces
-`+?`, not a claim of zero nested work. Subagent prices use an initial observation
-baseline, so retained historical worker spend is not charged again on attach.
+The package's [snapshot contract](../../docs/conventions/status-keys.md#nested-work-snapshots)
+exports the ordinary hosts' subagent observations separately from their own
+price. The subagent extension adds this disjoint contribution to its `subagents`
+cell. Its raw publication still excludes ordinary-host roots, preventing feedback
+or duplicate costs at mixed nesting depths. Missing observation remains explicit.
+A clean close after complete observations does not create an unknown charge.
+Subagent prices use an initial observation baseline, so retained historical
+worker spend is not charged again on attach.
 
 Detached work does not enter local active counts or prices. A separate
-`detached N recorded/$?` suffix counts launching/running records; `M lost`
+`detached N/$?` suffix counts launching/running records; `M lost`
 counts abandoned records. These are recorded states, not live activity queries.
 Detached spend remains unavailable, including after a run finishes. Existing
 run-directory notifications and explicit run queries refresh this projection;
 there is no extra poller or telemetry store. An absent run directory means no
-recorded runs. Other directory read errors leave counts unknown and make the
+recorded runs, so the known-empty suffix is omitted. Other directory read errors leave counts unknown and make the
 run query fail explicitly. A watch error stops automatic refresh; recorded
 state remains at its last observation until an explicit run query or primary
 registration refreshes it.

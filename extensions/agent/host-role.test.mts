@@ -41,7 +41,7 @@ test("primary shutdown follows actual registration rather than a later host clai
 			const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list);
 		},
 	} as unknown as ExtensionAPI);
-	const ctx = { cwd: root, sessionManager: { getSessionId: () => "native" }, ui: { setStatus() {} } } as unknown as ExtensionContext;
+	const ctx = { cwd: root, sessionManager: { getSessionId: () => "native", getEntries: () => [] }, ui: { setStatus() {} } } as unknown as ExtensionContext;
 	const emit = async (name: string) => { for (const handler of handlers.get(name) ?? []) await handler({}, ctx); };
 	const responder = () => bus.on("harness:session-host:request", () => bus.emit("harness:session-host:role", { version: 1, sessionId: "native", role: "managed-child" }));
 	try {

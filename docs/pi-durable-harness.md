@@ -230,6 +230,20 @@ the detailed behavior below.
 These are installed-source boundaries. UI focus and input behavior require
 checks through the interactive host, not merely a successful registration.
 
+## Footer retention boundary
+
+Verified 2026-09-24 against active coding-agent 0.87.1
+`dist/core/agent-session.js`, `dist/core/session-manager.{js,d.ts}`,
+`dist/core/extensions/types.d.ts`, and `docs/session-format.md`.
+`AgentSession.reload()` retains the SessionManager and emits lifecycle events
+with reason `reload`. `appendEntry()` appends a native custom entry outside
+model context. `getEntries()` covers all branches; session identity changes on
+new sessions and forks. Footer checkpoints therefore use exact native IDs and
+all-branch observations instead of a separate store or branch-relative totals.
+Controlled native-host and regular/fullscreen terminal checks exercise reload,
+reopening, fork/new isolation, mixed nesting, and visible idle totals. These
+observations do not establish retrospective spend or power-loss durability.
+
 ## Current-session evidence retrieval
 
 Verified 2026-09-23 against installed 0.87.1 `dist/core/session-manager.d.ts`,

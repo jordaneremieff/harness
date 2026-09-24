@@ -109,12 +109,58 @@ function price(spend: Spend): string {
 
 export interface DetachedFooterState { recorded: number | null; unavailable: number | null; exists: boolean }
 
-export function formatAgentFooter(states: AgentFooterState[], detached: DetachedFooterState): string | undefined {
-	if (!states.length && !detached.exists) return undefined;
-	const active = states.filter((state) => state.active).length;
-	const spend = states.reduce((sum, state) => ({ cost: sum.cost + state.spend.cost, incomplete: sum.incomplete || state.spend.incomplete }), { cost: 0, incomplete: false });
-	const nested = states.reduce((sum, state) => ({ active: sum.active + state.nested.active, cost: sum.cost + state.nested.cost, incomplete: sum.incomplete || state.nested.incomplete, available: sum.available && state.nested.available }), { active: 0, cost: 0, incomplete: false, available: true });
-	const nestedText = nested.active || nested.cost || nested.incomplete || !nested.available
-		? ` · subs ${nested.active}${nested.available ? "" : "+?"}/${price({ cost: nested.cost, incomplete: nested.incomplete || !nested.available })}` : "";
-	return `agents: ${active} active · ${price(spend)} local${nestedText}${detached.exists ? ` · detached ${detached.recorded ?? "?"} recorded${detached.unavailable === null ? "/? lost" : detached.unavailable ? `/${detached.unavailable} lost` : ""}/$?` : ""}`;
+export interface FooterTotals { active: number; spend: Spend; nested: NestedWork }
+export interface FooterCheckpoint { sessionId: string; spend: Spend; nested: Spend }
+export const FOOTER_ENTRY = "agent.footer";
+
+export function aggregateFooter(states: AgentFooterState[]): FooterTotals {
+	return {
+		active: states.filter((state) => state.active).length,
+		spend: states.reduce<Spend>((sum, state) => ({ cost: sum.cost + state.spend.cost, incomplete: sum.incomplete || state.spend.incomplete }), { cost: 0, incomplete: false }),
+		nested: states.reduce<NestedWork>((sum, state) => ({ active: sum.active + state.nested.active, cost: sum.cost + state.nested.cost, incomplete: sum.incomplete || state.nested.incomplete, available: sum.available && state.nested.available }), { active: 0, cost: 0, incomplete: false, available: true }),
+	};
+}
+
+function validSpend(value: unknown): value is Spend {
+	const spend = value as Spend | undefined;
+	return !!spend && typeof spend.cost === "number" && Number.isFinite(spend.cost) && spend.cost >= 0 && typeof spend.incomplete === "boolean";
+}
+
+/** Session identity excludes copied fork checkpoints; all branches describe actual incurred work. */
+export function restoreFooter(entries: readonly SessionEntry[], sessionId: string): FooterCheckpoint {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry.type !== "custom" || entry.customType !== FOOTER_ENTRY) continue;
+		const saved = entry.data as FooterCheckpoint | undefined;
+		if (saved?.sessionId !== sessionId) continue;
+		if (validSpend(saved.spend) && validSpend(saved.nested)) return structuredClone(saved);
+		return { sessionId, spend: { cost: 0, incomplete: true }, nested: { cost: 0, incomplete: true } };
+	}
+	return { sessionId, spend: { cost: 0, incomplete: false }, nested: { cost: 0, incomplete: false } };
+}
+
+/** A primary observes only manager changes after attachment, plus its own saved totals. */
+export class SessionFooter {
+	private previous: FooterTotals;
+	readonly saved: FooterCheckpoint;
+	constructor(saved: FooterCheckpoint, initial: FooterTotals) { this.saved = saved; this.previous = initial; }
+	observe(current: FooterTotals): FooterTotals {
+		for (const key of ["spend", "nested"] as const) {
+			const delta = current[key].cost - this.previous[key].cost;
+			if (delta >= 0 && Number.isFinite(this.saved[key].cost + delta)) this.saved[key].cost += delta;
+			else this.saved[key].incomplete = true;
+			if (key === "spend") this.saved[key].incomplete ||= current[key].incomplete;
+		}
+		this.previous = current;
+		return { active: current.active, spend: { ...this.saved.spend }, nested: { ...current.nested, cost: this.saved.nested.cost, incomplete: this.saved.nested.incomplete || current.nested.incomplete } };
+	}
+}
+
+export function formatAgentFooter(states: AgentFooterState[], detached: DetachedFooterState): string {
+	return formatAgentTotals(aggregateFooter(states), detached);
+}
+
+export function formatAgentTotals(totals: FooterTotals, detached: DetachedFooterState): string {
+	const exception = detached.recorded !== 0 || detached.unavailable !== 0;
+	return `agents ${totals.active} · ${price(totals.spend)}${exception ? ` · detached ${detached.recorded ?? "?"}${detached.unavailable === null ? "/? lost" : detached.unavailable ? `/${detached.unavailable} lost` : ""}/$?` : ""}`;
 }
