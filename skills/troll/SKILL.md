@@ -26,7 +26,7 @@ Press a claim with a tight, full-weight argument, from the operator's angle and 
 
 ## Run sheet
 
-1. **Intake.** Restate the operator's angle in its strongest form, or derive the challenge from the instinct. Ask at most one clarifying question, and only where the material cannot decide: an ambiguous explicit angle on a redirect face, a named session whose recent words expose no contestable position, or a missing claim on named-session intake. Never ask for an angle when the operator gave an instinct; derive the challenge instead. Acquire the target material: the operator's paste governs; for a named agent session with no paste, pull the target's own recent messages.
+1. **Intake.** Restate the operator's angle in its strongest form, or derive the challenge from the instinct. Ask at most one clarifying question, and only where the material cannot decide: an ambiguous explicit angle on a redirect face, a named session whose recent words expose no contestable position, a missing claim on named-session intake, or a name that resolves to more than one session. Never ask for an angle when the operator gave an instinct; derive the challenge instead. Acquire the target material: the operator's paste governs; for a named agent session with no paste, pull the target's own recent messages.
 2. **Face and lane.** Redirect or probe; for a redirect, pick the delivery lane by target type. State the face and lane in the confirmation.
 3. **Ground.** Work from what the operator supplied plus the pillar corpus or armory. Independent investigation stays off-limits.
 4. **Name the failure mode.** One sentence, then map it through the armory, or flag a derivation candidate.
