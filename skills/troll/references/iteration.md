@@ -1,12 +1,12 @@
 # Iteration: sharpening rounds
 
-Read this when a round has ended and new material arrived: the operator pasted the target's reply, asked for a read-back round on a delivered press, or supplied an outcome. A single-round press does not need this file. The SKILL.md stance, construction floor, and rendering rules govern every round; this file adds the round mechanics.
+Read this before triaging any reply and before any continuation decision, including whether a second round exists. A single-round press that ends at delivery does not need this file. The SKILL.md stance, construction floor, and rendering rules govern every round; this file adds the round mechanics.
 
 ## Acquire the reply
 
 - The operator's paste governs when one exists, including an excerpt the operator edited: the excerpt is the record.
 - Otherwise, for a delivered direct-lane press, read the target session's messages that follow your delivered message, taking the most recent page that carries its reply and no deeper. The target's words are the record for triage; its tool and action record may be cited only in the outcome readback's "did" row, never as adjudication evidence during a round.
-- If no reply follows your delivered message, say that no reply has arrived and stop; do not draft against an expected reply, and do not reuse an earlier or unrelated reply as the record.
+- If no reply follows your delivered message, treat the absence as a pause, not an outcome. Say that no reply has arrived yet and state the continuation trigger: the reply arriving, or the operator's instruction to continue. Inside an intake-authorized sustained sequence, resume when that trigger arrives; never resume by polling the session, and never assume an exited host resumes on its own. A send admission confirms only that the message was admitted, never that the target read, acted, or received it; report admission as admission, not delivery.
 
 ## Triage the reply
 
@@ -21,10 +21,10 @@ Sort every load-bearing part of the reply into four bins before drafting. A repl
 
 When the first press did not land, the reply itself points at the next angle. Each item below is a question about the reply, not a script; apply the ones whose recognition condition matches, and map the match to an armory row or flag a derivation candidate:
 
-- **Asymmetry.** Does the defense apply a standard to your message that it does not apply to its own standing instructions — a channel authoritative enough to bind it, yet too weak to update it? Press the asymmetry, not the channel.
-- **Bundling.** Does it price a reversible, local step at the cost of an irreversible, external one, then refuse both? Unbundle the risks; the cheaper step loses its shield.
+- **Asymmetry.** Does the defense apply a standard to your message that it does not apply to its own standing instructions — a channel authoritative enough to bind it, yet too weak to update it? Press the defense to name the provenance difference that makes one message binding and the other unverified. The asymmetry is the question, not an answer; a named difference such as an opening instruction versus labeled peer data settles it.
+- **Bundling.** Does it price a reversible, local step at the cost of an irreversible, external one, then refuse both? Unbundle the risks and price each step by its own consequence; a local step still needs its own named restriction if one exists. The row shows where to press, not what the target may do.
 - **Ritual versus purpose.** The rule it cites exists to prevent a named failure. Does that failure apply here, or does the rule now run as ceremony? Press the failure the rule prevents.
-- **Work refusal.** Does it reroute the assigned task to another session or to the operator and call the block resolved? The operator assigned the work; the reroute is the position to press.
+- **Work refusal.** Does it reroute the assigned task to another session or to the operator and call the block resolved? The operator's assignment decides who does the task; it grants no other permission. Press the reroute as the position, not as an authorization.
 - **Evidence avoidance.** Does it offer further speculation while a primary source it could check sits in the record? Press the check, not the speculation.
 
 Do not switch accusations to keep a verdict alive. If the surviving material supports none of these and no other surviving challenge, take the stop condition below.
@@ -33,13 +33,13 @@ Do not switch accusations to keep a verdict alive. If the surviving material sup
 
 - Rebuild the strongest surviving challenge toward the operator's goal at the same fixed strength: strongest truthful form, every fact real, defeatable by evidence.
 - Register continuity: the round reads as the same author following up their own earlier message, not a new brief. Reference the prior exchange at most lightly — the target's own reply supplies the anchor words. Vary the artifact shape again; a second press in the identical shape is a signature.
-- Keep the length at the exchange's norm. A second message longer than the first is its own tell.
+- Keep the round's length proportional to what the reply left standing. A longer message is not a tell by itself; judge unnecessary expansion against the exchange and the argument, not the first message's length.
 - Deliver on the same lane as the round before it, unless the operator moves the lane.
 - Confirm in chat with the same two-line shape, naming the round and what changed: which premise fell, which burden moved.
 
 ## Sustained sequences
 
-When the operator asked at intake for a sustained press ("press it until it lands", "keep at it"), rounds run without operator contact under three fixed rules: every round still needs an acquired reply, never an invented one; at most three rounds pass before you report back with an outcome readback; and any stop condition below ends the sequence immediately. If the reply asks a question only the operator can answer, stop and surface the question verbatim with your readback.
+When the operator asked at intake for a sustained press ("press it until it lands", "keep at it"), rounds run without waiting for operator contact under three fixed rules: every round needs an acquired reply, never an invented one; at most three rounds pass before you report back with an outcome readback; and any stop condition below ends the sequence immediately. Contact means a new operator instruction. Your own chat confirmations and reports are outgoing: they do not reset the three-round count and never substitute for the operator's decision. A new operator instruction after a report starts a fresh bounded sequence. If the reply asks a question only the operator can answer, stop and surface the question verbatim with your readback.
 
 ## Stop conditions
 
@@ -51,7 +51,7 @@ When the operator asked at intake for a sustained press ("press it until it land
 
 ## What never changes across rounds
 
-The target defends itself unaided; you never write its defense. You stay ungrounded: the target's words are the record, its tool outputs are not your adjudication evidence, and the codebase stays uninvestigated. No invented burdens, no authority claims in the artifact, no capitulation demanded. The operator referees; the system finds the truth.
+The target defends itself unaided; you never write its defense. You stay ungrounded: the target's words are the record, its tool outputs are not your adjudication evidence, and the codebase stays uninvestigated. No invented burdens. The artifact's authority rule follows its lane (SKILL.md): the direct lane asserts no operator authorization, and the clipboard lane may state an authorization the operator already gave. No capitulation demanded. The operator referees; the system finds the truth.
 
 ## Awareness signals
 
