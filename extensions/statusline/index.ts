@@ -32,7 +32,7 @@ import {
 import { scanSession } from "./metrics.ts";
 
 const TICK_MS = 5_000;
-/** Footer reset, used to bound each status cell's own SGR state. */
+/** Full reset bounds each label and status cell's own SGR state. */
 const RESET = "\x1b[0m";
 
 function thinkingColorKey(level: string): ThemeColor {
@@ -52,7 +52,7 @@ function buildLine1(
 	const model = ctx.model;
 
 	const modelName = sanitizeDisplay(model?.name || model?.id || "no-model");
-	let modelSeg = fg("accent", modelName);
+	let modelSeg = `${fg("accent", modelName)}${RESET}`;
 	// The thinking bracket follows the model's declared reasoning capability,
 	// not a provider-name check: providers whose Pi thinking level is inert
 	// register reasoning: false and the bracket disappears on its own.
@@ -100,10 +100,10 @@ function buildLine2(
 	width: number,
 ): string {
 	// --- Line 2: project + git + extension statuses ---
-	let project = fg("muted", sanitizeDisplay(folderLabel(ctx.cwd || process.cwd(), process.env.HOME)));
+	let project = `${fg("muted", sanitizeDisplay(folderLabel(ctx.cwd || process.cwd(), process.env.HOME)))}${RESET}`;
 	const branch = footerData.getGitBranch();
 	if (branch) {
-		project += fg("dim", ` (${sanitizeDisplay(branch)})`);
+		project += `${fg("dim", ` (${sanitizeDisplay(branch)})`)}${RESET}`;
 	}
 	// Each status is bracketed by the reset so a kept SGR sequence cannot bleed
 	// its color into the next cell or the rest of the footer.

@@ -237,13 +237,13 @@ describe("footer render", () => {
 		const [line1, line2] = footer.render(120);
 		assert.ok(visibleWidth(line1) <= 120);
 		assert.ok(visibleWidth(line2) <= 120);
-		assert.match(line1, /Test Model \[high\]/);
+		assert.ok(line1.includes("Test Model\x1b[0m [high]"));
 		assert.match(line1, /25%/);
 		assert.match(line1, /50k\/200k/);
 		assert.match(line1, /~\$0\.42/);
 		assert.match(line1, /●/);
 		assert.match(line1, /90% hit/);
-		assert.equal(line2, "/tmp/statusline-test (main) │ \x1b[0mlint ok\x1b[0m");
+		assert.equal(line2, "/tmp/statusline-test\x1b[0m (main)\x1b[0m │ \x1b[0mlint ok\x1b[0m");
 	});
 
 	it("includes recorded costs from all session entries, not only the current branch", async () => {
@@ -312,6 +312,35 @@ describe("footer render", () => {
 		assert.match(lines[1], /project next/);
 		for (const line of lines) assert.doesNotMatch(line, /\n|\[2J|title/);
 	});
+	for (const { label, overrides, lineIndex, following } of [
+		{ label: "model", overrides: { model: { name: "\x1b[8;5;41mLabel", reasoning: true } }, lineIndex: 0, following: "[high]" },
+		{ label: "project", overrides: { cwd: "/work/\x1b[8;5;41mLabel" }, lineIndex: 1, following: "(main)" },
+		{ label: "branch", overrides: { gitBranch: "\x1b[8;5;41mLabel" }, lineIndex: 1, following: " │ " },
+	] as const) {
+		it(`contains ${label} label styles before adjacent footer content`, async () => {
+			const { handlers } = makePi();
+			const mocks = makeCtx({ ...overrides, statuses: new Map([["notice", "visible"]]) });
+			// Pi's foreground helper resets foreground color, not conceal, blink, or background.
+			mocks.theme.fg = (_color, text) => `\x1b[37m${text}\x1b[39m`;
+			await handlers.get("session_start")(sessionStart, mocks.ctx);
+			const footer = installFooter(mocks);
+			try {
+				for (const width of [80, 200]) {
+					const line = footer.render(width)[lineIndex];
+					const styleStart = line.indexOf("\x1b[8;5;41m");
+					const followingStart = line.indexOf(following, styleStart);
+					assert.ok(styleStart >= 0, "label styling remains inside its own cell");
+					assert.ok(followingStart > styleStart, "adjacent content remains present");
+					assert.ok(line.slice(styleStart, followingStart).includes("\x1b[0m"),
+						`${label} styles require a full reset before adjacent content`);
+					assert.ok(visibleWidth(line) <= width);
+				}
+			} finally {
+				footer.dispose();
+			}
+		});
+	}
+
 	it("keeps a pre-colored extension status colored, bounded by resets", async () => {
 		const { handlers } = makePi();
 		const colored = "\x1b[38;2;137;180;250m\u{1F50C} MCP: 10 servers enabled\x1b[39m";

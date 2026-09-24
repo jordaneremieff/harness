@@ -84,8 +84,11 @@ following Pi's footer convention) plus the git branch from
 `footerData.getExtensionStatuses()` — the supported host surface through
 which any extension can publish footer text with `ctx.ui.setStatus()`. The
 statusline renders them generically, with no per-key special cases, after
-sanitizing each one. Model names and project labels use the same sanitizer
-before theme colors are applied.
+sanitizing each one. Model names, project labels, and branch labels use the
+same sanitizer before theme colors are applied. Each label ends with a full
+style reset, so its conceal, blink, background, or other graphics settings
+cannot affect the thinking level, context metrics, or adjacent footer text.
+A foreground-color reset alone does not contain those settings.
 
 The sanitize contract is an SGR allowlist. A complete `ESC [ ... m` sequence
 survives, so a status that colors itself renders as its author intended.
