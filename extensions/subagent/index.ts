@@ -1525,7 +1525,7 @@ export function filterCollectedCompletions(messages: ContextEvent["messages"]): 
 }
 
 interface WorkerCardStatus {
-	kind: "result" | "paused" | "report";
+	kind: "result" | "paused" | "report" | "peer";
 	text: string;
 	color: "muted" | "error" | "success" | "accent" | "warning";
 }
@@ -1553,6 +1553,7 @@ function resultCardStatus(details: Record<string, unknown>): WorkerCardStatus {
 }
 
 function workerCardStatus(type: string, details: Record<string, unknown>): WorkerCardStatus {
+	if (type === "subagent_peer") return { kind: "peer", color: "muted", text: "Peer message; no submitted result" };
 	if (type === "subagent_result") return resultCardStatus(details);
 	if (type === "subagent_paused")
 		return {
@@ -1565,12 +1566,50 @@ function workerCardStatus(type: string, details: Record<string, unknown>): Worke
 	return { kind: "report", color: "muted", text: [`interim ${number}`.trim(), bytes].filter(Boolean).join(" · ") };
 }
 
+function workerCardTitle(status: WorkerCardStatus, details: Record<string, unknown>): string {
+	if (status.kind === "report") return "Subagent report · interim";
+	if (status.kind !== "result") return `Subagent ${status.kind}`;
+	const state = asString(details.state);
+	const outcome = ["done", "failed", "cancelled", "owner_lost", "idle_expired", "no_result_submitted"].includes(state) ? state : "outcome unavailable";
+	return `Subagent result · ${outcome}`;
+}
+
+function addCollapsedWorkerEvidence(box: Box, details: Record<string, unknown>, preview: string, theme: Theme): void {
+	const toolErrors = isRecord(details.toolErrors) && Object.values(details.toolErrors).some((count) => typeof count === "number" && count > 0);
+	if (toolErrors) box.addChild(new Text(theme.fg("error", "Tool errors: present"), 0, 0));
+	const label = inspectInline(asString(details.label), 80);
+	if (label) {
+		const line = theme.fg("muted", label);
+		box.addChild({ render: (width: number) => [truncateToWidth(line, Math.max(1, width))], invalidate() {} });
+	}
+	// Literal excerpts never present a generated summary as verified evidence.
+	if (preview) {
+		const line = theme.fg("customMessageText", `↳ ${preview}`);
+		box.addChild({ render: (width: number) => [truncateToWidth(line, Math.max(1, width))], invalidate() {} });
+	}
+	box.addChild(new Text(theme.fg("muted", "Peer evidence · unverified"), 0, 0));
+	box.addChild(new Text(theme.fg("dim", keyHint("app.tools.expand", "to expand notification")), 0, 0));
+}
+
+function addExpandedWorkerEvidence(box: Box, text: string, id: string, details: Record<string, unknown>, status: WorkerCardStatus, theme: Theme): void {
+	box.addChild(new Text(theme.fg(status.color, status.text), 0, 0));
+	const label = inspectInline(asString(details.label), 80);
+	if (label) box.addChild(new Text(theme.fg("muted", label), 0, 0));
+	for (const key of ["id", "from", "to", "replyTo", "workerSession", "ownerSession"]) {
+		if (typeof details[key] === "string") box.addChild(new Text(theme.fg("muted", `${key}: ${inspectInline(details[key], 256)}`), 0, 0));
+	}
+	box.addChild(new Markdown(capUtf8(capLines(inspectPlainText(text), REPORT_ENVELOPE_LINE_CAP).text).text, 0, 0, getMarkdownTheme(), { color: (line) => theme.fg("customMessageText", line) }));
+	box.addChild(new Spacer(1));
+	const model = inspectInline(asString(details.model), 256);
+	box.addChild(new Text(`${theme.fg("muted", `source ${id}`)} ${theme.fg("muted", model ? `· ${model}` : "")} ${theme.fg("dim", "· peer-authored · unverified")}`, 0, 0));
+	if (status.kind === "result") box.addChild(new Text("subagent_collect / subagent_inspect: stored evidence", 0, 0));
+}
+
 /** Native expansion controls presentation only; the retained evidence stays unchanged. */
 export const renderWorkerMessage: MessageRenderer = (message, { expanded }, theme) => {
 	const details = isRecord(message.details) ? message.details : {};
-	const id = inspectInline(asString(details.id, "unknown"), 128);
-	const label = inspectInline(asString(details.label), 80);
-	const model = inspectInline(asString(details.model), 256);
+	const actor = asString(message.customType === "subagent_peer" ? details.from : details.id);
+	const id = /^[\w.:-]{1,128}$/u.test(actor) ? actor : "source unavailable";
 	const text =
 		typeof message.content === "string"
 			? message.content
@@ -1580,58 +1619,20 @@ export const renderWorkerMessage: MessageRenderer = (message, { expanded }, them
 					.join("\n");
 
 	const status = workerCardStatus(message.customType, details);
-	const subject = `${label || `Subagent ${id}`} · ${status.kind}`;
+	const subject = workerCardTitle(status, details);
 
-	const box = new Box(1, 1, (line) =>
+	const box = new Box(1, 0, (line) =>
 		theme.bg(
 			"customMessageBg",
 			line.replace(/\x1b\[(?:0|49)?m/g, (reset) => reset + theme.getBgAnsi("customMessageBg")),
 		),
 	);
-	box.addChild(
-		new Text(`${theme.fg("customMessageLabel", theme.bold("subagent"))} ${theme.fg("accent", subject)}`, 0, 0),
-	);
-	box.addChild(new Text(theme.fg(status.color, status.text), 0, 0));
-	box.addChild(new Spacer(1));
+	box.addChild(new Text(theme.fg(status.color, subject), 0, 0));
+	box.addChild(new Text(theme.fg("accent", id), 0, 0));
 	if (!expanded) {
-		// What the worker actually said, in its own words. A card that shows only
-		// identity and counters makes the reader expand every message to learn
-		// whether it matters.
-		const preview = message.customType === "subagent_paused" ? "" : cardContentPreview(text, id);
-		if (preview) {
-			// One row at any width: a collapsed card stays a row of the transcript,
-			// so the excerpt is cut to the terminal instead of wrapping the card open.
-			const line = theme.fg("customMessageText", `↳ ${preview}`);
-			box.addChild({
-				render: (width: number) => [truncateToWidth(line, Math.max(1, width))],
-				invalidate() {},
-			});
-		}
-		box.addChild(
-			new Text(
-				`${theme.fg("muted", `Worker evidence · unverified`)} ${theme.fg("dim", `${keyHint("app.tools.expand", "to expand")} · full evidence`)}`,
-				0,
-				0,
-			),
-		);
+		addCollapsedWorkerEvidence(box, details, message.customType === "subagent_paused" ? "" : cardContentPreview(text, id), theme);
 	} else {
-		box.addChild(
-			new Markdown(
-				capUtf8(capLines(inspectPlainText(text), REPORT_ENVELOPE_LINE_CAP).text).text,
-				0,
-				0,
-				getMarkdownTheme(),
-				{ color: (line) => theme.fg("customMessageText", line) },
-			),
-		);
-		box.addChild(new Spacer(1));
-		box.addChild(
-			new Text(
-				`${theme.fg("muted", `full id ${id}`)} ${theme.fg("muted", model ? `· ${model}` : "")} ${theme.fg("dim", "· worker-authored · unverified")}`,
-				0,
-				0,
-			),
-		);
+		addExpandedWorkerEvidence(box, text, id, details, status, theme);
 	}
 	return box;
 };
@@ -6710,6 +6711,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(reportTool);
 	pi.registerTool(peersTool);
 	pi.registerTool(peerMessageTool);
+	pi.registerMessageRenderer("subagent_peer", renderWorkerMessage);
 	pi.registerMessageRenderer("subagent_result", renderWorkerMessage);
 	pi.registerMessageRenderer("subagent_report", renderWorkerMessage);
 	pi.registerMessageRenderer("subagent_paused", renderWorkerMessage);

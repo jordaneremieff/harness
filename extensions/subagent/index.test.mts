@@ -1659,7 +1659,7 @@ describe("status and collection", () => {
 			registerShortcut() {},
 			on() {},
 		} as never);
-		assert.deepEqual([...renderers.keys()], ["subagent_result", "subagent_report", "subagent_paused"]);
+		assert.deepEqual([...renderers.keys()], ["subagent_peer", "subagent_result", "subagent_report", "subagent_paused"]);
 		const toolOf = (name: string): ToolDefinition => {
 			const registered = tools.get(name);
 			assert.ok(registered, `the ${name} tool is registered`);
@@ -1715,6 +1715,36 @@ describe("status and collection", () => {
 		assert.match(guidance, /Before a final conclusion/);
 	});
 
+	it("keeps source identity and failures ahead of bounded labels and peer excerpts", async () => {
+		const pi = await import("@earendil-works/pi-coding-agent");
+		pi.initTheme("dark");
+		const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, getBgAnsi: () => "", bold: (text: string) => text } as never;
+		([
+			["subagent_peer", "bg-source-id", /Subagent peer/, /reply-id/],
+			["subagent_report", "bg-message-id", /interim/, /reply-id/],
+			["subagent_result", "bg-message-id", /failed/, /FAILURE_DETAILS/],
+		] as const).forEach(([customType, source, expectedStatus, expectedDetails]) => {
+			const message = { role: "custom" as const, timestamp: 1, customType, content: `OPENING\n${"long evidence\n".repeat(500)}EXACT_END`, display: true, details: { id: "bg-message-id", from: "bg-source-id", label: "optional label ".repeat(20), state: "failed", error: "FAILURE_DETAILS", toolErrors: { read: 1 }, replyTo: "reply-id" } };
+			const before = structuredClone(message);
+			const card = present(renderWorkerMessage(message, { expanded: false, outputPad: 1 }, theme), "card");
+			for (const width of [20, 40, 100, 140]) {
+				const rows = card.render(width);
+				assert.ok(rows.length <= (width === 20 ? 12 : 8), `${customType} ${width}: ${rows.length}`);
+				const text = stripTerminalSequences(rows.join("\n"));
+				assert.ok(text.indexOf(source) < text.indexOf("optional"));
+				assert.match(text.replace(/\s+/g, " "), /Tool errors: present/);
+				assert.match(text, expectedStatus);
+				assert.doesNotMatch(text, /EXACT_END/);
+			}
+			const expanded = present(renderWorkerMessage(message, { expanded: true, outputPad: 1 }, theme), "expanded");
+			const text = stripTerminalSequences(expanded.render(100).join("\n"));
+			assert.match(text, /EXACT_END/);
+			assert.match(text, /reply-id/);
+			assert.match(text, expectedDetails);
+			assert.deepEqual(message, before);
+		});
+	});
+
 	it("collapses reports to bounded rows and exposes sanitized evidence on expansion", async () => {
 		const pi = await import("@earendil-works/pi-coding-agent");
 		pi.initTheme("dark");
@@ -1741,11 +1771,11 @@ describe("status and collection", () => {
 				"the collapsed card renders",
 			);
 			for (const width of [20, 60, 120, 140]) assertCollapsedCard(collapsed, kind, width);
-			// Collapsed card shows the work purpose first (label over bare id), its
-			// status facts, and the provenance + expand hint. Terminal escapes that
-			// would re-style the transcript (\u001b[31m here) never survive.
+			// Source identity precedes the optional purpose label. Author controls
+			// never restyle the transcript.
 			const collapsedText = stripTerminalSequences(collapsed.render(120).join("\n"));
-			assert.match(collapsedText, new RegExp(`render-gap probe · ${kind}`));
+			assert.match(collapsedText, new RegExp(`Subagent ${kind}`));
+			assert.ok(collapsedText.indexOf("bg-render") < collapsedText.indexOf("render-gap probe"));
 			assert.match(collapsedText, /unverified/);
 			assert.match(collapsedText, /expand/);
 			assert.ok(!collapsed.render(120).join("\n").includes("\u001b[31m"));
@@ -1762,7 +1792,7 @@ describe("status and collection", () => {
 			renderWorkerMessage(malformed as never, { expanded: false, outputPad: 1 }, theme),
 			"the malformed card renders safely",
 		);
-		assert.match(safe.render(80).join("\n"), /Subagent unknown/);
+		assert.match(safe.render(80).join("\n"), /source unavailable/);
 	});
 
 	it("keeps the card background through preview truncation resets", async () => {

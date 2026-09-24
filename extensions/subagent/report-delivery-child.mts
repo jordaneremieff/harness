@@ -31,6 +31,7 @@ process.env.HOME = testHome;
 const marker = join(agentDir, "provider-calls.log");
 const providerPath = join(agentDir, "report-provider.mjs");
 const SNAPSHOT = "SHARED_SNAPSHOT_LINE_ONE\n\tSHARED_SNAPSHOT_LINE_TWO: é 中文";
+const reportBody = `INTERIM_ONE: the first source is already correct\n${"report evidence\n".repeat(100)}EXACT_REPORT_TAIL`;
 function gate(): { promise: Promise<void>; resolve: () => void } {
 	let resolve: () => void = () => {};
 	const promise = new Promise<void>((done) => {
@@ -82,12 +83,13 @@ export default function (pi) {
       if (calls === 1) {
         await globalThis[Symbol.for("subagent-test.report-gates")].report;
         appendFileSync(${JSON.stringify(marker)}, "worker-shared:" + serialized.includes(JSON.stringify(snapshot).slice(1, -1)) + "\\n");
-        return fauxAssistantMessage(fauxToolCall("subagent_report", { message: "INTERIM_ONE: the first source is already correct" }), { stopReason: "toolUse" });
+        return fauxAssistantMessage(fauxToolCall("subagent_report", { message: ${JSON.stringify(reportBody)} }), { stopReason: "toolUse" });
       }
       await globalThis[Symbol.for("subagent-test.report-gates")].submit;
       appendFileSync(${JSON.stringify(marker)}, "worker-ack:" + serialized.includes("sent_unconfirmed") + "\\n");
       return fauxAssistantMessage(fauxToolCall("submit_result", { content: "WORKER_RESULT" }), { stopReason: "toolUse" });
     }
+    appendFileSync(${JSON.stringify(marker)}, "owner-report-tails:" + (serialized.split("EXACT_REPORT_TAIL").length - 1) + "\\n");
     if (calls === 1) {
       return fauxAssistantMessage(fauxToolCall("subagent", { tasks: [{ task: "WORKER_TASK_A" }, { task: "WORKER_TASK_B" }], sharedContext: snapshot }), { stopReason: "toolUse" });
     }
@@ -211,7 +213,11 @@ try {
 	assert.match(providerLog, /worker-ack:true/);
 
 	const reportText = typeof report.content === "string" ? report.content : JSON.stringify(report.content);
-	assert.match(reportText, /INTERIM_ONE/);
+	assert.ok(reportText.includes(reportBody));
+	const reports = session.messages.filter((message) => isCustom(message) && message.customType === "subagent_report");
+	assert.equal(reports.length, 2, "one retained interim report per worker");
+	assert.match(providerLog, /owner-report-tails:[12]/);
+	assert.doesNotMatch(providerLog, /owner-report-tails:([3-9]|\d{2})/);
 	assert.match(reportText, /interim report #1/);
 	assert.match(reportText, /worker-authored content begins/);
 	assert.equal(reportDetails.status, "sent_unconfirmed");

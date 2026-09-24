@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const evidence = `DECISIVE_EVIDENCE\n${"retained evidence\n".repeat(300)}EXACT_COMPLETION_TAIL`;
 const root = mkdtempSync(join(tmpdir(), "completion-delivery-"));
 process.env.HOME = join(root, "home");
 process.env.PI_CODING_AGENT_DIR = join(root, "agent");
@@ -205,7 +206,7 @@ try {
 			notificationCallReturnedAt: null,
 			error: null,
 			usage: null,
-			resultBytes: 17,
+			resultBytes: Buffer.byteLength(evidence),
 			resultPreview: "DECISIVE_EVIDENCE",
 			ownerPid: process.pid,
 			ownerSession: owner.sessionManager.getSessionId(),
@@ -217,7 +218,7 @@ try {
 		const files = sub.workerFiles(target);
 		mkdirSync(dirname(files.result), { recursive: true });
 		writeFileSync(join(dirname(files.result), "worker.json"), JSON.stringify(record));
-		writeFileSync(files.result, "DECISIVE_EVIDENCE");
+		writeFileSync(files.result, evidence);
 		const run = owner.prompt(`OWNER_${name}`);
 		if (name === "idle") await run;
 		else await until(() => gates.has("owner"), "owner tool is active");
@@ -240,6 +241,7 @@ try {
 		const secondInput = providerInputs[1];
 		assert.ok(secondInput, "the second provider turn carries the evidence");
 		assert.match(secondInput, /DECISIVE_EVIDENCE/);
+		assert.equal(secondInput.split("EXACT_COMPLETION_TAIL").length - 1, 1, "one complete result reaches the provider");
 		const completionInContext = secondInput.includes(`Subagent ${target}`);
 		assert.equal(
 			completionInContext,
@@ -252,7 +254,11 @@ try {
 			"Pi keeps one original notification in history",
 		);
 		assert.doesNotMatch(JSON.stringify(owner.messages), /PREMATURE_CONCLUSION/);
-		assert.equal(sub.collectWorker(target).workers[0]?.result, "DECISIVE_EVIDENCE");
+		assert.equal(sub.collectWorker(target).workers[0]?.result, evidence);
+		const original: AgentMessage | undefined = owner.messages.find((message) => isResultFor(message, target));
+		assert.ok(original && original.role === "custom");
+		assert.match(String(original.content), /EXACT_COMPLETION_TAIL/);
+		assert.equal((original.details as { resultBytes: number }).resultBytes, Buffer.byteLength(evidence));
 		await owner.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		owner.dispose();
 		owner = null;

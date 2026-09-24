@@ -47,6 +47,7 @@ const surfaces = new Map<string, string[]>();
 const requestMessages = new Map<string, Message[]>();
 const sessionMessages = new Map<string, AgentMessage[]>();
 const evidence = "fixture_schema_field_7c4e";
+const questionText = `Which schema field does schema.txt require?\n${"peer evidence\n".repeat(100)}EXACT_PEER_TAIL`;
 writeFileSync(join(workerCwd, "schema.txt"), evidence);
 const providerPath = join(agentDir, "peer-fixture.mjs");
 const model = {
@@ -158,7 +159,8 @@ function roleAResponse(count: number, context: TranscriptContext): AssistantMess
 		const questionIdValue = questionDetails.id;
 		assert.ok(isString(questionIdValue), "the question carries a string id");
 		questionId = questionIdValue;
-		assert.match(text(question), /Which schema field/);
+		assert.ok(text(question).includes(questionText));
+		assert.equal(JSON.stringify(context.messages).split("EXACT_PEER_TAIL").length - 1, 1);
 		assert.ok(context.messages.some((message) => text(message).includes("Which schema field")));
 		return tool("read", { path: "schema.txt" });
 	}
@@ -202,7 +204,7 @@ async function roleBResponse(count: number, context: TranscriptContext): Promise
 		const peerId = peer.id;
 		assert.ok(isString(peerId), "the peer carries a string id");
 		aId = peerId;
-		return tool("subagent_message", { to: aId, message: "Which schema field does schema.txt require?" });
+		return tool("subagent_message", { to: aId, message: questionText });
 	}
 	if (count === 3) {
 		const receipt = resultDetails(lastResult(context, "subagent_message"));

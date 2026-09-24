@@ -778,13 +778,21 @@ alone establishes general autonomous task reliability.
   session history; the extension neither retracts Pi queue entries nor creates
   a separate receipt store. If branch navigation or compaction removes the
   collection from model context, it no longer suppresses a retained completion.
-- Completion, interim-report, and pause messages use Pi's native expansion state.
-  The default collapsed view occupies bounded rows with worker identity, message
-  kind, unverified status, and the configured expansion-key hint. `Ctrl+O` is
-  Pi's default key. Expansion exposes the bounded, sanitized original message;
-  collection and the dashboard preserve access to retained evidence. This
-  changes presentation only, not result bytes or authority. Card backgrounds
-  resume after nested text resets, including the preview's truncation ellipsis.
+- Peer, completion, interim-report, and pause messages use Pi's native expansion
+  state. Collapsed cards put message kind, source ID, outcome, and tool-error
+  presence before optional labels and literal excerpts. Essential identity and
+  failure fields wrap rather than disappear through width truncation. Malformed
+  identity metadata is explicitly unavailable. Peer cards use the sender ID,
+  not the message ID; reports remain interim evidence, not submitted results.
+  The provenance line and configured expansion-key hint remain visible.
+  `Ctrl+O` is Pi's default key. Expansion exposes the bounded, sanitized
+  notification, sender/reply references, and detailed outcome information.
+  `subagent_collect`, `subagent_inspect`, and the dashboard retain access to
+  stored evidence. The renderer changes neither provider content, result bytes,
+  delivery timing, nor authority. Global expansion intentionally permits full
+  blocks. Compact defaults do not pin or guarantee visibility of a primary
+  answer after arbitrary arrivals. Card backgrounds resume after nested text
+  resets, including the preview's truncation ellipsis.
 - The store resyncs cumulative usage from the session's own statistics whenever
   a message ends, a compaction ends, or a branch summary finishes, so a
   replacement session sees real numbers even if this one dies mid-flight.

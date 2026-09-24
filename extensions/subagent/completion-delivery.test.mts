@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-test("real sessions deliver completion before conclusions and stop superseded work", { timeout: 60000 }, () => {
+test("real sessions preserve active and post-final completion delivery and stop superseded work", { timeout: 60000 }, () => {
 	const child = spawnSync(
 		process.execPath,
 		[join(dirname(fileURLToPath(import.meta.url)), "completion-delivery-child.mts")],
