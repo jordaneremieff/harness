@@ -158,7 +158,7 @@ interface AgentOwners {
 	creating: Map<string, Promise<AgentManager>>;
 	workers: Set<string>;
 }
-/** Tool-facing contract version of AgentManager. A mismatch means two agent-extension copies share one process-global cache. */
+/** Tool-facing contract version of AgentManager; the process-global manager cache reuses only an exact protocol match. */
 const MANAGER_PROTOCOL = 1;
 const ownerKey = Symbol.for("pi.extension.agent.owners");
 const shared = globalThis as typeof globalThis & { [ownerKey]?: AgentOwners };
@@ -1226,7 +1226,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 	const requireManagerProtocol = (candidate: AgentManager, root: string): AgentManager => {
 		if (!isCompatibleManager(candidate)) {
 			const found = String((candidate as { managerProtocol?: unknown }).managerProtocol);
-			throw new Error(`agent manager cache at ${root} holds a manager from a different agent extension copy (manager protocol ${found} != ${MANAGER_PROTOCOL}); restart the host process before using agent controls`);
+			throw new Error(`agent manager cache at ${root} holds a manager whose manager protocol ${found} does not match this copy's ${MANAGER_PROTOCOL}; restart the host process before using agent controls`);
 		}
 		return candidate;
 	};

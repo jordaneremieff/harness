@@ -80,14 +80,14 @@ const scratch = (prefix: string): Scratch => {
 };
 
 describe("process-global manager cache", () => {
-	it("refuses a cached manager from a different extension copy with a named error", async () => {
+	it("refuses a cached manager with a missing manager protocol", async () => {
 		const area = scratch("stale-cached");
 		const stale = staleManager();
 		sharedOwners().managers.set(area.key, stale);
 		try {
 			await assert.rejects(
 				listTool().execute(null, null, null, null, probeContext),
-				/different agent extension copy \(manager protocol undefined != 1\)/u,
+				/manager protocol undefined does not match this copy's 1/u,
 			);
 			assert.equal(sharedOwners().managers.get(area.key), stale);
 		} finally {
@@ -97,7 +97,7 @@ describe("process-global manager cache", () => {
 		}
 	});
 
-	it("reuses a compatible cached manager across extension copies", async () => {
+	it("reuses a cached manager whose manager protocol matches", async () => {
 		const area = scratch("compatible");
 		const agentDir = join(area.root, "agent");
 		mkdirSync(agentDir, { recursive: true });
@@ -116,13 +116,13 @@ describe("process-global manager cache", () => {
 		}
 	});
 
-	it("refuses a creation promise that resolves to a manager from a different extension copy", async () => {
+	it("refuses a creation promise that resolves to a manager with a missing manager protocol", async () => {
 		const area = scratch("stale-pending");
 		sharedOwners().creating.set(area.key, Promise.resolve(staleManager()));
 		try {
 			await assert.rejects(
 				listTool().execute(null, null, null, null, probeContext),
-				/different agent extension copy \(manager protocol undefined != 1\)/u,
+				/manager protocol undefined does not match this copy's 1/u,
 			);
 			assert.equal(sharedOwners().creating.has(area.key), false);
 			assert.equal(sharedOwners().managers.has(area.key), false);
