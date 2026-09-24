@@ -127,12 +127,16 @@ function ownerLines(data: AgentInspection): string[] {
 	];
 }
 
+function omissionLines(omissions: Extract<AgentInspection, { entryId: string }>["omissions"]): string[] {
+	return omissions ? [`Omitted from this entry: ${omissions.providerSignatures} provider signatures; ${omissions.imagePayloads} image payloads; ${omissions.redactedThinking} redacted thinking blocks.`] : [];
+}
+
 function inspectionLines(data: AgentInspection, entryIndex = 0): string[] {
 	const lines = ownerLines(data);
-	if ("entryId" in data) return [...lines, `Entry: ${data.entryId} · offset ${data.offset}`, data.truncated ? `Partial entry; next offset ${data.nextOffset}. n reads the next chunk.` : "Final entry chunk (earlier chunks are not repeated).", data.text];
+	if ("entryId" in data) return [...lines, `Entry: ${data.entryId} · offset ${data.offset}`, "Inspection source, not raw storage. Offsets count UTF-16 code units.", ...omissionLines(data.omissions), data.truncated ? `Partial entry; next offset ${data.nextOffset}. n reads the next chunk.` : "Final entry chunk (earlier chunks are not repeated).", data.text];
 	const entry = data.entries[entryIndex];
 	return [
-		...(entry ? [`${entry.role ?? entry.type} · entry ${entryIndex + 1}/${data.entries.length}${entry.truncated ? " · partial preview" : ""}`, entry.preview?.text ?? "Readable preview unavailable. Enter opens the exact source.", ...(entry.preview?.truncated ? ["Partial text. Enter opens the source; n continues it."] : [])] : ["No entries in this snapshot."]),
+		...(entry ? [`${entry.role ?? entry.type} · entry ${entryIndex + 1}/${data.entries.length}${entry.truncated ? " · partial preview" : ""}`, entry.preview?.text ?? "Readable preview unavailable. Enter opens the inspection source.", ...omissionLines(entry.omissions), ...(entry.preview?.truncated ? ["Partial text. Enter opens the inspection source; n continues it."] : [])] : ["No entries in this snapshot."]),
 		"", `Entries: ${data.entries.length}, newest first. ${data.nextCursor === null ? "No older page." : `Older cursor: ${data.nextCursor}. o reads it.`}`,
 		...data.entries.map((item, index) => `${index === entryIndex ? ">" : " "} ${item.role ?? item.type} · ${item.id}${item.truncated ? " · partial preview" : ""}`),
 		"", ...lines,

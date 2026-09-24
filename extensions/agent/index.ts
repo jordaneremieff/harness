@@ -91,7 +91,7 @@ const CompactParams = Type.Object({
 	summary: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_CONTINUITY_SUMMARY, description: "Required for the calling session only: a complete bounded continuity summary with objective, authority, explicit exclusions, source and brief pointers, source qualifications, acceptance, owners, and next action. Replaces older context without another summarizer." })),
 }, { additionalProperties: false });
 const CommandParams = Type.Object({ sessionId: Type.String({ minLength: 1 }), name: Type.String({ minLength: 1 }), args: Type.Optional(Type.String()) }, { additionalProperties: false });
-const InspectParams = Type.Object({ sessionId: Type.String({ minLength: 1 }), cursor: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })), entryId: Type.Optional(Type.String({ minLength: 1 })), offset: Type.Optional(Type.Integer({ minimum: 0 })) }, { additionalProperties: false });
+const InspectParams = Type.Object({ sessionId: Type.String({ minLength: 1 }), cursor: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })), entryId: Type.Optional(Type.String({ minLength: 1 })), offset: Type.Optional(Type.Integer({ minimum: 0, description: "UTF-16 offset from nextOffset in the inspection representation, not raw storage." })) }, { additionalProperties: false });
 const ForkParams = Type.Object(
 	{ sessionId: Type.String({ minLength: 1 }), entryId: Type.Optional(Type.String()), trust: Type.Optional(Type.Boolean()) },
 	{ additionalProperties: false },
@@ -1541,7 +1541,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 	});
 
 	registerTool<typeof InspectParams, unknown>({
-		name: "agent_inspect", label: "Agent inspect", description: "Read a bounded page of an agent session's real messages, tool results, and operation result. Preserve entry IDs and use nextCursor for older entries. Use entryId and offset to read a truncated entry in full.",
+		name: "agent_inspect", label: "Agent inspect", description: "Read a bounded inspection of an agent session's messages, tool results, and operation result. Provider signatures, image data, and redacted thinking are omitted with markers and counts; stored entries remain unchanged. Preserve entry IDs and use nextCursor for older entries. Use entryId and offset=nextOffset for the complete inspection representation, not raw storage. Offsets count UTF-16 code units.",
 		parameters: InspectParams,
 		async execute(_toolCallId, params, signal) {
 			const manager = await getManager();

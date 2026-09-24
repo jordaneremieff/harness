@@ -70,8 +70,10 @@ source to read its complete error rather than a clipped list preview.
   **Enter** opens its evidence.
 - A session reader puts readable message text before serialized source. Its header
   identifies the session and the owner-state boundary. **[ / ]** selects an entry;
-  **Enter** opens its exact serialized source. Non-text entries without a readable
-  preview explicitly direct the reader to the source. The scrollable detail also
+  **Enter** opens its serialized inspection representation, not raw storage.
+  The reader reports omission counts for provider signatures, image payloads,
+  and redacted thinking. Non-text entries without a readable preview explicitly
+  direct the reader to the inspection source. The scrollable detail also
   includes capture limits, current operation when known, retained result source,
   owner errors, configuration, and known parents. **o** reads an
   older page and **n** reads the next source chunk. Each request uses the inspection
@@ -260,10 +262,28 @@ For another session, omit `summary`. The existing native summarizer uses
 optional `instructions`, aborts active work, and does not resume it. The
 `/agent compact` command retains that controller behavior.
 
-`agent_inspect` reads actual session entries and execution/result state. Its
-bounded previews retain entry IDs and roles. Use an entry ID and the returned
-offset to read a complete entry in chunks; use the returned cursor for older
-entries. For a session this process already holds, it reads ordinary Pi session
+`agent_inspect` reads session evidence and execution/result state. Its bounded
+previews retain entry IDs and roles. Use an entry ID and `offset=nextOffset`
+to read the complete inspection representation in chunks; use `nextCursor` for
+older entries. Offsets count UTF-16 code units in that representation, not bytes
+or positions in the native file. Returned offsets preserve Unicode pairs.
+
+Before serialization, inspection replaces native `textSignature`,
+`thinkingSignature`, and `thoughtSignature` values with omission markers.
+It also replaces image `data` and the `thinking` text of `redacted: true`
+blocks. Each affected entry reports fixed-size `omissions` counts by category,
+including fields beyond the current preview or chunk. Markers retain the field
+locations in the reconstructed JSON. Visible text and non-redacted thinking,
+tool calls/results, identity, provenance, errors, and other metadata remain.
+
+The projection follows declared Pi content containers: ordinary messages,
+custom messages, context-edit replacements, and compaction system checkpoints.
+It does not recursively filter tool arguments, tool-result details, custom
+entry data, or other arbitrary objects by key name. Those fields remain evidence,
+not typed native content. This is not a general secret or binary-data scrubber.
+Native entries remain unchanged, and no raw-payload bypass or second store exists.
+
+For a session this process already holds, inspection reads ordinary Pi session
 entries through the live owner. For any other session with no detached run, it
 reads a bounded point-in-time snapshot of the persisted entries instead: no
 writer claim is taken, `SessionManager.open` is not called, and the source file
@@ -535,14 +555,21 @@ remain untouched; there is no migration or retired-format reader.
 
 ### Parent reload and saved-session recovery
 
-A same-process primary `/reload` retains the existing ordinary hosts, active
-operations, native queues, resources, and writer claims. It replaces only the
-primary's generation-bound callbacks. Existing children keep their own native
-provider and resource runtimes; changed resources load for the reloaded primary
-and newly created children. This does not preserve a provider callback that
-depends on a resource its own owner closed. Results that settle during the reload
-gap wait for the new primary callback and are delivered once in that process.
-The native message API supplies no crash-durable delivery acknowledgment.
+A same-process primary `/reload` refreshes extension registration and replaces
+the primary's generation-bound callbacks. It retains the existing ordinary
+hosts, active operations, native queues, resources, and writer claims. Existing
+children keep their own native provider and resource runtimes; changed resources
+load for the reloaded primary and newly created children. This does not preserve
+a provider callback that depends on a resource its own owner closed. Results
+that settle during the reload gap wait for the new primary callback and are
+delivered once in that process. The native message API supplies no crash-durable
+delivery acknowledgment.
+
+The process reuses managers that match the current manager protocol. Refreshed
+registration does not reconstruct these managers or existing workers: they
+retain their class methods and closures from creation, including imported
+helpers. A fresh host process loads method changes for those objects. Another
+session in the same process does not replace the retained owners.
 
 Explicit creation and ownership controls record parent-child associations in
 native custom entries outside model context before a task starts. Read-only
@@ -643,8 +670,11 @@ opt-in real-provider setup, compaction, and reopen check with configured
 authentication. The normal suite does not establish a live provider run.
 It uses synthetic providers and isolated processes for native session
 boundaries, persistence, ownership, detached controls, and cleanup. Native
-editor tests cover command completion. Component tests cover dashboard paging,
-refresh, disposal, source failures, and send-call expansion. Native TUI changes
+editor tests cover command completion. Synthetic inspection tests cover typed
+omissions, unchanged native entries, and Unicode continuation through live-owner
+and read-only projections. Loader tests verify the public inspection registration;
+they do not establish behavior in an already-loaded host. Component tests cover
+dashboard paging, omission labels, refresh, disposal, source failures, and send-call expansion. Native TUI changes
 also require an isolated interactive or PTY check for keys, focus, resize, and
 tool expansion; component snapshots alone do not establish those behaviors.
 

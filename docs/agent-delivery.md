@@ -165,8 +165,16 @@ Pi caches extension factories by path within a process's current cwd and cache
 generation. A fresh SDK session in an existing process therefore does not ensure
 refreshed extension code. Before live candidate verification, use the intended
 idle session's native reload: an already-loaded resource loader clears the
-factory cache on reload. Verify candidate behavior after that reload. Do not
-reload or interrupt unrelated owned sessions.
+factory cache on reload. This refreshes factories and registration, not objects
+that extensions deliberately retain at process scope. Compatible agent managers
+and existing workers retain their class methods and closures from creation.
+
+Read back actual candidate behavior through the registered public surface after
+reload. Updated descriptions or schemas do not establish changed execution. If
+retained owners still execute methods from creation, verify the candidate in a
+fresh native host process that loads its code. Another session in the same
+process does not establish that boundary. Do not reload or interrupt unrelated
+owned sessions.
 
 See [Evo](../extensions/evo/README.md), [worktrees](conventions/worktrees.md), and
 [Pi host contracts](pi-durable-harness.md) for invocation, delivery, and runtime

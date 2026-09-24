@@ -2,12 +2,12 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { Context, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { getCurrentSystemMessage, type ImageContent } from "@earendil-works/pi-ai";
+import { getCurrentSystemMessage, type ImageContent, type ThinkingContent } from "@earendil-works/pi-ai";
 import {
 	createAgentSessionServices, createAgentSessionFromServices, createAgentSessionRuntime,
 	createEventBus, getAgentDir, hasTrustRequiringProjectResources, ModelRegistry, SessionManager, SettingsManager,
 	type AgentSession, type AgentSessionEvent, type AgentSessionRuntime, type CreateAgentSessionRuntimeFactory,
-	type LoadExtensionsResult, type ModelRuntime, type ProjectTrustStore, type SessionEntry,
+	type ContextEditableContent, type LoadExtensionsResult, type ModelRuntime, type ProjectTrustStore, type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
 import { ASSOCIATION_ENTRY, type AssociationSource } from "./associations.ts";
@@ -138,11 +138,73 @@ function inspectionCapture(capture: InspectionCapture) {
 	return { mode: "read-only" as const, snapshot: true as const, available: capture.available, bytes: capture.bytes, unfinishedTail: capture.unfinishedTail, liveState: "unavailable" as const, ...(capture.reason ? { reason: capture.reason } : {}) };
 }
 
+interface InspectionOmissions {
+	providerSignatures: number;
+	imagePayloads: number;
+	redactedThinking: number;
+}
+
+function inspectionThinking(part: ThinkingContent, omissions: InspectionOmissions) {
+	const projected = { ...part };
+	if (part.thinkingSignature !== undefined) {
+		omissions.providerSignatures++;
+		projected.thinkingSignature = "[omitted: provider signature]";
+	}
+	if (part.redacted === true) {
+		omissions.redactedThinking++;
+		projected.thinking = "[omitted: redacted thinking]";
+	}
+	return projected;
+}
+
+/** Only native content fields are projected; tool arguments and extension data stay intact. */
+function inspectionContent(content: ContextEditableContent, omissions: InspectionOmissions) {
+	if (!Array.isArray(content)) return content;
+	return content.map((part) => {
+		if (!part || typeof part !== "object") return part;
+		switch (part.type) {
+			case "text":
+				if (part.textSignature === undefined) return part;
+				omissions.providerSignatures++;
+				return { ...part, textSignature: "[omitted: provider signature]" };
+			case "toolCall":
+				if (part.thoughtSignature === undefined) return part;
+				omissions.providerSignatures++;
+				return { ...part, thoughtSignature: "[omitted: provider signature]" };
+			case "thinking": return inspectionThinking(part, omissions);
+			case "image":
+				omissions.imagePayloads++;
+				return { ...part, data: "[omitted: image data]" };
+			default: return part;
+		}
+	});
+}
+
+/** Pagination addresses this inspection representation, never the raw stored serialization. */
+function inspectionSource(entry: SessionEntry) {
+	const omissions: InspectionOmissions = { providerSignatures: 0, imagePayloads: 0, redactedThinking: 0 };
+	let source: unknown = entry;
+	if (entry.type === "message") {
+		const message = entry.message;
+		if (message.role === "system" || message.role === "user" || message.role === "assistant" || message.role === "toolResult" || message.role === "custom") {
+			source = { ...entry, message: { ...message, content: inspectionContent(message.content, omissions) } };
+		}
+	} else if (entry.type === "custom_message") {
+		source = { ...entry, content: inspectionContent(entry.content, omissions) };
+	} else if (entry.type === "context_edit" && entry.replacement) {
+		source = { ...entry, replacement: { ...entry.replacement, content: inspectionContent(entry.replacement.content, omissions) } };
+	} else if (entry.type === "compaction" && entry.systemMessage) {
+		source = { ...entry, systemMessage: { ...entry.systemMessage, content: inspectionContent(entry.systemMessage.content, omissions) } };
+	}
+	return { text: JSON.stringify(source), ...(Object.values(omissions).some((count) => count > 0) ? { omissions } : {}) };
+}
+
 function inspectionEntry(manager: SessionManager, sessionId: string, base: InspectionBase, entryId: string, offset?: number) {
 	const entry = manager.getEntry(entryId);
 	if (!entry) throw new Error(`no entry ${entryId} in session ${sessionId}`);
 	const start = Math.max(0, offset ?? 0);
-	return { ...base, entryId: entry.id, offset: start, ...fragment(JSON.stringify(entry), start, 12000) };
+	const source = inspectionSource(entry);
+	return { ...base, entryId: entry.id, offset: start, ...fragment(source.text, start, 12000), ...(source.omissions ? { omissions: source.omissions } : {}) };
 }
 
 function inspectionPage(all: SessionEntry[], base: InspectionBase, result: SessionEntry | undefined, options: { cursor?: number; limit?: number }) {
@@ -150,9 +212,10 @@ function inspectionPage(all: SessionEntry[], base: InspectionBase, result: Sessi
 	const start = Math.max(0, end - Math.max(1, Math.min(12, options.limit ?? 6)));
 	const entries = all.slice(start, end).reverse().map((entry) => {
 		const preview = entryPreview(entry);
-		return { id: entry.id, parentId: entry.parentId, type: entry.type, role: entry.type === "message" ? entry.message.role : undefined, ...fragment(JSON.stringify(entry), 0, 1200), ...(preview ? { preview } : {}) };
+		const source = inspectionSource(entry);
+		return { id: entry.id, parentId: entry.parentId, type: entry.type, role: entry.type === "message" ? entry.message.role : undefined, ...fragment(source.text, 0, 1200), ...(source.omissions ? { omissions: source.omissions } : {}), ...(preview ? { preview } : {}) };
 	});
-	return { ...base, result: result?.type === "custom" ? fragment(JSON.stringify(result.data), 0, 2400) : undefined, entries, nextCursor: start || null, order: "newestFirst" as const, detail: "Use entryId and offset for the complete serialized entry." };
+	return { ...base, result: result?.type === "custom" ? fragment(JSON.stringify(result.data), 0, 2400) : undefined, entries, nextCursor: start || null, order: "newestFirst" as const, detail: "Use entryId and offset for the complete inspection representation, not raw storage. Provider signatures, image data, and redacted thinking are omitted with markers and counts. Offsets are UTF-16 positions in this representation." };
 }
 
 /**

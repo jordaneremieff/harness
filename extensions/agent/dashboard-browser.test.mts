@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
+import { projectInspection } from "./worker.ts";
 import { CURSOR_MARKER, KeybindingsManager as Keys, TUI_KEYBINDINGS, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { AgentDashboard, dashboardText, readAgentDashboard, type AgentObservationSources, type AgentSessionDescription } from "./dashboard.ts";
 
@@ -37,6 +38,24 @@ it("shows bounded readable text before source and retains its partial label", as
 	assert.match(text, /Partial text/);
 	assert.match(text, /Live owner state unavailable/);
 	assert.doesNotMatch(text, /SERIALIZED-ONLY/);
+});
+
+it("labels projected inspection omissions in both the preview and exact-entry reader", async () => {
+	const manager = SessionManager.inMemory();
+	const entryId = manager.appendMessage({ role: "user", content: [{ type: "image", data: "BINARY-PAYLOAD".repeat(2000), mimeType: "image/png" }, { type: "text", text: "Readable evidence", textSignature: "OPAQUE-PAYLOAD".repeat(2000) }], timestamp: 1 });
+	const calls: unknown[] = [];
+	const f = fixture({ inspect: async (id, options) => { calls.push(options); return projectInspection(manager, id, options); } });
+	await tick(); f.panel.handleInput("\r"); await tick();
+	assert.match(f.screen(), /Readable evidence/);
+	assert.match(f.screen(), /1 provider signatures; 1 image payloads; 0 redacted/);
+	f.panel.handleInput("\r"); await tick();
+	const lines = f.panel.state.reader?.lines.join("\n") ?? "";
+	assert.match(lines, /Inspection source, not raw storage/);
+	assert.match(lines, /1 provider signatures; 1 image payloads; 0 redacted/);
+	assert.match(lines, /omitted: image data/);
+	assert.doesNotMatch(lines, /BINARY-PAYLOAD|OPAQUE-PAYLOAD/);
+	assert.deepEqual(calls, [{ limit: 12 }, { limit: 12, entryId, offset: 0 }]);
+	f.panel.dispose();
 });
 
 it("follows native focus into the filter, keeps Enter, and clears Escape", async () => {

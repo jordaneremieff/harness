@@ -32,6 +32,14 @@ describe("agent extension discovery", () => {
 		const toolNames = result.extensions.flatMap((extension) => [...extension.tools.keys()]);
 		assert.deepEqual(result.errors, []);
 		assert.ok(toolNames.includes("agent_spawn") && toolNames.includes("agent_inspect"));
+		const inspect = result.extensions.flatMap((extension) => [...extension.tools.values()]).find((tool) => tool.definition.name === "agent_inspect")?.definition;
+		assert.ok(inspect);
+		assert.match(inspect.description, /Provider signatures, image data, and redacted thinking are omitted/);
+		assert.match(inspect.description, /not raw storage/);
+		const parameters = JSON.parse(JSON.stringify(inspect.parameters));
+		assert.match(parameters.properties.offset.description, /UTF-16 offset/);
+		assert.deepEqual(Object.keys(parameters.properties).sort(), ["cursor", "entryId", "limit", "offset", "sessionId"]);
+		assert.equal(parameters.additionalProperties, false);
 		assert.equal(result.runtime, result.runtime);
 		rmSync(base, { recursive: true, force: true });
 	});
