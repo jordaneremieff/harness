@@ -221,7 +221,12 @@ test("tool renderers name the call, hide result bodies by default, and expand on
 			.render(240)
 			.join("\n"),
 	);
-	assert.match(usageFailed, /pillars_usage: The frozen capture expired or was replaced\./);
+	assert.match(usageFailed, /pillars_usage: The frozen capture expired or was replaced.*Send \{\}/);
+	const thrown = usage.renderResult(
+		{ content: [{ type: "text", text: JSON.stringify(errorResponse("invalid_input")) }], details: undefined },
+		{ expanded: false, isPartial: false }, bareTheme, { isError: true },
+	).render(240).join("\n");
+	assert.match(thrown, /invalid_input[\s\S]*Send \{\}/);
 });
 
 test("the host tool row renders collapsed by default and toggles with setExpanded", () => {

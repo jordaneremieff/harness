@@ -11,14 +11,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Markdown } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { ACCESS_DESCRIPTION, access } from "./access.ts";
+import { ACCESS_DESCRIPTION, access, parseAccess } from "./access.ts";
+import { InputError } from "./input.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import { Collector, utcDay } from "./collector.ts";
 import { COMMAND_HELP, commandCompletions, judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
 import { exportLocal, parseCommand } from "./export.ts";
 import { accessEvidence, Deduplicator, type DeliveryExtent, extract, readEvidence, type ResultEvidence } from "./observation.ts";
 import { accessRenderers, usageMarkdown, usageRenderers } from "./presentation.ts";
-import { createReader, TOOL_DESCRIPTION } from "./readback.ts";
+import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./readback.ts";
 import { PillarsStore } from "./store.ts";
 
 export default function pillarsExtension(pi: ExtensionAPI): void {
@@ -178,13 +179,22 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 			{ additionalProperties: false },
 		),
 		...accessRenderers(),
+		prepareArguments(input) {
+			try {
+				const { referenceBodyDigest, ...args } = parseAccess(input, catalog);
+				return { ...args, ...(referenceBodyDigest === undefined ? {} : { referenceBodyDigest }) };
+			} catch (error) {
+				if (!(error instanceof InputError)) throw error;
+				throw new Error(JSON.stringify({ schema: "pillars-source-error", code: "invalid_input", message: error.message }));
+			}
+		},
 		async execute(id, args, signal) {
 			const result = await access(catalog, args, signal);
 			if (result.schema === "pillars-source" && delivered.size < 4096 && Buffer.byteLength(id) <= 256) {
 				const { resource, offset, endOffset, bodyBytes, referenceBodyDigest } = result;
 				delivered.set(id, { resource, offset, endOffset, bodyBytes, referenceBodyDigest });
 			}
-			if (result.schema === "pillars-source-error") throw new Error(`Pillars source: ${result.code}.`);
+			if (result.schema === "pillars-source-error") throw new Error(JSON.stringify(result));
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 		},
 	});
@@ -201,6 +211,13 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 			{ additionalProperties: false },
 		),
 		...usageRenderers(),
+		prepareArguments(input) {
+			try { return parseRequest(input); }
+			catch (error) {
+				if (!(error instanceof InputError)) throw error;
+				throw new Error(JSON.stringify(errorResponse("invalid_input", error.message)));
+			}
+		},
 		async execute(_id, args, signal) {
 			const result = await reader.read(args, signal);
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
@@ -237,7 +254,7 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 			ctx.signal,
 		);
 		if (result.schema === "pillars-source-error") {
-			display(`Pillars source: ${result.code}.`, ctx);
+			display(`Pillars source: ${result.code}. ${result.message ?? ""}`.trimEnd(), ctx);
 			return;
 		}
 		const continuation =

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
+import { InputError, inputObject, received } from "./input.ts";
 import {
 	type Cell,
 	COUNTERS,
@@ -50,19 +51,21 @@ export const MEANING = Object.freeze({
 export const TOOL_DESCRIPTION =
 	'Read retained Pillars access evidence, not application or effectiveness. Omit arguments for a 30-UTC-day resource overview. Use view:"revisions" for all joint day/resource/reference-digest/model/reasoning/stage/version rows, without per-resource queries. windowDays selects 1–30 trailing days. Follow nextCursor with cursor alone to finish a frozen view. Counts and storage incidents do not diagnose causes or establish live coverage.';
 export type ErrorCode =
+	| "invalid_input"
 	| "store_unreadable"
 	| "store_corrupt"
 	| "cursor_expired"
 	| "cursor_invalid"
 	| "response_overflow";
 const MESSAGES: Record<ErrorCode, string> = {
+	invalid_input: "input: received an invalid request. Send {} for the default overview.",
 	store_unreadable: "The retained aggregate store is unreadable.",
 	store_corrupt: "The retained aggregate store is invalid.",
-	cursor_expired: "The frozen capture expired or was replaced.",
-	cursor_invalid: "The continuation cursor is invalid.",
+	cursor_expired: "The frozen capture expired or was replaced. Send {} for a fresh overview, or send view and windowDays without cursor.",
+	cursor_invalid: "cursor: received a cursor outside the capture page range (value withheld). Copy nextCursor unchanged and send cursor alone, or send {} for a fresh overview.",
 	response_overflow: "The bounded capture exceeded its row, byte, or memory limit.",
 };
-export function errorResponse(code: ErrorCode) {
+export function errorResponse(code: ErrorCode, message = MESSAGES[code]) {
 	return {
 		schema: "pillars-usage-response" as const,
 		schemaVersion: 2 as const,
@@ -70,7 +73,7 @@ export function errorResponse(code: ErrorCode) {
 		meaning: MEANING,
 		code,
 		retryable: code !== "store_corrupt",
-		message: MESSAGES[code],
+		message,
 	};
 }
 export type ErrorResponse = ReturnType<typeof errorResponse>;
@@ -196,13 +199,19 @@ function shape(schema: Schema, value: unknown): boolean {
 	return true;
 }
 export function parseRequest(input: unknown = {}): Request {
-	if (!shape(requestSchema, input)) throw new Error("invalid_input");
-	const request = input as Partial<Request> & { view?: "overview" | "revisions"; windowDays?: number };
-	if ("cursor" in request) {
-		if (typeof request.cursor !== "string") throw new Error("invalid_input");
-		return { cursor: request.cursor };
+	const args = inputObject(input, ["view", "windowDays", "cursor"]);
+	if (Object.hasOwn(args, "cursor")) {
+		if (Object.hasOwn(args, "view") || Object.hasOwn(args, "windowDays"))
+			throw new InputError("cursor", args.cursor, "The request also contains view or windowDays. Send cursor alone to continue; omit cursor for a fresh view.");
+		if (typeof args.cursor !== "string" || !/^[-_A-Za-z0-9]{4,256}$/.test(args.cursor))
+			throw new InputError("cursor", args.cursor, "Use 4–256 letters, digits, hyphens, or underscores. Copy nextCursor unchanged and send cursor alone, or send {} for a fresh overview.");
+		return { cursor: args.cursor };
 	}
-	return { view: request.view ?? "overview", windowDays: request.windowDays ?? 30 };
+	if (Object.hasOwn(args, "view") && args.view !== "overview" && args.view !== "revisions")
+		throw new InputError("view", args.view, 'Use "overview" or "revisions", or omit view for the default overview.');
+	if (Object.hasOwn(args, "windowDays") && (typeof args.windowDays !== "number" || !Number.isInteger(args.windowDays) || args.windowDays < 1 || args.windowDays > 30))
+		throw new InputError("windowDays", args.windowDays, "Use an integer from 1 through 30, or omit windowDays for 30 days.");
+	return { view: (args.view ?? "overview") as "overview" | "revisions", windowDays: (args.windowDays ?? 30) as number };
 }
 function add(a: number, b: number): number {
 	const value = a + b;
@@ -407,7 +416,7 @@ function validatePartitions(c: Counters): void {
 type RevisionPage = Extract<Page, { view: "revisions" }>;
 type ResourcePage = Extract<Page, { view: "overview" }>;
 function validateErrorResponse(response: ErrorResponse): void {
-	if (response.message !== MESSAGES[response.code] || response.retryable !== (response.code !== "store_corrupt"))
+	if ((!["invalid_input", "cursor_invalid", "cursor_expired"].includes(response.code) && response.message !== MESSAGES[response.code]) || response.retryable !== (response.code !== "store_corrupt"))
 		throw new Error("invalid_response");
 }
 function validatePagination(response: Page): void {
@@ -584,10 +593,12 @@ export function createReader(
 	}
 	function continueCapture(cursor: string): Response {
 		const decoded = decodeCursor(cursor);
-		if (!decoded) return errorResponse("cursor_invalid");
+		if (!decoded) return errorResponse("cursor_invalid", `cursor: received ${received(cursor)} with invalid encoding. Copy nextCursor unchanged and send cursor alone, or send {} for a fresh overview.`);
 		if (capture && now() >= capture.expires) clear();
 		if (!capture || capture.key !== decoded.key)
-			return errorResponse(retired.has(decoded.key) ? "cursor_expired" : "cursor_invalid");
+			return retired.has(decoded.key)
+				? errorResponse("cursor_expired", `cursor: received ${received(cursor)} for a capture that expired or was replaced. Send {} for a fresh overview, or send view and windowDays without cursor.`)
+				: errorResponse("cursor_invalid", `cursor: received ${received(cursor)} for an unknown capture. Copy nextCursor from the current capture and send cursor alone, or send {} for a fresh overview.`);
 		try {
 			return page(decoded.index);
 		} catch (error) {
@@ -627,7 +638,12 @@ export function createReader(
 	return {
 		clear,
 		async read(input: unknown = {}, signal?: AbortSignal): Promise<Response> {
-			const request = parseRequest(input);
+			let request: Request;
+			try { request = parseRequest(input); }
+			catch (error) {
+				if (!(error instanceof InputError)) throw error;
+				return errorResponse("invalid_input", error.message);
+			}
 			if ("cursor" in request) return continueCapture(request.cursor);
 			clear();
 			const current = generation;

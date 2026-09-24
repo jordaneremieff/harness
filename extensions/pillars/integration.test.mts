@@ -237,6 +237,30 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 		);
 		assert.ok(stale?.role === "toolResult" && stale.isError);
 		assert.ok(stale.content.some((block) => block.type === "text" && block.text.includes("source_changed")));
+		for (const [toolName, args, expected] of [
+			["pillars", { resource: "principle-example.md" }, /principle-example.*inventory/],
+			["pillars_usage", { cursor: "abcd", view: "overview" }, /cursor alone/],
+			["pillars", { resource: null }, /resource:.*null.*identifier/],
+			["pillars", { offset: -1 }, /offset:.*-1.*integer/],
+			["pillars", { referenceBodyDigest: "private\u001b" }, /referenceBodyDigest:.*withheld.*64 lowercase/],
+			["pillars_usage", { windowDays: 31 }, /windowDays:.*31.*1.*30/],
+			["pillars_usage", { view: "private\u001b" }, /view:.*withheld.*overview/],
+			["pillars_usage", { extra: "private\u001b" }, /unsupported field/],
+		] as const) {
+			faux.setResponses([
+				ai.fauxAssistantMessage(ai.fauxToolCall(toolName, args, { id: "invalid-call" })),
+				ai.fauxAssistantMessage("Synthetic invalid input checked."),
+			]);
+			await session.prompt("Check an invalid tool input.");
+			const invalid: import("@earendil-works/pi-agent-core").AgentMessage | undefined = session.messages.findLast((message) => message.role === "toolResult");
+			assert.ok(invalid?.role === "toolResult");
+			const content = invalid.content.find((block) => block.type === "text");
+			assert.ok(content?.type === "text");
+			const diagnostic = JSON.parse(content.text);
+			assert.equal(diagnostic.code, "invalid_input");
+			assert.match(diagnostic.message, expected);
+			if (toolName === "pillars") assert.equal(invalid.isError, true);
+		}
 		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		const captured = await new PillarsStore(join(root, "store")).capture(utcDay());
 		const cells = Object.values(captured.shards).flatMap((shard) => shard.cells);

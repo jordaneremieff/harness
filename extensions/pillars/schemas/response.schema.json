@@ -1050,6 +1050,7 @@
         },
         "code": {
           "enum": [
+            "invalid_input",
             "store_unreadable",
             "store_corrupt",
             "cursor_expired",
@@ -1063,7 +1064,7 @@
         "message": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 200
+          "maxLength": 1024
         }
       },
       "required": [

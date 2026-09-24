@@ -33,7 +33,7 @@ function textContent(result: AgentToolResult<unknown>): string {
 
 function accessErrorText(result: AgentToolResult<AccessPage | AccessError | undefined>, context: RenderContext): string {
 	const details = result.details;
-	if (details?.schema === "pillars-source-error") return `pillars: ${details.code}`;
+	if (details?.schema === "pillars-source-error") return `pillars: ${details.code}${details.message ? `: ${details.message}` : ""}`;
 	if (context.isError) return textContent(result) || "pillars: unavailable";
 	return "pillars: unavailable";
 }
@@ -102,7 +102,7 @@ export function usageRenderers(): {
 			const details = result.details;
 			if (context.isError || !details || details.kind === "error") {
 				const message =
-					details && details.kind === "error" ? details.message : "The access-evidence read did not complete.";
+					details && details.kind === "error" ? details.message : textContent(result) || "The access-evidence read did not complete.";
 				return new Text(`\n${theme.fg("error", `pillars_usage: ${message}`)}`, 0, 0);
 			}
 			let text = `\n${theme.fg("success", details.view)}`;

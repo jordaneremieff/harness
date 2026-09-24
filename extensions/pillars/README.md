@@ -74,8 +74,45 @@ text and its SHA-256 digest, not a generated summary or a compliance verdict.
 
 The tool returns at most 32 KiB. If it returns `nextOffset`, continue with that
 UTF-8 byte offset and `referenceBodyDigest`. A changed reference fails rather
-than silently combining revisions. Invalid input, unavailable source, and a
-changed source produce fixed tool errors. A source body is limited to 1 MiB.
+than silently combining revisions. A source body is limited to 1 MiB.
+
+Source errors retain `schema:"pillars-source-error"` and `code`.
+`invalid_input` and `source_changed` also carry a bounded `message` (at most
+1,024 characters) that names the field, describes the received value, explains
+the rejection, and gives the valid input. The tool throws the JSON error object
+as its message, so Pi marks the result as an error without discarding the
+structured diagnostic. Pi leaves `details` unset for thrown errors. An unavailable
+catalog or unreadable body remains `source_unavailable`, not invalid input.
+
+Resource identifiers are not filenames. A `.md` suffix is rejected with the
+exact canonical request when that identifier exists, for example:
+
+```json
+{"resource":"heuristic-verification-reach"}
+```
+
+A unique single-character insertion, deletion, or substitution also produces a
+suggestion. Ambiguous or more distant inputs receive the identifier syntax and
+the instruction to call `pillars` with `{}` for the inventory's `resources` list.
+Suggestions never rewrite or accept an invalid identifier. This preserves one
+resource format while correcting the filename-versus-identifier confusion at
+the failed call.
+
+Validation identifies non-object input, unsupported fields, malformed or unknown
+resources, invalid offset types or ranges, malformed digests, missing continuation
+digests, offsets past the body, and offsets inside a UTF-8 character. Null resource
+and offset fields are invalid, not defaults. Changed-source errors tell the caller
+to omit both continuation fields for a fresh read. Other continuation errors tell
+the caller to copy `nextOffset` and `referenceBodyDigest` from the same page or
+restart without them.
+
+Both tools validate through Pi's `prepareArguments` callback before host schema
+validation, as well as at their execution boundary. They report the first invalid
+field. Numbers and booleans are shown directly. Arbitrary strings and unsupported
+field names are described by type and length, not echoed; object and array contents
+are withheld. The source tool echoes only a known identifier with its `.md` suffix.
+These rules prevent control characters, paths, credentials, and arbitrary input
+text from entering diagnostic messages.
 
 In the terminal TUI both tools render inside Pi's standard tool-call shell,
 collapsed by default. The call line names the requested resource or evidence
@@ -137,6 +174,24 @@ The model-callable `pillars_usage` tool is read-only:
 {"view":"revisions","windowDays":30}
 {"cursor":"<nextCursor>"}
 ```
+
+Invalid usage requests retain `schema:"pillars-usage-response"`, `schemaVersion:2`,
+`kind:"error"`, and the existing interpretation fields. The error `code` includes
+`invalid_input`; the existing `message` field permits at most 1,024 characters.
+Invalid requests identify non-object input, unsupported fields, invalid `view`,
+invalid `windowDays`, malformed `cursor`, or `cursor` mixed with `view` or
+`windowDays`. The parser reports these before capture, so they neither read the
+store nor replace an existing capture. Pi receives pre-execution validation errors
+as thrown JSON messages; direct reader calls return the same error object.
+
+Cursor errors distinguish invalid encoding, an unknown capture, an expired or
+replaced capture, and a page outside the capture range. Their messages tell the
+caller to copy `nextCursor` unchanged with `cursor` alone, or start a fresh view
+without `cursor`. `cursor_invalid` and `cursor_expired` permit bounded
+cause-specific messages; other non-input error codes retain their fixed messages.
+A fresh capture that expires or is replaced uses `cursor_expired` without claiming
+that the request contained a cursor. The response schema
+validates these error forms along with successful pages.
 
 The default overview ranks resources by requests, then class and identifier.
 It retains the leading 63 concrete identities and folds remaining identities

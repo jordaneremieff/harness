@@ -162,7 +162,10 @@ test("source access returns actual text and portable ids without absolute locato
 			{ offset: -1 },
 			{ resource: "x", referenceBodyDigest: "bad" },
 		]) {
-			assert.deepEqual(await access(catalog, input), { schema: "pillars-source-error", code: "invalid_input" });
+			const invalid = await access(catalog, input);
+			assert.equal(invalid.schema, "pillars-source-error");
+			assert.equal("code" in invalid && invalid.code, "invalid_input");
+			assert.ok("message" in invalid && invalid.message);
 		}
 	} finally {
 		restore();
@@ -191,15 +194,14 @@ test("source continuation retains exact UTF-8 boundaries and rejects changed ref
 			page = await access(catalog, { resource: "principle-example", offset: page.nextOffset, referenceBodyDigest });
 		}
 		assert.equal(parts.join(""), text);
-		assert.deepEqual(await access(catalog, { resource: "principle-example", offset: 1, referenceBodyDigest }), {
-			schema: "pillars-source-error",
-			code: "invalid_input",
-		});
+		const invalid = await access(catalog, { resource: "principle-example", offset: 1, referenceBodyDigest });
+		assert.equal(invalid.schema, "pillars-source-error");
+		assert.equal("code" in invalid && invalid.code, "invalid_input");
+		assert.match("message" in invalid ? invalid.message ?? "" : "", /inside a UTF-8 character/);
 		await writeFile(path, "Changed.");
-		assert.deepEqual(await access(catalog, { resource: "principle-example", offset: 24000, referenceBodyDigest }), {
-			schema: "pillars-source-error",
-			code: "source_changed",
-		});
+		const changed = await access(catalog, { resource: "principle-example", offset: 24000, referenceBodyDigest });
+		assert.equal("code" in changed && changed.code, "source_changed");
+		assert.match("message" in changed ? changed.message ?? "" : "", /omit offset and referenceBodyDigest/);
 	} finally {
 		restore();
 	}

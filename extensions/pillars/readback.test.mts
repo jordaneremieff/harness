@@ -76,7 +76,12 @@ test("closed requests reject unsupported fields before capture", async () => {
 		{ resourceId: "entry-a" },
 		{ view: undefined },
 	])
-		await assert.rejects(read.read(value), /invalid_input/);
+	{
+		const result = await read.read(value);
+		validateResponse(result);
+		assert.equal(result.kind, "error");
+		if (result.kind === "error") assert.equal(result.code, "invalid_input");
+	}
 	assert.equal(calls, 0);
 	assert.deepEqual(parseRequest({}), { view: "overview", windowDays: 30 });
 	for (let days = 1; days <= 30; days++) page(await read.read({ windowDays: days }));
@@ -155,6 +160,27 @@ test("TTL is fixed, old keys retire within a bounded set, invalid cursors never 
 	assert.equal(error.kind, "error");
 	assert.equal(calls, before);
 });
+test("invalid input preserves a capture and out-of-range cursors identify the page boundary", async () => {
+	let calls = 0;
+	const read = createReader(() => { calls++; return snapshot(25); }, { now: () => NOW });
+	const cursor = page(await read.read({ view: "revisions" })).pagination.nextCursor;
+	assert.ok(cursor);
+	const invalid = await read.read({ windowDays: 0 });
+	validateResponse(invalid);
+	assert.equal(invalid.kind, "error");
+	assert.equal(page(await read.read({ cursor })).pagination.pageNumber, 2);
+	const outOfRange = Buffer.from(Buffer.from(cursor, "base64url").toString("utf8").replace(/:1$/, ":999")).toString("base64url");
+	const refused = await read.read({ cursor: outOfRange });
+	validateResponse(refused);
+	assert.equal(refused.kind, "error");
+	if (refused.kind === "error") {
+		assert.equal(refused.code, "cursor_invalid");
+		assert.match(refused.message, /cursor:.*received.*page range.*nextCursor.*\{\}/);
+		assert.throws(() => validateResponse({ ...refused, message: "x".repeat(1025) }), /invalid_response/);
+	}
+	assert.equal(calls, 1);
+});
+
 test("overview ranks concrete resources once, folds remaining identities last, and preserves totals", async () => {
 	const store = snapshot(80);
 	store.shards[DAY].cells[79].counters = { ...zero(), readRequests: 5 };
@@ -334,7 +360,11 @@ test("overlapping captures and cancellation never expose a partial or replaced s
 	pending[0](snapshot(1));
 	const replaced = await first;
 	assert.equal(replaced.kind, "error");
-	if (replaced.kind === "error") assert.equal(replaced.code, "cursor_expired");
+	if (replaced.kind === "error") {
+		assert.equal(replaced.code, "cursor_expired");
+		assert.doesNotMatch(replaced.message, /received a cursor/);
+		assert.match(replaced.message, /Send \{\}/);
+	}
 	const next = current.pagination.nextCursor;
 	assert.ok(next);
 	page(await read.read({ cursor: next }));
