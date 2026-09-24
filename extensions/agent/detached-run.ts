@@ -222,13 +222,14 @@ export async function executeDetachedRun(
 		return sealTask;
 	};
 	let unsubscribe: (() => void) | undefined;
+	/** Injected only for a real failure or hosted report; the bounded text is formatted once per publication. */
+	const terminalError = (): string | undefined => failure === undefined && hosted === undefined ? undefined : boundedRunError(failure, hosted);
 	const publishProgress = createProgressWriter(
-		() => ({ ...progressRecord(request.runId, worker?.sessionManager().getEntries() ?? [], settled ? null : worker?.observation() ?? null, boundedRunError(failure, hosted)), ...(worker ? { currentSessionId: worker.sessionMetadata().id } : {}) }),
+		() => ({ ...progressRecord(request.runId, worker?.sessionManager().getEntries() ?? [], settled ? null : worker?.observation() ?? null, terminalError()), ...(worker ? { currentSessionId: worker.sessionMetadata().id } : {}) }),
 		(progress) => runs.writeProgress(progress),
 	);
 	const finish = (state: "finished" | "failed", detail: { error?: string; summary?: string }): number => {
 		settled = true;
-		failure = detail.error ?? failure;
 		unsubscribe?.();
 		unsubscribe = undefined;
 		publishProgress(true);
@@ -237,7 +238,7 @@ export async function executeDetachedRun(
 			...(worker ? { currentSessionId: worker.sessionMetadata().id } : {}),
 			state,
 			finishedAt: new Date().toISOString(),
-			...(state === "failed" ? { error: boundedRunError(failure, hosted) } : {}),
+			...(state === "failed" ? { error: detail.error ?? terminalError() } : {}),
 			...(detail.summary ? { summary: detail.summary } : {}),
 		});
 		return state === "finished" ? 0 : 1;

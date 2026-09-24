@@ -451,6 +451,34 @@ describe("detached control lifecycle", () => {
 		} finally { test.close(); }
 	});
 
+	it("keeps a successful run's progress error absent", async () => {
+		const test = controlFixture();
+		try {
+			assert.equal(await executeDetachedRun(test.source, test.options), 0);
+			const result = test.runs.get(test.source.runId);
+			assert.equal(result?.state, "finished");
+			assert.equal(result?.progress?.error, undefined);
+		} finally { test.close(); }
+	});
+
+	it("reports hosted evidence exactly once with the primary failure", async (t) => {
+		const test = controlFixture();
+		t.mock.method(test.worker, "operationResult", async () => ({ ...defined(operationOutcome("failed")), error: { message: "primary failure" } }));
+		try {
+			const code = await executeDetachedRun(test.source, {
+				...test.options,
+				createHost: async () => ({ open: async () => test.worker, close: async () => { test.calls.push("host-close"); }, activeHostedSessionIds: () => ["affected-peer"] }),
+			});
+			assert.equal(code, 1);
+			const result = test.runs.get(test.source.runId);
+			const error = result?.error ?? "";
+			assert.match(error, /primary failure/u);
+			assert.equal(error.split("active or queued work at shutdown").length, 2, error);
+			const progressError = result?.progress?.error ?? "";
+			assert.equal(progressError.split("active or queued work at shutdown").length, 2, progressError);
+		} finally { test.close(); }
+	});
+
 	it("cleans up startup failures without admitting input", async () => {
 		const test = controlFixture();
 		try {
