@@ -556,7 +556,7 @@ export class AgentManager {
 		});
 	}
 
-	private withSessionControl<T>(sessionId: string, local: (worker: AgentWorkerSession) => Promise<T>, remote: (client: DetachedControlClient) => Promise<T>, signal?: AbortSignal, timeoutMs?: number, callerSessionId?: string, cancelExisting = false): Promise<T> {
+	private withSessionControl<T>(sessionId: string, local: (worker: AgentWorkerSession) => Promise<T>, remote: (client: DetachedControlClient) => Promise<T>, signal?: AbortSignal, timeoutMs?: number, callerSessionId?: string, cancelExisting = false, requireActive = false): Promise<T> {
 		const assertPeer = (targetId: string) => {
 			if (callerSessionId === targetId) throw new Error("Owner-wait controls cannot target their calling session; use another session's controller.");
 		};
@@ -569,9 +569,15 @@ export class AgentManager {
 			return run ? withDetachedControl(run, async (client) => {
 				if (callerSessionId) assertPeer((await client.status()).sessionId);
 				return remote(client);
-			}, signal, timeoutMs) : (existing
-				? Promise.resolve(existing)
-				: this.openWorker(sessionId, undefined, undefined, undefined, true)).then((worker) => {
+			}, signal, timeoutMs) : (async () => {
+				if (existing) return existing;
+				const opened = await this.openWorker(sessionId, undefined, undefined, undefined, true);
+				if (requireActive && !opened.hasActiveWork()) {
+					await opened.close("steer-refused");
+					throw new Error(`agent steer requires an active session; ${sessionId} is idle with no queued input; use agent send to start a turn`);
+				}
+				return opened;
+			})().then((worker) => {
 				assertPeer(worker.sessionId());
 				return local(worker);
 			});
@@ -980,7 +986,7 @@ export class AgentManager {
 
 	async steer(sessionId: string, message: string, images?: ImageContent[], signal?: AbortSignal): Promise<string> {
 		this.assertAssociationWriter(sessionId);
-		await this.withSessionControl(sessionId, async (worker) => { await worker.steer(message, images); }, (client) => client.steer(message, images), signal);
+		await this.withSessionControl(sessionId, async (worker) => { await worker.steer(message, images); }, (client) => client.steer(message, images), signal, undefined, undefined, false, true);
 		return `session ${sessionId}: steering message queued. Queue admission does not confirm delivery or action.`;
 	}
 

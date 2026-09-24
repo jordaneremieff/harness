@@ -187,9 +187,11 @@ export class AgentWorkerSession {
 	private readonly spend = new OwnedSpend();
 	private readonly nested = new NestedStatus();
 	private eventBus = createEventBus();
+	hasActiveWork(): boolean {
+		return !this.terminal && Boolean(this.operation || this.tasks.size || this.controlTask || this.preflight || this.nativePreflights || (this.runtime && (!this.runtime.session.isIdle || this.runtime.session.isBashRunning || this.runtime.session.pendingMessageCount)));
+	}
 	footerState(): AgentFooterState {
-		const active = !this.terminal && Boolean(this.operation || this.tasks.size || this.controlTask || this.preflight || this.nativePreflights || (this.runtime && (!this.runtime.session.isIdle || this.runtime.session.isBashRunning || this.runtime.session.pendingMessageCount)));
-		return { active, spend: { ...this.spend.total }, nested: this.nested.snapshot() };
+		return { active: this.hasActiveWork(), spend: { ...this.spend.total }, nested: this.nested.snapshot() };
 	}
 	private publishFooter(): void { this.spend.sync(); this.notify({ kind: "status" }); }
 	private constructor(options: WorkerCreateOptions) { this.options = options; }
