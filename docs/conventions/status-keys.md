@@ -96,7 +96,9 @@ reported totals retain known spend and mark the observation incomplete. The
 consumer unsubscribes at host close. Intentional closure after complete settled
 observations does not invent unknown spend. A missing observation at closure
 remains incomplete in the checkpoint. Each departing primary clears its own cell.
-Shutdown or reload of the last primary closes the manager after final accounting.
+True shutdown of the last primary closes the manager after final accounting.
+Primary reload retains the manager and its price baseline while old UI callbacks
+are removed; the fresh runtime binds a new status callback.
 
 Both publishers save meaningful changes through native custom entries, outside
 model context. Checkpoints carry the exact native session ID. Same-process reload

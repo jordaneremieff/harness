@@ -489,7 +489,7 @@ describe("command registration", () => {
 			let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
 			registerAgentExtension({ registerTool() {}, registerMessageRenderer() {}, on() {}, getThinkingLevel: () => "high", registerCommand(_name: string, options: typeof command) { command = options; } } as unknown as ExtensionAPI);
 			const notices: string[] = [];
-			const ctx = { cwd: test.cwd, model: defaultModel, mode: "tui", hasUI: true, isProjectTrusted: () => true, ui: { custom: () => { throw new Error("custom UI must stay unopened"); }, notify: (text: string) => notices.push(text) } } as unknown as ExtensionCommandContext;
+			const ctx = { cwd: test.cwd, model: defaultModel, mode: "tui", hasUI: true, isProjectTrusted: () => true, sessionManager: { getSessionId: () => "command-parent" }, ui: { custom: () => { throw new Error("custom UI must stay unopened"); }, notify: (text: string) => notices.push(text) } } as unknown as ExtensionCommandContext;
 			for (const [input, method] of [
 				["new Check the parser", "spawn"], ["list", "status"], ["status selected", "status"],
 				["attach selected", "attach"], ["fork selected", "fork"], ["abort selected", "abort"],

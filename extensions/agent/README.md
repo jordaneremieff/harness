@@ -102,8 +102,9 @@ entries in memory without creating the file; the first assistant message flushes
 those entries. Tree navigation does not undo incurred costs. New sessions
 and copied forks start at zero. Multiple primaries have separate checkpoints and
 attachment baselines, so a later primary does not inherit earlier manager spend.
-Each departing primary clears its cell. Last-primary shutdown closes the manager
-after it saves final observations. These are cumulative observed session costs,
+Each departing primary clears its cell. A primary reload drops its old UI and
+message callbacks, but retains its manager, live hosts, and price baseline.
+Last-primary shutdown other than reload closes the manager after final observations. These are cumulative observed session costs,
 not retrospective historical charges or provider invoices. Missing or malformed
 usage adds `+?` to the known price rather than becoming zero.
 
@@ -372,7 +373,9 @@ custom-message input before teardown. The host waits for outgoing native work
 after shutdown hooks before releasing its claim. Failed disposal or incomplete
 cleanup retains the claim; a failed close permits another cleanup attempt.
 An abrupt process exit retains the claim, so reopening then fails closed.
-The error names the claim file. Confirm that no writer survives before manual
+Graceful quit releases successfully closed hosts; forced process death does not.
+The error names the claim file. Idle restoration after verified-dead claim removal
+is not automatic crash recovery. Confirm that no writer survives before manual
 removal; the extension never guesses that another process is safe to replace.
 Read-only observation does not take a claim, so `agent_status` and
 `agent_inspect` can report a session that another process owns; they read a
@@ -487,6 +490,56 @@ valid new header and setup entries before the first model response, so an idle
 session remains reopenable and detachable. It does not invent assistant
 messages to force persistence. Existing files outside this native directory
 remain untouched; there is no migration or retired-format reader.
+
+### Parent reload and saved-session recovery
+
+A same-process primary `/reload` retains the existing ordinary hosts, active
+operations, native queues, resources, and writer claims. It replaces only the
+primary's generation-bound callbacks. Existing children keep their own native
+provider and resource runtimes; changed resources load for the reloaded primary
+and newly created children. This does not preserve a provider callback that
+depends on a resource its own owner closed. Results that settle during the reload
+gap wait for the new primary callback and are delivered once in that process.
+The native message API supplies no crash-durable delivery acknowledgment.
+
+Explicit creation and ownership controls record parent-child associations in
+native custom entries outside model context before a task starts. Read-only
+list, status, inspection, and dashboard views do not establish associations.
+Session replacement updates the association; detach removes it. Entries identify
+the exact native parent and configured store. Copied forks and new sessions do
+not inherit another parent's ownership. Associations cover all native branches;
+tree navigation does not undo ownership. There is no inference from session
+names, transcript text, the store inventory, or historical records without an
+association.
+
+Reopening the exact saved primary through `--session <UUID>` or `-r` opens its
+associated ordinary children idle, including their saved nested associations.
+Shared children open once; cycles are refused. Each unavailable child reports
+its own failure without preventing independent children from opening. Current
+model, project-trust, and exclusive-claim checks still apply. A denied project
+trust decision excludes project resources rather than replaying prior trust.
+An unavailable model requires explicit repair. A foreign or retained writer
+claim still requires ownership resolution.
+
+A parent created before association records existed restores no inferred
+children. Explicit `agent_attach` or `/agent attach` opens a known child without
+a task and records the association for that parent. Save the native parent
+before expecting later process recovery. Pi buffers custom entries until its
+first assistant message flushes the file. An in-memory session or an unflushed
+parent therefore has same-process continuity only. This is not a record migration.
+
+A rejected native reload before runtime replacement retains the old invalidated
+runner. A later successful reload rebinds control, and its retained shutdown
+handler still closes the children on true quit. Pi also permits a different
+failure: its loader reports an extension factory error, omits that extension,
+and completes reload. If it omits this extension, the parent loses agent tools
+and shutdown handlers while retained children and writer claims remain live.
+A later successful reload recovers control. True quit from the omitted-extension
+runtime cannot call the lost cleanup handler. Pi 0.87.1 exposes no finalizer for
+that discarded extension owner; this cleanup guarantee is blocked at the native
+host. The extension adds no process hook or polling substitute. After process
+exit, retained claims still fail closed and require the ownership check described
+above before manual removal.
 
 Reopening retains persisted conversation history. It does not replay an
 interrupted model request, tool call, or pending queue. Inspection identifies

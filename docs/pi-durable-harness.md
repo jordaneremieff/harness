@@ -275,6 +275,39 @@ Controlled native-host and regular/fullscreen terminal checks exercise reload,
 reopening, fork/new isolation, mixed nesting, and visible idle totals. These
 observations do not establish retrospective spend or power-loss durability.
 
+## Ordinary-agent reload and recovery boundary
+
+Verified 2026-09-24 against installed coding-agent 0.87.1
+`dist/core/agent-session.js`, `dist/core/extensions/runner.js`,
+`dist/core/extensions/loader.js`, and native-host recovery tests in
+`extensions/agent/reload-resume.test.mts`.
+
+A primary reload emits shutdown before invalidating its extension runner, then
+reloads resources, builds a fresh runtime, and emits startup. It does not dispose
+separate ordinary child runtimes. The agent extension retains those hosts and
+writer claims, drops old primary callbacks, and rebinds callbacks on startup.
+Saved exact-parent associations use native custom entries, not another execution
+store. Reopening reconstructs idle ownership; it never restarts requests, tools,
+or pending queues. The native persistence boundary above still applies to an
+unflushed or in-memory parent.
+
+Failure paths differ. A reload rejection before runtime replacement leaves the
+old runner invalidated, but its registered event handlers still dispatch. Its
+context accessors reject stale use. Captured plain identity permits later retry
+and true-shutdown cleanup. A fresh agent runtime that fails before startup also
+finds its retained owner for true shutdown.
+
+By contrast, the extension loader catches a factory exception, discards that
+extension's registrations, reports a diagnostic, and continues without it. If
+reload omits the agent extension, retained children and claims stay live but
+the primary has neither agent controls nor its cleanup handler. A subsequent
+successful reload restores control. True quit from that omitted-extension runtime
+does not close the retained children. The installed public extension surface has
+no finalizer for the discarded owner. Tests reproduce that boundary and perform
+separate fixture cleanup; they do not establish automatic cleanup there. No
+process hook, second owner, or polling mechanism substitutes for the missing
+native finalizer.
+
 ## Current-session evidence retrieval
 
 Verified 2026-09-23 against installed 0.87.1 `dist/core/session-manager.d.ts`,

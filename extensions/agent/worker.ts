@@ -10,6 +10,7 @@ import {
 	type LoadExtensionsResult, type ModelRuntime, type ProjectTrustStore, type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
+import { ASSOCIATION_ENTRY, type AssociationSource } from "./associations.ts";
 import { NestedStatus, OwnedSpend, type AgentFooterState } from "./footer.ts";
 import type { AgentSessionMetadata, AgentStore, StoredAgentSession } from "./store.ts";
 
@@ -198,6 +199,10 @@ export class AgentWorkerSession {
 	sessionId(): string { return this.held.manager.getSessionId(); }
 	sessionMetadata(): AgentSessionMetadata { return this.options.store.metadata(this.held.manager); }
 	sessionManager(): SessionManager { return this.held.manager; }
+	associationSource(): AssociationSource {
+		const manager = this.held.manager;
+		return { sessionId: manager.getSessionId(), entries: () => manager.getEntries(), append: (entry) => { manager.appendCustomEntry(ASSOCIATION_ENTRY, entry); } };
+	}
 	isProjectTrusted(): boolean { return this.runtime.services.settingsManager.isProjectTrusted(); }
 
 	static async create(options: WorkerCreateOptions): Promise<AgentWorkerSession> {
