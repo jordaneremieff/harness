@@ -7,8 +7,8 @@ compaction. The primary session stays available while the agent works. The
 separate `subagent` extension remains independent.
 
 This extension provides runtime tools and a native `/agent` command with a
-read-only session and detached-run dashboard. It does not provide a
-conversation editor or workspace.
+session and detached-run dashboard with read-only inspection and explicit actions.
+It does not provide a conversation editor or workspace.
 
 ## Start and control sessions
 
@@ -29,17 +29,47 @@ as tool results instead.
 ### Observe sessions and runs
 
 Bare `/agent` reads the existing session inventory and detached-run records
-without opening sessions or starting work. The interactive dashboard uses a native overlay, independent of editor widgets
-and footer height. It shows active work first, then recent records, with totals
-and explicit omissions.
-Each section displays at most 50 records. Stored sessions have no live owner
-status; detached progress is a recorded observation, not a live status query.
-Empty and unavailable sources appear separately.
+without opening stored sessions for writing or starting work. Its native overlay
+stays independent of editor widgets and footer height. Compact selectable rows
+show active work first, then recent records. Selection follows the exact ID across
+refreshes. Wide terminals show selected metadata beside the list; narrow terminals
+use one column and the same explicit reader.
 
-Use **Tab** to switch sections, **j/k**, arrow keys, or page keys to change
-pages, **r** to refresh, and **q** or the configured cancel key to close.
-The dashboard does not poll. Use `/agent status <session>` for a live status
-request or `/agent help` for actions.
+Use **/** to filter by name, task, directory, or ID, then **Enter** to leave the
+filter. The filter searches the entire returned inventory before the display cap.
+The heading separates total, matching, shown, and omitted records. Stored sessions
+have no live owner status; detached progress is a recorded observation, not a live
+status query. Empty and unavailable sources appear separately. Open an unavailable
+source to read its complete error rather than a clipped list preview.
+
+- **Tab** changes sections. **j/k**, configured selection keys, and page keys move
+  the selected row. **Enter** opens its evidence.
+- A session reader shows the owner/capture boundary, current operation when known,
+  retained result preview, owner error, and recent entries with their exact IDs.
+  **[ / ]** selects an entry; **Enter** opens its serialized source. **o** reads an
+  older page and **n** reads the next source chunk. Each request uses the inspection
+  service's exact cursor or offset. A final chunk does not include earlier chunks.
+- A run reader shows recorded error, result summary, and progress independently,
+  with timestamps and the current native session ID. **s** inspects that session.
+  Run summaries are not complete session results. Result previews and source
+  chunks retain their partial labels; a truncated owner error has no continuation
+  endpoint. Read source entries for retained evidence, not an invented full result.
+- **j/k** and page keys scroll readers and help. **b** or the configured cancel key
+  returns to the previous view. **q** closes the dashboard. **?** shows key help.
+- **r** refreshes the inventory or requests the newest session inspection. It
+  returns a run reader to a refreshed inventory. There is no poller.
+- **a** opens the native action menu. The dashboard closes its overlay before a
+  native dialog and restores the selected view afterward. The same command table,
+  validator, and action closures serve slash input and dashboard actions. Only a
+  correctly typed session or run argument receives a selected ID; directory and
+  creation actions prompt for their own arguments. Interruptive actions require
+  confirmation. Cancel leaves work untouched. Results and refusals appear in a
+  scrollable reader. A returned receipt is not proof of task completion.
+
+Inspection never takes a writer claim on a stored session. Explicit actions keep
+all existing trust, ownership, cancellation, and refusal rules. Status action text
+is displayed as returned; the dashboard does not parse it into execution state.
+Use `/agent help` for the same actions outside the dashboard.
 
 RPC receives a text snapshot through a native notification. Print/JSON mode
 writes the snapshot to stderr, leaving protocol stdout and model context

@@ -3,7 +3,8 @@ import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { type ExtensionAPI, type ExtensionCommandContext, type RegisteredCommand, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { CombinedAutocompleteProvider, Editor, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import { createAgentCommand, type AgentSessionSummary } from "./command.ts";
+import { chooseDashboardAction, createAgentCommand, executeAgentAction, type AgentCommandAction, type AgentSessionSummary } from "./command.ts";
+import type { DashboardTarget } from "./dashboard.ts";
 import registerAgentExtension from "./index.ts";
 import { defined } from "./test-assertions.mts";
 
@@ -36,7 +37,7 @@ function completionFixture(sessions: () => Promise<AgentSessionSummary[]> = asyn
 		{ name: "steer", description: "Redirect work", args: [{ name: "session", complete: "session-control" }, { name: "message", rest: true }], run: async () => undefined },
 		{ name: "abort", description: "Stop work", args: [{ name: "session", complete: "session-control" }], run: async () => undefined },
 		{ name: "status", description: "Read owner status", args: [{ name: "session", complete: "session-control" }], run: async () => undefined },
-	], { sessions, runs: async () => [{ runId: "run-3", sessionId: "detached-3", prompt: "Audit dependencies", cwd: "/work/audit", state: "finished", startedAt: "2026-01-01", sessionsRoot: "/sessions", agentDir: "/agent", logFile: "/log", pid: 1, launchState: "started" }] });
+	], { sessions, inspect: async () => { throw new Error("not requested"); }, runs: async () => [{ runId: "run-3", sessionId: "detached-3", prompt: "Audit dependencies", cwd: "/work/audit", state: "finished", startedAt: "2026-01-01", sessionsRoot: "/sessions", agentDir: "/agent", logFile: "/log", pid: 1, launchState: "started" }] });
 }
 
 describe("agent command discovery and help", () => {
@@ -125,7 +126,7 @@ describe("agent command discovery and help", () => {
 
 	it("searches multiword descriptions without metadata reads or action execution", async () => {
 		const forbidden = async (): Promise<never> => { throw new Error("must not execute"); };
-		const command = createAgentCommand([{ name: "send", description: "Give a session its next task", args: [{ name: "message", rest: true }], run: forbidden }], { sessions: forbidden, runs: forbidden });
+		const command = createAgentCommand([{ name: "send", description: "Give a session its next task", args: [{ name: "message", rest: true }], run: forbidden }], { sessions: forbidden, runs: forbidden, inspect: forbidden });
 		const complete = defined(command.getArgumentCompletions);
 		assert.equal(defined(await complete("next task"))[0].value, "send ");
 		assert.equal(await complete("send next task"), null);
@@ -134,7 +135,7 @@ describe("agent command discovery and help", () => {
 
 	it("preserves text that contains help words and reports invocation errors", async () => {
 		const calls: string[][] = [];
-		const command = createAgentCommand([{ name: "new", description: "Start work", args: [{ name: "prompt", optional: true, rest: true }], run: async (args) => { calls.push(args); throw new Error("trust denied"); } }], { sessions: async () => [], runs: async () => [] });
+		const command = createAgentCommand([{ name: "new", description: "Start work", args: [{ name: "prompt", optional: true, rest: true }], run: async (args) => { calls.push(args); throw new Error("trust denied"); } }], { sessions: async () => [], runs: async () => [], inspect: async () => { throw new Error("not requested"); } });
 		const { ctx, notices } = context();
 		await command.handler("new help with --help output", ctx);
 		assert.deepEqual(calls, [["help", "with", "--help", "output"]]);
@@ -203,6 +204,57 @@ describe("agent metadata completion", () => {
 	it("returns no invented session choices for empty or unavailable metadata", async () => {
 		assert.deepEqual(await defined(completionFixture(async () => []).getArgumentCompletions)("send "), []);
 		assert.equal(await defined(completionFixture(async () => { throw new Error("store unavailable"); }).getArgumentCompletions)("send "), null);
+	});
+});
+
+describe("dashboard action dispatch", () => {
+	const target: DashboardTarget = { kind: "session", session: rows[1] };
+	function dialogs(choice: string | undefined, values: Array<string | undefined> = [], confirmed = true) {
+		const prompts: string[] = []; const confirmations: string[] = [];
+		const ctx = { ui: { select: async () => choice, input: async (title: string) => { prompts.push(title); return values.shift(); }, confirm: async (_title: string, text: string) => { confirmations.push(text); return confirmed; } } } as unknown as ExtensionCommandContext;
+		return { ctx, prompts, confirmations };
+	}
+	it("uses the same validation for commands and dialogs and preserves free text", async () => {
+		const calls: string[][] = [];
+		const action: AgentCommandAction = { name: "send", description: "Send task", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async (args) => { calls.push(args); return "queued, not delivered"; } };
+		const d = dialogs("send: Send task", ["help with --help output"]);
+		assert.equal(await chooseDashboardAction([action], target, d.ctx), "queued, not delivered");
+		assert.deepEqual(calls, [["open-2", "help", "with", "--help", "output"]]);
+		assert.equal(d.prompts.length, 1);
+		assert.match(defined(await executeAgentAction(action, ["open-2"], d.ctx)), /Missing message/);
+		assert.equal(calls.length, 1);
+	});
+	it("prefills only correctly typed session or run IDs and never a directory or task", async () => {
+		const runTarget: DashboardTarget = { kind: "run", run: { runId: "native-run", sessionId: "old-session", currentSessionId: "native-session", prompt: "task", cwd: "/work", sessionsRoot: "/sessions", agentDir: "/agent", logFile: "/log", pid: 1, startedAt: "date", launchState: "started", state: "running" } };
+		for (const [argument, selected, values, expected] of [
+			[{ name: "session", complete: "session-control" }, runTarget, [], "native-session"],
+			[{ name: "run", complete: "run" }, runTarget, [], "native-run"],
+			[{ name: "run", complete: "run" }, target, ["typed-run"], "typed-run"],
+			[{ name: "dir" }, target, ["typed-directory"], "typed-directory"],
+			[{ name: "prompt", rest: true }, target, ["typed task"], "typed task"],
+		] as const) {
+			let received: string[] | undefined;
+			const action: AgentCommandAction = { name: "action", description: "Do work", args: [argument], run: async (args) => { received = args; return "ok"; } };
+			await chooseDashboardAction([action], selected, dialogs("action: Do work", [...values]).ctx);
+			assert.equal(received?.join(" "), expected);
+		}
+	});
+	it("keeps cancel and interrupt confirmation outside execution and propagates exact refusal", async () => {
+		let calls = 0;
+		const action: AgentCommandAction = { name: "abort", description: "Stop work", args: [{ name: "session", complete: "session-control" }], confirm: "Stop current work", run: async () => { calls++; throw new Error("exact owner refusal"); } };
+		assert.equal(await chooseDashboardAction([action], target, dialogs(undefined).ctx), undefined);
+		assert.equal(await chooseDashboardAction([action], undefined, dialogs("abort: Stop work", [undefined]).ctx), undefined);
+		const cancelled = dialogs("abort: Stop work", [], false);
+		assert.equal(await chooseDashboardAction([action], target, cancelled.ctx), undefined);
+		assert.match(cancelled.confirmations[0], /open-2/); assert.equal(calls, 0);
+		await assert.rejects(chooseDashboardAction([action], target, dialogs("abort: Stop work").ctx), /exact owner refusal/);
+		assert.equal(calls, 1);
+	});
+	it("rejects blank required input and extra positional words before any dispatch", async () => {
+		let calls = 0;
+		const action: AgentCommandAction = { name: "place", description: "Use directory", args: [{ name: "dir" }], run: async () => { calls++; return "bad"; } };
+		for (const value of ["", "two words"]) assert.match(defined(await chooseDashboardAction([action], target, dialogs("place: Use directory", [value]).ctx)), /requires one word/);
+		assert.equal(calls, 0);
 	});
 });
 

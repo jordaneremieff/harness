@@ -1245,20 +1245,20 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			run: async (args) => (await getManager()).send(args[0], args.slice(1).join(" ")),
 		},
 		{
-			name: "steer", description: "Redirect work in progress", args: [{ name: "session", complete: "session-control" }, { name: "message", rest: true }],
+			name: "steer", description: "Redirect work in progress", confirm: "This queues a new direction for the selected session. Delivery is not guaranteed.", args: [{ name: "session", complete: "session-control" }, { name: "message", rest: true }],
 			help: `${sessionHelp} After the session, write the new direction. Detached work receives this through its owning process. A queued message is not proof of delivery.`,
 			run: async (args) => (await getManager()).steer(args[0], args.slice(1).join(" ")),
 		},
 		{
-			name: "abort", description: "Stop current work; keep the session", args: [{ name: "session", complete: "session-control" }], help: `${sessionHelp} Detached work receives this through its owning process.`,
+			name: "abort", description: "Stop current work; keep the session", confirm: "This stops the selected session's current operation.", args: [{ name: "session", complete: "session-control" }], help: `${sessionHelp} Detached work receives this through its owning process.`,
 			run: async (args) => (await getManager()).abort(args[0]),
 		},
 		{
-			name: "compact", description: "Compact a session through its owner", args: [{ name: "session", complete: "session-control" }, { name: "instructions", optional: true, rest: true }],
+			name: "compact", description: "Compact a session through its owner", confirm: "This aborts active work and compacts the selected session without resuming it.", args: [{ name: "session", complete: "session-control" }, { name: "instructions", optional: true, rest: true }],
 			run: async (args) => (await getManager()).compact(args[0], args.slice(1).join(" ") || undefined),
 		},
 		{
-			name: "command", description: "Invoke an extension command through its owner", args: [{ name: "session", complete: "session-control" }, { name: "name" }, { name: "args", optional: true, rest: true }],
+			name: "command", description: "Invoke an extension command through its owner", confirm: "This invokes a command with the selected owner's authority. It can replace the session.", args: [{ name: "session", complete: "session-control" }, { name: "name" }, { name: "args", optional: true, rest: true }],
 			run: async (args) => JSON.stringify(await (await getManager()).runCommand(args[0], args[1], args.slice(2).join(" "))),
 		},
 		{
@@ -1279,12 +1279,12 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			run: async (args, ctx) => (await (await getManager()).fork(args[0], undefined, undefined, trustPromptFrom(ctx))).text,
 		},
 		{
-			name: "rewind", description: "Redo work from a corrected decision", args: [{ name: "session", complete: "session" }, { name: "entry-id" }, { name: "correction", rest: true }],
+			name: "rewind", description: "Redo work from a corrected decision", confirm: "This creates a fork and starts work from the corrected decision, against current files.", args: [{ name: "session", complete: "session" }, { name: "entry-id" }, { name: "correction", rest: true }],
 			help: "Use an entry ID from agent_inspect. This command creates a fork and leaves the source unchanged; the fork uses current files.",
 			run: async (args, ctx) => (await (await getManager()).rewind(args[0], args[1], args.slice(2).join(" "), undefined, trustPromptFrom(ctx))).text,
 		},
 		{
-			name: "detach", description: "Start work that outlives this Pi session", args: [{ name: "session", complete: "session" }, { name: "prompt", rest: true }],
+			name: "detach", description: "Start work that outlives this Pi session", confirm: "This starts a separate process that outlives this controller.", args: [{ name: "session", complete: "session" }, { name: "prompt", rest: true }],
 			help: `${sessionHelp} Write the next task after the session. The session must be idle. Detachment starts a separate process; it does not move active work. Use runs to read progress.`,
 			run: async (args, ctx) => (await (await getManager()).detach({ sessionId: args[0], prompt: args.slice(1).join(" ") }, commandDefaults(ctx), trustPromptFrom(ctx))).text,
 		},
@@ -1298,13 +1298,14 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			run: async () => (await getManager()).listPlaces(),
 		},
 		{
-			name: "unbind", description: "Remove a directory assignment; keep its session", args: [{ name: "dir" }],
+			name: "unbind", description: "Remove a directory assignment; keep its session", confirm: "This removes the directory assignment, not its session.", args: [{ name: "dir" }],
 			help: "Use an exact directory from /agent places. Directory arguments use one word.",
 			run: async (args, ctx) => (await getManager()).unbindPlace(resolve(ctx.cwd, args[0])),
 		},
 	], {
 		sessions: async () => (await getManager()).sessionSummaries(),
 		runs: async () => (await getManager()).detachedRunViews(),
+		inspect: async (sessionId, options) => (await getManager()).inspect(sessionId, options),
 	}));
 
 	pi.on("session_start", async (_event, ctx) => {

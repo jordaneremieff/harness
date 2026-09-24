@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionCommandContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
-import { showAgentDashboard, type AgentObservationSources } from "./dashboard.ts";
+import { showAgentDashboard, type AgentObservationSources, type DashboardTarget } from "./dashboard.ts";
 
 export interface AgentSessionSummary {
 	sessionId: string;
@@ -26,6 +26,7 @@ export interface AgentCommandAction {
 	description: string;
 	args: CommandArgument[];
 	help?: string;
+	confirm?: string;
 	run(args: string[], ctx: ExtensionCommandContext): Promise<string | undefined>;
 }
 
@@ -94,6 +95,58 @@ function argumentHelp(action: AgentCommandAction, args: string[]): string | unde
 	return undefined;
 }
 
+/** Both native entry points share argument validation and the original action closure. */
+export async function executeAgentAction(action: AgentCommandAction, args: string[], ctx: ExtensionCommandContext): Promise<string | undefined> {
+	return argumentHelp(action, args) ?? await action.run(args, ctx);
+}
+
+function targetArgument(argument: CommandArgument, target?: DashboardTarget): string | undefined {
+	if (!target) return undefined;
+	if (argument.complete === "session" || argument.complete === "session-control") return target.kind === "session" ? target.session.sessionId : target.run.currentSessionId ?? target.run.sessionId;
+	if (argument.complete === "run" && target.kind === "run") return target.run.runId;
+	return undefined;
+}
+
+async function askDashboardArgument(action: AgentCommandAction, argument: CommandArgument, ctx: ExtensionCommandContext): Promise<string[] | undefined> {
+	const value = await ctx.ui.input(`${usage(action)} · ${argument.name}${argument.optional ? " (optional; blank to omit)" : ""}`, argument.rest ? "Free text" : argument.name);
+	if (value === undefined) return undefined;
+	return value.trim() ? value.trim().split(/\s+/) : [];
+}
+
+async function dashboardArguments(action: AgentCommandAction, target: DashboardTarget | undefined, ctx: ExtensionCommandContext): Promise<string[] | string | undefined> {
+	const args: string[] = [];
+	for (const [index, argument] of action.args.entries()) {
+		const preset = index === 0 ? targetArgument(argument, target) : undefined;
+		if (preset !== undefined) { args.push(preset); continue; }
+		const words = await askDashboardArgument(action, argument, ctx);
+		if (words === undefined) return undefined;
+		if (!words.length && argument.optional) break;
+		const error = dashboardArgumentError(argument, words);
+		if (error) return `${error}\n${actionHelp(action)}`;
+		args.push(...words);
+	}
+	return args;
+}
+
+function dashboardArgumentError(argument: CommandArgument, words: string[]): string | undefined {
+	if (!words.length || (!argument.rest && words.length !== 1)) return `${argument.name} requires ${argument.rest ? "text" : "one word"}.`;
+	return undefined;
+}
+
+export async function chooseDashboardAction(actions: AgentCommandAction[], target: DashboardTarget | undefined, ctx: ExtensionCommandContext): Promise<string | undefined> {
+	const labels = actions.map((action) => `${action.name}: ${action.description}`);
+	const choice = await ctx.ui.select("Agent actions", labels);
+	if (choice === undefined) return undefined;
+	const action = actions[labels.indexOf(choice)];
+	if (!action) return undefined;
+	const args = await dashboardArguments(action, target, ctx);
+	if (!Array.isArray(args)) return args;
+	const help = argumentHelp(action, args);
+	if (help) return help;
+	if (action.confirm && !await ctx.ui.confirm(`Confirm /agent ${action.name}`, `${action.confirm}\n\n${usage(action)}\nArguments: ${args.join(" ")}`)) return undefined;
+	return await executeAgentAction(action, args, ctx) ?? "Action returned no text. This is not proof of task completion.";
+}
+
 /** The same actions own execution, argument validation, help, and native completion. */
 export function createAgentCommand(actions: AgentCommandAction[], sources: AgentObservationSources): Omit<RegisteredCommand, "name" | "sourceInfo"> {
 	const find = (name: string) => commands.find((action) => action.name === name);
@@ -145,13 +198,11 @@ export function createAgentCommand(actions: AgentCommandAction[], sources: Agent
 			const [name, ...args] = input.trim().split(/\s+/);
 			const notify = (text: string) => ctx.ui.notify(text, "info");
 			try {
-				if (!name) return await showAgentDashboard(sources, ctx);
+				if (!name) return await showAgentDashboard(sources, ctx, { run: (target) => chooseDashboardAction(commands, target, ctx) });
 				if (["--help", "-h"].includes(name)) return notify(overview());
 				const action = find(name);
 				if (!action) return notify(unknown(name));
-				const help = argumentHelp(action, args);
-				if (help) return notify(help);
-				const result = await action.run(args, ctx);
+				const result = await executeAgentAction(action, args, ctx);
 				if (typeof result === "string") notify(result);
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
