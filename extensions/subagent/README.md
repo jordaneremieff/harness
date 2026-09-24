@@ -1000,18 +1000,25 @@ Recovery is an operator judgment over transcript evidence; inspection never
 guesses which model-authored content was the deliverable.
 
 The subagent extension also publishes one ambient footer status through Pi's
-public `subagent` status key. It shows this session's subagent-only subtree:
-executing local workers and cumulative observed native worker spend, for example
-`subagents: 2 active · $0.37`. The subtree follows worker-session ownership
+public `subagent` status key: `subagents 2 · $0.37`. It always shows the active
+count and cumulative observed native spend, including `subagents 0 · $0.00`.
+Its own subtree follows worker-session ownership
 edges, including prior native session identities retained on each worker's
 record after replacement, counting each worker once. Forked transcript ancestry
 does not create ownership edges. It excludes ordinary sessions and their
 separate subagent roots. Idle and paused retained workers are not active;
 a pause request remains active until its native run settles. Terminal spend
-remains visible as `subagents: 0 active · $0.37`. Missing usage, unreadable
-records, or unavailable live ownership add `+?` beside the known subtotal.
-The key clears when the subtree has no records or uncertainty, and on session
-shutdown.
+remains visible as `subagents 0 · $0.37`. The displayed total also includes
+the disjoint ordinary-host subagent contribution from the package snapshot
+contract. It never includes ordinary agents' own price. Missing usage, unreadable
+records, or unavailable live ownership add `+?` beside the count and known price.
+Only session shutdown clears the cell, not idle or zero work.
+
+Native custom entries retain exact-session totals outside model context. Reload,
+reopening, and tree navigation keep incurred spend. New sessions and copied forks
+start fresh. If raw records lose observed costs, the total stays visible with
+uncertainty; later observed increases still add to it. These checkpoints retain
+observations, not unobserved historical charges.
 
 Native accounting includes assistant and reported tool usage, standalone usage
 entries (including cache warming), compaction, and branch summaries. A cursor
@@ -1021,7 +1028,10 @@ provider invoices or unreported charges.
 
 The producer also publishes numeric replacements on the session's Pi event bus
 under the [package snapshot contract](../../docs/conventions/status-keys.md#nested-work-snapshots).
-Its extension-owned process state shares read-only activity observations and
+This raw publication contains only its own subagent subtree, never the combined
+display total. The separate ordinary-host contribution changes display only;
+it does not feed back into raw publication. Its extension-owned process state
+shares read-only activity observations and
 publication callbacks across module instances. Each session removes its request
 listener and publishes unavailable evidence at shutdown. No observer owns worker
 execution, and no polling loop or additional store is involved. Each native

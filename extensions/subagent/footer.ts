@@ -33,6 +33,67 @@ export interface SubtreeStatus {
 	workers: number;
 }
 
+interface Spend { cost: number; incomplete: boolean }
+export interface FooterCheckpoint { sessionId: string; raw: Spend; observedCost: number; agent: Spend }
+export const FOOTER_ENTRY = "subagent.footer";
+
+function validSpend(value: unknown): value is Spend {
+	const spend = value as Spend | undefined;
+	return !!spend && Number.isFinite(spend.cost) && spend.cost >= 0 && typeof spend.incomplete === "boolean";
+}
+
+/** Native identity prevents copied fork entries from acquiring another session's costs. */
+export function restoreFooter(entries: readonly SessionEntry[], sessionId: string): FooterCheckpoint | undefined {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry.type !== "custom" || entry.customType !== FOOTER_ENTRY) continue;
+		const saved = entry.data as FooterCheckpoint | undefined;
+		if (saved?.sessionId !== sessionId) continue;
+		if (validSpend(saved.raw) && validSpend(saved.agent) && Number.isFinite(saved.observedCost) && saved.observedCost >= 0) return structuredClone(saved);
+		return { sessionId, raw: { cost: 0, incomplete: true }, observedCost: 0, agent: { cost: 0, incomplete: true } };
+	}
+	return undefined;
+}
+
+/** Raw publication never includes the separate ordinary-host contribution used for display. */
+export class SessionFooter {
+	readonly saved: FooterCheckpoint;
+	private agentActive = 0;
+	private agentAvailable = false;
+	constructor(sessionId: string, saved?: FooterCheckpoint) {
+		this.saved = saved ?? { sessionId, raw: { cost: 0, incomplete: false }, observedCost: 0, agent: { cost: 0, incomplete: false } };
+	}
+	raw(status: SubtreeStatus): SubtreeStatus {
+		const delta = status.cost - this.saved.observedCost;
+		if (delta >= 0 && Number.isFinite(this.saved.raw.cost + delta)) this.saved.raw.cost += delta;
+		else this.saved.raw.incomplete = true;
+		this.saved.observedCost = status.cost;
+		return { ...status, cost: this.saved.raw.cost, incomplete: status.incomplete || this.saved.raw.incomplete };
+	}
+	acceptAgent(data: unknown): boolean {
+		if (!data || typeof data !== "object") return false;
+		const value = data as Record<string, unknown>;
+		if (value.version !== 1 || value.publisher !== "agent" || value.sessionId !== this.saved.sessionId) return false;
+		if (value.available === true && validSpend(value) && Number.isSafeInteger(value.active) && (value.active as number) >= 0) {
+			this.saved.agent.incomplete = value.incomplete || value.cost < this.saved.agent.cost;
+			this.saved.agent.cost = Math.max(this.saved.agent.cost, value.cost);
+			this.agentActive = value.active as number;
+			this.agentAvailable = true;
+		} else {
+			this.agentActive = 0; this.agentAvailable = false;
+			this.saved.agent.incomplete = true;
+		}
+		return true;
+	}
+	finish(raw: SubtreeStatus): void {
+		this.saved.raw.incomplete ||= raw.incomplete;
+		this.saved.agent.incomplete ||= !this.agentAvailable && this.saved.agent.cost > 0;
+	}
+	display(raw: SubtreeStatus): SubtreeStatus {
+		return { ...raw, active: raw.active + this.agentActive, cost: raw.cost + this.saved.agent.cost, incomplete: raw.incomplete || this.saved.agent.incomplete || (!this.agentAvailable && this.saved.agent.cost > 0) };
+	}
+}
+
 /** Follow worker-session ownership edges, never arbitrary session ancestry. */
 export function subtreeStatus(
 	records: readonly WorkerRecord[],
@@ -77,9 +138,8 @@ function addRecordStatus(result: SubtreeStatus, record: WorkerRecord, active: Re
 	if (record.usage?.incomplete) result.incomplete = true;
 }
 
-export function formatSubtreeStatus(status: SubtreeStatus): string | undefined {
-	if (status.workers === 0 && !status.incomplete) return undefined;
+export function formatSubtreeStatus(status: SubtreeStatus): string {
 	const spend = status.cost > 0 && status.cost < 0.01 ? status.cost.toFixed(4) : status.cost.toFixed(2);
 	const unknown = status.incomplete ? "+?" : "";
-	return `subagents: ${status.active}${unknown} active · $${spend}${unknown}`;
+	return `subagents ${status.active}${unknown} · $${spend}${unknown}`;
 }

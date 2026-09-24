@@ -124,7 +124,7 @@ import {
 	createCollaborationReader,
 } from "./collaboration.ts";
 import { stripTerminalSequences } from "./console.ts";
-import { formatSubtreeStatus, subtreeStatus, UsageEvidence } from "./footer.ts";
+import { FOOTER_ENTRY, formatSubtreeStatus, restoreFooter, SessionFooter, subtreeStatus, UsageEvidence } from "./footer.ts";
 import { createManagedHostBus } from "./host-role.ts";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
 import { type PeerEnvelope, PeerHub, type PeerReceipt } from "./peers.ts";
@@ -2090,6 +2090,8 @@ const liveWorkers = new Map<string, LiveWorker>();
 const statusBindings = new Map<string, {
 	ctx: ExtensionContext;
 	published: string | undefined;
+	footer: SessionFooter;
+	persist?: () => void;
 	dispose?: () => void;
 }>();
 
@@ -2114,7 +2116,7 @@ function currentSubtreeStatus(ownerSession: string) {
 	}
 	const status = subtreeStatus([...statusRecordCache.values()], ownerSession, active, observed);
 	status.incomplete ||= sharedWorkerState.statusRecordsIncomplete || [...statusRecordCache.values()].some((record) => !record.ownerSession);
-	return status;
+	return statusBindings.get(ownerSession)?.footer.raw(status) ?? status;
 }
 
 function publishSubagentStatus(): void {
@@ -2123,7 +2125,8 @@ function publishSubagentStatus(): void {
 	}
 	for (const [ownerSession, binding] of statusBindings) {
 		try {
-			const text = formatSubtreeStatus(currentSubtreeStatus(ownerSession));
+			const text = formatSubtreeStatus(binding.footer.display(currentSubtreeStatus(ownerSession)));
+			binding.persist?.();
 			if (text === binding.published) continue;
 			binding.ctx.ui.setStatus("subagent", text);
 			binding.published = text;
@@ -2137,19 +2140,28 @@ function bindStatusPublisher(ctx: ExtensionContext, pi: ExtensionAPI): void {
 	const binding = statusBindings.get(sessionId);
 	if (!binding) throw new Error("Subagent status context was not bound");
 	binding.dispose?.();
+	let persisted = JSON.stringify(restoreFooter(ctx.sessionManager.getEntries(), sessionId) ?? new SessionFooter(sessionId).saved);
+	binding.persist = () => {
+		const serialized = JSON.stringify(binding.footer.saved);
+		if (serialized !== persisted) { pi.appendEntry(FOOTER_ENTRY, structuredClone(binding.footer.saved)); persisted = serialized; }
+	};
+	const render = () => {
+		const text = formatSubtreeStatus(binding.footer.display(currentSubtreeStatus(sessionId)));
+		binding.persist?.();
+		if (text !== binding.published) {
+			try { binding.ctx.ui.setStatus("subagent", text); binding.published = text; } catch { /* Presentation is not execution. */ }
+		}
+	};
+	const offAgent = pi.events.on("harness:work-status:snapshot", (data: unknown) => {
+		if (binding.footer.acceptAgent(data)) render();
+	});
 	const publish = () => {
 		const status = currentSubtreeStatus(sessionId);
 		const { workers: _workers, ...snapshot } = status;
 		pi.events.emit("harness:work-status:snapshot", {
 			version: 1, publisher: "subagent", sessionId, available: true, ...snapshot,
 		});
-		const text = formatSubtreeStatus(status);
-		if (text !== binding.published) {
-			try {
-				binding.ctx.ui.setStatus("subagent", text);
-				binding.published = text;
-			} catch { /* The numeric snapshot is independent of presentation. */ }
-		}
+		render();
 	};
 	const off = pi.events.on("harness:work-status:request", (request: unknown) => {
 		if (!request || typeof request !== "object") return;
@@ -2158,12 +2170,15 @@ function bindStatusPublisher(ctx: ExtensionContext, pi: ExtensionAPI): void {
 	});
 	sharedWorkerState.statusObservers.add(publish);
 	binding.dispose = () => {
-		off();
+		binding.footer.finish(currentSubtreeStatus(sessionId));
+		render();
+		off(); offAgent();
 		sharedWorkerState.statusObservers.delete(publish);
 		pi.events.emit("harness:work-status:snapshot", {
 			version: 1, publisher: "subagent", sessionId, available: false,
 		});
 	};
+	pi.events.emit("harness:work-status:request", { version: 1, publisher: "agent", sessionId });
 	publish();
 }
 
@@ -2174,15 +2189,15 @@ function bindStatusContext(ctx: ExtensionContext): void {
 	if (current) {
 		current.ctx = ctx;
 	} else {
-		statusBindings.set(ownerSession, { ctx, published: undefined });
+		statusBindings.set(ownerSession, { ctx, published: undefined, footer: new SessionFooter(ownerSession, restoreFooter(ctx.sessionManager.getEntries(), ownerSession)) });
 	}
 	publishSubagentStatus();
 }
 
 function clearSubagentStatus(ownerSession: string): void {
 	const binding = statusBindings.get(ownerSession);
-	statusBindings.delete(ownerSession);
 	binding?.dispose?.();
+	statusBindings.delete(ownerSession);
 	try {
 		binding?.ctx.ui.setStatus("subagent", undefined);
 	} catch {

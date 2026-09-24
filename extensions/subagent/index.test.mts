@@ -2703,6 +2703,7 @@ describe("compaction veto", () => {
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
 		const sessionId = "sess-missing-maps";
 		registerSubagent({
+			appendEntry: () => undefined,
 			events: createEventBus(),
 			registerMessageRenderer: () => undefined,
 			registerTool: () => undefined,
@@ -2712,7 +2713,7 @@ describe("compaction veto", () => {
 			getActiveTools: () => [],
 			getAllTools: () => [],
 		} as never);
-		const ctx = { sessionManager: { getSessionId: () => sessionId } };
+		const ctx = { sessionManager: { getSessionId: () => sessionId, getEntries: () => [] } };
 		const mutableMaps = sharedWorkerState as {
 			workerOwners?: typeof sharedWorkerState.workerOwners;
 			reportSinks?: typeof sharedWorkerState.reportSinks;
@@ -2773,7 +2774,7 @@ describe("compaction veto", () => {
 		assert.match(tools.find((tool) => tool.name === "subagent_status")?.description ?? "", /progress and activity/);
 
 		const sessionId = "sess-nested-owner";
-		const ctx = { sessionManager: { getSessionId: () => sessionId } };
+		const ctx = { sessionManager: { getSessionId: () => sessionId, getEntries: () => [] } };
 		sharedWorkerState.workerSessionIds.add(sessionId);
 		await (handlers.get("session_start") as (event: unknown, ctx: unknown) => Promise<void>)({}, ctx);
 		assert.deepEqual(sharedWorkerState.workerSurfaces.get(sessionId)?.active, ["initial_tool"]);
@@ -2871,11 +2872,11 @@ describe("compaction veto", () => {
 		sharedWorkerState.workerSessionIds.add(workerId);
 		assert.ok(dispatchTool);
 		const primaryCtx = {
-			sessionManager: { getSessionId: () => primaryId },
+			sessionManager: { getSessionId: () => primaryId, getEntries: () => [] },
 			ui: { setStatus: (...args: unknown[]) => primaryStatus.push(args) },
 		};
 		const workerCtx = {
-			sessionManager: { getSessionId: () => workerId },
+			sessionManager: { getSessionId: () => workerId, getEntries: () => [] },
 			ui: { setStatus: (...args: unknown[]) => workerStatus.push(args) },
 		};
 		await (handlers.get("session_start") as (event: unknown, ctx: unknown) => Promise<void>)({}, primaryCtx);
@@ -4355,10 +4356,10 @@ describe("ambient subagent status", () => {
 		});
 		assert.equal(
 			formatSubagentStatus([live, done, foreign], "owner-a", new Set([live.id])),
-			"subagents: 1 active · $0.37",
+			"subagents 1 · $0.37",
 		);
-		assert.equal(formatSubagentStatus([done, foreign], "owner-a", new Set()), "subagents: 0 active · $0.37");
-		assert.equal(formatSubagentStatus([foreign], "owner-a", new Set()), undefined);
+		assert.equal(formatSubagentStatus([done, foreign], "owner-a", new Set()), "subagents 0 · $0.37");
+		assert.equal(formatSubagentStatus([foreign], "owner-a", new Set()), "subagents 0 · $0.00");
 	});
 });
 
@@ -4681,7 +4682,7 @@ describe("registered tool surface", () => {
 		assert.equal(Value.Check(dispatch.parameters, { tasks: [{ task: "x", profile: "p".repeat(4097) }] }), false);
 		const executeCtx = {
 			cwd: agentDir,
-			sessionManager: { getSessionId: () => "dispatch-shape-session" },
+			sessionManager: { getSessionId: () => "dispatch-shape-session", getEntries: () => [] },
 			ui: { setStatus: () => undefined },
 		};
 		await assert.rejects(
@@ -4771,7 +4772,7 @@ describe("registered tool surface", () => {
 					notify: (message: string) => notifications.push(message),
 					setStatus: () => undefined,
 				},
-				sessionManager: { getSessionId: () => "structured-status-test" },
+				sessionManager: { getSessionId: () => "structured-status-test", getEntries: () => [] },
 			}) as never;
 		await command.handler("", context("rpc"));
 		assert.equal(notifications.length, 1);
@@ -4806,7 +4807,7 @@ describe("managed profile adapters", () => {
 				mode,
 				cwd: agentDir,
 				hasUI: mode === "tui" || mode === "rpc",
-				sessionManager: { getSessionId: () => "managed-profile-adapter" },
+				sessionManager: { getSessionId: () => "managed-profile-adapter", getEntries: () => [] },
 				ui: {
 					setStatus() {},
 					notify: (text: string) => notifications.push(text),
