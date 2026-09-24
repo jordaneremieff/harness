@@ -1,3 +1,5 @@
+import { diagnosticNetworkCode, responseDiagnostic } from "./diagnostics.ts";
+
 export const BRAVE_WEB_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search";
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
@@ -132,11 +134,11 @@ function httpError(status: number): Error {
 		status === 401 || status === 403
 			? " Check PI_BRAVE_API_KEY and subscription access."
 			: status === 429
-				? " Check the subscription quota or retry after the rate limit resets."
+				? " Check the subscription quota and rate limit."
 				: status === 400 || status === 422
 					? " Check the query and search filters."
 					: "";
-	return new Error(`Brave Search request failed (HTTP ${status}).${hint}`);
+	return new Error(`Brave Search request failed.${hint}`);
 }
 
 function requestUrl(params: BraveWebSearchRequest): URL {
@@ -198,6 +200,11 @@ interface SearchTiming {
 	timeoutMs: number;
 }
 
+function checkSearchActive(timing: SearchTiming): void {
+	if (timing.signal?.aborted) throw new Error("Brave web search cancelled.");
+	if (timing.timedOut) throw new Error(`Brave web search timed out after ${timing.timeoutMs}ms.`);
+}
+
 async function fetchSearchResponse(
 	fetchImpl: FetchLike,
 	url: URL,
@@ -211,10 +218,9 @@ async function fetchSearchResponse(
 			redirect: "error",
 			signal: controller.signal,
 		});
-	} catch {
-		if (timing.signal?.aborted) throw new Error("Brave web search cancelled.");
-		if (timing.timedOut) throw new Error(`Brave web search timed out after ${timing.timeoutMs}ms.`);
-		throw new Error("Brave Search network request failed.");
+	} catch (error) {
+		checkSearchActive(timing);
+		throw new Error(`Brave Search network request failed${diagnosticNetworkCode(error)}.`);
 	}
 }
 
@@ -234,8 +240,7 @@ async function readSearchBody(response: FetchResponse, timing: SearchTiming): Pr
 		return await readBoundedBody(response);
 	} catch (error) {
 		if (error instanceof ResponseLimitError) throw error;
-		if (timing.signal?.aborted) throw new Error("Brave web search cancelled.");
-		if (timing.timedOut) throw new Error(`Brave web search timed out after ${timing.timeoutMs}ms.`);
+		checkSearchActive(timing);
 		throw new Error("Could not read the Brave Search response.");
 	}
 }
@@ -265,26 +270,37 @@ export async function searchBraveWeb(
 	}, timeoutMs);
 	timer.unref?.();
 
-	let response: FetchResponse;
-	let body: string;
+	let response: FetchResponse | undefined;
 	try {
 		response = await fetchSearchResponse(fetchImpl, url, apiKey, controller, timing);
+		checkSearchActive(timing);
+		if (!response.ok) {
+			// Status evidence must not depend on reading or decoding an error body.
+			void response.body?.cancel().catch(() => {});
+			controller.abort();
+			throw httpError(response.status);
+		}
 		await enforceDeclaredLength(response, controller);
-		body = await readSearchBody(response, timing);
+		const body = await readSearchBody(response, timing);
+		checkSearchActive(timing);
+		let payload: unknown;
+		try {
+			payload = JSON.parse(body);
+		} catch {
+			throw new Error("Brave Search returned an invalid JSON response.");
+		}
+		return decodeResponse(payload, params.query);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "Brave Search request failed.";
+		const context = responseDiagnostic(
+			BRAVE_WEB_SEARCH_URL,
+			response?.status,
+			response?.headers?.get("content-type"),
+			response?.headers?.get("retry-after"),
+		);
+		throw new Error(`${message}\n${context}`.replaceAll(apiKey, "[redacted]"));
 	} finally {
 		clearTimeout(timer);
 		signal?.removeEventListener("abort", onAbort);
 	}
-
-	if (signal?.aborted) throw new Error("Brave web search cancelled.");
-	if (timing.timedOut) throw new Error(`Brave web search timed out after ${timeoutMs}ms.`);
-	if (!response.ok) throw httpError(response.status);
-
-	let payload: unknown;
-	try {
-		payload = JSON.parse(body);
-	} catch {
-		throw new Error("Brave Search returned an invalid JSON response.");
-	}
-	return decodeResponse(payload, params.query);
 }

@@ -15,6 +15,30 @@ function response(body: string, contentType = "text/html") {
 }
 
 describe("web page reader", () => {
+	it("preserves final URL and safe content type on extraction errors", async () => {
+		for (const [body, contentType, reason] of [
+			["sensitive-body", "application/json; private=hidden", /unsupported/],
+			["sensitive-body", "", /unsupported/],
+			["sensitive-body", "text/plain; charset=unknown", /cannot decode/],
+			["binary\0content", "text/plain", /binary/],
+			["<div>".repeat(257), "text/html", /nesting limit/],
+		] as const) {
+			await assert.rejects(
+				readWebPage({ url: "https://example.com/start" }, undefined, {
+					fetchPage: async () => response(body, contentType),
+				}),
+				(error: Error) => {
+					assert.match(error.message, reason);
+					assert.match(error.message, /HTTP 200 OK/);
+					assert.match(error.message, /Final URL: https:\/\/example.com\/article/);
+					assert.ok(error.message.includes(`Content type: ${contentType.split(";", 1)[0] || "(not supplied)"}`));
+					assert.doesNotMatch(error.message, /sensitive-body|private=hidden|binary\0content/);
+					return true;
+				},
+			);
+		}
+	});
+
 	it("returns readable primary text with provenance and references without a duplicate raw body", async () => {
 		const result = await readWebPage({ url: "https://example.com/start" }, undefined, {
 			fetchPage: async () =>

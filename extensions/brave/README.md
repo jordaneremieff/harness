@@ -57,7 +57,9 @@ no key or configuration; it fetches only public pages with no credential.
   absent or `identity` content encoding is accepted. Compressed, incomplete,
   length-mismatched, or oversized bodies are refused. Chunked transfers are
   supported. The request declares `Accept-Encoding: identity`; a server that
-  ignores it receives no decompression fallback.
+  ignores it receives no decompression fallback. Other 2xx statuses remain
+  unsupported and are identified as such, not described as unsuccessful HTTP
+  responses; the reader requires a complete HTTP 200 response.
 - **No browser, cookies, credentials, private network, or archive.** The reader
   makes a stateless GET per hop. It keeps no cookie jar, runs no script, CSS, or
   plugin, sends no stored credential, ignores environment proxies, and rejects
@@ -97,6 +99,19 @@ no key or configuration; it fetches only public pages with no credential.
   `extraction`, `status`, and `outputTruncated` — never a credential or raw body.
   `downloadedBytes` counts the final response body, not headers or transfer framing.
   Redirect bodies are discarded, and URLs are normalized without fragments.
+- **Failures.** Failures still throw, so Pi produces an error result with text
+  and empty `details`; successful result fields are unchanged. Failure text names
+  the failed stage or limit and the final URL of the failed hop. If URL validation
+  rejects a redirect, the URL identifies the last response, not the rejected
+  target. Invalid initial URLs are not echoed. DNS and connection failures have
+  no HTTP status unless a response arrived; known network error codes are retained
+  without raw exception messages. Once headers arrive, failures carry the HTTP
+  status code, its standard reason phrase, and the bounded media type without
+  arbitrary header parameters. Extraction failures retain the same URL, status,
+  and media type. Missing media types are explicit. A valid server `Retry-After`
+  is reported as delay seconds or a canonical HTTP date; no reset time or retry
+  recommendation is invented. Remote status phrases and error bodies are never
+  returned.
 - Page content is presented as untrusted evidence, not instructions. Excerpt
   references establish only the returned static text, not full-page coverage.
 
@@ -115,16 +130,25 @@ no key or configuration; it fetches only public pages with no credential.
   at 5 MiB. A fixed buffer also bounds retained allocation overhead when a response
   arrives in many small chunks. Result URLs must use HTTP(S) without userinfo
   credentials; other URLs are omitted.
-- HTTP errors report the status and local guidance for authentication, query,
-  and rate-limit failures. Remote error bodies and transport exception messages
-  are not returned because they can reflect request credentials or instructions.
+- HTTP errors report the status code, standard reason phrase, fixed endpoint
+  URL, media type, and local guidance for authentication, query, and quota/rate-limit
+  failures. Status errors take precedence over body size or decoding errors:
+  error bodies are discarded without reading them. Valid server `Retry-After`
+  values are reported; absent or malformed values produce no retry hint. Search
+  failures retain the thrown-error contract, with Pi-owned empty `details`.
+  Missing configuration names `PI_BRAVE_API_KEY`. Transport failures retain known
+  error codes, and timeout, cancellation, size, and JSON failures remain distinct.
+  Remote error bodies, status phrases, and transport exception messages are not
+  returned because they can reflect request credentials or instructions. Header
+  diagnostics omit arbitrary parameters and redact the configured API key.
 - Search strings are stripped of terminal and bidi controls before presentation.
   Individual fields and final output are bounded; final model-visible output
   never exceeds Pi's 50 KB / 2000-line tool-output truncation limits
   (`dist/core/tools/truncate.js`, exported as `DEFAULT_MAX_BYTES` /
   `DEFAULT_MAX_LINES`).
-- Tool-result details contain only query and pagination metadata, not the API key
-  or a duplicate raw response.
+- Successful tool-result details contain only query and pagination metadata,
+  not the API key or a duplicate raw response. Empty search results are successful
+  results with explicit text and `resultCount: 0`, not HTTP or quota failures.
 - Titles, snippets, and excerpts are identified to the agent as untrusted web
   content rather than instructions. Snippets locate candidate evidence; the tool
   guidance tells the agent to open primary sources before using a result for a
@@ -152,5 +176,6 @@ construction, response normalization, HTTP error guidance, reflected-credential
 non-disclosure, credential-bearing URL omission, fragmented UTF-8, exact response
 bounds, cancellation, timeout cleanup, control-character handling,
 output truncation, registration, entrypoint execution, URL and address policy,
-static main/article/body extraction, excerpt references, and page reading
-results.
+static main/article/body extraction, excerpt references, page reading results,
+status and final-URL diagnostics after redirects, server-only retry hints,
+extraction failure metadata, unread error bodies, and native HTTP parser errors.

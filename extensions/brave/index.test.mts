@@ -116,6 +116,44 @@ describe("Brave extension entrypoint", () => {
 		});
 	});
 
+	it("preserves the thrown-error contract for HTTP search failures", async () => {
+		process.env.PI_BRAVE_API_KEY = "entrypoint-test-key";
+		globalThis.fetch = (async () =>
+			new Response("entrypoint-test-key", {
+				status: 429,
+				statusText: "entrypoint-test-key",
+				headers: { "retry-after": "60" },
+			})) as typeof fetch;
+		await assert.rejects(
+			registry().get("web_search").execute("call", { query: "test" }, new AbortController().signal),
+			(error: Error) => {
+				assert.match(error.message, /HTTP 429 Too Many Requests/);
+				assert.match(error.message, /Retry-After: 60/);
+				assert.doesNotMatch(error.message, /entrypoint-test-key/);
+				return true;
+			},
+		);
+	});
+
+	it("keeps empty search results as success with explicit text and zero result metadata", async () => {
+		process.env.PI_BRAVE_API_KEY = "entrypoint-test-key";
+		globalThis.fetch = (async () => new Response(JSON.stringify({ web: { results: [] } }))) as typeof fetch;
+		const result = await registry()
+			.get("web_search")
+			.execute("call", { query: "nothing" }, new AbortController().signal);
+		assert.match(result.content[0].text, /No web results found/);
+		assert.deepEqual(result.details, {
+			query: "nothing",
+			alteredQuery: undefined,
+			resultCount: 0,
+			count: 10,
+			offset: 0,
+			moreResultsAvailable: false,
+			nextOffset: undefined,
+			outputTruncated: false,
+		});
+	});
+
 	it("rejects an already-cancelled web_read execution without a network request", async () => {
 		const reader = registry().get("web_read");
 		await assert.rejects(reader.execute("call", { url: "https://example.com/" }, AbortSignal.abort()), /cancelled/);

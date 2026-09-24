@@ -23,6 +23,7 @@ interface Reply {
 	stall?: boolean;
 	close?: boolean;
 	error?: string;
+	errorCode?: string;
 }
 
 /** Emit one mocked HTTP reply into the callback, or its configured error path. */
@@ -33,7 +34,7 @@ function emitReply(
 	callback: (response: IncomingMessage) => void,
 ): void {
 	if (reply.error) {
-		request.emit("error", new Error(reply.error));
+		request.emit("error", Object.assign(new Error(reply.error), { code: reply.errorCode }));
 		return;
 	}
 	const response = new IncomingMessage(new Socket());
@@ -214,6 +215,145 @@ describe("public page address policy", () => {
 });
 
 describe("pinned public page transport", () => {
+	it("reports status, standard reason, and final URL after a redirect without remote error text", async () => {
+		for (const [status, reason] of [
+			[403, "Forbidden"],
+			[404, "Not Found"],
+			[429, "Too Many Requests"],
+			[503, "Service Unavailable"],
+		] as const) {
+			const f = fixture([
+				{ status: 302, headers: { location: "/final" } },
+				{ status, headers: { "retry-after": "120" }, chunks: [Buffer.from("sensitive-error-body")] },
+			]);
+			await assert.rejects(
+				fetchPublicPage("https://example.com/start", undefined, { dependencies: f.dependencies }),
+				(error: Error) => {
+					assert.match(error.message, new RegExp(`HTTP ${status} ${reason}`));
+					assert.match(error.message, /Final URL: https:\/\/example.com\/final/);
+					assert.match(error.message, /Retry-After: 120/);
+					assert.doesNotMatch(error.message, /sensitive-error-body/);
+					return true;
+				},
+			);
+			assertClean(f);
+		}
+	});
+
+	it("identifies rejected successful statuses as unsupported rather than unsuccessful", async () => {
+		for (const status of [203, 204, 206]) {
+			const f = fixture([{ status }]);
+			await assert.rejects(
+				fetchPublicPage("https://example.com", undefined, { dependencies: f.dependencies }),
+				(error: Error) => {
+					assert.match(error.message, new RegExp(`HTTP ${status}`));
+					assert.match(error.message, /requires a complete HTTP 200 response/);
+					assert.doesNotMatch(error.message, /unsuccessful/);
+					return true;
+				},
+			);
+		}
+	});
+
+	it("keeps response context for redirect, encoding, size, and incomplete-body failures", async () => {
+		for (const [reply, reason] of [
+			[{ status: 302, headers: {} }, /Location header is missing/],
+			[{ headers: { "content-encoding": "gzip" } }, /compressed responses/],
+			[{ headers: { "content-length": "2097153" } }, /size limit/],
+			[{ complete: false }, /incomplete/],
+			[{ headers: { "content-length": "99" } }, /length does not match/],
+		] as const) {
+			const f = fixture([{ status: 302, headers: { location: "/final" } }, reply]);
+			await assert.rejects(
+				fetchPublicPage("https://example.com", undefined, { dependencies: f.dependencies }),
+				(error: Error) => {
+					assert.match(error.message, reason);
+					assert.match(error.message, new RegExp(`HTTP ${reply.status ?? 200}`));
+					assert.match(error.message, /Final URL: https:\/\/example.com\/final/);
+					return true;
+				},
+			);
+		}
+	});
+
+	it("reports DNS and transport codes without raw exception messages", async () => {
+		const f = fixture();
+		f.resolver.resolve4 = async () => {
+			throw Object.assign(new Error("sensitive-dns-message"), { code: "ENOTFOUND" });
+		};
+		await assert.rejects(
+			fetchPublicPage("https://example.com", undefined, { dependencies: f.dependencies }),
+			(error: Error) => {
+				assert.match(error.message, /DNS lookup failed.*ENOTFOUND/);
+				assert.match(error.message, /Final URL: https:\/\/example.com\//);
+				assert.doesNotMatch(error.message, /sensitive-dns-message/);
+				return true;
+			},
+		);
+	});
+
+	it("retains the attempted URL for empty DNS answers and connection errors without inventing HTTP status", async () => {
+		const empty = fixture([], [[], []]);
+		await assert.rejects(
+			fetchPublicPage("https://example.com", undefined, { dependencies: empty.dependencies }),
+			/DNS lookup returned no addresses/,
+		);
+		for (const errorCode of ["ECONNRESET", "CERT_HAS_EXPIRED", "sensitive-code"]) {
+			const f = fixture([{ error: "sensitive-error", errorCode }]);
+			await assert.rejects(
+				fetchPublicPage("https://example.com", undefined, { dependencies: f.dependencies }),
+				(error: Error) => {
+					assert.match(error.message, /network request failed/);
+					assert.match(error.message, /Final URL: https:\/\/example.com\//);
+					if (errorCode !== "sensitive-code") assert.ok(error.message.includes(errorCode));
+					assert.doesNotMatch(error.message, /sensitive-|HTTP|Retry-After/);
+					return true;
+				},
+			);
+		}
+	});
+
+	it("retains media type and server retry hint when the redirect limit stops the response", async () => {
+		const f = fixture(
+			Array.from({ length: 4 }, () => ({
+				status: 302,
+				headers: {
+					location: "/next",
+					"content-type": "text/html; private=hidden",
+					"retry-after": "30",
+				},
+			})),
+		);
+		await assert.rejects(
+			fetchPublicPage("https://example.com", undefined, { dependencies: f.dependencies }),
+			(error: Error) => {
+				assert.match(error.message, /redirect limit exceeded/);
+				assert.match(error.message, /HTTP 302 Found/);
+				assert.match(error.message, /Content type: text\/html/);
+				assert.match(error.message, /Retry-After: 30/);
+				assert.doesNotMatch(error.message, /private=hidden/);
+				return true;
+			},
+		);
+	});
+
+	it("retains the last public response for rejected redirect targets", async () => {
+		for (const location of ["https://user:sensitive-password@example.com/", "http://127.0.0.1", "http://[broken"]) {
+			const f = fixture([{ status: 302, headers: { location } }]);
+			await assert.rejects(
+				fetchPublicPage("https://example.com", undefined, { dependencies: f.dependencies }),
+				(error: Error) => {
+					assert.match(error.message, /redirect.*not allowed/);
+					assert.match(error.message, /HTTP 302 Found/);
+					assert.match(error.message, /Final URL: https:\/\/example.com\//);
+					assert.doesNotMatch(error.message, /sensitive-password|127\.0\.0\.1|broken/);
+					return true;
+				},
+			);
+			assert.equal(f.observed.length, 1);
+		}
+	});
+
 	it("pins the numeric address and preserves the Host, TLS name, and certificate checks", () => {
 		const options = pinnedPageRequestOptions(new URL("https://example.com/path?q=yes"), "8.8.8.8");
 		assert.equal(options.hostname, "8.8.8.8");
@@ -277,7 +417,6 @@ describe("pinned public page transport", () => {
 			[["8.8.8.8", "127.0.0.1"], []],
 			[["8.8.8.8"], ["::ffff:7f00:1"]],
 			[["8.8.8.8"], ["fd00::1"]],
-			[[], []],
 		]) {
 			const f = fixture([], answers);
 			await assert.rejects(
@@ -404,12 +543,13 @@ describe("pinned public page transport", () => {
 	});
 
 	it("rejects premature response closure, incomplete messages, and length mismatches", async () => {
-		for (const reply of [{ close: true }, { complete: false }, { headers: { "content-length": "99" } }]) {
+		for (const [reply, reason] of [
+			[{ close: true }, /response transfer failed/],
+			[{ complete: false }, /response is incomplete/],
+			[{ headers: { "content-length": "99" } }, /body length does not match Content-Length/],
+		] as const) {
 			const f = fixture([reply]);
-			await assert.rejects(
-				fetchPublicPage("https://example.com", undefined, { dependencies: f.dependencies }),
-				/request failed/,
-			);
+			await assert.rejects(fetchPublicPage("https://example.com", undefined, { dependencies: f.dependencies }), reason);
 			assertClean(f);
 		}
 	});
@@ -418,9 +558,10 @@ describe("pinned public page transport", () => {
 		const marker = "sensitive-remote-detail";
 		const f = fixture([{ error: marker }]);
 		await assert.rejects(
-			fetchPublicPage(`https://example.com/${marker}`, undefined, { dependencies: f.dependencies }),
+			fetchPublicPage("https://example.com/public", undefined, { dependencies: f.dependencies }),
 			(error: Error) => {
-				assert.equal(error.message, "Public page request failed.");
+				assert.equal(error.message, "Public page network request failed.\nFinal URL: https://example.com/public");
+				assert.doesNotMatch(error.message, /sensitive-remote-detail/);
 				assert.equal(error.cause, undefined);
 				return true;
 			},
@@ -478,7 +619,12 @@ describe("pinned public page transport", () => {
 				dependencies: f.dependencies,
 				timeoutMs: cancellation ? 1000 : 10,
 			});
-			const rejected = assert.rejects(promise, cancellation ? /cancelled/ : /timed out/);
+			const rejected = assert.rejects(promise, (error: Error) => {
+				assert.match(error.message, cancellation ? /cancelled/ : /timed out/);
+				assert.match(error.message, /Final URL: https:\/\/example.com\/next/);
+				assert.match(error.message, /HTTP 200 OK/);
+				return true;
+			});
 			if (cancellation) {
 				await turn();
 				controller.abort();
@@ -560,6 +706,27 @@ function nativeParserFixture(rawResponse: string) {
 }
 
 describe("native HTTP parser safety", () => {
+	it("reports a native 404 without its remote reason phrase or body", async () => {
+		const f = nativeParserFixture(
+			"HTTP/1.1 404 sensitive-reason\r\nContent-Type: text/html\r\nContent-Length: 14\r\n\r\nsensitive-body",
+		);
+		try {
+			await assert.rejects(
+				fetchPublicPage("http://example.com/missing", undefined, { dependencies: f.dependencies }),
+				(error: Error) => {
+					assert.match(error.message, /HTTP 404 Not Found/);
+					assert.match(error.message, /Final URL: http:\/\/example.com\/missing/);
+					assert.doesNotMatch(error.message, /sensitive-/);
+					return true;
+				},
+			);
+			assert.equal(f.socket.destroyed, true);
+		} finally {
+			f.agent.destroy();
+			f.socket.destroy();
+		}
+	});
+
 	it("creates a fresh agent without the global agent's environment proxy configuration", async (context) => {
 		const socket = new Duplex({
 			read() {},

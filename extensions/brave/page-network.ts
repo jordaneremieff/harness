@@ -3,6 +3,7 @@ import { type ClientRequest, request as httpRequest, type IncomingMessage } from
 import { request as httpsRequest, type RequestOptions } from "node:https";
 import { BlockList, isIP } from "node:net";
 import { checkServerIdentity } from "node:tls";
+import { diagnosticNetworkCode, responseDiagnostic } from "./diagnostics.ts";
 
 export const PAGE_NETWORK_LIMITS = Object.freeze({
 	urlCharacters: 4096,
@@ -40,7 +41,7 @@ export interface PageNetworkOptions {
 	dependencies?: PageNetworkDependencies;
 }
 
-class PageNetworkError extends Error {}
+export class PageNetworkError extends Error {}
 
 function failure(message = "Public page request failed."): PageNetworkError {
 	return new PageNetworkError(message);
@@ -169,7 +170,7 @@ async function resolvePublicAddress(
 	});
 	const emptyWhenAbsent = (error: unknown): string[] => {
 		if (typeof error === "object" && error !== null && "code" in error && error.code === "ENODATA") return [];
-		throw failure("Public page DNS lookup failed.");
+		throw failure(`Public page DNS lookup failed${diagnosticNetworkCode(error)}.`);
 	};
 	try {
 		const answers = await Promise.race([
@@ -181,8 +182,9 @@ async function resolvePublicAddress(
 		]);
 		if (signal.aborted) throw abortFailure(signal);
 		const addresses = answers.flat();
-		if (addresses.length === 0 || !addresses.every(isPublicPageAddress)) {
-			throw failure("Public page address is not allowed.");
+		if (addresses.length === 0) throw failure("Public page DNS lookup returned no addresses.");
+		if (!addresses.every(isPublicPageAddress)) {
+			throw failure("Public page address is not allowed: DNS returned a non-public address.");
 		}
 		return addresses[0];
 	} finally {
@@ -223,9 +225,11 @@ export function pinnedPageRequestOptions(url: URL, address: string): RequestOpti
 }
 
 interface PageHop {
+	status: number;
 	location?: string;
 	body?: Buffer;
 	contentType?: string;
+	retryAfter?: string;
 }
 
 type ResponseDecision =
@@ -233,24 +237,35 @@ type ResponseDecision =
 	| { kind: "error"; error: PageNetworkError }
 	| { kind: "body"; contentType: string; declaredLength: string | undefined };
 
+function rejectedPageStatus(status: number): PageNetworkError {
+	return failure(
+		status >= 200 && status < 300
+			? "Public page reader requires a complete HTTP 200 response; this status is not supported."
+			: "Public page returned an unsuccessful HTTP status.",
+	);
+}
+
 /** Validate status, encoding, and declared length before any body buffer is allocated. */
 function classifyResponse(response: IncomingMessage): ResponseDecision {
 	const status = response.statusCode ?? 0;
 	if ([301, 302, 303, 307, 308].includes(status)) {
 		const location = response.headers.location;
-		if (!location) return { kind: "error", error: failure("Public page redirect is not allowed.") };
+		if (!location)
+			return { kind: "error", error: failure("Public page redirect is not allowed: Location header is missing.") };
 		return { kind: "redirect", location };
 	}
-	if (status !== 200) return { kind: "error", error: failure("Public page returned an unsuccessful HTTP status.") };
+	if (status !== 200) return { kind: "error", error: rejectedPageStatus(status) };
 	const encoding = response.headers["content-encoding"];
 	if (encoding && (typeof encoding !== "string" || encoding.trim().toLowerCase() !== "identity"))
 		return { kind: "error", error: failure("Public page compressed responses are not supported.") };
 	const declaredLength = response.headers["content-length"];
-	if (
-		declaredLength !== undefined &&
-		(!/^\d+$/.test(declaredLength) || Number(declaredLength) > PAGE_NETWORK_LIMITS.bodyBytes)
-	)
-		return { kind: "error", error: failure("Public page body exceeds the size limit.") };
+	if (declaredLength !== undefined && !/^\d+$/.test(declaredLength))
+		return { kind: "error", error: failure("Public page Content-Length header is invalid.") };
+	if (declaredLength !== undefined && Number(declaredLength) > PAGE_NETWORK_LIMITS.bodyBytes)
+		return {
+			kind: "error",
+			error: failure(`Public page body exceeds the ${PAGE_NETWORK_LIMITS.bodyBytes}-byte size limit.`),
+		};
 	return { kind: "body", contentType: response.headers["content-type"] ?? "", declaredLength };
 }
 
@@ -274,16 +289,26 @@ function requestPage(
 			response?.destroy();
 			request?.destroy();
 			body = undefined;
-			if (error) reject(error);
-			else resolve(result ?? {});
+			if (error)
+				reject(
+					failure(
+						`${error.message}\n${responseDiagnostic(url.href, response?.statusCode, response?.headers["content-type"], typeof response?.headers["retry-after"] === "string" ? response.headers["retry-after"] : undefined)}`,
+					),
+				);
+			else resolve(result ?? { status: response?.statusCode ?? 0 });
 		};
-		const onError = () => finish(failure());
+		const onError = (error?: unknown) =>
+			finish(
+				failure(
+					`Public page ${response ? "response transfer" : "network request"} failed${diagnosticNetworkCode(error)}.`,
+				),
+			);
 		const onAbort = () => finish(abortFailure(signal));
 		const onData = (chunk: Buffer) => {
 			if (settled || !body) return;
 			bytes += chunk.length;
 			if (bytes > PAGE_NETWORK_LIMITS.bodyBytes) {
-				finish(failure("Public page body exceeds the size limit."));
+				finish(failure(`Public page body exceeds the ${PAGE_NETWORK_LIMITS.bodyBytes}-byte size limit.`));
 				return;
 			}
 			chunk.copy(body, bytes - chunk.length);
@@ -311,7 +336,12 @@ function requestPage(
 					return;
 				}
 				if (decision.kind === "redirect") {
-					finish(undefined, { location: decision.location });
+					finish(undefined, {
+						location: decision.location,
+						status: response.statusCode ?? 0,
+						contentType: response.headers["content-type"],
+						retryAfter: response.headers["retry-after"],
+					});
 					return;
 				}
 				const { contentType, declaredLength } = decision;
@@ -320,11 +350,19 @@ function requestPage(
 				response.on("data", onData);
 				response.once("end", () => {
 					if (settled) return;
-					if (!body || !response?.complete || (declaredLength !== undefined && Number(declaredLength) !== bytes)) {
-						onError();
+					if (!body || !response?.complete) {
+						finish(failure("Public page response is incomplete."));
 						return;
 					}
-					finish(undefined, { body: Buffer.from(body.subarray(0, bytes)), contentType });
+					if (declaredLength !== undefined && Number(declaredLength) !== bytes) {
+						finish(failure("Public page body length does not match Content-Length."));
+						return;
+					}
+					finish(undefined, {
+						body: Buffer.from(body.subarray(0, bytes)),
+						contentType,
+						status: response.statusCode ?? 0,
+					});
 				});
 			});
 			request.on("error", onError);
@@ -333,8 +371,8 @@ function requestPage(
 			});
 			if (settled) request.destroy();
 			else request.end();
-		} catch {
-			onError();
+		} catch (error) {
+			onError(error);
 		}
 	});
 }
@@ -367,6 +405,35 @@ interface FetchedPage {
 	redirectCount: number;
 }
 
+async function resolvePageAddress(
+	url: URL,
+	signal: AbortSignal,
+	dependencies: PageNetworkDependencies,
+): Promise<string> {
+	try {
+		const address = await resolvePublicAddress(unbracket(url.hostname), signal, dependencies);
+		if (signal.aborted) throw abortFailure(signal);
+		return address;
+	} catch (error) {
+		throw failure(
+			`${error instanceof PageNetworkError ? error.message : "Public page DNS lookup failed."}\n${responseDiagnostic(url.href)}`,
+		);
+	}
+}
+
+function redirectPageUrl(url: URL, location: string, redirectCount: number, context: string): URL {
+	if (redirectCount >= PAGE_NETWORK_LIMITS.redirects)
+		throw failure(`Public page redirect limit exceeded (${PAGE_NETWORK_LIMITS.redirects}).\n${context}`);
+	if (!redirectAllowed(location)) throw failure(`Public page redirect is not allowed.\n${context}`);
+	try {
+		return parsePublicPageUrl(new URL(location, url).href);
+	} catch (error) {
+		throw failure(
+			`Public page redirect target is not allowed. ${error instanceof PageNetworkError ? error.message : "Invalid target URL."}\n${context}`,
+		);
+	}
+}
+
 /** Follow bounded, validated redirects until a non-redirect response arrives. */
 async function followRedirects(
 	input: string,
@@ -376,14 +443,12 @@ async function followRedirects(
 	let url = parsePublicPageUrl(input);
 	const requestedUrl = url.href;
 	for (let redirectCount = 0; ; redirectCount++) {
-		const address = await resolvePublicAddress(unbracket(url.hostname), controller.signal, dependencies);
-		if (controller.signal.aborted) throw abortFailure(controller.signal);
+		const address = await resolvePageAddress(url, controller.signal, dependencies);
 		const result = await requestPage(url, address, controller.signal, dependencies);
 		if (controller.signal.aborted) throw abortFailure(controller.signal);
 		if (result.location !== undefined) {
-			if (redirectCount >= PAGE_NETWORK_LIMITS.redirects) throw failure("Public page redirect limit exceeded.");
-			if (!redirectAllowed(result.location)) throw failure("Public page redirect is not allowed.");
-			url = parsePublicPageUrl(new URL(result.location, url).href);
+			const context = responseDiagnostic(url.href, result.status, result.contentType, result.retryAfter);
+			url = redirectPageUrl(url, result.location, redirectCount, context);
 			continue;
 		}
 		const body = result.body ?? Buffer.alloc(0);
@@ -415,8 +480,9 @@ export async function fetchPublicPage(
 			redirectCount: fetched.redirectCount,
 		};
 	} catch (error) {
+		if (error instanceof PageNetworkError) throw error;
 		if (controller.signal.aborted) throw abortFailure(controller.signal);
-		throw error instanceof PageNetworkError ? error : failure();
+		throw failure();
 	} finally {
 		clearTimeout(timer);
 		signal?.removeEventListener("abort", onAbort);

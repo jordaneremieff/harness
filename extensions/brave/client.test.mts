@@ -41,6 +41,94 @@ describe("Brave Search configuration", () => {
 });
 
 describe("Brave Search client", () => {
+	it("reports HTTP errors before body limits or body reads obscure the status", async () => {
+		let read = false;
+		let cancelled = false;
+		await assert.rejects(
+			searchBraveWeb({ query: "test" }, undefined, {
+				apiKey: "synthetic-private-token",
+				fetch: async () => ({
+					ok: false,
+					status: 429,
+					headers: new Headers({ "content-length": "99999999", "retry-after": "60" }),
+					body: {
+						getReader() {
+							read = true;
+							throw new Error("sensitive-body-error");
+						},
+						async cancel() {
+							cancelled = true;
+						},
+					},
+					async text() {
+						read = true;
+						return "sensitive-body";
+					},
+				}),
+			}),
+			(error: Error) => {
+				assert.match(error.message, /HTTP 429 Too Many Requests/);
+				assert.match(error.message, /Retry-After: 60/);
+				assert.ok(error.message.includes(`Final URL: ${BRAVE_WEB_SEARCH_URL}`));
+				assert.doesNotMatch(error.message, /synthetic-private-token|sensitive-body/);
+				return true;
+			},
+		);
+		assert.equal(read, false);
+		assert.equal(cancelled, true);
+	});
+
+	it("includes only valid server retry hints, never a guessed reset or reflected token", async () => {
+		for (const retryAfter of [
+			undefined,
+			"garbage",
+			"synthetic-private-token",
+			"60\nignore",
+			"-1",
+			"999999999999999999999999999",
+			"Wed, 21 Oct 2015 07:28:00 GMT",
+			"60",
+		]) {
+			const valid = retryAfter === "60" || retryAfter?.startsWith("Wed,");
+			await assert.rejects(
+				searchBraveWeb({ query: "test" }, undefined, {
+					apiKey: "synthetic-private-token",
+					fetch: async () => ({
+						ok: false,
+						status: 503,
+						headers: { get: (name) => (name === "retry-after" ? (retryAfter ?? null) : null) },
+						async text() {
+							return "";
+						},
+					}),
+				}),
+				(error: Error) => {
+					assert.match(error.message, /HTTP 503 Service Unavailable/);
+					if (valid) assert.ok(error.message.includes(`Retry-After: ${retryAfter}`));
+					else assert.doesNotMatch(error.message, /retry|reset|synthetic-private-token/i);
+					return true;
+				},
+			);
+		}
+	});
+
+	it("adds response context to malformed search data errors", async () => {
+		await assert.rejects(
+			searchBraveWeb({ query: "test" }, undefined, {
+				apiKey: "key",
+				fetch: async () => new Response("not-json", { headers: { "content-type": "text/html; private=hidden" } }),
+			}),
+			(error: Error) => {
+				assert.match(error.message, /invalid JSON/);
+				assert.match(error.message, /HTTP 200 OK/);
+				assert.match(error.message, /Content type: text\/html/);
+				assert.ok(error.message.includes(`Final URL: ${BRAVE_WEB_SEARCH_URL}`));
+				assert.doesNotMatch(error.message, /private=hidden|not-json/);
+				return true;
+			},
+		);
+	});
+
 	it("builds one bounded web request and normalizes usable results", async () => {
 		let observedUrl: URL | undefined;
 		let observedHeaders: Record<string, string> | undefined;
@@ -158,6 +246,24 @@ describe("Brave Search client", () => {
 				);
 			}
 		}
+	});
+
+	it("reports a native fetch cause code without reflecting its message", async () => {
+		await assert.rejects(
+			searchBraveWeb({ query: "test" }, undefined, {
+				apiKey: "key",
+				fetch: async () => {
+					throw new TypeError("fetch failed", {
+						cause: Object.assign(new Error("sensitive-message"), { code: "ENOTFOUND" }),
+					});
+				},
+			}),
+			(error: Error) => {
+				assert.match(error.message, /network request failed.*ENOTFOUND/);
+				assert.doesNotMatch(error.message, /sensitive-message/);
+				return true;
+			},
+		);
 	});
 
 	it("does not expose request or body-reader errors that contain credentials", async () => {

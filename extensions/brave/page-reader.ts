@@ -1,11 +1,6 @@
-import { fetchPublicPage } from "./page-network.ts";
-import {
-	cleanPageText,
-	extractPageText,
-	makePageExcerpts,
-	type PageExcerpts,
-	type PageText,
-} from "./page-text.ts";
+import { responseDiagnostic } from "./diagnostics.ts";
+import { fetchPublicPage, PageNetworkError, type PublicPageResponse } from "./page-network.ts";
+import { cleanPageText, extractPageText, makePageExcerpts, type PageExcerpts, type PageText } from "./page-text.ts";
 
 export interface WebReadRequest {
 	url: string;
@@ -29,8 +24,9 @@ export async function readWebPage(params: WebReadRequest, signal?: AbortSignal, 
 	const onAbort = () => controller.abort();
 	const timer = setTimeout(() => controller.abort(new Error("Web reader deadline exceeded.")), timeoutMs);
 	signal?.addEventListener("abort", onAbort, { once: true });
+	let fetched: PublicPageResponse | undefined;
 	try {
-		const fetched = await (options.fetchPage ?? fetchPublicPage)(params.url, controller.signal);
+		fetched = await (options.fetchPage ?? fetchPublicPage)(params.url, controller.signal);
 		controller.signal.throwIfAborted();
 		const page = await extractPageText(fetched.body, fetched.contentType, controller.signal);
 		controller.signal.throwIfAborted();
@@ -57,13 +53,25 @@ export async function readWebPage(params: WebReadRequest, signal?: AbortSignal, 
 			},
 		};
 	} catch (error) {
-		if (signal?.aborted) throw new Error("Web reader cancelled.");
-		if (controller.signal.aborted) throw new Error("Web reader exceeded its execution deadline.");
-		throw error;
+		throw readerFailure(error, fetched, signal?.aborted === true, controller.signal.aborted);
 	} finally {
 		clearTimeout(timer);
 		signal?.removeEventListener("abort", onAbort);
 	}
+}
+
+function readerFailure(
+	error: unknown,
+	fetched: PublicPageResponse | undefined,
+	cancelled: boolean,
+	deadline: boolean,
+): unknown {
+	const context = fetched ? `\n${responseDiagnostic(fetched.finalUrl, 200, fetched.contentType)}` : "";
+	if (cancelled || deadline) {
+		const message = cancelled ? "Web reader cancelled." : "Web reader exceeded its execution deadline.";
+		return new Error(message + (error instanceof PageNetworkError ? `\n${error.message}` : context));
+	}
+	return fetched && error instanceof Error ? new Error(error.message + context) : error;
 }
 
 /** Reader warnings for extraction method, empty content, and truncation. */
@@ -76,7 +84,9 @@ function readerNotes(page: PageText, status: string, outputTruncated: boolean): 
 	if (status === "no-readable-text")
 		notes.push("No readable text was found. The page may require scripts, authentication, or a different format.");
 	if (outputTruncated)
-		notes.push("Text is truncated. Omitted content is not retained; this result does not establish the full page contents.");
+		notes.push(
+			"Text is truncated. Omitted content is not retained; this result does not establish the full page contents.",
+		);
 	return notes;
 }
 
