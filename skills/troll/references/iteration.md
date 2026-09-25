@@ -1,8 +1,22 @@
 # Iteration: sharpening rounds
 
-Read this before triaging any reply and before any continuation decision, including whether a second round exists. A single-round press that ends at delivery does not need this file. The SKILL.md stance, construction floor, and rendering rules govern every round; this file adds the round mechanics.
+Read this when the operator requests a sustained sequence, supplies or asks for an outcome, or before triaging any reply or making any continuation decision, including whether a second round exists. A single-round press that ends at delivery does not need this file. The SKILL.md stance, construction floor, and rendering rules govern every round; this file owns continuation and outcome readback.
+
+## Contents
+
+- [Acquire the reply](#acquire-the-reply)
+- [Triage the reply](#triage-the-reply)
+- [Where the next round usually lives](#where-the-next-round-usually-lives)
+- [Rebuild and render the round](#rebuild-and-render-the-round)
+- [Sustained sequences](#sustained-sequences)
+- [Stop conditions](#stop-conditions)
+- [Outcome readback](#outcome-readback)
+- [What never changes across rounds](#what-never-changes-across-rounds)
+- [Awareness signals](#awareness-signals)
 
 ## Acquire the reply
+
+New material opens a round: the operator pastes a reply, asks for readback on a delivered press, supplies an outcome, or authorizes a sustained sequence at intake. A sustained request permits further rounds; it does not supply the target's reply.
 
 - The operator's paste governs when one exists, including an excerpt the operator edited: the excerpt is the record.
 - Otherwise, for a delivered direct-lane press, read the target session's messages that follow your delivered message, taking the most recent page that carries its reply and no deeper. The target's words are the record for triage; its tool and action record may be cited only in the outcome readback's "did" row, never as adjudication evidence during a round.
@@ -43,15 +57,19 @@ When the operator asked at intake for a sustained press ("press it until it land
 
 ## Stop conditions
 
-- **No surviving challenge.** Supplied or checked evidence defeated the assigned claim, or the reply resolved the press reference on its own terms, and nothing load-bearing survives. State the exact limit to the operator: what answered which premise. Do not manufacture a substitute accusation and do not soften this into a both-sides summary.
+- **No surviving challenge.** Supplied or checked evidence defeated the assigned claim, or the reply resolved the press reference on its own terms, and nothing load-bearing survives. State the exact limit to the operator: what answered which premise. Do not manufacture a substitute accusation and do not soften this into a both-sides summary. An unmeasured concern that still supports a pointed conditional inquiry is not a defeated premise.
 - **A genuine boundary survives.** The defense rests on a real restriction only the operator can lift — an external write that needs a direct instruction, a scope change the operator owns. Stop pressing that step; report the split outcome: what moved, what held, and what the operator must send through their own channel if they want the held step done. Pressing past a real boundary converts advocacy into pressure.
-- **The target acted.** A supplied or read-back outcome arrived. Switch to the outcome readback in SKILL.md and stop pressing unless the readback leaves a named surviving challenge and the operator wants another round.
+- **The target acted.** A supplied or read-back outcome arrived. Use the outcome readback below and stop pressing unless the readback leaves a named surviving challenge and the operator wants another round.
 - **The operator called it.** Stop. The operator referees the whole dispute.
 - **Round cap.** Three rounds without operator contact elapsed in a sustained sequence. Report with an outcome readback.
 
+## Outcome readback
+
+When the operator supplies or asks for an outcome, report in four named rows before any judgment: what the target said; what it reportedly did; what supplied evidence establishes; what remains unknown. For a named agent-session target, the "did" row may cite the target's own recent action record read through the inspection surface — observations with citations, not adjudication of the dispute. Then one recommendation: press again (name the surviving challenge), stop (name the actual reason: what answered the press, a genuine boundary, the round cap, or the operator's call), or supply the missing authorization through the operator's own channel. Agreement alone never fills the "evidence establishes" row; intention is not completion; useful action does not validate every premise of the press.
+
 ## What never changes across rounds
 
-The target defends itself unaided; you never write its defense. You stay ungrounded: the target's words are the record, its tool outputs are not your adjudication evidence, and the codebase stays uninvestigated. No invented burdens. The artifact's authority rule follows its lane (SKILL.md): the direct lane asserts no operator authorization, and the clipboard lane may state an authorization the operator already gave. No capitulation demanded. The operator referees; the system finds the truth.
+The target defends itself unaided; you never write its defense or pre-concede to it. Correct a defeated premise and remove dependent claims immediately; factual correction does not require a declaration that the target won. You stay ungrounded: the target's words are the record, its tool outputs are not your adjudication evidence, and the codebase stays uninvestigated. No invented burdens. The artifact's authority rule follows its lane (SKILL.md): the direct lane asserts no operator authorization, and the clipboard lane may state an authorization the operator already gave. No capitulation demanded. The operator referees; the system finds the truth.
 
 ## Awareness signals
 
