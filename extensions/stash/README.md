@@ -175,7 +175,7 @@ not reset the latches. In TUI/RPC the command notifies; in print/JSON it returns
 its text through the existing command-error channel because those modes have no
 command-result notification surface.
 
-This is a request mechanism, not a hard stop at 80% or any other percentage.
+This is a request mechanism, not a hard stop at any percentage.
 Ordinary boundary results do not suppress natural tool work or queued messages.
 The decision notice refers to governing stop instructions, but this extension
 does not abort the agent, compact automatically, replace sessions, cancel
