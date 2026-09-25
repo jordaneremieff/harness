@@ -104,8 +104,8 @@ describe("capacity configuration", () => {
 	it("uses documented defaults and accepts explicit overrides", () => {
 		assert.deepEqual(defaults, {
 			enabled: true,
-			checkpointPercent: 60,
-			decisionPercent: 70,
+			checkpointPercent: 85,
+			decisionPercent: 90,
 			intakeTokenBudget: undefined,
 		});
 		assert.deepEqual(
@@ -123,7 +123,7 @@ describe("capacity configuration", () => {
 			{ PI_STASH_CAPACITY: "true" },
 			{ PI_STASH_CHECKPOINT_PERCENT: "NaN" },
 			{ PI_STASH_CHECKPOINT_PERCENT: "0" },
-			{ PI_STASH_CHECKPOINT_PERCENT: "80" },
+			{ PI_STASH_CHECKPOINT_PERCENT: "90" },
 			{ PI_STASH_DECISION_PERCENT: "101" },
 			{ PI_STASH_INTAKE_TOKEN_BUDGET: "1.5" },
 			{ PI_STASH_INTAKE_TOKEN_BUDGET: "Infinity" },
@@ -147,27 +147,27 @@ describe("capacity boundary", () => {
 	it("requests checkpoint and decision once, even after usage falls and rises", () => {
 		const f = fixture();
 		for (const [percent, expected] of [
-			[59, 0],
-			[60, 1],
-			[65, 0],
-			[70, 1],
+			[84, 0],
+			[85, 1],
+			[87, 0],
+			[90, 1],
 			[95, 0],
 			[20, 0],
-			[90, 0],
+			[99, 0],
 		]) {
 			f.percent(percent);
 			const result = capacityTurnEnd(f.event(), f.ctx, defaults);
 			assert.equal(requests(result).length, expected);
 			assert.equal(result?.continue, expected ? true : undefined);
-			if (percent === 60) assert.match(requestContent(result), /checkpoint: true/);
-			if (percent === 70) assert.match(requestContent(result), /choose and execute/);
+			if (percent === 85) assert.match(requestContent(result), /checkpoint: true/);
+			if (percent === 90) assert.match(requestContent(result), /choose and execute/);
 			f.commit(result);
 		}
 		assert.equal(readCapacityState(f.ctx).decisionRequested, true);
 	});
 	it("combines a jump across both thresholds into one continuation", () => {
 		const f = fixture();
-		f.percent(85);
+		f.percent(95);
 		const result = capacityTurnEnd(f.event(), f.ctx, defaults);
 		assert.equal(requests(result).length, 1);
 		assert.equal(result?.continue, true);
@@ -187,7 +187,7 @@ describe("capacity boundary", () => {
 	});
 	it("suppresses duplicate dispatch and reload repeats from persisted source ids", () => {
 		const f = fixture();
-		f.percent(60);
+		f.percent(85);
 		const event = f.event();
 		const first = capacityTurnEnd(event, f.ctx, defaults);
 		f.commit(first);
@@ -196,7 +196,7 @@ describe("capacity boundary", () => {
 	});
 	it("recovers a latch from the request when a later state append fails", () => {
 		const f = fixture();
-		f.percent(60);
+		f.percent(85);
 		const event = f.event();
 		const first = capacityTurnEnd(event, f.ctx, defaults);
 		f.commit({ entries: requests(first) });
@@ -205,7 +205,7 @@ describe("capacity boundary", () => {
 	});
 	it("starts fresh after committed or earlier-draft compaction", () => {
 		const f = fixture();
-		f.percent(70);
+		f.percent(90);
 		f.commit(capacityTurnEnd(f.event(), f.ctx, defaults));
 		f.manager.appendCompaction("summary", null, 700);
 		assert.equal(readCapacityState(f.ctx).checkpointRequested, false);
@@ -219,18 +219,18 @@ describe("capacity boundary", () => {
 	});
 	it("starts fresh on a fork with inherited custom data and preserved message ids", () => {
 		const f = fixture();
-		f.percent(70);
+		f.percent(90);
 		f.commit(capacityTurnEnd(f.event(), f.ctx, defaults));
 		const state = readCapacityState(f.ctx);
 		const fork = fixture();
-		fork.percent(70);
+		fork.percent(90);
 		fork.manager.appendCustomEntry(CAPACITY_STATE, state);
 		assert.equal(readCapacityState(fork.ctx).checkpointRequested, false);
 		assert.equal(capacityTurnEnd(fork.event(), fork.ctx, defaults)?.continue, true);
 	});
 	it("explicit reset re-arms a high-pressure episode without rewriting history", () => {
 		const f = fixture();
-		f.percent(70);
+		f.percent(90);
 		f.commit(capacityTurnEnd(f.event(), f.ctx, defaults));
 		f.manager.appendCustomEntry(CAPACITY_STATE, capacityReset(f.ctx));
 		assert.equal(capacityTurnEnd(f.event(), f.ctx, defaults)?.continue, true);
@@ -238,7 +238,7 @@ describe("capacity boundary", () => {
 	it("does not continue or latch on aborted, failed, or cancelled turns", () => {
 		for (const outcome of ["aborted", "error", "completed"] as const) {
 			const f = fixture();
-			f.percent(70);
+			f.percent(90);
 			if (outcome === "completed") f.controller.abort();
 			const event = f.event();
 			event.outcome = outcome;
@@ -328,7 +328,7 @@ describe("capacity boundary", () => {
 	});
 	it("reports observations as historical and requests as unconfirmed", () => {
 		const f = fixture();
-		f.percent(60);
+		f.percent(85);
 		f.commit(capacityTurnEnd(f.event(), f.ctx, defaults));
 		assert.match(capacityStatus(f.ctx, defaults), /not a live reading/);
 		assert.match(capacityStatus(f.ctx, defaults), /do not prove a checkpoint was saved/);
@@ -357,7 +357,7 @@ describe("capacity boundary", () => {
 	});
 	it("respects state drafts already supplied in the boundary", () => {
 		const f = fixture();
-		f.percent(70);
+		f.percent(90);
 		const event = f.event();
 		const first = capacityTurnEnd(event, f.ctx, defaults);
 		event.entries = first?.entries as SessionBoundaryDraft[];

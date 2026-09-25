@@ -42,9 +42,9 @@ function configuredNumber(env: NodeJS.ProcessEnv, key: string): number | undefin
 export function capacityConfig(env: NodeJS.ProcessEnv): CapacityConfig {
 	const enabled = env.PI_STASH_CAPACITY?.trim() || "1";
 	if (enabled !== "0" && enabled !== "1") throw new Error("PI_STASH_CAPACITY must be 0 or 1.");
-	if (enabled === "0") return { enabled: false, checkpointPercent: 60, decisionPercent: 70 };
-	const checkpointPercent = configuredNumber(env, "PI_STASH_CHECKPOINT_PERCENT") ?? 60;
-	const decisionPercent = configuredNumber(env, "PI_STASH_DECISION_PERCENT") ?? 70;
+	if (enabled === "0") return { enabled: false, checkpointPercent: 85, decisionPercent: 90 };
+	const checkpointPercent = configuredNumber(env, "PI_STASH_CHECKPOINT_PERCENT") ?? 85;
+	const decisionPercent = configuredNumber(env, "PI_STASH_DECISION_PERCENT") ?? 90;
 	if (checkpointPercent >= decisionPercent || decisionPercent > 100) {
 		throw new Error("Stash capacity thresholds must satisfy 0 < checkpoint < decision <= 100.");
 	}

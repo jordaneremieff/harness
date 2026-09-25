@@ -155,8 +155,8 @@ portable; choose local thresholds and a checkpoint directory through the
 | Variable | Default | Meaning |
 |---|---|---|
 | `PI_STASH_CAPACITY` | `1` | `0` disables observation and requests; only `0` and `1` are accepted. |
-| `PI_STASH_CHECKPOINT_PERCENT` | `60` | Positive checkpoint threshold, strictly below the decision threshold. |
-| `PI_STASH_DECISION_PERCENT` | `70` | Continuity-decision threshold, at most `100`. |
+| `PI_STASH_CHECKPOINT_PERCENT` | `85` | Positive checkpoint threshold, strictly below the decision threshold. |
+| `PI_STASH_DECISION_PERCENT` | `90` | Continuity-decision threshold, at most `100`. |
 | `PI_STASH_INTAKE_TOKEN_BUDGET` | Unset | Positive safe integer for the unknown-usage text-intake trigger. |
 | `PI_STASH_CHECKPOINT_DIR` | `<stashDir>/checkpoints` | Working-checkpoint directory. Relative overrides resolve against the invoking session's cwd. |
 

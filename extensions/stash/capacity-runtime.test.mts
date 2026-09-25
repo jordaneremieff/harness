@@ -141,6 +141,18 @@ const reply = () => fauxAssistantMessage("Synthetic response.");
 
 test("capacity boundaries add one request per threshold across a long real session", { timeout: 20_000 }, async (t) => {
 	const host = await runtime(t);
+	// Explicit thresholds keep the fixture independent of Pi's projected-context overhead estimate.
+	const saved = ["PI_STASH_CHECKPOINT_PERCENT", "PI_STASH_DECISION_PERCENT"].map(
+		(key) => [key, process.env[key]] as const,
+	);
+	t.after(() => {
+		for (const [key, value] of saved) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	});
+	process.env.PI_STASH_CHECKPOINT_PERCENT = "60";
+	process.env.PI_STASH_DECISION_PERCENT = "70";
 	for (let turn = 0; turn < 32; turn++) {
 		host.setUsage(100 + turn * 100);
 		await host.prompt([reply()], `Synthetic turn ${turn}: retain the current decision and proceed.`);
@@ -197,7 +209,7 @@ test("capacity boundaries add one request per threshold across a long real sessi
 for (const stopReason of ["error", "aborted"] as const) {
 	test(`capacity records ${stopReason} turns without a continuation`, { timeout: 10_000 }, async (t) => {
 		const host = await runtime(t);
-		host.setUsage(7_500);
+		host.setUsage(9_500);
 		await host.prompt([fauxAssistantMessage("Synthetic failure.", { stopReason, errorMessage: "Fixture failure" })]);
 		assert.equal(host.faux.state.callCount, 1);
 		assert.equal(host.requests().length, 0);
@@ -209,7 +221,7 @@ for (const stopReason of ["error", "aborted"] as const) {
 
 test("abort during a completed boundary prevents the capacity request", { timeout: 10_000 }, async (t) => {
 	const host = await runtime(t, { abortAtBoundary: true });
-	host.setUsage(7_500);
+	host.setUsage(9_500);
 	await host.prompt([reply()]);
 	assert.equal(host.faux.state.callCount, 1);
 	assert.equal(host.requests().length, 0);
