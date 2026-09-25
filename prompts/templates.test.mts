@@ -43,7 +43,7 @@ it("the package discovers only maintained prompt commands without other resource
 		await loader.reload();
 		const { prompts, diagnostics } = loader.getPrompts();
 		assert.deepEqual(diagnostics, []);
-		assert.deepEqual(prompts.map((prompt) => prompt.name).sort(), ["drift", "seed", "wtf"]);
+		assert.deepEqual(prompts.map((prompt) => prompt.name).sort(), ["drift", "recap", "seed", "wtf"]);
 		for (const prompt of prompts) {
 			assert.equal(prompt.filePath, join(repositoryRoot, "prompts", `${prompt.name}.md`));
 			assert.ok(prompt.description.trim());
@@ -52,6 +52,7 @@ it("the package discovers only maintained prompt commands without other resource
 		}
 		assert.equal(prompts.find((prompt) => prompt.name === "wtf")?.argumentHint, "[your account of the problem]");
 		assert.equal(prompts.find((prompt) => prompt.name === "seed")?.argumentHint, "[your hint for the brief]");
+		assert.equal(prompts.find((prompt) => prompt.name === "recap")?.argumentHint, "[work, topic, or session]");
 		assert.deepEqual(loader.getExtensions().extensions, []);
 		assert.deepEqual(loader.getExtensions().errors, []);
 		assert.deepEqual(loader.getSkills().skills, []);
@@ -85,6 +86,53 @@ it("an explicit candidate prompt load does not discover global or package copies
 		assert.equal(prompts[0]?.filePath, join(repositoryRoot, "prompts", "wtf.md"));
 		assert.ok(prompts[0]?.content.includes("## Select the target"));
 		assert.ok(prompts[0]?.content.includes("## The operator's account\n\n$ARGUMENTS"));
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+it("a recap candidate expands empty and selected work through Pi's argument substitution", async () => {
+	const root = await mkdtemp(join(tmpdir(), "recap-candidate-"));
+	try {
+		const loader = new DefaultResourceLoader({
+			cwd: root,
+			agentDir: join(root, "agent"),
+			settingsManager: SettingsManager.inMemory(),
+			additionalPromptTemplatePaths: [join(repositoryRoot, "prompts", "recap.md")],
+			noPromptTemplates: true,
+			noExtensions: true,
+			noSkills: true,
+			noThemes: true,
+			noContextFiles: true,
+		});
+		await loader.reload();
+		const { prompts, diagnostics } = loader.getPrompts();
+		assert.deepEqual(diagnostics, []);
+		assert.deepEqual(
+			prompts.map((prompt) => prompt.name),
+			["recap"],
+		);
+		const recap = prompts[0];
+		assert.ok(recap);
+		assert.equal(recap.filePath, join(repositoryRoot, "prompts", "recap.md"));
+		assert.equal(recap.description, "Explain what the agents did and what it means in plain English");
+		assert.equal(recap.argumentHint, "[work, topic, or session]");
+		assert.ok(recap.content.includes("Selected work:\n$ARGUMENTS\n"));
+
+		const packageEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
+		const promptTemplatesUrl = pathToFileURL(join(dirname(packageEntry), "core", "prompt-templates.js"));
+		const { expandPromptTemplate } = (await import(promptTemplatesUrl.href)) as {
+			expandPromptTemplate: (text: string, templates: Array<{ name: string; content: string }>) => string;
+		};
+
+		for (const [invocation, selection] of [
+			["/recap", ""],
+			["/recap export work", "export work"],
+			['/recap "export work" session-42', "export work session-42"],
+			['/recap "literal $1 and $ARGUMENTS"', "literal $1 and $ARGUMENTS"],
+		]) {
+			assert.equal(expandPromptTemplate(invocation, prompts), recap.content.replace("$ARGUMENTS", () => selection));
+		}
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

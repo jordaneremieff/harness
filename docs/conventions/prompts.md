@@ -41,6 +41,17 @@ of the corpus.
   advancing the task. Operator clarification informs that reconstruction;
   a later goal change does not replace the opening intent. Missing opening
   context produces an explicit evidence boundary, not an invented intent.
+- `/recap [work, topic, or session]` explains selected work in plain English:
+  its purpose, actual changes or lessons, practical consequence, and unfinished
+  or uncertain parts. Without a selection, it summarizes the latest substantive
+  task and related agent reports. It separates verified results from reports,
+  proposals, local changes, and completed releases. It uses visible evidence
+  first and public read-only history or session tools only for relevant gaps;
+  unavailable evidence stays explicit. It does not scan unrelated sessions or
+  private stores. The summary appears in chat, usually in 150–250 words or
+  fewer for simple work. It ends with a required decision or next step only
+  when one exists. It does not change files, copy to the clipboard, run tests,
+  start or resume agents, or continue the task.
 - `/seed [hint]` puts a quick brief for another session on the operator's
   clipboard without advancing the task. The optional free-text hint selects
   the purpose and recipient: a continuation, a reset of a faulty frame, or
@@ -82,7 +93,8 @@ of the corpus.
   explicit boundary, not a rewrite of the command or a tool result.
 
 These jobs remain separate: `/drift` restores intent; `/wtf` repairs a reply;
-`/seed` briefs another session. None of them executes the underlying work or
+`/seed` briefs another session; `/recap` explains work outcomes to the operator.
+None of them executes the underlying work or
 changes persistent configuration. Ordinary requests for current status or a
 short explanation need no command. These templates do not make clear, concise
 answers an opt-in behavior.
@@ -98,7 +110,7 @@ collisions and retains the first loaded match; a duplicate local file is not a
 reliable override contract. Select the intended resource explicitly rather
 than depending on load order.
 
-Edit shared templates in the persistent prompts worktree. In the managed
+Edit each shared template in its owning prompt's persistent worktree. In the managed
 worktree layout, the configured package continues to load the main checkout
 until promotion. Other installations load their configured package source.
 A direct worktree load verifies a candidate, not activation. See [worktrees.md](worktrees.md) for the
