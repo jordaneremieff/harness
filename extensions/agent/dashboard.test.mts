@@ -1,187 +1,141 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { ExtensionCommandContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import { it } from "node:test";
+import { stripVTControlCharacters } from "node:util";
+import { initTheme, SessionManager, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as Keys, TUI_KEYBINDINGS, visibleWidth, type TUI } from "@earendil-works/pi-tui";
-import { AgentDashboard, dashboardRecords, dashboardText, readAgentDashboard, showAgentDashboard, type AgentInspection, type AgentObservationSources, type DashboardState } from "./dashboard.ts";
-import { createAgentCommand } from "./command.ts";
-import type { DetachedRunView } from "./detached.ts";
-import { defined } from "./test-assertions.mts";
+import { AgentDashboard, dashboardRecords, dashboardText, elapsed, readAgentDashboard, showAgentDashboard, type AgentObservationSources, type DashboardActions } from "./dashboard.ts";
+import type { SessionDigest } from "./dashboard-data.ts";
 
-const theme = { fg: (_color: string, value: string) => value, bg: (_color: string, value: string) => value } as Theme;
-const keys = new Keys(TUI_KEYBINDINGS) as KeybindingsManager;
+initTheme("dark");
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
-const run: DetachedRunView = { runId: "run-1", sessionId: "original", currentSessionId: "current", sessionsRoot: "/sessions", agentDir: "/agent", cwd: "/work", prompt: "Audit parser", logFile: "/log", startedAt: "2026-01-01", pid: 1, launchState: "started", state: "failed", error: "Failure sentinel", summary: "Result sentinel", progress: { runId: "run-1", updatedAt: "2026-01-02", entryCount: 4, lastText: "Progress sentinel" } };
-function inspection(sessionId = "active"): AgentInspection {
-	return { sessionId, liveOwner: false, execution: { current: null, recovery: "read-only snapshot" }, capture: { mode: "read-only", snapshot: true, available: true, bytes: 12, unfinishedTail: true, liveState: "unavailable" }, result: { text: "Retained sentinel", nextOffset: 20, truncated: true }, entries: [{ id: "source-entry", parentId: null, type: "message", role: "assistant", preview: { text: "Preview sentinel", truncated: true }, text: "Preview sentinel", nextOffset: 12, truncated: true }], nextCursor: 5, order: "newestFirst", detail: "Use entryId and offset" };
+const keys = new Keys({ ...TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: ["ctrl+o"], description: "Tools" }, "app.thinking.toggle": { defaultKeys: ["ctrl+t"], description: "Thinking" } }) as KeybindingsManager;
+const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text } as Theme;
+function row(id = "sample", overrides: Partial<SessionDigest> = {}): SessionDigest {
+	return { sessionId: id, name: `Session ${id}`, cwd: `/work/${id}`, path: `/store/${id}.jsonl`, live: false, createdAt: 1, modifiedAt: Date.now(), state: "done", cost: 1.25, partial: false, latestReply: "**The result is ready.**\n\nThe tests pass.", firstMessage: "TASK SENTINEL", durationMs: 60000, toolCalls: 4, model: { provider: "test", modelId: "test-model", thinkingLevel: "high" }, ...overrides };
 }
-function sources(): AgentObservationSources {
-	return { sessions: async () => [
-		{ sessionId: "saved", cwd: "/work/saved", modifiedAt: 1, live: false },
-		{ sessionId: "active", name: "Parser", cwd: "/work/active", modifiedAt: 2, live: true, operation: "op" },
-	], runs: async () => [run], inspect: async (id) => inspection(id) };
-}
-function fixture(data = sources(), suppliedKeys = keys) {
-	const dimensions = { rows: 24 };
-	const state: DashboardState = { tab: "sessions", filter: "", selected: {} };
-	let paints = 0; let closes = 0;
-	const panel = new AgentDashboard(data, { terminal: dimensions as TUI["terminal"], requestRender() { paints++; } }, theme, suppliedKeys, () => { closes++; }, state, true);
-	return { panel, state, dimensions, paints: () => paints, closes: () => closes, screen: (width = 100) => panel.render(width).join("\n") };
+function fixture(rows = [row()], overrides: Partial<AgentObservationSources> = {}, actions?: DashboardActions) {
+	const native = SessionManager.inMemory("/work");
+	native.appendMessage({ role: "user", content: "User asks for a check", timestamp: 1 });
+	native.appendMessage({ role: "assistant", content: [{ type: "text", text: "Assistant result sentinel" }], api: "openai-responses", provider: "test", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 });
+	const sources: AgentObservationSources = { board: async () => rows, sessions: async () => rows, runs: async () => [], conversation: async () => ({ entries: native.getBranch(), revision: "1", partial: false }), ...overrides };
+	const terminal = { rows: 36 };
+	const tui = { terminal, requestRender() {} } as unknown as TUI;
+	const requests: unknown[] = [];
+	const panel = new AgentDashboard(sources, tui, theme, keys, (request) => requests.push(request), undefined, actions);
+	const screen = (width = 120) => stripVTControlCharacters(panel.render(width).join("\n"));
+	return { panel, sources, tui, terminal, screen, requests, native };
 }
 
-describe("agent dashboard observations", () => {
-	it("reports owner boundaries and keeps run error, result and progress independent", async () => {
-		const snapshot = await readAgentDashboard(sources());
-		assert.equal(snapshot.sessions.records.length, 2);
-		const text = dashboardText(snapshot);
-		for (const value of ["Active", "Stored; owner state unavailable", "Session: current", "Failure sentinel", "Result sentinel", "Progress sentinel", "recorded, not a live query", "/agent help"]) assert.ok(text.includes(value), value);
-	});
-	it("renders unavailable host states in text and compact rows without live claims", async () => {
-		for (const hostState of ["stopping", "cleanup-incomplete", "terminal", "replacement-failed"] as const) {
-			const data = { ...sources(), sessions: async () => [{ sessionId: "closed", cwd: "/work", modifiedAt: 1, live: false, provenance: "stored" as const, hostState }] };
-			const text = dashboardText(await readAgentDashboard(data));
-			assert.match(text, new RegExp(`Host ${hostState}; stored metadata`, "u"));
-			const f = fixture(data); await tick();
-			assert.match(f.screen(), new RegExp(`Host ${hostState}`, "u"));
-			assert.doesNotMatch(f.screen(), /Open here|Active/u);
-			f.panel.handleInput("\x1b");
-		}
-	});
-	it("distinguishes empty and unavailable sources and preserves the full error for the reader", async () => {
-		const empty = dashboardText(await readAgentDashboard({ sessions: async () => [], runs: async () => [] }));
-		assert.match(empty, /Sessions: 0 total; 0 shown; 0 omitted\nNone found/);
-		const message = `storage\x1b[2J ${"x".repeat(700)} ERROR-END`;
-		const data = { ...sources(), sessions: () => { throw new Error(message); } };
-		const snapshot = await readAgentDashboard(data);
-		assert.equal(snapshot.sessions.error, message);
-		assert.match(dashboardText(snapshot), /Sessions: unavailable/);
-		assert.match(dashboardText(snapshot), /Result sentinel/);
-		assert.doesNotMatch(dashboardText(snapshot), /\x1b/);
-		const f = fixture(data); await tick(); f.panel.handleInput("\r");
-		assert.equal(f.state.reader?.lines[0], message);
-		assert.doesNotMatch(f.screen(), /\x1b/);
-	});
-	it("filters the complete inventory before the display cap with exact disjoint counts", async () => {
-		const snapshot = await readAgentDashboard({ sessions: async () => Array.from({ length: 80 }, (_, i) => ({ sessionId: `session-${i}`, cwd: "x".repeat(10000), name: i === 0 ? "unique oldest" : "\x1b[31m".repeat(10000), modifiedAt: i, live: false })), runs: async () => [] });
-		assert.match(dashboardText(snapshot), /80 total; 50 shown; 30 omitted/);
-		assert.ok(dashboardText(snapshot).length < 42000);
-		assert.doesNotMatch(dashboardText(snapshot), /\x1b/);
-		const view = dashboardRecords(snapshot.sessions, "unique oldest");
-		assert.deepEqual([view.total, view.matching, view.records.length, view.omitted], [80, 1, 1, 0]);
-		assert.equal(view.records[0].kind === "session" && view.records[0].session.sessionId, "session-0");
-	});
+it("shows one row per session, all records, meaningful state and spend before the latest reply", async () => {
+	const rows = Array.from({ length: 75 }, (_, index) => row(String(index), { modifiedAt: Date.now() - index * 1000 }));
+	rows[0].state = "working"; rows[0].owner = "window"; rows[0].currentTool = { name: "read", argument: "source.ts" };
+	const f = fixture(rows); await tick();
+	try {
+		assert.equal(dashboardRecords(f.panel.state.snapshot, "").length, 75);
+		assert.match(f.screen(200), /1 working.*\$93\.75 spent/);
+		assert.match(f.screen(200), /Working · other window/);
+		assert.match(f.screen(200), /read source.ts/);
+		assert.ok(f.screen(200).indexOf("The result is ready") < f.screen(200).indexOf("TASK SENTINEL"));
+		assert.doesNotMatch(f.screen(200), /select for model|Stored|Latest toolResult|omitted/);
+		f.panel.handleInput("\x1b[F"); assert.equal(f.panel.state.selected, "74");
+		assert.match(f.screen(), /Session 74/);
+		f.panel.handleInput("/"); f.panel.handleInput("test-model 74"); f.panel.handleInput("\r");
+		assert.equal(f.panel.state.selected, "74"); assert.match(f.screen(), /1 of 75/);
+	} finally { f.panel.dispose(); }
 });
 
-describe("agent dashboard interaction", () => {
-	it("selects compact rows, retains identity across reorder, filters, changes tabs and refreshes only on request", async () => {
-		let reads = 0; const data = sources();
-		const f = fixture({ ...data, sessions: async () => { reads++; return (await data.sessions()).map((row) => ({ ...row, name: `revision-${reads}`, operation: reads > 1 ? null : row.operation, modifiedAt: row.sessionId === "saved" && reads > 1 ? 10 : row.modifiedAt })); } });
-		assert.match(f.screen(), /Read in progress/); await tick();
-		assert.equal(reads, 1); assert.match(f.screen(), /revision-1/);
-		f.panel.handleInput("j"); assert.equal(f.state.selected.sessions, "saved");
-		f.panel.handleInput("k"); assert.equal(f.state.selected.sessions, "active");
-		f.panel.handleInput("r"); await tick(); assert.equal(f.state.selected.sessions, "active");
-		assert.match(f.screen(), /revision-2/);
-		f.panel.handleInput("/"); f.panel.handleInput("saved"); f.panel.handleInput("\r");
-		assert.equal(f.state.selected.sessions, "saved"); assert.match(f.screen(), /2 total · 1 matching · 1 shown · 0 omitted/);
-		f.state.filter = ""; f.panel.handleInput("\t"); assert.match(f.screen(), /Failure sentinel/);
-		assert.equal(reads, 2);
-		f.panel.handleInput("q"); assert.equal(f.closes(), 0);
-		f.panel.handleInput("\x1b"); f.panel.handleInput("\x1b"); f.panel.handleInput("r");
-		assert.equal(f.closes(), 1); assert.equal(reads, 2);
-	});
-	it("keeps close and help visible on short terminals and fits narrow Unicode output", async () => {
-		const f = fixture(); await tick();
-		for (const rows of [3, 4, 6, 12, 24]) {
-			f.dimensions.rows = rows;
-			for (const width of [1, 30, 48, 100]) {
-				const lines = f.panel.render(width);
-				assert.ok(lines.length <= rows - 2); assert.ok(lines.every((line) => visibleWidth(line) <= width));
-				if (width >= 30) assert.match(lines.slice(-3).join("\n"), /Esc close/);
-			}
+it("retains selection by ID across refresh and filters name, place, model and state", async () => {
+	let rows = [row("one"), row("two")];
+	const f = fixture(rows, { board: async () => rows }); await tick();
+	try {
+		f.panel.handleInput("j"); assert.equal(f.panel.state.selected, "two");
+		rows = [row("two", { state: "working" }), row("one", { modifiedAt: 1 })];
+		await f.panel.refresh(); assert.equal(f.panel.state.selected, "two");
+		assert.equal(dashboardRecords(f.panel.state.snapshot, "working test-model two").length, 1);
+		f.panel.handleInput("/"); f.panel.handleInput("no match"); assert.match(f.screen(), /No sessions match/);
+		f.panel.handleInput("\x1b"); assert.equal(f.panel.state.filter, "");
+		rows = []; await f.panel.refresh(); assert.equal(f.panel.state.selected, undefined);
+		assert.match(f.screen(), /No agent sessions yet/);
+	} finally { f.panel.dispose(); }
+});
+
+it("fits terminal cells at wide, narrow and short dimensions including Unicode and controls", async () => {
+	const f = fixture([row("unicode", { name: "宽字符 🧭 é\x1b[2J\r title", latestReply: "## A reply\n\n- First\n- Second\n\n```ts\nconst value = true;\n```" })]); await tick();
+	try {
+		for (const [width, height] of [[200, 52], [120, 36], [80, 24], [40, 12], [40, 8], [40, 7], [20, 6], [1, 1]]) {
+			f.terminal.rows = height;
+			f.panel.state.notice = "A receipt stays within the terminal";
+			const lines = f.panel.render(width);
+			assert.ok(lines.length <= Math.max(1, height - 2));
+			assert.ok(lines.every((line) => visibleWidth(line) <= width), `${width} columns`);
+			assert.doesNotMatch(lines.join("\n"), /\x1b\[2J/);
 		}
-		f.panel.handleInput("\r"); await tick(); f.dimensions.rows = 6;
-		assert.match(f.screen(30), /Esc back/);
-	});
-	it("honors configured select/cancel and suppresses disposed inventory responses", async () => {
-		let finish!: (value: []) => void;
-		const f = fixture({ ...sources(), sessions: () => new Promise<[]>((resolve) => { finish = resolve; }) }, new Keys(TUI_KEYBINDINGS, { "tui.select.cancel": "ctrl+x" }) as KeybindingsManager);
-		await tick(); f.panel.handleInput("r"); f.panel.handleInput("\x18"); assert.equal(f.closes(), 1);
-		const paints = f.paints(); finish([]); await tick(); assert.equal(f.paints(), paints);
-		f.panel.dispose(); await f.panel.refresh(); assert.equal(f.paints(), paints);
-	});
-	it("keeps Escape and configured cancel active in every dashboard mode", async () => {
-		for (const cancel of ["\x1b", "\x18"]) {
-			const f = fixture(sources(), new Keys(TUI_KEYBINDINGS, { "tui.select.cancel": "ctrl+x" }) as KeybindingsManager); await tick();
-			f.panel.handleInput("/"); f.panel.handleInput("parser"); f.panel.handleInput(cancel);
-			assert.equal(f.state.filter, ""); assert.doesNotMatch(f.screen(), /Type to filter/);
-			f.panel.handleInput("?"); assert.match(f.screen(), /Agent help/);
-			f.panel.handleInput(cancel); assert.doesNotMatch(f.screen(), /Agent help/);
-			f.panel.handleInput("\r"); await tick(); assert.ok(f.state.reader);
-			f.panel.handleInput(cancel); assert.equal(f.state.reader, undefined); assert.equal(f.closes(), 0);
-			f.panel.handleInput(cancel); assert.equal(f.closes(), 1);
-		}
-	});
-	it("opens actual inspection pages and follows exact cursors and chunk offsets without complete-result claims", async () => {
-		const calls: unknown[] = [];
-		const f = fixture({ ...sources(), inspect: async (id, options) => {
-			calls.push([id, options]); const base = inspection(id);
-			if (options.entryId) return { sessionId: id, liveOwner: true, execution: base.execution, entryId: options.entryId, offset: options.offset ?? 0, text: `Full source ${"界".repeat(100)}`, nextOffset: options.offset ? null : 12000, truncated: !options.offset };
-			return base;
-		} });
-		await tick(); f.panel.handleInput("\r"); await tick();
-		assert.match(f.screen(), /Live owner state unavailable/);
-		assert.match(defined(f.state.reader).lines.join("\n"), /partial preview/);
-		f.panel.handleInput("\r"); await tick(); assert.match(f.screen(), /Partial entry; next offset 12000/);
-		f.panel.handleInput("n"); await tick(); assert.match(f.screen(), /Final entry chunk/);
-		f.panel.handleInput("b"); assert.match(defined(f.state.reader).lines.join("\n"), /Retained sentinel/);
-		f.panel.handleInput("o"); await tick();
-		assert.deepEqual(calls, [["active", { limit: 12 }], ["active", { limit: 12 }], ["active", { limit: 12, entryId: "source-entry", offset: 0 }], ["active", { limit: 12, entryId: "source-entry", offset: 12000 }], ["active", { limit: 12, cursor: 5 }]]);
-		f.panel.handleInput("b"); assert.equal(f.state.reader, undefined);
-	});
-	it("ignores stale inspection after back, target change, close and failed reads", async () => {
-		let finish!: (value: AgentInspection) => void;
-		const f = fixture({ ...sources(), inspect: () => new Promise((resolve) => { finish = resolve; }) });
-		await tick(); f.panel.handleInput("\r"); f.panel.handleInput("b"); f.panel.handleInput("j");
-		finish(inspection()); await tick(); assert.equal(f.state.reader, undefined); assert.equal(f.state.selected.sessions, "saved");
-		f.panel.handleInput("\r"); f.panel.handleInput("\x1b"); f.panel.handleInput("\x1b"); const paints = f.paints(); finish(inspection()); await tick(); assert.equal(f.paints(), paints);
-		const failed = fixture({ ...sources(), inspect: async () => { throw new Error("owner unavailable exact"); } });
-		await tick(); failed.panel.handleInput("\r"); await tick(); assert.match(failed.screen(), /owner unavailable exact/);
-	});
-	it("opens full recorded run fields and inspects its current native session ID", async () => {
-		let inspected: string | undefined;
-		const f = fixture({ ...sources(), inspect: async (id) => { inspected = id; return inspection(id); } });
-		await tick(); f.panel.handleInput("\t"); f.panel.handleInput("\r");
-		const text = defined(f.state.reader).lines.join("\n");
-		for (const sentinel of ["Failure sentinel", "Result sentinel", "Progress sentinel", "2026-01-02", "Session: current"]) assert.ok(text.includes(sentinel));
-		f.panel.handleInput("s"); await tick(); assert.equal(inspected, "current");
-		f.panel.handleInput("o"); await tick();
-		f.panel.handleInput("r"); await tick();
-		f.panel.handleInput("b"); assert.match(defined(f.state.reader).lines.join("\n"), /Progress sentinel/);
-	});
-	it("keeps the reader's action target when an inventory refresh removes its row", async () => {
-		const data = sources(); let resolve!: (rows: Awaited<ReturnType<typeof data.sessions>>) => void;
-		let calls = 0; let request: unknown;
-		const panel = new AgentDashboard({ ...data, sessions: async () => ++calls === 1 ? data.sessions() : new Promise((done) => { resolve = done; }) }, { terminal: { rows: 24 } as TUI["terminal"], requestRender() {} }, theme, keys, (value) => { request = value; }, undefined, true);
-		await tick(); panel.handleInput("r"); await tick(); panel.handleInput("\r"); await tick();
-		resolve([]); await tick(); panel.handleInput("a");
-		assert.equal((request as { target: { session: { sessionId: string } } }).target.session.sessionId, "active");
-	});
-	it("waits for an inspection before opening actions and scrolls short-terminal help", async () => {
-		let finish!: (value: AgentInspection) => void;
-		const f = fixture({ ...sources(), inspect: () => new Promise((done) => { finish = done; }) });
-		await tick(); f.panel.handleInput("\r"); f.panel.handleInput("a"); assert.equal(f.closes(), 0);
-		finish(inspection()); await tick(); f.dimensions.rows = 6; f.panel.handleInput("?");
-		const before = f.screen(40); f.panel.handleInput("\x1b[6~"); assert.notEqual(f.screen(40), before);
-		f.panel.handleInput("b"); assert.ok(f.state.reader); f.panel.handleInput("\x1b"); f.panel.handleInput("\x1b"); assert.equal(f.closes(), 1);
-	});
-	it("routes bare commands to bounded mode-specific snapshots without model output", async (t) => {
-		const notices: string[] = []; const output: string[] = [];
-		const command = createAgentCommand([], sources());
-		const ctx = { mode: "rpc", hasUI: true, ui: { notify: (text: string) => notices.push(text), custom: () => { throw new Error("no terminal"); } } } as unknown as ExtensionCommandContext;
-		await command.handler("", ctx); assert.match(notices[0], /Agent dashboard/);
-		await command.handler("help", ctx); assert.match(notices[1], /Actions:/);
-		t.mock.method(process.stderr, "write", (text: string) => { output.push(text); return true; });
-		for (const mode of ["print", "json"]) await showAgentDashboard(sources(), { ...ctx, mode, hasUI: false } as ExtensionCommandContext);
-		assert.equal(output.length, 2); assert.ok(output.every((text) => text.includes("Result sentinel")));
-	});
+	} finally { f.panel.dispose(); }
+});
+
+it("renders native chat, follows fresh output, browses without jumps, and expands tools", async () => {
+	const f = fixture(); let revision = 1;
+	f.sources.conversation = async () => ({ entries: f.native.getBranch(), revision: String(revision), partial: false });
+	for (let index = 0; index < 90; index++) f.native.appendMessage({ role: "user", content: `message ${index}`, timestamp: index + 3 });
+	await tick(); f.panel.handleInput("\r"); await tick();
+	try {
+		assert.match(f.screen(), /TAIL/); assert.match(f.screen(), /message 89/); assert.match(f.screen(), /earlier messages/);
+		f.panel.handleInput("\x1b[H"); const browsing = f.screen(); assert.match(browsing, /BROWSE/);
+		f.native.appendMessage({ role: "user", content: "fresh live output", timestamp: 100 }); revision++;
+		await f.panel.refresh(); assert.doesNotMatch(f.screen(), /fresh live output/);
+		f.panel.handleInput("\x1b[F"); assert.match(f.screen(), /fresh live output/);
+		f.panel.handleInput("o"); f.panel.handleInput("\x1b[H"); assert.match(f.screen(), /User asks for a check/);
+		assert.match(f.screen(), /Assistant result sentinel/);
+		f.panel.handleInput("x"); assert.match(f.screen(), /User asks for a check/);
+		f.panel.handleInput("\x1b"); assert.equal(f.panel.state.conversation, undefined);
+	} finally { f.panel.dispose(); }
+});
+
+it("uses the native input, preserves rejected drafts, selects send or steer from fresh state, and blocks foreign control", async () => {
+	let current = row("target", { live: true, owner: "here", state: "idle" });
+	let reject = true;
+	const calls: unknown[] = [];
+	const f = fixture([current], { board: async () => [current] }, { run: async () => undefined, compose: async (...args) => { calls.push(args); if (reject) throw new Error("admission refused"); return "Native receipt"; } });
+	await tick(); f.panel.focused = true;
+	try {
+		f.panel.handleInput("m"); f.panel.handleInput("hello 世界"); f.panel.handleInput("\r"); await tick();
+		assert.match(f.screen(), /admission refused/); assert.match(f.screen(), /hello 世界/);
+		assert.deepEqual(calls[0], ["send", "target", "hello 世界"]);
+		reject = false; current = { ...current, state: "working" };
+		f.panel.handleInput("\r"); await tick(); assert.deepEqual(calls[1], ["steer", "target", "hello 世界"]);
+		assert.match(f.screen(), /Native receipt/); assert.equal(f.panel.state.drafts.size, 0);
+		current = { ...current, owner: "window", ownerLabel: "Pi window (pid 22)" }; await f.panel.refresh();
+		f.panel.handleInput("m"); assert.match(f.screen(), /Open in Pi window/); assert.equal(calls.length, 2);
+		f.panel.handleInput("n"); f.panel.handleInput("a new task"); f.panel.handleInput("\r"); await tick();
+		assert.deepEqual(calls[2], ["new", undefined, "a new task"]);
+	} finally { f.panel.dispose(); }
+});
+
+it("coalesces refreshes, stops the live clock on disposal and rejects late reads", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	let calls = 0; let release!: (rows: SessionDigest[]) => void;
+	const f = fixture([], { board: async () => { calls++; return new Promise((resolve) => { release = resolve; }); } });
+	await tick(); t.mock.timers.tick(3000); assert.equal(calls, 1);
+	release([row()]); await tick(); t.mock.timers.tick(1000); assert.equal(calls, 2);
+	f.panel.dispose(); release([row("late")]); await tick(); t.mock.timers.tick(5000);
+	assert.equal(calls, 2); assert.equal(f.panel.state.snapshot?.sessions[0].sessionId, "sample");
+});
+
+it("ignores a conversation result after Escape or disposal", async () => {
+	let release!: (data: Awaited<ReturnType<AgentObservationSources["conversation"]>>) => void;
+	const f = fixture(undefined, { conversation: async () => new Promise((resolve) => { release = resolve; }) }); await tick();
+	f.panel.handleInput("\r"); f.panel.handleInput("\x1b"); release({ entries: [], revision: "late", partial: false }); await tick();
+	assert.equal(f.panel.state.conversation, undefined); assert.doesNotMatch(f.screen(), /TAIL/); f.panel.dispose();
+});
+
+it("renders failures explicitly and gives headless callers a digest without opening TUI", async () => {
+	const f = fixture([], { board: async () => { throw new Error("store denied"); } }); await tick();
+	try {
+		assert.match(f.screen(), /Store unavailable/); assert.match(f.screen(), /store denied/);
+		const snapshot = await readAgentDashboard(f.sources); assert.match(dashboardText(snapshot), /store denied/);
+		let notice = "";
+		await showAgentDashboard(f.sources, { mode: "rpc", hasUI: true, ui: { notify: (text: string) => { notice = text; }, custom: () => assert.fail("no TUI") } } as never);
+		assert.match(notice, /store denied/);
+		assert.equal(elapsed(59000), "59s"); assert.equal(elapsed(60000), "1m0s"); assert.equal(elapsed(90000), "1m30s");
+	} finally { f.panel.dispose(); }
 });

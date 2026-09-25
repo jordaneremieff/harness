@@ -53,12 +53,12 @@ it("does nothing for shortcut calls without a terminal UI", async () => {
 it("keeps the native editor draft intact across a mounted dashboard and uses only the common context for actions", async () => {
 	const keys = new Keys(TUI_KEYBINDINGS) as KeybindingsManager;
 	const tui = { terminal: { rows: 24 }, requestRender() {} } as unknown as TUI;
-	const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text } as Theme;
+	const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text } as Theme;
 	const editor = new Editor(tui, { borderColor: (text) => text, selectList: { selectedPrefix: (text) => text, selectedText: (text) => text, description: (text) => text, scrollInfo: (text) => text, noMatch: (text) => text } });
 	editor.setText("Unsent draft\nsecond line"); const before = editor.getText();
 	let panel: AgentDashboard | undefined; let close!: (value?: unknown) => void; let actions = 0; let ctx!: ExtensionContext;
 	const command = createAgentCommand([{ name: "status", description: "Read status", args: [], run: async (_args, actual) => { assert.equal(actual, ctx); actions++; return "Status read"; } }], {
-		sessions: async () => [], runs: async () => [], inspect: async () => { throw new Error("No selection"); },
+		sessions: async () => [], runs: async () => [], board: async () => [], conversation: async () => { throw new Error("No selection"); },
 	});
 	ctx = context(async (factory) => {
 		const response = new Promise((resolve) => { close = resolve; });
@@ -67,7 +67,7 @@ it("keeps the native editor draft intact across a mounted dashboard and uses onl
 	});
 	ctx.ui = new Proxy({ ...ctx.ui, select: async () => "status: Read status" }, { get(target, key) { assert.ok(key in target, `Unexpected UI access: ${String(key)}`); return Reflect.get(target, key); } });
 	const opened = command.openDashboard(ctx); await tick(); assert.ok(panel);
-	await command.openDashboard(ctx); assert.match(panel.render(80).join("\n"), /SESSIONS/);
+	await command.openDashboard(ctx); assert.match(panel.render(80).join("\n"), /Agents/);
 	panel.handleInput("a"); await tick(); assert.equal(actions, 1); assert.match(panel.render(80).join("\n"), /Status read/);
 	panel.handleInput("\x1b"); panel.handleInput("\x1b"); await opened;
 	assert.equal(editor.getText(), before);

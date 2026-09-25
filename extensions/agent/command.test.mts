@@ -38,7 +38,7 @@ function completionFixture(sessions: () => Promise<AgentSessionSummary[]> = asyn
 		{ name: "steer", description: "Redirect work", args: [{ name: "session", complete: "session-control" }, { name: "message", rest: true }], run: async () => undefined },
 		{ name: "abort", description: "Stop work", args: [{ name: "session", complete: "session-control" }], run: async () => undefined },
 		{ name: "status", description: "Read owner status", args: [{ name: "session", complete: "session-control" }], run: async () => undefined },
-	], { sessions, inspect: async () => { throw new Error("not requested"); }, runs: async () => [{ runId: "run-3", sessionId: "detached-3", prompt: "Audit dependencies", cwd: "/work/audit", state: "finished", startedAt: "2026-01-01", sessionsRoot: "/sessions", agentDir: "/agent", logFile: "/log", pid: 1, launchState: "started" }] });
+	], { sessions, board: async () => [], conversation: async () => { throw new Error("not requested"); }, runs: async () => [{ runId: "run-3", sessionId: "detached-3", prompt: "Audit dependencies", cwd: "/work/audit", state: "finished", startedAt: "2026-01-01", sessionsRoot: "/sessions", agentDir: "/agent", logFile: "/log", pid: 1, launchState: "started" }] });
 }
 
 describe("agent command discovery and help", () => {
@@ -134,7 +134,7 @@ describe("agent command discovery and help", () => {
 
 	it("searches multiword descriptions without metadata reads or action execution", async () => {
 		const forbidden = async (): Promise<never> => { throw new Error("must not execute"); };
-		const command = createAgentCommand([{ name: "send", description: "Give a session its next task", args: [{ name: "message", rest: true }], run: forbidden }], { sessions: forbidden, runs: forbidden, inspect: forbidden });
+		const command = createAgentCommand([{ name: "send", description: "Give a session its next task", args: [{ name: "message", rest: true }], run: forbidden }], { sessions: forbidden, runs: forbidden, board: forbidden, conversation: forbidden });
 		const complete = defined(command.getArgumentCompletions);
 		assert.equal(defined(await complete("next task"))[0].value, "send ");
 		assert.equal(await complete("send next task"), null);
@@ -143,7 +143,7 @@ describe("agent command discovery and help", () => {
 
 	it("preserves text that contains help words and reports invocation errors", async () => {
 		const calls: string[][] = [];
-		const command = createAgentCommand([{ name: "new", description: "Start work", args: [{ name: "prompt", optional: true, rest: true }], run: async (args) => { calls.push(args); throw new Error("trust denied"); } }], { sessions: async () => [], runs: async () => [], inspect: async () => { throw new Error("not requested"); } });
+		const command = createAgentCommand([{ name: "new", description: "Start work", args: [{ name: "prompt", optional: true, rest: true }], run: async (args) => { calls.push(args); throw new Error("trust denied"); } }], { sessions: async () => [], runs: async () => [], board: async () => [], conversation: async () => { throw new Error("not requested"); } });
 		const { ctx, notices } = context();
 		await command.handler("new help with --help output", ctx);
 		assert.deepEqual(calls, [["help", "with", "--help", "output"]]);

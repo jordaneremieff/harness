@@ -1,564 +1,462 @@
 import { basename } from "node:path";
-import { stripVTControlCharacters } from "node:util";
-import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { Input, Markdown, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type MarkdownTheme, type TUI } from "@earendil-works/pi-tui";
+import type { ExtensionContext, KeybindingsManager, SessionEntry, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { Input, Markdown, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
 import type { AgentSessionSummary } from "./command.ts";
 import type { DetachedRunView } from "./detached.ts";
-import { displayPreview } from "./presentation.ts";
-import type { projectInspection } from "./worker.ts";
+import type { SessionDigest } from "./dashboard-data.ts";
+import { AgentConversation, cleanDashboardText, type ConversationDocument } from "./dashboard-conversation.ts";
 
-export type AgentInspection = ReturnType<typeof projectInspection>;
-export type AgentInspectionOptions = Parameters<typeof projectInspection>[2];
-export interface AgentSessionDescription {
-	name?: string;
-	model?: { provider: string; modelId: string; thinkingLevel: string };
-	provenance: "live" | "stored";
-	parentSessionIds: string[];
-}
 export interface AgentObservationSources {
-	describe?(sessionId: string): Promise<AgentSessionDescription>;
 	sessions(): Promise<AgentSessionSummary[]>;
 	runs(): Promise<DetachedRunView[]>;
-	inspect(sessionId: string, options: AgentInspectionOptions, signal?: AbortSignal): Promise<AgentInspection>;
+	board(): Promise<SessionDigest[]>;
+	conversation(sessionId: string): Promise<{ entries: SessionEntry[]; partial: boolean; revision: string }>;
 }
 export type DashboardTarget = { kind: "session"; session: AgentSessionSummary } | { kind: "run"; run: DetachedRunView };
-interface DashboardSection { records: DashboardTarget[]; error?: string }
-export interface AgentDashboardSnapshot { observedAt: string; sessions: DashboardSection; runs: DashboardSection }
-type Tab = "sessions" | "runs";
-interface Reader {
-	title: string;
-	target?: DashboardTarget;
-	lines: string[];
-	scroll: number;
-	sessionId?: string;
-	inspection?: AgentInspection;
-	entryIndex?: number;
-	parent?: Reader;
-	action?: boolean;
-}
+export interface AgentDashboardSnapshot { observedAt: number; sessions: SessionDigest[]; error?: string }
 export interface DashboardState {
 	snapshot?: AgentDashboardSnapshot;
-	tab: Tab;
+	selected?: string;
 	filter: string;
-	selected: Partial<Record<Tab, string>>;
-	descriptions?: Map<string, AgentSessionDescription>;
-	reader?: Reader;
+	conversation?: string;
+	drafts: Map<string, string>;
+	notice?: string;
+	actionResult?: string;
 }
 export interface DashboardActions {
 	run(target: DashboardTarget | undefined): Promise<string | undefined>;
+	compose?(mode: "send" | "steer" | "new", sessionId: string | undefined, text: string): Promise<string | undefined>;
 }
-interface DashboardActionRequest { target?: DashboardTarget }
-const ROW_LIMIT = 50;
-const clean = (text: string) => stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, (character) => character === "\n" || character === "\t" ? character : " ");
+interface ActionRequest { target?: DashboardTarget }
+type StateAppearance = { label: string; glyph: string; color: ThemeColor };
+export const sessionAppearance: Record<SessionDigest["state"], StateAppearance> = {
+	working: { label: "Working", glyph: "●", color: "accent" },
+	idle: { label: "Idle", glyph: "○", color: "muted" },
+	done: { label: "Done", glyph: "✓", color: "success" },
+	failed: { label: "Failed", glyph: "!", color: "error" },
+	stopped: { label: "Stopped", glyph: "■", color: "warning" },
+	interrupted: { label: "Interrupted", glyph: "↯", color: "warning" },
+	new: { label: "New", glyph: "·", color: "dim" },
+	orphaned: { label: "Orphaned", glyph: "⊗", color: "error" },
+	unavailable: { label: "Unavailable", glyph: "?", color: "error" },
+};
+const oneLine = (text: string) => cleanDashboardText(text).replace(/\s+/g, " ").trim();
+const titleOf = (row: SessionDigest) => oneLine(row.name || row.firstMessage || basename(row.cwd) || row.sessionId);
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
-const idOf = (target: DashboardTarget) => target.kind === "session" ? target.session.sessionId : target.run.runId;
-const sessionIdOf = (target: DashboardTarget) => target.kind === "session" ? target.session.sessionId : target.run.currentSessionId ?? target.run.sessionId;
-
-function label(target: DashboardTarget): string {
-	if (target.kind === "run") return `${target.run.state} · ${target.run.prompt}`;
-	const row = target.session;
-	return `${stateOf(target)}${row.hostState ? "; stored metadata" : !row.live && !row.detachedRunId ? "; owner state unavailable" : ""} · ${titleOf(target)}`;
+const pad = (text: string, width: number) => { const clipped = truncateToWidth(text, Math.max(0, width)); return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped))); };
+export function elapsed(ms: number): string {
+	const seconds = Math.max(0, Math.floor(ms / 1000));
+	return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m${seconds % 60}s` : seconds < 86400 ? `${Math.floor(seconds / 3600)}h${Math.floor(seconds % 3600 / 60)}m` : `${Math.floor(seconds / 86400)}d`;
 }
-function titleOf(target: DashboardTarget): string {
-	return target.kind === "run" ? target.run.prompt : target.session.name || target.session.firstMessage || target.session.cwd;
+function costOf(row: SessionDigest): string { return `${row.partial ? "≥" : ""}$${row.cost.toFixed(2)}`; }
+function stateLabel(row: SessionDigest): string {
+	return `${sessionAppearance[row.state].label}${row.owner === "window" ? " · other window" : row.owner === "detached" ? " · detached" : row.owner === "here" ? " · here" : ""}`;
 }
-function stateOf(target: DashboardTarget): string {
-	return target.kind === "run" ? target.run.state : target.session.hostState ? `Host ${target.session.hostState}` : target.session.operation ? "Active" : target.session.detachedRunId ? "Detached" : target.session.live ? "Open here" : "Stored";
+function sectionOf(row: SessionDigest, now: number): string {
+	if (row.state === "working") return "Working";
+	if (["failed", "stopped", "interrupted", "orphaned", "unavailable"].includes(row.state)) return "Attention";
+	const today = new Date(now); today.setHours(0, 0, 0, 0);
+	const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+	return row.modifiedAt >= today.getTime() ? "Today" : row.modifiedAt >= yesterday.getTime() ? "Yesterday" : "Earlier";
 }
-function configuration(data?: Partial<Pick<AgentSessionDescription, "model" | "provenance">>): string {
-	return data?.model ? `${data.model.provider}/${data.model.modelId} · ${data.model.thinkingLevel} · ${data.provenance ?? "live"}` : "Model unavailable";
+export function dashboardRecords(snapshot: AgentDashboardSnapshot | undefined, filter: string): SessionDigest[] {
+	const terms = oneLine(filter).toLocaleLowerCase().split(" ").filter(Boolean);
+	const sections = ["Working", "Attention", "Today", "Yesterday", "Earlier"];
+	return (snapshot?.sessions ?? []).filter((row) => {
+		const text = `${titleOf(row)} ${row.firstMessage ?? ""} ${row.cwd} ${row.sessionId} ${stateLabel(row)} ${row.model?.provider ?? ""} ${row.model?.modelId ?? ""} ${row.model?.thinkingLevel ?? ""}`.toLocaleLowerCase();
+		return terms.every((term) => text.includes(term));
+	}).sort((a, b) => sections.indexOf(sectionOf(a, snapshot?.observedAt ?? Date.now())) - sections.indexOf(sectionOf(b, snapshot?.observedAt ?? Date.now())) || b.modifiedAt - a.modifiedAt || a.sessionId.localeCompare(b.sessionId));
 }
-function descriptionLines(data: AgentSessionDescription): string[] {
-	return [configuration(data), data.parentSessionIds.length ? `Known parents: ${data.parentSessionIds.join(", ")}` : "No parent association in the available records"];
+export async function readAgentDashboard(sources: Pick<AgentObservationSources, "board">): Promise<AgentDashboardSnapshot> {
+	try { return { observedAt: Date.now(), sessions: await sources.board() }; }
+	catch (error) { return { observedAt: Date.now(), sessions: [], error: errorText(error) }; }
 }
-
-function sessionMetadata(target: Extract<DashboardTarget, { kind: "session" }>): string[] {
-	const row = target.session;
-	return [label(target), `Session: ${row.sessionId}`, `Directory: ${row.cwd}`, `Modified: ${new Date(row.modifiedAt).toISOString()}`, ...(row.operation ? [`Operation: ${row.operation}`] : []), ...(row.detachedRunId ? [`Run: ${row.detachedRunId}`] : []), ...(row.model ? [`Model: ${configuration(row)}`] : []), ...(row.parentSessionIds?.length ? [`Known parents: ${row.parentSessionIds.join(", ")}`] : [])];
-}
-function metadata(target: DashboardTarget): string[] {
-	if (target.kind === "session") return sessionMetadata(target);
-	const row = target.run;
-	return [label(target), `Run: ${row.runId}`, `Session: ${sessionIdOf(target)}`, `Directory: ${row.cwd}`, `Started: ${row.startedAt}`, ...(row.finishedAt ? [`Finished: ${row.finishedAt}`] : []),
-		"Recorded run data, not a live owner query. Result and progress text are retained summaries, not complete session results.",
-		...(row.error ? [`Error: ${row.error}`] : []), ...(row.summary ? [`Result summary: ${row.summary}`] : []),
-		...(row.progress ? [`Progress recorded: ${row.progress.updatedAt}`, `Entries recorded: ${row.progress.entryCount}`, ...(row.progress.currentTool ? [`Tool: ${row.progress.currentTool}`] : []), ...(row.progress.lastText ? [`Text: ${row.progress.lastText}`] : []), ...(row.progress.error ? [`Progress error: ${row.progress.error}`] : [])] : ["No progress record"]),
-	];
-}
-
-function runPreview(target: Extract<DashboardTarget, { kind: "run" }>): string[] {
-	const run = target.run;
-	return [titleOf(target), `Recorded ${run.state} · not a live query`, "Run summaries are not complete session results.", "", ...(run.error ? [`Error: ${run.error}`] : []), ...(run.progress?.lastText ? ["Latest recorded progress", run.progress.lastText, `Progress recorded: ${run.progress.updatedAt}`, ""] : ["No progress text recorded"]), ...(run.summary ? ["Result summary", run.summary, ""] : []), `Run: ${run.runId}`, `Session: ${sessionIdOf(target)}`, `Directory: ${run.cwd}`, `Started: ${run.startedAt}`, ...(run.finishedAt ? [`Finished: ${run.finishedAt}`] : []), ...(run.progress ? [`Entries recorded: ${run.progress.entryCount}`, ...(run.progress.currentTool ? [`Tool: ${run.progress.currentTool}`] : []), ...(run.progress.error ? [`Progress error: ${run.progress.error}`] : [])] : [])];
-}
-function readerState(reader: Reader): string {
-	const data = reader.inspection;
-	if (!data) return reader.title;
-	if (!data.liveOwner) return "Live owner state unavailable";
-	return data.execution.current ? "Active operation" : "Owner reports no current operation";
-}
-
-/** Independent inventory reads never open a stored session for writing. */
-export async function readAgentDashboard(sources: Pick<AgentObservationSources, "sessions" | "runs">): Promise<AgentDashboardSnapshot> {
-	const [sessions, runs] = await Promise.allSettled([
-		Promise.resolve().then(() => sources.sessions()).then((rows): DashboardTarget[] => [...rows].sort((a, b) => Number(Boolean(b.operation || b.detachedRunId)) - Number(Boolean(a.operation || a.detachedRunId)) || b.modifiedAt - a.modifiedAt).map((session) => ({ kind: "session", session: { ...session } }))),
-		Promise.resolve().then(() => sources.runs()).then((rows): DashboardTarget[] => [...rows].sort((a, b) => Number(b.state === "running" || b.state === "launching") - Number(a.state === "running" || a.state === "launching") || b.startedAt.localeCompare(a.startedAt)).map((run) => ({ kind: "run", run }))),
-	]);
-	const section = (result: PromiseSettledResult<DashboardTarget[]>): DashboardSection => result.status === "fulfilled" ? { records: result.value } : { records: [], error: errorText(result.reason) };
-	return { observedAt: new Date().toISOString(), sessions: section(sessions), runs: section(runs) };
-}
-
-export function dashboardRecords(section: DashboardSection | undefined, filter: string) {
-	const query = filter.trim().toLocaleLowerCase();
-	const matches = section?.records.filter((target) => `${idOf(target)} ${sessionIdOf(target)} ${stateOf(target)} ${target.kind === "session" ? `${target.session.name ?? ""} ${target.session.firstMessage ?? ""} ${target.session.cwd} ${configuration(target.session)}` : `${target.run.prompt} ${target.run.cwd}`}`.toLocaleLowerCase().includes(query)) ?? [];
-	return { total: section?.records.length ?? 0, matching: matches.length, records: matches.slice(0, ROW_LIMIT), omitted: Math.max(0, matches.length - ROW_LIMIT) };
+function totals(snapshot: AgentDashboardSnapshot | undefined): string {
+	const rows = snapshot?.sessions ?? [];
+	const working = rows.filter((row) => row.state === "working").length;
+	const attention = rows.filter((row) => sectionOf(row, Date.now()) === "Attention").length;
+	return `${working} working${attention ? ` · ${attention} need attention` : ""} · ${rows.some((row) => row.partial) ? "≥" : ""}$${rows.reduce((sum, row) => sum + row.cost, 0).toFixed(2)} spent`;
 }
 export function dashboardText(snapshot: AgentDashboardSnapshot): string {
-	return ["Agent dashboard", `Observed: ${snapshot.observedAt}`, "Read-only snapshot. Stored sessions have no live owner status. Run progress is recorded, not a live query.",
-		...(["sessions", "runs"] as const).flatMap((key) => {
-			const section = snapshot[key]; const view = dashboardRecords(section, "");
-			return [`${key === "sessions" ? "Sessions" : "Detached runs"}: ${section.error !== undefined ? "unavailable" : `${view.total} total; ${view.records.length} shown; ${view.omitted} omitted`}`, ...(section.error !== undefined ? [displayPreview(section.error, 300)] : view.records.length ? view.records.flatMap((target) => metadata(target).map((line) => displayPreview(line, 180))) : ["None found."])];
-		}), "Use /agent help for actions. Use agent_list and agent_runs for model-facing results.",
-	].join("\n");
+	return ["Agent dashboard", totals(snapshot), ...(snapshot.error ? [`Store unavailable: ${snapshot.error}`] : []), ...dashboardRecords(snapshot, "").flatMap((row) => [
+		oneLine(`${sessionAppearance[row.state].glyph} ${stateLabel(row)} · ${titleOf(row)} · ${basename(row.cwd)} · ${row.model?.modelId ?? "unknown model"} · ${costOf(row)}`),
+		`  ${oneLine(row.sessionId)} · ${oneLine(row.cwd)}`,
+		...(row.latestReply ? [`  ${oneLine(row.latestReply).slice(0, 300)}`] : []),
+	]), "Use /agent help for actions."].join("\n");
 }
 
-function ownerLines(data: AgentInspection): string[] {
-	const owner = data.liveOwner ? data.execution.current ? `Active operation: ${data.execution.current.id}` : "Owner reports no current operation" : "Live owner state unavailable; current operation is unknown";
-	return [`Session: ${data.sessionId}`, owner, `Recovery: ${data.execution.recovery}`,
-		...(data.capture ? [`Read-only snapshot: ${data.capture.available ? "available" : "unavailable"}; ${data.capture.bytes} bytes; unfinished tail: ${data.capture.unfinishedTail}`, ...(data.capture.reason ? [data.capture.reason] : [])] : []),
-		...(data.lastError ? [`Owner error${data.lastError.truncated ? " (partial; no error continuation endpoint)" : ""}:`, data.lastError.text] : []),
-	];
-}
-
-function omissionLines(omissions: Extract<AgentInspection, { entryId: string }>["omissions"]): string[] {
-	return omissions ? [`Omitted from this entry: ${omissions.providerSignatures} provider signatures; ${omissions.imagePayloads} image payloads; ${omissions.redactedThinking} redacted thinking blocks.`] : [];
-}
-
-interface ReaderBlock { text: string; markdown?: boolean }
-const literalBlocks = (lines: string[]): ReaderBlock[] => lines.map((text) => ({ text }));
-function inspectionBlocks(data: AgentInspection, entryIndex = 0): ReaderBlock[] {
-	const lines = ownerLines(data);
-	if ("entryId" in data) return literalBlocks([...lines, `Entry: ${data.entryId} · offset ${data.offset}`, "Inspection source, not raw storage. Offsets count UTF-16 code units.", ...omissionLines(data.omissions), data.truncated ? `Partial entry; next offset ${data.nextOffset}. n reads the next chunk.` : "Final entry chunk (earlier chunks are not repeated).", data.text]);
-	const entry = data.entries[entryIndex];
-	return [
-		...(entry ? [
-			{ text: `${entry.role ?? entry.type} · entry ${entryIndex + 1}/${data.entries.length}${entry.truncated ? " · partial preview" : ""}` },
-			{ text: entry.preview?.text ?? "Readable preview unavailable. Enter opens the inspection source.", markdown: Boolean(entry.preview) },
-			...literalBlocks([...omissionLines(entry.omissions), ...(entry.preview?.truncated ? ["Partial text. Enter opens the inspection source; n continues it."] : [])]),
-		] : literalBlocks(["No entries in this snapshot."])),
-		...literalBlocks(["", `Entries: ${data.entries.length}, newest first. ${data.nextCursor === null ? "No older page." : `Older cursor: ${data.nextCursor}. o reads it.`}`,
-		...data.entries.map((item, index) => `${index === entryIndex ? ">" : " "} ${item.role ?? item.type} · ${item.id}${item.truncated ? " · partial preview" : ""}`),
-		"", ...lines,
-		...(data.result ? ["", `Retained result source${data.result.truncated ? " (partial preview; open its source entry)" : ""}:`, data.result.text] : [])]),
-	];
-}
-function inspectionLines(data: AgentInspection, entryIndex = 0): string[] {
-	return inspectionBlocks(data, entryIndex).map((block) => block.text);
-}
-function messageTheme(theme: Theme): MarkdownTheme {
-	return {
-		heading: (text) => theme.fg("mdHeading", text), link: (text) => theme.fg("mdLink", text), linkUrl: (text) => theme.fg("mdLinkUrl", text),
-		code: (text) => theme.fg("mdCode", text), codeBlock: (text) => theme.fg("mdCodeBlock", text), codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
-		quote: (text) => theme.fg("mdQuote", text), quoteBorder: (text) => theme.fg("mdQuoteBorder", text), hr: (text) => theme.fg("mdHr", text), listBullet: (text) => theme.fg("mdListBullet", text),
-		bold: (text) => theme.bold(text), italic: (text) => theme.italic(text), strikethrough: (text) => theme.strikethrough(text), underline: (text) => theme.underline(text),
-	};
-}
-
-interface LatestMessage { label: string; text: string; markdown?: boolean }
-function latestMessage(data: AgentInspection): LatestMessage {
-	if (!("entries" in data)) return { label: "Latest text unavailable", text: "The source returned an entry chunk, not a recent page." };
-	const entry = data.entries.find((entry) => entry.type === "message" && ["assistant", "user", "toolResult"].includes(entry.role ?? "") && clean(entry.preview?.text ?? "").trim());
-	if (!entry?.preview) return { label: "No message text in the recent page", text: data.capture?.reason ?? "Enter opens entries; o reads older evidence." };
-	return { label: `Latest ${entry.role} · ${entry.id}${entry.preview.truncated ? " · partial text" : ""}`, text: entry.preview.text, markdown: true };
-}
-function modificationAge(modifiedAt: number, observedAt: string): string {
-	const seconds = Math.max(0, Math.floor((Date.parse(observedAt) - modifiedAt) / 1000));
-	if (!Number.isFinite(seconds)) return "mod unknown";
-	return `mod ${seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m${seconds % 60}s` : seconds < 86400 ? `${Math.floor(seconds / 3600)}h${Math.floor(seconds % 3600 / 60)}m` : `${Math.floor(seconds / 86400)}d`}`;
-}
-
-/** A component owns one inventory, one selected preview, and one inspection page/chunk. */
+/** One overlay owns its refresh clock, selected conversation, native input and render caches. */
 export class AgentDashboard implements Component {
 	readonly state: DashboardState;
-	private readonly input = new Input({ prompt: "/ " });
+	private readonly input = new Input({ prompt: "› " });
 	private hostFocused = false;
-	private description?: { sessionId: string; data?: AgentSessionDescription; error?: string };
-	private descriptionGeneration = 0;
-	private latest?: { sessionId: string; message?: LatestMessage };
-	private latestRead?: AbortController;
-	private messageMarkdown?: { text: string; component: Markdown };
-	get focused(): boolean { return this.hostFocused; }
-	set focused(value: boolean) { this.hostFocused = value; this.input.focused = value && this.filtering; }
-	private filtering = false;
-	private loading = false;
-	private reading = false;
+	private inputMode?: "filter" | "message" | "new";
+	private filterBefore = "";
+	private composerId?: string;
 	private closed = false;
-	private generation = 0;
-	private pageSize = 1;
-	private readerHeight = 1;
-	private readerLength = 1;
+	private refreshing = false;
+	private submitting = false;
+	private timer?: ReturnType<typeof setInterval>;
 	private help = false;
 	private helpScroll = 0;
-	private helpLength = 0;
+	private resultScroll = 0;
+	private resultLength = 0;
+	private pageSize = 1;
+	private viewport = 1;
+	private scroll = 0;
+	private follow = true;
+	private expanded = false;
+	private showThinking = false;
+	private messageLimit = 80;
+	private history?: { id: string; entries: SessionEntry[]; partial: boolean; revision: string };
+	private historyError?: string;
+	private historyGeneration = 0;
+	private conversation?: AgentConversation;
+	private document?: ConversationDocument;
+	private conversationWidth?: number;
+	private pendingAnchor?: { id: string; offset: number };
+	private preview?: { text: string; component: Markdown };
+	get focused(): boolean { return this.hostFocused; }
+	set focused(value: boolean) { this.hostFocused = value; this.input.focused = value && this.inputMode !== undefined; }
 	private readonly sources: AgentObservationSources;
 	private readonly tui: Pick<TUI, "requestRender" | "terminal">;
 	private readonly theme: Theme;
 	private readonly keys: KeybindingsManager;
-	private readonly done: (request?: DashboardActionRequest) => void;
-	private readonly actions: boolean;
-	constructor(sources: AgentObservationSources, tui: Pick<TUI, "requestRender" | "terminal">, theme: Theme, keys: KeybindingsManager, done: (request?: DashboardActionRequest) => void, state?: DashboardState, actions = false) {
+	private readonly done: (request?: ActionRequest) => void;
+	private readonly actions?: DashboardActions;
+	constructor(sources: AgentObservationSources, tui: Pick<TUI, "requestRender" | "terminal">, theme: Theme, keys: KeybindingsManager, done: (request?: ActionRequest) => void, state?: DashboardState, actions?: DashboardActions) {
 		this.sources = sources; this.tui = tui; this.theme = theme; this.keys = keys; this.done = done; this.actions = actions;
-		this.state = state ?? { tab: "sessions", filter: "", selected: {} };
-		this.input.setValue(this.state.filter);
-		if (!this.state.snapshot) void this.refresh();
-		else { this.restoreDescriptions(); this.updateDescription(); }
+		this.state = state ?? { filter: "", drafts: new Map() };
+		this.input.onSubmit = () => { if (this.inputMode === "filter") this.finishInput(); else void this.submit(); };
+		void this.refresh();
+		this.timer = setInterval(() => { void this.refresh(); }, 1000);
+		this.timer.unref?.();
 	}
-	private restoreDescriptions(): void {
-		const section = this.state.snapshot?.sessions;
-		if (!section || section.error !== undefined || !this.state.descriptions) return;
-		const retained = new Map<string, AgentSessionDescription>();
-		for (const target of section.records) {
-			if (target.kind !== "session") continue;
-			const data = this.state.descriptions.get(target.session.sessionId);
-			if (!data) continue;
-			retained.set(target.session.sessionId, data);
-			if (!target.session.model) { target.session.model = data.model; target.session.provenance = data.provenance; }
-		}
-		this.state.descriptions = retained;
-	}
-	private view() { return dashboardRecords(this.state.snapshot?.[this.state.tab], this.state.filter); }
-	private selected(): DashboardTarget | undefined {
-		const records = this.view().records;
-		const target = records.find((row) => idOf(row) === this.state.selected[this.state.tab]) ?? records[0];
-		if (this.state.snapshot?.[this.state.tab].error === undefined) this.state.selected[this.state.tab] = target ? idOf(target) : undefined;
-		return target;
+	private redraw(): void { if (!this.closed) this.tui.requestRender(); }
+	private rows(): SessionDigest[] { return dashboardRecords(this.state.snapshot, this.state.filter); }
+	private selected(): SessionDigest | undefined { return this.rows().find((row) => row.sessionId === this.state.selected); }
+	private selectValid(): void {
+		const rows = this.rows();
+		if (!rows.some((row) => row.sessionId === this.state.selected)) this.state.selected = rows[0]?.sessionId;
 	}
 	async refresh(): Promise<void> {
-		if (this.closed || this.loading) return;
-		this.loading = true; this.tui.requestRender();
-		const snapshot = await readAgentDashboard(this.sources);
-		if (this.closed) return;
-		this.state.snapshot = snapshot; this.restoreDescriptions(); this.selected(); this.loading = false; this.updateDescription(true); this.tui.requestRender();
-	}
-	private updateDescription(force = false, target = this.selected()): void {
-		this.updateLatest(force, target);
-		if (!target || !this.sources.describe) return;
-		const sessionId = sessionIdOf(target);
-		if (!force && this.description?.sessionId === sessionId) return;
-		const generation = ++this.descriptionGeneration;
-		this.description = { sessionId };
-		void this.sources.describe(sessionId).then((data) => {
-			if (this.closed || generation !== this.descriptionGeneration) return;
-			this.description = { sessionId, data };
-			if (target.kind === "session") {
-				this.state.descriptions ??= new Map();
-				this.state.descriptions.set(sessionId, data);
-				target.session.model = data.model; target.session.provenance = data.provenance;
-			}
-			this.updateDescription(); this.tui.requestRender();
-		}, (error) => {
-			if (this.closed || generation !== this.descriptionGeneration) return;
-			this.description = { sessionId, error: errorText(error) }; this.tui.requestRender();
-		});
-	}
-	private updateLatest(force: boolean, target?: DashboardTarget): void {
-		const sessionId = target?.kind === "session" ? target.session.sessionId : undefined;
-		if (!force && this.latest?.sessionId === sessionId) return;
-		this.latestRead?.abort();
-		this.latest = sessionId ? { sessionId } : undefined;
-		if (!sessionId) return;
-		const controller = new AbortController(); this.latestRead = controller;
-		void Promise.resolve().then(() => {
-			controller.signal.throwIfAborted();
-			return this.sources.inspect(sessionId, { limit: 12 }, controller.signal);
-		}).then((data) => {
-			if (this.closed || controller.signal.aborted) return;
-			this.latest = { sessionId, message: latestMessage(data) }; this.tui.requestRender();
-		}, (error) => {
-			if (this.closed || controller.signal.aborted) return;
-			this.latest = { sessionId, message: { label: "Latest text unavailable", text: errorText(error) } }; this.tui.requestRender();
-		});
-	}
-	private latestBlocks(target: Extract<DashboardTarget, { kind: "session" }>): ReaderBlock[] {
-		const message = this.latest?.sessionId === target.session.sessionId ? this.latest.message : undefined;
-		return message ? [{ text: message.label }, { text: message.text, markdown: message.markdown }] : [{ text: "Latest text: read in progress…" }];
-	}
-	private async inspect(sessionId: string, options: AgentInspectionOptions = {}, parent?: Reader): Promise<void> {
-		const generation = ++this.generation;
-		const target = this.state.reader?.target ?? this.selected();
-		this.reading = true;
-		this.state.reader = { title: "Session inspection", target, sessionId, lines: ["Read in progress…"], scroll: 0, parent };
-		this.tui.requestRender();
+		if (this.closed || this.refreshing) return;
+		this.refreshing = true;
 		try {
-			const inspection = await this.sources.inspect(sessionId, { limit: 12, ...options });
-			if (this.closed || generation !== this.generation) return;
-			this.state.reader = { title: "Session inspection", target, sessionId, inspection, entryIndex: 0, lines: inspectionLines(inspection), scroll: 0, parent };
-		} catch (error) {
-			if (this.closed || generation !== this.generation) return;
-			this.state.reader = { title: "Inspection unavailable", target, sessionId, lines: [errorText(error)], scroll: 0, parent };
+			const snapshot = await readAgentDashboard(this.sources);
+			if (this.closed) return;
+			this.state.snapshot = snapshot;
+			this.selectValid();
+			if (this.state.conversation) await this.readConversation();
+		} finally { this.refreshing = false; this.redraw(); }
+	}
+	private rememberAnchor(): void {
+		if (this.follow || !this.document) return;
+		const anchor = this.document.anchors.findLast((item) => item.line <= this.scroll);
+		if (anchor) this.pendingAnchor = { id: anchor.id, offset: this.scroll - anchor.line };
+	}
+	private async readConversation(): Promise<void> {
+		const id = this.state.conversation;
+		if (!id) return;
+		const generation = ++this.historyGeneration;
+		try {
+			const data = await this.sources.conversation(id);
+			if (this.closed || generation !== this.historyGeneration || id !== this.state.conversation) return;
+			this.historyError = undefined;
+			if (this.history?.id === id && this.history.revision === data.revision) return;
+			this.rememberAnchor(); this.history = { id, ...data }; this.conversation = undefined;
+		} catch (error) { if (!this.closed && generation === this.historyGeneration) this.historyError = errorText(error); }
+		this.redraw();
+	}
+	private openConversation(): void {
+		const row = this.selected(); if (!row) return;
+		this.state.conversation = row.sessionId; this.follow = true; this.scroll = 0; this.messageLimit = 80;
+		this.history = undefined; this.conversation = undefined; this.document = undefined; this.historyError = undefined;
+		void this.readConversation(); this.redraw();
+	}
+	private move(delta: number, edge?: "first" | "last"): void {
+		const rows = this.rows(); const index = rows.findIndex((row) => row.sessionId === this.state.selected);
+		const next = edge === "first" ? 0 : edge === "last" ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, index + delta));
+		this.state.selected = rows[next]?.sessionId; this.redraw();
+	}
+	private compose(create = false): void {
+		if (!this.actions?.compose || this.submitting) return;
+		const row = this.selected(); if (!create && !row) return;
+		const refusal = !create && row ? this.refusal(row) : undefined;
+		if (refusal) { this.state.notice = refusal; this.redraw(); return; }
+		this.inputMode = create ? "new" : "message"; this.composerId = create ? undefined : row?.sessionId;
+		this.input.setValue(this.state.drafts.get(this.composerId ?? "new") ?? ""); this.focused = this.hostFocused; this.redraw();
+	}
+	private refusal(row: SessionDigest): string | undefined {
+		if (row.owner === "window") return `Open in ${oneLine(row.ownerLabel || "another Pi window")} · ${basename(row.cwd)}`;
+		if (["orphaned", "unavailable"].includes(row.state) || row.owner === "unknown") return `${sessionAppearance[row.state].label}: ${oneLine(row.error || row.ownerLabel || "session control is unavailable")}`;
+		return undefined;
+	}
+	private finishInput(): void { this.inputMode = undefined; this.focused = this.hostFocused; this.redraw(); }
+	private async submissionMode(create: boolean, id?: string): Promise<"new" | "send" | "steer"> {
+		if (create) return "new";
+		const row = (await this.sources.board()).find((item) => item.sessionId === id);
+		if (!row) throw new Error("Session is no longer available");
+		const refusal = this.refusal(row); if (refusal) throw new Error(refusal);
+		return row.state === "working" ? "steer" : "send";
+	}
+	private async submit(): Promise<void> {
+		if (this.submitting || !this.actions?.compose) return;
+		const text = this.input.getValue().trim(); if (!text) return;
+		const create = this.inputMode === "new"; const id = this.composerId;
+		this.submitting = true; this.state.notice = "Send in progress…"; this.redraw();
+		try {
+			const mode = await this.submissionMode(create, id);
+			if (this.closed) return;
+			const receipt = await this.actions.compose(mode, id, text);
+			if (this.closed) return;
+			this.state.drafts.delete(id ?? "new"); this.input.setValue(""); this.finishInput();
+			this.state.notice = receipt || "Action returned no receipt";
+			await this.refresh();
+		} catch (error) { if (!this.closed) this.state.notice = `Refused: ${errorText(error)}`; }
+		finally { this.submitting = false; this.redraw(); }
+	}
+	private editInput(data: string): void {
+		if (matchesKey(data, "escape")) {
+			if (this.inputMode === "filter") { this.state.filter = this.filterBefore; this.selectValid(); }
+			this.finishInput(); return;
 		}
-		this.reading = false; this.tui.requestRender();
+		if (this.submitting) return;
+		this.input.handleInput(data);
+		if (this.inputMode === "filter") { this.state.filter = this.input.getValue(); this.selectValid(); }
+		else if (this.inputMode) this.state.drafts.set(this.composerId ?? "new", this.input.getValue());
 	}
 	private back(): void {
-		this.generation++; this.reading = false;
-		this.state.reader = this.state.reader?.parent;
+		if (this.help) this.help = false;
+		else if (this.state.actionResult !== undefined) this.state.actionResult = undefined;
+		else if (this.state.conversation) { this.state.conversation = undefined; this.historyGeneration++; this.history = undefined; this.conversation = undefined; this.document = undefined; }
+		else { this.dispose(); this.done(); }
 	}
-	private open(): void {
-		const target = this.selected(); const section = this.state.snapshot?.[this.state.tab];
-		if (section?.error !== undefined) { this.state.reader = { title: "Source unavailable", lines: [section.error], scroll: 0 }; return; }
-		if (!target) return;
-		if (target.kind === "session") void this.inspect(target.session.sessionId);
-		else this.state.reader = { title: "Detached run record", target, lines: runPreview(target), scroll: 0 };
+	private delta(data: string, page: number): number {
+		if (data === "k" || this.keys.matches(data, "tui.select.up")) return -1;
+		if (data === "j" || this.keys.matches(data, "tui.select.down")) return 1;
+		if (matchesKey(data, "pageUp") || data === "b") return -page;
+		if (matchesKey(data, "pageDown") || data === " ") return page;
+		return 0;
+	}
+	private scrollTo(data: string, current: number, length: number): number {
+		const next = matchesKey(data, "home") ? 0 : matchesKey(data, "end") ? length : current + this.delta(data, this.viewport);
+		return Math.max(0, Math.min(Math.max(0, length - this.viewport), next));
+	}
+	private commonInput(data: string): boolean {
+		switch (data) {
+			case "?": this.help = true; this.helpScroll = 0; return true;
+			case "m": this.compose(); return true;
+			case "n": this.compose(true); return true;
+			case "r": void this.refresh(); return true;
+			case "a": {
+				if (!this.actions || this.submitting) return true;
+				const row = this.selected(); this.dispose(); this.done({ target: row ? { kind: "session", session: row } : undefined }); return true;
+			}
+			default: return false;
+		}
+	}
+	private conversationInput(data: string): void {
+		if (this.keys.matches(data, "app.tools.expand") || data === "x") { this.rememberAnchor(); this.expanded = !this.expanded; this.conversation = undefined; }
+		else if (this.keys.matches(data, "app.thinking.toggle")) { this.rememberAnchor(); this.showThinking = !this.showThinking; this.conversation = undefined; }
+		else if (data === "o") { this.rememberAnchor(); this.messageLimit += 80; this.conversation = undefined; }
+		else if (matchesKey(data, "end")) this.follow = true;
+		else if (this.delta(data, this.viewport) || matchesKey(data, "home")) {
+			this.follow = false; this.pendingAnchor = undefined;
+			this.scroll = this.scrollTo(data, this.scroll, this.document?.lines.length ?? 0);
+		}
+	}
+	private boardInput(data: string): void {
+		if (data === "/") { this.filterBefore = this.state.filter; this.inputMode = "filter"; this.input.setValue(this.state.filter); this.focused = this.hostFocused; }
+		else if (matchesKey(data, "enter")) this.openConversation();
+		else if (matchesKey(data, "home")) this.move(0, "first");
+		else if (matchesKey(data, "end")) this.move(0, "last");
+		else if (this.delta(data, this.pageSize)) this.move(this.delta(data, this.pageSize));
 	}
 	handleInput(data: string): void {
 		if (this.closed) return;
-		const cancel = matchesKey(data, "escape") || this.keys.matches(data, "tui.select.cancel");
-		if (this.filtering) { this.filterInput(data, cancel); return; }
-		if (this.help) { this.helpInput(data, cancel); return; }
-		if (cancel || matchesKey(data, "b")) {
-			if (this.state.reader) this.back();
-			else if (cancel) { this.dispose(); this.done(); return; }
-		} else if (matchesKey(data, "?")) { this.help = true; this.helpScroll = 0; }
-		else if (matchesKey(data, "a") && this.actions && !this.reading) { this.openActions(); return; }
-		else if (this.state.reader) this.readerInput(data);
-		else this.listInput(data);
-		this.updateListDescription();
-		this.tui.requestRender();
+		if (this.inputMode) this.editInput(data);
+		else if (matchesKey(data, "escape")) this.back();
+		else if (this.help) this.helpScroll = Math.max(0, this.helpScroll + this.delta(data, this.viewport));
+		else if (this.state.actionResult !== undefined) this.resultScroll = this.scrollTo(data, this.resultScroll, this.resultLength);
+		else if (!this.commonInput(data)) {
+			if (this.state.conversation) this.conversationInput(data); else this.boardInput(data);
+		}
+		this.redraw();
 	}
-	private updateListDescription(): void {
-		if (!this.state.reader) this.updateDescription();
+	private hint(width: number): string {
+		const back = this.inputMode ? "Esc cancel" : this.help || this.state.actionResult !== undefined || this.state.conversation ? "Esc back" : "Esc close";
+		const hints = this.inputMode ? ["Enter send"] : this.help || this.state.actionResult !== undefined ? ["↑↓ scroll", "PgUp/PgDn page"] : this.state.conversation ? ["↑↓ scroll", "End tail", "m message", "x tools", "o earlier", "a actions", "? help"] : ["↑↓ select", "Enter chat", "/ find", "m message", "a actions", "? help"];
+		if (this.inputMode === "filter") hints[0] = "Enter keep filter";
+		while (hints.length && visibleWidth([...hints, back].join(" · ")) > width) hints.pop();
+		return this.theme.fg("muted", truncateToWidth([...hints, back].join(" · "), width));
 	}
-	private openActions(): void {
-		const target = this.state.reader?.target ?? this.selected();
-		this.dispose(); this.done({ target });
+	private heading(): string {
+		if (this.state.actionResult !== undefined) return this.theme.bold("Action result");
+		if (this.state.conversation) return this.conversationHeading();
+		return `${this.theme.bold("Agents")}  ${totals(this.state.snapshot)}`;
 	}
-	private filterInput(data: string, cancel: boolean): void {
-		if (cancel || this.keys.matches(data, "tui.select.confirm")) {
-			this.filtering = false; this.input.focused = false;
-			if (cancel) { this.state.filter = ""; this.input.setValue(""); }
-		} else { this.input.handleInput(data); this.state.filter = this.input.getValue(); }
-		this.selected(); this.updateDescription(); this.tui.requestRender();
+	private content(width: number, height: number): string[] {
+		if (this.help) return this.renderHelp(width, height);
+		if (this.state.actionResult !== undefined) return this.renderResult(width, height);
+		if (this.state.conversation) return this.renderConversation(width, height);
+		return this.renderBoard(width, height);
 	}
-	private helpInput(data: string, cancel: boolean): void {
-		if (cancel || matchesKey(data, "?") || matchesKey(data, "b")) this.help = false;
-		else this.helpScroll = Math.max(0, Math.min(Math.max(0, this.helpLength - this.pageSize), this.helpScroll + this.direction(data)));
-		this.tui.requestRender();
+	private inputLines(width: number): string[] {
+		const lines: string[] = [];
+		if (this.state.notice) lines.push(this.theme.fg("warning", truncateToWidth(oneLine(this.state.notice), width)));
+		if (!this.inputMode) return lines;
+		if (this.inputMode !== "filter") lines.push(this.theme.fg("accent", truncateToWidth(this.composerHeading(), width)));
+		lines.push(...this.input.render(width).slice(0, 1));
+		return lines;
 	}
-	private listInput(data: string): void {
-		if (matchesKey(data, "/")) { this.filtering = true; this.input.focused = this.hostFocused; this.input.setValue(this.state.filter); }
-		else if (matchesKey(data, "r")) void this.refresh();
-		else if (matchesKey(data, "tab")) { this.state.tab = this.state.tab === "sessions" ? "runs" : "sessions"; this.selected(); }
-		else if (this.keys.matches(data, "tui.select.confirm")) this.open();
-		else this.moveSelection(data);
-	}
-	private moveSelection(data: string): void {
-		const records = this.view().records; const target = this.selected();
-		const index = target ? records.indexOf(target) : 0;
-		const delta = this.direction(data);
-		const next = matchesKey(data, "home") ? 0 : matchesKey(data, "end") ? records.length - 1 : Math.max(0, Math.min(records.length - 1, index + delta));
-		if (records.length && (delta || next !== index)) this.state.selected[this.state.tab] = idOf(records[next]);
-	}
-	private direction(data: string): number {
-		if (this.keys.matches(data, "tui.select.pageDown")) return this.pageSize;
-		if (this.keys.matches(data, "tui.select.pageUp")) return -this.pageSize;
-		if (matchesKey(data, "j") || this.keys.matches(data, "tui.select.down")) return 1;
-		if (matchesKey(data, "k") || this.keys.matches(data, "tui.select.up")) return -1;
-		return 0;
-	}
-	private readerInput(data: string): void {
-		const reader = this.state.reader;
-		if (!reader) return;
-		const inspection = reader.inspection;
-		if (matchesKey(data, "r")) this.refreshReader(reader);
-		else if (matchesKey(data, "s") && !reader.sessionId) {
-			const target = reader.target; if (target?.kind === "run") void this.inspect(sessionIdOf(target), {}, reader);
-		} else if (inspection && !this.reading) this.inspectionInput(data, reader, inspection);
-		else this.scrollReader(data, reader);
-	}
-	private refreshReader(reader: Reader): void {
-		this.updateDescription(true, reader.target);
-		if (!reader.sessionId) { this.back(); void this.refresh(); return; }
-		const parent = reader.inspection && "entryId" in reader.inspection ? reader.parent?.parent : reader.parent;
-		void this.inspect(reader.sessionId, {}, parent);
-	}
-	private inspectionInput(data: string, reader: Reader, inspection: AgentInspection): void {
-		if ("entries" in inspection) { this.pageInput(data, reader, inspection); return; }
-		if (matchesKey(data, "n") && inspection.nextOffset !== null) void this.inspect(inspection.sessionId, { entryId: inspection.entryId, offset: inspection.nextOffset }, reader.parent);
-		else this.scrollReader(data, reader);
-	}
-	private pageInput(data: string, reader: Reader, inspection: Extract<AgentInspection, { entries: unknown }>): void {
-		if (matchesKey(data, "o") && inspection.nextCursor !== null) void this.inspect(inspection.sessionId, { cursor: inspection.nextCursor }, reader.parent);
-		else if (matchesKey(data, "[") || matchesKey(data, "]")) {
-			reader.entryIndex = Math.max(0, Math.min(inspection.entries.length - 1, (reader.entryIndex ?? 0) + (matchesKey(data, "]") ? 1 : -1)));
-			reader.lines = inspectionLines(inspection, reader.entryIndex); reader.scroll = 0;
-		} else if (this.keys.matches(data, "tui.select.confirm")) {
-			const entry = inspection.entries[reader.entryIndex ?? 0];
-			if (entry) void this.inspect(inspection.sessionId, { entryId: entry.id, offset: 0 }, reader);
-		} else this.scrollReader(data, reader);
-	}
-	private scrollReader(data: string, reader: Reader): void {
-		reader.scroll = Math.max(0, Math.min(Math.max(0, this.readerLength - this.readerHeight), reader.scroll + this.direction(data)));
-	}
-	private controls(width: number): string[] {
-		if (this.filtering) return ["Type to filter · Enter keep · Esc clear"];
-		if (this.help) return ["↑↓ scroll · PgUp/PgDn page", "? help · Esc back"];
-		if (this.state.reader) return this.readerControls(this.state.reader);
-		const action = this.actionHint(this.selected());
-		return width >= 90 ? ["↑↓ select · Enter open · / filter · Tab runs/sessions · r refresh", `? help${action} · Home/End jump · Esc close`]
-			: ["Enter open · / filter · Tab section", `? help${action} · r refresh · Esc close`];
-	}
-	private actionHint(target?: DashboardTarget): string {
-		if (!this.actions || this.reading) return "";
-		return target ? " · a actions" : " · a all actions";
-	}
-	private readerControls(reader: Reader): string[] {
-		const data = reader.inspection;
-		let navigation = "";
-		if (data && "entries" in data) navigation = `${data.entries.length ? "[/] entry · Enter source" : "No entries"}${data.nextCursor !== null ? " · o older" : ""}`;
-		else if (data && "entryId" in data) navigation = `${data.nextOffset !== null ? "n next chunk · " : ""}r newest`;
-		else if (reader.target?.kind === "run") navigation = "s session · r refresh";
-		return [`↑↓ scroll${navigation ? ` · ${navigation}` : ""}`,  `? help${this.actionHint(reader.target)} · Esc back`];
+	private composerHeading(): string {
+		if (this.inputMode === "new") return "New agent · task";
+		const row = this.state.snapshot?.sessions.find((item) => item.sessionId === this.composerId);
+		return `${row?.state === "working" ? "Steer" : "Send to"} ${row ? titleOf(row) : "session"}`;
 	}
 	render(width: number): string[] {
 		width = Math.max(1, width);
 		const height = Math.max(1, this.tui.terminal.rows - 2);
-		const framed = width >= 12 && height >= 8;
-		const inner = Math.max(1, width - (framed ? 4 : 0));
-		const controls = this.controls(inner).map((line) => {
-			const ending = / · Esc (close|back)$/.exec(line);
-			return ending ? truncateToWidth(line.slice(0, -ending[0].length), Math.max(0, inner - ending[0].length)) + ending[0] : line;
-		});
-		if (height < 4) return [truncateToWidth(this.state.reader ? "? help · Esc back" : "? help · Esc close", width)];
-		const footer = height >= 8 ? controls : controls.slice(-1);
-		const contentHeight = height - footer.length - (framed ? 3 : 0);
-		const content = this.help ? this.renderHelp(inner, contentHeight) : this.state.reader ? this.renderReader(inner, contentHeight, this.state.reader) : this.renderList(inner, contentHeight);
-		const pad = (line: string) => { const clipped = truncateToWidth(line, inner); return clipped + " ".repeat(Math.max(0, inner - visibleWidth(clipped))); };
-		const body = Array.from({ length: contentHeight }, (_, i) => content[i] ?? "");
-		if (!framed) return [...body, ...footer].map((line) => truncateToWidth(line, width));
-		const heading = this.help ? " Agent help " : this.state.reader ? " Agents / Detail " : " Agents ";
-		const border = (left: string, text: string, right: string) => this.theme.fg("border", left + truncateToWidth(text, width - 2) + "─".repeat(Math.max(0, width - 2 - visibleWidth(text))) + right);
-		return [border("┌", heading, "┐"), ...body.map((line) => `│ ${pad(line)} │`), border("├", "", "┤"), ...footer.map((line) => `│ ${pad(this.theme.fg("muted", line))} │`), border("└", "", "┘")];
+		if (height < 6 || width < 24) return [truncateToWidth(`Agents · ${this.rows().length} sessions · Esc close`, width)];
+		const inner = width - 4;
+		const footer = this.hint(inner);
+		const extraHeight = Math.max(0, height - 6);
+		const extras = extraHeight ? this.inputLines(inner).slice(-extraHeight) : [];
+		const contentHeight = Math.max(1, height - 5 - extras.length);
+		this.viewport = contentHeight;
+		const summary = this.heading();
+		const rendered = this.content(inner, contentHeight);
+		const content = Array.from({ length: contentHeight }, (_, index) => rendered[index] ?? "");
+		const border = (left: string, right: string) => this.theme.fg("borderMuted", left + "─".repeat(width - 2) + right);
+		const frame = (line: string) => `${this.theme.fg("borderMuted", "│")} ${pad(line, inner)} ${this.theme.fg("borderMuted", "│")}`;
+		return [border("╭", "╮"), frame(summary), frame(""), ...content.map(frame), ...extras.map(frame), frame(footer), border("╰", "╯")];
 	}
-	private renderHelp(width: number, contentHeight: number): string[] {
-		let lines = ["Find a session", "↑/↓ or j/k selects. PgUp/PgDn pages. Home/End jumps. Tab switches sessions and detached runs.", "/ filters the complete inventory by name, task, directory, ID, state, or known model/thinking values. Enter keeps the filter. Escape clears it.", "", "Read the work", "Enter opens the selected session. [/] selects a message. ↑/↓ scrolls. Enter opens exact serialized source; n continues a source chunk. o reads older entries. r reads newest.", "s opens the session from a detached run. Escape or the configured cancel key returns one level, then closes the dashboard. b also returns one level.", "", "Act without losing context", "a opens native action dialogs for the exact selected target. Escape cancels a dialog. The dashboard returns to the same selection and filter.", "", "Evidence boundaries", "Live describes an owner snapshot, not continuous monitoring. Stored configuration comes from retained entries; its owner state is unknown. Known parents come only from recorded associations.", "Run progress and result summaries are recorded, not a live owner query. Latest text comes from one recent selected-session page, not a complete transcript. mod is modification age, not run time. Exact source remains available. r refreshes explicitly; actions refresh the inventory."];
-		lines = lines.flatMap((line) => wrapTextWithAnsi(line, width));
-		this.helpLength = lines.length; this.pageSize = contentHeight;
-		this.helpScroll = Math.max(0, Math.min(Math.max(0, lines.length - contentHeight), this.helpScroll));
-		return lines.slice(this.helpScroll, this.helpScroll + contentHeight);
+	private renderBoard(width: number, height: number): string[] {
+		const rows = this.rows(); const selected = this.selected();
+		if (this.state.snapshot?.error) return [this.theme.fg("error", "Store unavailable"), ...wrapTextWithAnsi(cleanDashboardText(this.state.snapshot.error), width), "r retries"];
+		if (!rows.length) return [this.state.snapshot ? this.state.filter ? `No sessions match “${oneLine(this.state.filter)}”` : "No agent sessions yet. Press n to start one." : "Read in progress…"];
+		const split = width >= 136;
+		const leftWidth = split ? Math.min(108, Math.floor(width * 0.54)) : width;
+		const previewHeight = split ? height : Math.max(4, Math.floor(height * 0.43));
+		const listHeight = split ? height : Math.max(2, height - previewHeight - 1);
+		const roster = this.renderRoster(rows, leftWidth, listHeight);
+		const preview = selected ? this.renderPreview(selected, split ? width - leftWidth - 3 : width, previewHeight) : [];
+		if (split) return Array.from({ length: height }, (_, index) => `${pad(roster[index] ?? "", leftWidth)} ${this.theme.fg("borderMuted", "│")} ${preview[index] ?? ""}`);
+		return [...roster, this.theme.fg("borderMuted", "─".repeat(width)), ...preview];
 	}
-	private renderReader(width: number, contentHeight: number, reader: Reader): string[] {
-		const selectedDescription = reader.sessionId && reader.sessionId === this.description?.sessionId ? this.description : undefined;
-		const description = selectedDescription?.data;
-		const heading = reader.target ? displayPreview(titleOf(reader.target), 300) : reader.title;
-		const info = this.readerDescription(selectedDescription);
-		const blocks = reader.inspection ? inspectionBlocks(reader.inspection, reader.entryIndex) : literalBlocks(reader.lines);
-		const body = this.renderBlocks([...literalBlocks(info), ...blocks], width);
-		const headerSize = contentHeight > 5 ? 3 : contentHeight > 3 ? 2 : 0;
-		this.readerHeight = Math.max(1, contentHeight - headerSize); this.pageSize = this.readerHeight; this.readerLength = body.length;
-		reader.scroll = Math.max(0, Math.min(Math.max(0, body.length - this.readerHeight), reader.scroll));
-		const selected = reader.inspection && "entries" in reader.inspection ? reader.inspection.entries[reader.entryIndex ?? 0] : undefined;
-		const position = `Lines ${reader.scroll + 1}-${Math.min(body.length, reader.scroll + this.readerHeight)}/${body.length}`;
-		const state = readerState(reader);
-		const header = [this.theme.fg("accent", heading), this.theme.fg("muted", clean(`${state === heading ? "" : state}${description ? ` · ${configuration(description)}` : ""}`)), this.theme.fg("muted", `${selected ? `Selected entry: ${selected.id} · ` : ""}${position}${this.reading ? " · Read in progress" : ""}`)];
-		return [...header.slice(0, headerSize), ...body.slice(reader.scroll, reader.scroll + this.readerHeight)];
+	private columns(width: number): { title: number; place: number; model: number; cost: number; age: number } {
+		const place = width >= 64 ? 12 : 0; const model = width >= 72 ? 19 : width >= 56 ? 15 : 0;
+		const cost = 9; const age = width >= 48 ? 7 : 0;
+		return { title: Math.max(8, width - 3 - place - model - cost - age), place, model, cost, age };
 	}
-	private renderBlocks(blocks: ReaderBlock[], width: number): string[] {
-		return blocks.flatMap((block) => block.markdown ? this.renderMessage(block.text, width) : wrapTextWithAnsi(clean(block.text), width));
+	private rosterRow(row: SessionDigest, width: number): string {
+		const cols = this.columns(width);
+		const cell = (text: string, size: number) => size ? `${pad(oneLine(text), size - 1)} ` : "";
+		const selected = row.sessionId === this.state.selected;
+		const appearance = sessionAppearance[row.state];
+		const level = row.model?.thinkingLevel ?? "off";
+		const short = ({ xhigh: "xh", high: "hi", medium: "med", low: "lo", minimal: "min" } as Record<string, string>)[level] ?? level;
+		const model = row.model ? `${row.model.modelId}${level !== "off" ? ` ${short}` : ""}` : "—";
+		const line = `${selected ? "›" : " "}${this.theme.fg(appearance.color, appearance.glyph)} ${cell(titleOf(row), cols.title)}${this.theme.fg("muted", cell(basename(row.cwd), cols.place))}${this.theme.fg("muted", cell(model, cols.model))}${cell(costOf(row), cols.cost)}${this.theme.fg("dim", cell(elapsed((this.state.snapshot?.observedAt ?? Date.now()) - row.modifiedAt), cols.age))}`;
+		return selected ? this.theme.bg("selectedBg", pad(line, width)) : line;
 	}
-	private renderMessage(text: string, width: number): string[] {
-		if (this.messageMarkdown?.text !== text) this.messageMarkdown = { text, component: new Markdown(clean(text), 0, 0, messageTheme(this.theme)) };
-		return this.messageMarkdown.component.render(width);
-	}
-	private readerDescription(selected?: { data?: AgentSessionDescription; error?: string }): string[] {
-		if (selected?.error) return [`Configuration unavailable: ${selected.error}`, ""];
-		if (selected?.data) return [descriptionLines(selected.data)[1], ""];
-		return selected ? ["Configuration read in progress…", ""] : [];
-	}
-	private previewBlocks(target: DashboardTarget): ReaderBlock[] {
-		if (target.kind === "run") return literalBlocks(runPreview(target));
-		const session = target.session;
-		const current = this.description?.sessionId === session.sessionId ? this.description : undefined;
-		return [{ text: titleOf(target) }, ...this.latestBlocks(target), ...literalBlocks(["", ...(session.firstMessage ? ["Task / first message", session.firstMessage, ""] : []), label(target).split(" · ")[0], ...(current?.data ? descriptionLines(current.data) : [configuration(session), current?.error ? `Configuration unavailable: ${current.error}` : current ? "Read in progress…" : "Enter reads session details"]), "", `Directory: ${session.cwd}`, `Session: ${session.sessionId}`, ...(session.operation ? [`Operation: ${session.operation}`] : []), ...(session.detachedRunId ? [`Run: ${session.detachedRunId}`] : []), `Modified: ${new Date(session.modifiedAt).toISOString()}`, "", "Enter reads messages · a opens actions"])];
-	}
-	private renderList(width: number, contentHeight: number): string[] {
-		const view = this.view(); const target = this.selected(); const section = this.state.snapshot?.[this.state.tab];
-		const index = target ? view.records.indexOf(target) : 0;
-		const count = `${view.total} total · ${view.matching} matching · ${view.records.length} shown · ${view.omitted} omitted`;
-		const chrome = [this.theme.fg("accent", `${this.state.tab === "sessions" ? "SESSIONS" : "DETACHED RUNS"} · ${target ? index + 1 : 0}/${view.records.length}${this.loading ? " · Read in progress" : ""}`), section?.error !== undefined ? "Source unavailable · Enter reads the error" : count];
-		if (this.filtering) chrome.push(...this.input.render(width));
-		else if (this.state.filter) chrome.push(`Filter: ${displayPreview(this.state.filter, 160)} · / edits or clears`);
-		const header = chrome.slice(0, Math.max(0, Math.min(chrome.length, contentHeight - 1)));
-		const remaining = Math.max(1, contentHeight - header.length);
-		const split = width >= 96;
-		const detailHeight = !split && target && remaining >= 7 ? Math.min(4, Math.floor(remaining / 3)) : 0;
-		const listHeight = remaining - detailHeight;
-		this.pageSize = Math.max(1, Math.floor(listHeight / 2));
-		const start = Math.floor(index / this.pageSize) * this.pageSize;
-		const leftWidth = split ? Math.floor(width * 0.43) : width;
-		const roster = view.records.slice(start, start + this.pageSize).flatMap((row) => this.rosterLines(row, row === target, leftWidth));
-		if (!roster.length) roster.push(this.emptyLabel(section));
-		if (split && target) {
-			const rightWidth = width - leftWidth - 3;
-			const preview = this.renderBlocks(this.previewBlocks(target), rightWidth);
-			return [...header, ...Array.from({ length: remaining }, (_, i) => { const left = roster[i] ?? ""; return `${left}${" ".repeat(Math.max(0, leftWidth - visibleWidth(left)))} │ ${preview[i] ?? ""}`; })];
+	private renderRoster(rows: SessionDigest[], width: number, height: number): string[] {
+		const cols = this.columns(width);
+		const cell = (text: string, size: number) => size ? `${pad(text, size - 1)} ` : "";
+		const header = `   ${cell("SESSION", cols.title)}${cell("PLACE", cols.place)}${cell("MODEL", cols.model)}${cell("COST", cols.cost)}${cell("AGE", cols.age)}`;
+		const entries: Array<{ row?: SessionDigest; text?: string }> = [];
+		let section = "";
+		for (const row of rows) {
+			const next = sectionOf(row, this.state.snapshot?.observedAt ?? Date.now());
+			if (next !== section) { section = next; entries.push({ text: next }); }
+			entries.push({ row });
 		}
-		const detail = target && detailHeight ? this.compactDetail(target, width).slice(0, detailHeight) : [];
-		return [...header, ...Array.from({ length: listHeight }, (_, i) => roster[i] ?? ""), ...detail];
+		const selectedIndex = entries.findIndex((entry) => entry.row?.sessionId === this.state.selected);
+		this.pageSize = Math.max(1, height - 2);
+		const start = Math.min(Math.max(0, entries.length - this.pageSize), Math.max(0, selectedIndex - Math.floor(this.pageSize / 2)));
+		const filter = this.state.filter ? `“${oneLine(this.state.filter)}” · ${rows.length} of ${this.state.snapshot?.sessions.length ?? 0}` : `${rows.length} sessions`;
+		const lines = [this.theme.fg("dim", `${filter}${start > 0 ? " · ↑ more" : ""}${start + this.pageSize < entries.length ? " · ↓ more" : ""}`), this.theme.fg("muted", header)];
+		for (const entry of entries.slice(start, start + this.pageSize)) {
+			if (!entry.row) { lines.push(this.theme.fg("accent", ` ${entry.text}`)); continue; }
+			lines.push(this.rosterRow(entry.row, width));
+		}
+		return Array.from({ length: height }, (_, index) => lines[index] ?? "");
 	}
-	private rosterLines(row: DashboardTarget, selected: boolean, width: number): string[] {
-		const session = row.kind === "session" ? row.session : undefined;
-		const description = selected && this.description?.sessionId === sessionIdOf(row) ? this.description : undefined;
-		const model = description?.data?.model ?? session?.model;
-		const config = model ? `${model.modelId} · ${model.thinkingLevel}` : row.kind === "run" ? "recorded" : description?.data || description?.error ? "model unavailable" : "select for model";
-		const suffix = this.identitySuffix(row);
-		const title = `${truncateToWidth(`${selected ? "›" : " "} ${displayPreview(titleOf(row), 300)}`, Math.max(1, width - visibleWidth(suffix)))}${suffix}`;
-		const line = title + " ".repeat(Math.max(0, width - visibleWidth(title)));
-		return [selected ? this.theme.bg("selectedBg", this.theme.fg("accent", line)) : title, this.theme.fg("muted", truncateToWidth(clean(`  ${stateOf(row)}${session ? ` · ${modificationAge(session.modifiedAt, this.state.snapshot?.observedAt ?? "")}` : ""} · ${config}`), width))];
+	private renderPreview(row: SessionDigest, width: number, height: number): string[] {
+		const appearance = sessionAppearance[row.state];
+		const status = `${stateLabel(row)} · ${basename(row.cwd)} · ${row.model ? `${row.model.modelId} ${row.model.thinkingLevel}` : "model unknown"} · ${costOf(row)}`;
+		const header = [this.theme.bold(truncateToWidth(titleOf(row), width)), this.theme.fg(appearance.color, truncateToWidth(oneLine(status), width))];
+		if (height > 13) header.push(this.theme.fg("dim", `${elapsed(row.durationMs)} duration · ${row.toolCalls} tool calls · active ${elapsed((this.state.snapshot?.observedAt ?? Date.now()) - row.modifiedAt)} ago`));
+		if (row.state === "working") header.push(this.theme.fg("accent", truncateToWidth(row.currentTool ? `› ${oneLine(row.currentTool.name)} ${oneLine(row.currentTool.argument)}` : "› Thinking", width)));
+		else if (row.error) header.push(this.theme.fg("error", truncateToWidth(oneLine(row.error), width)));
+		header.push("");
+		const text = row.latestReply || (row.state === "new" ? "No reply yet. Press m to give this agent a task." : "No assistant reply in the available history.");
+		if (this.preview?.text !== text) this.preview = { text, component: new Markdown(cleanDashboardText(text), 0, 0, getMarkdownTheme()) };
+		const reply = this.preview.component.render(Math.max(1, Math.min(100, width)));
+		const detail = height > 18 ? ["", this.theme.fg("dim", "TASK"), ...wrapTextWithAnsi(oneLine(row.firstMessage || "No task recorded"), width).slice(0, 2).map((line) => this.theme.fg("muted", line)), "", this.theme.fg("dim", truncateToWidth(oneLine(row.cwd), width)), this.theme.fg("dim", oneLine(row.sessionId))] : [];
+		const budget = Math.max(1, height - header.length - detail.length);
+		const body = reply.slice(0, budget);
+		if (reply.length > budget) body[budget - 1] = this.theme.fg("dim", "… Enter reads the conversation");
+		return [...header, ...Array.from({ length: budget }, (_, index) => body[index] ?? ""), ...detail].slice(0, height);
 	}
-	private identitySuffix(row: DashboardTarget): string {
-		const peers = this.state.snapshot?.[this.state.tab].records.filter((other) => displayPreview(titleOf(other), 300) === displayPreview(titleOf(row), 300)) ?? [];
-		if (peers.length < 2) return "";
-		const directory = (target: DashboardTarget) => basename(target.kind === "session" ? target.session.cwd : target.run.cwd);
-		const names = peers.map((other) => displayPreview(directory(other), 12));
-		if (names.every(Boolean) && new Set(names).size === peers.length) return ` [${displayPreview(directory(row), 12)}]`;
-		let length = 6;
-		while (length < idOf(row).length && peers.some((other) => other !== row && idOf(other).slice(-length) === idOf(row).slice(-length))) length++;
-		return ` [${idOf(row).slice(-length)}]`;
+	private conversationHeading(): string {
+		const row = this.state.snapshot?.sessions.find((item) => item.sessionId === this.state.conversation);
+		return `${this.theme.bold(row ? titleOf(row) : "Conversation")}  ${this.theme.fg("muted", this.follow ? "TAIL" : "BROWSE")}${row ? ` · ${stateLabel(row)} · ${costOf(row)}` : ""}`;
 	}
-	private compactDetail(target: DashboardTarget, width: number): string[] {
-		if (target.kind === "run") return [truncateToWidth(clean(titleOf(target)), width), ...wrapTextWithAnsi(clean(target.run.progress?.lastText ?? target.run.summary ?? "No recorded text"), width)];
-		const task = `Task: ${target.session.firstMessage || titleOf(target)}`;
-		const [label, ...body] = this.latestBlocks(target);
-		return [truncateToWidth(clean(task), width), truncateToWidth(clean(label.text), width), ...this.renderBlocks(body, width).filter((line) => clean(line).trim())];
+	private renderConversation(width: number, height: number): string[] {
+		if (this.historyError) return [this.theme.fg("error", "Conversation unavailable"), ...wrapTextWithAnsi(cleanDashboardText(this.historyError), width), "r retries"];
+		if (!this.history) return ["Read in progress…"];
+		const meaningful = this.history.entries.filter((entry) => ["message", "custom_message", "compaction", "branch_summary"].includes(entry.type));
+		const start = Math.max(0, meaningful.length - this.messageLimit);
+		const row = this.state.snapshot?.sessions.find((item) => item.sessionId === this.history?.id);
+		const measure = Math.min(112, width);
+		if (!this.conversation) this.conversation = new AgentConversation(meaningful.slice(start), row?.cwd ?? ".", this.tui as TUI, this.expanded, this.showThinking);
+		if (this.conversationWidth !== undefined && this.conversationWidth !== measure && !this.pendingAnchor) this.rememberAnchor();
+		this.conversationWidth = measure;
+		this.document = this.conversation.render(measure);
+		const top = `${start ? `${start} earlier messages · o loads more` : "Start of conversation"}${this.history.partial ? " · partial file capture" : ""}`;
+		this.viewport = Math.max(1, height - 1);
+		if (this.pendingAnchor && !this.follow) {
+			const anchor = this.document.anchors.find((item) => item.id === this.pendingAnchor?.id);
+			if (anchor) this.scroll = anchor.line + this.pendingAnchor.offset;
+			this.pendingAnchor = undefined;
+		}
+		this.scroll = this.follow ? Math.max(0, this.document.lines.length - this.viewport) : Math.max(0, Math.min(this.scroll, this.document.lines.length - this.viewport));
+		const gutter = " ".repeat(Math.min(3, Math.floor((width - measure) / 2)));
+		const content = this.document.lines.slice(this.scroll, this.scroll + this.viewport).map((line) => gutter + line);
+		return [this.theme.fg("dim", `${top} · ${this.scroll + (this.document.lines.length ? 1 : 0)}–${Math.min(this.document.lines.length, this.scroll + this.viewport)} / ${this.document.lines.length}`), ...(content.length ? content : ["No conversation messages yet."])];
 	}
-	private emptyLabel(section?: DashboardSection): string {
-		if (section?.error !== undefined) return "Enter reads the source error";
-		return this.loading ? "Read in progress…" : "None found.";
+	private renderResult(width: number, height: number): string[] {
+		const lines = wrapTextWithAnsi(cleanDashboardText(this.state.actionResult ?? ""), width);
+		this.resultLength = lines.length;
+		this.resultScroll = Math.min(this.resultScroll, Math.max(0, lines.length - height));
+		return lines.slice(this.resultScroll, this.resultScroll + height);
 	}
-	invalidate(): void { this.input.invalidate(); this.messageMarkdown?.component.invalidate(); }
-	dispose(): void { this.closed = true; this.generation++; this.descriptionGeneration++; this.latestRead?.abort(); this.input.focused = false; }
-}
-
-async function interactiveDashboard(sources: AgentObservationSources, ctx: ExtensionContext, actions?: DashboardActions): Promise<void> {
-	const state: DashboardState = { tab: "sessions", filter: "", selected: {} };
-	for (;;) {
-		const request = await ctx.ui.custom<DashboardActionRequest | undefined>((tui, theme, keys, done) => new AgentDashboard(sources, tui, theme, keys, done, state, Boolean(actions)), {
-			overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: { top: 1, bottom: 1 } },
-		});
-		if (!request || !actions) return;
-		// Close the native overlay before opening dialogs; never leave a hidden focused component.
-		const parent = state.reader?.action ? state.reader.parent : state.reader;
-		try {
-			const result = await actions.run(request.target);
-			if (result !== undefined) state.reader = { title: "Action result", target: request.target, lines: [result], scroll: 0, parent, action: true };
-		} catch (error) { state.reader = { title: "Action refused", target: request.target, lines: [errorText(error)], scroll: 0, parent, action: true }; }
-		// Action text is a receipt, not inventory evidence, even when the action fails.
-		state.snapshot = await readAgentDashboard(sources);
+	private renderHelp(width: number, height: number): string[] {
+		const lines = ["Agent board", "", "↑↓ or j/k selects a session. Page Up/Down moves a page. Home/End reaches either end.", "Enter opens the conversation. / searches name, task, place, model, state or ID. Enter keeps a filter; Escape cancels its edit.", "m opens a message. Enter sends to an idle agent or steers active work. Escape keeps the draft. n starts a new agent.", "a opens all native actions. Actions retain their trust and ownership checks.", "", "Conversation", "↑↓ scrolls. Page Up/Down or b/Space pages. Home starts; End follows new output. o loads earlier messages.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A dead writer claim shows Orphaned. The board never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files use a bounded tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Refresh runs once per second while this overlay is open. Only changed files are parsed. Escape returns or closes."];
+		const wrapped = lines.flatMap((line) => wrapTextWithAnsi(line, width));
+		this.helpScroll = Math.min(this.helpScroll, Math.max(0, wrapped.length - height));
+		return wrapped.slice(this.helpScroll, this.helpScroll + height);
 	}
+	invalidate(): void { this.rememberAnchor(); this.input.invalidate(); this.preview?.component.invalidate(); this.conversation?.invalidate(); }
+	dispose(): void { this.closed = true; this.historyGeneration++; if (this.timer) clearInterval(this.timer); this.timer = undefined; this.input.focused = false; }
 }
 
 export async function showAgentDashboard(sources: AgentObservationSources, ctx: ExtensionContext, actions?: DashboardActions): Promise<void> {
-	if (ctx.mode === "tui") return interactiveDashboard(sources, ctx, actions);
-	const text = dashboardText(await readAgentDashboard(sources));
-	if (ctx.hasUI) ctx.ui.notify(text, "info");
-	else process.stderr.write(`${text}\n`);
+	if (ctx.mode !== "tui") {
+		const text = dashboardText(await readAgentDashboard(sources));
+		if (ctx.hasUI) ctx.ui.notify(text, "info"); else process.stderr.write(`${text}\n`);
+		return;
+	}
+	const state: DashboardState = { filter: "", drafts: new Map() };
+	for (;;) {
+		const request = await ctx.ui.custom<ActionRequest | undefined>((tui, theme, keys, done) => new AgentDashboard(sources, tui, theme, keys, done, state, actions), {
+			overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: { top: 1, bottom: 1 } },
+		});
+		if (!request || !actions) return;
+		try { const result = await actions.run(request.target); if (result !== undefined) state.actionResult = result; }
+		catch (error) { state.actionResult = `Refused: ${errorText(error)}`; }
+	}
 }

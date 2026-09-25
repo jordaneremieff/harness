@@ -24,6 +24,7 @@ import { getAgentDir, hasTrustRequiringProjectResources, type ModelRuntime, Proj
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import { createAgentCommand, type AgentSessionSummary, type AgentCommandAction } from "./command.ts";
+import { AgentDashboardData } from "./dashboard-data.ts";
 import { PEER_OUTCOME_DISPLAY_LIMIT, renderAgentCall, renderAgentResult, renderCompactCall, renderCompactResult, renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
 import { aggregateFooter, FOOTER_ENTRY, formatAgentTotals, restoreFooter, SessionFooter, WORK_STATUS_REQUEST, WORK_STATUS_SNAPSHOT, type AgentFooterState, type DetachedFooterState, type FooterCheckpoint, type FooterTotals } from "./footer.ts";
 import { isManagedChild } from "./host-role.ts";
@@ -1702,6 +1703,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	let dashboardData: AgentDashboardData | undefined;
+	const getDashboardData = () => dashboardData ??= new AgentDashboardData(join(resolve(process.env.PI_AGENT_SESSIONS_DIR ?? join(process.env.PI_AGENT_DIR ?? getAgentDir(), "agent-sessions")), "native"));
 	const commandDefaults = (ctx: ExtensionContext) => ({ cwd: ctx.cwd, model: hostModel(ctx), thinkingLevel: pi.getThinkingLevel() });
 	const sessionHelp = "Type part of a session name or directory, then press Tab to insert its ID.";
 	const command = createAgentCommand(ownedActions([
@@ -1779,10 +1782,14 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			run: async (args, ctx) => (await getManager()).unbindPlace(resolve(ctx.cwd, args[0])),
 		},
 	]), {
-		describe: async (sessionId) => (await getManager()).describe(sessionId),
 		sessions: async () => (await getManager()).sessionSummaries(),
 		runs: async () => (await getManager()).detachedRunViews(),
-		inspect: async (sessionId, options, signal) => (await getManager()).inspect(sessionId, options, signal),
+		board: async () => {
+			const owner = await getManager();
+			const state = owner.restartState();
+			return (await getDashboardData()).read({ held: state.sessions, active: owner.activeSessionIds(), busy: state.busy, runs: owner.detachedRunViews() });
+		},
+		conversation: async (sessionId) => (await getDashboardData()).conversation(sessionId),
 	});
 	pi.registerCommand("agent", command);
 	pi.registerCommand("restart", createRestartCommand({ hosts: agentRestartHosts, managedChild: (ctx) => owners.workers.has(ctx.sessionManager.getSessionId()) || isManagedChild(pi.events, ctx.sessionManager.getSessionId()) }));

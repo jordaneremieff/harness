@@ -8,7 +8,6 @@ import { mock, test } from "node:test";
 import { createAgentSessionRuntime, createAgentSessionServices, createAgentSessionFromServices, ModelRuntime, ProjectTrustStore, SessionManager, type AgentSession, type AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
 import { ASSOCIATION_ENTRY, associatedSessions } from "./associations.ts";
 import { AgentStore } from "./store.ts";
-import { dashboardText, readAgentDashboard } from "./dashboard.ts";
 import { FOOTER_ENTRY, type FooterCheckpoint } from "./footer.ts";
 import type { AgentManager } from "./index.ts";
 import type { AgentWorkerSession } from "./worker.ts";
@@ -280,16 +279,14 @@ for (const state of ["stopping", "cleanup-incomplete", "terminal"] as const) tes
 		}
 		const owner = f.owner(); assert.ok(owner);
 		const claims = f.claims(), starts = f.events.filter((event) => event.type === "start").length;
-		const snapshot = await readAgentDashboard({ sessions: () => owner.sessionSummaries(), runs: async () => owner.detachedRunViews() });
-		assert.equal(snapshot.sessions.error, undefined); assert.equal(snapshot.sessions.records.length, 3);
-		const rows = snapshot.sessions.records.map((target) => { assert.equal(target.kind, "session"); return target.session; });
+		const rows = await owner.sessionSummaries();
+		assert.equal(rows.length, 3);
 		const row = rows.find((row) => row.sessionId === id); assert.ok(row);
 		assert.equal(row.live, false); assert.equal(row.provenance, "stored"); assert.equal(row.hostState, state);
 		assert.equal(row.operation, undefined); assert.equal(row.model, undefined);
 		assert.match(row.firstMessage ?? "", /SAVED_WORK/u);
 		assert.equal(rows.find((row) => row.sessionId === healthy)?.provenance, "live");
 		assert.equal(rows.find((row) => row.sessionId === stored)?.provenance, "stored");
-		assert.match(dashboardText(snapshot), new RegExp(`Host ${state}`, "u"));
 		assert.deepEqual(f.claims(), claims); assert.equal(f.events.filter((event) => event.type === "start").length, starts);
 		const second = await f.create();
 		assert.equal(f.owner(), owner); assert.deepEqual(f.claims(), claims);

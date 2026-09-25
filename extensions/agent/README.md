@@ -6,8 +6,8 @@ Pi owns resources, context, model requests, extension events, queues, and
 compaction. The primary session stays available while the agent works. The
 separate `subagent` extension remains independent.
 
-This extension provides runtime tools and a native `/agent` command with a
-session and detached-run dashboard with read-only inspection and explicit actions.
+This extension provides runtime tools and a native `/agent` board for session
+supervision, readable conversations, messages, and explicit actions.
 It also provides `/restart` for the current interactive Pi CLI process.
 It does not provide a conversation editor or workspace.
 
@@ -136,94 +136,74 @@ opens a session nor changes task admission, delivery, or lifecycle behavior.
 
 ### Observe sessions and runs
 
-Bare `/agent` reads the existing session inventory and detached-run records
-without opening stored sessions for writing or starting work. Its native overlay
-stays independent of editor widgets and footer height. The framed browser puts
-session names first, then the first message or directory when no name exists.
-A second row shows execution state, modification age (`mod`, not run time), and
-available model/thinking information. Duplicate titles receive a short directory
-or distinguishing ID suffix, with space reserved even for long titles.
-Active work precedes recent records. Selection follows the exact ID across
-refreshes. Wide terminals put the selected session's latest message text before
-its task, configuration, parents, and identity. Narrow terminals prioritize the
-task and latest text below the list. The footer shows Escape for back or close.
+Bare `/agent` and **Ctrl+Alt+G** open a board for supervising ordinary sessions.
+Each session occupies one row: state, title, place, model/thinking level, spend,
+and age of the last file update. Working sessions come first, followed by
+sessions that need attention and date groups. The board windows the full list;
+it does not impose a display-count cap. The header shows active work, attention,
+and total retained spend. Selection follows the full session ID across refreshes.
 
-Use **/** to filter by name, first message, task, directory, ID, displayed state,
-or known provider/model/thinking values, including selected configuration already
-read. The dashboard retains these values across inventory refreshes and action
-dialogs until a new selected description replaces them. **Enter** keeps the
-filter; **Escape** clears it while the filter input has focus. The filter searches the entire returned inventory before the display cap.
-The heading separates total, matching, shown, and omitted records. Stored sessions
-have no live owner status; detached progress is a recorded observation, not a live
-status query. Empty and unavailable sources appear separately. Open an unavailable
-source to read its complete error rather than a clipped list preview.
+The selected preview leads with the latest assistant reply, rendered as Markdown.
+It shows current work, configuration, latest-turn duration, tool-call count, and
+cost before the clipped original task and identity. Wide terminals place the
+preview beside the board; narrow terminals place it below. Detached runs share
+session rows instead of a separate tab.
 
-- **Tab** changes sections. **j/k**, configured selection keys, and page keys move
-  the selected row. **Home/End** jumps to the first/last displayed record.
-  **Enter** opens its evidence.
-- Selected previews and session readers render readable message text with Pi's
-  Markdown component, including headings, emphasis, lists, code, and tables. Terminal controls are
-  removed before rendering. The renderer reflows on resize and invalidates styles
-  with the host theme. Serialized inspection and retained result sources stay
-  literal and separate from message formatting. Its header
-  identifies the session and the owner-state boundary. **[ / ]** selects an entry;
-  **Enter** opens its serialized inspection representation, not raw storage.
-  The reader reports omission counts for provider signatures, image payloads,
-  and redacted thinking. Non-text entries without a readable preview explicitly
-  direct the reader to the inspection source. The scrollable detail also
-  includes capture limits, current operation when known, retained result source,
-  owner errors, configuration, and known parents. **o** reads an
-  older page and **n** reads the next source chunk. Each request uses the inspection
-  service's exact cursor or offset. A final chunk does not include earlier chunks.
-- A run reader shows recorded error, result summary, and progress independently,
-  with timestamps and the current native session ID. **s** inspects that session.
-  Run summaries are not complete session results. Result previews and source
-  chunks retain their partial labels; a truncated owner error has no continuation
-  endpoint. Read source entries for retained evidence, not an invented full result.
-- **j/k** and page keys scroll readers and help. **Escape**, **b**, or the configured
-  cancel key returns to the previous view. **Escape** also closes the list.
-  **?** shows key help.
-- **r** refreshes the inventory or requests the newest session inspection and
-  selected configuration. It returns a run reader to a refreshed inventory.
-  There is no poller.
-- **a** opens the native action menu. The dashboard closes its overlay before a
-  native dialog and restores the selected view afterward. Each completed, cancelled,
-  or failed action refreshes both inventories while preserving the filter and
-  selected ID. A failed inventory read replaces stale rows with an unavailable
-  source and its error. Action text never supplies inventory state. The same command table,
-  validator, and action closures serve slash input and dashboard actions. Only a
-  correctly typed session or run argument receives a selected ID; directory and
-  creation actions prompt for their own arguments. Interruptive actions require
-  confirmation. Cancel leaves work untouched. Results and refusals appear in a
-  scrollable reader. Without a selected target, the footer labels the chooser
-  **all actions**, and target-dependent actions prompt for an ID. A returned
-  receipt is not proof of task completion.
+| Key | Action |
+| --- | --- |
+| Up/Down or `j/k` | Select a session; scroll a conversation or result |
+| Page Up/Down or `b` / Space | Move a page |
+| Home/End | Reach the first/last session; start/follow a conversation |
+| `/` | Filter the full list by title, task, directory, model, state, or ID |
+| Enter in the filter | Keep the filter |
+| Enter on a row | Read the current conversation branch |
+| `m` | Open an inline message draft for the selected session |
+| `n` | Open an inline task draft for a new agent |
+| Enter in a draft | Send to an idle session or steer active work |
+| `a` | Open all native actions |
+| `x` or Pi's tool-expansion key | Expand or collapse tools and summaries |
+| Pi's thinking-visibility key | Show or hide thinking in the conversation |
+| `o` | Load earlier conversation messages |
+| `r` | Refresh immediately |
+| `?` | Read controls and observation boundaries |
+| Escape | Cancel an input edit, return to the board, or close |
 
-Selection reads configuration through the manager's read-only description path.
-It also reads one bounded recent inspection page from only the selected session.
-The latest nonempty assistant, user, or tool-result text receives a role, entry ID,
-and partial-text label when applicable. No text in that page does not establish
-an empty transcript; Enter and older-page navigation remain available. Selection
-changes, empty selection, and disposal cancel the preview request and reject late
-responses. Refresh requests new evidence. No background transcript scan or poller
-reads other sessions for previews or search.
-A live model/thinking pair comes from the local owner. A stored pair appears only
-when the retained session contains both model and thinking-level records; it does
-not imply a live owner. Unread stored rows say **select for model**. The selected
-description supplies the row and detail without a scan of every session file.
-Known parents come only from association sources available to the manager,
-not from directory or name guesses.
-An empty parent list does not establish that the session has no parent elsewhere.
+The conversation uses Pi's exported native user, assistant, tool, custom-message,
+and summary components. Built-in tools use Pi's tool definitions; other tools
+use Pi's generic renderer. No tool executes during rendering. Tools and thinking
+start collapsed. The conversation follows new persisted output until the operator
+scrolls up; End resumes tail-follow. Earlier-message loading, expansion, and
+resize preserve the browsed message. Images appear as labels and provider
+signatures are omitted. Text fields have a marked display bound.
+`agent_inspect` remains the model-facing source inspection surface.
 
-Inspection never takes a writer claim on a stored session. Explicit actions keep
-all existing trust, ownership, cancellation, and refusal rules. Status action text
-is displayed as returned; the dashboard does not parse it into execution state.
-Use `/agent help` for the same actions outside the dashboard.
+The composer uses native input and the same command actions as `/agent send`,
+`/agent steer`, and `/agent new`. It rechecks ownership at submission. Another
+Pi window receives no message through this board; a short refusal identifies
+its owner. Detached steering uses the existing detached control path. Escape
+retains a draft; failed admission retains it too. A receipt does not prove
+message delivery or completed work. Native action dialogs close the overlay
+first, then restore selection and conversation with a scrollable result.
 
-RPC receives a text snapshot through a native notification. Print/JSON mode
-writes the snapshot to stderr, leaving protocol stdout and model context
-unchanged. This fallback applies to the bare dashboard command; action output
-retains the native notification behavior described above.
+While open, the board refreshes once per second. It stats native session files
+and caches digests by file identity, size, and modification metadata. Only changed
+files are parsed; the selected conversation has its own cache. Close disposes
+the refresh clock. Observation never claims a writer, repairs a tail, opens a
+session for writing, or persists an index. File captures are bounded; oversized
+files use a header plus a bounded tail. Missing ancestry and capture limits
+remain partial, and `≥` marks incomplete spend. Spend includes retained native
+usage across branches; tool counts and latest output describe the current branch.
+
+Local manager activity, detached records, and read-only writer claims supply
+ownership. A same-host live PID plus a pending transcript turn identifies work
+in another window. Dead claims show Orphaned; foreign-host or unreadable claims
+remain unavailable for control. PID reuse limits liveness certainty. Transcript
+observations include persisted messages, not uncommitted streaming tokens.
+The help view holds these boundaries instead of repeated caveats on every row.
+
+Slash actions and completion remain available without the board. RPC receives
+a digest snapshot through a native notification. Print/JSON writes it to stderr,
+leaving protocol stdout and model context unchanged.
 
 ### Footer activity and price
 
@@ -810,7 +790,8 @@ editor tests cover command completion. Synthetic inspection tests cover typed
 omissions, unchanged native entries, and Unicode continuation through live-owner
 and read-only projections. Loader tests verify the public inspection registration;
 they do not establish behavior in an already-loaded host. Component tests cover
-dashboard paging, omission labels, refresh, disposal, source failures, and send-call expansion. Native TUI changes
+board filtering, uncapped paging, native chat components, message drafts,
+refresh, disposal, source failures, and read-only digest boundaries. Native TUI changes
 also require an isolated interactive or PTY check for keys, focus, resize, and
 tool expansion; component snapshots alone do not establish those behaviors.
 

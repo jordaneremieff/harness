@@ -110,7 +110,7 @@ export async function executeAgentAction(action: AgentCommandAction, args: strin
 function targetArgument(argument: CommandArgument, target?: DashboardTarget): string | undefined {
 	if (!target) return undefined;
 	if (argument.complete === "session" || argument.complete === "session-control") return target.kind === "session" ? target.session.sessionId : target.run.currentSessionId ?? target.run.sessionId;
-	if (argument.complete === "run" && target.kind === "run") return target.run.runId;
+	if (argument.complete === "run") return target.kind === "run" ? target.run.runId : target.session.detachedRunId;
 	return undefined;
 }
 
@@ -183,7 +183,16 @@ export function createAgentCommand(actions: AgentCommandAction[], sources: Agent
 	const openDashboard = async (ctx: ExtensionContext): Promise<void> => {
 		if (!ctx.hasUI || ctx.mode !== "tui" || dashboardOpen) return;
 		dashboardOpen = true;
-		try { await showAgentDashboard(sources, ctx, { run: (target) => chooseDashboardAction(commands, target, ctx) }); }
+		try {
+			await showAgentDashboard(sources, ctx, {
+				run: (target) => chooseDashboardAction(commands, target, ctx),
+				compose: async (mode, sessionId, text) => {
+					const action = find(mode);
+					if (!action) throw new Error(`Agent action unavailable: ${mode}`);
+					return executeAgentAction(action, mode === "new" ? [text] : [sessionId ?? "", text], ctx);
+				},
+			});
+		}
 		finally { dashboardOpen = false; }
 	};
 	const showDashboard = (ctx: ExtensionContext) => ctx.mode === "tui" ? openDashboard(ctx) : showAgentDashboard(sources, ctx);
