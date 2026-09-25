@@ -37,7 +37,7 @@ const VALUE_OPTIONS = new Set([
 	"preferred",
 	"scope",
 ]);
-const FLAG_OPTIONS = new Set(["allow-home-credentials", "reveal"]);
+const FLAG_OPTIONS = new Set(["allow-home-credentials", "reveal", "summary"]);
 const EVIDENCE_ROOT = join(REPOSITORY_ROOT, ".evals");
 
 function parseArguments(args: string[]): ParsedArguments {
@@ -156,7 +156,7 @@ Commands:
   validate   <suite>
   plan       <suite> --participant <provider/model:thinking> --repetitions <n> <authority options>
   run        <suite> <plan options> --approve <sha256:digest>
-  inspect    <run-id> [--reveal]
+  inspect    <run-id> [--summary | --reveal] [--case <case-id> ...]
   adjudicate <run-id> --verdict <pass|fail|inconclusive> --notes <text> [--preferred <label>] [--scope usable-executions]
   delete     <run-id> --approve <run-id>
 
@@ -166,6 +166,7 @@ Authority options:
   --grant-effect <effect>        Repeat for each suite-requested effect.
 
 Selection options --participant, --case, and --variant are repeatable. The run command requires the exact digest printed by plan.
+Inspect --summary omits evidence payloads. Inspect --case selects planned cases and retains whole-run coverage; without --summary it includes full case evidence.
 `;
 }
 
@@ -203,11 +204,11 @@ export function refineOperationalStatus(
 	return "failed";
 }
 
-async function executeRun(parsed: ParsedArguments): Promise<Record<string, unknown>> {
+async function executeRun(parsed: ParsedArguments, evidenceRoot: string): Promise<Record<string, unknown>> {
 	const { plan, suite } = await planned(parsed);
 	const approval = one(parsed, "approve");
 	if (approval !== plan.digest) throw new Error(`Approval digest mismatch. Exact plan digest: ${plan.digest}`);
-	const prepared = prepareRun(EVIDENCE_ROOT, plan);
+	const prepared = prepareRun(evidenceRoot, plan);
 	const state = prepared.state;
 	state.phase = "running";
 	state.operational.startedAt = new Date().toISOString();
@@ -257,7 +258,7 @@ export function runExitCode(state: RunState): number {
 	return state.operational.status !== "completed" || state.quality.status === "fail" ? 1 : 0;
 }
 
-export async function runCli(args = process.argv.slice(2)): Promise<number> {
+export async function runCli(args = process.argv.slice(2), evidenceRoot = EVIDENCE_ROOT): Promise<number> {
 	try {
 		const parsed = parseArguments(args);
 		switch (parsed.command) {
@@ -294,17 +295,20 @@ export async function runCli(args = process.argv.slice(2)): Promise<number> {
 				return 0;
 			}
 			case "run": {
-				const result = await executeRun(parsed);
+				const result = await executeRun(parsed, evidenceRoot);
 				process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 				const state = result.state as RunState;
 				return runExitCode(state);
 			}
-			case "inspect":
-				assertAllowed(parsed, [], ["reveal"]);
-				process.stdout.write(
-					`${JSON.stringify(inspectRun(EVIDENCE_ROOT, positional(parsed, "run-id"), parsed.flags.has("reveal")), null, 2)}\n`,
-				);
+			case "inspect": {
+				assertAllowed(parsed, ["case"], ["reveal", "summary"]);
+				const inspected = inspectRun(evidenceRoot, positional(parsed, "run-id"), parsed.flags.has("reveal"), {
+					summary: parsed.flags.has("summary"),
+					caseIds: values(parsed, "case"),
+				});
+				process.stdout.write(`${JSON.stringify(inspected, null, 2)}\n`);
 				return 0;
+			}
 			case "adjudicate": {
 				assertAllowed(parsed, ["verdict", "notes", "preferred", "scope"], []);
 				const verdict = one(parsed, "verdict") as QualityStatus;
@@ -316,7 +320,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<number> {
 					throw new Error("--scope must be usable-executions");
 				}
 				const state = adjudicateRun(
-					EVIDENCE_ROOT,
+					evidenceRoot,
 					positional(parsed, "run-id"),
 					verdict,
 					one(parsed, "notes"),
@@ -329,7 +333,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<number> {
 			case "delete": {
 				assertAllowed(parsed, ["approve"], []);
 				const runId = positional(parsed, "run-id");
-				deleteRun(EVIDENCE_ROOT, runId, one(parsed, "approve"));
+				deleteRun(evidenceRoot, runId, one(parsed, "approve"));
 				process.stdout.write(`${JSON.stringify({ deleted: runId }, null, 2)}\n`);
 				return 0;
 			}

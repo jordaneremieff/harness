@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
 	adjudicateRun,
+	blindVariantLabels,
 	buildReviewArtifact,
 	buildRunCoverage,
 	deleteRun,
@@ -328,6 +329,239 @@ describe("run coverage and review evidence", () => {
 			const excluded = entryFor(review.cases[0].entries, executionId(participants[1]));
 			assert.deepEqual(usable.events, transcriptEvents(0));
 			assert.deepEqual(excluded.events, transcriptEvents(1));
+		} finally {
+			removeFixture(fixture);
+		}
+	});
+});
+
+describe("inspection views", () => {
+	it("projects complete evidence without payloads or raw identities", () => {
+		const fixture = createFixture("completed", [[], []]);
+		try {
+			const summary = inspectRun(fixture.root, fixture.runId, false, { summary: true });
+			assert.deepEqual(summary, {
+				view: { mode: "summary", scope: "whole-run", caseIds: ["case"] },
+				runId: fixture.runId,
+				state: { phase: "terminal", operational: { status: "completed" }, quality: { status: "not_assessed" } },
+				reviewStatus: "available",
+				coverage: {
+					source: "current-execution-artifacts",
+					wholeRun: { plannedExecutions: 2, usableExecutions: 2, excludedExecutions: 0, missingExecutions: 0 },
+				},
+				note: "Usable evidence has no execution errors; it is not a quality verdict. Missing executions are included in excludedExecutions.",
+				cases: [
+					{
+						id: "case",
+						title: "Case",
+						coverage: { plannedExecutions: 2, usableExecutions: 2, excludedExecutions: 0, missingExecutions: 0 },
+						entries: participants.map(({ provider, model, thinking }) => ({
+							label: "A",
+							participant: { provider, model, thinking },
+							repetition: 1,
+							evidenceStatus: "usable",
+							reviewEntry: "available",
+						})),
+					},
+				],
+			});
+			const full = inspectRun(fixture.root, fixture.runId, false);
+			assert.deepEqual(full, {
+				state: readJson(join(fixture.directory, "state.json")),
+				review: readJson(join(fixture.directory, "review.json")),
+			});
+			assert.ok(JSON.stringify(summary).length < JSON.stringify(full).length);
+		} finally {
+			removeFixture(fixture);
+		}
+	});
+
+	it("keeps excluded evidence and missing planned repetitions distinct without counting them twice", () => {
+		const fixture = createFixture("partial", [[], providerError]);
+		try {
+			const planned = readJson<EvaluationPlan>(join(fixture.directory, "plan.json"));
+			planned.invocation.repetitions = 2;
+			planned.variants.push({ id: "other-variant", description: "Other", config: { marker: "variant-config-canary" } });
+			writeJson(join(fixture.directory, "plan.json"), planned);
+			const labels = blindVariantLabels(planned, fixture.runId);
+			writeJson(join(fixture.directory, "variant-map.json"), { variantToLabel: labels });
+			const summary = inspectRun(fixture.root, fixture.runId, false, { summary: true });
+			assert.deepEqual(summary.coverage, {
+				source: "current-execution-artifacts",
+				wholeRun: { plannedExecutions: 8, usableExecutions: 1, excludedExecutions: 7, missingExecutions: 6 },
+			});
+			const cases = summary.cases as Array<{
+				entries: Array<{ label: string; repetition: number; evidenceStatus: string; errorTypes?: string[] }>;
+			}>;
+			assert.equal(cases[0].entries.length, 8);
+			assert.deepEqual(cases[0].entries[4].errorTypes, ["AssistantError", "AssistantStopReason"]);
+			assert.equal(cases[0].entries[4].evidenceStatus, "excluded");
+			assert.equal(cases[0].entries[1].label, labels["other-variant"]);
+			assert.equal(cases[0].entries[2].repetition, 2);
+			assert.equal(cases[0].entries[2].evidenceStatus, "missing");
+			assert.deepEqual(cases[0].entries[2].errorTypes, ["MissingExecutionEvidence"]);
+			for (const omitted of [
+				"other-variant",
+				"variant-config-canary",
+				"executionId",
+				"checks",
+				"events",
+				"Provider refused",
+			]) {
+				assert.ok(!JSON.stringify(summary).includes(omitted), omitted);
+			}
+		} finally {
+			removeFixture(fixture);
+		}
+	});
+
+	it("distinguishes a present execution error name from actual absent evidence", () => {
+		const fixture = createFixture("partial", [
+			[],
+			[{ type: "MissingExecutionEvidence", message: "Recorded execution error." }],
+		]);
+		try {
+			const summary = inspectRun(fixture.root, fixture.runId, false, { summary: true });
+			assert.deepEqual(summary.coverage, {
+				source: "current-execution-artifacts",
+				wholeRun: { plannedExecutions: 2, usableExecutions: 1, excludedExecutions: 1, missingExecutions: 0 },
+			});
+			const cases = summary.cases as Array<{ entries: Array<{ evidenceStatus: string; errorTypes?: string[] }> }>;
+			assert.equal(cases[0].entries[1].evidenceStatus, "excluded");
+			assert.deepEqual(cases[0].entries[1].errorTypes, ["MissingExecutionEvidence"]);
+			writeJson(join(fixture.directory, "execution-files.json"), { files: [`${executionId(participants[1])}.json`] });
+			const selected = inspectRun(fixture.root, fixture.runId, false, { caseIds: ["case"] });
+			const totals = { plannedExecutions: 2, usableExecutions: 0, excludedExecutions: 2, missingExecutions: 1 };
+			assert.deepEqual(selected.coverage, {
+				source: "current-execution-artifacts",
+				wholeRun: totals,
+				selectedCases: totals,
+			});
+			const selectedCases = selected.cases as typeof cases;
+			assert.deepEqual(
+				selectedCases[0].entries.map((entry) => entry.evidenceStatus),
+				["missing", "excluded"],
+			);
+		} finally {
+			removeFixture(fixture);
+		}
+	});
+
+	it("shows planned evidence and absent review before execution without creating artifacts", () => {
+		const root = mkdtempSync(join(tmpdir(), "evals-inspect-prepared-"));
+		try {
+			const prepared = prepareRun(root, plan(root));
+			for (const phase of ["prepared", "running", "terminal"] as const) {
+				prepared.state.phase = phase;
+				if (phase === "terminal") prepared.state.operational.status = "failed";
+				writeJson(join(prepared.directory, "state.json"), prepared.state);
+				const summary = inspectRun(root, prepared.runId, false, { summary: true });
+				assert.deepEqual(summary.coverage, {
+					source: "current-execution-artifacts",
+					wholeRun: { plannedExecutions: 2, usableExecutions: 0, excludedExecutions: 2, missingExecutions: 2 },
+				});
+				assert.equal(summary.reviewStatus, "missing");
+				assert.deepEqual((summary.state as { phase: string }).phase, phase);
+				assert.equal(existsSync(join(prepared.directory, "review.json")), false);
+				assert.equal(existsSync(join(prepared.directory, "execution-files.json")), false);
+			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("separates absent review entries from usable execution artifacts", () => {
+		const fixture = createFixture("completed", [[], []]);
+		try {
+			const reviewPath = join(fixture.directory, "review.json");
+			writeJson(reviewPath, { cases: [{ id: "case", entries: [] }] });
+			const summary = inspectRun(fixture.root, fixture.runId, false, { summary: true });
+			assert.equal(summary.reviewStatus, "available");
+			const cases = summary.cases as Array<{ entries: Array<{ evidenceStatus: string; reviewEntry: string }> }>;
+			assert.ok(
+				cases[0].entries.every((entry) => entry.evidenceStatus === "usable" && entry.reviewEntry === "missing"),
+			);
+			rmSync(reviewPath);
+			const detail = inspectRun(fixture.root, fixture.runId, false, { caseIds: ["case"] });
+			assert.equal(detail.reviewStatus, "missing");
+			assert.equal(Object.hasOwn(detail, "review"), false);
+			assert.deepEqual(detail.cases, summary.cases);
+		} finally {
+			removeFixture(fixture);
+		}
+	});
+
+	it("rejects unsafe selectors and reveal in compact output", () => {
+		const fixture = createFixture("completed", [[], []]);
+		try {
+			for (const summary of [false, true]) {
+				assert.throws(
+					() => inspectRun(fixture.root, fixture.runId, false, { summary, caseIds: ["case", "case"] }),
+					/duplicate/,
+				);
+				assert.throws(
+					() => inspectRun(fixture.root, fixture.runId, false, { summary, caseIds: ["unknown"] }),
+					/not in this run plan/,
+				);
+			}
+			assert.throws(() => inspectRun(fixture.root, fixture.runId, true, { summary: true }), /cannot be combined/);
+		} finally {
+			removeFixture(fixture);
+		}
+	});
+
+	it("keeps current artifact corruption visible in compact inspection", () => {
+		const fixture = createFixture("partial", [[], providerError]);
+		try {
+			const manifest = readJson<{ files: string[] }>(join(fixture.directory, "execution-files.json"));
+			const path = join(fixture.directory, "executions", manifest.files[0]);
+			const entry = readJson<{ result: { errors: unknown } }>(path);
+			entry.result.errors = { wrong: "shape" };
+			writeJson(path, entry);
+			const summary = inspectRun(fixture.root, fixture.runId, false, { summary: true });
+			assert.match(JSON.stringify(summary), /InvalidExecutionEvidence/);
+			writeFileSync(path, "{not-json");
+			assert.throws(() => inspectRun(fixture.root, fixture.runId, false, { summary: true }), SyntaxError);
+			writeJson(path, entry);
+			for (const invalid of [null, false, "", { cases: "bad" }]) {
+				writeJson(join(fixture.directory, "review.json"), invalid);
+				assert.throws(() => inspectRun(fixture.root, fixture.runId, false, { summary: true }), /Review artifact/);
+				assert.throws(() => inspectRun(fixture.root, fixture.runId, false, { caseIds: ["case"] }), /Review artifact/);
+				assert.doesNotThrow(() => inspectRun(fixture.root, fixture.runId, false));
+			}
+		} finally {
+			removeFixture(fixture);
+		}
+	});
+
+	it("leaves artifacts and scoped adjudication unchanged after compact and selected inspection", () => {
+		const fixture = createFixture("partial", [[], providerError]);
+		try {
+			const files = [
+				"plan.json",
+				"state.json",
+				"review.json",
+				"variant-map.json",
+				"execution-files.json",
+				...participants.map((participant) => `executions/${executionId(participant)}.json`),
+			];
+			const before = files.map((file) => readFileSync(join(fixture.directory, file), "utf8"));
+			inspectRun(fixture.root, fixture.runId, false, { summary: true });
+			const detail = inspectRun(fixture.root, fixture.runId, true, { caseIds: ["case"] });
+			assert.deepEqual(detail.review, readJson(join(fixture.directory, "review.json")));
+			assert.deepEqual(detail.variantMapping, { variantToLabel: { variant: "A" } });
+			assert.deepEqual(
+				files.map((file) => readFileSync(join(fixture.directory, file), "utf8")),
+				before,
+			);
+			adjudicateRun(fixture.root, fixture.runId, "pass", "Reviewed usable evidence.", "A", "usable-executions");
+			const record = readJson<AdjudicationRecord>(join(fixture.directory, "adjudication.json"));
+			assert.deepEqual(record.scope, { type: "usable-executions", executionIds: [executionId(participants[0])] });
+			assert.equal(
+				(inspectRun(fixture.root, fixture.runId, false, { summary: true }).state as { quality: { status: string } })
+					.quality.status,
+				"pass",
+			);
 		} finally {
 			removeFixture(fixture);
 		}

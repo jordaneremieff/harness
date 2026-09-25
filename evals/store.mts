@@ -15,6 +15,7 @@ import type {
 	AdjudicationRecord,
 	EvaluationPlan,
 	EvaluationSuite,
+	Participant,
 	QualityStatus,
 	RunCoverage,
 	RunState,
@@ -125,35 +126,59 @@ function executionErrorTypes(errors: unknown): string[] {
 	];
 }
 
-function plannedExecutionIds(plan: EvaluationPlan): string[] {
-	const executionIds: string[] = [];
+interface PlannedEvidenceSlot {
+	executionId: string;
+	caseId: string;
+	variantId: string;
+	participant: Participant;
+	repetition: number;
+}
+
+function plannedEvidenceSlots(plan: EvaluationPlan): PlannedEvidenceSlot[] {
+	const slots: PlannedEvidenceSlot[] = [];
 	for (const evaluationCase of plan.cases) {
 		for (const participant of plan.participants) {
 			for (let repetition = 1; repetition <= plan.invocation.repetitions; repetition += 1) {
 				for (const variant of plan.variants) {
-					executionIds.push(
-						[evaluationCase.id, participant.provider, participant.model, participant.thinking, repetition, variant.id]
+					slots.push({
+						executionId: [
+							evaluationCase.id,
+							participant.provider,
+							participant.model,
+							participant.thinking,
+							repetition,
+							variant.id,
+						]
 							.join("--")
 							.replace(/[^a-zA-Z0-9._-]/g, "_"),
-					);
+						caseId: evaluationCase.id,
+						variantId: variant.id,
+						participant,
+						repetition,
+					});
 				}
 			}
 		}
 	}
-	return executionIds;
+	return slots;
 }
 
-export function buildRunCoverage(directory: string, plan: EvaluationPlan): RunCoverage {
+function executionEvidenceById(directory: string): Map<string, StoredExecutionEvidence> {
 	const evidence = listExecutionEvidence(directory) as unknown as StoredExecutionEvidence[];
-	const evidenceById = new Map(
+	return new Map(
 		evidence
 			.filter((entry) => typeof entry.execution?.executionId === "string")
 			.map((entry) => [entry.execution.executionId, entry] as const),
 	);
+}
+
+function coverageForSlots(
+	slots: PlannedEvidenceSlot[],
+	evidenceById: Map<string, StoredExecutionEvidence>,
+): RunCoverage {
 	const usableExecutionIds: string[] = [];
 	const exclusions: RunCoverage["exclusions"] = [];
-	const plannedIds = plannedExecutionIds(plan);
-	for (const executionId of plannedIds) {
+	for (const { executionId } of slots) {
 		const entry = evidenceById.get(executionId);
 		if (!entry) {
 			exclusions.push({ executionId, errorTypes: ["MissingExecutionEvidence"] });
@@ -164,12 +189,16 @@ export function buildRunCoverage(directory: string, plan: EvaluationPlan): RunCo
 		else exclusions.push({ executionId, errorTypes });
 	}
 	return {
-		plannedExecutions: plannedIds.length,
+		plannedExecutions: slots.length,
 		usableExecutions: usableExecutionIds.length,
 		excludedExecutions: exclusions.length,
 		usableExecutionIds,
 		exclusions,
 	};
+}
+
+export function buildRunCoverage(directory: string, plan: EvaluationPlan): RunCoverage {
+	return coverageForSlots(plannedEvidenceSlots(plan), executionEvidenceById(directory));
 }
 
 export function buildReviewArtifact(
@@ -222,13 +251,163 @@ export function buildReviewArtifact(
 	};
 }
 
-export function inspectRun(evidenceRoot: string, runId: string, reveal: boolean): Record<string, unknown> {
+interface InspectOptions {
+	summary?: boolean;
+	caseIds?: string[];
+}
+
+interface InspectionReview {
+	cases: Array<{ id: string; entries: Array<{ executionId: string }> }>;
+}
+
+function assertInspectionReview(review: InspectionReview): void {
+	if (
+		!review ||
+		!Array.isArray(review.cases) ||
+		review.cases.some(
+			(value) =>
+				!value ||
+				typeof value.id !== "string" ||
+				!Array.isArray(value.entries) ||
+				value.entries.some((entry) => !entry || typeof entry.executionId !== "string"),
+		)
+	) {
+		throw new Error("Review artifact must contain case ids and execution entry arrays");
+	}
+}
+
+function coverageCounts(coverage: RunCoverage, slots: PlannedEvidenceSlot[], missing: Set<string>) {
+	const usable = new Set(coverage.usableExecutionIds);
+	const usableExecutions = slots.filter((slot) => usable.has(slot.executionId)).length;
+	return {
+		plannedExecutions: slots.length,
+		usableExecutions,
+		excludedExecutions: slots.length - usableExecutions,
+		missingExecutions: slots.filter((slot) => missing.has(slot.executionId)).length,
+	};
+}
+
+function inspectEvidenceSlot(
+	slot: PlannedEvidenceSlot,
+	label: unknown,
+	errorTypes: string[],
+	missing: boolean,
+	reviewed: boolean,
+) {
+	if (typeof label !== "string" || !/^(?:[A-Z]|V\d+)$/.test(label)) {
+		throw new Error("Variant mapping lacks a valid display label");
+	}
+	const evidenceStatus = missing ? "missing" : errorTypes.length === 0 ? "usable" : "excluded";
+	return {
+		label,
+		participant: {
+			provider: slot.participant.provider,
+			model: slot.participant.model,
+			thinking: slot.participant.thinking,
+		},
+		repetition: slot.repetition,
+		evidenceStatus,
+		...(errorTypes.length > 0 ? { errorTypes } : {}),
+		reviewEntry: reviewed ? "available" : "missing",
+	};
+}
+
+function inspectEvidenceView(
+	directory: string,
+	state: RunState,
+	review: InspectionReview | undefined,
+	options: InspectOptions,
+): Record<string, unknown> {
+	const plan = readJson<EvaluationPlan>(join(directory, "plan.json"));
+	const selected = new Set(options.caseIds ?? []);
+	if (selected.size !== (options.caseIds?.length ?? 0)) throw new Error("Case selection contains a duplicate");
+	for (const id of selected) {
+		if (!plan.cases.some((value) => value.id === id)) throw new Error(`Case is not in this run plan: ${id}`);
+	}
+	if (review !== undefined) assertInspectionReview(review);
+	const cases = plan.cases.filter((value) => selected.size === 0 || selected.has(value.id));
+	const slots = plannedEvidenceSlots(plan);
+	const evidenceById = executionEvidenceById(directory);
+	const missing = new Set(slots.filter((slot) => !evidenceById.has(slot.executionId)).map((slot) => slot.executionId));
+	const coverage = coverageForSlots(slots, evidenceById);
+	const exclusions = new Map(coverage.exclusions.map((entry) => [entry.executionId, entry.errorTypes]));
+	const mapping = readJson<{ variantToLabel: Record<string, string> }>(join(directory, "variant-map.json"));
+	const caseIds = new Set(cases.map((value) => value.id));
+	const inventories = cases.map((value) => {
+		const caseSlots = slots.filter((slot) => slot.caseId === value.id);
+		const reviewIds = new Set(
+			review?.cases.find((candidate) => candidate.id === value.id)?.entries.map((entry) => entry.executionId),
+		);
+		return {
+			id: value.id,
+			title: value.title,
+			coverage: coverageCounts(coverage, caseSlots, missing),
+			entries: caseSlots.map((slot) =>
+				inspectEvidenceSlot(
+					slot,
+					mapping.variantToLabel?.[slot.variantId],
+					exclusions.get(slot.executionId) ?? [],
+					missing.has(slot.executionId),
+					reviewIds.has(slot.executionId),
+				),
+			),
+		};
+	});
+	return {
+		view: {
+			mode: options.summary ? "summary" : "case-detail",
+			scope: selected.size > 0 ? "selected-cases" : "whole-run",
+			caseIds: cases.map((value) => value.id),
+		},
+		runId: state.runId,
+		state: options.summary
+			? {
+					phase: state.phase,
+					operational: { status: state.operational.status ?? null },
+					quality: { status: state.quality.status },
+				}
+			: state,
+		reviewStatus: review ? "available" : "missing",
+		coverage: {
+			source: "current-execution-artifacts",
+			wholeRun: coverageCounts(coverage, slots, missing),
+			...(selected.size > 0
+				? {
+						selectedCases: coverageCounts(
+							coverage,
+							slots.filter((slot) => caseIds.has(slot.caseId)),
+							missing,
+						),
+					}
+				: {}),
+		},
+		note: "Usable evidence has no execution errors; it is not a quality verdict. Missing executions are included in excludedExecutions.",
+		cases: inventories,
+		...(!options.summary && review
+			? { review: { ...review, cases: review.cases.filter((value) => caseIds.has(value.id)) } }
+			: {}),
+	};
+}
+
+export function inspectRun(
+	evidenceRoot: string,
+	runId: string,
+	reveal: boolean,
+	options: InspectOptions = {},
+): Record<string, unknown> {
+	if (options.summary && reveal)
+		throw new Error("--summary cannot be combined with --reveal; use full inspection to reveal variants");
 	const directory = runDirectory(evidenceRoot, runId);
 	const state = readJson<RunState>(join(directory, "state.json"));
-	const review = existsSync(join(directory, "review.json")) ? readJson(join(directory, "review.json")) : undefined;
+	const review = existsSync(join(directory, "review.json"))
+		? readJson<InspectionReview>(join(directory, "review.json"))
+		: undefined;
+	const view =
+		options.summary || options.caseIds?.length
+			? inspectEvidenceView(directory, state, review, options)
+			: { state, ...(review ? { review } : {}) };
 	return {
-		state,
-		...(review ? { review } : {}),
+		...view,
 		...(reveal ? { variantMapping: readJson(join(directory, "variant-map.json")) } : {}),
 	};
 }

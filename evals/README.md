@@ -42,6 +42,9 @@ npm run evals -- run prompts/wtf.eval.mts \
   --approve sha256:<exact-plan-digest>
 
 npm run evals -- inspect <run-id>
+npm run evals -- inspect <run-id> --summary
+npm run evals -- inspect <run-id> --summary --case <case-id>
+npm run evals -- inspect <run-id> --case <case-id> --case <another-case-id>
 npm run evals -- inspect <run-id> --reveal
 npm run evals -- adjudicate <run-id> --verdict pass --preferred A --notes "Human review notes"
 npm run evals -- adjudicate <partial-run-id> --verdict pass --scope usable-executions --notes "Scoped human review notes"
@@ -66,9 +69,23 @@ Quality states are `pass`, `fail`, `inconclusive`, and `not_assessed`. Operation
 
 Each run writes private evidence under `.evals/<run-id>/`, excluded from Git and npm install archives. Evidence includes the exact plan, state, generated Vitest config, bounded child logs, Vitest JSON, normalized executions, usage, errors, effective model data, and a review artifact. Terminal state and `review.json` both record coverage as `plannedExecutions`, `usableExecutions`, `excludedExecutions`, `usableExecutionIds`, and `exclusions`. Every exclusion carries its `executionId` and `errorTypes`; missing planned evidence is identified as `MissingExecutionEvidence`.
 
-`review.json` uses blinded variant labels and includes full synthetic fixture context. Entries with errors remain visible as `excluded`, including their outputs, normalized transcript events, usage, errors, and exclusion reason, but omit `checks` so those results cannot be treated as scored evidence. `variant-map.json` remains separate and appears only through `inspect --reveal`.
+`review.json` uses variant display labels and includes full synthetic fixture context. Entries with errors remain visible as `excluded`, including their outputs, normalized transcript events, usage, errors, and exclusion reason, but omit `checks` so those results cannot be treated as scored evidence. `variant-map.json` remains separate and appears in output only through `inspect --reveal`. Withholding that map does not make full inspection anonymous: execution identifiers include variant identifiers, state coverage repeats them, and evidence payloads can identify the variant.
 
 Deterministic checks are structural or lexical floors. Passing them does not establish semantic quality.
+
+### Navigate evidence
+
+Start with `inspect <run-id> --summary`. The compact JSON view separates the operational status from the recorded quality status. It reports whole-run planned, usable, excluded, and missing execution totals, followed by each planned case's totals and execution inventory. Each inventory entry identifies the variant by its existing display label, the requested participant by provider/model/thinking, the repetition, the evidence status, exclusion error types, and whether the review entry exists. No checks become scores, and no participants are ranked.
+
+`missingExecutions` is a subset of `excludedExecutions`, not an additional category. An absent planned execution has `evidenceStatus: "missing"` and `MissingExecutionEvidence`. A present execution with errors has `evidenceStatus: "excluded"`; an error-free execution is `usable`, regardless of check results or human quality. `reviewStatus` reports an absent review artifact, while `reviewEntry` reports absent case detail independently of execution availability. Prepared, running, and interrupted runs therefore retain their planned denominator even before review exists.
+
+Coverage in these navigation views comes from the saved plan and current execution artifacts, as the `coverage.source` field states. It does not rewrite saved coverage, operational state, review, or adjudication. During an active run, artifacts can change between reads; the view is not an atomic snapshot. Invalid JSON, malformed manifests, and unreadable referenced execution files remain errors rather than silently omitted evidence.
+
+Use repeatable `--case <case-id>` to select cases from that run's plan. Unknown, unplanned, and duplicate selections fail without output. Results retain plan order, not selector order. `view.scope` identifies a selected view, `coverage.wholeRun` retains the run denominator, and `coverage.selectedCases` reports the selected denominator. Unselected suite cases in `review.json` are not planned executions and do not appear as missing work in navigation views.
+
+Without `--summary`, `--case` includes the full selected review cases, including fixture input, outputs, transcript events, and excluded evidence. Saved state and review metadata, including their coverage and quality fields, still describe the whole run. With `--summary`, only the selected inventories appear. Plain `inspect` retains its original complete state and review output, including unplanned suite cases.
+
+Compact output omits raw execution and variant identifiers, variant configuration, fixture input, outputs, transcripts, usage, check results, and free-form error payloads. It reads the variant map internally to obtain display labels. `--summary --reveal` is rejected; use full or selected detail with `--reveal` instead. Compact output is a navigation view, not an anonymity guarantee: case titles, requested participant identities, and error type names remain visible. Full detail makes no anonymity promise.
 
 ## Pi adapter
 
