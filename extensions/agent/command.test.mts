@@ -11,7 +11,8 @@ import { defined } from "./test-assertions.mts";
 function registration() {
 	let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
 	registerAgentExtension({ registerShortcut() {}, registerTool() {}, registerMessageRenderer() {}, on() {}, getThinkingLevel: () => "off", registerCommand(name: string, options: typeof command) {
-		assert.equal(name, "agent"); command = options;
+		if (name === "agent") command = options;
+		else assert.equal(name, "restart");
 	} } as unknown as ExtensionAPI);
 	return command;
 }
@@ -41,6 +42,13 @@ function completionFixture(sessions: () => Promise<AgentSessionSummary[]> = asyn
 }
 
 describe("agent command discovery and help", () => {
+	it("registers restart only as a top-level command without an exit listener at load", () => {
+		const commands = new Map<string, unknown>();
+		const listeners = process.listenerCount("exit");
+		registerAgentExtension({ registerShortcut() {}, registerTool() {}, registerMessageRenderer() {}, on: () => () => {}, registerCommand(name: string, command: unknown) { assert.equal(commands.has(name), false); commands.set(name, command); } } as unknown as ExtensionAPI);
+		assert.deepEqual([...commands.keys()], ["agent", "restart"]);
+		assert.equal(process.listenerCount("exit"), listeners);
+	});
 	it("uses a short slash description and lists real actions with outcome descriptions", async () => {
 		const native = provider(registration());
 		const slash = await suggest(native, "/agent");

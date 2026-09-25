@@ -280,6 +280,7 @@ export class AgentWorkerSession {
 	hasActiveWork(): boolean {
 		return !this.terminal && Boolean(this.operation || this.tasks.size || this.controlTask || this.preflight || this.nativePreflights || (this.runtime && (!this.runtime.session.isIdle || this.runtime.session.isBashRunning || this.runtime.session.pendingMessageCount)));
 	}
+	hasUnsavedResult(): boolean { return this.unsavedResult !== undefined; }
 	footerState(): AgentFooterState {
 		return { active: this.hasActiveWork(), spend: { ...this.spend.total }, nested: this.nested.snapshot() };
 	}

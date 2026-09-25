@@ -27,6 +27,7 @@ import { createAgentCommand, type AgentSessionSummary, type AgentCommandAction }
 import { renderAgentCall, renderAgentResult, renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
 import { aggregateFooter, FOOTER_ENTRY, formatAgentTotals, restoreFooter, SessionFooter, WORK_STATUS_REQUEST, WORK_STATUS_SNAPSHOT, type AgentFooterState, type DetachedFooterState, type FooterCheckpoint, type FooterTotals } from "./footer.ts";
 import { isManagedChild } from "./host-role.ts";
+import { createRestartCommand, type RestartHosts } from "./restart.ts";
 import { ASSOCIATION_ENTRY, associatedSessions, associationReaches, type AssociationEntry, type AssociationSource } from "./associations.ts";
 import { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
 import { DetachedRuns, formatRun, MAX_SUMMARY_CHARS, type DetachedRunView } from "./detached.ts";
@@ -193,7 +194,7 @@ interface AgentOwners {
 	workers: Set<string>;
 }
 /** Tool-facing contract version of AgentManager; the process-global manager cache reuses only an exact protocol match. */
-const MANAGER_PROTOCOL = 1;
+const MANAGER_PROTOCOL = 2;
 const ownerKey = Symbol.for("pi.extension.agent.owners");
 const shared = globalThis as typeof globalThis & { [ownerKey]?: AgentOwners };
 if (!shared[ownerKey]) shared[ownerKey] = { managers: new Map(), creating: new Map(), workers: new Set() };
@@ -205,6 +206,7 @@ interface PrimaryOwner {
 	cwd: string;
 	status?: (text: string | undefined) => void;
 	published?: string;
+	saveFailed?: boolean;
 	footer: SessionFooter;
 	observe?: (totals: FooterTotals, checkpoint: FooterCheckpoint) => void;
 	pending: Map<string, { content: string; details: unknown }>;
@@ -260,7 +262,7 @@ export class AgentManager {
 		if (owners.workers.has(sessionId)) return;
 		const previous = this.primary.get(sessionId);
 		const footer = previous?.footer ?? new SessionFooter(retention?.checkpoint ?? restoreFooter([], sessionId), this.footerTotals());
-		const primary: PrimaryOwner = { sessionId, cwd, send, status, footer, observe: retention?.observe, pending: previous?.pending ?? new Map() };
+		const primary: PrimaryOwner = { sessionId, cwd, send, status, footer, observe: retention?.observe, saveFailed: previous?.saveFailed, pending: previous?.pending ?? new Map() };
 		this.primary.set(sessionId, primary);
 		this.refreshDetachedFooter();
 		this.watchRuns();
@@ -412,7 +414,8 @@ export class AgentManager {
 				primary.footer.saved.nested.incomplete ||= totals.nested.incomplete;
 				totals.nested.available = true;
 			}
-			try { primary.observe?.(totals, primary.footer.saved); } catch { /* Observation never controls execution. */ }
+			try { primary.observe?.(totals, primary.footer.saved); }
+			catch { primary.saveFailed = true; }
 			const text = formatAgentTotals(totals, this.detachedFooter);
 			if (primary.published === text) continue;
 			try { primary.status?.(text); primary.published = text; } catch { /* Presentation does not own execution. */ }
@@ -1161,6 +1164,19 @@ export class AgentManager {
 		});
 	}
 
+	/** Read every retained host without opening files, admitting work, or changing ownership. */
+	restartState(): { sessions: string[]; busy: string[]; unsaved: string[]; pending: boolean } {
+		const busy = new Set([...this.opening.keys(), ...this.controls.keys(), ...this.transfers.keys()]);
+		const unsaved = new Set(this.associationFailures.keys());
+		for (const [id, changes] of this.associationChanges) if (changes.length) unsaved.add(id);
+		for (const [id, primary] of this.primary) if (primary.pending.size || primary.saveFailed) unsaved.add(id);
+		for (const [id, worker] of this.sessions) {
+			if (worker.hasActiveWork() || worker.unavailableState()) busy.add(id);
+			if (worker.hasUnsavedResult()) unsaved.add(id);
+		}
+		return { sessions: [...new Set([...this.primary.keys(), ...this.sessions.keys()])].sort(), busy: [...busy], unsaved: [...unsaved], pending: this.closing || this.creations.size > 0 };
+	}
+
 	/** Sessions this manager holds with active work, for finalization reporting. */
 	activeSessionIds(): string[] {
 		return [...this.sessions.entries()].filter(([, worker]) => worker.hasActiveWork()).map(([id]) => id);
@@ -1318,6 +1334,28 @@ export class AgentManager {
 	async sessionEntries(sessionId: string) {
 		return this.withWorker(sessionId, (worker) => worker.sessionManager().getEntries());
 	}
+}
+
+function restartIds(ids: Set<string>): string {
+	return [...ids].slice(0, 8).map((id) => id.replace(/[^a-zA-Z0-9_-]/gu, "?").slice(0, 80)).join(", ") + (ids.size > 8 ? ` (${ids.size - 8} omitted)` : "");
+}
+
+/** Includes nested managers and owners retained across primary reloads. Detached runs are separate processes. */
+export function agentRestartHosts(): RestartHosts {
+	if (owners.creating.size) return { identity: "", refusal: "Restart refused. Agent host creation is incomplete." };
+	const busy = new Set<string>(), unsaved = new Set<string>();
+	const identity: Array<[string, string[]]> = [];
+	for (const [root, owner] of owners.managers) {
+		if (owner.managerProtocol !== MANAGER_PROTOCOL) return { identity: "", refusal: "Restart refused. A retained agent manager uses another protocol. Quit Pi and resume the saved session." };
+		const state = owner.restartState();
+		if (state.pending) return { identity: "", refusal: "Restart refused. Agent host creation or cleanup is incomplete." };
+		for (const id of state.busy) busy.add(id);
+		for (const id of state.unsaved) unsaved.add(id);
+		identity.push([root, state.sessions]);
+	}
+	return { identity: JSON.stringify(identity.sort(([a], [b]) => a.localeCompare(b))),
+		...(unsaved.size ? { refusal: `Restart refused. Agent sessions have unsaved state: ${restartIds(unsaved)}.` }
+			: busy.size ? { refusal: `Restart refused. Agent sessions have active or queued work: ${restartIds(busy)}.` } : {}) };
 }
 
 export interface ResolvedWorkerModel {
@@ -1726,6 +1764,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		inspect: async (sessionId, options, signal) => (await getManager()).inspect(sessionId, options, signal),
 	});
 	pi.registerCommand("agent", command);
+	pi.registerCommand("restart", createRestartCommand({ hosts: agentRestartHosts, managedChild: (ctx) => owners.workers.has(ctx.sessionManager.getSessionId()) || isManagedChild(pi.events, ctx.sessionManager.getSessionId()) }));
 	pi.registerShortcut("ctrl+alt+g", { description: "Open the agent dashboard", handler: (ctx) => command.openDashboard(ctx) });
 
 	pi.on("session_start", async (_event, ctx) => {

@@ -16,7 +16,7 @@ function registrations() {
 	let command!: Parameters<ExtensionAPI["registerCommand"]>[1];
 	let shortcut!: Parameters<ExtensionAPI["registerShortcut"]>[1];
 	const api: Partial<ExtensionAPI> = { registerTool() {}, registerMessageRenderer() {}, on: () => () => {},
-		registerCommand(name, value) { assert.equal(name, "agent"); command = value; },
+		registerCommand(name, value) { if (name === "agent") command = value; else assert.equal(name, "restart"); },
 		registerShortcut(key, value) { assert.equal(key, "ctrl+alt+g"); assert.equal(shortcut, undefined); shortcut = value; },
 	};
 	registerAgentExtension(api as ExtensionAPI);

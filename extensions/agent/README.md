@@ -8,7 +8,70 @@ separate `subagent` extension remains independent.
 
 This extension provides runtime tools and a native `/agent` command with a
 session and detached-run dashboard with read-only inspection and explicit actions.
+It also provides `/restart` for the current interactive Pi CLI process.
 It does not provide a conversation editor or workspace.
+
+## Restart this Pi process
+
+Use `/restart` without arguments to stop Pi gracefully and resume the exact saved
+session in the same terminal. One native confirmation precedes shutdown. Cancel
+leaves the process unchanged. Pi follows its ordinary `/quit` cleanup path before
+Node replaces the process image, without a wrapper or another child process.
+
+Restart preserves the saved conversation, current working directory, and current
+process environment. Saved idle agent children and their nested associations
+restore through the [saved-session recovery](#parent-reload-and-saved-session-recovery)
+path. Current model, project-trust, and writer-claim checks still apply.
+Detached runs survive independently and do not block restart.
+
+Restart does not preserve:
+
+- CLI-only launch options, such as `-e`, `--model`, or tool restrictions. Like
+  Pi's printed resume command, restart does not replay the original command line.
+  Configure required resources persistently before relying on their return.
+- The editor draft or in-memory queues. The primary's active model work,
+  compaction, and public steering/follow-up queues block restart. Active or
+  queued work in every agent-owned host also blocks restart.
+- Other extensions' live work. Subagent workers stop; the subagent extension
+  records unfinished workers as `owner_lost`. The confirmation covers this loss,
+  not a claim that all extensions are idle.
+
+Preflight requires an interactive standalone Pi CLI, an executable Node binary,
+a readable Pi entrypoint, and a non-empty absolute session file. New sessions
+without their first saved assistant response are refused. SDK and managed-child
+hosts are refused. Every process-local agent manager participates, including
+nested hosts and owners retained after reload. Incomplete opens, creations,
+controls, cleanup, association saves, footer saves, pending delivery, and live-only
+unsaved results block restart. The command checks identity and readiness again
+after confirmation. Only an accepted restart installs an exit listener.
+
+The primary readiness check has a public-API boundary in Pi 0.87.1.
+`ExtensionContext.isIdle()` excludes user Bash activity, and
+`hasPendingMessages()` excludes the TUI's private compaction queue. A failed
+post-compaction submission can leave messages in that private queue while the
+public context reports idle with no queued messages. Pi exposes no passive
+Bash-completion event or complete TUI queue accessor to extensions. Refusal for
+these two states is blocked at that API boundary. A running `!` or `!!` command
+stops during ordinary quit cleanup; retained compaction messages are lost.
+The confirmation states both losses. Finish Bash work and restore queued text
+to the editor for external saving before restart. The extension does not
+intercept Bash execution or inspect private host fields to claim full idleness.
+
+The launch uses the current Node executable and Node arguments, Pi's installed
+`bin.pi` entrypoint, `--session-dir`, and the exact absolute `--session` file.
+It leaves cwd and environment unchanged. It does not refresh environment changes
+made in another shell, and it cannot recover Pi after Pi stops accepting input.
+A manager retained from a different agent protocol requires ordinary quit and
+manual resume before `/restart` is available.
+
+Node's `process.execve` is experimental. Restart is unsupported where that API
+is absent, including Windows. A recovery command prints synchronously after
+cleanup and before replacement. On Node versions below 26.1, a failed exec system
+call aborts the process instead of throwing a JavaScript exception. Use the
+printed command if Pi does not return. A JavaScript failure after shutdown also
+exits unsuccessfully; it does not leave an open old session. File checks reduce
+avoidable failures but do not make replacement atomic with those checks.
+Nonzero process exits never restart.
 
 ## Start and control sessions
 
@@ -612,7 +675,9 @@ The process reuses managers that match the current manager protocol. Refreshed
 registration does not reconstruct these managers or existing workers: they
 retain their class methods and closures from creation, including imported
 helpers. A fresh host process loads method changes for those objects. Another
-session in the same process does not replace the retained owners.
+session in the same process does not replace the retained owners. Use
+[`/restart`](#restart-this-pi-process) to replace the process and resume the saved
+session when its preconditions hold.
 
 Explicit creation and ownership controls record parent-child associations in
 native custom entries outside model context before a task starts. Read-only

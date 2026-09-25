@@ -790,7 +790,9 @@ for (const target of ["primary", "worker"] as const) test(`native ${target} tool
 		assert.ok(entries.some((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.isError));
 		assert.equal(JSON.stringify(disk.buildSessionContext().messages).includes("SAVED_CONTEXT_BEFORE_FAULT"), false);
 		assert.equal(associatedSessions(entries, id, f.store).has(candidate), false);
+		assert.ok(owner.restartState().unsaved.includes(id));
 		if (target === "worker") {
+			assert.equal(f.worker(id).hasUnsavedResult(), true);
 			const inspection = JSON.parse(await f.tool("agent_inspect", { sessionId: id }));
 			assert.match(inspection.resultPersistence, /not saved/u);
 			let complete = inspection.result.text, next = inspection.result.nextOffset;
