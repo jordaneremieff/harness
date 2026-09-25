@@ -293,7 +293,7 @@ test("oversized sessions retain bounded head identity and tail activity without 
 	assert.equal(row.partial, true); assert.equal(row.cost, 7); assert.equal(row.latestReply, "Retained answer");
 	assert.equal(row.name, "Head name"); assert.equal(row.firstMessage, "Original task"); assert.equal(row.state, "done");
 	assert.deepEqual(row.model, { provider: "configured", modelId: "chosen", thinkingLevel: "high" });
-	assert.equal(row.currentTool, undefined); assert.equal(row.toolCalls, 0); assert.equal(row.durationMs, 0);
+	assert.equal(row.currentTool, undefined); assert.equal(row.toolCalls, 0); assert.equal(row.durationMs, undefined);
 	const cachedCalls = reads.calls;
 	await f.data.read(); assert.equal(reads.calls, cachedCalls);
 	const beforeConversation = reads.bytes;
@@ -332,6 +332,35 @@ test("bounded head tasks require a branch root and never override a separate roo
 	assert.equal(rows.find((row) => row.sessionId === "separate")?.firstMessage, "Separate task");
 });
 
+test("turn duration uses connected head ancestry but remains unknown across capture gaps", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: time + 20000 });
+	const f = fixture(t);
+	for (const id of ["connected", "gap", "empty-tail"]) {
+		const path = f.put(id, [
+			user("first", null, "Initial task"), assistant("old", "first", "Initial reply"),
+			user("latest", "old", "Latest task", 5000), assistant("active", "latest", "In progress", "toolUse", 1, 6000, [toolCall()]),
+			user("other-branch", "first", "Unrelated later user", 15000),
+		]);
+		appendFileSync(path, `${JSON.stringify(entry("large", "other-branch", { type: "custom", customType: "large", data: "x".repeat(MAX_CAPTURE_BYTES + 1000) }))}\n`);
+		if (id !== "empty-tail") appendFileSync(path, `${JSON.stringify(assistant("done", id === "connected" ? "active" : "large", "Tail reply", "stop", 1, 12000))}\n`);
+	}
+	let rows = await f.data.read();
+	assert.equal(rows.find((row) => row.sessionId === "connected")?.durationMs, 7000);
+	assert.equal(rows.find((row) => row.sessionId === "gap")?.durationMs, undefined);
+	assert.equal(rows.find((row) => row.sessionId === "empty-tail")?.durationMs, undefined);
+	const owners = overlay({ held: ["connected", "gap", "empty-tail"], active: ["connected", "gap", "empty-tail"] });
+	rows = await f.data.read(owners);
+	assert.ok(rows.every((row) => row.state === "working"));
+	assert.equal(rows.find((row) => row.sessionId === "connected")?.durationMs, 15000);
+	t.mock.timers.tick(6000);
+	rows = await f.data.read(owners);
+	assert.equal(rows.find((row) => row.sessionId === "connected")?.durationMs, 21000);
+	assert.equal(rows.find((row) => row.sessionId === "gap")?.durationMs, undefined);
+	assert.equal(rows.find((row) => row.sessionId === "empty-tail")?.durationMs, undefined);
+	appendFileSync(join(f.native, "gap.jsonl"), `${JSON.stringify(user("next", "done", "New tail task", 27000))}\n${JSON.stringify(assistant("end", "next", "New reply", "stop", 1, 28000))}\n`);
+	assert.equal((await f.data.read()).find((row) => row.sessionId === "gap")?.durationMs, 1000);
+});
+
 test("malformed JSON, truncated tails, invalid entries, and invalid usage remain partial and untouched", async (t) => {
 	const f = fixture(t); const path = f.put("s", [user(), assistant()]);
 	appendFileSync(path, 'null\n42\n{"type":"message"}\nnot json\n{"unfinished":');
@@ -364,7 +393,7 @@ test("duplicate session IDs refuse conversation selection and never gain overlay
 	const f = fixture(t); f.put("s", [user(), assistant()], "one"); const second = f.put("s", [user()], "two");
 	const [row] = await f.data.read(overlay({ held: ["s"], active: ["s"] }));
 	assert.equal(row.state, "unavailable"); assert.equal(row.owner, "unknown"); assert.equal(row.live, false); assert.equal(row.partial, true);
-	assert.equal(row.cost, 0); assert.match(row.error ?? "", /2 native files/);
+	assert.equal(row.cost, 0); assert.equal(row.durationMs, undefined); assert.match(row.error ?? "", /2 native files/);
 	await assert.rejects(f.data.conversation("s"), /multiple native files/);
 	unlinkSync(second);
 	assert.equal((await f.data.read())[0].state, "done");
@@ -388,6 +417,7 @@ test("an unreadable changed header invalidates a cached session instead of showi
 	writeFileSync(path, "broken\n");
 	const [row] = await f.data.read(overlay({ held: ["s"], active: ["s"] }));
 	assert.equal(row.state, "unavailable"); assert.equal(row.latestReply, ""); assert.equal(row.partial, true);
+	assert.equal(row.durationMs, undefined);
 	await assert.rejects(f.data.conversation("s"));
 });
 

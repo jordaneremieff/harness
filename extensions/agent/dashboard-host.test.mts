@@ -10,7 +10,7 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const keys = new Keys(TUI_KEYBINDINGS) as KeybindingsManager;
 const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text } as Theme;
 type Factory = (tui: TUI, theme: Theme, keys: KeybindingsManager, done: (request: unknown) => void) => Component;
-const row: SessionDigest = { sessionId: "native-id", name: "Native session", cwd: "/work", path: "/store/native.jsonl", live: false, createdAt: 1, modifiedAt: 2, state: "new", cost: 0, partial: false, latestReply: "", toolCalls: 0, durationMs: 0 };
+const row: SessionDigest = { sessionId: "native-id", name: "Native session", cwd: "/work", path: "/store/native.jsonl", live: false, createdAt: 1, modifiedAt: 2, state: "new", cost: 0, partial: false, latestReply: "", toolCalls: 0 };
 const sources: AgentObservationSources = { sessions: async () => [row], runs: async () => [], board: async () => [row], conversation: async () => ({ entries: [], partial: false, revision: "1" }) };
 
 it("closes each overlay before native dialogs and restores selection and conversation afterward", async () => {

@@ -24,8 +24,8 @@ export interface SessionDigest extends AgentSessionSummary {
 	toolCalls: number;
 	/** First unresolved call in the latest assistant batch, not proof of execution. */
 	currentTool?: { name: string; argument: string };
-	/** Latest user turn's observed span; advances while an owner reports work. */
-	durationMs: number;
+	/** Latest user turn's observed span; absent without an established start. */
+	durationMs?: number;
 }
 
 export interface DashboardOverlay {
@@ -212,7 +212,7 @@ function digestCapture(path: string, captured: Capture): CachedDigest {
 		sessionId: captured.header.id, cwd: captured.header.cwd, path,
 		createdAt: Date.parse(captured.header.timestamp), modifiedAt: captured.modifiedAt,
 		live: false, provenance: "stored", state: "new", cost: 0, partial: captured.partial,
-		latestReply: "", toolCalls: 0, durationMs: 0,
+		latestReply: "", toolCalls: 0,
 	};
 	for (const entry of [...captured.head, ...captured.all]) {
 		if (entry.type === "session_info") row.name = entry.name?.trim().slice(0, TASK_CHARS) || undefined;
@@ -223,8 +223,17 @@ function digestCapture(path: string, captured: Capture): CachedDigest {
 	for (const entry of captured.entries) observeEntry(branch, entry);
 	if (!branch.meaningful && captured.partial) row.state = "unavailable";
 	row.currentTool = branch.pending.values().next().value;
-	row.durationMs = branch.turnStart === undefined ? 0 : Math.max(0, (branch.turnEnd ?? branch.turnStart) - branch.turnStart);
+	if (branch.turnStart === undefined && captured.head.length) branch.turnStart = capturedTurnStart(captured);
+	row.durationMs = branch.turnStart === undefined || branch.turnEnd === undefined ? undefined : Math.max(0, branch.turnEnd - branch.turnStart);
 	return { revision: captured.revision, digest: row, turnStart: branch.turnStart };
+}
+
+function capturedTurnStart(captured: Capture): number | undefined {
+	if (!captured.entries.length) return undefined;
+	// A head timestamp is usable only when retained ancestry connects it to the tail.
+	const entries = activeBranch([...captured.head, ...captured.all]).entries;
+	const user = entries.findLast((entry) => entry.type === "message" && entry.message.role === "user");
+	return user?.type === "message" ? user.message.timestamp : undefined;
 }
 
 function entryUsage(entry: SessionEntry): { usage: unknown; required: boolean } {
@@ -434,7 +443,7 @@ export class AgentDashboardData {
 		}
 		return [...byId.values()].map((group): SessionDigest => group.length === 1 ? applyOverlay(group[0], this.nativeRoot, overlay) : {
 			...group[0].digest, state: "unavailable", owner: "unknown", partial: true, live: false,
-			latestReply: "", cost: 0, toolCalls: 0, currentTool: undefined,
+			latestReply: "", cost: 0, toolCalls: 0, currentTool: undefined, durationMs: undefined,
 			error: `Session ID occurs in ${group.length} native files; observation is ambiguous`,
 		}).sort((a, b) => b.modifiedAt - a.modifiedAt || a.sessionId.localeCompare(b.sessionId));
 	}
@@ -451,7 +460,7 @@ export class AgentDashboardData {
 		catch (error) {
 			if (cached) this.cache.set(path, { revision: revision(stat), readError: reason(error), digest: {
 				...cached.digest, modifiedAt: stat.mtimeMs, state: "unavailable", partial: true, live: false,
-				latestReply: "", cost: 0, toolCalls: 0, durationMs: 0, currentTool: undefined, error: reason(error),
+				latestReply: "", cost: 0, toolCalls: 0, durationMs: undefined, currentTool: undefined, error: reason(error),
 			} });
 		}
 	}

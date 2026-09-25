@@ -152,7 +152,7 @@ the preview to keep the selected row visible.
 
 The selected preview leads with the latest assistant reply, rendered as Markdown.
 It shows current work, configuration, and cost. Taller previews also show
-latest-turn duration and tool-call count; the clipped original task and full
+latest-turn duration when known and tool-call count; the clipped original task and full
 identity appear when more height is available. Wide terminals place the preview
 beside the board; narrow terminals place it below, or omit it when space is too
 short. Detached runs share session rows instead of a separate tab.
@@ -209,7 +209,9 @@ precedence. Activity, latest replies, tools, and conversation entries come from
 the tail, without joining history across the gap. Missing ancestry and capture
 limits remain partial, and `≥` marks incomplete spend. Spend includes retained
 native usage from both windows across branches; tool counts and latest output
-describe the captured current branch.
+describe the captured current branch. Duration is absent when the latest turn
+start is unknown. A head timestamp supplies the start only when captured ancestry
+connects that user message to the tail; an unseen gap never implies zero time.
 
 Local manager activity, detached records, and read-only writer claims supply
 ownership. A same-host live PID plus a pending transcript turn identifies work

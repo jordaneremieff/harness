@@ -70,6 +70,17 @@ it("keeps unresolved ownership in Attention and bounds terminal outcomes by the 
 	} finally { f.panel.dispose(); }
 });
 
+it("omits unknown duration but preserves an observed zero duration in tall previews", async () => {
+	let current = row("sample", { state: "working", durationMs: undefined });
+	const f = fixture([current], { board: async () => [current] }); await tick(); f.terminal.rows = 52;
+	try {
+		assert.doesNotMatch(f.screen(200), /duration ·|NaN/);
+		assert.match(f.screen(200), /4 tool calls · active/);
+		current = { ...current, durationMs: 0 }; await f.panel.refresh();
+		assert.match(f.screen(200), /0s duration · 4 tool calls/);
+	} finally { f.panel.dispose(); }
+});
+
 it("retains selection by ID across refresh and filters name, place, model and state", async () => {
 	const modifiedAt = Date.now();
 	let rows = [row("one", { modifiedAt }), row("two", { modifiedAt })];

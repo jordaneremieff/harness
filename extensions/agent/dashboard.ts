@@ -50,6 +50,11 @@ export function elapsed(ms: number): string {
 	return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m${seconds % 60}s` : seconds < 86400 ? `${Math.floor(seconds / 3600)}h${Math.floor(seconds % 3600 / 60)}m` : `${Math.floor(seconds / 86400)}d`;
 }
 function costOf(row: SessionDigest): string { return `${row.partial ? "≥" : ""}$${row.cost.toFixed(2)}`; }
+function activityOf(row: SessionDigest, now: number): string {
+	const parts = [`${row.toolCalls} tool calls`, `active ${elapsed(now - row.modifiedAt)} ago`];
+	if (row.durationMs !== undefined) parts.unshift(`${elapsed(row.durationMs)} duration`);
+	return parts.join(" · ");
+}
 function stateLabel(row: SessionDigest): string {
 	return `${sessionAppearance[row.state].label}${row.owner === "window" ? " · other window" : row.owner === "detached" ? " · detached" : row.owner === "here" ? " · here" : ""}`;
 }
@@ -436,7 +441,7 @@ export class AgentDashboard implements Component {
 		const appearance = sessionAppearance[row.state];
 		const status = `${stateLabel(row)} · ${basename(row.cwd)} · ${row.model ? `${row.model.modelId} ${row.model.thinkingLevel}` : "model unknown"} · ${costOf(row)}`;
 		const header = [...(height > 4 ? [this.theme.bold(truncateToWidth(titleOf(row), width))] : []), this.theme.fg(appearance.color, truncateToWidth(oneLine(status), width))];
-		if (height > 13) header.push(this.theme.fg("dim", `${elapsed(row.durationMs)} duration · ${row.toolCalls} tool calls · active ${elapsed((this.state.snapshot?.observedAt ?? Date.now()) - row.modifiedAt)} ago`));
+		if (height > 13) header.push(this.theme.fg("dim", activityOf(row, this.state.snapshot?.observedAt ?? Date.now())));
 		if (row.state === "working") header.push(this.theme.fg("accent", truncateToWidth(row.currentTool ? `› ${oneLine(row.currentTool.name)} ${oneLine(row.currentTool.argument)}` : "› Thinking", width)));
 		else if (row.error) header.push(this.theme.fg("error", truncateToWidth(oneLine(row.error), width)));
 		if (height > 4) header.push("");
