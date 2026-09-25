@@ -139,17 +139,23 @@ opens a session nor changes task admission, delivery, or lifecycle behavior.
 Bare `/agent` and **Ctrl+Alt+G** open a board for supervising ordinary sessions.
 Each session occupies one row: state, title, place, model/thinking level, spend,
 and age of the last file update. Working sessions come first, followed by
-sessions that need attention from the last 24 hours and date groups. Older
-non-clean sessions keep their state glyph and color in their date group. The
-attention count uses the same observation time as the sections. The board windows
-the full list; it does not impose a display-count cap. The header shows active work, attention,
-and total retained spend. Selection follows the full session ID across refreshes.
+Attention and date groups. Orphaned and Unavailable sessions remain in Attention
+until their unresolved condition changes. Failed, Stopped and Interrupted outcomes
+remain there for 24 hours; older outcomes keep their state glyph and color in
+their date group. The attention count uses the same observation time as the
+sections. The board windows the full list without a display-count cap. The header
+shows active work, attention, and total retained spend. Selection follows the
+full session ID across refreshes. Colliding visible titles and places receive
+unique ID tails inside the title column, preserved when the title is clipped.
+Short terminals omit column labels and counts before session rows, and shrink
+the preview to keep the selected row visible.
 
 The selected preview leads with the latest assistant reply, rendered as Markdown.
-It shows current work, configuration, latest-turn duration, tool-call count, and
-cost before the clipped original task and identity. Wide terminals place the
-preview beside the board; narrow terminals place it below. Detached runs share
-session rows instead of a separate tab.
+It shows current work, configuration, and cost. Taller previews also show
+latest-turn duration and tool-call count; the clipped original task and full
+identity appear when more height is available. Wide terminals place the preview
+beside the board; narrow terminals place it below, or omit it when space is too
+short. Detached runs share session rows instead of a separate tab.
 
 | Key | Action |
 | --- | --- |
@@ -190,9 +196,11 @@ first, then restore selection and conversation with a scrollable result.
 While open, the board refreshes once per second. It stats native session files
 and caches digests by file identity, size, and modification metadata. Only changed
 files are parsed; the selected conversation has its own cache. Close disposes
-the refresh clock. If Pi removes the overlay without closing its component,
-five seconds without a render disposes the clock and prevents further reads.
-This expiry does not close any other overlay. Observation never claims a writer,
+the refresh clock. Each clock tick requests a render independently of source
+reads. If Pi leaves that request unperformed for five seconds, the board pauses
+the clock and further reads, without closing or disabling the component. A later
+render or key resumes refresh. Slow reads do not expire a visible board. This
+pause does not close any other overlay. Observation never claims a writer,
 repairs a tail, opens a session for writing, or persists an index. File captures are bounded; oversized
 files use a header plus a bounded tail. Missing ancestry and capture limits
 remain partial, and `≥` marks incomplete spend. Spend includes retained native

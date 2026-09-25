@@ -44,28 +44,29 @@ it("shows one row per session, all records, meaningful state and spend before th
 	} finally { f.panel.dispose(); }
 });
 
-it("limits Attention to recent non-clean sessions and shares the section timestamp with the header", async (t) => {
+it("keeps unresolved ownership in Attention and bounds terminal outcomes by the shared observation time", async (t) => {
 	const now = new Date(2026, 0, 3, 12).getTime();
 	t.mock.timers.enable({ apis: ["Date"], now });
 	const states = ["failed", "stopped", "interrupted", "orphaned", "unavailable"] as const;
 	const day = 24 * 60 * 60 * 1000;
-	const rows = states.flatMap((state) => [row(`recent-${state}`, { state, modifiedAt: now - 1000 }), row(`old-${state}`, { state, modifiedAt: now - 2 * day })]);
+	const rows = states.flatMap((state) => [row(`recent-${state}`, { state, modifiedAt: now - 1000 }), row(`old-${state}`, { state, owner: state === "orphaned" || state === "unavailable" ? "unknown" : undefined, modifiedAt: now - 2 * day })]);
 	rows.push(row("boundary", { state: "failed", modifiedAt: now - day }), row("today", { modifiedAt: now }));
 	const f = fixture(rows); await tick(); f.terminal.rows = 52;
 	try {
-		assert.match(f.screen(200), /6 need attention/);
+		assert.match(f.screen(200), /8 need attention/);
 		const ordered = dashboardRecords(f.panel.state.snapshot, "").map((item) => item.sessionId);
 		assert.ok(ordered.indexOf("boundary") < ordered.indexOf("today"));
-		assert.ok(states.every((state) => ordered.indexOf(`old-${state}`) > ordered.indexOf("today")));
+		assert.ok(["failed", "stopped", "interrupted"].every((state) => ordered.indexOf(`old-${state}`) > ordered.indexOf("today")));
+		assert.ok(["orphaned", "unavailable"].every((state) => ordered.indexOf(`old-${state}`) < ordered.indexOf("today")));
 		const text = f.screen(200);
 		assert.ok(text.indexOf(" Today") < text.indexOf(" Earlier"));
 		assert.match(text, /! Session old-failed/);
 		assert.match(text, /■ Session old-stopped/);
 		t.mock.timers.tick(1);
-		assert.match(f.screen(200), /6 need attention/);
+		assert.match(f.screen(200), /8 need attention/);
 		await f.panel.refresh();
-		assert.match(f.screen(200), /5 need attention/);
-		assert.ok(dashboardRecords(f.panel.state.snapshot, "").findIndex((item) => item.sessionId === "boundary") > 5);
+		assert.match(f.screen(200), /7 need attention/);
+		assert.ok(dashboardRecords(f.panel.state.snapshot, "").findIndex((item) => item.sessionId === "boundary") > 7);
 	} finally { f.panel.dispose(); }
 });
 
@@ -95,6 +96,49 @@ it("fits terminal cells at wide, narrow and short dimensions including Unicode a
 			assert.ok(lines.length <= Math.max(1, height - 2));
 			assert.ok(lines.every((line) => visibleWidth(line) <= width), `${width} columns`);
 			assert.doesNotMatch(lines.join("\n"), /\x1b\[2J/);
+		}
+	} finally { f.panel.dispose(); }
+});
+
+it("keeps the selected roster row visible when short terminals omit labels and preview space", async () => {
+	const now = Date.now();
+	const f = fixture(Array.from({ length: 20 }, (_, index) => row(String(index), { modifiedAt: now - index * 86400000 })));
+	await tick();
+	try {
+		for (const [width, height] of [[100, 14], [80, 10]]) {
+			f.terminal.rows = height;
+			for (const key of ["\x1b[H", "j", "\x1b[F", "k"]) {
+				f.panel.handleInput(key);
+				const screen = f.screen(width);
+				assert.ok(screen.split("\n").some((line) => line.includes(`›✓ Session ${f.panel.state.selected} `)), `${width}x${height} selected row`);
+				assert.doesNotMatch(screen, /SESSION\s+PLACE/);
+			}
+			if (height === 14) assert.match(f.screen(width), /The result is ready/);
+		}
+	} finally { f.panel.dispose(); }
+});
+
+it("reserves unique ID tails for colliding visible titles and places, including clipped titles", async () => {
+	const modifiedAt = Date.now();
+	const rows = [row("first-a123456", { name: "probe", cwd: "/work/probe", modifiedAt }), row("second-b123456", { name: "probe", cwd: "/work/probe", modifiedAt }), row("other-c123456", { name: "probe", cwd: "/work/elsewhere", modifiedAt })];
+	const f = fixture(rows); await tick();
+	try {
+		for (const width of [200, 120, 80]) {
+			const screen = f.screen(width);
+			assert.match(screen, /probe a123456/); assert.match(screen, /probe b123456/);
+			assert.doesNotMatch(screen, /probe c123456/);
+		}
+		f.panel.handleInput("/"); f.panel.handleInput("first-a123456"); f.panel.handleInput("\r");
+		assert.match(f.screen(80), /probe a123456/);
+		f.panel.state.filter = "";
+		rows[0] = { ...rows[0], name: `${"长".repeat(60)} first` };
+		rows[1] = { ...rows[1], name: `${"长".repeat(60)} second` };
+		await f.panel.refresh();
+		for (const width of [200, 120, 80]) {
+			const lines = f.panel.render(width);
+			const screen = stripVTControlCharacters(lines.join("\n"));
+			assert.match(screen, /长.* a123456/); assert.match(screen, /长.* b123456/);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
 		}
 	} finally { f.panel.dispose(); }
 });
@@ -147,21 +191,56 @@ it("coalesces refreshes, stops the live clock on disposal and rejects late reads
 	assert.equal(calls, 2); assert.equal(f.panel.state.snapshot?.sessions[0].sessionId, "sample");
 });
 
-it("stops refresh when the host removes an overlay without closing it", async (t) => {
+it("keeps a visible board responsive while a source read exceeds the visibility limit", async (t) => {
 	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
-	let calls = 0;
-	const f = fixture([], { board: async () => { calls++; return [row()]; } }); await tick();
+	let calls = 0; let renders = 0; let release!: (rows: SessionDigest[]) => void;
+	const f = fixture([], { board: async () => { calls++; return calls === 1 ? new Promise((resolve) => { release = resolve; }) : [row()]; } });
+	f.tui.requestRender = () => { renders++; f.panel.render(120); };
+	await tick();
 	try {
-		for (let index = 0; index < 8; index++) {
-			f.panel.render(120); t.mock.timers.tick(1000); await tick();
-		}
-		assert.equal(calls, 9);
-		f.panel.render(120);
-		for (let index = 0; index < 5; index++) { t.mock.timers.tick(1000); await tick(); }
-		assert.equal(calls, 13);
+		for (let index = 0; index < 8; index++) { t.mock.timers.tick(1000); await tick(); }
+		assert.equal(calls, 1); assert.ok(renders >= 8);
+		f.panel.handleInput("?"); assert.match(f.screen(), /Agent board/);
+		f.panel.handleInput("\x1b");
+		release([row()]); await tick(); t.mock.timers.tick(1000); await tick();
+		assert.equal(calls, 2);
+		f.panel.handleInput("\x1b"); assert.equal(f.requests.length, 1);
+		t.mock.timers.tick(10000); await tick(); assert.equal(calls, 2);
+	} finally { f.panel.dispose(); }
+});
+
+for (const resume of ["render", "key"] as const) it(`pauses unseen refresh and resumes on a later ${resume} without disabling Escape`, async (t) => {
+	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
+	let calls = 0; let requests = 0;
+	const f = fixture([], { board: async () => { calls++; return [row()]; } });
+	f.tui.requestRender = () => { requests++; }; await tick(); f.panel.render(120);
+	try {
+		for (let index = 0; index < 6; index++) { t.mock.timers.tick(1000); await tick(); }
+		assert.equal(calls, 6);
+		const pausedRequests = requests;
 		t.mock.timers.tick(10000); await tick(); await f.panel.refresh();
-		assert.equal(calls, 13);
-		assert.deepEqual(f.requests, [], "expiry must not close an unrelated native overlay");
+		assert.equal(calls, 6); assert.equal(requests, pausedRequests);
+		assert.deepEqual(f.requests, [], "a pause must not close another native overlay");
+		if (resume === "render") f.panel.render(120); else f.panel.handleInput("?");
+		t.mock.timers.tick(1000); await tick(); assert.equal(calls, 7);
+		if (resume === "key") f.panel.handleInput("\x1b");
+		f.panel.handleInput("\x1b"); assert.equal(f.requests.length, 1);
+		t.mock.timers.tick(10000); await tick(); assert.equal(calls, 7);
+	} finally { f.panel.dispose(); }
+});
+
+it("does not let a late source result restart a hidden board", async (t) => {
+	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
+	let calls = 0; let renders = 0; let release!: (rows: SessionDigest[]) => void;
+	const f = fixture([], { board: async () => { calls++; return calls === 1 ? new Promise((resolve) => { release = resolve; }) : [row()]; } });
+	f.tui.requestRender = () => { renders++; }; await tick();
+	try {
+		for (let index = 0; index < 6; index++) { t.mock.timers.tick(1000); await tick(); }
+		const before = renders;
+		release([row("late")]); await tick(); t.mock.timers.tick(10000); await tick();
+		assert.equal(calls, 1); assert.equal(renders, before); assert.equal(f.panel.state.snapshot === undefined, true);
+		f.panel.render(120); t.mock.timers.tick(1000); await tick();
+		assert.equal(calls, 2); assert.equal(f.panel.state.snapshot?.sessions[0].sessionId, "sample");
 	} finally { f.panel.dispose(); }
 });
 

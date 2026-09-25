@@ -55,7 +55,8 @@ function stateLabel(row: SessionDigest): string {
 }
 function sectionOf(row: SessionDigest, now: number): string {
 	if (row.state === "working") return "Working";
-	if (now - row.modifiedAt <= 24 * 60 * 60 * 1000 && ["failed", "stopped", "interrupted", "orphaned", "unavailable"].includes(row.state)) return "Attention";
+	if (row.state === "orphaned" || row.state === "unavailable") return "Attention";
+	if (now - row.modifiedAt <= 24 * 60 * 60 * 1000 && ["failed", "stopped", "interrupted"].includes(row.state)) return "Attention";
 	const today = new Date(now); today.setHours(0, 0, 0, 0);
 	const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
 	return row.modifiedAt >= today.getTime() ? "Today" : row.modifiedAt >= yesterday.getTime() ? "Yesterday" : "Earlier";
@@ -98,7 +99,8 @@ export class AgentDashboard implements Component {
 	private refreshing = false;
 	private submitting = false;
 	private timer?: ReturnType<typeof setInterval>;
-	private lastRenderAt = Date.now();
+	private refreshPaused = false;
+	private renderRequestedAt?: number;
 	private help = false;
 	private helpScroll = 0;
 	private resultScroll = 0;
@@ -130,15 +132,31 @@ export class AgentDashboard implements Component {
 		this.sources = sources; this.tui = tui; this.theme = theme; this.keys = keys; this.done = done; this.actions = actions;
 		this.state = state ?? { filter: "", drafts: new Map() };
 		this.input.onSubmit = () => { if (this.inputMode === "filter") this.finishInput(); else void this.submit(); };
+		this.resumeRefresh();
 		void this.refresh();
+	}
+	private resumeRefresh(): void {
+		if (this.closed) return;
+		this.refreshPaused = false;
+		if (this.timer) return;
 		this.timer = setInterval(() => {
-			// Pi can remove an overlay without closing its custom component.
-			if (Date.now() - this.lastRenderAt >= 5000) this.dispose();
-			else void this.refresh();
+			// A render request that Pi does not perform bounds work for hidden overlays.
+			if (this.renderRequestedAt !== undefined && Date.now() - this.renderRequestedAt >= 5000) { this.pauseRefresh(); return; }
+			this.redraw();
+			void this.refresh();
 		}, 1000);
 		this.timer.unref?.();
 	}
-	private redraw(): void { if (!this.closed) this.tui.requestRender(); }
+	private pauseRefresh(): void {
+		this.refreshPaused = true;
+		if (this.timer) clearInterval(this.timer);
+		this.timer = undefined;
+	}
+	private redraw(): void {
+		if (this.closed || this.refreshPaused) return;
+		this.renderRequestedAt ??= Date.now();
+		this.tui.requestRender();
+	}
 	private rows(): SessionDigest[] { return dashboardRecords(this.state.snapshot, this.state.filter); }
 	private selected(): SessionDigest | undefined { return this.rows().find((row) => row.sessionId === this.state.selected); }
 	private selectValid(): void {
@@ -146,11 +164,11 @@ export class AgentDashboard implements Component {
 		if (!rows.some((row) => row.sessionId === this.state.selected)) this.state.selected = rows[0]?.sessionId;
 	}
 	async refresh(): Promise<void> {
-		if (this.closed || this.refreshing) return;
+		if (this.closed || this.refreshPaused || this.refreshing) return;
 		this.refreshing = true;
 		try {
 			const snapshot = await readAgentDashboard(this.sources);
-			if (this.closed) return;
+			if (this.closed || this.refreshPaused) return;
 			this.state.snapshot = snapshot;
 			this.selectValid();
 			if (this.state.conversation) await this.readConversation();
@@ -163,15 +181,15 @@ export class AgentDashboard implements Component {
 	}
 	private async readConversation(): Promise<void> {
 		const id = this.state.conversation;
-		if (!id) return;
+		if (!id || this.refreshPaused) return;
 		const generation = ++this.historyGeneration;
 		try {
 			const data = await this.sources.conversation(id);
-			if (this.closed || generation !== this.historyGeneration || id !== this.state.conversation) return;
+			if (this.closed || this.refreshPaused || generation !== this.historyGeneration || id !== this.state.conversation) return;
 			this.historyError = undefined;
 			if (this.history?.id === id && this.history.revision === data.revision) return;
 			this.rememberAnchor(); this.history = { id, ...data }; this.conversation = undefined;
-		} catch (error) { if (!this.closed && generation === this.historyGeneration) this.historyError = errorText(error); }
+		} catch (error) { if (!this.closed && !this.refreshPaused && generation === this.historyGeneration) this.historyError = errorText(error); }
 		this.redraw();
 	}
 	private openConversation(): void {
@@ -281,6 +299,7 @@ export class AgentDashboard implements Component {
 	}
 	handleInput(data: string): void {
 		if (this.closed) return;
+		this.renderRequestedAt = undefined; this.resumeRefresh();
 		if (this.inputMode) this.editInput(data);
 		else if (matchesKey(data, "escape")) this.back();
 		else if (this.help) this.helpScroll = Math.max(0, this.helpScroll + this.delta(data, this.viewport));
@@ -322,7 +341,7 @@ export class AgentDashboard implements Component {
 		return `${row?.state === "working" ? "Steer" : "Send to"} ${row ? titleOf(row) : "session"}`;
 	}
 	render(width: number): string[] {
-		this.lastRenderAt = Date.now();
+		this.renderRequestedAt = undefined; this.resumeRefresh();
 		width = Math.max(1, width);
 		const height = Math.max(1, this.tui.terminal.rows - 2);
 		if (height < 6 || width < 24) return [truncateToWidth(`Agents · ${this.rows().length} sessions · Esc close`, width)];
@@ -345,9 +364,10 @@ export class AgentDashboard implements Component {
 		if (!rows.length) return [this.state.snapshot ? this.state.filter ? `No sessions match “${oneLine(this.state.filter)}”` : "No agent sessions yet. Press n to start one." : "Read in progress…"];
 		const split = width >= 136;
 		const leftWidth = split ? Math.min(108, Math.floor(width * 0.54)) : width;
-		const previewHeight = split ? height : Math.max(4, Math.floor(height * 0.43));
-		const listHeight = split ? height : Math.max(2, height - previewHeight - 1);
+		const listHeight = split ? height : Math.min(height, Math.max(3, height - Math.max(4, Math.floor(height * 0.43)) - 1));
+		const previewHeight = split ? height : Math.max(0, height - listHeight - 1);
 		const roster = this.renderRoster(rows, leftWidth, listHeight);
+		if (!previewHeight) return roster;
 		const preview = selected ? this.renderPreview(selected, split ? width - leftWidth - 3 : width, previewHeight) : [];
 		if (split) return Array.from({ length: height }, (_, index) => `${pad(roster[index] ?? "", leftWidth)} ${this.theme.fg("borderMuted", "│")} ${preview[index] ?? ""}`);
 		return [...roster, this.theme.fg("borderMuted", "─".repeat(width)), ...preview];
@@ -357,7 +377,27 @@ export class AgentDashboard implements Component {
 		const cost = 9; const age = width >= 48 ? 7 : 0;
 		return { title: Math.max(8, width - 3 - place - model - cost - age), place, model, cost, age };
 	}
-	private rosterRow(row: SessionDigest, width: number): string {
+	private rosterTitles(rows: SessionDigest[], width: number): Map<string, string> {
+		const cols = this.columns(width);
+		const groups = new Map<string, SessionDigest[]>();
+		for (const row of this.state.snapshot?.sessions ?? rows) {
+			const key = JSON.stringify([truncateToWidth(titleOf(row), cols.title - 1), cols.place ? truncateToWidth(oneLine(basename(row.cwd)), cols.place - 1) : ""]);
+			const group = groups.get(key) ?? []; group.push(row); groups.set(key, group);
+		}
+		const titles = new Map<string, string>();
+		for (const group of groups.values()) {
+			if (group.length < 2) continue;
+			for (const row of group) {
+				let length = Math.min(6, row.sessionId.length);
+				while (length < row.sessionId.length && group.some((other) => other.sessionId !== row.sessionId && other.sessionId.slice(-length) === row.sessionId.slice(-length))) length++;
+				const suffix = row.sessionId.slice(-length);
+				const title = truncateToWidth(titleOf(row), Math.max(0, cols.title - 2 - visibleWidth(suffix)));
+				titles.set(row.sessionId, `${title} ${suffix}`.trimStart());
+			}
+		}
+		return titles;
+	}
+	private rosterRow(row: SessionDigest, width: number, title: string): string {
 		const cols = this.columns(width);
 		const cell = (text: string, size: number) => size ? `${pad(oneLine(text), size - 1)} ` : "";
 		const selected = row.sessionId === this.state.selected;
@@ -365,7 +405,7 @@ export class AgentDashboard implements Component {
 		const level = row.model?.thinkingLevel ?? "off";
 		const short = ({ xhigh: "xh", high: "hi", medium: "med", low: "lo", minimal: "min" } as Record<string, string>)[level] ?? level;
 		const model = row.model ? `${row.model.modelId}${level !== "off" ? ` ${short}` : ""}` : "—";
-		const line = `${selected ? "›" : " "}${this.theme.fg(appearance.color, appearance.glyph)} ${cell(titleOf(row), cols.title)}${this.theme.fg("muted", cell(basename(row.cwd), cols.place))}${this.theme.fg("muted", cell(model, cols.model))}${cell(costOf(row), cols.cost)}${this.theme.fg("dim", cell(elapsed((this.state.snapshot?.observedAt ?? Date.now()) - row.modifiedAt), cols.age))}`;
+		const line = `${selected ? "›" : " "}${this.theme.fg(appearance.color, appearance.glyph)} ${cell(title, cols.title)}${this.theme.fg("muted", cell(basename(row.cwd), cols.place))}${this.theme.fg("muted", cell(model, cols.model))}${cell(costOf(row), cols.cost)}${this.theme.fg("dim", cell(elapsed((this.state.snapshot?.observedAt ?? Date.now()) - row.modifiedAt), cols.age))}`;
 		return selected ? this.theme.bg("selectedBg", pad(line, width)) : line;
 	}
 	private renderRoster(rows: SessionDigest[], width: number, height: number): string[] {
@@ -380,24 +420,26 @@ export class AgentDashboard implements Component {
 			entries.push({ row });
 		}
 		const selectedIndex = entries.findIndex((entry) => entry.row?.sessionId === this.state.selected);
-		this.pageSize = Math.max(1, height - 2);
+		const headerHeight = height >= 6 ? 2 : height >= 4 ? 1 : 0;
+		this.pageSize = Math.max(1, height - headerHeight);
 		const start = Math.min(Math.max(0, entries.length - this.pageSize), Math.max(0, selectedIndex - Math.floor(this.pageSize / 2)));
 		const filter = this.state.filter ? `“${oneLine(this.state.filter)}” · ${rows.length} of ${this.state.snapshot?.sessions.length ?? 0}` : `${rows.length} sessions`;
-		const lines = [this.theme.fg("dim", `${filter}${start > 0 ? " · ↑ more" : ""}${start + this.pageSize < entries.length ? " · ↓ more" : ""}`), this.theme.fg("muted", header)];
+		const lines = [this.theme.fg("dim", `${filter}${start > 0 ? " · ↑ more" : ""}${start + this.pageSize < entries.length ? " · ↓ more" : ""}`), this.theme.fg("muted", header)].slice(0, headerHeight);
+		const titles = this.rosterTitles(rows, width);
 		for (const entry of entries.slice(start, start + this.pageSize)) {
 			if (!entry.row) { lines.push(this.theme.fg("accent", ` ${entry.text}`)); continue; }
-			lines.push(this.rosterRow(entry.row, width));
+			lines.push(this.rosterRow(entry.row, width, titles.get(entry.row.sessionId) ?? titleOf(entry.row)));
 		}
 		return Array.from({ length: height }, (_, index) => lines[index] ?? "");
 	}
 	private renderPreview(row: SessionDigest, width: number, height: number): string[] {
 		const appearance = sessionAppearance[row.state];
 		const status = `${stateLabel(row)} · ${basename(row.cwd)} · ${row.model ? `${row.model.modelId} ${row.model.thinkingLevel}` : "model unknown"} · ${costOf(row)}`;
-		const header = [this.theme.bold(truncateToWidth(titleOf(row), width)), this.theme.fg(appearance.color, truncateToWidth(oneLine(status), width))];
+		const header = [...(height > 4 ? [this.theme.bold(truncateToWidth(titleOf(row), width))] : []), this.theme.fg(appearance.color, truncateToWidth(oneLine(status), width))];
 		if (height > 13) header.push(this.theme.fg("dim", `${elapsed(row.durationMs)} duration · ${row.toolCalls} tool calls · active ${elapsed((this.state.snapshot?.observedAt ?? Date.now()) - row.modifiedAt)} ago`));
 		if (row.state === "working") header.push(this.theme.fg("accent", truncateToWidth(row.currentTool ? `› ${oneLine(row.currentTool.name)} ${oneLine(row.currentTool.argument)}` : "› Thinking", width)));
 		else if (row.error) header.push(this.theme.fg("error", truncateToWidth(oneLine(row.error), width)));
-		header.push("");
+		if (height > 4) header.push("");
 		const text = row.latestReply || (row.state === "new" ? "No reply yet. Press m to give this agent a task." : "No assistant reply in the available history.");
 		if (this.preview?.text !== text) this.preview = { text, component: new Markdown(cleanDashboardText(text), 0, 0, getMarkdownTheme()) };
 		const reply = this.preview.component.render(Math.max(1, Math.min(100, width)));
@@ -441,13 +483,13 @@ export class AgentDashboard implements Component {
 		return lines.slice(this.resultScroll, this.resultScroll + height);
 	}
 	private renderHelp(width: number, height: number): string[] {
-		const lines = ["Agent board", "", "↑↓ or j/k selects a session. Page Up/Down moves a page. Home/End reaches either end.", "Enter opens the conversation. / searches name, task, place, model, state or ID. Enter keeps a filter; Escape cancels its edit.", "m opens a message. Enter sends to an idle agent or steers active work. Escape keeps the draft. n starts a new agent.", "a opens all native actions. Actions retain their trust and ownership checks.", "", "Conversation", "↑↓ scrolls. Page Up/Down or b/Space pages. Home starts; End follows new output. o loads earlier messages.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A dead writer claim shows Orphaned. The board never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files use a bounded tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds non-clean sessions active within the last 24 hours. Older sessions retain their state in date groups.", "Refresh runs once per second while this overlay is visible. Only changed files are parsed. Refresh stops after five seconds without a render. Escape returns or closes."];
+		const lines = ["Agent board", "", "↑↓ or j/k selects a session. Page Up/Down moves a page. Home/End reaches either end.", "Enter opens the conversation. / searches name, task, place, model, state or ID. Enter keeps a filter; Escape cancels its edit.", "m opens a message. Enter sends to an idle agent or steers active work. Escape keeps the draft. n starts a new agent.", "a opens all native actions. Actions retain their trust and ownership checks.", "", "Conversation", "↑↓ scrolls. Page Up/Down or b/Space pages. Home starts; End follows new output. o loads earlier messages.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A dead writer claim shows Orphaned. The board never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files use a bounded tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds unresolved Orphaned and Unavailable sessions regardless of age, plus Failed, Stopped and Interrupted outcomes from the last 24 hours. Older outcomes retain their state in date groups.", "Refresh runs once per second while this overlay is visible. Only changed files are parsed. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it. Escape returns or closes."];
 		const wrapped = lines.flatMap((line) => wrapTextWithAnsi(line, width));
 		this.helpScroll = Math.min(this.helpScroll, Math.max(0, wrapped.length - height));
 		return wrapped.slice(this.helpScroll, this.helpScroll + height);
 	}
 	invalidate(): void { this.rememberAnchor(); this.input.invalidate(); this.preview?.component.invalidate(); this.conversation?.invalidate(); }
-	dispose(): void { this.closed = true; this.historyGeneration++; if (this.timer) clearInterval(this.timer); this.timer = undefined; this.input.focused = false; }
+	dispose(): void { this.closed = true; this.pauseRefresh(); this.historyGeneration++; this.input.focused = false; }
 }
 
 export async function showAgentDashboard(sources: AgentObservationSources, ctx: ExtensionContext, actions?: DashboardActions): Promise<void> {
