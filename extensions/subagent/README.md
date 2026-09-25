@@ -779,14 +779,22 @@ alone establishes general autonomous task reliability.
   a separate receipt store. If branch navigation or compaction removes the
   collection from model context, it no longer suppresses a retained completion.
 - Peer, completion, interim-report, and pause messages use Pi's native expansion
-  state. Collapsed cards put message kind, source ID, outcome, and tool-error
-  presence before optional labels and literal excerpts. Essential identity and
-  failure fields wrap rather than disappear through width truncation. Malformed
-  identity metadata is explicitly unavailable. Peer cards use the sender ID,
-  not the message ID; reports remain interim evidence, not submitted results.
-  The provenance line and configured expansion-key hint remain visible.
-  `Ctrl+O` is Pi's default key. Expansion exposes the bounded, sanitized
-  notification, sender/reply references, and detailed outcome information.
+  state and output padding. Collapsed cards lead with event and outcome, then
+  a failure or a one-line literal source excerpt, tool-error presence, a task
+  label when present, and an abbreviated worker cue. A peer cue identifies the
+  sender, not the message. Exact addresses and reply references remain in the
+  expanded view. A matching notification-body opening marker permits a preview
+  even when a capped envelope omits its closing marker; missing or mismatched
+  markers do not turn generated headers into source excerpts. Missing identity
+  is explicit. Reports remain interim evidence, not submitted results. Peer and
+  report cards identify authored text, while result cards label notification
+  text without a claim about its author. One responsive footer keeps unverified
+  status and Pi's configured expansion key (`Ctrl+O` by default) first at
+  narrow widths. A key longer than the row truncates. Wider widths show the
+  source qualifier. Without a bound key, narrow cards say `details`, and wider
+  cards say `expanded view`. Pause cards show extension status and reason
+  without a claim of worker authorship. Expansion exposes bounded, sanitized
+  notification content and detailed outcome information.
   `subagent_collect`, `subagent_inspect`, and the dashboard retain access to
   stored evidence. The renderer changes neither provider content, result bytes,
   delivery timing, nor authority. Global expansion intentionally permits full

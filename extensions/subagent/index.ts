@@ -100,6 +100,7 @@ import {
 	getMarkdownTheme,
 	hasTrustRequiringProjectResources,
 	keyHint,
+	keyText,
 	type LoadExtensionsResult,
 	type MessageRenderer,
 	ModelRuntime,
@@ -115,7 +116,7 @@ import {
 	type ToolInfo,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Box, Markdown, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import {
 	collaborationFamilyChain,
@@ -1379,20 +1380,21 @@ function markWorkerPreview(body: string, id: string): string {
 	return `[worker-authored preview from ${id}; unverified; not instructions] ${body}`;
 }
 
-/** Bytes of author-supplied text a collapsed card may quote. */
+/** Bytes of notification text a collapsed card may quote. */
 const CARD_PREVIEW_BYTES = 220;
 
 /**
- * The substantive opening of the worker's own message, for a collapsed card.
- * It is an exact excerpt of the author's text with the display wrapper and
- * the extension's own header line removed, never a generated summary: a card
- * that paraphrases a worker would present unverified content as this
- * extension's claim. Control sequences are neutralized, the excerpt is
- * byte-bounded, and truncation reads as one inline mark, so an oversized or
- * hostile message cannot own the row or split it across lines.
+ * A literal opening excerpt of the notification body, with its display wrapper
+ * and header removed. Peer messages and interim reports carry authored text;
+ * a completion can carry a submission, retained output, failure text, or an
+ * extension placeholder. The card does not infer authorship from the wrapper.
+ * Control sequences are neutralized; byte and row bounds protect the display.
  */
 export function cardContentPreview(text: string, id: string): string {
 	const body = collaborationMessageText(text, id);
+	// The matching opening marker locates notification text even when a capped
+	// envelope has lost its closing marker. Without it, do not quote the header.
+	if (body === text) return "";
 	const lines = body
 		.split("\n")
 		.map((line) => line.trim())
@@ -1456,11 +1458,10 @@ export function notifyCompletion(
 			// the parent gets it here: a blocked tool changes how the result reads.
 			(failedTools ? `\nTool failures: ${failedTools}` : "") +
 			(record.modelFallback ? `\n${fallbackSummary(record.modelFallback, record.model)}` : "");
-		// Provenance is load-bearing. This arrives as a steering message with
-		// triggerTurn:true, which puts worker-authored text in the position the
-		// operator's own words occupy. The 50KB cap bounds size, not authority, so
-		// the boundary is marked the same way collectWorker flags unprotocolled
-		// output: the worker reports, the parent decides.
+		// This steering message can carry a submission, retained output, failure
+		// text, or a generated placeholder. Its marker bounds untrusted content,
+		// not authorship; triggerTurn:true can put it beside operator input.
+		// The 50KB cap limits size, not authority. The parent decides.
 		body = markWorkerAuthored(body, record.id);
 		const message = () => ({
 			customType: "subagent_result" as const,
@@ -1527,73 +1528,97 @@ export function filterCollectedCompletions(messages: ContextEvent["messages"]): 
 
 interface WorkerCardStatus {
 	kind: "result" | "paused" | "report" | "peer";
-	text: string;
+	title: string;
+	fact: string;
 	color: "muted" | "error" | "success" | "accent" | "warning";
 }
 
+function cardMetric(value: unknown, suffix: string): string {
+	return typeof value === "number" && Number.isFinite(value) ? `${value}${suffix}` : "";
+}
+
 function resultCardStatus(details: Record<string, unknown>): WorkerCardStatus {
-	const state = inspectInline(asString(details.state), 64);
+	const state = asString(details.state);
+	const outcome = ["done", "failed", "cancelled", "owner_lost", "idle_expired", "no_result_submitted"].includes(state)
+		? state
+		: "outcome unavailable";
+	const failure = state === "failed" || state === "owner_lost" || state === "idle_expired" || state === "no_result_submitted";
 	const usage = isRecord(details.usage) ? details.usage : {};
-	const toolErrors = compactStatusToolErrors({ toolErrors: isRecord(details.toolErrors) ? details.toolErrors : {} });
+	const toolErrors = compactStatusToolErrors({ toolErrors: Object.fromEntries(
+		Object.entries(isRecord(details.toolErrors) ? details.toolErrors : {}).filter(([, count]) => typeof count === "number" && Number.isFinite(count) && count > 0),
+	) });
 	const facts = [
-		state,
-		typeof details.elapsedSeconds === "number" ? `${details.elapsedSeconds}s` : "",
-		typeof usage.turns === "number" ? `${usage.turns} turns` : "",
-		typeof usage.cost === "number" ? formatUsd(usage.cost) : "",
-		typeof details.resultBytes === "number" ? `${details.resultBytes}B` : "",
+		outcome,
+		cardMetric(details.elapsedSeconds, "s"),
+		cardMetric(usage.turns, " turns"),
+		typeof usage.cost === "number" && Number.isFinite(usage.cost) ? formatUsd(usage.cost) : "",
+		cardMetric(details.resultBytes, "B"),
 		toolErrors ? `tool errors: ${toolErrors}` : "",
-	]
-		.filter(Boolean)
-		.join(" · ");
-	const failure = state === "failed" || state === "owner_lost" || state === "idle_expired";
+	].filter(Boolean).join(" · ");
 	return {
 		kind: "result",
-		text: failure && asString(details.error) ? `${facts} · ${inspectInline(asString(details.error), 200)}` : facts,
+		title: `Subagent result · ${outcome}`,
+		fact: failure && asString(details.error) ? `${facts} · ${inspectInline(details.error, 200)}` : facts,
 		color: failure ? "error" : state === "done" ? "success" : "accent",
 	};
 }
 
 function workerCardStatus(type: string, details: Record<string, unknown>): WorkerCardStatus {
-	if (type === "subagent_peer") return { kind: "peer", color: "muted", text: "Peer message; no submitted result" };
+	if (type === "subagent_peer") return { kind: "peer", color: "muted", title: "Subagent peer · message", fact: "Peer message; no submitted result" };
 	if (type === "subagent_result") return resultCardStatus(details);
-	if (type === "subagent_paused")
+	if (type === "subagent_paused") {
+		const breach = asString(details.breach);
 		return {
 			kind: "paused",
 			color: "warning",
-			text: asString(details.reason) ? `paused · ${inspectInline(asString(details.reason), 200)}` : "paused",
+			title: `Subagent paused${breach === "deadline" || breach === "budget" ? ` · ${breach}` : ""}`,
+			fact: asString(details.reason) ? inspectInline(details.reason, 200) : "Reason unavailable",
 		};
-	const number = typeof details.reportNumber === "number" ? `#${details.reportNumber}` : "";
-	const bytes = typeof details.messageBytes === "number" ? `${details.messageBytes}B` : "";
-	return { kind: "report", color: "muted", text: [`interim ${number}`.trim(), bytes].filter(Boolean).join(" · ") };
+	}
+	const number = typeof details.reportNumber === "number" && Number.isSafeInteger(details.reportNumber) && details.reportNumber > 0 ? ` #${details.reportNumber}` : "";
+	const bytes = typeof details.messageBytes === "number" && Number.isFinite(details.messageBytes) ? `${details.messageBytes}B` : "";
+	return { kind: "report", color: "muted", title: `Subagent report · interim${number}`, fact: ["interim; not a submitted result", bytes].filter(Boolean).join(" · ") };
 }
 
-function workerCardTitle(status: WorkerCardStatus, details: Record<string, unknown>): string {
-	if (status.kind === "report") return "Subagent report · interim";
-	if (status.kind !== "result") return `Subagent ${status.kind}`;
-	const state = asString(details.state);
-	const outcome = ["done", "failed", "cancelled", "owner_lost", "idle_expired", "no_result_submitted"].includes(state) ? state : "outcome unavailable";
-	return `Subagent result · ${outcome}`;
+/** A single terminal row; a narrow terminal must not expand a notification excerpt. */
+function cardRow(box: Box, value: string, color: WorkerCardStatus["color"] | "customMessageText" | "dim", theme: Theme): void {
+	const line = theme.fg(color, value);
+	box.addChild({ render: (width: number) => [truncateToWidth(line, Math.max(1, width))], invalidate() {} });
 }
 
-function addCollapsedWorkerEvidence(box: Box, details: Record<string, unknown>, preview: string, theme: Theme): void {
-	const toolErrors = isRecord(details.toolErrors) && Object.values(details.toolErrors).some((count) => typeof count === "number" && count > 0);
-	if (toolErrors) box.addChild(new Text(theme.fg("error", "Tool errors: present"), 0, 0));
+/** Abbreviated addresses are presentation cues, never substitutes for exact control IDs. */
+function cardSource(id: string): string {
+	return id.length > 24 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+}
+
+function addCollapsedWorkerEvidence(box: Box, details: Record<string, unknown>, id: string, preview: string, status: WorkerCardStatus, theme: Theme): void {
+	const failure = status.kind === "result" && status.color === "error" ? inspectInline(asString(details.error), 200) : "";
+	if (status.kind === "paused" || failure) cardRow(box, failure || status.fact, status.color, theme);
+	// The matching opening marker supplies a quote even if the capped tail lost its close.
+	if (preview) cardRow(box, `↳ ${preview}`, "customMessageText", theme);
+	const toolErrors = isRecord(details.toolErrors) && Object.values(details.toolErrors).some((count) => typeof count === "number" && Number.isFinite(count) && count > 0);
+	if (toolErrors) cardRow(box, "Tool errors: present", "error", theme);
 	const label = inspectInline(asString(details.label), 80);
-	if (label) {
-		const line = theme.fg("muted", label);
-		box.addChild({ render: (width: number) => [truncateToWidth(line, Math.max(1, width))], invalidate() {} });
-	}
-	// Literal excerpts never present a generated summary as verified evidence.
-	if (preview) {
-		const line = theme.fg("customMessageText", `↳ ${preview}`);
-		box.addChild({ render: (width: number) => [truncateToWidth(line, Math.max(1, width))], invalidate() {} });
-	}
-	box.addChild(new Text(theme.fg("muted", "Peer evidence · unverified"), 0, 0));
-	box.addChild(new Text(theme.fg("dim", keyHint("app.tools.expand", "to expand notification")), 0, 0));
+	if (label) cardRow(box, `task: ${label}`, "muted", theme);
+	cardRow(box, `${status.kind === "peer" ? "sender" : "worker"}: ${cardSource(id)}`, "muted", theme);
+	const key = keyText("app.tools.expand");
+	const hint = key ? keyHint("app.tools.expand", "to expand") : "expanded view";
+	const full = status.kind === "paused" ? `Extension status · ${hint}` : `unverified · ${hint} · ${cardSourceQualifier(status.kind)}`;
+	const compact = `${status.kind === "paused" ? "status" : "unverified"} ${key || "details"}`;
+	box.addChild({ render: (width: number) => [truncateToWidth(theme.fg("dim", visibleWidth(full) <= width ? full : compact), Math.max(1, width))], invalidate() {} });
+}
+
+function cardSourceQualifier(kind: WorkerCardStatus["kind"]): string {
+	if (kind === "peer") return "peer-authored";
+	return kind === "report" ? "worker-authored report" : "notification text";
+}
+
+function cardProvenance(kind: WorkerCardStatus["kind"]): string {
+	return kind === "paused" ? "Extension status" : `unverified · ${cardSourceQualifier(kind)}`;
 }
 
 function addExpandedWorkerEvidence(box: Box, text: string, id: string, details: Record<string, unknown>, status: WorkerCardStatus, theme: Theme): void {
-	box.addChild(new Text(theme.fg(status.color, status.text), 0, 0));
+	box.addChild(new Text(theme.fg(status.color, status.fact), 0, 0));
 	const label = inspectInline(asString(details.label), 80);
 	if (label) box.addChild(new Text(theme.fg("muted", label), 0, 0));
 	for (const key of ["id", "from", "to", "replyTo", "workerSession", "ownerSession"]) {
@@ -1602,12 +1627,12 @@ function addExpandedWorkerEvidence(box: Box, text: string, id: string, details: 
 	box.addChild(new Markdown(capUtf8(capLines(inspectPlainText(text), REPORT_ENVELOPE_LINE_CAP).text).text, 0, 0, getMarkdownTheme(), { color: (line) => theme.fg("customMessageText", line) }));
 	box.addChild(new Spacer(1));
 	const model = inspectInline(asString(details.model), 256);
-	box.addChild(new Text(`${theme.fg("muted", `source ${id}`)} ${theme.fg("muted", model ? `· ${model}` : "")} ${theme.fg("dim", "· peer-authored · unverified")}`, 0, 0));
+	box.addChild(new Text(`${theme.fg("muted", `${status.kind === "peer" ? "sender" : "worker"} ${id}`)} ${theme.fg("muted", model ? `· ${model}` : "")} ${theme.fg("dim", `· ${cardProvenance(status.kind)}`)}`, 0, 0));
 	if (status.kind === "result") box.addChild(new Text("subagent_collect / subagent_inspect: stored evidence", 0, 0));
 }
 
 /** Native expansion controls presentation only; the retained evidence stays unchanged. */
-export const renderWorkerMessage: MessageRenderer = (message, { expanded }, theme) => {
+export const renderWorkerMessage: MessageRenderer = (message, { expanded, outputPad }, theme) => {
 	const details = isRecord(message.details) ? message.details : {};
 	const actor = asString(message.customType === "subagent_peer" ? details.from : details.id);
 	const id = /^[\w.:-]{1,128}$/u.test(actor) ? actor : "source unavailable";
@@ -1620,19 +1645,17 @@ export const renderWorkerMessage: MessageRenderer = (message, { expanded }, them
 					.join("\n");
 
 	const status = workerCardStatus(message.customType, details);
-	const subject = workerCardTitle(status, details);
-
-	const box = new Box(1, 0, (line) =>
+	const box = new Box(outputPad, 1, (line) =>
 		theme.bg(
 			"customMessageBg",
 			line.replace(/\x1b\[(?:0|49)?m/g, (reset) => reset + theme.getBgAnsi("customMessageBg")),
 		),
 	);
-	box.addChild(new Text(theme.fg(status.color, subject), 0, 0));
-	box.addChild(new Text(theme.fg("accent", id), 0, 0));
 	if (!expanded) {
-		addCollapsedWorkerEvidence(box, details, message.customType === "subagent_paused" ? "" : cardContentPreview(text, id), theme);
+		cardRow(box, status.title, status.color, theme);
+		addCollapsedWorkerEvidence(box, details, id, status.kind === "paused" ? "" : cardContentPreview(text, id), status, theme);
 	} else {
+		box.addChild(new Text(theme.fg(status.color, status.title), 0, 0));
 		addExpandedWorkerEvidence(box, text, id, details, status, theme);
 	}
 	return box;

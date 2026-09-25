@@ -30,6 +30,7 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { after, describe, it } from "node:test";
@@ -71,6 +72,7 @@ const {
 	workerReportMessage,
 	capLines,
 	capUtf8,
+	cardContentPreview,
 	collectWorker,
 	composeWorkerPrompt,
 	compactionVeto,
@@ -91,6 +93,7 @@ const {
 	parentToolSurface,
 	purposeLabel,
 	projectTrustInputs,
+	peerMessage,
 	linkWorkerOwner,
 	recordWorkerSurface,
 	sendWorkerReport,
@@ -202,32 +205,19 @@ interface ProfileToolResult {
 	};
 }
 
-/** Check one collapsed report card at one width against its bounded preview contract. */
+/** Check that a notification excerpt stays one bounded row and never owns a narrow card. */
 function assertCollapsedCard(component: { render(width: number): string[] }, kind: string, width: number): void {
 	const rows = component.render(width);
-	assert.ok(rows.length >= 3, `collapsed card has subject, status, and hint (${rows.length})`);
-	assert.ok(
-		rows.every((row) => visibleWidth(row) <= width),
-		`rows fit ${width}`,
-	);
+	assert.ok(rows.length >= 5 && rows.length <= 9, `compact ${kind} card at ${width}: ${rows.length}`);
+	assert.ok(rows.every((row) => visibleWidth(row) === width), `rows fit ${width}`);
 	const joined = stripTerminalSequences(rows.join("\n"));
-	if (kind === "paused") {
-		// A pause card has no author prose to quote; it shows state only.
-		assert.doesNotMatch(joined, /↳ /, `no preview row at ${width}`);
-	} else {
-		// The collapsed card quotes the bounded first substantive excerpt in the
-		// worker's own words; the report tail never reaches it. Narrow widths cut
-		// the same one line instead of wrapping it open.
-		const expected = width >= 60 ? /↳ Worker evidence LONG_REPORT_LINE/ : /↳ Worker/;
-		assert.match(joined, expected, `preview starts the body at ${width}`);
-		assert.doesNotMatch(joined, /LAST_EVIDENCE/, `preview excludes the tail at ${width}`);
+	if (kind === "paused") assert.doesNotMatch(joined, /↳ /);
+	else {
+		assert.match(joined, /↳ Worker/);
+		assert.doesNotMatch(joined, /LAST_EVIDENCE/);
 	}
-	assert.equal(
-		joined.split("↳ ").length - 1,
-		kind === "paused" ? 0 : 1,
-		`the preview stays one line at width ${width}`,
-	);
-	assert.ok(!joined.includes("\u202e"), `bidi controls are neutralized at ${width}`);
+	assert.equal(joined.split("↳ ").length - 1, kind === "paused" ? 0 : 1);
+	assert.ok(!joined.includes("\u202e"));
 }
 
 after(() => {
@@ -1586,7 +1576,7 @@ describe("interim worker reports", () => {
 // ---------------------------------------------------------------------------
 
 describe("status and collection", () => {
-	it("marks completion only after the synchronous send call returns", () => {
+	it("marks completion only after the synchronous send call returns", async () => {
 		const id = "bg-notifytruth";
 		const dir = seedWorker(
 			id,
@@ -1640,6 +1630,18 @@ describe("status and collection", () => {
 			deliverAs: "steer",
 			triggerTurn: true,
 		});
+		const pi = await import("@earendil-works/pi-coding-agent");
+		pi.initTheme("dark");
+		const { CustomMessageComponent } = await import(new URL("./modes/interactive/components/custom-message.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+		const native = new CustomMessageComponent(sent[0].message as never, renderWorkerMessage);
+		const collapsed = stripTerminalSequences(native.render(36).join("\n"));
+		assert.match(collapsed, /Subagent result/);
+		assert.match(collapsed, /↳ result/);
+		assert.doesNotMatch(collapsed, /worker-authored content begins/);
+		native.setExpanded(true);
+		assert.match(stripTerminalSequences(native.render(100).join("\n")), /worker-authored content begins/);
+		native.setOutputPad(2);
+		assert.ok(native.render(36).every((row: string) => visibleWidth(row) <= 36), native.render(36).map((row: string) => visibleWidth(row)).join(","));
 		assert.equal(
 			notifyCompletion(record, {
 				sendMessage: (message: SentMessage, options: unknown) => sent.push({ message, options }),
@@ -1647,6 +1649,30 @@ describe("status and collection", () => {
 			false,
 		);
 		assert.equal(sent.length, 1, "a persisted marker suppresses a duplicate send");
+	});
+
+	it("treats failure text and empty output as notification text, not worker prose", async () => {
+		const pi = await import("@earendil-works/pi-coding-agent");
+		pi.initTheme("dark");
+		const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, getBgAnsi: () => "", bold: (text: string) => text } as never;
+		for (const [id, error, excerpt] of [
+			["bg-failurenotice", "provider failure", "provider failure"],
+			["bg-emptynotice", null, "(no output)"],
+		] as const) {
+			const record = runningRecord(id, { state: "failed", exitedAt: 2, error });
+			seedWorker(id, record);
+			const stored = readWorker(id);
+			assert.ok(stored);
+			let message: unknown;
+			assert.equal(notifyCompletion(stored, { sendMessage: (sent: unknown) => { message = sent; } } as never), true);
+			assert.ok(message);
+			const card = present(renderWorkerMessage(message as never, { expanded: false, outputPad: 1 }, theme));
+			const text = stripTerminalSequences(card.render(100).join("\n"));
+			assert.ok(text.includes(`↳ ${excerpt}`));
+			assert.match(text, /unverified/);
+			assert.match(text, /notification text/);
+			assert.doesNotMatch(text, /peer-authored|worker-authored report/);
+		}
 	});
 
 	it("keeps one result in context after exact collection, without altering history", async () => {
@@ -1715,34 +1741,49 @@ describe("status and collection", () => {
 		assert.match(guidance, /Before a final conclusion/);
 	});
 
-	it("keeps source identity and failures ahead of bounded labels and peer excerpts", async () => {
+	it("puts outcomes and authored evidence ahead of abbreviated source cues", async () => {
 		const pi = await import("@earendil-works/pi-coding-agent");
 		pi.initTheme("dark");
 		const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, getBgAnsi: () => "", bold: (text: string) => text } as never;
-		([
-			["subagent_peer", "bg-source-id", /Subagent peer/, /reply-id/],
-			["subagent_report", "bg-message-id", /interim/, /reply-id/],
-			["subagent_result", "bg-message-id", /failed/, /FAILURE_DETAILS/],
-		] as const).forEach(([customType, source, expectedStatus, expectedDetails]) => {
-			const message = { role: "custom" as const, timestamp: 1, customType, content: `OPENING\n${"long evidence\n".repeat(500)}EXACT_END`, display: true, details: { id: "bg-message-id", from: "bg-source-id", label: "optional label ".repeat(20), state: "failed", error: "FAILURE_DETAILS", toolErrors: { read: 1 }, replyTo: "reply-id" } };
+		const sender = "01a0d73f-b158-77c9-a1d9-0db0defbea70";
+		const peer = peerMessage({ id: "reply-id", from: sender, to: "bg-target", replyTo: "prior-id", sentAt: 1, message: "Authored peer finding" });
+		const report = workerReportMessage({ workerId: "bg-reporter", workerSession: sender, ownerSession: "parent", reportNumber: 2, sentAt: 1, model: "example/model", messageBytes: 23, label: "review parser", text: workerReportEnvelopeText({ workerId: "bg-reporter", model: "example/model", reportNumber: 2, sentAt: 1, ownerSession: "parent", message: "Authored report finding" }) });
+		const result = { customType: "subagent_result", content: workerReportEnvelopeText({ workerId: "bg-worker", model: "example/model", reportNumber: 1, sentAt: 1, ownerSession: "parent", message: "Authored result finding" }), details: { id: "bg-worker", label: "review parser", state: "failed", error: "FAILURE_DETAILS", toolErrors: { read: 1 }, elapsedSeconds: 7 } };
+		for (const [message, title, authored, source, sourceLabel, provenance] of [
+			[peer, "Subagent peer", "Authored peer finding", sender, "sender", "unverified · peer-authored"],
+			[report, "Subagent report · interim #2", "Authored report finding", "bg-reporter", "worker", "unverified · worker-authored report"],
+			[result, "Subagent result · failed", "Authored result finding", "bg-worker", "worker", "unverified · notification text"],
+		] as const) {
 			const before = structuredClone(message);
-			const card = present(renderWorkerMessage(message, { expanded: false, outputPad: 1 }, theme), "card");
+			const card = present(renderWorkerMessage(message as never, { expanded: false, outputPad: 1 }, theme), "card");
 			for (const width of [20, 40, 100, 140]) {
 				const rows = card.render(width);
-				assert.ok(rows.length <= (width === 20 ? 12 : 8), `${customType} ${width}: ${rows.length}`);
+				assert.ok(rows.length <= 9, `${title} ${width}: ${rows.length}`);
+				assert.ok(rows.every((row) => visibleWidth(row) === width));
 				const text = stripTerminalSequences(rows.join("\n"));
-				assert.ok(text.indexOf(source) < text.indexOf("optional"));
-				assert.match(text.replace(/\s+/g, " "), /Tool errors: present/);
-				assert.match(text, expectedStatus);
-				assert.doesNotMatch(text, /EXACT_END/);
+				assert.ok(text.indexOf("Subagent") < text.indexOf("↳"));
+				assert.doesNotMatch(text, /interim report #1|worker-authored content begins|reply-id/);
+				assert.ok(!text.includes(sender), "the full session UUID stays in expanded evidence");
+				if (width >= 100) {
+					assert.match(text, /unverified/);
+					assert.ok(text.includes(provenance.replace("unverified · ", "")));
+					assert.ok(text.indexOf("↳") < text.indexOf(`${sourceLabel}:`));
+					assert.match(text, new RegExp(title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+					assert.match(text, new RegExp(authored));
+				}
 			}
-			const expanded = present(renderWorkerMessage(message, { expanded: true, outputPad: 1 }, theme), "expanded");
+			const expanded = present(renderWorkerMessage(message as never, { expanded: true, outputPad: 1 }, theme), "expanded");
 			const text = stripTerminalSequences(expanded.render(100).join("\n"));
-			assert.match(text, /EXACT_END/);
-			assert.match(text, /reply-id/);
-			assert.match(text, expectedDetails);
+			assert.ok(text.includes(`${sourceLabel} ${source}`));
+			assert.ok(text.includes(authored));
+			assert.ok(text.includes(provenance));
 			assert.deepEqual(message, before);
-		});
+		}
+		assert.equal(present(renderWorkerMessage(result as never, { expanded: false, outputPad: 1 }, theme)).render(20).length, 9, "failure, preview, tool errors, task, worker, and footer fit nine rows with padding");
+		const resultRows = stripTerminalSequences(present(renderWorkerMessage(result as never, { expanded: false, outputPad: 1 }, theme)).render(100).join("\n"));
+		assert.ok(resultRows.indexOf("FAILURE_DETAILS") < resultRows.indexOf("Authored result finding"));
+		assert.match(resultRows, /Tool errors: present/);
+		assert.match(resultRows, /review parser/);
 	});
 
 	it("collapses reports to bounded rows and exposes sanitized evidence on expansion", async () => {
@@ -1754,7 +1795,11 @@ describe("status and collection", () => {
 			getBgAnsi: () => "",
 			bold: (text: string) => text,
 		} as never;
-		const body = `Worker evidence\n\n${"LONG_REPORT_LINE\n".repeat(300)}LAST_EVIDENCE\u202e\u001b[31m`;
+		const body = `Worker evidence 👩‍💻 文 e\u0301\n\n${"LONG_REPORT_LINE\n".repeat(300)}LAST_EVIDENCE\u202e\u001b[31m`;
+		const wrapped = workerReportEnvelopeText({ workerId: "bg-render", model: "example/model", reportNumber: 1, sentAt: 1, ownerSession: "parent", message: body });
+		const withoutClose = wrapped.slice(0, wrapped.indexOf("\n\n──── worker-authored content ends"));
+		assert.match(cardContentPreview(withoutClose, "bg-render"), /Worker evidence/);
+		assert.equal(cardContentPreview(withoutClose, "bg-other"), "", "a different opening marker cannot supply a quote");
 		for (const [customType, kind] of [
 			["subagent_result", "result"],
 			["subagent_report", "report"],
@@ -1762,7 +1807,7 @@ describe("status and collection", () => {
 		] as const) {
 			const message = {
 				customType,
-				content: body,
+				content: wrapped,
 				display: true,
 				details: { id: "bg-render", label: "render-gap probe", state: "done" },
 			};
@@ -1771,12 +1816,14 @@ describe("status and collection", () => {
 				"the collapsed card renders",
 			);
 			for (const width of [20, 60, 120, 140]) assertCollapsedCard(collapsed, kind, width);
-			// Source identity precedes the optional purpose label. Author controls
+			// The optional purpose label precedes the worker cue. Source controls
 			// never restyle the transcript.
 			const collapsedText = stripTerminalSequences(collapsed.render(120).join("\n"));
 			assert.match(collapsedText, new RegExp(`Subagent ${kind}`));
-			assert.ok(collapsedText.indexOf("bg-render") < collapsedText.indexOf("render-gap probe"));
-			assert.match(collapsedText, /unverified/);
+			assert.ok(collapsedText.indexOf("render-gap probe") < collapsedText.indexOf("bg-render"));
+			const provenance = { paused: /Extension status/, report: /worker-authored report/, result: /notification text/ }[kind];
+			assert.match(collapsedText, provenance);
+			assert.doesNotMatch(collapsedText, /peer-authored/);
 			assert.match(collapsedText, /expand/);
 			assert.ok(!collapsed.render(120).join("\n").includes("\u001b[31m"));
 			const expanded = present(
@@ -1784,15 +1831,54 @@ describe("status and collection", () => {
 				"the expanded card renders",
 			);
 			assert.match(stripTerminalSequences(expanded.render(80).join("\n")), /LAST_EVIDENCE/);
+			assert.match(stripTerminalSequences(expanded.render(80).join("\n")), provenance);
+			assert.doesNotMatch(stripTerminalSequences(expanded.render(80).join("\n")), /peer-authored/);
 			assert.doesNotMatch(expanded.render(80).join("\n"), /\u202e/);
-			assert.equal(message.content, body);
+			assert.equal(message.content, wrapped);
 		}
-		const malformed = { customType: "subagent_result", content: body, details: { id: { toString: 1 }, state: {} } };
+		const malformed = { customType: "subagent_result", content: body, details: { id: { toString: 1 }, state: {}, label: "bad\u001b[31m\u202e label", toolErrors: { bad: { toString: 1 } } } };
 		const safe = present(
 			renderWorkerMessage(malformed as never, { expanded: false, outputPad: 1 }, theme),
 			"the malformed card renders safely",
 		);
 		assert.match(safe.render(80).join("\n"), /source unavailable/);
+		assert.doesNotMatch(safe.render(80).join("\n"), /↳|interim report #1|\u202e|\u001b\[31m/, "malformed metadata does not turn the envelope into a quote or restyle it");
+	});
+
+	it("shows a plain expansion cue without a key and the configured key when present", async () => {
+		const pi = await import("@earendil-works/pi-coding-agent");
+		pi.initTheme("dark");
+		const piTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
+		const original = piTui.getKeybindings();
+		const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, getBgAnsi: () => "", bold: (text: string) => text } as never;
+		const message = peerMessage({ id: "reply-id", from: "bg-sender", to: "bg-target", replyTo: null, sentAt: 1, message: "Authored evidence" });
+		const result = { customType: "subagent_result", content: workerReportEnvelopeText({ workerId: "bg-worker", model: "example/model", reportNumber: 1, sentAt: 1, ownerSession: "parent", message: "Result text" }), details: { id: "bg-worker", state: "done" } };
+		const renderCue = (source: unknown, width: number) => stripTerminalSequences(present(renderWorkerMessage(source as never, { expanded: false, outputPad: 1 }, theme)).render(width).join("\n"));
+		try {
+			piTui.setKeybindings(new piTui.KeybindingsManager({ "app.tools.expand": { defaultKeys: [] } }));
+			assert.equal(pi.keyText("app.tools.expand"), "");
+			const noKey = renderCue(message, 20);
+			assert.match(noKey, /unverified/);
+			assert.match(noKey, /details/);
+			assert.match(renderCue(message, 100), /expanded view/);
+			assert.doesNotMatch(noKey, /to expand|ctrl\+o/);
+			piTui.setKeybindings(new piTui.KeybindingsManager({ "app.tools.expand": { defaultKeys: "ctrl+o" } }, { "app.tools.expand": "alt+x" }));
+			assert.match(pi.keyText("app.tools.expand"), /(?:option|alt)\+x/);
+			for (const source of [message, result]) {
+				const configured = renderCue(source, 100);
+				assert.match(configured, /unverified · (?:option|alt)\+x to expand/);
+				assert.doesNotMatch(configured, /ctrl\+o|expanded view/);
+			}
+			assert.match(renderCue(result, 100), /notification text/);
+			piTui.setKeybindings(new piTui.KeybindingsManager({ "app.tools.expand": { defaultKeys: "ctrl+o" } }));
+			for (const source of [message, result]) {
+				const narrow = renderCue(source, 20);
+				assert.match(narrow, /unverified ctrl\+o/);
+				assert.ok(narrow.split("\n").length <= 9);
+			}
+		} finally {
+			piTui.setKeybindings(original);
+		}
 	});
 
 	it("keeps the card background through preview truncation resets", async () => {
@@ -1802,7 +1888,7 @@ describe("status and collection", () => {
 			role: "custom" as const,
 			timestamp: 1,
 			customType: "subagent_report",
-			content: "long preview ".repeat(40),
+			content: workerReportEnvelopeText({ workerId: "bg-background", model: "example/model", reportNumber: 1, sentAt: 1, ownerSession: "parent", message: "long preview ".repeat(40) }),
 			display: true,
 			details: { id: "bg-background" },
 		};
