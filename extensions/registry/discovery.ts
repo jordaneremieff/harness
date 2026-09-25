@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { BOUNDARY_LINES, boundResult, isoTime, oneLine, type Block, type Outcome } from "./format.ts";
+import { BOUNDARY_LINES, MODEL_SCOPE_BOUNDARY, boundResult, fullRecordQuery, isoTime, oneLine, type Block, type Outcome } from "./format.ts";
 import type { ModelSnapshot } from "./models.ts";
 import { catalogHealth, HEALTH_BOUNDARIES, healthCoverage, type HealthFinding } from "./health.ts";
 import { encodeCursor, paginate, type Page, type Query } from "./query.ts";
@@ -82,10 +82,20 @@ function matchesDiscovery(record: Record<string, unknown>, query: Query): boolea
 	);
 }
 
-function discoveryBlocks(records: Record<string, unknown>[], stale: boolean): Block[] {
+function compactModelQuery(query: Query): boolean {
+	return query.kind === "model" && !fullRecordQuery(query) && !query.health;
+}
+
+const MODEL_LIST_FIELDS = ["selected", "catalog", "available", "configuredAuth", "inScope", "reasoning", "contextWindow", "supportedThinkingLevels", "currentThinkingLevel"];
+
+function discoveryBlocks(records: Record<string, unknown>[], stale: boolean, compact: boolean): Block[] {
 	if (stale) return [];
 	return records.map((record) => ({
-		lines: [
+		lines: compact ? [
+			`MODEL ${oneLine(String(record.name))}`,
+			`  ${MODEL_LIST_FIELDS.filter((key) => key in record).map((key) => `${key}=${oneLine(JSON.stringify(record[key]))}`).join(" | ")}`,
+			`  evidence: ${oneLine(String(record.evidence))} at ${isoTime(Number(record.at))}`,
+		] : [
 			"",
 			`${String(record.kind).toUpperCase()} ${oneLine(String(record.name))}`,
 			...Object.entries(record)
@@ -116,8 +126,9 @@ function discoveryHeader(
 	if (partial) lines.push("The source is incomplete. This is not absence.");
 	if (modelQuery) {
 		lines.push(
-			"Model catalog and availability are synchronous local snapshots. Configured auth is presence only, not valid credentials or remote health.",
-			"Model fields are capability metadata, not a remote probe. No catalog refresh or auth resolution occurred.",
+			"Model metadata and cached availability are synchronous local snapshots, not remote health. configuredAuth is presence, not credential validity; no refresh, auth resolution, or probe.",
+			MODEL_SCOPE_BOUNDARY,
+			...(compactModelQuery(request.query) ? ["Compact models; use kind:model + exact provider/id name for full metadata."] : []),
 		);
 		if (request.query.health) {
 			lines.push(...HEALTH_BOUNDARIES);
@@ -184,7 +195,7 @@ export function discoveryPage(request: DiscoveryRequest) {
 	const outcome = discoveryOutcome(stale, unavailable, partial, selected.length > 0 || query.health === true);
 	const result = boundResult({
 		header: discoveryHeader(outcome, request, modelQuery, observation, stale, unavailable, partial),
-		blocks: discoveryBlocks(page.items, stale),
+		blocks: discoveryBlocks(page.items, stale, compactModelQuery(query)),
 		footer: ["", ...BOUNDARY_LINES],
 		details: {
 			...discoveryDetails(outcome, query, selected, page, modelQuery, models, observation, partial),

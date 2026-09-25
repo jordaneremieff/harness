@@ -49,6 +49,38 @@ Examples:
 {"cursor":"<cursor from the preceding result>"}
 ```
 
+## Compact results and exact records
+
+List-style text favors discovery. Resource lists show name, invocation when
+applicable, description, source path, and configured/active or skill-eligibility
+status. The result header identifies registration evidence and its observation
+time. Exact `name` queries, optionally narrowed by `kind`, show every provenance
+field and the record's evidence time. Exact resource queries also retain the
+observer summary that resource lists omit. `detail: true` with an exact tool name and
+`kind: "tool"` additionally returns its parameters and prompt guidelines.
+
+Model lists show canonical name, selected state, catalog membership, cached
+availability, configured-auth presence, scope membership, reasoning capability,
+context window, supported thinking levels, and current thinking level when
+present. Each record retains its evidence time. Use exact `name: "provider/id"`
+with `kind: "model"` for provider, ID, display name, input modalities, output
+limit, extension-provider registration, scope position, and scope thinking pin.
+Offline health reports retain full records beside their findings.
+
+Structured `details.records` retain the complete projected records in both
+forms; compact text does not shrink the evidence used by continuation checks.
+Resource schemas and guidelines still require tool detail. The complete-result
+bound still includes structured details, so compact text does not guarantee that
+an arbitrarily large record fits. Descriptions and other display previews retain
+their existing bounded, terminal-safe form.
+
+The no-argument summary retains all host facts and observation state in a
+shorter layout. It does not move host facts behind another query. Shared
+read-only and evidence-not-authority boundaries appear once. Resource-specific
+qualifications accompany the relevant facts, not unrelated model or resource
+queries. An unavailable status never becomes false or zero, and omitted list
+fields do not imply absence.
+
 ## Offline catalog health
 
 Use `{"kind":"model","health":true}` for an on-demand review of the same local
@@ -280,7 +312,10 @@ field projection, zero-based scope positions, scope order, extension-provider
 registration, selection/scope distinctions, unavailable surfaces, stale
 continuations, privacy, and oversized output. Search tests cover tool-guideline
 matches, field-local literal semantics, explicit negative-result boundaries,
-and continuation invalidation after usage guidance changes.
+and continuation invalidation after usage guidance changes. Compact-output tests
+check full-record recovery through exact selectors, per-kind caveats, retained
+host facts and uncertainty, and smaller list text with unchanged structured
+records.
 These tests establish component and adapter behavior, not model-backed utility
 or global activation. Adapter tests also require zero host probes after caller
 or session cancellation. Current-context tests cover fresh reads, zero and overflow,

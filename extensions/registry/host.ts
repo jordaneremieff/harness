@@ -102,12 +102,9 @@ export const CONTEXT_BOUNDARY = "Pi estimates context from assistant usage and t
 export function contextLines(context: ContextSnapshot): string[] {
 	return [
 		"CURRENT SESSION",
-		`- model: ${context.model === null ? "unavailable" : JSON.stringify(context.model)}`,
-		`- thinking level: ${context.thinkingLevel === null ? "unavailable" : JSON.stringify(context.thinkingLevel)}`,
-		`- context usage: ${context.state} (host_estimate)`,
-		`- context tokens: ${context.tokens ?? "unknown"}`,
-		`- context window: ${context.contextWindow ?? "unavailable"}`,
-		`- context percent: ${context.percent ?? "unknown"}`,
+		`- model: ${context.model === null ? "unavailable" : JSON.stringify(context.model)} | thinking level: ${context.thinkingLevel === null ? "unavailable" : JSON.stringify(context.thinkingLevel)}`,
+		`- context usage: ${context.state} (host_estimate at ${new Date(context.at).toISOString()})`,
+		`- context tokens: ${context.tokens ?? "unknown"} | context window: ${context.contextWindow ?? "unavailable"} | context percent: ${context.percent ?? "unknown"}`,
 		CONTEXT_BOUNDARY,
 	];
 }
@@ -144,7 +141,7 @@ export function hostFacts(session: SessionFacts, accessors: HostAccessors = inst
 		},
 		{ key: "sessionId", value: session.sessionId ?? null },
 		{ key: "sessionFile", value: session.sessionFile === null ? "(ephemeral)" : session.sessionFile ?? null,
-			note: "sessionFile absence means an ephemeral session only when the accessor answered" },
+			note: "ephemeral only if the accessor answered without a file" },
 		fact("installedVersion", accessors.version),
 		fact("packageDir", accessors.packageDir, exists),
 		fact("docsPath", accessors.docsPath, exists),
@@ -154,7 +151,7 @@ export function hostFacts(session: SessionFacts, accessors: HostAccessors = inst
 			"agentDirDefault",
 			accessors.agentDir,
 			exists,
-			"process default from getAgentDir(); an embedding-configured agent directory is not reflected here",
+			"getAgentDir() process default, not an embedding-configured directory",
 		),
 		fact("configDirName", accessors.configDirName),
 	];

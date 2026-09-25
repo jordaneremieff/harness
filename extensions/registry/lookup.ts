@@ -12,6 +12,10 @@ import type { ModelSnapshot } from "./models.ts";
 import {
 	type Assembled,
 	BOUNDARY_LINES,
+	INVENTORY_BOUNDARY,
+	RESOURCE_LIST_HINT,
+	fullRecordQuery,
+	resourceBoundaries,
 	type Block,
 	boundResult,
 	type BoundedResult,
@@ -86,10 +90,7 @@ function hostSummary(request: LookupRequest, records: ResourceRecord[]): LookupR
 	const context = request.readContext?.();
 	const assembled: Assembled = {
 		header: [
-			...baseHeader("host_summary", snapshot.at, [
-				"No selectors supplied: this is the host summary and its observation boundaries.",
-				"",
-			]),
+			...baseHeader("host_summary", snapshot.at, []),
 			...hostFactLines(hostFacts(request.session, request.accessors ?? installedAccessors)),
 			"",
 			...(context ? [...contextLines(context).map(escapeJsonControls), ""] : []),
@@ -103,8 +104,9 @@ function hostSummary(request: LookupRequest, records: ResourceRecord[]): LookupR
 			}`,
 			"",
 			...observationLines(snapshot.observation),
-			"",
 			...BOUNDARY_LINES,
+			INVENTORY_BOUNDARY,
+			"No preference data.",
 		],
 		blocks: [],
 		footer: [],
@@ -134,12 +136,16 @@ function unavailableResult(
 		header: baseHeader("unavailable", request.snapshot.at, [
 			`query: ${queryLine(query)}`,
 			`unavailable surfaces: ${missingSurfaces.join(", ")}`,
+			"Known records: registration evidence at the observation time above.",
 			"This is not an absence result. The surface this query needs did not answer.",
 			"Incomplete inventories have no continuation; query an available resource kind for paged results.",
 		]),
-		blocks: matched.slice(0, query.limit).map(recordBlock),
+		blocks: matched.slice(0, query.limit).map((record) => recordBlock(record, fullRecordQuery(query))),
 		pageSummary: (kept) => `records: ${kept} shown of ${matched.length} known matches | limit ${query.limit} (inventory incomplete)`,
-		footer: ["", ...observationLines(request.snapshot.observation), "", ...BOUNDARY_LINES],
+		footer: (kept) => [
+			...(fullRecordQuery(query) ? observationLines(request.snapshot.observation) : [RESOURCE_LIST_HINT]),
+			...resourceBoundaries(matched.slice(0, kept)),
+		],
 		details: { unavailableSurfaces: missingSurfaces, query, total: matched.length, incompleteInventory: true, scanned: false },
 	};
 	return finish("unavailable", assembled);
@@ -185,11 +191,12 @@ function ambiguousTargetResult(
 		header: baseHeader("ambiguous", request.snapshot.at, [
 			`query: ${queryLine(query)}`,
 			`${candidates.length} file-backed resources match; a content query needs exactly one.`,
+			"Candidate records: registration evidence at the observation time above.",
 			"Narrow the query with an exact name or a kind. No file was opened.",
 			"",
 		]),
-		blocks: page.items.map(recordBlock),
-		footer: ["", ...BOUNDARY_LINES],
+		blocks: page.items.map((record) => recordBlock(record, fullRecordQuery(query))),
+		footer: (kept) => [RESOURCE_LIST_HINT, ...resourceBoundaries(page.items.slice(0, kept))],
 		details: { query, scanned: false, candidates: candidates.length, offset: page.offset },
 		continuation: (kept) =>
 			offset + kept < candidates.length
@@ -316,7 +323,7 @@ function completedScanResult(
 	return finish(outcome, {
 		header,
 		blocks: page.items.map(matchBlock),
-		footer: ["", ...BOUNDARY_LINES],
+		footer: ["", ...resourceBoundaries([record])],
 		details,
 		pageSummary: (kept) =>
 			`matches: ${kept} shown of ${scan.matches.length} found | offset ${page.offset} | limit ${query.limit}`,
@@ -426,7 +433,8 @@ function listingResult(
 	const header = baseHeader(outcome, snapshot.at, [
 		`query: ${queryLine(query)}`,
 		"source: Pi registration records (getAllTools, getActiveTools, getCommands)",
-		"This domain covers tools, commands, skills, and prompts only. Use kind model or context_file for those separate sources.",
+		"Domain: tools/commands/skills/prompts. Use kind model or context_file for other sources.",
+		...(fullRecordQuery(query) ? [] : [RESOURCE_LIST_HINT]),
 		query.search === undefined
 			? ""
 			: query.kind === undefined || query.kind === "tool"
@@ -438,7 +446,10 @@ function listingResult(
 				: "No literal match in the searched metadata. Every required accessor answered. This does not establish that no resource supports the task."
 			: "",
 	]).filter((line) => line !== "");
-	const footer = ["", ...observationLines(snapshot.observation), "", ...BOUNDARY_LINES];
+	const footer = (kept: number) => [
+		...(fullRecordQuery(query) ? observationLines(snapshot.observation) : []),
+		...resourceBoundaries(page.items.slice(0, kept)),
+	];
 	const details: Record<string, unknown> = {
 		query,
 		total: page.total,
@@ -450,15 +461,14 @@ function listingResult(
 		return finish("ambiguous", {
 			header: baseHeader("ambiguous", snapshot.at, [
 				"More than one tool has this exact name. No schema was returned.",
-				...BOUNDARY_LINES,
 			]),
-			blocks: page.items.map(recordBlock),
-			footer: [],
+			blocks: page.items.map((record) => recordBlock(record)),
+			footer,
 			details: { query, total: selected.length },
 		});
 	}
 	const blocks: Block[] = page.items.map((record) => {
-		const block = recordBlock(record);
+		const block = recordBlock(record, fullRecordQuery(query));
 		if (query.detail) {
 			block.detail.parameters = record.parameters ?? null;
 			block.detail.promptGuidelines = record.promptGuidelines ?? [];
