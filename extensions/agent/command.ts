@@ -3,6 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { ExtensionCommandContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { showAgentDashboard, type AgentObservationSources, type DashboardTarget } from "./dashboard.ts";
+import type { UnavailableHostState } from "./worker.ts";
 
 export interface AgentSessionSummary {
 	sessionId: string;
@@ -14,6 +15,7 @@ export interface AgentSessionSummary {
 	cwd: string;
 	modifiedAt: number;
 	live: boolean;
+	hostState?: UnavailableHostState;
 	operation?: string | null;
 	detachedRunId?: string;
 }
@@ -53,6 +55,7 @@ function sessionLabel(row: AgentSessionSummary): string {
 }
 
 function sessionState(row: AgentSessionSummary): string {
+	if (row.hostState) return `Host ${row.hostState}; stored metadata`;
 	if (row.detachedRunId) return "Detached run; owner control";
 	if (row.operation) return "Active work";
 	return row.live ? "Open session" : "Stored session";

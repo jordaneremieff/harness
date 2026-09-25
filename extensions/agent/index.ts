@@ -1243,8 +1243,8 @@ export class AgentManager {
 	 * Stored metadata supplies every row, including a stored name and first
 	 * message. Live fields, such as the model selection, operation, and a
 	 * fresher name, come only from a worker this process already holds open;
-	 * the stored name appears when no worker does. Listing opens no session,
-	 * and a session under a live detached run carries that run's id.
+	 * stored fields remain available when a held host is closed. Listing opens
+	 * no session, and a session under a live detached run carries that run's id.
 	 */
 	async sessionSummaries(): Promise<AgentSessionSummary[]> {
 		const all = await this.store.list(this.rootContext);
@@ -1253,10 +1253,18 @@ export class AgentManager {
 		return rows.sort((left, right) => left.modifiedAt - right.modifiedAt);
 	}
 
+	private async summaryStatus(sessionId: string, worker: AgentWorkerSession | undefined): Promise<WorkerStatus | undefined> {
+		if (!worker || worker.unavailableState() || this.closing || this.transfers.has(sessionId)) return undefined;
+		try { return await this.trackControl(sessionId, () => worker.status()); }
+		catch (error) { if (!worker.unavailableState()) throw error; return undefined; }
+	}
+
 	/** One command-completion row from stored metadata and optional live state. */
 	private async summaryRow(metadata: AgentSessionMetadata, detachedBySession: Map<string, DetachedRunView>): Promise<AgentSessionSummary> {
 		const worker = this.sessions.get(metadata.id);
-		const status = worker && !this.closing && !this.transfers.has(metadata.id) ? await this.trackControl(metadata.id, () => worker.status()) : undefined;
+		const observed = await this.summaryStatus(metadata.id, worker);
+		const hostState = worker?.unavailableState();
+		const status = hostState ? undefined : observed;
 		const detached = worker ? undefined : detachedBySession.get(metadata.id);
 		const parentSessionIds = this.parentSessionIds(metadata.id);
 		const name = status?.name ?? metadata.name;
@@ -1264,7 +1272,8 @@ export class AgentManager {
 			sessionId: metadata.id,
 			cwd: metadata.cwd,
 			modifiedAt: metadata.modifiedAt,
-			live: worker !== undefined,
+			live: status !== undefined,
+			...(hostState ? { hostState } : {}),
 			...(name ? { name } : {}),
 			...(metadata.firstMessage ? { firstMessage: metadata.firstMessage } : {}),
 			...(status ? { model: { provider: status.model.provider, modelId: status.model.modelId, thinkingLevel: status.model.thinkingLevel } } : {}),

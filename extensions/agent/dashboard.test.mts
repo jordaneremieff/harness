@@ -35,6 +35,17 @@ describe("agent dashboard observations", () => {
 		const text = dashboardText(snapshot);
 		for (const value of ["Active", "Stored; owner state unavailable", "Session: current", "Failure sentinel", "Result sentinel", "Progress sentinel", "recorded, not a live query", "/agent help"]) assert.ok(text.includes(value), value);
 	});
+	it("renders unavailable host states in text and compact rows without live claims", async () => {
+		for (const hostState of ["stopping", "cleanup-incomplete", "terminal", "replacement-failed"] as const) {
+			const data = { ...sources(), sessions: async () => [{ sessionId: "closed", cwd: "/work", modifiedAt: 1, live: false, provenance: "stored" as const, hostState }] };
+			const text = dashboardText(await readAgentDashboard(data));
+			assert.match(text, new RegExp(`Host ${hostState}; stored metadata`, "u"));
+			const f = fixture(data); await tick();
+			assert.match(f.screen(), new RegExp(`Host ${hostState}`, "u"));
+			assert.doesNotMatch(f.screen(), /Open here|Active/u);
+			f.panel.handleInput("q");
+		}
+	});
 	it("distinguishes empty and unavailable sources and preserves the full error for the reader", async () => {
 		const empty = dashboardText(await readAgentDashboard({ sessions: async () => [], runs: async () => [] }));
 		assert.match(empty, /Sessions: 0 total; 0 shown; 0 omitted\nNone found/);

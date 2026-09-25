@@ -434,6 +434,8 @@ Each open session holds an exclusive local-filesystem writer claim under
 custom-message input before teardown. The host waits for outgoing native work
 after shutdown hooks before releasing its claim. Failed disposal or incomplete
 cleanup retains the claim; a failed close permits another cleanup attempt.
+Failed switch cleanup keeps its target reservation under the same cleanup owner;
+the switch's finalizer does not release that reservation independently.
 A host becomes terminal only after native cleanup and every held writer release
 complete. The manager then retires its live session, association source, and
 owner registration, retaining its observed spend exactly once. This also applies
@@ -443,11 +445,15 @@ Later observation reads the stored session through the read-only capture path;
 a later control opens a fresh host under the normal writer-claim rules. Neither
 path replays a task.
 
-A stopping host or a host with incomplete cleanup refuses observations and
-controls. The error identifies the session and observed host state and states
-that the requested operation did not run. A stopping-host refusal asks the caller
-to wait for cleanup. An incomplete-cleanup refusal reports retained claims
-without recommending a reopen or claim removal.
+A stopping host or a host with incomplete cleanup refuses targeted live
+observations and controls. The error identifies the session and observed host
+state and states that the requested operation did not run. A stopping-host refusal
+asks the caller to wait for cleanup. An incomplete-cleanup refusal reports retained
+claims without recommending a reopen or claim removal.
+
+Session inventory instead retains the row's stored metadata and reports the
+observed host state separately. Completion and dashboard rows preserve other
+sessions without reporting a closed host as open or active.
 
 An abrupt process exit retains the claim, so reopening then fails closed.
 Graceful quit releases successfully closed hosts; forced process death does not.

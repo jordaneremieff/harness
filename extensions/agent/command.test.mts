@@ -201,6 +201,16 @@ describe("agent metadata completion", () => {
 		assert.ok(result.every((item) => !/[\x1b\n]/.test(item.label + item.description)));
 	});
 
+	it("labels unavailable hosts with stored metadata instead of active work", async () => {
+		for (const hostState of ["stopping", "cleanup-incomplete", "terminal", "replacement-failed"] as const) {
+			const command = completionFixture(async () => [{ ...rows[0], live: false, provenance: "stored", hostState }]);
+			const choices = defined(await defined(command.getArgumentCompletions)("status "));
+			assert.equal(choices.length, 1);
+			assert.match(defined(choices[0].description), new RegExp(`Host ${hostState}; stored metadata`, "u"));
+			assert.doesNotMatch(defined(choices[0].description), /Active work|Open session/u);
+		}
+	});
+
 	it("returns no invented session choices for empty or unavailable metadata", async () => {
 		assert.deepEqual(await defined(completionFixture(async () => []).getArgumentCompletions)("send "), []);
 		assert.equal(await defined(completionFixture(async () => { throw new Error("store unavailable"); }).getArgumentCompletions)("send "), null);

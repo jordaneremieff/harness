@@ -55,13 +55,13 @@ const sessionIdOf = (target: DashboardTarget) => target.kind === "session" ? tar
 function label(target: DashboardTarget): string {
 	if (target.kind === "run") return `${target.run.state} · ${target.run.prompt}`;
 	const row = target.session;
-	return `${stateOf(target)}${!row.live && !row.detachedRunId ? "; owner state unavailable" : ""} · ${titleOf(target)}`;
+	return `${stateOf(target)}${row.hostState ? "; stored metadata" : !row.live && !row.detachedRunId ? "; owner state unavailable" : ""} · ${titleOf(target)}`;
 }
 function titleOf(target: DashboardTarget): string {
 	return target.kind === "run" ? target.run.prompt : target.session.name || target.session.firstMessage || target.session.cwd;
 }
 function stateOf(target: DashboardTarget): string {
-	return target.kind === "run" ? target.run.state : target.session.operation ? "Active" : target.session.detachedRunId ? "Detached" : target.session.live ? "Open here" : "Stored";
+	return target.kind === "run" ? target.run.state : target.session.hostState ? `Host ${target.session.hostState}` : target.session.operation ? "Active" : target.session.detachedRunId ? "Detached" : target.session.live ? "Open here" : "Stored";
 }
 function configuration(data?: Partial<Pick<AgentSessionDescription, "model" | "provenance">>): string {
 	return data?.model ? `${data.model.provider}/${data.model.modelId} · ${data.model.thinkingLevel} · ${data.provenance ?? "live"}` : "Model unavailable";

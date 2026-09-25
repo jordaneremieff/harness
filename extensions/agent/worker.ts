@@ -48,6 +48,7 @@ export interface WorkerStatus {
 	operation: string | null; tools: string[]; activeTools: string[]; extensions: string[];
 	entryCount: number; lastError?: string;
 }
+export type UnavailableHostState = "terminal" | "cleanup-incomplete" | "stopping" | "replacement-failed";
 export interface WorkerCommandResult { text: string; sessionId?: string }
 export interface WorkerObservation { currentTool?: string; lastText?: string; pending: number }
 interface NativeAdmission {
@@ -286,8 +287,11 @@ export class AgentWorkerSession {
 	private constructor(options: WorkerCreateOptions) { this.options = options; }
 	/** Terminal means native cleanup and every held writer release completed. */
 	isTerminal(): boolean { return this.terminal; }
+	unavailableState(): UnavailableHostState | undefined {
+		return this.terminal ? "terminal" : this.cleanupFailed ? "cleanup-incomplete" : this.stopping ? "stopping" : this.replacementFailed ? "replacement-failed" : undefined;
+	}
 	assertAvailable(): void {
-		const state = this.terminal ? "terminal" : this.cleanupFailed ? "cleanup-incomplete" : this.stopping ? "stopping" : this.replacementFailed ? "replacement-failed" : undefined;
+		const state = this.unavailableState();
 		if (!state) return;
 		const recovery = this.terminal
 			? "Use agent_attach to open a fresh host from the stored session; no task is replayed."
@@ -454,7 +458,11 @@ export class AgentWorkerSession {
 					if (this.reserved) throw new Error("session replacement is already in progress");
 					this.reserved = await this.options.store.open(metadata);
 					try { return await this.replace(() => this.runtime.switchSession(metadata.path, options)); }
-					finally { await this.reserved?.close(); this.reserved = undefined; }
+					finally {
+						// Failed replacement and shutdown leave release ownership with
+						// disposeHost, which also owns the terminal transition.
+						if (!this.replacementFailed && !this.stopping) { await this.reserved?.close(); this.reserved = undefined; }
+					}
 				},
 				navigateTree: (target, options) => session.navigateTree(target, options),
 				reload: () => session.reload(),
