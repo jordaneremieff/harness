@@ -23,9 +23,9 @@ it("puts human identity before technical IDs and exposes state, model and contro
 	const f = fixture(); await tick();
 	const text = f.screen();
 	assert.match(text, /› Parser repair/);
-	assert.match(text, /Active · reasoner · high/);
+	assert.match(text, /Active · mod \d+d · reasoner · high/);
 	assert.match(text, /Review the release/);
-	for (const hint of ["/ filter", "Tab runs/sessions", "a actions", "r refresh", "q close"]) assert.ok(text.includes(hint));
+	for (const hint of ["/ filter", "Tab runs/sessions", "a actions", "r refresh", "Esc close"]) assert.ok(text.includes(hint));
 	assert.ok(text.indexOf("Parser repair") < text.indexOf("common-prefix-first"));
 	f.panel.handleInput("\x1b[F"); assert.equal(f.panel.state.selected.sessions, "common-prefix-second");
 	f.panel.handleInput("\x1b[H"); assert.equal(f.panel.state.selected.sessions, "common-prefix-first");
@@ -54,7 +54,7 @@ it("labels projected inspection omissions in both the preview and exact-entry re
 	assert.match(lines, /1 provider signatures; 1 image payloads; 0 redacted/);
 	assert.match(lines, /omitted: image data/);
 	assert.doesNotMatch(lines, /BINARY-PAYLOAD|OPAQUE-PAYLOAD/);
-	assert.deepEqual(calls, [{ limit: 12 }, { limit: 12, entryId, offset: 0 }]);
+	assert.deepEqual(calls, [{ limit: 12 }, { limit: 12 }, { limit: 12, entryId, offset: 0 }]);
 	f.panel.dispose();
 });
 
@@ -76,7 +76,7 @@ it("rejects stale selected metadata and late completion after disposal", async (
 	await tick(); f.panel.handleInput("j");
 	pending.get("common-prefix-first")?.({ name: "Wrong target", provenance: "live", model: { provider: "old", modelId: "stale", thinkingLevel: "low" }, parentSessionIds: ["wrong-parent"] });
 	pending.get("common-prefix-second")?.({ provenance: "stored", model: { provider: "example", modelId: "saved", thinkingLevel: "high" }, parentSessionIds: ["known-parent"] });
-	await tick(); assert.match(f.screen(), /example\/saved · high · stored/); assert.match(f.screen(), /Stored · saved · high/); assert.match(f.screen(), /known-parent/); assert.doesNotMatch(f.screen(), /wrong-parent/);
+	await tick(); assert.match(f.screen(), /example\/saved · high · stored/); assert.match(f.screen(), /Stored · mod \d+d · saved · high/); assert.match(f.screen(), /known-parent/); assert.doesNotMatch(f.screen(), /wrong-parent/);
 	f.panel.handleInput("r"); await tick(); f.panel.dispose(); const paints = f.paints();
 	pending.get("common-prefix-second")?.({ provenance: "stored", parentSessionIds: [] }); await tick(); assert.equal(f.paints(), paints);
 });
@@ -110,6 +110,7 @@ it("keeps selected stored configuration visible at narrow sizes and sanitizes mo
 	const f = fixture({ describe: async () => ({ provenance: "stored", model: { provider: "example", modelId: "saved", thinkingLevel: "high" }, parentSessionIds: [] }), sessions: async () => [{ ...sessions[0], model: { provider: "example", modelId: "bad\x1b[2Jmodel", thinkingLevel: "high" } }] });
 	await tick(); f.dimensions.rows = 18;
 	const lines = f.panel.render(60); assert.ok(lines.every((line) => visibleWidth(line) <= 60));
-	assert.match(lines.join("\n"), /example\/saved · high · stored/);
+	assert.match(lines.join("\n"), /saved · high/);
+	assert.match(lines.join("\n"), /The regression passed/);
 	assert.doesNotMatch(lines.join("\n"), /\x1b\[2J/);
 });

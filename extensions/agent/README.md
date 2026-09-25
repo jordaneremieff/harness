@@ -50,14 +50,16 @@ Bare `/agent` reads the existing session inventory and detached-run records
 without opening stored sessions for writing or starting work. Its native overlay
 stays independent of editor widgets and footer height. The framed browser puts
 session names first, then the first message or directory when no name exists.
-A second row shows execution state and available model/thinking information.
+A second row shows execution state, modification age (`mod`, not run time), and
+available model/thinking information. Duplicate titles receive a short directory
+or distinguishing ID suffix, with space reserved even for long titles.
 Active work precedes recent records. Selection follows the exact ID across
-refreshes. Wide terminals place selected configuration, known parents, first
-message, and exact identity beside the list. Narrow terminals retain a single
-list with the selected configuration below it. The footer shows controls for
-the current view, including return and close.
+refreshes. Wide terminals put the selected session's latest message text before
+its task, configuration, parents, and identity. Narrow terminals prioritize the
+task and latest text below the list. The footer shows Escape for back or close.
 
-Use **/** to filter by name, first message, task, directory, or ID. **Enter** keeps
+Use **/** to filter by name, first message, task, directory, ID, displayed state,
+or known provider/model/thinking values, including selected configuration already read. **Enter** keeps
 the filter; **Escape** clears it while the filter input has focus. The filter
 searches the entire returned inventory before the display cap.
 The heading separates total, matching, shown, and omitted records. Stored sessions
@@ -84,7 +86,7 @@ source to read its complete error rather than a clipped list preview.
   chunks retain their partial labels; a truncated owner error has no continuation
   endpoint. Read source entries for retained evidence, not an invented full result.
 - **j/k** and page keys scroll readers and help. **b** or the configured cancel key
-  returns to the previous view. **q** closes the dashboard. **?** shows key help.
+  returns to the previous view. **Escape** closes the list. **?** shows key help.
 - **r** refreshes the inventory or requests the newest session inspection and
   selected configuration. It returns a run reader to a refreshed inventory.
   There is no poller.
@@ -102,6 +104,13 @@ source to read its complete error rather than a clipped list preview.
   receipt is not proof of task completion.
 
 Selection reads configuration through the manager's read-only description path.
+It also reads one bounded recent inspection page from only the selected session.
+The latest nonempty assistant, user, or tool-result text receives a role, entry ID,
+and partial-text label when applicable. No text in that page does not establish
+an empty transcript; Enter and older-page navigation remain available. Selection
+changes, empty selection, and disposal cancel the preview request and reject late
+responses. Refresh requests new evidence. No background transcript scan or poller
+reads other sessions for previews or search.
 A live model/thinking pair comes from the local owner. A stored pair appears only
 when the retained session contains both model and thinking-level records; it does
 not imply a live owner. Unread stored rows say **select for model**. The selected

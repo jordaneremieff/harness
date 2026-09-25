@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionCommandContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { Input, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
@@ -18,7 +19,7 @@ export interface AgentObservationSources {
 	describe?(sessionId: string): Promise<AgentSessionDescription>;
 	sessions(): Promise<AgentSessionSummary[]>;
 	runs(): Promise<DetachedRunView[]>;
-	inspect(sessionId: string, options: AgentInspectionOptions): Promise<AgentInspection>;
+	inspect(sessionId: string, options: AgentInspectionOptions, signal?: AbortSignal): Promise<AgentInspection>;
 }
 export type DashboardTarget = { kind: "session"; session: AgentSessionSummary } | { kind: "run"; run: DetachedRunView };
 interface DashboardSection { records: DashboardTarget[]; error?: string }
@@ -98,7 +99,7 @@ function readerState(reader: Reader): string {
 /** Independent inventory reads never open a stored session for writing. */
 export async function readAgentDashboard(sources: Pick<AgentObservationSources, "sessions" | "runs">): Promise<AgentDashboardSnapshot> {
 	const [sessions, runs] = await Promise.allSettled([
-		Promise.resolve().then(() => sources.sessions()).then((rows): DashboardTarget[] => [...rows].sort((a, b) => Number(Boolean(b.operation || b.detachedRunId)) - Number(Boolean(a.operation || a.detachedRunId)) || b.modifiedAt - a.modifiedAt).map((session) => ({ kind: "session", session }))),
+		Promise.resolve().then(() => sources.sessions()).then((rows): DashboardTarget[] => [...rows].sort((a, b) => Number(Boolean(b.operation || b.detachedRunId)) - Number(Boolean(a.operation || a.detachedRunId)) || b.modifiedAt - a.modifiedAt).map((session) => ({ kind: "session", session: { ...session } }))),
 		Promise.resolve().then(() => sources.runs()).then((rows): DashboardTarget[] => [...rows].sort((a, b) => Number(b.state === "running" || b.state === "launching") - Number(a.state === "running" || a.state === "launching") || b.startedAt.localeCompare(a.startedAt)).map((run) => ({ kind: "run", run }))),
 	]);
 	const section = (result: PromiseSettledResult<DashboardTarget[]>): DashboardSection => result.status === "fulfilled" ? { records: result.value } : { records: [], error: errorText(result.reason) };
@@ -107,7 +108,7 @@ export async function readAgentDashboard(sources: Pick<AgentObservationSources, 
 
 export function dashboardRecords(section: DashboardSection | undefined, filter: string) {
 	const query = filter.trim().toLocaleLowerCase();
-	const matches = section?.records.filter((target) => `${idOf(target)} ${sessionIdOf(target)} ${target.kind === "session" ? `${target.session.name ?? ""} ${target.session.firstMessage ?? ""} ${target.session.cwd}` : `${target.run.prompt} ${target.run.cwd}`}`.toLocaleLowerCase().includes(query)) ?? [];
+	const matches = section?.records.filter((target) => `${idOf(target)} ${sessionIdOf(target)} ${stateOf(target)} ${target.kind === "session" ? `${target.session.name ?? ""} ${target.session.firstMessage ?? ""} ${target.session.cwd} ${configuration(target.session)}` : `${target.run.prompt} ${target.run.cwd}`}`.toLocaleLowerCase().includes(query)) ?? [];
 	return { total: section?.records.length ?? 0, matching: matches.length, records: matches.slice(0, ROW_LIMIT), omitted: Math.max(0, matches.length - ROW_LIMIT) };
 }
 export function dashboardText(snapshot: AgentDashboardSnapshot): string {
@@ -144,13 +145,28 @@ function inspectionLines(data: AgentInspection, entryIndex = 0): string[] {
 	];
 }
 
-/** A component owns only one snapshot and one bounded inspection page/chunk at a time. */
+interface LatestMessage { label: string; text: string }
+function latestMessage(data: AgentInspection): LatestMessage {
+	if (!("entries" in data)) return { label: "Latest text unavailable", text: "The source returned an entry chunk, not a recent page." };
+	const entry = data.entries.find((entry) => entry.type === "message" && ["assistant", "user", "toolResult"].includes(entry.role ?? "") && clean(entry.preview?.text ?? "").trim());
+	if (!entry?.preview) return { label: "No message text in the recent page", text: data.capture?.reason ?? "Enter opens entries; o reads older evidence." };
+	return { label: `Latest ${entry.role} · ${entry.id}${entry.preview.truncated ? " · partial text" : ""}`, text: entry.preview.text };
+}
+function modificationAge(modifiedAt: number, observedAt: string): string {
+	const seconds = Math.max(0, Math.floor((Date.parse(observedAt) - modifiedAt) / 1000));
+	if (!Number.isFinite(seconds)) return "mod unknown";
+	return `mod ${seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m${seconds % 60}s` : seconds < 86400 ? `${Math.floor(seconds / 3600)}h${Math.floor(seconds % 3600 / 60)}m` : `${Math.floor(seconds / 86400)}d`}`;
+}
+
+/** A component owns one inventory, one selected preview, and one inspection page/chunk. */
 export class AgentDashboard implements Component {
 	readonly state: DashboardState;
 	private readonly input = new Input({ prompt: "/ " });
 	private hostFocused = false;
 	private description?: { sessionId: string; data?: AgentSessionDescription; error?: string };
 	private descriptionGeneration = 0;
+	private latest?: { sessionId: string; message?: LatestMessage };
+	private latestRead?: AbortController;
 	get focused(): boolean { return this.hostFocused; }
 	set focused(value: boolean) { this.hostFocused = value; this.input.focused = value && this.filtering; }
 	private filtering = false;
@@ -192,6 +208,7 @@ export class AgentDashboard implements Component {
 		this.state.snapshot = snapshot; this.selected(); this.loading = false; this.updateDescription(true); this.tui.requestRender();
 	}
 	private updateDescription(force = false, target = this.selected()): void {
+		this.updateLatest(force, target);
 		if (!target || !this.sources.describe) return;
 		const sessionId = sessionIdOf(target);
 		if (!force && this.description?.sessionId === sessionId) return;
@@ -199,11 +216,35 @@ export class AgentDashboard implements Component {
 		this.description = { sessionId };
 		void this.sources.describe(sessionId).then((data) => {
 			if (this.closed || generation !== this.descriptionGeneration) return;
-			this.description = { sessionId, data }; this.tui.requestRender();
+			this.description = { sessionId, data };
+			if (target.kind === "session") { target.session.model = data.model; target.session.provenance = data.provenance; }
+			this.tui.requestRender();
 		}, (error) => {
 			if (this.closed || generation !== this.descriptionGeneration) return;
 			this.description = { sessionId, error: errorText(error) }; this.tui.requestRender();
 		});
+	}
+	private updateLatest(force: boolean, target?: DashboardTarget): void {
+		const sessionId = target?.kind === "session" ? target.session.sessionId : undefined;
+		if (!force && this.latest?.sessionId === sessionId) return;
+		this.latestRead?.abort();
+		this.latest = sessionId ? { sessionId } : undefined;
+		if (!sessionId) return;
+		const controller = new AbortController(); this.latestRead = controller;
+		void Promise.resolve().then(() => {
+			controller.signal.throwIfAborted();
+			return this.sources.inspect(sessionId, { limit: 12 }, controller.signal);
+		}).then((data) => {
+			if (this.closed || controller.signal.aborted) return;
+			this.latest = { sessionId, message: latestMessage(data) }; this.tui.requestRender();
+		}, (error) => {
+			if (this.closed || controller.signal.aborted) return;
+			this.latest = { sessionId, message: { label: "Latest text unavailable", text: errorText(error) } }; this.tui.requestRender();
+		});
+	}
+	private latestLines(target: Extract<DashboardTarget, { kind: "session" }>): string[] {
+		const current = this.latest?.sessionId === target.session.sessionId ? this.latest : undefined;
+		return current?.message ? [current.message.label, current.message.text] : ["Latest text: read in progress…"];
 	}
 	private async inspect(sessionId: string, options: AgentInspectionOptions = {}, parent?: Reader): Promise<void> {
 		const generation = ++this.generation;
@@ -236,7 +277,6 @@ export class AgentDashboard implements Component {
 		if (this.closed) return;
 		const cancel = this.keys.matches(data, "tui.select.cancel");
 		if (this.filtering) { this.filterInput(data, cancel); return; }
-		if (matchesKey(data, "q")) { this.dispose(); this.done(); return; }
 		if (this.help) { this.helpInput(data, cancel); return; }
 		if (cancel || matchesKey(data, "b")) {
 			if (this.state.reader) this.back();
@@ -324,11 +364,11 @@ export class AgentDashboard implements Component {
 	}
 	private controls(width: number): string[] {
 		if (this.filtering) return ["Type to filter · Enter keep · Esc clear"];
-		if (this.help) return ["↑↓ scroll · PgUp/PgDn page", "b back · q close"];
+		if (this.help) return ["↑↓ scroll · PgUp/PgDn page", "? help · Esc back"];
 		if (this.state.reader) return this.readerControls(this.state.reader);
 		const action = this.actionHint(this.selected());
-		return width >= 90 ? ["↑↓ select · Enter open · / filter · Tab runs/sessions · r refresh", `q close · ? help${action} · Home/End jump`]
-			: ["Enter open · / filter · Tab section", `q close · ? help${action} · r refresh`];
+		return width >= 90 ? ["↑↓ select · Enter open · / filter · Tab runs/sessions · r refresh", `? help${action} · Home/End jump · Esc close`]
+			: ["Enter open · / filter · Tab section", `? help${action} · r refresh · Esc close`];
 	}
 	private actionHint(target?: DashboardTarget): string {
 		if (!this.actions || this.reading) return "";
@@ -336,19 +376,22 @@ export class AgentDashboard implements Component {
 	}
 	private readerControls(reader: Reader): string[] {
 		const data = reader.inspection;
-		let navigation = "↑↓ scroll";
+		let navigation = "";
 		if (data && "entries" in data) navigation = `${data.entries.length ? "[/] entry · Enter source" : "No entries"}${data.nextCursor !== null ? " · o older" : ""}`;
 		else if (data && "entryId" in data) navigation = `${data.nextOffset !== null ? "n next chunk · " : ""}r newest`;
 		else if (reader.target?.kind === "run") navigation = "s session · r refresh";
-		return [navigation, `b back · q close · ? help${this.actionHint(reader.target)}`];
+		return [`↑↓ scroll${navigation ? ` · ${navigation}` : ""}`,  `? help${this.actionHint(reader.target)} · Esc back`];
 	}
 	render(width: number): string[] {
 		width = Math.max(1, width);
 		const height = Math.max(1, this.tui.terminal.rows - 2);
 		const framed = width >= 12 && height >= 8;
 		const inner = Math.max(1, width - (framed ? 4 : 0));
-		const controls = this.controls(inner);
-		if (height < 4) return [truncateToWidth(this.state.reader ? "b back · q close · ? help" : "q close · ? help", width)];
+		const controls = this.controls(inner).map((line) => {
+			const ending = / · Esc (close|back)$/.exec(line);
+			return ending ? truncateToWidth(line.slice(0, -ending[0].length), Math.max(0, inner - ending[0].length)) + ending[0] : line;
+		});
+		if (height < 4) return [truncateToWidth(this.state.reader ? "? help · Esc back" : "? help · Esc close", width)];
 		const footer = height >= 8 ? controls : controls.slice(-1);
 		const contentHeight = height - footer.length - (framed ? 3 : 0);
 		const content = this.help ? this.renderHelp(inner, contentHeight) : this.state.reader ? this.renderReader(inner, contentHeight, this.state.reader) : this.renderList(inner, contentHeight);
@@ -360,7 +403,7 @@ export class AgentDashboard implements Component {
 		return [border("┌", heading, "┐"), ...body.map((line) => `│ ${pad(line)} │`), border("├", "", "┤"), ...footer.map((line) => `│ ${pad(this.theme.fg("muted", line))} │`), border("└", "", "┘")];
 	}
 	private renderHelp(width: number, contentHeight: number): string[] {
-		let lines = ["Find a session", "↑/↓ or j/k selects. PgUp/PgDn pages. Home/End jumps. Tab switches sessions and detached runs.", "/ filters the complete inventory by name, first message, directory or ID. Enter keeps the filter. Escape clears it.", "", "Read the work", "Enter opens the selected session. [/] selects a message. ↑/↓ scrolls. Enter opens exact serialized source; n continues a source chunk. o reads older entries. r reads newest.", "s opens the session from a detached run. b or configured cancel returns one level. q closes the dashboard.", "", "Act without losing context", "a opens native action dialogs for the exact selected target. Escape cancels a dialog. The dashboard returns to the same selection and filter.", "", "Evidence boundaries", "Live describes an owner snapshot, not continuous monitoring. Stored configuration comes from retained entries; its owner state is unknown. Known parents come only from recorded associations.", "Run progress and result summaries are recorded, not a live owner query. Readable entry previews are bounded. Exact source remains available. r refreshes explicitly."];
+		let lines = ["Find a session", "↑/↓ or j/k selects. PgUp/PgDn pages. Home/End jumps. Tab switches sessions and detached runs.", "/ filters the complete inventory by name, task, directory, ID, state, or known model/thinking values. Enter keeps the filter. Escape clears it.", "", "Read the work", "Enter opens the selected session. [/] selects a message. ↑/↓ scrolls. Enter opens exact serialized source; n continues a source chunk. o reads older entries. r reads newest.", "s opens the session from a detached run. Escape or the configured cancel key returns one level, then closes the dashboard. b also returns one level.", "", "Act without losing context", "a opens native action dialogs for the exact selected target. Escape cancels a dialog. The dashboard returns to the same selection and filter.", "", "Evidence boundaries", "Live describes an owner snapshot, not continuous monitoring. Stored configuration comes from retained entries; its owner state is unknown. Known parents come only from recorded associations.", "Run progress and result summaries are recorded, not a live owner query. Latest text comes from one recent selected-session page, not a complete transcript. mod is modification age, not run time. Exact source remains available. r refreshes explicitly; actions refresh the inventory."];
 		lines = lines.flatMap((line) => wrapTextWithAnsi(line, width));
 		this.helpLength = lines.length; this.pageSize = contentHeight;
 		this.helpScroll = Math.max(0, Math.min(Math.max(0, lines.length - contentHeight), this.helpScroll));
@@ -390,7 +433,7 @@ export class AgentDashboard implements Component {
 		if (target.kind === "run") return runPreview(target);
 		const session = target.session;
 		const current = this.description?.sessionId === session.sessionId ? this.description : undefined;
-		return [titleOf(target), label(target).split(" · ")[0], "", ...(current?.data ? descriptionLines(current.data) : [configuration(session), current?.error ? `Configuration unavailable: ${current.error}` : current ? "Read in progress…" : "Enter reads session details"]), "", ...(session.firstMessage ? ["First message", session.firstMessage, ""] : []), `Directory: ${session.cwd}`, `Session: ${session.sessionId}`, ...(session.operation ? [`Operation: ${session.operation}`] : []), ...(session.detachedRunId ? [`Run: ${session.detachedRunId}`] : []), `Modified: ${new Date(session.modifiedAt).toISOString()}`, "", "Enter reads messages · a opens actions"];
+		return [titleOf(target), ...this.latestLines(target), "", ...(session.firstMessage ? ["Task / first message", session.firstMessage, ""] : []), label(target).split(" · ")[0], ...(current?.data ? descriptionLines(current.data) : [configuration(session), current?.error ? `Configuration unavailable: ${current.error}` : current ? "Read in progress…" : "Enter reads session details"]), "", `Directory: ${session.cwd}`, `Session: ${session.sessionId}`, ...(session.operation ? [`Operation: ${session.operation}`] : []), ...(session.detachedRunId ? [`Run: ${session.detachedRunId}`] : []), `Modified: ${new Date(session.modifiedAt).toISOString()}`, "", "Enter reads messages · a opens actions"];
 	}
 	private renderList(width: number, contentHeight: number): string[] {
 		const view = this.view(); const target = this.selected(); const section = this.state.snapshot?.[this.state.tab];
@@ -422,20 +465,31 @@ export class AgentDashboard implements Component {
 		const description = selected && this.description?.sessionId === sessionIdOf(row) ? this.description : undefined;
 		const model = description?.data?.model ?? session?.model;
 		const config = model ? `${model.modelId} · ${model.thinkingLevel}` : row.kind === "run" ? "recorded" : description?.data || description?.error ? "model unavailable" : "select for model";
-		const title = truncateToWidth(`${selected ? "›" : " "} ${displayPreview(titleOf(row), 300)}`, width);
+		const suffix = this.identitySuffix(row);
+		const title = `${truncateToWidth(`${selected ? "›" : " "} ${displayPreview(titleOf(row), 300)}`, Math.max(1, width - visibleWidth(suffix)))}${suffix}`;
 		const line = title + " ".repeat(Math.max(0, width - visibleWidth(title)));
-		return [selected ? this.theme.bg("selectedBg", this.theme.fg("accent", line)) : title, this.theme.fg("muted", truncateToWidth(clean(`  ${stateOf(row)} · ${config}`), width))];
+		return [selected ? this.theme.bg("selectedBg", this.theme.fg("accent", line)) : title, this.theme.fg("muted", truncateToWidth(clean(`  ${stateOf(row)}${session ? ` · ${modificationAge(session.modifiedAt, this.state.snapshot?.observedAt ?? "")}` : ""} · ${config}`), width))];
+	}
+	private identitySuffix(row: DashboardTarget): string {
+		const peers = this.state.snapshot?.[this.state.tab].records.filter((other) => displayPreview(titleOf(other), 300) === displayPreview(titleOf(row), 300)) ?? [];
+		if (peers.length < 2) return "";
+		const directory = (target: DashboardTarget) => basename(target.kind === "session" ? target.session.cwd : target.run.cwd);
+		const name = displayPreview(directory(row), 12);
+		if (name && peers.filter((other) => displayPreview(directory(other), 12) === name).length === 1) return ` [${name}]`;
+		let length = 6;
+		while (length < idOf(row).length && peers.some((other) => other !== row && idOf(other).slice(-length) === idOf(row).slice(-length))) length++;
+		return ` [${idOf(row).slice(-length)}]`;
 	}
 	private compactDetail(target: DashboardTarget, width: number): string[] {
-		const current = this.description?.sessionId === sessionIdOf(target) ? this.description.data : undefined;
-		return ["─".repeat(width), clean(target.kind === "session" ? configuration(current ?? target.session) : `Recorded ${target.run.state} · not a live query`), clean(label(target))];
+		const text = target.kind === "session" ? [`Task: ${target.session.firstMessage || titleOf(target)}`, ...this.latestLines(target)] : [titleOf(target), target.run.progress?.lastText ?? target.run.summary ?? "No recorded text"];
+		return [...text.slice(0, -1).map((line) => truncateToWidth(clean(line), width)), ...wrapTextWithAnsi(clean(text.at(-1) ?? ""), width)];
 	}
 	private emptyLabel(section?: DashboardSection): string {
 		if (section?.error !== undefined) return "Enter reads the source error";
 		return this.loading ? "Read in progress…" : "None found.";
 	}
 	invalidate(): void { this.input.invalidate(); }
-	dispose(): void { this.closed = true; this.generation++; this.descriptionGeneration++; this.input.focused = false; }
+	dispose(): void { this.closed = true; this.generation++; this.descriptionGeneration++; this.latestRead?.abort(); this.input.focused = false; }
 }
 
 async function interactiveDashboard(sources: AgentObservationSources, ctx: ExtensionCommandContext, actions?: DashboardActions): Promise<void> {

@@ -1724,7 +1724,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		describe: async (sessionId) => (await getManager()).describe(sessionId),
 		sessions: async () => (await getManager()).sessionSummaries(),
 		runs: async () => (await getManager()).detachedRunViews(),
-		inspect: async (sessionId, options) => (await getManager()).inspect(sessionId, options),
+		inspect: async (sessionId, options, signal) => (await getManager()).inspect(sessionId, options, signal),
 	}));
 
 	pi.on("session_start", async (_event, ctx) => {

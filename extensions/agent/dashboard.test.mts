@@ -43,7 +43,7 @@ describe("agent dashboard observations", () => {
 			const f = fixture(data); await tick();
 			assert.match(f.screen(), new RegExp(`Host ${hostState}`, "u"));
 			assert.doesNotMatch(f.screen(), /Open here|Active/u);
-			f.panel.handleInput("q");
+			f.panel.handleInput("\x1b");
 		}
 	});
 	it("distinguishes empty and unavailable sources and preserves the full error for the reader", async () => {
@@ -85,7 +85,8 @@ describe("agent dashboard interaction", () => {
 		assert.equal(f.state.selected.sessions, "saved"); assert.match(f.screen(), /2 total · 1 matching · 1 shown · 0 omitted/);
 		f.state.filter = ""; f.panel.handleInput("\t"); assert.match(f.screen(), /Failure sentinel/);
 		assert.equal(reads, 2);
-		f.panel.handleInput("q"); f.panel.handleInput("q"); f.panel.handleInput("r");
+		f.panel.handleInput("q"); assert.equal(f.closes(), 0);
+		f.panel.handleInput("\x1b"); f.panel.handleInput("\x1b"); f.panel.handleInput("r");
 		assert.equal(f.closes(), 1); assert.equal(reads, 2);
 	});
 	it("keeps close and help visible on short terminals and fits narrow Unicode output", async () => {
@@ -95,11 +96,11 @@ describe("agent dashboard interaction", () => {
 			for (const width of [1, 30, 48, 100]) {
 				const lines = f.panel.render(width);
 				assert.ok(lines.length <= rows - 2); assert.ok(lines.every((line) => visibleWidth(line) <= width));
-				if (width >= 30) assert.match(lines.slice(-3).join("\n"), /q close/);
+				if (width >= 30) assert.match(lines.slice(-3).join("\n"), /Esc close/);
 			}
 		}
 		f.panel.handleInput("\r"); await tick(); f.dimensions.rows = 6;
-		assert.match(f.screen(30), /b back · q close/);
+		assert.match(f.screen(30), /Esc back/);
 	});
 	it("honors configured select/cancel and suppresses disposed inventory responses", async () => {
 		let finish!: (value: []) => void;
@@ -122,7 +123,7 @@ describe("agent dashboard interaction", () => {
 		f.panel.handleInput("n"); await tick(); assert.match(f.screen(), /Final entry chunk/);
 		f.panel.handleInput("b"); assert.match(defined(f.state.reader).lines.join("\n"), /Retained sentinel/);
 		f.panel.handleInput("o"); await tick();
-		assert.deepEqual(calls, [["active", { limit: 12 }], ["active", { limit: 12, entryId: "source-entry", offset: 0 }], ["active", { limit: 12, entryId: "source-entry", offset: 12000 }], ["active", { limit: 12, cursor: 5 }]]);
+		assert.deepEqual(calls, [["active", { limit: 12 }], ["active", { limit: 12 }], ["active", { limit: 12, entryId: "source-entry", offset: 0 }], ["active", { limit: 12, entryId: "source-entry", offset: 12000 }], ["active", { limit: 12, cursor: 5 }]]);
 		f.panel.handleInput("b"); assert.equal(f.state.reader, undefined);
 	});
 	it("ignores stale inspection after back, target change, close and failed reads", async () => {
@@ -130,7 +131,7 @@ describe("agent dashboard interaction", () => {
 		const f = fixture({ ...sources(), inspect: () => new Promise((resolve) => { finish = resolve; }) });
 		await tick(); f.panel.handleInput("\r"); f.panel.handleInput("b"); f.panel.handleInput("j");
 		finish(inspection()); await tick(); assert.equal(f.state.reader, undefined); assert.equal(f.state.selected.sessions, "saved");
-		f.panel.handleInput("\r"); f.panel.handleInput("q"); const paints = f.paints(); finish(inspection()); await tick(); assert.equal(f.paints(), paints);
+		f.panel.handleInput("\r"); f.panel.handleInput("\x1b"); f.panel.handleInput("\x1b"); const paints = f.paints(); finish(inspection()); await tick(); assert.equal(f.paints(), paints);
 		const failed = fixture({ ...sources(), inspect: async () => { throw new Error("owner unavailable exact"); } });
 		await tick(); failed.panel.handleInput("\r"); await tick(); assert.match(failed.screen(), /owner unavailable exact/);
 	});
@@ -159,7 +160,7 @@ describe("agent dashboard interaction", () => {
 		await tick(); f.panel.handleInput("\r"); f.panel.handleInput("a"); assert.equal(f.closes(), 0);
 		finish(inspection()); await tick(); f.dimensions.rows = 6; f.panel.handleInput("?");
 		const before = f.screen(40); f.panel.handleInput("\x1b[6~"); assert.notEqual(f.screen(40), before);
-		f.panel.handleInput("b"); assert.ok(f.state.reader); f.panel.handleInput("q"); assert.equal(f.closes(), 1);
+		f.panel.handleInput("b"); assert.ok(f.state.reader); f.panel.handleInput("\x1b"); f.panel.handleInput("\x1b"); assert.equal(f.closes(), 1);
 	});
 	it("routes bare commands to bounded mode-specific snapshots without model output", async (t) => {
 		const notices: string[] = []; const output: string[] = [];

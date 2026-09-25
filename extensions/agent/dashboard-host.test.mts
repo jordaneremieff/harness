@@ -31,7 +31,7 @@ it("closes and disposes each native overlay before dialogs, then restores select
 			active = factory({ terminal: { rows: 24 }, requestRender() {} } as unknown as TUI, theme, keys, (request) => { defined(active).dispose(); inOverlay = false; resolve(request); }) as AgentDashboard;
 			await tick();
 			if (overlays === 1) { active.handleInput("\r"); await tick(); screens.push(active.render(100).join("\n")); active.handleInput("a"); }
-			else { screens.push(active.render(100).join("\n")); active.handleInput("b"); screens.push(active.render(100).join("\n")); active.handleInput("q"); }
+			else { screens.push(active.render(100).join("\n")); active.handleInput("b"); screens.push(active.render(100).join("\n")); active.handleInput("\x1b"); active.handleInput("\x1b"); }
 			return result;
 		},
 		select: async () => { assert.equal(inOverlay, false); return "status: Read owner"; },
@@ -54,7 +54,9 @@ it("returns cancelled dialogs to the exact prior reader and shows uncaught actio
 		closed = false;
 		const panel = factory({ terminal: { rows: 8 }, requestRender() {} } as unknown as TUI, theme, keys, (value) => { closed = true; resolve(value); }) as AgentDashboard;
 		await tick(); views.push(panel.render(80).join("\n"));
-		panel.handleInput(++count < 3 ? "a" : "q"); return promise;
+		if (++count < 3) panel.handleInput("a");
+		else { panel.handleInput("\x1b"); panel.handleInput("\x1b"); }
+		return promise;
 	} } } as unknown as ExtensionCommandContext;
 	let actions = 0;
 	await showAgentDashboard(sources, ctx, { run: async () => { assert.equal(closed, true); if (++actions === 1) return undefined; throw new Error("exact refusal sentinel"); } });
