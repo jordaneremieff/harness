@@ -55,7 +55,7 @@ function stateLabel(row: SessionDigest): string {
 }
 function sectionOf(row: SessionDigest, now: number): string {
 	if (row.state === "working") return "Working";
-	if (["failed", "stopped", "interrupted", "orphaned", "unavailable"].includes(row.state)) return "Attention";
+	if (now - row.modifiedAt <= 24 * 60 * 60 * 1000 && ["failed", "stopped", "interrupted", "orphaned", "unavailable"].includes(row.state)) return "Attention";
 	const today = new Date(now); today.setHours(0, 0, 0, 0);
 	const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
 	return row.modifiedAt >= today.getTime() ? "Today" : row.modifiedAt >= yesterday.getTime() ? "Yesterday" : "Earlier";
@@ -75,7 +75,7 @@ export async function readAgentDashboard(sources: Pick<AgentObservationSources, 
 function totals(snapshot: AgentDashboardSnapshot | undefined): string {
 	const rows = snapshot?.sessions ?? [];
 	const working = rows.filter((row) => row.state === "working").length;
-	const attention = rows.filter((row) => sectionOf(row, Date.now()) === "Attention").length;
+	const attention = rows.filter((row) => sectionOf(row, snapshot?.observedAt ?? Date.now()) === "Attention").length;
 	return `${working} working${attention ? ` · ${attention} need attention` : ""} · ${rows.some((row) => row.partial) ? "≥" : ""}$${rows.reduce((sum, row) => sum + row.cost, 0).toFixed(2)} spent`;
 }
 export function dashboardText(snapshot: AgentDashboardSnapshot): string {
@@ -98,6 +98,7 @@ export class AgentDashboard implements Component {
 	private refreshing = false;
 	private submitting = false;
 	private timer?: ReturnType<typeof setInterval>;
+	private lastRenderAt = Date.now();
 	private help = false;
 	private helpScroll = 0;
 	private resultScroll = 0;
@@ -130,7 +131,11 @@ export class AgentDashboard implements Component {
 		this.state = state ?? { filter: "", drafts: new Map() };
 		this.input.onSubmit = () => { if (this.inputMode === "filter") this.finishInput(); else void this.submit(); };
 		void this.refresh();
-		this.timer = setInterval(() => { void this.refresh(); }, 1000);
+		this.timer = setInterval(() => {
+			// Pi can remove an overlay without closing its custom component.
+			if (Date.now() - this.lastRenderAt >= 5000) this.dispose();
+			else void this.refresh();
+		}, 1000);
 		this.timer.unref?.();
 	}
 	private redraw(): void { if (!this.closed) this.tui.requestRender(); }
@@ -317,6 +322,7 @@ export class AgentDashboard implements Component {
 		return `${row?.state === "working" ? "Steer" : "Send to"} ${row ? titleOf(row) : "session"}`;
 	}
 	render(width: number): string[] {
+		this.lastRenderAt = Date.now();
 		width = Math.max(1, width);
 		const height = Math.max(1, this.tui.terminal.rows - 2);
 		if (height < 6 || width < 24) return [truncateToWidth(`Agents · ${this.rows().length} sessions · Esc close`, width)];
@@ -435,7 +441,7 @@ export class AgentDashboard implements Component {
 		return lines.slice(this.resultScroll, this.resultScroll + height);
 	}
 	private renderHelp(width: number, height: number): string[] {
-		const lines = ["Agent board", "", "↑↓ or j/k selects a session. Page Up/Down moves a page. Home/End reaches either end.", "Enter opens the conversation. / searches name, task, place, model, state or ID. Enter keeps a filter; Escape cancels its edit.", "m opens a message. Enter sends to an idle agent or steers active work. Escape keeps the draft. n starts a new agent.", "a opens all native actions. Actions retain their trust and ownership checks.", "", "Conversation", "↑↓ scrolls. Page Up/Down or b/Space pages. Home starts; End follows new output. o loads earlier messages.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A dead writer claim shows Orphaned. The board never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files use a bounded tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Refresh runs once per second while this overlay is open. Only changed files are parsed. Escape returns or closes."];
+		const lines = ["Agent board", "", "↑↓ or j/k selects a session. Page Up/Down moves a page. Home/End reaches either end.", "Enter opens the conversation. / searches name, task, place, model, state or ID. Enter keeps a filter; Escape cancels its edit.", "m opens a message. Enter sends to an idle agent or steers active work. Escape keeps the draft. n starts a new agent.", "a opens all native actions. Actions retain their trust and ownership checks.", "", "Conversation", "↑↓ scrolls. Page Up/Down or b/Space pages. Home starts; End follows new output. o loads earlier messages.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A dead writer claim shows Orphaned. The board never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files use a bounded tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds non-clean sessions active within the last 24 hours. Older sessions retain their state in date groups.", "Refresh runs once per second while this overlay is visible. Only changed files are parsed. Refresh stops after five seconds without a render. Escape returns or closes."];
 		const wrapped = lines.flatMap((line) => wrapTextWithAnsi(line, width));
 		this.helpScroll = Math.min(this.helpScroll, Math.max(0, wrapped.length - height));
 		return wrapped.slice(this.helpScroll, this.helpScroll + height);

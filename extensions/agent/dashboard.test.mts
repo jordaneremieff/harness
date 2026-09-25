@@ -44,8 +44,34 @@ it("shows one row per session, all records, meaningful state and spend before th
 	} finally { f.panel.dispose(); }
 });
 
+it("limits Attention to recent non-clean sessions and shares the section timestamp with the header", async (t) => {
+	const now = new Date(2026, 0, 3, 12).getTime();
+	t.mock.timers.enable({ apis: ["Date"], now });
+	const states = ["failed", "stopped", "interrupted", "orphaned", "unavailable"] as const;
+	const day = 24 * 60 * 60 * 1000;
+	const rows = states.flatMap((state) => [row(`recent-${state}`, { state, modifiedAt: now - 1000 }), row(`old-${state}`, { state, modifiedAt: now - 2 * day })]);
+	rows.push(row("boundary", { state: "failed", modifiedAt: now - day }), row("today", { modifiedAt: now }));
+	const f = fixture(rows); await tick(); f.terminal.rows = 52;
+	try {
+		assert.match(f.screen(200), /6 need attention/);
+		const ordered = dashboardRecords(f.panel.state.snapshot, "").map((item) => item.sessionId);
+		assert.ok(ordered.indexOf("boundary") < ordered.indexOf("today"));
+		assert.ok(states.every((state) => ordered.indexOf(`old-${state}`) > ordered.indexOf("today")));
+		const text = f.screen(200);
+		assert.ok(text.indexOf(" Today") < text.indexOf(" Earlier"));
+		assert.match(text, /! Session old-failed/);
+		assert.match(text, /■ Session old-stopped/);
+		t.mock.timers.tick(1);
+		assert.match(f.screen(200), /6 need attention/);
+		await f.panel.refresh();
+		assert.match(f.screen(200), /5 need attention/);
+		assert.ok(dashboardRecords(f.panel.state.snapshot, "").findIndex((item) => item.sessionId === "boundary") > 5);
+	} finally { f.panel.dispose(); }
+});
+
 it("retains selection by ID across refresh and filters name, place, model and state", async () => {
-	let rows = [row("one"), row("two")];
+	const modifiedAt = Date.now();
+	let rows = [row("one", { modifiedAt }), row("two", { modifiedAt })];
 	const f = fixture(rows, { board: async () => rows }); await tick();
 	try {
 		f.panel.handleInput("j"); assert.equal(f.panel.state.selected, "two");
@@ -119,6 +145,24 @@ it("coalesces refreshes, stops the live clock on disposal and rejects late reads
 	release([row()]); await tick(); t.mock.timers.tick(1000); assert.equal(calls, 2);
 	f.panel.dispose(); release([row("late")]); await tick(); t.mock.timers.tick(5000);
 	assert.equal(calls, 2); assert.equal(f.panel.state.snapshot?.sessions[0].sessionId, "sample");
+});
+
+it("stops refresh when the host removes an overlay without closing it", async (t) => {
+	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
+	let calls = 0;
+	const f = fixture([], { board: async () => { calls++; return [row()]; } }); await tick();
+	try {
+		for (let index = 0; index < 8; index++) {
+			f.panel.render(120); t.mock.timers.tick(1000); await tick();
+		}
+		assert.equal(calls, 9);
+		f.panel.render(120);
+		for (let index = 0; index < 5; index++) { t.mock.timers.tick(1000); await tick(); }
+		assert.equal(calls, 13);
+		t.mock.timers.tick(10000); await tick(); await f.panel.refresh();
+		assert.equal(calls, 13);
+		assert.deepEqual(f.requests, [], "expiry must not close an unrelated native overlay");
+	} finally { f.panel.dispose(); }
 });
 
 it("ignores a conversation result after Escape or disposal", async () => {

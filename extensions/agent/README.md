@@ -139,8 +139,10 @@ opens a session nor changes task admission, delivery, or lifecycle behavior.
 Bare `/agent` and **Ctrl+Alt+G** open a board for supervising ordinary sessions.
 Each session occupies one row: state, title, place, model/thinking level, spend,
 and age of the last file update. Working sessions come first, followed by
-sessions that need attention and date groups. The board windows the full list;
-it does not impose a display-count cap. The header shows active work, attention,
+sessions that need attention from the last 24 hours and date groups. Older
+non-clean sessions keep their state glyph and color in their date group. The
+attention count uses the same observation time as the sections. The board windows
+the full list; it does not impose a display-count cap. The header shows active work, attention,
 and total retained spend. Selection follows the full session ID across refreshes.
 
 The selected preview leads with the latest assistant reply, rendered as Markdown.
@@ -188,8 +190,10 @@ first, then restore selection and conversation with a scrollable result.
 While open, the board refreshes once per second. It stats native session files
 and caches digests by file identity, size, and modification metadata. Only changed
 files are parsed; the selected conversation has its own cache. Close disposes
-the refresh clock. Observation never claims a writer, repairs a tail, opens a
-session for writing, or persists an index. File captures are bounded; oversized
+the refresh clock. If Pi removes the overlay without closing its component,
+five seconds without a render disposes the clock and prevents further reads.
+This expiry does not close any other overlay. Observation never claims a writer,
+repairs a tail, opens a session for writing, or persists an index. File captures are bounded; oversized
 files use a header plus a bounded tail. Missing ancestry and capture limits
 remain partial, and `≥` marks incomplete spend. Spend includes retained native
 usage across branches; tool counts and latest output describe the current branch.
