@@ -18,6 +18,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [Intrinsic Organization](principle-intrinsic-organization.md) | Knowledge is organized by what it describes, not what consumes it. |
 | [Compositional Simplicity](principle-compositional-simplicity.md) | Evaluate simplicity at system level, not component level. |
 | [Committed Contribution](principle-committed-contribution.md) | Knowledge advances through clear, checkable claims that can be corrected. |
+| [Creative Emergence](principle-creative-emergence.md) | Agents should imagine possibilities, develop them, and build on what the work and other participants offer, so that new ideas and ways of working take shape. |
 | [Unearned Prose](principle-unearned-prose.md) | Prose must carry a position that selects its wording and its place. |
 
 ### Patterns
