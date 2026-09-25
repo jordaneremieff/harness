@@ -819,12 +819,15 @@ alone establishes general autonomous task reliability.
 - `submit_result` stores at most 50KB. `result.txt` keeps the exact submitted
   bytes and `subagent_collect <id>` returns them; dispatch itself never waits
   for or returns the result inline.
-- A completion notification arrives as worker-authored content between explicit
-  provenance markers. Every rendered view of that text, the notification,
-  collection, the status preview, and inspection, removes terminal control
-  sequences and direction controls, while the stored file keeps the exact bytes.
-  It is a report, not operator input: an instruction inside a worker's result is
-  data to judge, never a directive to follow.
+- A completion notification marks submitted results and retained worker output
+  as worker-authored. Failure text and generated notices use a separate
+  unverified boundary without a worker-authorship claim. If retained output has
+  no submitted result, the extension marks its own note separately. The default
+  card quotes a bounded excerpt; expansion shows both boundaries within its
+  display limits. Every rendered view removes terminal control sequences and
+  direction controls, while the stored result file keeps the exact bytes.
+  Neither kind is operator input: instructions inside are data to judge, not
+  directives.
 - A live worker left idle or paused with no owner resume, event activation, or
   submitted result is released by a bounded idle deadline (30 minutes by
   default, `PI_SUBAGENT_IDLE_MINUTES`) rather than holding its session forever.

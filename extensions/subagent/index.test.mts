@@ -1651,27 +1651,51 @@ describe("status and collection", () => {
 		assert.equal(sent.length, 1, "a persisted marker suppresses a duplicate send");
 	});
 
-	it("treats failure text and empty output as notification text, not worker prose", async () => {
+	it("separates generated completion notices from worker-authored text", async () => {
 		const pi = await import("@earendil-works/pi-coding-agent");
 		pi.initTheme("dark");
+		const { CustomMessageComponent } = await import(new URL("./modes/interactive/components/custom-message.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
 		const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, getBgAnsi: () => "", bold: (text: string) => text } as never;
-		for (const [id, error, excerpt] of [
-			["bg-failurenotice", "provider failure", "provider failure"],
-			["bg-emptynotice", null, "(no output)"],
+		for (const [id, state, error, excerpt, lastOutput] of [
+			["bg-failurenotice", "failed", "provider failure", "provider failure", null],
+			["bg-emptynotice", "failed", null, "(no output)", null],
+			["bg-emptyresult", "done", null, "(empty submitted result)", null],
+			["bg-mixednotice", "no_result_submitted", null, "retained worker output", "retained worker output"],
 		] as const) {
-			const record = runningRecord(id, { state: "failed", exitedAt: 2, error });
-			seedWorker(id, record);
+			const dir = seedWorker(id, runningRecord(id, { state, exitedAt: 2, error, lastOutput }));
+			if (id === "bg-emptyresult") writeFileSync(join(dir, "result.txt"), "", "utf-8");
 			const stored = readWorker(id);
 			assert.ok(stored);
 			let message: unknown;
 			assert.equal(notifyCompletion(stored, { sendMessage: (sent: unknown) => { message = sent; } } as never), true);
 			assert.ok(message);
+			const content = (message as { content: string }).content;
 			const card = present(renderWorkerMessage(message as never, { expanded: false, outputPad: 1 }, theme));
 			const text = stripTerminalSequences(card.render(100).join("\n"));
 			assert.ok(text.includes(`↳ ${excerpt}`));
 			assert.match(text, /unverified/);
 			assert.match(text, /notification text/);
 			assert.doesNotMatch(text, /peer-authored|worker-authored report/);
+			assert.match(content, /completion notice begins/);
+			assert.equal(content.includes("worker-authored content begins"), Boolean(lastOutput));
+			assert.equal(cardContentPreview(content, id), excerpt);
+			const native = new CustomMessageComponent(message as never, renderWorkerMessage);
+			native.setExpanded(true);
+			const expanded = stripTerminalSequences(native.render(120).join("\n"));
+			assert.match(expanded, /completion notice begins/);
+			assert.ok(expanded.includes(excerpt));
+			if (lastOutput) {
+				assert.ok(content.indexOf("worker-authored content ends") < content.indexOf("completion notice begins"));
+				assert.match(expanded, /worker-authored content begins/);
+				assert.match(expanded, /worker did not submit a result/);
+			} else {
+				assert.doesNotMatch(expanded, /worker-authored content begins/);
+			}
+			if (id === "bg-failurenotice") {
+				const withoutClose = content.slice(0, content.indexOf("\n\n──── completion notice ends"));
+				assert.equal(cardContentPreview(withoutClose, id), excerpt, "a missing closing marker keeps the notice excerpt");
+				assert.equal(cardContentPreview(withoutClose, "bg-other"), "", "a different opening marker cannot supply a quote");
+			}
 		}
 	});
 
