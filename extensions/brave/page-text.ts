@@ -185,43 +185,101 @@ export async function extractPageText(body: Buffer, contentType: string, signal?
 	};
 }
 
+export interface PageExcerptOptions {
+	max_bytes?: number;
+	excerpt_offset?: number;
+	expected_source_id?: string;
+}
+
 export interface PageExcerpts {
 	sourceId: string;
 	excerpts: { reference: string; text: string }[];
+	excerptOffset: number;
+	nextOffset: number | null;
+	extractionTruncated: boolean;
 	outputTruncated: boolean;
 }
 
-export function makePageExcerpts(page: PageText, finalUrl: string, maxBytes = 16_000): PageExcerpts {
+/** Validate before network access and at the pure transformation boundary. */
+export function validateExcerptOptions(options: PageExcerptOptions): void {
+	const maxBytes = options.max_bytes === undefined ? 16_000 : options.max_bytes;
 	if (!Number.isInteger(maxBytes) || maxBytes < 1000 || maxBytes > MAX_EXCERPT_BYTES) {
 		throw new Error("Web reader max_bytes must be an integer from 1000 through 24000.");
 	}
+	const offset = options.excerpt_offset === undefined ? 0 : options.excerpt_offset;
+	if (!Number.isInteger(offset) || offset < 0 || offset > MAX_TEXT_CHARS) {
+		throw new Error("Web reader excerpt_offset must be an integer from 0 through 131072.");
+	}
+	if (
+		options.expected_source_id !== undefined &&
+		(typeof options.expected_source_id !== "string" || !/^[a-f0-9]{16}$/.test(options.expected_source_id))
+	) {
+		throw new Error("Web reader expected_source_id must be the 16 lowercase hex characters returned as Source.");
+	}
+	if (offset > 0 && options.expected_source_id === undefined) {
+		throw new Error(
+			"Web reader continuation requires expected_source_id from the previous response. Start at excerpt_offset 0 if no source ID is available.",
+		);
+	}
+}
+
+export function makePageExcerpts(page: PageText, finalUrl: string, options: PageExcerptOptions = {}): PageExcerpts {
+	validateExcerptOptions(options);
+	const maxBytes = options.max_bytes ?? 16_000;
+	const excerptOffset = options.excerpt_offset ?? 0;
 	const sourceId = createHash("sha256")
 		.update(finalUrl)
 		.update("\0")
 		.update(page.paragraphs.join("\n"))
 		.digest("hex")
 		.slice(0, 16);
+	if (options.expected_source_id !== undefined && options.expected_source_id !== sourceId) {
+		throw new Error(
+			"Web reader source changed: the final URL or normalized retained text differs from expected_source_id. No excerpts returned. Start a new read without continuation fields; do not combine it with the previous snapshot.",
+		);
+	}
 	const excerpts: PageExcerpts["excerpts"] = [];
 	let used = 0;
-	let outputTruncated = page.truncated;
-	outer: for (const paragraph of page.paragraphs) {
-		// Code points keep excerpt boundaries outside surrogate pairs.
+	let index = 0;
+	let nextOffset: number | null = null;
+	for (const text of excerptChunks(page.paragraphs)) {
+		const current = index++;
+		if (current < excerptOffset) continue;
+		const reference = `${sourceId}:E${current + 1}`;
+		const bytes = Buffer.byteLength(`[${reference}] ${text}\n\n`);
+		if (used + bytes > maxBytes || excerpts.length >= 160) {
+			nextOffset = current;
+			break;
+		}
+		excerpts.push({ reference, text });
+		used += bytes;
+	}
+	if (excerptOffset > index) {
+		throw new Error(
+			`Web reader excerpt_offset exceeds the retained excerpt count (${index}). Use a returned nextOffset, or restart at excerpt_offset 0.`,
+		);
+	}
+	return {
+		sourceId,
+		excerpts,
+		excerptOffset,
+		nextOffset,
+		extractionTruncated: page.truncated,
+		outputTruncated: nextOffset !== null || page.truncated,
+	};
+}
+
+/** Segmentation is independent of response offsets and budgets. */
+function* excerptChunks(paragraphs: string[]): Generator<string> {
+	for (const paragraph of paragraphs) {
 		const points = Array.from(paragraph);
 		let offset = 0;
 		while (offset < points.length) {
 			const chunk = readExcerptChunk(points, offset);
 			offset = chunk.offset;
-			const reference = `${sourceId}:E${excerpts.length + 1}`;
-			const bytes = Buffer.byteLength(`[${reference}] ${chunk.text}\n\n`);
-			if (used + bytes > maxBytes || excerpts.length >= 160) {
-				outputTruncated = true;
-				break outer;
-			}
-			excerpts.push({ reference, text: chunk.text });
-			used += bytes;
+			yield chunk.text;
 		}
 	}
-	return { sourceId, excerpts, outputTruncated };
 }
 
 interface ElementState {

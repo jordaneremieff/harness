@@ -27,6 +27,20 @@ Call `web_search` to find a source, then open its public URL:
 Pass that object to `web_read`. Cite the returned final URL and excerpt label.
 The reader does not need a Brave subscription token.
 
+For later excerpts, copy the response's `nextOffset` into `excerpt_offset` and
+its `Source` into `expected_source_id`, with the same `url`. For example, if the
+response returns offset `31` and source `0123456789abcdef`:
+
+```json
+{"url":"https://example.com/","excerpt_offset":31,"expected_source_id":"0123456789abcdef","max_bytes":16000}
+```
+
+Use the actual returned values, not these example values. A `null` next offset
+ends the retained excerpts, not necessarily the full page. Each call fetches and
+extracts the public page again. No snapshot or cursor is stored. If the source
+changes, start a new read without continuation fields and keep its evidence
+separate from the earlier snapshot. The byte budget may change between calls.
+
 ## Configuration
 
 The `web_search` subscription token comes from `PI_BRAVE_API_KEY` in the Pi
@@ -39,7 +53,14 @@ no key or configuration; it fetches only public pages with no credential.
 
 - **Input.** `url` must be a public HTTP(S) URL with no userinfo credentials and
   default ports only (80/443, whether explicit or implicit), bounded to 4096 characters. `max_bytes`
-  is the excerpt byte budget: an integer 1000 through 24000, default 16000.
+  is the per-response excerpt byte budget: an integer 1000 through 24000, default 16000.
+  `excerpt_offset` is a zero-based excerpt index, default 0, bounded to 131072
+  (the retained-text limit bounds the possible excerpt count). Every nonzero
+  offset requires `expected_source_id`, exactly 16 lowercase hex characters.
+  A supplied source ID is checked even at offset zero. Malformed continuation
+  inputs are refused before network access. Use the returned `nextOffset`;
+  offsets beyond the retained excerpt count are refused, while an exact-end
+  offset returns no excerpts and `nextOffset: null`.
 - **Public addresses only.** The hostname is resolved for A and AAAA records and
   every returned address is checked against an allow/deny policy before use. IPv4
   rejects special-use blocks (private, loopback, link-local, CGNAT, multicast,
@@ -85,22 +106,36 @@ no key or configuration; it fetches only public pages with no credential.
   `[<sourceId>:E<n>]`. `sourceId` is a 16-hex SHA-256 of the final URL plus the
   normalized extracted paragraphs. A NUL separates the URL from the newline-joined
   paragraphs. Unchanged URL and text
-  yield the same labels; changed content yields a different source id. Labels
+  yield the same labels independent of response budgets and offsets. Excerpts
+  split each paragraph into chunks of at most 800 UTF-8 bytes without splitting
+  Unicode code points. A changed final URL or retained text yields a different
+  source ID and refuses a continuation before returning any excerpts. This ID
+  does not cover the raw page, title, extraction method, extraction-cap flag, or
+  discarded text beyond the cap. Changes outside the normalized retained text
+  therefore need not change it. Labels
   identify the extracted snapshot, not anchors in the live page; the output says
   to cite the final URL plus labels. The header states the final URL, requested
   URL, retrieval time (ISO 8601), title, content type, extraction method and
   status, and the source id.
-- **Truncation and honesty.** Output stays below Pi's 50 KB / 2000-line
-  tool-output limits. When the excerpt byte/count budget or retained-text cap
-  truncates content, `outputTruncated` is true and a note says the omitted
-  content was not retained, so the result does not establish full-page coverage.
+- **Pagination and extraction limits.** Each response stays below Pi's 50 KB /
+  2000-line tool-output limits and returns at most 160 excerpts within its byte
+  budget. `nextOffset` identifies the first unreturned excerpt, or is `null` at
+  the end of retained text. `extractionTruncated` separately reports the
+  retained-text cap. Text beyond that cap is unavailable through continuation;
+  the warning persists on the final page. Static extraction remains incomplete
+  evidence even without that flag. `outputTruncated` is true when more excerpts
+  follow or extraction hit the cap; it does not describe excerpts before the
+  requested offset. The model-visible header contains the offset, excerpt
+  count, next offset, and extraction flag. Continuation guidance includes both
+  required continuation arguments.
   `details` carries `requestedUrl`, `finalUrl`, `retrievedAt`, `contentType`,
   `downloadedBytes`, `redirectCount`, `title`, `sourceId`, `excerptCount`,
-  `extraction`, `status`, and `outputTruncated` — never a credential or raw body.
+  `excerptOffset`, `nextOffset`, `extractionTruncated`, `extraction`, `status`,
+  and `outputTruncated` — never a credential or raw body.
   `downloadedBytes` counts the final response body, not headers or transfer framing.
   Redirect bodies are discarded, and URLs are normalized without fragments.
 - **Failures.** Failures still throw, so Pi produces an error result with text
-  and empty `details`; successful result fields are unchanged. Failure text names
+  and empty `details`. Failure text names
   the failed stage or limit and the final URL of the failed hop. If URL validation
   rejects a redirect, the URL identifies the last response, not the rejected
   target. Invalid initial URLs are not echoed. DNS and connection failures have
@@ -178,4 +213,11 @@ bounds, cancellation, timeout cleanup, control-character handling,
 output truncation, registration, entrypoint execution, URL and address policy,
 static main/article/body extraction, excerpt references, page reading results,
 status and final-URL diagnostics after redirects, server-only retry hints,
-extraction failure metadata, unread error bodies, and native HTTP parser errors.
+extraction failure metadata, unread error bodies, native HTTP parser errors,
+multi-page reconstruction under varying budgets, Unicode and stable labels,
+invalid continuation refusal before fetch, changed-source refusal, exact-end and
+empty snapshots, extraction-cap honesty, and complete response bounds. A
+registered-entrypoint test follows model-visible continuation arguments through
+the native HTTP parser with synthetic sockets. The load check establishes Pi
+loader acceptance; neither check establishes live-session activation or general
+research time savings.

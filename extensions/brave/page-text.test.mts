@@ -90,7 +90,7 @@ describe("page excerpt references", () => {
 		const result = makePageExcerpts(page, "https://example.com/page");
 		assert.equal(result.excerpts[0].reference, `${result.sourceId}:E1`);
 		assert.equal(result.excerpts[1].text, "Two");
-		assert.equal(makePageExcerpts(page, "https://example.com/page", 1000).sourceId, result.sourceId);
+		assert.equal(makePageExcerpts(page, "https://example.com/page", { max_bytes: 1000 }).sourceId, result.sourceId);
 		assert.notEqual(makePageExcerpts(page, "https://example.com/other").sourceId, result.sourceId);
 		assert.notEqual(
 			makePageExcerpts({ ...page, paragraphs: ["Changed"] }, "https://example.com/page").sourceId,
@@ -99,17 +99,139 @@ describe("page excerpt references", () => {
 	});
 	it("bounds UTF-8 output and preserves complete code points at the smallest budget", async () => {
 		const page = await html(`<main>${"😀".repeat(2000)}</main>`);
-		const result = makePageExcerpts(page, "https://example.com", 1000);
+		const result = makePageExcerpts(page, "https://example.com", { max_bytes: 1000 });
 		assert.equal(result.outputTruncated, true);
 		assert.ok(result.excerpts.length > 0);
 		const rendered = result.excerpts.map((e) => `[${e.reference}] ${e.text}\n\n`).join("");
 		assert.ok(Buffer.byteLength(rendered) <= 1000);
 		assert.doesNotMatch(rendered, /�/);
 	});
+	it("reconstructs all retained paragraphs with budget-independent labels and Unicode chunks", async () => {
+		const paragraphs = Array.from({ length: 60 }, (_, i) => `Section ${i + 1}: ${"evidence 😀 café ".repeat(80)}`);
+		const page = await extractPageText(Buffer.from(paragraphs.join("\n")), "text/plain");
+		const collect = (budgets: number[]) => {
+			const collected: { reference: string; text: string }[] = [];
+			let offset = 0;
+			let sourceId: string | undefined;
+			let calls = 0;
+			for (;;) {
+				const budget = budgets[calls++ % budgets.length];
+				const result = makePageExcerpts(page, "https://example.com", {
+					max_bytes: budget,
+					excerpt_offset: offset,
+					expected_source_id: sourceId,
+				});
+				sourceId = result.sourceId;
+				assert.equal(result.excerptOffset, offset);
+				assert.equal(result.extractionTruncated, false);
+				assert.ok(result.excerpts.length > 0);
+				const rendered = result.excerpts.map((e) => `[${e.reference}] ${e.text}\n\n`).join("");
+				assert.ok(Buffer.byteLength(rendered) <= budget);
+				assert.equal(Buffer.from(rendered).toString("utf8"), rendered);
+				collected.push(...result.excerpts);
+				if (result.nextOffset === null) {
+					assert.equal(result.outputTruncated, false);
+					break;
+				}
+				assert.equal(result.nextOffset, collected.length);
+				offset = result.nextOffset;
+				assert.ok(calls < 300);
+			}
+			assert.ok(calls > 1);
+			return collected;
+		};
+		const small = collect([1000, 24000, 1733]);
+		assert.deepEqual(small, collect([24000]));
+		assert.equal(small.map((e) => e.text).join(""), paragraphs.map((paragraph) => paragraph.trim()).join(""));
+		assert.deepEqual(
+			small.map((e) => e.reference.split(":")[1]),
+			small.map((_, i) => `E${i + 1}`),
+		);
+	});
+	it("returns the first unreturned chunk without gaps at exact Unicode byte boundaries", async () => {
+		const page = await extractPageText(Buffer.from(`${"😀".repeat(401)}\n\t End   evidence \n`), "text/plain");
+		const first = makePageExcerpts(page, "https://example.com", { max_bytes: 1000 });
+		assert.deepEqual(first.excerpts, [{ reference: `${first.sourceId}:E1`, text: "😀".repeat(200) }]);
+		assert.equal(first.nextOffset, 1);
+		const second = makePageExcerpts(page, "https://example.com", {
+			max_bytes: 24000,
+			excerpt_offset: 1,
+			expected_source_id: first.sourceId,
+		});
+		assert.deepEqual(second.excerpts, [
+			{ reference: `${first.sourceId}:E2`, text: "😀".repeat(200) },
+			{ reference: `${first.sourceId}:E3`, text: "😀" },
+			{ reference: `${first.sourceId}:E4`, text: "End evidence" },
+		]);
+		assert.equal(second.nextOffset, null);
+	});
+	it("pages past the per-response excerpt-count ceiling", async () => {
+		const page = await extractPageText(
+			Buffer.from(Array.from({ length: 400 }, (_, i) => `P${i}`).join("\n")),
+			"text/plain",
+		);
+		const first = makePageExcerpts(page, "https://example.com", { max_bytes: 24000 });
+		assert.equal(first.excerpts.length, 160);
+		assert.equal(first.nextOffset, 160);
+		const next = makePageExcerpts(page, "https://example.com", {
+			max_bytes: 24000,
+			excerpt_offset: first.nextOffset,
+			expected_source_id: first.sourceId,
+		});
+		assert.equal(next.excerpts[0].reference, `${first.sourceId}:E161`);
+		assert.equal(next.nextOffset, 320);
+		const last = makePageExcerpts(page, "https://example.com", {
+			max_bytes: 24000,
+			excerpt_offset: next.nextOffset,
+			expected_source_id: first.sourceId,
+		});
+		assert.equal(last.excerpts.length, 80);
+		assert.equal(last.excerpts[79].text, "P399");
+		assert.equal(last.nextOffset, null);
+		assert.equal(last.extractionTruncated, false);
+	});
+	it("refuses changed text or final URL before returning any continuation excerpts", async () => {
+		const page = await html("<main>Original evidence</main>");
+		const first = makePageExcerpts(page, "https://example.com");
+		for (const offset of [0, 1]) {
+			const options = { excerpt_offset: offset, expected_source_id: first.sourceId };
+			assert.throws(
+				() => makePageExcerpts({ ...page, paragraphs: ["Different"] }, "https://example.com", options),
+				/source changed.*No excerpts returned/,
+			);
+			assert.throws(() => makePageExcerpts(page, "https://example.com/other", options), /source changed/);
+		}
+	});
+	it("treats exact-end and empty snapshots as successful but refuses offsets beyond retained text", async () => {
+		const page = await html("<main>Evidence</main>");
+		const first = makePageExcerpts(page, "https://example.com");
+		const end = makePageExcerpts(page, "https://example.com", {
+			excerpt_offset: 1,
+			expected_source_id: first.sourceId,
+		});
+		assert.deepEqual(end.excerpts, []);
+		assert.equal(end.nextOffset, null);
+		assert.equal(end.outputTruncated, false);
+		assert.throws(
+			() => makePageExcerpts(page, "https://example.com", { excerpt_offset: 2, expected_source_id: first.sourceId }),
+			/exceeds the retained excerpt count \(1\)/,
+		);
+		const empty = makePageExcerpts({ ...page, paragraphs: [] }, "https://example.com");
+		assert.deepEqual(empty.excerpts, []);
+		assert.equal(empty.nextOffset, null);
+		assert.throws(
+			() =>
+				makePageExcerpts({ ...page, paragraphs: [] }, "https://example.com", {
+					excerpt_offset: 1,
+					expected_source_id: empty.sourceId,
+				}),
+			/exceeds the retained excerpt count \(0\)/,
+		);
+	});
 	it("validates output budgets and carries the extraction truncation flag", async () => {
 		const page = await html("ok");
 		for (const max of [999, 24001, 1.5, Number.NaN])
-			assert.throws(() => makePageExcerpts(page, "https://example.com", max), /max_bytes/);
+			assert.throws(() => makePageExcerpts(page, "https://example.com", { max_bytes: max }), /max_bytes/);
 		assert.equal(makePageExcerpts({ ...page, truncated: true }, "https://example.com").outputTruncated, true);
 	});
 });

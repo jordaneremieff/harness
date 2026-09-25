@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { readWebPage } from "./page-reader.ts";
+import { readWebPage, type WebReadRequest } from "./page-reader.ts";
 
 function response(body: string, contentType = "text/html") {
 	return {
@@ -79,7 +79,9 @@ describe("web page reader", () => {
 		assert.ok(result.content[0].text.split("\n").length < 2000);
 		assert.ok(result.details.contentType.length <= 200);
 		assert.doesNotMatch(result.content[0].text, /\u001b/);
-		assert.match(result.content[0].text, /Omitted content is not retained/);
+		assert.match(result.content[0].text, /More retained excerpts follow/);
+		assert.equal(result.details.extractionTruncated, false);
+		assert.equal(result.details.nextOffset, 160);
 	});
 	it("propagates cancellation to transport and distinguishes the shared execution deadline", async () => {
 		let cancelled = false;
@@ -105,6 +107,96 @@ describe("web page reader", () => {
 			/execution deadline/,
 		);
 		assert.equal(cancelled, true);
+	});
+	it("rejects invalid continuation input before network access", async () => {
+		let calls = 0;
+		const fetchPage = async () => {
+			calls++;
+			return response("<main>Text</main>");
+		};
+		for (const fields of [
+			{ excerpt_offset: 1 },
+			...[-1, 0.5, Number.NaN, Infinity, 131073, "1", null].map((excerpt_offset) => ({
+				excerpt_offset,
+				expected_source_id: "0123456789abcdef",
+			})),
+			...["", "ABCDEF0123456789", "0123456789abcdeg", "a".repeat(17), 123, null].map((expected_source_id) => ({
+				expected_source_id,
+			})),
+		]) {
+			await assert.rejects(
+				readWebPage({ url: "https://example.com", ...fields } as unknown as WebReadRequest, undefined, { fetchPage }),
+				/excerpt_offset|expected_source_id/,
+			);
+		}
+		assert.equal(calls, 0);
+	});
+	it("retains extraction-cap warnings on the final noninitial page and scopes the source to retained text", async () => {
+		const url = "https://example.com/start";
+		let tail = "a";
+		const fetchPage = async () => response("x".repeat(128 * 1024) + tail, "text/plain");
+		let result = await readWebPage({ url, max_bytes: 24000 }, undefined, { fetchPage });
+		const sourceId = result.details.sourceId;
+		let calls = 1;
+		while (result.details.nextOffset !== null) {
+			tail = "b";
+			result = await readWebPage(
+				{ url, max_bytes: 24000, excerpt_offset: result.details.nextOffset, expected_source_id: sourceId },
+				undefined,
+				{ fetchPage },
+			);
+			assert.equal(result.details.sourceId, sourceId);
+			assert.ok(++calls < 10);
+		}
+		assert.ok(result.details.excerptOffset > 0);
+		assert.equal(result.details.extractionTruncated, true);
+		assert.equal(result.details.outputTruncated, true);
+		assert.match(result.content[0].text, /End of retained excerpts.*does not establish full-page coverage/);
+		assert.match(result.content[0].text, /Extraction hit.*not available through continuation/);
+		assert.doesNotMatch(result.content[0].text, /More retained excerpts/);
+	});
+	it("refetches and returns complete mismatch diagnostics without changed evidence", async () => {
+		let calls = 0;
+		let current = response("<main>Original</main>");
+		const fetchPage = async () => {
+			calls++;
+			return current;
+		};
+		const first = await readWebPage({ url: current.requestedUrl }, undefined, { fetchPage });
+		for (const changed of [
+			response("<main>replacement-evidence</main>"),
+			{ ...response("<main>Original</main>"), finalUrl: "https://example.com/moved" },
+		]) {
+			current = changed;
+			await assert.rejects(
+				readWebPage(
+					{ url: current.requestedUrl, excerpt_offset: 1, expected_source_id: first.details.sourceId },
+					undefined,
+					{ fetchPage },
+				),
+				(error: Error) => {
+					assert.match(error.message, /source changed.*Start a new read/);
+					assert.ok(error.message.includes(`Final URL: ${current.finalUrl}`));
+					assert.match(error.message, /HTTP 200 OK/);
+					assert.doesNotMatch(error.message, /replacement-evidence|:E\d/);
+					return true;
+				},
+			);
+		}
+		assert.equal(calls, 3);
+	});
+	it("bounds the complete response with maximum URL metadata and continuation guidance", async () => {
+		const url = `https://example.com/${"a".repeat(4076)}`;
+		const result = await readWebPage({ url, max_bytes: 24000 }, undefined, {
+			fetchPage: async () => ({
+				...response(`<title>${"😀".repeat(300)}</title><main>${"😀".repeat(20000)}</main>`),
+				requestedUrl: url,
+				finalUrl: url,
+			}),
+		});
+		assert.ok(result.details.nextOffset !== null);
+		assert.ok(Buffer.byteLength(JSON.stringify(result)) < 50 * 1024);
+		assert.ok(result.content[0].text.split("\n").length < 2000);
 	});
 	it("validates before network access and preserves honest errors", async () => {
 		let calls = 0;
