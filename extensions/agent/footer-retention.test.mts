@@ -76,8 +76,7 @@ test("native primary reload, tree navigation, fork, new, and reopen keep exact-s
 		let attempts = 0;
 		manager.appendCustomEntry = (type, data) => {
 			if (type === FOOTER_ENTRY && ++attempts === 1) {
-				append(type, data);
-				throw new Error("controlled checkpoint append failure after in-memory mutation");
+				throw new Error("controlled checkpoint append failure before in-memory mutation");
 			}
 			return append(type, data);
 		};
@@ -86,7 +85,7 @@ test("native primary reload, tree navigation, fork, new, and reopen keep exact-s
 		while (status.get("agent") !== "agents 0 · $0.25" && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 10));
 		assert.equal(status.get("agent"), "agents 0 · $0.25");
 		await runtime.session.waitForIdle();
-		assert.ok(attempts >= 2, "native append failure does not suppress later retries");
+		assert.ok(attempts >= 2, "pre-mutation append failure does not suppress later retries");
 		manager.appendCustomEntry = append;
 		const sessionId = runtime.session.sessionId;
 		const sessionFile = runtime.session.sessionFile;

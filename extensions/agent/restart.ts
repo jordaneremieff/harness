@@ -115,7 +115,7 @@ export function createRestartCommand(options: RestartOptions) {
 		const sessionDir = native.getSessionDir();
 		const launch = { executable: host.execPath, args: [host.execPath, ...host.execArgv, cli, "--session-dir", sessionDir, "--session", sessionFile] };
 		if (launch.args.some((arg) => /[\x00-\x1f\x7f-\x9f]/u.test(arg))) throw new RestartRefusal("Restart refused. A launch argument contains terminal control characters.");
-		return { launch, identity: JSON.stringify([native.getSessionId(), sessionFile, sessionDir, native.getLeafId(), ctx.cwd, file.dev, file.ino, file.size, file.mtimeMs, hosts.identity, launch]) };
+		return { launch, identity: JSON.stringify([native.getSessionId(), sessionFile, sessionDir, ctx.cwd, file.dev, file.ino, hosts.identity, launch]) };
 	};
 	return {
 		description: "Restart this Pi process and resume the saved session",

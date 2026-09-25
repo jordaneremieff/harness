@@ -200,6 +200,18 @@ const shared = globalThis as typeof globalThis & { [ownerKey]?: AgentOwners };
 if (!shared[ownerKey]) shared[ownerKey] = { managers: new Map(), creating: new Map(), workers: new Set() };
 const owners = shared[ownerKey];
 
+class FooterHistoryFailure extends Error {}
+
+function appendFooterCheckpoint(pi: ExtensionAPI, native: ExtensionContext["sessionManager"], saved: FooterCheckpoint): void {
+	// Native append mutates the leaf before persistence and emits entry_appended synchronously.
+	const leaf = native.getLeafId();
+	try { pi.appendEntry(FOOTER_ENTRY, structuredClone(saved)); }
+	catch (error) {
+		if (native.getLeafId() !== leaf) throw new FooterHistoryFailure();
+		throw error;
+	}
+}
+
 interface PrimaryOwner {
 	sessionId: string;
 	send?: (message: string, details: unknown) => void;
@@ -207,8 +219,10 @@ interface PrimaryOwner {
 	status?: (text: string | undefined) => void;
 	published?: string;
 	saveFailed?: boolean;
+	historyUncertain?: boolean;
 	footer: SessionFooter;
-	observe?: (totals: FooterTotals, checkpoint: FooterCheckpoint) => void;
+	/** True only after checkpoint persistence completes or already matches. */
+	observe?: (totals: FooterTotals, checkpoint: FooterCheckpoint) => boolean;
 	pending: Map<string, { content: string; details: unknown }>;
 }
 
@@ -258,11 +272,11 @@ export class AgentManager {
 		owners.managers.set(store.root, this);
 	}
 
-	registerPrimary(sessionId: string, cwd: string, send: (message: string, details: unknown) => void, status?: (text: string | undefined) => void, retention?: { checkpoint: FooterCheckpoint; observe: (totals: FooterTotals, checkpoint: FooterCheckpoint) => void }): void {
+	registerPrimary(sessionId: string, cwd: string, send: (message: string, details: unknown) => void, status?: (text: string | undefined) => void, retention?: { checkpoint: FooterCheckpoint; observe: (totals: FooterTotals, checkpoint: FooterCheckpoint) => boolean }): void {
 		if (owners.workers.has(sessionId)) return;
 		const previous = this.primary.get(sessionId);
 		const footer = previous?.footer ?? new SessionFooter(retention?.checkpoint ?? restoreFooter([], sessionId), this.footerTotals());
-		const primary: PrimaryOwner = { sessionId, cwd, send, status, footer, observe: retention?.observe, saveFailed: previous?.saveFailed, pending: previous?.pending ?? new Map() };
+		const primary: PrimaryOwner = { sessionId, cwd, send, status, footer, observe: retention?.observe, saveFailed: previous?.saveFailed, historyUncertain: previous?.historyUncertain, pending: previous?.pending ?? new Map() };
 		this.primary.set(sessionId, primary);
 		this.refreshDetachedFooter();
 		this.watchRuns();
@@ -285,6 +299,8 @@ export class AgentManager {
 	}
 
 	hasPrimary(sessionId: string): boolean { return this.primary.has(sessionId); }
+
+	hasUncertainFooterHistory(sessionId: string): boolean { return this.primary.get(sessionId)?.historyUncertain === true; }
 
 	bindAssociationParent(source: AssociationSource): void {
 		this.associationParents.set(source.sessionId, source);
@@ -414,8 +430,8 @@ export class AgentManager {
 				primary.footer.saved.nested.incomplete ||= totals.nested.incomplete;
 				totals.nested.available = true;
 			}
-			try { primary.observe?.(totals, primary.footer.saved); }
-			catch { primary.saveFailed = true; }
+			try { if (primary.observe?.(totals, primary.footer.saved) === true) primary.saveFailed = false; }
+			catch (error) { primary.saveFailed = true; if (error instanceof FooterHistoryFailure) primary.historyUncertain = true; }
 			const text = formatAgentTotals(totals, this.detachedFooter);
 			if (primary.published === text) continue;
 			try { primary.status?.(text); primary.published = text; } catch { /* Presentation does not own execution. */ }
@@ -1169,7 +1185,7 @@ export class AgentManager {
 		const busy = new Set([...this.opening.keys(), ...this.controls.keys(), ...this.transfers.keys()]);
 		const unsaved = new Set(this.associationFailures.keys());
 		for (const [id, changes] of this.associationChanges) if (changes.length) unsaved.add(id);
-		for (const [id, primary] of this.primary) if (primary.pending.size || primary.saveFailed) unsaved.add(id);
+		for (const [id, primary] of this.primary) if (primary.pending.size || primary.saveFailed || primary.historyUncertain) unsaved.add(id);
 		for (const [id, worker] of this.sessions) {
 			if (worker.hasActiveWork() || worker.unavailableState()) busy.add(id);
 			if (worker.hasUnsavedResult()) unsaved.add(id);
@@ -1794,16 +1810,16 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		}, (text) => ctx.ui.setStatus("agent", text), { checkpoint, observe: (totals, saved) => {
 			snapshot = { ...snapshot, active: totals.nested.active, cost: totals.nested.cost, incomplete: saved.nested.incomplete || totals.nested.incomplete || !totals.nested.available };
 			publish();
-			if (appending || owner.associationFailure(sessionId)) return;
+			if (appending || owner.associationFailure(sessionId) || owner.hasUncertainFooterHistory(sessionId)) return false;
 			appending = true;
 			try {
 				let serialized = JSON.stringify(saved);
 				while (serialized !== persisted) {
-					// Native append emits entry_appended synchronously. Commit only after it returns.
-					pi.appendEntry(FOOTER_ENTRY, structuredClone(saved));
+					appendFooterCheckpoint(pi, native, saved);
 					persisted = serialized;
 					serialized = JSON.stringify(saved);
 				}
+				return true;
 			} finally { appending = false; }
 		} });
 		registeredPrimaries.add(sessionId);

@@ -43,7 +43,18 @@ hosts are refused. Every process-local agent manager participates, including
 nested hosts and owners retained after reload. Incomplete opens, creations,
 controls, cleanup, association saves, footer saves, pending delivery, and live-only
 unsaved results block restart. The command checks identity and readiness again
-after confirmation. Only an accepted restart installs an exit listener.
+after confirmation. Saved custom entries appended during confirmation do not
+change session identity. A session switch or file replacement still refuses
+restart. Only an accepted restart installs an exit listener.
+
+A footer-save failure before the native session leaf changes remains retryable.
+A later complete persistence check clears this refusal, including when the saved
+checkpoint already matches. Reentrant or association-blocked checks do not clear
+it. An append failure after the leaf changes marks native history uncertain:
+a subsequent append could reference an entry absent from disk. The extension
+stops footer appends and refuses restart for that primary, including after reload.
+This state is separate from association failures. Pi's public extension API cannot
+repair that native history; restarting is not a repair.
 
 The primary readiness check has a public-API boundary in Pi 0.87.1.
 `ExtensionContext.isIdle()` excludes user Bash activity, and

@@ -9,6 +9,7 @@ import { createAgentSessionRuntime, createAgentSessionServices, createAgentSessi
 import { ASSOCIATION_ENTRY, associatedSessions } from "./associations.ts";
 import { AgentStore } from "./store.ts";
 import { dashboardText, readAgentDashboard } from "./dashboard.ts";
+import { FOOTER_ENTRY, type FooterCheckpoint } from "./footer.ts";
 import type { AgentManager } from "./index.ts";
 import type { AgentWorkerSession } from "./worker.ts";
 
@@ -98,7 +99,7 @@ async function fixture() {
 		const id = /agent session ([^ :]+)/u.exec(text)?.[1]; assert.ok(id); return id;
 	};
 	const inspect = async (id: string) => JSON.parse(await tool("agent_inspect", { sessionId: id })) as { liveOwner: boolean; execution: { current: { id: string } | null }; result?: { text: string } };
-	const claims = () => readdirSync(join(store, "native", ".claims"));
+	const claims = () => existsSync(join(store, "native", ".claims")) ? readdirSync(join(store, "native", ".claims")) : [];
 	const worker = (id: string): AgentWorkerSession => {
 		const worker = (owner() as unknown as { sessions: Map<string, AgentWorkerSession> }).sessions.get(id); assert.ok(worker); return worker;
 	};
@@ -763,6 +764,91 @@ for (const action of ["replace", "detach"] as const) test(`deferred ${action} as
 		assert.equal((owner as unknown as { associationChanges: Map<string, unknown[]> }).associationChanges.get(native.getSessionId())?.length, 1);
 		assert.ok(f.notices.some((notice) => notice.includes("deferred persistence failure"))); assert.deepEqual(f.errors, []);
 	} finally { finishReload.resolve(); await f.close(); }
+});
+
+test("restart clears a footer save failure only after successful persistence, not reentrant or association-skipped checks", { timeout: 30_000 }, async (t) => {
+	const f = await fixture();
+	try {
+		await f.runtime.session.prompt("SAVED_PARENT_CONTEXT");
+		const owner = f.owner(), native = f.runtime.session.sessionManager, file = native.getSessionFile(); assert.ok(owner); assert.ok(file);
+		const state = owner as unknown as { publishFooter(): void; associationFailures: Map<string, Error>; primary: Map<string, { saveFailed?: boolean; footer: { saved: FooterCheckpoint } }> };
+		const id = native.getSessionId(), primary = state.primary.get(id); assert.ok(primary);
+		const append = native.appendCustomEntry.bind(native); let fail = true, attempts = 0;
+		t.mock.method(native, "appendCustomEntry", (...args: Parameters<typeof append>) => {
+			if (args[0] === FOOTER_ENTRY) {
+				attempts++;
+				state.publishFooter();
+				if (attempts > 1) assert.equal(primary.saveFailed, true, "reentrant check cannot clear the retained failure");
+				if (fail) throw new Error("footer append unavailable");
+			}
+			return append(...args);
+		});
+		primary.footer.saved.spend.cost = 1;
+		state.publishFooter();
+		assert.equal(attempts, 1); assert.ok(owner.restartState().unsaved.includes(id));
+		state.associationFailures.set(id, new Error("association unavailable"));
+		state.publishFooter();
+		assert.equal(attempts, 1); assert.equal(primary.saveFailed, true);
+		state.associationFailures.delete(id);
+		state.publishFooter();
+		assert.equal(attempts, 2); assert.ok(owner.restartState().unsaved.includes(id));
+		fail = false; state.publishFooter();
+		assert.equal(attempts, 3); assert.equal(primary.saveFailed, false);
+		assert.deepEqual(owner.restartState().unsaved, []);
+		const checkpoint = SessionManager.open(file).getEntries().findLast((entry) => entry.type === "custom" && entry.customType === FOOTER_ENTRY);
+		assert.ok(checkpoint?.type === "custom"); assert.deepEqual(checkpoint.data, primary.footer.saved);
+		assert.ok(JSON.stringify(SessionManager.open(file).buildSessionContext().messages).includes("SAVED_PARENT_CONTEXT"));
+		assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
+});
+
+test("restart clears a retained footer save failure when the checkpoint already matches", { timeout: 30_000 }, async (t) => {
+	const f = await fixture();
+	try {
+		await f.runtime.session.prompt("SAVED_PARENT_CONTEXT");
+		const owner = f.owner(), native = f.runtime.session.sessionManager; assert.ok(owner);
+		const state = owner as unknown as { publishFooter(): void; primary: Map<string, { saveFailed?: boolean }> };
+		const id = native.getSessionId(), primary = state.primary.get(id); assert.ok(primary);
+		const append = t.mock.method(native, "appendCustomEntry");
+		primary.saveFailed = true;
+		assert.ok(owner.restartState().unsaved.includes(id));
+		state.publishFooter();
+		assert.equal(append.mock.callCount(), 0); assert.equal(primary.saveFailed, false);
+		assert.deepEqual(owner.restartState().unsaved, []);
+		assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
+});
+
+test("restart retains uncertain native history after a leaf-advancing footer failure across reload", { timeout: 30_000 }, async (t) => {
+	const f = await fixture();
+	try {
+		await f.runtime.session.prompt("SAVED_PARENT_CONTEXT");
+		const owner = f.owner(), native = f.runtime.session.sessionManager, file = native.getSessionFile(); assert.ok(owner); assert.ok(file);
+		const state = owner as unknown as { publishFooter(): void; primary: Map<string, { footer: { saved: FooterCheckpoint } }> };
+		const id = native.getSessionId(), primary = state.primary.get(id); assert.ok(primary);
+		const saved = SessionManager.open(file).getEntries(), leaf = native.getLeafId(), persist = native._persist.bind(native);
+		let attempts = 0, failedId = "";
+		const fault = t.mock.method(native, "_persist", (entry: Parameters<typeof persist>[0]) => {
+			if (entry.type === "custom" && entry.customType === FOOTER_ENTRY) {
+				attempts++; failedId = entry.id; throw new Error("post-mutation footer persistence failure");
+			}
+			persist(entry);
+		});
+		primary.footer.saved.spend.cost = 1;
+		state.publishFooter();
+		assert.equal(attempts, 1); assert.equal(native.getLeafId(), failedId); assert.notEqual(failedId, leaf);
+		assert.equal(SessionManager.open(file).getEntry(failedId), undefined);
+		assert.equal(owner.hasUncertainFooterHistory(id), true); assert.ok(owner.restartState().unsaved.includes(id));
+		fault.mock.restore();
+		state.publishFooter();
+		await f.runtime.session.reload();
+		assert.equal(f.owner(), owner); assert.equal(owner.hasUncertainFooterHistory(id), true);
+		assert.ok(owner.restartState().unsaved.includes(id));
+		state.publishFooter();
+		assert.deepEqual(SessionManager.open(file).getEntries(), saved, "footer retries never append through the uncertain leaf");
+		assert.ok(JSON.stringify(SessionManager.open(file).buildSessionContext().messages).includes("SAVED_PARENT_CONTEXT"));
+		assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
 });
 
 for (const target of ["primary", "worker"] as const) test(`native ${target} tool-result continuation exposes the unrepaired history boundary`, { timeout: 30_000 }, async (t) => {

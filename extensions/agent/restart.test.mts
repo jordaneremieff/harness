@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { armRestart, createRestartCommand, type RestartHosts, type RestartProcess } from "./restart.ts";
 
 function fixture() {
@@ -85,8 +86,9 @@ for (const [name, change] of [
 	["session identity", (f: Fixture) => { f.state.sessionId = "different"; }],
 	["session file", (f: Fixture) => { f.state.session = f.cli; }],
 	["session directory", (f: Fixture) => { f.state.sessionDir = join(f.root, "other"); }],
-	["session leaf", (f: Fixture) => { f.state.leaf = "new-tip"; }],
-	["file contents", (f: Fixture) => { writeFileSync(f.session, "different saved contents"); }],
+	["session file replacement", (f: Fixture) => { const replacement = join(f.root, "replacement.jsonl"); writeFileSync(replacement, "replacement"); renameSync(replacement, f.session); }],
+	["current directory", (f: Fixture) => { f.ctx.cwd = join(f.root, "other"); }],
+	["launch arguments", (f: Fixture) => { f.host.execArgv = ["--title=different"]; }],
 	["agent host identities", (f: Fixture) => { f.state.hosts.identity = "another child"; }],
 	["active primary", (f: Fixture) => { f.state.idle = false; }],
 	["queued primary", (f: Fixture) => { f.state.queued = true; }],
@@ -99,6 +101,29 @@ for (const [name, change] of [
 		await f.command.handler("", f.ctx);
 		assert.deepEqual(f.calls, ["confirm"]); assert.equal(f.events.listenerCount("exit"), 0); assert.equal(f.guard.pending, false);
 		assert.match(f.notices[0], /^Restart refused\./u);
+	} finally { f.close(); }
+});
+
+test("restart permits a saved custom entry appended during confirmation", async () => {
+	const f = fixture();
+	try {
+		const native = SessionManager.create(f.root, f.root);
+		native.appendMessage(fauxAssistantMessage("saved conversation"));
+		f.ctx.sessionManager = native;
+		const file = native.getSessionFile(); assert.ok(file);
+		const before = statSync(file), leaf = native.getLeafId();
+		let entryId = "";
+		f.ctx.ui.confirm = async () => {
+			f.calls.push("confirm");
+			entryId = native.appendCustomEntry("fixture.checkpoint", { saved: true });
+			return true;
+		};
+		await f.command.handler("", f.ctx);
+		assert.notEqual(native.getLeafId(), leaf); assert.ok(statSync(file).size > before.size);
+		assert.equal(statSync(file).ino, before.ino);
+		assert.deepEqual(f.calls, ["confirm", "shutdown"]); assert.deepEqual(f.notices, []);
+		assert.equal(f.events.listenerCount("exit"), 1);
+		assert.deepEqual(SessionManager.open(file).getEntry(entryId), native.getEntry(entryId));
 	} finally { f.close(); }
 });
 

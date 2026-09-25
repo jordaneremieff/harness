@@ -17,7 +17,7 @@ interface ManagerState {
 	creations: Set<unknown>;
 	associationFailures: Map<string, Error>;
 	associationChanges: Map<string, unknown[]>;
-	primary: Map<string, { pending: Map<string, unknown>; saveFailed?: boolean }>;
+	primary: Map<string, { pending: Map<string, unknown>; saveFailed?: boolean; historyUncertain?: boolean }>;
 	closing: boolean;
 }
 function state(manager: AgentManager): ManagerState { return manager as unknown as ManagerState; }
@@ -89,6 +89,7 @@ for (const [name, mutate] of [
 	["live-only result", (s: ManagerState) => { const w = worker(); fields(w).unsavedResult = { text: "private result" }; s.sessions.set("child", w); }],
 	["pending delivery", (s: ManagerState) => { s.primary.set("child", { pending: new Map([["result", {}]]) }); }],
 	["failed footer save", (s: ManagerState) => { s.primary.set("child", { pending: new Map(), saveFailed: true }); }],
+	["uncertain footer history", (s: ManagerState) => { s.primary.set("child", { pending: new Map(), saveFailed: false, historyUncertain: true }); }],
 ] as const) test(`restart refuses unsaved agent ${name}`, async () => {
 	const f = await fixture();
 	try {
