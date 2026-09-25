@@ -1,11 +1,16 @@
 # evo: autonomous harness improvement
 
-`/evo` asks the active session to coordinate a materially valuable harness
-improvement through accepted delivery. It selects work from evidence, gives
-coherent implementation tasks to full Pi agent sessions, reviews their actual
-results, returns corrections to the same owners, and completes authorized
-release steps. It does not stop at a plan or a token fix when material authorized
-work remains.
+`/evo` asks the active session to imagine, develop, and deliver useful harness
+capabilities. It starts from what the operator could accomplish, not only what
+is broken. Addition, enhancement, refinement, repair, and removal are legitimate
+contributions even when the current system meets every existing contract.
+
+The coordinator develops possibilities into concrete outcomes, selects the
+strongest worthwhile authorized contribution, and gives coherent implementation
+tasks to full Pi agent sessions. It reviews their actual results, integrates
+useful discoveries, returns corrections to the same owners, and completes
+authorized release steps. An idea list, assessment, or plan is not completion
+while worthwhile authorized work remains.
 
 The extension owns deterministic invocation and hint framing. The ordinary
 agent owns judgment, coordination, and acceptance. The package-level
@@ -20,9 +25,10 @@ access. Evo adds no scheduler, worker store, model loop, or fixed model roster.
 /evo <hint>
 ```
 
-Bare `/evo` infers the outcome from current and recent session evidence, operator
-corrections, repository state, public evidence surfaces, and current upstream
-capabilities. It requires no prior record or populated store. The active agent
+Bare `/evo` chooses a useful direction without an operator-supplied topic. It uses
+operator purposes, current capabilities, workflows, session evidence, and public
+host capabilities as material for ideas. It requires no defect, incident history,
+prior proof of value, or populated store to begin exploration. The active agent
 loads the harness skill and repository instructions before governed work.
 
 The complete trailing input is an optional exploration hint. A word, question,
@@ -45,23 +51,35 @@ data. This framing is not a sandbox or a proof of model compliance.
 
 ## Outcome and ownership
 
-The coordinator starts from a concrete operator outcome that the current harness
-could serve better. It bounds discovery to a relevant current workflow, forms a
-plausible candidate, and inspects the defining sources and current path. If a fact
-decides whether to act, it performs an obtainable, proportionate check rather
-than treating sparse history as evidence against improvement. A shipped candidate
-rejects only that candidate. Before no-change, the coordinator investigates beyond
-delivered work when accessible evidence offers a current unmet outcome.
+The coordinator explores what the harness could make possible, easier, clearer,
+or more effective. It combines and extends what works and explores new uses.
+A promising possibility supplies a reason to explore, not proof of value. A
+healthy current system and passing tests do not close the opportunity space.
 
-The coordinator classifies changes before applying the harness skill's warrant
-rules. Fixed repairs and ordinary maintenance need no new-infrastructure warrant
-or recurring historical incidents. Agent-proposed infrastructure retains its
-grounded warrant and required approval. Recurrence informs priority, not maintenance eligibility.
-The coordinator ranks supported candidates by operator value, reach, evidence
-strength, and cost. It selects a coherent objective with acceptance evidence and
-an end condition, not an arbitrary one-context or one-worktree limit. It stops
-discovery when a material supported outcome is ready, then bounds implementation
-and review to that outcome instead of expanding into an infinite audit.
+Promising ideas take concrete form as use cases, sketches, examples, drafts, or
+bounded experiments within current authority. The coordinator works through how
+the operator would use a capability and what changes from the current approach.
+Results, surprises, and other participants' contributions refine, combine,
+redirect, or end an approach. Exploration produces evidence for selection; it
+does not wait for proof that an existing contract failed.
+
+Selection compares expected operator value, reach, cost, risk, and uncertainty.
+Factual claims require defining sources, and decision-changing gaps receive
+proportionate checks. The coordinator selects the strongest worthwhile authorized
+contribution, states its objective, scope, acceptance, and end condition, then
+executes. It does not prefer a trivial repair merely because its evidence is
+easier. Shipped work supplies material to build on or a reason not to repeat a
+candidate, not a reason to end evolution.
+
+The harness skill owns classification, warrant, and approval. Creative exploration
+is distinct from infrastructure adoption. Existing-surface improvements are not
+automatically infrastructure, but a new persistent or recurring mechanism retains
+its warrant even inside an existing surface. Fixed repairs, ordinary maintenance,
+removals, and operator-selected outcomes or architectures retain the skill's
+exemptions. A correctly classified agent-proposed skill needs a usefulness
+rationale, not an incident or omission. New enumerated surfaces still require
+explicit approval before any write; an unapproved surface's proposal belongs in
+chat, not an implementation disguised as an experiment.
 
 Implementation uses full ordinary Pi agent sessions discovered through current
 public registrations. Missing execution capability is an explicit blocker,
@@ -70,8 +88,10 @@ Independent research and review helpers remain auxiliary. Distinct tasks
 normally get fresh execution sessions; corrections and compaction remain with
 the same owner while its task is open.
 
-Task contracts carry objectives, source pointers, authority, constraints,
-expected evidence, acceptance, end conditions, and integration ownership.
+Task contracts carry purpose, expected operator benefit, possibilities, source
+pointers, authority, constraints, expected evidence, acceptance, end conditions,
+and integration ownership. Execution owners retain room to develop the approach;
+the coordinator integrates their discoveries against the shared purpose.
 Concurrent edits have disjoint owners. One coordinator serializes shared
 synchronization and release. It reviews the real diff, defining sources, check
 results, and release state after execution settles, then verifies any repairs.
@@ -82,14 +102,19 @@ The final chat response integrates meaningful changes, checked evidence, local
 commits, actual releases, strongest rejected work, and genuine blockers. No
 operator-curated report or intermediate artifact is required. Existing continuity
 surfaces preserve governing context and live-session ownership when needed.
-No-change requires bounded current discovery, defeated plausible candidates, and
-no remaining concrete decision-changing lead in the inspected scope. The result
-names that scope, the strongest rejected candidates, and the defining facts that
-defeat them, not a claim that the whole harness has no useful work. A blocked
-result instead names the exact unavailable fact, capability, or authority and
-affected act. A boundary that prevents discovery does not require invented
-candidates; a candidate-specific boundary does not end independent authorized
-work. Neither a change quota nor exhaustive discovery is required. Task size
+No-change follows bounded creative exploration that yields no worthwhile
+contribution and no concrete lead worth further development in that scope. The
+result names the possibilities considered, their development or checks, and the
+reasons against change. If no plausible idea emerged, it explains the scope and
+reasoning without inventing one. Passing tests, sparse history, or rejected
+repairs alone do not justify no-change; the coordinator also assesses
+value-creation opportunities.
+
+A worthwhile contribution blocked by a fact, capability, or authority remains
+blocked, not worthless. The result names the exact boundary and affected act.
+A boundary that prevents exploration requires no fabricated candidates; a
+candidate-specific boundary does not end independent authorized work. Neither a
+change quota, novelty quota, nor exhaustive discovery is required. Task size
 alone is not a no-change reason.
 
 ## Authority
@@ -170,11 +195,11 @@ selected slices' dedicated worktrees.
 - `evo.test.mts` checks parser bounds, framing, authority, workflow instructions,
   mode-independent dispatch, and error behavior.
 - `evo.runtime.test.mts` loads the real extension into ordinary Pi sessions with a
-  controlled provider. It checks delivery of current candidate discovery,
-  maintenance versus infrastructure warrant rules, scoped no-change and blocker
-  distinctions, the bounded release grant and its restrictions, repeated requests,
-  preflight lifetime, active follow-up delivery,
-  retained outcome, and error routing without live credentials.
+  controlled provider. It checks delivery of healthy-system opportunity
+  exploration, concrete idea development, selection and execution, warrant and
+  approval distinctions, scoped no-change, the bounded release grant, repeated
+  requests, preflight lifetime, active follow-up delivery, retained outcome,
+  and error routing without live credentials.
 
 ```bash
 node --test extensions/evo/*.test.mts

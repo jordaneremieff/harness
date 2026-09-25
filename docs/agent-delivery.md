@@ -24,42 +24,73 @@ worker loop, a separate implementation backend, or direct local implementation
 and call it full-session delivery. Complete independent authorized work while
 reporting the precise unavailable layer.
 
-## Discover a current outcome
+## Develop possibilities into outcomes
 
-The invoking session owns selection, composition, acceptance, and the final
-operator result. Start from a concrete operator outcome that the current harness
-could serve better. Prior results and shipped contracts help reject duplicate
-work; they do not establish that every useful outcome is already delivered.
-Sparse history is not evidence against a current improvement.
+The invoking session owns the purpose, exploration, selection, composition,
+acceptance, and final operator result. Evo's purpose is to evolve what the
+operator can accomplish with the harness. Addition, enhancement, refinement,
+repair, and removal are legitimate contributions. Existing contracts and passing
+tests describe the current capability; they do not define the limits of useful
+work. A healthy system is a starting point for development, not a completion
+condition.
 
-Bound discovery to a relevant current workflow and the sources that define it.
-Use accessible operator needs, current instructions, code, tests, and public host
-capabilities to form a plausible candidate. Inspect its current path against the
-intended outcome. Separate a missing result from an unverified explanation of
-its cause. When an unresolved fact decides whether to act, perform an obtainable,
-proportionate check at that fact's defining layer. Do not demand recurring
-operator recordkeeping when a current check settles the bounded decision.
+Begin with possibilities for what the harness could make possible, easier,
+clearer, or more effective. Use operator purposes, current capabilities, ordinary
+workflows, session evidence, and public host capabilities as material. Combine
+or extend what works and explore new uses. A promising possibility supplies a
+reason to explore before there is proof of a defect or proof of value. State its
+intended benefit and distinguish conjecture from known facts. Sparse history does
+not close this space, and an invented defect does not justify an idea.
 
-Classify the proposed change before applying the harness skill's warrant rules.
-Fixed repairs and ordinary maintenance do not need a new-infrastructure warrant
-or recurring historical incidents. Agent-proposed infrastructure retains its
-grounded warrant and any required approval; reversibility alone supplies neither.
-Rank supported candidates by operator value, reach, evidence strength, and cost.
-Recurrence informs priority, not eligibility for ordinary maintenance.
+Give promising ideas enough form to learn from them: a use case, sketch, example,
+draft, or bounded experiment within current authority. Work through how the
+operator would use the capability and what would change from the current
+approach. Investigate the uncertainty that decides the next act. Let results,
+surprises, and other participants' contributions refine, combine, redirect, or
+end the approach. Bound this development by its purpose and decision value,
+not by an exhaustive audit, a fixed candidate count, or a demand for novelty.
 
-If a candidate is already delivered, reject that candidate without replaying it.
-Before no-change, investigate a current unmet outcome beyond delivered work when
-accessible evidence offers one. Follow concrete leads that could change the
-selection decision, not an exhaustive audit. Stop discovery when a supported,
-material outcome is ready for execution, or when the plausible candidates in the
-inspected scope are defeated and no concrete decision-changing lead remains
-there. No candidate count, mandatory change, or invented defect is required.
+Exploration produces evidence for selection rather than waiting for selection
+proof before it starts. Compare expected operator value, reach, cost, risk, and
+remaining uncertainty. Check factual claims at their defining layer and perform
+obtainable, proportionate checks that change the decision. Do not impose recurring
+operator recordkeeping or prefer a trivial repair merely because its evidence is
+easier. An already-delivered contribution is material to build on or a reason not
+to repeat that candidate, not a reason to stop evolution.
 
-For no-change, state the inspected scope, strongest rejected candidates, and the
-defining facts that defeat them. This is a scoped conclusion, not proof that the
-whole harness has no useful work. Distinguish blocked work: name the exact
-unavailable fact, capability, or authority and the affected act. A boundary that
-prevents discovery permits a blocked result without fabricated candidates. A
+The harness skill owns capability classification, warrant, and approval rules.
+Apply them to the proposed capability and mechanism, not to imagination itself.
+An existing-surface improvement is not automatically infrastructure. A new
+persistent or recurring mechanism retains its required warrant even inside an
+existing surface. Fixed repairs, ordinary maintenance, removals, and
+operator-selected outcomes or architectures retain the skill's exemptions. A
+correctly classified agent-proposed skill needs a usefulness rationale rather
+than an incident, measured omission, structural evidence, or binding requirement.
+Classification must describe the capability, not serve as an exemption tactic.
+New enumerated surfaces require explicit approval before any write. Sketches and
+experiments are not a way around that boundary: develop an unapproved surface's
+proposal in chat, not its implementation. A promising idea, reversibility, or a
+sufficient warrant does not grant authority.
+
+Select the strongest worthwhile authorized contribution, define its acceptance,
+and carry it into execution. An idea list, an assessment, and a plan are not
+completion while worthwhile authorized work remains. Stop exploration when it
+supports that decision, then focus implementation and review on the selected
+outcome.
+
+Before no-change, assess value-creation opportunities as well as known defects.
+Passing checks or rejected repairs alone do not complete that assessment. Return
+scoped no-change when bounded creative exploration yields no worthwhile
+contribution and no concrete lead merits further development in that scope.
+Name the possibilities considered, how they were developed or checked, and why
+they do not justify a change. If no plausible possibility emerged, describe the
+explored scope and reasoning without inventing one. Do not claim that the whole
+harness has no useful work.
+
+Distinguish no-change from blocked work. If a worthwhile contribution needs an
+unavailable fact, capability, or authority, name that exact boundary and the
+affected act; do not reclassify it as worthless. A boundary that prevents
+exploration permits a blocked result without fabricated candidates. A
 candidate-specific boundary does not end independent authorized work.
 
 ## Own a coherent effort
@@ -72,15 +103,17 @@ work.
 
 Each execution contract includes:
 
-- the objective and expected outcome;
+- the purpose, objective, and expected operator benefit;
 - source pointers, relevant instructions, verified facts, and remaining questions;
 - permitted edits and acts, explicit exclusions, and inherited-work attribution;
 - acceptance evidence, required checks, and a terminal end condition;
 - the owner of integration, dependencies on other units, and the result consumer.
 
-Distinguish operator decisions from provisional plans. Supply the reasoning and
-rejected alternatives needed to judge the result, not a frozen agent-authored
-implementation recipe. A normal self-contained terminal response is a valid
+Distinguish operator decisions from provisional plans. Supply the possibilities,
+reasoning, uncertainties, and rejected alternatives needed to judge the result,
+not a frozen agent-authored implementation recipe. Leave room for execution
+owners to develop the approach and return useful discoveries; the coordinator
+integrates them against the shared purpose and constraints. A normal self-contained terminal response is a valid
 full-session result; do not impose an auxiliary worker's submission protocol.
 
 Use a fresh execution session for each distinct task by default. Keep corrections,

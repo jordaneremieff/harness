@@ -182,16 +182,25 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
 			assert.equal(runtime.requests.length, 2);
 			const texts = userTexts(runtime.requests[1]);
 			assert.equal(texts.length, 2);
-			assert.match(texts[0], /Coordinate one bounded autonomous harness improvement effort/);
+			assert.match(texts[0], /Evolve the harness by imagining, developing, and delivering useful capabilities/);
 			for (const text of texts) {
 				// The controlled provider observes delivery, not autonomous candidate judgment.
-				assert.match(text, /Start from a concrete operator outcome/);
-				assert.match(text, /inspect the current path and perform a proportionate check/);
-				assert.match(text, /already-delivered candidate as rejection of that candidate only/);
-				assert.match(text, /Fixed repairs and ordinary maintenance do not need a new-infrastructure warrant/);
-				assert.match(text, /Agent-proposed infrastructure still needs its grounded warrant and any required approval/);
-				assert.match(text, /Return no-change after bounded discovery/);
-				assert.match(text, /no concrete decision-changing lead remains there/);
+				assert.match(text, /even when current contracts pass and nothing is broken/);
+				assert.match(text, /Give promising possibilities concrete form through a use case, sketch, example, draft/);
+				assert.match(text, /Use exploration to produce evidence for selection/);
+				assert.match(text, /Select the strongest worthwhile authorized contribution and carry it into execution/);
+				assert.match(text, /passing checks or rejected repairs do not complete that assessment/);
+				assert.match(text, /a new persistent or recurring mechanism still needs its required warrant/);
+				assert.match(text, /A correctly classified agent-proposed skill needs a usefulness rationale/);
+				assert.match(text, /New enumerated surfaces still require explicit approval before any write/);
+				assert.match(
+					text,
+					/Return scoped no-change when bounded creative exploration yields no worthwhile contribution/,
+				);
+				assert.match(
+					text,
+					/If no plausible possibility emerged, explain the explored scope and reasoning without inventing one/,
+				);
 				assert.match(text, /A boundary that prevents discovery permits a blocked result without invented candidates/);
 				assert.match(text, /a candidate-specific boundary does not end independent authorized work/);
 				assert.match(
