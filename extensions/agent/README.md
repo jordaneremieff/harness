@@ -89,7 +89,10 @@ source to read its complete error rather than a clipped list preview.
   selected configuration. It returns a run reader to a refreshed inventory.
   There is no poller.
 - **a** opens the native action menu. The dashboard closes its overlay before a
-  native dialog and restores the selected view afterward. The same command table,
+  native dialog and restores the selected view afterward. Each completed, cancelled,
+  or failed action refreshes both inventories while preserving the filter and
+  selected ID. A failed inventory read replaces stale rows with an unavailable
+  source and its error. Action text never supplies inventory state. The same command table,
   validator, and action closures serve slash input and dashboard actions. Only a
   correctly typed session or run argument receives a selected ID; directory and
   creation actions prompt for their own arguments. Interruptive actions require

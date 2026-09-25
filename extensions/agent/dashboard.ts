@@ -181,7 +181,7 @@ export class AgentDashboard implements Component {
 	private selected(): DashboardTarget | undefined {
 		const records = this.view().records;
 		const target = records.find((row) => idOf(row) === this.state.selected[this.state.tab]) ?? records[0];
-		this.state.selected[this.state.tab] = target ? idOf(target) : undefined;
+		if (this.state.snapshot?.[this.state.tab].error === undefined) this.state.selected[this.state.tab] = target ? idOf(target) : undefined;
 		return target;
 	}
 	async refresh(): Promise<void> {
@@ -451,6 +451,8 @@ async function interactiveDashboard(sources: AgentObservationSources, ctx: Exten
 			const result = await actions.run(request.target);
 			if (result !== undefined) state.reader = { title: "Action result", target: request.target, lines: [result], scroll: 0, parent, action: true };
 		} catch (error) { state.reader = { title: "Action refused", target: request.target, lines: [errorText(error)], scroll: 0, parent, action: true }; }
+		// Action text is a receipt, not inventory evidence, even when the action fails.
+		state.snapshot = await readAgentDashboard(sources);
 	}
 }
 
