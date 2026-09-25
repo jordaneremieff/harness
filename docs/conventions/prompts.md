@@ -41,17 +41,30 @@ of the corpus.
   advancing the task. Operator clarification informs that reconstruction;
   a later goal change does not replace the opening intent. Missing opening
   context produces an explicit evidence boundary, not an invented intent.
-- `/recap [work, topic, or session]` explains selected work in plain English:
-  its purpose, actual changes or lessons, practical consequence, and unfinished
-  or uncertain parts. Without a selection, it summarizes the latest substantive
-  task and related agent reports. It separates verified results from reports,
-  proposals, local changes, and completed releases. It uses visible evidence
-  first and public read-only history or session tools only for relevant gaps;
-  unavailable evidence stays explicit. It does not scan unrelated sessions or
-  private stores. The summary appears in chat, usually in 150–250 words or
-  fewer for simple work. It ends with a required decision or next step only
-  when one exists. It does not change files, copy to the clipboard, run tests,
-  start or resume agents, or continue the task.
+- `/recap [work, topic, or session; optional focus or comparison]` explains
+  selected work in plain English: its purpose, actual changes or lessons,
+  practical consequence, and unfinished or uncertain parts. Without a work
+  selection, it summarizes the latest substantive task and related agent
+  reports. A natural-language focus narrows the summary; a question or action
+  phrase never grants permission to do the work. An explicit comparison such
+  as `/recap export work since the last recap` names the earlier reference for
+  the same work and reports material changes in outcomes, evidence, blockers,
+  and decisions. It omits settled background, retains unchanged constraints
+  that affect the current state or next act, and distinguishes corrections to
+  earlier reports from actual work changes. A missing or ambiguous reference
+  produces an explicit limit and a useful current-state summary, not an invented
+  comparison or a required operator task to reconstruct the reference.
+  Missing later evidence does not establish an unchanged state.
+  It separates verified results from reports, proposals, local changes, and
+  completed releases. It uses visible evidence first and public read-only
+  history or session tools only for relevant gaps; unavailable evidence stays
+  explicit. It excludes unrelated work and does not scan unrelated sessions
+  or private stores. The summary appears in chat, usually in 150–250 words or
+  fewer for simple work, without a fixed section template. It ends with a
+  decision or next step only when source evidence establishes that the work
+  requires it; an unspecified detail alone creates no required decision.
+  It never invents an action or approval request. It does not change files,
+  copy to the clipboard, run tests, start or resume agents, or continue the task.
 - `/seed [hint]` puts a quick brief for another session on the operator's
   clipboard without advancing the task. The optional free-text hint selects
   the purpose and recipient: a continuation, a reset of a faulty frame, or

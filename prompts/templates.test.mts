@@ -52,7 +52,10 @@ it("the package discovers only maintained prompt commands without other resource
 		}
 		assert.equal(prompts.find((prompt) => prompt.name === "wtf")?.argumentHint, "[your account of the problem]");
 		assert.equal(prompts.find((prompt) => prompt.name === "seed")?.argumentHint, "[your hint for the brief]");
-		assert.equal(prompts.find((prompt) => prompt.name === "recap")?.argumentHint, "[work, topic, or session]");
+		assert.equal(
+			prompts.find((prompt) => prompt.name === "recap")?.argumentHint,
+			"[work, topic, or session; optional focus or comparison]",
+		);
 		assert.deepEqual(loader.getExtensions().extensions, []);
 		assert.deepEqual(loader.getExtensions().errors, []);
 		assert.deepEqual(loader.getSkills().skills, []);
@@ -91,7 +94,7 @@ it("an explicit candidate prompt load does not discover global or package copies
 	}
 });
 
-it("a recap candidate expands empty and selected work through Pi's argument substitution", async () => {
+it("a recap candidate expands selections, focus, and comparisons through Pi's argument substitution", async () => {
 	const root = await mkdtemp(join(tmpdir(), "recap-candidate-"));
 	try {
 		const loader = new DefaultResourceLoader({
@@ -116,8 +119,8 @@ it("a recap candidate expands empty and selected work through Pi's argument subs
 		assert.ok(recap);
 		assert.equal(recap.filePath, join(repositoryRoot, "prompts", "recap.md"));
 		assert.equal(recap.description, "Explain what the agents did and what it means in plain English");
-		assert.equal(recap.argumentHint, "[work, topic, or session]");
-		assert.ok(recap.content.includes("Selected work:\n$ARGUMENTS\n"));
+		assert.equal(recap.argumentHint, "[work, topic, or session; optional focus or comparison]");
+		assert.ok(recap.content.includes("Selected work and optional focus or comparison:\n$ARGUMENTS\n"));
 
 		const packageEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
 		const promptTemplatesUrl = pathToFileURL(join(dirname(packageEntry), "core", "prompt-templates.js"));
@@ -129,6 +132,10 @@ it("a recap candidate expands empty and selected work through Pi's argument subs
 			["/recap", ""],
 			["/recap export work", "export work"],
 			['/recap "export work" session-42', "export work session-42"],
+			["/recap export work since the last recap", "export work since the last recap"],
+			['/recap session-42 since "the parser decision"', "session-42 since the parser decision"],
+			["/recap search work: is it ready to use?", "search work: is it ready to use?"],
+			["/recap export work; publish it now", "export work; publish it now"],
 			['/recap "literal $1 and $ARGUMENTS"', "literal $1 and $ARGUMENTS"],
 		]) {
 			assert.equal(expandPromptTemplate(invocation, prompts), recap.content.replace("$ARGUMENTS", () => selection));

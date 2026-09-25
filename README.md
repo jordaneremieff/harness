@@ -35,8 +35,11 @@ boundaries, rather than a central feature catalog.
   commands, including `/seed [hint]`, which puts a quick brief for another session
   on the clipboard labeled `seed: <topic>`; its chat confirmation follows
   the clipboard tool's actual outcome, including the history archive result.
-  `/recap [work, topic, or session]` explains outcomes and practical consequences
-  in chat, keeps evidence and release limits visible, and does not continue the work.
+  `/recap` explains selected work and practical consequences in chat. A comparison
+  such as `/recap export work since the last recap` separates material changes
+  from corrections to earlier reports and keeps relevant unchanged constraints
+  visible. It states missing evidence, preserves release limits, and does not
+  continue the work.
 - [Worktrees](docs/conventions/worktrees.md) defines the development and
   publication workflow.
 - [Memory](skills/memory/SKILL.md) retrieves prior operator knowledge before
