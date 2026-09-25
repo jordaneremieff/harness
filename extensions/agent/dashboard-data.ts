@@ -43,6 +43,7 @@ export interface DashboardConversation {
 
 interface Capture extends DashboardConversation {
 	header: SessionHeader;
+	head: SessionEntry[];
 	all: SessionEntry[];
 	modifiedAt: number;
 }
@@ -59,6 +60,7 @@ interface Claim {
 }
 
 const HEADER_BYTES = 16 * 1024;
+const HEAD_BYTES = 1024 * 1024;
 const CLAIM_BYTES = 16 * 1024;
 const REPLY_CHARS = 32 * 1024;
 const TASK_CHARS = 4096;
@@ -167,9 +169,12 @@ function capture(path: string): Capture {
 			|| !nonempty(header.id) || !/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(header.id)
 			|| !text(header.cwd) || !isAbsolute(header.cwd) || !timestamp(header.timestamp)) throw new Error("Not a current native session header");
 		let content: string;
+		let headEntries: SessionEntry[] = [];
 		let partial = stat.size > MAX_CAPTURE_BYTES;
 		if (partial) {
-			const start = stat.size - (MAX_CAPTURE_BYTES - HEADER_BYTES) + 1;
+			const prefix = Buffer.concat([head, readBytes(fd, head.length, HEAD_BYTES - head.length)]);
+			headEntries = parseSessionEntries(prefix.toString("utf8", newline + 1, prefix.lastIndexOf(10) + 1)).filter(validEntry);
+			const start = stat.size - (MAX_CAPTURE_BYTES - HEAD_BYTES) + 1;
 			const tail = readBytes(fd, start - 1, stat.size - start + 1);
 			// The preceding byte decides whether the bounded tail starts at a full line.
 			const boundary = tail.indexOf(10);
@@ -186,7 +191,7 @@ function capture(path: string): Capture {
 		const branch = activeBranch(all);
 		if (revision(fstatSync(fd)) !== revision(stat)) partial = true;
 		return {
-			header: header as unknown as SessionHeader, all, entries: branch.entries,
+			header: header as unknown as SessionHeader, head: headEntries, all, entries: branch.entries,
 			partial: partial || branch.partial, revision: revision(stat), modifiedAt: stat.mtimeMs,
 		};
 	} finally { closeSync(fd); }
@@ -209,11 +214,12 @@ function digestCapture(path: string, captured: Capture): CachedDigest {
 		live: false, provenance: "stored", state: "new", cost: 0, partial: captured.partial,
 		latestReply: "", toolCalls: 0, durationMs: 0,
 	};
-	for (const entry of captured.all) {
+	for (const entry of [...captured.head, ...captured.all]) {
 		if (entry.type === "session_info") row.name = entry.name?.trim().slice(0, TASK_CHARS) || undefined;
 		addCost(row, entry);
 	}
 	const branch: BranchState = { row, thinkingLevel: "", explicitModel: false, meaningful: false, rooted: captured.entries[0]?.parentId === null, pending: new Map() };
+	seedIdentity(branch, captured.head);
 	for (const entry of captured.entries) observeEntry(branch, entry);
 	if (!branch.meaningful && captured.partial) row.state = "unavailable";
 	row.currentTool = branch.pending.values().next().value;
@@ -245,6 +251,17 @@ interface BranchState {
 	turnStart?: number;
 	turnEnd?: number;
 	pending: Map<string, { name: string; argument: string }>;
+}
+
+function seedIdentity(branch: BranchState, head: SessionEntry[]): void {
+	const entries = activeBranch(head).entries;
+	const rooted = entries[0]?.parentId === null;
+	for (const entry of entries) {
+		if (entry.type === "model_change" || entry.type === "thinking_level_change") observeEntry(branch, entry);
+		else if (entry.type === "message" && entry.message.role === "user" && rooted && !branch.rooted && branch.row.firstMessage === undefined) {
+			branch.row.firstMessage = contentText(entry.message.content).slice(0, TASK_CHARS);
+		}
+	}
 }
 
 function observeEntry(branch: BranchState, entry: SessionEntry): void {

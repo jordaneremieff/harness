@@ -201,10 +201,15 @@ reads. If Pi leaves that request unperformed for five seconds, the board pauses
 the clock and further reads, without closing or disabling the component. A later
 render or key resumes refresh. Slow reads do not expire a visible board. This
 pause does not close any other overlay. Observation never claims a writer,
-repairs a tail, opens a session for writing, or persists an index. File captures are bounded; oversized
-files use a header plus a bounded tail. Missing ancestry and capture limits
-remain partial, and `≥` marks incomplete spend. Spend includes retained native
-usage across branches; tool counts and latest output describe the current branch.
+repairs a tail, opens a session for writing, or persists an index. Oversized files
+split the bounded capture budget between a head window and a tail. Complete head
+entries preserve the name, original task, and model/thinking configuration when
+the tail lacks them; a task requires a captured branch root. Tail metadata takes
+precedence. Activity, latest replies, tools, and conversation entries come from
+the tail, without joining history across the gap. Missing ancestry and capture
+limits remain partial, and `≥` marks incomplete spend. Spend includes retained
+native usage from both windows across branches; tool counts and latest output
+describe the captured current branch.
 
 Local manager activity, detached records, and read-only writer claims supply
 ownership. A same-host live PID plus a pending transcript turn identifies work

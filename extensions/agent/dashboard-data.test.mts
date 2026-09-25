@@ -275,18 +275,61 @@ test("same-size rewrites, cleared names, and replacement identities refresh the 
 	await assert.rejects(f.data.conversation("s"), /not available/);
 });
 
-test("oversized sessions keep a bounded tail, partial totals, and no invented ancestry", async (t) => {
+test("oversized sessions retain bounded head identity and tail activity without joining conversation ancestry", async (t) => {
 	const f = fixture(t);
-	const path = f.put("s", [user(), assistant("old", "u", "Old answer", "stop", 5)]);
-	appendFileSync(path, `${JSON.stringify(entry("large", "old", { type: "custom", customType: "large", data: "x".repeat(MAX_CAPTURE_BYTES + 1000) }))}\n`);
+	const path = f.put("s", [
+		entry("m", null, { type: "model_change", provider: "configured", modelId: "chosen" }),
+		entry("h", "m", { type: "thinking_level_change", thinkingLevel: "high" }),
+		entry("n", "h", { type: "session_info", name: "Original name" }),
+		user("u", "n", "Original task"),
+		assistant("old", "u", "Old answer", "toolUse", 5, 1000, [toolCall("head-call")]),
+		entry("rename", "old", { type: "session_info", name: "Head name" }),
+	]);
+	appendFileSync(path, `${JSON.stringify(entry("large", "rename", { type: "custom", customType: "large", data: "x".repeat(MAX_CAPTURE_BYTES + 1000) }))}\n`);
 	appendFileSync(path, `${JSON.stringify(assistant("new", "large", "Retained answer", "stop", 2))}\n`);
 	const reads = watchReads(t);
-	const [row] = await f.data.read();
+	let [row] = await f.data.read();
 	assert.ok(reads.bytes <= MAX_CAPTURE_BYTES);
-	assert.equal(row.partial, true); assert.equal(row.cost, 2); assert.equal(row.latestReply, "Retained answer");
-	assert.equal(row.firstMessage, undefined); assert.equal(row.state, "done");
+	assert.equal(row.partial, true); assert.equal(row.cost, 7); assert.equal(row.latestReply, "Retained answer");
+	assert.equal(row.name, "Head name"); assert.equal(row.firstMessage, "Original task"); assert.equal(row.state, "done");
+	assert.deepEqual(row.model, { provider: "configured", modelId: "chosen", thinkingLevel: "high" });
+	assert.equal(row.currentTool, undefined); assert.equal(row.toolCalls, 0); assert.equal(row.durationMs, 0);
+	const cachedCalls = reads.calls;
+	await f.data.read(); assert.equal(reads.calls, cachedCalls);
+	const beforeConversation = reads.bytes;
 	const conversation = await f.data.conversation("s");
+	assert.ok(reads.bytes - beforeConversation <= MAX_CAPTURE_BYTES);
 	assert.deepEqual(conversation.entries.map((item) => item.id), ["new"]); assert.equal(conversation.partial, true);
+	appendFileSync(path, `${[
+		entry("tail-name", "new", { type: "session_info", name: "Tail name" }),
+		entry("tail-model", "tail-name", { type: "model_change", provider: "updated", modelId: "latest" }),
+		assistant("active", "tail-model", "Tail work", "toolUse", 3, 2000, [toolCall("tail-call", "bash", { command: "pwd" })]),
+	].map((item) => JSON.stringify(item)).join("\n")}\n`);
+	const beforeUpdate = reads.bytes;
+	[row] = await f.data.read();
+	assert.ok(reads.bytes - beforeUpdate <= MAX_CAPTURE_BYTES);
+	assert.equal(row.name, "Tail name"); assert.equal(row.firstMessage, "Original task");
+	assert.deepEqual(row.model, { provider: "updated", modelId: "latest", thinkingLevel: "high" });
+	assert.equal(row.state, "interrupted"); assert.equal(row.latestReply, "Tail work");
+	assert.deepEqual(row.currentTool, { name: "bash", argument: "pwd" }); assert.equal(row.toolCalls, 1);
+	assert.equal(row.partial, true); assert.equal(row.cost, 10);
+	appendFileSync(path, `${JSON.stringify(entry("tail-thinking", "active", { type: "thinking_level_change", thinkingLevel: "low" }))}\n`);
+	assert.equal((await f.data.read())[0].model?.thinkingLevel, "low");
+	appendFileSync(path, `${JSON.stringify(entry("clear-name", "tail-thinking", { type: "session_info", name: "" }))}\n`);
+	assert.equal((await f.data.read())[0].name, undefined);
+});
+
+test("bounded head tasks require a branch root and never override a separate root in the tail", async (t) => {
+	const f = fixture(t);
+	for (const id of ["missing", "separate"]) {
+		const path = f.put(id, [user("u", id === "missing" ? "absent" : null, "Head task")]);
+		appendFileSync(path, `${JSON.stringify(entry("large", "u", { type: "custom", customType: "large", data: "x".repeat(MAX_CAPTURE_BYTES + 1000) }))}\n`);
+		if (id === "separate") appendFileSync(path, `${JSON.stringify(user("new-root", null, "Separate task"))}\n`);
+		appendFileSync(path, `${JSON.stringify(assistant("new", id === "separate" ? "new-root" : "large"))}\n`);
+	}
+	const rows = await f.data.read();
+	assert.equal(rows.find((row) => row.sessionId === "missing")?.firstMessage, undefined);
+	assert.equal(rows.find((row) => row.sessionId === "separate")?.firstMessage, "Separate task");
 });
 
 test("malformed JSON, truncated tails, invalid entries, and invalid usage remain partial and untouched", async (t) => {
