@@ -23,7 +23,7 @@ async function fixture() {
 	const key = `reload${randomUUID()}`;
 	const release = deferred();
 	const events: Event[] = [], listeners = new Set<() => void>();
-	const state = { omit: false, response: undefined as string | undefined, request: undefined as { sessionId: string; name: string; args: Record<string, unknown> } | undefined, release: release.promise, event: (event: Event) => { events.push(event); for (const listener of listeners) listener(); } };
+	const state = { omit: false, stopOnStart: false, response: undefined as string | undefined, request: undefined as { sessionId: string; name: string; args: Record<string, unknown> } | undefined, release: release.promise, event: (event: Event) => { events.push(event); for (const listener of listeners) listener(); } };
 	const globals = globalThis as unknown as Record<string, unknown>;
 	globals[key] = state;
 	const provider = join(root, "provider.mjs"), entry = join(root, "agent-entry.mjs");
@@ -35,9 +35,11 @@ async function fixture() {
 		export default pi => {
 			const state=globalThis[${JSON.stringify(key)}],version=${version}; let ctx,open=true,calls=0;
 			const event=(type,extra={})=>state.event({type,sessionId:ctx.sessionManager.getSessionId(),cwd:ctx.cwd,version,...extra});
-			pi.on("session_start",(_event,current)=>{ctx=current;event("start");});
+			pi.on("session_start",(_event,current)=>{ctx=current;event("start");if(state.stopOnStart && ctx.cwd===${JSON.stringify(child)}) ctx.shutdown();});
 			pi.on("session_shutdown",()=>{open=false;state.event({type:"shutdown",version});});
 			pi.registerCommand("replace", {handler:(_args,ctx)=>ctx.newSession()});
+			pi.registerCommand("replace-fail", {handler:(_args,ctx)=>ctx.newSession({setup:()=>{throw new Error("replacement setup failed");}})});
+			pi.registerCommand("stop-host", {handler:(_args,ctx)=>ctx.shutdown()});
 			pi.registerTool({name:"hold",label:"Hold",description:"Controlled hold",parameters:Type.Object({}),async execute(_id,_args,signal){
 				event("tool"); await new Promise((resolve,reject)=>{const abort=()=>{event("abort");reject(new Error("aborted"));};
 					if(signal?.aborted) return abort(); signal?.addEventListener("abort",abort,{once:true});
@@ -117,6 +119,142 @@ async function fixture() {
 		},
 	};
 }
+
+for (const failure of ["teardown", "setup"] as const) test(`failed replacement ${failure} retires the host before stored observation and fresh control`, { timeout: 30_000 }, async (t) => {
+	const f = await fixture();
+	try {
+		const originalId = await f.spawn(), worker = f.worker(originalId), outgoing = f.childSession(originalId);
+		await outgoing.prompt("SAVED_WORK"); await worker.waitForIdle();
+		const modelCalls = () => f.events.filter((event) => event.type === "model" && event.cwd === f.child).length;
+		const calls = modelCalls();
+		if (failure === "teardown") {
+			const dispose = outgoing.dispose.bind(outgoing); let attempts = 0;
+			t.mock.method(outgoing, "dispose", () => { if (++attempts === 1) throw new Error("replacement teardown failed"); dispose(); });
+		}
+		await assert.rejects(f.tool("agent_command", { sessionId: originalId, name: failure === "teardown" ? "replace" : "replace-fail" }), new RegExp(`replacement ${failure} failed`, "u"));
+		const id = worker.sessionId();
+		assert.equal(id === originalId, failure === "teardown");
+		assert.equal(f.claims().length, 0);
+		assert.match(await f.tool("agent_status", { sessionId: id }), /read-only capture/u);
+		const inspection = JSON.parse(await f.tool("agent_inspect", { sessionId: id }));
+		assert.equal(inspection.liveOwner, false); assert.equal(inspection.capture.available, true);
+		assert.equal(inspection.execution.current, null);
+		const manager = f.owner() as unknown as { sessions: Map<string, AgentWorkerSession>; associationParents: Map<string, unknown>; retiredFooterStates: unknown[] };
+		const owners = (globalThis as unknown as { [key: symbol]: { workers: Set<string> } })[Symbol.for("pi.extension.agent.owners")];
+		for (const retiredId of [originalId, id]) {
+			assert.equal(manager.sessions.has(retiredId), false);
+			assert.equal(manager.associationParents.has(retiredId), false);
+			assert.equal(owners.workers.has(retiredId), false);
+		}
+		assert.equal(manager.retiredFooterStates.length, 1);
+		assert.equal(f.statuses.at(-1), "agents 0 · $0.25");
+		const foreign = new AgentStore({ sessionsRoot: f.store });
+		try {
+			const metadata = foreign.locate(id); assert.ok(metadata); await foreign.open(metadata);
+			await assert.rejects(f.tool("agent_attach", { sessionId: id }), /exclusive writer claim/u);
+			assert.equal((await f.inspect(id)).liveOwner, false); assert.equal(f.claims().length, 1);
+		} finally { await foreign.close(); }
+		assert.match(await f.tool("agent_attach", { sessionId: id }), /attached/u);
+		const reopened = f.worker(id); assert.notEqual(reopened, worker);
+		assert.equal(modelCalls(), calls, "attach never replays work");
+		assert.equal(f.claims().length, 1); assert.equal(owners.workers.has(id), true);
+		assert.equal(f.statuses.at(-1), "agents 0 · $0.25");
+		await f.tool("agent_send", { sessionId: id, message: "EXPLICIT_CONTINUE" }); await reopened.waitForIdle();
+		assert.equal(modelCalls(), calls + 1);
+		await reopened.close(); await reopened.close();
+		assert.equal(manager.retiredFooterStates.length, 2);
+		assert.equal(f.statuses.at(-1), "agents 0 · $0.50");
+		assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
+});
+
+for (const failure of ["stopping", "dispose", "claim-release", "replacement-claim-release"] as const) test(`${failure} refuses observations and controls without work or claim removal`, { timeout: 30_000 }, async (t) => {
+	const f = await fixture(), release = deferred(), entered = deferred();
+	let pending: Promise<void> | undefined;
+	let restore: (() => void) | undefined;
+	try {
+		const id = await f.spawn(), worker = f.worker(id), outgoing = f.childSession(id);
+		const manager = f.owner() as unknown as { sessions: Map<string, AgentWorkerSession>; associationParents: Map<string, unknown>; retiredFooterStates: unknown[]; detachedRuns: { start(): Promise<never> } };
+		const launch = t.mock.method(manager.detachedRuns, "start", async () => { throw new Error("unexpected detached launch"); });
+		if (failure === "stopping") {
+			const abort = outgoing.abort.bind(outgoing);
+			const mocked = t.mock.method(outgoing, "abort", async () => { entered.resolve(); await release.promise; await abort(); });
+			restore = () => mocked.mock.restore(); pending = worker.close(); await entered.promise;
+		} else {
+			const held = (worker as unknown as { held: { close(): Promise<void> } }).held;
+			const mocked = failure === "dispose"
+				? t.mock.method(outgoing, "dispose", () => { throw new Error("native disposal failed"); })
+				: t.mock.method(held, "close", async () => { throw new Error("claim release failed"); });
+			restore = () => mocked.mock.restore();
+			await assert.rejects(failure === "replacement-claim-release" ? f.tool("agent_command", { sessionId: id, name: "replace" }) : worker.close(), /cleanup/u);
+		}
+		const state = failure === "stopping" ? "stopping" : "cleanup-incomplete";
+		const claims = f.claims(), entries = outgoing.sessionManager.getEntries(), starts = f.events.filter((event) => event.type === "start").length;
+		assert.equal(claims.length, 1);
+		const refused = (error: unknown) => {
+			assert.ok(error instanceof Error); assert.ok(error.message.includes(id));
+			assert.ok(error.message.includes(`state: ${state}`)); assert.match(error.message, /requested operation did not run/u);
+			if (state === "cleanup-incomplete") { assert.match(error.message, /Writer claims remain retained/u); assert.doesNotMatch(error.message, /Use agent_attach|manual removal/u); }
+			return true;
+		};
+		const calls: Array<[string, Record<string, unknown>]> = [
+			["agent_status", {}], ["agent_inspect", {}], ["agent_send", { message: "REFUSED" }], ["agent_steer", { message: "REFUSED" }],
+			["agent_attach", {}], ["agent_attach", { model: "reload-local/controlled" }], ["agent_detach", { prompt: "REFUSED" }],
+			["agent_command", { name: "replace" }], ["agent_abort", {}], ["agent_compact", {}], ["agent_fork", {}],
+			["agent_rewind", { entryId: "unused", correction: "REFUSED" }],
+		];
+		for (const [name, params] of calls) await assert.rejects(f.tool(name, { sessionId: id, ...params }), refused, name);
+		await assert.rejects(worker.start("REFUSED"), refused);
+		assert.equal(launch.mock.callCount(), 0); assert.deepEqual(outgoing.sessionManager.getEntries(), entries);
+		assert.equal(f.events.filter((event) => event.type === "model").length, 0);
+		assert.equal(f.events.filter((event) => event.type === "start").length, starts);
+		assert.deepEqual(f.claims(), claims); assert.equal(manager.sessions.get(id), worker);
+		assert.equal(manager.associationParents.has(id), true); assert.equal(manager.retiredFooterStates.length, 0);
+		const owners = (globalThis as unknown as { [key: symbol]: { workers: Set<string> } })[Symbol.for("pi.extension.agent.owners")];
+		assert.equal(owners.workers.has(id), true);
+		restore(); release.resolve(); await pending; await worker.close();
+		assert.equal(f.claims().length, 0); assert.equal(manager.sessions.has(id), false);
+		assert.equal(manager.associationParents.has(id), false); assert.equal(owners.workers.has(id), false);
+		assert.equal(manager.retiredFooterStates.length, 1);
+		assert.match(await f.tool("agent_status", { sessionId: id }), /read-only capture/u);
+		assert.deepEqual(f.errors, []);
+	} finally { restore?.(); release.resolve(); await pending; await f.close(); }
+});
+
+test("self shutdown retires a held host and startup shutdown never admits it", { timeout: 30_000 }, async () => {
+	const f = await fixture();
+	try {
+		const id = await f.spawn(), worker = f.worker(id);
+		await f.tool("agent_command", { sessionId: id, name: "stop-host" }); await worker.close();
+		assert.equal((await f.inspect(id)).liveOwner, false); assert.equal(f.claims().length, 0);
+		f.state.stopOnStart = true;
+		await assert.rejects(f.spawn(), /closed during startup/u);
+		const manager = f.owner() as unknown as { sessions: Map<string, AgentWorkerSession>; associationParents: Map<string, unknown>; retiredFooterStates: unknown[] };
+		const owners = (globalThis as unknown as { [key: symbol]: { workers: Set<string> } })[Symbol.for("pi.extension.agent.owners")];
+		for (const event of f.events.filter((event) => event.type === "start" && event.cwd === f.child)) {
+			assert.equal(manager.sessions.has(event.sessionId), false);
+			assert.equal(manager.associationParents.has(event.sessionId), false); assert.equal(owners.workers.has(event.sessionId), false);
+		}
+		assert.equal(manager.retiredFooterStates.length, 1); assert.equal(f.claims().length, 0);
+		assert.equal(f.events.filter((event) => event.type === "model").length, 0);
+		assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
+});
+
+test("a close error retires the host when native cleanup and claim release still succeed", { timeout: 30_000 }, async (t) => {
+	const f = await fixture();
+	try {
+		const id = await f.spawn(), worker = f.worker(id);
+		const runtime = (worker as unknown as { runtime: AgentSessionRuntime }).runtime;
+		t.mock.method(runtime, "dispose", async () => { throw new Error("shutdown failed"); });
+		await assert.rejects(worker.close(), /cleanup failed/u);
+		assert.equal(f.claims().length, 0); assert.equal((await f.inspect(id)).liveOwner, false);
+		assert.match(await f.tool("agent_status", { sessionId: id }), /read-only capture/u);
+		await f.tool("agent_attach", { sessionId: id }); assert.notEqual(f.worker(id), worker);
+		await worker.close(); assert.equal(f.claims().length, 1, "repeat close never retires the fresh host");
+		assert.equal((await f.inspect(id)).liveOwner, true); assert.deepEqual(f.errors, []);
+	} finally { await f.close(); }
+});
 
 test("native parent reload retains active execution, native queues, claims, costs, and child resources", { timeout: 30_000 }, async () => {
 	const f = await fixture();

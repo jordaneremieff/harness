@@ -266,6 +266,7 @@ export class AgentWorkerSession {
 	private startup: Promise<void> | undefined;
 	private lastError: string | undefined;
 	private terminal = false;
+	private cleanupFailed = false;
 	private replacementFailed = false;
 	private invalidated = false;
 	private lastChoice: WorkerModelChoice | undefined;
@@ -283,8 +284,19 @@ export class AgentWorkerSession {
 	}
 	private publishFooter(): void { this.spend.sync(); this.notify({ kind: "status" }); }
 	private constructor(options: WorkerCreateOptions) { this.options = options; }
+	/** Terminal means native cleanup and every held writer release completed. */
+	isTerminal(): boolean { return this.terminal; }
+	assertAvailable(): void {
+		const state = this.terminal ? "terminal" : this.cleanupFailed ? "cleanup-incomplete" : this.stopping ? "stopping" : this.replacementFailed ? "replacement-failed" : undefined;
+		if (!state) return;
+		const recovery = this.terminal
+			? "Use agent_attach to open a fresh host from the stored session; no task is replayed."
+			: this.cleanupFailed ? "Writer claims remain retained; no new host was opened."
+			: "Wait for host cleanup to finish before retrying.";
+		throw new Error(`agent session ${this.sessionId()} host is closed (state: ${state}). The requested operation did not run. ${recovery}`);
+	}
 	private get session(): AgentSession {
-		if (this.terminal || this.replacementFailed || this.stopping) throw new Error("agent session host is closed");
+		this.assertAvailable();
 		return this.runtime.session;
 	}
 	private get agentDir(): string { return this.options.agentDir ?? process.env.PI_AGENT_DIR ?? getAgentDir(); }
@@ -333,11 +345,12 @@ export class AgentWorkerSession {
 		if (this.runtime) await this.drainNative(this.runtime.session);
 		const previous = this.held;
 		if (previous.manager !== sessionManager) {
-			this.held = this.reserved
+			this.reserved = this.reserved
 				? this.options.store.rebind(this.reserved, sessionManager)
 				: this.options.store.adopt(sessionManager);
-			this.reserved = undefined;
 			await previous.close();
+			this.held = this.reserved;
+			this.reserved = undefined;
 			this.options.onSessionClosed?.(previous.metadata.id);
 			this.options.onSessionReplaced?.(previous.metadata.id, this.sessionId());
 			this.notify({ kind: "replaced", previousId: previous.metadata.id, sessionId: this.sessionId() });
@@ -508,7 +521,7 @@ export class AgentWorkerSession {
 			// Native replacement has no rollback after teardown or failed rebind.
 			this.replacementFailed = this.invalidated;
 			if (this.replacementFailed) {
-				try { await this.disposeHost(); } catch (cleanup) { throw new AggregateError([error, cleanup], "replacement and cleanup failed"); }
+				try { await this.disposeHost(); } catch (cleanup) { this.cleanupFailed = !this.terminal; throw new AggregateError([error, cleanup], "replacement and cleanup failed"); }
 			}
 			throw error;
 		} finally {
@@ -573,6 +586,7 @@ export class AgentWorkerSession {
 		return task;
 	}
 	async start(prompt: string, images?: ImageContent[]): Promise<string | undefined> {
+		this.assertAvailable();
 		const command = /^\/(\S+)(?:\s+([\s\S]*))?$/u.exec(prompt);
 		if (command && this.session.extensionRunner.getCommand(command[1])) { await this.runCommand(command[1], command[2] ?? ""); return undefined; }
 		if (prompt.startsWith("!")) {
@@ -677,6 +691,7 @@ export class AgentWorkerSession {
 		return { sessionId: this.sessionId(), cwd: session.sessionManager.getCwd(), name: session.sessionManager.getSessionName(), tipId: session.sessionManager.getLeafId(), model: { provider: model.provider, modelId: model.id, thinkingLevel: session.thinkingLevel }, operation: this.operation ?? null, tools: session.getAllTools().map((tool) => tool.name), activeTools: session.getActiveToolNames(), extensions: session.resourceLoader.getExtensions().extensions.map((extension) => extension.path), entryCount: session.sessionManager.getEntries().length, ...(this.lastError ? { lastError: this.lastError.slice(0, 2000) } : {}) };
 	}
 	async inspect(options: { cursor?: number; limit?: number; entryId?: string; offset?: number } = {}) {
+		this.assertAvailable();
 		const inspection = projectInspection(this.sessionManager(), this.sessionId(), options, { operation: this.operation ?? null, lastError: this.lastError });
 		return this.unsavedResult && !options.entryId ? { ...inspection, result: fragment(JSON.stringify(this.unsavedResult), Math.max(0, options.offset ?? 0), 12000), resultOffset: Math.max(0, options.offset ?? 0), resultPersistence: "not saved; retained only by the live owner", detail: "Continue the unsaved result with offset=result.nextOffset and no entryId. Native entries remain separately readable by entryId." } : inspection;
 	}
@@ -701,8 +716,10 @@ export class AgentWorkerSession {
 		this.spend.sync();
 		this.unsubscribe?.(); this.observers.clear(); this.nested.close();
 		if (!cleanupComplete) throw new AggregateError(errors, "agent host cleanup incomplete; writer claims retained");
-		await attempt(() => this.reserved?.close());
-		await attempt(() => this.held?.close());
+		let claimsReleased = true;
+		await attempt(async () => { try { await this.reserved?.close(); this.reserved = undefined; } catch (error) { claimsReleased = false; throw error; } });
+		await attempt(async () => { try { await this.held?.close(); } catch (error) { claimsReleased = false; throw error; } });
+		if (!claimsReleased) throw new AggregateError(errors, "agent host cleanup incomplete; writer claims retained");
 		this.terminal = true;
 		this.publishFooter();
 		await attempt(() => this.options.onSessionClosed?.(this.sessionId()));
@@ -718,7 +735,7 @@ export class AgentWorkerSession {
 				while (this.tasks.size) await Promise.allSettled(this.tasks);
 			}
 			if (!this.terminal) await this.disposeHost();
-		})().catch((error) => { this.closeTask = undefined; throw error; });
+		})().catch((error) => { this.cleanupFailed = !this.terminal; this.closeTask = undefined; throw error; });
 		return this.closeTask;
 	}
 }

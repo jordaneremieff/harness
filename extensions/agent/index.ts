@@ -475,7 +475,11 @@ export class AgentManager {
 		return { agentDir: this.agentDir,
 			associationFailure: (sessionId: string) => this.associationFailure(sessionId),
 			onSessionCreated: (id: string) => { owners.workers.add(id); },
-			onSessionClosed: (id: string) => { owners.workers.delete(id); },
+			onSessionClosed: (id: string) => {
+				owners.workers.delete(id);
+				const worker = this.sessions.get(id);
+				if (worker?.isTerminal()) this.retireWorker(id, worker);
+			},
 			onSessionReplaced: (previousId: string, id: string) => {
 				const worker = this.sessions.get(previousId);
 				this.sessions.delete(previousId);
@@ -557,7 +561,7 @@ export class AgentManager {
 	): Promise<T> {
 		return this.trackControl(sessionId, async () => {
 			const held = this.sessions.get(sessionId);
-			if (held) return local(held);
+			if (held) { held.assertAvailable(); return local(held); }
 			const run = this.detachedOwner(sessionId);
 			if (run) return withDetachedControl(run, remote, signal);
 			const metadata = this.store.locate(sessionId);
@@ -577,7 +581,7 @@ export class AgentManager {
 				await worker.close();
 				throw new Error("agent manager is closed");
 			}
-			try { this.associate(worker); } catch (error) { await worker.close(); this.associationParents.delete(worker.sessionId()); throw error; }
+			try { worker.assertAvailable(); this.associate(worker); } catch (error) { await worker.close(); this.associationParents.delete(worker.sessionId()); throw error; }
 			const id = worker.sessionId();
 			this.sessions.set(id, worker);
 			this.publishFooter();
@@ -620,6 +624,7 @@ export class AgentManager {
 				}
 				return opened;
 			})().then((worker) => {
+				worker.assertAvailable();
 				assertPeer(worker.sessionId());
 				return local(worker);
 			});
@@ -691,6 +696,7 @@ export class AgentManager {
 		if (parentId) this.assertAssociationWriter(parentId);
 		const existing = this.sessions.get(sessionId);
 		if (existing) {
+			existing.assertAvailable();
 			if (repairModel) {
 				if ((await existing.status()).operation || existing.hasPendingHostWork()) throw new Error("Model repair requires an idle session with no queued input");
 				if (!(await existing.setModelAction(repairModel.provider, repairModel.modelId))) throw new Error(`Authentication is not configured for ${repairModel.provider}; the stored model is unchanged`);
@@ -705,7 +711,7 @@ export class AgentManager {
 			);
 		}
 		const pending = this.opening.get(sessionId);
-		if (pending) { const worker = await pending; this.joinedWorkers.add(worker); this.associate(worker); return worker; }
+		if (pending) { const worker = await pending; worker.assertAvailable(); this.joinedWorkers.add(worker); this.associate(worker); return worker; }
 		const promise = this.loadWorker(sessionId, trust, promptUi, repairModel);
 		this.opening.set(sessionId, promise);
 		try { return await promise; } finally { this.opening.delete(sessionId); }
@@ -886,6 +892,7 @@ export class AgentManager {
 
 	/** Remove the process-local records for a worker this manager releases. */
 	private retireWorker(sessionId: string, worker: AgentWorkerSession): void {
+		if (this.sessions.get(sessionId) !== worker) return;
 		this.associationParents.delete(sessionId);
 		this.retiredFooterStates.push(worker.footerState());
 		this.sessions.delete(sessionId);
