@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerClipboard from "./index.ts";
+import type { SearchPage } from "./search.ts";
+import { appendEntry, makeEntry } from "./store.ts";
 
 interface ClipboardDetails {
 	id: string;
@@ -213,6 +215,36 @@ describe("clipboard entrypoint", () => {
 		assert.equal(result.details.nextOffset, 8000);
 		assert.ok(Buffer.byteLength(result.content[0].text, "utf8") <= 50 * 1024);
 		assert.match(result.content[0].text, /offset 8000/);
+	});
+
+	it("keeps query output, stable ids and continuation intact under hostile text and maximum ids", async () => {
+		const { tools } = registry();
+		for (let index = 0; index < 50; index++) {
+			const id = `output-${index}-`.padEnd(200, "x");
+			assert.equal(
+				await appendEntry(
+					archiveDir,
+					makeEntry(`needle ${"\x1b\u202e🙂".repeat(200)}`, "\u202e".repeat(200), new Date(), id),
+				),
+				null,
+			);
+		}
+		let cursor: string | undefined;
+		const ids: string[] = [];
+		for (let request = 0; request < 100; request++) {
+			const result = await execute(tools.get("clipboard_list"), { query: "needle", limit: 50, cursor });
+			assert.ok(Buffer.byteLength(JSON.stringify(result)) < 50 * 1024);
+			assert.ok(result.content[0].text.split("\n").length <= 2000);
+			assert.ok(!result.content[0].text.includes("\x1b"));
+			const page = JSON.parse(result.content[0].text) as SearchPage;
+			ids.push(...page.matches.map((match) => match.id));
+			if (!page.nextCursor) break;
+			cursor = page.nextCursor;
+		}
+		assert.equal(ids.length, 50);
+		assert.equal(new Set(ids).size, 50);
+		assert.ok(ids.every((id) => id.length === 200));
+		await assert.rejects(execute(tools.get("clipboard_list"), { cursor: "invalid" }), /requires the original query/);
 	});
 
 	it("uses a useful RPC notification instead of the TUI-only overlay", async () => {

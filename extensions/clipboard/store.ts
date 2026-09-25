@@ -25,7 +25,7 @@ const PREVIEW_CHARS = 100;
 const MAX_LABEL_CHARS = 200;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const READ_CHUNK_BYTES = 64 * 1024;
-const MAX_ARCHIVE_RECORD_BYTES = 64 * 1024 * 1024;
+export const MAX_ARCHIVE_RECORD_BYTES = 64 * 1024 * 1024;
 const MAX_RETURNED_ENTRIES = 1000;
 const DEFAULT_CONTENT_CHARS = 32 * 1024;
 
@@ -90,7 +90,7 @@ function hasCode(error: unknown, code: string): boolean {
 	return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === code;
 }
 
-async function ensurePrivateDirectory(dir: string, create: boolean): Promise<boolean> {
+export async function ensurePrivateDirectory(dir: string, create: boolean): Promise<boolean> {
 	if (create) await mkdir(dir, { recursive: true, mode: 0o700 });
 	try {
 		const info = await lstat(dir);
@@ -164,7 +164,7 @@ function archiveFiles(dirents: Dirent[], date?: string): string[] {
 		.sort();
 }
 
-function normalizeEntry(value: unknown, contentChars: number): ClipboardEntry | null {
+export function normalizeEntry(value: unknown, contentChars: number): ClipboardEntry | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 	const record = value as Record<string, unknown>;
 	if (
@@ -182,7 +182,7 @@ function normalizeEntry(value: unknown, contentChars: number): ClipboardEntry | 
 	return content === entry.content ? entry : { ...entry, content, contentTruncated: true };
 }
 
-async function openArchive(path: string): Promise<{ handle: FileHandle; size: number }> {
+export async function openArchive(path: string): Promise<{ handle: FileHandle; size: number }> {
 	const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	try {
 		const info = await handle.stat();
