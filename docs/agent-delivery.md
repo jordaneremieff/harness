@@ -24,14 +24,51 @@ worker loop, a separate implementation backend, or direct local implementation
 and call it full-session delivery. Complete independent authorized work while
 reporting the precise unavailable layer.
 
-## Own a coherent effort
+## Discover a current outcome
 
 The invoking session owns selection, composition, acceptance, and the final
-operator result. Select a materially valuable outcome from accessible evidence;
-then state its scope, acceptance evidence, and end condition. Bound investigation
-to that outcome. Context size and the number of worktrees do not define task
-completion. Stop when acceptance and authorized delivery are complete, or when
-an exact unresolved boundary prevents the remaining work.
+operator result. Start from a concrete operator outcome that the current harness
+could serve better. Prior results and shipped contracts help reject duplicate
+work; they do not establish that every useful outcome is already delivered.
+Sparse history is not evidence against a current improvement.
+
+Bound discovery to a relevant current workflow and the sources that define it.
+Use accessible operator needs, current instructions, code, tests, and public host
+capabilities to form a plausible candidate. Inspect its current path against the
+intended outcome. Separate a missing result from an unverified explanation of
+its cause. When an unresolved fact decides whether to act, perform an obtainable,
+proportionate check at that fact's defining layer. Do not demand recurring
+operator recordkeeping when a current check settles the bounded decision.
+
+Classify the proposed change before applying the harness skill's warrant rules.
+Fixed repairs and ordinary maintenance do not need a new-infrastructure warrant
+or recurring historical incidents. Agent-proposed infrastructure retains its
+grounded warrant and any required approval; reversibility alone supplies neither.
+Rank supported candidates by operator value, reach, evidence strength, and cost.
+Recurrence informs priority, not eligibility for ordinary maintenance.
+
+If a candidate is already delivered, reject that candidate without replaying it.
+Before no-change, investigate a current unmet outcome beyond delivered work when
+accessible evidence offers one. Follow concrete leads that could change the
+selection decision, not an exhaustive audit. Stop discovery when a supported,
+material outcome is ready for execution, or when the plausible candidates in the
+inspected scope are defeated and no concrete decision-changing lead remains
+there. No candidate count, mandatory change, or invented defect is required.
+
+For no-change, state the inspected scope, strongest rejected candidates, and the
+defining facts that defeat them. This is a scoped conclusion, not proof that the
+whole harness has no useful work. Distinguish blocked work: name the exact
+unavailable fact, capability, or authority and the affected act. A boundary that
+prevents discovery permits a blocked result without fabricated candidates. A
+candidate-specific boundary does not end independent authorized work.
+
+## Own a coherent effort
+
+For the selected outcome, state its scope, acceptance evidence, and end condition.
+Bound implementation and review to that outcome. Context size and the number of
+worktrees do not define task completion. Stop when acceptance and authorized
+delivery are complete, or when an exact unresolved boundary prevents the remaining
+work.
 
 Each execution contract includes:
 

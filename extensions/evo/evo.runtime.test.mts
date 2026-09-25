@@ -184,6 +184,16 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
 			assert.equal(texts.length, 2);
 			assert.match(texts[0], /Coordinate one bounded autonomous harness improvement effort/);
 			for (const text of texts) {
+				// The controlled provider observes delivery, not autonomous candidate judgment.
+				assert.match(text, /Start from a concrete operator outcome/);
+				assert.match(text, /inspect the current path and perform a proportionate check/);
+				assert.match(text, /already-delivered candidate as rejection of that candidate only/);
+				assert.match(text, /Fixed repairs and ordinary maintenance do not need a new-infrastructure warrant/);
+				assert.match(text, /Agent-proposed infrastructure still needs its grounded warrant and any required approval/);
+				assert.match(text, /Return no-change after bounded discovery/);
+				assert.match(text, /no concrete decision-changing lead remains there/);
+				assert.match(text, /A boundary that prevents discovery permits a blocked result without invented candidates/);
+				assert.match(text, /a candidate-specific boundary does not end independent authorized work/);
 				assert.match(
 					text,
 					/This invocation also authorizes promotion and push of accepted high-confidence local commits/,

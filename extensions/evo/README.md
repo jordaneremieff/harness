@@ -45,11 +45,23 @@ data. This framing is not a sandbox or a proof of model compliance.
 
 ## Outcome and ownership
 
-The coordinator ranks warranted candidates by operator value, recurrence, reach,
-and evidence strength. It selects a coherent objective with acceptance evidence
-and an end condition, not an arbitrary one-context or one-worktree limit. It
-bounds investigation and review to that outcome rather than expanding into an
-infinite audit.
+The coordinator starts from a concrete operator outcome that the current harness
+could serve better. It bounds discovery to a relevant current workflow, forms a
+plausible candidate, and inspects the defining sources and current path. If a fact
+decides whether to act, it performs an obtainable, proportionate check rather
+than treating sparse history as evidence against improvement. A shipped candidate
+rejects only that candidate. Before no-change, the coordinator investigates beyond
+delivered work when accessible evidence offers a current unmet outcome.
+
+The coordinator classifies changes before applying the harness skill's warrant
+rules. Fixed repairs and ordinary maintenance need no new-infrastructure warrant
+or recurring historical incidents. Agent-proposed infrastructure retains its
+grounded warrant and required approval. Recurrence informs priority, not maintenance eligibility.
+The coordinator ranks supported candidates by operator value, reach, evidence
+strength, and cost. It selects a coherent objective with acceptance evidence and
+an end condition, not an arbitrary one-context or one-worktree limit. It stops
+discovery when a material supported outcome is ready, then bounds implementation
+and review to that outcome instead of expanding into an infinite audit.
 
 Implementation uses full ordinary Pi agent sessions discovered through current
 public registrations. Missing execution capability is an explicit blocker,
@@ -70,8 +82,15 @@ The final chat response integrates meaningful changes, checked evidence, local
 commits, actual releases, strongest rejected work, and genuine blockers. No
 operator-curated report or intermediate artifact is required. Existing continuity
 surfaces preserve governing context and live-session ownership when needed.
-No-change requires evidence against the candidates or an exact capability or
-authority boundary; task size alone is not a reason.
+No-change requires bounded current discovery, defeated plausible candidates, and
+no remaining concrete decision-changing lead in the inspected scope. The result
+names that scope, the strongest rejected candidates, and the defining facts that
+defeat them, not a claim that the whole harness has no useful work. A blocked
+result instead names the exact unavailable fact, capability, or authority and
+affected act. A boundary that prevents discovery does not require invented
+candidates; a candidate-specific boundary does not end independent authorized
+work. Neither a change quota nor exhaustive discovery is required. Task size
+alone is not a no-change reason.
 
 ## Authority
 
@@ -151,8 +170,10 @@ selected slices' dedicated worktrees.
 - `evo.test.mts` checks parser bounds, framing, authority, workflow instructions,
   mode-independent dispatch, and error behavior.
 - `evo.runtime.test.mts` loads the real extension into ordinary Pi sessions with a
-  controlled provider. It checks delivery of the bounded release grant and its
-  restrictions, repeated requests, preflight lifetime, active follow-up delivery,
+  controlled provider. It checks delivery of current candidate discovery,
+  maintenance versus infrastructure warrant rules, scoped no-change and blocker
+  distinctions, the bounded release grant and its restrictions, repeated requests,
+  preflight lifetime, active follow-up delivery,
   retained outcome, and error routing without live credentials.
 
 ```bash
