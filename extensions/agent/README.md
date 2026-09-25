@@ -70,7 +70,11 @@ source to read its complete error rather than a clipped list preview.
 - **Tab** changes sections. **j/k**, configured selection keys, and page keys move
   the selected row. **Home/End** jumps to the first/last displayed record.
   **Enter** opens its evidence.
-- A session reader puts readable message text before serialized source. Its header
+- A session reader renders readable message text with Pi's Markdown component,
+  including headings, emphasis, lists, code, and tables. Terminal controls are
+  removed before rendering. The renderer reflows on resize and invalidates styles
+  with the host theme. Serialized inspection and retained result sources stay
+  literal and separate from message formatting. Its header
   identifies the session and the owner-state boundary. **[ / ]** selects an entry;
   **Enter** opens its serialized inspection representation, not raw storage.
   The reader reports omission counts for provider signatures, image payloads,

@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionCommandContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { Input, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
+import { Input, Markdown, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type MarkdownTheme, type TUI } from "@earendil-works/pi-tui";
 import type { AgentSessionSummary } from "./command.ts";
 import type { DetachedRunView } from "./detached.ts";
 import { displayPreview } from "./presentation.ts";
@@ -132,17 +132,34 @@ function omissionLines(omissions: Extract<AgentInspection, { entryId: string }>[
 	return omissions ? [`Omitted from this entry: ${omissions.providerSignatures} provider signatures; ${omissions.imagePayloads} image payloads; ${omissions.redactedThinking} redacted thinking blocks.`] : [];
 }
 
-function inspectionLines(data: AgentInspection, entryIndex = 0): string[] {
+interface ReaderBlock { text: string; markdown?: boolean }
+const literalBlocks = (lines: string[]): ReaderBlock[] => lines.map((text) => ({ text }));
+function inspectionBlocks(data: AgentInspection, entryIndex = 0): ReaderBlock[] {
 	const lines = ownerLines(data);
-	if ("entryId" in data) return [...lines, `Entry: ${data.entryId} · offset ${data.offset}`, "Inspection source, not raw storage. Offsets count UTF-16 code units.", ...omissionLines(data.omissions), data.truncated ? `Partial entry; next offset ${data.nextOffset}. n reads the next chunk.` : "Final entry chunk (earlier chunks are not repeated).", data.text];
+	if ("entryId" in data) return literalBlocks([...lines, `Entry: ${data.entryId} · offset ${data.offset}`, "Inspection source, not raw storage. Offsets count UTF-16 code units.", ...omissionLines(data.omissions), data.truncated ? `Partial entry; next offset ${data.nextOffset}. n reads the next chunk.` : "Final entry chunk (earlier chunks are not repeated).", data.text]);
 	const entry = data.entries[entryIndex];
 	return [
-		...(entry ? [`${entry.role ?? entry.type} · entry ${entryIndex + 1}/${data.entries.length}${entry.truncated ? " · partial preview" : ""}`, entry.preview?.text ?? "Readable preview unavailable. Enter opens the inspection source.", ...omissionLines(entry.omissions), ...(entry.preview?.truncated ? ["Partial text. Enter opens the inspection source; n continues it."] : [])] : ["No entries in this snapshot."]),
-		"", `Entries: ${data.entries.length}, newest first. ${data.nextCursor === null ? "No older page." : `Older cursor: ${data.nextCursor}. o reads it.`}`,
+		...(entry ? [
+			{ text: `${entry.role ?? entry.type} · entry ${entryIndex + 1}/${data.entries.length}${entry.truncated ? " · partial preview" : ""}` },
+			{ text: entry.preview?.text ?? "Readable preview unavailable. Enter opens the inspection source.", markdown: Boolean(entry.preview) },
+			...literalBlocks([...omissionLines(entry.omissions), ...(entry.preview?.truncated ? ["Partial text. Enter opens the inspection source; n continues it."] : [])]),
+		] : literalBlocks(["No entries in this snapshot."])),
+		...literalBlocks(["", `Entries: ${data.entries.length}, newest first. ${data.nextCursor === null ? "No older page." : `Older cursor: ${data.nextCursor}. o reads it.`}`,
 		...data.entries.map((item, index) => `${index === entryIndex ? ">" : " "} ${item.role ?? item.type} · ${item.id}${item.truncated ? " · partial preview" : ""}`),
 		"", ...lines,
-		...(data.result ? ["", `Retained result source${data.result.truncated ? " (partial preview; open its source entry)" : ""}:`, data.result.text] : []),
+		...(data.result ? ["", `Retained result source${data.result.truncated ? " (partial preview; open its source entry)" : ""}:`, data.result.text] : [])]),
 	];
+}
+function inspectionLines(data: AgentInspection, entryIndex = 0): string[] {
+	return inspectionBlocks(data, entryIndex).map((block) => block.text);
+}
+function messageTheme(theme: Theme): MarkdownTheme {
+	return {
+		heading: (text) => theme.fg("mdHeading", text), link: (text) => theme.fg("mdLink", text), linkUrl: (text) => theme.fg("mdLinkUrl", text),
+		code: (text) => theme.fg("mdCode", text), codeBlock: (text) => theme.fg("mdCodeBlock", text), codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
+		quote: (text) => theme.fg("mdQuote", text), quoteBorder: (text) => theme.fg("mdQuoteBorder", text), hr: (text) => theme.fg("mdHr", text), listBullet: (text) => theme.fg("mdListBullet", text),
+		bold: (text) => theme.bold(text), italic: (text) => theme.italic(text), strikethrough: (text) => theme.strikethrough(text), underline: (text) => theme.underline(text),
+	};
 }
 
 interface LatestMessage { label: string; text: string }
@@ -167,6 +184,7 @@ export class AgentDashboard implements Component {
 	private descriptionGeneration = 0;
 	private latest?: { sessionId: string; message?: LatestMessage };
 	private latestRead?: AbortController;
+	private messageMarkdown?: { text: string; component: Markdown };
 	get focused(): boolean { return this.hostFocused; }
 	set focused(value: boolean) { this.hostFocused = value; this.input.focused = value && this.filtering; }
 	private filtering = false;
@@ -414,7 +432,8 @@ export class AgentDashboard implements Component {
 		const description = selectedDescription?.data;
 		const heading = reader.target ? displayPreview(titleOf(reader.target), 300) : reader.title;
 		const info = this.readerDescription(selectedDescription);
-		const body = [...info, ...reader.lines].flatMap((line) => wrapTextWithAnsi(clean(line), width));
+		const blocks = reader.inspection ? inspectionBlocks(reader.inspection, reader.entryIndex) : literalBlocks(reader.lines);
+		const body = [...literalBlocks(info), ...blocks].flatMap((block) => block.markdown ? this.renderMessage(block.text, width) : wrapTextWithAnsi(clean(block.text), width));
 		const headerSize = contentHeight > 5 ? 3 : contentHeight > 3 ? 2 : 0;
 		this.readerHeight = Math.max(1, contentHeight - headerSize); this.pageSize = this.readerHeight; this.readerLength = body.length;
 		reader.scroll = Math.max(0, Math.min(Math.max(0, body.length - this.readerHeight), reader.scroll));
@@ -423,6 +442,10 @@ export class AgentDashboard implements Component {
 		const state = readerState(reader);
 		const header = [this.theme.fg("accent", heading), this.theme.fg("muted", clean(`${state === heading ? "" : state}${description ? ` · ${configuration(description)}` : ""}`)), this.theme.fg("muted", `${selected ? `Selected entry: ${selected.id} · ` : ""}${position}${this.reading ? " · Read in progress" : ""}`)];
 		return [...header.slice(0, headerSize), ...body.slice(reader.scroll, reader.scroll + this.readerHeight)];
+	}
+	private renderMessage(text: string, width: number): string[] {
+		if (this.messageMarkdown?.text !== text) this.messageMarkdown = { text, component: new Markdown(clean(text), 0, 0, messageTheme(this.theme)) };
+		return this.messageMarkdown.component.render(width);
 	}
 	private readerDescription(selected?: { data?: AgentSessionDescription; error?: string }): string[] {
 		if (selected?.error) return [`Configuration unavailable: ${selected.error}`, ""];
@@ -488,7 +511,7 @@ export class AgentDashboard implements Component {
 		if (section?.error !== undefined) return "Enter reads the source error";
 		return this.loading ? "Read in progress…" : "None found.";
 	}
-	invalidate(): void { this.input.invalidate(); }
+	invalidate(): void { this.input.invalidate(); this.messageMarkdown?.component.invalidate(); }
 	dispose(): void { this.closed = true; this.generation++; this.descriptionGeneration++; this.latestRead?.abort(); this.input.focused = false; }
 }
 
