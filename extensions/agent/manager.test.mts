@@ -461,7 +461,7 @@ describe("command registration", () => {
 			const open = t.mock.method(AgentWorkerSession, "open", async () => { throw new Error("must not open"); });
 			const status = t.mock.method(test.manager, "status", async () => { throw new Error("must not query"); });
 			let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
-			registerAgentExtension({ registerTool() {}, registerMessageRenderer() {}, on() {}, registerCommand(_name: string, options: typeof command) { command = options; } } as unknown as ExtensionAPI);
+			registerAgentExtension({ registerShortcut() {}, registerTool() {}, registerMessageRenderer() {}, on() {}, registerCommand(_name: string, options: typeof command) { command = options; } } as unknown as ExtensionAPI);
 			const complete = defined(command.getArgumentCompletions);
 			for (const action of ["status", "attach", "fork", "send", "steer", "abort", "rewind", "detach"]) {
 				const result = defined(await complete(`${action} `));
@@ -487,7 +487,7 @@ describe("command registration", () => {
 				t.mock.method(test.manager, method, (...args: unknown[]) => { calls.push({ method, args }); return ["spawn", "fork", "rewind", "detach"].includes(method) ? { sessionId: "created", runId: "run", text: method } : method; });
 			}
 			let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
-			registerAgentExtension({ registerTool() {}, registerMessageRenderer() {}, on() {}, getThinkingLevel: () => "high", registerCommand(_name: string, options: typeof command) { command = options; } } as unknown as ExtensionAPI);
+			registerAgentExtension({ registerShortcut() {}, registerTool() {}, registerMessageRenderer() {}, on() {}, getThinkingLevel: () => "high", registerCommand(_name: string, options: typeof command) { command = options; } } as unknown as ExtensionAPI);
 			const notices: string[] = [];
 			const ctx = { cwd: test.cwd, model: defaultModel, mode: "tui", hasUI: true, isProjectTrusted: () => true, sessionManager: { getSessionId: () => "command-parent" }, ui: { custom: () => { throw new Error("custom UI must stay unopened"); }, notify: (text: string) => notices.push(text) } } as unknown as ExtensionCommandContext;
 			for (const [input, method] of [
@@ -523,7 +523,7 @@ describe("command registration", () => {
 		process.env.PI_AGENT_SESSIONS_DIR = test.sessionsRoot;
 		try {
 			let handler!: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
-			registerAgentExtension({ registerTool() {}, registerMessageRenderer() {}, on() {}, getThinkingLevel: () => "high", registerCommand(_name: string, options: { handler: typeof handler }) { handler = options.handler; } } as unknown as ExtensionAPI);
+			registerAgentExtension({ registerShortcut() {}, registerTool() {}, registerMessageRenderer() {}, on() {}, getThinkingLevel: () => "high", registerCommand(_name: string, options: { handler: typeof handler }) { handler = options.handler; } } as unknown as ExtensionAPI);
 			t.mock.method(AgentWorkerSession, "open", async () => { throw new Error("must not open"); });
 			t.mock.method(AgentWorkerSession, "create", async () => { throw new Error("must not create"); });
 			const notices: string[] = [];

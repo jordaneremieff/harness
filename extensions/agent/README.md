@@ -12,7 +12,11 @@ It does not provide a conversation editor or workspace.
 
 ## Start and control sessions
 
-Enter `/agent` for the dashboard or `/agent help` for actions. Add a space to
+Enter `/agent` or press **Ctrl+Alt+G** for the dashboard. Use `/agent help` for actions.
+The command and shortcut share one guarded opener. Repeated opens do not stack
+overlays, and a failed open releases the guard. The shortcut leaves the editor
+draft intact and does nothing outside a terminal UI. Dashboard actions use the
+common extension context, not command-only session controls. Add a space to
 see actions in Pi's native completion menu. For separate work, describe the
 task directly:
 
@@ -59,9 +63,10 @@ its task, configuration, parents, and identity. Narrow terminals prioritize the
 task and latest text below the list. The footer shows Escape for back or close.
 
 Use **/** to filter by name, first message, task, directory, ID, displayed state,
-or known provider/model/thinking values, including selected configuration already read. **Enter** keeps
-the filter; **Escape** clears it while the filter input has focus. The filter
-searches the entire returned inventory before the display cap.
+or known provider/model/thinking values, including selected configuration already
+read. The dashboard retains these values across inventory refreshes and action
+dialogs until a new selected description replaces them. **Enter** keeps the
+filter; **Escape** clears it while the filter input has focus. The filter searches the entire returned inventory before the display cap.
 The heading separates total, matching, shown, and omitted records. Stored sessions
 have no live owner status; detached progress is a recorded observation, not a live
 status query. Empty and unavailable sources appear separately. Open an unavailable
@@ -70,8 +75,8 @@ source to read its complete error rather than a clipped list preview.
 - **Tab** changes sections. **j/k**, configured selection keys, and page keys move
   the selected row. **Home/End** jumps to the first/last displayed record.
   **Enter** opens its evidence.
-- A session reader renders readable message text with Pi's Markdown component,
-  including headings, emphasis, lists, code, and tables. Terminal controls are
+- Selected previews and session readers render readable message text with Pi's
+  Markdown component, including headings, emphasis, lists, code, and tables. Terminal controls are
   removed before rendering. The renderer reflows on resize and invalidates styles
   with the host theme. Serialized inspection and retained result sources stay
   literal and separate from message formatting. Its header
@@ -89,8 +94,9 @@ source to read its complete error rather than a clipped list preview.
   Run summaries are not complete session results. Result previews and source
   chunks retain their partial labels; a truncated owner error has no continuation
   endpoint. Read source entries for retained evidence, not an invented full result.
-- **j/k** and page keys scroll readers and help. **b** or the configured cancel key
-  returns to the previous view. **Escape** closes the list. **?** shows key help.
+- **j/k** and page keys scroll readers and help. **Escape**, **b**, or the configured
+  cancel key returns to the previous view. **Escape** also closes the list.
+  **?** shows key help.
 - **r** refreshes the inventory or requests the newest session inspection and
   selected configuration. It returns a run reader to a refreshed inventory.
   There is no poller.

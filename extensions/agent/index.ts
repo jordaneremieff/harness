@@ -16,7 +16,6 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/pi-agent-co
 import type {
 	AgentToolResult,
 	ExtensionAPI,
-	ExtensionCommandContext,
 	ExtensionContext,
 	ExtensionUIContext,
 	ModelRegistry,
@@ -181,7 +180,7 @@ interface TrustPromptUi {
 }
 
 /** Primary-session UI handle for undecided trust-gated cwds; undefined when no prompt is available. */
-function trustPromptFrom(ctx: ExtensionContext | ExtensionCommandContext): TrustPromptUi | undefined {
+function trustPromptFrom(ctx: ExtensionContext): TrustPromptUi | undefined {
 	const ui = (ctx as { ui?: { select?: (title: string, options: string[]) => Promise<string | undefined>; hasUI?: boolean } }).ui;
 	const hasUI = (ctx as { hasUI?: boolean }).hasUI ?? ui?.hasUI ?? false;
 	if (!hasUI || typeof ui?.select !== "function") return undefined;
@@ -1644,9 +1643,9 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	const commandDefaults = (ctx: ExtensionCommandContext) => ({ cwd: ctx.cwd, model: hostModel(ctx), thinkingLevel: pi.getThinkingLevel() });
+	const commandDefaults = (ctx: ExtensionContext) => ({ cwd: ctx.cwd, model: hostModel(ctx), thinkingLevel: pi.getThinkingLevel() });
 	const sessionHelp = "Type part of a session name or directory, then press Tab to insert its ID.";
-	pi.registerCommand("agent", createAgentCommand(ownedActions([
+	const command = createAgentCommand(ownedActions([
 		{
 			name: "new", description: "Start separate work; add an optional task", args: [{ name: "prompt", optional: true, rest: true }],
 			help: "Describe the task in your own words, for example: /agent new Check the error handling. The session uses your current directory and model. Results use native host notifications; Pi print/JSON discards them. Advanced overrides use agent_spawn.",
@@ -1725,7 +1724,9 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		sessions: async () => (await getManager()).sessionSummaries(),
 		runs: async () => (await getManager()).detachedRunViews(),
 		inspect: async (sessionId, options, signal) => (await getManager()).inspect(sessionId, options, signal),
-	}));
+	});
+	pi.registerCommand("agent", command);
+	pi.registerShortcut("ctrl+alt+g", { description: "Open the agent dashboard", handler: (ctx) => command.openDashboard(ctx) });
 
 	pi.on("session_start", async (_event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();

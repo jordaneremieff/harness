@@ -10,7 +10,7 @@ import { defined } from "./test-assertions.mts";
 
 function registration() {
 	let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
-	registerAgentExtension({ registerTool() {}, registerMessageRenderer() {}, on() {}, getThinkingLevel: () => "off", registerCommand(name: string, options: typeof command) {
+	registerAgentExtension({ registerShortcut() {}, registerTool() {}, registerMessageRenderer() {}, on() {}, getThinkingLevel: () => "off", registerCommand(name: string, options: typeof command) {
 		assert.equal(name, "agent"); command = options;
 	} } as unknown as ExtensionAPI);
 	return command;

@@ -84,6 +84,7 @@ describe("tool preview metadata", () => {
 				registerTool: (tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) => tools.set(tool.name, tool),
 				registerMessageRenderer() {},
 				registerCommand() {},
+				registerShortcut() {},
 				on() {},
 				getThinkingLevel: () => "medium",
 			} as unknown as ExtensionAPI);

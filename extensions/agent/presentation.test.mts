@@ -67,7 +67,7 @@ describe("received peer presentation", () => {
 describe("agent session tool presentation", () => {
 	it("registers session call and snapshot result renderers for every metadata producer", () => {
 		const tools: ToolDefinition[] = [];
-		registerAgentExtension({ on() {}, registerCommand() {}, registerMessageRenderer() {}, registerTool: (tool: ToolDefinition) => tools.push(tool) } as unknown as ExtensionAPI);
+		registerAgentExtension({ on() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerTool: (tool: ToolDefinition) => tools.push(tool) } as unknown as ExtensionAPI);
 		for (const name of ["agent_spawn", "agent_fork", "agent_rewind", "agent_attach", "agent_place", "agent_detach", "agent_status"]) {
 			const tool = tools.find((item) => item.name === name);
 			assert.equal(tool?.renderResult, renderAgentResult);
@@ -150,7 +150,7 @@ describe("agent_send presentation", () => {
 	it("registers native call and result renderers without changing execution", () => {
 		const tools: ToolDefinition[] = [];
 		const renderers = new Map();
-		registerAgentExtension({ on() {}, registerCommand() {}, registerMessageRenderer: (name: string, renderer: unknown) => renderers.set(name, renderer), registerTool: (tool: ToolDefinition) => tools.push(tool) } as unknown as ExtensionAPI);
+		registerAgentExtension({ on() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer: (name: string, renderer: unknown) => renderers.set(name, renderer), registerTool: (tool: ToolDefinition) => tools.push(tool) } as unknown as ExtensionAPI);
 		assert.equal(renderers.get("agent.peer"), renderPeerMessage);
 		const tool = tools.find((item) => item.name === "agent_send");
 		assert.equal(tool?.renderCall, renderSendCall);

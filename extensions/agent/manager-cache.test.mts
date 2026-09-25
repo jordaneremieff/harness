@@ -29,6 +29,7 @@ const captureExtension = (): Captured => {
 		registerTool: (tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) => tools.set(tool.name, tool),
 		registerMessageRenderer() {},
 		registerCommand() {},
+		registerShortcut() {},
 		on: (name: string, handler: (event: { reason: string }, ctx: unknown) => Promise<void>) => handlers.set(name, handler),
 	} as unknown as ExtensionAPI);
 	return { tools, handlers };

@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import type { ExtensionCommandContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { Input, Markdown, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type MarkdownTheme, type TUI } from "@earendil-works/pi-tui";
 import type { AgentSessionSummary } from "./command.ts";
 import type { DetachedRunView } from "./detached.ts";
@@ -41,6 +41,7 @@ export interface DashboardState {
 	tab: Tab;
 	filter: string;
 	selected: Partial<Record<Tab, string>>;
+	descriptions?: Map<string, AgentSessionDescription>;
 	reader?: Reader;
 }
 export interface DashboardActions {
@@ -162,12 +163,12 @@ function messageTheme(theme: Theme): MarkdownTheme {
 	};
 }
 
-interface LatestMessage { label: string; text: string }
+interface LatestMessage { label: string; text: string; markdown?: boolean }
 function latestMessage(data: AgentInspection): LatestMessage {
 	if (!("entries" in data)) return { label: "Latest text unavailable", text: "The source returned an entry chunk, not a recent page." };
 	const entry = data.entries.find((entry) => entry.type === "message" && ["assistant", "user", "toolResult"].includes(entry.role ?? "") && clean(entry.preview?.text ?? "").trim());
 	if (!entry?.preview) return { label: "No message text in the recent page", text: data.capture?.reason ?? "Enter opens entries; o reads older evidence." };
-	return { label: `Latest ${entry.role} · ${entry.id}${entry.preview.truncated ? " · partial text" : ""}`, text: entry.preview.text };
+	return { label: `Latest ${entry.role} · ${entry.id}${entry.preview.truncated ? " · partial text" : ""}`, text: entry.preview.text, markdown: true };
 }
 function modificationAge(modifiedAt: number, observedAt: string): string {
 	const seconds = Math.max(0, Math.floor((Date.parse(observedAt) - modifiedAt) / 1000));
@@ -209,7 +210,20 @@ export class AgentDashboard implements Component {
 		this.state = state ?? { tab: "sessions", filter: "", selected: {} };
 		this.input.setValue(this.state.filter);
 		if (!this.state.snapshot) void this.refresh();
-		else this.updateDescription();
+		else { this.restoreDescriptions(); this.updateDescription(); }
+	}
+	private restoreDescriptions(): void {
+		const section = this.state.snapshot?.sessions;
+		if (!section || section.error !== undefined || !this.state.descriptions) return;
+		const retained = new Map<string, AgentSessionDescription>();
+		for (const target of section.records) {
+			if (target.kind !== "session") continue;
+			const data = this.state.descriptions.get(target.session.sessionId);
+			if (!data) continue;
+			retained.set(target.session.sessionId, data);
+			if (!target.session.model) { target.session.model = data.model; target.session.provenance = data.provenance; }
+		}
+		this.state.descriptions = retained;
 	}
 	private view() { return dashboardRecords(this.state.snapshot?.[this.state.tab], this.state.filter); }
 	private selected(): DashboardTarget | undefined {
@@ -223,7 +237,7 @@ export class AgentDashboard implements Component {
 		this.loading = true; this.tui.requestRender();
 		const snapshot = await readAgentDashboard(this.sources);
 		if (this.closed) return;
-		this.state.snapshot = snapshot; this.selected(); this.loading = false; this.updateDescription(true); this.tui.requestRender();
+		this.state.snapshot = snapshot; this.restoreDescriptions(); this.selected(); this.loading = false; this.updateDescription(true); this.tui.requestRender();
 	}
 	private updateDescription(force = false, target = this.selected()): void {
 		this.updateLatest(force, target);
@@ -235,8 +249,12 @@ export class AgentDashboard implements Component {
 		void this.sources.describe(sessionId).then((data) => {
 			if (this.closed || generation !== this.descriptionGeneration) return;
 			this.description = { sessionId, data };
-			if (target.kind === "session") { target.session.model = data.model; target.session.provenance = data.provenance; }
-			this.tui.requestRender();
+			if (target.kind === "session") {
+				this.state.descriptions ??= new Map();
+				this.state.descriptions.set(sessionId, data);
+				target.session.model = data.model; target.session.provenance = data.provenance;
+			}
+			this.updateDescription(); this.tui.requestRender();
 		}, (error) => {
 			if (this.closed || generation !== this.descriptionGeneration) return;
 			this.description = { sessionId, error: errorText(error) }; this.tui.requestRender();
@@ -260,9 +278,9 @@ export class AgentDashboard implements Component {
 			this.latest = { sessionId, message: { label: "Latest text unavailable", text: errorText(error) } }; this.tui.requestRender();
 		});
 	}
-	private latestLines(target: Extract<DashboardTarget, { kind: "session" }>): string[] {
-		const current = this.latest?.sessionId === target.session.sessionId ? this.latest : undefined;
-		return current?.message ? [current.message.label, current.message.text] : ["Latest text: read in progress…"];
+	private latestBlocks(target: Extract<DashboardTarget, { kind: "session" }>): ReaderBlock[] {
+		const message = this.latest?.sessionId === target.session.sessionId ? this.latest.message : undefined;
+		return message ? [{ text: message.label }, { text: message.text, markdown: message.markdown }] : [{ text: "Latest text: read in progress…" }];
 	}
 	private async inspect(sessionId: string, options: AgentInspectionOptions = {}, parent?: Reader): Promise<void> {
 		const generation = ++this.generation;
@@ -293,7 +311,7 @@ export class AgentDashboard implements Component {
 	}
 	handleInput(data: string): void {
 		if (this.closed) return;
-		const cancel = this.keys.matches(data, "tui.select.cancel");
+		const cancel = matchesKey(data, "escape") || this.keys.matches(data, "tui.select.cancel");
 		if (this.filtering) { this.filterInput(data, cancel); return; }
 		if (this.help) { this.helpInput(data, cancel); return; }
 		if (cancel || matchesKey(data, "b")) {
@@ -433,7 +451,7 @@ export class AgentDashboard implements Component {
 		const heading = reader.target ? displayPreview(titleOf(reader.target), 300) : reader.title;
 		const info = this.readerDescription(selectedDescription);
 		const blocks = reader.inspection ? inspectionBlocks(reader.inspection, reader.entryIndex) : literalBlocks(reader.lines);
-		const body = [...literalBlocks(info), ...blocks].flatMap((block) => block.markdown ? this.renderMessage(block.text, width) : wrapTextWithAnsi(clean(block.text), width));
+		const body = this.renderBlocks([...literalBlocks(info), ...blocks], width);
 		const headerSize = contentHeight > 5 ? 3 : contentHeight > 3 ? 2 : 0;
 		this.readerHeight = Math.max(1, contentHeight - headerSize); this.pageSize = this.readerHeight; this.readerLength = body.length;
 		reader.scroll = Math.max(0, Math.min(Math.max(0, body.length - this.readerHeight), reader.scroll));
@@ -442,6 +460,9 @@ export class AgentDashboard implements Component {
 		const state = readerState(reader);
 		const header = [this.theme.fg("accent", heading), this.theme.fg("muted", clean(`${state === heading ? "" : state}${description ? ` · ${configuration(description)}` : ""}`)), this.theme.fg("muted", `${selected ? `Selected entry: ${selected.id} · ` : ""}${position}${this.reading ? " · Read in progress" : ""}`)];
 		return [...header.slice(0, headerSize), ...body.slice(reader.scroll, reader.scroll + this.readerHeight)];
+	}
+	private renderBlocks(blocks: ReaderBlock[], width: number): string[] {
+		return blocks.flatMap((block) => block.markdown ? this.renderMessage(block.text, width) : wrapTextWithAnsi(clean(block.text), width));
 	}
 	private renderMessage(text: string, width: number): string[] {
 		if (this.messageMarkdown?.text !== text) this.messageMarkdown = { text, component: new Markdown(clean(text), 0, 0, messageTheme(this.theme)) };
@@ -452,11 +473,11 @@ export class AgentDashboard implements Component {
 		if (selected?.data) return [descriptionLines(selected.data)[1], ""];
 		return selected ? ["Configuration read in progress…", ""] : [];
 	}
-	private previewLines(target: DashboardTarget): string[] {
-		if (target.kind === "run") return runPreview(target);
+	private previewBlocks(target: DashboardTarget): ReaderBlock[] {
+		if (target.kind === "run") return literalBlocks(runPreview(target));
 		const session = target.session;
 		const current = this.description?.sessionId === session.sessionId ? this.description : undefined;
-		return [titleOf(target), ...this.latestLines(target), "", ...(session.firstMessage ? ["Task / first message", session.firstMessage, ""] : []), label(target).split(" · ")[0], ...(current?.data ? descriptionLines(current.data) : [configuration(session), current?.error ? `Configuration unavailable: ${current.error}` : current ? "Read in progress…" : "Enter reads session details"]), "", `Directory: ${session.cwd}`, `Session: ${session.sessionId}`, ...(session.operation ? [`Operation: ${session.operation}`] : []), ...(session.detachedRunId ? [`Run: ${session.detachedRunId}`] : []), `Modified: ${new Date(session.modifiedAt).toISOString()}`, "", "Enter reads messages · a opens actions"];
+		return [{ text: titleOf(target) }, ...this.latestBlocks(target), ...literalBlocks(["", ...(session.firstMessage ? ["Task / first message", session.firstMessage, ""] : []), label(target).split(" · ")[0], ...(current?.data ? descriptionLines(current.data) : [configuration(session), current?.error ? `Configuration unavailable: ${current.error}` : current ? "Read in progress…" : "Enter reads session details"]), "", `Directory: ${session.cwd}`, `Session: ${session.sessionId}`, ...(session.operation ? [`Operation: ${session.operation}`] : []), ...(session.detachedRunId ? [`Run: ${session.detachedRunId}`] : []), `Modified: ${new Date(session.modifiedAt).toISOString()}`, "", "Enter reads messages · a opens actions"])];
 	}
 	private renderList(width: number, contentHeight: number): string[] {
 		const view = this.view(); const target = this.selected(); const section = this.state.snapshot?.[this.state.tab];
@@ -477,7 +498,7 @@ export class AgentDashboard implements Component {
 		if (!roster.length) roster.push(this.emptyLabel(section));
 		if (split && target) {
 			const rightWidth = width - leftWidth - 3;
-			const preview = this.previewLines(target).flatMap((line) => wrapTextWithAnsi(clean(line), rightWidth));
+			const preview = this.renderBlocks(this.previewBlocks(target), rightWidth);
 			return [...header, ...Array.from({ length: remaining }, (_, i) => { const left = roster[i] ?? ""; return `${left}${" ".repeat(Math.max(0, leftWidth - visibleWidth(left)))} │ ${preview[i] ?? ""}`; })];
 		}
 		const detail = target && detailHeight ? this.compactDetail(target, width).slice(0, detailHeight) : [];
@@ -497,15 +518,17 @@ export class AgentDashboard implements Component {
 		const peers = this.state.snapshot?.[this.state.tab].records.filter((other) => displayPreview(titleOf(other), 300) === displayPreview(titleOf(row), 300)) ?? [];
 		if (peers.length < 2) return "";
 		const directory = (target: DashboardTarget) => basename(target.kind === "session" ? target.session.cwd : target.run.cwd);
-		const name = displayPreview(directory(row), 12);
-		if (name && peers.filter((other) => displayPreview(directory(other), 12) === name).length === 1) return ` [${name}]`;
+		const names = peers.map((other) => displayPreview(directory(other), 12));
+		if (names.every(Boolean) && new Set(names).size === peers.length) return ` [${displayPreview(directory(row), 12)}]`;
 		let length = 6;
 		while (length < idOf(row).length && peers.some((other) => other !== row && idOf(other).slice(-length) === idOf(row).slice(-length))) length++;
 		return ` [${idOf(row).slice(-length)}]`;
 	}
 	private compactDetail(target: DashboardTarget, width: number): string[] {
-		const text = target.kind === "session" ? [`Task: ${target.session.firstMessage || titleOf(target)}`, ...this.latestLines(target)] : [titleOf(target), target.run.progress?.lastText ?? target.run.summary ?? "No recorded text"];
-		return [...text.slice(0, -1).map((line) => truncateToWidth(clean(line), width)), ...wrapTextWithAnsi(clean(text.at(-1) ?? ""), width)];
+		if (target.kind === "run") return [truncateToWidth(clean(titleOf(target)), width), ...wrapTextWithAnsi(clean(target.run.progress?.lastText ?? target.run.summary ?? "No recorded text"), width)];
+		const task = `Task: ${target.session.firstMessage || titleOf(target)}`;
+		const [label, ...body] = this.latestBlocks(target);
+		return [truncateToWidth(clean(task), width), truncateToWidth(clean(label.text), width), ...this.renderBlocks(body, width).filter((line) => clean(line).trim())];
 	}
 	private emptyLabel(section?: DashboardSection): string {
 		if (section?.error !== undefined) return "Enter reads the source error";
@@ -515,7 +538,7 @@ export class AgentDashboard implements Component {
 	dispose(): void { this.closed = true; this.generation++; this.descriptionGeneration++; this.latestRead?.abort(); this.input.focused = false; }
 }
 
-async function interactiveDashboard(sources: AgentObservationSources, ctx: ExtensionCommandContext, actions?: DashboardActions): Promise<void> {
+async function interactiveDashboard(sources: AgentObservationSources, ctx: ExtensionContext, actions?: DashboardActions): Promise<void> {
 	const state: DashboardState = { tab: "sessions", filter: "", selected: {} };
 	for (;;) {
 		const request = await ctx.ui.custom<DashboardActionRequest | undefined>((tui, theme, keys, done) => new AgentDashboard(sources, tui, theme, keys, done, state, Boolean(actions)), {
@@ -533,7 +556,7 @@ async function interactiveDashboard(sources: AgentObservationSources, ctx: Exten
 	}
 }
 
-export async function showAgentDashboard(sources: AgentObservationSources, ctx: ExtensionCommandContext, actions?: DashboardActions): Promise<void> {
+export async function showAgentDashboard(sources: AgentObservationSources, ctx: ExtensionContext, actions?: DashboardActions): Promise<void> {
 	if (ctx.mode === "tui") return interactiveDashboard(sources, ctx, actions);
 	const text = dashboardText(await readAgentDashboard(sources));
 	if (ctx.hasUI) ctx.ui.notify(text, "info");

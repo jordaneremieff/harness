@@ -109,6 +109,18 @@ describe("agent dashboard interaction", () => {
 		const paints = f.paints(); finish([]); await tick(); assert.equal(f.paints(), paints);
 		f.panel.dispose(); await f.panel.refresh(); assert.equal(f.paints(), paints);
 	});
+	it("keeps Escape and configured cancel active in every dashboard mode", async () => {
+		for (const cancel of ["\x1b", "\x18"]) {
+			const f = fixture(sources(), new Keys(TUI_KEYBINDINGS, { "tui.select.cancel": "ctrl+x" }) as KeybindingsManager); await tick();
+			f.panel.handleInput("/"); f.panel.handleInput("parser"); f.panel.handleInput(cancel);
+			assert.equal(f.state.filter, ""); assert.doesNotMatch(f.screen(), /Type to filter/);
+			f.panel.handleInput("?"); assert.match(f.screen(), /Agent help/);
+			f.panel.handleInput(cancel); assert.doesNotMatch(f.screen(), /Agent help/);
+			f.panel.handleInput("\r"); await tick(); assert.ok(f.state.reader);
+			f.panel.handleInput(cancel); assert.equal(f.state.reader, undefined); assert.equal(f.closes(), 0);
+			f.panel.handleInput(cancel); assert.equal(f.closes(), 1);
+		}
+	});
 	it("opens actual inspection pages and follows exact cursors and chunk offsets without complete-result claims", async () => {
 		const calls: unknown[] = [];
 		const f = fixture({ ...sources(), inspect: async (id, options) => {

@@ -6,7 +6,7 @@ import { AgentDashboard, dashboardRecords, readAgentDashboard, type AgentInspect
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const keys = new Keys(TUI_KEYBINDINGS) as KeybindingsManager;
-const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text } as Theme;
+const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text, italic: (text: string) => text, strikethrough: (text: string) => text, underline: (text: string) => text } as Theme;
 const now = Date.now();
 const sessions = ["alpha", "bravo"].map((id, i) => ({ sessionId: `session-${id}`, name: "Parser audit", firstMessage: "Check the parser.", cwd: `/work/${id}`, modifiedAt: now - i * 90000, live: true, operation: i ? null : "operation", model: { provider: "sample", modelId: "reasoner", thinkingLevel: "high" } }));
 function inspection(id: string, text = "Latest meaningful result"): AgentInspection {
@@ -40,6 +40,45 @@ it("reserves a distinct ID suffix for colliding directories and long names", asy
 		const text = f.panel.render(width).join("\n"); assert.match(text, /\[-alpha\]/); assert.match(text, /\[-bravo\]/);
 	}
 	f.panel.dispose();
+});
+it("uses distinct suffixes when directory names collide with ID suffixes", async () => {
+	const f = fixture({ sessions: async () => [
+		{ ...sessions[0], sessionId: "id-111111", cwd: "/work/abcdef" },
+		{ ...sessions[1], sessionId: "id-abcdef", cwd: "/work/shared" },
+		{ ...sessions[1], sessionId: "id-333333", cwd: "/work/shared" },
+	] }); await tick();
+	for (const width of [80, 120]) {
+		const labels = f.panel.render(width).filter((line) => line.includes("Parser audit [")).map((line) => line.match(/Parser audit \[[^\]]+\]/)?.[0]);
+		assert.equal(labels.length, 3); assert.equal(new Set(labels).size, 3);
+	}
+	f.panel.dispose();
+});
+it("renders compact and wide selected Markdown without hiding the body after a heading", async () => {
+	const f = fixture({ inspect: async (id) => inspection(id, "# Result\n\nThe **parser** is ready.") }); await tick();
+	for (const width of [80, 120]) {
+		const screen = f.panel.render(width).join("\n");
+		assert.match(screen, /Result/); assert.match(screen, /The parser is ready/); assert.doesNotMatch(screen, /# Result|\*\*parser\*\*/);
+	}
+	f.panel.dispose();
+});
+it("retains selected-only model search across inventory refresh", async () => {
+	let descriptions = 0;
+	const f = fixture({ sessions: async () => [{ ...sessions[0], model: undefined, live: false }], describe: async () => {
+		descriptions++; return { provenance: "stored", parentSessionIds: [], model: { provider: "sample", modelId: "selected-model", thinkingLevel: "low" } };
+	} }); await tick();
+	f.panel.handleInput("/"); f.panel.handleInput("selected-model"); f.panel.handleInput("\r");
+	await f.panel.refresh(); await tick();
+	assert.match(f.panel.render(120).join("\n"), /1 matching/); assert.equal(f.panel.state.selected.sessions, "session-alpha");
+	assert.equal(descriptions, 2); assert.deepEqual(f.calls, ["session-alpha", "session-alpha"]); f.panel.dispose();
+});
+it("restarts selected preview when late model metadata satisfies a confirmed filter", async () => {
+	let resolve!: (data: Awaited<ReturnType<NonNullable<AgentObservationSources["describe"]>>>) => void;
+	const f = fixture({ sessions: async () => [{ ...sessions[0], model: undefined, live: false }], describe: () => new Promise((done) => { resolve = done; }) }); await tick();
+	f.panel.handleInput("/"); f.panel.handleInput("selected-model"); f.panel.handleInput("\r");
+	assert.match(f.panel.render(120).join("\n"), /0 matching/);
+	resolve({ provenance: "stored", parentSessionIds: [], model: { provider: "sample", modelId: "selected-model", thinkingLevel: "low" } }); await tick();
+	assert.match(f.panel.render(120).join("\n"), /1 matching/); assert.match(f.panel.render(120).join("\n"), /Latest meaningful result/);
+	assert.deepEqual(f.calls, ["session-alpha", "session-alpha"]); f.panel.dispose();
 });
 it("searches known displayed states and model fields before the row cap without inspecting other sessions", async () => {
 	const rows = [
