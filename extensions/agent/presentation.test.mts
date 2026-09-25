@@ -10,7 +10,7 @@ import { Text, visibleWidth, getKeybindings, setKeybindings, KeybindingsManager,
 import registerAgentExtension, { AgentManager } from "./index.ts";
 import { AgentStore } from "./store.ts";
 import { createTestRuntime } from "./test-runtime.mts";
-import { displayPreview, displayText, renderAgentCall, renderAgentResult, renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
+import { displayPreview, displayText, renderAgentCall, renderAgentResult, renderCompactCall, renderCompactResult, renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
 
 const theme = { fg: (_color: string, value: string) => value, bg: (_color: string, value: string) => value, getBgAnsi: () => "", bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): string[] }, width = 100) => component.render(width).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
@@ -462,5 +462,60 @@ describe("agent_send presentation", () => {
 		assert.match(screen(error), /Send error/);
 		assert.doesNotMatch(screen(error), /Admission receipt|\x1b/);
 		assert.ok(error instanceof Text);
+	});
+});
+
+describe("agent_compact presentation", () => {
+	it("registers native call and result renderers without changing execution", () => {
+		const tools: ToolDefinition[] = [];
+		registerAgentExtension({ on() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer: () => {}, registerTool: (tool: ToolDefinition) => tools.push(tool) } as unknown as ExtensionAPI);
+		const tool = tools.find((item) => item.name === "agent_compact");
+		assert.equal(tool?.renderCall, renderCompactCall);
+		assert.equal(tool?.renderResult, renderCompactResult);
+		assert.equal(typeof tool?.execute, "function");
+	});
+
+	it("marks a summary call as self-compaction and shows the summary size without its content", () => {
+		const summary = "Objective: hand over the slice. Next: run the checks.";
+		const text = screen(renderCompactCall({ sessionId: "current-session", summary }, theme, { expanded: false, argsComplete: true }));
+		assert.match(text, /agent_compact · self · current-session/);
+		assert.match(text, new RegExp(`summary \\(${summary.length} chars\\)`));
+		assert.match(text, /Native compaction entry/);
+		assert.doesNotMatch(text, /Objective: hand over/);
+	});
+
+	it("marks a call without summary as native summarization of the named session", () => {
+		const plain = screen(renderCompactCall({ sessionId: "worker-session" }, theme, { expanded: false, argsComplete: true }));
+		assert.match(plain, /agent_compact · worker-session/);
+		assert.match(plain, /Native summarization/);
+		assert.match(plain, /[Ii]nstructions: none/);
+		assert.doesNotMatch(plain, /self ·|agent-authored/);
+		const instructed = screen(renderCompactCall({ sessionId: "worker-session", instructions: "Keep the API section" }, theme, { expanded: false, argsComplete: true }));
+		assert.match(instructed, /[Ii]nstructions: present/);
+		assert.doesNotMatch(instructed, /Keep the API section/);
+	});
+
+	it("labels the self receipt as a request and native results as compaction outcomes", () => {
+		const result = { content: [{ type: "text" as const, text: "Self-compaction requested for the end of this tool batch." }], details: undefined };
+		const self = screen(renderCompactResult(result, { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: "current-session", summary: "s" } }));
+		assert.match(self, /Self-compaction request receipt/);
+		assert.match(self, /does not establish that compaction occurred/);
+		const native = screen(renderCompactResult(result, { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: "worker-session" } }));
+		assert.match(native, /Native compaction result/);
+		const pending = screen(renderCompactResult(result, { expanded: false, isPartial: true }, theme, { isError: false, args: { sessionId: "current-session", summary: "s" } }));
+		assert.match(pending, /Compaction pending/);
+	});
+
+	it("shows errors without a receipt claim, escapes controls, and fits narrow widths", () => {
+		const error = renderCompactResult({ content: [{ type: "text" as const, text: "Self-compaction accepts summary, not summarizer instructions.\x1b[2J" }], details: undefined }, { expanded: true, isPartial: false }, theme, { isError: true, args: { sessionId: "current-session", summary: "s" } });
+		const text = screen(error);
+		assert.match(text, /Compact error/);
+		assert.doesNotMatch(text, /receipt|Compaction pending|\x1b/);
+		assert.ok(text.includes("Self-compaction accepts summary"));
+		const pending = screen(renderCompactCall({}, theme, { expanded: false, argsComplete: false }));
+		assert.match(pending, /target pending/);
+		assert.match(pending, /Native summarization/);
+		const call = renderCompactCall({ sessionId: "t", summary: "日本語 😀" }, theme, { expanded: false, argsComplete: true });
+		for (const width of [10, 40, 100]) assert.ok(call.render(width).every((line) => visibleWidth(line) <= width));
 	});
 });

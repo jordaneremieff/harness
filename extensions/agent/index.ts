@@ -24,7 +24,7 @@ import { getAgentDir, hasTrustRequiringProjectResources, type ModelRuntime, Proj
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import { createAgentCommand, type AgentSessionSummary, type AgentCommandAction } from "./command.ts";
-import { PEER_OUTCOME_DISPLAY_LIMIT, renderAgentCall, renderAgentResult, renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
+import { PEER_OUTCOME_DISPLAY_LIMIT, renderAgentCall, renderAgentResult, renderCompactCall, renderCompactResult, renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
 import { aggregateFooter, FOOTER_ENTRY, formatAgentTotals, restoreFooter, SessionFooter, WORK_STATUS_REQUEST, WORK_STATUS_SNAPSHOT, type AgentFooterState, type DetachedFooterState, type FooterCheckpoint, type FooterTotals } from "./footer.ts";
 import { isManagedChild } from "./host-role.ts";
 import { createRestartCommand, type RestartHosts } from "./restart.ts";
@@ -1592,6 +1592,8 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 
 	pi.registerTool<typeof CompactParams, unknown>({
 		name: "agent_compact", label: "Agent compact", description: "Compact an ordinary Pi session. For your own current session ID, supply summary: Pi applies it after this tool batch and continues the same run, without terminal input or a new session. This is an agent-authored summary, not native summarization or a completeness check. Abort suppresses continuation. For another session, omit summary; native compaction aborts its work and does not resume it.", parameters: CompactParams,
+		renderCall: renderCompactCall,
+		renderResult: renderCompactResult,
 		execute: async (id, params, signal, _onUpdate, ctx) => {
 			if (params.sessionId === ctx.sessionManager.getSessionId()) {
 				for (const owner of owners.managers.values()) {

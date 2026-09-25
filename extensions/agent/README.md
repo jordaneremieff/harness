@@ -113,6 +113,18 @@ session snapshots for spawn, fork, rewind, attach, place, and status. Detach
 labels its snapshot **Selected before transfer**; it does not establish the
 child runtime's later model selection. Missing metadata remains unknown.
 
+`agent_compact` returns no session snapshot, so its card names the target and
+the path instead. A call with `summary` is a self-compaction request: the card
+marks it `self`, shows the target session ID and the summary's character count,
+and describes the result as a native compaction entry carrying the
+agent-authored summary at the end of the tool batch. The summary text itself
+stays in the native tool-call arguments and appears only under expansion. A
+call without `summary` names the session for native summarization and reports
+whether summarizer instructions are present. Result cards label the self
+receipt as a request that does not establish applied compaction, mark native
+compaction results, and keep errors distinct. Rendering reads no sessions and
+changes no execution behavior.
+
 Native tool expansion reveals arguments, returned text, and snapshot identifiers.
 Each expanded text block retains at most 32,000 source UTF-16 code units without
 splitting a surrogate pair. Escaping terminal controls expands that prefix to at

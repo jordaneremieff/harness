@@ -277,3 +277,32 @@ export function renderSendResult(result: AgentToolResult<unknown>, options: Tool
 	const label = context.isError ? "Send error" : options.isPartial ? "Admission pending" : "Admission receipt (not proof of delivery or action)";
 	return textComponent(theme.fg(context.isError ? "error" : "muted", `${label}:\n`) + theme.fg("toolOutput", options.expanded ? boundedMessage(output) : displayPreview(output, 300)), context.lastComponent);
 }
+
+/** The summary argument selects the self path; execution still refuses a mismatched session ID. */
+export function renderCompactCall(value: unknown, theme: Theme, context: { expanded: boolean; argsComplete: boolean; lastComponent?: Component }): Component {
+	const args = peerRecord(value);
+	const target = typeof args.sessionId === "string" && args.sessionId ? displayPreview(args.sessionId, 300) : "(target pending)";
+	const summary = peerField(args, "summary");
+	const lines = [theme.fg("toolTitle", theme.bold("agent_compact")) + theme.fg("accent", summary ? ` · self · ${target}` : ` · ${target}`)];
+	if (summary) lines.push(theme.fg("muted", `Native compaction entry with the agent-authored summary (${summary.length} chars) at this tool batch's end`));
+	else {
+		lines.push(theme.fg("muted", "Native summarization of the named session; it aborts active work and does not resume"));
+		lines.push(theme.fg("muted", `Summarizer instructions: ${peerField(args, "instructions") ? "present" : "none"}`));
+	}
+	if (context.expanded) lines.push(theme.fg("toolOutput", boundedMessage(JSON.stringify(args, null, 2))));
+	else lines.push(theme.fg("dim", toolExpansionHint("arguments")));
+	return textComponent(lines.join("\n"), context.lastComponent);
+}
+
+export function renderCompactResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; args?: unknown; lastComponent?: Component }): Component {
+	const output = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+	const selfPath = peerField(peerRecord(context.args), "summary") !== "";
+	const label = context.isError
+		? "Compact error"
+		: options.isPartial
+			? "Compaction pending"
+			: selfPath
+				? "Self-compaction request receipt (does not establish that compaction occurred)"
+				: "Native compaction result";
+	return textComponent(theme.fg(context.isError ? "error" : "muted", `${label}:\n`) + theme.fg("toolOutput", options.expanded ? boundedMessage(output) : displayPreview(output, 300)), context.lastComponent);
+}
