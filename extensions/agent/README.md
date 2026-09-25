@@ -579,15 +579,20 @@ full arguments remain in Pi's native tool call. Display bounds never change the
 transmitted message. Results distinguish admission receipts from send errors.
 
 Received peer messages use Pi's native custom-message expansion. The collapsed
-view shows the message kind, source session ID, literal excerpt, provenance,
-and configured expansion hint. Peer-operation outcomes come from execution
-metadata; they do not describe primary-session state or task acceptance.
-Detached-run batches identify their aggregate outcomes and expose individual
-run/session IDs on expansion. Identity and failure information precede optional
-text and are not width-truncated. Malformed identity metadata is labeled
-unavailable rather than presented as a shortened source.
+card shows the event or outcome first, then a literal message, result, or run
+excerpt from the source. For a detached-run batch, a failed or abandoned run
+summary takes priority. The producer sends settled runs in batches of at most
+32. Each batch shows its outcomes. A failed or abandoned excerpt requires every
+run line to match its metadata. The card labels peer data unverified and reports
+saved or unsaved operation state only when metadata supplies it. Each collapsed
+row fits the available width; source IDs do not displace the excerpt. Oversized
+metadata reports an unknown outcome and an unchecked source; an unmatched
+notification preamble remains visible.
 
-Expansion exposes the sanitized notification and its message/reply references.
+Expansion exposes the sanitized original notification and exact valid message,
+reply, session, operation, and run IDs. Invalid IDs use bounded excerpts and
+point to full metadata in native history. Large batches show at most 32 run
+metadata rows with a notice for the omitted rows.
 An explicit display-limit notice preserves access through native history;
 `agent_inspect` retains the stored operation outcome and `agent_runs` retains
 run outcomes. The renderer changes neither provider content nor delivery timing.

@@ -24,7 +24,7 @@ import { getAgentDir, hasTrustRequiringProjectResources, type ModelRuntime, Proj
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import { createAgentCommand, type AgentSessionSummary, type AgentCommandAction } from "./command.ts";
-import { renderAgentCall, renderAgentResult, renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
+import { PEER_OUTCOME_DISPLAY_LIMIT, renderAgentCall, renderAgentResult, renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
 import { aggregateFooter, FOOTER_ENTRY, formatAgentTotals, restoreFooter, SessionFooter, WORK_STATUS_REQUEST, WORK_STATUS_SNAPSHOT, type AgentFooterState, type DetachedFooterState, type FooterCheckpoint, type FooterTotals } from "./footer.ts";
 import { isManagedChild } from "./host-role.ts";
 import { createRestartCommand, type RestartHosts } from "./restart.ts";
@@ -1045,19 +1045,22 @@ export class AgentManager {
 			!run.acknowledged && (run.state === "finished" || run.state === "failed" || run.state === "abandoned"),
 		);
 		if (!settled.length) return;
-		const lines = settled.map((run) => {
-			const detail = run.error || run.summary || (run.state === "abandoned"
-				? "the process is gone; completed work remains; a retained writer claim blocks reopening"
-				: "no result summary; reopen the session to review its work");
-			const flat = detail.replace(/\s+/gu, " ").trim();
-			const summary = flat.length > MAX_SUMMARY_CHARS ? `${flat.slice(0, MAX_SUMMARY_CHARS)}…` : flat;
-			return `Detached run ${run.runId} ${run.state}, session ${run.sessionId}: ${summary}`;
-		});
-		primary.send(lines.join("\n"), { kind: "runs", runIds: settled.map((run) => run.runId), outcomes: settled.map((run) => ({ runId: run.runId, sessionId: run.sessionId, status: run.state })) });
-		// The marker suppresses later reports, not concurrent primary processes.
-		// Sending and acknowledgement are not atomic: a crash before the marker
-		// permits a repeat; asynchronous delivery failure after it loses the notice.
-		for (const run of settled) this.detachedRuns.acknowledge(run.runId);
+		for (let offset = 0; offset < settled.length; offset += PEER_OUTCOME_DISPLAY_LIMIT) {
+			const batch = settled.slice(offset, offset + PEER_OUTCOME_DISPLAY_LIMIT);
+			const lines = batch.map((run) => {
+				const detail = run.error || run.summary || (run.state === "abandoned"
+					? "the process is gone; completed work remains; a retained writer claim blocks reopening"
+					: "no result summary; reopen the session to review its work");
+				const flat = detail.replace(/\s+/gu, " ").trim();
+				const summary = flat.length > MAX_SUMMARY_CHARS ? `${flat.slice(0, MAX_SUMMARY_CHARS)}…` : flat;
+				return `Detached run ${run.runId} ${run.state}, session ${run.sessionId}: ${summary}`;
+			});
+			primary.send(lines.join("\n"), { kind: "runs", runIds: batch.map((run) => run.runId), outcomes: batch.map((run) => ({ runId: run.runId, sessionId: run.sessionId, status: run.state })) });
+			// The marker suppresses later reports, not concurrent primary processes.
+			// Sending and acknowledgement are not atomic: a crash before the marker
+			// permits a repeat; asynchronous delivery failure after it loses the notice.
+			for (const run of batch) this.detachedRuns.acknowledge(run.runId);
+		}
 	}
 
 	async send(sessionId: string, message: string, fromSessionId?: string, replyTo?: string): Promise<string> {

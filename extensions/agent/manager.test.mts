@@ -7,9 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "@earendil-works/pi-agent-core";
-import { type ExtensionAPI, type ExtensionCommandContext, type RegisteredCommand, type ModelRuntime, ProjectTrustStore, SessionManager } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionCommandContext, type RegisteredCommand, type ModelRuntime, ProjectTrustStore, SessionManager, type Theme } from "@earendil-works/pi-coding-agent";
 import { DetachedRuns, formatRun } from "./detached.ts";
 import registerAgentExtension, { AgentManager } from "./index.ts";
+import { renderPeerMessage } from "./presentation.ts";
 import { AgentWorkerSession } from "./worker.ts";
 import { PlaceBook } from "./places.ts";
 import { AgentStore } from "./store.ts";
@@ -184,7 +185,7 @@ describe("detached run ownership", () => {
 	});
 });
 
-function recordRun(test: Harness, runId: string, pid = process.pid): DetachedRuns {
+function recordRun(test: Harness, runId: string, pid = process.pid, startedAt = "2026-09-10T00:00:00.000Z"): DetachedRuns {
 	const runs = new DetachedRuns(test.sessionsRoot);
 	runs.writeRequest({
 		runId,
@@ -195,7 +196,7 @@ function recordRun(test: Harness, runId: string, pid = process.pid): DetachedRun
 		cwd: test.cwd,
 		prompt: "work",
 		logFile: runs.logFile(runId),
-		startedAt: "2026-09-10T00:00:00.000Z",
+		startedAt,
 		pid,
 	});
 	return runs;
@@ -246,6 +247,60 @@ describe("detached run visibility", () => {
 			assert.equal(runs.get("live")?.acknowledged, undefined);
 			test.manager.reportSettledRuns("primary");
 			assert.equal(messages.length, 1);
+		} finally { await test.close(); }
+	});
+
+	it("reports a late failure in bounded batches and retries only an unsent batch", async () => {
+		const test = await harness();
+		try {
+			const runs = new DetachedRuns(test.sessionsRoot);
+			const runIds = Array.from({ length: 33 }, (_, index) => `batch-${String(index).padStart(2, "0")}`);
+			for (const [index, runId] of runIds.entries()) {
+				recordRun(test, runId, process.pid, `2026-09-10T00:00:${String(32 - index).padStart(2, "0")}.000Z`);
+				runs.writeResult({ runId, state: index === 32 ? "failed" : "finished", finishedAt: "2026-09-10T00:01:00.000Z", ...(index === 32 ? { error: "Late parser failure" } : { summary: "Done" }) });
+			}
+			type Notice = { content: string; details: { kind: string; runIds: string[]; outcomes: Array<{ runId: string; sessionId: string; status: string }> } };
+			const accepted: Notice[] = [];
+			let attempts = 0;
+			const capture = (content: string, details: unknown) => {
+				if (++attempts === 2) throw new Error("second batch refused");
+				accepted.push({ content, details: details as Notice["details"] });
+			};
+			test.manager.registerPrimary("primary", test.cwd, capture);
+			assert.throws(() => test.manager.reportSettledRuns("primary"), /second batch refused/u);
+			assert.equal(accepted.length, 1);
+			assert.equal(runs.get(runIds[0])?.acknowledged, true);
+			assert.equal(runs.get(runIds[31])?.acknowledged, true);
+			assert.equal(runs.get(runIds[32])?.acknowledged, undefined);
+			test.manager.registerPrimary("primary", test.cwd, capture);
+			test.manager.reportSettledRuns("primary");
+			assert.equal(accepted.length, 2);
+			const first = defined(accepted[0]);
+			const last = defined(accepted[1]);
+			assert.deepEqual(accepted.flatMap((item) => item.details.runIds), runIds);
+			assert.deepEqual(accepted.map((item) => item.details.outcomes.length), [32, 1]);
+			for (const item of accepted) {
+				assert.equal(item.details.kind, "runs");
+				assert.deepEqual(item.details.runIds, item.details.outcomes.map((outcome) => outcome.runId));
+				assert.equal(item.content.split("\n").length, item.details.outcomes.length);
+				for (const outcome of item.details.outcomes) assert.ok(item.content.includes(`Detached run ${outcome.runId} ${outcome.status}, session ${outcome.sessionId}: `));
+			}
+			assert.deepEqual(last.details.outcomes, [{ runId: runIds[32], sessionId: `session-${runIds[32]}`, status: "failed" }]);
+			const plain = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, getBgAnsi: () => "", bold: (text: string) => text } as unknown as Theme;
+			const render = (item: Notice, expanded: boolean) => {
+				const card = renderPeerMessage({ role: "custom", timestamp: 1, customType: "agent.peer", display: true, ...item }, { expanded, outputPad: 1 }, plain);
+				assert.ok(card);
+				return card.render(140).join("\n");
+			};
+			assert.match(render(first, false), /Runs: 32/);
+			const failure = render(last, false);
+			assert.match(failure, /Runs: 1 · 1 failed/);
+			assert.match(failure, /↳ failed: Late parser failure/);
+			assert.doesNotMatch(failure, /Source unavailable|Source not checked/);
+			assert.equal((render(first, true).match(/runId: batch-/gu) ?? []).length, 32);
+			assert.equal(runs.get(runIds[32])?.acknowledged, true);
+			test.manager.reportSettledRuns("primary");
+			assert.equal(accepted.length, 2);
 		} finally { await test.close(); }
 	});
 
