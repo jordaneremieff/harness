@@ -7,7 +7,7 @@ This extension gives the agent public-page reading and web search without an ext
 
 | Surface | Kind | Purpose |
 |---|---|---|
-| `web_read` | tool | Read one public HTTP(S) page as bounded static text with the final URL, retrieval time, and snapshot excerpt references. |
+| `web_read` | tool | Read one public HTTP(S) page as bounded static text, or locate a literal phrase, with the final URL, retrieval time, and snapshot excerpt references. |
 | `web_search` | tool | Search the public web with optional country, language, freshness, SafeSearch, spellcheck, extra excerpts, and pagination controls. |
 
 `web_read` registers first, then `web_search`. The reader covers the observed
@@ -41,6 +41,35 @@ extracts the public page again. No snapshot or cursor is stored. If the source
 changes, start a new read without continuation fields and keep its evidence
 separate from the earlier snapshot. The byte budget may change between calls.
 
+To locate a named phrase without returning all preceding excerpts, add `find`:
+
+```json
+{"url":"https://git-scm.com/docs/git-worktree","find":"git worktree repair","max_bytes":1000}
+```
+
+The query is a case-sensitive, single-line literal, not a regex or fuzzy search.
+Search compares it exactly with the retained normalized text. It does not trim,
+case-fold, or normalize the query's whitespace or Unicode. Normalized paragraphs
+are separated by newlines; a single-line query does not cross those boundaries.
+It does cross the reader's excerpt splits within a paragraph.
+
+Results contain the full excerpt chunks that intersect any match, once each in
+source order, with their original labels. They omit nonmatching chunks, not just
+preceding text. Counts refer to returned excerpts, not query occurrences. A match
+across a split selects both chunks; the byte budget can put those parts in separate
+responses. Repeat the same `find`, `url`, and returned continuation fields to
+obtain the remaining matching excerpts. `excerpt_offset` still means an index
+in the snapshot, never an index in the filtered results. `nextOffset: null` ends
+matching retained excerpts, not necessarily the full page.
+
+For surrounding context, omit `find` and use the source-checked sequential call
+shown in the response. That call starts one excerpt before the first returned
+matching excerpt (or at zero). Continue sequentially for further context.
+`details.find.firstMatchOffset` gives the first returned matching excerpt's
+zero-based snapshot index, or `null` when none is returned. No-match results
+state the requested offset and apply only to retained text at or after that
+excerpt, not to the complete page.
+
 ## Configuration
 
 The `web_search` subscription token comes from `PI_BRAVE_API_KEY` in the Pi
@@ -57,10 +86,19 @@ no key or configuration; it fetches only public pages with no credential.
   `excerpt_offset` is a zero-based excerpt index, default 0, bounded to 131072
   (the retained-text limit bounds the possible excerpt count). Every nonzero
   offset requires `expected_source_id`, exactly 16 lowercase hex characters.
-  A supplied source ID is checked even at offset zero. Malformed continuation
-  inputs are refused before network access. Use the returned `nextOffset`;
-  offsets beyond the retained excerpt count are refused, while an exact-end
+  A supplied source ID is checked even at offset zero. The reader validates
+  effective arguments after Pi's schema normalization, before network access.
+  Pi omits optional null values and can convert numbers or booleans to strings;
+  the reader does not impose a separate raw-input policy. Malformed effective
+  continuation inputs are refused before network access. Use the returned
+  `nextOffset`; offsets beyond the retained excerpt count are refused, while an exact-end
   offset returns no excerpts and `nextOffset: null`.
+  Optional `find` is a nonblank single-line literal of at most 200 UTF-16 code
+  units. The reader rejects control characters, bidi controls, line separators,
+  and unpaired surrogates before network access. Reader-owned semantic errors
+  do not echo the invalid query. Pi's earlier schema-validation errors can
+  include JSON-escaped received arguments. Valid query text is explicitly
+  labeled as an untrusted literal.
 - **Public addresses only.** The hostname is resolved for A and AAAA records and
   every returned address is checked against an allow/deny policy before use. IPv4
   rejects special-use blocks (private, loopback, link-local, CGNAT, multicast,
@@ -106,7 +144,7 @@ no key or configuration; it fetches only public pages with no credential.
   `[<sourceId>:E<n>]`. `sourceId` is a 16-hex SHA-256 of the final URL plus the
   normalized extracted paragraphs. A NUL separates the URL from the newline-joined
   paragraphs. Unchanged URL and text
-  yield the same labels independent of response budgets and offsets. Excerpts
+  yield the same labels independent of response budgets, offsets, and `find`. Excerpts
   split each paragraph into chunks of at most 800 UTF-8 bytes without splitting
   Unicode code points. A changed final URL or retained text yields a different
   source ID and refuses a continuation before returning any excerpts. This ID
@@ -117,11 +155,15 @@ no key or configuration; it fetches only public pages with no credential.
   to cite the final URL plus labels. The header states the final URL, requested
   URL, retrieval time (ISO 8601), title, content type, extraction method and
   status, and the source id.
-- **Pagination and extraction limits.** Each response stays below Pi's 50 KB /
-  2000-line tool-output limits and returns at most 160 excerpts within its byte
-  budget. `nextOffset` identifies the first unreturned excerpt, or is `null` at
-  the end of retained text. `extractionTruncated` separately reports the
-  retained-text cap. Text beyond that cap is unavailable through continuation;
+- **Pagination and extraction limits.** Each response's model-visible text
+  stays below Pi's 50 KiB / 2000-line tool-output limits and returns at most
+  160 excerpts within its byte budget. These are text bounds, not a limit on
+  `JSON.stringify(result)`: escaping and serialized metadata add bytes.
+  `nextOffset` identifies the first unreturned eligible excerpt, or is `null`
+  when none remain. Without `find`, all retained excerpts are eligible.
+  With `find`, only chunks that intersect a literal match are eligible, including
+  a match that begins in a previous chunk. `extractionTruncated` separately reports
+  the retained-text cap. Text beyond that cap is unavailable through continuation;
   the warning persists on the final page. Static extraction remains incomplete
   evidence even without that flag. `outputTruncated` is true when more excerpts
   follow or extraction hit the cap; it does not describe excerpts before the
@@ -132,6 +174,11 @@ no key or configuration; it fetches only public pages with no credential.
   `downloadedBytes`, `redirectCount`, `title`, `sourceId`, `excerptCount`,
   `excerptOffset`, `nextOffset`, `extractionTruncated`, `extraction`, `status`,
   and `outputTruncated` — never a credential or raw body.
+  Search additionally returns `find: { query, firstMatchOffset }`; unfiltered
+  reads omit this field. The first matching offset refers to this response,
+  not to matches before the requested offset. The search has no result cache,
+  occurrence list, or stored cursor; it uses the same bounded fetch, extraction,
+  source check, and excerpt segmentation as sequential reads.
   `downloadedBytes` counts the final response body, not headers or transfer framing.
   Redirect bodies are discarded, and URLs are normalized without fragments.
 - **Failures.** Failures still throw, so Pi produces an error result with text
@@ -216,8 +263,14 @@ status and final-URL diagnostics after redirects, server-only retry hints,
 extraction failure metadata, unread error bodies, native HTTP parser errors,
 multi-page reconstruction under varying budgets, Unicode and stable labels,
 invalid continuation refusal before fetch, changed-source refusal, exact-end and
-empty snapshots, extraction-cap honesty, and complete response bounds. A
-registered-entrypoint test follows model-visible continuation arguments through
-the native HTTP parser with synthetic sockets. The load check establishes Pi
+empty snapshots, extraction-cap honesty, and bounded response fixtures. Literal
+search tests cover late evidence, exact case and Unicode, split and overlapping
+matches, snapshot-index pagination, changing budgets, effective-query validation
+before fetch, native schema normalization and diagnostics, no-match scope,
+cancellation, and unchanged sequential reads. A quote-heavy fixture distinguishes
+model-visible text bounds from larger JSON serialization. Registered
+entrypoint tests follow model-visible sequential and search continuation
+arguments through the native HTTP parser with synthetic sockets, then return
+from search to sequential context. The load check establishes Pi
 loader acceptance; neither check establishes live-session activation or general
 research time savings.

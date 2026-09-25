@@ -189,6 +189,7 @@ export interface PageExcerptOptions {
 	max_bytes?: number;
 	excerpt_offset?: number;
 	expected_source_id?: string;
+	find?: string;
 }
 
 export interface PageExcerpts {
@@ -198,10 +199,23 @@ export interface PageExcerpts {
 	nextOffset: number | null;
 	extractionTruncated: boolean;
 	outputTruncated: boolean;
+	find?: { query: string; firstMatchOffset: number | null };
 }
 
 /** Validate before network access and at the pure transformation boundary. */
 export function validateExcerptOptions(options: PageExcerptOptions): void {
+	if (
+		options.find !== undefined &&
+		(typeof options.find !== "string" ||
+			options.find.length > 200 ||
+			!options.find.trim() ||
+			cleanPageText(options.find) !== options.find ||
+			/[\t\r\n\u2028\u2029\ud800-\udfff]|\p{Bidi_Control}/u.test(options.find))
+	) {
+		throw new Error(
+			"Web reader find must be a nonblank single-line literal of at most 200 UTF-16 code units, without control characters, bidi controls, or unpaired surrogates.",
+		);
+	}
 	const maxBytes = options.max_bytes === undefined ? 16_000 : options.max_bytes;
 	if (!Number.isInteger(maxBytes) || maxBytes < 1000 || maxBytes > MAX_EXCERPT_BYTES) {
 		throw new Error("Web reader max_bytes must be an integer from 1000 through 24000.");
@@ -242,15 +256,17 @@ export function makePageExcerpts(page: PageText, finalUrl: string, options: Page
 	let used = 0;
 	let index = 0;
 	let nextOffset: number | null = null;
-	for (const text of excerptChunks(page.paragraphs)) {
+	let firstMatchOffset: number | null = null;
+	for (const { text, matches } of excerptChunks(page.paragraphs, options.find)) {
 		const current = index++;
-		if (current < excerptOffset) continue;
+		if (current < excerptOffset || !matches) continue;
 		const reference = `${sourceId}:E${current + 1}`;
 		const bytes = Buffer.byteLength(`[${reference}] ${text}\n\n`);
 		if (used + bytes > maxBytes || excerpts.length >= 160) {
 			nextOffset = current;
 			break;
 		}
+		firstMatchOffset ??= current;
 		excerpts.push({ reference, text });
 		used += bytes;
 	}
@@ -266,18 +282,27 @@ export function makePageExcerpts(page: PageText, finalUrl: string, options: Page
 		nextOffset,
 		extractionTruncated: page.truncated,
 		outputTruncated: nextOffset !== null || page.truncated,
+		...(options.find === undefined ? {} : { find: { query: options.find, firstMatchOffset } }),
 	};
 }
 
-/** Segmentation is independent of response offsets and budgets. */
-function* excerptChunks(paragraphs: string[]): Generator<string> {
+/** Segmentation and labels are independent of filtering, offsets, and budgets. */
+function* excerptChunks(paragraphs: string[], find?: string): Generator<{ text: string; matches: boolean }> {
 	for (const paragraph of paragraphs) {
 		const points = Array.from(paragraph);
 		let offset = 0;
+		let charOffset = 0;
+		let match = find === undefined ? -1 : paragraph.indexOf(find);
 		while (offset < points.length) {
 			const chunk = readExcerptChunk(points, offset);
 			offset = chunk.offset;
-			yield chunk.text;
+			if (find !== undefined && match >= 0 && match + find.length <= charOffset) {
+				// Retain overlap so a match across a chunk boundary selects both chunks.
+				match = paragraph.indexOf(find, Math.max(0, charOffset - find.length + 1));
+			}
+			const matches = find === undefined || (match >= 0 && match < charOffset + chunk.text.length);
+			charOffset += chunk.text.length;
+			yield { text: chunk.text, matches };
 		}
 	}
 }

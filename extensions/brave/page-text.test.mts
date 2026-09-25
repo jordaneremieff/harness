@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { extractPageText, makePageExcerpts } from "./page-text.ts";
+import { extractPageText, makePageExcerpts, type PageExcerptOptions, type PageText } from "./page-text.ts";
 
 const html = (text: string, signal?: AbortSignal) =>
 	extractPageText(Buffer.from(text), "text/html; charset=utf-8", signal);
@@ -233,5 +233,167 @@ describe("page excerpt references", () => {
 		for (const max of [999, 24001, 1.5, Number.NaN])
 			assert.throws(() => makePageExcerpts(page, "https://example.com", { max_bytes: max }), /max_bytes/);
 		assert.equal(makePageExcerpts({ ...page, truncated: true }, "https://example.com").outputTruncated, true);
+	});
+});
+
+describe("literal location in retained page text", () => {
+	const url = "https://example.com/evidence";
+	const plain = (paragraphs: string[]): PageText => ({ title: "", paragraphs, method: "plain-text", truncated: false });
+
+	it("locates late evidence without preceding excerpts and preserves sequential source labels", () => {
+		const page = plain([...Array.from({ length: 300 }, (_, i) => `Navigation ${i}`), "The named phrase is here."]);
+		const found = makePageExcerpts(page, url, { find: "named phrase", max_bytes: 1000 });
+		assert.deepEqual(found.excerpts, [{ reference: `${found.sourceId}:E301`, text: "The named phrase is here." }]);
+		assert.deepEqual(found.find, { query: "named phrase", firstMatchOffset: 300 });
+		assert.equal(found.nextOffset, null);
+		assert.equal(found.outputTruncated, false);
+		const sequential = makePageExcerpts(page, url, { excerpt_offset: 300, expected_source_id: found.sourceId });
+		assert.deepEqual(found.excerpts, sequential.excerpts);
+		assert.ok(!("find" in sequential));
+		assert.equal(makePageExcerpts(page, url, { find: "other" }).sourceId, found.sourceId);
+	});
+
+	it("matches literal case, spaces, punctuation, and Unicode without query normalization", () => {
+		const page = plain(["Needle", "needle", "café", "cafe\u0301", "one two", "a.*b", "aZZb", " spaced "]);
+		for (const [find, indexes] of [
+			["needle", [2]],
+			["NEEDLE", []],
+			["café", [3]],
+			["cafe\u0301", [4]],
+			["one  two", []],
+			["a.*b", [6]],
+			[" spaced ", [8]],
+			["Needleneedle", []],
+		] as const) {
+			const found = makePageExcerpts(page, url, { find });
+			assert.deepEqual(
+				found.excerpts.map((e) => e.reference),
+				indexes.map((i) => `${found.sourceId}:E${i}`),
+			);
+		}
+	});
+
+	it("finds whole literals across byte splits, including emoji and combining sequences", () => {
+		for (const [prefix, phrase] of [
+			["x".repeat(799), "needle"],
+			["x".repeat(798), "é😀e\u0301"],
+			["x".repeat(795), "👩‍🚀"],
+		] as const) {
+			const page = plain([`${prefix}${phrase}${"z".repeat(1700)}`]);
+			const first = makePageExcerpts(page, url, { find: phrase, max_bytes: 1000 });
+			assert.equal(first.excerpts.length, 1);
+			assert.equal(first.nextOffset, 1);
+			const second = makePageExcerpts(page, url, {
+				find: phrase,
+				max_bytes: 1000,
+				excerpt_offset: first.nextOffset,
+				expected_source_id: first.sourceId,
+			});
+			assert.equal(second.excerpts.length, 1);
+			assert.equal(second.excerpts[0].reference, `${first.sourceId}:E2`);
+			assert.equal(second.nextOffset, null);
+			assert.ok((first.excerpts[0].text + second.excerpts[0].text).includes(phrase));
+			assert.equal(Buffer.from(second.excerpts[0].text).toString("utf8"), second.excerpts[0].text);
+		}
+	});
+
+	it("selects only intersecting chunks at exact boundaries and retains overlapping matches", () => {
+		for (const [text, find, indexes] of [
+			[`${"x".repeat(794)}needle${"z".repeat(800)}`, "needle", [1]],
+			[`${"x".repeat(800)}needle`, "needle", [2]],
+			[`${"x".repeat(797)}ababa${"z".repeat(800)}`, "aba", [1, 2]],
+			["a".repeat(1601), "a".repeat(200), [1, 2, 3]],
+			[`${"x".repeat(1200)}needle${"x".repeat(1200)}needle`, "needle", [2, 4]],
+		] as const) {
+			const found = makePageExcerpts(plain([text]), url, { find });
+			assert.deepEqual(
+				found.excerpts.map((e) => e.reference),
+				indexes.map((i) => `${found.sourceId}:E${i}`),
+			);
+		}
+	});
+
+	it("pages matching chunks without duplicates or gaps under changing budgets", () => {
+		const paragraphs = Array.from({ length: 30 }, (_, i) => `${"x".repeat(799)}needle ${i}${"z".repeat(850)}`);
+		const page = plain(paragraphs);
+		const collect = (budgets: number[]) => {
+			const collected: { reference: string; text: string }[] = [];
+			let options: PageExcerptOptions = { find: "needle" };
+			for (let calls = 0; ; calls++) {
+				assert.ok(calls < 100);
+				const budget = budgets[calls % budgets.length];
+				const result = makePageExcerpts(page, url, { ...options, max_bytes: budget });
+				assert.ok(result.excerpts.length > 0);
+				assert.ok(Buffer.byteLength(result.excerpts.map((e) => `[${e.reference}] ${e.text}\n\n`).join("")) <= budget);
+				collected.push(...result.excerpts);
+				if (result.nextOffset === null) break;
+				assert.ok(result.nextOffset > (options.excerpt_offset ?? 0));
+				options = { find: "needle", excerpt_offset: result.nextOffset, expected_source_id: result.sourceId };
+			}
+			return collected;
+		};
+		const mixed = collect([1000, 24000, 1733]);
+		assert.deepEqual(mixed, collect([24000]));
+		assert.equal(mixed.length, paragraphs.length * 2);
+		assert.equal(new Set(mixed.map((e) => e.reference)).size, mixed.length);
+		assert.deepEqual(
+			mixed.map((e) => Number(e.reference.split(":E")[1])),
+			paragraphs.flatMap((_, i) => [i * 3 + 1, i * 3 + 2]),
+		);
+	});
+
+	it("keeps the excerpt-count ceiling and uses snapshot offsets rather than match ordinals", () => {
+		const page = plain(Array.from({ length: 400 }, (_, i) => (i % 2 ? "needle" : "gap")));
+		const first = makePageExcerpts(page, url, { find: "needle", max_bytes: 24000 });
+		assert.equal(first.excerpts.length, 160);
+		assert.equal(first.nextOffset, 321);
+		const last = makePageExcerpts(page, url, {
+			find: "needle",
+			max_bytes: 24000,
+			excerpt_offset: first.nextOffset,
+			expected_source_id: first.sourceId,
+		});
+		assert.equal(last.excerpts.length, 40);
+		assert.equal(last.find?.firstMatchOffset, 321);
+		assert.equal(last.excerpts.at(-1)?.reference, `${first.sourceId}:E400`);
+		assert.equal(last.nextOffset, null);
+	});
+
+	it("reports empty and exact-end results, validates offsets, and retains extraction-cap status", () => {
+		for (const page of [plain([]), plain(["needle"])]) {
+			const first = makePageExcerpts(page, url, { find: "needle" });
+			const end = makePageExcerpts(page, url, {
+				find: "needle",
+				excerpt_offset: page.paragraphs.length,
+				expected_source_id: first.sourceId,
+			});
+			assert.deepEqual(end.excerpts, []);
+			assert.equal(end.find?.firstMatchOffset, null);
+			assert.equal(end.nextOffset, null);
+			assert.equal(end.outputTruncated, false);
+			assert.throws(
+				() =>
+					makePageExcerpts(page, url, {
+						find: "needle",
+						excerpt_offset: page.paragraphs.length + 1,
+						expected_source_id: first.sourceId,
+					}),
+				/exceeds the retained excerpt count/,
+			);
+		}
+		const capped = makePageExcerpts({ ...plain(["text"]), truncated: true }, url, { find: "absent" });
+		assert.equal(capped.extractionTruncated, true);
+		assert.equal(capped.outputTruncated, true);
+		assert.equal(capped.nextOffset, null);
+	});
+
+	it("rejects a changed source even when neither source contains the query", () => {
+		const page = plain(["Original"]);
+		const first = makePageExcerpts(page, url, { find: "absent" });
+		for (const offset of [0, 1]) {
+			const options = { find: "absent", excerpt_offset: offset, expected_source_id: first.sourceId };
+			assert.throws(() => makePageExcerpts(plain(["Changed"]), url, options), /source changed/);
+			assert.throws(() => makePageExcerpts(page, `${url}/other`, options), /source changed/);
+		}
 	});
 });

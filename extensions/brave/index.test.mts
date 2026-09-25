@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Agent } from "node:http";
 import { Duplex } from "node:stream";
 import { afterEach, describe, it } from "node:test";
+import { type JsonObject, type Tool, validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerBraveSearch from "./index.ts";
 
@@ -44,6 +45,24 @@ function registry(): ToolRegistry {
 	};
 }
 
+function effectiveArguments(tool: RegisteredTool, args: JsonObject): unknown {
+	return validateToolArguments(tool as unknown as Tool, {
+		type: "toolCall",
+		id: "call",
+		name: tool.name,
+		arguments: args,
+	});
+}
+
+async function assertNormalizedFindExecution(reader: RegisteredTool, url: string): Promise<void> {
+	for (const raw of [null, 42, true]) {
+		const effective = effectiveArguments(reader, { url, find: raw });
+		assert.deepEqual(effective, raw === null ? { url } : { url, find: String(raw) });
+		const result = await reader.execute("normalized", effective, new AbortController().signal);
+		assert.match(result.content[0].text, /\] 42 true/);
+	}
+}
+
 const originalKey = process.env.PI_BRAVE_API_KEY;
 const originalFetch = globalThis.fetch;
 
@@ -65,6 +84,10 @@ describe("Brave extension entrypoint", () => {
 		assert.equal(reader.parameters.properties.max_bytes.minimum, 1000);
 		assert.equal(reader.parameters.properties.max_bytes.maximum, 24000);
 		assert.match(reader.parameters.properties.max_bytes.description, /default 16000/);
+		assert.equal(reader.parameters.properties.find.minLength, 1);
+		assert.equal(reader.parameters.properties.find.maxLength, 200);
+		assert.match(reader.parameters.properties.find.description, /case-sensitive literal/);
+		assert.match(reader.promptGuidelines.join(" "), /omit find for sequential context/);
 		assert.equal(reader.parameters.properties.excerpt_offset.minimum, 0);
 		assert.equal(reader.parameters.properties.excerpt_offset.maximum, 131072);
 		assert.equal(reader.parameters.properties.expected_source_id.minLength, 16);
@@ -222,6 +245,98 @@ describe("Brave extension entrypoint", () => {
 				reader.execute("private", { ...params, url: "http://127.0.0.1/" }, new AbortController().signal),
 				/not allowed/,
 			);
+			assert.equal(sockets.length, count);
+			assert.ok(sockets.every((socket) => socket.destroyed));
+		} finally {
+			for (const socket of sockets) socket.destroy();
+		}
+	});
+
+	it("executes literal search, visible continuation, and sequential context through the registered reader", async (context) => {
+		const find = "git worktree repair";
+		let body = `${"menu\n".repeat(220)}Before\n${"x".repeat(799)}${find}${"z".repeat(850)}\nAfter\nThe ${find} command restores links.`;
+		const sockets: Duplex[] = [];
+		context.mock.method(Agent.prototype, "createConnection", () => {
+			const raw = `HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+			const socket = new Duplex({
+				read() {},
+				write(_chunk, _encoding, callback) {
+					callback();
+					queueMicrotask(() => socket.push(Buffer.from(raw)));
+				},
+			});
+			sockets.push(socket);
+			return socket;
+		});
+		const reader = registry().get("web_read");
+		const url = "http://8.8.8.8/evidence";
+		let params: JsonObject = { url, find, max_bytes: 1000 };
+		let sourceId = "";
+		let contextOffset = 0;
+		const labels: string[] = [];
+		const textParts: string[] = [];
+		try {
+			for (let calls = 0; ; calls++) {
+				assert.ok(calls < 5);
+				const result = await reader.execute("find", effectiveArguments(reader, params), new AbortController().signal);
+				const text = result.content[0].text;
+				const source = /Source: ([a-f0-9]{16})/.exec(text);
+				assert.ok(source);
+				sourceId = source[1];
+				if (calls === 0) {
+					const context = /omit find, and use excerpt_offset: (\d+), expected_source_id: "([a-f0-9]{16})"/.exec(text);
+					assert.ok(context);
+					contextOffset = Number(context[1]);
+					assert.equal(context[2], sourceId);
+					assert.doesNotMatch(text, /\] menu/);
+				}
+				for (const excerpt of text.matchAll(/\[([a-f0-9]{16}:E\d+)\] ([^\n]+)/g)) {
+					labels.push(excerpt[1]);
+					textParts.push(excerpt[2]);
+				}
+				const next = /same url and find, excerpt_offset: (\d+), expected_source_id: "([a-f0-9]{16})"/.exec(text);
+				const details = result.details as { nextOffset: number | null; find: { query: string } };
+				assert.equal(details.find.query, find);
+				if (!next) {
+					assert.equal(details.nextOffset, null);
+					assert.match(text, /End of matching retained excerpts/);
+					break;
+				}
+				assert.equal(details.nextOffset, Number(next[1]));
+				params = { url, find, max_bytes: 1000, excerpt_offset: Number(next[1]), expected_source_id: next[2] };
+			}
+			assert.deepEqual(
+				labels,
+				[222, 223, 226].map((i) => `${sourceId}:E${i}`),
+			);
+			assert.ok((textParts[0] + textParts[1]).includes(find));
+			const around = await reader.execute(
+				"context",
+				{ url, excerpt_offset: contextOffset, expected_source_id: sourceId },
+				new AbortController().signal,
+			);
+			assert.match(around.content[0].text, /\] Before/);
+			assert.match(around.content[0].text, /\] After/);
+			assert.ok(!("find" in (around.details as object)));
+			body = "Changed source without the query";
+			await assert.rejects(reader.execute("changed", params, new AbortController().signal), /source changed/);
+			body = "42 true";
+			await assertNormalizedFindExecution(reader, url);
+			const count = sockets.length;
+			const rejectedQuery = `schema-marker-${"x".repeat(200)}\u001b`;
+			assert.throws(
+				() => effectiveArguments(reader, { url, find: rejectedQuery }),
+				(error: Error) => {
+					assert.match(error.message, /Received arguments/);
+					assert.ok(error.message.includes(JSON.stringify(rejectedQuery)));
+					return true;
+				},
+			);
+			await assert.rejects(
+				reader.execute("invalid", effectiveArguments(reader, { url, find: "\u001b" }), new AbortController().signal),
+				/find must be/,
+			);
+			await assert.rejects(reader.execute("cancelled", { url, find }, AbortSignal.abort()), /cancelled/);
 			assert.equal(sockets.length, count);
 			assert.ok(sockets.every((socket) => socket.destroyed));
 		} finally {

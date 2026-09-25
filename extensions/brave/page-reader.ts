@@ -50,6 +50,7 @@ export async function readWebPage(params: WebReadRequest, signal?: AbortSignal, 
 				redirectCount: fetched.redirectCount,
 				title: page.title,
 				sourceId: excerpts.sourceId,
+				...(excerpts.find === undefined ? {} : { find: excerpts.find }),
 				excerptCount: excerpts.excerpts.length,
 				excerptOffset: excerpts.excerptOffset,
 				nextOffset: excerpts.nextOffset,
@@ -90,7 +91,9 @@ function readerNotes(page: PageText, status: string, excerpts: PageExcerpts): st
 		notes.push("No readable main/article region was found; this is filtered body text, not a verified article.");
 	if (status === "no-readable-text")
 		notes.push("No readable text was found. The page may require scripts, authentication, or a different format.");
-	if (excerpts.nextOffset !== null) {
+	if (excerpts.find !== undefined) {
+		notes.push(...findNotes(excerpts));
+	} else if (excerpts.nextOffset !== null) {
 		notes.push(
 			`More retained excerpts follow. To continue, call web_read with the same url, excerpt_offset: ${excerpts.nextOffset}, expected_source_id: "${excerpts.sourceId}". Each call fetches the page again and refuses a changed source.`,
 		);
@@ -101,6 +104,34 @@ function readerNotes(page: PageText, status: string, excerpts: PageExcerpts): st
 		notes.push(
 			"Extraction hit the retained-text cap. Text beyond that cap is not available through continuation; this result does not establish the full page contents.",
 		);
+	return notes;
+}
+
+/** Matching excerpt counts describe chunks, not occurrences of the query. */
+function findNotes(excerpts: PageExcerpts): string[] {
+	const find = excerpts.find;
+	if (find === undefined) return [];
+	const notes = [
+		`Find (untrusted literal): ${JSON.stringify(find.query)}. Case-sensitive, exact text; no Unicode or whitespace normalization of the query.`,
+		"Only excerpts that intersect a match follow, in source order. Gaps are omitted; split matches can span successive excerpts or responses. Counts refer to excerpts, not occurrences.",
+	];
+	if (find.firstMatchOffset === null) {
+		notes.push(
+			`No literal match intersects retained excerpts at or after excerpt_offset ${excerpts.excerptOffset}. This does not establish absence from the full page.`,
+		);
+	} else {
+		notes.push(
+			`First matching excerpt offset: ${find.firstMatchOffset}. For sequential context, call web_read with the same url, omit find, and use excerpt_offset: ${Math.max(0, find.firstMatchOffset - 1)}, expected_source_id: "${excerpts.sourceId}".`,
+		);
+	}
+	if (excerpts.nextOffset !== null) {
+		notes.push(
+			`More matching excerpts follow. To continue, call web_read with the same url and find, excerpt_offset: ${excerpts.nextOffset}, expected_source_id: "${excerpts.sourceId}".`,
+		);
+	} else {
+		notes.push("End of matching retained excerpts. This does not establish full-page coverage.");
+	}
+	notes.push("Each call fetches the page again and refuses a changed source.");
 	return notes;
 }
 
