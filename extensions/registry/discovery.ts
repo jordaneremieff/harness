@@ -86,14 +86,14 @@ function compactModelQuery(query: Query): boolean {
 	return query.kind === "model" && !fullRecordQuery(query) && !query.health;
 }
 
-const MODEL_LIST_FIELDS = ["selected", "catalog", "available", "configuredAuth", "inScope", "reasoning", "contextWindow", "supportedThinkingLevels", "currentThinkingLevel"];
+const MODEL_LIST_FIELDS = ["displayName", "input", "selected", "catalog", "available", "configuredAuth", "inScope", "scopeIndex", "reasoning", "contextWindow", "supportedThinkingLevels", "currentThinkingLevel"];
 
 function discoveryBlocks(records: Record<string, unknown>[], stale: boolean, compact: boolean): Block[] {
 	if (stale) return [];
 	return records.map((record) => ({
 		lines: compact ? [
 			`MODEL ${oneLine(String(record.name))}`,
-			`  ${MODEL_LIST_FIELDS.filter((key) => key in record).map((key) => `${key}=${oneLine(JSON.stringify(record[key]))}`).join(" | ")}`,
+			`  ${MODEL_LIST_FIELDS.filter((key) => key in record).map((key) => `${key}=${oneLine(JSON.stringify(record[key]))}`).join(" ")}`,
 			`  evidence: ${oneLine(String(record.evidence))} at ${isoTime(Number(record.at))}`,
 		] : [
 			"",

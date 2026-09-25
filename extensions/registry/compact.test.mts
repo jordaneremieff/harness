@@ -75,20 +75,30 @@ describe("compact registry output", () => {
 			if (key === "name" || key === "kind") continue;
 			assert.ok(exact.text.includes(`  ${key}: ${JSON.stringify(value)}`), key);
 		}
-		for (const key of ["provider", "id", "displayName", "input", "maxTokens", "extensionProvider", "scopeIndex", "scopeThinkingLevel"]) {
+		for (const key of ["provider", "id", "maxTokens", "extensionProvider", "scopeThinkingLevel"]) {
 			assert.ok(!list.text.includes(`${key}:`) && !list.text.includes(`${key}=`), key);
 		}
 		assert.match(list.text, /exact provider\/id name for full metadata/);
 	});
 
-	it("makes resource and model lists materially smaller without dropping structured facts", async () => {
+	it("shows display names, image input, and session cycle positions in compact model lists", async () => {
+		const result = await lookup(request({ params: { kind: "model" } }));
+		assert.match(result.text, /displayName="Fixture Model"/);
+		assert.match(result.text, /input=\["text","image"\]/);
+		assert.match(result.text, /scopeIndex=0/);
+		assert.match(result.text, /scope order is session cycle order, not operator preference/);
+	});
+
+	it("makes resource and model records materially smaller without dropping structured facts", async () => {
 		const tool = buildRecords(snapshot())[0];
 		assert.ok(Buffer.byteLength(recordBlock(tool, false).lines.join("\n")) < Buffer.byteLength(recordBlock(tool).lines.join("\n")) * 0.6);
 		const catalog = models(Array.from({ length: 8 }, () => model()));
 		const list = await lookup(request({ params: { kind: "model" }, models: catalog }));
 		const exact = await lookup(request({ params: { kind: "model", name: "fixture/model" }, models: catalog }));
 		assert.deepEqual(records(list), records(exact));
-		assert.ok(Buffer.byteLength(list.text) < Buffer.byteLength(exact.text) * 0.75);
+		assert.ok(Buffer.byteLength(list.text) < Buffer.byteLength(exact.text));
+		const recordBytes = (text: string) => Buffer.byteLength(text.slice(text.indexOf("\nMODEL "), text.indexOf("\nBOUNDARIES")));
+		assert.ok(recordBytes(list.text) < recordBytes(exact.text) * 0.75);
 	});
 
 	it("places only applicable caveats beside each result kind", async () => {
@@ -134,9 +144,45 @@ describe("compact registry output", () => {
 			assert.match(result.text, /custom=true, forced whole=false, appended=true/);
 			assert.match(result.text, /retained records: 3 \| retained bytes: 300/);
 			assert.match(result.text, /overflow: no/);
-			assert.match(result.text, /Prior prompt inputs do not establish final system instructions or provider payload/);
+			assert.match(result.text, /Final provider payload and serialized system instructions are not readable here; observed prompt inputs do not establish them/);
 		});
 	}
+
+	it("retains the final-payload boundary once on resource lists, exact records, ambiguities, and scans", async () => {
+		const boundary = /Final provider payload and serialized system instructions are not readable here/g;
+		for (const kind of ["tool", "prompt", "skill"] as const) {
+			for (const name of [undefined, kind === "tool" ? "inspect" : "review"]) {
+				const result = await lookup(request({ params: { kind, ...(name ? { name } : {}) } }));
+				assert.equal(result.text.match(boundary)?.length, 1);
+			}
+		}
+		const ambiguous = await lookup(request({ params: { contains: "needle" } }));
+		assert.equal(ambiguous.outcome, "ambiguous");
+		assert.equal(ambiguous.text.match(boundary)?.length, 1);
+		const scanned = await lookup(request({ params: { kind: "skill", name: "review", contains: "needle" },
+			scan: async () => ({ outcome: "ok", matches: [{ line: 1, text: "needle" }], bytesRead: 6, fileSize: 6, truncated: false }) }));
+		assert.equal(scanned.outcome, "ok");
+		assert.equal(scanned.text.match(boundary)?.length, 1);
+	});
+
+	it("omits the compact hint for exact-name content ambiguities", async () => {
+		const exact = await lookup(request({ params: { name: "review", contains: "needle" } }));
+		assert.equal(exact.outcome, "ambiguous");
+		assert.match(exact.text, /sourceInfo.source: fixture-package/);
+		assert.doesNotMatch(exact.text, /Compact records/);
+		const list = await lookup(request({ params: { contains: "needle" } }));
+		assert.equal(list.outcome, "ambiguous");
+		assert.match(list.text, /Compact records/);
+	});
+
+	it("retains inventory exclusions for missing skill content targets", async () => {
+		const result = await lookup(request({ params: { kind: "skill", name: "absent", contains: "needle" },
+			scan: async () => { throw new Error("missing targets must not scan"); } }));
+		assert.equal(result.outcome, "missing");
+		assert.match(result.text, /Not a complete extension inventory/);
+		assert.match(result.text, /Built-in interactive commands, full settings, and load rejection reasons are excluded/);
+		assert.match(result.text, /No file-backed skill or prompt matched/);
+	});
 
 	it("labels registration evidence on compact incomplete and ambiguous pages", async () => {
 		const host = snapshot(); host.availability.commands = false;

@@ -52,19 +52,20 @@ Examples:
 ## Compact results and exact records
 
 List-style text favors discovery. Resource lists show name, invocation when
-applicable, description, source path, and configured/active or skill-eligibility
-status. The result header identifies registration evidence and its observation
-time. Exact `name` queries, optionally narrowed by `kind`, show every provenance
+applicable, description, and source path. Tool lists show configured and active
+status; skill lists show default skill-list eligibility. The result header
+identifies registration evidence and its observation time. Exact `name` queries, optionally narrowed by `kind`, show every provenance
 field and the record's evidence time. Exact resource queries also retain the
 observer summary that resource lists omit. `detail: true` with an exact tool name and
 `kind: "tool"` additionally returns its parameters and prompt guidelines.
 
-Model lists show canonical name, selected state, catalog membership, cached
-availability, configured-auth presence, scope membership, reasoning capability,
-context window, supported thinking levels, and current thinking level when
-present. Each record retains its evidence time. Use exact `name: "provider/id"`
-with `kind: "model"` for provider, ID, display name, input modalities, output
-limit, extension-provider registration, scope position, and scope thinking pin.
+Model lists show canonical and display names, input modalities, selected state,
+catalog membership, cached availability, configured-auth presence, scope
+membership and position when present, reasoning capability, context window,
+supported thinking levels, and current thinking level when present. Scope
+position is session cycle order, not operator preference. Each record retains
+its evidence time. Use exact `name: "provider/id"` with `kind: "model"` for
+provider, ID, output limit, extension-provider registration, and scope thinking pin.
 Offline health reports retain full records beside their findings.
 
 Structured `details.records` retain the complete projected records in both

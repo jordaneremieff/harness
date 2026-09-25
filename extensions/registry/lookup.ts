@@ -13,6 +13,7 @@ import {
 	type Assembled,
 	BOUNDARY_LINES,
 	INVENTORY_BOUNDARY,
+	PROMPT_BOUNDARY,
 	RESOURCE_LIST_HINT,
 	fullRecordQuery,
 	resourceBoundaries,
@@ -104,6 +105,7 @@ function hostSummary(request: LookupRequest, records: ResourceRecord[]): LookupR
 			}`,
 			"",
 			...observationLines(snapshot.observation),
+			PROMPT_BOUNDARY,
 			...BOUNDARY_LINES,
 			INVENTORY_BOUNDARY,
 			"No preference data.",
@@ -171,7 +173,7 @@ function missingTargetResult(request: LookupRequest, query: Query): LookupResult
 			"",
 			...observationLines(request.snapshot.observation),
 			"",
-			...BOUNDARY_LINES,
+			...resourceBoundaries([]),
 		]),
 		blocks: [],
 		footer: [],
@@ -196,7 +198,10 @@ function ambiguousTargetResult(
 			"",
 		]),
 		blocks: page.items.map((record) => recordBlock(record, fullRecordQuery(query))),
-		footer: (kept) => [RESOURCE_LIST_HINT, ...resourceBoundaries(page.items.slice(0, kept))],
+		footer: (kept) => [
+			...(fullRecordQuery(query) ? [] : [RESOURCE_LIST_HINT]),
+			...resourceBoundaries(page.items.slice(0, kept)),
+		],
 		details: { query, scanned: false, candidates: candidates.length, offset: page.offset },
 		continuation: (kept) =>
 			offset + kept < candidates.length

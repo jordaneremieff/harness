@@ -175,7 +175,7 @@ export const BOUNDARY_LINES = [
 ];
 
 export const INVENTORY_BOUNDARY = "Not a complete extension inventory: extensions without registered resources are excluded. Built-in interactive commands, full settings, and load rejection reasons are excluded.";
-export const PROMPT_BOUNDARY = "Prior prompt inputs do not establish final system instructions or provider payload.";
+export const PROMPT_BOUNDARY = "Final provider payload and serialized system instructions are not readable here; observed prompt inputs do not establish them.";
 export const MODEL_SCOPE_BOUNDARY = "No preference data; model scope order is session cycle order, not operator preference.";
 
 export function resourceBoundaries(records: ResourceRecord[]): string[] {
@@ -183,6 +183,7 @@ export function resourceBoundaries(records: ResourceRecord[]): string[] {
 	return [
 		...BOUNDARY_LINES,
 		INVENTORY_BOUNDARY,
+		PROMPT_BOUNDARY,
 		...(kinds.size ? ["Registration origins are not immutable executing bytes."] : []),
 		...(kinds.has("tool") ? ["Configured presence is not active status or activation authority."] : []),
 		...(kinds.has("command") || kinds.has("prompt") || kinds.has("skill")
@@ -202,7 +203,6 @@ export function observationLines(observation: ObservationSnapshot | null): strin
 		return [
 			"OBSERVATION",
 			"not_yet_observed: no before_agent_start since reset; skill eligibility and context paths are unknown, not absent.",
-			PROMPT_BOUNDARY,
 		];
 	}
 	const lines = [
@@ -222,7 +222,6 @@ export function observationLines(observation: ObservationSnapshot | null): strin
 	} else {
 		lines.push("- overflow: no");
 	}
-	lines.push(PROMPT_BOUNDARY);
 	return lines;
 }
 
