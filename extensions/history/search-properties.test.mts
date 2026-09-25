@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { searchHistory, type HistorySource } from "./core.ts";
+import { LIMITS, searchHistory, toolResult, type HistorySource } from "./core.ts";
 
 function message(
 	id: string,
@@ -71,6 +71,122 @@ test("search continuations preserve every literal match across byte and result b
 		assert.ok(complete, "bounded pages must eventually exhaust this fixture");
 		assert.deepEqual(actual, positions(text, query));
 	}
+});
+
+function mixedFixture(source: string, query: string | undefined) {
+	const text = `${"x".repeat(2047)}${"🧭λ\u0001".repeat(25)}`;
+	const entries = new Map<string, SessionEntry>();
+	const expected: { id: string; pointer: string; offset?: number }[] = [];
+	for (let i = 0; i < 5; i++) {
+		const id = `selected-${i}`;
+		const parentId = i === 0 ? null : `excluded-${i - 1}`;
+		const timestamp = "2026-01-01";
+		const content = [
+			...Array.from({ length: 513 }, () => ({ type: "text" as const, text: "" })),
+			{ type: "text" as const, text },
+		];
+		const entry: SessionEntry =
+			source === "summary"
+				? { id, parentId, timestamp, type: "compaction", summary: text, firstKeptEntryId: id, tokensBefore: 1 }
+				: {
+						id,
+						parentId,
+						timestamp,
+						type: "message",
+						message:
+							source === "user"
+								? { role: "user", content, timestamp: 1 }
+								: { role: "toolResult", toolName: "probe", toolCallId: "call", isError: true, content, timestamp: 1 },
+					};
+		entries.set(id, entry);
+		entries.set(`excluded-${i}`, {
+			id: `excluded-${i}`,
+			parentId: id,
+			timestamp,
+			type: "custom_message",
+			customType: "note",
+			display: true,
+			content: "irrelevant".repeat(10000),
+		});
+		const pointer = source === "summary" ? "/summary" : "/message/content/513/text";
+		const hits =
+			query === undefined ? [{ id, pointer: "" }] : positions(text, query).map((offset) => ({ id, pointer, offset }));
+		expected.unshift(...hits);
+	}
+	return { entries, expected };
+}
+
+function collectFilteredPages(
+	entries: Map<string, SessionEntry>,
+	filter: Record<string, unknown>,
+	query: string | undefined,
+	maxVisits: number,
+	maxMatches: number,
+	statuses: Set<unknown>,
+) {
+	let calls = 0;
+	const source: HistorySource = {
+		getSessionId: () => "s",
+		getLeafId: () => "excluded-4",
+		getEntry(id) {
+			calls++;
+			return entries.get(id);
+		},
+	};
+	let cursor: Record<string, unknown> = { filter };
+	const actual: { id: string; pointer: string; offset?: number }[] = [];
+	for (let page = 0; page < 500; page++) {
+		const before = calls;
+		const result = searchHistory(source, {
+			query,
+			maxVisits,
+			maxMatches,
+			maxScanBytes: 2048,
+			maxOutputBytes: 4096,
+			...cursor,
+		});
+		statuses.add(result.status);
+		assert.ok(calls - before <= maxVisits);
+		assert.equal(result.visited, calls - before);
+		assert.ok(Number(result.scannedBytes) <= 2048);
+		assert.ok(Number(result.slotsVisited) <= LIMITS.slots);
+		assert.ok(Buffer.byteLength(JSON.stringify(toolResult(result))) <= 4096);
+		assert.deepEqual(result.filter, filter);
+		for (const hit of result.matches as { entry: { id: string }; pointer: string; offset?: number }[])
+			actual.push({ id: hit.entry.id, pointer: hit.pointer, ...(query === undefined ? {} : { offset: hit.offset }) });
+		if (result.next === null) return actual;
+		assert.notDeepEqual(result.next, cursor);
+		cursor = result.next as Record<string, unknown>;
+		assert.deepEqual(cursor.filter, filter);
+	}
+	assert.fail("bounded pages must eventually exhaust this fixture");
+}
+
+test("filtered pages compose visit, slot, byte, match, and output bounds without lost or duplicate matches", () => {
+	const statuses = new Set<unknown>();
+	const filters = [
+		{ source: "user" },
+		{ source: "summary" },
+		{ source: "toolResult", toolName: "probe", errorsOnly: true },
+	];
+	for (const filter of filters) {
+		for (const query of [undefined, "🧭λ", "\u0001"]) {
+			const { entries, expected } = mixedFixture(filter.source, query);
+			for (const maxVisits of [1, 128]) {
+				for (const maxMatches of [1, 20]) {
+					assert.deepEqual(collectFilteredPages(entries, filter, query, maxVisits, maxMatches, statuses), expected);
+				}
+			}
+		}
+	}
+	assert.deepEqual([...statuses].sort(), [
+		"ancestry_exhausted",
+		"match_limit",
+		"output_limit",
+		"scan_limit",
+		"slot_limit",
+		"visit_limit",
+	]);
 });
 
 test("entry visit limits retain the original ancestry when the current leaf changes", () => {

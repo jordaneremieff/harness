@@ -175,12 +175,54 @@ function textSlot(entry: SessionEntry, slot: number): { pointer: string; value: 
 	return { pointer: `${prefix}/${index}/${key}`, value: readable ? own(block, key) : undefined };
 }
 
+type SearchFilter =
+	| { source: "user" }
+	| { source: "summary" }
+	| { source: "toolResult"; toolName?: string; errorsOnly?: boolean };
+
+function searchFilter(value: unknown): SearchFilter | undefined {
+	if (value === undefined) return undefined;
+	if (!object(value)) throw new Error("filter must be an object.");
+	const source = own(value, "source");
+	if (source !== "user" && source !== "toolResult" && source !== "summary")
+		throw new Error("filter.source must be user, toolResult, or summary.");
+	const toolName = shortString(own(value, "toolName"), "filter.toolName");
+	const errorsOnly = own(value, "errorsOnly");
+	if (errorsOnly !== undefined && typeof errorsOnly !== "boolean")
+		throw new Error("filter.errorsOnly must be a boolean.");
+	if (source !== "toolResult") {
+		if (toolName !== undefined || errorsOnly !== undefined)
+			throw new Error("filter.toolName and filter.errorsOnly require source toolResult.");
+		return { source };
+	}
+	return {
+		source,
+		...(toolName !== undefined ? { toolName } : {}),
+		...(errorsOnly !== undefined ? { errorsOnly } : {}),
+	};
+}
+
+/** Select raw stored metadata, never the provider-facing message conversion. */
+function selectedEntry(entry: SessionEntry, filter: SearchFilter | undefined): boolean {
+	if (!filter) return true;
+	if (filter.source === "summary") return entry.type === "compaction" || entry.type === "branch_summary";
+	if (entry.type !== "message") return false;
+	const message = own(entry, "message");
+	if (own(message, "role") !== filter.source) return false;
+	if (filter.source === "user") return true;
+	return (
+		(filter.toolName === undefined || own(message, "toolName") === filter.toolName) &&
+		(filter.errorsOnly !== true || own(message, "isError") === true)
+	);
+}
+
 /** Walk one ancestry, collecting listing entries or literal text matches under per-call bounds. */
 class HistorySearch {
 	readonly #source: HistorySource;
 	readonly #snap: { sessionId: string; currentLeafId: string | null };
 	readonly #fromId: string | undefined;
 	readonly #query: string | undefined;
+	readonly #filter: SearchFilter | undefined;
 	readonly #signal: AbortSignal | undefined;
 	readonly #visitCap: number;
 	readonly #scanCap: number;
@@ -189,6 +231,7 @@ class HistorySearch {
 	readonly #matches: RecordValue[] = [];
 	readonly #seen = new Set<string>();
 	#visited = 0;
+	#excluded = 0;
 	#slotsVisited = 0;
 	#scannedBytes = 0;
 	#slot: number;
@@ -204,6 +247,7 @@ class HistorySearch {
 		this.#source = source;
 		this.#signal = signal;
 		this.#query = query;
+		this.#filter = searchFilter(own(args, "filter"));
 		this.#snap = snapshot(source, args);
 		this.#fromId = shortString(own(args, "fromId"), "fromId");
 		this.#id = this.#fromId ?? this.#snap.currentLeafId;
@@ -216,8 +260,14 @@ class HistorySearch {
 		this.#outputCap = integer(own(args, "maxOutputBytes"), LIMITS.outputBytes, 4096, LIMITS.outputBytes, "maxOutputBytes");
 	}
 
-	#cursor() {
-		return { sessionId: this.#snap.sessionId, fromId: this.#id, slot: this.#slot, offset: this.#offset };
+	#cursor(offset = this.#offset) {
+		return {
+			sessionId: this.#snap.sessionId,
+			fromId: this.#id,
+			slot: this.#slot,
+			offset,
+			...(this.#filter ? { filter: this.#filter } : {}),
+		};
 	}
 
 	#result(status: string, next: unknown = null, gap?: unknown): RecordValue {
@@ -228,6 +278,7 @@ class HistorySearch {
 				...this.#snap,
 				startId: this.#fromId ?? this.#snap.currentLeafId,
 				status,
+				...(this.#filter ? { filter: this.#filter, excluded: this.#excluded } : {}),
 				visited: this.#visited,
 				slotsVisited: this.#slotsVisited,
 				scannedBytes: this.#scannedBytes,
@@ -248,6 +299,7 @@ class HistorySearch {
 				...this.#snap,
 				startId: this.#fromId ?? this.#snap.currentLeafId,
 				status: "output_limit",
+				...(this.#filter ? { filter: this.#filter, excluded: this.#excluded } : {}),
 				visited: this.#visited,
 				slotsVisited: this.#slotsVisited,
 				scannedBytes: this.#scannedBytes,
@@ -276,15 +328,24 @@ class HistorySearch {
 					entryId: this.#id,
 					action: "No entry with this ID exists in the current session; use a known ID.",
 				});
-			const meta = metadata(entry);
-			const query = this.#query;
-			const outcome = query === undefined ? this.#collectListing(entry, meta) : this.#scanEntry(entry, meta, query);
+			const outcome = this.#collectEntry(entry);
 			if (outcome) return outcome;
 			this.#id = entry.parentId;
 			this.#slot = 0;
 			this.#offset = 0;
 		}
 		return this.#result("ancestry_exhausted");
+	}
+
+	#collectEntry(entry: SessionEntry): RecordValue | null {
+		if (!selectedEntry(entry, this.#filter)) {
+			if (this.#slot !== 0 || this.#offset !== 0)
+				throw new Error("Text continuation entry is excluded. Retain the original filter.");
+			this.#excluded++;
+			return null;
+		}
+		const meta = metadata(entry);
+		return this.#query === undefined ? this.#collectListing(entry, meta) : this.#scanEntry(entry, meta, this.#query);
 	}
 
 	#collectListing(entry: SessionEntry, meta: RecordValue): RecordValue | null {
@@ -371,7 +432,7 @@ class HistorySearch {
 		};
 		this.#matches.push(match);
 		// Reserve space for the continuation before accepting this match.
-		while (!this.#fitsWithContinuation({ sessionId: this.#snap.sessionId, fromId: this.#id, slot: this.#slot, offset: matchOffset })) {
+		while (!this.#fitsWithContinuation(this.#cursor(matchOffset))) {
 			if (this.#matches.length === 1 && excerptBytes > 4) {
 				excerptBytes = Math.max(4, Math.floor(excerptBytes / 2));
 				excerpt = page(chunk.text, position, excerptBytes, this.#signal);

@@ -11,7 +11,8 @@ context, edit entries, open session files, or search other sessions.
 2. Read a result with `history_read`, its `entryId`, and a `pointer`.
    Omit `pointer` for a manifest of standard fields.
 3. If a response has a continuation in `next`, copy those fields into the next
-   call. Repeat the original query and limit choices for a search. Read
+   call, including the returned `filter`. Retain the original query, filter,
+   and limit choices for a search. Read
    continuations retain the same source field. Include the returned `sessionId`
    to reject a continuation after session replacement.
 
@@ -41,6 +42,55 @@ an offset inside a surrogate pair and never split a pair at a page boundary.
 Array and standard-field manifest offsets use item indexes. A manifest's
 indexes refer to the fixed standard-field list, including absent fields;
 follow `next` rather than adding the number of returned descriptors.
+
+## Source filters
+
+Use the optional `filter` on `history_search` to select stored sources before
+text scanning or listing. Omission preserves unfiltered search.
+
+```json
+{ "query": "release", "filter": { "source": "user" } }
+```
+
+This selects only raw `message` entries whose stored `message.role` is `user`.
+It excludes assistant and tool-result echoes, `custom_message` entries, and
+messages with other roles such as `custom` or `bashExecution`. Pi's conversion
+of those sources to provider-facing user text does not change their stored
+source. A stored user role does **not** prove human authorship or current authority.
+
+```json
+{ "filter": { "source": "toolResult", "toolName": "bash", "errorsOnly": true } }
+```
+
+This lists stored results from the exact, case-sensitive tool name `bash` with
+`isError === true`. Add a `query` to search their supported text fields instead.
+It does not select assistant tool calls or `bashExecution` records.
+Omit `toolName` to select results from any tool. `errorsOnly: false` or omission
+accepts any stored error flag, including an absent flag; `true` accepts only the
+boolean `true`, not text that describes failure or a nonzero exit code.
+`toolName` and `errorsOnly` require `source: "toolResult"`.
+
+```json
+{ "filter": { "source": "summary" } }
+```
+
+This lists raw `compaction` and `branch_summary` entries with their navigation
+IDs. Add a query to search their summaries. It does not select custom messages
+that quote summaries or expand the summaries into their underlying transcript.
+
+Filtered responses echo `filter` and report `excluded`, the number of visited
+entries rejected by that filter in this call. Rejected entries consume visits
+but no text-slot, scan-byte, or match budget. Selection does not read rejected
+entries' content or unrelated metadata. Identity and parent validation still
+apply. A filtered empty page with `visit_limit` is not absence; follow `next`.
+The `coverage` exclusions below remain unchanged for selected entries.
+
+Every filtered continuation includes the same filter, even at entry boundaries.
+Copy `next` intact and repeat the query and limits. There is no stored query or
+cursor state: changing or dropping the filter starts different selection at
+that position, not continuation of the original search. A text continuation
+that selects an excluded entry is rejected. Session and entry pinning remain
+unchanged.
 
 ## Scope and evidence
 
@@ -137,8 +187,15 @@ The colocated tests exercise real `SessionManager.inMemory()` entries and
 synthetic malformed sources, including compaction, alternate ancestry,
 continuations, Unicode, output bounds, structured omissions, cancellation,
 argument validation, context-edit replacement manifests and withholding, and
-the adapter's invocation-owned session context.
-Repository gates and runtime discovery remain separate evidence layers.
+the adapter's invocation-owned session context. Mixed-source tests cover raw
+source selection, strictly true error flags, exact tool names, and composition
+of filters with every search bound. The ordinary-session regression loads the
+extension through Pi's resource loader and drives its registered tools with a
+scripted provider. Its synthetic comparison shows irrelevant tool output using
+the unfiltered scan budget while the user filter reaches the stored user text.
+That test establishes deterministic selection under its fixture, not aggregate
+utility or model choice quality. Repository gates remain a separate evidence
+layer.
 
 The adapter uses the public `ExtensionAPI` and `ExtensionContext` contracts.
 The implementation uses only `getSessionId`, `getLeafId`, and `getEntry`.
