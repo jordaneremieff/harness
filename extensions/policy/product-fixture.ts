@@ -150,7 +150,9 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 			executions++;
 			if (args.draft !== undefined) {
 				if (args.draft.length === 0) throw new Error("DRAFT REFUSED: EMPTY");
-				return result(`DRAFT ACCEPTED: ${Buffer.byteLength(args.draft, "utf8")} UTF-8 bytes`);
+				return result(
+					`DRAFT RECEIVED: ${Buffer.byteLength(args.draft, "utf8")} UTF-8 bytes. Receipt only; no assessment verdict or approval.`,
+				);
 			}
 			const file =
 				args.resource === undefined || args.resource === "inventory"

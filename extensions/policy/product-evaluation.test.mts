@@ -677,6 +677,19 @@ test("an existing catalog never receives the pillars seed automatically", async 
 	assert.ok(path);
 });
 
+test("the synthetic draft receipt stays neutral about assessment or approval", async () => {
+	const run = harness("enforce");
+	try {
+		await run.start();
+		const receipt = await run.call(pillarsDraft("Repaired proposal grounded in the entry."));
+		assert.equal(receipt.isError, false);
+		assert.match(receipt.text, /^DRAFT RECEIVED: \d+ UTF-8 bytes\. Receipt only; no assessment verdict or approval\.$/);
+		assert.doesNotMatch(receipt.text, /accepted|approved|valid/i);
+	} finally {
+		await run.close();
+	}
+});
+
 test("policy denials do not count as executed errors or result volume", async () => {
 	const run = harness("enforce");
 	try {
