@@ -12,8 +12,8 @@ A seed rule that references a registered tool uses only its public contract:
 
 - the registered physical tool name, as Pi's public tool catalog reports it;
 - the tool's public argument names, as its registered schema declares them;
-- public completion facts Pi already exposes: the outcome classification and
-  the final argument object;
+- policy completion facts derived from public Pi completion events, together
+  with the final argument object policy captured at admission;
 - public availability facts from Pi's tool catalog
   (`context.tools.<name>.active`, `.configured`, `context.catalogAvailable`).
 
