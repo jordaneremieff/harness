@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -15,8 +15,12 @@ export const PRODUCT_TOOLS = [
 	"policy_product_recover",
 	"policy_product_volume",
 	"policy_product_count",
+	"pillars",
 	"policy_rules",
 ];
+
+/** Repository corpus resources the synthetic pillars tool serves verbatim. */
+export const PRODUCT_PILLARS_RESOURCES = ["pattern-grounding-preflight", "inventory", "governance"] as const;
 function structuredOutcome(scenario: string): { text: string; details: Record<string, unknown> } {
 	if (scenario === "success")
 		return { text: "SUCCESS: no failure records", details: { status: "ok", code: "DEMO_REFUSAL" } };
@@ -127,6 +131,35 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 		async execute(_id, args) {
 			executions++;
 			return result(args.compact ? "COMPACT: 2 items" : "x".repeat(args.bytes));
+		},
+	});
+	// Public pillars argument contract only: optional resource and draft strings.
+	pi.registerTool({
+		name: "pillars",
+		label: "Synthetic Pillars corpus",
+		description:
+			"Return the repository's actual Pillars corpus text for one resource: an entry, the inventory, or governance. A draft submission returns a byte receipt and executes nothing; an empty draft is refused. No external actions occur.",
+		parameters: Type.Object(
+			{
+				resource: Type.Optional(StringEnum([...PRODUCT_PILLARS_RESOURCES])),
+				draft: Type.Optional(Type.String({ maxLength: 8192 })),
+			},
+			{ additionalProperties: false },
+		),
+		async execute(_id, args) {
+			executions++;
+			if (args.draft !== undefined) {
+				if (args.draft.length === 0) throw new Error("DRAFT REFUSED: EMPTY");
+				return result(`DRAFT ACCEPTED: ${Buffer.byteLength(args.draft, "utf8")} UTF-8 bytes`);
+			}
+			const file =
+				args.resource === undefined || args.resource === "inventory"
+					? "README.md"
+					: args.resource === "governance"
+						? "GOVERNANCE.md"
+						: `${args.resource}.md`;
+			const text = await readFile(join(import.meta.dirname, "..", "..", "pillars", file), "utf8");
+			return result(text);
 		},
 	});
 	pi.registerTool({

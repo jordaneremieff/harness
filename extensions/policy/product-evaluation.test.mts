@@ -45,6 +45,17 @@ const request = (scenario = "mutated-schema"): ProductStep => ({
 const failure = (attempt = 1): ProductStep => ({ name: "policy_product_recover", args: { path: "primary", attempt } });
 const success: ProductStep = { name: "policy_product_recover", args: { path: "alternate", attempt: 1 } };
 const volume = (bytes: number): ProductStep => ({ name: "policy_product_volume", args: { bytes } });
+const pillarsEntry = "pattern-grounding-preflight";
+const pillarsBody: ProductStep = { name: "pillars", args: { resource: pillarsEntry } };
+const pillarsCall = (args: Record<string, string>): ProductStep => ({ name: "pillars", args });
+const pillarsDraft = (text: string): ProductStep => pillarsCall({ resource: pillarsEntry, draft: text });
+const pillarsPeriod = async (run: ReturnType<typeof harness>) => run.period("recovery.pillars-application");
+const adaptiveGuidancePattern = (entryId: string): RegExp =>
+	entryId === "recovery-guidance"
+		? /consecutive completed tool executions failed/
+		: entryId === "pillars-application" || entryId === "pillars-doctrine-quotation"
+			? /Pillars entry text was read without a draft/
+			: /substantial text/;
 
 /** Public hook order, not an SDK inference run or a model response simulation. */
 function harness(mode: PolicyMode) {
@@ -140,6 +151,9 @@ function harness(mode: PolicyMode) {
 		inspect,
 		project,
 		active: () => active,
+		activate(names: string[]) {
+			active = [...names];
+		},
 		catalog(value: typeof catalog) {
 			catalog = value;
 		},
@@ -164,9 +178,11 @@ function harness(mode: PolicyMode) {
 			assert.ok(lastEnd);
 			await emit("tool_execution_end", lastEnd);
 		},
-		async call(step: ProductStep) {
-			await emit("turn_start");
-			await project();
+		async call(step: ProductStep, options: { project?: boolean } = {}) {
+			if (options.project !== false) {
+				await emit("turn_start");
+				await project();
+			}
 			assert.ok(active.includes(step.name), `active tool: ${step.name}`);
 			const fixtureTool = tool(step.name);
 			const args = structuredClone(step.args);
@@ -258,7 +274,7 @@ for (const mode of ["enforce", "observe"] as const)
 				);
 				assert.equal(run.guidance.length, fixture.group === "adaptive" && mode === "enforce" ? 1 : 0);
 				if (fixture.group === "adaptive" && mode === "enforce")
-					assert.match(run.guidance[0], entry.id === "recovery-guidance" ? /consecutive completed tool executions failed/ : /substantial text/);
+					assert.match(run.guidance[0], adaptiveGuidancePattern(entry.id));
 				if (entry.id === "schema-denial") {
 					assert.equal(run.inputs[0].count, "not-an-integer");
 					const output = run.events[1] as { content: string };
@@ -468,6 +484,198 @@ for (const mode of ["enforce", "observe"] as const) {
 		}
 	});
 }
+
+for (const mode of ["enforce", "observe"] as const)
+	test(`${mode}: pillars guard projects once per period after a draftless corpus read`, async () => {
+		const run = harness(mode);
+		try {
+			await run.start();
+			await run.call(pillarsBody);
+			assert.equal((await pillarsPeriod(run)).count, 1);
+			const projected = await run.project();
+			assert.equal(projected.length, mode === "enforce" ? 1 : 0);
+			if (mode === "enforce") assert.match(projected[0], /Pillars entry text was read without a draft/);
+			assert.deepEqual(await run.project(), []);
+		} finally {
+			await run.close();
+		}
+	});
+
+test("inventory, governance, default, and other-tool reads never arm the pillars period", async () => {
+	const run = harness("enforce");
+	try {
+		await run.start();
+		for (const step of [
+			pillarsCall({ resource: "inventory" }),
+			pillarsCall({ resource: "governance" }),
+			pillarsCall({}),
+			{ name: "policy_product_count", args: {} },
+		]) {
+			await run.call(step);
+			assert.equal((await pillarsPeriod(run)).count, 0, step.name);
+		}
+		assert.deepEqual(await run.project(), []);
+	} finally {
+		await run.close();
+	}
+});
+
+test("a successful draft completed before the next projection suppresses pillars guidance and re-arms later", async () => {
+	const run = harness("enforce");
+	try {
+		await run.start();
+		await run.call(pillarsBody, { project: false });
+		await run.call(pillarsDraft("Repaired proposal grounded in the entry."), { project: false });
+		const period = await pillarsPeriod(run);
+		assert.equal(period.count, 0);
+		assert.deepEqual(await run.project(), []);
+		assert.equal(run.guidance.length, 0);
+		await run.call(pillarsBody);
+		assert.equal((await pillarsPeriod(run)).count, 1);
+		assert.equal((await run.project()).length, 1);
+	} finally {
+		await run.close();
+	}
+});
+
+test("a draft completed before a body read leaves one conditional notice at the next projection", async () => {
+	const run = harness("enforce");
+	try {
+		await run.start();
+		await run.call(pillarsDraft("Initial proposal text."), { project: false });
+		await run.call(pillarsBody, { project: false });
+		const projected = await run.project();
+		assert.equal(projected.length, 1);
+		assert.match(projected[0], /If those entries govern a consequential decision/);
+		assert.deepEqual(await run.project(), []);
+		assert.equal(run.guidance.length, 1);
+	} finally {
+		await run.close();
+	}
+});
+
+test("draft-first never arms the pillars period", async () => {
+	const run = harness("enforce");
+	try {
+		await run.start();
+		await run.call(pillarsDraft("Initial proposal text."));
+		assert.equal((await pillarsPeriod(run)).count, 0);
+		assert.deepEqual(await run.project(), []);
+	} finally {
+		await run.close();
+	}
+});
+
+test("a failed draft neither resets nor observes the pillars period", async () => {
+	const run = harness("enforce");
+	try {
+		await run.start();
+		await run.call(pillarsBody);
+		// The pre-call projection consumes the armed guidance; the failed call itself observes nothing.
+		await run.call(pillarsDraft(""));
+		assert.equal((await pillarsPeriod(run)).count, 1);
+		await run.call(pillarsDraft("Repaired proposal grounded in the entry."));
+		assert.equal((await pillarsPeriod(run)).count, 0);
+	} finally {
+		await run.close();
+	}
+});
+
+test("pillars periods expire exactly at the declared age", async (t) => {
+	let now = Date.now();
+	t.mock.method(Date, "now", () => now);
+	const run = harness("enforce");
+	try {
+		await run.start();
+		await run.call(pillarsBody);
+		assert.equal((await run.project()).length, 1);
+		now += DEFAULT_LIMITS.periodMs - 1;
+		assert.deepEqual(await run.project(), []);
+		now++;
+		await run.call(pillarsBody);
+		assert.equal((await run.project()).length, 1);
+	} finally {
+		await run.close();
+	}
+});
+
+test("an inactive pillars tool suppresses projection without consuming the once allowance", async () => {
+	const run = harness("enforce");
+	try {
+		await run.start();
+		await run.call(pillarsBody);
+		run.activate(PRODUCT_TOOLS.filter((name) => name !== "pillars"));
+		assert.deepEqual(await run.project(), []);
+		run.activate(PRODUCT_TOOLS);
+		assert.equal((await run.project()).length, 1);
+	} finally {
+		await run.close();
+	}
+});
+
+test("an unavailable catalog stays unknown without consuming the pillars once allowance", async () => {
+	const run = harness("enforce");
+	try {
+		await run.start();
+		await run.call(pillarsBody);
+		run.catalog("unavailable");
+		assert.deepEqual(await run.project(), []);
+		run.catalog("ready");
+		assert.equal((await run.project()).length, 1);
+	} finally {
+		await run.close();
+	}
+});
+
+for (const mode of ["notice", "annotate"] as const)
+	test(`${mode}: pillars guidance follows the mode matrix`, async () => {
+		const run = harness(mode);
+		try {
+			await run.start();
+			await run.call(pillarsBody);
+			assert.equal((await run.project()).length, mode === "annotate" ? 1 : 0);
+		} finally {
+			await run.close();
+		}
+	});
+
+test("disable and retire remove pillars guidance while enable restores it", async () => {
+	const run = harness("enforce");
+	try {
+		await run.start();
+		await run.command("disable recovery.pillars-application Review");
+		await run.call(pillarsBody);
+		assert.deepEqual(await run.project(), []);
+		await run.command("enable recovery.pillars-application Review");
+		await run.call(pillarsBody);
+		assert.equal((await run.project()).length, 1);
+		await run.command("retire recovery.pillars-application Review");
+		await run.call(pillarsBody);
+		assert.deepEqual(await run.project(), []);
+	} finally {
+		await run.close();
+	}
+});
+
+test("an existing catalog never receives the pillars seed automatically", async () => {
+	const run = harness("enforce");
+	let path = "";
+	try {
+		await run.start();
+		const health = JSON.parse((await run.inspect({ view: "health" })).text);
+		path = health.authority.path;
+		await writeFile(path, "");
+		await run.start();
+		const stored = await new RuleRegistry(dirname(path)).snapshot();
+		assert.equal(stored.records.size, 0);
+		await run.call(pillarsBody);
+		assert.deepEqual(await run.project(), []);
+		assert.equal((await readFile(path, "utf8")).length, 0);
+	} finally {
+		await run.close();
+	}
+	assert.ok(path);
+});
 
 test("policy denials do not count as executed errors or result volume", async () => {
 	const run = harness("enforce");

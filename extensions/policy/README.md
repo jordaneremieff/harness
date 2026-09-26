@@ -35,12 +35,16 @@ completed work and never infers a retry's cause.
 | `bounds.*` | Require explicit discovery/output limits and identify caps that do not stop the producer. |
 | `arguments.schema` | Refuse a final argument object that violates the available tool schema. This includes mutations from earlier hooks. Unavailable schemas remain unknown. |
 | `recovery.repeated-errors` | Diagnose two consecutive completed execution errors less than 30 seconds apart, across tools. Each further qualifying error triggers guidance again. Success resets future streaks without erasing a triggered notice; policy denials and unexecuted calls do not count. |
+| `recovery.pillars-application` | Guide after a successful draftless Pillars entry read; a successful draft resets the period. Projection requires an active `pillars` tool in the public catalog. The cross-extension seed contract is documented in [docs/conventions/policy-recovery.md](../../docs/conventions/policy-recovery.md). |
 | `resources.output-volume` | Guide after 65,536 measured UTF-8 text bytes across at most sixteen executed results within a five-minute period/window. The measurement precedes this extension's guidance. |
 
-Recovery guidance is captured at completion and delivered before the next real
-model request. Multiple triggers before that request coalesce into one notice.
-The output-volume guide projects at most once per period. Neither guide forces
-another turn. These are conservative intervention bounds, not
+Repeated-errors guidance is captured at completion and delivered before the next
+real model request; multiple triggers before that request coalesce into one
+notice. Pillars application guidance is a context-phase rule: it reevaluates
+recorded observations at each projection, so a successful draft before the next
+projection retracts it. The output-volume and pillars guides project at most
+once per period. No guide forces another turn. These are conservative
+intervention bounds, not
 measured optimal thresholds or claims of cost savings. Observe mode applies no
 effects. The operator can replace, retire, or disable any seeded rule. Command
 defaults also declare an
@@ -963,7 +967,8 @@ The `policy-product` suite in [product.eval.mts](product.eval.mts) evaluates the
 starter catalog through the production entrypoint in isolated fresh stores. Its fixture supplies only
 inert tools and seeds no data or rules, never replacement policy definitions.
 Cases cover known-invalid final arguments, the absence of automatic result
-assertions, repeated execution errors, output volume, and near misses. Controlled tests check package
+assertions, repeated execution errors, output volume, pillars application
+recovery, and near misses. Controlled tests check package
 provenance, exact intervention thresholds, mode effects, duplicate completion,
 reset/expiry, data absence, and cleanup. Catalog lifecycle tests preserve
 operator edits and retirement across reloads and changed starter definitions;

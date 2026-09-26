@@ -94,6 +94,44 @@ export const PACKAGE_CATALOG: PackageDefinitionRow[] = [
 		},
 	),
 	policy(
+		"recovery.pillars-application",
+		"Apply loaded Pillars entries to a concrete proposal before delivery.",
+		"After a successful entry read without a draft, assess any consequential proposal against the relevant Pillars before delivery. Skip extra ceremony for source-only or routine work.",
+		{
+			phase: "context",
+			selector: { tools: ["pillars"] },
+			when: {
+				all: [
+					{ op: "gte", path: ["state", "count"], value: 1 },
+					{ op: "eq", path: ["context", "tools", "pillars", "active"], value: true },
+				],
+			},
+			state: {
+				observe: {
+					all: [
+						{ op: "eq", path: ["outcome", "kind"], value: "success" },
+						{ op: "exists", path: ["input", "resource"] },
+						{ not: { op: "in", path: ["input", "resource"], value: ["inventory", "governance"] } },
+						{ not: { op: "exists", path: ["input", "draft"] } },
+					],
+				},
+				resetWhen: {
+					all: [
+						{ op: "eq", path: ["outcome", "kind"], value: "success" },
+						{ op: "exists", path: ["input", "draft"] },
+					],
+				},
+				once: "period",
+				expiresAfterMs: DEFAULT_LIMITS.periodMs,
+			},
+			action: {
+				kind: "guide",
+				text: "Pillars entry text was read without a draft. If those entries govern a consequential decision, action, or answer now, check the concrete proposal with pillars(draft: ...) before delivery; use the relevant source already selected. Apply the assessment, fix affected work, and continue the authorized task. If the request is only to read or quote doctrine, the work is routine, or no proposal follows, proceed without an extra check. A source read or submitted draft does not prove application or grant permission.",
+			},
+			onUnavailable: "skip",
+		},
+	),
+	policy(
 		"resources.output-volume",
 		"Limit repeated large text results before they consume more context.",
 		"Recent tool results contain substantial text. Narrow the requested fields, paths, or result count before the next tool call.",

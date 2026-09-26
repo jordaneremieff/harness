@@ -32,6 +32,7 @@ test("every installed policy has a validated purpose, action authority, and sour
 	for (const id of [
 		"arguments.schema",
 		"recovery.repeated-errors",
+		"recovery.pillars-application",
 		"resources.output-volume",
 	])
 		assert.equal(installed(id).source.kind, "package");
