@@ -108,9 +108,11 @@ restart without them.
 
 Both tools validate through Pi's `prepareArguments` callback before host schema
 validation, as well as at their execution boundary. They report the first invalid
-field. Numbers and booleans are shown directly. Arbitrary strings and unsupported
-field names are described by type and length, not echoed; object and array contents
-are withheld. The source tool echoes only a known identifier with its `.md` suffix.
+field. For source and usage fields, numbers and booleans are shown directly. Arbitrary
+strings and unsupported field names are described by type and length, not echoed;
+object and array contents are withheld. Draft validation uses a fixed diagnostic
+that withholds every input value. The source tool echoes only a known identifier
+with its `.md` suffix.
 These rules prevent control characters, paths, credentials, and arbitrary input
 text from entering diagnostic messages.
 
@@ -142,6 +144,55 @@ output stay outside model context: TUI, JSON, and RPC use a custom session
 entry, while text-print mode writes to stdout. JSON/RPC consumers receive the
 host's `entry_appended` event. Command output remains in the ordinary session record where that record persists;
 it is not stored in the aggregate telemetry directory.
+
+## Assess an agent-authored draft
+
+The agent can include an optional `draft` in an ordinary `pillars` source read:
+
+```json
+{"resource":"heuristic-verification-reach","draft":"The test confirms source delivery, not whether the agent applied the guidance."}
+```
+
+The tool's description and prompt guidance ask the agent to submit a concrete
+proposal before a consequential decision, action, or answer without waiting for
+an operator cue. Routine execution and exact-output tasks need no added ceremony.
+Omitting `draft` keeps source-only behavior. A draft must be a nonblank,
+well-formed Unicode string of at most 8 KiB in UTF-8. The extension preserves its
+text exactly and rejects invalid input without echoing it.
+
+After a successful source read, the extension sends a native assessment task for
+the ordinary model continuation. Pi delivers that task after the tool results
+in the current batch. The source JSON, digest, pagination, and error contract
+remain unchanged; the task is a separate message. It asks the agent to apply
+relevant Pillars to the proposal, correct affected work, and complete the
+already-authorized task. Existing consultation rules still apply, including use
+of relevant bodies already in context when sufficient. The task requests no
+separate verdict or doctrine recital unless the operator asks for one. It labels
+the draft as agent-authored data, not an operator request, new doctrine, or
+permission. The shared correction and authority text also serves `/pillars check`.
+
+The task uses `sendMessage` with `triggerTurn:false`; the extension starts no
+additional model turn and owns no assessment queue, pending state, or context
+transform. Source errors and cancellation before admission send no task.
+Cancellation after admission leaves the task in native history without requesting
+another turn. Reload and session resume do not replay or duplicate it. This is
+not an action gate: other tools in the same batch still execute before the
+assessment reaches the model.
+
+The terminal call line marks an agent draft assessment but does not display the
+draft. The task has `display:false`, so it stays outside the ordinary message
+display while remaining model-visible. **A draft is not private scratch.** Both
+the tool input and assessment task enter native session history, and provider
+requests include the draft. Do not submit secrets. The aggregate access store
+retains no draft text, and its counts remain source-access evidence rather than
+assessment or application evidence.
+
+Context cost consists of the tool's static guidance plus an assessment task for
+each successful call that includes a draft. The task contains fixed instructions
+and a JSON-escaped copy of the draft; escaping can make it larger than the input
+byte limit. The extension has no automatic retry or review loop. Agent selection
+and the quality of the resulting correction remain model judgments, not a
+compliance verdict computed by the extension.
 
 ## Discovery and activation
 
@@ -481,7 +532,10 @@ breaking, crash-leftover reconciliation, atomic publication, retention,
 corruption, quotas, full-capacity pagination, memory refusal, export
 publication, free-text command parsing, native argument-completion insertion,
 help rendering at narrow widths, and actual Pi discovery/callback/command/shutdown
-integration with a synthetic provider. Provider assertions use Pi's public
+integration with a synthetic provider. Draft tests cover Unicode and byte bounds,
+private diagnostics, unchanged source output, native batch ordering, ordinary
+transcript preservation, cancellation, reload, disk resume, and source-only
+aggregate evidence. Provider assertions use Pi's public
 transcript helpers to resolve the effective prompt and tools from system
 messages. Event mocks return the host's unsubscribe function shape.
 Command integration covers operator-only

@@ -48,7 +48,7 @@ function expandedAccessText(page: AccessPage, theme: Theme): string {
 
 /** Terminal rendering for the `pillars` tool: compact by default, full source text when expanded. */
 export function accessRenderers(): {
-	renderCall(args: AccessRequest | undefined, theme: Theme): Text;
+	renderCall(args: (AccessRequest & { draft?: string }) | undefined, theme: Theme): Text;
 	renderResult(
 		result: AgentToolResult<AccessPage | AccessError | undefined>,
 		options: ToolRenderResultOptions,
@@ -61,6 +61,7 @@ export function accessRenderers(): {
 			let text = theme.fg("toolTitle", theme.bold("pillars "));
 			text += theme.fg("accent", args?.resource ?? "inventory");
 			if (args?.offset !== undefined) text += theme.fg("dim", ` (offset ${args.offset})`);
+			if (args?.draft !== undefined) text += theme.fg("dim", " (agent draft assessment)");
 			return new Text(text, 0, 0);
 		},
 		renderResult(result, options, theme, context) {

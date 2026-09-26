@@ -16,6 +16,7 @@ import { InputError } from "./input.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import { Collector, utcDay } from "./collector.ts";
 import { COMMAND_HELP, commandCompletions, judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
+import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, MAX_DRAFT_BYTES, splitDraft } from "./draft.ts";
 import { exportLocal, parseCommand } from "./export.ts";
 import { accessEvidence, Deduplicator, type DeliveryExtent, extract, readEvidence, type ResultEvidence } from "./observation.ts";
 import { accessRenderers, usageMarkdown, usageRenderers } from "./presentation.ts";
@@ -155,11 +156,12 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "pillars",
 		label: "Pillars",
-		description: ACCESS_DESCRIPTION,
-		promptSnippet: "Read the Pillars inventory, consultation rules, and selected corpus entries",
+		description: `${ACCESS_DESCRIPTION} ${DRAFT_GUIDANCE}`,
+		promptSnippet: "Read Pillars and assess an agent-authored draft before delivery",
 		promptGuidelines: [
 			"Call pillars at judgment moments: design or architecture decisions, trade-offs, option menus, verification depth, information placement, and prose tells.",
 			'Read resource:"governance" before applying any corpus entry.',
+			DRAFT_GUIDANCE,
 		],
 		parameters: Type.Object(
 			{
@@ -175,26 +177,42 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 						description: "Required for continuation; prevents mixing source revisions",
 					}),
 				),
+				draft: Type.Optional(
+					Type.String({
+						minLength: 1,
+						maxLength: MAX_DRAFT_BYTES,
+						description: "Concrete agent-authored proposal to assess after this source read. Nonblank, well-formed Unicode, at most 8192 UTF-8 bytes. Retained in native history, not private scratch.",
+					}),
+				),
 			},
 			{ additionalProperties: false },
 		),
 		...accessRenderers(),
 		prepareArguments(input) {
 			try {
-				const { referenceBodyDigest, ...args } = parseAccess(input, catalog);
-				return { ...args, ...(referenceBodyDigest === undefined ? {} : { referenceBodyDigest }) };
+				const { source, draft } = splitDraft(input);
+				const { referenceBodyDigest, ...args } = parseAccess(source, catalog);
+				return { ...args, ...(referenceBodyDigest === undefined ? {} : { referenceBodyDigest }), ...(draft === undefined ? {} : { draft }) };
 			} catch (error) {
-				if (!(error instanceof InputError)) throw error;
+				if (!(error instanceof InputError) && !(error instanceof DraftInputError)) throw error;
 				throw new Error(JSON.stringify({ schema: "pillars-source-error", code: "invalid_input", message: error.message }));
 			}
 		},
 		async execute(id, args, signal) {
-			const result = await access(catalog, args, signal);
+			let input: ReturnType<typeof splitDraft>;
+			try { input = splitDraft(args); }
+			catch (error) {
+				if (!(error instanceof DraftInputError)) throw error;
+				throw new Error(JSON.stringify({ schema: "pillars-source-error", code: "invalid_input", message: error.message }));
+			}
+			const result = await access(catalog, input.source, signal);
 			if (result.schema === "pillars-source" && delivered.size < 4096 && Buffer.byteLength(id) <= 256) {
 				const { resource, offset, endOffset, bodyBytes, referenceBodyDigest } = result;
 				delivered.set(id, { resource, offset, endOffset, bodyBytes, referenceBodyDigest });
 			}
 			if (result.schema === "pillars-source-error") throw new Error(JSON.stringify(result));
+			if (input.draft !== undefined && !signal?.aborted)
+				pi.sendMessage({ customType: "pillars-draft", content: draftAssessment(input.draft), display: false }, { triggerTurn: false });
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 		},
 	});
