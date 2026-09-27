@@ -1,4 +1,4 @@
-/** Pi adapter for the autonomous `/evo [hint]` harness evolution command. */
+/** Pi adapter for the autonomous `/evo [direction]` harness evolution command. */
 
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +16,7 @@ function reportInvalidInvocation(ctx: ExtensionCommandContext, message: string):
 export default function registerEvo(pi: ExtensionAPI): void {
 	pi.registerCommand("evo", {
 		description:
-			"Coordinate autonomous harness improvement through full Pi sessions; optional trailing text is an exploration hint",
+			"Coordinate autonomous harness improvement through full Pi sessions; optional trailing text directs the run",
 		handler: async (rawArgs, ctx) => {
 			const invocation = parseEvoInvocation(rawArgs);
 			if (!invocation.ok) {
@@ -26,7 +26,7 @@ export default function registerEvo(pi: ExtensionAPI): void {
 			const kickoff = buildEvoKickoff({
 				harnessRoot: HARNESS_ROOT,
 				invocationCwd: ctx.cwd,
-				hint: invocation.hint,
+				direction: invocation.direction,
 			});
 			pi.sendUserMessage(kickoff, { deliverAs: "followUp" });
 		},

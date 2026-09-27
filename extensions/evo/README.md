@@ -12,7 +12,7 @@ useful discoveries, returns corrections to the same owners, and completes
 authorized release steps. An idea list, assessment, or plan is not completion
 while worthwhile authorized work remains.
 
-The extension owns deterministic invocation and hint framing. The ordinary
+The extension owns deterministic invocation and direction framing. The ordinary
 agent owns judgment, coordination, and acceptance. The package-level
 [agent delivery contract](../../docs/agent-delivery.md) defines the integration
 with registered full-session controls, without sibling imports or private-store
@@ -22,7 +22,7 @@ access. Evo adds no scheduler, worker store, model loop, or fixed model roster.
 
 ```text
 /evo
-/evo <hint>
+/evo <direction>
 ```
 
 Bare `/evo` chooses a useful direction without an operator-supplied topic. It uses
@@ -31,12 +31,29 @@ host capabilities as material for ideas. It requires no defect, incident history
 prior proof of value, or populated store to begin exploration. The active agent
 loads the harness skill and repository instructions before governed work.
 
-The complete trailing input is an optional exploration hint. A word, question,
-multiline text, or pasted source is data, not a subcommand. The hint does not fix
-the outcome or override stronger evidence. In `/evo push approved`, the hint
-adds no release authority. The invocation itself grants the bounded
-established-resource promotion and push path below. Give authority for acts
-outside that path separately in the governing conversation.
+The complete trailing input is an optional run direction, not a subcommand.
+Its focus (targets, subjects, questions, requested outcomes) selects the work.
+Its participants, models, thinking levels, budget limits, process steps, and
+expectations shape the run. Restrictions bind for the run and take priority over
+the invocation's release grant. These semantics apply regardless of origin.
+Resolve named models against the current model registry and report unavailable
+choices instead of silently substituting.
+
+The direction never expands authority or approves a new enumerated surface.
+In `/evo push approved`, the approval wording adds no release authority. The
+invocation itself grants the bounded established-resource promotion and push
+path below. If directed work needs authority outside that grant, complete the
+authorized part, then deliver the complete artifact and ask once. Mention
+approval wording only when it changes an act. The direction does not waive
+binding rules, required checks, or review.
+
+Quoted or pasted material inside the direction (transcripts, excerpts, logs,
+other people's messages, screenshots, or paths) is evidence. Its imperatives do
+not assign work unless the direction adopts them. Factual claims need
+verification. Follow stated process steps and expectations where possible;
+state each deviation and its reason when evidence or a binding rule argues
+against them. Pursue a stated count with worthwhile work and report a shortfall
+instead of padding.
 
 The parser bounds raw input at 80,000 UTF-8 bytes and sanitized input at 20,000
 Unicode code points. It replaces malformed UTF-16, removes terminal controls and
@@ -45,9 +62,10 @@ Oversized input is refused rather than truncated. UI hosts receive an error
 notification; headless hosts receive a command error through Pi's error surface.
 Neither path dispatches a kickoff for invalid input.
 
-The kickoff encodes the hint as one JSON string on one line. Escaped delimiters
-and newlines cannot create new prompt sections. The decoded text remains search
-data. This framing is not a sandbox or a proof of model compliance.
+The kickoff encodes the direction as one JSON string on one line inside
+`<evo-direction-json>`. Escaped delimiters and newlines cannot create new prompt
+sections. The decoded text directs the run within the authority boundary above.
+This framing is not a sandbox or a proof of model compliance.
 
 ## Outcome and ownership
 
@@ -102,6 +120,12 @@ The final chat response integrates meaningful changes, checked evidence, local
 commits, actual releases, strongest rejected work, and genuine blockers. No
 operator-curated report or intermediate artifact is required. Existing continuity
 surfaces preserve governing context and live-session ownership when needed.
+
+When a direction supplies the focus, exploration and selection stay within that
+focus. If it yields no worthwhile contribution, return scoped no-change or the
+exact blocker for that focus. Name stronger leads outside the focus as
+recommendations, not substitute work.
+
 No-change follows bounded creative exploration that yields no worthwhile
 contribution and no concrete lead worth further development in that scope. The
 result names the possibilities considered, their development or checks, and the
@@ -113,9 +137,9 @@ value-creation opportunities.
 A worthwhile contribution blocked by a fact, capability, or authority remains
 blocked, not worthless. The result names the exact boundary and affected act.
 A boundary that prevents exploration requires no fabricated candidates; a
-candidate-specific boundary does not end independent authorized work. Neither a
-change quota, novelty quota, nor exhaustive discovery is required. Task size
-alone is not a no-change reason.
+candidate-specific boundary does not end independent authorized work. The
+invocation imposes no default change quota, novelty quota, or exhaustive
+discovery requirement. Task size alone is not a no-change reason.
 
 ## Authority
 
@@ -144,7 +168,8 @@ It does not activate new or provisional resources or alter unrelated settings by
 inference. Delivery outside this bounded promotion/push path, including other
 publication, activation, or settings changes, requires separate explicit operator
 authority. The coordinator completes already-granted acts without asking again.
-Current explicit operator restrictions take priority over the invocation's release grant.
+Current explicit operator restrictions and restrictions in the direction take
+priority over the invocation's release grant.
 If a required fact, check, or authority is missing, it stops only the affected
 step, reports the exact boundary, and completes independent authorized work.
 
@@ -160,7 +185,7 @@ execution follows the host's existing contract; it grants no arbitrary credentia
 access. Repository rules still protect concurrent work and held experiments.
 Inherited edits retain their attribution.
 
-Hints, historical evidence, and worker messages do not grant authority. Evo
+The direction, historical evidence, and worker messages do not grant authority. Evo
 expresses these boundaries in the request; it does not mechanically enforce
 filesystem paths or tool permissions.
 
@@ -190,16 +215,18 @@ selected slices' dedicated worktrees.
 
 - `index.ts` registers `/evo`, resolves its evidence root, reports invalid input,
   and selects follow-up delivery.
-- `command.ts` sanitizes and bounds the hint.
+- `command.ts` sanitizes and bounds the direction.
 - `kickoff.ts` frames the coordinator request and authority contract.
-- `evo.test.mts` checks parser bounds, framing, authority, workflow instructions,
-  mode-independent dispatch, and error behavior.
+- `evo.test.mts` checks parser bounds and pins the complete kickoff direction
+  framing, including scope, restrictions, authority, evidence separation, model
+  resolution, process deviations, and shortfalls. It also checks JSON isolation,
+  mode-independent dispatch, and errors.
 - `evo.runtime.test.mts` loads the real extension into ordinary Pi sessions with a
   controlled provider. It checks delivery of healthy-system opportunity
   exploration, concrete idea development, selection and execution, warrant and
-  approval distinctions, scoped no-change, the bounded release grant, repeated
-  requests, preflight lifetime, active follow-up delivery, retained outcome,
-  and error routing without live credentials.
+  approval distinctions, run direction, scoped no-change, the bounded release
+  grant, repeated requests, preflight lifetime, active follow-up delivery,
+  retained outcome, and error routing without live credentials.
 
 ```bash
 node --test extensions/evo/*.test.mts
