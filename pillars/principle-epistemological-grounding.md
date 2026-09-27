@@ -167,7 +167,7 @@ Everything is input, but not every input is the same kind of thing. Some inputs 
 
 ### Message Role Mapping
 
-[Message Role Mapping](pattern-message-role-mapping.md) preserves the separate evidence and authority boundaries of assertions, declarations, and interpretations within human communication.
+[Message Role Mapping](pattern-message-role-mapping.md) preserves the separate evidence and authority boundaries of assertions, declarations, and interpretations within communication.
 
 ### System Autonomy
 

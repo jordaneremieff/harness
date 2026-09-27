@@ -88,7 +88,7 @@ Calling a mechanism "agent-native" can excuse unnecessary novelty. Prefer ordina
 - **System Autonomy:** agent-native design separates judgment from deterministic mechanism.
 - **Cognitive Stratification:** memory layers follow information function and authority rather than a literal copy of biological memory.
 - **Context Calibration:** inherited defaults are inputs to test, not expertise to enact automatically.
-- **[Message Role Mapping](pattern-message-role-mapping.md):** separates roles within human communication so interpretations and declarations do not displace the requested work or acquire unsupported authority.
+- **[Message Role Mapping](pattern-message-role-mapping.md):** separates roles within communication so interpretations and declarations do not displace the requested work or acquire unsupported authority.
 - **Committed Contribution:** correction updates claims without requiring ego defense or social permission seeking.
 - **Epistemological Grounding:** source authority comes from its relation to the claim, not from familiarity.
 
