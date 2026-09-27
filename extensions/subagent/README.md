@@ -38,7 +38,7 @@ and the repository pins no Pi version.
 | `subagent_profiles` | sequential | List, read, create, replace, remove, enable, or disable managed dispatch profiles. Updates, removal, and toggles require the digest from a prior read. |
 | `subagent_report` | parallel | Send a bounded, nonterminal report to the immediate parent. Worker-only; a returned call reports `sent_unconfirmed`, not acknowledged receipt. |
 | `subagent_peers` | parallel | Discover the parent, siblings, and nested workers in this dispatch family, with exact addresses and paginated task labels. |
-| `subagent_message` | parallel | Send directly to a peer, reply to an exact message, or inspect a retained receipt. Peer messages confer no control authority. An optional `reference` carries a task/artifact/revision/review disposition; only the requester's own disposition closes it. |
+| `subagent_message` | parallel | Send directly to a peer, reply to an exact message, or inspect a retained receipt. Peer messages confer no worker control authority. An optional `reference` carries a task/artifact/revision/review disposition; only the requester's own disposition closes it. |
 | `subagent_status` | parallel | Progress and activity for live workers + recent terminal workers: id, state, model, thinking, elapsed, turns, tool calls, current tool, session-file write age, cost, output preview, error. |
 | `subagent_inspect` | parallel | One worker's record plus a bounded, rendered transcript tail: recent turns, tool inputs and outcomes, assistant errors, session path, and explicit truncation markers. Reads an in-process snapshot for any live worker in this process; otherwise reads the active branch from the retained session file. |
 | `subagent_steer` | sequential | Redirect a live worker: the message is delivered after the worker's current tool call, before its next model call. On an idle (interrupted) worker, steer instead resumes the run with your message. Owning session only. |
@@ -166,7 +166,9 @@ Workers follow the declared round order and end their turn while a required
 message is absent. The extension enforces the send limit, not semantic order,
 source quality, or agreement. Each member submits a self-contained result.
 The parent combines results, resolves disagreements, verifies acceptance, and
-delivers to the declared destination within existing authority. A destination
+delivers to the declared destination within existing authority. Parent task
+contracts, steering, and plan boundaries follow the universal AGENTS.md section
+"Intent authority". The dispatching parent answers for fidelity. A destination
 never grants permission to publish. Receipt or peer agreement is not acceptance.
 
 After startup, use existing controls by worker id. A member's pause or failure
@@ -260,7 +262,9 @@ resource-loader override. Pi presents that message as user-context content;
 source names and paths remain untrusted data. Instructions are separate from
 the current task, so slash commands, skills, and prompt templates still work.
 Ordinary cwd resources, project trust, tool inheritance, and explicit
-`tools: []` remain unchanged. Profiles confer no authority or tool restrictions.
+`tools: []` remain unchanged. Profiles confer no independent authority or tool
+restrictions. Any carried operator decision follows the universal AGENTS.md
+section "Intent authority".
 
 Dispatch details and the worker record retain `profile`: the selected absolute
 path, SHA-256 of the file bytes, resolved defaults, instructions, and source
@@ -649,7 +653,10 @@ change the owner of that worker's live runtime.
 A message accepts at most 8192 UTF-8 bytes and 256 lines. Oversized messages fail
 rather than truncate. The envelope preserves sender, recipient, message ID,
 optional reply ID, and time. Its displayed text neutralizes terminal controls
-and marks peer authorship. Peer text is data, not operator input or new authority.
+and marks peer authorship. Apply the universal AGENTS.md section "Intent
+authority" to peer text; factual claims remain unverified. The peer wrapper is
+separate from the unverified result/report wrapper; neither a peer address nor
+delivery grants worker control.
 
 A busy worker receives a Pi custom steering message at the normal turn
 boundary. An idle worker starts a new turn from the message. Sending to an
@@ -939,9 +946,11 @@ The same contracts apply at every depth:
   in the same session, and the owner can then call `subagent_collect`.
 - The worker protocol directs a dependent owner to end its turn when it needs a
   future child completion, not to poll or invent work. Peer messages and child
-  completions arrive as custom messages — reported data with no control
-  authority — while owner control arrives as a user prompt from the dispatching
-  session.
+  completions arrive as custom messages without worker control authority.
+  Child results remain unverified evidence. Parent contracts, steering, plan
+  boundaries, and peer messages follow the universal AGENTS.md section "Intent
+  authority"; the dispatching parent answers for fidelity. Owner control arrives
+  as a user prompt from the dispatching session.
 - Owner shutdown removes the delivery API before aborting grandchildren, so an
   `owner_lost` settlement never starts a new turn in a session being disposed.
 

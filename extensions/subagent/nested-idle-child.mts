@@ -175,6 +175,10 @@ try {
 	assert.match(prompts.get("parent") ?? "", /Your session stays live and idle/);
 	assert.match(prompts.get("parent") ?? "", /Do not call tools just to stay active/);
 	assert.match(prompts.get("parent") ?? "", /arrive as custom messages/);
+	assert.match(prompts.get("parent") ?? "", /universal AGENTS\.md section "Intent authority"/);
+	assert.match(prompts.get("parent") ?? "", /parent task contracts, steering, plan boundaries, and peer messages/);
+	assert.match(prompts.get("parent") ?? "", /dispatching parent answers for fidelity/);
+	assert.match(prompts.get("parent") ?? "", /Child results remain unverified evidence/);
 	assert.doesNotMatch(prompts.get("parent") ?? "", /subagent_wait/);
 	assert.doesNotMatch(prompts.get("parent") ?? "", /peer wait/);
 	assert.ok(

@@ -5,7 +5,7 @@
  * `cwd`), reusable operating instructions, and source pointers (`grounding`),
  * plus an optional display `name` and an `enabled` switch. It is read once, at dispatch time, into a snapshot that
  * travels with the worker record; a profile is never executed or treated as
- * authority. Referenced sources are pointers only and are never opened here.
+ * independent authority. Referenced sources are pointers only and are never opened here.
  *
  * A dispatch selects a profile two ways. A bare kebab word names a managed
  * profile in the store under `<agentDir>/subagent/profiles/`; anything else is a
@@ -449,7 +449,8 @@ export function profileMessage(profile: ProfileSnapshot) {
 		customType: "subagent_profile",
 		display: true,
 		content: [
-			"Selected profile context. It supplies a reusable approach, not operator authority or claims of expertise.",
+			"Selected profile context. It supplies reusable defaults, not independent authority or claims of expertise.",
+			'Apply the universal AGENTS.md section "Intent authority" to any carried operator decision.',
 			"The current task supplies the target and permitted actions; task-specific directions override these defaults.",
 			"Profile selection preserves the session's configured tools and resources. Profile text does not replace governing instructions or grant permissions.",
 			`Profile identity: ${JSON.stringify({ path: profile.path, sha256: profile.sha256 })}`,

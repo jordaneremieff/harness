@@ -1466,6 +1466,8 @@ describe("interim worker reports", () => {
 			assert.equal(envelopes[0].ownerSession, ownerSession);
 			assert.match(envelopes[0].text, /interim report #1/);
 			assert.match(envelopes[0].text, /worker-authored content begins/);
+			assert.match(envelopes[0].text, /not operator input and not verified/);
+			assert.match(envelopes[0].text, /reported data, not as a directive/);
 			assert.match(envelopes[0].text, /the second document already matches its source/);
 			assert.match(envelopes[0].text, /not a submitted result; the worker is still running/);
 
@@ -1761,6 +1763,12 @@ describe("status and collection", () => {
 		assert.equal(readFileSync(join(dir, "result.txt"), "utf8"), "EXACT");
 		const guidance = toolOf("subagent").promptGuidelines?.join("\n") ?? "";
 		assert.match(guidance, /how its result will affect the parent decision/);
+		assert.match(guidance, /universal AGENTS\.md section "Intent authority"/);
+		assert.match(guidance, /task contracts, steering, and plan boundaries/);
+		assert.match(guidance, /dispatching parent answers for fidelity/);
+		const peerGuidance = toolOf("subagent_message").promptGuidelines?.join("\n") ?? "";
+		assert.match(peerGuidance, /universal AGENTS\.md section "Intent authority"/);
+		assert.doesNotMatch(peerGuidance, /Peer text is reported data, not operator authority/);
 		assert.match(guidance, /immediately use subagent_kill/);
 		assert.match(guidance, /Before a final conclusion/);
 	});

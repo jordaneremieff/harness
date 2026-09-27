@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { compilePlan, planNames, sendWithinPlan, wirePlan, workerPlanSnapshot } from "./plans.ts";
+import { compilePlan, planFields, planNames, sendWithinPlan, wirePlan, workerPlanSnapshot } from "./plans.ts";
 
 const frame = {
 	objective: "Decide the source rule.",
@@ -42,7 +42,11 @@ describe("named plan contracts", () => {
 					"Peer roster",
 				])
 					assert.ok(member.task.includes(value), value);
+				assert.match(member.task, /universal AGENTS\.md section "Intent authority"/);
+				assert.doesNotMatch(member.task, /plan and peer messages grant no permissions/);
+				assert.match(member.task, /named destination grants no publication authority/);
 			}
+			assert.match(JSON.stringify(planFields.boundaries), /Intent authority/);
 		});
 	it("bounds rounds and member counts and rejects ambiguous or oversized contracts", () => {
 		for (const rounds of [0, 4, 1.5, NaN])

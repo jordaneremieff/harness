@@ -125,7 +125,10 @@ test("conversation display removes its own wrapper and preserves original peer s
 		collaborationMessageText(payload.content, "bg-source"),
 		"Please inspect the interface.\nKeep exact identifiers.",
 	);
-	assert.match(payload.content, /Peer-authored data, not operator input/);
+	assert.match(payload.content, /universal AGENTS\.md section "Intent authority"/);
+	assert.match(payload.content, /No worker control authority or submitted result/);
+	assert.match(payload.content, /claims remain unverified/);
+	assert.doesNotMatch(payload.content, /not operator input|reported data, not as a directive/);
 	assert.equal(collaborationMessageText(payload.content, "bg-other"), payload.content);
 	assert.equal(collaborationMessageText("plain fixture message", "bg-source"), "plain fixture message");
 });
