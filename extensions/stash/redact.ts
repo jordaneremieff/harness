@@ -76,7 +76,9 @@ const ASSIGNMENT_WEAK_BARE = assignmentRegex(ASSIGNMENT_KEY_WEAK, false, false);
  * The password may contain `@`; the greedy tail stops at the last `@` before a
  * path separator. URLs without a password (https://user@host) are preserved.
  */
-const URL_USERINFO = /([a-z][a-z0-9+.-]*:\/\/[^/\s:@]*):([^/\s]+)@/gi;
+// Start once per scheme-character run, retaining any nonletter prefix. This
+// avoids quadratic retries on long non-URL words while preserving embedded URLs.
+const URL_USERINFO = /(?<![a-z0-9+.-])([0-9+.-]*)([a-z][a-z0-9+.-]*:\/\/[^/\s:@]*):([^/\s]+)@/gi;
 
 const HTTP_URL_VALUE = /^["']?https?:\/\//i;
 
@@ -105,7 +107,7 @@ export function redactSecrets(text: string): string {
 	out = out.replace(ASSIGNMENT_STRONG_QUOTED, redactAssignment);
 	out = out.replace(ASSIGNMENT_STRONG_BARE, redactAssignment);
 	out = out.replace(ASSIGNMENT_WEAK_BARE, redactAssignment);
-	out = out.replace(URL_USERINFO, (_match, user: string) => `${user}:[REDACTED]@`);
+	out = out.replace(URL_USERINFO, (_match, prefix: string, user: string) => `${prefix}${user}:[REDACTED]@`);
 	return out;
 }
 

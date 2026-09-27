@@ -616,11 +616,9 @@ describe("stash entrypoint", () => {
 		const read = await tools.get("stash_read").execute("read", { id: prefix }, signal);
 		assert.match(read.content[0].text, /Finish the retrieved effort/);
 		assert.equal(await readFile(path, "utf8"), original, "retrieval must not claim an effort");
-		const completed = await tools.get("stash_complete").execute(
-			"complete",
-			{ id: prefix, outcome: "The retrieved work is complete and its checks pass." },
-			signal,
-		);
+		const completed = await tools
+			.get("stash_complete")
+			.execute("complete", { id: prefix, outcome: "The retrieved work is complete and its checks pass." }, signal);
 		assert.equal(completed.details.id, record.id);
 		assert.equal(completed.details.state, "closed");
 		assert.equal(completed.details.outcome, "The retrieved work is complete and its checks pass.");
@@ -1795,6 +1793,47 @@ describe("stash command grammar", () => {
 		});
 		assert.equal(sent.length, 1);
 		assert.match(sent[0].content, /UNIQUE_PICKUP_BODY/);
+	});
+});
+
+describe("stash_list content search", () => {
+	it("returns searchable deep content through registration without lifecycle changes", async () => {
+		const { tools } = registry();
+		const { record, path } = await writeStash(dir, {
+			title: "Search target",
+			summary: `${"padding ".repeat(5000)}registration needle`,
+			tags: ["search-fixture"],
+		});
+		const before = await readFile(path);
+		const result = await tools
+			.get("stash_list")
+			.execute("search", { query: "REGISTRATION NEEDLE", tag: "search-fixture" }, undefined);
+		const page = JSON.parse(result.content.map((part) => part.text).join(""));
+		assert.equal(page.matches[0].id, record.id);
+		assert.equal(page.matches[0].field, "body");
+		assert.ok(page.matches[0].start > 32 * 1024);
+		assert.deepEqual(result.details, page);
+		assert.deepEqual(await readFile(path), before);
+		assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 16 * 1024);
+	});
+
+	it("rejects queryless cursors, blank queries, and aborted search", async () => {
+		const { tools } = registry();
+		const list = tools.get("stash_list");
+		await assert.rejects(list.execute("search", { cursor: "bad" }, undefined), /cursor requires query/);
+		await assert.rejects(list.execute("search", { query: " " }, undefined), /query must/);
+		await assert.rejects(list.execute("search", { query: "needle" }, AbortSignal.abort()), /cancelled/);
+	});
+
+	it("keeps exact no-query empty-list text and details", async () => {
+		const { tools } = registry();
+		const result = await tools
+			.get("stash_list")
+			.execute("list", { tag: "nonexistent-tag", state: "closed" }, undefined);
+		assert.deepEqual(result, {
+			content: [{ type: "text", text: 'No stashes found with tag "nonexistent-tag" and state closed.' }],
+			details: { count: 0 },
+		});
 	});
 });
 

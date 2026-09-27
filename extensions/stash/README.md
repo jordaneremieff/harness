@@ -7,7 +7,7 @@ The agent distills an effort into a durable Markdown handover. The extension own
 | Surface | Kind | Purpose |
 |---|---|---|
 | `stash_write` | tool | Persist a self-contained handover with project, branch, and session metadata; `checkpoint: true` saves a working synthesis outside handover discovery. |
-| `stash_list` | tool | List recent artifacts by stable id, optionally filtered by tag or lifecycle state. |
+| `stash_list` | tool | List recent artifacts, or find remembered content with `query` and stateless continuation; filter by tag or lifecycle state. |
 | `stash_read` | tool | Read by exact id or unique prefix without changing lifecycle state. Results are capped at 50 KiB or 2000 lines and include the path when truncated. |
 | `stash_complete` | tool | Close an open or active effort with a required concrete outcome. |
 | `stash_rotate` | tool | Archive a stale open or closed effort so it no longer appears in listings or pickup; the file moves to the store's dot-hidden `.trash` directory and remains recoverable. |
@@ -25,6 +25,95 @@ Pickup is one system action. The command reads the selected artifact and sends i
 ```bash
 pi "/stash get <id>"
 ```
+
+## Find remembered content
+
+Use `stash_list({ query: "inode checks", limit: 5 })` when the remembered detail
+is not in a title or tag. Search covers the metadata and full bodies of supported
+handover artifacts, including older records outside the browser's preload and
+text beyond its preview. Results contain stable IDs, bounded titles, lifecycle
+states, the first matched field, and an excerpt. Then use `stash_read` with the
+selected ID before resuming work. Search never picks up, closes, reopens, rotates,
+or claims an effort. Artifact text remains evidence, not fresh authority.
+
+Without `query`, the existing newest-first list, filters, limits, and output
+remain unchanged. `cursor` requires `query`. With a query:
+
+- Matching is literal and case-insensitive through JavaScript Unicode `iu`
+  simple case folding. Regular-expression punctuation is literal. There is no
+  normalization, locale-specific folding, or full folding: Kelvin `K` matches
+  `k`, an astral uppercase/lowercase pair matches, but `İ` does not match `i`,
+  `ß` does not match `ss`, and composed `é` does not match decomposed `é`.
+- The query is nonblank, at most 256 UTF-16 units, and contains no unpaired
+  surrogates, control/format characters, or line separators. Leading and trailing
+  spaces remain literal. Tag matching stays exact and case-sensitive; an empty
+  tag retains the existing no-filter meaning. State filters accept only verified
+  `open`, `active`, or `closed` values. Missing or unrecognized lifecycle values
+  remain `unknown` in unfiltered search.
+- Search checks filename ID, title, each tag, creation time, project, branch,
+  session ID, state, lifecycle timestamps, outcome, then body. It returns the
+  first matching field per artifact, in reverse filename order. Unknown
+  frontmatter keys are not searchable metadata. The filename owns the ID.
+- Each field is credential-redacted in full, then terminal-escaped before
+  matching or excerpt selection. The body is the frontmatter parser's trimmed
+  body. `start`/`end` and `excerptStart`/`excerptEnd` are half-open UTF-16 offsets
+  in that transformed field, not raw Markdown or byte offsets. Excerpt bounds
+  preserve surrogate pairs. Titles are display prefixes; offsets never refer
+  to that shortened title. A credential-shaped filename produces a redacted
+  skip report, never an altered ID presented as selectable.
+
+### Search bounds and continuation
+
+Each call enumerates at most 10,000 direct directory entries plus one overflow
+sentinel. Iterative directory reads use a one-entry buffer and do not recurse.
+An overflow refuses search before body reads; it does not sort or truncate an
+incomplete inventory. The complete bounded inventory includes names and entry
+kinds, including ignored entries. Candidate names use the same safe filename
+shape as ordinary discovery. Nonregular candidate paths produce explicit skips.
+Other names, hidden entries, checkpoint directories, and `.trash` contents are
+outside the candidate scope.
+
+A page visits at most 256 candidates, reads at most 4 MiB, and returns at most
+10 matches and 16 KiB of JSON. `limit` lowers the match cap; values above 10 are
+clamped for search only. Each artifact retains the 256 KiB supported-size cap.
+Before a read, the page reserves room for a complete supported artifact plus one
+size sentinel, so a byte-heavy page can stop below 4 MiB. Output admission checks
+include skips and reserve the cursor and final counters. A result that does not
+fit remains at the next cursor position; the next call rereads it. `deferred`
+counts that read without counting it as consumed. No index, saved search state,
+background task, or extra store exists.
+
+Repeat the exact `query`, `tag`, and `state` with `nextCursor` until it is null,
+including after an empty page. Changing `limit` is allowed. The cursor binds the
+query, filters, directory path/device/inode, complete filename/kind inventory,
+next position, and cumulative skipped count. A canonical checksum detects
+cursor corruption; it is not authentication or a hostile-client security
+boundary. Malformed cursors, changed membership, changed entry kinds, a replaced
+store, or different query/filters require a restart without the cursor. Edits to
+an artifact's bytes do not invalidate a filename inventory.
+
+`coverage` reports the inventory size, candidate count, page range `[from,next)`,
+visited count, actual bytes read, fully searched count, filter exclusions,
+deferred count, and cumulative skips. `visited` equals searched + filtered +
+page skips + deferred. `complete` means continuation reached the end without
+skips; it does not mean a frozen archive snapshot or prove absence under other
+wording. A zero-match page says nothing about unvisited or skipped artifacts.
+
+Oversized, malformed-header, invalid UTF-8, vanished, unreadable, symlink,
+nonregular, and changed-during-read candidates are explicit skips. Valid JSON
+with a missing or unrecognized lifecycle value remains searchable as unknown.
+Each read checks size and timestamps after its own permission hardening, reads
+through a no-follow/nonblocking regular-file descriptor, then checks that
+descriptor and the current path again. These are per-read observations, not a
+transaction with external writers. A later body/filter edit can change results
+on subsequent pages, and prior pages are not searched again automatically.
+Cancellation stops between directory and file operations and closes open
+handles; it does not undo permission hardening already performed.
+
+Search enforces private directory mode on every call and private file mode on
+each opened artifact. It does not run or mark complete the ordinary whole-store
+permission sweep. Later ordinary list/read/write paths still perform that sweep.
+Search leaves artifact bytes and lifecycle state unchanged.
 
 ## Lifecycle
 
@@ -313,7 +402,7 @@ Each artifact is `<utcTimestamp>-<slug>[-<collision>].md` with JSON-valued front
 
 - Credential-shaped content is redacted deterministically: before distillation, the transcript and observed references are scanned and credential-shaped values (prefixed provider tokens, JWTs, bearer headers, private keys, `key: value` assignments, URL userinfo passwords) are replaced with `[REDACTED]`; the same pass runs over the generated payload before the artifact is written, so no secret depends on the model's discretion. The operator hint is trusted input and is never redacted. Artifacts written before this version are not retroactively scrubbed.
 
-- Directory mode is enforced as `0700`; regular artifact files are enforced as `0600`, on discovery.
+- Directory mode is enforced as `0700`. Ordinary discovery sweeps regular artifacts to `0600` once per process; reads enforce `0600` per open. Bounded search hardens only the artifacts it opens and leaves any pending whole-store sweep pending.
 - Completed temporary files are hard-linked into place. Existing names are never replaced; concurrent same-second writes receive numeric suffixes.
 - Lifecycle changes run through Pi's per-file mutation queue, reread the exact regular file with `O_NOFOLLOW | O_NONBLOCK`, preserve unknown frontmatter, write a private dot-hidden temporary file, recheck file identity, and atomically rename the completed revision into place.
 - Artifact opens use `O_NONBLOCK` and reject non-regular descriptors before reads or permission changes. A pipe that replaces an artifact after directory discovery is refused without waiting for a peer, including during the initial permission sweep.
@@ -357,6 +446,7 @@ The component derives its row budget from the host TUI and the overlay's height 
 - `index.ts`: tool registrations, `/stash` and shortcut host, capacity hook, and the creation slot/status lifecycle.
 - `capacity.ts`: bounded session-state restoration, context observations, configuration, and latched continuity requests.
 - `store.ts`: private, collision-safe filesystem store, atomic lifecycle transitions, and the rotation archive.
+- `search.ts`: bounded content discovery, stateless inventory-bound continuation, and transformed-field excerpts.
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.
 - `panel.ts`: interactive browser state and rendering.
 - `pickup.ts`: self-contained pickup message, operator amendment block, and already-active ownership handoff.

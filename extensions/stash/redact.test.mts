@@ -1,8 +1,34 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { redactPayload, redactSecrets, REDACTED } from "./redact.ts";
 
 describe("redactSecrets", () => {
+	it("redacts embedded URL userinfo after scheme-character prefixes", () => {
+		for (const prefix of ["", "123", "+.-", "1+2.-", "abc", "ABC123"]) {
+			assert.equal(
+				redactSecrets(`${prefix}https://user:fake-value@host/path`),
+				`${prefix}https://user:${REDACTED}@host/path`,
+			);
+			assert.equal(redactSecrets(`${prefix}https://host/path`), `${prefix}https://host/path`);
+		}
+	});
+
+	it("finishes supported-size non-URL runs without quadratic scheme retries", () => {
+		const source = `import assert from "node:assert/strict";
+import { redactSecrets } from ${JSON.stringify(new URL("./redact.ts", import.meta.url).href)};
+for (const value of ["x".repeat(262144), "1".repeat(262144), "x".repeat(250000) + "://host/path"]) assert.equal(redactSecrets(value), value);
+const prefix = "1".repeat(200000);
+assert.equal(redactSecrets(prefix + "https://user:fake-value@host"), prefix + "https://user:[REDACTED]@host");`;
+		const result = spawnSync(process.execPath, ["--input-type=module", "-e", source], {
+			encoding: "utf8",
+			timeout: 5000,
+			maxBuffer: 8192,
+		});
+		assert.equal(result.error, undefined);
+		assert.equal(result.status, 0, result.stderr);
+	});
+
 	it("redacts prefixed provider tokens", () => {
 		assert.equal(redactSecrets("key sk-ant-oa" + "t01-abcdefghijklmnopqrstuvwx"), `key ${REDACTED}`);
 		assert.equal(redactSecrets("deepseek: sk-047abc" + "1234567890abcdefgh"), `deepseek: ${REDACTED}`);

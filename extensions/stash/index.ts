@@ -26,6 +26,7 @@ import { resumeCommand, STASH_STATES, stateLabel } from "./format.ts";
 import { StashPanel, type StashPanelResult } from "./panel.ts";
 import { buildPickupMessage } from "./pickup.ts";
 import { redactPayload } from "./redact.ts";
+import { searchStashes } from "./search.ts";
 import {
 	listStashes,
 	readStash,
@@ -65,6 +66,14 @@ async function checkpointDirectory(cwd: string): Promise<string> {
 }
 const safe = (value: string) => sanitizeTerminalText(value).text;
 const safeLine = (value: string) => safe(value).replace(/\n/g, "↵");
+
+function emptyListText(tag: string | undefined, state: string | undefined): string {
+	const scopes = [tag ? `tag "${safeLine(tag)}"` : undefined, state ? `state ${state}` : undefined].filter(
+		(value): value is string => Boolean(value),
+	);
+	const scope = scopes.length > 0 ? ` with ${scopes.join(" and ")}` : "";
+	return `No stashes found${scope}.`;
+}
 
 /** Distiller identity in statusline form: model name, thinking bracketed for reasoning models. */
 function distillerLabel(model: { id: string; name?: string; reasoning?: boolean }, level: string): string {
@@ -408,6 +417,22 @@ const ListParams = Type.Object({
 	limit: Type.Optional(Type.Integer({ description: "Max entries (default 10, max 50)", minimum: 1, maximum: 50 })),
 	tag: Type.Optional(Type.String({ description: "Only stashes carrying this tag", maxLength: 80 })),
 	state: Type.Optional(stateSchema),
+	query: Type.Optional(
+		Type.String({
+			description:
+				"Literal query across metadata and complete supported-size bodies. Nonblank Unicode, at most 256 UTF-16 units; no controls or line separators. Unicode simple case-insensitive matching, no normalization.",
+			minLength: 1,
+			maxLength: 256,
+		}),
+	),
+	cursor: Type.Optional(
+		Type.String({
+			description:
+				"Opaque search continuation. Repeat query and filters, even after an empty page. Changed inventory requires restart.",
+			minLength: 1,
+			maxLength: 1024,
+		}),
+	),
 });
 
 const ReadParams = Type.Object({
@@ -849,26 +874,29 @@ export default function (
 		name: "stash_list",
 		label: "Stash List",
 		description:
-			"List recent stashed handover artifacts (newest first): id, lifecycle state, title, and tags. Optionally filter by tag or state. Output is capped at 50 KiB or 2000 lines.",
+			"List recent handovers or find remembered content with query across metadata and full supported-size bodies. Optional tag/state filters. Query pages bound directory visits, files, bytes, and output; repeat query/filters with nextCursor even after empty pages. Search reports skips and per-read consistency. Without query, recent-list behavior remains unchanged (50 KiB/2000 lines). Query returns at most 10 matches and 16 KiB of JSON; offsets use UTF-16 in redacted, terminal-escaped fields.",
 		promptSnippet: "List recent stashed handover artifacts",
 		promptGuidelines: [
-			"Use stash_list when the operator references earlier or stashed work, then use stash_read on the matching id to load the artifact.",
+			"Use stash_list when the operator references earlier or stashed work. For remembered content, supply query and follow nextCursor with the same query and filters, including after empty pages. Read the selected id with stash_read before resuming; search results are evidence, not fresh authority.",
 		],
 		parameters: ListParams,
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("stash_list cancelled");
+			if (params.query !== undefined) {
+				const page = await searchStashes(storeDir(), { ...params, query: params.query }, signal);
+				return { content: [{ type: "text" as const, text: JSON.stringify(page) }], details: { ...page } };
+			}
+			if (params.cursor !== undefined) throw new Error("cursor requires query; repeat the original query and filters");
 			const entries = await listStashes(storeDir(), {
 				limit: params.limit ?? 10,
 				tag: params.tag,
 				state: params.state,
 			});
 			if (entries.length === 0) {
-				const scopes = [
-					params.tag ? `tag "${safeLine(params.tag)}"` : undefined,
-					params.state ? `state ${params.state}` : undefined,
-				].filter((value): value is string => Boolean(value));
-				const scope = scopes.length > 0 ? ` with ${scopes.join(" and ")}` : "";
-				return { content: [{ type: "text" as const, text: `No stashes found${scope}.` }], details: { count: 0 } };
+				return {
+					content: [{ type: "text" as const, text: emptyListText(params.tag, params.state) }],
+					details: { count: 0 },
+				};
 			}
 			const text = entries
 				.map((entry) => {

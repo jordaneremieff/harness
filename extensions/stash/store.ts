@@ -19,7 +19,7 @@ import {
 import { redactSecrets } from "./redact.ts";
 
 const HEADER_SCAN_BYTES = 16 * 1024;
-const MAX_STASH_BYTES = 256 * 1024;
+export const MAX_STASH_BYTES = 256 * 1024;
 const SAFE_STEM = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 
 /** Dot-hidden sibling of the store that receives rotated artifacts. */
@@ -65,7 +65,7 @@ function artifactDirents(dirents: Dirent[]): Dirent[] {
  * The stat taken to verify regularity is returned with the handle so callers
  * can avoid a second stat.
  */
-async function openRegular(path: string): Promise<{ handle: FileHandle; info: Stats }> {
+export async function openRegular(path: string): Promise<{ handle: FileHandle; info: Stats }> {
 	const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 	const handle = await open(path, constants.O_RDONLY | noFollow | constants.O_NONBLOCK);
 	try {
@@ -97,23 +97,26 @@ async function hardenArtifacts(dir: string, dirents: Dirent[]): Promise<void> {
 	}
 }
 
-/**
- * Enforce directory privacy on every touch and sweep artifact permissions once
- * per process. Subsequent reads enforce 0600 on each opened regular artifact;
- * writes publish at 0600. The cached sweep avoids repeated linear hardening
- * without weakening the per-touch directory and per-read file checks.
- */
-async function secureStore(dir: string, create: boolean): Promise<Dirent[] | null> {
+/** Validate and harden only the directory, without enumerating or sweeping artifacts. */
+export async function validateStore(dir: string, create: boolean): Promise<Stats | null> {
 	if (create) await mkdir(dir, { recursive: true, mode: 0o700 });
 	try {
 		const info = await lstat(dir);
 		if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`stash store is not a regular directory: ${dir}`);
-		if ((info.mode & 0o7777) !== 0o700) await chmod(dir, 0o700);
+		if ((info.mode & 0o7777) !== 0o700) {
+			await chmod(dir, 0o700);
+			return await lstat(dir);
+		}
+		return info;
 	} catch (error) {
 		if (!create && hasCode(error, "ENOENT")) return null;
 		throw error;
 	}
+}
 
+/** Enforce directory privacy and sweep artifacts once, caching only a completed sweep. */
+async function secureStore(dir: string, create: boolean): Promise<Dirent[] | null> {
+	if (!(await validateStore(dir, create))) return null;
 	let dirents: Dirent[];
 	try {
 		dirents = await readdir(dir, { withFileTypes: true });
@@ -262,7 +265,7 @@ function utf8BodyPrefix(body: string, maxBytes: number): { text: string; truncat
 	return { text: bytes.subarray(0, end).toString("utf8"), truncated: true };
 }
 
-function normalizeMeta(name: string, parsed: Partial<StashMeta> & Record<string, unknown>): StashMeta {
+export function normalizeMeta(name: string, parsed: Partial<StashMeta> & Record<string, unknown>): StashMeta {
 	const id = name.replace(/\.md$/, "");
 	return {
 		id,
