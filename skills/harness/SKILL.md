@@ -8,11 +8,11 @@ description: >
   classification among them, or when changing harness rules and shared
   contracts. Also use when a request opens harness inspection or improvement
   without naming the change, or when harness work is delegated across workers
-  or sessions. New enumerated surfaces require a proposal and explicit operator
-  approval before any write; reclassifying them as part of the requested
-  outcome does not exempt them. Do not use for invoking or installing an unchanged
-  resource, ordinary application code, unrelated uses of "tool", "skill", or
-  "extension", or Pi core development.
+  or sessions. New enumerated surfaces require authority before any write;
+  apply the universal Intent authority rule before asking for approval.
+  Reclassifying an addition does not supply authority. Do not use for invoking
+  or installing an unchanged resource, ordinary application code, unrelated
+  uses of "tool", "skill", or "extension", or Pi core development.
 compatibility: Pi-specific workflow. The bundled skill validator uses dependency-free TypeScript and requires Node.js 22.19 or newer for direct execution; verify Pi-sensitive behavior against the active Pi installation. Uses the sibling repository instructions at `../../AGENTS.md` for the owning repository's binding rules.
 ---
 
@@ -29,9 +29,9 @@ Select, design, change, and verify Pi harness surfaces through one entry point. 
 - Treat current Pi documentation, declarations, installed source, and shipped examples as the authority for version-sensitive claims.
 - Follow the owning repository's rules in `AGENTS.md` for provenance, privacy, worktree, testing, release, scope, and dependency approval.
 - Keep common decisions here and lane-specific detail in one-level references. Read only the references that the selected lane requires.
-- **New surfaces require a proposal and explicit operator approval before any write.** The enumeration below decides what counts — not the agent's framing of the request. Reclassifying an addition as "part of the requested outcome," "the sharing mechanism," or "just making it work" does not exempt it.
+- **New surfaces require authority before any write.** Apply the approval gate below. The enumeration decides what counts, not the agent's framing of the request.
 
-## New surfaces require approval
+## New surfaces require authority
 
 A change adds a **new surface** when it introduces any of the following that do not already exist in the repository:
 
@@ -47,14 +47,14 @@ A change adds a **new surface** when it introduces any of the following that do 
 
 Edits, tests, docs, and refactors **inside** an already-registered surface are ordinary work. They still need surface classification and proportionate verification, but they do not need a new-surface proposal.
 
-### Hard stop before implementation
+### Approval gate before implementation
 
 When the intended change adds a new surface:
 
-1. **Stop.** Do not create the directory, file, or package field.
-2. **Propose in chat:** name each new surface against the enumeration; state the warrant (step 3); name the nearest existing surface and why it cannot absorb the change; state the lowest sufficient layer; list out-of-scope items you will not add.
-3. **Wait for explicit operator approval** of that proposal. An operator request that already names the surface supplies the approval; do not ask again. When the agent chooses a new surface as the means to an operator outcome, the operator must approve the surface itself, not only the outcome. Gate-clearing analysis is not permission to ship. Self-approval is a violation.
-4. **Implement only the approved scope.**
+1. **Apply Intent authority in the universal `AGENTS.md`.** Determine whether the supplied authority covers the surface or delegates its selection. Apply any workflow-specific grant under the repository's authority rules. An operator request that names the surface already satisfies this gate.
+2. **Establish the required warrant** under workflow step 3. Name each new surface against the enumeration, the nearest existing surface and why it cannot absorb the change, the lowest sufficient layer, and out-of-scope items. A warrant establishes suitability, not authority.
+3. **If authority is missing, stop before any write.** Propose the complete change in chat and wait for explicit operator approval. Without a grant that delegates surface selection, approval must cover the surface itself, not only the desired outcome. Do not recreate this hold when step 1 already establishes authority.
+4. **Implement only the authorized scope.** State the warrant in the result when no approval request was needed.
 
 If an unapproved new surface is already present in the tree when you notice it, stop, report what is present, and hold for operator disposition. Do not silently keep expanding it or silently revert concurrent work you did not author.
 
@@ -88,7 +88,7 @@ calldiff is syntactic, not a typechecker: it proves call shape, not runtime beha
 
 ### 1. Reconstruct the contract
 
-Derive the requested outcome, acceptance, and granted permissions from the request and established sources. Separate operator directions and binding rules from agent interpretations, including inherited plans. Record only the fixed decisions, open choices, target, and release constraints that affect execution. A handover preserves evidence and decisions; its proposed design is not an operator decision unless its source establishes that authority.
+Derive the requested outcome, acceptance, and granted permissions from the request and established sources. Separate operator directions and binding rules from agent interpretations, including inherited plans. Record only the fixed decisions, open choices, target, and release constraints that affect execution. Apply Intent authority in the universal `AGENTS.md` to handovers and delegated task contracts.
 
 Use the Pillars consultation procedure for corrections: Corrected-Assumption Leakage governs a corrected factual premise; Frame Abandonment governs a rejected interpretation. Carry the resulting changes into affected work rather than asking the operator to specify the outcome again.
 
@@ -162,7 +162,7 @@ Follow repository sequencing rules for manual review and broad suites. Do not su
 
 ### 7. Apply authority once
 
-Confirm execution stays within granted authority and does not transfer a settled decision back to the operator. Treat new surfaces, destructive state changes, publication, and credential use under their separate authority rules; those boundaries hold regardless of how the intent was derived.
+Confirm execution stays within granted authority under Intent authority in the universal `AGENTS.md`. Apply the relevant approval rules to new surfaces, destructive state changes, publication, and credential use; check supplied grants before treating an act as unapproved.
 
 Stop only the actions that depend on a disputed fact or on authority you were not granted. Name that exact boundary and complete the rest of the authorized work.
 

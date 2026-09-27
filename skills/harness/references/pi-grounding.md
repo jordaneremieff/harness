@@ -7,7 +7,7 @@ mode behavior, discovery, packaging, SDK/RPC behavior, or TUI contracts.
 
 | Facet | Suitable source | What it can establish |
 |---|---|---|
-| Operator intent | Request, corrections, approved plan | Desired outcome and fixed constraints |
+| Operator intent | Operator request, corrections, decisions, and grants | Desired outcome, fixed constraints, and delegated discretion |
 | Documented support | README and matching installed docs | The contract the installed release documents |
 | Public code shape | Exported declarations and package exports | Names, types, signatures, and public reachability in that release |
 | Runtime mechanism | Closest relevant implementation | Dispatch, awaiting, fallback, cleanup, and mode mechanics in that code state |

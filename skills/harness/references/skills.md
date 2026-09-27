@@ -26,7 +26,7 @@ Skip broad research for a tiny mechanical correction whose intent and compatibil
 
 ### 3. Establish the skill warrant
 
-Under "Establish the warrant when required" in [the main harness skill](../SKILL.md), a new skill's evidence warrant needs no observed failure — a usefulness rationale (the capability it provides and why it is worth having) is sufficient on its own. Creation still follows "New surfaces require approval" there. A skill that is activated frequently, injects substantial context on activation, or becomes a standing dependency of the workflow follows the caliber rule — "Caliber for repeated or hard-to-remove mechanisms", within "Establish the warrant when required" — for recurring or hard-to-remove mechanisms.
+Under "Establish the warrant when required" in [the main harness skill](../SKILL.md), a new skill's evidence warrant needs no observed failure — a usefulness rationale (the capability it provides and why it is worth having) is sufficient on its own. Creation still follows "New surfaces require authority" there. A skill that is activated frequently, injects substantial context on activation, or becomes a standing dependency of the workflow follows the caliber rule — "Caliber for repeated or hard-to-remove mechanisms", within "Establish the warrant when required" — for recurring or hard-to-remove mechanisms.
 
 A baseline (observing the task without the candidate, or citing an already-observed failure) strengthens the case and gives later evaluation something to measure against, but its absence never blocks a new skill.
 

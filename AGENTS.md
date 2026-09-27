@@ -91,6 +91,12 @@
 - Before closing work: focused tests, `npm test`, `npm run typecheck`, `npm run
   check`, and README claims updated to match reality in the same change.
 
+## Authority
+
+Apply the Intent authority rule in the universal `AGENTS.md` to the approval
+requirements in this repository. For `/evo`, apply the elevated grant and
+reserved decisions in `extensions/evo/README.md`.
+
 ## Scope and dependencies
 
 - Add an extra format, compatibility branch, or fallback only for a concrete
