@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { setImmediate } from "node:timers/promises";
 import { Parser } from "htmlparser2";
+import type { PageLinkCollector } from "./page-links.ts";
 
 const MAX_INPUT_BYTES = 2 * 1024 * 1024;
 const MAX_TEXT_CHARS = 128 * 1024;
@@ -116,7 +117,12 @@ function decodePage(body: Buffer, contentType: string): { text: string; html: bo
 	return { text, html };
 }
 
-export async function extractPageText(body: Buffer, contentType: string, signal?: AbortSignal): Promise<PageText> {
+export async function extractPageText(
+	body: Buffer,
+	contentType: string,
+	signal?: AbortSignal,
+	links?: PageLinkCollector,
+): Promise<PageText> {
 	signal?.throwIfAborted();
 	const { text, html } = decodePage(body, contentType);
 	if (!html) {
@@ -132,6 +138,7 @@ export async function extractPageText(body: Buffer, contentType: string, signal?
 	const append = (value: string) => {
 		const state = stack.at(-1);
 		if (state?.excluded) return;
+		links?.text(value);
 		buckets.body.append(value);
 		if (state?.main) buckets.main.append(value);
 		if (state?.article) buckets.article.append(value);
@@ -147,13 +154,15 @@ export async function extractPageText(body: Buffer, contentType: string, signal?
 				const parent = stack.at(-1);
 				const documentTitle = name === "title" && (!parent || parent.name === "head") && !titleSeen;
 				if (documentTitle) titleSeen = true;
-				stack.push({
+				const state = {
 					name,
 					excluded: isExcludedElement(name, attributes, parent),
 					main: parent?.main === true || name === "main" || attributes.role === "main",
 					article: parent?.article === true || name === "article",
 					title: documentTitle,
-				});
+				};
+				stack.push(state);
+				links?.open(name, attributes, state);
 			},
 			ontext(value) {
 				if (stack.at(-1)?.title) title += value.slice(0, Math.max(0, 301 - title.length));
@@ -161,6 +170,7 @@ export async function extractPageText(body: Buffer, contentType: string, signal?
 			},
 			onclosetag(name) {
 				if (BLOCKS.has(name)) append("\n");
+				links?.close();
 				stack.pop();
 				if (BLOCKS.has(name)) append("\n");
 			},

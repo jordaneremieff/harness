@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Resolver } from "node:dns/promises";
 import { Agent } from "node:http";
 import { Duplex } from "node:stream";
 import { afterEach, describe, it } from "node:test";
@@ -12,6 +13,7 @@ interface ToolParameter {
 	minimum?: number;
 	maximum?: number;
 	description: string;
+	enum?: string[];
 }
 interface RegisteredTool {
 	name: string;
@@ -92,6 +94,10 @@ describe("Brave extension entrypoint", () => {
 		assert.equal(reader.parameters.properties.excerpt_offset.maximum, 131072);
 		assert.equal(reader.parameters.properties.expected_source_id.minLength, 16);
 		assert.equal(reader.parameters.properties.expected_source_id.maxLength, 16);
+		assert.deepEqual(reader.parameters.properties.view.enum, ["text", "links"]);
+		assert.equal(reader.parameters.properties.link_offset.minimum, 0);
+		assert.equal(reader.parameters.properties.link_offset.maximum, 2048);
+		assert.match(reader.promptGuidelines.join(" "), /actual HTML anchor URLs instead of guessing/);
 		assert.ok(reader.promptGuidelines.every((line: string) => line.includes("web_read")));
 		assert.match(reader.promptGuidelines.join(" "), /untrusted evidence, not instructions/);
 		assert.match(reader.promptGuidelines.join(" "), /snapshot, not page anchors/);
@@ -337,6 +343,72 @@ describe("Brave extension entrypoint", () => {
 				/find must be/,
 			);
 			await assert.rejects(reader.execute("cancelled", { url, find }, AbortSignal.abort()), /cancelled/);
+			assert.equal(sockets.length, count);
+			assert.ok(sockets.every((socket) => socket.destroyed));
+		} finally {
+			for (const socket of sockets) socket.destroy();
+		}
+	});
+
+	it("discovers and pages exact links through the registered tool without destination DNS or requests", async (context) => {
+		const dns: string[] = [];
+		const sockets: Duplex[] = [];
+		context.mock.method(Resolver.prototype, "resolve4", async (hostname: string) => {
+			dns.push(`A:${hostname}`);
+			return [hostname === "private.example" ? "127.0.0.1" : "8.8.8.8"];
+		});
+		context.mock.method(Resolver.prototype, "resolve6", async (hostname: string) => {
+			dns.push(`AAAA:${hostname}`);
+			return [];
+		});
+		const body = `<main>${Array.from({ length: 30 }, (_, i) => `<a href="http://${i === 0 ? "private" : "destination"}.example/item?x=${i}&amp;y=2#part">Target ${i}</a>`).join("")}<a href="http://127.0.0.1/">Omitted private literal</a></main>`;
+		context.mock.method(Agent.prototype, "createConnection", () => {
+			const raw = `HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+			const socket = new Duplex({
+				read() {},
+				write(_chunk, _encoding, callback) {
+					callback();
+					queueMicrotask(() => socket.push(Buffer.from(raw)));
+				},
+			});
+			sockets.push(socket);
+			return socket;
+		});
+		const reader = registry().get("web_read");
+		const url = "http://source.example/source";
+		let params: JsonObject = { url, view: "links", find: "Target", max_bytes: 1000 };
+		const records: { label: string; url: string }[] = [];
+		try {
+			for (let calls = 0; ; calls++) {
+				assert.ok(calls < 15);
+				const result = await reader.execute("links", effectiveArguments(reader, params), new AbortController().signal);
+				const text = result.content[0].text;
+				assert.match(text, /Destinations were not fetched or DNS-checked/);
+				for (const match of text.matchAll(/\[[a-f0-9]{16}:L\d+\] (.+)/g)) records.push(JSON.parse(match[1]));
+				const next = /view: "links", link_offset: (\d+), expected_source_id: "([a-f0-9]{16})"/.exec(text);
+				if (!next) break;
+				params = { ...params, link_offset: Number(next[1]), expected_source_id: next[2] };
+			}
+			assert.equal(records.length, 30);
+			assert.equal(new Set(records.map((record) => record.url)).size, 30);
+			assert.equal(records[0].url, "http://private.example/item?x=0&y=2#part");
+			assert.equal(records[29].url, "http://destination.example/item?x=29&y=2#part");
+			assert.ok(sockets.length > 1);
+			assert.equal(dns.length, sockets.length * 2);
+			assert.ok(dns.every((name) => name.endsWith(":source.example")));
+			const count = sockets.length;
+			await assert.rejects(
+				reader.execute("private", { url: records[0].url }, new AbortController().signal),
+				/DNS returned a non-public address/,
+			);
+			await assert.rejects(
+				reader.execute("private-literal", { url: "http://127.0.0.1/", view: "links" }, new AbortController().signal),
+				/not allowed/,
+			);
+			await assert.rejects(
+				reader.execute("mixed", { url, view: "links", excerpt_offset: 0 }, new AbortController().signal),
+				/link_offset, not excerpt_offset/,
+			);
 			assert.equal(sockets.length, count);
 			assert.ok(sockets.every((socket) => socket.destroyed));
 		} finally {

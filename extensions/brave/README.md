@@ -7,7 +7,7 @@ This extension gives the agent public-page reading and web search without an ext
 
 | Surface | Kind | Purpose |
 |---|---|---|
-| `web_read` | tool | Read one public HTTP(S) page as bounded static text, or locate a literal phrase, with the final URL, retrieval time, and snapshot excerpt references. |
+| `web_read` | tool | Read one public HTTP(S) page as bounded static text, locate a literal phrase, or discover exact HTML source links, with the final URL, retrieval time, and snapshot references. |
 | `web_search` | tool | Search the public web with optional country, language, freshness, SafeSearch, spellcheck, extra excerpts, and pagination controls. |
 
 `web_read` registers first, then `web_search`. The reader covers the observed
@@ -70,6 +70,106 @@ zero-based snapshot index, or `null` when none is returned. No-match results
 state the requested offset and apply only to retained text at or after that
 excerpt, not to the complete page.
 
+## Source links
+
+Use the opt-in links view to follow a source's actual anchors instead of
+reconstructing a destination from its label:
+
+```json
+{"url":"https://docs.python.org/3/whatsnew/3.14.html","view":"links","find":"PEP 734","max_bytes":4000}
+```
+
+The default remains `view: "text"`. Its output, extraction rules, excerpt
+segmentation, and source identities are unchanged. Links support `text/html`
+only. XHTML (`application/xhtml+xml`), plain text, Markdown, and other content
+types are refused. The HTML parser does not implement XML namespace semantics;
+using it for XHTML anchors would invent links from non-HTML elements. Text mode
+retains its existing XHTML support.
+
+Each `[<sourceId>:L<n>]` reference precedes a JSON record with `label`,
+`labelSource`, `labelTruncated`, and `url`. The URL is the complete serialized
+resolution of the anchor's `href`, including query and fragment. JSON escaping
+is presentation syntax, not part of the URL. Repeated destinations remain
+separate source-order occurrences. A link proves a relationship on the fetched
+source, not the destination's contents or safety. Open the selected URL with a
+separate ordinary `web_read` call before relying on destination evidence.
+
+- **Selection.** The existing parser collects links during the text traversal.
+  It uses exactly the same main/article/body selection and hidden-element
+  exclusions, not a separate navigation scan. Only selected `<a href>` elements
+  contribute records; resource `<link>` elements, scripts, SVG, MathML, and
+  template contents are not link discoveries. Region choice still depends on
+  readable text. For example, an image-only `<main>` does not override a readable
+  article or body. HTML parsing uses `htmlparser2`, including its recovery for
+  malformed markup, not a browser DOM or a general XML parser.
+- **Labels.** The reader uses visible descendant text, with image `alt` text in
+  place, then the anchor's `aria-label`, then its `title`, then an empty label.
+  This is not the browser accessible-name algorithm. Whitespace collapses to
+  spaces; controls and bidi formatting are removed. Each normalized label
+  retains at most 512 UTF-16 code units without a split surrogate pair.
+  `labelTruncated` explicitly identifies a shortened label. URLs never use a
+  shortened display form.
+- **Resolution.** Relative, query-only, empty, and fragment-only hrefs use the
+  final response URL or the first `<base href>` outside template and foreign
+  content, even if that base appears after the anchor. Later bases do not apply.
+  A malformed, `data:`, or `javascript:` base falls back to the final URL under
+  the [HTML base rules](https://html.spec.whatwg.org/multipage/semantics.html#the-base-element).
+  Other schemes do not acquire an invented HTTP fallback. Browser CSP is not
+  evaluated. A base attribute longer than 4096 UTF-16 code units prevents
+  relative resolution and reports `baseStatus: "over-limit"`; absolute links
+  still resolve. The raw base is never returned. Anchor attributes are entity
+  decoded, then resolved through the URL parser. Edge ASCII whitespace is
+  removed; embedded controls, bidi formatting, unpaired surrogates, and
+  backslashes are rejected rather than silently repaired.
+- **No destination traffic.** Resolution and validation make no requests or
+  DNS lookups for listed destinations. Complete resolved URLs must pass the
+  existing HTTP(S), no-userinfo, default-port, length, and literal-address
+  restrictions. Hostnames are not DNS-vetted during listing. Every later
+  explicit read retains the full existing DNS, address, redirect, and transport
+  restrictions. Skipped destinations are counted, not echoed.
+- **Bounds and coverage.** The existing download, decode, parser, and deadline
+  limits apply. Each body/main/article bucket retains at most 2048 candidate
+  records and 256 KiB of JSON-encoded candidate data. The selected bucket also
+  caps resolved record data at 256 KiB. The byte calculation includes the label
+  and its metadata, not only the href. Candidate limits stop retention, not the
+  bounded parser traversal. The reader counts all selected anchor occurrences
+  and reports `anchorsSeen`, `retainedLinks`, `skippedUrl`, and `skippedLimit`.
+  The first count equals the sum of the other three. `truncatedLabels` counts
+  shortened labels among retained records, not another omission category.
+  `extractionTruncated` covers record, byte, label, and base limits. Text's
+  separate retained-text cap does not stop link collection. No-match and
+  end-of-retained-links results never establish full-page coverage.
+- **Search and paging.** With `view: "links"`, `find` matches case-sensitive
+  literals in retained normalized labels only, not destinations. The shared
+  query validation and lack of query normalization still apply. Truncated
+  labels are searched only within their retained prefixes. `link_offset` is a
+  zero-based retained-record index, including records omitted by `find`, not a
+  match ordinal. Copy `nextOffset` into `link_offset`, use the same view, URL,
+  and query, and supply the returned `Source` as `expected_source_id`. Do not
+  supply `excerpt_offset` in links view or `link_offset` in text view, even at
+  zero. Nonzero offsets require the matching source ID. Exact-end offsets
+  return an empty page; offsets beyond the retained count fail. Each response
+  returns at most 160 complete records within `max_bytes`. If the first eligible
+  record exceeds that budget, the response returns no partial record and gives
+  `requiredMaxBytes`; retry with at least that budget and the returned
+  continuation fields. Every admitted record fits the maximum output budget.
+- **Identity.** The link source ID hashes a links-specific serialization of the
+  final URL, effective base identity/status, region, limits, retained resolved
+  records, and coverage metadata. A changed retained href destination invalidates
+  link continuation even if text and text identity stay unchanged. Search,
+  offsets, budgets, retrieval time, and title do not select this identity.
+  Unretained href changes with unchanged coverage need not change it. Text and
+  link source IDs are not interchangeable. No snapshot, cursor, or link archive
+  is stored; each call refetches and checks its own view's source.
+
+Link `details` reports the view, standard response metadata, source ID, region,
+base status, returned and retained link counts, retained bytes, omission and
+truncation counts, offset, next offset, required budget, limits, and output
+truncation. Search adds `find: { query, firstMatchOffset }`, where the offset is
+the first returned match or `null`. It contains no duplicate record list, raw
+HTML, or raw base. `outputTruncated` means another eligible record remains or
+extraction reached a limit; URL-policy omissions remain separately visible.
+
 ## Configuration
 
 The `web_search` subscription token comes from `PI_BRAVE_API_KEY` in the Pi
@@ -80,7 +180,9 @@ no key or configuration; it fetches only public pages with no credential.
 
 ## web_read boundaries
 
-- **Input.** `url` must be a public HTTP(S) URL with no userinfo credentials and
+- **Input.** The following excerpt rules describe the default text view;
+  [source links](#source-links) defines the opt-in view's record contract.
+  `url` must be a public HTTP(S) URL with no userinfo credentials and
   default ports only (80/443, whether explicit or implicit), bounded to 4096 characters. `max_bytes`
   is the per-response excerpt byte budget: an integer 1000 through 24000, default 16000.
   `excerpt_offset` is a zero-based excerpt index, default 0, bounded to 131072
@@ -271,6 +373,12 @@ cancellation, and unchanged sequential reads. A quote-heavy fixture distinguishe
 model-visible text bounds from larger JSON serialization. Registered
 entrypoint tests follow model-visible sequential and search continuation
 arguments through the native HTTP parser with synthetic sockets, then return
-from search to sequential context. The load check establishes Pi
+from search to sequential context. Link regressions cover relative/base/fragment
+resolution, complete URLs, exclusion and label selection, malformed anchors,
+Unicode across parser chunks, label and retention limits, distinct identities,
+source-bound pagination, insufficient budgets, cancellation, and unchanged text.
+Registered link tests use the native HTTP parser and controlled DNS to establish
+source-only traffic, visible continuation, and unchanged private-open refusal.
+The load check establishes Pi
 loader acceptance; neither check establishes live-session activation or general
 research time savings.
