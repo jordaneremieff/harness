@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import { ModelRuntime, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, ProjectTrustStore, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createDetachedControlServer } from "./detached-control.ts";
 import { DetachedRuns, type DetachedRunRequest } from "./detached.ts";
-import { AgentManager } from "./index.ts";
+import registerAgentExtension, { AgentManager } from "./index.ts";
 import { AgentStore } from "./store.ts";
 import type { AgentWorkerSession, WorkerStatus } from "./worker.ts";
 
@@ -65,6 +65,33 @@ test("manager controls reach the detached owner without a second session open", 
 		await assert.rejects(f.manager.attach(f.request.sessionId), /running detached/u);
 		await assert.rejects(f.manager.send(f.request.sessionId, "another task"), /running detached/u);
 	} finally { await f.close(); }
+});
+
+test("the steering tool labels the actual caller before detached delivery", { timeout: 20_000 }, async () => {
+	const f = await fixture();
+	const previousSessions = process.env.PI_AGENT_SESSIONS_DIR;
+	const previousAgent = process.env.PI_AGENT_DIR;
+	const root = realpathSync(f.store.root);
+	const owners = (globalThis as Record<symbol, unknown>)[Symbol.for("pi.extension.agent.owners")] as { managers: Map<string, AgentManager> };
+	process.env.PI_AGENT_SESSIONS_DIR = root;
+	process.env.PI_AGENT_DIR = f.request.agentDir;
+	try {
+		assert.equal(owners.managers.get(root), f.manager);
+		const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+		registerAgentExtension({
+			registerTool: (tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) => tools.set(tool.name, tool),
+			registerMessageRenderer() {}, registerCommand() {}, registerShortcut() {}, on() {},
+		} as unknown as ExtensionAPI);
+		const tool = tools.get("agent_steer");
+		assert.ok(tool);
+		await tool.execute("call", { sessionId: f.request.sessionId, message: "Keep the existing restriction.", replyTo: "prior-message" }, undefined, undefined, { sessionManager: { getSessionId: () => "actual-caller" } });
+		assert.equal(f.calls.length, 1);
+		assert.match(f.calls[0], /^steer:Message [\w-]+ from session actual-caller; reply to prior-message\. Agent-carried message\. Apply the universal AGENTS.md "Intent authority" section\.\n\nKeep the existing restriction\.$/u);
+	} finally {
+		if (previousSessions === undefined) delete process.env.PI_AGENT_SESSIONS_DIR; else process.env.PI_AGENT_SESSIONS_DIR = previousSessions;
+		if (previousAgent === undefined) delete process.env.PI_AGENT_DIR; else process.env.PI_AGENT_DIR = previousAgent;
+		await f.close();
+	}
 });
 
 test("an unavailable endpoint reports recorded status and never retries a mutation locally", { timeout: 20_000 }, async (t) => {

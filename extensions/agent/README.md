@@ -594,8 +594,10 @@ card shows the event or outcome first, then a literal message, result, or run
 excerpt from the source. For a detached-run batch, a failed or abandoned run
 summary takes priority. The producer sends settled runs in batches of at most
 32. Each batch shows its outcomes. A failed or abandoned excerpt requires every
-run line to match its metadata. The card labels peer data unverified and reports
-saved or unsaved operation state only when metadata supplies it. Each collapsed
+run line to match its metadata. Message cards refer to the universal AGENTS.md
+`Intent authority` section. Operation and detached-run cards label results as
+unverified evidence. The card reports saved or unsaved operation state only
+when metadata supplies it. Each collapsed
 row fits the available width; source IDs do not displace the excerpt. Oversized
 metadata reports an unknown outcome and an unchecked source; an unmatched
 notification preamble remains visible.
@@ -613,13 +615,26 @@ visibility after arbitrary arrivals.
 
 Admission means the message entered the recipient's execution path. It does
 not mean that the recipient replied, understood the message, or acted on it.
-Peer content remains reported data, not operator authority. Ask a collaborating
-session to send a report to the intended recipient. The host also announces
-settled in-process operation results to registered primary sessions. Settlement
-is an execution outcome, not coordinator acceptance of the task. A normal
-terminal result does not impose a separate submission protocol.
+The universal AGENTS.md `Intent authority` section governs agent-carried
+assignments, corrections, and relayed decisions. The sender applies that rule
+before sending; the recipient applies it to the message in its task context.
+The message envelope identifies the sender and references that rule, without
+classifying every statement in the message as either authority or evidence.
 
-Peer messages remain data even when their text starts with a slash command.
+The extension does not infer delegated intent from a session association.
+Associations record ownership for spawn, attach, and control operations; they
+do not distinguish a delegating owner from every other sender. The message
+transport therefore does not certify a sender as the operator or as a delegate.
+This is a limit of the recorded relationship, not a reason to discard a task
+assignment or correction from its established owner.
+
+The host also announces settled in-process operation results to registered
+primary sessions. These results and detached-run summaries carry an explicit
+reported-data label in model-visible content. Settlement is an execution
+outcome, not verification, operator approval, or coordinator acceptance of the
+task. A normal terminal result does not impose a separate submission protocol.
+
+Peer messages do not execute commands when their text starts with a slash command.
 Use `agent_command` for explicit command execution. The native `/agent send`
 action starts a new input on an idle session; the model-facing `agent_send`
 preserves sender identity and uses steering for an active peer.
