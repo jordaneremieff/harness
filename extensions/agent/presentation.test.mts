@@ -294,7 +294,7 @@ describe("agent session tool presentation", () => {
 	it("registers session call and snapshot result renderers for every metadata producer", () => {
 		const tools: ToolDefinition[] = [];
 		registerAgentExtension({ on() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerTool: (tool: ToolDefinition) => tools.push(tool) } as unknown as ExtensionAPI);
-		for (const name of ["agent_spawn", "agent_fork", "agent_rewind", "agent_attach", "agent_place", "agent_detach", "agent_status"]) {
+		for (const name of ["agent_spawn", "agent_fork", "agent_rewind", "agent_attach", "agent_configure", "agent_place", "agent_detach", "agent_status"]) {
 			const tool = tools.find((item) => item.name === name);
 			assert.equal(tool?.renderResult, renderAgentResult);
 			assert.equal(typeof tool?.execute, "function");
@@ -325,6 +325,8 @@ describe("agent session tool presentation", () => {
 		assert.match(screen(renderAgentCall("agent_spawn", {}, theme, context)), /inherited \(unresolved\)/);
 		assert.match(screen(renderAgentCall("agent_detach", { sessionId: "existing" }, theme, context)), /retained session/);
 		assert.match(screen(renderAgentCall("agent_place", { area: "project" }, theme, context)), /bound session or inherited/);
+		assert.match(screen(renderAgentCall("agent_configure", { sessionId: "target", model: "provider/model", thinkingLevel: "low" }, theme, context)), /Requested: provider\/model · thinking low/);
+		assert.match(screen(renderAgentCall("agent_configure", { sessionId: "target", name: "" }, theme, context)), /retained session \(unresolved\)/);
 		assert.doesNotMatch(screen(renderAgentCall("agent_status", {}, theme, context)), /Requested:/);
 	});
 

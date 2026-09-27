@@ -311,6 +311,7 @@ remain free text, without placeholder or model-ID suggestions.
 | `new [prompt]` | Create a separate session and optionally start work. |
 | `list`, `status [session]` | List sessions or request one session's status. |
 | `attach session [provider/model]` | Reopen a session without starting work; optionally repair its idle model choice. |
+| `configure session name [text]`, `configure session model provider/model [level]`, `configure session thinking level` | Change an idle session's configuration without a task or replacement. |
 | `send session message` | Start the session's next task; active work refuses another task. |
 | `steer session message` | Queue a redirection in the running session. A stored session with no live owner and no open worker refuses and names `send` as the turn-start action. |
 | `abort session` | Stop the operation without deleting the session. |
@@ -326,7 +327,7 @@ remain free text, without placeholder or model-ID suggestions.
 
 The `agent_spawn` tool accepts an explicit cwd, model, thinking level, name,
 prompt, and project-trust decision. `agent_list`, `agent_status`, `agent_send`,
-`agent_steer`, `agent_abort`, `agent_fork`, and `agent_attach` expose discovery,
+`agent_steer`, `agent_abort`, `agent_fork`, `agent_attach`, and `agent_configure` expose discovery,
 communication, and control to models. `agent_compact` and `agent_command`
 provide explicit compaction and command invocation through the session owner.
 Pi's tool schemas define their parameters. An extension command that replaces
@@ -368,6 +369,68 @@ detached route alias is refused. Use the current native session ID.
 For another session, omit `summary`. The existing native summarizer uses
 optional `instructions`, aborts active work, and does not resume it. The
 `/agent compact` command retains that controller behavior.
+
+### Configure an idle session
+
+`agent_configure` changes `name`, an exact `provider/model`, and/or the canonical
+`thinkingLevel` on the same session. Supply at least one field. Empty or
+whitespace-only `name` clears the name. Name and model inputs are bounded to 256
+and 512 UTF-16 code units respectively; malformed Unicode, controls, multiline
+text, fuzzy models, and unknown fields are refused. A session ID is exact, not a
+name lookup. `trust` applies only when a closed session needs its ordinary
+project-resource decision; configuration does not change trust on an open host.
+
+```text
+/agent configure <session-id> name Parser review
+/agent configure <session-id> name
+/agent configure <session-id> model provider/model
+/agent configure <session-id> model provider/model high
+/agent configure <session-id> thinking low
+```
+
+A model-only change preserves the session's prior effective reasoning level,
+then lets Pi clamp it to the requested model. An explicit level takes priority.
+Neither unrelated global defaults nor per-model defaults select the final
+level. A stored session without a retained reasoning entry needs an explicit
+level with a model change. Native setters update session history without
+persisting global model or reasoning defaults. The session ID and existing
+history stay intact, including when an explicit model repairs an unavailable
+stored model. No prompt, follow-up message, automatic retry, or replacement
+session accompanies configuration.
+
+On the board, choose **configure** from the native actions menu. **Name**,
+**Model**, and **Reasoning** edit an in-memory draft. **Apply** validates and
+submits it; **Cancel** discards it without opening a worker or changing native
+history. The displayed values are a snapshot, not an idle reservation. The owner
+checks the current state again at Apply. The board restores selection and the
+conversation after the dialogs, with a scrollable result after Apply.
+
+Configuration refuses its caller, primary sessions, detached owners, another
+live owner, active or queued work, input preflight, pending control/open/transfer,
+and closing or unavailable hosts. Reservation precedes asynchronous admission;
+configuration does not wait for work to finish or abort it to manufacture idle.
+Native user, custom-message, steering, follow-up, and Bash admission stay closed
+through native setters and awaited hooks. A shutdown that starts before mutation
+refuses the change; shutdown after a native setter starts waits for that admitted
+configuration before disposal and writer release.
+
+Results include bounded `before`, `requested`, and actual `after` fields, their
+live/retained source, and requested/effective reasoning with native clamp status.
+`clamped: null` means that the reasoning setter did not finish, not that no clamp
+occurred. Older native names and model identities that exceed the input bounds
+are clipped with explicit field paths in `truncated`. The tool sets `isError` for
+`outcome: "failed"` and retains the complete actual-state report in its text and
+structured details. Setter failures report partial state and uncertain writes,
+not rollback. Raw provider or hook exception text is not reflected in this report.
+
+Native model-selection hooks are awaited. Pi does not await all asynchronous
+name or reasoning hooks; reported hook errors cover only those observed by the
+result snapshot, and later extension activity remains ordinary native behavior.
+A successful setter or an existing file is not an independent disk verification.
+Native append can advance in-memory history before a write fails. The native
+[flush boundary](#footer-activity-and-price) still applies to unflushed sessions.
+Inspect uncertain state before another explicit change; configuration does not
+repair history or replay lost work.
 
 ### Find work and retrieve its evidence
 
@@ -538,7 +601,7 @@ The run process owns the session while it runs. Nothing else may open that
 session for writing. Status, inspect, steer, abort, compact, and command reach
 that existing owner through Pi's public client/server transport and Chord
 service endpoints.
-They do not reopen the session or construct another worker. Attach, send, fork,
+They do not reopen the session or construct another worker. Attach, configure, send, fork,
 rewind, place resolution that reopens the bound session, and a second detached
 run remain refused. Those operations become available after the run closes its
 session and releases its writer claim.
@@ -908,7 +971,10 @@ opt-in real-provider setup, compaction, and reopen check with configured
 authentication. The normal suite does not establish a live provider run.
 It uses synthetic providers and isolated processes for native session
 boundaries, persistence, ownership, detached controls, and cleanup. Native
-editor tests cover command completion. Synthetic inspection tests cover typed
+editor tests cover command completion. Configuration tests cover shared input
+validation, native setters and clamping, saved identity/history, idle admission
+and shutdown races, hook and append failures, tool/slash output, and dialog drafts.
+Synthetic inspection tests cover typed
 omissions, unchanged native entries, and Unicode continuation through live-owner
 and read-only projections. Loader tests verify the public inspection registration;
 they do not establish behavior in an already-loaded host. Component tests cover

@@ -88,7 +88,7 @@ describe("process-global manager cache", () => {
 		try {
 			await assert.rejects(
 				listTool().execute("list", {}, undefined, undefined, probeContext),
-				/manager protocol undefined does not match this copy's 3/u,
+				/manager protocol undefined does not match this copy's 4/u,
 			);
 			assert.equal(sharedOwners().managers.get(area.key), stale);
 		} finally {
@@ -123,7 +123,7 @@ describe("process-global manager cache", () => {
 		try {
 			await assert.rejects(
 				listTool().execute("list", {}, undefined, undefined, probeContext),
-				/manager protocol undefined does not match this copy's 3/u,
+				/manager protocol undefined does not match this copy's 4/u,
 			);
 			assert.equal(sharedOwners().creating.has(area.key), false);
 			assert.equal(sharedOwners().managers.has(area.key), false);

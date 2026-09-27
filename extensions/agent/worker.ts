@@ -1,5 +1,6 @@
 /** One ordinary Pi AgentSessionRuntime, with host-owned admission and observation. */
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Context, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getCurrentSystemMessage, type ImageContent, type ThinkingContent } from "@earendil-works/pi-ai";
@@ -10,6 +11,7 @@ import {
 	type ContextEditableContent, type LoadExtensionsResult, type ModelRuntime, type ProjectTrustStore, type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
+import { boundedConfigurationResult, configurationModel, configurationThinkingLevel, isThinkingLevel, validateConfigurationPatch, type ConfigurationPatch, type ConfigurationResult, type ConfigurationState } from "./configuration.ts";
 import { ASSOCIATION_ENTRY, type AssociationSource } from "./associations.ts";
 import { queryEvidence, validateInspect, type InspectOptions } from "./evidence.ts";
 import { NestedStatus, OwnedSpend, type AgentFooterState } from "./footer.ts";
@@ -20,9 +22,15 @@ const RESULT_TYPE = "agent.result";
 const START_TYPE = "agent.operation";
 export interface WorkerModelChoice { provider: string; modelId: string; thinkingLevel?: ThinkingLevel }
 export type ReplacedSessionContext = ReturnType<AgentSession["createReplacedSessionContext"]>;
+export interface InitialConfiguration { patch: ConfigurationPatch; result?: ConfigurationResult }
+interface ConfigurationAttempt {
+	patch: ConfigurationPatch; before: ConfigurationState; beforeSource: "live" | "retained";
+	reasoning?: ThinkingLevel; clamped?: boolean; stage: string; writes: boolean; hookErrors: { count: number; events: string[] };
+}
 export interface WorkerCreateOptions {
 	cwd: string; agentDir?: string; trusted?: boolean; trustStore?: ProjectTrustStore;
 	parentSessionPath?: string; model?: WorkerModelChoice; repairModel?: WorkerModelChoice;
+	configuration?: InitialConfiguration;
 	extensionPaths?: string[]; skillPaths?: string[]; name?: string;
 	setup?: (sessionManager: SessionManager) => Promise<void>;
 	onSessionCreated?: (sessionId: string) => void;
@@ -284,6 +292,8 @@ export class AgentWorkerSession {
 	private ownedRun = false;
 	private stopping = false;
 	private controlTask: Promise<unknown> | undefined;
+	private configuration: ConfigurationAttempt | undefined;
+	private configurationSession: AgentSession | undefined;
 	private startup: Promise<void> | undefined;
 	private lastError: string | undefined;
 	private terminal = false;
@@ -298,7 +308,7 @@ export class AgentWorkerSession {
 	private readonly nested = new NestedStatus();
 	private eventBus = createEventBus();
 	hasActiveWork(): boolean {
-		return !this.terminal && Boolean(this.operation || this.tasks.size || this.controlTask || this.preflight || this.nativePreflights || (this.runtime && (!this.runtime.session.isIdle || this.runtime.session.isBashRunning || this.runtime.session.pendingMessageCount)));
+		return !this.terminal && Boolean(this.operation || this.tasks.size || this.controlTask || this.configuration || this.preflight || this.nativePreflights || (this.runtime && (!this.runtime.session.isIdle || this.runtime.session.isBashRunning || this.runtime.session.pendingMessageCount)));
 	}
 	hasUnsavedResult(): boolean { return this.unsavedResult !== undefined; }
 	footerState(): AgentFooterState {
@@ -349,18 +359,33 @@ export class AgentWorkerSession {
 	private static async attach(options: WorkerCreateOptions, held: StoredAgentSession): Promise<AgentWorkerSession> {
 		const worker = new AgentWorkerSession(options);
 		worker.held = held;
+		const configuration = options.configuration;
 		try {
+			if (configuration) worker.configuration = worker.configurationAttempt(configuration.patch, "retained");
 			worker.runtime = await createAgentSessionRuntime(worker.createRuntime, { cwd: held.manager.getCwd(), agentDir: worker.agentDir, sessionManager: held.manager });
 			worker.runtime.setBeforeSessionInvalidate(() => { worker.invalidated = true; });
 			worker.runtime.setRebindSession(async () => { await worker.bind(); worker.invalidated = false; });
 			worker.startup = worker.bind();
 			await worker.startup;
 			if (worker.stopping) throw new Error("agent host closed during startup");
+			if (configuration && worker.configuration) {
+				const attempt = worker.configuration;
+				await worker.control(() => worker.applyConfiguration(attempt, worker.runtime.session), true);
+				configuration.result = worker.configurationResult(attempt);
+			}
 			if (options.name) await worker.setSessionName(options.name);
 			return worker;
 		} catch (error) {
-			try { await worker.close(); } catch (cleanup) { throw new AggregateError([error, cleanup], "agent startup and cleanup failed"); }
+			if (configuration && worker.configuration) configuration.result = worker.configurationResult(worker.configuration, true);
+			try { await worker.close(); } catch (cleanup) {
+				if (configuration?.result) configuration.result.error = `${configuration.result.error} Native startup cleanup failed; writer claims remain retained.`;
+				throw new AggregateError([error, cleanup], "agent startup and cleanup failed");
+			}
 			throw error;
+		} finally {
+			worker.configuration = undefined;
+			worker.configurationSession = undefined;
+			options.configuration = undefined;
 		}
 	}
 
@@ -402,16 +427,13 @@ export class AgentWorkerSession {
 		if (errors.length) throw new Error(errors.join("\n"));
 		const saved = sessionManager.buildSessionContext();
 		const choice = this.chooseModel(saved);
-		const model = services.modelRuntime.getModel(choice.provider, choice.modelId);
-		if (!model) throw new UnavailableAgentModelError(this.sessionId(), cwd, choice);
-		if (this.options.repairModel && !services.modelRuntime.hasConfiguredAuth(choice.provider) && !(await services.modelRuntime.checkAuth(choice.provider))) throw new Error(`Authentication is not configured for ${choice.provider}; the stored model is unchanged`);
+		const model = await this.runtimeModel(services.modelRuntime, choice, cwd);
 		const result = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model, thinkingLevel: choice.thinkingLevel });
+		if (this.configuration) this.configurationSession = result.session;
 		// Preloaded messages suppress the SDK's initial model entry. Persist the
 		// selected native model even when setup supplied conversation history.
 		const selected = selectedModel(result.session);
-		if (saved.model?.provider !== selected.provider || saved.model?.modelId !== selected.id) {
-			sessionManager.appendModelChange(selected.provider, selected.id);
-		}
+		if (saved.model?.provider !== selected.provider || saved.model?.modelId !== selected.id) sessionManager.appendModelChange(selected.provider, selected.id);
 		this.lastChoice = { provider: selected.provider, modelId: selected.id, thinkingLevel: result.session.thinkingLevel };
 		const toolState = getCurrentSystemMessage(saved.messages);
 		if (toolState) result.session.setActiveToolsByName((toolState.toolsAdded ?? []).map((tool) => tool.name));
@@ -421,9 +443,23 @@ export class AgentWorkerSession {
 	};
 
 	private chooseModel(saved: ReturnType<SessionManager["buildSessionContext"]>): WorkerModelChoice {
-		const choice = this.options.repairModel ?? (saved.model ? { ...saved.model, thinkingLevel: saved.thinkingLevel as ThinkingLevel } : this.lastChoice ?? this.options.model);
+		const explicit = this.configuration?.patch.model;
+		const choice: WorkerModelChoice | undefined = (explicit ? configurationModel(explicit) : this.options.repairModel) ?? (saved.model ? { ...saved.model, thinkingLevel: saved.thinkingLevel as ThinkingLevel } : this.lastChoice ?? this.options.model);
 		if (!choice) throw new Error(`agent session ${this.sessionId()} has no stored model; select an explicit model`);
-		return choice;
+		if (!this.configuration) return choice;
+		this.configuration.stage = "model and authentication validation";
+		this.configuration.reasoning = configurationThinkingLevel(this.configuration.patch, this.configuration.before.thinkingLevel);
+		return { ...choice, thinkingLevel: this.configuration.reasoning ?? choice.thinkingLevel };
+	}
+	private async runtimeModel(runtime: ModelRuntime, choice: WorkerModelChoice, cwd: string) {
+		if (this.configuration) this.configuration.stage = "model lookup";
+		const model = runtime.getModel(choice.provider, choice.modelId);
+		if (!model) throw new UnavailableAgentModelError(this.sessionId(), cwd, choice);
+		if (this.configuration) this.configuration.stage = "authentication validation";
+		const authenticated = this.configuration ? await runtime.checkAuth(choice.provider) : !this.options.repairModel || runtime.hasConfiguredAuth(choice.provider) || await runtime.checkAuth(choice.provider);
+		if (!authenticated) throw new Error(`Authentication is not configured for ${choice.provider}; the stored model is unchanged`);
+		if (this.configuration) { this.configuration.stage = "native startup"; this.configuration.writes = true; }
+		return model;
 	}
 	private async extensionTrust(cwd: string, extensions: LoadExtensionsResult): Promise<boolean | undefined> {
 		for (const extension of extensions.extensions) {
@@ -488,7 +524,14 @@ export class AgentWorkerSession {
 				navigateTree: (target, options) => session.navigateTree(target, options),
 				reload: () => session.reload(),
 			},
-			onError: (error) => this.reportError(`${error.event}: ${error.error}`),
+			onError: (error) => {
+				if (this.configuration) {
+					const observed = this.configuration.hookErrors;
+					observed.count++;
+					if (observed.events.length < 16) observed.events.push(error.event.slice(0, 80));
+					this.reportError(`Native ${error.event.slice(0, 80)} hook failed during configuration`);
+				} else this.reportError(`${error.event}: ${error.error}`);
+			},
 			shutdownHandler: () => { void this.close().catch((error) => this.reportError(String(error))); },
 		});
 		this.nested.request(this.eventBus);
@@ -501,7 +544,14 @@ export class AgentWorkerSession {
 		this.nativeAdmissions.set(session, admission);
 		const prompt = session.prompt.bind(session);
 		const sendCustomMessage = session.sendCustomMessage.bind(session);
+		const steer = session.steer.bind(session);
+		const followUp = session.followUp.bind(session);
+		const executeBash = session.executeBash.bind(session);
+		session.steer = (...args) => this.trackNativeQueue(admission, () => steer(...args));
+		session.followUp = (...args) => this.trackNativeQueue(admission, () => followUp(...args));
+		session.executeBash = (...args) => this.configuration ? Promise.reject(new Error("agent session configuration is in progress")) : executeBash(...args);
 		session.prompt = (text, options) => {
+			if (this.configuration) return Promise.reject(new Error("agent session configuration is in progress"));
 			if (!admission.accepting || this.stopping) return Promise.reject(new Error("agent session native input is closed"));
 			// Pi dispatches registered commands before input preflight. A command
 			// can await replacement, so it belongs to host work, not the old run.
@@ -519,9 +569,21 @@ export class AgentWorkerSession {
 			return this.trackNative(admission, task.finally(finishPreflight));
 		};
 		session.sendCustomMessage = (message, options) => {
+			if (this.configuration) return Promise.reject(new Error("agent session configuration is in progress"));
 			if (!admission.accepting || this.stopping) return Promise.reject(new Error("agent session native input is closed"));
 			return this.trackNative(admission, sendCustomMessage(message, options));
 		};
+	}
+	private trackNativeQueue(admission: NativeAdmission, action: () => Promise<void>): Promise<void> {
+		if (this.configuration) return Promise.reject(new Error("agent session configuration is in progress"));
+		if (!admission.accepting || this.stopping) return Promise.reject(new Error("agent session native input is closed"));
+		const generation = this.abortGeneration;
+		const admitted = () => {
+			if (generation !== this.abortGeneration || this.stopping || !admission.accepting) throw new Error("agent queued input aborted during preflight");
+		};
+		this.nativePreflights++;
+		const task = Promise.resolve().then(() => { admitted(); return action(); }).then(admitted).finally(() => { this.nativePreflights--; });
+		return this.trackNative(admission, task);
 	}
 	private trackNative<T>(admission: NativeAdmission, task: Promise<T>): Promise<T> {
 		admission.tasks.add(task);
@@ -616,6 +678,7 @@ export class AgentWorkerSession {
 	}
 	async start(prompt: string, images?: ImageContent[]): Promise<string | undefined> {
 		this.assertAvailable();
+		if (this.configuration) throw new Error("agent session configuration is in progress");
 		const command = /^\/(\S+)(?:\s+([\s\S]*))?$/u.exec(prompt);
 		if (command && this.session.extensionRunner.getCommand(command[1])) { await this.runCommand(command[1], command[2] ?? ""); return undefined; }
 		if (prompt.startsWith("!")) {
@@ -641,7 +704,7 @@ export class AgentWorkerSession {
 	}
 	async deliverCustomMessage(message: Parameters<AgentSession["sendCustomMessage"]>[0], options?: Parameters<AgentSession["sendCustomMessage"]>[1]): Promise<void> {
 		const session = this.session;
-		if (this.preflight || this.nativePreflights || this.controlTask) throw new Error("agent session input preflight or control is in progress; retry after admission");
+		if (this.preflight || this.nativePreflights || this.controlTask || this.configuration) throw new Error("agent session input preflight or control is in progress; retry after admission");
 		if (!options?.triggerTurn || session.isStreaming) {
 			await session.sendCustomMessage(message, options);
 			return;
@@ -661,18 +724,82 @@ export class AgentWorkerSession {
 	async sendUserMessage(...args: Parameters<AgentSession["sendUserMessage"]>): Promise<void> { await this.track(this.session.sendUserMessage(...args)); }
 	async steer(text: string, images?: ImageContent[]): Promise<void> { await this.session.steer(text, images); }
 	async abort(): Promise<boolean> {
+		if (this.configuration) throw new Error("agent session configuration is in progress");
 		const active = this.hasPendingHostWork();
 		this.operationAborted = active; this.abortGeneration++;
 		await this.session.abort();
 		while (this.tasks.size) await Promise.allSettled(this.tasks);
 		return active;
 	}
-	private control<T>(action: () => Promise<T>): Promise<T> {
+	private control<T>(action: () => Promise<T>, configuration = false): Promise<T> {
 		void this.session;
+		if (this.configuration && !configuration) return Promise.reject(new Error("agent session configuration is in progress"));
 		if (this.controlTask || this.preflight || this.nativePreflights) return Promise.reject(new Error("agent session control or input preflight is in progress"));
 		const task = Promise.resolve().then(action);
 		this.controlTask = task;
 		return this.track(task.finally(() => { if (this.controlTask === task) this.controlTask = undefined; }));
+	}
+	private configurationState(session?: AgentSession): ConfigurationState {
+		const manager = this.sessionManager();
+		const saved = manager.buildSessionContext();
+		const retained = manager.getBranch().findLast((entry) => entry.type === "thinking_level_change");
+		const level = session?.thinkingLevel ?? (retained?.type === "thinking_level_change" ? retained.thinkingLevel : undefined);
+		const model = session ? session.model && { provider: session.model.provider, modelId: session.model.id } : saved.model;
+		return { name: manager.getSessionName() ?? "", model: model ? `${model.provider}/${model.modelId}` : null, thinkingLevel: isThinkingLevel(level) ? level : null };
+	}
+	private configurationAttempt(patch: ConfigurationPatch, beforeSource: "live" | "retained"): ConfigurationAttempt {
+		return { patch: validateConfigurationPatch(patch), before: this.configurationState(beforeSource === "live" ? this.runtime.session : undefined), beforeSource, stage: "validation", writes: false, hookErrors: { count: 0, events: [] } };
+	}
+	private configurationResult(attempt: ConfigurationAttempt, failed = false): ConfigurationResult {
+		const session = this.configurationSession ?? this.runtime?.session;
+		const after = this.configurationState(session);
+		const file = this.sessionManager().getSessionFile();
+		return boundedConfigurationResult({
+			sessionId: this.sessionId(), outcome: failed ? "failed" : "applied", before: attempt.before, beforeSource: attempt.beforeSource,
+			requested: attempt.patch, after, afterSource: session ? "live" : "retained",
+			...(attempt.reasoning ? { reasoning: { requested: attempt.reasoning, effective: after.thinkingLevel, clamped: attempt.clamped ?? null } } : {}),
+			hookErrors: { count: attempt.hookErrors.count, events: [...attempt.hookErrors.events], omitted: attempt.hookErrors.count - attempt.hookErrors.events.length, observation: "Errors observed through native setters and awaited hooks. Native name and reasoning hooks are not all awaited; later activity is outside this snapshot." },
+			persistence: { nativeWrites: !attempt.writes ? "not-attempted" : failed ? "uncertain" : "completed", fileExists: Boolean(file && existsSync(file)), note: "Native history snapshot; disk contents are not independently verified. A new native session buffers entries until its first assistant response. No rollback or replay." },
+			...(failed ? { error: `Configuration failed during ${attempt.stage}; inspect the actual state before another change.` } : {}),
+		});
+	}
+	private assertConfigurationIdle(): void {
+		this.assertAvailable();
+		const session = this.runtime.session;
+		if (this.operation || this.preflight || this.nativePreflights || !session.isIdle || session.isBashRunning || session.pendingMessageCount) throw new Error("Configuration requires an idle session with no queued input");
+	}
+	private async applyConfiguration(attempt: ConfigurationAttempt, session: AgentSession): Promise<void> {
+		attempt.stage = "model lookup";
+		const identity = attempt.patch.model ? configurationModel(attempt.patch.model) : undefined;
+		const runtime = this.runtime.services.modelRuntime;
+		const model = identity ? runtime.getModel(identity.provider, identity.modelId) : undefined;
+		if (identity && !model) throw new Error("The exact model is unavailable");
+		attempt.stage = "reasoning validation";
+		attempt.reasoning = configurationThinkingLevel(attempt.patch, attempt.before.thinkingLevel);
+		attempt.stage = "authentication validation";
+		if (model && !(await runtime.checkAuth(model.provider))) throw new Error("Authentication is unavailable for the requested model");
+		attempt.stage = "idle admission";
+		this.assertConfigurationIdle();
+		// Once a native setter starts, shutdown joins this control before disposal.
+		if (model) { attempt.stage = "model update"; attempt.writes = true; await session.setModel(model); }
+		if (attempt.reasoning !== undefined) {
+			attempt.stage = "reasoning update"; attempt.writes = true;
+			const clamped = !session.getAvailableThinkingLevels().includes(attempt.reasoning);
+			session.setThinkingLevel(attempt.reasoning);
+			attempt.clamped = clamped;
+		}
+		if (attempt.patch.name !== undefined) { attempt.stage = "name update"; attempt.writes = true; session.setSessionName(attempt.patch.name); }
+	}
+	async configure(input: ConfigurationPatch): Promise<ConfigurationResult> {
+		this.assertConfigurationIdle();
+		if (this.hasActiveWork()) return Promise.reject(new Error("Configuration requires an idle session with no host work"));
+		const attempt = this.configurationAttempt(input, "live");
+		this.configuration = attempt;
+		return this.control(async () => {
+			try { await this.applyConfiguration(attempt, this.runtime.session); return this.configurationResult(attempt); }
+			catch { return this.configurationResult(attempt, true); }
+			finally { this.configuration = undefined; this.publishFooter(); }
+		}, true);
 	}
 	async compact(instructions?: string) { return this.control(() => this.session.compact(instructions)); }
 	async reload(): Promise<void> { await this.control(() => this.session.reload()); this.nested.request(this.eventBus); }
@@ -731,11 +858,11 @@ export class AgentWorkerSession {
 	private async disposeHost(): Promise<void> {
 		const errors: unknown[] = [];
 		const attempt = async (action: () => unknown) => { try { await action(); } catch (error) { errors.push(error); } };
-		let cleanupComplete = !this.runtime;
-		if (this.runtime) {
-			const session = this.runtime.session;
+		const session = this.runtime?.session ?? this.configurationSession;
+		let cleanupComplete = !session;
+		if (session) {
 			this.fenceNative(session);
-			if (!this.invalidated) await attempt(() => this.runtime.dispose());
+			if (this.runtime && !this.invalidated) await attempt(() => this.runtime.dispose());
 			// Shutdown handlers run before native disposal. Even after disposal,
 			// provider cleanup and admitted preflight promises still need a join.
 			let disposed = false;

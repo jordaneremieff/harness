@@ -205,7 +205,7 @@ export function renderAgentCall(name: string, value: unknown, theme: Theme, cont
 	const args = peerRecord(value);
 	const subject = peerField(args, "name") || peerField(args, "topic") || peerField(args, "prompt") || peerField(args, "correction") || peerField(args, "sessionId") || peerField(args, "runId");
 	const lines = [theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${displayPreview(subject, 120)}`) : "")];
-	if (["agent_spawn", "agent_detach", "agent_attach", "agent_place", "agent_fork", "agent_rewind"].includes(name)) {
+	if (["agent_spawn", "agent_detach", "agent_attach", "agent_configure", "agent_place", "agent_fork", "agent_rewind"].includes(name)) {
 		lines.push(theme.fg("muted", requestedConfiguration(name, args)));
 	}
 	if (context.expanded) lines.push(theme.fg("toolOutput", boundedMessage(JSON.stringify(args, null, 2))));

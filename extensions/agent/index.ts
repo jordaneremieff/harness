@@ -24,6 +24,8 @@ import { getAgentDir, hasTrustRequiringProjectResources, type ModelRuntime, Proj
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import { createAgentCommand, type AgentSessionSummary, type AgentCommandAction } from "./command.ts";
+import { CONFIGURATION_LIMITS, CONFIGURATION_SYNTAX, THINKING_LEVELS, configurationSessionId, formatConfiguration, isThinkingLevel, parseConfigurationArguments, validateConfigurationPatch, type ConfigurationPatch, type ConfigurationResult } from "./configuration.ts";
+import { configurationDialog } from "./configuration-dialog.ts";
 import { AgentDashboardData } from "./dashboard-data.ts";
 import { discoverSessions, type DiscoveryOptions } from "./discovery.ts";
 import { validateInspect, type InspectOptions } from "./evidence.ts";
@@ -39,14 +41,7 @@ import { PlaceBook } from "./places.ts";
 import { MAX_CONTINUITY_SUMMARY, SelfCompaction } from "./self-compaction.ts";
 import { planRewind } from "./rewind.ts";
 import { type AgentSessionMetadata, AgentStore } from "./store.ts";
-import { AgentWorkerSession, projectInspection, type WorkerCommandResult, type WorkerStatus, type WorkerModelChoice } from "./worker.ts";
-
-/** Canonical reasoning levels. The worker clamps the level to the selected model. */
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
-
-function isThinkingLevel(value: string): value is ThinkingLevel {
-	return (THINKING_LEVELS as readonly string[]).includes(value);
-}
+import { AgentWorkerSession, projectInspection, type InitialConfiguration, type WorkerCommandResult, type WorkerStatus, type WorkerModelChoice } from "./worker.ts";
 
 export { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
 
@@ -88,6 +83,13 @@ const ByIdParams = Type.Object(
 const AttachParams = Type.Object({
 	sessionId: Type.String({ minLength: 1 }), trust: Type.Optional(Type.Boolean()),
 	model: Type.Optional(Type.String({ minLength: 1, description: "Explicit provider/model to replace the stored selection on an idle session. No automatic fallback or prompt starts." })),
+}, { additionalProperties: false });
+const ConfigureParams = Type.Object({
+	sessionId: Type.String({ minLength: 1, maxLength: CONFIGURATION_LIMITS.sessionId }),
+	name: Type.Optional(Type.String({ maxLength: CONFIGURATION_LIMITS.name, description: "Session name; an empty string clears it." })),
+	model: Type.Optional(Type.String({ minLength: 1, maxLength: CONFIGURATION_LIMITS.model, description: "Exact provider/model. The current effective reasoning level is preserved, then clamped by Pi." })),
+	thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
+	trust: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 const SendParams = Type.Object(
 	{ sessionId: Type.String({ minLength: 1 }), message: Type.String({ minLength: 1 }), replyTo: Type.Optional(Type.String({ minLength: 1 })) },
@@ -214,7 +216,7 @@ interface AgentOwners {
 	workers: Set<string>;
 }
 /** Tool-facing contract version of AgentManager; the process-global manager cache reuses only an exact protocol match. */
-const MANAGER_PROTOCOL = 3;
+const MANAGER_PROTOCOL = 4;
 const ownerKey = Symbol.for("pi.extension.agent.owners");
 const shared = globalThis as typeof globalThis & { [ownerKey]?: AgentOwners };
 if (!shared[ownerKey]) shared[ownerKey] = { managers: new Map(), creating: new Map(), workers: new Set() };
@@ -264,6 +266,7 @@ export class AgentManager {
 	private readonly joinedWorkers = new WeakSet<AgentWorkerSession>();
 	private readonly sessions = new Map<string, AgentWorkerSession>();
 	private readonly controls = new Map<string, Set<Promise<unknown>>>();
+	private readonly configurations = new Set<string>();
 	private readonly transfers = new Map<string, Promise<unknown>>();
 	private readonly creations = new Set<Promise<AgentWorkerSession>>();
 	private closing = false;
@@ -669,8 +672,9 @@ export class AgentManager {
 		});
 	}
 
-	private async trackControl<T>(sessionId: string, action: () => Promise<T>): Promise<T> {
+	private async trackControl<T>(sessionId: string, action: () => Promise<T>, configuration = false): Promise<T> {
 		this.assertOpen();
+		if (this.configurations.has(sessionId) && !configuration) throw new Error(`session ${sessionId} configuration is in progress`);
 		if (this.transfers.has(sessionId)) throw new Error(`session ${sessionId} ownership transfer is in progress`);
 		const pending = this.controls.get(sessionId) ?? new Set<Promise<unknown>>();
 		this.controls.set(sessionId, pending);
@@ -755,12 +759,13 @@ export class AgentManager {
 		try { return await promise; } finally { this.opening.delete(sessionId); }
 	}
 
-	private async loadWorker(sessionId: string, trust: boolean | undefined, promptUi?: TrustPromptUi, repairModel?: WorkerModelChoice): Promise<AgentWorkerSession> {
+	private async loadWorker(sessionId: string, trust: boolean | undefined, promptUi?: TrustPromptUi, repairModel?: WorkerModelChoice, configuration?: InitialConfiguration): Promise<AgentWorkerSession> {
 		const metadata = await this.findMetadata(sessionId);
 		const trusted = await this.resolveTrust(metadata.cwd, trust, promptUi);
 		const worker = await this.createWorker(() => AgentWorkerSession.open(metadata, {
 			...this.workerHostOptions(promptUi),
 			...(repairModel ? { repairModel } : {}),
+			...(configuration ? { configuration } : {}),
 			cwd: metadata.cwd,
 			store: this.store,
 			modelRuntime: this.modelRuntime,
@@ -776,13 +781,47 @@ export class AgentManager {
 		this.assertOpen();
 		const run = this.detachedRuns.get(runId);
 		if (!run || run.sessionId !== sessionId || run.pid !== process.pid || run.state !== "running") throw new Error("detached run does not belong to this process");
-		if (this.sessions.has(sessionId) || this.opening.has(sessionId) || this.transfers.has(sessionId)) throw new Error(`session ${sessionId} already has a local owner`);
+		if (this.sessions.has(sessionId) || this.opening.has(sessionId) || this.transfers.has(sessionId) || this.configurations.has(sessionId)) throw new Error(`session ${sessionId} already has a local owner`);
 		const task = this.loadWorker(sessionId, trust);
 		this.opening.set(sessionId, task);
 		try { return await task; } finally { this.opening.delete(sessionId); }
 	}
 
+	async configure(sessionId: string, input: ConfigurationPatch, trust?: boolean, promptUi?: TrustPromptUi, callerSessionId?: string): Promise<ConfigurationResult> {
+		const patch = validateConfigurationPatch(input);
+		this.assertOpen();
+		sessionId = configurationSessionId(sessionId);
+		if (sessionId === callerSessionId || sessionId === this.admissionParent.getStore()) throw new Error("Configuration cannot target its calling session");
+		if ([...owners.managers.values()].some((owner) => owner.primary.has(sessionId))) throw new Error("Configuration cannot target a primary session");
+		if ([...owners.managers.values()].some((owner) => owner !== this && (owner.sessions.has(sessionId) || owner.opening.has(sessionId) || owner.configurations.has(sessionId)))) throw new Error("Configuration requires this session's owner");
+		if (this.configurations.has(sessionId) || this.controls.has(sessionId) || this.opening.has(sessionId) || this.transfers.has(sessionId)) throw new Error("Configuration requires an idle owner with no pending control, open, or transfer");
+		if (this.detachedRuns.liveFor(sessionId)) throw new Error("Configuration refuses detached sessions; wait for their owner to finish");
+		this.assertAssociationWriter(sessionId);
+		const existing = this.sessions.get(sessionId);
+		if (existing) { existing.assertAvailable(); if (existing.hasActiveWork()) throw new Error("Configuration requires an idle session with no queued input"); }
+		this.configurations.add(sessionId);
+		const initial: InitialConfiguration = { patch };
+		// Reserve the held native host before a later microtask can admit input.
+		const configured = existing?.configure(patch);
+		try {
+			return await this.trackControl(sessionId, async () => {
+				try {
+					if (existing && configured) {
+						initial.result = await configured;
+						if (initial.result.outcome === "applied") this.associate(existing, true);
+					} else await this.loadWorker(sessionId, trust, promptUi, undefined, initial);
+					if (!initial.result) throw new Error("Native configuration returned no state");
+					return initial.result;
+				} catch (error) {
+					if (!initial.result) throw error;
+					return initial.result.outcome === "failed" ? initial.result : { ...initial.result, outcome: "failed", error: "Owner admission or cleanup failed after configuration. The reported native state is not rolled back." };
+				}
+			}, true);
+		} finally { this.configurations.delete(sessionId); }
+	}
+
 	async attach(sessionId: string, trust?: boolean, promptUi?: TrustPromptUi, model?: string): Promise<string> {
+		if (this.configurations.has(sessionId)) throw new Error(`session ${sessionId} configuration is in progress`);
 		if (model === undefined) return this.withWorker(sessionId, async (worker) => formatStatus(await worker.status(), "attached"), trust, promptUi);
 		const repairModel = resolveModelChoice(model, undefined, null);
 		if (!repairModel) throw new Error("Model repair requires an explicit provider/model");
@@ -1007,6 +1046,7 @@ export class AgentManager {
 			created = true;
 		}
 		const id = sessionId;
+		if (this.configurations.has(id)) throw new Error(`session ${id} configuration is in progress`);
 		if (this.transfers.has(id)) throw new Error(`session ${id} ownership transfer is in progress`);
 		const transfer = (async () => {
 			await Promise.allSettled(this.controls.get(id) ?? []);
@@ -1506,9 +1546,10 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 	const registerTool: ExtensionAPI["registerTool"] = (tool) => {
 		pi.registerTool({ ...tool, execute: (...args) => admit(args[4], () => tool.execute(...args)) });
 	};
-	const ownedActions = (actions: AgentCommandAction[]): AgentCommandAction[] => actions.map((action) => ({
-		...action, run: (args, ctx) => admit(ctx, () => action.run(args, ctx)),
-	}));
+	const ownedActions = (actions: AgentCommandAction[]): AgentCommandAction[] => actions.map((action) => {
+		const dialog = action.dialog;
+		return { ...action, run: (args, ctx) => admit(ctx, () => action.run(args, ctx)), ...(dialog ? { dialog: (target, ctx) => admit(ctx, () => dialog(target, ctx)) } : {}) };
+	});
 
 	const hostModel = (ctx: ExtensionContext): { provider: string; id: string } | null => {
 		const model = ctx.model;
@@ -1732,6 +1773,20 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	registerTool<typeof ConfigureParams, unknown>({
+		name: "agent_configure", label: "Agent configure",
+		description: "Configure an idle session's name, exact provider/model, or reasoning level without a task or replacement. Supply at least one field. Model-only changes preserve effective reasoning before Pi clamps it. Refuses self, primary, detached, active, queued, or pending-control targets. Results report actual before/requested/after state and native persistence boundaries, including partial failure.",
+		promptSnippet: "Configure an idle session without starting work",
+		parameters: ConfigureParams,
+		renderCall: (args, theme, context) => renderAgentCall("agent_configure", args, theme, context),
+		renderResult: renderAgentResult,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const { sessionId, trust, ...patch } = params;
+			const result = await (await getManager()).configure(sessionId, patch, trust, trustPromptFrom(ctx), ctx.sessionManager.getSessionId());
+			return { content: [{ type: "text", text: formatConfiguration(result) }], details: { configuration: result }, ...(result.outcome === "failed" ? { isError: true } : {}) };
+		},
+	});
+
 	let dashboardData: AgentDashboardData | undefined;
 	const getDashboardData = () => dashboardData ??= new AgentDashboardData(join(resolve(process.env.PI_AGENT_SESSIONS_DIR ?? join(process.env.PI_AGENT_DIR ?? getAgentDir(), "agent-sessions")), "native"));
 	const commandDefaults = (ctx: ExtensionContext) => ({ cwd: ctx.cwd, model: hostModel(ctx), thinkingLevel: pi.getThinkingLevel() });
@@ -1781,6 +1836,23 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		{
 			name: "attach", description: "Reopen a session; optionally choose an explicit replacement model", args: [{ name: "session", complete: "session" }, { name: "model", optional: true }], help: `${sessionHelp} An optional provider/model repairs only an idle session. It does not start work or substitute a default.`,
 			run: async (args, ctx) => args[1] === undefined ? (await getManager()).attach(args[0], undefined, trustPromptFrom(ctx)) : (await getManager()).attach(args[0], undefined, trustPromptFrom(ctx), args[1]),
+		},
+		{
+			name: "configure", description: "Change an idle session's name, model, or reasoning", args: [{ name: "session", complete: "session" }, { name: "field" }, { name: "value", optional: true, rest: true }],
+			help: `${CONFIGURATION_SYNTAX}. A bare name field clears the name. Model-only changes preserve current effective reasoning, then Pi clamps it. No task starts. The board offers native dialogs with Apply and Cancel.`,
+			run: async (args, ctx) => {
+				const { sessionId, patch } = parseConfigurationArguments(args);
+				return formatConfiguration(await (await getManager()).configure(sessionId, patch, undefined, trustPromptFrom(ctx), ctx.sessionManager.getSessionId()));
+			},
+			dialog: async (target, ctx) => {
+				const sessionId = target?.kind === "session" ? target.session.sessionId : target?.kind === "run" ? target.run.currentSessionId ?? target.run.sessionId : await ctx.ui.input("Configure session", "Exact session ID");
+				if (!sessionId) return undefined;
+				const owner = await getManager();
+				const snapshot = (await owner.sessionSummaries()).find((row) => row.sessionId === sessionId);
+				if (!snapshot) throw new Error("The selected session is unavailable");
+				const patch = await configurationDialog(snapshot, ctx);
+				return patch ? formatConfiguration(await owner.configure(sessionId, patch, undefined, trustPromptFrom(ctx), ctx.sessionManager.getSessionId())) : undefined;
+			},
 		},
 		{
 			name: "fork", description: "Copy a conversation into a separate session", args: [{ name: "session", complete: "session" }], help: `${sessionHelp} The source session stays unchanged.`,

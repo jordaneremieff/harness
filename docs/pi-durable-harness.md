@@ -254,6 +254,35 @@ the detailed behavior below.
 These are installed-source boundaries. UI focus and input behavior require
 checks through the interactive host, not merely a successful registration.
 
+## Idle session configuration
+
+Verified 2026-09-27 against active and checkout coding-agent 0.87.1
+`dist/core/agent-session.{js,d.ts}` and `dist/core/agent-session-runtime.d.ts`,
+plus the native configuration tests in `extensions/agent/`.
+
+Ordinary `AgentSession.setModel`, `setThinkingLevel`, and `setSessionName` mutate
+native session state and history. Model and reasoning setters do not persist
+global defaults unless their options request it. They have no native idle guard.
+An input hook can still be in preflight while `isIdle` is true, so the owner must
+reserve configuration and exclude admitted work, pending input, and controls
+before mutation. `AgentSessionRuntime` replacement is not needed for these
+field changes.
+
+The model setter authenticates again, applies native model-switch defaults, and
+awaits model-selection hooks. Agent configuration then reapplies the explicitly
+requested or previously effective reasoning level through Pi's native clamp.
+The owner retains exclusion until those setters and awaited hooks settle.
+Native name and reasoning notifications do not await every asynchronous hook;
+an observed error snapshot is not a promise about later extension activity.
+Once a native setter starts, shutdown joins the admitted configuration before
+host disposal and writer release. This does not make setters atomic or supply
+cancellation inside their authentication await.
+
+Native append and the existing first-assistant flush boundary still govern
+persistence. A failed append can leave actual in-memory state different from the
+saved file. Configuration reports both the actual snapshot and that uncertainty;
+it adds no rollback, replay, independent configuration store, or host migration.
+
 ## Footer retention boundary
 
 Verified 2026-09-24 against active coding-agent 0.87.1

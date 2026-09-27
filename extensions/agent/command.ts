@@ -33,6 +33,7 @@ export interface AgentCommandAction {
 	args: CommandArgument[];
 	help?: string;
 	confirm?: string;
+	dialog?(target: DashboardTarget | undefined, ctx: ExtensionContext): Promise<string | undefined>;
 	run(args: string[], ctx: ExtensionContext): Promise<string | undefined>;
 }
 
@@ -146,6 +147,7 @@ export async function chooseDashboardAction(actions: AgentCommandAction[], targe
 	if (choice === undefined) return undefined;
 	const action = actions[labels.indexOf(choice)];
 	if (!action) return undefined;
+	if (action.dialog) return action.dialog(target, ctx);
 	const args = await dashboardArguments(action, target, ctx);
 	if (!Array.isArray(args)) return args;
 	const help = argumentHelp(action, args);
