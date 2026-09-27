@@ -1,5 +1,5 @@
 /** Ordinary Pi JSONL sessions with exclusive local writer claims. */
-import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, opendirSync, readdirSync, readSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -185,6 +185,36 @@ export class AgentStore {
 		return undefined;
 	}
 
+	/** Observation lookup bounds directory visits and reads only native headers. */
+	locateReadOnly(id: string, signal?: AbortSignal): AgentSessionMetadata | undefined {
+		const directory = opendirSync(this.nativeRoot);
+		try {
+			for (let visits = 0; ; visits++) {
+				signal?.throwIfAborted();
+				const file = directory.readSync();
+				if (!file) return undefined;
+				if (visits >= 2048) throw new Error("Native observation lookup exceeds 2048 directory entries; session absence is unknown");
+				if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+				const path = join(this.nativeRoot, file.name);
+				const header = this.readHeader(path);
+				if (header?.id !== id) continue;
+				const stat = statSync(path, { throwIfNoEntry: false });
+				if (!stat?.isFile()) continue;
+				const metadata: AgentSessionMetadata = { id, cwd: String(header.cwd), path, createdAt: Date.parse(String(header.timestamp)), modifiedAt: stat.mtimeMs };
+				this.validate(metadata);
+				return metadata;
+			}
+		} finally { directory.closeSync(); }
+	}
+
+	private capturedSession(metadata: AgentSessionMetadata, content: string): SessionManager {
+		const newline = content.indexOf("\n");
+		if (newline < 0 || newline > 16384) throw new Error("invalid or unfinished native header");
+		const header = JSON.parse(content.slice(0, newline));
+		if (header?.type !== "session" || header.version !== CURRENT_SESSION_VERSION || header.id !== metadata.id || header.cwd !== metadata.cwd) throw new Error("session identity changed before capture");
+		return SessionManager.inMemory(metadata.cwd, undefined, parseSessionEntries(content));
+	}
+
 	/**
 	 * Read one native session file as a point-in-time snapshot.
 	 *
@@ -194,7 +224,7 @@ export class AgentStore {
 	 * unfinished tail is skipped and reported.
 	 */
 	readOnly(metadata: AgentSessionMetadata): ReadOnlySessionCapture {
-		const unavailable = (reason: string): ReadOnlySessionCapture => ({ manager: SessionManager.inMemory(metadata.cwd), cwd: metadata.cwd, bytes: 0, unfinishedTail: false, unavailable: reason });
+		const unavailable = (reason: string, bytes = 0): ReadOnlySessionCapture => ({ manager: SessionManager.inMemory(metadata.cwd), cwd: metadata.cwd, bytes, unfinishedTail: false, unavailable: reason });
 		if (resolve(dirname(metadata.path)) !== this.nativeRoot) return unavailable("not a native agent session path");
 		let fd: number;
 		try { fd = openSync(metadata.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
@@ -210,8 +240,11 @@ export class AgentStore {
 				if (!count) break;
 				bytes += count;
 			}
+			const after = fstatSync(fd);
+			if (bytes !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) return unavailable("session file changed during capture", bytes);
 			const content = buffer.toString("utf8", 0, bytes);
-			return { manager: SessionManager.inMemory(metadata.cwd, undefined, parseSessionEntries(content)), cwd: metadata.cwd, bytes, unfinishedTail: hasUnfinishedTail(content) };
+			try { return { manager: this.capturedSession(metadata, content), cwd: metadata.cwd, bytes, unfinishedTail: hasUnfinishedTail(content) }; }
+			catch { return unavailable("native capture is malformed or its identity changed", bytes); }
 		} finally { closeSync(fd); }
 	}
 

@@ -369,16 +369,104 @@ For another session, omit `summary`. The existing native summarizer uses
 optional `instructions`, aborts active work, and does not resume it. The
 `/agent compact` command retains that controller behavior.
 
+### Find work and retrieve its evidence
+
+`agent_list` searches retained session metadata without opening a writer. Use a
+case-insensitive literal `query` in the native ID, directory, latest name, or first
+nonempty user text. Empty or image-only user messages do not select that text;
+later messages do not expand the query after the first text is selected. An
+optional absolute `cwd` matches that directory exactly. Discovery does not search
+every conversation message or establish live ownership.
+
+```text
+agent_list({query: "cache cleanup", limit: 5})
+agent_list({query: "cache cleanup", limit: 5, cursor: "<nextCursor>"})
+agent_inspect({sessionId: "<session>", view: "result"})
+agent_inspect({sessionId: "<session>", view: "result", entryId: "<result-entry>", offset: 12000})
+agent_inspect({sessionId: "<session>", view: "search", query: "cleanup", source: "toolResult"})
+agent_inspect({sessionId: "<session>", entryId: "<matched-entry>"})
+```
+
+Use the returned offset rather than assuming the example's value. Existing
+`agent_attach`, `agent_send`, and `agent_fork` controls reuse a selected session;
+observation starts no work and changes no ownership.
+
+Discovery enumerates only the native directory. It stops after a directory bound
+of 2,048 entries plus one overflow probe, rather than slicing a whole-store scan.
+Each page visits at most 32 candidate files, captures at most 16 MiB in total,
+and refuses files above the existing 8 MiB capture bound. The default result
+limit is 10, the maximum is 20, and serialized output stays below 24,000 bytes.
+A page searches at most 4,096 UTF-16 units of each text metadata field and shows
+at most 512 units without splitting Unicode pairs. Partial metadata, shortened
+previews, unreadable files, oversized files, and malformed input remain explicit.
+Files with invalid header timestamps or non-string metadata text are skipped
+with a reason. A metadata row that exceeds the output budget is also skipped,
+not retried forever. A lack of matches in those sources does not prove absence.
+
+Rows use descending filename order, not last-activity order. Discovery has no
+index, cache, watcher, or model-generated summaries. A cursor binds the query,
+exact directory filter, and bounded filename inventory. New or removed files
+invalidate it. Each continuation captures file contents anew; the cursor is not
+a frozen transcript snapshot. Continue even after an empty page when
+`nextCursor` exists. A directory above the enumeration bound refuses discovery
+instead of reporting a complete empty inventory.
+
+`agent_inspect` has explicit evidence views:
+
+- `history`, the default, retains existing whole-history pages and exact-entry
+  reads. History pages now identify their saved result with `result.entryId`.
+- `branch` follows one known native parent chain, newest first. Omit `fromId`
+  for the current leaf, or use a known entry ID. A branch summary exposes its
+  abandoned tip as `fromId`; pass that ID to inspect the alternate ancestry.
+  This does not enumerate unknown branches or navigate the session.
+- `search` applies a case-sensitive literal `query` on that same ancestry.
+  Optional `source` selects user, assistant, tool-result, custom-message, or
+  summary entries before text scanning. Matches preserve native IDs, text-field
+  paths, and UTF-16 match offsets. Those offsets address the named source text
+  field, not the exact-entry inspection serialization. One match per entry
+  prevents a large tool dump from occupying the whole result page.
+- `result` finds the latest operation on that ancestry or an explicit
+  `operationId`. It returns the saved result's entry ID and the first exact-entry
+  chunk. Continue with that `entryId` and `nextOffset`. A newer operation without
+  a saved result does not silently return an older completed result. A result
+  is an observed execution outcome, not verification or task acceptance.
+
+Selected-ancestry pages visit at most 128 entries. Search visits at most 512 text
+slots and scans at most 65,536 UTF-8 bytes per page. Excluded entries still use
+visits. Continuations include text positions for large fields and preserve
+matches across scan boundaries. Their signed token binds the session, ancestry,
+and query; repeat the same view, query, source, and operation ID. Tokens expire
+when their observation host generation changes. Restart from the returned
+`fromId` after that refusal. No transcript or query index is retained.
+
+Search covers raw native text, visible thinking, tool names, assistant errors,
+Bash command/output text, session names, and summaries. It excludes signatures,
+image payloads, redacted thinking, tool arguments, tool-result details, arbitrary
+custom data, and context-edit replacements. Raw history is not current projected
+model context. Missing ancestors stop coverage explicitly. Ordinary appends do
+not change a continuation's selected ancestry; the token does not establish an
+immutable snapshot of file bytes. Historical text remains evidence, not fresh
+instructions or approval.
+
+Live owners, read-only captures, and detached inspection use the same selectors.
+A foreign-session lookup reads bounded headers and refuses after a directory
+bound of 2,048 entries plus an overflow probe. Existing owner routing still
+applies. Captures remain point-in-time, with explicit size and unfinished-tail
+limits. Live-only unsaved results appear only through the existing `history`
+view paging contract below; branch, search, and result views never overlay them
+on selected evidence.
+
 `agent_inspect` reads session evidence and execution/result state. Its bounded
 previews retain entry IDs and roles. Use an entry ID and `offset=nextOffset`
 to read the complete inspection representation in chunks; use `nextCursor` for
 older entries. Offsets count UTF-16 code units in that representation, not bytes
 or positions in the native file. Returned offsets preserve Unicode pairs.
 
-Before serialization, inspection replaces native `textSignature`,
-`thinkingSignature`, and `thoughtSignature` values with omission markers.
-It also replaces image `data` and the `thinking` text of `redacted: true`
-blocks. Each affected entry reports fixed-size `omissions` counts by category,
+For history pages and exact-entry reads, inspection replaces native
+`textSignature`, `thinkingSignature`, and `thoughtSignature` values with omission
+markers before serialization. It also replaces image `data` and the `thinking`
+text of `redacted: true` blocks. Each affected entry reports fixed-size `omissions`
+counts by category,
 including fields beyond the current preview or chunk. Markers retain the field
 locations in the reconstructed JSON. Visible text and non-redacted thinking,
 tool calls/results, identity, provenance, errors, and other metadata remain.

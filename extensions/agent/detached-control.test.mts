@@ -84,11 +84,14 @@ describe("detached control over public Unix transport", () => {
 			await withDetachedControl(f.request, async (control) => {
 				assert.deepEqual(await control.status(), f.status);
 				assert.deepEqual(await control.inspect({ limit: 2, offset: 4 }), JSON.parse(JSON.stringify(f.inspection)));
+				await control.inspect({ view: "search", query: "literal", fromId: "known-tip", source: "user" });
+				await control.inspect({ view: "result", entryId: "result-entry", offset: 1200 });
+				await assert.rejects(control.inspect({ view: "branch", query: "invalid" }), /query/);
 				await control.steer("redirect", [image]);
 				assert.equal(await control.abort(), true);
 			});
 			assert.deepEqual(f.calls.steers, [{ message: "redirect", images: [image] }]);
-			assert.deepEqual(f.calls.inspections, [{ limit: 2, offset: 4 }]);
+			assert.deepEqual(f.calls.inspections, [{ limit: 2, offset: 4 }, { view: "search", query: "literal", fromId: "known-tip", source: "user" }, { view: "result", entryId: "result-entry", offset: 1200 }]);
 			assert.equal(f.calls.aborts, 1);
 			await withDetachedControl(f.request, async (control) => { assert.equal((await control.status()).sessionId, f.request.sessionId); });
 		} finally { await server.close(); f.cleanup(); }

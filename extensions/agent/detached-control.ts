@@ -14,7 +14,7 @@ import { createUnixServer } from "@earendil-works/pi-server/unix";
 import { DetachedRuns, type DetachedRunRequest } from "./detached.ts";
 import type { AgentWorkerSession, WorkerStatus } from "./worker.ts";
 
-type InspectOptions = { cursor?: number; limit?: number; entryId?: string; offset?: number };
+import { validateInspect, type InspectOptions } from "./evidence.ts";
 type Inspection = Awaited<ReturnType<AgentWorkerSession["inspect"]>>;
 type ControlWorker = Pick<AgentWorkerSession, "status" | "inspect" | "steer" | "compact" | "runCommand">;
 
@@ -114,12 +114,8 @@ function invalid(message: string): never {
 	throw new RemoteServiceError("service_invalid_value", message);
 }
 function checkInspect(value: unknown): asserts value is InspectOptions {
-	if (!object(value) || Object.keys(value).some((key) => !["cursor", "limit", "entryId", "offset"].includes(key))) invalid("invalid inspect options");
-	for (const key of ["cursor", "offset"] as const) {
-		if (value[key] !== undefined && (!Number.isSafeInteger(value[key]) || (value[key] as number) < 0)) invalid(`invalid inspect ${key}`);
-	}
-	if (value.limit !== undefined && (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 12)) invalid("invalid inspect limit");
-	if (value.entryId !== undefined && !text(value.entryId, 256)) invalid("invalid inspect entryId");
+	try { validateInspect(value); }
+	catch (error) { invalid(error instanceof Error ? error.message : "Invalid inspect options"); }
 }
 function checkSteer(message: unknown, images: unknown): void {
 	if (!text(message, MAX_INPUT_BYTES)) invalid("invalid steering message or message exceeds its byte limit");

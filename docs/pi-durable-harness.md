@@ -328,8 +328,10 @@ native finalizer.
 
 ## Current-session evidence retrieval
 
-Verified 2026-09-23 against installed 0.87.1 `dist/core/session-manager.d.ts`,
-`dist/core/session-manager.js`, and `dist/core/extensions/types.d.ts`.
+Bounded access, discovery, and read-only capture verified 2026-09-27 against
+active and checkout 0.87.1 `dist/core/session-manager.{d.ts,js}` and
+`dist/core/extensions/types.d.ts`. Context-projection claims below retain their
+2026-09-23 verification boundary.
 
 - `ExtensionContext.sessionManager` exposes `ReadonlySessionManager`.
   `getEntry(id)` reads the existing map; current leaf/session identifiers need
@@ -338,6 +340,9 @@ Verified 2026-09-23 against installed 0.87.1 `dist/core/session-manager.d.ts`,
   session and `getTree()` constructs the whole tree. These methods accept no
   visit limit. Bound ancestry queries by repeated `getEntry()` calls with an
   explicit stop condition, not by truncating a completed scan.
+- `list()` and `listAll()` collect full inventories. Progress callbacks and
+  cancellation do not supply cursor, visit, or byte limits. `findById()` still
+  enumerates a directory. Output truncation does not bound these producers.
 - `buildContextEntries()` selects raw active-path entries with compaction
   applied; it does not apply context edits. The read-only interface also exposes
   `buildSessionProjection()`, which applies omissions and content replacements
@@ -349,8 +354,10 @@ Verified 2026-09-23 against installed 0.87.1 `dist/core/session-manager.d.ts`,
 - `SessionManager.open()` reads a complete file and repairs an unfinished tail.
   Do not use it to inspect a foreign active file. A known, byte-bounded read-only
   capture can use public `parseSessionEntries()` and `SessionManager.inMemory()`
-  without a private decoder or a write to its source. Oversized captures need an
-  explicit unavailable state; capture time limits freshness.
+  without a private decoder or a write to its source. The parser skips malformed
+  JSON lines; it supplies neither structural validation nor capture limits.
+  Oversized captures need an explicit unavailable state; capture time limits
+  freshness.
 - The ordinary API still does not provide bounded discovery of unknown alternate
   branches. Neither a complete tree scan nor a durable live view is a paged
   archive query. Do not add a parallel raw-file index to imply that contract.

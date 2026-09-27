@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
 import { ASSOCIATION_ENTRY, type AssociationSource } from "./associations.ts";
+import { queryEvidence, validateInspect, type InspectOptions } from "./evidence.ts";
 import { NestedStatus, OwnedSpend, type AgentFooterState } from "./footer.ts";
 import type { AgentSessionMetadata, AgentStore, StoredAgentSession } from "./store.ts";
 
@@ -216,7 +217,24 @@ function inspectionPage(all: SessionEntry[], base: InspectionBase, result: Sessi
 		const source = inspectionSource(entry);
 		return { id: entry.id, parentId: entry.parentId, type: entry.type, role: entry.type === "message" ? entry.message.role : undefined, ...fragment(source.text, 0, 1200), ...(source.omissions ? { omissions: source.omissions } : {}), ...(preview ? { preview } : {}) };
 	});
-	return { ...base, result: result?.type === "custom" ? fragment(JSON.stringify(result.data), 0, 2400) : undefined, entries, nextCursor: start || null, order: "newestFirst" as const, detail: "Use entryId and offset for the complete inspection representation, not raw storage. Provider signatures, image data, and redacted thinking are omitted with markers and counts. Offsets are UTF-16 positions in this representation." };
+	return { ...base, result: result?.type === "custom" ? { entryId: result.id as string | undefined, ...fragment(JSON.stringify(result.data), 0, 2400) } : undefined, entries, nextCursor: start || null, order: "newestFirst" as const, detail: "Use entryId and offset for the complete inspection representation, not raw storage. Provider signatures, image data, and redacted thinking are omitted with markers and counts. Offsets are UTF-16 positions in this representation." };
+}
+
+function selectedInspection(manager: SessionManager, sessionId: string, options: InspectOptions, owner?: InspectionOwner, capture?: InspectionCapture) {
+	const base: InspectionBase = { sessionId, execution: { current: owner?.operation ? { id: owner.operation } : null, recovery: "Observed history is not task acceptance or in-flight replay" }, liveOwner: owner !== undefined, ...(capture ? { capture: inspectionCapture(capture) } : {}) };
+	if (capture && !capture.available) return { ...base, view: options.view, coverage: { complete: false, reason: capture.reason }, continuation: null };
+	const selected = options.entryId ? { resultEntryId: options.entryId } : queryEvidence(manager, sessionId, options);
+	if (!selected.resultEntryId) return { ...base, ...selected };
+	return { ...selected, ...savedResultInspection(manager, base, selected.resultEntryId, options) };
+}
+
+function savedResultInspection(manager: SessionManager, base: InspectionBase, entryId: string, options: InspectOptions) {
+	const entry = manager.getEntry(entryId);
+	if (entry?.type !== "custom" || entry.customType !== RESULT_TYPE || !entry.data || typeof entry.data !== "object") throw new Error("Selected entry is not a saved operation result");
+	const result = entry.data as WorkerResult;
+	if (typeof result.operationId !== "string" || !result.operationId || result.operationId.length > 256 || !["completed", "failed", "aborted"].includes(result.status)) throw new Error("Malformed saved operation result");
+	if (options.operationId && result.operationId !== options.operationId) throw new Error("Saved result does not match operationId");
+	return { ...inspectionEntry(manager, base.sessionId, base, entry.id, options.offset), view: "result" as const, operationId: result.operationId, status: result.status, resultPersistence: "saved native entry", detail: "Continue with this entryId and nextOffset in result or history view. Offsets address the same inspection representation. Execution outcome is not task acceptance." };
 }
 
 /**
@@ -229,10 +247,12 @@ function inspectionPage(all: SessionEntry[], base: InspectionBase, result: Sessi
 export function projectInspection(
 	manager: SessionManager,
 	sessionId: string,
-	options: { cursor?: number; limit?: number; entryId?: string; offset?: number },
+	options: InspectOptions,
 	owner?: InspectionOwner,
 	capture?: InspectionCapture,
 ) {
+	validateInspect(options);
+	if (options.view && options.view !== "history") return selectedInspection(manager, sessionId, options, owner, capture);
 	const all = manager.getEntries();
 	const result = lastCustom(all, RESULT_TYPE);
 	const base: InspectionBase = {
@@ -699,10 +719,10 @@ export class AgentWorkerSession {
 		const model = selectedModel(session);
 		return { sessionId: this.sessionId(), cwd: session.sessionManager.getCwd(), name: session.sessionManager.getSessionName(), tipId: session.sessionManager.getLeafId(), model: { provider: model.provider, modelId: model.id, thinkingLevel: session.thinkingLevel }, operation: this.operation ?? null, tools: session.getAllTools().map((tool) => tool.name), activeTools: session.getActiveToolNames(), extensions: session.resourceLoader.getExtensions().extensions.map((extension) => extension.path), entryCount: session.sessionManager.getEntries().length, ...(this.lastError ? { lastError: this.lastError.slice(0, 2000) } : {}) };
 	}
-	async inspect(options: { cursor?: number; limit?: number; entryId?: string; offset?: number } = {}) {
+	async inspect(options: InspectOptions = {}) {
 		this.assertAvailable();
 		const inspection = projectInspection(this.sessionManager(), this.sessionId(), options, { operation: this.operation ?? null, lastError: this.lastError });
-		return this.unsavedResult && !options.entryId ? { ...inspection, result: fragment(JSON.stringify(this.unsavedResult), Math.max(0, options.offset ?? 0), 12000), resultOffset: Math.max(0, options.offset ?? 0), resultPersistence: "not saved; retained only by the live owner", detail: "Continue the unsaved result with offset=result.nextOffset and no entryId. Native entries remain separately readable by entryId." } : inspection;
+		return this.unsavedResult && !options.entryId && (options.view ?? "history") === "history" ? { ...inspection, result: { entryId: undefined, ...fragment(JSON.stringify(this.unsavedResult), Math.max(0, options.offset ?? 0), 12000) }, resultOffset: Math.max(0, options.offset ?? 0), resultPersistence: "not saved; retained only by the live owner", detail: "Continue the unsaved result with offset=result.nextOffset and no entryId. Native entries remain separately readable by entryId." } : inspection;
 	}
 	async waitForIdle(): Promise<void> {
 		while (this.tasks.size) await Promise.allSettled(this.tasks);

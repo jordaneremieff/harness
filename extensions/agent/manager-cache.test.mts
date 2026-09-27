@@ -87,8 +87,8 @@ describe("process-global manager cache", () => {
 		sharedOwners().managers.set(area.key, stale);
 		try {
 			await assert.rejects(
-				listTool().execute(null, null, null, null, probeContext),
-				/manager protocol undefined does not match this copy's 2/u,
+				listTool().execute("list", {}, undefined, undefined, probeContext),
+				/manager protocol undefined does not match this copy's 3/u,
 			);
 			assert.equal(sharedOwners().managers.get(area.key), stale);
 		} finally {
@@ -106,7 +106,7 @@ describe("process-global manager cache", () => {
 		const modelRuntime = await createTestRuntime({ refreshOnCreate: false });
 		const manager = new AgentManager(store, modelRuntime, new ProjectTrustStore(agentDir), new AbortController(), agentDir);
 		try {
-			const result = await listTool().execute(null, null, null, null, probeContext);
+			const result = await listTool().execute("list", {}, undefined, undefined, probeContext);
 			assert.ok(result);
 			assert.equal(sharedOwners().managers.get(area.key), manager);
 		} finally {
@@ -122,8 +122,8 @@ describe("process-global manager cache", () => {
 		sharedOwners().creating.set(area.key, Promise.resolve(staleManager()));
 		try {
 			await assert.rejects(
-				listTool().execute(null, null, null, null, probeContext),
-				/manager protocol undefined does not match this copy's 2/u,
+				listTool().execute("list", {}, undefined, undefined, probeContext),
+				/manager protocol undefined does not match this copy's 3/u,
 			);
 			assert.equal(sharedOwners().creating.has(area.key), false);
 			assert.equal(sharedOwners().managers.has(area.key), false);
