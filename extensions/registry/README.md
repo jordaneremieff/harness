@@ -18,6 +18,28 @@ means unavailable. Missing accessors remain explicitly
 unavailable. The agent-directory fact is Pi's process default, not proof of an
 embedding's configured agent directory.
 
+## Terminal cards
+
+The `registry` tool renders its own card in the interactive transcript. A
+collapsed card shows the request on its heading row and at most one qualifier
+row (kind, match mode, detail, provider, filters, limit, continuation), then
+one or two outcome rows built from the structured details: the outcome, the
+returned count against the matched total, the returned resource kinds, page
+bounds, and any continuation. A single-record page replaces the kind tally with
+that record's key facts: a model's cached availability, configured auth, context
+window, and supported thinking levels, or a tool's configured and active state.
+A bounded kind tally marks each omitted kind. The host context percent is a
+whole number. The argument and result expansion
+hints appear only when the collapsed view hides or clips content, and each
+rides the row it belongs to. An expanded card shows the full arguments or the
+bounded result text.
+
+The card never repeats the requested name, search, or content phrase in the
+result unless the result resolves a different resource. Counts are page
+counts, not an inventory; the result text carries the evidence and observation
+boundaries, and a bounded or partial page never reads as an absence result.
+Terminal controls are escaped and long values are clipped.
+
 ## Parameters
 
 | Parameter | Contract |

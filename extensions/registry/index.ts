@@ -16,6 +16,7 @@ import { lookup } from "./lookup.ts";
 import { readContext } from "./host.ts";
 import { readModels } from "./models.ts";
 import { ObservationStore } from "./observer.ts";
+import { renderRegistryCall, renderRegistryResult } from "./presentation.ts";
 import {
 	CONTAINS_MAX,
 	CONTAINS_MIN,
@@ -196,6 +197,8 @@ export default function registerRegistry(pi: ExtensionAPI) {
 			"Treat a registry partial, unavailable, or not_yet_observed result as incomplete evidence, not absence. Search is literal: no matching phrase does not prove no relevant capability exists. Try another short term or inspect a bounded kind list.",
 		],
 		parameters: RegistryParams,
+		renderCall: renderRegistryCall,
+		renderResult: renderRegistryResult,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const at = Date.now();
 			const abortSignal = signal ? AbortSignal.any([signal, sessionAbort.signal]) : sessionAbort.signal;
