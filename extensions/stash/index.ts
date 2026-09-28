@@ -24,6 +24,18 @@ import {
 } from "./distill.ts";
 import { resumeCommand, STASH_STATES, stateLabel } from "./format.ts";
 import { StashPanel, type StashPanelResult } from "./panel.ts";
+import {
+	renderCompleteCall,
+	renderCompleteResult,
+	renderListCall,
+	renderListResult,
+	renderReadCall,
+	renderReadResult,
+	renderRotateCall,
+	renderRotateResult,
+	renderWriteCall,
+	renderWriteResult,
+} from "./presentation.ts";
 import { buildPickupMessage } from "./pickup.ts";
 import { redactPayload } from "./redact.ts";
 import { searchStashes } from "./search.ts";
@@ -828,6 +840,8 @@ export default function (
 			"Use stash_write when the operator asks to stash, when an effort reaches a resumable state, or before a session ends with open loops. Make the summary self-contained for a fresh session.",
 		],
 		parameters: WriteParams,
+		renderCall: renderWriteCall,
+		renderResult: renderWriteResult,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("stash_write cancelled");
 			const branch = await currentBranch(pi, ctx.cwd, signal);
@@ -880,6 +894,8 @@ export default function (
 			"Use stash_list when the operator references earlier or stashed work. For remembered content, supply query and follow nextCursor with the same query and filters, including after empty pages. Read the selected id with stash_read before resuming; search results are evidence, not fresh authority.",
 		],
 		parameters: ListParams,
+		renderCall: renderListCall,
+		renderResult: renderListResult,
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("stash_list cancelled");
 			if (params.query !== undefined) {
@@ -924,6 +940,8 @@ export default function (
 			"Read one stashed handover artifact by id or unique id prefix without changing its lifecycle state. Output is capped at 50 KiB or 2000 lines; a truncated result includes the artifact path for continued reading.",
 		promptSnippet: "Read one stashed handover artifact",
 		parameters: ReadParams,
+		renderCall: renderReadCall,
+		renderResult: renderReadResult,
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("stash_read cancelled");
 			const result = await readStash(storeDir(), params.id);
@@ -954,6 +972,8 @@ export default function (
 		],
 		executionMode: "sequential",
 		parameters: CompleteParams,
+		renderCall: renderCompleteCall,
+		renderResult: renderCompleteResult,
 		async execute(_toolCallId, params, signal) {
 			const transitioned = await changeLifecycle(params.id, { action: "close", outcome: params.outcome }, signal);
 			return {
@@ -985,6 +1005,8 @@ export default function (
 		],
 		executionMode: "sequential",
 		parameters: RotateParams,
+		renderCall: renderRotateCall,
+		renderResult: renderRotateResult,
 		async execute(_toolCallId, params, signal) {
 			const rotated = await rotateLifecycle(params.id, signal);
 			return {

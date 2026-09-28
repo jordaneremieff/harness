@@ -26,6 +26,38 @@ Pickup is one system action. The command reads the selected artifact and sends i
 pi "/stash get <id>"
 ```
 
+## Terminal cards
+
+The stash tools render their own cards in the interactive transcript. A collapsed
+card shows the request on its heading row and one qualifier row, then the
+outcome on one or two summary rows. The argument and result expansion hints
+appear only when the collapsed view hides or clips content, and each rides the
+row it belongs to. An expanded card shows the full arguments or result text.
+Terminal controls are escaped and long values are clipped.
+
+- `stash_write` names the title and the payload shape (checkpoint mode, summary
+  length, list sizes). The outcome names the stored id and state; it reports a
+  handover record and never claims the effort is complete. The artifact path
+  stays in the expansion, except for a checkpoint, where the path is the only
+  locator.
+- `stash_list` names the remembered phrase or the recent list, with tag, state,
+  limit, and continuation qualifiers. A search page states matches, skips, and
+  whether coverage is complete or partial, plus the match states, so an empty
+  partial page never reads as proof of absence; a recent list states the entry
+  count by state and any truncation. Each count agrees with its noun, and a
+  bounded state list marks each omitted state.
+- `stash_read` names the requested id. The outcome leads with the artifact's
+  frontmatter state and title and the returned line count, and falls back to the
+  line count when the frontmatter is absent. The artifact path stays in the
+  expansion.
+- `stash_complete` previews the requested outcome on the call row. The outcome
+  reports the closed state with the retained artifact; the recorded outcome
+  stays in the expansion.
+- `stash_rotate` names the id and reports the recoverable archive path.
+
+All cards tolerate partial arguments and malformed details, and escape terminal
+controls before display.
+
 ## Find remembered content
 
 Use `stash_list({ query: "inode checks", limit: 5 })` when the remembered detail
