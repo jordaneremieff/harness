@@ -92,6 +92,34 @@ that position, not continuation of the original search. A text continuation
 that selects an excluded entry is rejected. Session and entry pinning remain
 unchanged.
 
+## Terminal cards
+
+Both history tools render their own cards in the interactive transcript. A
+collapsed card shows the request on its heading row and at most one qualifier
+row, then one or two outcome rows. The argument and result expansion hints
+appear only when the collapsed view hides or clips content, and each rides the
+row it belongs to. An expanded card shows the full arguments or the
+pretty-printed result. Terminal controls are escaped and long values are
+clipped.
+
+- `history_search` names the literal query, or the bounded listing when the
+  query is omitted, with filter, start entry, and continuation qualifiers. The
+  outcome states matches returned, entries visited, and the walk status, plus
+  the returned entry types; a bounded type list marks each omitted type. Each
+  count agrees with its noun. An exhausted empty page reads as absence only
+  within the walked scope; a limit status keeps the continuation visible, so a
+  bounded page never reads as the end of the ancestry.
+- `history_read` names the requested entry and pointer, with an offset
+  qualifier. The outcome states the read status and the returned page versus the
+  field total (UTF-16 code units for strings, item counts for lists), and shows
+  the returned text with a continuation when more remains. A withheld result
+  shows its reason. Each count agrees with its noun, and the text preview stays
+  one row.
+
+Both cards tolerate partial arguments and malformed payloads, and escape
+terminal controls before display. The full result remains in native tool
+history.
+
 ## Scope and evidence
 
 - A search walks parent IDs from the current leaf, or an explicit `fromId`.

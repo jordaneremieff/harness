@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { LIMITS, readHistory, searchHistory, toolResult } from "./core.ts";
+import { renderReadCall, renderReadResult, renderSearchCall, renderSearchResult } from "./presentation.ts";
 
 const sessionId = Type.Optional(
 	Type.String({
@@ -67,6 +68,8 @@ export default function history(pi: ExtensionAPI) {
 			maxMatches: Type.Optional(Type.Integer({ minimum: 1, maximum: LIMITS.matches })),
 			maxOutputBytes: outputBytes,
 		}),
+		renderCall: renderSearchCall,
+		renderResult: renderSearchResult,
 		async execute(_id, args, signal, _update, ctx) {
 			return toolResult(searchHistory(ctx.sessionManager, args, signal));
 		},
@@ -91,6 +94,8 @@ export default function history(pi: ExtensionAPI) {
 			maxItems: Type.Optional(Type.Integer({ minimum: 1, maximum: LIMITS.items })),
 			maxOutputBytes: outputBytes,
 		}),
+		renderCall: renderReadCall,
+		renderResult: renderReadResult,
 		async execute(_id, args, signal, _update, ctx) {
 			return toolResult(readHistory(ctx.sessionManager, args, signal));
 		},
