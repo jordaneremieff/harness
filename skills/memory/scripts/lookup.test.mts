@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { type SpawnSyncReturns, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	constants,
 	existsSync,
@@ -177,7 +178,7 @@ test("indexes verbatim cue lines with heading and filename fallback", () => {
 	assert.equal(asString(heading.metadata), "absent");
 });
 
-test("filters raw title/tag cues and filename/slug without searching bodies", () => {
+test("queries raw source and title/tag cues plus filename/slug", () => {
 	const root = makeCorpus({
 		"README.md": README,
 		"prefer-dark-theme.md": ACTIVE_NOTE,
@@ -185,7 +186,16 @@ test("filters raw title/tag cues and filename/slug without searching bodies", ()
 	});
 	assert.equal(asNumber(runJsonOk(["--query", "UI"], root).totalMatches), 1);
 	assert.equal(asNumber(runJsonOk(["--query", "old-edge"], root).totalMatches), 1);
-	assert.equal(asNumber(runJsonOk(["--query", "zebra-feature"], root).totalMatches), 0);
+	const body = runJsonOk(["--query", "zebra-feature"], root);
+	assert.equal(asNumber(body.totalMatches), 1);
+	assert.equal(asBoolean(notesOf(body)[0].cueMatch), false);
+	assert.equal(asString(cuesOf(notesOf(body)[0]).status), "status: superseded");
+	assert.equal(asNumber(runJsonOk(["--query", "dark interface"], root).totalMatches), 0);
+	assert.equal(asNumber(runJsonOk(["--query", "UI.*"], root).totalMatches), 0);
+	const slug = notesOf(runJsonOk(["--query", "old-edge"], root))[0];
+	assert.equal(asBoolean(slug.cueMatch), true);
+	assert.equal(slug.sourceMatch, null);
+	assert.match(asString(slug.digest), /^[a-f0-9]{64}$/);
 });
 
 test("does not split comma-bearing tag values", () => {
@@ -453,6 +463,8 @@ test("stays read-only for the index, note reads, and missing roots", () => {
 	const root = makeCorpus({ "README.md": README, "good.md": ACTIVE_NOTE });
 	const before = readdirSync(root).sort();
 	runJsonOk([], root);
+	runJsonOk(["--query", "theme"], root);
+	runJsonOk(["--query", "absent knowledge"], root);
 	runJsonOk(["--note", "good"], root);
 	runJsonOk(["--note", "README"], root);
 	runError(["--note", "absent-note"], root);
@@ -498,6 +510,242 @@ test("extracts verbatim cue lines without YAML interpretation", () => {
 	const partial = extractCue(`---\ntitle: A\n${"y".repeat(9000)}`, true);
 	assert.equal(partial.metadata, "partial");
 	assert.equal(partial.issue, "frontmatter not closed within the read window");
+});
+
+function assertSourceLocation(note: Json, source: string, expectedText: string): Json {
+	const match = asObject(note.sourceMatch);
+	const points = Array.from(source);
+	const offset = asNumber(match.offset);
+	const endOffset = asNumber(match.endOffset);
+	assert.equal(points.slice(offset, endOffset).join(""), expectedText);
+	assert.equal(offset, Array.from(source.slice(0, source.indexOf(expectedText))).length);
+	const excerptOffset = asNumber(match.excerptOffset);
+	const excerptEnd = asNumber(match.excerptEndOffset);
+	assert.equal(asString(match.excerpt), points.slice(excerptOffset, excerptEnd).join(""));
+	assert.ok(excerptOffset <= offset && excerptEnd >= endOffset);
+	assert.ok(excerptEnd - excerptOffset <= 480);
+	assert.equal(asString(note.digest), createHash("sha256").update(source).digest("hex"));
+	return match;
+}
+
+test("keeps unfiltered browsing cue-only, including blank queries", () => {
+	const root = makeCorpus({ "README.md": README, "good.md": ACTIVE_NOTE });
+	for (const args of [[], ["--query", "  "]]) {
+		const index = runJsonOk(args, root);
+		assert.equal(index.search, undefined);
+		assert.equal(notesOf(index)[0].digest, undefined);
+		assert.equal(notesOf(index)[0].sourceMatch, undefined);
+		assert.equal(asString(cuesOf(notesOf(index)[0]).title), "title: Prefer dark theme");
+	}
+});
+
+test("returns original locations through lowercase expansion, contextual casing, and multibyte text", () => {
+	const cases: Array<[string, string, string]> = [
+		["\uFEFF😀İ prefix\r\nA NEEDLE after é中.", "needle", "NEEDLE"],
+		["😀İ😀İ😀 NEEDLE", "needle", "NEEDLE"],
+		["😀İstanbul", "i", "İ"],
+		["😀İstanbul", "\u0307", "İ"],
+		["😀İstanbul", "i\u0307s", "İs"],
+		["😀 ΟΔΟΣ after", "οδος", "ΟΔΟΣ"],
+		["😀 Σ before ΟΣ after", "ΟΣ", "ΟΣ"],
+		["😀 e\u0301 中 𐐀", "𐐨", "𐐀"],
+		["before a.b+[x] after", "a.b+[x]", "a.b+[x]"],
+	];
+	for (const [source, query, expected] of cases) {
+		const root = makeCorpus({ "README.md": README, "note.md": source });
+		const index = runJsonOk(["--query", query], root);
+		assert.equal(asNumber(index.totalMatches), 1, JSON.stringify({ source, query }));
+		const note = notesOf(index)[0];
+		const match = assertSourceLocation(note, source, expected);
+		const page = runJsonOk(
+			["--note", "note", "--offset", String(match.excerptOffset), "--digest", asString(note.digest)],
+			root,
+		);
+		assert.equal(asString(page.content), Array.from(source).slice(asNumber(match.excerptOffset)).join(""));
+	}
+	const decomposed = makeCorpus({ "README.md": README, "note.md": "e\u0301" });
+	assert.equal(asNumber(runJsonOk(["--query", "é"], decomposed).totalMatches), 0);
+});
+
+test("keeps the complete source match within an excerpt when lowercase expands the query", () => {
+	const query = "\u0130".repeat(200);
+	const matched = "i\u0307".repeat(200);
+	const source = `${"p".repeat(120)}${matched} tail`;
+	const root = makeCorpus({ "README.md": README, "note.md": source });
+	const index = runJsonOk(["--query", query], root);
+	assert.equal(asNumber(index.totalMatches), 1);
+	const match = assertSourceLocation(notesOf(index)[0], source, matched);
+	assert.equal(asNumber(match.offset), 120);
+	assert.equal(asNumber(match.endOffset), 520);
+	assert.equal(asNumber(match.excerptOffset), 40);
+	assert.equal(asNumber(match.excerptEndOffset), 520);
+});
+
+test("searches introductory prose, fenced content, and source tails without section parsing", () => {
+	const intro =
+		"---\ntitle: Display\nstatus: active\n---\n\nDisable animated transitions.\n\n# Display\n\nDo not apply this to video playback.\n";
+	const fenced =
+		"---\ntitle: Preview\n---\n\n# Preview\n\nUse vector output. The following example is retired.\n\n```text\n# Raster example\nrender_mode = raster\n```\n\nKeep vector output.\n";
+	const tail = `${ACTIVE_NOTE}\n${"😀 filler line\n".repeat(1500)}\nOnly choose a quiet room when there is no fee.\n`;
+	const root = makeCorpus({ "README.md": README, "intro.md": intro, "fenced.md": fenced, "tail.md": tail });
+	for (const [slug, source, query] of [
+		["intro", intro, "animated transitions"],
+		["fenced", fenced, "render_mode"],
+		["tail", tail, "quiet room"],
+	]) {
+		const index = runJsonOk(["--query", query], root);
+		assert.equal(asNumber(index.totalMatches), 1);
+		const note = notesOf(index)[0];
+		assert.equal(asString(note.slug), slug);
+		assertSourceLocation(note, source, query);
+		assert.equal(asBoolean(note.cueMatch), false);
+		assert.equal(asBoolean(asObject(index.search).complete), true);
+	}
+	const note = notesOf(runJsonOk(["--query", "quiet room"], root))[0];
+	const match = asObject(note.sourceMatch);
+	assert.ok(asNumber(match.offset) > 8192);
+	const page = runJsonOk(
+		["--note", "tail", "--offset", String(match.excerptOffset), "--digest", asString(note.digest)],
+		root,
+	);
+	assert.match(asString(page.content), /no fee/);
+});
+
+test("exposes only the first occurrence as an excerpt without hiding later source pages", () => {
+	const source = `${ACTIVE_NOTE}\nneedle before a qualification\n${"x".repeat(6000)}\nneedle with a later qualification\n`;
+	const root = makeCorpus({ "README.md": README, "note.md": source });
+	const index = runJsonOk(["--query", "needle"], root);
+	assert.equal(asBoolean(asObject(index.search).firstMatchOnly), true);
+	const match = assertSourceLocation(notesOf(index)[0], source, "needle");
+	assert.ok(asNumber(match.excerptEndOffset) < Array.from(source).length);
+	const full = collectPages(root, "note");
+	assert.equal(full.text, source);
+	assert.match(full.text, /later qualification/);
+});
+
+test("binds a query match to the first source read and observes edits and deletions on the next query", () => {
+	const source = `${ACTIVE_NOTE}\nbody phrase\n`;
+	const root = makeCorpus({ "README.md": README, "good.md": source });
+	const first = notesOf(runJsonOk(["--query", "body phrase"], root))[0];
+	const digest = asString(first.digest);
+	assert.equal(asString(runJsonOk(["--note", "good", "--digest", digest], root).content), source);
+	writeFileSync(join(root, "good.md"), `${ACTIVE_NOTE}\nreplacement phrase\n`);
+	const changed = runError(["--note", "good", "--digest", digest], root);
+	assert.equal(changed.status, 4);
+	assert.match(changed.stderr, /changed/);
+	assert.equal(asNumber(runJsonOk(["--query", "body phrase"], root).totalMatches), 0);
+	assert.equal(asNumber(runJsonOk(["--query", "replacement phrase"], root).totalMatches), 1);
+	rmSync(join(root, "good.md"));
+	const removed = runJsonOk(["--query", "replacement phrase"], root);
+	assert.equal(asNumber(removed.totalMatches), 0);
+	assert.equal(asBoolean(asObject(removed.search).complete), true);
+});
+
+test("separates source coverage gaps from query misses and raw metadata warnings", () => {
+	const root = makeCorpus({
+		"README.md": README,
+		"good.md": "---\ntitle: First\ntitle: Duplicate\n---\n\nneedle\n",
+		"large.md": `# Large\n${"x".repeat(65536)}needle`,
+		"bad name.md": "needle",
+	});
+	mkdirSync(join(root, "directory.md"));
+	writeFileSync(join(root, "invalid.md"), Buffer.concat([Buffer.from("x".repeat(9000)), Buffer.from([0xff])]));
+	const index = runJsonOk(["--query", "needle"], root);
+	const search = asObject(index.search);
+	assert.equal(asBoolean(asObject(index.scan).complete), true);
+	assert.equal(asBoolean(search.complete), false);
+	assert.equal(asNumber(search.notesSearched), 1);
+	assert.equal(asNumber(search.unavailableNotes), 4);
+	assert.equal(asNumber(index.totalMatches), 1);
+	assert.deepEqual(
+		issueCodes(index).sort(),
+		["note.metadata", "note.nonregular", "note.oversized", "note.unaddressable", "note.unreadable"].sort(),
+	);
+	const missing = runJsonOk(["--query", "nothing"], root);
+	assert.equal(asNumber(missing.totalMatches), 0);
+	assert.equal(asBoolean(asObject(missing.search).complete), false);
+	assert.equal(asNumber(runJsonOk(["--query", "large"], root).totalMatches), 0);
+	assert.ok(notesOf(runJsonOk([], root)).some((note) => note.slug === "large"));
+
+	const metadataOnly = makeCorpus({ "README.md": README, "note.md": "---\ntitle: Unclosed\n\nneedle" });
+	const complete = runJsonOk(["--query", "needle"], metadataOnly);
+	assert.equal(asBoolean(asObject(complete.search).complete), true);
+	assert.equal(asString(notesOf(complete)[0].metadata), "malformed");
+	assert.equal(asNumber(asObject(complete.search).unavailableNotes), 0);
+});
+
+test("queries a source exactly at the byte bound and excludes hidden and contract contents", () => {
+	const prefix = "😀".repeat(16_382);
+	const source = `${prefix}sentinel`;
+	assert.equal(Buffer.byteLength(source), 65536);
+	const root = makeCorpus({ "README.md": `${README}\ncontract-only`, "exact.md": source, ".hidden.md": "hidden-only" });
+	const index = runJsonOk(["--query", "sentinel"], root);
+	assertSourceLocation(notesOf(index)[0], source, "sentinel");
+	assert.equal(asBoolean(asObject(index.search).complete), true);
+	assert.equal(asNumber(runJsonOk(["--query", "contract-only"], root).totalMatches), 0);
+	assert.equal(asNumber(runJsonOk(["--query", "hidden-only"], root).totalMatches), 0);
+	const noReadme = makeCorpus({ "good.md": "sentinel" });
+	assert.equal(runError(["--query", "sentinel"], noReadme).status, 3);
+	assert.equal(runError(["--query", "sentinel"], null).status, 3);
+});
+
+test("reports directory limits and counts unavailable notes beyond retained issue detail", () => {
+	const files: Record<string, string> = { "README.md": README };
+	for (let index = 0; index < 30; index += 1) files[`bad ${index}.md`] = "needle";
+	const root = makeCorpus(files);
+	const index = runJsonOk(["--query", "needle"], root);
+	assert.equal(asNumber(asObject(index.search).unavailableNotes), 30);
+	assert.equal(asNumber(asObject(index.scan).issueCount), 30);
+	assert.equal(asNumber(asObject(index.scan).issuesShown), 20);
+	assert.equal(index.corpusEmpty, null);
+	const many: Record<string, string> = { "README.md": README };
+	for (let count = 0; count < 520; count += 1) many[`entry-${count}.txt`] = "not a note";
+	const limited = runJsonOk(["--query", "needle"], makeCorpus(many));
+	assert.equal(asBoolean(asObject(limited.search).complete), false);
+	assert.equal(asNumber(asObject(limited.scan).visited), 513);
+	assert.ok(issueCodes(limited).includes("scan.limit"));
+});
+
+test("paginates escaped source matches without skipping records or treating metadata warnings as unread source", () => {
+	const files: Record<string, string> = { "README.md": README };
+	for (let index = 0; index < 30; index += 1) {
+		files[`note-${String(index).padStart(2, "0")}.md`] =
+			`${maximalNote(index)}\n${"\u0001".repeat(600)}needle${"\u0001".repeat(600)}`;
+	}
+	const root = makeCorpus(files);
+	const pages = drainIndex(root, ["--query", "needle"]);
+	assert.ok(asNumber(pages[0].returned) < 25, "serialized byte bound must shrink this page");
+	const seen: string[] = [];
+	for (const page of pages) {
+		assert.equal(asBoolean(asObject(page.search).complete), true);
+		assert.equal(asNumber(asObject(page.search).notesSearched), 30);
+		for (const note of notesOf(page)) {
+			const slug = asString(note.slug);
+			assert.ok(!seen.includes(slug));
+			seen.push(slug);
+			assertSourceLocation(note, files[`${slug}.md`], "needle");
+		}
+	}
+	assert.equal(seen.length, 30);
+	assert.deepEqual(seen, [...seen].sort());
+});
+
+test("returns lifecycle cues verbatim and does not suppress conflicting or superseded source hits", () => {
+	const root = makeCorpus({
+		"README.md": README,
+		"active.md": "---\ntitle: Current\nstatus: active\nsupersedes: [old]\n---\n\nUse bullets for a weekly report.\n",
+		"old.md":
+			"---\ntitle: Previous\nstatus: superseded\nsuperseded_by: active\n---\n\nUse prose for a weekly report.\n",
+		"conflict.md": "---\ntitle: Other\nstatus: active\n---\n\nUse a table for a weekly report.\n",
+	});
+	const index = runJsonOk(["--query", "weekly report"], root);
+	assert.equal(asNumber(index.totalMatches), 3);
+	assert.deepEqual(
+		notesOf(index).map((note) => asString(note.slug)),
+		["active", "conflict", "old"],
+	);
+	assert.equal(asString(cuesOf(notesOf(index)[2]).status), "status: superseded");
+	assert.equal(asString(cuesOf(notesOf(index)[0]).supersedes), "supersedes: [old]");
 });
 
 test("slices by code point and trims incomplete UTF-8 windows", () => {

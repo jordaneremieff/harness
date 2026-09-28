@@ -2,9 +2,9 @@
 // lookup.mts - bounded, read-only discovery over an operator memory corpus.
 //
 // The corpus root is the absolute path in PI_MEMORY_DIR. One run emits one
-// compact JSON object: a paged index of raw frontmatter cue lines, or one
-// bounded source page for a named note. Discovery reads filenames and raw cue
-// lines only; it never searches note bodies and never writes to the corpus.
+// compact JSON object: paged discovery cues and source matches, or one bounded
+// source page for a named note. Explicit queries search source text; unfiltered
+// browsing reads cue windows only. Neither operation writes to the corpus.
 
 import { createHash } from "node:crypto";
 import {
@@ -27,6 +27,8 @@ const INDEX_READ_BYTES = 8 * 1024;
 const SOURCE_READ_BYTES = 64 * 1024;
 const INDEX_PAGE_SIZE = 25;
 const PAGE_CODEPOINTS = 4000;
+const MATCH_EXCERPT_POINTS = 480;
+const MATCH_CONTEXT_POINTS = 120;
 const MAX_STDOUT_BYTES = 48 * 1024;
 const MAX_QUERY_CHARS = 200;
 const MAX_SLUG_CHARS = 120;
@@ -62,6 +64,20 @@ type Cue = {
 	body: string;
 };
 
+type SourceMatch = {
+	offset: number;
+	endOffset: number;
+	excerptOffset: number;
+	excerptEndOffset: number;
+	excerpt: string;
+};
+
+type SearchHit = {
+	digest: string;
+	cueMatch: boolean;
+	sourceMatch: SourceMatch | null;
+};
+
 type NoteCue = {
 	slug: string;
 	file: string;
@@ -75,6 +91,7 @@ type NoteCue = {
 	metadataIssue?: string;
 	searchText: string;
 	size: number;
+	search?: SearchHit;
 };
 
 type Issue = { code: string; message: string };
@@ -85,11 +102,14 @@ type Scan = {
 	issueCount: number;
 	visited: number;
 	complete: boolean;
+	unavailable: number;
 };
 
 type OpenResult = { ok: true; fd: number; size: number } | { ok: false; reason: string };
 type IndexWindow = { ok: true; text: string; truncated: boolean; size: number } | { ok: false; reason: string };
-type SourceResult = { ok: true; buffer: Buffer } | { ok: false; reason: string };
+type SourceFailure = { ok: false; reason: string; oversized?: boolean };
+type SourceResult = { ok: true; buffer: Buffer } | SourceFailure;
+type DiscoveryResult = { ok: true; note: NoteCue } | SourceFailure;
 type PageSlice = { content: string; nextOffset: number; contentCodePoints: number; hasMore: boolean };
 
 type Args =
@@ -132,19 +152,21 @@ This command is read-only. It never creates the root, the README, or any file.
 README.md is the required corpus contract and is not itself a note.
 
 Options:
-  --query <text>   Show only notes whose slug, filename, or raw title/tag cue
-                   text contains <text>. The match is literal and
-                   case-insensitive. This is NOT semantic or full-body search.
-                   Maximum 200 characters.
+  --query <text>   Search note source text (including frontmatter, introductory
+                   prose, and code) plus slug, filename, and title/tag cues.
+                   Literal substring matching uses JavaScript toLowerCase;
+                   no normalization, tokenization, or semantic ranking.
+                   Maximum 200 characters. Blank selects unfiltered browsing.
   --note <slug>    Return one bounded source page for <slug>. The value README
                    selects the corpus contract README.md instead of a note.
   --offset <n>     Unicode code-point offset into the note source (default 0).
                    Valid only with --note. An offset above 0 requires --digest.
-  --digest <hex>   Lowercase SHA-256 hex of the accepted source from a prior
-                   page. Valid only with --note. A mismatch rejects changed
-                   source.
-  --index <n>      Zero-based entry offset into the filtered, sorted matches
-                   (default 0). Valid only without --note. Maximum 1000000.
+  --digest <hex>   SHA-256 hex returned by a query match or source page. Use it
+                   for the first source read after a query and every later page.
+                   Valid only with --note. A mismatch rejects changed source.
+  --index <n>      Zero-based entry offset into the sorted notes or query matches
+                   (default 0). Repeat the query for each page. Pages rescan the
+                   corpus; they are not one frozen snapshot. Maximum 1000000.
   -h, --help       Show this help.
 
 Output:
@@ -167,9 +189,29 @@ Cue index:
   a repeated field. metadata is ok, absent, partial (frontmatter not closed
   within the read window), or malformed (frontmatter not closed).
 
+Query evidence:
+  Each match includes its source digest and cueMatch. sourceMatch is null for
+  a cue-only match; otherwise it locates only the FIRST source occurrence.
+  offset/endOffset and excerptOffset/excerptEndOffset are half-open Unicode
+  code-point ranges in the ORIGINAL source, not its lowercase representation.
+  The excerpt contains at most 480 code points. Excerpts and raw lifecycle
+  cues are candidates, not complete evidence or confidence scores. Read the
+  note from offset 0 with its digest to inspect scope and lifecycle; use
+  sourceMatch.excerptOffset with --offset to read around a later match.
+  search.complete describes coverage of supported source text, not relevance.
+  Unreadable, oversized, or unsupported note entries make it false and are
+  reported in scan.issues (bounded detail) and search.unavailableNotes (total).
+  Query results exclude those entries even if their filename matches. Use
+  unfiltered browsing and bounded ordinary file tools for oversized sources.
+  Metadata warnings do not imply missing source text. A directory visit limit
+  also makes coverage incomplete. A miss proves absence only for the queried
+  substring in the searched sources, not absence of relevant knowledge.
+
 Bounds:
   - The directory scan is non-recursive and stops at 512 entries.
-  - The index reads the first 8192 bytes of each note.
+  - Unfiltered browsing reads the first 8192 bytes of each note.
+  - A query reads at most 65537 bytes per note and refuses sources above
+    65536 bytes or with invalid UTF-8. It keeps no source-body index or cache.
   - The index page target is 25 notes, shrunk as needed so the serialized
     stdout, including its newline, stays below 50 KiB. nextIndex continues
     exactly after the last returned record, so no record is skipped.
@@ -428,11 +470,67 @@ function toOutputNote(note: NoteCue): Record<string, unknown> {
 		size: note.size,
 	};
 	if (note.metadataIssue !== undefined) output.metadataIssue = note.metadataIssue;
+	if (note.search !== undefined) Object.assign(output, note.search);
 	return output;
 }
 
 function matchesQuery(cue: NoteCue, query: string): boolean {
 	return cue.searchText.includes(query.toLowerCase());
+}
+
+function originalMatchRange(
+	text: string,
+	foldedOffset: number,
+	foldedEnd: number,
+): { offset: number; endOffset: number } {
+	let folded = 0;
+	let offset = 0;
+	let endOffset = 0;
+	// Whole-string lowercase preserves contextual casing. Per-code-point lowercase
+	// lengths locate the original characters even when conversion expands one.
+	for (const point of text) {
+		const next = folded + point.toLowerCase().length;
+		if (next <= foldedOffset) offset += 1;
+		endOffset += 1;
+		if (next >= foldedEnd) return { offset, endOffset };
+		folded = next;
+	}
+	throw new Error("lowercase match has no original source range");
+}
+
+function findSourceMatch(text: string, query: string): SourceMatch | null {
+	const foldedQuery = query.toLowerCase();
+	const foldedOffset = text.toLowerCase().indexOf(foldedQuery);
+	if (foldedOffset < 0) return null;
+	const range = originalMatchRange(text, foldedOffset, foldedOffset + foldedQuery.length);
+	const excerptOffset = Math.max(0, range.offset - MATCH_CONTEXT_POINTS, range.endOffset - MATCH_EXCERPT_POINTS);
+	const slice = sliceByCodePoints(text, excerptOffset, MATCH_EXCERPT_POINTS);
+	return {
+		...range,
+		excerptOffset,
+		excerptEndOffset: slice.nextOffset,
+		excerpt: slice.content,
+	};
+}
+
+function readBrowseNote(path: string, file: string, slug: string): DiscoveryResult {
+	const window = readIndexWindow(path);
+	if (!window.ok) return window;
+	return { ok: true, note: buildNoteCue(file, slug, window.text, window.truncated, window.size) };
+}
+
+function readSearchNote(path: string, file: string, slug: string, query: string): DiscoveryResult {
+	const source = readNoteSource(path);
+	if (!source.ok) return source;
+	const text = decodeUtf8(source.buffer);
+	if (text === undefined) return { ok: false, reason: `note is not valid UTF-8: ${file}` };
+	const note = buildNoteCue(file, slug, text, false, source.buffer.length);
+	const cueMatch = matchesQuery(note, query);
+	const sourceMatch = findSourceMatch(text, query);
+	if (cueMatch || sourceMatch !== null) {
+		note.search = { digest: sha256(source.buffer), cueMatch, sourceMatch };
+	}
+	return { ok: true, note };
 }
 
 function utf8SequenceLength(lead: number): number {
@@ -514,7 +612,11 @@ function readNoteSource(path: string): SourceResult {
 	try {
 		const buffer = readDescriptor(opened.fd, SOURCE_READ_BYTES + 1);
 		if (buffer.length > SOURCE_READ_BYTES) {
-			return { ok: false, reason: `note exceeds the ${SOURCE_READ_BYTES}-byte source limit: ${basename(path)}` };
+			return {
+				ok: false,
+				oversized: true,
+				reason: `note exceeds the ${SOURCE_READ_BYTES}-byte source limit: ${basename(path)}`,
+			};
 		}
 		return { ok: true, buffer };
 	} finally {
@@ -534,45 +636,51 @@ function pushIssue(scan: Scan, code: string, message: string): void {
 	if (scan.issues.length < MAX_ISSUES) scan.issues.push({ code, message: bounded(message, MAX_ISSUE_CHARS) });
 }
 
-function considerEntry(root: string, entry: Dirent, scan: Scan): void {
+function unavailableNote(scan: Scan, code: string, message: string): void {
+	scan.unavailable += 1;
+	pushIssue(scan, code, message);
+}
+
+function reportCueIssues(scan: Scan, cue: NoteCue): void {
+	if (cue.size > SOURCE_READ_BYTES) {
+		pushIssue(scan, "note.oversized", `${cue.file} exceeds the ${SOURCE_READ_BYTES}-byte source limit`);
+	}
+	if (cue.metadata !== "ok" && cue.metadata !== "absent") {
+		pushIssue(scan, "note.metadata", `${cue.file}: ${cue.metadata} frontmatter (${cue.metadataIssue ?? "no detail"})`);
+	} else if (cue.cuesMultiline || cue.cuesDuplicate || cue.cuesClipped) {
+		pushIssue(scan, "note.metadata", `${cue.file}: cue extraction problem (${cue.metadataIssue ?? "no detail"})`);
+	}
+}
+
+function considerEntry(root: string, entry: Dirent, scan: Scan, query: string | null): void {
 	if (!/\.md$/i.test(entry.name)) return;
 	if (entry.isDirectory()) {
-		pushIssue(scan, "note.nonregular", `skipped directory named like a note: ${entry.name}`);
+		unavailableNote(scan, "note.nonregular", `skipped directory named like a note: ${entry.name}`);
 		return;
 	}
 	if (entry.name.toLowerCase() === "readme.md") return;
 	if (entry.isSymbolicLink()) {
-		pushIssue(scan, "note.symlink", `skipped symbolic link: ${entry.name}`);
+		unavailableNote(scan, "note.symlink", `skipped symbolic link: ${entry.name}`);
 		return;
 	}
 	const slug = addressableSlug(entry.name);
 	if (slug === undefined) {
-		pushIssue(scan, "note.unaddressable", `excluded filename outside the --note slug grammar: ${entry.name}`);
+		unavailableNote(scan, "note.unaddressable", `excluded filename outside the --note slug grammar: ${entry.name}`);
 		return;
 	}
-	const window = readIndexWindow(join(root, entry.name));
-	if (!window.ok) {
-		pushIssue(scan, "note.unreadable", window.reason);
+	const path = join(root, entry.name);
+	const source =
+		query === null ? readBrowseNote(path, entry.name, slug) : readSearchNote(path, entry.name, slug, query);
+	if (!source.ok) {
+		unavailableNote(scan, source.oversized ? "note.oversized" : "note.unreadable", source.reason);
 		return;
 	}
-	const cue = buildNoteCue(entry.name, slug, window.text, window.truncated, window.size);
-	scan.notes.push(cue);
-	if (window.size > SOURCE_READ_BYTES) {
-		pushIssue(scan, "note.oversized", `${entry.name} exceeds the ${SOURCE_READ_BYTES}-byte source limit`);
-	}
-	if (cue.metadata !== "ok" && cue.metadata !== "absent") {
-		pushIssue(
-			scan,
-			"note.metadata",
-			`${entry.name}: ${cue.metadata} frontmatter (${cue.metadataIssue ?? "no detail"})`,
-		);
-	} else if (cue.cuesMultiline || cue.cuesDuplicate || cue.cuesClipped) {
-		pushIssue(scan, "note.metadata", `${entry.name}: cue extraction problem (${cue.metadataIssue ?? "no detail"})`);
-	}
+	scan.notes.push(source.note);
+	reportCueIssues(scan, source.note);
 }
 
-function scanCorpus(root: string): Scan {
-	const scan: Scan = { notes: [], issues: [], issueCount: 0, visited: 0, complete: true };
+function scanCorpus(root: string, query: string | null = null): Scan {
+	const scan: Scan = { notes: [], issues: [], issueCount: 0, visited: 0, complete: true, unavailable: 0 };
 	let handle: ReturnType<typeof opendirSync>;
 	try {
 		handle = opendirSync(root);
@@ -588,7 +696,7 @@ function scanCorpus(root: string): Scan {
 				break;
 			}
 			if (entry.name.startsWith(".")) continue;
-			considerEntry(root, entry, scan);
+			considerEntry(root, entry, scan, query);
 		}
 	} finally {
 		handle.closeSync();
@@ -671,8 +779,8 @@ function indexPageFields(
 }
 
 function runIndex(root: string, args: { query: string | null; index: number }): Record<string, unknown> {
-	const scan = scanCorpus(root);
-	const matches = args.query === null ? scan.notes : scan.notes.filter((cue) => matchesQuery(cue, args.query ?? ""));
+	const scan = scanCorpus(root, args.query);
+	const matches = args.query === null ? scan.notes : scan.notes.filter((cue) => cue.search !== undefined);
 	const totalMatches = matches.length;
 	let kept = matches.slice(args.index, args.index + INDEX_PAGE_SIZE).map(toOutputNote);
 	const result: Record<string, unknown> = {
@@ -691,6 +799,15 @@ function runIndex(root: string, args: { query: string | null; index: number }): 
 		scan: formatScan(scan),
 		notes: [],
 	};
+	if (args.query !== null) {
+		result.search = {
+			complete: scan.complete && scan.unavailable === 0,
+			notesSearched: scan.notes.length,
+			unavailableNotes: scan.unavailable,
+			maxSourceBytes: SOURCE_READ_BYTES,
+			firstMatchOnly: true,
+		};
+	}
 	for (;;) {
 		Object.assign(result, indexPageFields(kept, args.index, totalMatches));
 		if (serializedSize(result) <= MAX_STDOUT_BYTES) break;
