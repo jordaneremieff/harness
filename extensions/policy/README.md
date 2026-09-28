@@ -652,6 +652,29 @@ data. Its response deliberately shows the supplied candidate. That response can
 remain in the host transcript. The actual inspection invocation retains ordinary
 telemetry; it is not a promise that the complete invocation performs no writes.
 
+### Tool cards
+
+Both tools draw a compact TUI card and stay legible without expansion.
+
+`policy_propose`: the collapsed heading names the operation and rule id. One dim
+row adds the authority, the authoring form, and the expected revision for
+`replace`. The purpose, reason, and note stay expanded-only.
+
+`policy_rules`: the collapsed heading names the view and, when present, the rule,
+data, or call id. A `check` row adds the draft operation and id, effect, and case
+count; a `preview` row adds the tool, input key count, and result replay state.
+Other views add no qualifier row.
+
+Results lead with the outcome that view produces: admission and diagnostic
+counts for `check`; the simulated decision and the rules that caused it for
+`preview`; the selected rule's id, state, and effect when `id` narrows `rules`,
+or the rule and pending-proposal counts otherwise; and a top-level field summary
+for JSON views such as `health`, `state`, `capabilities`, `explain`, `catalog`,
+and `data`. A preview result never claims that a tool ran; its expansion carries
+the boundary text. A degraded rule store appends a warning. Expansion shows the
+complete arguments or result text with a display bound; terminal controls escape
+to text in every collapsed value.
+
 ### `/policy`
 
 ```text

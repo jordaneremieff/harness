@@ -28,6 +28,7 @@ import {
 	validateLocalCandidate,
 } from "./local-rules.ts";
 import { capText, terminalSafe } from "./panel.ts";
+import { renderProposeCall, renderProposeResult, renderRulesCall, renderRulesResult } from "./presentation.ts";
 import { ProposalConditionSchema, ProposalProgramSchema } from "./program.ts";
 import {
 	contentRevision,
@@ -758,6 +759,8 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 			"Use policy_rules to inspect all rules, pending proposals, health, and exact session scope values before proposing a change.",
 		],
 		parameters: PolicyProposeParams,
+		renderCall: (args, theme, context) => renderProposeCall(args, theme, context),
+		renderResult: (result, options, theme, context) => renderProposeResult(result, options, theme, context),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("policy_propose cancelled");
 			await deps.loadRegistry(ctx);
@@ -797,6 +800,8 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 			"Read policy_rules view=authoring before authoring policies. Use view=check for read-only draft admission and bounded synthetic cases before proposal submission; checks never grant approval.",
 		],
 		parameters: PolicyRulesParams,
+		renderCall: (args, theme, context) => renderRulesCall(args, theme, context),
+		renderResult: (result, options, theme, context) => renderRulesResult(result, options, theme, context),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("policy_rules cancelled");
 			validateInspectionParams(params);
