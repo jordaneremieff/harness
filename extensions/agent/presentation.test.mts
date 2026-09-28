@@ -10,7 +10,7 @@ import { Text, visibleWidth, getKeybindings, setKeybindings, KeybindingsManager,
 import registerAgentExtension, { AgentManager } from "./index.ts";
 import { AgentStore } from "./store.ts";
 import { createTestRuntime } from "./test-runtime.mts";
-import { displayPreview, displayText, renderAgentCall, renderAgentResult, renderCompactCall, renderCompactResult, renderPeerMessage, renderSendCall, renderSendResult } from "./presentation.ts";
+import { displayPreview, displayText, renderAbortCall, renderAbortResult, renderAgentCall, renderAgentResult, renderCommandCall, renderCommandResult, renderCompactCall, renderCompactResult, renderInspectCall, renderInspectResult, renderListCall, renderListResult, renderPeerMessage, renderRunsCall, renderRunsResult, renderSendCall, renderSendResult, renderSteerCall, renderSteerResult } from "./presentation.ts";
 
 const theme = { fg: (_color: string, value: string) => value, bg: (_color: string, value: string) => value, getBgAnsi: () => "", bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): string[] }, width = 100) => component.render(width).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
@@ -396,7 +396,7 @@ describe("agent_send presentation", () => {
 		const expanded = renderSendCall(args, theme, { expanded: true, argsComplete: true, lastComponent: collapsed });
 		assert.equal(expanded, collapsed);
 		assert.ok(screen(expanded).includes(args.message));
-		assert.match(screen(expanded), /Reply to: message-reference/);
+		assert.match(screen(expanded), /reply to message-reference/);
 		assert.deepEqual(args, before);
 		const recollapsed = renderSendCall(args, theme, { expanded: false, argsComplete: true, lastComponent: expanded });
 		assert.doesNotMatch(screen(recollapsed), /Submitted message/);
@@ -413,9 +413,12 @@ describe("agent_send presentation", () => {
 		const previous = getKeybindings();
 		try {
 			setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
-			const text = screen(renderSendCall({ sessionId: "target", message: "content" }, theme, { expanded: false, argsComplete: true }));
+			const text = screen(renderSendCall({ sessionId: "target", message: "line one\nline two" }, theme, { expanded: false, argsComplete: true }));
 			assert.match(text, /Full message is in the tool-call arguments/);
 			assert.doesNotMatch(text, /Tool expansion|to expand message/);
+			const visible = screen(renderSendCall({ sessionId: "target", message: "single line" }, theme, { expanded: false, argsComplete: true }));
+			assert.doesNotMatch(visible, /Full message|to expand message/);
+			assert.equal(visible.split("\n").length, 2);
 		} finally { setKeybindings(previous); }
 	});
 
@@ -520,5 +523,264 @@ describe("agent_compact presentation", () => {
 		assert.match(pending, /Native summarization/);
 		const call = renderCompactCall({ sessionId: "t", summary: "日本語 😀" }, theme, { expanded: false, argsComplete: true });
 		for (const width of [10, 40, 100]) assert.ok(call.render(width).every((line) => visibleWidth(line) <= width));
+	});
+});
+
+describe("agent discovery, inspection, and control presentation", () => {
+	const SESSION = "01a00000-0000-7000-8000-000000000001";
+	const reply = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined });
+	const collapsed = (component: { render(width: number): string[] }) => screen(component);
+
+	it("registers call and result renderers for the six tools without changing execution", () => {
+		const tools: ToolDefinition[] = [];
+		registerAgentExtension({ on() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer: () => {}, registerTool: (tool: ToolDefinition) => tools.push(tool) } as unknown as ExtensionAPI);
+		const expected: Array<[string, unknown, unknown]> = [
+			["agent_list", renderListCall, renderListResult],
+			["agent_steer", renderSteerCall, renderSteerResult],
+			["agent_abort", renderAbortCall, renderAbortResult],
+			["agent_command", renderCommandCall, renderCommandResult],
+			["agent_inspect", renderInspectCall, renderInspectResult],
+			["agent_runs", renderRunsCall, renderRunsResult],
+		];
+		for (const [name, call, result] of expected) {
+			const tool = tools.find((item) => item.name === name);
+			assert.equal(tool?.renderCall, call, `${name} renderCall`);
+			assert.equal(tool?.renderResult, result, `${name} renderResult`);
+			assert.equal(typeof tool?.execute, "function", `${name} execute`);
+		}
+	});
+
+	it("summarizes a discovery page with coverage, skipped files, and the next cursor", () => {
+		const page = JSON.stringify({
+			rows: [
+				{ sessionId: "01a00000-0000-7000-8000-000000000011", cwd: "/srv/work", name: "Renderer worker", firstMessage: "Add the call cards" },
+				{ sessionId: "01a00000-0000-7000-8000-000000000012", cwd: "/srv/work", name: "Reviewer", firstMessage: "Check the claims" },
+			],
+			nextCursor: "Y3Vyc29y",
+			coverage: { directoryEntries: 40, inventoryFiles: 34, start: 0, next: 2, filesRead: 2, captureBytes: 900, partialMetadata: 0, skipped: [{ file: "bad.jsonl", reason: "metadata unavailable" }], exhausted: false },
+		});
+		const call = collapsed(renderListCall({ query: "renderer", cwd: "/srv/work", limit: 5, cursor: "Y3Vyc29y" }, theme, { expanded: false }));
+		assert.match(call, /agent_list · query renderer/);
+		assert.match(call, /cwd \/srv\/work · limit 5 · continuation page/);
+		assert.doesNotMatch(call, /Expand for full arguments/);
+		const summary = collapsed(renderListResult(reply(page), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(summary, /2 sessions on this page · inventory 34 files · 1 skipped \(unknown, not absent\)/);
+		assert.match(summary, /Next page available; repeat with nextCursor/);
+		assert.doesNotMatch(summary, /sessionId|firstMessage|\{"/);
+	});
+
+	it("reports a covered inventory without claiming that no sessions exist", () => {
+		const final = JSON.stringify({ rows: [{ sessionId: "01a00000-0000-7000-8000-000000000013", cwd: "/srv/work" }], nextCursor: null, coverage: { inventoryFiles: 12, skipped: [], exhausted: true } });
+		const text = collapsed(renderListResult(reply(final), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(text, /1 session on this page · inventory 12 files/);
+		assert.match(text, /Inventory covered; no further page/);
+		assert.doesNotMatch(text, /no sessions|absent|unknown/i);
+		const empty = collapsed(renderListResult(reply(JSON.stringify({ rows: [], nextCursor: null, coverage: { inventoryFiles: 3, skipped: [], exhausted: true } })), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(empty, /Inventory covered/);
+		assert.match(empty, /0 sessions on this page/);
+	});
+
+	it("falls back to a bounded preview for unexpected discovery output and labels errors", () => {
+		const raw = collapsed(renderListResult(reply("inventory unreadable: permission denied"), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(raw, /inventory unreadable: permission denied/);
+		const error = collapsed(renderListResult(reply("discovery stopped\x1b[2J"), { expanded: false, isPartial: false }, theme, { isError: true }));
+		assert.match(error, /List error/);
+		assert.doesNotMatch(error, /\x1b/);
+		const pending = collapsed(renderListResult(reply("partial"), { expanded: false, isPartial: true }, theme, { isError: false }));
+		assert.match(pending, /Discovery pending/);
+	});
+
+	it("mirrors agent_send for steer and states the queue-admission limit", () => {
+		const args = { sessionId: "target-session", message: "First line\nSecond line", replyTo: "prior-message" };
+		const call = collapsed(renderSteerCall(args, theme, { expanded: false, argsComplete: true }));
+		assert.match(call, /agent_steer → target-session/);
+		assert.match(call, /reply to prior-message/);
+		assert.match(call, /First line Second line/);
+		const receipt = collapsed(renderSteerResult(reply(`session target-session: steering message queued. Queue admission does not confirm delivery or action.`), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(receipt, /Queue admission \(not proof of delivery, action, or crash recovery\)/);
+		assert.ok(collapsed(renderSteerResult(reply("refused"), { expanded: false, isPartial: false }, theme, { isError: true })).match(/Steer error/));
+		assert.ok(collapsed(renderSteerResult(reply("queued"), { expanded: false, isPartial: true }, theme, { isError: false })).match(/Queue admission pending/));
+	});
+
+	it("distinguishes an abort request from an idle target and a pending target", () => {
+		const call = collapsed(renderAbortCall({ sessionId: SESSION }, theme, { expanded: false }));
+		assert.equal(call, `agent_abort · ${SESSION}`);
+		assert.match(collapsed(renderAbortCall({}, theme, { expanded: false })), /\(target pending\)/);
+		const requested = collapsed(renderAbortResult(reply(`session ${SESSION}: abort requested.`), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } }));
+		assert.equal(requested, "Abort requested");
+		const idle = collapsed(renderAbortResult(reply(`session ${SESSION}: no active operation to abort.`), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } }));
+		assert.equal(idle, "No active operation to abort");
+		assert.match(collapsed(renderAbortResult(reply("session other: abort requested."), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } })), /Abort requested · session other/);
+		assert.match(collapsed(renderAbortResult(reply("connection lost"), { expanded: false, isPartial: false }, theme, { isError: true })), /Abort error/);
+	});
+
+	it("summarizes command output, a replacement session, and malformed output", () => {
+		const call = collapsed(renderCommandCall({ sessionId: SESSION, name: "reload", args: "--force" }, theme, { expanded: false }));
+		assert.match(call, new RegExp(`agent_command · reload → ${SESSION}`));
+		assert.match(call, /args --force/);
+		assert.match(collapsed(renderCommandCall({}, theme, { expanded: false })), /\(command pending\) → \(target pending\)/);
+		const summary = collapsed(renderCommandResult(reply(JSON.stringify({ text: "Reloaded 3 extensions", sessionId: "session-2" })), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(summary, /Reloaded 3 extensions/);
+		assert.match(summary, /Replacement session session-2/);
+		const malformed = collapsed(renderCommandResult(reply("{\"other\":1}"), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(malformed, /\{"other":1\}/);
+	});
+
+	it("summarizes inspect calls for each view", () => {
+		assert.match(collapsed(renderInspectCall({ sessionId: SESSION }, theme, { expanded: false })), new RegExp(`agent_inspect · ${SESSION}\nview history`));
+		const search = collapsed(renderInspectCall({ sessionId: SESSION, view: "search", query: "needle", source: "assistant", continuation: "dGV4dA" }, theme, { expanded: false }));
+		assert.match(search, /view search · query needle · source assistant · continuation/);
+		const entry = collapsed(renderInspectCall({ sessionId: SESSION, entryId: "e5", offset: 1200, fromId: "e9" }, theme, { expanded: false }));
+		assert.match(entry, /view history · entry e5 · from e9 · offset 1200/);
+	});
+
+	it("summarizes a history page, a read-only capture, and an exact entry", () => {
+		const history = JSON.stringify({
+			sessionId: SESSION,
+			execution: { current: null, recovery: "ordinary persisted history; no in-flight replay" },
+			liveOwner: true,
+			entries: [
+				{ id: "e3", parentId: "e2", type: "message", role: "assistant", text: "{\"a\":1}" },
+				{ id: "e2", parentId: "e1", type: "message", role: "user", text: "{\"b\":2}" },
+				{ id: "e1", parentId: null, type: "session_info", text: "{\"name\":\"w\"}" },
+			],
+			result: { entryId: "r1", text: "{}" },
+			nextCursor: 1,
+			order: "newestFirst",
+		}, null, 2);
+		const page = collapsed(renderInspectResult(reply(history), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } }));
+		assert.equal(page.split("\n")[0], "history page · 3 entries");
+		assert.match(page, /live owner · 1 older entry remains · saved result shown/);
+		assert.match(collapsed(renderInspectResult(reply(history), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: "other-session" } })), new RegExp(`^${SESSION} · history page`));
+		const capture = JSON.stringify({ sessionId: SESSION, execution: { current: null, recovery: "read-only snapshot; live operation and owner result unavailable" }, liveOwner: false, capture: { mode: "read-only", snapshot: true, available: true, bytes: 3210, unfinishedTail: false, liveState: "unavailable" }, entries: [], nextCursor: null });
+		assert.match(collapsed(renderInspectResult(reply(capture), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } })), /history page · 0 entries\nread-only capture · oldest page/);
+		const entry = JSON.stringify({ sessionId: SESSION, liveOwner: true, entryId: "e5", offset: 0, text: "{\"type\":\"message\"}", nextOffset: 1200, truncated: true, omissions: { providerSignatures: 2, imagePayloads: 1, redactedThinking: 0 } });
+		const entryText = collapsed(renderInspectResult(reply(entry), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } }));
+		assert.equal(entryText.split("\n")[0], "entry e5 · offset 0");
+		assert.match(entryText, /live owner · more of this entry remains · 3 omitted fields/);
+		const complete = JSON.stringify({ sessionId: SESSION, liveOwner: true, entryId: "e5", offset: 0, text: "{}", nextOffset: null });
+		assert.match(collapsed(renderInspectResult(reply(complete), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } })), /representation complete/);
+	});
+
+	it("keeps a bounded or empty search calibrated to its covered ancestry", () => {
+		const bounded = JSON.stringify({ sessionId: SESSION, view: "search", liveOwner: true, fromId: "e9", evidence: [{ id: "e7" }, { id: "e4" }], continuation: "dGV4dA", coverage: { visits: 12, slots: 20, scannedBytes: 5000, complete: false, reason: "query bound reached" } });
+		const text = collapsed(renderInspectResult(reply(bounded), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } }));
+		assert.equal(text.split("\n")[0], "search · 2 matches · query bound reached");
+		assert.match(text, /live owner · continuation available/);
+		const empty = JSON.stringify({ sessionId: SESSION, view: "search", liveOwner: true, evidence: [], continuation: null, coverage: { visits: 30, slots: 4, scannedBytes: 900, complete: true, reason: "root reached" } });
+		const zero = collapsed(renderInspectResult(reply(empty), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } }));
+		assert.equal(zero.split("\n")[0], "search · 0 matches · ancestry covered");
+		assert.doesNotMatch(zero, /no matches|absent|not found/i);
+		const branch = JSON.stringify({ sessionId: SESSION, view: "branch", liveOwner: true, evidence: [{ id: "e3" }], continuation: null, coverage: { complete: true, reason: "root reached" } });
+		assert.match(collapsed(renderInspectResult(reply(branch), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } })), /branch · 1 entry · ancestry covered/);
+	});
+
+	it("labels a saved result as an outcome and names its persistence", () => {
+		const saved = JSON.stringify({ sessionId: SESSION, view: "result", liveOwner: true, status: "completed", operationId: "op-7", resultPersistence: "saved native entry", entryId: "e5", offset: 0, text: "{}", nextOffset: null });
+		const text = collapsed(renderInspectResult(reply(saved), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } }));
+		assert.equal(text.split("\n")[0], "saved result · completed · operation op-7");
+		assert.match(text, /saved native entry · outcome is not task acceptance/);
+		const unsaved = collapsed(renderInspectResult(reply(JSON.stringify({ sessionId: SESSION, view: "result", liveOwner: true, operationId: "op-8", resultPersistence: "not saved; retained only by the live owner", entryId: "e6", offset: 0, text: "{}", nextOffset: null })), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } }));
+		assert.match(unsaved, /not saved; retained only by the live owner/);
+		assert.match(collapsed(renderInspectResult(reply("inspect failed"), { expanded: false, isPartial: false }, theme, { isError: true })), /Inspect error/);
+	});
+
+	it("summarizes detached run lists by state, a single run, and an empty list", () => {
+		const list = [
+			"detached runs (2):",
+			"run-1  running  session=s-1  route=s-1  started=2026-09-28T00:00:00Z  pid=4242",
+			"    entries=12  tool=read  updated=2026-09-28T01:00:00Z",
+			"run-2  failed  session=s-2  route=s-2  started=2026-09-27T00:00:00Z  finished=2026-09-27T02:00:00Z",
+			"    error=provider unavailable",
+		].join("\n");
+		assert.equal(collapsed(renderRunsCall({}, theme, { expanded: false })), "agent_runs · all detached runs");
+		assert.equal(collapsed(renderRunsCall({ runId: "run-1" }, theme, { expanded: false })), "agent_runs · run-1");
+		const summarized = collapsed(renderRunsResult(reply(list), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.equal(summarized.split("\n")[0], "2 detached runs · 1 running · 1 failed");
+		assert.doesNotMatch(summarized, /route=|pid=/);
+		const single = collapsed(renderRunsResult(reply("run-1  finished  session=s-1  route=s-1  started=2026-09-28T00:00:00Z  finished=2026-09-28T01:00:00Z\n    the port is renamed"), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.equal(single.split("\n")[0], "finished · session s-1");
+		assert.match(single, /the port is renamed/);
+		assert.doesNotMatch(single, /run-1/);
+		assert.match(collapsed(renderRunsResult(reply("detached runs (0):\n(none)"), { expanded: false, isPartial: false }, theme, { isError: false })), /0 detached runs/);
+		assert.equal(collapsed(renderRunsResult(reply("no detached run missing"), { expanded: false, isPartial: false }, theme, { isError: false })), "No matching detached run");
+		assert.match(collapsed(renderRunsResult(reply("runs unavailable"), { expanded: false, isPartial: false }, theme, { isError: true })), /Runs error/);
+	});
+
+	it("shows an argument hint only when a collapsed call hides or clips content", () => {
+		assert.equal(collapsed(renderAgentCall("agent_status", { sessionId: SESSION }, theme, { expanded: false, argsComplete: true })), `agent_status · ${SESSION}`);
+		const attach = collapsed(renderAgentCall("agent_attach", { sessionId: SESSION }, theme, { expanded: false, argsComplete: true }));
+		assert.equal(attach.split("\n").length, 2);
+		assert.doesNotMatch(attach, /Expand for full arguments/);
+		assert.match(collapsed(renderAgentCall("agent_attach", { sessionId: SESSION, model: "provider/model" }, theme, { expanded: false, argsComplete: true })), /Requested: provider\/model/);
+		assert.match(collapsed(renderListCall({ query: "q".repeat(400) }, theme, { expanded: false })), /Expand for full arguments/);
+		assert.doesNotMatch(collapsed(renderInspectCall({ sessionId: SESSION, view: "search", query: "needle" }, theme, { expanded: false })), /Expand for full arguments/);
+		assert.match(collapsed(renderInspectCall({ sessionId: SESSION, query: "q".repeat(400) }, theme, { expanded: false })), /Expand for full arguments/);
+		assert.match(collapsed(renderAgentCall("agent_spawn", { prompt: "p".repeat(400) }, theme, { expanded: false, argsComplete: true })), /Expand for full arguments/);
+		assert.doesNotMatch(collapsed(renderCompactCall({ sessionId: SESSION }, theme, { expanded: false, argsComplete: true })), /Expand for full arguments/);
+		assert.match(collapsed(renderCompactCall({ sessionId: SESSION, summary: "s" }, theme, { expanded: false, argsComplete: true })), /Expand for full arguments/);
+	});
+
+	it("escapes controls, clips long values, expands arguments, and fits narrow widths", () => {
+		const hostile = "query\x1b]52;c;clipboard\x07\u202e";
+		const listCall = renderListCall({ query: hostile }, theme, { expanded: false });
+		assert.doesNotMatch(collapsed(listCall), /[\x1b\x07\u202e]/u);
+		const long = renderListCall({ query: "q".repeat(400) }, theme, { expanded: false });
+		const longText = collapsed(long);
+		assert.ok(longText.includes("…"));
+		assert.ok(longText.split("\n")[0].length < 200);
+		for (const width of [10, 40, 100]) assert.ok(long.render(width).every((line) => visibleWidth(line) <= width), `width ${width}`);
+		const expanded = collapsed(renderCommandCall({ sessionId: SESSION, name: "reload", args: "--force" }, theme, { expanded: true }));
+		assert.match(expanded, /"name": "reload"/);
+		assert.match(expanded, /"args": "--force"/);
+		const inspectPending = renderInspectCall({}, theme, { expanded: false });
+		assert.match(collapsed(inspectPending), /\(target pending\)/);
+		for (const width of [10, 40, 100]) assert.ok(inspectPending.render(width).every((line) => visibleWidth(line) <= width), `inspect width ${width}`);
+	});
+
+	it("labels an unsaved live result and a saved result differently on a history page", () => {
+		const unsaved = JSON.stringify({
+			sessionId: SESSION,
+			execution: { current: null, recovery: "ordinary persisted history; no in-flight replay" },
+			liveOwner: true,
+			entries: [{ id: "e1", parentId: null, type: "message", role: "user", text: "{}" }],
+			result: { text: "{\"operationId\":\"op-1\"}", nextOffset: null, truncated: false },
+			resultOffset: 0,
+			resultPersistence: "not saved; retained only by the live owner",
+			detail: "Continue the unsaved result with offset=result.nextOffset and no entryId.",
+		});
+		const unsavedText = collapsed(renderInspectResult(reply(unsaved), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } }));
+		assert.match(unsavedText, /live owner · oldest page · unsaved live result shown/);
+		assert.doesNotMatch(unsavedText, /saved result shown/);
+		const saved = JSON.stringify({ sessionId: SESSION, liveOwner: true, entries: [{ id: "e1", type: "message", role: "user", text: "{}" }], result: { entryId: "r1", text: "{}" }, nextCursor: null });
+		assert.match(collapsed(renderInspectResult(reply(saved), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: SESSION } })), /saved result shown/);
+	});
+
+	it("escapes controls captured from abort and run result text", () => {
+		const hostile = "01a\u202e\u009b[31m";
+		const escaped = displayText(hostile);
+		const abort = collapsed(renderAbortResult(reply(`session ${hostile}: abort requested.`), { expanded: false, isPartial: false }, theme, { isError: false, args: { sessionId: "other-session" } }));
+		assert.ok(abort.includes(escaped));
+		assert.doesNotMatch(abort, /[\u202e\u009b]/u);
+		const run = collapsed(renderRunsResult(reply(`${hostile}  running  session=${hostile}  route=r  started=t  pid=1`), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.ok(run.includes(escaped));
+		assert.doesNotMatch(run, /[\u202e\u009b]/u);
+	});
+
+	it("renders a bare heading for missing arguments instead of throwing", () => {
+		for (const missing of [null, undefined]) {
+			for (const [name, renderer] of [["agent_list", renderListCall], ["agent_abort", renderAbortCall], ["agent_command", renderCommandCall], ["agent_inspect", renderInspectCall], ["agent_runs", renderRunsCall]] as const) {
+				assert.match(collapsed(renderer(missing, theme, { expanded: false })), new RegExp(name));
+			}
+			assert.match(collapsed(renderSendCall(missing as never, theme, { expanded: false, argsComplete: true })), /agent_send/);
+			assert.match(collapsed(renderSteerCall(missing as never, theme, { expanded: false, argsComplete: true })), /agent_steer/);
+		}
+	});
+
+	it("reports partial metadata in the discovery coverage row", () => {
+		const partial = collapsed(renderListResult(reply(JSON.stringify({ rows: [{}], nextCursor: null, coverage: { inventoryFiles: 8, skipped: [], partialMetadata: 3, exhausted: true } })), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(partial, /1 session on this page · inventory 8 files · 3 partial/);
+		const clean = collapsed(renderListResult(reply(JSON.stringify({ rows: [{}], nextCursor: null, coverage: { inventoryFiles: 8, skipped: [], partialMetadata: 0, exhausted: true } })), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.doesNotMatch(clean, /partial/);
 	});
 });

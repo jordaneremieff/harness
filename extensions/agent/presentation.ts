@@ -200,16 +200,24 @@ function toolExpansionHint(subject: string): string {
 	return key ? `${key} to expand ${subject}` : `Expand for full ${subject}`;
 }
 
+const CONFIGURED_AGENT_TOOLS = new Set(["agent_spawn", "agent_detach", "agent_attach", "agent_configure", "agent_place", "agent_fork", "agent_rewind"]);
+
+/** True when the collapsed call hides an argument: a clipped subject or any key the card does not show. */
+function agentArgsHidden(args: Record<string, unknown>, subjectKey: string, subjectValue: string): boolean {
+	if (clipped(subjectValue, 120)) return true;
+	const shown = new Set([subjectKey, "model", "thinkingLevel"].filter(Boolean));
+	return Object.entries(args).some(([key, item]) => item !== undefined && !shown.has(key));
+}
+
 /** Requests and status snapshots are separate evidence; rendering never opens a session. */
 export function renderAgentCall(name: string, value: unknown, theme: Theme, context: { expanded: boolean; argsComplete: boolean; lastComponent?: Component }): Component {
 	const args = peerRecord(value);
-	const subject = peerField(args, "name") || peerField(args, "topic") || peerField(args, "prompt") || peerField(args, "correction") || peerField(args, "sessionId") || peerField(args, "runId");
-	const lines = [theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${displayPreview(subject, 120)}`) : "")];
-	if (["agent_spawn", "agent_detach", "agent_attach", "agent_configure", "agent_place", "agent_fork", "agent_rewind"].includes(name)) {
-		lines.push(theme.fg("muted", requestedConfiguration(name, args)));
-	}
+	const subjectKey = ["name", "topic", "prompt", "correction", "sessionId", "runId"].find((key) => peerField(args, key)) ?? "";
+	const subjectValue = subjectKey ? peerField(args, subjectKey) : "";
+	const lines = [theme.fg("toolTitle", theme.bold(name)) + (subjectValue ? theme.fg("accent", ` · ${displayPreview(subjectValue, 120)}`) : "")];
+	if (CONFIGURED_AGENT_TOOLS.has(name)) lines.push(theme.fg("muted", requestedConfiguration(name, args)));
 	if (context.expanded) lines.push(theme.fg("toolOutput", boundedMessage(JSON.stringify(args, null, 2))));
-	else lines.push(theme.fg("dim", toolExpansionHint("arguments")));
+	else if (agentArgsHidden(args, subjectKey, subjectValue)) lines.push(theme.fg("dim", toolExpansionHint("arguments")));
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
@@ -258,26 +266,54 @@ export function renderAgentResult(result: AgentToolResult<unknown>, options: Too
 
 interface SendDisplayArgs { sessionId: string; message: string; replyTo?: string }
 
-export function renderSendCall(args: Partial<SendDisplayArgs>, theme: Theme, context: { expanded: boolean; argsComplete: boolean; lastComponent?: Component }): Component {
-	const target = typeof args.sessionId === "string" ? displayPreview(args.sessionId, 300) : "(target pending)";
-	const message = typeof args.message === "string" ? args.message : "";
-	const lines = [theme.fg("toolTitle", theme.bold("agent_send")) + theme.fg("accent", ` → ${target}`)];
-	if (typeof args.replyTo === "string" && args.replyTo) lines.push(theme.fg("muted", `Reply to: ${displayPreview(args.replyTo, 300)}`));
-	if (context.expanded) {
-		lines.push(theme.fg("muted", context.argsComplete ? "Submitted message (controls escaped):" : "Message so far (controls escaped):"));
-		lines.push(theme.fg("toolOutput", boundedMessage(message)));
-	} else {
-		lines.push(theme.fg("toolOutput", displayPreview(message, 180) || (context.argsComplete ? "(empty or whitespace-only message)" : "(message pending)")));
+function messageCollapsedLines(message: string, preview: string, argsComplete: boolean, theme: Theme): string[] {
+	const lines = [theme.fg("toolOutput", preview || (argsComplete ? "(empty or whitespace-only message)" : "(message pending)"))];
+	if (preview !== message) {
 		const expandKey = keyText("app.tools.expand");
 		lines.push(theme.fg("muted", expandKey ? `${expandKey} to expand message` : "Full message is in the tool-call arguments."));
 	}
+	return lines;
+}
+
+function messageExpandedLines(message: string, argsComplete: boolean, theme: Theme): string[] {
+	return [theme.fg("muted", argsComplete ? "Submitted message (controls escaped):" : "Message so far (controls escaped):"), theme.fg("toolOutput", boundedMessage(message))];
+}
+
+function renderMessageCall(name: string, value: unknown, theme: Theme, context: { expanded: boolean; argsComplete: boolean; lastComponent?: Component }): Component {
+	const args = peerRecord(value);
+	const target = typeof args.sessionId === "string" ? displayPreview(args.sessionId, 300) : "(target pending)";
+	const message = typeof args.message === "string" ? args.message : "";
+	const reply = typeof args.replyTo === "string" && args.replyTo ? displayPreview(args.replyTo, 300) : "";
+	const lines = [theme.fg("toolTitle", theme.bold(name)) + theme.fg("accent", ` → ${target}`) + (reply ? theme.fg("muted", ` · reply to ${reply}`) : "")];
+	const expanded = messageExpandedLines(message, context.argsComplete, theme);
+	const preview = displayPreview(message, 180);
+	lines.push(...(context.expanded ? expanded : messageCollapsedLines(message, preview, context.argsComplete, theme)));
+	return textComponent(lines.join("\n"), context.lastComponent);
+}
+
+export function renderSendCall(args: Partial<SendDisplayArgs>, theme: Theme, context: { expanded: boolean; argsComplete: boolean; lastComponent?: Component }): Component {
+	return renderMessageCall("agent_send", args, theme, context);
+}
+
+/** Steer is queue admission for a running session; the card mirrors agent_send without claiming delivery. */
+export function renderSteerCall(args: Partial<SendDisplayArgs>, theme: Theme, context: { expanded: boolean; argsComplete: boolean; lastComponent?: Component }): Component {
+	return renderMessageCall("agent_steer", args, theme, context);
+}
+
+function renderMessageResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; lastComponent?: Component }, labels: { error: string; partial: string; receipt: string }): Component {
+	const output = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+	const label = context.isError ? labels.error : options.isPartial ? labels.partial : labels.receipt;
+	const lines = [`${theme.fg(context.isError ? "error" : "muted", label)}:`, theme.fg("toolOutput", options.expanded ? boundedMessage(output) : displayPreview(output, 300))];
+	if (!options.expanded && clipped(output, 300)) lines.push(theme.fg("dim", toolExpansionHint("result")));
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
 export function renderSendResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; lastComponent?: Component }): Component {
-	const output = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
-	const label = context.isError ? "Send error" : options.isPartial ? "Admission pending" : "Admission receipt (not proof of delivery or action)";
-	return textComponent(theme.fg(context.isError ? "error" : "muted", `${label}:\n`) + theme.fg("toolOutput", options.expanded ? boundedMessage(output) : displayPreview(output, 300)), context.lastComponent);
+	return renderMessageResult(result, options, theme, context, { error: "Send error", partial: "Admission pending", receipt: "Admission receipt (not proof of delivery or action)" });
+}
+
+export function renderSteerResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; lastComponent?: Component }): Component {
+	return renderMessageResult(result, options, theme, context, { error: "Steer error", partial: "Queue admission pending", receipt: "Queue admission (not proof of delivery, action, or crash recovery)" });
 }
 
 /** The summary argument selects the self path; execution still refuses a mismatched session ID. */
@@ -292,7 +328,7 @@ export function renderCompactCall(value: unknown, theme: Theme, context: { expan
 		lines.push(theme.fg("muted", `Summarizer instructions: ${peerField(args, "instructions") ? "present" : "none"}`));
 	}
 	if (context.expanded) lines.push(theme.fg("toolOutput", boundedMessage(JSON.stringify(args, null, 2))));
-	else lines.push(theme.fg("dim", toolExpansionHint("arguments")));
+	else if (summary || peerField(args, "instructions")) lines.push(theme.fg("dim", toolExpansionHint("arguments")));
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
@@ -307,4 +343,274 @@ export function renderCompactResult(result: AgentToolResult<unknown>, options: T
 				? "Self-compaction request receipt (does not establish that compaction occurred)"
 				: "Native compaction result";
 	return textComponent(theme.fg(context.isError ? "error" : "muted", `${label}:\n`) + theme.fg("toolOutput", options.expanded ? boundedMessage(output) : displayPreview(output, 300)), context.lastComponent);
+}
+
+function jsonObject(value: string): Record<string, unknown> | undefined {
+	try {
+		const parsed: unknown = JSON.parse(value);
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function countField(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** Collapsed argument card: heading, at most one qualifier row, then the hint only when an argument is hidden. */
+function argumentCard(name: string, subject: string, qualifier: string | undefined, args: Record<string, unknown>, theme: Theme, context: { expanded: boolean; lastComponent?: Component }, hidden: boolean): Component {
+	const lines = [theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${subject}`) : "")];
+	if (qualifier) lines.push(theme.fg("muted", qualifier));
+	if (context.expanded) lines.push(theme.fg("toolOutput", boundedMessage(JSON.stringify(args, null, 2))));
+	else if (hidden) lines.push(theme.fg("dim", toolExpansionHint("arguments")));
+	return textComponent(lines.join("\n"), context.lastComponent);
+}
+
+function clipped(value: string, limit: number): boolean {
+	return value.length > limit;
+}
+
+/** Outcome cards lead with error or partial labels; a summary replaces raw JSON when the shape is known. */
+function outcomeCard(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; args?: unknown; lastComponent?: Component }, labels: { error: string; partial: string }, summarize: (output: string, theme: Theme, args: Record<string, unknown>) => string[] | undefined): Component {
+	const output = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+	const lines: string[] = [];
+	if (context.isError) lines.push(theme.fg("error", labels.error));
+	else if (options.isPartial) lines.push(theme.fg("muted", labels.partial));
+	if (options.expanded) lines.push(theme.fg("toolOutput", boundedResult(output)));
+	else {
+		const summary = summarize(output, theme, peerRecord(context.args));
+		if (summary) lines.push(...summary);
+		else lines.push(theme.fg(context.isError ? "error" : "toolOutput", resultPreview(output, 300)));
+		if (output.length > 300 || output.includes("\n")) lines.push(theme.fg("dim", toolExpansionHint("result")));
+	}
+	return textComponent(lines.join("\n"), context.lastComponent);
+}
+
+export function renderListCall(value: unknown, theme: Theme, context: { expanded: boolean; lastComponent?: Component }): Component {
+	const args = peerRecord(value);
+	const query = peerField(args, "query");
+	const cwd = peerField(args, "cwd");
+	const subject = query ? `query ${displayPreview(query, 160)}` : cwd ? `cwd ${displayPreview(cwd, 160)}` : "stored sessions";
+	const qualifiers: string[] = [];
+	if (query && cwd) qualifiers.push(`cwd ${displayPreview(cwd, 160)}`);
+	const limit = countField(args.limit);
+	if (limit !== undefined) qualifiers.push(`limit ${limit}`);
+	if (peerField(args, "cursor")) qualifiers.push("continuation page");
+	return argumentCard("agent_list", subject, qualifiers.join(" · ") || undefined, args, theme, context, clipped(query, 160) || clipped(cwd, 160));
+}
+
+function listSummary(output: string, theme: Theme): string[] | undefined {
+	const page = jsonObject(output);
+	if (!page) return undefined;
+	const rows = Array.isArray(page.rows) ? page.rows.length : undefined;
+	const coverage = peerRecord(page.coverage);
+	const inventory = countField(coverage.inventoryFiles);
+	if (rows === undefined || inventory === undefined) return undefined;
+	const skipped = Array.isArray(coverage.skipped) ? coverage.skipped.length : 0;
+	const partial = countField(coverage.partialMetadata) ?? 0;
+	const lines = [theme.fg("toolOutput", `${rows} ${rows === 1 ? "session" : "sessions"} on this page · inventory ${inventory} ${inventory === 1 ? "file" : "files"}${skipped ? ` · ${skipped} skipped (unknown, not absent)` : ""}${partial ? ` · ${partial} partial` : ""}`)];
+	lines.push(theme.fg("muted", typeof page.nextCursor === "string" ? "Next page available; repeat with nextCursor, including after an empty page" : "Inventory covered; no further page"));
+	return lines;
+}
+
+export function renderListResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; args?: unknown; lastComponent?: Component }): Component {
+	return outcomeCard(result, options, theme, context, { error: "List error", partial: "Discovery pending" }, listSummary);
+}
+
+export function renderAbortCall(value: unknown, theme: Theme, context: { expanded: boolean; lastComponent?: Component }): Component {
+	const args = peerRecord(value);
+	const target = peerField(args, "sessionId");
+	return argumentCard("agent_abort", target ? displayPreview(target, 300) : "(target pending)", undefined, args, theme, context, clipped(target, 300) || args.trust !== undefined);
+}
+
+export function renderAbortResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; args?: unknown; lastComponent?: Component }): Component {
+	return outcomeCard(result, options, theme, context, { error: "Abort error", partial: "Abort pending" }, (output, theme, args) => {
+		const target = peerField(args, "sessionId");
+		const requested = output.match(/^session ([^:\n]{1,300}): abort requested\./u);
+		if (requested) return [theme.fg("toolOutput", requested[1] === target ? "Abort requested" : `Abort requested · session ${displayPreview(requested[1], 300)}`)];
+		const idle = output.match(/^session ([^:\n]{1,300}): no active operation to abort\./u);
+		if (idle) return [theme.fg("toolOutput", idle[1] === target ? "No active operation to abort" : `No active operation to abort · session ${displayPreview(idle[1], 300)}`)];
+		return undefined;
+	});
+}
+
+export function renderCommandCall(value: unknown, theme: Theme, context: { expanded: boolean; lastComponent?: Component }): Component {
+	const args = peerRecord(value);
+	const name = peerField(args, "name");
+	const target = peerField(args, "sessionId");
+	const subject = `${name ? displayPreview(name, 120) : "(command pending)"} → ${target ? displayPreview(target, 300) : "(target pending)"}`;
+	const commandArgs = peerField(args, "args");
+	return argumentCard("agent_command", subject, commandArgs ? `args ${displayPreview(commandArgs, 200)}` : undefined, args, theme, context, clipped(name, 120) || clipped(target, 300) || clipped(commandArgs, 200));
+}
+
+export function renderCommandResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; args?: unknown; lastComponent?: Component }): Component {
+	return outcomeCard(result, options, theme, context, { error: "Command error", partial: "Command pending" }, (output, theme) => {
+		const parsed = jsonObject(output);
+		if (!parsed) return undefined;
+		const text = peerField(parsed, "text");
+		const replacement = peerField(parsed, "sessionId");
+		if (!text && !replacement) return undefined;
+		const lines = [theme.fg("toolOutput", displayPreview(text || "(no command output text)", 240))];
+		if (replacement) lines.push(theme.fg("muted", `Replacement session ${displayPreview(replacement, 300)}`));
+		return lines;
+	});
+}
+
+export function renderRunsCall(value: unknown, theme: Theme, context: { expanded: boolean; lastComponent?: Component }): Component {
+	const args = peerRecord(value);
+	const runId = peerField(args, "runId");
+	return argumentCard("agent_runs", runId ? displayPreview(runId, 200) : "all detached runs", undefined, args, theme, context, clipped(runId, 200));
+}
+
+const RUN_STATES = ["running", "finished", "failed", "abandoned"] as const;
+
+function runsListSummary(output: string, theme: Theme): string[] | undefined {
+	const list = output.match(/^detached runs \((\d+)\):\n?/u);
+	if (!list) return undefined;
+	const counts = new Map<string, number>();
+	for (const line of output.split("\n").slice(1)) {
+		const state = line.match(/^\S+\s{2}(running|finished|failed|abandoned)\s{2}session=/u)?.[1];
+		if (state) counts.set(state, (counts.get(state) ?? 0) + 1);
+	}
+	const total = list[1];
+	const parts = [`${total} detached ${total === "1" ? "run" : "runs"}`];
+	for (const state of RUN_STATES) {
+		const count = counts.get(state);
+		if (count) parts.push(`${count} ${state}`);
+	}
+	return [theme.fg("toolOutput", parts.join(" · "))];
+}
+
+function runsSingleSummary(output: string, theme: Theme): string[] | undefined {
+	if (output.startsWith("no detached run ")) return [theme.fg("toolOutput", "No matching detached run")];
+	const single = output.match(/^(\S{1,200})\s{2}(\S{1,40})\s{2}session=(\S{1,200})/u);
+	if (!single) return undefined;
+	const lines = [theme.fg("toolOutput", `${displayPreview(single[2], 40)} · session ${displayPreview(single[3], 200)}`)];
+	const detail = output.split("\n").slice(1).map((line) => line.trim()).find(Boolean);
+	if (detail) lines.push(theme.fg("muted", displayPreview(detail, 200)));
+	return lines;
+}
+
+function runsSummary(output: string, theme: Theme): string[] | undefined {
+	return runsListSummary(output, theme) ?? runsSingleSummary(output, theme);
+}
+
+export function renderRunsResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; args?: unknown; lastComponent?: Component }): Component {
+	return outcomeCard(result, options, theme, context, { error: "Runs error", partial: "Runs pending" }, runsSummary);
+}
+
+function inspectQualifier(args: Record<string, unknown>): { qualifier: string; hidden: boolean } {
+	const parts = [`view ${peerField(args, "view") || "history"}`];
+	let hidden = false;
+	const push = (label: string, key: string, limit: number) => {
+		const value = peerField(args, key);
+		if (!value) return;
+		parts.push(`${label} ${displayPreview(value, limit)}`);
+		hidden = hidden || clipped(value, limit);
+	};
+	push("entry", "entryId", 120);
+	push("query", "query", 120);
+	push("operation", "operationId", 120);
+	push("source", "source", 40);
+	push("from", "fromId", 120);
+	for (const [key, label] of [["offset", "offset"], ["cursor", "cursor"], ["limit", "limit"]] as const) {
+		const value = countField(args[key]);
+		if (value !== undefined) parts.push(`${label} ${value}`);
+	}
+	if (peerField(args, "continuation")) parts.push("continuation");
+	return { qualifier: parts.join(" · "), hidden };
+}
+
+export function renderInspectCall(value: unknown, theme: Theme, context: { expanded: boolean; lastComponent?: Component }): Component {
+	const args = peerRecord(value);
+	const target = peerField(args, "sessionId");
+	const { qualifier, hidden } = inspectQualifier(args);
+	return argumentCard("agent_inspect", target ? displayPreview(target, 300) : "(target pending)", qualifier, args, theme, context, hidden || clipped(target, 300));
+}
+
+function inspectOwnerLabel(parsed: Record<string, unknown>): string {
+	if (parsed.liveOwner === true) return "live owner";
+	const capture = peerRecord(parsed.capture);
+	if (Object.keys(capture).length) return capture.available === false ? "read-only capture unavailable" : "read-only capture";
+	return "owner unknown";
+}
+
+function omissionCount(value: unknown): number | undefined {
+	const record = peerRecord(value);
+	const counts = [record.providerSignatures, record.imagePayloads, record.redactedThinking].map(countField);
+	if (counts.every((count) => count === undefined)) return undefined;
+	return counts.reduce<number>((total, count) => total + (count ?? 0), 0);
+}
+
+function inspectResultSummary(parsed: Record<string, unknown>, sessionLabel: string, owner: string, theme: Theme): string[] {
+	const status = peerField(parsed, "status");
+	const operation = peerField(parsed, "operationId");
+	const persistence = peerField(parsed, "resultPersistence");
+	const headline = [`saved result${status ? ` · ${displayPreview(status, 40)}` : ""}${operation ? ` · operation ${displayPreview(operation, 120)}` : ""}`];
+	if (sessionLabel) headline.unshift(sessionLabel);
+	const lines = [theme.fg("toolOutput", headline.join(" · "))];
+	lines.push(theme.fg("muted", [owner, persistence ? displayPreview(persistence, 120) : undefined, "outcome is not task acceptance"].filter(Boolean).join(" · ")));
+	return lines;
+}
+
+function inspectAncestrySummary(parsed: Record<string, unknown>, view: string, sessionLabel: string, owner: string, theme: Theme): string[] {
+	const evidence = Array.isArray(parsed.evidence) ? parsed.evidence.length : undefined;
+	const coverage = peerRecord(parsed.coverage);
+	const reason = peerField(coverage, "reason");
+	const covered = coverage.complete === true;
+	const noun = view === "search" ? (evidence === 1 ? "match" : "matches") : (evidence === 1 ? "entry" : "entries");
+	const count = evidence === undefined ? view : `${evidence} ${noun}`;
+	const headline = [`${view} · ${count}${covered ? " · ancestry covered" : reason ? ` · ${displayPreview(reason, 80)}` : ""}`];
+	if (sessionLabel) headline.unshift(sessionLabel);
+	const lines = [theme.fg("toolOutput", headline.join(" · "))];
+	const continuation = peerField(parsed, "continuation");
+	lines.push(theme.fg("muted", [owner, continuation ? "continuation available" : undefined].filter(Boolean).join(" · ")));
+	return lines;
+}
+
+function inspectEntrySummary(parsed: Record<string, unknown>, sessionLabel: string, owner: string, theme: Theme): string[] {
+	const entryId = peerField(parsed, "entryId");
+	const offset = countField(parsed.offset);
+	const nextOffset = countField(parsed.nextOffset);
+	const omissions = omissionCount(parsed.omissions);
+	const remaining = parsed.nextOffset === null || nextOffset === undefined ? "representation complete" : "more of this entry remains";
+	const headline = [`entry ${displayPreview(entryId, 120)}${offset !== undefined ? ` · offset ${offset}` : ""}`];
+	if (sessionLabel) headline.unshift(sessionLabel);
+	const lines = [theme.fg("toolOutput", headline.join(" · "))];
+	lines.push(theme.fg("muted", [owner, remaining, omissions ? `${omissions} omitted fields` : undefined].filter(Boolean).join(" · ")));
+	return lines;
+}
+
+function inspectHistorySummary(parsed: Record<string, unknown>, sessionLabel: string, owner: string, theme: Theme): string[] | undefined {
+	const entries = Array.isArray(parsed.entries) ? parsed.entries.length : undefined;
+	if (entries === undefined) return undefined;
+	const nextCursor = countField(parsed.nextCursor);
+	const older = nextCursor !== undefined && nextCursor > 0 ? `${nextCursor} older ${nextCursor === 1 ? "entry remains" : "entries remain"}` : "oldest page";
+	const persistence = peerField(parsed, "resultPersistence");
+	const savedResult = parsed.result && typeof parsed.result === "object"
+		? (persistence.startsWith("not saved") ? "unsaved live result shown" : "saved result shown")
+		: undefined;
+	const headline = [`history page · ${entries} ${entries === 1 ? "entry" : "entries"}`];
+	if (sessionLabel) headline.unshift(sessionLabel);
+	const lines = [theme.fg("toolOutput", headline.join(" · "))];
+	lines.push(theme.fg("muted", [owner, older, savedResult].filter(Boolean).join(" · ")));
+	return lines;
+}
+
+function inspectSummary(output: string, theme: Theme, args: Record<string, unknown>): string[] | undefined {
+	const parsed = jsonObject(output);
+	if (!parsed) return undefined;
+	const session = peerField(parsed, "sessionId");
+	const sessionLabel = session && session !== peerField(args, "sessionId") ? displayPreview(session, 300) : "";
+	const owner = inspectOwnerLabel(parsed);
+	const view = peerField(parsed, "view");
+	if (view === "result") return inspectResultSummary(parsed, sessionLabel, owner, theme);
+	if (view === "branch" || view === "search") return inspectAncestrySummary(parsed, view, sessionLabel, owner, theme);
+	if (peerField(parsed, "entryId")) return inspectEntrySummary(parsed, sessionLabel, owner, theme);
+	return inspectHistorySummary(parsed, sessionLabel, owner, theme);
+}
+
+export function renderInspectResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; args?: unknown; lastComponent?: Component }): Component {
+	return outcomeCard(result, options, theme, context, { error: "Inspect error", partial: "Inspection pending" }, inspectSummary);
 }

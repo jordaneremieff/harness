@@ -125,6 +125,26 @@ receipt as a request that does not establish applied compaction, mark native
 compaction results, and keep errors distinct. Rendering reads no sessions and
 changes no execution behavior.
 
+Discovery, inspection, and control tools carry their own cards. A collapsed
+call card shows the tool name, the request, and the per-call values that exist:
+the list query or directory filter with its page state, the steer target with
+its message preview and reply reference, the command name with its arguments,
+the inspect target with the selected view, entry, query, source, offset, or
+continuation, and the run id or the whole run list. No card repeats a static
+description of the tool. A call shows the expansion key only when it hides or
+clips an argument. A collapsed result card summarizes the outcome instead of
+showing JSON and repeats the request only when the result identifies something
+else: sessions on the page against the inventory with skipped files, partial
+metadata, and the next page, the inspect view with its entry or match count,
+capture mode, coverage reason, continuation, and whether a shown operation
+result is saved or held only by the live owner, command output with a
+replacement session, and detached-run counts by state. A bounded or empty page reports its coverage,
+so it cannot read as proof of absence. Queue admission and abort request keep
+their exact claims. Expanded cards show the full arguments and returned text
+with escaped controls and the display bound; the machine-readable result stays
+intact in native tool history. Unexpected or malformed output falls back to a
+bounded text preview instead of a guessed summary.
+
 Native tool expansion reveals arguments, returned text, and snapshot identifiers.
 Each expanded text block retains at most 32,000 source UTF-16 code units without
 splitting a surrogate pair. Escaping terminal controls expands that prefix to at
