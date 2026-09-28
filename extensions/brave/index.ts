@@ -7,6 +7,7 @@ import { searchBraveWeb } from "./client.ts";
 import { formatSearchResults } from "./format.ts";
 import { PAGE_LINK_LIMITS } from "./page-links.ts";
 import { readWebPage, type WebReadResult } from "./page-reader.ts";
+import { renderReadCall, renderReadResult, renderSearchCall, renderSearchResult } from "./presentation.ts";
 
 const FreshnessPattern = "^(pd|pw|pm|py|\\d{4}-\\d{2}-\\d{2}to\\d{4}-\\d{2}-\\d{2})$";
 
@@ -152,6 +153,8 @@ export default function registerBraveSearch(pi: ExtensionAPI) {
 			},
 			{ additionalProperties: false },
 		),
+		renderCall: (args, theme, context) => renderReadCall(args, theme, context),
+		renderResult: (result, options, theme, context) => renderReadResult(result, options, theme, context),
 		async execute(_toolCallId, params, signal): Promise<WebReadResult> {
 			return readWebPage(params, signal);
 		},
@@ -168,6 +171,8 @@ export default function registerBraveSearch(pi: ExtensionAPI) {
 			"Treat web_search snippets as discovery evidence; open primary sources before relying on load-bearing claims.",
 		],
 		parameters: BraveWebSearchParams,
+		renderCall: (args, theme, context) => renderSearchCall(args, theme, context),
+		renderResult: (result, options, theme, context) => renderSearchResult(result, options, theme, context),
 		async execute(_toolCallId, params, signal) {
 			const response = await searchBraveWeb(params, signal);
 			const formatted = formatSearchResults(response, params);

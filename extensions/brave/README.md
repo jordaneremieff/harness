@@ -16,6 +16,28 @@ discovery. No other browser, image, video, news, or local tool is registered
 without a demonstrated need, which keeps the model-facing schema and
 maintenance surface small.
 
+## Tool cards
+
+Each tool draws a compact TUI card. A collapsed call shows one heading row
+(`web_read · <url>` or `web_search · <query>`) plus, when the call sets other
+fields, one dim qualifier row with the view, find phrase, offsets, source id,
+byte budget, or search controls. The argument expansion hint appears only when
+the URL or query is clipped.
+
+A collapsed result leads with the outcome the response establishes:
+
+- `web_read` text reads show the status, the excerpt count, whether a continuation
+  exists, an exact label range when no `find` applies, and the first matched label
+  for a `find`. Coverage flags state extraction or output truncation. A redirect
+  shows the final URL when it differs from the request.
+- `web_read` links reads show the link count, page offset, coverage flags, and
+  the `max_bytes` the next complete record needs.
+- `web_search` shows the returned result count, whether more pages are
+  available, an altered query, and output truncation.
+
+Expansion shows the full result text with a display bound; terminal controls
+escape to text in every collapsed value.
+
 ## Use
 
 Call `web_search` to find a source, then open its public URL:
