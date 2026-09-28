@@ -125,7 +125,20 @@ import {
 	createCollaborationReader,
 } from "./collaboration.ts";
 import { stripTerminalSequences } from "./console.ts";
-import { renderDispatchCall, renderWorkerCall, renderWorkerResult } from "./tool-presentation.ts";
+import {
+	renderControlResult,
+	renderDispatchCall,
+	renderMessageCall,
+	renderMessageResult,
+	renderPeersCall,
+	renderPeersResult,
+	renderProfilesCall,
+	renderProfilesResult,
+	renderReportCall,
+	renderReportResult,
+	renderWorkerCall,
+	renderWorkerResult,
+} from "./tool-presentation.ts";
 import { FOOTER_ENTRY, formatSubtreeStatus, restoreFooter, SessionFooter, subtreeStatus, UsageEvidence } from "./footer.ts";
 import { createManagedHostBus } from "./host-role.ts";
 import { openSubagentPanel, reopenCommand } from "./panel.ts";
@@ -5762,6 +5775,8 @@ function profileListView(filter?: string) {
 const profilesTool = defineTool({
 	name: "subagent_profiles",
 	label: "Subagent Profiles",
+	renderCall: (args, theme, context) => renderProfilesCall(args, theme, context),
+	renderResult: (result, options, theme, context) => renderProfilesResult(result, options, theme, context),
 	description:
 		"Manage reusable dispatch defaults, instructions, and source pointers, never tools or authority. Actions: list, read, create, update, remove, enable, disable. Create requires a new name; update replaces the full definition. Mutations except create require expectedSha256 from read. Relative definition paths use session cwd. Lists are bounded summaries with faults and truncation; read returns one full record. Changes never affect existing worker snapshots.",
 	promptSnippet: "List, read, create, replace, remove, enable, or disable managed dispatch profiles.",
@@ -6248,6 +6263,8 @@ export function peerMessage(envelope: PeerEnvelope) {
 const peersTool = defineTool({
 	name: "subagent_peers",
 	label: "Subagent Peers",
+	renderCall: renderPeersCall,
+	renderResult: renderPeersResult,
 	description:
 		"List available collaboration peers in this session's dispatch family. Returns up to 32 entries and nextOffset. Addresses are worker ids or root session ids; parent addresses the immediate parent. Peer messages grant no worker control authority.",
 	promptSnippet: "List peers for direct collaboration inside this dispatch family.",
@@ -6272,6 +6289,8 @@ const peersTool = defineTool({
 const peerMessageTool = defineTool({
 	name: "subagent_message",
 	label: "Subagent Message",
+	renderCall: renderMessageCall,
+	renderResult: renderMessageResult,
 	description:
 		"Send a direct peer message with {to,message,replyTo?,reference?}, or read a retained receipt with {id}. These forms are mutually exclusive. Messages stay inside the dispatch family and accept at most 8192 UTF-8 bytes and 256 lines. Paused workers refuse messages. sent_unconfirmed means the synchronous send call returned; context_seen means context construction, not processing or disk persistence. Receipts are process-local and bounded, not durable acknowledgements. An optional reference opens a review/correction obligation ({obligationId,artifact,revision,reviewer?,required?}) or closes it ({obligationId,artifact,revision,outcome,reason?}); only the requester's own matching disposition closes an obligation, and a reply or critique is evidence, never a disposition.",
 	promptSnippet: "Send a direct message to a peer, or read a message receipt by id.",
@@ -6322,6 +6341,8 @@ const peerMessageTool = defineTool({
 const reportTool = defineTool({
 	name: "subagent_report",
 	label: "Subagent Report",
+	renderCall: renderReportCall,
+	renderResult: renderReportResult,
 	description: [
 		"Send one interim report from a running worker to the session that dispatched it. Only a subagent worker can use it; any other session gets an explicit failure.",
 		"The report does not end your run, does not replace submit_result, and grants no authority. Your final deliverable must still be self-contained.",
@@ -6468,6 +6489,8 @@ const inspectTool = defineTool({
 const steerTool = defineTool({
 	name: "subagent_steer",
 	label: "Subagent Steer",
+	renderCall: (args, theme, context) => renderWorkerCall("subagent_steer", args, theme, context),
+	renderResult: (result, options, theme, context) => renderControlResult("steer", result, options, theme, context),
 	description: [
 		"Redirect a live background subagent: while active, the message is delivered after the worker's current tool call finishes, before its next model call. On an idle interrupted worker, steer resumes the worker in a fresh run with the message.",
 		"Only the session that dispatched the worker can steer it. A terminal or other-session-owned worker is refused with the reason.",
@@ -6547,6 +6570,8 @@ const collectTool = defineTool({
 const interruptTool = defineTool({
 	name: "subagent_interrupt",
 	label: "Subagent Interrupt",
+	renderCall: (args, theme, context) => renderWorkerCall("subagent_interrupt", args, theme, context),
+	renderResult: (result, options, theme, context) => renderControlResult("interrupt", result, options, theme, context),
 	description: [
 		"Interrupt a live subagent worker without cancelling it: the run stops but the worker stays alive, idle, and resumable. Resume it by sending a follow-up — subagent_steer on an idle worker resumes it with your message.",
 		"Distinct from subagent_kill, which ends the worker terminally. Use interrupt to pause and redirect; use kill to end. An interrupted worker that is never resumed is released by the idle deadline (default 30 minutes, PI_SUBAGENT_IDLE_MINUTES).",
@@ -6614,6 +6639,8 @@ const continueTool = defineTool({
 const killTool = defineTool({
 	name: "subagent_kill",
 	label: "Subagent Kill",
+	renderCall: (args, theme, context) => renderWorkerCall("subagent_kill", args, theme, context),
+	renderResult: (result, options, theme, context) => renderControlResult("kill", result, options, theme, context),
 	description: [
 		"Cancel a live subagent worker. The owning session aborts the worker's run; a worker owned by a dead session is recorded from the store instead.",
 		"Cancellation intent is recorded before the abort, so the worker's terminal state is `cancelled` rather than whatever shape the interrupted run happens to produce.",

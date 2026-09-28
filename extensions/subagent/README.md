@@ -858,6 +858,27 @@ alone establishes general autonomous task reliability.
   total-view limit. Full machine-readable results remain unchanged. Long
   identifiers and paths remain available through expansion. Terminal controls
   display as escaped text.
+- Control and collaboration calls show one heading row with the request subject
+  (worker id, peer target, receipt id, profile action and name), plus at most
+  one qualifier row of per-call detail such as a clipped message preview or a
+  profile definition and digest. A call shows an argument expansion hint only
+  when the collapsed row clips or omits argument content. Result cards use one
+  summary row and never repeat the call's subject: `subagent_steer`,
+  `subagent_interrupt`, and `subagent_kill` state the outcome, and a queued
+  steer is labeled delivery-only, not proof of worker action; `subagent_report`
+  reports the sent bytes and destination with its `sent_unconfirmed` status on
+  one row, and never claims the parent read it; `subagent_peers` reports the
+  family size, self included, and any page continuation, with addresses in the
+  expansion; `subagent_message` separates a send (an arrow to the target) from
+  a receipt read (the retained id) and states the peer state
+  (`sent_unconfirmed`, `context_seen`, or `target_closed`) with its limit on
+  the same row; `subagent_profiles` reports a list as counts by state, or a
+  read or mutation outcome with its digest. The status limits are abbreviated
+  on the card; this section and the expansion carry the full wording. A result
+  shows an expansion hint only when it hides content. Expansion shows the full
+  arguments, the complete escaped result text, and the structured result
+  details. A refusal the tool returns without an error flag renders in the
+  warning color while the text stays the tool's own sentence.
 - A worker is a full session: ending an ordinary assistant turn without calling
   `submit_result` leaves it live and idle in the same session, ready for a later
   peer message, child completion, or owner resume. No automatic submit reminder
