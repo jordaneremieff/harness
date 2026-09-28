@@ -225,7 +225,7 @@ Create the stable branch and persistent worktree with:
 
 ```bash
 npm run worktrees -- add extension/stash
-npm run worktrees -- add skill/memory
+npm run worktrees -- add skill/research
 npm run worktrees -- add prompt/drift
 npm run worktrees -- add feature/audit
 ```

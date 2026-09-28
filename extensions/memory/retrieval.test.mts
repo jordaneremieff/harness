@@ -1,0 +1,1018 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import {
+	constants,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { after, test } from "node:test";
+import {
+	MemoryRetrievalError,
+	NOTE_OPEN_FLAGS,
+	type ReadOptions,
+	type SearchOptions,
+	addressableSlug,
+	extractCue,
+	openRegular,
+	readMemory,
+	searchMemory,
+	sliceByCodePoints,
+	trimUtf8,
+} from "./retrieval.ts";
+
+type Json = Record<string, unknown>;
+const cleanupRoots: string[] = [];
+after(() => {
+	for (const root of cleanupRoots) rmSync(root, { recursive: true, force: true });
+});
+function object(value: unknown): Json {
+	assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+	return value as Json;
+}
+function array(value: unknown): unknown[] {
+	assert.ok(Array.isArray(value));
+	return value;
+}
+function string(value: unknown): string {
+	assert.equal(typeof value, "string");
+	return value as string;
+}
+function number(value: unknown): number {
+	assert.equal(typeof value, "number");
+	return value as number;
+}
+function notes(result: Json): Json[] {
+	return array(result.notes).map(object);
+}
+function issues(result: Json): string[] {
+	return array(object(result.scan).issues).map((issue) => string(object(issue).code));
+}
+function corpus(files: Record<string, string>): string {
+	const root = mkdtempSync(join(tmpdir(), "memory-retrieval-"));
+	cleanupRoots.push(root);
+	for (const [name, content] of Object.entries(files)) {
+		const path = join(root, name);
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, content);
+	}
+	return root;
+}
+function boundedJson(value: Json): Json {
+	assert.ok(Buffer.byteLength(JSON.stringify(value)) + 1 <= 48 * 1024);
+	assert.deepEqual(JSON.parse(JSON.stringify(value)), value, "result must contain only JSON-compatible data");
+	return value;
+}
+async function search(root: string, options: SearchOptions = {}): Promise<Json> {
+	return boundedJson(await searchMemory(root, options));
+}
+async function read(root: string, options: ReadOptions): Promise<Json> {
+	return boundedJson(await readMemory(root, options));
+}
+async function rejects(
+	operation: Promise<unknown>,
+	code: MemoryRetrievalError["code"],
+	pattern?: RegExp,
+): Promise<void> {
+	await assert.rejects(operation, (error: unknown) => {
+		assert.ok(error instanceof MemoryRetrievalError);
+		assert.equal(error.code, code);
+		assert.ok(error.message.length <= 500);
+		assert.doesNotMatch(error.message, /[\u0000-\u001f\u007f-\u009f]/);
+		if (pattern) assert.match(error.message, pattern);
+		return true;
+	});
+}
+async function drain(root: string, options: SearchOptions = {}): Promise<Json[]> {
+	const pages: Json[] = [];
+	let index = 0;
+	for (let guard = 0; guard < 200; guard += 1) {
+		const page = await search(root, { ...options, index });
+		pages.push(page);
+		if (!page.hasMore) return pages;
+		const next = number(page.nextIndex);
+		assert.ok(next > index);
+		index = next;
+	}
+	throw new Error("index walk exceeded guard");
+}
+async function collect(root: string, slug: string): Promise<{ text: string; pages: Json[] }> {
+	let offset = 0;
+	let digest: string | undefined;
+	let text = "";
+	const pages: Json[] = [];
+	for (let guard = 0; guard < 64; guard += 1) {
+		const page = await read(root, { slug, offset, digest });
+		const content = string(page.content);
+		assert.equal(Buffer.from(content, "utf8").toString("utf8"), content);
+		text += content;
+		pages.push(page);
+		if (!page.hasMore) return { text, pages };
+		offset = number(page.nextOffset);
+		digest = string(page.digest);
+	}
+	throw new Error("source walk exceeded guard");
+}
+function sourceLocation(note: Json, source: string, expected: string): Json {
+	const match = object(note.sourceMatch);
+	const points = Array.from(source);
+	const offset = number(match.offset);
+	const end = number(match.endOffset);
+	assert.equal(points.slice(offset, end).join(""), expected);
+	assert.equal(offset, Array.from(source.slice(0, source.indexOf(expected))).length);
+	const excerptOffset = number(match.excerptOffset);
+	const excerptEnd = number(match.excerptEndOffset);
+	assert.equal(match.excerpt, points.slice(excerptOffset, excerptEnd).join(""));
+	assert.ok(excerptOffset <= offset && excerptEnd >= end);
+	assert.ok(excerptEnd - excerptOffset <= 480);
+	assert.equal(note.digest, createHash("sha256").update(source).digest("hex"));
+	return match;
+}
+const README = "# Memory corpus contract\n\nThis directory holds durable notes.\n";
+const ACTIVE =
+	"---\ntitle: Prefer dark theme\ntags: [preference, ui]\nstatus: active\ncreated: 2025-01-02\nupdated: 2025-01-03\nverified: true\nverified_date: 2025-01-03\nsupersedes: []\nsuperseded_by: null\n---\n\n# Prefer dark theme\n\n## Summary\n\nUse the dark theme.\n";
+const OLD =
+	"---\ntitle: Old edge setting\ntags: [browser]\nstatus: superseded\nsupersedes: []\nsuperseded_by: prefer-dark-theme\n---\n\n# Old edge setting\n\nThe body mentions zebra-feature.\n";
+function maximalNote(index: number): string {
+	const tags = Array.from({ length: 40 }, (_, key) => `tag-${index}-${key}`.padEnd(80, "x")).join(", ");
+	const supersedes = Array.from({ length: 40 }, (_, key) => `slug-${index}-${key}`.padEnd(160, "y")).join(", ");
+	return `---\ntitle: ${"T".repeat(300)}\ntags: [${tags}]\nstatus: ${"s".repeat(80)}\nsupersedes: [${supersedes}]\nsuperseded_by: ${"z".repeat(160)}\n---\n\n# Heading ${index}\n`;
+}
+
+test("returns compact literal cues with heading and filename fallback", async () => {
+	const root = corpus({
+		"README.md": README,
+		"prefer-dark-theme.md": ACTIVE,
+		"old-edge-setting.md": OLD,
+		"heading.md": "# Heading only\n",
+		"plain.md": "Body only",
+	});
+	const result = await search(root);
+	assert.equal(result.totalNotes, 4);
+	const bySlug = new Map(notes(result).map((note) => [note.slug, note]));
+	assert.equal(bySlug.has("README"), false);
+	assert.deepEqual(bySlug.get("prefer-dark-theme"), {
+		slug: "prefer-dark-theme",
+		title: "Prefer dark theme",
+		tags: "[preference, ui]",
+		status: "active",
+		supersedes: "[]",
+		superseded_by: "null",
+	});
+	assert.deepEqual(bySlug.get("heading"), { slug: "heading", title: "Heading only" });
+	assert.deepEqual(bySlug.get("plain"), { slug: "plain", title: "plain" });
+	for (const query of [undefined]) {
+		const browse = await search(root, { query });
+		assert.equal(browse.search, undefined);
+		for (const note of notes(browse)) {
+			assert.equal(note.digest, undefined);
+			assert.equal(note.sourceMatch, undefined);
+		}
+	}
+});
+
+test("searches full source, cues, and slugs without lifecycle filtering", async () => {
+	const root = corpus({ "README.md": README, "prefer-dark-theme.md": ACTIVE, "old-edge-setting.md": OLD });
+	for (const query of ["UI", "old-edge", "zebra-feature"])
+		assert.equal((await search(root, { query })).totalMatches, 1);
+	const body = notes(await search(root, { query: "zebra-feature" }))[0];
+	assert.deepEqual(object(array(body.matched)[0]).fields, ["body"]);
+	assert.equal(body.status, "superseded");
+	const partial = notes(await search(root, { query: "dark interface" }));
+	assert.equal(partial.length, 2);
+	assert.equal(partial[0].slug, "prefer-dark-theme");
+	assert.deepEqual(partial[0].missing, ["interface"]);
+	assert.deepEqual(object(array(partial[1].matched)[0]).fields, ["frontmatter"]);
+	assert.equal((await search(root, { query: '"UI.*"' })).totalMatches, 0);
+	const slug = notes(await search(root, { query: '"old-edge"' }))[0];
+	assert.deepEqual(object(array(slug.matched)[0]).fields, ["slug"]);
+	assert.equal(slug.sourceMatch, null);
+	assert.match(string(slug.digest), /^[a-f0-9]{64}$/);
+});
+
+test("preserves comma-bearing tag values", async () => {
+	const root = corpus({ "README.md": README, "comma.md": '---\ntitle: Comma tag\ntags: ["a,b", c]\n---\n# Comma\n' });
+	const result = await search(root, { query: "a,b" });
+	assert.equal(result.totalMatches, 1);
+	assert.equal(notes(result)[0].tags, '["a,b", c]');
+});
+
+test("distinguishes clean emptiness, query misses, and uncertain emptiness", async () => {
+	const empty = corpus({ "README.md": README });
+	assert.equal((await search(empty)).corpusEmpty, true);
+	const miss = await search(empty, { query: "nothing-matches" });
+	assert.equal(miss.totalMatches, 0);
+	assert.equal(miss.corpusEmpty, true);
+	const nonempty = corpus({ "README.md": README, "good.md": ACTIVE });
+	assert.equal((await search(nonempty, { query: "unavailable" })).corpusEmpty, false);
+	mkdirSync(join(empty, "bad.md"));
+	const uncertain = await search(empty);
+	assert.equal(uncertain.corpusEmpty, null);
+	assert.equal(uncertain.totalNotes, 0);
+});
+
+test("requires an explicit absolute existing root and readable README without writes", async () => {
+	for (const root of [undefined, null, 3, "", "relative/corpus"] as unknown as string[]) {
+		await rejects(searchMemory(root, {}), "corpus", /absolute/);
+	}
+	const root = corpus({ "only-note.md": ACTIVE });
+	await rejects(searchMemory(root, {}), "corpus", /README\.md/);
+	await rejects(readMemory(root, { slug: "only-note" }), "corpus", /README\.md/);
+	const absent = join(root, "absent");
+	await rejects(searchMemory(absent, {}), "corpus");
+	assert.equal(existsSync(absent), false);
+	await rejects(searchMemory(join(root, "only-note.md"), {}), "corpus", /directory/);
+	await rejects(searchMemory(`/${"x".repeat(1025)}`, {}), "corpus", /1024/);
+	await rejects(searchMemory(`${root}\0`, {}), "corpus");
+	mkdirSync(join(root, "README.md"));
+	await rejects(searchMemory(root, {}), "corpus", /nonregular/);
+});
+
+test("reads original note and README source, preserving BOM and code-point pages", async () => {
+	const source = `\uFEFF${ACTIVE}${"é😀中abc".repeat(1500)}`;
+	const root = corpus({ "README.md": README, "unicode.md": source });
+	const { text, pages } = await collect(root, "unicode");
+	assert.equal(text, source);
+	assert.ok(pages.length > 1);
+	assert.equal(pages[0].source, "note");
+	assert.equal(pages[0].file, "unicode.md");
+	assert.equal(pages[0].offset, 0);
+	assert.equal(pages[0].contentCodePoints, 4000);
+	assert.equal(pages[0].totalCodePoints, Array.from(source).length);
+	const contract = await read(root, { slug: "README" });
+	assert.equal(contract.source, "contract");
+	assert.equal(contract.file, "README.md");
+	assert.equal(contract.content, README);
+	const end = await read(root, { slug: "unicode", offset: Array.from(source).length, digest: string(pages[0].digest) });
+	assert.equal(end.content, "");
+	assert.equal(end.hasMore, false);
+	await rejects(
+		readMemory(root, { slug: "unicode", offset: Array.from(source).length + 1, digest: string(pages[0].digest) }),
+		"input",
+		/beyond/,
+	);
+});
+
+test("binds search evidence and every continuation to the source digest", async () => {
+	const source = `${ACTIVE}\nbody phrase\n`;
+	const root = corpus({ "README.md": README, "good.md": source });
+	const found = notes(await search(root, { query: "body phrase" }))[0];
+	const digest = string(found.digest);
+	const page = await read(root, { slug: "good", digest: digest.toUpperCase() });
+	assert.equal(page.content, source);
+	writeFileSync(join(root, "good.md"), `${ACTIVE}\nreplacement phrase\n`);
+	await rejects(readMemory(root, { slug: "good", digest }), "changed", /changed/);
+	await rejects(readMemory(root, { slug: "good", offset: number(page.nextOffset), digest }), "changed", /changed/);
+	assert.equal((await search(root, { query: '"body phrase"' })).totalMatches, 0);
+	assert.equal((await search(root, { query: "replacement phrase" })).totalMatches, 1);
+	rmSync(join(root, "good.md"));
+	const removed = await search(root, { query: "replacement phrase" });
+	assert.equal(removed.totalMatches, 0);
+	assert.equal(object(removed.search).complete, true);
+	await rejects(readMemory(root, { slug: "good" }), "corpus", /not found/);
+});
+
+test("accepts exactly 64 KiB and refuses larger or invalid UTF-8 sources", async () => {
+	const source = `${"😀".repeat(16_382)}sentinel`;
+	assert.equal(Buffer.byteLength(source), 65536);
+	const root = corpus({
+		"README.md": `${README}\ncontract-only`,
+		"exact.md": source,
+		"over.md": `${source}x`,
+		".hidden.md": "hidden-only",
+	});
+	assert.equal((await read(root, { slug: "exact" })).sourceBytes, 65536);
+	await rejects(readMemory(root, { slug: "over" }), "corpus", /65536-byte/);
+	assert.ok(issues(await search(root)).includes("note.oversized"));
+	const found = await search(root, { query: "sentinel" });
+	sourceLocation(notes(found)[0], source, "sentinel");
+	assert.equal(object(found.search).complete, false);
+	assert.equal((await search(root, { query: "contract-only" })).totalMatches, 0);
+	assert.equal((await search(root, { query: "hidden-only" })).totalMatches, 0);
+	writeFileSync(join(root, "bad-utf8.md"), Buffer.from([0x23, 0x20, 0xff, 0xfe, 0x0a]));
+	assert.ok(issues(await search(root)).includes("note.unreadable"));
+	await rejects(readMemory(root, { slug: "bad-utf8" }), "corpus", /valid UTF-8/);
+});
+
+test("requests no-follow and nonblocking opens and rejects symlink errors and nonregular files", async () => {
+	assert.ok((NOTE_OPEN_FLAGS & constants.O_NOFOLLOW) !== 0);
+	assert.ok((NOTE_OPEN_FLAGS & constants.O_NONBLOCK) !== 0);
+	const root = corpus({ "README.md": README, "good.md": ACTIVE });
+	const error = Object.assign(new Error("symbolic link"), { code: "ELOOP" });
+	const loop = openRegular(join(root, "good.md"), () => {
+		throw error;
+	});
+	assert.equal(loop.ok, false);
+	if (!loop.ok) assert.match(loop.reason, /symbolic link/);
+	mkdirSync(join(root, "directory.md"));
+	await rejects(readMemory(root, { slug: "directory" }), "corpus", /nonregular/);
+});
+
+test("reports directory limits and counts unavailable notes beyond retained detail", async () => {
+	const files: Record<string, string> = { "README.md": README };
+	for (let i = 0; i < 30; i += 1) files[`bad ${i}.md`] = "needle";
+	const result = await search(corpus(files), { query: "needle" });
+	assert.equal(object(result.search).unavailableNotes, 30);
+	assert.equal(object(result.scan).issueCount, 30);
+	assert.equal(object(result.scan).issuesShown, 20);
+	assert.equal(result.corpusEmpty, null);
+	const many: Record<string, string> = { "README.md": README };
+	for (let i = 0; i < 520; i += 1) many[`entry-${i}.txt`] = "not a note";
+	const root = corpus(many);
+	for (const options of [{}, { query: "needle" }]) {
+		const limited = await search(root, options);
+		assert.equal(object(limited.scan).complete, false);
+		assert.equal(object(limited.scan).visited, 513);
+		assert.ok(issues(limited).includes("scan.limit"));
+		assert.equal(limited.corpusEmpty, null);
+		if (limited.search) assert.equal(object(limited.search).complete, false);
+	}
+});
+
+test("includes only filenames that source reads reproduce exactly", async () => {
+	for (const [file, expected] of [
+		["foo.md", "foo"],
+		["FOO.md", "FOO"],
+		["foo.MD", undefined],
+		["foo.md.md", undefined],
+		["bad name.md", undefined],
+		["README.md", undefined],
+		["foo.txt", undefined],
+	])
+		assert.equal(addressableSlug(string(file)), expected);
+	const root = corpus({
+		"README.md": README,
+		"good.md": ACTIVE,
+		"UPPER.MD": "# Upper",
+		"double.md.md": "# Double",
+		"bad name.md": "# Bad",
+	});
+	const result = await search(root);
+	assert.deepEqual(
+		notes(result).map((note) => note.slug),
+		["good"],
+	);
+	assert.ok(issues(result).includes("note.unaddressable"));
+	assert.equal((await read(root, { slug: "good" })).file, "good.md");
+});
+
+test("reports duplicate, multiline, empty, clipped, and unclosed cue fields", async () => {
+	const root = corpus({
+		"README.md": README,
+		"duplicate.md": "---\ntitle: A\ntitle: B\n---\n# H\n",
+		"multiline.md": "---\ntags:\n  - a\n  - b\nstatus: active\n---\n# H\n",
+		"clipped.md": `---\ntitle: ${"x".repeat(300)}\n---\n# H\n`,
+		"unclosed.md": "---\ntitle: A\n",
+		"huge.md": `---\ntitle: Huge\nblob: ${"y".repeat(9000)}\n---\n# Huge\n`,
+		"empty.md": "---\ntitle:\nstatus:\n---\n# Heading\n",
+	});
+	const result = await search(root);
+	const bySlug = new Map(notes(result).map((note) => [note.slug, note]));
+	assert.equal(bySlug.get("duplicate")?.title, "A");
+	for (const [slug, pattern] of [
+		["duplicate", /duplicate/],
+		["multiline", /multiline/],
+		["clipped", /clipped/],
+		["unclosed", /no closing delimiter/],
+		["huge", /read window/],
+		["empty", /empty/],
+	] as const)
+		assert.match(string(bySlug.get(slug)?.cueProblem), pattern);
+	assert.ok(string(bySlug.get("clipped")?.title).length <= 160);
+	assert.equal(bySlug.get("empty")?.status, "");
+	assert.equal(bySlug.get("empty")?.title, "Heading");
+	assert.ok(issues(result).includes("note.metadata"));
+});
+
+test("validates scalar inputs, integer bounds, query grammar, and safe continuation", async () => {
+	const root = corpus({ "README.md": README, "good.md": ACTIVE });
+	for (const options of [
+		null,
+		[],
+		{ bogus: true },
+		{ query: ["a", "b"] },
+		{ query: null },
+		{ query: 2 },
+		{ query: "x".repeat(201) },
+		{ index: -1 },
+		{ index: "1" },
+		{ index: 1.5 },
+		{ index: 1_000_001 },
+		{ index: NaN },
+		{ limit: 0 },
+		{ limit: 513 },
+		{ query: "needle", limit: 26 },
+		{ limit: 1.5 },
+		{ limit: "2" },
+		{ limit: null },
+		{ limit: Infinity },
+	])
+		await rejects(searchMemory(root, options as SearchOptions), "input");
+	for (const options of [
+		null,
+		[],
+		{},
+		{ slug: [] },
+		{ slug: "good.md" },
+		{ slug: "../good" },
+		{ slug: "x".repeat(121) },
+		{ slug: "good", offset: 5 },
+		{ slug: "good", offset: -1 },
+		{ slug: "good", offset: 1_000_000_001 },
+		{ slug: "good", offset: "0" },
+		{ slug: "good", digest: "nope" },
+		{ slug: "good", digest: 2 },
+		{ slug: "good", query: "a" },
+	])
+		await rejects(readMemory(root, options as ReadOptions), "input");
+	for (const query of ["the and", "!!!", '""', '"unclosed', Array.from({ length: 17 }, (_, i) => `w${i}`).join(" ")])
+		await rejects(searchMemory(root, { query }), "input");
+	await rejects(readMemory(root, { slug: "bad\n\u001bname" }), "input", /invalid note slug/);
+});
+
+test("blank scalar and array queries require omission for browse", async () => {
+	const root = corpus({ "README.md": README });
+	for (const query of ["", " \t\n", [""], ["  "]])
+		await rejects(searchMemory(root, { query }), "input", /omit query to browse/);
+	assert.equal((await search(root)).query, null);
+});
+
+test("source reads refuse offsets beyond the note's code-point end", async () => {
+	const root = corpus({ "README.md": README, "note.md": "😀abc" });
+	const first = await read(root, { slug: "note" });
+	await rejects(readMemory(root, { slug: "note", digest: string(first.digest), offset: 5 }), "input", /beyond the end/);
+	assert.equal((await read(root, { slug: "note", digest: string(first.digest), offset: 4 })).content, "");
+});
+
+test("real symbolic links remain excluded from browse and search", async () => {
+	const root = corpus({ "README.md": README, "target.md": "needle" });
+	symlinkSync(join(root, "target.md"), join(root, "linked.md"));
+	for (const query of [undefined, "needle", ["needle", "target"]]) {
+		const result = await search(root, { query });
+		assert.deepEqual(
+			notes(result).map((note) => note.slug),
+			["target"],
+		);
+		assert.ok(issues(result).includes("note.symlink"));
+		assert.equal(object(result.scan).complete, true);
+		assert.equal(object(result.scan).unavailableNotes, 1);
+		if (query) assert.equal(object(result.search).complete, false);
+	}
+});
+
+test("query limits explain how to shorten full questions", async () => {
+	const root = corpus({ "README.md": README });
+	await rejects(searchMemory(root, { query: "word ".repeat(50) }), "input", /Shorten to a keyword formulation/);
+	await rejects(
+		searchMemory(root, { query: Array.from({ length: 17 }, (_, i) => `term${i}`).join(" ") }),
+		"input",
+		/Shorten to a keyword formulation/,
+	);
+});
+
+test("stays read-only for browse, search, source reads, and missing notes", async () => {
+	const root = corpus({ "README.md": README, "good.md": ACTIVE });
+	const before = readdirSync(root).sort();
+	await search(root);
+	await search(root, { query: "theme" });
+	await search(root, { query: "absent knowledge" });
+	await read(root, { slug: "good" });
+	await read(root, { slug: "README" });
+	await rejects(readMemory(root, { slug: "absent-note" }), "corpus");
+	assert.deepEqual(readdirSync(root).sort(), before);
+	assert.equal(readFileSync(join(root, "good.md"), "utf8"), ACTIVE);
+});
+
+test("bounds escaped source output under a long root", async () => {
+	let root = corpus({});
+	while (root.length < 600) {
+		root = join(root, "segment-name-".padEnd(60, "x"));
+		mkdirSync(root);
+	}
+	writeFileSync(join(root, "README.md"), README);
+	writeFileSync(join(root, "control.md"), `# Control\n\n${"\u0001".repeat(20 * 1024)}`);
+	const result = await read(root, { slug: "control" });
+	assert.ok(number(result.sourceBytes) > 4000);
+});
+
+test("extracts literal cue lines without YAML interpretation", () => {
+	assert.equal(extractCue("# Title\n", false).metadata, "absent");
+	const cue = extractCue(
+		'---\ntitle: "A: B"\ntags: [x, y]\nstatus: active\nsuperseded_by: null\ncreated: 2025-01-01\n---\n# A\n',
+		false,
+	);
+	assert.equal(cue.metadata, "ok");
+	assert.equal(cue.lines.get("title"), 'title: "A: B"');
+	assert.equal(cue.lines.get("tags"), "tags: [x, y]");
+	assert.equal(cue.lines.get("superseded_by"), "superseded_by: null");
+	assert.equal(cue.lines.has("created"), false);
+	assert.equal(extractCue("---\ntitle: A\ntitle: B\n---\n", false).duplicate, true);
+	assert.equal(extractCue("---\ntags:\n  - a\n---\n", false).multiline, true);
+	assert.equal(extractCue("---\ntitle: A\n", false).metadata, "malformed");
+	const partial = extractCue(`---\ntitle: A\n${"y".repeat(9000)}`, true);
+	assert.equal(partial.metadata, "partial");
+	assert.equal(partial.issue, "frontmatter not closed within the read window");
+});
+
+test("keeps original locations through lowercase expansion, contextual casing, and multibyte text", async () => {
+	const cases = [
+		["\uFEFF😀İ prefix\r\nA NEEDLE after é中.", "needle", "NEEDLE"],
+		["😀İ😀İ😀 NEEDLE", "needle", "NEEDLE"],
+		["😀İstanbul", "i", "İ"],
+		["😀İstanbul", "\u0307", "İ"],
+		["😀İstanbul", "i\u0307s", "İs"],
+		["😀 ΟΔΟΣ after", "οδος", "ΟΔΟΣ"],
+		["😀 Σ before ΟΣ after", "ΟΣ", "ΟΣ"],
+		["😀 e\u0301 中 𐐀", "𐐨", "𐐀"],
+		["before a.b+[x] after", "a.b+[x]", "a.b+[x]"],
+	];
+	for (const [source, query, expected] of cases) {
+		const root = corpus({ "README.md": README, "note.md": source });
+		const result = await search(root, { query: `"${query}"` });
+		assert.equal(result.totalMatches, 1);
+		const note = notes(result)[0];
+		const match = sourceLocation(note, source, expected);
+		const page = await read(root, { slug: "note", offset: number(match.excerptOffset), digest: string(note.digest) });
+		assert.equal(page.content, Array.from(source).slice(number(match.excerptOffset)).join(""));
+	}
+	assert.equal((await search(corpus({ "README.md": README, "note.md": "e\u0301" }), { query: "é" })).totalMatches, 0);
+});
+
+test("contains the full expanded lowercase match and clips oversized phrase spans", async () => {
+	const matched = "i\u0307".repeat(198);
+	const source = `${"p".repeat(120)}${matched} tail`;
+	const root = corpus({ "README.md": README, "note.md": source });
+	const match = sourceLocation(notes(await search(root, { query: `"${"İ".repeat(198)}"` }))[0], source, matched);
+	assert.equal(match.offset, 120);
+	assert.equal(match.endOffset, 516);
+	assert.equal(match.excerptOffset, 36);
+	assert.equal(match.excerptEndOffset, 516);
+	const long = `start${" ".repeat(9000)}finish`;
+	const clipped = object(
+		notes(await search(corpus({ "README.md": README, "long.md": long }), { query: '"start finish"' }))[0].sourceMatch,
+	);
+	assert.equal(clipped.offset, 0);
+	assert.equal(clipped.endOffset, 480);
+	assert.equal(clipped.excerpt, long.slice(0, 480));
+});
+
+test("searches introductions, fenced text, and source tails with no section parsing", async () => {
+	const intro =
+		"---\ntitle: Display\nstatus: active\n---\n\nDisable animated transitions.\n\n# Display\n\nDo not apply this to video playback.\n";
+	const fenced =
+		"---\ntitle: Preview\n---\n\n# Preview\n\nUse vector output. The following example is retired.\n\n```text\n# Raster example\nrender_mode = raster\n```\n\nKeep vector output.\n";
+	const tail = `${ACTIVE}\n${"😀 filler line\n".repeat(1500)}\nOnly choose a quiet room when there is no fee.\n`;
+	const root = corpus({ "README.md": README, "intro.md": intro, "fenced.md": fenced, "tail.md": tail });
+	for (const [slug, source, query] of [
+		["intro", intro, "animated transitions"],
+		["fenced", fenced, "render_mode"],
+		["tail", tail, "quiet room"],
+	]) {
+		const result = await search(root, { query });
+		assert.equal(result.totalMatches, 1);
+		assert.equal(notes(result)[0].slug, slug);
+		sourceLocation(notes(result)[0], source, query);
+		assert.equal(object(result.search).complete, true);
+	}
+	const note = notes(await search(root, { query: "quiet room" }))[0];
+	const match = object(note.sourceMatch);
+	assert.ok(number(match.offset) > 8192);
+	assert.match(
+		string(
+			(await read(root, { slug: "tail", offset: number(match.excerptOffset), digest: string(note.digest) })).content,
+		),
+		/no fee/,
+	);
+});
+
+test("retains later source qualifications beyond a selected passage", async () => {
+	const source = `${ACTIVE}\nneedle before a qualification\n${"x".repeat(6000)}\nneedle with a later qualification\n`;
+	const root = corpus({ "README.md": README, "note.md": source });
+	const result = await search(root, { query: "needle" });
+	assert.equal(object(result.search).ranking, "lexical");
+	const match = sourceLocation(notes(result)[0], source, "needle");
+	assert.ok(number(match.excerptEndOffset) < Array.from(source).length);
+	assert.equal((await collect(root, "note")).text, source);
+});
+
+test("separates coverage gaps from misses and cue warnings", async () => {
+	const root = corpus({
+		"README.md": README,
+		"good.md": "---\ntitle: First\ntitle: Duplicate\n---\n\nneedle\n",
+		"large.md": `# Large\n${"x".repeat(65536)}needle`,
+		"bad name.md": "needle",
+	});
+	mkdirSync(join(root, "directory.md"));
+	writeFileSync(join(root, "invalid.md"), Buffer.concat([Buffer.from("x".repeat(9000)), Buffer.from([0xff])]));
+	const result = await search(root, { query: "needle" });
+	assert.equal(object(result.scan).complete, true);
+	assert.equal(object(result.search).complete, false);
+	assert.equal(object(result.search).notesSearched, 1);
+	assert.equal(object(result.search).unavailableNotes, 4);
+	assert.equal(result.totalMatches, 1);
+	assert.deepEqual(
+		issues(result).sort(),
+		["note.metadata", "note.nonregular", "note.oversized", "note.unaddressable", "note.unreadable"].sort(),
+	);
+	const miss = await search(root, { query: "nothing" });
+	assert.equal(miss.totalMatches, 0);
+	assert.equal(object(miss.search).complete, false);
+	assert.equal((await search(root, { query: "large" })).totalMatches, 0);
+	assert.ok(notes(await search(root)).some((note) => note.slug === "large"));
+	const complete = await search(corpus({ "README.md": README, "note.md": "---\ntitle: Unclosed\n\nneedle" }), {
+		query: "needle",
+	});
+	assert.equal(object(complete.search).complete, true);
+	assert.match(string(notes(complete)[0].cueProblem), /no closing delimiter/);
+	assert.equal(object(complete.search).unavailableNotes, 0);
+});
+
+test("paginates escaped evidence and maximal metadata without skips", async () => {
+	const files: Record<string, string> = { "README.md": README };
+	for (let i = 0; i < 30; i += 1)
+		files[`note-${String(i).padStart(2, "0")}.md`] =
+			`${maximalNote(i)}\n${"\u0001".repeat(600)}needle${"\u0001".repeat(600)}`;
+	const root = corpus(files);
+	const pages = await drain(root, { query: "needle", limit: 25 });
+	assert.ok(number(pages[0].returned) < 25);
+	const seen: string[] = [];
+	for (const page of pages) {
+		assert.equal(object(page.search).complete, true);
+		assert.equal(object(page.search).notesSearched, 30);
+		for (const note of notes(page)) {
+			const slug = string(note.slug);
+			assert.ok(!seen.includes(slug));
+			seen.push(slug);
+			sourceLocation(note, files[`${slug}.md`], "needle");
+		}
+	}
+	assert.equal(seen.length, 30);
+	assert.deepEqual(seen, [...seen].sort());
+	const browsePages = await drain(root);
+	assert.equal(browsePages.flatMap(notes).length, 30);
+	assert.equal(new Set(browsePages.flatMap((page) => notes(page).map((note) => note.slug))).size, 30);
+});
+
+test("retains conflicting and superseded notes with literal lifecycle cues", async () => {
+	const root = corpus({
+		"README.md": README,
+		"active.md": "---\ntitle: Current\nstatus: active\nsupersedes: [old]\n---\n\nUse bullets for a weekly report.\n",
+		"old.md":
+			"---\ntitle: Previous\nstatus: superseded\nsuperseded_by: active\n---\n\nUse prose for a weekly report.\n",
+		"conflict.md": "---\ntitle: Other\nstatus: active\n---\n\nUse a table for a weekly report.\n",
+	});
+	const result = await search(root, { query: "weekly report" });
+	assert.equal(result.totalMatches, 3);
+	const bySlug = new Map(notes(result).map((note) => [note.slug, note]));
+	assert.deepEqual([...bySlug.keys()].sort(), ["active", "conflict", "old"]);
+	assert.equal(bySlug.get("old")?.status, "superseded");
+	assert.equal(bySlug.get("active")?.supersedes, "[old]");
+});
+
+test("keeps overlapping phrase and word evidence in one selected passage", async () => {
+	const phrase = `start needle ${" ".repeat(90)}finish`;
+	const source = `${"x".repeat(200)} early ${" ".repeat(300)}${phrase}`;
+	const match = object(
+		notes(
+			await search(corpus({ "README.md": README, "overlap.md": source }), {
+				query: 'early "start needle finish" needle',
+			}),
+		)[0].sourceMatch,
+	);
+	assert.ok(string(match.excerpt).includes(phrase));
+	assert.equal(match.endOffset, source.length);
+	assert.ok(number(match.excerptEndOffset) >= source.length);
+});
+
+test("clips cue values without splitting astral characters", async () => {
+	const title = `${"a".repeat(158)}😀 tail`;
+	const value = `${"b".repeat(238)}😀 tail`;
+	const root = corpus({
+		"README.md": README,
+		"frontmatter.md": `---\ntitle: ${title}\ntags: ${value}\nsupersedes: ${value}\n---\nneedle\n`,
+		"heading.md": `# ${title}\nneedle\n`,
+	});
+	for (const options of [{}, { query: "needle" }]) {
+		for (const note of notes(await search(root, options))) {
+			assert.equal(note.title, `${"a".repeat(158)}…`);
+			for (const key of ["tags", "supersedes"])
+				if (note[key] !== undefined) assert.equal(note[key], `${"b".repeat(238)}…`);
+			for (const text of Object.values(note).filter((value): value is string => typeof value === "string"))
+				assert.equal(Buffer.from(text, "utf8").toString("utf8"), text);
+			assert.match(string(note.cueProblem), /clipped/);
+		}
+	}
+});
+
+test("ranks multi-term evidence with ordinal ranks and explicit missing terms", async () => {
+	const root = corpus({
+		"README.md": README,
+		"both.md": "---\ntitle: Model delegation\ntags: [model, delegation]\n---\nDelegate model tasks.\n",
+		"model.md": "# Other\n\nmodel model model model model\n",
+		"neither.md": "# Flowers\n\nA garden.\n",
+	});
+	const result = await search(root, { query: "model delegation unavailable" });
+	const found = notes(result);
+	assert.deepEqual(
+		found.map((note) => note.slug),
+		["both", "model"],
+	);
+	assert.deepEqual(
+		found.map((note) => note.rank),
+		[1, 2],
+	);
+	assert.deepEqual(found[0].missing, ["unavailable"]);
+	assert.deepEqual(
+		array(found[0].matched).map((term) => object(term).term),
+		["model", "delegation"],
+	);
+	assert.equal(found[0].score, undefined);
+	assert.equal(object(result.search).ranking, "lexical");
+	assert.deepEqual(
+		array(object(result.search).terms).map((term) => object(term).notes),
+		[2, 1, 0],
+	);
+});
+
+test("requires phrases, ignores stopwords, and matches adjacent identifier tokens", async () => {
+	const root = corpus({
+		"README.md": README,
+		"yes.md": "# Notes\n\nWeekly\nreport uses PI_MEMORY_DIR and model routing.\n",
+		"no.md": "# Notes\n\nWeekly plan then report. PI elsewhere MEMORY then DIR. models only.\n",
+	});
+	for (const query of ['"weekly report" model', "PI_MEMORY_DIR", "model"])
+		assert.deepEqual(
+			notes(await search(root, { query })).map((note) => note.slug),
+			["yes"],
+		);
+	const result = await search(root, { query: "the model and model" });
+	assert.deepEqual(object(result.search).ignored, ["the", "and"]);
+	assert.equal(array(object(result.search).terms).length, 1);
+});
+
+test("selects later concentrated evidence rather than the first occurrence", async () => {
+	const source = `alpha alone.\n${"unrelated ".repeat(100)}\n😀 alpha beta gamma with a qualification.\n`;
+	const match = object(
+		notes(await search(corpus({ "README.md": README, "note.md": source }), { query: "alpha beta gamma" }))[0]
+			.sourceMatch,
+	);
+	assert.ok(number(match.offset) > 500);
+	assert.match(string(match.excerpt), /alpha beta gamma with a qualification/);
+	assert.equal(Array.from(source).slice(number(match.offset), number(match.endOffset)).join(""), "alpha beta gamma");
+});
+
+test("defaults browse to byte-bounded cues and query to ten records with exact continuation", async () => {
+	const files: Record<string, string> = { "README.md": README };
+	for (let i = 0; i < 60; i += 1)
+		files[`note-${String(i).padStart(2, "0")}.md`] = `# Subject\n\nneedle ${"extra ".repeat(i)}\n`;
+	const root = corpus(files);
+	for (const query of [undefined, "needle"]) {
+		const initial = await search(root, { query });
+		assert.equal(initial.pageSize, query === undefined ? 512 : 10);
+		assert.equal(initial.returned, query === undefined ? 60 : 10);
+		assert.equal(initial.nextIndex, query === undefined ? null : 10);
+		for (const limit of [1, 25]) {
+			const pages = await drain(root, { query, limit });
+			assert.equal(pages[0].returned, limit);
+			const found = pages.flatMap(notes);
+			assert.equal(found.length, 60);
+			assert.deepEqual(
+				found.map((note) => note.slug),
+				Array.from({ length: 60 }, (_, i) => `note-${String(i).padStart(2, "0")}`),
+			);
+			if (query)
+				assert.deepEqual(
+					found.map((note) => note.rank),
+					Array.from({ length: 60 }, (_, i) => i + 1),
+				);
+		}
+		const beyond = await search(root, { query, index: 1_000_000 });
+		assert.equal(beyond.returned, 0);
+		assert.equal(beyond.nextIndex, null);
+		assert.equal(beyond.hasMore, false);
+	}
+});
+
+test("default browse returns a full compact index and accepts a larger explicit reducer", async () => {
+	const files: Record<string, string> = { "README.md": README };
+	for (let i = 0; i < 275; i += 1) files[`note-${String(i).padStart(3, "0")}.md`] = "# Compact cue\n";
+	const root = corpus(files);
+	const full = await search(root);
+	assert.equal(full.returned, 275);
+	assert.equal(full.nextIndex, null);
+	const reduced = await drain(root, { limit: 50 });
+	assert.equal(reduced[0].returned, 50);
+	assert.deepEqual(reduced.flatMap(notes), notes(full));
+	const largeFiles: Record<string, string> = { "README.md": README };
+	for (let i = 0; i < 100; i += 1)
+		largeFiles[`note-${String(i).padStart(3, "0")}.md`] =
+			`---\ntitle: ${"T".repeat(160)}\ntags: ${"t".repeat(240)}\nstatus: active\nsupersedes: ${"s".repeat(240)}\nsuperseded_by: ${"n".repeat(240)}\n---\n`;
+	const pages = await drain(corpus(largeFiles));
+	assert.ok(pages.length > 1);
+	assert.equal(pages.flatMap(notes).length, 100);
+	assert.equal(new Set(pages.flatMap(notes).map((note) => note.slug)).size, 100);
+});
+
+test("fused passages prefer body evidence and preserve original code-point locations", async () => {
+	const source = "\uFEFF---\ntitle: metadata😀\n---\n\n# Subject\n\n😀 bodyneedle\n";
+	const root = corpus({
+		"README.md": README,
+		"subject.md": source,
+		"body-rival.md": "# bodyneedle\nbodyneedle bodyneedle\n",
+		"metadata-only.md": "---\ntitle: uniquemetadata\n---\n\n# Subject\nflowers\n",
+	});
+	const result = await search(root, { query: ["metadata", "bodyneedle", "uniquemetadata"] });
+	const subject = notes(result).find((note) => note.slug === "subject");
+	assert.ok(subject);
+	const match = sourceLocation(subject, source, "bodyneedle");
+	assert.doesNotMatch(string(match.excerpt), /title:|metadata/);
+	assert.equal((JSON.stringify(subject).match(/"sourceMatch":/g) ?? []).length, 1);
+	const ranks = array(subject.formulations).map((item) => object(item).rank);
+	assert.ok(number(ranks[0]) < number(ranks[1]));
+	const metadata = notes(result).find((note) => note.slug === "metadata-only");
+	assert.ok(metadata);
+	sourceLocation(metadata, "---\ntitle: uniquemetadata\n---\n\n# Subject\nflowers\n", "uniquemetadata");
+});
+
+test("slices code points and trims incomplete UTF-8 browse windows", () => {
+	assert.deepEqual(sliceByCodePoints("😀ab", 0, 1), {
+		content: "😀",
+		nextOffset: 1,
+		contentCodePoints: 1,
+		hasMore: true,
+	});
+	assert.equal(sliceByCodePoints("😀ab", 1, 1).content, "a");
+	assert.equal(trimUtf8(Buffer.from([0x61, 0xc3, 0xa9]), true).toString("utf8"), "aé");
+	assert.equal(trimUtf8(Buffer.from([0x61, 0xc3]), true).toString("utf8"), "a");
+});
+
+test("rejects pre-aborted calls without exposing the signal reason", async () => {
+	const controller = new AbortController();
+	controller.abort(new Error("private abort reason"));
+	await rejects(searchMemory("/absent", {}, controller.signal), "aborted", /^Memory retrieval cancelled$/);
+	await rejects(readMemory("/absent", { slug: "note" }, controller.signal), "aborted", /^Memory retrieval cancelled$/);
+});
+
+test("observes cancellation during traversal and permits a later complete call", async () => {
+	const files: Record<string, string> = { "README.md": README };
+	for (let i = 0; i < 20; i += 1) files[`note-${i}.md`] = "needle ".repeat(2000);
+	const root = corpus(files);
+	for (const query of [undefined, "needle", ["needle", "alternate"]]) {
+		const controller = new AbortController();
+		const pending = searchMemory(root, { query }, controller.signal);
+		setImmediate(() => controller.abort());
+		await rejects(pending, "aborted");
+	}
+	const controller = new AbortController();
+	const pending = readMemory(root, { slug: "note-0" }, controller.signal);
+	controller.abort();
+	await rejects(pending, "aborted");
+	assert.equal((await search(root, { query: "needle" })).totalMatches, 20);
+	assert.equal((await read(root, { slug: "note-0" })).hasMore, true);
+});
+
+test("fuses formulation ranks with k=60 and keeps independent evidence", async () => {
+	const files = {
+		"README.md": README,
+		"alpha.md": "# Alpha\nalpha alpha alpha\n",
+		"beta.md": "# Beta\nbeta beta beta\n",
+		"shared.md": "# Shared\nalpha beta\n",
+		"neither.md": "# Other\nflowers\n",
+	};
+	const root = corpus(files);
+	const queries = ["alpha", "beta"];
+	const singles = await Promise.all(queries.map((query) => search(root, { query })));
+	const expected = new Map<string, number>();
+	for (const single of singles)
+		for (const note of notes(single)) {
+			const slug = string(note.slug);
+			expected.set(slug, (expected.get(slug) ?? 0) + 1 / (60 + number(note.rank)));
+		}
+	const result = await search(root, { query: queries });
+	assert.deepEqual(result.query, queries);
+	assert.equal(object(result.search).ranking, "reciprocal-rank-fusion");
+	assert.equal(result.totalMatches, 3);
+	assert.equal(result.totalNotes, 4);
+	assert.equal(object(result.search).notesSearched, 4);
+	assert.equal(object(result.scan).visited, 5);
+	assert.equal(object(result.search).complete, true);
+	assert.deepEqual(
+		notes(result).map((note) => note.slug),
+		[...expected].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([slug]) => slug),
+	);
+	assert.equal(notes(result)[0].slug, "shared");
+	assert.equal(object(result.search).terms, undefined);
+	const summaries = array(object(result.search).formulations).map(object);
+	assert.deepEqual(
+		summaries.map((summary) => summary.query),
+		queries,
+	);
+	for (const [index, note] of notes(result).entries()) {
+		assert.equal(note.rank, index + 1);
+		assert.equal(note.score, undefined);
+		assert.equal(note.matched, undefined);
+		assert.equal(
+			note.digest,
+			createHash("sha256")
+				.update(files[`${string(note.slug)}.md` as keyof typeof files])
+				.digest("hex"),
+		);
+		const evidence = array(note.formulations).map(object);
+		assert.equal(evidence.length, 2);
+		for (const [formulation, item] of evidence.entries()) {
+			const original = notes(singles[formulation]).find((candidate) => candidate.slug === note.slug);
+			assert.equal(item.query, queries[formulation]);
+			assert.equal(item.rank, original?.rank ?? null);
+			assert.equal(item.score, undefined);
+			if (original) {
+				assert.deepEqual(item.matched, original.matched);
+				assert.deepEqual(item.missing, original.missing);
+				assert.equal(item.sourceMatch, undefined);
+			} else {
+				assert.deepEqual(item.matched, []);
+				assert.deepEqual(item.missing, [queries[formulation]]);
+				assert.equal(item.sourceMatch, undefined);
+			}
+		}
+	}
+	assert.equal(
+		(await read(root, { slug: "shared", digest: string(notes(result)[0].digest) })).content,
+		files["shared.md"],
+	);
+});
+
+test("keeps phrase requirements local to each formulation", async () => {
+	const root = corpus({
+		"README.md": README,
+		"red.md": "# Red\nred bird alpha\n",
+		"blue.md": "# Blue\nblue bird alpha\n",
+		"slug-only.md": "# Unrelated\nflower\n",
+	});
+	const result = await search(root, { query: ['"red bird" alpha', '"blue bird"', '"slug-only"'] });
+	assert.equal(result.totalMatches, 3);
+	const blue = notes(result).find((note) => note.slug === "blue");
+	assert.ok(blue);
+	const rejected = object(array(blue.formulations)[0]);
+	assert.equal(rejected.rank, null);
+	assert.deepEqual(rejected.missing, ["red bird"]);
+	assert.deepEqual(
+		array(rejected.matched).map((item) => object(item).term),
+		["alpha"],
+	);
+	assert.equal(rejected.sourceMatch, undefined);
+	assert.match(string(object(blue.sourceMatch).excerpt), /blue bird/);
+	const slug = notes(result).find((note) => note.slug === "slug-only");
+	assert.ok(slug);
+	assert.equal(slug.sourceMatch, null);
+	assert.equal(object(array(slug.formulations)[2]).sourceMatch, undefined);
+	assert.equal(object(array(slug.formulations)[2]).rank, 1);
+	for (const query of [
+		[],
+		[" "],
+		["alpha", ""],
+		["alpha", 2],
+		["a", "b", "c", "d"],
+		["x".repeat(201)],
+		["alpha", '"unclosed'],
+	])
+		await rejects(searchMemory(root, { query: query as string[] }), "input");
+});
+
+test("preserves fusion order under bounded pagination and shared coverage gaps", async () => {
+	const files: Record<string, string> = { "README.md": README, "bad name.md": "needle alternate" };
+	for (let i = 0; i < 30; i += 1)
+		files[`note-${String(i).padStart(2, "0")}.md`] =
+			`${maximalNote(i)}\n${"\u0001".repeat(600)}needle alternate third${"\u0001".repeat(600)}`;
+	const root = corpus(files);
+	const query = ["needle", "alternate", "third"];
+	const pages = await drain(root, { query, limit: 25 });
+	assert.ok(number(pages[0].returned) < 25);
+	const found = pages.flatMap(notes);
+	assert.equal(found.length, 30);
+	assert.equal(new Set(found.map((note) => note.slug)).size, 30);
+	assert.deepEqual(
+		found.map((note) => note.rank),
+		Array.from({ length: 30 }, (_, i) => i + 1),
+	);
+	for (const page of pages) {
+		assert.equal(object(page.search).complete, false);
+		assert.equal(object(page.search).unavailableNotes, 1);
+		assert.equal(object(page.scan).issueCount, 31);
+	}
+	const single = await search(root, { query: "needle" });
+	const one = await search(root, { query: ["needle"] });
+	assert.deepEqual(
+		notes(one).map((note) => note.slug),
+		notes(single).map((note) => note.slug),
+	);
+	assert.equal(notes(single)[0].formulations, undefined);
+	assert.equal(object(single.search).formulations, undefined);
+	assert.deepEqual(object(array(notes(one)[0].formulations)[0]).matched, notes(single)[0].matched);
+});

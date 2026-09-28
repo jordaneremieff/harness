@@ -17,6 +17,7 @@ Current consumers:
 
 | Variable | Extension | Purpose |
 |---|---|---|
+| `PI_MEMORY_DIR` | memory | Required absolute corpus directory; unset, empty, or relative returns Memory unavailable, with no default. |
 | `PI_BRAVE_API_KEY` | brave | Brave Web Search subscription token. Precedence: explicit client option, then this variable. |
 | `PI_STASH_DIR` | stash | Stash store directory override; default `<agentDir>/stash`. |
 | `PI_STASH_CAPACITY` | stash | `1` or unset enables capacity requests; `0` disables them. |

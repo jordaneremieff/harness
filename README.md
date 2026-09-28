@@ -42,11 +42,12 @@ boundaries, rather than a central feature catalog.
   continue the work.
 - [Worktrees](docs/conventions/worktrees.md) defines the development and
   publication workflow.
-- [Memory](skills/memory/SKILL.md) retrieves prior operator knowledge before
-  dependent choices. Its read-only script searches bounded note sources in
-  `PI_MEMORY_DIR`, links matches to digest-checked source reads, and retains
-  compact cue browsing. Curation stays with the skill, without a separate
-  stored index.
+- [Memory](extensions/memory/README.md) retrieves prior operator knowledge before
+  dependent choices. Its tools search bounded note sources in `PI_MEMORY_DIR`,
+  combine alternative query formulations, read digest-checked source pages,
+  and retain compact cue browsing. Validated writes maintain note format,
+  dates, concurrent-update checks, and reciprocal supersession without a
+  separate stored index.
 
 `npm test` includes a serialized tool-schema check in
 [scripts/extension-load-check.test.mts](scripts/extension-load-check.test.mts).

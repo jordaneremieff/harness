@@ -171,17 +171,17 @@ describe("development record classification", () => {
 
 	it("recognizes skill development records under their own root", () => {
 		for (const path of [
-			"skills/memory/AGENTS.md",
-			"skills/memory/LOG.md",
-			"skills/memory/PLAN.md",
-			"skills/memory/REWRITE-SPEC.md",
-			"skills/memory/SOLUTION.md",
-			"skills/memory/MEMORY-FINDINGS.md",
+			"skills/demo/AGENTS.md",
+			"skills/demo/LOG.md",
+			"skills/demo/PLAN.md",
+			"skills/demo/REWRITE-SPEC.md",
+			"skills/demo/SOLUTION.md",
+			"skills/demo/DEMO-FINDINGS.md",
 		]) {
-			assert.equal(isDevRecordPath(path, "skills/memory"), true, path);
+			assert.equal(isDevRecordPath(path, "skills/demo"), true, path);
 		}
-		for (const path of ["skills/memory/SKILL.md", "skills/memory/README.md", "skills/other/LOG.md"]) {
-			assert.equal(isDevRecordPath(path, "skills/memory"), false, path);
+		for (const path of ["skills/demo/SKILL.md", "skills/demo/README.md", "skills/other/LOG.md"]) {
+			assert.equal(isDevRecordPath(path, "skills/demo"), false, path);
 		}
 	});
 
@@ -227,9 +227,9 @@ describe("development record classification", () => {
 		assert.deepEqual(feature.shipped, ["evals/runner.mts"]);
 		assert.deepEqual(feature.devRecords, ["evals/AGENTS.md"]);
 
-		const skill = classifyCommitFiles(["skills/memory/SKILL.md"], "skills/memory");
+		const skill = classifyCommitFiles(["skills/demo/SKILL.md"], "skills/demo");
 		assert.equal(skill.kind, "ship");
-		assert.equal(classifyCommitFiles(["skills/memory/LOG.md"], "skills/memory").kind, "held");
+		assert.equal(classifyCommitFiles(["skills/demo/LOG.md"], "skills/demo").kind, "held");
 
 		const prompt = classifyCommitFiles(["prompts/drift.md"], null);
 		assert.equal(prompt.kind, "ship");

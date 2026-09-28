@@ -1,10 +1,5 @@
-#!/usr/bin/env node
-// lookup.mts - bounded, read-only discovery over an operator memory corpus.
-//
-// The corpus root is the absolute path in PI_MEMORY_DIR. One run emits one
-// compact JSON object: paged discovery cues and source matches, or one bounded
-// source page for a named note. Explicit queries search source text; unfiltered
-// browsing reads cue windows only. Neither operation writes to the corpus.
+// Bounded, read-only lexical retrieval over an explicitly supplied memory corpus.
+// Search pages rescan current sources; source pages bind continuations to a digest.
 
 import { createHash } from "node:crypto";
 import {
@@ -16,22 +11,21 @@ import {
 	openSync,
 	opendirSync,
 	readSync,
-	realpathSync,
 	statSync,
 } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { setImmediate } from "node:timers/promises";
 
 const VISIT_CAP = 512;
 const INDEX_READ_BYTES = 8 * 1024;
 const SOURCE_READ_BYTES = 64 * 1024;
-const INDEX_PAGE_SIZE = 512;
-const SEARCH_PAGE_SIZE = 25;
+const DEFAULT_PAGE_SIZE = 10;
+const MAX_PAGE_SIZE = 25;
 const MAX_QUERY_TERMS = 16;
 const PAGE_CODEPOINTS = 4000;
 const MATCH_EXCERPT_POINTS = 480;
 const MATCH_CONTEXT_POINTS = 120;
-const MAX_STDOUT_BYTES = 48 * 1024;
+const MAX_RESULT_BYTES = 48 * 1024;
 const MAX_QUERY_CHARS = 200;
 const MAX_SLUG_CHARS = 120;
 const MAX_ROOT_CHARS = 1024;
@@ -46,13 +40,6 @@ const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 const SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const CUE_KEYS = ["title", "tags", "status", "supersedes", "superseded_by"];
 const NOTE_OPEN_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
-const OPTION_NAMES = new Map<string, string>([
-	["--query", "query"],
-	["--note", "note"],
-	["--offset", "offset"],
-	["--digest", "digest"],
-	["--index", "index"],
-]);
 
 type MetadataState = "ok" | "absent" | "partial" | "malformed";
 type TitleSource = "frontmatter" | "heading" | "filename";
@@ -96,6 +83,7 @@ type NoteCue = {
 	size: number;
 	analysis?: Analysis;
 	search?: SearchHit;
+	formulations?: NoteCue[];
 };
 
 type Issue = { code: string; message: string };
@@ -116,132 +104,38 @@ type SourceResult = { ok: true; buffer: Buffer } | SourceFailure;
 type DiscoveryResult = { ok: true; note: NoteCue } | SourceFailure;
 type PageSlice = { content: string; nextOffset: number; contentCodePoints: number; hasMore: boolean };
 
-type Args =
-	| { kind: "help" }
-	| { kind: "index"; query: string | null; index: number }
-	| { kind: "note"; slug: string; offset: number; digest: string | null };
+export type SearchOptions = { query?: string | string[]; index?: number; limit?: number };
+export type ReadOptions = { slug: string; offset?: number; digest?: string };
 
-class LookupError extends Error {
-	readonly exitCode: number;
-	constructor(message: string, exitCode: number) {
-		super(message);
-		this.name = "LookupError";
-		this.exitCode = exitCode;
+export class MemoryRetrievalError extends Error {
+	readonly code: "input" | "corpus" | "changed" | "aborted";
+	constructor(message: string, code: "input" | "corpus" | "changed" | "aborted") {
+		super(bounded(message, MAX_ERROR_CHARS));
+		this.name = "MemoryRetrievalError";
+		this.code = code;
 	}
 }
 
-class UsageError extends LookupError {
+class UsageError extends MemoryRetrievalError {
 	constructor(message: string) {
-		super(message, 2);
+		super(message, "input");
 	}
 }
 
-class CorpusError extends LookupError {
+class CorpusError extends MemoryRetrievalError {
 	constructor(message: string) {
-		super(message, 3);
+		super(message, "corpus");
 	}
 }
 
-class DigestError extends LookupError {
+class DigestError extends MemoryRetrievalError {
 	constructor(message: string) {
-		super(message, 4);
+		super(message, "changed");
 	}
 }
 
-function helpText(): string {
-	return `Usage: node skills/memory/scripts/lookup.mts [OPTIONS]
-
-Read the operator memory corpus rooted at PI_MEMORY_DIR (required, absolute).
-This command is read-only. It never creates the root, the README, or any file.
-README.md is the required corpus contract and is not itself a note.
-
-Options:
-  --query <text>   Rank complete supported sources and slugs by lexical relevance.
-                   Unquoted words use exact lowercase Unicode tokens.
-                   Common function words are
-                   ignored. Any term may match; more evidence improves rank.
-                   Hyphen/underscore/dot/slash compounds match adjacent tokens.
-                   Double-quoted phrases are REQUIRED literal substrings,
-                   case-insensitive with flexible whitespace.
-                   No regex, stemming, fuzzy matching, synonyms, or Unicode normalization.
-                   Maximum 200 characters and 16 distinct terms. An empty phrase,
-                   unclosed quote, or no searchable terms is an error.
-                   Blank selects unfiltered browsing.
-  --note <slug>    Return one bounded source page for <slug>. The value README
-                   selects the corpus contract README.md instead of a note.
-  --offset <n>     Unicode code-point offset into the note source (default 0).
-                   Valid only with --note. An offset above 0 requires --digest.
-  --digest <hex>   SHA-256 hex returned by a query match or source page. Use it
-                   for the first source read after a query and every later page.
-                   Valid only with --note. A mismatch rejects changed source.
-  --index <n>      Zero-based entry offset into alphabetical notes or ranked matches
-                   (default 0). Repeat the query for each page. Pages rescan the
-                   corpus; they are not one frozen snapshot. Maximum 1000000.
-  -h, --help       Show this help.
-
-Output:
-  stdout  One compact JSON object on success.
-  stderr  A single "Error: <message>" line on failure.
-
-Exit codes:
-  0  Success
-  2  Invalid invocation
-  3  Corpus unavailable, note missing, source too large, invalid UTF-8, or path
-     refused
-  4  Note source changed since the supplied digest
-
-Cue index:
-  Compact records expose slug, title, and any present tags, status, supersedes,
-  and superseded_by values. Values omit their field name and outer whitespace;
-  quotes, brackets, and null remain literal text, not parsed YAML. Title falls
-  back to a heading, then the slug. Missing fields are omitted, not inferred.
-  Only notes with clipped, multiline, duplicate, empty, or unclosed cue fields
-  carry cueProblem. Scan issues retain bounded details and the total count.
-  The compact index supports the agent's own judgment about conceptual needs;
-  it is not an embedding or semantic search engine.
-
-Query evidence:
-  Each result has a source digest, ordinal rank, matched terms and their fields,
-  missing terms, and sourceMatch (null for a slug-only hit). Rank is lexical
-  relevance within this scan, not semantic similarity, truth, freshness, or
-  confidence. It is not comparable across calls. BM25-style rarity and frequency
-  saturation use title/tag/slug weights and body-length normalization; ties use
-  slug order. Status never suppresses a result. search.terms reports term kinds
-  and note frequencies across searched sources; search.ignored lists stopwords.
-  sourceMatch selects a window by distinct-term rarity, not the first hit.
-  offset/endOffset identify its selected hit span (clipped for an oversized
-  hit); excerptOffset/excerptEndOffset delimit the surrounding excerpt. All
-  ranges are half-open Unicode code-point offsets in the ORIGINAL source.
-  The excerpt contains at most 480 code points. Cues and excerpts are discovery
-  evidence, not complete support. Read from offset 0 with the digest to inspect
-  scope and lifecycle; use sourceMatch.excerptOffset for later context.
-  search.complete describes coverage of supported source text, not relevance.
-  Unreadable, oversized, or unsupported note entries make it false and are
-  reported in scan.issues (bounded detail) and search.unavailableNotes (total).
-  Query results exclude those entries even if their filename matches. Use
-  unfiltered browsing and bounded ordinary file tools for oversized sources.
-  Metadata warnings do not imply missing source text. A directory visit limit
-  also makes coverage incomplete. A miss or low rank does not establish absence
-  of relevant knowledge. Inspect the compact index or reformulate the query.
-
-Bounds:
-  - The directory scan is non-recursive and stops at 512 entries.
-  - Unfiltered browsing reads the first 8192 bytes of each note.
-  - A query reads at most 65537 bytes per note and refuses sources above
-    65536 bytes or with invalid UTF-8. It keeps no source-body index or cache.
-  - Browse pages target 512 notes; ranked pages target 25. Pages shrink so the
-    serialized stdout, including its newline, stays within 48 KiB. nextIndex continues
-    exactly after the last returned record, so no record is skipped.
-  - A note source must be at most 65536 bytes and valid UTF-8; otherwise it is
-    refused.
-  - A source page holds at most 4000 code points.
-  - Hidden entries are ignored. A note is opened with O_NOFOLLOW and
-    O_NONBLOCK, checked with fstat, read through that descriptor, and must be
-    a regular file. Symbolic links, nonregular files, and filenames outside
-    the --note slug grammar are refused or excluded with a reported issue.
-  - README.md must exist and be a readable regular file for index and note
-    access.
-`;
+function checkAbort(signal?: AbortSignal): void {
+	if (signal?.aborted) throw new MemoryRetrievalError("Memory retrieval cancelled", "aborted");
 }
 
 function bounded(text: string, max: number): string {
@@ -253,89 +147,41 @@ function bounded(text: string, max: number): string {
 	return `${safe.slice(0, end)}\u2026`;
 }
 
-function parseBoundedInt(name: string, raw: string, min: number, max: number): number {
-	if (!/^(?:0|[1-9][0-9]*)$/.test(raw)) throw new UsageError(`${name} must be a non-negative integer`);
-	const value = Number(raw);
+function boundedInt(name: string, value: number, min: number, max: number): number {
+	if (!Number.isSafeInteger(value) || value < 0) throw new UsageError(`${name} must be a non-negative integer`);
 	if (value < min || value > max) throw new UsageError(`${name} must be between ${min} and ${max}`);
 	return value;
 }
 
-function normalizeQuery(text: string): string | null {
+function normalizeQuery(text: string): string {
 	const trimmed = text.trim();
+	if (!trimmed) throw new UsageError("Blank query refused; omit query to browse");
 	if (trimmed.length > MAX_QUERY_CHARS) {
-		throw new UsageError(`--query is ${trimmed.length} characters; maximum is ${MAX_QUERY_CHARS}`);
+		throw new UsageError(
+			`query is ${trimmed.length} characters; maximum is ${MAX_QUERY_CHARS}. Shorten to a keyword formulation, not a pasted question`,
+		);
 	}
-	return trimmed === "" ? null : trimmed;
+	return trimmed;
 }
 
 function normalizeSlug(slug: string): string {
 	if (slug === "README") return slug;
 	if (/\.md$/i.test(slug)) throw new UsageError("use the note slug without the .md extension");
-	if (!SLUG_PATTERN.test(slug) || slug.length > MAX_SLUG_CHARS) throw new UsageError(`invalid note slug: ${slug}`);
+	if (!SLUG_PATTERN.test(slug) || slug.length > MAX_SLUG_CHARS) throw new UsageError("invalid note slug");
 	return slug;
 }
 
 function normalizeDigest(raw: string): string {
 	const value = raw.toLowerCase();
-	if (!DIGEST_PATTERN.test(value)) throw new UsageError("--digest must be a 64-character SHA-256 hex value");
+	if (!DIGEST_PATTERN.test(value)) throw new UsageError("digest must be a 64-character SHA-256 hex value");
 	return value;
-}
-
-function collectOptions(argv: string[]): { help: boolean; values: Map<string, string> } {
-	const values = new Map<string, string>();
-	let help = false;
-	for (let index = 0; index < argv.length; index += 1) {
-		const arg = argv[index];
-		if (arg === "--help" || arg === "-h") {
-			help = true;
-			continue;
-		}
-		const name = OPTION_NAMES.get(arg);
-		if (name === undefined) throw new UsageError(`unknown option: ${arg}`);
-		if (values.has(name)) throw new UsageError(`duplicate option: ${arg}`);
-		const value = argv[index + 1];
-		if (value === undefined) throw new UsageError(`option ${arg} requires a value`);
-		values.set(name, value);
-		index += 1;
-	}
-	return { help, values };
-}
-
-function buildNoteArgs(values: Map<string, string>): Args {
-	if (values.has("query")) throw new UsageError("--query cannot be combined with --note");
-	if (values.has("index")) throw new UsageError("--index cannot be combined with --note");
-	const slug = normalizeSlug(values.get("note") ?? "");
-	const offsetRaw = values.get("offset");
-	const offset = offsetRaw === undefined ? 0 : parseBoundedInt("--offset", offsetRaw, 0, OFFSET_LIMIT);
-	const digestRaw = values.get("digest");
-	if (offset > 0 && digestRaw === undefined) {
-		throw new UsageError("--offset above 0 requires --digest for safe continuation");
-	}
-	const digest = digestRaw === undefined ? null : normalizeDigest(digestRaw);
-	return { kind: "note", slug, offset, digest };
-}
-
-function buildIndexArgs(values: Map<string, string>): Args {
-	if (values.has("offset")) throw new UsageError("--offset requires --note");
-	if (values.has("digest")) throw new UsageError("--digest requires --note");
-	const indexRaw = values.get("index");
-	const index = indexRaw === undefined ? 0 : parseBoundedInt("--index", indexRaw, 0, INDEX_LIMIT);
-	const queryRaw = values.get("query");
-	const query = queryRaw === undefined ? null : normalizeQuery(queryRaw);
-	return { kind: "index", query, index };
-}
-
-function parseArgs(argv: string[]): Args {
-	const { help, values } = collectOptions(argv);
-	if (help) return { kind: "help" };
-	return values.has("note") ? buildNoteArgs(values) : buildIndexArgs(values);
 }
 
 function noteFileForSlug(slug: string): string {
 	return slug === "README" ? "README.md" : `${slug}.md`;
 }
 
-// Only names that --note reproduces exactly are addressable.
+// Only names that source reads reproduce exactly are addressable.
 function addressableSlug(name: string): string | undefined {
 	if (!name.endsWith(".md")) return undefined;
 	const slug = name.slice(0, -3);
@@ -518,7 +364,7 @@ function unquotedTerms(piece: string, ignored: Set<string>): Term[] {
 
 function parseQuery(text: string): Query {
 	const pieces = text.split('"');
-	if (pieces.length % 2 === 0) throw new UsageError("--query has an unclosed double quote");
+	if (pieces.length % 2 === 0) throw new UsageError("query has an unclosed double quote");
 	const terms: Term[] = [];
 	const ignored = new Set<string>();
 	const seen = new Set<string>();
@@ -533,15 +379,17 @@ function parseQuery(text: string): Query {
 		const piece = pieces[part];
 		if (part % 2 === 1) {
 			const phrase = piece.trim().replace(/\s+/gu, " ");
-			if (!phrase) throw new UsageError("--query contains an empty quoted phrase");
+			if (!phrase) throw new UsageError("query contains an empty quoted phrase");
 			add({ text: phrase, kind: "phrase", keys: [] });
 			continue;
 		}
 		for (const term of unquotedTerms(piece, ignored)) add(term);
 	}
-	if (terms.length === 0)
-		throw new UsageError("--query has no searchable terms; quote exact text or use content words");
-	if (terms.length > MAX_QUERY_TERMS) throw new UsageError(`--query exceeds ${MAX_QUERY_TERMS} distinct terms`);
+	if (terms.length === 0) throw new UsageError("query has no searchable terms; quote exact text or use content words");
+	if (terms.length > MAX_QUERY_TERMS)
+		throw new UsageError(
+			`query exceeds ${MAX_QUERY_TERMS} distinct terms. Shorten to a keyword formulation; pass alternatives as separate queries`,
+		);
 	return { terms, ignored: [...ignored] };
 }
 
@@ -558,11 +406,14 @@ function pointOffsets(text: string): number[] {
 }
 
 type Region = { start: number; end: number; field: Field };
-function sourceRegions(text: string): Region[] {
-	const regions: Region[] = [];
+function sourceBodyStart(text: string): number {
 	const open = /^\uFEFF?---[ \t]*\r?\n/.exec(text);
 	const close = open === null ? null : /^---[ \t]*\r?$/m.exec(text.slice(open[0].length));
-	const bodyStart = open !== null && close !== null ? open[0].length + close.index + close[0].length : 0;
+	return open !== null && close !== null ? open[0].length + close.index + close[0].length : 0;
+}
+function sourceRegions(text: string): Region[] {
+	const regions: Region[] = [];
+	const bodyStart = sourceBodyStart(text);
 	for (const line of text.matchAll(/[^\n]+/g)) {
 		let field: Field = "body";
 		if (line.index < bodyStart) {
@@ -602,7 +453,8 @@ function foldedRanges(text: string): { starts: number[]; ends: number[]; units: 
 	return { starts, ends, units };
 }
 
-function analyze(text: string, note: NoteCue, query: Query): Analysis {
+function analyze(text: string, note: NoteCue, query: Query, signal?: AbortSignal): Analysis {
+	checkAbort(signal);
 	const counts = query.terms.map(() => new Map<Field, number>());
 	const hits: Occurrence[] = [];
 	const positions = pointOffsets(text);
@@ -622,6 +474,7 @@ function analyze(text: string, note: NoteCue, query: Query): Analysis {
 		[note.slug, tokens(note.slug), true],
 	] as const) {
 		for (let i = 0; i < wordList.length; i += 1) {
+			checkAbort(signal);
 			const word = wordList[i];
 			const field = isSlug ? "slug" : fieldAt(word.start);
 			query.terms.forEach((term, index) => {
@@ -641,6 +494,7 @@ function analyze(text: string, note: NoteCue, query: Query): Analysis {
 		if (new RegExp(pattern).test(note.slug.toLowerCase())) add(index, "slug", 0, 0);
 		regionIndex = 0;
 		for (const match of text.toLowerCase().matchAll(new RegExp(pattern, "g"))) {
+			checkAbort(signal);
 			const offset = folded.starts[match.index];
 			const endOffset = folded.ends[match.index + match[0].length - 1];
 			add(index, fieldAt(folded.units[match.index]), offset, endOffset);
@@ -708,15 +562,21 @@ function passageSpan(hits: Occurrence[], idf: number[]): { offset: number; endOf
 	return { offset: contained[0].offset, endOffset: bestEnd };
 }
 
-function bestPassage(analysis: Analysis, idf: number[]): SourceMatch | null {
+function bestPassage(analysis: Analysis, idf: number[], minOffset = 0): SourceMatch | null {
 	if (analysis.hits.length === 0) return null;
 	const { offset, endOffset } = passageSpan(analysis.hits, idf);
-	const excerptOffset = Math.max(0, offset - MATCH_CONTEXT_POINTS, endOffset - MATCH_EXCERPT_POINTS);
+	const excerptOffset = Math.max(minOffset, offset - MATCH_CONTEXT_POINTS, endOffset - MATCH_EXCERPT_POINTS);
 	const slice = sliceByCodePoints(analysis.text, excerptOffset, MATCH_EXCERPT_POINTS);
 	return { offset, endOffset, excerptOffset, excerptEndOffset: slice.nextOffset, excerpt: slice.content };
 }
 
-function toSearchOutput(note: NoteCue, query: Query, idf: number[], rank: number): Record<string, unknown> {
+function toSearchOutput(
+	note: NoteCue,
+	query: Query,
+	idf: number[],
+	rank: number,
+	signal?: AbortSignal,
+): Record<string, unknown> {
 	const output = toOutputNote(note);
 	const search = note.search;
 	if (search === undefined) return output;
@@ -735,33 +595,44 @@ function toSearchOutput(note: NoteCue, query: Query, idf: number[], rank: number
 					],
 		),
 		missing: query.terms.filter((_, index) => search.analysis.counts[index].size === 0).map((term) => term.text),
-		sourceMatch: bestPassage(analyze(search.analysis.text, note, query), idf),
+		sourceMatch: bestPassage(analyze(search.analysis.text, note, query, signal), idf),
 	};
 }
 
-function readBrowseNote(path: string, file: string, slug: string): DiscoveryResult {
-	const window = readIndexWindow(path);
+function readBrowseNote(path: string, file: string, slug: string, signal?: AbortSignal): DiscoveryResult {
+	const window = readIndexWindow(path, signal);
 	if (!window.ok) return window;
 	return { ok: true, note: buildNoteCue(file, slug, window.text, window.truncated, window.size) };
 }
 
-function readSearchNote(path: string, file: string, slug: string, query: Query): DiscoveryResult {
-	const source = readNoteSource(path);
+function readSearchNote(
+	path: string,
+	file: string,
+	slug: string,
+	queries: Query[],
+	signal?: AbortSignal,
+): DiscoveryResult {
+	const source = readNoteSource(path, signal);
 	if (!source.ok) return source;
 	const text = decodeUtf8(source.buffer);
 	if (text === undefined) return { ok: false, reason: `note is not valid UTF-8: ${file}` };
-	const note = buildNoteCue(file, slug, text, false, source.buffer.length);
-	const analysis = analyze(text, note, query);
-	// Retain text and counts for ranking; recompute passages only for the page.
-	analysis.hits = [];
-	note.analysis = analysis;
-	if (
-		query.terms.every((term, index) => term.kind !== "phrase" || analysis.counts[index].size > 0) &&
-		analysis.counts.some((counts) => counts.size > 0)
-	) {
-		note.search = { digest: sha256(source.buffer), analysis };
-	}
-	return { ok: true, note };
+	const cue = buildNoteCue(file, slug, text, false, source.buffer.length);
+	const digest = sha256(source.buffer);
+	const formulations = queries.map((query) => {
+		checkAbort(signal);
+		const note = { ...cue };
+		const analysis = analyze(text, note, query, signal);
+		// Retain text and counts for ranking; recompute passages only for the page.
+		analysis.hits = [];
+		note.analysis = analysis;
+		if (
+			query.terms.every((term, index) => term.kind !== "phrase" || analysis.counts[index].size > 0) &&
+			analysis.counts.some((counts) => counts.size > 0)
+		)
+			note.search = { digest, analysis };
+		return note;
+	});
+	return { ok: true, note: { ...formulations[0], formulations } };
 }
 
 function utf8SequenceLength(lead: number): number {
@@ -805,10 +676,11 @@ function openRegular(path: string, opener: (path: string, flags: number) => numb
 	return { ok: true, fd, size: info.size };
 }
 
-function readDescriptor(fd: number, maxBytes: number): Buffer {
+function readDescriptor(fd: number, maxBytes: number, signal?: AbortSignal): Buffer {
 	const buffer = Buffer.allocUnsafe(maxBytes);
 	let total = 0;
 	while (total < maxBytes) {
+		checkAbort(signal);
 		const bytesRead = readSync(fd, buffer, total, maxBytes - total, total);
 		if (bytesRead <= 0) break;
 		total += bytesRead;
@@ -824,11 +696,11 @@ function decodeUtf8(buffer: Buffer): string | undefined {
 	}
 }
 
-function readIndexWindow(path: string): IndexWindow {
+function readIndexWindow(path: string, signal?: AbortSignal): IndexWindow {
 	const opened = openRegular(path);
 	if (!opened.ok) return opened;
 	try {
-		const bytes = readDescriptor(opened.fd, INDEX_READ_BYTES);
+		const bytes = readDescriptor(opened.fd, INDEX_READ_BYTES, signal);
 		const text = decodeUtf8(trimUtf8(bytes, opened.size > INDEX_READ_BYTES));
 		if (text === undefined) return { ok: false, reason: `note is not valid UTF-8: ${basename(path)}` };
 		return { ok: true, text, truncated: opened.size > INDEX_READ_BYTES, size: opened.size };
@@ -837,11 +709,11 @@ function readIndexWindow(path: string): IndexWindow {
 	}
 }
 
-function readNoteSource(path: string): SourceResult {
+function readNoteSource(path: string, signal?: AbortSignal): SourceResult {
 	const opened = openRegular(path);
 	if (!opened.ok) return opened;
 	try {
-		const buffer = readDescriptor(opened.fd, SOURCE_READ_BYTES + 1);
+		const buffer = readDescriptor(opened.fd, SOURCE_READ_BYTES + 1, signal);
 		if (buffer.length > SOURCE_READ_BYTES) {
 			return {
 				ok: false,
@@ -883,7 +755,7 @@ function reportCueIssues(scan: Scan, cue: NoteCue): void {
 	}
 }
 
-function considerEntry(root: string, entry: Dirent, scan: Scan, query: Query | null): void {
+function considerEntry(root: string, entry: Dirent, scan: Scan, query: Query[] | null, signal?: AbortSignal): void {
 	if (!/\.md$/i.test(entry.name)) return;
 	if (entry.isDirectory()) {
 		unavailableNote(scan, "note.nonregular", `skipped directory named like a note: ${entry.name}`);
@@ -896,12 +768,14 @@ function considerEntry(root: string, entry: Dirent, scan: Scan, query: Query | n
 	}
 	const slug = addressableSlug(entry.name);
 	if (slug === undefined) {
-		unavailableNote(scan, "note.unaddressable", `excluded filename outside the --note slug grammar: ${entry.name}`);
+		unavailableNote(scan, "note.unaddressable", `excluded filename outside the note slug grammar: ${entry.name}`);
 		return;
 	}
 	const path = join(root, entry.name);
 	const source =
-		query === null ? readBrowseNote(path, entry.name, slug) : readSearchNote(path, entry.name, slug, query);
+		query === null
+			? readBrowseNote(path, entry.name, slug, signal)
+			: readSearchNote(path, entry.name, slug, query, signal);
 	if (!source.ok) {
 		unavailableNote(scan, source.oversized ? "note.oversized" : "note.unreadable", source.reason);
 		return;
@@ -910,16 +784,18 @@ function considerEntry(root: string, entry: Dirent, scan: Scan, query: Query | n
 	reportCueIssues(scan, source.note);
 }
 
-function scanCorpus(root: string, query: Query | null = null): Scan {
+async function scanCorpus(root: string, query: Query[] | null, signal?: AbortSignal): Promise<Scan> {
 	const scan: Scan = { notes: [], issues: [], issueCount: 0, visited: 0, complete: true, unavailable: 0 };
 	let handle: ReturnType<typeof opendirSync>;
 	try {
 		handle = opendirSync(root);
 	} catch {
-		throw new CorpusError(`cannot read corpus root: ${root}`);
+		throw new CorpusError("cannot read corpus root");
 	}
 	try {
 		for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+			await setImmediate();
+			checkAbort(signal);
 			scan.visited += 1;
 			if (scan.visited > VISIT_CAP) {
 				scan.complete = false;
@@ -927,7 +803,7 @@ function scanCorpus(root: string, query: Query | null = null): Scan {
 				break;
 			}
 			if (entry.name.startsWith(".")) continue;
-			considerEntry(root, entry, scan, query);
+			considerEntry(root, entry, scan, query, signal);
 		}
 	} finally {
 		handle.closeSync();
@@ -989,6 +865,7 @@ function formatScan(scan: Scan): Record<string, unknown> {
 		visited: scan.visited,
 		visitCap: VISIT_CAP,
 		issueCount: scan.issueCount,
+		unavailableNotes: scan.unavailable,
 		issuesShown: shown.length,
 		issues: shown,
 	};
@@ -1009,19 +886,141 @@ function indexPageFields(
 	return { notes, returned: notes.length, hasMore, nextIndex: hasMore ? nextIndex : null };
 }
 
-function runIndex(root: string, args: { query: string | null; index: number }): Record<string, unknown> {
-	const query = args.query === null ? null : parseQuery(args.query);
-	const scan = scanCorpus(root, query);
-	const ranked = query === null ? null : rankNotes(scan.notes, query);
-	const matches = ranked?.notes ?? scan.notes;
+type Ranking = ReturnType<typeof rankNotes>;
+
+function fuseRankings(rankings: Ranking[], signal?: AbortSignal): NoteCue[] {
+	const scores = new Map<string, { note: NoteCue; score: number }>();
+	for (const ranking of rankings) {
+		checkAbort(signal);
+		ranking.notes.forEach((note, index) => {
+			const previous = scores.get(note.slug);
+			const contribution = 1 / (60 + index + 1);
+			if (previous) previous.score += contribution;
+			else scores.set(note.slug, { note, score: contribution });
+		});
+	}
+	return [...scores.values()]
+		.sort((a, b) => b.score - a.score || (a.note.slug < b.note.slug ? -1 : a.note.slug > b.note.slug ? 1 : 0))
+		.map(({ note }) => note);
+}
+
+function fusedPassage(
+	source: NoteCue,
+	queries: Query[],
+	rankings: Ranking[],
+	signal?: AbortSignal,
+): SourceMatch | null {
+	const candidates: Array<{ analysis: Analysis; idf: number[]; rank: number; bodyStart: number; body: boolean }> = [];
+	queries.forEach((query, index) => {
+		checkAbort(signal);
+		const note = source.formulations?.[index];
+		const rank = rankings[index].notes.findIndex((candidate) => candidate.slug === source.slug);
+		if (rank < 0 || !note?.analysis) return;
+		const analysis = analyze(note.analysis.text, note, query, signal);
+		if (!analysis.hits.length) return;
+		const bodyStart = codePointCount(analysis.text.slice(0, sourceBodyStart(analysis.text)));
+		const bodyHits = analysis.hits.filter((hit) => hit.offset >= bodyStart);
+		candidates.push({
+			analysis: bodyHits.length ? { ...analysis, hits: bodyHits } : analysis,
+			idf: rankings[index].idf,
+			rank,
+			bodyStart,
+			body: bodyHits.length > 0,
+		});
+	});
+	candidates.sort((a, b) => Number(b.body) - Number(a.body) || a.rank - b.rank);
+	const selected = candidates[0];
+	return selected ? bestPassage(selected.analysis, selected.idf, selected.body ? selected.bodyStart : 0) : null;
+}
+
+function toFusedOutput(
+	note: NoteCue,
+	sources: NoteCue[],
+	texts: string[],
+	queries: Query[],
+	rankings: Ranking[],
+	rank: number,
+	signal?: AbortSignal,
+): Record<string, unknown> {
+	const source = sources.find((candidate) => candidate.slug === note.slug);
+	if (!source) throw new CorpusError("query source is unavailable");
+	return {
+		...toOutputNote(note),
+		digest: note.search?.digest,
+		rank,
+		sourceMatch: fusedPassage(source, queries, rankings, signal),
+		formulations: queries.map((query, index) => {
+			checkAbort(signal);
+			const evidence = source?.formulations?.[index];
+			if (!evidence?.analysis) throw new CorpusError("query evidence is unavailable");
+			const ordinal = rankings[index].notes.findIndex((candidate) => candidate.slug === note.slug);
+			const analysis = evidence.analysis;
+			return {
+				query: texts[index],
+				rank: ordinal < 0 ? null : ordinal + 1,
+				matched: query.terms.flatMap((term, termIndex) =>
+					analysis.counts[termIndex].size === 0
+						? []
+						: [{ term: term.text, fields: [...analysis.counts[termIndex].keys()] }],
+				),
+				missing: query.terms.filter((_, termIndex) => analysis.counts[termIndex].size === 0).map((term) => term.text),
+			};
+		}),
+	};
+}
+
+function searchSummary(
+	scan: Scan,
+	fused: boolean,
+	texts: string[],
+	queries: Query[],
+	rankings: Ranking[],
+): Record<string, unknown> {
+	const evidence = queries.map((query, index) => ({
+		terms: query.terms.map((term, termIndex) => ({
+			text: term.text,
+			kind: term.kind,
+			notes: rankings[index].df[termIndex],
+		})),
+		ignored: query.ignored,
+	}));
+	return {
+		complete: scan.complete && scan.unavailable === 0,
+		notesSearched: scan.notes.length,
+		unavailableNotes: scan.unavailable,
+		maxSourceBytes: SOURCE_READ_BYTES,
+		ranking: fused ? "reciprocal-rank-fusion" : "lexical",
+		...(fused ? { formulations: evidence.map((item, index) => ({ query: texts[index], ...item })) } : evidence[0]),
+	};
+}
+
+async function runIndex(
+	root: string,
+	args: { query: string | string[] | null; index: number; limit: number },
+	signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+	const texts = args.query === null ? [] : [args.query].flat();
+	const queries = texts.map(parseQuery);
+	const scan = await scanCorpus(root, queries.length === 0 ? null : queries, signal);
+	checkAbort(signal);
+	const rankings = queries.map((query, index) =>
+		rankNotes(
+			scan.notes.map((note) => note.formulations?.[index] ?? note),
+			query,
+		),
+	);
+	const fused = Array.isArray(args.query);
+	const matches = queries.length === 0 ? scan.notes : fused ? fuseRankings(rankings, signal) : rankings[0].notes;
 	const totalMatches = matches.length;
-	const pageSize = query === null ? INDEX_PAGE_SIZE : SEARCH_PAGE_SIZE;
+	const pageSize = args.limit;
 	let kept = matches
 		.slice(args.index, args.index + pageSize)
 		.map((note, position) =>
-			query === null || ranked === null
+			queries.length === 0
 				? toOutputNote(note)
-				: toSearchOutput(note, query, ranked.idf, args.index + position + 1),
+				: fused
+					? toFusedOutput(note, scan.notes, texts, queries, rankings, args.index + position + 1, signal)
+					: toSearchOutput(note, queries[0], rankings[0].idf, args.index + position + 1, signal),
 		);
 	const result: Record<string, unknown> = {
 		ok: true,
@@ -1039,32 +1038,27 @@ function runIndex(root: string, args: { query: string | null; index: number }): 
 		scan: formatScan(scan),
 		notes: [],
 	};
-	if (args.query !== null) {
-		result.search = {
-			complete: scan.complete && scan.unavailable === 0,
-			notesSearched: scan.notes.length,
-			unavailableNotes: scan.unavailable,
-			maxSourceBytes: SOURCE_READ_BYTES,
-			ranking: "lexical",
-			terms: query?.terms.map((term, index) => ({ text: term.text, kind: term.kind, notes: ranked?.df[index] })),
-			ignored: query?.ignored,
-		};
-	}
+	if (args.query !== null) result.search = searchSummary(scan, fused, texts, queries, rankings);
 	for (;;) {
+		checkAbort(signal);
 		Object.assign(result, indexPageFields(kept, args.index, totalMatches));
-		if (serializedSize(result) <= MAX_STDOUT_BYTES) break;
-		if (kept.length === 0) throw new CorpusError("serialized output exceeds the stdout bound");
+		if (serializedSize(result) <= MAX_RESULT_BYTES) break;
+		if (kept.length === 0) throw new CorpusError("serialized output exceeds the result bound");
 		kept = kept.slice(0, -1);
 	}
 	if (kept.length === 0 && args.index < totalMatches) {
-		throw new CorpusError("serialized output cannot hold one record within the stdout bound");
+		throw new CorpusError("serialized output cannot hold one record within the result bound");
 	}
 	return result;
 }
 
-function runNote(root: string, args: { slug: string; offset: number; digest: string | null }): Record<string, unknown> {
+function runNote(
+	root: string,
+	args: { slug: string; offset: number; digest: string | null },
+	signal?: AbortSignal,
+): Record<string, unknown> {
 	const file = noteFileForSlug(args.slug);
-	const source = readNoteSource(join(root, file));
+	const source = readNoteSource(join(root, file), signal);
 	if (!source.ok) throw new CorpusError(source.reason);
 	const digest = sha256(source.buffer);
 	if (args.digest !== null && args.digest !== digest) {
@@ -1094,8 +1088,9 @@ function runNote(root: string, args: { slug: string; offset: number; digest: str
 	};
 	let contentCodePoints = slice.contentCodePoints;
 	for (;;) {
-		if (serializedSize(result) <= MAX_STDOUT_BYTES) break;
-		if (contentCodePoints === 0) throw new CorpusError("serialized output exceeds the stdout bound");
+		checkAbort(signal);
+		if (serializedSize(result) <= MAX_RESULT_BYTES) break;
+		if (contentCodePoints === 0) throw new CorpusError("serialized output exceeds the result bound");
 		contentCodePoints = Math.max(0, contentCodePoints - 256);
 		const trimmed = sliceByCodePoints(text, args.offset, contentCodePoints);
 		result.content = trimmed.content;
@@ -1104,75 +1099,109 @@ function runNote(root: string, args: { slug: string; offset: number; digest: str
 		result.hasMore = trimmed.hasMore;
 	}
 	if (contentCodePoints === 0 && args.offset < totalCodePoints) {
-		throw new CorpusError("source page cannot progress within the stdout bound");
+		throw new CorpusError("source page cannot progress within the result bound");
 	}
 	return result;
 }
 
-function readMemoryRoot(): string {
-	const raw = process.env.PI_MEMORY_DIR;
-	if (raw === undefined || raw.trim() === "") {
-		throw new CorpusError("Memory unavailable: set PI_MEMORY_DIR to an absolute corpus path");
+function validateRoot(raw: string): string {
+	if (typeof raw !== "string" || raw.trim() === "") {
+		throw new CorpusError("Memory unavailable: provide an absolute corpus path");
 	}
-	if (!isAbsolute(raw)) throw new CorpusError("Memory unavailable: PI_MEMORY_DIR must be an absolute path");
+	if (!isAbsolute(raw)) throw new CorpusError("Memory unavailable: corpus root must be an absolute path");
+	if (raw.length > MAX_ROOT_CHARS || raw.includes("\0")) {
+		throw new CorpusError(`Memory unavailable: invalid corpus path or length above ${MAX_ROOT_CHARS} characters`);
+	}
 	let info: Stats;
 	try {
 		info = statSync(raw);
 	} catch {
-		throw new CorpusError(`Memory unavailable: PI_MEMORY_DIR does not exist: ${raw}`);
+		throw new CorpusError("Memory unavailable: corpus root does not exist or is not accessible");
 	}
-	if (!info.isDirectory()) throw new CorpusError(`Memory unavailable: PI_MEMORY_DIR is not a directory: ${raw}`);
-	const root = resolve(raw);
-	if (root.length > MAX_ROOT_CHARS) {
-		throw new CorpusError(`Memory unavailable: corpus path exceeds ${MAX_ROOT_CHARS} characters`);
-	}
-	return root;
+	if (!info.isDirectory()) throw new CorpusError("Memory unavailable: corpus root is not a directory");
+	return resolve(raw);
 }
 
-function isDirectRun(): boolean {
-	const entry = process.argv[1];
-	if (entry === undefined) return false;
-	try {
-		return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
-	} catch {
-		return false;
+function validateOptions(options: object, allowed: string[]): void {
+	if (options === null || typeof options !== "object" || Array.isArray(options)) {
+		throw new UsageError("options must be an object");
 	}
+	if (Object.keys(options).some((key) => !allowed.includes(key))) throw new UsageError("unknown option");
 }
 
-function main(): void {
+function safeError(error: unknown): MemoryRetrievalError {
+	return error instanceof MemoryRetrievalError ? error : new CorpusError("Memory retrieval failed");
+}
+
+function normalizeSearchQuery(value: SearchOptions["query"]): string | string[] | null {
+	if (!Array.isArray(value)) {
+		if (value !== undefined && typeof value !== "string")
+			throw new UsageError("query must be a string or an array of strings");
+		return value === undefined ? null : normalizeQuery(value);
+	}
+	if (value.length < 1 || value.length > 3) throw new UsageError("query requires 1 to 3 formulations");
+	const queries: string[] = [];
+	for (const item of value) {
+		if (typeof item !== "string") throw new UsageError("each query formulation must be a string");
+		queries.push(normalizeQuery(item));
+	}
+	return queries;
+}
+
+/** Read cue pages or ranked lexical matches. Each call rescans current sources. */
+export async function searchMemory(
+	root: string,
+	options: SearchOptions = {},
+	signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
 	try {
-		const args = parseArgs(process.argv.slice(2));
-		if (args.kind === "help") {
-			process.stdout.write(helpText());
-			return;
-		}
-		const root = readMemoryRoot();
-		requireReadme(root);
-		const result = args.kind === "index" ? runIndex(root, args) : runNote(root, args);
-		const payload = `${JSON.stringify(result)}\n`;
-		if (Buffer.byteLength(payload) > MAX_STDOUT_BYTES) {
-			throw new CorpusError("serialized output exceeds the stdout bound");
-		}
-		process.stdout.write(payload);
+		checkAbort(signal);
+		validateOptions(options, ["query", "index", "limit"]);
+		const query = normalizeSearchQuery(options.query);
+		const index = boundedInt("index", options.index === undefined ? 0 : options.index, 0, INDEX_LIMIT);
+		const limit = boundedInt(
+			"limit",
+			options.limit === undefined ? (query === null ? VISIT_CAP : DEFAULT_PAGE_SIZE) : options.limit,
+			1,
+			query === null ? VISIT_CAP : MAX_PAGE_SIZE,
+		);
+		const resolved = validateRoot(root);
+		requireReadme(resolved);
+		const result = await runIndex(resolved, { query, index, limit }, signal);
+		checkAbort(signal);
+		return result;
 	} catch (error) {
-		const exitCode = error instanceof LookupError ? error.exitCode : 70;
-		const message = error instanceof Error ? error.message : String(error);
-		process.stderr.write(`Error: ${bounded(message, MAX_ERROR_CHARS)}\n`);
-		process.exitCode = exitCode;
+		throw safeError(error);
 	}
 }
 
-export {
-	NOTE_OPEN_FLAGS,
-	parseQuery,
-	addressableSlug,
-	extractCue,
-	openRegular,
-	parseArgs,
-	readMemoryRoot,
-	scanCorpus,
-	sliceByCodePoints,
-	trimUtf8,
-};
+/** Read the original source in code-point pages, bound to its SHA-256 digest. */
+export async function readMemory(
+	root: string,
+	options: ReadOptions,
+	signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+	try {
+		checkAbort(signal);
+		validateOptions(options, ["slug", "offset", "digest"]);
+		if (typeof options.slug !== "string") throw new UsageError("slug must be a string");
+		const slug = normalizeSlug(options.slug);
+		const offset = boundedInt("offset", options.offset === undefined ? 0 : options.offset, 0, OFFSET_LIMIT);
+		if (offset > 0 && options.digest === undefined)
+			throw new UsageError("offset above 0 requires digest for safe continuation");
+		if (options.digest !== undefined && typeof options.digest !== "string")
+			throw new UsageError("digest must be a string");
+		const digest = options.digest === undefined ? null : normalizeDigest(options.digest);
+		const resolved = validateRoot(root);
+		requireReadme(resolved);
+		await setImmediate();
+		checkAbort(signal);
+		const result = runNote(resolved, { slug, offset, digest }, signal);
+		checkAbort(signal);
+		return result;
+	} catch (error) {
+		throw safeError(error);
+	}
+}
 
-if (isDirectRun()) main();
+export { NOTE_OPEN_FLAGS, addressableSlug, extractCue, openRegular, sliceByCodePoints, trimUtf8 };
