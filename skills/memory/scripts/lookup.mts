@@ -25,7 +25,9 @@ import { fileURLToPath } from "node:url";
 const VISIT_CAP = 512;
 const INDEX_READ_BYTES = 8 * 1024;
 const SOURCE_READ_BYTES = 64 * 1024;
-const INDEX_PAGE_SIZE = 25;
+const INDEX_PAGE_SIZE = 512;
+const SEARCH_PAGE_SIZE = 25;
+const MAX_QUERY_TERMS = 16;
 const PAGE_CODEPOINTS = 4000;
 const MATCH_EXCERPT_POINTS = 480;
 const MATCH_CONTEXT_POINTS = 120;
@@ -72,11 +74,13 @@ type SourceMatch = {
 	excerpt: string;
 };
 
-type SearchHit = {
-	digest: string;
-	cueMatch: boolean;
-	sourceMatch: SourceMatch | null;
-};
+type Field = "slug" | "title" | "tags" | "frontmatter" | "body";
+const FIELD_WEIGHT: Record<Field, number> = { slug: 2, title: 3, tags: 2, frontmatter: 1, body: 1 };
+type Term = { text: string; kind: "word" | "compound" | "phrase"; keys: string[] };
+type Query = { terms: Term[]; ignored: string[] };
+type Occurrence = { term: number; field: Field; offset: number; endOffset: number };
+type Analysis = { text: string; hits: Occurrence[]; counts: Map<Field, number>[]; length: number };
+type SearchHit = { digest: string; analysis: Analysis };
 
 type NoteCue = {
 	slug: string;
@@ -89,8 +93,8 @@ type NoteCue = {
 	cuesDuplicate: boolean;
 	metadata: MetadataState;
 	metadataIssue?: string;
-	searchText: string;
 	size: number;
+	analysis?: Analysis;
 	search?: SearchHit;
 };
 
@@ -152,11 +156,17 @@ This command is read-only. It never creates the root, the README, or any file.
 README.md is the required corpus contract and is not itself a note.
 
 Options:
-  --query <text>   Search note source text (including frontmatter, introductory
-                   prose, and code) plus slug, filename, and title/tag cues.
-                   Literal substring matching uses JavaScript toLowerCase;
-                   no normalization, tokenization, or semantic ranking.
-                   Maximum 200 characters. Blank selects unfiltered browsing.
+  --query <text>   Rank complete supported sources and slugs by lexical relevance.
+                   Unquoted words use exact lowercase Unicode tokens.
+                   Common function words are
+                   ignored. Any term may match; more evidence improves rank.
+                   Hyphen/underscore/dot/slash compounds match adjacent tokens.
+                   Double-quoted phrases are REQUIRED literal substrings,
+                   case-insensitive with flexible whitespace.
+                   No regex, stemming, fuzzy matching, synonyms, or Unicode normalization.
+                   Maximum 200 characters and 16 distinct terms. An empty phrase,
+                   unclosed quote, or no searchable terms is an error.
+                   Blank selects unfiltered browsing.
   --note <slug>    Return one bounded source page for <slug>. The value README
                    selects the corpus contract README.md instead of a note.
   --offset <n>     Unicode code-point offset into the note source (default 0).
@@ -164,7 +174,7 @@ Options:
   --digest <hex>   SHA-256 hex returned by a query match or source page. Use it
                    for the first source read after a query and every later page.
                    Valid only with --note. A mismatch rejects changed source.
-  --index <n>      Zero-based entry offset into the sorted notes or query matches
+  --index <n>      Zero-based entry offset into alphabetical notes or ranked matches
                    (default 0). Repeat the query for each page. Pages rescan the
                    corpus; they are not one frozen snapshot. Maximum 1000000.
   -h, --help       Show this help.
@@ -181,39 +191,46 @@ Exit codes:
   4  Note source changed since the supplied digest
 
 Cue index:
-  Each note exposes title, titleSource, and cues: raw frontmatter lines for
-  title, tags, status, supersedes, and superseded_by, kept verbatim. Status
-  and supersession text is source evidence, not parsed interpretation. Cues
-  are not validated as YAML. flags cuesClipped, cuesMultiline, and
-  cuesDuplicate mark a clipped line, an unsupported multiline/empty value, and
-  a repeated field. metadata is ok, absent, partial (frontmatter not closed
-  within the read window), or malformed (frontmatter not closed).
+  Compact records expose slug, title, and any present tags, status, supersedes,
+  and superseded_by values. Values omit their field name and outer whitespace;
+  quotes, brackets, and null remain literal text, not parsed YAML. Title falls
+  back to a heading, then the slug. Missing fields are omitted, not inferred.
+  Only notes with clipped, multiline, duplicate, empty, or unclosed cue fields
+  carry cueProblem. Scan issues retain bounded details and the total count.
+  The compact index supports the agent's own judgment about conceptual needs;
+  it is not an embedding or semantic search engine.
 
 Query evidence:
-  Each match includes its source digest and cueMatch. sourceMatch is null for
-  a cue-only match; otherwise it locates only the FIRST source occurrence.
-  offset/endOffset and excerptOffset/excerptEndOffset are half-open Unicode
-  code-point ranges in the ORIGINAL source, not its lowercase representation.
-  The excerpt contains at most 480 code points. Excerpts and raw lifecycle
-  cues are candidates, not complete evidence or confidence scores. Read the
-  note from offset 0 with its digest to inspect scope and lifecycle; use
-  sourceMatch.excerptOffset with --offset to read around a later match.
+  Each result has a source digest, ordinal rank, matched terms and their fields,
+  missing terms, and sourceMatch (null for a slug-only hit). Rank is lexical
+  relevance within this scan, not semantic similarity, truth, freshness, or
+  confidence. It is not comparable across calls. BM25-style rarity and frequency
+  saturation use title/tag/slug weights and body-length normalization; ties use
+  slug order. Status never suppresses a result. search.terms reports term kinds
+  and note frequencies across searched sources; search.ignored lists stopwords.
+  sourceMatch selects a window by distinct-term rarity, not the first hit.
+  offset/endOffset identify its selected hit span (clipped for an oversized
+  hit); excerptOffset/excerptEndOffset delimit the surrounding excerpt. All
+  ranges are half-open Unicode code-point offsets in the ORIGINAL source.
+  The excerpt contains at most 480 code points. Cues and excerpts are discovery
+  evidence, not complete support. Read from offset 0 with the digest to inspect
+  scope and lifecycle; use sourceMatch.excerptOffset for later context.
   search.complete describes coverage of supported source text, not relevance.
   Unreadable, oversized, or unsupported note entries make it false and are
   reported in scan.issues (bounded detail) and search.unavailableNotes (total).
   Query results exclude those entries even if their filename matches. Use
   unfiltered browsing and bounded ordinary file tools for oversized sources.
   Metadata warnings do not imply missing source text. A directory visit limit
-  also makes coverage incomplete. A miss proves absence only for the queried
-  substring in the searched sources, not absence of relevant knowledge.
+  also makes coverage incomplete. A miss or low rank does not establish absence
+  of relevant knowledge. Inspect the compact index or reformulate the query.
 
 Bounds:
   - The directory scan is non-recursive and stops at 512 entries.
   - Unfiltered browsing reads the first 8192 bytes of each note.
   - A query reads at most 65537 bytes per note and refuses sources above
     65536 bytes or with invalid UTF-8. It keeps no source-body index or cache.
-  - The index page target is 25 notes, shrunk as needed so the serialized
-    stdout, including its newline, stays below 50 KiB. nextIndex continues
+  - Browse pages target 512 notes; ranked pages target 25. Pages shrink so the
+    serialized stdout, including its newline, stays within 48 KiB. nextIndex continues
     exactly after the last returned record, so no record is skipped.
   - A note source must be at most 65536 bytes and valid UTF-8; otherwise it is
     refused.
@@ -229,7 +246,11 @@ Bounds:
 
 function bounded(text: string, max: number): string {
 	const safe = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
-	return safe.length <= max ? safe : `${safe.slice(0, max - 1)}\u2026`;
+	if (safe.length <= max) return safe;
+	let end = max - 1;
+	const last = safe.charCodeAt(end - 1);
+	if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+	return `${safe.slice(0, end)}\u2026`;
 }
 
 function parseBoundedInt(name: string, raw: string, min: number, max: number): number {
@@ -429,9 +450,7 @@ function buildNoteCue(file: string, slug: string, text: string, truncated: boole
 	const titleValue = titleLine === undefined ? undefined : valueAfterKey(titleLine) || undefined;
 	const heading = titleValue === undefined ? findHeading(cue.body) : undefined;
 	const title = titleValue ?? heading ?? slug;
-	const tagLine = cue.lines.get("tags");
-	const tagText = tagLine === undefined ? "" : valueAfterKey(tagLine);
-	let cuesClipped = false;
+	let cuesClipped = title.length > MAX_TITLE_CHARS;
 	for (const line of cue.lines.values()) {
 		if (line.length > MAX_CUE_CHARS) cuesClipped = true;
 	}
@@ -447,7 +466,6 @@ function buildNoteCue(file: string, slug: string, text: string, truncated: boole
 		cuesMultiline: cue.multiline,
 		cuesDuplicate: cue.duplicate,
 		metadata: cue.metadata,
-		searchText: [slug, file, title, tagText].join("\n").toLowerCase(),
 		size,
 	};
 	if (problems.length > 0) note.metadataIssue = bounded(problems.join("; "), MAX_ISSUE_CHARS);
@@ -455,61 +473,269 @@ function buildNoteCue(file: string, slug: string, text: string, truncated: boole
 }
 
 function toOutputNote(note: NoteCue): Record<string, unknown> {
-	const cues: Record<string, string> = {};
-	for (const [key, line] of note.cues) cues[key] = bounded(line, MAX_CUE_CHARS);
-	const output: Record<string, unknown> = {
-		slug: note.slug,
-		file: note.file,
-		title: bounded(note.title, MAX_TITLE_CHARS),
-		titleSource: note.titleSource,
-		cues,
-		cuesClipped: note.cuesClipped,
-		cuesMultiline: note.cuesMultiline,
-		cuesDuplicate: note.cuesDuplicate,
-		metadata: note.metadata,
-		size: note.size,
-	};
-	if (note.metadataIssue !== undefined) output.metadataIssue = note.metadataIssue;
-	if (note.search !== undefined) Object.assign(output, note.search);
+	const output: Record<string, unknown> = { slug: note.slug, title: bounded(note.title, MAX_TITLE_CHARS) };
+	for (const [key, line] of note.cues) {
+		if (key !== "title") output[key] = bounded(valueAfterKey(line), MAX_CUE_CHARS);
+	}
+	if (note.metadataIssue !== undefined) output.cueProblem = note.metadataIssue;
 	return output;
 }
 
-function matchesQuery(cue: NoteCue, query: string): boolean {
-	return cue.searchText.includes(query.toLowerCase());
+const STOP_WORDS = new Set(
+	"a an the and or but if of at by for with to from in on is are was were be been being have has had do does did i me my we our you your he his she her it its they their this that these those as not no so than too very will would should could can may must s t d ll re ve".split(
+		" ",
+	),
+);
+
+type Token = { key: string; start: number; end: number };
+function tokens(text: string): Token[] {
+	return Array.from(text.matchAll(/[\p{L}\p{N}\p{M}]+/gu), (match) => ({
+		key: match[0].toLowerCase(),
+		start: match.index,
+		end: match.index + match[0].length,
+	}));
 }
 
-function originalMatchRange(
-	text: string,
-	foldedOffset: number,
-	foldedEnd: number,
-): { offset: number; endOffset: number } {
-	let folded = 0;
-	let offset = 0;
-	let endOffset = 0;
-	// Whole-string lowercase preserves contextual casing. Per-code-point lowercase
-	// lengths locate the original characters even when conversion expands one.
-	for (const point of text) {
-		const next = folded + point.toLowerCase().length;
-		if (next <= foldedOffset) offset += 1;
-		endOffset += 1;
-		if (next >= foldedEnd) return { offset, endOffset };
-		folded = next;
+function unquotedTerms(piece: string, ignored: Set<string>): Term[] {
+	const words = tokens(piece);
+	const terms: Term[] = [];
+	for (let i = 0; i < words.length; i += 1) {
+		const first = i;
+		while (i + 1 < words.length && /^[-_./]+$/.test(piece.slice(words[i].end, words[i + 1].start))) i += 1;
+		const raw = piece.slice(words[first].start, words[i].end).toLowerCase();
+		if (first === i && STOP_WORDS.has(raw)) {
+			ignored.add(raw);
+			continue;
+		}
+		terms.push({
+			text: raw,
+			kind: first === i ? "word" : "compound",
+			keys: words.slice(first, i + 1).map((word) => word.key),
+		});
 	}
-	throw new Error("lowercase match has no original source range");
+	return terms;
 }
 
-function findSourceMatch(text: string, query: string): SourceMatch | null {
-	const foldedQuery = query.toLowerCase();
-	const foldedOffset = text.toLowerCase().indexOf(foldedQuery);
-	if (foldedOffset < 0) return null;
-	const range = originalMatchRange(text, foldedOffset, foldedOffset + foldedQuery.length);
-	const excerptOffset = Math.max(0, range.offset - MATCH_CONTEXT_POINTS, range.endOffset - MATCH_EXCERPT_POINTS);
-	const slice = sliceByCodePoints(text, excerptOffset, MATCH_EXCERPT_POINTS);
+function parseQuery(text: string): Query {
+	const pieces = text.split('"');
+	if (pieces.length % 2 === 0) throw new UsageError("--query has an unclosed double quote");
+	const terms: Term[] = [];
+	const ignored = new Set<string>();
+	const seen = new Set<string>();
+	const add = (term: Term) => {
+		const identity = `${term.kind}:${term.kind === "phrase" ? term.text.toLowerCase() : term.keys.join(" ")}`;
+		if (!seen.has(identity)) {
+			terms.push(term);
+			seen.add(identity);
+		}
+	};
+	for (let part = 0; part < pieces.length; part += 1) {
+		const piece = pieces[part];
+		if (part % 2 === 1) {
+			const phrase = piece.trim().replace(/\s+/gu, " ");
+			if (!phrase) throw new UsageError("--query contains an empty quoted phrase");
+			add({ text: phrase, kind: "phrase", keys: [] });
+			continue;
+		}
+		for (const term of unquotedTerms(piece, ignored)) add(term);
+	}
+	if (terms.length === 0)
+		throw new UsageError("--query has no searchable terms; quote exact text or use content words");
+	if (terms.length > MAX_QUERY_TERMS) throw new UsageError(`--query exceeds ${MAX_QUERY_TERMS} distinct terms`);
+	return { terms, ignored: [...ignored] };
+}
+
+function pointOffsets(text: string): number[] {
+	const offsets: number[] = [];
+	let units = 0;
+	let points = 0;
+	for (const point of text) {
+		for (let i = 0; i < point.length; i += 1) offsets[units++] = points;
+		points += 1;
+	}
+	offsets[units] = points;
+	return offsets;
+}
+
+type Region = { start: number; end: number; field: Field };
+function sourceRegions(text: string): Region[] {
+	const regions: Region[] = [];
+	const open = /^\uFEFF?---[ \t]*\r?\n/.exec(text);
+	const close = open === null ? null : /^---[ \t]*\r?$/m.exec(text.slice(open[0].length));
+	const bodyStart = open !== null && close !== null ? open[0].length + close.index + close[0].length : 0;
+	for (const line of text.matchAll(/[^\n]+/g)) {
+		let field: Field = "body";
+		if (line.index < bodyStart) {
+			field = /^title:/.test(line[0]) ? "title" : /^tags:/.test(line[0]) ? "tags" : "frontmatter";
+		} else if (/^[ \t]{0,3}#{1,6}[ \t]/.test(line[0])) field = "title";
+		regions.push({ start: line.index, end: line.index + line[0].length, field });
+	}
+	return regions;
+}
+
+function termEnd(input: string, words: Token[], start: number, term: Term): number | undefined {
+	if (term.kind === "phrase" || term.keys[0] !== words[start].key) return undefined;
+	const last = words[start + term.keys.length - 1];
+	if (last === undefined) return undefined;
+	for (let part = 1; part < term.keys.length; part += 1) {
+		if (words[start + part].key !== term.keys[part]) return undefined;
+		if (!/^[\s_./-]+$/u.test(input.slice(words[start + part - 1].end, words[start + part].start))) return undefined;
+	}
+	return last.end;
+}
+
+function foldedRanges(text: string): { starts: number[]; ends: number[]; units: number[] } {
+	const starts: number[] = [];
+	const ends: number[] = [];
+	const units: number[] = [];
+	let unitOffset = 0;
+	let index = 0;
+	for (const point of text) {
+		for (let unit = 0; unit < point.toLowerCase().length; unit += 1) {
+			starts.push(index);
+			ends.push(index + 1);
+			units.push(unitOffset);
+		}
+		index += 1;
+		unitOffset += point.length;
+	}
+	return { starts, ends, units };
+}
+
+function analyze(text: string, note: NoteCue, query: Query): Analysis {
+	const counts = query.terms.map(() => new Map<Field, number>());
+	const hits: Occurrence[] = [];
+	const positions = pointOffsets(text);
+	const regions = sourceRegions(text);
+	let regionIndex = 0;
+	const fieldAt = (start: number): Field => {
+		while (regionIndex + 1 < regions.length && regions[regionIndex].end <= start) regionIndex += 1;
+		return regions[regionIndex]?.field ?? "body";
+	};
+	const add = (term: number, field: Field, offset: number, endOffset: number) => {
+		counts[term].set(field, (counts[term].get(field) ?? 0) + 1);
+		if (field !== "slug") hits.push({ term, field, offset, endOffset });
+	};
+	const sourceTokens = tokens(text);
+	for (const [input, wordList, isSlug] of [
+		[text, sourceTokens, false],
+		[note.slug, tokens(note.slug), true],
+	] as const) {
+		for (let i = 0; i < wordList.length; i += 1) {
+			const word = wordList[i];
+			const field = isSlug ? "slug" : fieldAt(word.start);
+			query.terms.forEach((term, index) => {
+				const end = termEnd(input, wordList, i, term);
+				if (end !== undefined) add(index, field, isSlug ? 0 : positions[word.start], isSlug ? 0 : positions[end]);
+			});
+		}
+	}
+	const folded = query.terms.some((term) => term.kind === "phrase") ? foldedRanges(text) : null;
+	query.terms.forEach((term, index) => {
+		if (term.kind !== "phrase" || folded === null) return;
+		const pattern = term.text
+			.toLowerCase()
+			.split(" ")
+			.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+			.join("\\s+");
+		if (new RegExp(pattern).test(note.slug.toLowerCase())) add(index, "slug", 0, 0);
+		regionIndex = 0;
+		for (const match of text.toLowerCase().matchAll(new RegExp(pattern, "g"))) {
+			const offset = folded.starts[match.index];
+			const endOffset = folded.ends[match.index + match[0].length - 1];
+			add(index, fieldAt(folded.units[match.index]), offset, endOffset);
+		}
+	});
+	hits.sort((a, b) => a.offset - b.offset || a.endOffset - b.endOffset || a.term - b.term);
+	return { text, hits, counts, length: sourceTokens.length };
+}
+
+function rankNotes(notes: NoteCue[], query: Query): { notes: NoteCue[]; idf: number[]; df: number[] } {
+	const df = query.terms.map((_, index) => notes.filter((note) => (note.analysis?.counts[index].size ?? 0) > 0).length);
+	const idf = df.map((count) => Math.log(1 + (notes.length - count + 0.5) / (count + 0.5)));
+	const average = notes.reduce((sum, note) => sum + (note.analysis?.length ?? 0), 0) / Math.max(1, notes.length);
+	const score = (note: NoteCue): number => {
+		const analysis = note.analysis;
+		if (analysis === undefined) return 0;
+		return analysis.counts.reduce((sum, fields, index) => {
+			let frequency = 0;
+			for (const [field, count] of fields) {
+				const normalization = field === "body" ? 0.25 + (0.75 * analysis.length) / Math.max(1, average) : 1;
+				frequency += (count * FIELD_WEIGHT[field]) / normalization;
+			}
+			return sum + (idf[index] * frequency * 2.2) / (frequency + 1.2);
+		}, 0);
+	};
+	const scored = notes.filter((note) => note.search !== undefined).map((note) => ({ note, score: score(note) }));
+	scored.sort((a, b) => b.score - a.score || (a.note.slug < b.note.slug ? -1 : a.note.slug > b.note.slug ? 1 : 0));
+	return { notes: scored.map(({ note }) => note), idf, df };
+}
+
+function passageSpan(hits: Occurrence[], idf: number[]): { offset: number; endOffset: number } {
+	// Sweep by end, not start: a phrase can enclose a later, shorter word hit.
+	const endings = hits
+		.map((hit, index) => ({ hit, index }))
+		.sort((a, b) => a.hit.endOffset - b.hit.endOffset || a.index - b.index);
+	const active = new Set<number>();
+	const counts = new Map<number, number>();
+	let weight = 0;
+	let bestWeight = -1;
+	let bestEnd = hits[0].endOffset;
+	let left = 0;
+	const change = (term: number, delta: number) => {
+		const before = counts.get(term) ?? 0;
+		const after = before + delta;
+		if (before === 0) weight += idf[term];
+		if (after === 0) weight -= idf[term];
+		counts.set(term, after);
+	};
+	for (const { hit, index } of endings) {
+		const start = hit.endOffset - MATCH_EXCERPT_POINTS;
+		while (left < hits.length && hits[left].offset < start) {
+			if (active.delete(left)) change(hits[left].term, -1);
+			left += 1;
+		}
+		if (hit.offset < start) continue;
+		active.add(index);
+		change(hit.term, 1);
+		if (weight > bestWeight + 1e-10) {
+			bestWeight = weight;
+			bestEnd = hit.endOffset;
+		}
+	}
+	const contained = hits.filter((hit) => hit.offset >= bestEnd - MATCH_EXCERPT_POINTS && hit.endOffset <= bestEnd);
+	if (contained.length === 0) return { offset: hits[0].offset, endOffset: hits[0].offset + MATCH_EXCERPT_POINTS };
+	return { offset: contained[0].offset, endOffset: bestEnd };
+}
+
+function bestPassage(analysis: Analysis, idf: number[]): SourceMatch | null {
+	if (analysis.hits.length === 0) return null;
+	const { offset, endOffset } = passageSpan(analysis.hits, idf);
+	const excerptOffset = Math.max(0, offset - MATCH_CONTEXT_POINTS, endOffset - MATCH_EXCERPT_POINTS);
+	const slice = sliceByCodePoints(analysis.text, excerptOffset, MATCH_EXCERPT_POINTS);
+	return { offset, endOffset, excerptOffset, excerptEndOffset: slice.nextOffset, excerpt: slice.content };
+}
+
+function toSearchOutput(note: NoteCue, query: Query, idf: number[], rank: number): Record<string, unknown> {
+	const output = toOutputNote(note);
+	const search = note.search;
+	if (search === undefined) return output;
 	return {
-		...range,
-		excerptOffset,
-		excerptEndOffset: slice.nextOffset,
-		excerpt: slice.content,
+		...output,
+		digest: search.digest,
+		rank,
+		matched: query.terms.flatMap((term, index) =>
+			search.analysis.counts[index].size === 0
+				? []
+				: [
+						{
+							term: term.text,
+							fields: [...search.analysis.counts[index].keys()],
+						},
+					],
+		),
+		missing: query.terms.filter((_, index) => search.analysis.counts[index].size === 0).map((term) => term.text),
+		sourceMatch: bestPassage(analyze(search.analysis.text, note, query), idf),
 	};
 }
 
@@ -519,16 +745,21 @@ function readBrowseNote(path: string, file: string, slug: string): DiscoveryResu
 	return { ok: true, note: buildNoteCue(file, slug, window.text, window.truncated, window.size) };
 }
 
-function readSearchNote(path: string, file: string, slug: string, query: string): DiscoveryResult {
+function readSearchNote(path: string, file: string, slug: string, query: Query): DiscoveryResult {
 	const source = readNoteSource(path);
 	if (!source.ok) return source;
 	const text = decodeUtf8(source.buffer);
 	if (text === undefined) return { ok: false, reason: `note is not valid UTF-8: ${file}` };
 	const note = buildNoteCue(file, slug, text, false, source.buffer.length);
-	const cueMatch = matchesQuery(note, query);
-	const sourceMatch = findSourceMatch(text, query);
-	if (cueMatch || sourceMatch !== null) {
-		note.search = { digest: sha256(source.buffer), cueMatch, sourceMatch };
+	const analysis = analyze(text, note, query);
+	// Retain text and counts for ranking; recompute passages only for the page.
+	analysis.hits = [];
+	note.analysis = analysis;
+	if (
+		query.terms.every((term, index) => term.kind !== "phrase" || analysis.counts[index].size > 0) &&
+		analysis.counts.some((counts) => counts.size > 0)
+	) {
+		note.search = { digest: sha256(source.buffer), analysis };
 	}
 	return { ok: true, note };
 }
@@ -647,12 +878,12 @@ function reportCueIssues(scan: Scan, cue: NoteCue): void {
 	}
 	if (cue.metadata !== "ok" && cue.metadata !== "absent") {
 		pushIssue(scan, "note.metadata", `${cue.file}: ${cue.metadata} frontmatter (${cue.metadataIssue ?? "no detail"})`);
-	} else if (cue.cuesMultiline || cue.cuesDuplicate || cue.cuesClipped) {
+	} else if (cue.metadataIssue !== undefined) {
 		pushIssue(scan, "note.metadata", `${cue.file}: cue extraction problem (${cue.metadataIssue ?? "no detail"})`);
 	}
 }
 
-function considerEntry(root: string, entry: Dirent, scan: Scan, query: string | null): void {
+function considerEntry(root: string, entry: Dirent, scan: Scan, query: Query | null): void {
 	if (!/\.md$/i.test(entry.name)) return;
 	if (entry.isDirectory()) {
 		unavailableNote(scan, "note.nonregular", `skipped directory named like a note: ${entry.name}`);
@@ -679,7 +910,7 @@ function considerEntry(root: string, entry: Dirent, scan: Scan, query: string | 
 	reportCueIssues(scan, source.note);
 }
 
-function scanCorpus(root: string, query: string | null = null): Scan {
+function scanCorpus(root: string, query: Query | null = null): Scan {
 	const scan: Scan = { notes: [], issues: [], issueCount: 0, visited: 0, complete: true, unavailable: 0 };
 	let handle: ReturnType<typeof opendirSync>;
 	try {
@@ -779,17 +1010,26 @@ function indexPageFields(
 }
 
 function runIndex(root: string, args: { query: string | null; index: number }): Record<string, unknown> {
-	const scan = scanCorpus(root, args.query);
-	const matches = args.query === null ? scan.notes : scan.notes.filter((cue) => cue.search !== undefined);
+	const query = args.query === null ? null : parseQuery(args.query);
+	const scan = scanCorpus(root, query);
+	const ranked = query === null ? null : rankNotes(scan.notes, query);
+	const matches = ranked?.notes ?? scan.notes;
 	const totalMatches = matches.length;
-	let kept = matches.slice(args.index, args.index + INDEX_PAGE_SIZE).map(toOutputNote);
+	const pageSize = query === null ? INDEX_PAGE_SIZE : SEARCH_PAGE_SIZE;
+	let kept = matches
+		.slice(args.index, args.index + pageSize)
+		.map((note, position) =>
+			query === null || ranked === null
+				? toOutputNote(note)
+				: toSearchOutput(note, query, ranked.idf, args.index + position + 1),
+		);
 	const result: Record<string, unknown> = {
 		ok: true,
 		kind: "index",
 		root: bounded(root, MAX_ROOT_CHARS),
 		query: args.query,
 		index: args.index,
-		pageSize: INDEX_PAGE_SIZE,
+		pageSize,
 		totalNotes: scan.notes.length,
 		totalMatches,
 		returned: 0,
@@ -805,7 +1045,9 @@ function runIndex(root: string, args: { query: string | null; index: number }): 
 			notesSearched: scan.notes.length,
 			unavailableNotes: scan.unavailable,
 			maxSourceBytes: SOURCE_READ_BYTES,
-			firstMatchOnly: true,
+			ranking: "lexical",
+			terms: query?.terms.map((term, index) => ({ text: term.text, kind: term.kind, notes: ranked?.df[index] })),
+			ignored: query?.ignored,
 		};
 	}
 	for (;;) {
@@ -922,6 +1164,7 @@ function main(): void {
 
 export {
 	NOTE_OPEN_FLAGS,
+	parseQuery,
 	addressableSlug,
 	extractCue,
 	openRegular,

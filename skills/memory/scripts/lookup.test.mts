@@ -55,10 +55,6 @@ function notesOf(json: Json): Json[] {
 	return asArray(json.notes).map(asObject);
 }
 
-function cuesOf(note: Json): Json {
-	return asObject(note.cues);
-}
-
 function issueCodes(json: Json): string[] {
 	return asArray(asObject(json.scan).issues).map((issue) => asString(asObject(issue).code));
 }
@@ -149,7 +145,7 @@ function maximalNote(index: number): string {
 	return `---\ntitle: ${"T".repeat(300)}\ntags: [${tags}]\nstatus: ${"s".repeat(80)}\nsupersedes: [${supersedes}]\nsuperseded_by: ${"z".repeat(160)}\n---\n\n# Heading ${index}\n`;
 }
 
-test("indexes verbatim cue lines with heading and filename fallback", () => {
+test("indexes compact raw cue values with heading and filename fallback", () => {
 	const root = makeCorpus({
 		"README.md": README,
 		"prefer-dark-theme.md": ACTIVE_NOTE,
@@ -163,19 +159,18 @@ test("indexes verbatim cue lines with heading and filename fallback", () => {
 	const theme = bySlug.get("prefer-dark-theme");
 	assert.ok(theme);
 	assert.equal(asString(theme.title), "Prefer dark theme");
-	assert.equal(asString(theme.titleSource), "frontmatter");
-	assert.equal(asString(cuesOf(theme).title), "title: Prefer dark theme");
-	assert.equal(asString(cuesOf(theme).tags), "tags: [preference, ui]");
-	assert.equal(asString(cuesOf(theme).status), "status: active");
-	assert.equal(asString(cuesOf(theme).supersedes), "supersedes: []");
-	assert.equal(asString(cuesOf(theme).superseded_by), "superseded_by: null");
-	assert.equal(asString(theme.metadata), "ok");
-	assert.equal(asBoolean(theme.cuesClipped), false);
+	assert.deepEqual(theme, {
+		slug: "prefer-dark-theme",
+		title: "Prefer dark theme",
+		tags: "[preference, ui]",
+		status: "active",
+		supersedes: "[]",
+		superseded_by: "null",
+	});
 	const heading = bySlug.get("heading-only");
 	assert.ok(heading);
 	assert.equal(asString(heading.title), "Heading only note");
-	assert.equal(asString(heading.titleSource), "heading");
-	assert.equal(asString(heading.metadata), "absent");
+	assert.deepEqual(heading, { slug: "heading-only", title: "Heading only note" });
 });
 
 test("queries raw source and title/tag cues plus filename/slug", () => {
@@ -188,12 +183,16 @@ test("queries raw source and title/tag cues plus filename/slug", () => {
 	assert.equal(asNumber(runJsonOk(["--query", "old-edge"], root).totalMatches), 1);
 	const body = runJsonOk(["--query", "zebra-feature"], root);
 	assert.equal(asNumber(body.totalMatches), 1);
-	assert.equal(asBoolean(notesOf(body)[0].cueMatch), false);
-	assert.equal(asString(cuesOf(notesOf(body)[0]).status), "status: superseded");
-	assert.equal(asNumber(runJsonOk(["--query", "dark interface"], root).totalMatches), 0);
-	assert.equal(asNumber(runJsonOk(["--query", "UI.*"], root).totalMatches), 0);
-	const slug = notesOf(runJsonOk(["--query", "old-edge"], root))[0];
-	assert.equal(asBoolean(slug.cueMatch), true);
+	assert.deepEqual(asArray(notesOf(body)[0].matched).map(asObject)[0].fields, ["body"]);
+	assert.equal(asString(notesOf(body)[0].status), "superseded");
+	const partial = runJsonOk(["--query", "dark interface"], root);
+	assert.equal(asNumber(partial.totalMatches), 2);
+	assert.equal(notesOf(partial)[0].slug, "prefer-dark-theme");
+	assert.deepEqual(notesOf(partial)[0].missing, ["interface"]);
+	assert.deepEqual(asArray(notesOf(partial)[1].matched).map(asObject)[0].fields, ["frontmatter"]);
+	assert.equal(asNumber(runJsonOk(["--query", '"UI.*"'], root).totalMatches), 0);
+	const slug = notesOf(runJsonOk(["--query", '"old-edge"'], root))[0];
+	assert.deepEqual(asArray(slug.matched).map(asObject)[0].fields, ["slug"]);
 	assert.equal(slug.sourceMatch, null);
 	assert.match(asString(slug.digest), /^[a-f0-9]{64}$/);
 });
@@ -206,7 +205,7 @@ test("does not split comma-bearing tag values", () => {
 	const json = runJsonOk(["--query", "a,b"], root);
 	assert.equal(asNumber(json.totalMatches), 1);
 	assert.equal(asString(notesOf(json)[0].slug), "comma-tag");
-	assert.equal(asString(cuesOf(notesOf(json)[0]).tags), 'tags: ["a,b", c]');
+	assert.equal(asString(notesOf(json)[0].tags), '["a,b", c]');
 });
 
 test("reaches every indexed record under maximal cue metadata", () => {
@@ -396,7 +395,7 @@ test("only includes names --note reproduces, excluding foo.MD and foo.md.md", ()
 	assert.ok(issueCodes(json).includes("note.unaddressable"));
 	for (const note of notesOf(json)) {
 		const page = runJsonOk(["--note", asString(note.slug)], root);
-		assert.equal(asString(page.file), asString(note.file));
+		assert.equal(asString(page.file), `${asString(note.slug)}.md`);
 	}
 });
 
@@ -413,23 +412,21 @@ test("flags duplicate, multiline, and clipped cues and unclosed frontmatter", ()
 	const bySlug = new Map(notesOf(json).map((note) => [asString(note.slug), note]));
 	const duplicate = bySlug.get("duplicate");
 	assert.ok(duplicate);
-	assert.equal(asBoolean(duplicate.cuesDuplicate), true);
-	assert.equal(asString(cuesOf(duplicate).title), "title: A");
-	assert.match(asString(duplicate.metadataIssue), /duplicate/);
+	assert.equal(asString(duplicate.title), "A");
+	assert.match(asString(duplicate.cueProblem), /duplicate/);
 	const multiline = bySlug.get("multiline");
 	assert.ok(multiline);
-	assert.equal(asBoolean(multiline.cuesMultiline), true);
-	assert.match(asString(multiline.metadataIssue), /multiline/);
+	assert.match(asString(multiline.cueProblem), /multiline/);
 	const clipped = bySlug.get("clipped");
 	assert.ok(clipped);
-	assert.equal(asBoolean(clipped.cuesClipped), true);
-	assert.ok(asString(cuesOf(clipped).title).length <= 240);
+	assert.match(asString(clipped.cueProblem), /clipped/);
+	assert.ok(asString(clipped.title).length <= 160);
 	const unclosed = bySlug.get("unclosed");
 	assert.ok(unclosed);
-	assert.equal(asString(unclosed.metadata), "malformed");
+	assert.match(asString(unclosed.cueProblem), /no closing delimiter/);
 	const huge = bySlug.get("huge");
 	assert.ok(huge);
-	assert.equal(asString(huge.metadata), "partial");
+	assert.match(asString(huge.cueProblem), /read window/);
 	assert.ok(issueCodes(json).includes("note.metadata"));
 });
 
@@ -535,7 +532,7 @@ test("keeps unfiltered browsing cue-only, including blank queries", () => {
 		assert.equal(index.search, undefined);
 		assert.equal(notesOf(index)[0].digest, undefined);
 		assert.equal(notesOf(index)[0].sourceMatch, undefined);
-		assert.equal(asString(cuesOf(notesOf(index)[0]).title), "title: Prefer dark theme");
+		assert.equal(asString(notesOf(index)[0].title), "Prefer dark theme");
 	}
 });
 
@@ -553,7 +550,7 @@ test("returns original locations through lowercase expansion, contextual casing,
 	];
 	for (const [source, query, expected] of cases) {
 		const root = makeCorpus({ "README.md": README, "note.md": source });
-		const index = runJsonOk(["--query", query], root);
+		const index = runJsonOk(["--query", `"${query}"`], root);
 		assert.equal(asNumber(index.totalMatches), 1, JSON.stringify({ source, query }));
 		const note = notesOf(index)[0];
 		const match = assertSourceLocation(note, source, expected);
@@ -568,17 +565,17 @@ test("returns original locations through lowercase expansion, contextual casing,
 });
 
 test("keeps the complete source match within an excerpt when lowercase expands the query", () => {
-	const query = "\u0130".repeat(200);
-	const matched = "i\u0307".repeat(200);
+	const query = `"${"\u0130".repeat(198)}"`;
+	const matched = "i\u0307".repeat(198);
 	const source = `${"p".repeat(120)}${matched} tail`;
 	const root = makeCorpus({ "README.md": README, "note.md": source });
 	const index = runJsonOk(["--query", query], root);
 	assert.equal(asNumber(index.totalMatches), 1);
 	const match = assertSourceLocation(notesOf(index)[0], source, matched);
 	assert.equal(asNumber(match.offset), 120);
-	assert.equal(asNumber(match.endOffset), 520);
-	assert.equal(asNumber(match.excerptOffset), 40);
-	assert.equal(asNumber(match.excerptEndOffset), 520);
+	assert.equal(asNumber(match.endOffset), 516);
+	assert.equal(asNumber(match.excerptOffset), 36);
+	assert.equal(asNumber(match.excerptEndOffset), 516);
 });
 
 test("searches introductory prose, fenced content, and source tails without section parsing", () => {
@@ -598,7 +595,6 @@ test("searches introductory prose, fenced content, and source tails without sect
 		const note = notesOf(index)[0];
 		assert.equal(asString(note.slug), slug);
 		assertSourceLocation(note, source, query);
-		assert.equal(asBoolean(note.cueMatch), false);
 		assert.equal(asBoolean(asObject(index.search).complete), true);
 	}
 	const note = notesOf(runJsonOk(["--query", "quiet room"], root))[0];
@@ -611,11 +607,11 @@ test("searches introductory prose, fenced content, and source tails without sect
 	assert.match(asString(page.content), /no fee/);
 });
 
-test("exposes only the first occurrence as an excerpt without hiding later source pages", () => {
+test("selects an excerpt without hiding later source pages", () => {
 	const source = `${ACTIVE_NOTE}\nneedle before a qualification\n${"x".repeat(6000)}\nneedle with a later qualification\n`;
 	const root = makeCorpus({ "README.md": README, "note.md": source });
 	const index = runJsonOk(["--query", "needle"], root);
-	assert.equal(asBoolean(asObject(index.search).firstMatchOnly), true);
+	assert.equal(asObject(index.search).ranking, "lexical");
 	const match = assertSourceLocation(notesOf(index)[0], source, "needle");
 	assert.ok(asNumber(match.excerptEndOffset) < Array.from(source).length);
 	const full = collectPages(root, "note");
@@ -633,7 +629,7 @@ test("binds a query match to the first source read and observes edits and deleti
 	const changed = runError(["--note", "good", "--digest", digest], root);
 	assert.equal(changed.status, 4);
 	assert.match(changed.stderr, /changed/);
-	assert.equal(asNumber(runJsonOk(["--query", "body phrase"], root).totalMatches), 0);
+	assert.equal(asNumber(runJsonOk(["--query", '"body phrase"'], root).totalMatches), 0);
 	assert.equal(asNumber(runJsonOk(["--query", "replacement phrase"], root).totalMatches), 1);
 	rmSync(join(root, "good.md"));
 	const removed = runJsonOk(["--query", "replacement phrase"], root);
@@ -670,7 +666,7 @@ test("separates source coverage gaps from query misses and raw metadata warnings
 	const metadataOnly = makeCorpus({ "README.md": README, "note.md": "---\ntitle: Unclosed\n\nneedle" });
 	const complete = runJsonOk(["--query", "needle"], metadataOnly);
 	assert.equal(asBoolean(asObject(complete.search).complete), true);
-	assert.equal(asString(notesOf(complete)[0].metadata), "malformed");
+	assert.match(asString(notesOf(complete)[0].cueProblem), /no closing delimiter/);
 	assert.equal(asNumber(asObject(complete.search).unavailableNotes), 0);
 });
 
@@ -740,12 +736,166 @@ test("returns lifecycle cues verbatim and does not suppress conflicting or super
 	});
 	const index = runJsonOk(["--query", "weekly report"], root);
 	assert.equal(asNumber(index.totalMatches), 3);
+	const bySlug = new Map(notesOf(index).map((note) => [note.slug, note]));
+	assert.deepEqual([...bySlug.keys()].sort(), ["active", "conflict", "old"]);
+	assert.equal(bySlug.get("old")?.status, "superseded");
+	assert.equal(bySlug.get("active")?.supersedes, "[old]");
+});
+
+test("keeps overlapping phrase and word evidence inside the selected passage", () => {
+	const phrase = `start needle ${" ".repeat(90)}finish`;
+	const source = `${"x".repeat(200)} early ${" ".repeat(300)}${phrase}`;
+	const root = makeCorpus({ "README.md": README, "overlap.md": source });
+	const index = runJsonOk(["--query", 'early "start needle finish" needle'], root);
+	const match = asObject(notesOf(index)[0].sourceMatch);
+	assert.ok(asString(match.excerpt).includes(phrase));
+	assert.equal(asNumber(match.endOffset), source.length);
+	assert.ok(asNumber(match.excerptEndOffset) >= source.length);
+});
+
+test("reports empty cue values without a continuation line as extraction problems", () => {
+	const root = makeCorpus({ "README.md": README, "empty.md": "---\ntitle:\nstatus:\n---\n# Heading\n" });
+	const index = runJsonOk([], root);
+	assert.match(asString(notesOf(index)[0].cueProblem), /empty/);
+	assert.deepEqual(issueCodes(index), ["note.metadata"]);
+	assert.equal(notesOf(index)[0].status, "");
+	assert.equal(notesOf(index)[0].title, "Heading");
+});
+
+test("clips compact cue values without splitting astral characters", () => {
+	const title = `${"a".repeat(158)}😀 tail`;
+	const value = `${"b".repeat(238)}😀 tail`;
+	const root = makeCorpus({
+		"README.md": README,
+		"frontmatter.md": `---\ntitle: ${title}\ntags: ${value}\nsupersedes: ${value}\n---\nneedle\n`,
+		"heading.md": `# ${title}\nneedle\n`,
+	});
+	for (const args of [[], ["--query", "needle"]]) {
+		for (const note of notesOf(runJsonOk(args, root))) {
+			assert.equal(note.title, `${"a".repeat(158)}…`);
+			assert.ok(asString(note.title).length <= 160);
+			for (const key of ["tags", "supersedes"]) {
+				if (note[key] !== undefined) assert.equal(note[key], `${"b".repeat(238)}…`);
+			}
+			for (const text of Object.values(note).filter((value): value is string => typeof value === "string")) {
+				assert.equal(Buffer.from(text, "utf8").toString("utf8"), text);
+			}
+			assert.match(asString(note.cueProblem), /clipped/);
+		}
+	}
+});
+
+test("retains bounded evidence for a phrase with an oversized whitespace gap", () => {
+	const source = `start${" ".repeat(9000)}finish`;
+	const root = makeCorpus({ "README.md": README, "long.md": source });
+	const index = runJsonOk(["--query", '"start finish"'], root);
+	assert.equal(index.totalMatches, 1);
+	const match = asObject(notesOf(index)[0].sourceMatch);
+	assert.equal(match.offset, 0);
+	assert.equal(match.endOffset, 480);
+	assert.equal(asString(match.excerpt), source.slice(0, 480));
+});
+
+test("ranks multi-term evidence and emits matched and missing terms without numeric scores", () => {
+	const root = makeCorpus({
+		"README.md": README,
+		"both.md": "---\ntitle: Model delegation\ntags: [model, delegation]\n---\nDelegate model tasks.\n",
+		"model.md": "# Other\n\nmodel model model model model\n",
+		"neither.md": "# Flowers\n\nA garden.\n",
+	});
+	const index = runJsonOk(["--query", "model delegation unavailable"], root);
+	const notes = notesOf(index);
 	assert.deepEqual(
-		notesOf(index).map((note) => asString(note.slug)),
-		["active", "conflict", "old"],
+		notes.map((note) => note.slug),
+		["both", "model"],
 	);
-	assert.equal(asString(cuesOf(notesOf(index)[2]).status), "status: superseded");
-	assert.equal(asString(cuesOf(notesOf(index)[0]).supersedes), "supersedes: [old]");
+	assert.deepEqual(
+		notes.map((note) => note.rank),
+		[1, 2],
+	);
+	assert.deepEqual(notes[0].missing, ["unavailable"]);
+	assert.deepEqual(
+		asArray(notes[0].matched).map((term) => asObject(term).term),
+		["model", "delegation"],
+	);
+	assert.equal(notes[0].score, undefined);
+	assert.equal(asObject(index.search).ranking, "lexical");
+	assert.deepEqual(
+		asArray(asObject(index.search).terms).map((term) => asObject(term).notes),
+		[2, 1, 0],
+	);
+});
+
+test("requires quoted phrases, ignores function words, and keeps identifiers adjacent", () => {
+	const root = makeCorpus({
+		"README.md": README,
+		"yes.md": "# Notes\n\nWeekly\nreport uses PI_MEMORY_DIR and model routing.\n",
+		"no.md": "# Notes\n\nWeekly plan then report. PI elsewhere MEMORY then DIR. models only.\n",
+	});
+	assert.deepEqual(
+		notesOf(runJsonOk(["--query", '"weekly report" model'], root)).map((n) => n.slug),
+		["yes"],
+	);
+	assert.deepEqual(
+		notesOf(runJsonOk(["--query", "PI_MEMORY_DIR"], root)).map((n) => n.slug),
+		["yes"],
+	);
+	assert.deepEqual(
+		notesOf(runJsonOk(["--query", "model"], root)).map((n) => n.slug),
+		["yes"],
+	);
+	const index = runJsonOk(["--query", "the model and model"], root);
+	assert.deepEqual(asObject(index.search).ignored, ["the", "and"]);
+	assert.equal(asArray(asObject(index.search).terms).length, 1);
+	for (const query of ["the and", "!!!", '""', '"unclosed', Array.from({ length: 17 }, (_, i) => `w${i}`).join(" ")]) {
+		assert.equal(runError(["--query", query], root).status, 2);
+	}
+});
+
+test("selects later concentrated evidence instead of the first source occurrence", () => {
+	const source = `alpha alone.\n${"unrelated ".repeat(100)}\n😀 alpha beta gamma with a qualification.\n`;
+	const root = makeCorpus({ "README.md": README, "note.md": source });
+	const note = notesOf(runJsonOk(["--query", "alpha beta gamma"], root))[0];
+	const match = asObject(note.sourceMatch);
+	assert.ok(asNumber(match.offset) > 500);
+	assert.match(asString(match.excerpt), /alpha beta gamma with a qualification/);
+	assert.equal(
+		Array.from(source).slice(asNumber(match.offset), asNumber(match.endOffset)).join(""),
+		"alpha beta gamma",
+	);
+});
+
+test("fits a compact corpus on one page and preserves exact browse continuation under byte pressure", () => {
+	const files: Record<string, string> = { "README.md": README };
+	for (let i = 0; i < 100; i += 1) files[`subject-${i}.md`] = ACTIVE_NOTE;
+	const pages = drainIndex(makeCorpus(files));
+	assert.equal(pages.length, 1);
+	assert.equal(notesOf(pages[0]).length, 100);
+	const large: Record<string, string> = { "README.md": README };
+	for (let i = 0; i < 100; i += 1)
+		large[`wide-${String(i).padStart(3, "0")}.md`] =
+			`---\ntitle: ${"x".repeat(200)}\ntags: ${"t".repeat(240)}\nstatus: active\nsupersedes: ${"s".repeat(240)}\nsuperseded_by: ${"z".repeat(240)}\n---\n`;
+	const boundedPages = drainIndex(makeCorpus(large));
+	assert.ok(boundedPages.length > 1);
+	assert.equal(new Set(boundedPages.flatMap((page) => notesOf(page).map((n) => n.slug))).size, 100);
+	for (const page of boundedPages) assert.ok(Buffer.byteLength(JSON.stringify(page)) + 1 <= 48 * 1024);
+});
+
+test("preserves ranked page order and ordinals across deterministic rescans", () => {
+	const files: Record<string, string> = { "README.md": README };
+	for (let i = 0; i < 60; i += 1)
+		files[`note-${String(i).padStart(2, "0")}.md`] = `# Subject\n\nneedle ${"extra ".repeat(i)}\n`;
+	const root = makeCorpus(files);
+	const notes = drainIndex(root, ["--query", "needle"]).flatMap(notesOf);
+	assert.equal(notes.length, 60);
+	assert.deepEqual(
+		notes.map((n) => n.rank),
+		Array.from({ length: 60 }, (_, i) => i + 1),
+	);
+	assert.deepEqual(
+		notes.map((n) => n.slug),
+		Array.from({ length: 60 }, (_, i) => `note-${String(i).padStart(2, "0")}`),
+	);
 });
 
 test("slices by code point and trims incomplete UTF-8 windows", () => {
