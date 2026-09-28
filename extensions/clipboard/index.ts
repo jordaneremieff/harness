@@ -4,6 +4,18 @@ import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil
 import { Type } from "typebox";
 import { ClipboardPanel, type RestoreOutcome } from "./panel.ts";
 import { pbCopy, pbPaste } from "./pb.ts";
+import {
+	renderCopyCall,
+	renderCopyResult,
+	renderGetCall,
+	renderGetResult,
+	renderListCall,
+	renderListResult,
+	renderPasteCall,
+	renderPasteResult,
+	renderRestoreCall,
+	renderRestoreResult,
+} from "./presentation.ts";
 import { SEARCH_LIMITS, searchEntries, type SearchPage } from "./search.ts";
 import { appendEntry, type ClipboardEntry, makeEntry, readEntries, resolveClipboardDir } from "./store.ts";
 import { boundedOutput, sanitizeTerminalText } from "./text.ts";
@@ -252,6 +264,8 @@ export default function (pi: ExtensionAPI) {
 			"If the operator asks to recover something previously copied, use clipboard_list then clipboard_restore; if they ask what is currently on the clipboard, use clipboard_paste.",
 		],
 		parameters: CopyParams,
+		renderCall: (args, theme, context) => renderCopyCall(args, theme, context),
+		renderResult: (result, options, theme, context) => renderCopyResult(result, options, theme, context),
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("clipboard_copy cancelled");
 			try {
@@ -290,6 +304,8 @@ export default function (pi: ExtensionAPI) {
 			"Read the current macOS clipboard. Output is paged and capped; use offset from a truncated response to continue. Do not call speculatively.",
 		promptSnippet: "Read the current macOS clipboard contents",
 		parameters: PasteParams,
+		renderCall: (args, theme, context) => renderPasteCall(args, theme, context),
+		renderResult: (result, options, theme, context) => renderPasteResult(result, options, theme, context),
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("clipboard_paste cancelled");
 			let content: string;
@@ -350,6 +366,8 @@ export default function (pi: ExtensionAPI) {
 			"Use clipboard_list to find previously copied content. If only a phrase is known, pass query and follow nextCursor. Use the returned id/date with clipboard_get or clipboard_restore; confirm with get when archive content might have changed.",
 		],
 		parameters: ListParams,
+		renderCall: (args, theme, context) => renderListCall(args, theme, context),
+		renderResult: (result, options, theme, context) => renderListResult(result, options, theme, context),
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("clipboard_list cancelled");
 			if (params.query !== undefined) {
@@ -370,6 +388,8 @@ export default function (pi: ExtensionAPI) {
 			"Read one archived clipboard entry by stable id from clipboard_list. Output is paged and capped; use offset from a truncated response to continue.",
 		promptSnippet: "Read one archived clipboard entry by stable id",
 		parameters: GetParams,
+		renderCall: (args, theme, context) => renderGetCall(args, theme, context),
+		renderResult: (result, options, theme, context) => renderGetResult(result, options, theme, context),
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("clipboard_get cancelled");
 			const entry = await findEntry(params.id, params.date, "clipboard_get", signal);
@@ -410,6 +430,8 @@ export default function (pi: ExtensionAPI) {
 			"Copy one archived entry back to the macOS clipboard by stable id from clipboard_list. The restore is archived as a new entry.",
 		promptSnippet: "Restore an archived entry to the macOS clipboard",
 		parameters: RestoreParams,
+		renderCall: (args, theme, context) => renderRestoreCall(args, theme, context),
+		renderResult: (result, options, theme, context) => renderRestoreResult(result, options, theme, context),
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("clipboard_restore cancelled");
 			const entry = await findEntry(params.id, params.date, "clipboard_restore", signal);

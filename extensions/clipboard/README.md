@@ -17,6 +17,26 @@ Each tool is one operation; there is no action multiplexer, and the model-facing
 API has no transient index addressing — stable ids are the only entry handle.
 `clipboard_paste` and `clipboard_get` return at most 8,000 Unicode characters per page, subject to the stricter 50 KiB and 2000-line output bounds. A `nextOffset` tells the caller how to continue.
 
+## Tool cards
+
+Each tool draws a compact TUI card. A collapsed card never shows copied, pasted, or
+archived content; it shows the label, size, id, and outcome instead. Expansion reveals the
+full arguments or result text with a display bound, and terminal controls escape to text
+in every collapsed value.
+
+- `clipboard_copy` names the label and reports the content size in UTF-16 code units
+  (or that the content is still streaming), then the copied size and any archive warning.
+- `clipboard_paste` names only the requested page bounds, then the page size, any
+  continuation offset, the escaped-control note, and the empty state.
+- `clipboard_list` names the query or date and its bounds, then the entry or match count,
+  whether more is available, and whether a continuation exists.
+- `clipboard_get` names the entry id and page bounds, then the entry size, any
+  continuation offset, and the escaped-control note.
+- `clipboard_restore` names the entry id, then the restored size and any archive warning.
+
+A result that hides content carries the expansion hint; a restore result, which repeats no
+hidden content, carries none.
+
 ## Find text from a remembered phrase
 
 Use `clipboard_list` with `query` when the date and id are unknown. Without
