@@ -42,10 +42,6 @@ boundaries, rather than a central feature catalog.
   continue the work.
 - [Worktrees](docs/conventions/worktrees.md) defines the development and
   publication workflow.
-- [Data diff](skills/data-diff/SKILL.md) compares local CSV exports by record
-  identity, separates unresolved matches, and reconciles requested totals with
-  exact arithmetic. It leaves input files unchanged and uses available local
-  analysis tools rather than a bundled parser.
 - [Memory](skills/memory/SKILL.md) retrieves prior operator knowledge before
   dependent choices. Its read-only script derives a compact cue index from
   `PI_MEMORY_DIR` and reads selected notes in bounded pages; curation stays
