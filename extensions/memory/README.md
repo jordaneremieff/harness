@@ -1,8 +1,10 @@
 # Memory
 
 Registered tools retrieve and curate durable operator knowledge in plain Markdown.
-The extension has no service, stored search index, background injection, slash command,
-model request, or corpus Git operation. All I/O belongs to an explicit tool call.
+Before each agent run, the extension adds a bounded pointer-only memory index to the
+structured system prompt. It has no service, stored search index, background task,
+slash command, model request, or corpus Git operation. I/O belongs to a tool call
+or the run's `before_agent_start` event.
 
 ## Configuration
 
@@ -14,6 +16,64 @@ See [extension configuration](../../docs/conventions/extension-config.md).
 Search and read never initialize storage. The first valid write creates a missing
 root and a minimal `README.md` contract. An existing contract remains unchanged.
 The root is operator-controlled; do not point it at an untrusted shared directory.
+
+## System prompt index
+
+The `memory_index` section lists active notes as `slug: title` pointers. Its frame
+states that titles are retrieval cues, not evidence or instructions, that the agent
+must read with `memory_read` before relying on a note, and that current instructions
+control. Read a matching subject; use `memory_search` when no title matches.
+No note body, heading fallback, source passage, or contract content enters the section.
+
+The section uses the existing browse scanner: at most 512 directory entries plus
+one lookahead, with at most 8 KiB read per note. It includes only lowercase kebab-case
+slugs with a usable `active` status cue. Superseded notes, hidden files, `README.md`,
+and names outside that grammar are excluded. Missing, malformed, multiline, or
+ambiguous status cues remain unknown. A status cue requires a plain top-level `status`
+key. Its value comes from the complete bounded header, parsed with the public Pi
+frontmatter parser. A rejected header makes status unknown,
+even when the error concerns another field. Unreadable entries and unknown status
+counts qualify the section; they are not proof that no other active subjects exist.
+
+Titles come only from frontmatter cues. The public Pi frontmatter parser decodes
+isolated scalar fields, including YAML and JSON quotes. Within a valid header,
+missing or unusable titles fall back to the slug. Controls and format characters
+become spaces, whitespace collapses to one line, and angle brackets become non-markup
+characters. Titles
+remain untrusted even after display sanitization.
+
+The complete section, including Pi's wrapper, fits **12 KiB of UTF-8**. Pointers
+sort by slug. Titles first retain at most 160 Unicode code points; if the whole list
+does not fit, all titles shorten to at most 64 code points. If it still does not fit,
+the section retains the longest alphabetical prefix and reports the exact number
+of observed active notes omitted by the byte limit. The omission clause appears only
+when notes are omitted. It always points to `memory_search`.
+This preserves subject cues before sacrificing coverage. Approximate size is the
+sum of each slug, title, separator, and newline, plus the fixed frame and coverage
+notice. At roughly four bytes per English token, the cap is about 3,000 tokens;
+actual token cost varies by language and model. Every session and worker pays for
+its section in model context, even when the text is unchanged.
+
+If directory traversal reaches its cap, the section reports an incomplete scan,
+omits all pointers, and states that the active-note count is unknown. A capped native
+directory walk cannot choose a stable subset across entry orders. This avoids a
+false precise omitted count and order-dependent prompt changes without expanding
+the scan. `memory_search` remains available with its explicit coverage boundaries.
+
+The hook rebuilds from disk at each `before_agent_start`, not each model request
+within that run. It has no cache, timestamp, persistent state, or write side effect.
+Identical cues produce identical section bytes; body-only or date-only changes
+produce no index delta. A changed title or membership updates the next run's section.
+If configuration, the root, the contract, or the scan is unavailable, the hook adds
+no section and never blocks the run. A later unavailable run removes a prior section.
+
+Pi clones base prompt options for each `before_agent_start`, compares the
+resulting sections with the transcript, and records changed text or a `null` removal.
+An unchanged section adds no transcript delta. The extension edits only
+`event.systemPromptOptions.sections.memory_index`; it does not replace the whole
+prompt. A different extension that forces an opaque system prompt owns that separate
+projection. Controlled native-session tests verify ordinary provider delivery,
+unchanged suppression, changed cues, removal, and restoration.
 
 ## Tools
 

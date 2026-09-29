@@ -1,0 +1,180 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import {
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	getCurrentSystemMessage,
+	getSystemMessageText,
+	type TranscriptContext,
+} from "@earendil-works/pi-ai";
+import {
+	createAgentSession,
+	DefaultResourceLoader,
+	ModelRuntime,
+	SessionManager,
+	SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+
+test("native prompt sections reach a controlled provider, avoid unchanged deltas, and remove unavailable memory", {
+	timeout: 20000,
+}, async () => {
+	const root = mkdtempSync(join(tmpdir(), "memory-prompt-runtime-"));
+	const corpus = join(root, "corpus");
+	const agentDir = join(root, "agent");
+	mkdirSync(corpus);
+	mkdirSync(agentDir);
+	writeFileSync(join(corpus, "README.md"), "PRIVATE CONTRACT");
+	const source = (title: string, body = "PRIVATE BODY") => `---\nstatus: active\ntitle: ${title}\n---\n${body}\n`;
+	writeFileSync(join(corpus, "editor-choice.md"), source("Editor choice"));
+	const previousRoot = process.env.PI_MEMORY_DIR;
+	process.env.PI_MEMORY_DIR = corpus;
+	const requests: TranscriptContext[] = [];
+	const errors: string[] = [];
+	const settingsManager = SettingsManager.inMemory({
+		defaultProvider: "memory-fixture",
+		defaultModel: "controlled",
+		compaction: { enabled: false },
+		retry: { enabled: false },
+	});
+	let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+	try {
+		const modelRuntime = await ModelRuntime.create({
+			authPath: join(agentDir, "auth.json"),
+			modelsPath: null,
+			modelsStorePath: join(agentDir, "models-cache.json"),
+			refreshOnCreate: false,
+		});
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: root,
+			agentDir,
+			settingsManager,
+			noSkills: true,
+			noPromptTemplates: true,
+			noContextFiles: true,
+			additionalExtensionPaths: [fileURLToPath(new URL("./index.ts", import.meta.url))],
+			extensionFactories: [
+				(pi) => {
+					pi.registerProvider("memory-fixture", {
+						baseUrl: "https://memory.invalid",
+						api: "memory-fixture",
+						apiKey: "synthetic-fixture-not-a-credential",
+						models: [
+							{
+								id: "controlled",
+								name: "Controlled fixture",
+								reasoning: false,
+								input: ["text"],
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								contextWindow: 128000,
+								maxTokens: 1024,
+							},
+						],
+						streamSimple(model, context) {
+							requests.push(structuredClone(context));
+							const message: AssistantMessage = {
+								role: "assistant",
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								timestamp: Date.now(),
+								content: [{ type: "text", text: "Controlled reply." }],
+								stopReason: "stop",
+								usage: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									totalTokens: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								},
+							};
+							const stream = createAssistantMessageEventStream();
+							stream.push({ type: "done", reason: "stop", message });
+							stream.end();
+							return stream;
+						},
+					});
+				},
+			],
+		});
+		await resourceLoader.reload();
+		assert.deepEqual(resourceLoader.getExtensions().errors, []);
+		const manager = SessionManager.inMemory(root);
+		({ session } = await createAgentSession({
+			cwd: root,
+			agentDir,
+			modelRuntime,
+			settingsManager,
+			resourceLoader,
+			sessionManager: manager,
+			tools: [],
+		}));
+		await session.bindExtensions({ mode: "print", onError: (error) => errors.push(error.error) });
+		const model = modelRuntime.getModel("memory-fixture", "controlled");
+		assert.ok(model);
+		await session.setModel(model);
+		const patches = () =>
+			manager
+				.getBranch()
+				.flatMap((entry) =>
+					entry.type === "message" &&
+					entry.message.role === "system" &&
+					entry.message.sections &&
+					Object.hasOwn(entry.message.sections, "memory_index")
+						? [entry.message.sections.memory_index]
+						: [],
+				);
+		const promptSection = () => getCurrentSystemMessage(requests[requests.length - 1].messages)?.sections?.memory_index;
+		await session.prompt("First request");
+		const first = promptSection();
+		assert.equal(typeof first, "string");
+		assert.match(first as string, /editor-choice: Editor choice/);
+		assert.doesNotMatch(first as string, /PRIVATE BODY|PRIVATE CONTRACT/);
+		const system = getCurrentSystemMessage(requests[0].messages);
+		assert.ok(system);
+		assert.match(getSystemMessageText(system), /<memory_index>[\s\S]*editor-choice: Editor choice/);
+		assert.deepEqual(patches(), [first]);
+
+		await session.prompt("Unchanged request");
+		assert.equal(promptSection(), first);
+		assert.deepEqual(patches(), [first]);
+		writeFileSync(join(corpus, "editor-choice.md"), source("Editor choice", "DIFFERENT PRIVATE BODY"));
+		await session.prompt("Body-only change");
+		assert.deepEqual(patches(), [first]);
+
+		writeFileSync(join(corpus, "editor-choice.md"), source("Editor replacement"));
+		await session.prompt("Changed title");
+		const changed = promptSection();
+		assert.match(changed as string, /editor-choice: Editor replacement/);
+		assert.deepEqual(patches(), [first, changed]);
+
+		delete process.env.PI_MEMORY_DIR;
+		await session.prompt("Unavailable memory");
+		assert.equal(promptSection(), undefined);
+		assert.deepEqual(patches(), [first, changed, null]);
+		await session.prompt("Still unavailable");
+		assert.deepEqual(patches(), [first, changed, null]);
+		process.env.PI_MEMORY_DIR = corpus;
+		await session.prompt("Restored memory");
+		assert.equal(promptSection(), changed);
+		assert.deepEqual(patches(), [first, changed, null, changed]);
+		rmSync(join(corpus, "README.md"));
+		await session.prompt("Missing contract");
+		assert.equal(promptSection(), undefined);
+		assert.deepEqual(patches(), [first, changed, null, changed, null]);
+		assert.equal(requests.length, 8);
+		assert.deepEqual(errors, []);
+	} finally {
+		if (session) {
+			await session.abort();
+			session.dispose();
+		}
+		if (previousRoot === undefined) delete process.env.PI_MEMORY_DIR;
+		else process.env.PI_MEMORY_DIR = previousRoot;
+		rmSync(root, { recursive: true, force: true });
+	}
+});

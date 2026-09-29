@@ -47,7 +47,8 @@ boundaries, rather than a central feature catalog.
   combine alternative query formulations, read digest-checked source pages,
   and retain compact cue browsing. Validated writes and targeted edits maintain
   note format, dates, and concurrent-update checks. Writes maintain reciprocal
-  supersession without a separate stored index.
+  supersession. A per-run index places active note pointers in the system prompt
+  without a separate stored index.
 
 `npm test` includes a serialized tool-schema check in
 [scripts/extension-load-check.test.mts](scripts/extension-load-check.test.mts).

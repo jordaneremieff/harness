@@ -22,7 +22,10 @@ interface Registered {
 }
 function tools() {
 	const all = new Map<string, Registered>();
-	memory({ registerTool: (tool: Registered) => all.set(tool.name, tool) } as unknown as ExtensionAPI);
+	memory({
+		registerTool: (tool: Registered) => all.set(tool.name, tool),
+		on: () => () => {},
+	} as unknown as ExtensionAPI);
 	return all;
 }
 function call(tool: Registered, args: JsonObject, signal = new AbortController().signal) {
