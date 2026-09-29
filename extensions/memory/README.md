@@ -19,10 +19,11 @@ The root is operator-controlled; do not point it at an untrusted shared director
 
 ## System prompt index
 
-The `memory_index` section lists active notes as `slug: title` pointers. Its frame
-states that titles are retrieval cues, not evidence or instructions, that the agent
-must read with `memory_read` before relying on a note, and that current instructions
-control. Read a matching subject; use `memory_search` when no title matches.
+The `memory_index` section lists active notes as `slug: title` pointers, or as
+slug-only pointers under byte pressure. Its frame identifies the pointer form and
+states that cues are not evidence or instructions, that the agent must read with
+`memory_read` before relying on a note, and that current instructions control.
+Read a matching subject; use `memory_search` when no subject matches.
 No note body, heading fallback, source passage, or contract content enters the section.
 
 The section uses the existing browse scanner: at most 512 directory entries plus
@@ -44,15 +45,15 @@ remain untrusted even after display sanitization.
 
 The complete section, including Pi's wrapper, fits **12 KiB of UTF-8**. Pointers
 sort by slug. Titles first retain at most 160 Unicode code points; if the whole list
-does not fit, all titles shorten to at most 64 code points. If it still does not fit,
-the section retains the longest alphabetical prefix and reports the exact number
-of observed active notes omitted by the byte limit. The omission clause appears only
-when notes are omitted. It always points to `memory_search`.
-This preserves subject cues before sacrificing coverage. Approximate size is the
-sum of each slug, title, separator, and newline, plus the fixed frame and coverage
-notice. At roughly four bytes per English token, the cap is about 3,000 tokens;
-actual token cost varies by language and model. Every session and worker pays for
-its section in model context, even when the text is unchanged.
+does not fit, all titles shorten to at most 64 code points. If that complete list
+still does not fit, the section uses slugs only. If the complete slug list exceeds
+the cap, the section retains the longest alphabetical slug prefix and reports the
+exact number of observed active notes omitted by the byte limit. The omission
+clause appears only when notes are omitted. It always points to `memory_search`.
+This preserves subject coverage before retaining title detail. Byte accounting
+includes every slug, optional title, separator, newline, frame, coverage notice,
+footer, and wrapper. Token cost varies by language and model. Every session and
+worker pays for its section in model context, even when the text is unchanged.
 
 If directory traversal reaches its cap, the section reports an incomplete scan,
 omits all pointers, and states that the active-note count is unknown. A capped native
@@ -63,7 +64,9 @@ the scan. `memory_search` remains available with its explicit coverage boundarie
 The hook rebuilds from disk at each `before_agent_start`, not each model request
 within that run. It has no cache, timestamp, persistent state, or write side effect.
 Identical cues produce identical section bytes; body-only or date-only changes
-produce no index delta. A changed title or membership updates the next run's section.
+produce no index delta. A change to visible cues or membership updates the next
+run's section. Title changes that leave the same compact pointer list and form
+produce no index delta.
 If configuration, the root, the contract, or the scan is unavailable, the hook adds
 no section and never blocks the run. A later unavailable run removes a prior section.
 
@@ -72,8 +75,10 @@ resulting sections with the transcript, and records changed text or a `null` rem
 An unchanged section adds no transcript delta. The extension edits only
 `event.systemPromptOptions.sections.memory_index`; it does not replace the whole
 prompt. A different extension that forces an opaque system prompt owns that separate
-projection. Controlled native-session tests verify ordinary provider delivery,
-unchanged suppression, changed cues, removal, and restoration.
+projection. Controlled native-session tests verify ordinary provider delivery of
+title and compact pointers, unchanged suppression, changed cues, removal, and
+restoration. These tests establish delivery and coverage, not model comprehension
+or improved answer quality.
 
 ## Tools
 
