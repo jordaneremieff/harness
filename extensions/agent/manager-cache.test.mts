@@ -88,13 +88,26 @@ describe("process-global manager cache", () => {
 		try {
 			await assert.rejects(
 				listTool().execute("list", {}, undefined, undefined, probeContext),
-				/manager protocol undefined does not match this copy's 4/u,
+				/manager protocol undefined does not match this copy's 5/u,
 			);
 			assert.equal(sharedOwners().managers.get(area.key), stale);
 		} finally {
 			sharedOwners().managers.delete(area.key);
 			area.restoreEnv();
 			area.cleanup();
+		}
+	});
+
+	it("refuses a cached manager with an incompatible numeric protocol", async () => {
+		const area = scratch("incompatible-cached");
+		const stale = { managerProtocol: 4 } as unknown as AgentManager;
+		sharedOwners().managers.set(area.key, stale);
+		try {
+			await assert.rejects(listTool().execute("list", {}, undefined, undefined, probeContext), /manager protocol 4 does not match this copy's 5/u);
+			assert.equal(sharedOwners().managers.get(area.key), stale);
+		} finally {
+			sharedOwners().managers.delete(area.key);
+			area.restoreEnv(); area.cleanup();
 		}
 	});
 
@@ -123,7 +136,7 @@ describe("process-global manager cache", () => {
 		try {
 			await assert.rejects(
 				listTool().execute("list", {}, undefined, undefined, probeContext),
-				/manager protocol undefined does not match this copy's 4/u,
+				/manager protocol undefined does not match this copy's 5/u,
 			);
 			assert.equal(sharedOwners().creating.has(area.key), false);
 			assert.equal(sharedOwners().managers.has(area.key), false);

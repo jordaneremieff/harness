@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createEventBus, SessionManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
-import { aggregateFooter, FOOTER_ENTRY, formatAgentFooter, NestedStatus, OwnedSpend, restoreFooter, SessionFooter, WORK_STATUS_REQUEST, WORK_STATUS_SNAPSHOT } from "./footer.ts";
+import { aggregateFooter, FOOTER_ENTRY, formatAgentFooter, OwnedSpend, restoreFooter, SessionFooter } from "./footer.ts";
 import { fixture } from "./native-fixture.mts";
 
 const usage = (cost: number): Usage => ({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } });
@@ -26,50 +26,12 @@ test("owned spend excludes imported history and counts native usage categories o
 	assert.equal(spend.total.cost, 10.0001);
 });
 
-test("nested snapshots replace totals, baseline inherited spend, reject invalid values, and retain unknown on loss", () => {
-	const bus = createEventBus(); const nested = new NestedStatus(); let updates = 0;
-	nested.bind(bus, "one", () => updates++);
-	bus.on(WORK_STATUS_REQUEST, () => bus.emit(WORK_STATUS_SNAPSHOT, { version: 1, publisher: "subagent", sessionId: "one", available: true, active: 0, cost: 10, incomplete: false }));
-	nested.request(bus);
-	const send = (cost: number, active = 1) => bus.emit(WORK_STATUS_SNAPSHOT, { version: 1, publisher: "subagent", sessionId: "one", available: true, active, cost, incomplete: false });
-	send(12); send(12);
-	assert.deepEqual(nested.snapshot(), { active: 1, cost: 2, incomplete: false, available: true });
-	nested.bind(bus, "one", () => updates++); send(13);
-	assert.equal(nested.snapshot().cost, 3, "same-session reload retains its baseline");
-	send(-1);
-	assert.equal(nested.snapshot().available, false);
-	send(13, 0);
-	bus.emit(WORK_STATUS_SNAPSHOT, { version: 1, publisher: "subagent", sessionId: "one", available: false });
-	assert.equal(nested.snapshot().cost, 3);
-	assert.equal(nested.snapshot().available, false);
-	nested.bind(bus, "two", () => updates++);
-	assert.equal(nested.snapshot().cost, 3);
-	assert.equal(nested.snapshot().incomplete, true);
-	const before = updates; nested.close(); send(90);
-	assert.equal(updates, before);
-});
-
-test("late first snapshots expose unanchored spend instead of subtracting already completed work", () => {
-	const bus = createEventBus(); const nested = new NestedStatus();
-	nested.bind(bus, "late", () => {}); nested.request(bus);
-	bus.emit(WORK_STATUS_SNAPSHOT, { version: 1, publisher: "subagent", sessionId: "late", available: true, active: 1, cost: 5, incomplete: false });
-	assert.deepEqual(nested.snapshot(), { active: 1, cost: 0, incomplete: true, available: true });
-	nested.request(bus);
-	bus.emit(WORK_STATUS_SNAPSHOT, { version: 1, publisher: "subagent", sessionId: "late", available: true, active: 0, cost: 9, incomplete: false });
-	assert.equal(nested.snapshot().incomplete, true);
-	assert.equal(nested.snapshot().cost, 4);
-	nested.bind(bus, "late", () => {}); nested.request(bus);
-	bus.emit(WORK_STATUS_SNAPSHOT, { version: 1, publisher: "subagent", sessionId: "late", available: true, active: 0, cost: 9, incomplete: false });
-	assert.equal(nested.snapshot().cost, 4);
-	assert.equal(nested.snapshot().incomplete, true);
-	nested.close();
-});
-
-test("footer distinguishes active, observed zero, missing nested evidence, and detached records", () => {
+test("footer distinguishes active, observed zero, incomplete spend, and detached records", () => {
 	const detached = { exists: false, recorded: 0, unavailable: 0 };
 	assert.equal(formatAgentFooter([], detached), "agents 0 · $0.00");
-	const state = { active: true, spend: { cost: 0.0001, incomplete: false }, nested: { active: 0, cost: 0, available: false, incomplete: false } };
+	const state = { active: true, spend: { cost: 0.0001, incomplete: false } };
 	assert.equal(formatAgentFooter([state], detached), "agents 1 · $0.0001");
+	assert.equal(formatAgentFooter([{ ...state, spend: { cost: 0, incomplete: true } }], detached), "agents 1 · $0.00+?");
 	assert.match(formatAgentFooter([{ ...state, active: false }], { exists: true, recorded: 2, unavailable: 1 }) ?? "", /agents 0.*detached 2\/1 lost\/\$\?/u);
 });
 
@@ -79,7 +41,7 @@ test("session checkpoints retain costs across reload and tree navigation but rej
 	const first = manager.appendMessage(message(0));
 	const empty = aggregateFooter([]);
 	const footer = new SessionFooter(restoreFooter([], id), empty);
-	const current = { ...empty, spend: { cost: 2, incomplete: false }, nested: { active: 1, cost: 3, incomplete: false, available: true } };
+	const current = { ...empty, spend: { cost: 2, incomplete: false } };
 	footer.observe(current); footer.observe(current);
 	manager.appendCustomEntry(FOOTER_ENTRY, structuredClone(footer.saved));
 	manager.branch(first);
@@ -92,47 +54,24 @@ test("session checkpoints retain costs across reload and tree navigation but rej
 	assert.equal(formatAgentFooter([], { exists: true, recorded: 0, unavailable: 0 }), "agents 0 · $0.00");
 });
 
-test("transient nested evidence resolves without poisoning the retained primary total", () => {
-	const empty = aggregateFooter([]);
-	const footer = new SessionFooter(restoreFooter([], "primary"), empty);
-	const pending = { ...empty, nested: { active: 1, cost: 0, incomplete: true, available: true } };
-	assert.equal(footer.observe(pending).nested.incomplete, true);
-	assert.equal(footer.observe({ ...pending, nested: { ...pending.nested, cost: 1, incomplete: false } }).nested.incomplete, false);
-	assert.equal(footer.saved.nested.cost, 1);
-	footer.saved.nested.incomplete = true;
-	assert.equal(footer.observe(empty).nested.incomplete, true, "sealed missing evidence survives source loss");
-	assert.equal(footer.saved.nested.cost, 1);
-});
-
-test("ordinary host receives package snapshots through its real headless extension bus and preserves native spend on reload", async () => {
-	const source = `export default function(pi) {
-		let ctx;
-		const publish = (cost) => pi.events.emit("harness:work-status:snapshot", { version: 1, publisher: "subagent", sessionId: ctx.sessionManager.getSessionId(), available: true, active: 1, cost, incomplete: false });
-		pi.on("session_start", (_event, current) => { ctx = current; publish(5); });
-		pi.events.on("harness:work-status:request", () => publish(5));
-		pi.on("agent_start", () => publish(7));
+test("ordinary host preserves native spend across reload, replacement, and close", async () => {
+	const f = await fixture(`export default function(pi) {
 		pi.registerCommand("fresh", { handler: async (_args, ctx) => { await ctx.newSession(); } });
-	}`;
-	const f = await fixture(source);
+	}`);
 	try {
-		assert.deepEqual(f.worker.footerState().nested, { active: 1, cost: 0, incomplete: false, available: true });
 		await f.worker.start("test"); await f.worker.waitForIdle();
 		assert.equal(f.worker.footerState().active, false);
-		assert.equal(f.worker.footerState().nested.cost, 2);
 		f.worker.sessionManager().appendUsage("cache_warm", "test", "test", usage(0.5));
 		await f.worker.reload();
 		assert.equal(f.worker.footerState().spend.cost, 0.5);
 		await f.worker.start("again"); await f.worker.waitForIdle();
 		assert.equal(f.worker.footerState().spend.cost, 0.5);
-		assert.equal(f.worker.footerState().nested.cost, 2);
 		const previous = f.worker.sessionId();
 		await f.worker.runCommand("fresh", "");
 		assert.notEqual(f.worker.sessionId(), previous);
 		assert.equal(f.worker.footerState().spend.cost, 0.5);
-		assert.equal(f.worker.footerState().nested.cost, 2);
 		await f.worker.close();
 		assert.equal(f.worker.footerState().active, false);
-		assert.equal(f.worker.footerState().nested.active, 0);
-		assert.equal(f.worker.footerState().nested.available, false);
+		assert.equal(f.worker.footerState().spend.cost, 0.5);
 	} finally { await f.close(); }
 });

@@ -147,7 +147,7 @@ test("accepted restart arms once before graceful shutdown with exact argv and un
 		let captured: unknown[] = [];
 		f.ctx.ui.confirm = async (title, body) => {
 			assert.equal(title, "Restart this Pi session?");
-			assert.match(body, /Subagent workers and other extensions' work/u);
+			assert.match(body, /Other extensions' work/u);
 			assert.match(body, /A running ! command also stops/u);
 			assert.match(body, /private compaction queue/u);
 			f.calls.push("confirm"); return true;

@@ -3,7 +3,7 @@
  *
  * Each agent session uses an ordinary Pi AgentSessionRuntime. This module registers the
  * operator-visible tools and the `/agent` command on the primary session. It
- * owns no second store, no parallel session model, and no fork of subagent.
+ * uses native session storage and host execution.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -30,8 +30,7 @@ import { AgentDashboardData } from "./dashboard-data.ts";
 import { discoverSessions, type DiscoveryOptions } from "./discovery.ts";
 import { validateInspect, type InspectOptions } from "./evidence.ts";
 import { PEER_OUTCOME_DISPLAY_LIMIT, renderAbortCall, renderAbortResult, renderAgentCall, renderAgentResult, renderCommandCall, renderCommandResult, renderCompactCall, renderCompactResult, renderInspectCall, renderInspectResult, renderListCall, renderListResult, renderPeerMessage, renderRunsCall, renderRunsResult, renderSendCall, renderSendResult, renderSteerCall, renderSteerResult } from "./presentation.ts";
-import { aggregateFooter, FOOTER_ENTRY, formatAgentTotals, restoreFooter, SessionFooter, WORK_STATUS_REQUEST, WORK_STATUS_SNAPSHOT, type AgentFooterState, type DetachedFooterState, type FooterCheckpoint, type FooterTotals } from "./footer.ts";
-import { isManagedChild } from "./host-role.ts";
+import { aggregateFooter, FOOTER_ENTRY, formatAgentTotals, restoreFooter, SessionFooter, type AgentFooterState, type DetachedFooterState, type FooterCheckpoint, type FooterTotals } from "./footer.ts";
 import { createRestartCommand, type RestartHosts } from "./restart.ts";
 import { ASSOCIATION_ENTRY, associatedSessions, associationReaches, type AssociationEntry, type AssociationSource } from "./associations.ts";
 import { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
@@ -255,7 +254,7 @@ interface AgentOwners {
 	workers: Set<string>;
 }
 /** Tool-facing contract version of AgentManager; the process-global manager cache reuses only an exact protocol match. */
-const MANAGER_PROTOCOL = 4;
+const MANAGER_PROTOCOL = 5;
 const ownerKey = Symbol.for("pi.extension.agent.owners");
 const shared = globalThis as typeof globalThis & { [ownerKey]?: AgentOwners };
 if (!shared[ownerKey]) shared[ownerKey] = { managers: new Map(), creating: new Map(), workers: new Set() };
@@ -622,15 +621,11 @@ export class AgentManager {
 		}
 	}
 
-	private publishFooter(final = false): void {
+	private publishFooter(): void {
 		this.refreshIdleRelease();
 		const current = this.footerTotals();
 		for (const primary of this.primary.values()) {
 			const totals = primary.footer.observe(current);
-			if (final) {
-				primary.footer.saved.nested.incomplete ||= totals.nested.incomplete;
-				totals.nested.available = true;
-			}
 			try { if (primary.observe?.(totals, primary.footer.saved) === true) primary.saveFailed = false; }
 			catch (error) { primary.saveFailed = true; if (error instanceof FooterHistoryFailure) primary.historyUncertain = true; }
 			const text = formatAgentTotals(totals, this.detachedFooter);
@@ -679,9 +674,6 @@ export class AgentManager {
 			await this.closeAll();
 			await this.store.close(this.rootContext);
 		} else {
-			const departing = this.primary.get(sessionId);
-			const nested = this.footerTotals().nested;
-			if (departing && (!nested.available || nested.incomplete)) departing.footer.saved.nested.incomplete = true;
 			this.publishFooter();
 			try { this.primary.get(sessionId)?.status?.(undefined); } catch { /* Continue teardown. */ }
 			this.primary.delete(sessionId);
@@ -1457,17 +1449,13 @@ export class AgentManager {
 
 	private async closeSessions(): Promise<void> {
 		this.stopRunWatcher();
-		const nested = this.footerTotals().nested;
-		if (!nested.available || nested.incomplete) {
-			for (const primary of this.primary.values()) primary.footer.saved.nested.incomplete = true;
-		}
 		const initial = [...this.sessions.values()].map((worker) => worker.close());
 		void Promise.allSettled(initial);
 		await Promise.allSettled([...this.transfers.values(), ...[...this.controls.values()].flatMap((pending) => [...pending]), ...this.opening.values(), ...this.creations]);
 		const results = await Promise.allSettled(new Set([...initial, ...[...this.sessions.values()].map((worker) => worker.close())]));
 		const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
 		if (errors.length) throw new AggregateError(errors, "agent session cleanup failed; failed owners retain their claims");
-		this.publishFooter(true);
+		this.publishFooter();
 		for (const id of this.sessions.keys()) owners.workers.delete(id);
 		this.sessions.clear();
 		this.retiredFooterStates.length = 0;
@@ -1708,7 +1696,6 @@ function formatStatus(status: WorkerStatus, action: string): string {
 export default function registerAgentExtension(pi: ExtensionAPI) {
 	pi.registerMessageRenderer("agent.peer", renderPeerMessage);
 	const registeredPrimaries = new Set<string>();
-	const footerDisposers = new Map<string, () => void>();
 	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
 	// A managed session learns its owner in model-visible content on every request,
 	// including turns that a peer message starts.
@@ -2128,12 +2115,12 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		conversation: async (sessionId) => (await getDashboardData()).conversation(sessionId),
 	});
 	pi.registerCommand("agent", command);
-	pi.registerCommand("restart", createRestartCommand({ hosts: agentRestartHosts, managedChild: (ctx) => owners.workers.has(ctx.sessionManager.getSessionId()) || isManagedChild(pi.events, ctx.sessionManager.getSessionId()) }));
+	pi.registerCommand("restart", createRestartCommand({ hosts: agentRestartHosts, managedChild: (ctx) => owners.workers.has(ctx.sessionManager.getSessionId()) }));
 	pi.registerShortcut("ctrl+alt+g", { description: "Open the agent dashboard", handler: (ctx) => command.openDashboard(ctx) });
 
 	pi.on("session_start", async (_event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
-		if (owners.workers.has(sessionId) || isManagedChild(pi.events, sessionId)) return;
+		if (owners.workers.has(sessionId)) return;
 		primaryRegistry = ctx.modelRegistry;
 		primaryProvider = ctx.model?.provider;
 		const owner = await getManager();
@@ -2144,20 +2131,11 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		const checkpoint = restoreFooter(ctx.sessionManager.getEntries(), sessionId);
 		let persisted = JSON.stringify(checkpoint);
 		let appending = false;
-		let snapshot = { version: 1, publisher: "agent", sessionId, available: true, active: 0, cost: checkpoint.nested.cost, incomplete: checkpoint.nested.incomplete };
-		const publish = () => pi.events.emit(WORK_STATUS_SNAPSHOT, snapshot);
-		footerDisposers.get(sessionId)?.();
-		footerDisposers.set(sessionId, pi.events.on(WORK_STATUS_REQUEST, (request: unknown) => {
-			const value = request as { version?: unknown; publisher?: unknown; sessionId?: unknown } | null;
-			if (value?.version === 1 && value.publisher === "agent" && value.sessionId === sessionId) publish();
-		}));
 		owner.registerPrimary(sessionId, ctx.cwd, (content, details) => {
 			const failure = owner.associationFailure(sessionId);
 			if (failure) throw failure;
 			pi.sendMessage({ customType: "agent.peer", content, display: true, details }, { deliverAs: "steer", triggerTurn: true });
-		}, (text) => ctx.ui.setStatus("agent", text), { checkpoint, observe: (totals, saved) => {
-			snapshot = { ...snapshot, active: totals.nested.active, cost: totals.nested.cost, incomplete: saved.nested.incomplete || totals.nested.incomplete || !totals.nested.available };
-			publish();
+		}, (text) => ctx.ui.setStatus("agent", text), { checkpoint, observe: (_totals, saved) => {
 			if (appending || owner.associationFailure(sessionId) || owner.hasUncertainFooterHistory(sessionId)) return false;
 			appending = true;
 			try {
@@ -2185,7 +2163,6 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			if (!owner && !registeredPrimaries.has(id)) continue;
 			if (event.reason === "reload") owner?.suspendPrimary(id);
 			else { await owner?.unregisterPrimary(id); registeredPrimaries.delete(id); }
-			footerDisposers.get(id)?.(); footerDisposers.delete(id);
 		}
 	});
 }

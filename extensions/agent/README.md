@@ -3,8 +3,7 @@
 Create and control ordinary Pi sessions from another Pi session. Each session
 uses Pi's public session services, `AgentSessionRuntime`, and `SessionManager`.
 Pi owns resources, context, model requests, extension events, queues, and
-compaction. The primary session stays available while the agent works. The
-separate `subagent` extension remains independent.
+compaction. The primary session stays available while the agent works.
 
 This extension provides runtime tools and a native `/agent` board for session
 supervision, readable conversations, messages, and explicit actions.
@@ -32,8 +31,7 @@ Restart does not preserve:
 - The editor draft or in-memory queues. The primary's active model work,
   compaction, and public steering/follow-up queues block restart. Active or
   queued work in every agent-owned host also blocks restart.
-- Other extensions' live work. Subagent workers stop; the subagent extension
-  records unfinished workers as `owner_lost`. The confirmation covers this loss,
+- Other extensions' live work. The confirmation covers this loss,
   not a claim that all extensions are idle.
 
 Preflight requires an interactive standalone Pi CLI, an executable Node binary,
@@ -250,11 +248,12 @@ The `agent` status key reports `agents 2 · $0.37`, including `agents 0 · $0.00
 before work starts. The active count covers this process's manager for the
 configured agent store, not only the current parent's children. Each primary
 retains its own cumulative price from the intervals when it observes that manager. A positively identified
-managed child is not registered as a primary; the package's
-[host identity contract](../../docs/conventions/session-host-roles.md) prevents
+managed child is not registered as a primary. The manager checks its own
+managed-host records before primary registration and restart, as defined by the
+[host identity contract](../../docs/conventions/session-host-roles.md). This prevents
 unrelated completion turns during child startup and cyclic manager lifetimes.
 Each ordinary host
-counts once, including ordinary agents created by other agents or subagents.
+counts once, including ordinary agents created by other agents.
 Active means pending host work through final settlement, including commands,
 compaction, and queued input. Idle hosts do not count as active.
 
@@ -276,15 +275,6 @@ Last-primary shutdown other than reload closes the manager after final observati
 not retrospective historical charges or provider invoices. Missing or malformed
 usage adds `+?` to the known price rather than becoming zero.
 
-The package's [snapshot contract](../../docs/conventions/status-keys.md#nested-work-snapshots)
-exports the ordinary hosts' subagent observations separately from their own
-price. The subagent extension adds this disjoint contribution to its `subagents`
-cell. Its raw publication still excludes ordinary-host roots, preventing feedback
-or duplicate costs at mixed nesting depths. Missing observation remains explicit.
-A clean close after complete observations does not create an unknown charge.
-Subagent prices use an initial observation baseline, so retained historical
-worker spend is not charged again on attach.
-
 Detached work does not enter local active counts or prices. A separate
 `detached N/$?` suffix counts launching/running records; `M lost`
 counts abandoned records. These are recorded states, not live activity queries.
@@ -297,7 +287,7 @@ state remains at its last observation until an explicit run query or primary
 registration refreshes it.
 
 The publisher sends short status text through Pi's UI API. Headless worker
-status calls remain no-ops; numeric snapshots use the session's event bus.
+status calls remain no-ops; the manager observes native session usage directly.
 The statusline remains a generic consumer. A narrow terminal still applies the
 footer's normal whole-cell truncation rules.
 

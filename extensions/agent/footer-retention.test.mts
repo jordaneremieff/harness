@@ -42,9 +42,7 @@ test("native primary reload, tree navigation, fork, new, and reopen keep exact-s
 		import {createAssistantMessageEventStream,fauxAssistantMessage,fauxToolCall} from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
 		export default function(pi) {
 			let ctx, calls = 0;
-			const publish = () => pi.events.emit("harness:work-status:snapshot", {version:1,publisher:"subagent",sessionId:ctx.sessionManager.getSessionId(),available:true,active:0,cost:0,incomplete:false});
-			pi.on("session_start", (_event, current) => { ctx=current; publish(); });
-			pi.events.on("harness:work-status:request", request => { if(request.publisher === "subagent") publish(); });
+			pi.on("session_start", (_event, current) => { ctx=current; });
 			const stream = () => {
 				const out=createAssistantMessageEventStream();
 				const m=ctx.cwd===${JSON.stringify(cwd)} && calls++===0
@@ -95,7 +93,7 @@ test("native primary reload, tree navigation, fork, new, and reopen keep exact-s
 		await runtime.session.reload();
 		assert.equal(status.get("agent"), "agents 0 · $0.25");
 		const saved = restoreFooter(runtime.session.sessionManager.getEntries(), sessionId);
-		assert.deepEqual(saved.nested, { cost: 0, incomplete: false }, "intentional closed hosts do not create unknown spend");
+		assert.deepEqual(saved.spend, { cost: 0.25, incomplete: false });
 		await runtime.session.navigateTree(firstUser.id, { summarize: false });
 		await runtime.session.reload();
 		assert.equal(status.get("agent"), "agents 0 · $0.25", "off-branch costs remain incurred");

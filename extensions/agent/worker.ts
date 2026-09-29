@@ -14,7 +14,7 @@ import { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
 import { boundedConfigurationResult, configurationModel, configurationThinkingLevel, isThinkingLevel, validateConfigurationPatch, type ConfigurationPatch, type ConfigurationResult, type ConfigurationState } from "./configuration.ts";
 import { ASSOCIATION_ENTRY, type AssociationSource } from "./associations.ts";
 import { queryEvidence, validateInspect, type InspectOptions } from "./evidence.ts";
-import { NestedStatus, OwnedSpend, type AgentFooterState } from "./footer.ts";
+import { OwnedSpend, type AgentFooterState } from "./footer.ts";
 import type { AgentSessionMetadata, AgentStore, StoredAgentSession } from "./store.ts";
 
 export const META_CUSTOM_TYPE = "agent.meta";
@@ -305,14 +305,13 @@ export class AgentWorkerSession {
 	private lastText: string | undefined;
 	private readonly options: WorkerCreateOptions;
 	private readonly spend = new OwnedSpend();
-	private readonly nested = new NestedStatus();
 	private eventBus = createEventBus();
 	hasActiveWork(): boolean {
 		return !this.terminal && Boolean(this.operation || this.tasks.size || this.controlTask || this.configuration || this.preflight || this.nativePreflights || (this.runtime && (!this.runtime.session.isIdle || this.runtime.session.isBashRunning || this.runtime.session.pendingMessageCount)));
 	}
 	hasUnsavedResult(): boolean { return this.unsavedResult !== undefined; }
 	footerState(): AgentFooterState {
-		return { active: this.hasActiveWork(), spend: { ...this.spend.total }, nested: this.nested.snapshot() };
+		return { active: this.hasActiveWork(), spend: { ...this.spend.total } };
 	}
 	private publishFooter(): void { this.spend.sync(); this.notify({ kind: "status" }); }
 	private constructor(options: WorkerCreateOptions) { this.options = options; }
@@ -412,7 +411,6 @@ export class AgentWorkerSession {
 		await this.adoptReplacement(sessionManager);
 		this.spend.bind(sessionManager);
 		this.eventBus = createEventBus();
-		this.nested.bind(this.eventBus, this.sessionId(), () => this.publishFooter());
 		const stored = sessionManager.getBranch().findLast((entry) => entry.type === "custom" && entry.customType === META_CUSTOM_TYPE);
 		const metadata = stored?.type === "custom" ? stored.data as { extensionPaths?: string[]; skillPaths?: string[] } | undefined : undefined;
 		const settings = SettingsManager.create(cwd, this.agentDir, { projectTrusted: false });
@@ -534,7 +532,6 @@ export class AgentWorkerSession {
 			},
 			shutdownHandler: () => { void this.close().catch((error) => this.reportError(String(error))); },
 		});
-		this.nested.request(this.eventBus);
 		this.publishFooter();
 	}
 	/** Native user sends enter prompt; custom sends have their own admission path. */
@@ -807,7 +804,7 @@ export class AgentWorkerSession {
 		}, true);
 	}
 	async compact(instructions?: string) { return this.control(() => this.session.compact(instructions)); }
-	async reload(): Promise<void> { await this.control(() => this.session.reload()); this.nested.request(this.eventBus); }
+	async reload(): Promise<void> { await this.control(() => this.session.reload()); }
 	async appendCustomEntry(type: string, data: unknown): Promise<void> { this.sessionManager().appendCustomEntry(type, data); }
 	async setSessionName(name: string | undefined): Promise<void> { this.session.setSessionName(name ?? ""); }
 	async setModelAction(provider: string, modelId: string): Promise<boolean> {
@@ -875,7 +872,7 @@ export class AgentWorkerSession {
 			await attempt(async () => { await this.drainNative(session); cleanupComplete = disposed; });
 		}
 		this.spend.sync();
-		this.unsubscribe?.(); this.observers.clear(); this.nested.close();
+		this.unsubscribe?.(); this.observers.clear();
 		if (!cleanupComplete) throw new AggregateError(errors, "agent host cleanup incomplete; writer claims retained");
 		let claimsReleased = true;
 		await attempt(async () => { try { await this.reserved?.close(); this.reserved = undefined; } catch (error) { claimsReleased = false; throw error; } });

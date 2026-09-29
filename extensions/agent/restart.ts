@@ -128,7 +128,7 @@ export function createRestartCommand(options: RestartOptions) {
 			let committed = false;
 			guard.pending = true;
 			try {
-				if (!await ctx.ui.confirm("Restart this Pi session?", "Subagent workers and other extensions' work in this process stop. A running ! command also stops. Pi's private compaction queue and other unsaved state are lost. Continue?")) return;
+				if (!await ctx.ui.confirm("Restart this Pi session?", "Other extensions' work in this process stops. A running ! command also stops. Pi's private compaction queue and other unsaved state are lost. Continue?")) return;
 				const after = preflight(ctx);
 				if (before.identity !== after.identity) throw new RestartRefusal("Restart refused. The session or agent hosts changed during confirmation. Use /restart again.");
 				disarm = armRestart(after.launch, host, options.write);
