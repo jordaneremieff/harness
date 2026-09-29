@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import {
 	MemoryRetrievalError,
+	memoryIndex,
 	NOTE_OPEN_FLAGS,
 	type ReadOptions,
 	type SearchOptions,
@@ -209,6 +210,80 @@ test("searches full source, cues, and slugs without lifecycle filtering", async 
 	assert.match(string(slug.digest), /^[a-f0-9]{64}$/);
 });
 
+test("fenced comments retain body evidence and Unicode source positions without title rank inflation", async () => {
+	for (const [open, close, newline = "\r\n"] of [
+		["```sh", "```"],
+		["~~~~sh", "~~~~"],
+		["   ````sh", "   ````"],
+		["```sh", "```", "\r"],
+	]) {
+		const phrase = "rotate the credential cache";
+		const fenced = `Intro 😀${newline}${open}${newline}# ${phrase}${newline}${close}${newline}`;
+		const prose = `Intro 😀${newline}${phrase}${newline}`;
+		const root = corpus({ "README.md": README, "fenced.md": fenced, "prose.md": prose });
+		const found = notes(await search(root, { query: "rotate cache" }));
+		assert.deepEqual(
+			found.map((note) => note.slug),
+			["prose", "fenced"],
+		);
+		for (const note of found) {
+			for (const match of array(note.matched)) assert.deepEqual(object(match).fields, ["body"]);
+			sourceLocation(note, note.slug === "fenced" ? fenced : prose, phrase);
+		}
+		const heading = `${fenced}${newline}## ${phrase}${newline}`;
+		writeFileSync(join(root, "heading.md"), heading);
+		const result = notes(await search(root, { query: "rotate cache" })).find((note) => note.slug === "heading");
+		assert.ok(result);
+		for (const match of array(result.matched)) assert.deepEqual(object(match).fields, ["body", "title"]);
+		const match = object(result.sourceMatch);
+		assert.equal(
+			string(match.excerpt),
+			Array.from(heading).slice(number(match.excerptOffset), number(match.excerptEndOffset)).join(""),
+		);
+	}
+});
+
+test("string and single-formulation array queries return the same body-first source passage", async () => {
+	const source =
+		"---\r\ntitle: Compaction settings\r\nstatus: active\r\n---\r\n\r\nIntro 😀\r\ncompaction settings control the boundary.\r\n";
+	const root = corpus({ "README.md": README, "subject.md": source });
+	const plain = notes(await search(root, { query: "compaction settings" }))[0];
+	const arrayForm = notes(await search(root, { query: ["compaction settings"] }))[0];
+	assert.deepEqual(plain.sourceMatch, arrayForm.sourceMatch);
+	sourceLocation(plain, source, "compaction settings");
+	assert.doesNotMatch(string(object(plain.sourceMatch).excerpt), /title:|status:/);
+});
+
+test("malformed headers expose qualified raw cues without metadata title weights or active pointers", async () => {
+	for (const suffix of ["other: [unclosed\n", "---suffix\ntitle: hidden-title\n"]) {
+		const source = `---\nstatus: active\n${suffix}---\nBody sentinel\n`;
+		const root = corpus({ "README.md": README, "subject.md": source });
+		const cue = notes(await search(root))[0];
+		assert.equal(cue.status, "active");
+		assert.match(string(cue.cueProblem), /invalid or ambiguous frontmatter/);
+		const found = notes(await search(root, { query: suffix.startsWith("---") ? "hidden-title" : "active" }))[0];
+		assert.match(string(found.cueProblem), /invalid or ambiguous frontmatter/);
+		for (const match of array(found.matched)) assert.deepEqual(object(match).fields, ["body"]);
+		const index = await memoryIndex(root);
+		assert.match(index ?? "", /unknown status: 1/);
+		assert.doesNotMatch(index ?? "", /^subject:/m);
+		assert.equal((await read(root, { slug: "subject" })).content, source);
+	}
+});
+
+test("Unicode separators never create physical frontmatter delimiters", async () => {
+	for (const separator of ["\u2028", "\u2029"]) {
+		const source = `---\nstatus: active\ncustom: word${separator}---${separator}tail\ntitle: Physical title\n---\nBody sentinel\n`;
+		const root = corpus({ "README.md": README, "subject.md": source });
+		const cue = notes(await search(root))[0];
+		assert.equal(cue.title, "Physical title");
+		assert.equal((await read(root, { slug: "subject" })).content, source);
+		const found = notes(await search(root, { query: "Physical" }))[0];
+		sourceLocation(found, source, "Physical");
+		assert.ok(object(found.sourceMatch).excerptEndOffset);
+	}
+});
+
 test("preserves comma-bearing tag values", async () => {
 	const root = corpus({ "README.md": README, "comma.md": '---\ntitle: Comma tag\ntags: ["a,b", c]\n---\n# Comma\n' });
 	const result = await search(root, { query: "a,b" });
@@ -248,7 +323,7 @@ test("requires an explicit absolute existing root and readable README without wr
 });
 
 test("reads original note and README source, preserving BOM and code-point pages", async () => {
-	const source = `\uFEFF${ACTIVE}${"é😀中abc".repeat(1500)}`;
+	const source = `\uFEFF${ACTIVE}${"é😀中abc".repeat(2500)}`;
 	const root = corpus({ "README.md": README, "unicode.md": source });
 	const { text, pages } = await collect(root, "unicode");
 	assert.equal(text, source);
@@ -256,12 +331,13 @@ test("reads original note and README source, preserving BOM and code-point pages
 	assert.equal(pages[0].source, "note");
 	assert.equal(pages[0].file, "unicode.md");
 	assert.equal(pages[0].offset, 0);
-	assert.equal(pages[0].contentCodePoints, 4000);
+	assert.equal(pages[0].contentCodePoints, 12000);
 	assert.equal(pages[0].totalCodePoints, Array.from(source).length);
 	const contract = await read(root, { slug: "README" });
 	assert.equal(contract.source, "contract");
 	assert.equal(contract.file, "README.md");
 	assert.equal(contract.content, README);
+	assert.equal(contract.lifecycle, null);
 	const end = await read(root, { slug: "unicode", offset: Array.from(source).length, digest: string(pages[0].digest) });
 	assert.equal(end.content, "");
 	assert.equal(end.hasMore, false);
@@ -277,10 +353,11 @@ test("binds search evidence and every continuation to the source digest", async 
 	const root = corpus({ "README.md": README, "good.md": source });
 	const found = notes(await search(root, { query: "body phrase" }))[0];
 	const digest = string(found.digest);
-	const page = await read(root, { slug: "good", digest: digest.toUpperCase() });
+	await rejects(readMemory(root, { slug: "good", digest: digest.toUpperCase() }), "input", /lowercase/);
+	const page = await read(root, { slug: "good", digest });
 	assert.equal(page.content, source);
 	writeFileSync(join(root, "good.md"), `${ACTIVE}\nreplacement phrase\n`);
-	await rejects(readMemory(root, { slug: "good", digest }), "changed", /changed/);
+	await rejects(readMemory(root, { slug: "good", digest }), "changed", /Search again.*restart memory_read at offset 0/);
 	await rejects(readMemory(root, { slug: "good", offset: number(page.nextOffset), digest }), "changed", /changed/);
 	assert.equal((await search(root, { query: '"body phrase"' })).totalMatches, 0);
 	assert.equal((await search(root, { query: "replacement phrase" })).totalMatches, 1);
@@ -288,7 +365,63 @@ test("binds search evidence and every continuation to the source digest", async 
 	const removed = await search(root, { query: "replacement phrase" });
 	assert.equal(removed.totalMatches, 0);
 	assert.equal(object(removed.search).complete, true);
-	await rejects(readMemory(root, { slug: "good" }), "corpus", /not found/);
+	await rejects(readMemory(root, { slug: "good" }), "corpus", /not found.*memory_search.*offset 0.*current digest/);
+});
+
+test("a changed contract restarts from zero without an old digest", async () => {
+	const root = corpus({ "README.md": README });
+	const first = await read(root, { slug: "README" });
+	writeFileSync(join(root, "README.md"), `${README}\nChanged contract.`);
+	await rejects(
+		readMemory(root, { slug: "README", digest: string(first.digest), offset: 1 }),
+		"changed",
+		/offset 0 without the old digest/,
+	);
+	const changed = await read(root, { slug: "README", offset: 0 });
+	assert.notEqual(changed.digest, first.digest);
+	assert.match(string(changed.content), /Changed contract/);
+});
+
+test("every note page exposes conservative lifecycle evidence without altering its source", async () => {
+	const cases: Array<[string, string, string | null, RegExp | null]> = [
+		['status: "active"\nsuperseded_by: null', "active", null, null],
+		['status: "superseded"\nsuperseded_by: "new-subject"', "superseded", "new-subject", null],
+		["replacement: &next new-subject\nstatus: superseded\nsuperseded_by: *next", "superseded", "new-subject", null],
+		["status: active\nsuperseded_by: new-subject", "unknown", null, /Active status requires/],
+		["status: superseded\nsuperseded_by: null", "superseded", null, /different lowercase subject slug/],
+		["status: superseded\nsuperseded_by: subject", "superseded", null, /different lowercase subject slug/],
+		["status: superseded\nsuperseded_by: Upper", "superseded", null, /different lowercase subject slug/],
+		["status: superseded\nsuperseded_by: readme", "superseded", null, /different lowercase subject slug/],
+		["status: active", "unknown", null, /Active status requires/],
+		["title: Without status", "unknown", null, /plain status key/],
+		["status: unusual\nsuperseded_by: null", "unknown", null, /active or superseded/],
+		["status: [active]\nsuperseded_by: null", "unknown", null, /active or superseded/],
+		["status: active\nstatus: superseded\nsuperseded_by: new-subject", "unknown", null, /frontmatter|duplicate/],
+		["status: |\n  active\nsuperseded_by: null", "unknown", null, /plain status key/],
+		["status: active\nother: [unclosed\nsuperseded_by: null", "unknown", null, /invalid or ambiguous/],
+		["status: active\n---suffix\nsuperseded_by: null", "unknown", null, /invalid or ambiguous/],
+	];
+	for (const [header, status, replacement, problem] of cases) {
+		const source = `---\n${header}\n---\n# Subject\n${"body qualification 😀\n".repeat(750)}`;
+		const root = corpus({ "README.md": README, "subject.md": source });
+		const { text, pages } = await collect(root, "subject");
+		assert.equal(text, source);
+		assert.ok(pages.length > 1);
+		for (const page of pages) {
+			const lifecycle = object(page.lifecycle);
+			assert.equal(lifecycle.status, status, header);
+			assert.equal(lifecycle.supersededBy, replacement, header);
+			if (problem) assert.match(string(lifecycle.problem), problem);
+			else assert.equal(lifecycle.problem, undefined);
+			assert.deepEqual(lifecycle, pages[0].lifecycle);
+		}
+		const index = await memoryIndex(root);
+		assert.equal(/^subject:/m.test(index ?? ""), status === "active", header);
+		if (status === "unknown") assert.match(index ?? "", /unknown status: 1/);
+		assert.equal(readFileSync(join(root, "subject.md"), "utf8"), source);
+	}
+	const root = corpus({ "README.md": README, "plain.md": "# No metadata\nText" });
+	assert.equal(object((await read(root, { slug: "plain" })).lifecycle).status, "unknown");
 });
 
 test("accepts exactly 64 KiB and refuses larger or invalid UTF-8 sources", async () => {
@@ -511,7 +644,10 @@ test("bounds escaped source output under a long root", async () => {
 	writeFileSync(join(root, "README.md"), README);
 	writeFileSync(join(root, "control.md"), `# Control\n\n${"\u0001".repeat(20 * 1024)}`);
 	const result = await read(root, { slug: "control" });
-	assert.ok(number(result.sourceBytes) > 4000);
+	assert.ok(number(result.contentCodePoints) > 0 && number(result.contentCodePoints) < 12000);
+	assert.equal(result.hasMore, true);
+	const collected = await collect(root, "control");
+	assert.equal(collected.text, readFileSync(join(root, "control.md"), "utf8"));
 });
 
 test("extracts literal cue lines without YAML interpretation", () => {
@@ -890,7 +1026,7 @@ test("observes cancellation during traversal and permits a later complete call",
 	assert.equal((await read(root, { slug: "note-0" })).hasMore, true);
 });
 
-test("fuses formulation ranks with k=60 and keeps independent evidence", async () => {
+test("preserves best formulation rank, breaks ties with k=60 fusion and keeps independent evidence", async () => {
 	const files = {
 		"README.md": README,
 		"alpha.md": "# Alpha\nalpha alpha alpha\n",
@@ -901,15 +1037,17 @@ test("fuses formulation ranks with k=60 and keeps independent evidence", async (
 	const root = corpus(files);
 	const queries = ["alpha", "beta"];
 	const singles = await Promise.all(queries.map((query) => search(root, { query })));
-	const expected = new Map<string, number>();
+	const expected = new Map<string, { best: number; score: number }>();
 	for (const single of singles)
 		for (const note of notes(single)) {
 			const slug = string(note.slug);
-			expected.set(slug, (expected.get(slug) ?? 0) + 1 / (60 + number(note.rank)));
+			const rank = number(note.rank);
+			const prior = expected.get(slug);
+			expected.set(slug, { best: Math.min(prior?.best ?? rank, rank), score: (prior?.score ?? 0) + 1 / (60 + rank) });
 		}
 	const result = await search(root, { query: queries });
 	assert.deepEqual(result.query, queries);
-	assert.equal(object(result.search).ranking, "reciprocal-rank-fusion");
+	assert.equal(object(result.search).ranking, "best-rank-then-reciprocal-rank-fusion");
 	assert.equal(result.totalMatches, 3);
 	assert.equal(result.totalNotes, 4);
 	assert.equal(object(result.search).notesSearched, 4);
@@ -917,9 +1055,14 @@ test("fuses formulation ranks with k=60 and keeps independent evidence", async (
 	assert.equal(object(result.search).complete, true);
 	assert.deepEqual(
 		notes(result).map((note) => note.slug),
-		[...expected].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([slug]) => slug),
+		[...expected]
+			.sort((a, b) => a[1].best - b[1].best || b[1].score - a[1].score || a[0].localeCompare(b[0]))
+			.map(([slug]) => slug),
 	);
-	assert.equal(notes(result)[0].slug, "shared");
+	assert.deepEqual(
+		notes(result).map((note) => note.slug),
+		["alpha", "beta", "shared"],
+	);
 	assert.equal(object(result.search).terms, undefined);
 	const summaries = array(object(result.search).formulations).map(object);
 	assert.deepEqual(
@@ -955,9 +1098,53 @@ test("fuses formulation ranks with k=60 and keeps independent evidence", async (
 		}
 	}
 	assert.equal(
-		(await read(root, { slug: "shared", digest: string(notes(result)[0].digest) })).content,
+		(await read(root, { slug: "shared", digest: string(notes(result).find((note) => note.slug === "shared")?.digest) }))
+			.content,
 		files["shared.md"],
 	);
+});
+
+test("a noisy alternative cannot bury another formulation's first result", async () => {
+	const files: Record<string, string> = {
+		"README.md": README,
+		"subject.md": "harbor lantern coastal beacon",
+		"guide.md": "# Common guide\ncommon guide common guide",
+	};
+	for (let index = 0; index < 20; index++)
+		files[`diffuse-${String(index).padStart(2, "0")}.md`] = "harbor coastal common guide unrelated context";
+	const root = corpus(files);
+	const query = ["harbor lantern", "coastal beacon", "common guide"];
+	const singles = await Promise.all(query.map((query) => search(root, { query })));
+	assert.equal(notes(singles[0])[0].slug, "subject");
+	assert.equal(notes(singles[1])[0].slug, "subject");
+	const page = await search(root, { query });
+	const leaders = new Set(singles.map((single) => notes(single)[0].slug));
+	for (const leader of leaders) {
+		const position = notes(page).findIndex((note) => note.slug === leader);
+		assert.ok(position >= 0 && position < leaders.size);
+	}
+	assert.equal(notes(page)[0].slug, "subject");
+	const all = (await drain(root, { query, limit: 3 })).flatMap(notes);
+	assert.deepEqual(
+		all.map((note) => note.slug),
+		notes(await search(root, { query, limit: 25 })).map((note) => note.slug),
+	);
+	assert.equal(new Set(all.map((note) => note.slug)).size, all.length);
+});
+
+test("zero matches explain exact tokens and supported reformulations", async () => {
+	const root = corpus({ "README.md": README, "subject.md": "configuration setting and accessToken" });
+	for (const query of ["settings", "access token"]) {
+		const result = await search(root, { query });
+		assert.equal(result.totalMatches, 0);
+		assert.match(string(result.guidance), /exact tokens without stemming or camelCase splitting/);
+		assert.match(string(result.guidance), /alternate inflections, exact identifier forms, or quoted fragments/);
+	}
+	for (const query of ["setting", "accessToken", '"Token"']) {
+		const result = await search(root, { query });
+		assert.equal(result.totalMatches, 1);
+		assert.equal(result.guidance, undefined);
+	}
 });
 
 test("keeps phrase requirements local to each formulation", async () => {

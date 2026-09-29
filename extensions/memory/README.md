@@ -28,11 +28,14 @@ No note body, heading fallback, source passage, or contract content enters the s
 
 The section uses the existing browse scanner: at most 512 directory entries plus
 one lookahead, with at most 8 KiB read per note. It includes only lowercase kebab-case
-slugs with a usable `active` status cue. Superseded notes, hidden files, `README.md`,
-and names outside that grammar are excluded. Missing, malformed, multiline, or
-ambiguous status cues remain unknown. A status cue requires a plain top-level `status`
-key. Its value comes from the complete bounded header, parsed with the public Pi
-frontmatter parser. A rejected header makes status unknown,
+slugs with a usable `active` lifecycle. Superseded notes, hidden files, `README.md`,
+and names outside that grammar are excluded. The index and read pages share the
+same conservative lifecycle interpretation. Active subjects require plain top-level
+`status: active` and `superseded_by: null` keys. Unusable status cues remain unknown.
+Active subjects also remain unknown when the replacement cue is missing, unusable,
+or non-null. Known superseded notes remain excluded even when their replacement
+is unusable. Values come from the complete bounded header, parsed with the public
+Pi frontmatter parser. A rejected header makes status unknown,
 even when the error concerns another field. Unreadable entries and unknown status
 counts qualify the section; they are not proof that no other active subjects exist.
 
@@ -40,8 +43,7 @@ Titles come only from frontmatter cues. The public Pi frontmatter parser decodes
 isolated scalar fields, including YAML and JSON quotes. Within a valid header,
 missing or unusable titles fall back to the slug. Controls and format characters
 become spaces, whitespace collapses to one line, and angle brackets become non-markup
-characters. Titles
-remain untrusted even after display sanitization.
+characters. Titles remain untrusted even after display sanitization.
 
 The complete section, including Pi's wrapper, fits **12 KiB of UTF-8**. Pointers
 sort by slug. Titles first retain at most 160 Unicode code points; if the whole list
@@ -96,27 +98,38 @@ records and accept `limit` from 1 through 25. Browse returns all cues that fit t
 Unquoted words match exact lowercase Unicode tokens. Common function words are
 ignored. Hyphen, underscore, dot and slash compounds match adjacent tokens.
 Double-quoted phrases require case-insensitive literal matches with flexible
-whitespace. No stemming, fuzzy matching, automatic synonyms, regex, or Unicode
-normalization applies. A formulation supports 200 characters and 16 distinct terms.
+whitespace. No stemming, camelCase splitting, fuzzy matching, automatic synonyms,
+regex, or Unicode normalization applies. A formulation supports 200 characters and
+16 distinct terms. After a miss, try alternate inflections (`setting` versus
+`settings`), exact identifier forms (`accessToken`), or quoted fragments (`"Token"`).
+A zero-match query returns this guidance alongside its coverage boundaries.
 
 Each formulation uses lexical rarity, frequency saturation, field weights and
-length normalization. Alternative formulations combine ranks with reciprocal rank
-fusion, using `1 / (60 + rank)` for each match. The score stays internal. Ordinal
-rank describes retrieval order, never truth, confidence, freshness, or a comparable
-value across calls. Per-formulation matched and missing terms explain the evidence.
-The calling agent supplies reformulations; the extension makes no model calls.
+length normalization. Unfenced Markdown headings receive title weight; fenced
+comments and examples remain body evidence. Alternative formulations order notes by
+their best per-formulation rank first. Ties use reciprocal rank fusion,
+`sum(1 / (60 + rank))`, then slug order. This keeps each alternative's first match
+among the first three results even when another formulation matches many weakly
+related notes. The score stays internal. Ordinal rank describes retrieval order,
+never truth, confidence, freshness, or a comparable value across calls.
+Per-formulation matched and missing terms explain the evidence. The calling agent
+supplies reformulations; the extension makes no model calls.
 
 When title metadata is absent, browse cues use the first level 1–6 ATX heading
 outside backtick or tilde fences, then the filename if no heading exists.
 Cues preserve raw metadata values. Missing or malformed fields remain unknown;
-`cueProblem` marks clipped, multiline, duplicate, empty, or unclosed extraction.
+`cueProblem` marks clipped, multiline, duplicate, empty, unclosed, invalid, or
+ambiguous frontmatter. The complete bounded header must parse at its physical
+closing delimiter. Otherwise raw cues remain visible with a qualification, metadata
+receives no title weight, and the prompt index counts status as unknown. Unicode
+line and paragraph separators do not create Markdown delimiter lines.
 Status never suppresses search results. Prefer current active sources and inspect
 supersession pointers before applying a claim. Digests identify exact source bytes.
-Each matched note has at most one source passage. For fused results, a body match
-takes priority over a frontmatter-only match; the best-ranked matching formulation
-selects the passage within that category. Per-formulation records retain rank and
-matched/missing terms without repeating passages. Selected excerpts retain
-half-open Unicode code-point offsets in original source.
+Each matched note has at most one source passage. A body match takes priority over
+a frontmatter-only match for both string and array queries. For fused results, the
+best-ranked matching formulation selects the passage within that category.
+Per-formulation records retain rank and matched/missing terms without repeating
+passages. Selected excerpts retain half-open Unicode code-point offsets in original source.
 They are discovery evidence, not complete support. Slug-only hits have no source
 passage. A later qualification can lie outside the selected excerpt.
 
@@ -125,17 +138,33 @@ an incomplete directory scan. `scan.complete` describes traversal only, not note
 availability. Browse reads bounded cue windows; inspect `scan.unavailableNotes`
 and issue totals even when traversal is complete. Queries read complete supported
 sources up to 64 KiB each. Unreadable, unsupported, or oversized notes keep
-`search.complete` false. Cards distinguish directory scan status from query coverage. Result output is bounded; follow the
-returned page position. No scan result establishes absence outside its covered scope.
+`search.complete` false. Cards distinguish directory scan status from query
+coverage. Result output is bounded; follow the returned page position. No scan
+result establishes absence outside its covered scope.
 
 ### `memory_read`
 
 Pass a `slug`, or `README` for the corpus contract. Pass the search result's `digest`
-on the first read. A page returns at most 4000 Unicode code points; pass its
-`nextOffset` and unchanged `digest` to continue. Nonzero offsets require the digest.
-A changed source refuses instead of mixing revisions. Read scope, qualifications,
-source dates and lifecycle before relying on a note. Sources above 64 KiB require
-bounded ordinary file reads; the tool refuses them explicitly.
+on the first read. A page returns at most 12,000 Unicode code points within the
+48 KiB serialized result bound. Escaping overhead can shorten the page;
+pass its returned `nextOffset` and unchanged lowercase SHA-256 `digest` to continue.
+Nonzero offsets require the digest. A changed source refuses instead of mixing
+revisions. Search again for the current digest and restart from offset 0. For a
+changed `README`, restart its read at offset 0 without the old digest to obtain the
+current contract and digest. A missing note points back to search for its current
+slug. Read scope, qualifications, source dates and lifecycle before relying on a
+note. Sources above 64 KiB require bounded ordinary file reads; the tool refuses
+them explicitly.
+
+Every note page includes a `lifecycle` record from the same complete bounded header
+interpretation used by retrieval. `status` is `active`, `superseded`, or `unknown`;
+`supersededBy` is a validated replacement subject slug or null. Unknown or unusable
+metadata carries a `problem`. A valid plain status key and null replacement are
+required for `active`. A known `superseded` status remains visible even when its
+replacement is missing or invalid; that replacement stays null with a problem.
+Malformed or ambiguous headers remain unknown. The record does not validate note
+claims or repair metadata. `README` pages have `lifecycle: null` because the contract
+has no note lifecycle. Original source content remains unchanged on every page.
 
 ### `memory_write`
 
@@ -144,7 +173,9 @@ Required fields are `slug`, `title`, `tags`, `summary`, `details`, `sources`, an
 writer generates the title heading, section headings, dates and lifecycle fields.
 A lowercase kebab-case subject slug is stable across updates; `readme` is reserved.
 Tags are bounded descriptive subject cues, not query filters. All content sections
-must be nonblank. Sources contain the evidence and dates needed to assess the claim.
+must be nonblank. Titles and tags must be single-line, including no Unicode line
+or paragraph separators. Sources contain the evidence and dates needed to assess
+the claim.
 
 Omit `expectedDigest` to create; an existing slug refuses. Supply the current source
 digest to update; a missing or changed source refuses. Updates preserve `created`
@@ -160,10 +191,21 @@ sources before publication, then writes the destination and marks replaced notes
 `status: superseded` with `superseded_by` in the same call. Existing target bodies
 remain byte-for-byte unchanged, including introductory prose, fenced headings and
 tails. A bounded transitive check refuses supersession cycles, including cycles through
-partial publications. It inspects at most 512 linked notes and 8 MiB; unavailable
-ancestors or exhausted bounds refuse the write before publication.
-Mutation requires valid unambiguous lifecycle metadata; tolerant retrieval
-still exposes malformed notes for explicit repair. No silent schema migration occurs.
+partial publications. It accepts at most 512 linked notes totaling 8 MiB. The byte
+check follows each bounded source read, so refusal can inspect one additional
+source of at most 64 KiB. Unavailable ancestors or exhausted bounds refuse the write
+before publication.
+
+Preserved lifecycle metadata must be valid and unambiguous: `created` and `updated`
+are calendar dates; `supersedes` is a list of at most 16 unique subject slugs without
+self-links. `active` requires `superseded_by: null`; `superseded` requires a different
+subject slug. Scalar `supersedes`, duplicate links, and contradictory states refuse
+rather than normalize. Mutation requires exact `---` delimiter lines. Tolerant
+retrieval also accepts whitespace-padded delimiter lines, but does not repair them.
+Ambiguous delimiter prefixes refuse mutation. A complete rewrite intentionally
+replaces old title, tags, body, and verification fields; it does not require those
+old authoring fields to match the newly supplied ones. No silent schema migration
+occurs.
 
 Search before every mutation. Update the existing subject instead of creating a near
 duplicate. The writer refuses identical slugs, not semantic duplicates. Search is
@@ -171,7 +213,10 @@ the overlap preview; no second implicit search inflates write results.
 
 Successful calls report `Memory updated: <file>` for each changed note. Errors name
 `written` and `notWritten` files, whether initialization occurred, and the destination
-digest when published. These fields describe file publication, not a corpus transaction.
+digest when published. `notWritten` lists the unpublished files once the complete
+publication plan is known; a planning refusal can leave that list empty with
+`written: []` and an explicit error. These fields describe file publication, not a
+corpus transaction.
 
 ### `memory_edit`
 
@@ -184,15 +229,21 @@ Missing, ambiguous, overlapping, nested, and collectively unchanged edits refuse
 Adjacent disjoint matches are valid. No fuzzy matching, whitespace normalization,
 or line-ending conversion occurs. Include the source's exact line endings.
 
-The first level-one ATX title heading outside backtick or tilde fences must match
-frontmatter and remain unchanged. Fenced examples do not count as title headings.
+**An existing matching `# Title` heading is required.** The first level-one ATX title
+heading outside backtick or tilde fences must match the frontmatter `title` and
+remain unchanged. A missing or divergent heading refuses with an actionable error;
+the editor never invents a title or treats frontmatter as its body replacement.
+Use `memory_write` only when a complete rewrite is intentional. Fenced examples do
+not count as title headings.
 Edits that hide that heading or introduce an earlier title also refuse. Changes to
 introductory prose preserve the original heading's identity despite offset shifts.
 Title, tags, and other frontmatter are not editable through this tool. The writer updates
 only `updated`, `verified`, and `verified_date` frontmatter lines; all other bytes
 survive, including comments, unknown metadata, introductory prose, extra sections,
-and unchanged body text. Generated fields require independent plain top-level keys;
-unsupported YAML forms refuse instead of silently altering other metadata.
+and unchanged body text. `updated`, `verified`, and `verified_date` must already
+exist as independent plain top-level keys. Missing generated keys and YAML aliases
+that would alter other metadata refuse. Supersession applies the same preservation
+check to its generated lifecycle fields.
 
 `verified` describes the whole resulting note, not just the replacement. True sets
 `verified_date` to today's UTC date; false clears it to null. A current digest is
@@ -210,6 +261,26 @@ cleanup, and receipt as writes. They do not initialize or replace `README.md`;
 `initialized` remains false. Success reports `Memory updated: <file>`. Publication
 and cleanup failures use the same `written` and `notWritten` receipt fields; input
 or lock refusals occur before publication and report a content-free error.
+
+## Technical examples and credential refusals
+
+Ordinary configuration examples are valid note content: `api_key=api_key`,
+`password=process.env.PASSWORD`, JSON parameter names, descriptive placeholders,
+and prose such as `secret: configuration value`. Their punctuation, quoting, or
+placement in a code fence does not turn them into credentials.
+
+The guard refuses private-key markers and the selected recognizable token-prefix
+formats implemented in `checkCredentials`. It does not classify generic assignments,
+measure entropy, or exempt code fences. Never supply real secrets: an unrecognized
+password or token remains forbidden knowledge even if the narrow guard accepts it.
+
+Validation checks authored fields, subject and supersession slugs, replacement
+text, and every complete note planned for publication. This includes inherited
+links and retained supersession bodies. An error names only the input location or
+resulting-note category and pattern family, never the matched text. Replace a
+credential value with a descriptive placeholder. `oldText` is not independently
+rejected, so a targeted edit can remove an existing credential; the complete
+result must pass. Insertion or deletion that assembles a recognizable token refuses.
 
 ## Concurrency and failure
 
@@ -236,15 +307,20 @@ that retry. Do not blindly repeat a create after partial success.
 Cancellation is checked before work and between bounded operations. A started
 synchronous filesystem operation finishes; cancellation does not undo a publication.
 The writer attempts temporary-file and lock cleanup on success and failure. Cleanup
-failure is explicit, including when all note publications succeeded. Process loss
-cannot return a receipt: inspect source files and links before recovery. File sync
-and rename do not establish whole-corpus atomicity or power-loss durability.
+failure is explicit, including when all note publications succeeded. Staging errors
+preserve the initial filesystem error code, report close and cleanup failures
+separately, and name any retained private temporary file without exposing corpus
+paths or note content. Process loss cannot return a receipt: inspect source files
+and links before recovery. File sync and rename do not establish whole-corpus
+atomicity or power-loss durability.
 
 Writers that use this extension share the lock. Ordinary editors do not. Digest
 rechecks detect edits before publication, but no filesystem compare-and-swap prevents
 an uncooperative editor from racing the final check and rename. Stop other corpus
 writers for manual repairs. Leaf symlinks, special files, and multiply linked note
-inodes are refused for mutation. Search and read also refuse unsafe leaf paths.
+inodes are refused for mutation. Search and read refuse leaf symlinks and special
+files, but permit regular hard-linked notes because these operations do not mutate
+the inode or its aliases.
 
 ## Storage policy
 
@@ -313,10 +389,26 @@ Rationale, constraints and qualifications.
 
 ## Presentation and verification
 
-Native tool cards show request subjects, outcomes and coverage limits. Expansion
-reveals bounded escaped evidence. Presentation never changes model-visible evidence
-or retained native history. Semantic tool behavior is identical in TUI and headless modes.
+Native tool cards show request subjects, outcomes and coverage limits. Collapsed
+search cards preview up to three subjects and name any additional subjects on the
+returned page. Expanded search cards label raw cues, cue problems, digests,
+per-formulation matches and missing terms, source excerpt ranges, scan issues and
+continuation instructions. Zero-match guidance appears without expansion. Raw cues
+remain untrusted source evidence, not attestations.
+
+Expanded read cards show the actual source text, digest and half-open code-point
+range instead of a serialized JSON string. Lifecycle status, replacement subjects
+and problems remain visible in both views. Terminal controls are escaped, and the
+expanded evidence body is limited to 32,000 UTF-16 units after escaping, including
+its explicit clipping notice. Write and edit payloads stay withheld in both call
+views. Presentation never changes model-visible evidence or retained native history.
+Semantic tool behavior is identical in TUI and headless modes.
 
 Run focused tests with `node --test extensions/memory/*.test.mts`. Run the native
 loader with `node scripts/extension-load-check.mts extensions/memory/index.ts`.
+The native lifecycle regression loads the extension in an isolated ordinary Pi
+session and drives its registered tools with a controlled provider. It checks
+technical-note creation, search, Unicode paging, edit, digest refusal, credential
+refusal, supersession, and the next prompt's active pointers. This establishes the
+host/tool contract, not live-model judgment or general retrieval quality.
 Repository gates cover type compatibility, lint, slice boundaries and the complete suite.

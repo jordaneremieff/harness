@@ -14,7 +14,7 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { findMarkdownHeading } from "./headings.ts";
@@ -109,9 +109,11 @@ function text(value: unknown, name: string, max: number, multiline = true): asse
 		!value.trim() ||
 		value.length > max ||
 		unsafeText(value) ||
-		(!multiline && /[\r\n]/u.test(value))
+		(!multiline && /[\r\n\u2028\u2029]/u.test(value))
 	)
-		throw new Error(`Invalid ${name}`);
+		throw new Error(
+			`Invalid ${name}: use nonblank ${multiline ? "text" : "single-line text"} within ${max} characters, without disallowed controls or unpaired surrogates`,
+		);
 }
 function validate(input: MemoryWrite): void {
 	slug(input.slug);
@@ -127,24 +129,34 @@ function validate(input: MemoryWrite): void {
 	if (input.supersedes !== undefined && (!Array.isArray(input.supersedes) || input.supersedes.length > 16))
 		throw new Error("Use at most 16 supersession targets");
 	const seen = new Set<string>();
-	for (const target of input.supersedes ?? []) {
+	for (const [index, target] of (input.supersedes ?? []).entries()) {
 		slug(target.slug);
+		checkCredentials(target.slug, `supersedes[${index}].slug`);
 		digest(target.digest);
 		if (target.slug === input.slug || seen.has(target.slug))
 			throw new Error("Supersession targets must be unique and different from the destination");
 		seen.add(target.slug);
 	}
-	checkCredentials(JSON.stringify(input));
+	for (const field of ["slug", "title", "summary", "details", "sources"] as const)
+		checkCredentials(input[field], field);
+	input.tags.forEach((tag, index) => {
+		checkCredentials(tag, `tags[${index}]`);
+	});
 }
 
-/** Refuse recognizable credential forms without echoing them. */
-function checkCredentials(payload: string): void {
-	if (
-		/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b|\b(?:api[_ -]?key|access[_ -]?token|password|secret)\s*[=:]\s*["']?[^\s"',;]{8,}/i.test(
-			payload,
-		)
-	)
-		throw new Error("Credential-like material refused; no note content was written");
+/** Recognizable formats only: assignment syntax and entropy do not distinguish technical examples from secrets. */
+function checkCredentials(payload: string, location = "resulting note"): void {
+	const family = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(payload)
+		? "private-key marker"
+		: /\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b/i.test(
+					payload,
+				)
+			? "recognized token prefix"
+			: undefined;
+	if (family)
+		throw new Error(
+			`Credential-like material refused in ${location} (${family}); use a descriptive placeholder instead of a credential value. No note content was written`,
+		);
 }
 
 /** Open the inode itself, not a link target, and bound the read before allocation. */
@@ -196,27 +208,50 @@ function existing(path: string, expected?: string): Existing {
 	if (expected !== undefined && sourceDigest(source) !== expected)
 		throw new Error("Source digest changed; read the current note before retry");
 	const match = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(source);
-	if (!match) throw new Error("Mutation requires valid frontmatter; repair the source explicitly first");
+	if (!match)
+		throw new Error(
+			"Mutation requires valid frontmatter with exact --- delimiter lines; repair the source explicitly first",
+		);
 	let meta: Record<string, unknown>;
 	try {
-		meta = parseFrontmatter<Record<string, unknown>>(match[0]).frontmatter;
+		const parsed = parseFrontmatter<Record<string, unknown>>(match[0]);
+		if (parsed.body !== "") throw new Error("Ambiguous header boundary");
+		meta = parsed.frontmatter;
 	} catch {
-		throw new Error("Mutation requires unambiguous frontmatter");
+		throw new Error(
+			"Mutation requires unambiguous frontmatter with exact --- delimiter lines; repair the source explicitly first",
+		);
 	}
+	if (!meta || typeof meta !== "object" || Array.isArray(meta))
+		throw new Error("Mutation requires a frontmatter mapping; source remains readable");
+	validateLifecycle(meta, basename(path, ".md"));
+	return { text: source, meta, end: match[0].length };
+}
+function validateLifecycle(meta: Record<string, unknown>, subject: string): void {
+	const isSubject = (value: unknown): value is string =>
+		typeof value === "string" && value.length <= 120 && SLUG.test(value) && value !== "readme";
+	if (!date(meta.created) || !date(meta.updated))
+		throw new Error(
+			"Mutation requires valid lifecycle dates: created and updated must be YYYY-MM-DD; source remains readable",
+		);
 	if (
-		!meta ||
-		typeof meta !== "object" ||
-		Array.isArray(meta) ||
-		!date(meta.created) ||
-		!date(meta.updated) ||
-		!(meta.status === "active" || meta.status === "superseded") ||
 		!Array.isArray(meta.supersedes) ||
 		meta.supersedes.length > 16 ||
-		meta.supersedes.some((v) => typeof v !== "string" || !SLUG.test(v)) ||
-		!(meta.superseded_by === null || (typeof meta.superseded_by === "string" && SLUG.test(meta.superseded_by)))
+		new Set(meta.supersedes).size !== meta.supersedes.length ||
+		meta.supersedes.some((value) => !isSubject(value) || value === subject)
 	)
-		throw new Error("Mutation requires valid lifecycle fields; source remains readable");
-	return { text: source, meta, end: match[0].length };
+		throw new Error(
+			"Mutation requires valid lifecycle links: supersedes must be a list of at most 16 unique subject slugs, without self-links; source remains readable",
+		);
+	if (
+		!(meta.status === "active" || meta.status === "superseded") ||
+		(meta.status === "active"
+			? meta.superseded_by !== null
+			: !isSubject(meta.superseded_by) || meta.superseded_by === subject)
+	)
+		throw new Error(
+			"Mutation requires valid lifecycle status: active requires superseded_by: null; superseded requires a different subject slug. Source remains readable",
+		);
 }
 /** Partial publication can leave active historical nodes; inspect transitive links before adding an edge. */
 function checkCycles(root: string, destination: string, targets: string[], signal?: AbortSignal): void {
@@ -257,32 +292,38 @@ function serialize(input: MemoryWrite, created: string, today: string, supersede
 }
 /** Only lifecycle lines change; introductory text, fences, and the complete body survive. */
 function superseded(source: Existing, replacement: string, today: string): string {
-	const header = source.text.slice(0, source.end);
-	const updated = header.replace(
-		/^(status|updated|superseded_by):[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*/gm,
-		(_line, key: string) =>
-			`${key}: ${JSON.stringify(key === "status" ? "superseded" : key === "updated" ? today : replacement)}`,
-	);
-	// The parser permits YAML forms that line replacement cannot safely edit.
-	const parsed = parseFrontmatter<Record<string, unknown>>(updated).frontmatter;
-	if (parsed.status !== "superseded" || parsed.updated !== today || parsed.superseded_by !== replacement)
-		throw new Error("Lifecycle fields require plain top-level keys for supersession");
-	const result = updated + source.text.slice(source.end);
+	const header = changedHeader(source, { status: "superseded", updated: today, superseded_by: replacement });
+	const result = header + source.text.slice(source.end);
 	if (Buffer.byteLength(result) > MAX_BYTES) throw new Error("Superseded source exceeds 64 KiB");
 	return result;
 }
 function stage(root: string, content: string): string {
-	const path = join(root, `.memory-${randomUUID()}.tmp`);
-	const fd = openSync(path, "wx", 0o600);
+	const file = `.memory-${randomUUID()}.tmp`;
+	const path = join(root, file);
+	let fd: number | undefined;
+	const failures: string[] = [];
 	try {
+		fd = openSync(path, "wx", 0o600);
 		writeFileSync(fd, content);
 		fsyncSync(fd);
 	} catch (error) {
-		closeSync(fd);
-		unlinkSync(path);
-		throw error;
+		failures.push(`Temporary file staging failed (${errorCode(error)})`);
 	}
-	closeSync(fd);
+	if (fd !== undefined) {
+		try {
+			closeSync(fd);
+		} catch (error) {
+			failures.push(`Temporary file close failed (${errorCode(error)})`);
+		}
+		if (failures.length) {
+			const error = removeFile(path);
+			if (error)
+				failures.push(
+					`Temporary file cleanup failed (${error}); retained artifact: ${file}. Confirm no writer remains before manual removal`,
+				);
+		}
+	}
+	if (failures.length) throw new Error(`${failures.join("; ")}; no notes were written`);
 	return path;
 }
 
@@ -369,11 +410,12 @@ function planWrites(root: string, input: MemoryWrite, signal?: AbortSignal): Pub
 }
 function validateEdit(input: MemoryEdit): void {
 	slug(input.slug);
+	checkCredentials(input.slug, "slug");
 	digest(input.expectedDigest);
 	if (typeof input.verified !== "boolean") throw new Error("verified must be explicit for the whole edited note");
 	if (!Array.isArray(input.edits) || input.edits.length < 1 || input.edits.length > 32)
 		throw new Error("Use between 1 and 32 edits");
-	for (const edit of input.edits) {
+	for (const [index, edit] of input.edits.entries()) {
 		if (!edit || typeof edit !== "object") throw new Error("Invalid edit");
 		for (const key of ["oldText", "newText"] as const) {
 			const value = edit[key];
@@ -385,7 +427,7 @@ function validateEdit(input: MemoryEdit): void {
 			)
 				throw new Error(`Invalid edits[].${key}`);
 		}
-		checkCredentials(edit.newText);
+		checkCredentials(edit.newText, `edits[${index}].newText`);
 	}
 }
 
@@ -396,7 +438,9 @@ function editedBody(source: Existing, edits: MemoryEdit["edits"]): string {
 		!heading ||
 		(heading.title !== source.meta.title && heading.text.replace(/[\r\n]+$/, "") !== `# ${source.meta.title}`)
 	)
-		throw new Error("Editing requires a title heading that matches frontmatter");
+		throw new Error(
+			"Editing requires a title heading that matches frontmatter: the first unfenced # heading must match title. Preserve that heading; use memory_write only for an intentional complete rewrite",
+		);
 	const matches = edits
 		.map((edit, index) => {
 			const start = body.indexOf(edit.oldText);
@@ -427,23 +471,28 @@ function editedBody(source: Existing, edits: MemoryEdit["edits"]): string {
 }
 
 /** Preserve header bytes outside the generated fields, including comments and unknown keys. */
-function editedHeader(source: Existing, verified: boolean, today: string): string {
-	const fields = { updated: today, verified, verified_date: verified ? today : null };
+function changedHeader(source: Existing, fields: Record<string, string | boolean | null>): string {
 	const seen = new Set<string>();
 	const header = source.text
 		.slice(0, source.end)
-		.replace(/^(updated|verified|verified_date):[^\r\n]*/gm, (_line, key: keyof typeof fields) => {
+		.replace(/^(updated|verified|verified_date|status|superseded_by):[^\r\n]*/gm, (line, key: string) => {
+			if (!Object.hasOwn(fields, key)) return line;
 			seen.add(key);
 			return `${key}: ${JSON.stringify(fields[key])}`;
 		});
-	let parsed: Record<string, unknown>;
 	try {
-		parsed = parseFrontmatter<Record<string, unknown>>(header).frontmatter;
+		const parsed = parseFrontmatter<Record<string, unknown>>(header);
+		if (
+			parsed.body !== "" ||
+			seen.size !== Object.keys(fields).length ||
+			!isDeepStrictEqual(parsed.frontmatter, { ...source.meta, ...fields })
+		)
+			throw new Error("Metadata changed outside generated fields");
 	} catch {
-		throw new Error("Generated fields require plain top-level keys for editing");
+		throw new Error(
+			`Generated fields (${Object.keys(fields).join(", ")}) require independent plain top-level keys; other metadata must remain unchanged`,
+		);
 	}
-	if (seen.size !== 3 || !isDeepStrictEqual(parsed, { ...source.meta, ...fields }))
-		throw new Error("Generated fields require independent plain top-level keys for editing");
 	return header;
 }
 
@@ -451,10 +500,10 @@ function planEdit(root: string, input: MemoryEdit, signal?: AbortSignal): Public
 	checkAbort(signal);
 	const file = `${input.slug}.md`;
 	const source = destinationSource(join(root, file), input) as Existing;
+	const today = new Date().toISOString().slice(0, 10);
 	const content =
-		editedHeader(source, input.verified, new Date().toISOString().slice(0, 10)) + editedBody(source, input.edits);
-	checkCredentials(content);
-	if (unsafeText(content)) throw new Error("Edited note contains control characters");
+		changedHeader(source, { updated: today, verified: input.verified, verified_date: input.verified ? today : null }) +
+		editedBody(source, input.edits);
 	if (Buffer.byteLength(content) > MAX_BYTES) throw new Error("Note exceeds the 64 KiB source limit");
 	return [{ file, content, expected: input.expectedDigest }];
 }
@@ -487,7 +536,11 @@ function recordFailure(receipt: WriteReceipt, message: string): void {
 function cleanup(staged: string[], release: () => void, receipt: WriteReceipt): void {
 	for (const path of staged) {
 		const error = removeFile(path);
-		if (error) recordFailure(receipt, `Temporary file cleanup failed (${error})`);
+		if (error)
+			recordFailure(
+				receipt,
+				`Temporary file cleanup failed (${error}); retained artifact: ${basename(path)}. Confirm no writer remains before manual removal`,
+			);
 	}
 	try {
 		release();
@@ -510,8 +563,21 @@ export function writeMemory(
 	memoryRoot(rootValue);
 	validate(input);
 	checkAbort(signal);
-	mkdirSync(rootValue, { recursive: true, mode: 0o700 });
+	try {
+		mkdirSync(rootValue, { recursive: true, mode: 0o700 });
+	} catch (error) {
+		throw new Error(`Memory unavailable: corpus directory cannot be created (${errorCode(error)})`);
+	}
 	return mutate(rootValue, input.slug, (root) => planWrites(root, input, signal), signal, hooks);
+}
+
+function validatePublications(plans: Publication[], destination: string): void {
+	for (const publication of plans) {
+		if (publication.file === "README.md") continue;
+		if (unsafeText(publication.content))
+			throw new Error("Resulting note contains disallowed control characters or unpaired surrogates");
+		checkCredentials(publication.content, publication.file === destination ? "resulting note" : "supersession target");
+	}
 }
 
 function mutate(
@@ -541,6 +607,7 @@ function mutate(
 	try {
 		const plans = plan(root);
 		receipt.notWritten = plans.map((plan) => plan.file);
+		validatePublications(plans, receipt.file);
 		const prepared = plans.map((plan) => {
 			const temp = stage(root, plan.content);
 			staged.push(temp);

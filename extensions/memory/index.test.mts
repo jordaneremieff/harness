@@ -54,6 +54,9 @@ test("factory registers only the memory jobs, with native cards and trigger guid
 		assert.equal(typeof tool.renderCall, "function");
 		assert.equal(typeof tool.renderResult, "function");
 	}
+	const searchParameters = JSON.stringify(all.get("memory_search")?.parameters);
+	assert.match(searchParameters, /quoted, case-insensitive literal fragments/);
+	assert.match(all.get("memory_read")?.description ?? "", /12,000 Unicode code points.*lifecycle/);
 	const guidance = [...all.values()].flatMap((tool) => tool.promptGuidelines ?? []).join("\n");
 	for (const word of [
 		"memo",
@@ -143,6 +146,7 @@ test("schema rejects empty payloads, excess formulations and unbounded pages", (
 	assert.throws(() => call(all.get("memory_search") as Registered, { query: ["a", "b", "c", "d"] }));
 	assert.throws(() => call(all.get("memory_search") as Registered, { limit: 513 }));
 	assert.throws(() => call(all.get("memory_read") as Registered, { slug: "one", offset: -1 }));
+	assert.throws(() => call(all.get("memory_read") as Registered, { slug: "one", digest: "A".repeat(64) }));
 	const editor = all.get("memory_edit") as Registered;
 	const edit = {
 		slug: "one",

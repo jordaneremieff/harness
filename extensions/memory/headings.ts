@@ -3,10 +3,11 @@ interface Heading {
 	end: number;
 	text: string;
 	title: string;
+	level: number;
 }
 
-/** Locate an ATX heading without treating fenced examples as headings. */
-export function findMarkdownHeading(body: string, maxLevel = 6): Heading | undefined {
+/** ATX headings with UTF-16 source positions; fenced examples are body text. */
+export function* markdownHeadings(body: string): Iterable<Heading> {
 	let fence: { marker: string; length: number } | undefined;
 	for (const match of body.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g)) {
 		const line = match[0].replace(/[\r\n]+$/, "");
@@ -21,13 +22,20 @@ export function findMarkdownHeading(body: string, maxLevel = 6): Heading | undef
 			continue;
 		}
 		const heading = /^ {0,3}(#{1,6})[ \t]+(.*)$/.exec(line);
-		if (heading && heading[1].length <= maxLevel)
-			return {
+		if (heading)
+			yield {
 				start: match.index,
 				end: match.index + match[0].length,
 				text: match[0],
 				title: heading[2].replace(/[ \t]+#+[ \t]*$/, "").trim(),
+				level: heading[1].length,
 			};
+	}
+}
+
+export function findMarkdownHeading(body: string, maxLevel = 6): Heading | undefined {
+	for (const heading of markdownHeadings(body)) {
+		if (heading.level <= maxLevel) return heading;
 	}
 	return undefined;
 }

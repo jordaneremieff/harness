@@ -29,7 +29,8 @@ for (const form of ["titles", "slugs"] as const) {
 		mkdirSync(corpus);
 		mkdirSync(agentDir);
 		writeFileSync(join(corpus, "README.md"), "PRIVATE CONTRACT");
-		const source = (title: string, body = "PRIVATE BODY") => `---\nstatus: active\ntitle: ${title}\n---\n${body}\n`;
+		const source = (title: string, body = "PRIVATE BODY") =>
+			`---\nstatus: active\nsuperseded_by: null\ntitle: ${title}\n---\n${body}\n`;
 		writeFileSync(join(corpus, "editor-choice.md"), source("Editor choice"));
 		if (form === "slugs") {
 			for (let i = 0; i < 274; i++)

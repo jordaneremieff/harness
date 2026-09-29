@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { type MemoryWrite, MemoryWriteError, memoryRoot, sourceDigest, writeMemory } from "./store.ts";
+import { editMemory, type MemoryWrite, MemoryWriteError, memoryRoot, sourceDigest, writeMemory } from "./store.ts";
 
 function corpus(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "memory-store-"));
@@ -368,12 +368,69 @@ test("input validation rejects malformed, duplicate, self and credential-like ma
 		{ ...note(), tags: ["x", "x"] },
 		{ ...note(), expectedDigest: "bad" },
 		{ ...note(), supersedes: [{ slug: "editor-choice", digest: "a".repeat(64) }] },
-		{ ...note(), sources: "password=example-not-a-real-secret" },
+		{ ...note(), sources: `token=${"ghp_"}${"x".repeat(24)}` },
 		{ ...note(), details: "-----BEGIN PRIVATE KEY-----" },
 	];
 	for (const input of cases) assert.throws(() => writeMemory(root, input));
 	assert.deepEqual(readdirSync(root), []);
 });
+test("technical assignments and prose survive creation and whole-note rewrites verbatim", (t) => {
+	const root = corpus(t);
+	const details = [
+		"api_key=api_key",
+		"`api_key=api_key`",
+		"api_key=api_key\nnext line",
+		"```typescript\nconst client = new Client({ api_key: process.env.API_KEY });\n```",
+		"password=example-not-a-real-secret",
+		"access_token: fixture.accessToken",
+		"secret: configuration value",
+		'{"api_key":"api_key","password":"<password>"}',
+		"Use the parameter password=password in the synthetic fixture.",
+	].join("\n\n");
+	const first = writeMemory(root, { ...note(), title: "secret: configuration guide", details });
+	const path = join(root, "editor-choice.md");
+	assert.ok(readFileSync(path, "utf8").includes(details));
+	const changed = writeMemory(root, { ...note(), expectedDigest: first.digest, details, verified: false });
+	assert.equal(changed.ok, true);
+	assert.ok(readFileSync(path, "utf8").includes(details));
+	assert.equal(metadata(root, "editor-choice").verified_date, null);
+});
+
+test("recognized credential formats refuse in every authoring field without echo or initialization", (t) => {
+	const root = join(corpus(t), "absent");
+	const tokens = [
+		"-----BEGIN PRIVATE KEY-----",
+		"-----BEGIN RSA PRIVATE KEY-----",
+		`sk-${"x".repeat(24)}`,
+		...Array.from("pousr", (kind) => `gh${kind}_${"x".repeat(24)}`),
+		`github_pat_${"x".repeat(24)}`,
+		`AKIA${"X".repeat(16)}`,
+	];
+	for (const token of tokens) {
+		for (const field of ["title", "summary", "details", "sources", "tags"] as const) {
+			const value = field === "tags" ? [token] : `Example: ${token}`;
+			assert.throws(
+				() => writeMemory(root, { ...note(), [field]: value }),
+				(error) => {
+					assert.ok(error instanceof Error);
+					assert.match(error.message, /Credential-like material refused/);
+					assert.ok(error.message.includes(field === "tags" ? "tags[0]" : field));
+					assert.match(error.message, /descriptive placeholder/);
+					assert.ok(!error.message.includes(token));
+					return true;
+				},
+			);
+		}
+		for (const marker of ["```", "~~~"]) {
+			assert.throws(
+				() => writeMemory(root, { ...note(), details: `${marker}\n${token}\n${marker}` }),
+				/Credential-like/,
+			);
+		}
+	}
+	assert.equal(fs.existsSync(root), false);
+});
+
 test("non-scalar lifecycle status refuses supersession without implicit repair", (t) => {
 	const root = corpus(t);
 	writeMemory(root, note("old"));
@@ -425,6 +482,241 @@ test("directories and multiply linked note inodes refuse mutation", (t) => {
 	linkSync(join(root, "editor-choice.md"), join(root, "linked.md"));
 	failure(() => writeMemory(root, { ...note(), expectedDigest: first.digest }));
 });
+test("single-line titles refuse Unicode separators before initialization", (t) => {
+	const root = join(corpus(t), "absent");
+	for (const separator of ["\u2028", "\u2029"]) {
+		assert.throws(() => writeMemory(root, { ...note(), title: `Alpha${separator}Beta` }), /title.*single-line/);
+		assert.equal(fs.existsSync(root), false);
+	}
+});
+
+test("nonexact frontmatter delimiters explain the mutation boundary without changing bytes", (t) => {
+	const root = corpus(t);
+	writeMemory(root, note());
+	const path = join(root, "editor-choice.md");
+	const original = readFileSync(path, "utf8");
+	for (const source of [original.replace(/^---/, "--- "), original.replace("\n---\n", "\n--- \n")]) {
+		writeFileSync(path, source);
+		const error = failure(() => writeMemory(root, { ...note(), expectedDigest: sourceDigest(source) }));
+		assert.match(error.message, /valid frontmatter with exact --- delimiter lines/);
+		assert.equal(readFileSync(path, "utf8"), source);
+	}
+});
+
+test("ambiguous physical headers refuse edits, rewrites and supersession without byte changes", (t) => {
+	const root = corpus(t);
+	writeMemory(root, note());
+	const path = join(root, "editor-choice.md");
+	const source = readFileSync(path, "utf8").replace(
+		"\n---\n\n#",
+		'\n---suffix\nupdated: "2000-01-01"\nprivate-field: preserved\n---\n\n#',
+	);
+	writeFileSync(path, source);
+	const expectedDigest = sourceDigest(source);
+	for (const operation of [
+		() =>
+			editMemory(root, {
+				slug: "editor-choice",
+				expectedDigest,
+				verified: true,
+				edits: [{ oldText: "Use the plain editor.", newText: "Use a different editor." }],
+			}),
+		() => writeMemory(root, { ...note(), expectedDigest }),
+		() =>
+			writeMemory(root, { ...note("replacement"), supersedes: [{ slug: "editor-choice", digest: expectedDigest }] }),
+	]) {
+		assert.match(failure(operation).message, /unambiguous frontmatter.*exact --- delimiter/);
+		assert.equal(readFileSync(path, "utf8"), source);
+		assert.deepEqual(readdirSync(root).sort(), ["README.md", "editor-choice.md"]);
+	}
+});
+
+test("supersession refuses alias side effects without exposing or altering unrelated metadata", (t) => {
+	const root = corpus(t);
+	writeMemory(root, note("old"));
+	const path = join(root, "old.md");
+	const source = readFileSync(path, "utf8").replace('status: "active"', "status: &state active\nprivate-field: *state");
+	writeFileSync(path, source);
+	const error = failure(() =>
+		writeMemory(root, { ...note("new"), supersedes: [{ slug: "old", digest: sourceDigest(source) }] }),
+	);
+	assert.match(error.message, /plain top-level keys.*metadata must remain unchanged/);
+	assert.doesNotMatch(error.message, /private-field|&state|\*state/);
+	assert.equal(readFileSync(path, "utf8"), source);
+	assert.equal(fs.existsSync(join(root, "new.md")), false);
+});
+
+test("whole-note rewrite replaces old authoring fields without a migration requirement", (t) => {
+	const root = corpus(t);
+	writeMemory(root, note());
+	const path = join(root, "editor-choice.md");
+	const source = readFileSync(path, "utf8")
+		.replace(/^title: .*$/m, "title: [old, malformed]")
+		.replace(/^tags: .*$/m, "tags: old-string")
+		.replace(/^verified_date: .*\n/m, "")
+		.replace("# Editor choice", "## Earlier heading");
+	writeFileSync(path, source);
+	const rewritten = writeMemory(root, { ...note(), expectedDigest: sourceDigest(source) });
+	assert.ok(rewritten.ok);
+	assert.equal(metadata(root, "editor-choice").title, note().title);
+	assert.deepEqual(metadata(root, "editor-choice").tags, note().tags);
+	assert.equal(metadata(root, "editor-choice").created, parseFrontmatter(source).frontmatter.created);
+});
+
+test("preserved lifecycle links refuse invalid shapes rather than normalize them", (t) => {
+	const root = corpus(t);
+	writeMemory(root, note());
+	const path = join(root, "editor-choice.md");
+	const original = readFileSync(path, "utf8");
+	for (const replacement of [
+		"supersedes: editor-choice",
+		"supersedes: [editor-choice]",
+		"supersedes: [other, other]",
+		"supersedes: [readme]",
+		`supersedes: [${"x".repeat(121)}]`,
+	]) {
+		const source = original.replace("supersedes: []", replacement);
+		writeFileSync(path, source);
+		const error = failure(() => writeMemory(root, { ...note(), expectedDigest: sourceDigest(source) }));
+		assert.match(error.message, /supersedes must be a list.*without self-links/);
+		assert.equal(readFileSync(path, "utf8"), source);
+	}
+	for (const source of [
+		original.replace("superseded_by: null", "superseded_by: other"),
+		original.replace('status: "active"', 'status: "superseded"'),
+	]) {
+		writeFileSync(path, source);
+		assert.match(
+			failure(() => writeMemory(root, { ...note(), expectedDigest: sourceDigest(source) })).message,
+			/valid lifecycle status/,
+		);
+		assert.equal(readFileSync(path, "utf8"), source);
+	}
+});
+
+test("credential checks cover slugs, inherited links and complete supersession targets", (t) => {
+	const root = corpus(t);
+	const token = `sk-${"x".repeat(24)}`;
+	for (const input of [
+		{ ...note(), slug: token },
+		{ ...note(), supersedes: [{ slug: token, digest: "a".repeat(64) }] },
+	]) {
+		assert.throws(
+			() => writeMemory(root, input),
+			(error) => {
+				assert.ok(error instanceof Error);
+				assert.match(error.message, /Credential-like material refused/);
+				assert.ok(!error.message.includes(token));
+				return true;
+			},
+		);
+	}
+	writeMemory(root, note("old"));
+	const path = join(root, "old.md");
+	const original = readFileSync(path, "utf8");
+	const linked = original.replace("supersedes: []", `supersedes: [${token}]`);
+	writeFileSync(path, linked);
+	const rewrite = failure(() => writeMemory(root, { ...note("old"), expectedDigest: sourceDigest(linked) }));
+	assert.match(rewrite.message, /resulting note.*recognized token prefix/);
+	assert.ok(!rewrite.message.includes(token));
+	assert.equal(readFileSync(path, "utf8"), linked);
+	const source = `${original}\n${token}\n`;
+	writeFileSync(path, source);
+	const supersession = failure(() =>
+		writeMemory(root, { ...note("new"), supersedes: [{ slug: "old", digest: sourceDigest(source) }] }),
+	);
+	assert.match(supersession.message, /supersession target.*recognized token prefix/);
+	assert.ok(!supersession.message.includes(token));
+	assert.deepEqual(supersession.receipt.written, []);
+	assert.equal(fs.existsSync(join(root, "new.md")), false);
+	assert.equal(readFileSync(path, "utf8"), source);
+});
+
+for (const phase of ["lock", "note"] as const) {
+	test(`${phase} staging preserves flush and cleanup failures with the retained filename`, (t) => {
+		const root = corpus(t);
+		const first = writeMemory(root, note());
+		const originalSync = fs.fsyncSync;
+		const originalUnlink = fs.unlinkSync;
+		let syncs = 0;
+		let failed = false;
+		t.mock.method(fs, "fsyncSync", (fd: number) => {
+			if (++syncs === (phase === "lock" ? 1 : 2)) {
+				failed = true;
+				throw Object.assign(new Error("Synthetic flush failure"), { code: "EIO" });
+			}
+			return originalSync(fd);
+		});
+		t.mock.method(fs, "unlinkSync", (path: fs.PathLike) => {
+			if (failed && String(path).endsWith(".tmp"))
+				throw Object.assign(new Error("Synthetic cleanup failure"), { code: "EACCES" });
+			return originalUnlink(path);
+		});
+		syncBuiltinESMExports();
+		try {
+			assert.throws(
+				() => writeMemory(root, { ...note(), expectedDigest: first.digest }),
+				(error) => {
+					assert.ok(error instanceof Error);
+					assert.match(error.message, /staging failed \(EIO\).*cleanup failed \(EACCES\).*retained artifact/);
+					const retained = readdirSync(root).filter((file) => file.startsWith(".memory-"));
+					assert.equal(retained.length, 1);
+					assert.ok(error.message.includes(retained[0]));
+					assert.ok(!error.message.includes(root));
+					if (phase === "note") {
+						assert.ok(error instanceof MemoryWriteError);
+						assert.deepEqual(error.receipt.written, []);
+						assert.deepEqual(error.receipt.notWritten, ["editor-choice.md"]);
+					}
+					return true;
+				},
+			);
+			assert.equal(sourceDigest(readFileSync(join(root, "editor-choice.md"))), first.digest);
+		} finally {
+			t.mock.restoreAll();
+			syncBuiltinESMExports();
+		}
+	});
+}
+
+test("a staged note close failure cleans the private file and preserves the source", (t) => {
+	const root = corpus(t);
+	const first = writeMemory(root, note());
+	const original = fs.closeSync;
+	let closed = 0;
+	t.mock.method(fs, "closeSync", (fd: number) => {
+		original(fd);
+		if (++closed === 4) throw Object.assign(new Error("Synthetic close failure"), { code: "EIO" });
+	});
+	syncBuiltinESMExports();
+	try {
+		const error = failure(() => writeMemory(root, { ...note(), expectedDigest: first.digest }));
+		assert.match(error.message, /Temporary file close failed \(EIO\)/);
+		assert.deepEqual(error.receipt.written, []);
+		assert.deepEqual(readdirSync(root).sort(), ["README.md", "editor-choice.md"]);
+		assert.equal(sourceDigest(readFileSync(join(root, "editor-choice.md"))), first.digest);
+	} finally {
+		t.mock.restoreAll();
+		syncBuiltinESMExports();
+	}
+});
+
+test("unavailable write roots return a content-free error", (t) => {
+	const root = corpus(t);
+	const path = join(root, "not-a-directory");
+	writeFileSync(path, "Unchanged");
+	assert.throws(
+		() => writeMemory(path, note()),
+		(error) => {
+			assert.ok(error instanceof Error);
+			assert.match(error.message, /Memory unavailable: corpus directory cannot be created/);
+			assert.ok(!error.message.includes(path));
+			return true;
+		},
+	);
+	assert.equal(readFileSync(path, "utf8"), "Unchanged");
+});
+
 test("README initialization does not replace an existing contract", (t) => {
 	const root = corpus(t);
 	writeFileSync(join(root, "README.md"), "Operator contract\n");

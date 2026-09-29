@@ -92,10 +92,12 @@ test("writer titles with trailing hashes permit body edits and retain their exac
 		const before = readFileSync(f.path, "utf8");
 		const input = { ...f.input, expectedDigest: sourceDigest(before) };
 		assert.match(
-			failure(() => editMemory(f.root, {
-				...input,
-				edits: [{ oldText: `# ${title}\n`, newText: "# Changed\n" }],
-			})).message,
+			failure(() =>
+				editMemory(f.root, {
+					...input,
+					edits: [{ oldText: `# ${title}\n`, newText: "# Changed\n" }],
+				}),
+			).message,
 			/title heading/,
 		);
 		assert.equal(readFileSync(f.path, "utf8"), before);
@@ -353,7 +355,7 @@ test("generated fields require safe independent keys without changes to other me
 
 test("replacement credentials refuse without echo and assembled credentials also refuse", (t) => {
 	const f = fixture(t);
-	const synthetic = "password=synthetic-not-a-credential";
+	const synthetic = `ghp_${"x".repeat(24)}`;
 	assert.throws(
 		() => editMemory(f.root, { ...f.input, edits: [{ oldText: "Use editor A.", newText: synthetic }] }),
 		(error) => {
@@ -363,19 +365,111 @@ test("replacement credentials refuse without echo and assembled credentials also
 			return true;
 		},
 	);
-	const source = `${f.source}\npassword: short\n`;
+	const source = `${f.source}\nghp_short\n`;
 	writeFileSync(f.path, source);
 	assert.match(
 		failure(() =>
 			editMemory(f.root, {
 				...f.input,
 				expectedDigest: sourceDigest(source),
-				edits: [{ oldText: "short", newText: "synthetic-long-value" }],
+				edits: [{ oldText: "short", newText: "x".repeat(24) }],
 			}),
 		).message,
 		/Credential-like/,
 	);
 	assert.equal(readFileSync(f.path, "utf8"), source);
+});
+
+test("technical examples permit targeted edits without a credential-classifier workaround", (t) => {
+	const f = fixture(t);
+	const examples = "`api_key=api_key`\n```js\npassword=process.env.PASSWORD\n```\nsecret: configuration value";
+	const source = `${f.source}\n${examples}\n`;
+	writeFileSync(f.path, source);
+	const result = editMemory(f.root, { ...f.input, expectedDigest: sourceDigest(source) });
+	assert.equal(
+		readFileSync(f.path, "utf8"),
+		source
+			.replace("Use editor A.", "Use editor B.")
+			.replace("verified: true", "verified: false")
+			.replace(/^verified_date: .*$/m, "verified_date: null"),
+	);
+	assert.ok(result.digest);
+	editMemory(f.root, {
+		...f.input,
+		expectedDigest: result.digest,
+		edits: [{ oldText: examples, newText: `${examples}\naccess_token=fixture.accessToken` }],
+	});
+	assert.ok(readFileSync(f.path, "utf8").includes(`${examples}\naccess_token=fixture.accessToken`));
+});
+
+test("credentials in retained source or fenced replacements refuse with content-free diagnostics", (t) => {
+	const f = fixture(t);
+	const token = `sk-${"x".repeat(24)}`;
+	assert.throws(
+		() =>
+			editMemory(f.root, {
+				...f.input,
+				edits: [{ oldText: "Use editor A.", newText: `\`\`\`text\n${token}\n\`\`\`` }],
+			}),
+		(error) => {
+			assert.ok(error instanceof Error);
+			assert.match(error.message, /edits\[0\]\.newText \(recognized token prefix\)/);
+			assert.ok(!error.message.includes(token));
+			return true;
+		},
+	);
+	const source = `${f.source}\n${token}\n`;
+	writeFileSync(f.path, source);
+	const input = { ...f.input, expectedDigest: sourceDigest(source) };
+	const error = failure(() => editMemory(f.root, input));
+	assert.match(error.message, /resulting note \(recognized token prefix\)/);
+	assert.ok(!error.message.includes(token));
+	assert.equal(readFileSync(f.path, "utf8"), source);
+	assert.ok(editMemory(f.root, { ...input, edits: [{ oldText: token, newText: "<credential>" }] }).ok);
+});
+
+test("deletion cannot assemble a credential and token-shaped edit subjects refuse before access", (t) => {
+	const f = fixture(t);
+	const token = `sk-${"x".repeat(24)}`;
+	assert.throws(
+		() => editMemory(f.root, { ...f.input, slug: token }),
+		(error) => {
+			assert.ok(error instanceof Error);
+			assert.match(error.message, /refused in slug/);
+			assert.ok(!error.message.includes(token));
+			return true;
+		},
+	);
+	const source = `${f.source}\nsk-${"x".repeat(12)} GAP ${"x".repeat(12)}\n`;
+	writeFileSync(f.path, source);
+	const error = failure(() =>
+		editMemory(f.root, {
+			...f.input,
+			expectedDigest: sourceDigest(source),
+			edits: [{ oldText: " GAP ", newText: "" }],
+		}),
+	);
+	assert.match(error.message, /resulting note.*recognized token prefix/);
+	assert.ok(!error.message.includes(token));
+	assert.equal(readFileSync(f.path, "utf8"), source);
+});
+
+test("missing title headings and generated metadata explain exact edit requirements", (t) => {
+	const f = fixture(t);
+	for (const [source, pattern] of [
+		[f.source.replace("# Editor choice", "## Summary title"), /first unfenced # heading must match title/],
+		[
+			f.source.replace(/^verified_date: .*\n/m, ""),
+			/Generated fields \(updated, verified, verified_date\).*plain top-level keys/,
+		],
+	] as const) {
+		writeFileSync(f.path, source);
+		assert.match(
+			failure(() => editMemory(f.root, { ...f.input, expectedDigest: sourceDigest(source) })).message,
+			pattern,
+		);
+		assert.equal(readFileSync(f.path, "utf8"), source);
+	}
 });
 
 test("runtime validation bounds edits, requires verification and digest, and refuses controls and lone surrogates", (t) => {

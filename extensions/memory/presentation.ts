@@ -2,10 +2,10 @@
  * Terminal cards for the memory tools.
  *
  * A collapsed card shows the request on its heading row and at most one
- * qualifier row, then the outcome on one or two summary rows. The expansion
- * hint appears only when the collapsed view hides or clips content, and it
- * rides the row it belongs to. An expanded card shows the full arguments or
- * result text with controls escaped and a display bound.
+ * qualifier row, then the outcome and coverage. Search results also preview
+ * a few subjects. The expansion hint appears when the collapsed view hides
+ * or clips content. Expanded retrieval cards show labeled evidence and source
+ * text with controls escaped and a display bound.
  *
  * Evidence semantics: a bounded page is not proof of absence, so coverage
  * words travel with every page count. A write receipt reports which files
@@ -30,6 +30,7 @@ const SLUG_LIMIT = 72;
 const ERROR_LIMIT = 300;
 const DIGEST_PREFIX = 8;
 const PREVIEW_ARRAY_LIMIT = 20;
+const SEARCH_PREVIEW_LIMIT = 3;
 const WITHHOLD_THRESHOLD = 120;
 const WRITE_ERROR_PREFIX = "Memory write incomplete: ";
 const WITHHELD_KEYS = new Set(["summary", "details", "sources", "title", "oldText", "newText"]);
@@ -84,7 +85,10 @@ function joinedParts(parts: string[]): string {
 /** Escaped body with a display bound; the full text stays in native tool history. */
 function boundedBody(value: string): string {
 	const prefix = clip(value, DISPLAY_LIMIT);
-	return `${escapeControls(prefix)}${value.length > prefix.length ? "\n[Display limit; full text remains in native tool history.]" : ""}`;
+	const escaped = escapeControls(prefix);
+	if (value.length === prefix.length && escaped.length <= DISPLAY_LIMIT) return escaped;
+	const notice = "\n[Display limit; full text remains in native tool history.]";
+	return `${clip(escaped, DISPLAY_LIMIT - notice.length)}${notice}`;
 }
 
 function textContent(result: AgentToolResult<unknown>): string {
@@ -186,7 +190,7 @@ function callCard(
 	return textComponent(line ? `${heading}\n${line}` : heading, context.lastComponent);
 }
 
-/** Outcome row plus at most one summary row; the hint rides the last row. */
+/** Outcome and qualification rows, with optional bounded subject previews. */
 function resultCard(
 	outcome: { color: OutcomeColor; line: string },
 	second: string,
@@ -195,6 +199,7 @@ function resultCard(
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	context: ResultContext,
+	previews: string[] = [],
 ): Text {
 	const lines = [`\n${theme.fg(outcome.color, rowSafe(outcome.line))}`];
 	if (options.expanded) {
@@ -203,6 +208,7 @@ function resultCard(
 		const hintSuffix = hint ? theme.fg("dim", `${second ? " · " : ""}${expandHint("result")}`) : "";
 		const row = second ? theme.fg("muted", rowSafe(second)) + hintSuffix : hintSuffix;
 		if (row) lines.push(row);
+		for (const preview of previews) lines.push(theme.fg("toolOutput", rowSafe(preview)));
 	}
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
@@ -360,6 +366,132 @@ function pageQualifiers(
 	]);
 }
 
+function noteHeading(note: Record<string, unknown>, compact = false): string {
+	const slug = textField(note.slug) ?? "unknown subject";
+	const title = textField(note.title);
+	return joinedParts([
+		compact ? previewMark(slug, SLUG_LIMIT).text : slug,
+		title && title !== slug ? (compact ? previewMark(title, 96).text : title) : "",
+	]);
+}
+
+function matchedTerms(value: unknown): string {
+	if (!Array.isArray(value)) return "";
+	return value
+		.map(record)
+		.map((match) => {
+			const term = textField(match.term);
+			const fields = stringList(match.fields);
+			return term ? `${term}${fields.length ? ` (${fields.join(", ")})` : ""}` : "";
+		})
+		.filter(Boolean)
+		.join("; ");
+}
+
+function formulationEvidence(evidence: Record<string, unknown>): string[] {
+	const matched = matchedTerms(evidence.matched);
+	const missing = stringList(evidence.missing);
+	return [matched ? `Matched: ${matched}` : "", missing.length ? `Missing: ${missing.join(", ")}` : ""].filter(Boolean);
+}
+
+function numberLines(fields: Array<[string, unknown]>): string[] {
+	return fields.flatMap(([label, value]) => (numberField(value) === null ? [] : [`${label}: ${value}`]));
+}
+
+function scanEvidence(details: Record<string, unknown>): string[] {
+	const scan = record(details.scan);
+	const issues = Array.isArray(scan.issues) ? scan.issues.map(record) : [];
+	return [
+		`Directory scan: ${scan.complete === true ? "complete" : "partial or unknown"}`,
+		...numberLines([
+			["Entries visited", scan.visited],
+			["Visit limit", scan.visitCap],
+			["Unavailable notes", record(details.search).unavailableNotes ?? scan.unavailableNotes],
+			["Scan issues", scan.issueCount],
+			["Scan issues shown", scan.issuesShown],
+		]),
+		...issues.map(
+			(issue) => `Scan issue: ${joinedParts([textField(issue.code) ?? "unknown", textField(issue.message) ?? ""])}`,
+		),
+	];
+}
+
+function queryCoverage(details: Record<string, unknown>): string[] {
+	if (!isQueryPage(details.query)) return [];
+	const search = record(details.search);
+	const summaries = Array.isArray(search.formulations) ? search.formulations.map(record) : [search];
+	return [
+		`Query coverage: ${search.complete === true ? "complete" : "partial or unknown"}`,
+		...numberLines([
+			["Notes searched", search.notesSearched],
+			["Source byte limit", search.maxSourceBytes],
+		]),
+		...(textField(search.ranking) ? [`Ranking: ${search.ranking}; rank is not confidence`] : []),
+		...summaries.flatMap((summary) => {
+			const ignored = stringList(summary.ignored);
+			return ignored.length
+				? [`Ignored words${textField(summary.query) ? ` in ${summary.query}` : ""}: ${ignored.join(", ")}`]
+				: [];
+		}),
+	];
+}
+
+function searchContinuation(details: Record<string, unknown>): string {
+	if (details.hasMore === true)
+		return `Continue with the same query and nextIndex: ${numberField(details.nextIndex) ?? "unknown"}`;
+	return details.hasMore === false ? "End of this result set; coverage limits still apply." : "Continuation: unknown.";
+}
+
+function passageEvidence(value: unknown, query: boolean): string[] {
+	const passage = record(value);
+	const excerpt = textField(passage.excerpt);
+	if (excerpt === null) return query ? ["No source passage in this record."] : [];
+	return [
+		`Match [${numberField(passage.offset) ?? "?"}, ${numberField(passage.endOffset) ?? "?"}) code points`,
+		`Source excerpt [${numberField(passage.excerptOffset) ?? "?"}, ${numberField(passage.excerptEndOffset) ?? "?"}) code points:`,
+		excerpt,
+	];
+}
+
+function formulationLines(formulation: Record<string, unknown>): string[] {
+	return [
+		`Formulation: ${textField(formulation.query) ?? "unknown"} · ${numberField(formulation.rank) === null ? "no ranked match" : `rank ${formulation.rank}`}`,
+		...formulationEvidence(formulation),
+	];
+}
+
+function noteEvidence(note: Record<string, unknown>, query: boolean): string[] {
+	const cues = ["status", "tags", "supersedes", "superseded_by"].flatMap((key) =>
+		textField(note[key]) ? [`${key} cue: ${note[key]}`] : [],
+	);
+	const formulations = Array.isArray(note.formulations) ? note.formulations.map(record) : [];
+	return [
+		"",
+		`${numberField(note.rank) !== null ? `${note.rank}. ` : ""}${noteHeading(note)}`,
+		...cues,
+		...(textField(note.cueProblem) ? [`Cue problem: ${note.cueProblem}`] : []),
+		...(textField(note.digest) ? [`Digest: ${note.digest}`] : []),
+		...formulationEvidence(note),
+		...formulations.flatMap(formulationLines),
+		...passageEvidence(note.sourceMatch, query),
+	];
+}
+
+function searchBody(details: Record<string, unknown>, notes: Record<string, unknown>[]): string {
+	const query = details.query;
+	const querying = isQueryPage(query);
+	const header = [
+		querying ? `Query: ${typeof query === "string" ? query : stringList(query).join(" | ")}` : "",
+		...scanEvidence(details),
+		...queryCoverage(details),
+		...numberLines([["Page starts at index", details.index]]),
+		searchContinuation(details),
+		textField(details.guidance) ?? "",
+		"Cues and excerpts are discovery evidence. Read selected notes from offset 0 with their digests.",
+	].filter(Boolean);
+	return [...header, ...notes.flatMap((note) => noteEvidence(note, querying))].join("\n");
+}
+
 /** A bounded page is not proof of absence: counts travel with a coverage word. */
 function searchResult(
 	result: AgentToolResult<unknown>,
@@ -372,6 +504,28 @@ function searchResult(
 	const details = record(result.details);
 	const notes = Array.isArray(details.notes) ? details.notes.map(record) : null;
 	if (notes === null) return fallbackCard("memory_search", result, options, theme, context);
+	const { outcome, qualifiers } = searchOverview(details, notes);
+	return resultCard(
+		outcome,
+		qualifiers,
+		true,
+		options.expanded ? searchBody(details, notes) : "",
+		options,
+		theme,
+		context,
+		searchPreviews(notes),
+	);
+}
+
+function searchPreviews(notes: Record<string, unknown>[]): string[] {
+	const previews = notes
+		.slice(0, SEARCH_PREVIEW_LIMIT)
+		.map((note) => `• ${noteHeading(note, true)}${textField(note.cueProblem) ? " [cue problem]" : ""}`);
+	if (notes.length > previews.length) previews.push(`+ ${notes.length - previews.length} more subjects on this page`);
+	return previews;
+}
+
+function searchOverview(details: Record<string, unknown>, notes: Record<string, unknown>[]) {
 	const returned = numberField(details.returned) ?? notes.length;
 	const query = isQueryPage(details.query);
 	const { complete, total } = pageCoverage(details, query);
@@ -381,15 +535,15 @@ function searchResult(
 	const noun = query ? "matches" : "notes";
 	const counted = total > 0 ? total : returned;
 	const count = details.corpusEmpty === true ? "corpus empty" : `${returned} of ${counted} ${noun}`;
-	return resultCard(
-		{ color, line: `${count} · ${scope} ${complete ? "complete" : "partial"}` },
-		pageQualifiers(details, record(details.search), record(details.scan)),
-		returned > 0,
-		textContent(result),
-		options,
-		theme,
-		context,
-	);
+	const cueProblems = notes.filter((note) => textField(note.cueProblem)).length;
+	return {
+		outcome: { color, line: `${count} · ${scope} ${complete ? "complete" : "partial"}` },
+		qualifiers: joinedParts([
+			pageQualifiers(details, record(details.search), record(details.scan)),
+			cueProblems ? `${cueProblems} cue problems` : "",
+			textField(details.guidance) ?? "",
+		]),
+	};
 }
 
 /** The outcome row separates the returned page from the source that remains on disk. */
@@ -410,17 +564,55 @@ function readResult(
 	const total = numberField(details.totalCodePoints);
 	const size = shown !== null && total !== null ? `${shown} of ${total} chars` : null;
 	const more = details.hasMore === true ? " · more" : "";
-	const contract = details.source === "contract" ? "contract source" : "";
+	const lifecycle = lifecycleView(details);
 	const line = joinedParts([slug !== null ? previewMark(slug, SLUG_LIMIT).text : "note", size ?? ""]).concat(more);
 	return resultCard(
-		{ color: "success", line },
-		contract,
+		{ color: lifecycle.color, line },
+		joinedParts([
+			previewMark(lifecycle.label, 200).text,
+			lifecycle.problem ? `Lifecycle problem: ${previewMark(lifecycle.problem, ERROR_LIMIT).text}` : "",
+		]),
 		true,
-		textContent(result) || (typeof details.content === "string" ? details.content : stringifySafe(details)),
+		readBody(details, lifecycle, textContent(result)),
 		options,
 		theme,
 		context,
 	);
+}
+
+type LifecycleView = { label: string; problem: string | null; color: OutcomeColor };
+
+function lifecycleView(details: Record<string, unknown>): LifecycleView {
+	const lifecycle = record(details.lifecycle);
+	const problem = textField(lifecycle.problem);
+	if (details.source === "contract") return { label: "contract source", problem, color: "success" };
+	const status = lifecycle.status === "active" || lifecycle.status === "superseded" ? lifecycle.status : "unknown";
+	const replacement = textField(lifecycle.supersededBy);
+	return {
+		label: `status ${status}${replacement ? ` · replacement ${replacement}` : ""}`,
+		problem,
+		color: status !== "active" || problem ? "warning" : "success",
+	};
+}
+
+function readBody(details: Record<string, unknown>, lifecycle: LifecycleView, fallback: string): string {
+	const end = numberField(details.nextOffset);
+	const continuation =
+		details.hasMore === true
+			? `Continue at offset ${end ?? "unknown"} with the same digest.`
+			: details.hasMore === false
+				? "End of source."
+				: "Continuation: unknown.";
+	const header = [
+		lifecycle.label,
+		lifecycle.problem ? `Lifecycle problem: ${lifecycle.problem}` : "",
+		`Digest: ${textField(details.digest) ?? "unknown"}`,
+		`Source range: [${numberField(details.offset) ?? "?"}, ${end ?? "?"}) code points`,
+		continuation,
+	]
+		.filter(Boolean)
+		.join("\n");
+	return `${header}\n\n${typeof details.content === "string" ? details.content : fallback}`;
 }
 
 /** Receipt shape written by the memory store. */

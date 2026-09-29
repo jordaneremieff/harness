@@ -13,7 +13,10 @@ function corpus(t: { after(fn: () => void): void }) {
 	return root;
 }
 function note(root: string, slug: string, fields: string) {
-	writeFileSync(join(root, `${slug}.md`), `---\n${fields}\n---\n# BODY TITLE MUST NOT APPEAR\nPRIVATE BODY MARKER\n`);
+	writeFileSync(
+		join(root, `${slug}.md`),
+		`---\nsuperseded_by: null\n${fields}\n---\n# BODY TITLE MUST NOT APPEAR\nPRIVATE BODY MARKER\n`,
+	);
 }
 function section(value: string | undefined): string {
 	assert.equal(typeof value, "string");
@@ -102,7 +105,10 @@ test("index bytes ignore body and date changes and sort independently of directo
 	const before = section(await memoryIndex(first));
 	assert.equal(await memoryIndex(first), before);
 	assert.equal(await memoryIndex(second), before);
-	writeFileSync(join(first, "m.md"), "---\nstatus: active\ntitle: m\n---\nA completely different body");
+	writeFileSync(
+		join(first, "m.md"),
+		"---\nstatus: active\nsuperseded_by: null\ntitle: m\n---\nA completely different body",
+	);
 	assert.equal(await memoryIndex(first), before);
 	note(first, "m", "status: active\ntitle: New subject");
 	assert.notEqual(await memoryIndex(first), before);
@@ -158,7 +164,7 @@ test("compact pointers preserve all subjects, qualifiers, order and body/date st
 	assert.equal(await memoryIndex(second), text);
 	writeFileSync(
 		join(first, `${slugs[0]}.md`),
-		`---\nstatus: active\ntitle: ${"界😀".repeat(80)}\nupdated: 2026-01-01\n---\nDIFFERENT PRIVATE BODY`,
+		`---\nstatus: active\nsuperseded_by: null\ntitle: ${"界😀".repeat(80)}\nupdated: 2026-01-01\n---\nDIFFERENT PRIVATE BODY`,
 	);
 	assert.equal(await memoryIndex(first), text);
 });

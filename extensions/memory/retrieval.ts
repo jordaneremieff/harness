@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { setImmediate } from "node:timers/promises";
-import { findMarkdownHeading } from "./headings.ts";
+import { findMarkdownHeading, markdownHeadings } from "./headings.ts";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { memoryRoot, SLUG } from "./store.ts";
 
@@ -25,7 +25,7 @@ const SOURCE_READ_BYTES = 64 * 1024;
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 25;
 const MAX_QUERY_TERMS = 16;
-const PAGE_CODEPOINTS = 4000;
+const PAGE_CODEPOINTS = 12000;
 const MATCH_EXCERPT_POINTS = 480;
 const MATCH_CONTEXT_POINTS = 120;
 const MAX_RESULT_BYTES = 48 * 1024;
@@ -48,7 +48,8 @@ type MetadataState = "ok" | "absent" | "partial" | "malformed";
 type TitleSource = "frontmatter" | "heading" | "filename";
 
 type Cue = {
-	header?: string;
+	status?: unknown;
+	supersededBy?: unknown;
 	metadata: MetadataState;
 	issue?: string;
 	lines: Map<string, string>;
@@ -75,7 +76,7 @@ type Analysis = { text: string; hits: Occurrence[]; counts: Map<Field, number>[]
 type SearchHit = { digest: string; analysis: Analysis };
 
 type NoteCue = {
-	header?: string;
+	lifecycle: Lifecycle;
 	slug: string;
 	file: string;
 	title: string;
@@ -178,9 +179,8 @@ function normalizeSlug(slug: string): string {
 	return slug;
 }
 
-function normalizeDigest(raw: string): string {
-	const value = raw.toLowerCase();
-	if (!DIGEST_PATTERN.test(value)) throw new UsageError("digest must be a 64-character SHA-256 hex value");
+function normalizeDigest(value: string): string {
+	if (!DIGEST_PATTERN.test(value)) throw new UsageError("digest must be a 64-character lowercase SHA-256 hex value");
 	return value;
 }
 
@@ -198,10 +198,11 @@ function addressableSlug(name: string): string | undefined {
 }
 
 function findFrontmatterClose(text: string): { start: number; end: number } | undefined {
-	const match = /^---[ \t]*$/m.exec(text);
-	if (match === null || match.index === undefined) return undefined;
-	const start = match.index;
-	let end = start + match[0].length;
+	const match = /(?:^|\n)---[ \t]*(?=\r?\n|$)/.exec(text);
+	if (match === null) return undefined;
+	const start = match.index + (match[0].startsWith("\n") ? 1 : 0);
+	let end = match.index + match[0].length;
+	if (text[end] === "\r") end += 1;
 	if (text[end] === "\n") end += 1;
 	return { start, end };
 }
@@ -296,7 +297,6 @@ function extractCue(raw: string, truncated: boolean): Cue {
 	}
 	const fields = extractCueFields(afterOpen.slice(0, close.start));
 	const cue: Cue = {
-		header: `---\n${afterOpen.slice(0, close.start)}---\n`,
 		metadata: "ok",
 		lines: fields.lines,
 		multiline: fields.multiline,
@@ -304,8 +304,53 @@ function extractCue(raw: string, truncated: boolean): Cue {
 		unusable: fields.unusable,
 		body: afterOpen.slice(close.end),
 	};
+	try {
+		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(
+			`---\n${afterOpen.slice(0, close.start)}---\n`,
+		);
+		if (body !== "" || !frontmatter || typeof frontmatter !== "object" || Array.isArray(frontmatter))
+			throw new Error("Ambiguous header");
+		cue.status = Object.hasOwn(frontmatter, "status") ? frontmatter.status : undefined;
+		cue.supersededBy = Object.hasOwn(frontmatter, "superseded_by") ? frontmatter.superseded_by : undefined;
+	} catch {
+		cue.metadata = "malformed";
+		fields.problems.unshift("invalid or ambiguous frontmatter; metadata cues are untrusted");
+	}
 	if (fields.problems.length > 0) cue.issue = bounded(fields.problems.join("; "), MAX_ISSUE_CHARS);
 	return cue;
+}
+
+type Lifecycle = { status: "active" | "superseded" | "unknown"; supersededBy: string | null; problem?: string };
+
+/** Read-only interpretation of the same bounded header used for discovery. */
+function sourceLifecycle(cue: Cue, slug: string): Lifecycle {
+	const unknown: Lifecycle = { status: "unknown", supersededBy: null };
+	const problem = (message: string) => bounded([cue.issue, message].filter(Boolean).join("; "), MAX_ISSUE_CHARS);
+	if (cue.metadata !== "ok" || !cue.lines.has("status") || cue.unusable.has("status"))
+		return { ...unknown, problem: problem("Lifecycle status requires an unambiguous plain status key") };
+	if (cue.status !== "active" && cue.status !== "superseded")
+		return { ...unknown, problem: problem("Lifecycle status must be active or superseded") };
+	const usableReplacement = cue.lines.has("superseded_by") && !cue.unusable.has("superseded_by");
+	if (cue.status === "active") {
+		if (!usableReplacement || cue.supersededBy !== null)
+			return { ...unknown, problem: problem("Active status requires an unambiguous superseded_by: null") };
+		return { status: "active", supersededBy: null, ...(cue.issue ? { problem: cue.issue } : {}) };
+	}
+	const replacement = cue.supersededBy;
+	if (
+		!usableReplacement ||
+		typeof replacement !== "string" ||
+		replacement.length > MAX_SLUG_CHARS ||
+		!SLUG.test(replacement) ||
+		replacement === "readme" ||
+		replacement === slug
+	)
+		return {
+			status: "superseded",
+			supersededBy: null,
+			problem: problem("Superseded source requires a different lowercase subject slug in superseded_by"),
+		};
+	return { status: "superseded", supersededBy: replacement, ...(cue.issue ? { problem: cue.issue } : {}) };
 }
 
 function valueAfterKey(line: string): string {
@@ -330,7 +375,7 @@ function buildNoteCue(file: string, slug: string, text: string, truncated: boole
 	const problems = cue.issue === undefined ? [] : [cue.issue];
 	if (cuesClipped) problems.push("cue text clipped");
 	const note: NoteCue = {
-		header: cue.header,
+		lifecycle: sourceLifecycle(cue, slug),
 		slug,
 		file,
 		title,
@@ -435,19 +480,21 @@ function pointOffsets(text: string): number[] {
 }
 
 type Region = { start: number; end: number; field: Field };
-function sourceBodyStart(text: string): number {
+function sourceBodyStart(text: string, note: NoteCue): number {
+	if (note.metadata !== "ok") return 0;
 	const open = /^\uFEFF?---[ \t]*\r?\n/.exec(text);
-	const close = open === null ? null : /^---[ \t]*\r?$/m.exec(text.slice(open[0].length));
-	return open !== null && close !== null ? open[0].length + close.index + close[0].length : 0;
+	const close = open === null ? undefined : findFrontmatterClose(text.slice(open[0].length));
+	return open !== null && close !== undefined ? open[0].length + close.end : 0;
 }
-function sourceRegions(text: string): Region[] {
+function sourceRegions(text: string, note: NoteCue): Region[] {
 	const regions: Region[] = [];
-	const bodyStart = sourceBodyStart(text);
-	for (const line of text.matchAll(/[^\n]+/g)) {
+	const bodyStart = sourceBodyStart(text, note);
+	const headings = new Set(Array.from(markdownHeadings(text.slice(bodyStart)), (heading) => bodyStart + heading.start));
+	for (const line of text.matchAll(/[^\r\n]+/g)) {
 		let field: Field = "body";
 		if (line.index < bodyStart) {
 			field = /^title:/.test(line[0]) ? "title" : /^tags:/.test(line[0]) ? "tags" : "frontmatter";
-		} else if (/^[ \t]{0,3}#{1,6}[ \t]/.test(line[0])) field = "title";
+		} else if (headings.has(line.index)) field = "title";
 		regions.push({ start: line.index, end: line.index + line[0].length, field });
 	}
 	return regions;
@@ -487,7 +534,7 @@ function analyze(text: string, note: NoteCue, query: Query, signal?: AbortSignal
 	const counts = query.terms.map(() => new Map<Field, number>());
 	const hits: Occurrence[] = [];
 	const positions = pointOffsets(text);
-	const regions = sourceRegions(text);
+	const regions = sourceRegions(text, note);
 	let regionIndex = 0;
 	const fieldAt = (start: number): Field => {
 		while (regionIndex + 1 < regions.length && regions[regionIndex].end <= start) regionIndex += 1;
@@ -599,6 +646,16 @@ function bestPassage(analysis: Analysis, idf: number[], minOffset = 0): SourceMa
 	return { offset, endOffset, excerptOffset, excerptEndOffset: slice.nextOffset, excerpt: slice.content };
 }
 
+function passageCandidate(analysis: Analysis, note: NoteCue): { analysis: Analysis; bodyStart: number; body: boolean } {
+	const bodyStart = codePointCount(analysis.text.slice(0, sourceBodyStart(analysis.text, note)));
+	const bodyHits = analysis.hits.filter((hit) => hit.offset >= bodyStart);
+	return {
+		analysis: bodyHits.length ? { ...analysis, hits: bodyHits } : analysis,
+		bodyStart,
+		body: bodyHits.length > 0,
+	};
+}
+
 function toSearchOutput(
 	note: NoteCue,
 	query: Query,
@@ -609,6 +666,7 @@ function toSearchOutput(
 	const output = toOutputNote(note);
 	const search = note.search;
 	if (search === undefined) return output;
+	const candidate = passageCandidate(analyze(search.analysis.text, note, query, signal), note);
 	return {
 		...output,
 		digest: search.digest,
@@ -624,7 +682,7 @@ function toSearchOutput(
 					],
 		),
 		missing: query.terms.filter((_, index) => search.analysis.counts[index].size === 0).map((term) => term.text),
-		sourceMatch: bestPassage(analyze(search.analysis.text, note, query, signal), idf),
+		sourceMatch: bestPassage(candidate.analysis, idf, candidate.body ? candidate.bodyStart : 0),
 	};
 }
 
@@ -688,7 +746,11 @@ function openRegular(path: string, opener: (path: string, flags: number) => numb
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ELOOP") return { ok: false, reason: `refused symbolic link note: ${basename(path)}` };
-		if (code === "ENOENT") return { ok: false, reason: `note not found: ${basename(path)}` };
+		if (code === "ENOENT")
+			return {
+				ok: false,
+				reason: `note not found: ${basename(path)}. Use memory_search to find the current slug; read it from offset 0 with its current digest`,
+			};
 		return { ok: false, reason: `note is not readable: ${basename(path)}` };
 	}
 	let info: Stats;
@@ -918,18 +980,26 @@ function indexPageFields(
 type Ranking = ReturnType<typeof rankNotes>;
 
 function fuseRankings(rankings: Ranking[], signal?: AbortSignal): NoteCue[] {
-	const scores = new Map<string, { note: NoteCue; score: number }>();
+	const scores = new Map<string, { note: NoteCue; bestRank: number; score: number }>();
 	for (const ranking of rankings) {
 		checkAbort(signal);
 		ranking.notes.forEach((note, index) => {
 			const previous = scores.get(note.slug);
-			const contribution = 1 / (60 + index + 1);
-			if (previous) previous.score += contribution;
-			else scores.set(note.slug, { note, score: contribution });
+			const rank = index + 1;
+			const contribution = 1 / (60 + rank);
+			if (previous) {
+				previous.bestRank = Math.min(previous.bestRank, rank);
+				previous.score += contribution;
+			} else scores.set(note.slug, { note, bestRank: rank, score: contribution });
 		});
 	}
 	return [...scores.values()]
-		.sort((a, b) => b.score - a.score || (a.note.slug < b.note.slug ? -1 : a.note.slug > b.note.slug ? 1 : 0))
+		.sort(
+			(a, b) =>
+				a.bestRank - b.bestRank ||
+				b.score - a.score ||
+				(a.note.slug < b.note.slug ? -1 : a.note.slug > b.note.slug ? 1 : 0),
+		)
 		.map(({ note }) => note);
 }
 
@@ -947,15 +1017,7 @@ function fusedPassage(
 		if (rank < 0 || !note?.analysis) return;
 		const analysis = analyze(note.analysis.text, note, query, signal);
 		if (!analysis.hits.length) return;
-		const bodyStart = codePointCount(analysis.text.slice(0, sourceBodyStart(analysis.text)));
-		const bodyHits = analysis.hits.filter((hit) => hit.offset >= bodyStart);
-		candidates.push({
-			analysis: bodyHits.length ? { ...analysis, hits: bodyHits } : analysis,
-			idf: rankings[index].idf,
-			rank,
-			bodyStart,
-			body: bodyHits.length > 0,
-		});
+		candidates.push({ ...passageCandidate(analysis, note), idf: rankings[index].idf, rank });
 	});
 	candidates.sort((a, b) => Number(b.body) - Number(a.body) || a.rank - b.rank);
 	const selected = candidates[0];
@@ -1018,7 +1080,7 @@ function searchSummary(
 		notesSearched: scan.notes.length,
 		unavailableNotes: scan.unavailable,
 		maxSourceBytes: SOURCE_READ_BYTES,
-		ranking: fused ? "reciprocal-rank-fusion" : "lexical",
+		ranking: fused ? "best-rank-then-reciprocal-rank-fusion" : "lexical",
 		...(fused ? { formulations: evidence.map((item, index) => ({ query: texts[index], ...item })) } : evidence[0]),
 	};
 }
@@ -1067,7 +1129,12 @@ async function runIndex(
 		scan: formatScan(scan),
 		notes: [],
 	};
-	if (args.query !== null) result.search = searchSummary(scan, fused, texts, queries, rankings);
+	if (args.query !== null) {
+		result.search = searchSummary(scan, fused, texts, queries, rankings);
+		if (totalMatches === 0)
+			result.guidance =
+				"No matches within covered sources. Matching uses exact tokens without stemming or camelCase splitting. Try alternate inflections, exact identifier forms, or quoted fragments; inspect coverage gaps.";
+	}
 	for (;;) {
 		checkAbort(signal);
 		Object.assign(result, indexPageFields(kept, args.index, totalMatches));
@@ -1081,6 +1148,16 @@ async function runIndex(
 	return result;
 }
 
+function refuseChangedSource(file: string): never {
+	const recovery =
+		file === "README.md"
+			? "Restart memory_read for README at offset 0 without the old digest to obtain the current contract and digest"
+			: "Search again for its current digest, then restart memory_read at offset 0";
+	throw new DigestError(
+		`note source changed since the supplied digest: ${file}. ${recovery}; do not continue the previous page`,
+	);
+}
+
 function runNote(
 	root: string,
 	args: { slug: string; offset: number; digest: string | null },
@@ -1090,9 +1167,7 @@ function runNote(
 	const source = readNoteSource(join(root, file), signal);
 	if (!source.ok) throw new CorpusError(source.reason);
 	const digest = sha256(source.buffer);
-	if (args.digest !== null && args.digest !== digest) {
-		throw new DigestError(`note source changed since the supplied digest: ${file}`);
-	}
+	if (args.digest !== null && args.digest !== digest) refuseChangedSource(file);
 	const text = decodeUtf8(source.buffer);
 	if (text === undefined) throw new CorpusError(`note is not valid UTF-8: ${file}`);
 	const totalCodePoints = codePointCount(text);
@@ -1105,6 +1180,7 @@ function runNote(
 		slug: args.slug,
 		file,
 		source: file.toLowerCase() === "readme.md" ? "contract" : "note",
+		lifecycle: file.toLowerCase() === "readme.md" ? null : sourceLifecycle(extractCue(text, false), args.slug),
 		sourceBytes: source.buffer.length,
 		maxSourceBytes: SOURCE_READ_BYTES,
 		digest,
@@ -1251,18 +1327,6 @@ function pointerField(note: NoteCue, key: string): string | undefined {
 	}
 }
 
-function pointerStatus(note: NoteCue): unknown {
-	if (note.header === undefined || !note.cues.has("status") || note.unusableCues.has("status")) return undefined;
-	try {
-		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(note.header);
-		if (body !== "" || typeof frontmatter !== "object" || frontmatter === null || Array.isArray(frontmatter))
-			return undefined;
-		return Object.hasOwn(frontmatter, "status") ? frontmatter.status : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
 function pointerTitle(note: NoteCue): string {
 	const raw = pointerField(note, "title");
 	if (raw === undefined || /[\uD800-\uDFFF]/u.test(raw)) return note.slug;
@@ -1295,7 +1359,7 @@ function renderMemoryIndex(scan: Scan): string {
 		return `${INDEX_FRAME}\nDirectory scan incomplete (${VISIT_CAP}-entry limit). All pointers omitted; active-note count unknown. Use memory_search.`;
 	const eligible = scan.notes
 		.filter((note) => SLUG.test(note.slug) && note.slug !== "readme")
-		.map((note) => ({ note, status: pointerStatus(note) }));
+		.map((note) => ({ note, status: note.lifecycle.status }));
 	const pointers = eligible
 		.filter(({ status }) => status === "active")
 		.map(({ note }) => ({ slug: note.slug, title: indexTitle(pointerTitle(note), 160) }));

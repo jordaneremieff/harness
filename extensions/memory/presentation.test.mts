@@ -276,7 +276,9 @@ describe("memory_search result cards", () => {
 		const shown = screen(view);
 		assert.match(shown, /2 of 5 matches · coverage complete/);
 		assert.match(shown, /1 unavailable notes · continuation available/);
-		assert.equal(lines(view).length, 2);
+		assert.match(shown, /• a · A/);
+		assert.match(shown, /• b · B/);
+		assert.equal(lines(view).length, 4);
 	});
 
 	it("marks partial coverage as a warning", () => {
@@ -337,11 +339,114 @@ describe("memory_search result cards", () => {
 		assert.match(shown, /\{muted\}/);
 	});
 
-	it("shows the result text expanded", () => {
+	it("shows labeled source evidence and all retained qualifications without a JSON dump", () => {
+		const details = {
+			...indexPage,
+			notes: [
+				{
+					slug: "subject",
+					title: "Subject title",
+					digest: "a".repeat(64),
+					rank: 1,
+					status: '"superseded"',
+					superseded_by: '"replacement"',
+					tags: '["topic"]',
+					supersedes: "[]",
+					cueProblem: "unsupported multiline cue: tags",
+					formulations: [
+						{
+							query: "provider lessons",
+							rank: 2,
+							matched: [{ term: "provider", fields: ["body"] }],
+							missing: ["lessons"],
+						},
+					],
+					sourceMatch: {
+						offset: 10,
+						endOffset: 18,
+						excerptOffset: 8,
+						excerptEndOffset: 40,
+						excerpt: "First line\nSecond line\x1b[2J",
+					},
+				},
+			],
+			scan: {
+				complete: false,
+				visited: 513,
+				visitCap: 512,
+				issueCount: 21,
+				issuesShown: 1,
+				unavailableNotes: 1,
+				issues: [{ code: "scan.limit", message: "Directory coverage stops at its limit" }],
+			},
+			search: {
+				complete: false,
+				unavailableNotes: 1,
+				notesSearched: 20,
+				maxSourceBytes: 65536,
+				ranking: "lexical",
+				ignored: ["the"],
+			},
+		};
+		const response = result(JSON.stringify(details), details);
+		const before = structuredClone(response);
+		const shown = screen(renderResult("memory_search", response, expandedView, theme, okContext), 200);
+		for (const pattern of [
+			/Directory scan: partial/,
+			/Query coverage: partial/,
+			/Scan issues: 21/,
+			/Scan issues shown: 1/,
+			/scan.limit · Directory coverage stops at its limit/,
+			/Unavailable notes: 1/,
+			/nextIndex: 2/,
+			/subject · Subject title/,
+			/status cue: "superseded"/,
+			/superseded_by cue: "replacement"/,
+			/Cue problem: unsupported multiline cue: tags/,
+			/Digest: a{64}/,
+			/Formulation: provider lessons · rank 2/,
+			/Matched: provider \(body\)/,
+			/Missing: lessons/,
+			/Match \[10, 18\)/,
+			/Source excerpt \[8, 40\)/,
+			/First line\nSecond line\\u\{1b\}\[2J/,
+		])
+			assert.match(shown, pattern);
+		assert.doesNotMatch(shown, /"notes":|\\nSecond|\x1b/);
+		assert.deepEqual(response, before);
+	});
+
+	it("bounds collapsed subject previews and shows zero-match guidance without expansion", () => {
+		const details = {
+			...indexPage,
+			returned: 6,
+			totalMatches: 6,
+			hasMore: false,
+			nextIndex: null,
+			notes: Array.from({ length: 6 }, (_, index) => ({ slug: `subject-${index}`, title: `Title ${index}` })),
+		};
 		const shown = screen(
-			renderResult("memory_search", result("full page text", indexPage), expandedView, theme, okContext),
+			renderResult("memory_search", result(JSON.stringify(details), details), collapsed, theme, okContext),
 		);
-		assert.match(shown, /full page text/);
+		for (const index of [0, 1, 2]) assert.match(shown, new RegExp(`subject-${index}`));
+		assert.doesNotMatch(shown, /subject-[345]/);
+		assert.match(shown, /3 more subjects on this page/);
+		const empty = {
+			...details,
+			returned: 0,
+			totalMatches: 0,
+			notes: [],
+			search: { complete: false },
+			guidance: "Try alternate inflections, exact identifier forms, or quoted fragments; inspect coverage gaps.",
+		};
+		for (const view of [collapsed, expandedView]) {
+			const shown = screen(
+				renderResult("memory_search", result(JSON.stringify(empty), empty), view, theme, okContext),
+				200,
+			);
+			assert.match(shown, /0 of 0 matches · coverage partial/);
+			assert.match(shown, /Try alternate inflections, exact identifier forms, or quoted fragments/);
+		}
 	});
 
 	it("renders errors, partial state, and malformed details safely", () => {
@@ -379,47 +484,106 @@ describe("memory_read result cards", () => {
 		slug: "provider-lessons",
 		file: "provider-lessons.md",
 		source: "note",
-		digest: "0f1e2d3c4b5a6978",
+		digest: "0f1e2d3c".repeat(8),
 		offset: 0,
-		nextOffset: 4000,
-		totalCodePoints: 9000,
-		contentCodePoints: 4000,
+		nextOffset: 12000,
+		totalCodePoints: 19000,
+		contentCodePoints: 12000,
 		hasMore: true,
+		lifecycle: { status: "active", supersededBy: null },
 		content: "page one",
 	};
 
 	it("separates the returned page from the remaining source", () => {
 		const view = renderResult("memory_read", result("page one", notePage), collapsed, theme, okContext);
 		const shown = screen(view);
-		assert.match(shown, /provider-lessons · 4000 of 9000 chars · more/);
+		assert.match(shown, /provider-lessons · 12000 of 19000 chars · more/);
+		assert.match(shown, /status active/);
 		assert.match(shown, /(?:to expand result|expand for result)/i);
 		assert.equal(lines(view).length, 2);
 	});
 
 	it("marks the final page and contract source", () => {
-		const details = { ...notePage, hasMore: false, contentCodePoints: 9000, source: "contract" };
+		const details = {
+			...notePage,
+			hasMore: false,
+			nextOffset: 19000,
+			offset: 12000,
+			contentCodePoints: 7000,
+			source: "contract",
+			lifecycle: null,
+		};
 		const shown = screen(renderResult("memory_read", result("t", details), collapsed, theme, okContext));
-		assert.match(shown, /9000 of 9000 chars/);
+		assert.match(shown, /7000 of 19000 chars/);
 		assert.doesNotMatch(shown, /· more/);
 		assert.match(shown, /contract source/);
 	});
 
-	it("shows the page text expanded", () => {
-		const shown = screen(renderResult("memory_read", result("", notePage), expandedView, theme, okContext));
-		assert.match(shown, /page one/);
+	it("shows actual source text with digest, code-point range, and escaped terminal controls", () => {
+		const details = { ...notePage, content: "# Actual title\n\nFirst line\nSecond line\tvalue\x1b[2J\u202e" };
+		const response = result(JSON.stringify(details), details);
+		const before = structuredClone(response);
+		const shown = screen(renderResult("memory_read", response, expandedView, theme, okContext), 200);
+		assert.match(shown, /# Actual title\n\nFirst line\nSecond line\\tvalue\\u\{1b\}\[2J\\u\{202e\}/);
+		assert.match(shown, /Digest: (?:0f1e2d3c){8}/);
+		assert.match(shown, /Source range: \[0, 12000\) code points/);
+		assert.match(shown, /Continue at offset 12000 with the same digest/);
+		assert.doesNotMatch(shown, /"content":|\\nFirst|\x1b|\u202e/);
+		assert.deepEqual(response, before);
+	});
+
+	it("keeps supersession and unknown lifecycle warnings visible in both views", () => {
+		for (const lifecycle of [
+			{ status: "superseded", supersededBy: "new-subject" },
+			{ status: "unknown", supersededBy: null, problem: "invalid or ambiguous frontmatter" },
+		])
+			for (const view of [collapsed, expandedView]) {
+				const details = { ...notePage, lifecycle };
+				const shown = screen(
+					renderResult("memory_read", result(JSON.stringify(details), details), view, colorTheme, okContext),
+					200,
+				);
+				assert.match(shown, /\{warning\}/);
+				assert.match(shown, new RegExp(`status ${lifecycle.status}`));
+				if (lifecycle.supersededBy) assert.match(shown, /replacement new-subject/);
+				if (lifecycle.problem) assert.match(shown, /Lifecycle problem: invalid or ambiguous frontmatter/);
+			}
+	});
+
+	it("keeps the escaped display within its bound and leaves the full result intact", () => {
+		const details = { ...notePage, content: "\u0001".repeat(12000) };
+		const response = result(JSON.stringify(details), details);
+		const shown = screen(renderResult("memory_read", response, expandedView, theme, okContext), 100000);
+		assert.ok(shown.length < 32200);
+		assert.match(shown, /Display limit; full text remains in native tool history/);
+		assert.doesNotMatch(shown, /\u0001/);
+		assert.equal(response.details, details);
+		assert.equal(details.content.length, 12000);
+		wellFormed(shown);
 	});
 
 	it("renders errors, partial state, and malformed details safely", () => {
 		const error = screen(
 			renderResult(
 				"memory_read",
-				result("Error: note source changed since the supplied digest: provider-lessons.md", undefined),
+				result(
+					"Error: note source changed since the supplied digest: provider-lessons.md. Search again for its current digest, then restart memory_read at offset 0; do not continue the previous page",
+					undefined,
+				),
 				collapsed,
 				theme,
 				errorContext,
 			),
 		);
 		assert.match(error, /note source changed since the supplied digest/);
+		assert.match(error, /Search again for its current digest/);
+		assert.match(error, /restart memory_read at offset 0/);
+		const missing =
+			"note not found: absent.md. Use memory_search to find the current slug; read it from offset 0 with its current digest";
+		assert.match(
+			screen(renderResult("memory_read", result(missing, undefined), collapsed, theme, errorContext), 200),
+			/memory_search.*offset 0.*current digest/,
+		);
 		assert.match(
 			screen(renderResult("memory_read", result("", {}), { expanded: false, isPartial: true }, theme, okContext)),
 			/Reading note\.\.\./,
