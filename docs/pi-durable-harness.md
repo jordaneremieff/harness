@@ -1,10 +1,10 @@
 # Pi durable-harness track
 
-Pi's ordinary SDK, durable AgentHarness, and Pico3 kernel are distinct runtime
-contracts. This repository uses host-owned execution and observation where those
-contracts preserve its capabilities. An exported kernel does not by itself
-replace ordinary extension loading, project trust, resource discovery, or
-submitted-result retrieval.
+Pi's ordinary SDK, durable AgentHarness, Pico3 kernel, and Pico5 runtime are
+distinct runtime contracts. This repository uses host-owned execution and
+observation where those contracts preserve its capabilities. An exported
+kernel does not by itself replace ordinary extension loading, project trust,
+resource discovery, or submitted-result retrieval.
 
 ## Standalone distillation boundary
 
@@ -57,13 +57,21 @@ needs `npm ci` after a lockfile update. Repository tests and controlled runtime
 checks establish their exercised contracts, not host-wide compatibility with
 every provider or interactive flow.
 
+Rechecked 2026-09-29. The active installation, npm `latest`, checkout
+dependencies, and the lockfile still resolve Pi 0.87.1. Upstream `main` advanced
+to `9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa`, ahead of the previously checked
+`898ab804050730e9dcefb4443875d5a932aa6a32` per the
+[main comparison][main-comparison]. The release is unchanged; the main review
+below is the basis for the Pico5 and ordinary-session boundaries.
+
 | Source | Checked state |
 |---|---|
 | Installed coding agent and agent core | 0.87.1, from package metadata and installed declarations/source |
 | Checkout Pi packages | 0.87.1, from the lockfile and local package metadata |
 | npm publication | Coding-agent, AI, server, TUI, and durable `latest` are 0.87.1 |
 | GitHub release | [v0.87.1][release], published 2026-09-22; tag commit `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` |
-| Checked upstream `main` | [`898ab804050730e9dcefb4443875d5a932aa6a32`][main] |
+| Checked upstream `main` (2026-09-23) | [`898ab804050730e9dcefb4443875d5a932aa6a32`][main-2026-09-23] |
+| Checked upstream `main` (2026-09-29) | [`9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa`][main] |
 
 The [0.87.0-to-0.87.1 comparison][previous-release] includes model support,
 multimodal empty-text handling, invalid `--mode` rejection, revised split-turn
@@ -88,12 +96,16 @@ WAL with `synchronous = NORMAL`. These are release source and export contracts,
 not a local backend adoption or a crash-test result. They do not replace the
 ordinary SDK, agent-core lane runtime, or Pico3 runtime.
 
-The [release-to-main comparison][release-main] adds separate durable environment
-and JSONL source modules. The [main manifest][durable-main-package] exposes
-`./env`, `./env/node`, `./storage/jsonl`, and `./storage/jsonl/node`; those are
-not 0.87.1 release exports. This metadata and source review does not establish
-ordinary extension/resource parity or submitted-result retrieval through that
-package.
+The [release-to-main comparison][release-main] adds separate durable
+environment, JSONL, and testing source modules. The
+[main manifest][durable-main-package] exposes `./env`, `./env/node`,
+`./storage/jsonl`, `./storage/jsonl/node`, and `./testing`; those are not
+0.87.1 release exports. The
+[main root][durable-main-root] also exports the Pico5 Harness, Session,
+TaskRuntime, registry, checkpoint, document, and entry surface that the 0.87.1
+[root][durable-exports] does not. This metadata and source review does not
+establish ordinary extension/resource parity or submitted-result retrieval
+through that package.
 
 Installed paths below are relative to the active `@earendil-works/pi-coding-agent`
 package root. `pi-agent-core/` and `pi-ai/` refer to its corresponding packages
@@ -107,6 +119,7 @@ contract and implementation, not a runtime regression result for this repository
 | Ordinary coding-agent SDK | [`createAgentSession`][sdk] constructs `Agent` and `AgentSession`; `AgentSessionRuntime` owns session replacement | Keep full extension/resource behavior through public session services and runtime construction |
 | Durable AgentHarness | Root agent-core API plus harness context, session, environment, and reducer exports | Lanes, stored results, and ordered inboxes remain a separate explicit host choice |
 | Pico3 | Agent-core exports [`./experimental/pico3`][agent-package] with declarations and executable JavaScript | The kernel is published, not merely a design document; its host integration still requires an explicit capability match |
+| Pico5 | Durable package root and subpaths on `main` export the Pico5 Harness, Session, and task runtime; 0.87.1 exports the record and storage contracts only | Treat Pico5 as source-available ahead of release, not as a 0.87.1 runtime contract |
 
 Coding-agent exports its ordinary root and `./rpc-entry` as runtime entrypoints.
 Its `./client` and `./experimental/plugin` remain source-condition-only. Do not
@@ -120,6 +133,82 @@ its named compatibility/provider subpaths, plus TypeBox root/compile/value.
 Server, client, and Chord are not in that alias map; their package resolution
 must be checked separately. Matching a checkout lockfile does not establish
 that every loaded extension resolves the same dependency instance.
+
+## Pico5 durable runtime
+
+Verified 2026-09-29 against upstream `main`
+`9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa`. Upstream `packages/durable`
+(`@earendil-works/pi-durable`) now carries the Pico5 runtime. The
+[package README][durable-readme] describes the durable record, task, and document
+contracts and names the normative documents. [`pico-v5.md`][pico-v5] is
+normative for the runtime; the [implementation handoff][pico-v5-handoff] tracks
+delivery; and the [Chord usage guide][pico-v5-chord] shows document composition.
+
+The 0.87.1 package version is unchanged on `main`, but the exported surface is
+larger than the [0.87.1 manifest][durable-package]. The release exports the
+[record root][durable-exports] plus `./storage/memory`, `./storage/sqlite`, and
+`./storage/sqlite/node`. Main adds `./env`, `./env/node`, `./storage/jsonl`,
+`./storage/jsonl/node`, and `./testing`, and its [root][durable-main-root] adds
+the Pico5 Harness, Session, TaskRuntime, registry, checkpoint, document, and
+entry exports. Those are source contracts on `main`, not runtime contracts in
+this repository.
+
+The [handoff status][pico-v5-handoff] states that Packages 1 to 15 are
+implemented in `packages/durable`. Packages 16 to 20 remain unimplemented.
+Package 18, "Ownership and subagents", describes the planned subagent model in
+[`pico-v5.md` section 7.3][pico-v5-tools]: a foreground subagent conversation is
+explicitly owned by its tool task, and the tool reacquires the child and waits
+for that submission's result; a background subagent is provisioned in one
+transaction with a background supervisor task that owns the child conversation
+and a durable registry mapping. Those behaviours are unimplemented on `main`
+and are not runtime contracts.
+
+This repository keeps its current design:
+
+- The agent extension keeps ordinary Pi sessions with explicit ownership
+  associations and owner-directed result delivery. It does not use a Pico5
+  conversation runtime.
+- The foreground, blocking subagent pattern is a deliberate design decision
+  not to adopt: a dispatching session never blocks on a child's result, so
+  the primary stays responsive while children work.
+- The background pattern maps to ordinary agent spawn and detached runs. Those
+  paths keep ordinary-session ownership and result delivery.
+- Pico5 conversation ownership is adopted only when the coding agent exposes it
+  as a public runtime contract, not from the durable package export alone.
+
+## Ordinary-session changes on main
+
+Verified 2026-09-29 against the cited `main` commits. These changes are on
+`main`, not in 0.87.1, and are not runtime contracts until a release ships them.
+
+- [`ff72faba28`][main-session-file] creates the session file at the first user
+  or assistant message instead of the first assistant message. The
+  [Footer retention boundary](#footer-retention-boundary) and
+  [Idle session configuration](#idle-session-configuration) claims describe the
+  0.87.1 boundary, where an unflushed manager buffers custom entries until the
+  first assistant message. Main changes that flush point and so changes which
+  setup-only sessions leave a file.
+- [`8d897edaa6`][main-duplicate-runtimes] suppresses automatic peer-dependency
+  installation for managed npm and git packages and warns when an extension
+  package declares host-provided Pi modules in `dependencies`. The
+  [runtime adoption boundary](#runtime-adoption-and-distribution) records that a
+  physical copy can bypass Pi's extension module mapping; main detects that
+  manifest configuration instead of silently creating a second copy.
+- [`002fc83852`][main-stream-events] adds the `provider_stream_event` extension
+  event for parsed provider stream events before normalization, with
+  adapter-owned, read-only data. It extends the provider observation surface in
+  [Current ordinary-session contracts](#current-ordinary-session-contracts)
+  without changing the existing request and response hooks.
+- [`4259686d92`][main-builtin-names] resolves built-in extensions as
+  `builtin:<name>` resources that load after project trust, disables one with
+  `-builtin:<name>`, and makes `--no-extensions` turn them off unless the host
+  loads it with `-e builtin:<name>`. Extension naming and loading change for any
+  host that refers to built-in extension identities.
+- [`e473b5cd8b`][main-rpc-disposition] adds `data.disposition` to successful
+  RPC prompt, steer, and follow_up responses, so a client can tell whether a run
+  started. The agent and subagent extensions use `AgentSession` directly and do
+  not consume RPC responses today; an RPC-backed host would use this field
+  instead of waiting unconditionally for `agent_settled`.
 
 ## Current ordinary-session contracts
 
@@ -296,8 +385,10 @@ returns, so an exception leaves the observation retryable. `SessionManager`
 mutates its in-memory entries before persistence; a failed write can leave an
 in-memory entry. Before the first assistant message, an unflushed manager buffers
 custom entries without creating its session file. The first assistant message
-flushes the buffer. Same-process reload retains these entries; reopening restores
-only files Pi actually saved. `getEntries()` covers all branches; session identity
+flushes the buffer. This is the 0.87.1 flush boundary;
+[Ordinary-session changes on main](#ordinary-session-changes-on-main) describes
+the main-only change. Same-process reload retains these entries; reopening
+restores only files Pi actually saved. `getEntries()` covers all branches; session identity
 changes on new sessions and forks. Footer checkpoints therefore use exact native
 IDs and all-branch observations instead of a separate store or branch-relative totals.
 Controlled native-host and regular/fullscreen terminal checks exercise reload,
@@ -539,17 +630,18 @@ current defects without checking the implementation.
 
 ## Convergence decisions
 
-Verified 2026-09-23. Use the ordinary SDK as the default host for current
-extension/resource behavior. Check its boundary and context controls before
-considering a kernel migration. Match the selected host, not only a shared name.
+Verified 2026-09-23, rechecked 2026-09-29. Use the ordinary SDK as the default
+host for current extension/resource behavior. Check its boundary and context
+controls before considering a kernel migration. Match the selected host, not
+only a shared name.
 
 | Repository capability | Host-owned replacement condition | Action |
 |---|---|---|
 | Ordinary session replacement | Public session services and `AgentSessionRuntime` preserve cwd, resources, trust, and lifecycle | Use them now rather than duplicate construction and replacement |
 | Turn completion and checkpoints | Ordinary `finishTurn`, actionable boundaries, and session projection supply the required control | Use these hooks first; preserve post-run recovery and queues |
 | Request context | `context` preserves Pi-owned prompt/tools; `context_with_system` explicitly transfers request transcript ownership | Use the narrow hook; distinguish transient filtering from persisted context edits |
-| Worker execution/recovery | Durable lane or Pico3 host preserves tools, hooks, cancellation, continuation, and resources | Replace local scheduling only at that complete host boundary |
-| Live observation | Selected host supplies lane snapshots/reducer or Pico3 view/envelopes | Use its fold and closure behavior; do not keep duplicate progress state |
+| Worker execution/recovery | Durable lane, Pico3, or released Pico5 host preserves tools, hooks, cancellation, continuation, and resources | Replace local scheduling only at that complete host boundary |
+| Live observation | Selected host supplies lane snapshots/reducer, Pico3 view/envelopes, or a released Pico5 document watch | Use its fold and closure behavior; do not keep duplicate progress state |
 | Remote control | Published semantic services preserve the required process/attachment authority | Check the actual callable contract; source-only coding-agent entrypoints are not a runtime dependency |
 | Submitted results | Retained outcomes/transcripts satisfy exact retrieval and parent-loss behavior | Remove separate storage when the host demonstrably owns the whole contract |
 | Reusable source selection | Host resolves files, precedence, applicability, and model-visible delivery | Remove local selection when those semantics exist, not merely when a kernel exports config |
@@ -571,10 +663,23 @@ After each Pi upgrade and before a host-dependent decision:
   affected claim unverified rather than preserve a stale verification date.
 
 [release]: https://github.com/earendil-works/pi/releases/tag/v0.87.1
-[main]: https://github.com/earendil-works/pi/commit/898ab804050730e9dcefb4443875d5a932aa6a32
+[main]: https://github.com/earendil-works/pi/commit/9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa
+[main-2026-09-23]: https://github.com/earendil-works/pi/commit/898ab804050730e9dcefb4443875d5a932aa6a32
+[main-comparison]: https://github.com/earendil-works/pi/compare/898ab804050730e9dcefb4443875d5a932aa6a32...9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa
+[main-session-file]: https://github.com/earendil-works/pi/commit/ff72faba28d10c86611863d0aaa5d3122f2d8cb0
+[main-duplicate-runtimes]: https://github.com/earendil-works/pi/commit/8d897edaa69bf810fa6d14f854ce0cf101f11093
+[main-stream-events]: https://github.com/earendil-works/pi/commit/002fc8385268300ca91a5fc95f935c2afbbdac02
+[main-builtin-names]: https://github.com/earendil-works/pi/commit/4259686d9290c0d73ae7192b796aee3e530a9779
+[main-rpc-disposition]: https://github.com/earendil-works/pi/commit/e473b5cd8b6f2e82f1295aeee81cb697ffde2ed5
+[durable-readme]: https://github.com/earendil-works/pi/blob/9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa/packages/durable/README.md
+[pico-v5]: https://github.com/earendil-works/pi/blob/9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa/packages/durable/docs/pico-v5.md
+[pico-v5-handoff]: https://github.com/earendil-works/pi/blob/9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa/packages/durable/docs/pico-v5-handoff.md
+[pico-v5-chord]: https://github.com/earendil-works/pi/blob/9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa/packages/durable/docs/pico-v5-chord-usage.md
+[pico-v5-tools]: https://github.com/earendil-works/pi/blob/9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa/packages/durable/docs/pico-v5.md#73-tools
+[durable-main-root]: https://github.com/earendil-works/pi/blob/9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa/packages/durable/src/index.ts
 [previous-release]: https://github.com/earendil-works/pi/compare/16787ad5b2dc748047f314ca1bfe7708f30f54f3...f07218c4d4bbc12bef056a7058c3dd49dfe41abe
 [boundary-release]: https://github.com/earendil-works/pi/compare/d201760ffee16564aa8d9a759e0c85b70db33674...f07218c4d4bbc12bef056a7058c3dd49dfe41abe
-[release-main]: https://github.com/earendil-works/pi/compare/f07218c4d4bbc12bef056a7058c3dd49dfe41abe...898ab804050730e9dcefb4443875d5a932aa6a32
+[release-main]: https://github.com/earendil-works/pi/compare/f07218c4d4bbc12bef056a7058c3dd49dfe41abe...9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa
 [sdk]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/coding-agent/src/core/sdk.ts#L368-L439
 [session-projection]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/coding-agent/src/core/agent-session.ts#L608-L685
 [context-hooks]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/coding-agent/src/core/extensions/runner.ts#L1185-L1251
@@ -583,7 +688,7 @@ After each Pi upgrade and before a host-dependent decision:
 [durable-package]: https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/durable/package.json#L8-L30
 [durable-sqlite]: https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/durable/src/storage/sqlite/index.ts#L1-L8
 [durable-sqlite-node]: https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/durable/src/storage/sqlite/node.ts#L79-L121
-[durable-main-package]: https://github.com/earendil-works/pi/blob/898ab804050730e9dcefb4443875d5a932aa6a32/packages/durable/package.json#L8-L50
+[durable-main-package]: https://github.com/earendil-works/pi/blob/9d1a6503521d7bba9f8a1c59fe09fa47e23ef0aa/packages/durable/package.json#L8-L55
 [agent-package]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/agent/package.json#L8-L41
 [pico-options]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/agent/src/harness/pico3/harness.ts#L58-L110
 [pico-watch]: https://github.com/earendil-works/pi/blob/d201760ffee16564aa8d9a759e0c85b70db33674/packages/agent/src/harness/pico3/harness.ts#L746-L803
