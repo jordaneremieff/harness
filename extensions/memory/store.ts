@@ -15,6 +15,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
 export const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -46,6 +47,12 @@ export interface MemoryWrite {
 	verified: boolean;
 	expectedDigest?: string;
 	supersedes?: Array<{ slug: string; digest: string }>;
+}
+export interface MemoryEdit {
+	slug: string;
+	expectedDigest: string;
+	verified: boolean;
+	edits: Array<{ oldText: string; newText: string }>;
 }
 export interface WriteReceipt {
 	ok: boolean;
@@ -92,13 +99,15 @@ function digest(value: unknown): asserts value is string {
 	if (typeof value !== "string" || !DIGEST.test(value))
 		throw new Error("An expected SHA-256 source digest is required");
 }
+function unsafeText(value: string): boolean {
+	return /[\uD800-\uDFFF]/u.test(value) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value);
+}
 function text(value: unknown, name: string, max: number, multiline = true): asserts value is string {
 	if (
 		typeof value !== "string" ||
 		!value.trim() ||
 		value.length > max ||
-		/[\uD800-\uDFFF]/u.test(value) ||
-		/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value) ||
+		unsafeText(value) ||
 		(!multiline && /[\r\n]/u.test(value))
 	)
 		throw new Error(`Invalid ${name}`);
@@ -124,8 +133,11 @@ function validate(input: MemoryWrite): void {
 			throw new Error("Supersession targets must be unique and different from the destination");
 		seen.add(target.slug);
 	}
-	// A conservative refusal catches recognizable credential forms without echoing them.
-	const payload = JSON.stringify(input);
+	checkCredentials(JSON.stringify(input));
+}
+
+/** Refuse recognizable credential forms without echoing them. */
+function checkCredentials(payload: string): void {
 	if (
 		/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b|\b(?:api[_ -]?key|access[_ -]?token|password|secret)\s*[=:]\s*["']?[^\s"',;]{8,}/i.test(
 			payload,
@@ -324,7 +336,7 @@ function targetPlans(root: string, input: MemoryWrite, today: string, signal?: A
 		return { file, content: superseded(source, input.slug, today), expected: target.digest };
 	});
 }
-function destinationSource(destination: string, input: MemoryWrite): Existing | undefined {
+function destinationSource(destination: string, input: { expectedDigest?: string }): Existing | undefined {
 	const present = exists(destination);
 	if (present && input.expectedDigest === undefined)
 		throw new Error("Duplicate slug refused; read the note and supply expectedDigest to update");
@@ -354,6 +366,133 @@ function planWrites(root: string, input: MemoryWrite, signal?: AbortSignal): Pub
 		...targets,
 	];
 }
+function validateEdit(input: MemoryEdit): void {
+	slug(input.slug);
+	digest(input.expectedDigest);
+	if (typeof input.verified !== "boolean") throw new Error("verified must be explicit for the whole edited note");
+	if (!Array.isArray(input.edits) || input.edits.length < 1 || input.edits.length > 32)
+		throw new Error("Use between 1 and 32 edits");
+	for (const edit of input.edits) {
+		if (!edit || typeof edit !== "object") throw new Error("Invalid edit");
+		for (const key of ["oldText", "newText"] as const) {
+			const value = edit[key];
+			if (
+				typeof value !== "string" ||
+				value.length > 24000 ||
+				(key === "oldText" && value.length === 0) ||
+				unsafeText(value)
+			)
+				throw new Error(`Invalid edits[].${key}`);
+		}
+		checkCredentials(edit.newText);
+	}
+}
+
+/** Locate the document title without treating fenced examples as headings. */
+function titleHeading(body: string): { start: number; end: number; text: string; title: string } | undefined {
+	let fence: { marker: string; length: number } | undefined;
+	for (const match of body.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g)) {
+		const line = match[0].replace(/[\r\n]+$/, "");
+		const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+		if (fence) {
+			if (marker && marker[1][0] === fence.marker && marker[1].length >= fence.length && /^[ \t]*$/.test(marker[2]))
+				fence = undefined;
+			continue;
+		}
+		if (marker && (marker[1][0] === "~" || !marker[2].includes("`"))) {
+			fence = { marker: marker[1][0], length: marker[1].length };
+			continue;
+		}
+		const heading = /^ {0,3}#[ \t]+(.*)$/.exec(line);
+		if (heading)
+			return {
+				start: match.index,
+				end: match.index + match[0].length,
+				text: match[0],
+				title: heading[1].replace(/[ \t]+#+[ \t]*$/, "").trim(),
+			};
+	}
+	return undefined;
+}
+
+function editedBody(source: Existing, edits: MemoryEdit["edits"]): string {
+	const body = source.text.slice(source.end);
+	const heading = titleHeading(body);
+	if (!heading || heading.title !== source.meta.title)
+		throw new Error("Editing requires a title heading that matches frontmatter");
+	const matches = edits
+		.map((edit, index) => {
+			const start = body.indexOf(edit.oldText);
+			if (start < 0) throw new Error(`edits[${index}].oldText does not match the original body`);
+			if (body.indexOf(edit.oldText, start + 1) !== -1)
+				throw new Error(`edits[${index}].oldText is ambiguous in the original body`);
+			const end = start + edit.oldText.length;
+			if (start < heading.end && end > heading.start) throw new Error("The title heading cannot be edited");
+			return { start, end, newText: edit.newText };
+		})
+		.sort((a, b) => a.start - b.start);
+	let cursor = 0;
+	let result = "";
+	for (const match of matches) {
+		if (match.start < cursor) throw new Error("Edits overlap; merge them into one replacement");
+		result += body.slice(cursor, match.start) + match.newText;
+		cursor = match.end;
+	}
+	result += body.slice(cursor);
+	if (result === body) throw new Error("Edits produce no body change");
+	const expectedStart = matches
+		.filter((match) => match.end <= heading.start)
+		.reduce((start, match) => start + match.newText.length - (match.end - match.start), heading.start);
+	const resultingHeading = titleHeading(result);
+	if (resultingHeading?.text !== heading.text || resultingHeading.start !== expectedStart)
+		throw new Error("The title heading cannot be changed or preceded by another title");
+	return result;
+}
+
+/** Preserve header bytes outside the generated fields, including comments and unknown keys. */
+function editedHeader(source: Existing, verified: boolean, today: string): string {
+	const fields = { updated: today, verified, verified_date: verified ? today : null };
+	const seen = new Set<string>();
+	const header = source.text
+		.slice(0, source.end)
+		.replace(/^(updated|verified|verified_date):[^\r\n]*/gm, (_line, key: keyof typeof fields) => {
+			seen.add(key);
+			return `${key}: ${JSON.stringify(fields[key])}`;
+		});
+	let parsed: Record<string, unknown>;
+	try {
+		parsed = parseFrontmatter<Record<string, unknown>>(header).frontmatter;
+	} catch {
+		throw new Error("Generated fields require plain top-level keys for editing");
+	}
+	if (seen.size !== 3 || !isDeepStrictEqual(parsed, { ...source.meta, ...fields }))
+		throw new Error("Generated fields require independent plain top-level keys for editing");
+	return header;
+}
+
+function planEdit(root: string, input: MemoryEdit, signal?: AbortSignal): Publication[] {
+	checkAbort(signal);
+	const file = `${input.slug}.md`;
+	const source = destinationSource(join(root, file), input) as Existing;
+	const content =
+		editedHeader(source, input.verified, new Date().toISOString().slice(0, 10)) + editedBody(source, input.edits);
+	checkCredentials(content);
+	if (unsafeText(content)) throw new Error("Edited note contains control characters");
+	if (Buffer.byteLength(content) > MAX_BYTES) throw new Error("Note exceeds the 64 KiB source limit");
+	return [{ file, content, expected: input.expectedDigest }];
+}
+
+export function editMemory(
+	rootValue: string,
+	input: MemoryEdit,
+	signal?: AbortSignal,
+	hooks: WriteHooks = {},
+): WriteReceipt {
+	memoryRoot(rootValue);
+	validateEdit(input);
+	return mutate(rootValue, input.slug, (root) => planEdit(root, input, signal), signal, hooks);
+}
+
 function publish(root: string, plan: Publication & { temp: string }): void {
 	const path = join(root, plan.file);
 	if (plan.expected === undefined) {
@@ -395,19 +534,35 @@ export function writeMemory(
 	validate(input);
 	checkAbort(signal);
 	mkdirSync(rootValue, { recursive: true, mode: 0o700 });
-	const root = realpathSync(rootValue);
+	return mutate(rootValue, input.slug, (root) => planWrites(root, input, signal), signal, hooks);
+}
+
+function mutate(
+	rootValue: string,
+	subject: string,
+	plan: (root: string) => Publication[],
+	signal: AbortSignal | undefined,
+	hooks: WriteHooks,
+): WriteReceipt {
+	checkAbort(signal);
+	let root: string;
+	try {
+		root = realpathSync(rootValue);
+	} catch (error) {
+		throw new Error(`Memory unavailable: corpus directory cannot be resolved (${errorCode(error)})`);
+	}
 	const release = acquire(root);
 	const receipt: WriteReceipt = {
 		ok: false,
-		slug: input.slug,
-		file: `${input.slug}.md`,
+		slug: subject,
+		file: `${subject}.md`,
 		written: [],
 		notWritten: [],
 		initialized: false,
 	};
 	const staged: string[] = [];
 	try {
-		const plans = planWrites(root, input, signal);
+		const plans = plan(root);
 		receipt.notWritten = plans.map((plan) => plan.file);
 		const prepared = plans.map((plan) => {
 			const temp = stage(root, plan.content);

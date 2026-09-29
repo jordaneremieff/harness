@@ -3,7 +3,7 @@ import { type ExtensionAPI, withFileMutationQueue } from "@earendil-works/pi-cod
 import { join } from "node:path";
 import { renderCall, renderResult } from "./presentation.ts";
 import { readMemory, searchMemory } from "./retrieval.ts";
-import { DIGEST, memoryRoot, SLUG, writeMemory } from "./store.ts";
+import { DIGEST, editMemory, memoryRoot, SLUG, type WriteReceipt, writeMemory } from "./store.ts";
 
 const slug = () => Type.String({ pattern: SLUG.source, minLength: 1, maxLength: 120 });
 const digest = () => Type.String({ pattern: DIGEST.source });
@@ -13,6 +13,22 @@ const query = () =>
 		description:
 			"Short keywords, not a pasted question. Omit query to browse; blank strings refuse. Maximum 200 characters and 16 distinct terms.",
 	});
+
+function mutationResult(root: string, details: WriteReceipt) {
+	const notice = details.written
+		.filter((file) => file !== "README.md")
+		.map((file) => `Memory updated: ${file}`)
+		.join("\n");
+	return {
+		content: [
+			{
+				type: "text" as const,
+				text: `${details.initialized ? `Memory initialized: ${root}\n` : ""}${notice}\n${JSON.stringify(details)}`,
+			},
+		],
+		details,
+	};
+}
 
 export default function memory(pi: ExtensionAPI): void {
 	pi.registerTool({
@@ -72,10 +88,10 @@ export default function memory(pi: ExtensionAPI): void {
 		name: "memory_write",
 		label: "Memory write",
 		description:
-			"Create a subject note, or replace it with expectedDigest from a current read. Dates, frontmatter, and sections are generated. Search first; update the existing subject instead of duplicating it. Supersedes adds reciprocal replacements using each old note's digest. Atomic per-file writes, not a corpus transaction: errors name written and notWritten files. No corpus Git commits.",
+			"Create a subject note, or rewrite it completely with expectedDigest from a current read. Use memory_edit for targeted changes. Dates, frontmatter, and sections are generated. Search first; update the existing subject instead of duplicating it. Supersedes adds reciprocal replacements using each old note's digest. Atomic per-file writes, not a corpus transaction: errors name written and notWritten files. No corpus Git commits.",
 		promptGuidelines: [
 			"Store durable operator preferences, confirmed decisions and rationale, authoritative environment facts, or verified recurring lessons. High confidence: write automatically when explicit or verified, future-useful, concise, sourced, and not already stored. Medium confidence: ask only if future value is material. Low confidence: do not store. Silence never confirms an inference.",
-			"Never store task state, handovers, TODOs, logs, repository-defined facts, secrets, sensitive personal data, or speculation. Search before each write. Set verified only for operator statements about their own facts/preferences or an authoritative source inspected now. Report Memory updated: <file>. Delete only on explicit request, after checking active dependent notes with ordinary file tools; there is no delete tool.",
+			"Never store task state, handovers, TODOs, logs, repository-defined facts, secrets, sensitive personal data, or speculation. Search before each mutation. Use memory_edit for targeted changes, not ordinary file edits. Set verified only for operator statements about their own facts/preferences or an authoritative source inspected now. Report Memory updated: <file>. Delete only on explicit request, after checking active dependent notes with ordinary file tools; there is no delete tool.",
 		],
 		parameters: Type.Object({
 			slug: slug(),
@@ -97,21 +113,36 @@ export default function memory(pi: ExtensionAPI): void {
 			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
 				writeMemory(root, args, signal),
 			);
-			const notice = details.written
-				.filter((file) => file !== "README.md")
-				.map((file) => `Memory updated: ${file}`)
-				.join("\n");
-			return {
-				content: [
-					{
-						type: "text",
-						text: `${details.initialized ? `Memory initialized: ${root}\n` : ""}${notice}\n${JSON.stringify(details)}`,
-					},
-				],
-				details,
-			};
+			return mutationResult(root, details);
 		},
 		renderCall: (args, theme, context) => renderCall("memory_write", args, theme, context),
 		renderResult: (result, options, theme, context) => renderResult("memory_write", result, options, theme, context),
+	});
+	pi.registerTool({
+		name: "memory_edit",
+		label: "Memory edit",
+		description:
+			"Edit an existing note body with exact replacements against the original, not incrementally. Each oldText must match once; overlaps refuse. Frontmatter and the title heading are not editable. Other bytes stay unchanged except generated update and verification fields. Requires a current expectedDigest and explicit verification of the whole resulting note. Uses the memory writer lock and atomic publication; changed or superseded sources refuse.",
+		parameters: Type.Object({
+			slug: slug(),
+			expectedDigest: digest(),
+			verified: Type.Boolean({ description: "Attest to the whole resulting note; false clears verified_date." }),
+			edits: Type.Array(
+				Type.Object({
+					oldText: Type.String({ minLength: 1, maxLength: 24000 }),
+					newText: Type.String({ maxLength: 24000, description: "Replacement text; empty deletes the matched text." }),
+				}),
+				{ minItems: 1, maxItems: 32 },
+			),
+		}),
+		async execute(_id, args, signal) {
+			const root = memoryRoot();
+			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
+				editMemory(root, args, signal),
+			);
+			return mutationResult(root, details);
+		},
+		renderCall: (args, theme, context) => renderCall("memory_edit", args, theme, context),
+		renderResult: (result, options, theme, context) => renderResult("memory_edit", result, options, theme, context),
 	});
 }

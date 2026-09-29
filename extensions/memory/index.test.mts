@@ -46,7 +46,7 @@ const input = {
 
 test("factory registers only the memory jobs, with native cards and trigger guidance", () => {
 	const all = tools();
-	assert.deepEqual([...all.keys()], ["memory_search", "memory_read", "memory_write"]);
+	assert.deepEqual([...all.keys()], ["memory_search", "memory_read", "memory_write", "memory_edit"]);
 	for (const tool of all.values()) {
 		assert.equal(typeof tool.renderCall, "function");
 		assert.equal(typeof tool.renderResult, "function");
@@ -77,6 +77,15 @@ test("adapter rejects unavailable configuration without an inferred path", async
 		await assert.rejects(call(all.get("memory_search") as Registered, {}), /Memory unavailable/);
 		await assert.rejects(call(all.get("memory_read") as Registered, { slug: "README" }), /Memory unavailable/);
 		await assert.rejects(call(all.get("memory_write") as Registered, input), /Memory unavailable/);
+		await assert.rejects(
+			call(all.get("memory_edit") as Registered, {
+				slug: input.slug,
+				expectedDigest: "a".repeat(64),
+				verified: false,
+				edits: [{ oldText: "old", newText: "new" }],
+			}),
+			/Memory unavailable/,
+		);
 	}
 });
 
@@ -131,4 +140,55 @@ test("schema rejects empty payloads, excess formulations and unbounded pages", (
 	assert.throws(() => call(all.get("memory_search") as Registered, { query: ["a", "b", "c", "d"] }));
 	assert.throws(() => call(all.get("memory_search") as Registered, { limit: 513 }));
 	assert.throws(() => call(all.get("memory_read") as Registered, { slug: "one", offset: -1 }));
+	const editor = all.get("memory_edit") as Registered;
+	const edit = {
+		slug: "one",
+		expectedDigest: "a".repeat(64),
+		verified: false,
+		edits: [{ oldText: "old", newText: "" }],
+	};
+	for (const args of [
+		{ slug: "one", edits: edit.edits },
+		{ ...edit, edits: [] },
+		{ ...edit, edits: Array.from({ length: 33 }, () => edit.edits[0]) },
+		{ ...edit, edits: [{ oldText: "", newText: "new" }] },
+		{ ...edit, expectedDigest: "bad" },
+	])
+		assert.throws(() => call(editor, args));
+});
+
+test("edit adapter reports the receipt and notice and shares the write queue", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "memory-edit-adapter-"));
+	const old = process.env.PI_MEMORY_DIR;
+	process.env.PI_MEMORY_DIR = root;
+	t.after(() => {
+		if (old === undefined) delete process.env.PI_MEMORY_DIR;
+		else process.env.PI_MEMORY_DIR = old;
+		rmSync(root, { recursive: true, force: true });
+	});
+	const all = tools();
+	const writer = all.get("memory_write") as Registered;
+	const editor = all.get("memory_edit") as Registered;
+	const first = await call(writer, input);
+	const edit = {
+		slug: input.slug,
+		expectedDigest: first.details.digest as string,
+		verified: false,
+		edits: [{ oldText: "Use editor A.", newText: "Use editor B." }],
+	};
+	const results = await Promise.allSettled([
+		call(editor, edit),
+		call(writer, { ...input, summary: "Use editor C.", expectedDigest: first.details.digest as string }),
+	]);
+	assert.equal(results[0].status, "fulfilled");
+	assert.equal(results[1].status, "rejected");
+	assert.ok(results[0].status === "fulfilled");
+	const result = results[0].value;
+	assert.match(result.content[0].text, /^Memory updated: editor-choice.md\n/);
+	assert.deepEqual(result.details.written, ["editor-choice.md"]);
+	assert.deepEqual(result.details.notWritten, []);
+	assert.equal(result.details.initialized, false);
+	assert.equal(typeof result.details.digest, "string");
+	assert.match(readFileSync(join(root, "editor-choice.md"), "utf8"), /Use editor B\./);
+	await assert.rejects(call(editor, edit), /digest changed/);
 });

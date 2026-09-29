@@ -45,9 +45,9 @@ boundaries, rather than a central feature catalog.
 - [Memory](extensions/memory/README.md) retrieves prior operator knowledge before
   dependent choices. Its tools search bounded note sources in `PI_MEMORY_DIR`,
   combine alternative query formulations, read digest-checked source pages,
-  and retain compact cue browsing. Validated writes maintain note format,
-  dates, concurrent-update checks, and reciprocal supersession without a
-  separate stored index.
+  and retain compact cue browsing. Validated writes and targeted edits maintain
+  note format, dates, and concurrent-update checks. Writes maintain reciprocal
+  supersession without a separate stored index.
 
 `npm test` includes a serialized tool-schema check in
 [scripts/extension-load-check.test.mts](scripts/extension-load-check.test.mts).

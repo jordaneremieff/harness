@@ -170,6 +170,89 @@ describe("memory_write call cards", () => {
 	});
 });
 
+describe("memory_edit cards", () => {
+	it("names the subject and edit count while withholding both texts in every view", () => {
+		const args = {
+			slug: "editor-choice",
+			expectedDigest: "a".repeat(64),
+			verified: false,
+			edits: [{ oldText: "private old text", newText: "private new text" }],
+		};
+		for (const context of [call, expandedCall]) {
+			const shown = screen(renderCall("memory_edit", args, theme, context));
+			assert.match(shown, /memory_edit · editor-choice/);
+			assert.doesNotMatch(shown, /private old text|private new text/);
+		}
+		assert.match(screen(renderCall("memory_edit", args, theme, call)), /1 edit/);
+		assert.match(screen(renderCall("memory_edit", args, theme, expandedCall)), /"oldText": "<withheld: 16 chars>"/);
+	});
+
+	it("escapes controls, bounds long payloads, and handles partial arguments", () => {
+		const args = { slug: "\x1b]52;c;clip\x07", edits: [{ oldText: "x".repeat(40000), newText: "\x1b" }] };
+		for (const context of [call, expandedCall]) {
+			const shown = screen(renderCall("memory_edit", args, theme, context), 40);
+			assert.doesNotMatch(shown, /[\x1b\x07]/);
+			assert.ok(shown.length < 1000);
+			wellFormed(shown);
+		}
+		for (const args of [null, {}, { edits: "partial" }]) {
+			assert.match(screen(renderCall("memory_edit", args, theme, { argsComplete: false })), /memory_edit/);
+		}
+	});
+
+	it("uses publication receipts for success and failure and escapes expanded evidence", () => {
+		const receipt = {
+			ok: true,
+			slug: "editor-choice",
+			written: ["editor-choice.md"],
+			notWritten: [],
+			digest: "12345678abcdef",
+			initialized: false,
+		};
+		assert.match(
+			screen(renderResult("memory_edit", result("saved", receipt), collapsed, theme, okContext)),
+			/editor-choice edited/,
+		);
+		const failed = { ...receipt, ok: false, written: [], notWritten: ["editor-choice.md"], error: "Source changed" };
+		const shown = screen(
+			renderResult(
+				"memory_edit",
+				result(`Memory write incomplete: ${JSON.stringify(failed)}`, undefined),
+				collapsed,
+				theme,
+				errorContext,
+			),
+		);
+		assert.match(shown, /edit failed.*editor-choice.*Source changed/);
+		assert.match(
+			screen(renderResult("memory_edit", result("Unknown refusal", undefined), collapsed, theme, errorContext)),
+			/edit incomplete/,
+		);
+		assert.match(
+			screen(
+				renderResult(
+					"memory_edit",
+					result("", { ...failed, written: ["editor-choice.md"] }),
+					collapsed,
+					theme,
+					errorContext,
+				),
+			),
+			/edit incomplete/,
+		);
+		assert.match(
+			screen(renderResult("memory_edit", result("", {}), { ...collapsed, isPartial: true }, theme, okContext)),
+			/Editing note/,
+		);
+		const expanded = screen(
+			renderResult("memory_edit", result("Evidence\x1b[2J", receipt), expandedView, theme, okContext),
+		);
+		assert.match(expanded, /Evidence/);
+		assert.doesNotMatch(expanded, /\x1b/);
+		assert.match(screen(renderResult("memory_edit", result("", null), collapsed, theme, okContext)), /memory_edit/);
+	});
+});
+
 describe("memory_search result cards", () => {
 	const indexPage = {
 		ok: true,

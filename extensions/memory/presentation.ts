@@ -32,7 +32,7 @@ const DIGEST_PREFIX = 8;
 const PREVIEW_ARRAY_LIMIT = 20;
 const WITHHOLD_THRESHOLD = 120;
 const WRITE_ERROR_PREFIX = "Memory write incomplete: ";
-const WITHHELD_KEYS = new Set(["summary", "details", "sources", "title"]);
+const WITHHELD_KEYS = new Set(["summary", "details", "sources", "title", "oldText", "newText"]);
 
 export interface CallContext {
 	expanded?: boolean;
@@ -319,6 +319,16 @@ function writeCall(args: unknown, theme: Theme, context: CallContext): Component
 	return callCard("memory_write", subject, detail, true, stringifySafe(sanitizeForPreview(args, null)), theme, context);
 }
 
+function editCall(args: unknown, theme: Theme, context: CallContext): Component {
+	const fields = record(args);
+	const slug = textField(fields.slug);
+	const subject =
+		slug !== null ? previewMark(slug, SLUG_LIMIT).text : context.argsComplete === false ? "" : "(slug pending)";
+	const count = Array.isArray(fields.edits) ? fields.edits.length : null;
+	const detail = count === null ? ["edit"] : [`${count} ${count === 1 ? "edit" : "edits"}`];
+	return callCard("memory_edit", subject, detail, true, stringifySafe(sanitizeForPreview(args, null)), theme, context);
+}
+
 /** A page is a query page when the query field holds a formulation, not null. */
 function isQueryPage(query: unknown): boolean {
 	if (typeof query === "string") return query !== "";
@@ -461,12 +471,12 @@ function receiptView(receipt: Record<string, unknown>): ReceiptView {
 	};
 }
 
-function receiptOutcome(receipt: Record<string, unknown>): ReceiptOutcome {
+function receiptOutcome(receipt: Record<string, unknown>, operation: "write" | "edit"): ReceiptOutcome {
 	const view = receiptView(receipt);
 	if (receipt.ok === true) {
 		return {
 			color: view.notWritten.length > 0 ? "warning" : "success",
-			line: `${view.slugText || "note"} written${receipt.initialized === true ? " · corpus initialized" : ""}`,
+			line: `${view.slugText || "note"} ${operation === "edit" ? "edited" : "written"}${receipt.initialized === true ? " · corpus initialized" : ""}`,
 			second: joinedParts([view.digestPart, view.notWritten.length > 0 ? view.counts : ""]),
 			hint: view.notWritten.length > 0,
 		};
@@ -474,42 +484,45 @@ function receiptOutcome(receipt: Record<string, unknown>): ReceiptOutcome {
 	if (view.written.length > 0) {
 		return {
 			color: "warning",
-			line: `${view.slugText ? `${view.slugText} ` : ""}write incomplete · ${view.counts}`,
+			line: `${view.slugText ? `${view.slugText} ` : ""}${operation} incomplete · ${view.counts}`,
 			second: joinedParts([view.digestPart, view.errorText]),
 			hint: true,
 		};
 	}
 	return {
 		color: "error",
-		line: `write failed${view.slugText ? ` · ${view.slugText}` : ""}${view.errorText ? ` · ${view.errorText}` : ""}`,
+		line: `${operation} failed${view.slugText ? ` · ${view.slugText}` : ""}${view.errorText ? ` · ${view.errorText}` : ""}`,
 		second: view.digestPart,
 		hint: false,
 	};
 }
 
 function writeResult(
+	name: string,
 	result: AgentToolResult<unknown>,
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	context: ResultContext,
 ): Component {
-	if (options.isPartial) return partialCard("Writing note...", theme, context);
+	const operation = name === "memory_edit" ? "edit" : "write";
+	if (options.isPartial)
+		return partialCard(operation === "edit" ? "Editing note..." : "Writing note...", theme, context);
 	const details = record(result.details);
 	const text = textContent(result);
 	if (isReceipt(details)) {
-		const outcome = receiptOutcome(details);
+		const outcome = receiptOutcome(details, operation);
 		return resultCard(outcome, outcome.second, outcome.hint, text, options, theme, context);
 	}
 	if (context.isError) {
 		const receipt = receiptFromMessage(text);
 		if (receipt !== null && isReceipt(receipt)) {
-			const outcome = receiptOutcome(receipt);
+			const outcome = receiptOutcome(receipt, operation);
 			return resultCard(outcome, outcome.second, outcome.hint, text, options, theme, context);
 		}
 		const display = text.startsWith(WRITE_ERROR_PREFIX) ? text.slice(WRITE_ERROR_PREFIX.length) : text;
 		const message = previewMark(display, ERROR_LIMIT).text;
 		return resultCard(
-			{ color: "error", line: message ? `write incomplete · ${message}` : "write incomplete" },
+			{ color: "error", line: message ? `${operation} incomplete · ${message}` : `${operation} incomplete` },
 			"",
 			text !== "",
 			text,
@@ -518,7 +531,7 @@ function writeResult(
 			context,
 		);
 	}
-	return fallbackCard("memory_write", result, options, theme, context);
+	return fallbackCard(name, result, options, theme, context);
 }
 
 /** Render a memory tool call card by tool name. */
@@ -530,6 +543,8 @@ export function renderCall(name: string, args: unknown, theme: Theme, context: C
 			return readCall(args, theme, context);
 		case "memory_write":
 			return writeCall(args, theme, context);
+		case "memory_edit":
+			return editCall(args, theme, context);
 		default:
 			return callCard(name, "", [], false, "", theme, context);
 	}
@@ -549,7 +564,8 @@ export function renderResult(
 		case "memory_read":
 			return readResult(result, options, theme, context);
 		case "memory_write":
-			return writeResult(result, options, theme, context);
+		case "memory_edit":
+			return writeResult(name, result, options, theme, context);
 		default:
 			return fallbackCard(name, result, options, theme, context);
 	}
