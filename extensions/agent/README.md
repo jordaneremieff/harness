@@ -799,11 +799,34 @@ transport therefore does not certify a sender as the operator or as a delegate.
 This is a limit of the recorded relationship, not a reason to discard a task
 assignment or correction from its established owner.
 
-The host also announces settled in-process operation results to registered
-primary sessions. These results and detached-run summaries carry an explicit
+The host announces a settled in-process operation result to the sessions that
+own the settled session, from the recorded associations. A registered primary
+owner receives it through its own notification path; a managed owner receives
+the ordinary `agent.peer` message, delivered as steering while it works. An
+owner therefore learns that its own child finished without polling, and a
+primary no longer receives results of sessions it did not create. When no
+owning session is live in this process, because the owner closed, detached, is
+unknown, or has a failed association write, the notice reaches the registered
+primary sessions instead and says so in its content; its collapsed card marks
+the same state. A notice that its owner cannot admit yet waits in memory and
+reaches that owner later, or falls back when the owner retires. Detached-run
+summaries keep their separate announcement to registered primaries.
+
+These results and detached-run summaries carry an explicit
 reported-data label in model-visible content. Settlement is an execution
 outcome, not verification, operator approval, or coordinator acceptance of the
 task. A normal terminal result does not impose a separate submission protocol.
+
+Every managed session reads its owner's address in model-visible content. On
+each model request, the extension adds a session-ownership section to the
+session's leading system message: the owning session ID, that `agent_send` to
+that ID carries an interim report, a blocking question, or a correction, and
+that the ordinary terminal response remains the result. The section is built
+from the current associations for each request, so it follows primary reload,
+saved-session recovery, and fork or replacement updates. Unknown ownership is
+stated as unknown rather than guessed. A session with no leading system message
+receives no section. The section is request-time content: it changes no stored
+entry and no operator task text.
 
 Peer messages do not execute commands when their text starts with a slash command.
 Use `agent_command` for explicit command execution. The native `/agent send`
@@ -831,7 +854,10 @@ Pi's ordinary session owns structured prompts, full-transcript context hooks,
 context edits, tool declarations, actionable `turn_end` and
 `agent_before_settle` boundaries, compaction, retries, and queues. The extension
 does not reconstruct those semantics in an adapter. Native session entries
-supply extension history and projection APIs.
+supply extension history and projection APIs. In a managed session, the
+extension uses the ordinary full-transcript context hook to add its
+[session-ownership section](#collaborate-between-sessions) to the leading system
+message of each request.
 
 Each in-process session has its own model runtime. It inherits provider
 registrations through the primary's public model registry, then discovers
@@ -879,10 +905,10 @@ the primary's generation-bound callbacks. It retains the existing ordinary
 hosts, active operations, native queues, resources, and writer claims. Existing
 children keep their own native provider and resource runtimes; changed resources
 load for the reloaded primary and newly created children. This does not preserve
-a provider callback that depends on a resource its own owner closed. Results
-that settle during the reload gap wait for the new primary callback and are
-delivered once in that process. The native message API supplies no crash-durable
-delivery acknowledgment.
+a provider callback that depends on a resource its own owner closed. A result
+of a primary-owned session that settles during the reload gap waits for the new
+primary callback and is delivered once in that process. The native message API
+supplies no crash-durable delivery acknowledgment.
 
 The process reuses managers that match the current manager protocol. Refreshed
 registration does not reconstruct these managers or existing workers: they
