@@ -76,6 +76,34 @@ test("single edit returns the shared receipt and refreshes whole-note verificati
 	);
 });
 
+test("writer titles with trailing hashes permit body edits and retain their exact heading bytes", (t) => {
+	const f = fixture(t);
+	for (const title of ["Issue #", "Issue ###", "#", "###"]) {
+		writeMemory(f.root, {
+			slug: f.input.slug,
+			expectedDigest: sourceDigest(readFileSync(f.path)),
+			title,
+			tags: ["editor"],
+			summary: "Use editor A.",
+			details: "Keep the local files.",
+			sources: "Operator statement.",
+			verified: true,
+		});
+		const before = readFileSync(f.path, "utf8");
+		const input = { ...f.input, expectedDigest: sourceDigest(before) };
+		assert.match(
+			failure(() => editMemory(f.root, {
+				...input,
+				edits: [{ oldText: `# ${title}\n`, newText: "# Changed\n" }],
+			})).message,
+			/title heading/,
+		);
+		assert.equal(readFileSync(f.path, "utf8"), before);
+		assert.ok(editMemory(f.root, input).ok);
+		assert.equal(body(readFileSync(f.path, "utf8")), body(before).replace("Use editor A.", "Use editor B."));
+	}
+});
+
 test("multiple disjoint edits match the original body, not replacement output", (t) => {
 	const f = fixture(t);
 	editMemory(f.root, {

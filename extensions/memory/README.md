@@ -41,6 +41,8 @@ rank describes retrieval order, never truth, confidence, freshness, or a compara
 value across calls. Per-formulation matched and missing terms explain the evidence.
 The calling agent supplies reformulations; the extension makes no model calls.
 
+When title metadata is absent, browse cues use the first level 1–6 ATX heading
+outside backtick or tilde fences, then the filename if no heading exists.
 Cues preserve raw metadata values. Missing or malformed fields remain unknown;
 `cueProblem` marks clipped, multiline, duplicate, empty, or unclosed extraction.
 Status never suppresses search results. Prefer current active sources and inspect

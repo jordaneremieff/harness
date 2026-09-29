@@ -17,6 +17,7 @@ import {
 import { isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { findMarkdownHeading } from "./headings.ts";
 
 export const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const DIGEST = /^[a-f0-9]{64}$/;
@@ -388,37 +389,13 @@ function validateEdit(input: MemoryEdit): void {
 	}
 }
 
-/** Locate the document title without treating fenced examples as headings. */
-function titleHeading(body: string): { start: number; end: number; text: string; title: string } | undefined {
-	let fence: { marker: string; length: number } | undefined;
-	for (const match of body.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g)) {
-		const line = match[0].replace(/[\r\n]+$/, "");
-		const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-		if (fence) {
-			if (marker && marker[1][0] === fence.marker && marker[1].length >= fence.length && /^[ \t]*$/.test(marker[2]))
-				fence = undefined;
-			continue;
-		}
-		if (marker && (marker[1][0] === "~" || !marker[2].includes("`"))) {
-			fence = { marker: marker[1][0], length: marker[1].length };
-			continue;
-		}
-		const heading = /^ {0,3}#[ \t]+(.*)$/.exec(line);
-		if (heading)
-			return {
-				start: match.index,
-				end: match.index + match[0].length,
-				text: match[0],
-				title: heading[1].replace(/[ \t]+#+[ \t]*$/, "").trim(),
-			};
-	}
-	return undefined;
-}
-
 function editedBody(source: Existing, edits: MemoryEdit["edits"]): string {
 	const body = source.text.slice(source.end);
-	const heading = titleHeading(body);
-	if (!heading || heading.title !== source.meta.title)
+	const heading = findMarkdownHeading(body, 1);
+	if (
+		!heading ||
+		(heading.title !== source.meta.title && heading.text.replace(/[\r\n]+$/, "") !== `# ${source.meta.title}`)
+	)
 		throw new Error("Editing requires a title heading that matches frontmatter");
 	const matches = edits
 		.map((edit, index) => {
@@ -443,7 +420,7 @@ function editedBody(source: Existing, edits: MemoryEdit["edits"]): string {
 	const expectedStart = matches
 		.filter((match) => match.end <= heading.start)
 		.reduce((start, match) => start + match.newText.length - (match.end - match.start), heading.start);
-	const resultingHeading = titleHeading(result);
+	const resultingHeading = findMarkdownHeading(result, 1);
 	if (resultingHeading?.text !== heading.text || resultingHeading.start !== expectedStart)
 		throw new Error("The title heading cannot be changed or preceded by another title");
 	return result;

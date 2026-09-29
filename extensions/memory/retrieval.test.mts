@@ -28,6 +28,18 @@ import {
 	trimUtf8,
 } from "./retrieval.ts";
 
+test("cue title fallback ignores fenced examples and preserves heading levels one through six", async () => {
+	for (let level = 1; level <= 6; level++) {
+		const root = corpus({
+			"README.md": "Contract",
+			"subject.md": `---\nstatus: active\n---\nIntro\n\n\`\`\`md\n# comment\n\`\`\`\n\n~~~~\n## another comment\n~~~\n# still fenced\n~~~~\n\n${"#".repeat(level)} Real subject ###\nBody`,
+		});
+		assert.equal(notes(await search(root))[0].title, "Real subject");
+	}
+	const root = corpus({ "README.md": "Contract", "subject.md": "~~~\n# Only a fenced example" });
+	assert.equal(notes(await search(root))[0].title, "subject");
+});
+
 type Json = Record<string, unknown>;
 const cleanupRoots: string[] = [];
 after(() => {

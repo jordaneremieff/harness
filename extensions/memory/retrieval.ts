@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { setImmediate } from "node:timers/promises";
+import { findMarkdownHeading } from "./headings.ts";
 
 const VISIT_CAP = 512;
 const INDEX_READ_BYTES = 8 * 1024;
@@ -284,10 +285,7 @@ function valueAfterKey(line: string): string {
 }
 
 function findHeading(text: string): string | undefined {
-	const match = text.match(/^[ \t]{0,3}#{1,6}[ \t]+(.+)$/m);
-	if (match === null) return undefined;
-	const title = match[1].replace(/[ \t]+#+[ \t]*$/, "").trim();
-	return title === "" ? undefined : title;
+	return findMarkdownHeading(text)?.title || undefined;
 }
 
 function buildNoteCue(file: string, slug: string, text: string, truncated: boolean, size: number): NoteCue {
