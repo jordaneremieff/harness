@@ -320,7 +320,7 @@ const suite: EvaluationSuite = {
 				seed: [
 					{
 						role: "user",
-						content: "Have a subagent audit the flush-order fix against restart scenarios, then we decide.",
+						content: "Have an agent audit the flush-order fix against restart scenarios, then we decide.",
 					},
 					{ role: "assistant", content: "I dispatched a worker to audit the flush-order fix." },
 					{

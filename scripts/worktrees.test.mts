@@ -51,7 +51,7 @@ const settingsDir = "/home/operator/.pi/agent";
 const repoRoot = "/home/operator/Workspace/harness";
 const worktreeRoot = "/home/operator/Workspace/harness.worktrees";
 const entrypoints = new Map(
-	["brave", "clipboard", "stash", "statusline", "subagent", "tune", "workspace"].map((name) => [
+	["brave", "clipboard", "demo", "stash", "statusline", "tune", "workspace"].map((name) => [
 		name,
 		`${worktreeRoot}/${name}/extensions/${name}/index.ts`,
 	]),
@@ -143,12 +143,12 @@ branch refs/heads/extension/stash
 describe("development record classification", () => {
 	it("treats extension development records as unshippable wherever they sit", () => {
 		const records = [
-			["extensions/subagent/LOG.md", "extensions/subagent"],
-			["extensions/subagent/PLAN.md", "extensions/subagent"],
+			["extensions/demo/LOG.md", "extensions/demo"],
+			["extensions/demo/PLAN.md", "extensions/demo"],
 			["extensions/stash/AGENTS.md", "extensions/stash"],
 			["extensions/stash/SOLUTION.md", "extensions/stash"],
-			["extensions/subagent/REWRITE-SPEC.md", "extensions/subagent"],
-			["extensions/subagent/RELIABILITY-FINDINGS.md", "extensions/subagent"],
+			["extensions/demo/REWRITE-SPEC.md", "extensions/demo"],
+			["extensions/demo/RELIABILITY-FINDINGS.md", "extensions/demo"],
 		] as const;
 		for (const [path, root] of records) {
 			assert.equal(isDevRecordPath(path, root), true, path);
@@ -163,7 +163,7 @@ describe("development record classification", () => {
 		]) {
 			assert.equal(isDevRecordPath(path, "extensions/demo"), true, path);
 		}
-		assert.equal(isDevRecordPath("extensions/subagent/RELIABILITY-FINDINGS.md", "extensions/subagent"), true);
+		assert.equal(isDevRecordPath("extensions/demo/RELIABILITY-FINDINGS.md", "extensions/demo"), true);
 		for (const path of ["extensions/demo/findings.md", "extensions/demo/FINDINGS.md.bak", "docs/FINDINGS.md"]) {
 			assert.equal(isDevRecordPath(path, "extensions/demo"), false, path);
 		}
@@ -273,18 +273,18 @@ describe("Pi package reconciliation", () => {
 	it("routes loaded main extensions and existing worktree extensions through worktrees", () => {
 		const result = reconcile([
 			"../../Workspace/harness",
-			"../../Workspace/harness.worktrees/subagent/extensions/subagent/index.ts",
+			"../../Workspace/harness.worktrees/demo/extensions/demo/index.ts",
 			"git:github.com/example/theme",
 		]);
 
-		assert.deepEqual(result.activeNames, ["brave", "clipboard", "stash", "statusline", "subagent"]);
+		assert.deepEqual(result.activeNames, ["brave", "clipboard", "demo", "stash", "statusline"]);
 		assert.deepEqual(result.packages, [
 			{ source: "../../Workspace/harness", extensions: [] },
 			"../../Workspace/harness.worktrees/brave/extensions/brave/index.ts",
 			"../../Workspace/harness.worktrees/clipboard/extensions/clipboard/index.ts",
+			"../../Workspace/harness.worktrees/demo/extensions/demo/index.ts",
 			"../../Workspace/harness.worktrees/stash/extensions/stash/index.ts",
 			"../../Workspace/harness.worktrees/statusline/extensions/statusline/index.ts",
-			"../../Workspace/harness.worktrees/subagent/extensions/subagent/index.ts",
 			"git:github.com/example/theme",
 		]);
 	});
@@ -318,7 +318,7 @@ describe("Pi package reconciliation", () => {
 	it("produces the same package list on repeated reconciliation", () => {
 		const first = reconcile([
 			"../../Workspace/harness",
-			"../../Workspace/harness.worktrees/subagent/extensions/subagent/index.ts",
+			"../../Workspace/harness.worktrees/demo/extensions/demo/index.ts",
 		]);
 		const second = reconcile(first.packages);
 		assert.deepEqual(second, first);

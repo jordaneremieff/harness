@@ -189,6 +189,6 @@ The armory file is the single seam: the body names pillars without paths; `refer
 
 - Not code review. Reviewing the operator's own code follows its own discipline.
 - Not triage. The probe face does not sort or prioritize work.
-- Not a checker dispatch. Do not spawn a subagent to verify the claims. Composing the delivery and readback surfaces is transport, not verification, and stays inside this skill.
+- Not a checker dispatch. Do not start another session to verify the claims. Composing the delivery and readback surfaces is transport, not verification, and stays inside this skill.
 - Not an authorization channel. Conveying the operator's permission to another session is not a press; the operator sends that themselves.
 - Not neutral. If the operator wants a neutral verdict, say that this skill is the wrong tool.

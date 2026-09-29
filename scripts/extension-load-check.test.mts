@@ -165,7 +165,6 @@ test("serialized package registrations and built-in schemas exclude tuple notati
 			: fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
 		const { DefaultResourceLoader, SettingsManager } = await import(pathToFileURL(entry).href);
 		const { createAllTools } = await import(pathToFileURL(join(dirname(entry), "core/tools/index.js")).href);
-		const { submitResultTool } = await import(pathToFileURL(join(repositoryRoot, "extensions/subagent/index.ts")).href);
 		const loader = new DefaultResourceLoader({
 			cwd: root, agentDir: join(root, "agent"),
 			settingsManager: SettingsManager.inMemory({
@@ -181,8 +180,7 @@ test("serialized package registrations and built-in schemas exclude tuple notati
 		const registered = extensions.flatMap(extension => [...extension.tools.values()].map(({ definition }) => metadata(definition)));
 		assert.ok(registered.length > 0, "the package must register tools");
 		const builtins = Object.values(createAllTools(root)).map(metadata);
-		const runtime = [submitResultTool(join(root, "result.md"), () => {}, () => "schema-test")].map(metadata);
-		console.log(JSON.stringify({ extensions: extensions.map(extension => extension.path), registered, builtins, runtime }));
+		console.log(JSON.stringify({ extensions: extensions.map(extension => extension.path), registered, builtins }));
 	`;
 	const { stdout } = await promisify(execFile)(
 		process.execPath,
@@ -195,15 +193,14 @@ test("serialized package registrations and built-in schemas exclude tuple notati
 		},
 	);
 	type Schema = { name: string; parameters: unknown };
-	const { extensions, registered, builtins, runtime } = JSON.parse(stdout) as {
+	const { extensions, registered, builtins } = JSON.parse(stdout) as {
 		extensions: string[];
 		registered: Schema[];
 		builtins: Schema[];
-		runtime: Schema[];
 	};
-	const tools = [...builtins, ...registered, ...runtime];
+	const tools = [...builtins, ...registered];
 	t.diagnostic(
-		`Checked ${tools.length} schemas: ${builtins.length} built-ins, ${registered.length} registrations from ${extensions.length} package extensions, and ${runtime.length} worker-only tool`,
+		`Checked ${tools.length} schemas: ${builtins.length} built-ins and ${registered.length} registrations from ${extensions.length} package extensions`,
 	);
 	assert.deepEqual(
 		tools.flatMap((tool) => tupleSchemaIssues(tool.name, tool.parameters)),

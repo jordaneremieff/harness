@@ -53,8 +53,8 @@ boundaries, rather than a central feature catalog.
 `npm test` includes a serialized tool-schema check in
 [scripts/extension-load-check.test.mts](scripts/extension-load-check.test.mts).
 It loads every extension selected by the package manifest in an isolated Pi
-resource loader and checks its factory-registered tools, Pi's built-in tools,
-and the subagent's worker-only result tool. Registration runs in a bounded child
+resource loader and checks its factory-registered tools and Pi's built-in tools.
+Registration runs in a bounded child
 with separate coverage output because jiti and native imports share source URLs
 but have different line maps. The schema assertions run in the normal test suite.
 The check rejects array-valued `items`, `additionalItems`, and `prefixItems` in

@@ -206,8 +206,8 @@ Verified 2026-09-29 against the cited `main` commits. These changes are on
   host that refers to built-in extension identities.
 - [`e473b5cd8b`][main-rpc-disposition] adds `data.disposition` to successful
   RPC prompt, steer, and follow_up responses, so a client can tell whether a run
-  started. The agent and subagent extensions use `AgentSession` directly and do
-  not consume RPC responses today; an RPC-backed host would use this field
+  started. The agent extension uses `AgentSession` directly and does
+  not consume RPC responses; an RPC-backed host would use this field
   instead of waiting unconditionally for `agent_settled`.
 
 ## Current ordinary-session contracts
@@ -275,7 +275,7 @@ produce an explicit safe view rather than throw.
 Display and delivery are separate contracts. An idle custom message with
 `triggerTurn: true` starts a provider turn; active steering preserves the host
 queue. Provider conversion includes message content but omits display metadata.
-Agent and subagent use the native rendering boundary, not queue changes, to
+The agent extension uses the native rendering boundary, not queue changes, to
 limit the default footprint of late peer evidence. Peer-operation outcomes
 remain separate from primary-session state and task acceptance. Native
 expansion and arbitrary message arrivals prevent a permanent-visibility

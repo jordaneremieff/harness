@@ -55,7 +55,7 @@ workflow, wrong artifact type, or a case better served by another skill.
 For Pi, a triggered skill is observable when the agent reads the skill's
 `SKILL.md`; a direct `/skill:name` invocation is an explicit override, not
 evidence of autonomous triggering. Run candidates in clean sessions where
-possible. If the harness offers subagents or parallel sessions, use them;
+possible. If the harness offers parallel sessions, use them;
 otherwise run prompts serially and keep the results separate.
 
 Track a trigger rate over repeated runs, because activation is
