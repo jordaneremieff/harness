@@ -33,7 +33,7 @@ const PREVIEW_ARRAY_LIMIT = 20;
 const SEARCH_PREVIEW_LIMIT = 3;
 const WITHHOLD_THRESHOLD = 120;
 const WRITE_ERROR_PREFIX = "Memory write incomplete: ";
-const WITHHELD_KEYS = new Set(["summary", "details", "sources", "title", "oldText", "newText"]);
+const WITHHELD_KEYS = new Set(["summary", "details", "sources", "reason", "title", "oldText", "newText"]);
 
 export interface CallContext {
 	expanded?: boolean;
@@ -278,6 +278,7 @@ function searchCall(args: unknown, theme: Theme, context: CallContext): Componen
 	const { subject, qualifiers, hint } = querySubject(fields.query, context.argsComplete);
 	const detail = [...qualifiers];
 	if (textField(fields.cursor)) detail.push("continuation");
+	if (fields.includeRetired === true) detail.push("includes retired");
 	const limit = numberField(fields.limit);
 	if (limit !== null && limit > 0) detail.push(`limit ${limit}`);
 	else if (fields.query === undefined && context.argsComplete !== false) detail.push("byte-bounded cues");
@@ -335,6 +336,16 @@ function editCall(args: unknown, theme: Theme, context: CallContext): Component 
 	return callCard("memory_edit", subject, detail, true, stringifySafe(sanitizeForPreview(args, null)), theme, context);
 }
 
+function reviewCall(name: string, args: unknown, theme: Theme, context: CallContext): Component {
+	const fields = record(args);
+	const slug = textField(fields.slug);
+	const subject =
+		slug !== null ? previewMark(slug, SLUG_LIMIT).text : context.argsComplete === false ? "" : "(slug pending)";
+	const detail = [name === "memory_retire" ? "retire" : (textField(fields.outcome) ?? "review")];
+	if (fields.reactivate === true) detail.push("reactivation requested");
+	return callCard(name, subject, detail, true, stringifySafe(sanitizeForPreview(args, null)), theme, context);
+}
+
 /** A page is a query page when the query field holds a formulation, not null. */
 function isQueryPage(query: unknown): boolean {
 	if (typeof query === "string") return query !== "";
@@ -361,6 +372,7 @@ function pageQualifiers(
 	return joinedParts([
 		issues !== null && issues > 0 ? `${issues} scan issues` : "",
 		unavailable !== null && unavailable > 0 ? `${unavailable} unavailable notes` : "",
+		numberField(details.excludedRetired) ? `${details.excludedRetired} retired notes excluded in this window` : "",
 		hasContinuation ? "continuation available" : "",
 	]);
 }
@@ -411,6 +423,8 @@ function scanEvidence(details: Record<string, unknown>): string[] {
 			["Window end", scan.windowEnd],
 			["Window source bytes", scan.sourceBytes],
 			["Unavailable notes", record(details.search).unavailableNotes ?? scan.unavailableNotes],
+			["Retired notes in this window", scan.retiredNotes],
+			["Retired notes excluded in this window", details.excludedRetired],
 			["Scan issues", scan.issueCount],
 			["Scan issues shown", scan.issuesShown],
 		]),
@@ -442,7 +456,7 @@ function queryCoverage(details: Record<string, unknown>): string[] {
 
 function searchContinuation(details: Record<string, unknown>): string {
 	if (details.hasMore === true)
-		return `Continue with the same query and nextCursor: ${textField(details.nextCursor) ?? "unknown"}`;
+		return `Continue with the same query and includeRetired filter and nextCursor: ${textField(details.nextCursor) ?? "unknown"}`;
 	return details.hasMore === false ? "End of this result set; coverage limits still apply." : "Continuation: unknown.";
 }
 
@@ -469,10 +483,14 @@ function noteEvidence(note: Record<string, unknown>, query: boolean): string[] {
 		textField(note[key]) ? [`${key} cue: ${note[key]}`] : [],
 	);
 	const formulations = Array.isArray(note.formulations) ? note.formulations.map(record) : [];
+	const lifecycle = note.lifecycle ? lifecycleView(note) : undefined;
 	return [
 		"",
 		`${numberField(note.rank) !== null ? `${note.rank}. ` : ""}${noteHeading(note)}`,
 		...cues,
+		...(lifecycle ? [lifecycle.label] : []),
+		...(lifecycle?.problem ? [`Lifecycle problem: ${lifecycle.problem}`] : []),
+		...freshnessEvidence(note.freshness),
 		...(textField(note.cueProblem) ? [`Cue problem: ${note.cueProblem}`] : []),
 		...(textField(note.digest) ? [`Digest: ${note.digest}`] : []),
 		...formulationEvidence(note),
@@ -488,6 +506,7 @@ function searchBody(details: Record<string, unknown>, notes: Record<string, unkn
 		querying ? `Query: ${typeof query === "string" ? query : stringList(query).join(" | ")}` : "",
 		...scanEvidence(details),
 		...queryCoverage(details),
+		typeof details.includeRetired === "boolean" ? `Includes retired notes: ${details.includeRetired}` : "",
 		...numberLines([["Page starts at window offset", details.pageOffset]]),
 		textField(record(details.coverage).meaning) ?? "",
 		searchContinuation(details),
@@ -525,7 +544,13 @@ function searchResult(
 function searchPreviews(notes: Record<string, unknown>[]): string[] {
 	const previews = notes
 		.slice(0, SEARCH_PREVIEW_LIMIT)
-		.map((note) => `• ${noteHeading(note, true)}${textField(note.cueProblem) ? " [cue problem]" : ""}`);
+		.map((note) =>
+			joinedParts([
+				`• ${noteHeading(note, true)}${textField(note.cueProblem) ? " [cue problem]" : ""}`,
+				note.lifecycle ? lifecycleView(note).label : "",
+				freshnessSummary(note.freshness),
+			]),
+		);
 	if (notes.length > previews.length) previews.push(`+ ${notes.length - previews.length} more subjects on this page`);
 	return previews;
 }
@@ -572,9 +597,10 @@ function readResult(
 	const lifecycle = lifecycleView(details);
 	const line = joinedParts([slug !== null ? previewMark(slug, SLUG_LIMIT).text : "note", size ?? ""]).concat(more);
 	return resultCard(
-		{ color: lifecycle.color, line },
+		{ color: freshnessWarning(details.freshness) ? "warning" : lifecycle.color, line },
 		joinedParts([
 			previewMark(lifecycle.label, 200).text,
+			freshnessSummary(details.freshness),
 			textField(details.revision) ? `revision ${details.revision}` : "",
 			lifecycle.problem ? `Lifecycle problem: ${previewMark(lifecycle.problem, ERROR_LIMIT).text}` : "",
 		]),
@@ -592,13 +618,68 @@ function lifecycleView(details: Record<string, unknown>): LifecycleView {
 	const lifecycle = record(details.lifecycle);
 	const problem = textField(lifecycle.problem);
 	if (details.source === "contract") return { label: "contract source", problem, color: "success" };
-	const status = lifecycle.status === "active" || lifecycle.status === "superseded" ? lifecycle.status : "unknown";
+	const status =
+		lifecycle.status === "active" || lifecycle.status === "superseded" || lifecycle.status === "retired"
+			? lifecycle.status
+			: "unknown";
 	const replacement = textField(lifecycle.supersededBy);
 	return {
 		label: `${details.source === "history" ? "historical evidence · prior " : ""}status ${status}${replacement ? ` · replacement ${replacement}` : ""}`,
 		problem,
 		color: details.source === "history" || status !== "active" || problem ? "warning" : "success",
 	};
+}
+
+function freshnessSummary(value: unknown): string {
+	const freshness = record(value);
+	if (Object.keys(freshness).length === 0) return "";
+	return joinedParts([
+		`policy ${textField(freshness.policy) ?? "unknown"}`,
+		`review ${textField(freshness.deadline) ?? "unknown"}`,
+		Object.keys(record(freshness.concern)).length ? "unresolved concern" : "",
+		stringList(freshness.problems).length ? `${stringList(freshness.problems).length} freshness problems` : "",
+	]);
+}
+
+function freshnessWarning(value: unknown): boolean {
+	const freshness = record(value);
+	return (
+		freshness.deadline === "due" ||
+		Object.keys(record(freshness.concern)).length > 0 ||
+		stringList(freshness.problems).length > 0
+	);
+}
+
+function freshnessRecord(label: string, value: unknown): string[] {
+	const evidence = record(value);
+	if (!Object.keys(evidence).length) return [];
+	return [
+		`${label}: ${textField(evidence.date) ?? "unknown date"}`,
+		...["digest", "reason", "sources"].flatMap((field) =>
+			textField(evidence[field]) ? [`${label} ${field}: ${evidence[field]}`] : [],
+		),
+	];
+}
+
+function freshnessEvidence(value: unknown): string[] {
+	const freshness = record(value);
+	if (Object.keys(freshness).length === 0) return [];
+	const lines = [
+		`Freshness evaluated on: ${textField(freshness.evaluatedOn) ?? "unknown"}`,
+		`Declared verified: ${typeof freshness.verified === "boolean" ? freshness.verified : "unknown"}`,
+		`Declared verification date: ${textField(freshness.verifiedDate) ?? "none or unknown"}`,
+		`Review policy: ${textField(freshness.policy) ?? "unknown"}`,
+		`Review deadline: ${textField(freshness.deadline) ?? "unknown"}`,
+		`Review after: ${textField(freshness.reviewAfter) ?? "none or unknown"}`,
+	];
+	lines.push(
+		...freshnessRecord("Unresolved concern", freshness.concern),
+		...freshnessRecord("Last review", freshness.lastReview),
+		...freshnessRecord("Retirement", freshness.retirement),
+	);
+	lines.push(...stringList(freshness.problems).map((problem) => `Freshness problem: ${problem}`));
+	lines.push("Metadata records declarations, not proof of current truth.");
+	return lines;
 }
 
 function readBody(details: Record<string, unknown>, lifecycle: LifecycleView, fallback: string): string {
@@ -615,6 +696,7 @@ function readBody(details: Record<string, unknown>, lifecycle: LifecycleView, fa
 		textField(details.capturedAt) ? `Captured: ${details.capturedAt}` : "",
 		textField(details.authority) ?? "",
 		lifecycle.problem ? `Lifecycle problem: ${lifecycle.problem}` : "",
+		...freshnessEvidence(details.freshness),
 		`Digest: ${textField(details.digest) ?? "unknown"}`,
 		`Source range: [${numberField(details.offset) ?? "?"}, ${end ?? "?"}) code points`,
 		continuation,
@@ -681,9 +763,17 @@ function receiptView(receipt: Record<string, unknown>): ReceiptView {
 	};
 }
 
-function receiptOutcome(receipt: Record<string, unknown>, operation: "write" | "edit"): ReceiptOutcome {
+type MutationOperation = "write" | "edit" | "review" | "retire";
+const MUTATION_OPERATIONS: Record<string, MutationOperation> = {
+	memory_write: "write",
+	memory_edit: "edit",
+	memory_review: "review",
+	memory_retire: "retire",
+};
+
+function receiptOutcome(receipt: Record<string, unknown>, operation: MutationOperation): ReceiptOutcome {
 	const view = receiptView(receipt);
-	const verb = operation === "edit" ? "edited" : "written";
+	const verb = { write: "written", edit: "edited", review: "reviewed", retire: "retired" }[operation];
 	const initialization = receipt.initialized === true ? " · corpus initialized" : "";
 	if (receipt.ok === true) {
 		return {
@@ -716,9 +806,11 @@ function writeResult(
 	theme: Theme,
 	context: ResultContext,
 ): Component {
-	const operation = name === "memory_edit" ? "edit" : "write";
-	if (options.isPartial)
-		return partialCard(operation === "edit" ? "Editing note..." : "Writing note...", theme, context);
+	const operation = MUTATION_OPERATIONS[name] ?? "write";
+	if (options.isPartial) {
+		const state = { write: "Writing", edit: "Editing", review: "Reviewing", retire: "Retiring" }[operation];
+		return partialCard(`${state} note...`, theme, context);
+	}
 	const details = record(result.details);
 	const text = textContent(result);
 	if (isReceipt(details)) {
@@ -746,6 +838,24 @@ function writeResult(
 	return fallbackCard(name, result, options, theme, context);
 }
 
+function historyPlanEvidence(value: unknown): string[] {
+	const plan = record(value);
+	if (Object.keys(plan).length === 0) return [];
+	return [
+		`Read-only history plan: captured before ${textField(plan.capturedBefore) ?? "unknown"}; keep newest ${numberField(plan.keepNewest) ?? "unknown"}`,
+		...numberLines([
+			["Available bytes on this metadata page", plan.availableBytes],
+			["Keep bytes on this metadata page", plan.keepBytes],
+			["Candidate bytes on this metadata page", plan.candidateBytes],
+			["Kept revisions on this page", plan.kept],
+			["Candidate revisions on this page", plan.candidates],
+			["Unavailable revisions on this page", plan.unavailable],
+		]),
+		...(textField(plan.meaning) ? [`Plan scope: ${plan.meaning}`] : []),
+		"Capture-name digests are unverified. This plan authorizes no removal and imposes no retained-storage bound.",
+	];
+}
+
 function historyResult(
 	result: AgentToolResult<unknown>,
 	options: ToolRenderResultOptions,
@@ -760,18 +870,22 @@ function historyResult(
 	const body = [
 		textField(details.authority) ?? "",
 		`Coverage: ${stringifySafe(coverage)}`,
+		...historyPlanEvidence(details.plan),
 		...revisions.map(
 			(revision) =>
-				`Revision: ${revision.revision}\nCaptured: ${revision.capturedAt}\nDigest: ${revision.digest}\nBytes: ${revision.bytes}`,
+				`Revision: ${revision.revision}\nCaptured: ${revision.capturedAt}\nDigest: ${revision.digest}\nBytes: ${revision.bytes}${textField(revision.selection) ? `\nSelection: ${revision.selection}\nReason: ${textField(revision.reason) ?? "unknown"}` : ""}`,
 		),
 		textField(details.nextCursor)
-			? `Repeat slug with nextCursor: ${details.nextCursor}`
+			? `Repeat slug${details.plan ? " and plan" : ""} with nextCursor: ${details.nextCursor}`
 			: "End of captured revision inventory.",
 	].join("\n");
 	return resultCard(
 		{ color: "muted", line: `${textField(details.slug) ?? "subject"} · ${revisions.length} prior captures` },
 		joinedParts([
 			"historical evidence, not current authority",
+			details.plan
+				? `${numberField(record(details.plan).candidates) ?? "unknown"} candidates on this page; read-only plan`
+				: "",
 			textField(details.nextCursor) ? "continuation available" : "",
 			numberField(coverage.unavailable) ? `${coverage.unavailable} unavailable revisions` : "",
 		]),
@@ -794,7 +908,9 @@ export function renderCall(name: string, args: unknown, theme: Theme, context: C
 			return callCard(
 				name,
 				textField(record(args).slug) ?? "",
-				textField(record(args).cursor) ? ["continuation"] : [],
+				[textField(record(args).cursor) ? "continuation" : "", record(args).plan ? "read-only plan" : ""].filter(
+					Boolean,
+				),
 				true,
 				stringifySafe(args),
 				theme,
@@ -804,6 +920,9 @@ export function renderCall(name: string, args: unknown, theme: Theme, context: C
 			return writeCall(args, theme, context);
 		case "memory_edit":
 			return editCall(args, theme, context);
+		case "memory_review":
+		case "memory_retire":
+			return reviewCall(name, args, theme, context);
 		default:
 			return callCard(name, "", [], false, "", theme, context);
 	}
@@ -826,6 +945,8 @@ export function renderResult(
 			return historyResult(result, options, theme, context);
 		case "memory_write":
 		case "memory_edit":
+		case "memory_review":
+		case "memory_retire":
 			return writeResult(name, result, options, theme, context);
 		default:
 			return fallbackCard(name, result, options, theme, context);

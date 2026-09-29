@@ -28,14 +28,16 @@ function tools() {
 	} as unknown as ExtensionAPI);
 	return all;
 }
-function call(tool: Registered, args: JsonObject, signal = new AbortController().signal) {
-	const effective = validateToolArguments(tool as unknown as Tool, {
+function argumentsFor(tool: Registered, args: JsonObject) {
+	return validateToolArguments(tool as unknown as Tool, {
 		type: "toolCall",
 		id: "test",
 		name: tool.name,
 		arguments: args,
 	});
-	return tool.execute("test", effective, signal);
+}
+function call(tool: Registered, args: JsonObject, signal = new AbortController().signal) {
+	return tool.execute("test", argumentsFor(tool, args), signal);
 }
 const input = {
 	slug: "editor-choice",
@@ -49,7 +51,10 @@ const input = {
 
 test("factory registers only the memory jobs, with native cards and trigger guidance", () => {
 	const all = tools();
-	assert.deepEqual([...all.keys()], ["memory_search", "memory_read", "memory_history", "memory_write", "memory_edit"]);
+	assert.deepEqual(
+		[...all.keys()],
+		["memory_search", "memory_read", "memory_history", "memory_write", "memory_edit", "memory_review", "memory_retire"],
+	);
 	for (const tool of all.values()) {
 		assert.equal(typeof tool.renderCall, "function");
 		assert.equal(typeof tool.renderResult, "function");
@@ -66,6 +71,9 @@ test("factory registers only the memory jobs, with native cards and trigger guid
 		"Low confidence",
 		"TODOs",
 		"never grant",
+		"does not require a memory write",
+		"only its disputed claim",
+		"never reverses supersession",
 	])
 		assert.ok(guidance.includes(word), word);
 });
@@ -83,6 +91,24 @@ test("adapter rejects unavailable configuration without an inferred path", async
 		await assert.rejects(call(all.get("memory_search") as Registered, {}), /Memory unavailable/);
 		await assert.rejects(call(all.get("memory_read") as Registered, { slug: "README" }), /Memory unavailable/);
 		await assert.rejects(call(all.get("memory_write") as Registered, input), /Memory unavailable/);
+		await assert.rejects(
+			call(all.get("memory_review") as Registered, {
+				slug: input.slug,
+				expectedDigest: "a".repeat(64),
+				outcome: "confirmed",
+				sources: "Current source.",
+			}),
+			/Memory unavailable/,
+		);
+		await assert.rejects(
+			call(all.get("memory_retire") as Registered, {
+				slug: input.slug,
+				expectedDigest: "a".repeat(64),
+				reason: "Withdrawn.",
+				sources: "Operator statement.",
+			}),
+			/Memory unavailable/,
+		);
 		await assert.rejects(
 			call(all.get("memory_edit") as Registered, {
 				slug: input.slug,
@@ -162,6 +188,130 @@ test("schema rejects empty payloads, excess formulations and unbounded pages", (
 		{ ...edit, expectedDigest: "bad" },
 	])
 		assert.throws(() => call(editor, args));
+});
+
+test("lifecycle schemas reject unsupported policies, incomplete plans and unbounded metadata", () => {
+	const all = tools();
+	const reviewer = all.get("memory_review") as Registered;
+	const retire = all.get("memory_retire") as Registered;
+	const review = { slug: "one", expectedDigest: "a".repeat(64), outcome: "confirmed", sources: "Source." };
+	for (const args of [
+		{ ...review, expectedDigest: "bad" },
+		{ ...review, outcome: "automatic" },
+		{ ...review, sources: "" },
+		{ ...review, sources: "s".repeat(1501) },
+		{ ...review, reason: "r".repeat(601) },
+		{ ...review, reactivate: false },
+		{ ...review, reviewPolicy: "monthly" },
+		{ ...review, reviewAfter: "tomorrow" },
+	])
+		assert.throws(() => argumentsFor(reviewer, args));
+	const retireCases: JsonObject[] = [
+		{ slug: "one", expectedDigest: "a".repeat(64), sources: "Source." },
+		{ slug: "one", expectedDigest: "a".repeat(64), reason: "", sources: "Source." },
+	];
+	for (const args of retireCases) assert.throws(() => argumentsFor(retire, args));
+	const planCases: JsonObject[] = [
+		{ capturedBefore: "2026-01-01T00:00:00.000Z" },
+		{ keepNewest: 1 },
+		{ capturedBefore: "2026-01-01", keepNewest: 1 },
+		{ capturedBefore: "2026-01-01T00:00:00.000Z", keepNewest: -1 },
+		{ capturedBefore: "2026-01-01T00:00:00.000Z", keepNewest: 16385 },
+		{ capturedBefore: "2026-01-01T00:00:00.000Z", keepNewest: 0.5 },
+	];
+	for (const plan of planCases)
+		assert.throws(() => argumentsFor(all.get("memory_history") as Registered, { slug: "one", plan }));
+	assert.throws(() => argumentsFor(all.get("memory_search") as Registered, { includeRetired: "yes" }));
+	const normalized = argumentsFor(all.get("memory_write") as Registered, { ...input, reviewPolicy: null });
+	assert.equal(Object.hasOwn(normalized, "reviewPolicy"), false);
+	const nullable = argumentsFor(reviewer, { ...review, reviewPolicy: null, reviewAfter: null });
+	assert.equal(nullable.reviewPolicy, null);
+	assert.equal(nullable.reviewAfter, null);
+});
+
+test("review and retirement adapters share receipts, preserve signals, and serialize with writers", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "memory-lifecycle-adapter-"));
+	const old = process.env.PI_MEMORY_DIR;
+	process.env.PI_MEMORY_DIR = root;
+	t.after(() => {
+		if (old === undefined) delete process.env.PI_MEMORY_DIR;
+		else process.env.PI_MEMORY_DIR = old;
+		rmSync(root, { recursive: true, force: true });
+	});
+	const all = tools();
+	const writer = all.get("memory_write") as Registered;
+	const reviewer = all.get("memory_review") as Registered;
+	const retire = all.get("memory_retire") as Registered;
+	const first = await call(writer, { ...input, reviewPolicy: "before-use", reviewAfter: "2000-01-01" });
+	const review = {
+		slug: input.slug,
+		expectedDigest: first.details.digest as string,
+		outcome: "unresolved",
+		reason: "The current source differs.",
+		sources: "Synthetic source comparison.",
+	};
+	const reviewResults = await Promise.allSettled([
+		call(reviewer, review),
+		call(all.get("memory_edit") as Registered, {
+			slug: input.slug,
+			expectedDigest: first.details.digest as string,
+			verified: false,
+			edits: [{ oldText: "Use editor A.", newText: "Use editor B." }],
+		}),
+	]);
+	assert.equal(reviewResults[0].status, "fulfilled");
+	assert.equal(reviewResults[1].status, "rejected");
+	assert.ok(reviewResults[0].status === "fulfilled");
+	const reviewed = reviewResults[0].value;
+	assert.match(reviewed.content[0].text, /^Memory updated: editor-choice.md\n/);
+	assert.deepEqual(reviewed.details.written, ["editor-choice.md"]);
+	assert.deepEqual(reviewed.details.notWritten, []);
+	assert.equal(reviewed.details.initialized, false);
+	assert.equal((reviewed.details.captured as unknown[]).length, 1);
+	const confirmed = await call(reviewer, {
+		slug: input.slug,
+		expectedDigest: reviewed.details.digest as string,
+		outcome: "confirmed",
+		sources: "Complete current source check.",
+		reviewPolicy: null,
+		reviewAfter: null,
+	});
+	const current = readFileSync(join(root, `${input.slug}.md`), "utf8");
+	assert.match(current, /last_review:/);
+	assert.doesNotMatch(current, /review_flag:|review_policy:|review_after:/);
+	const retirement = {
+		slug: input.slug,
+		expectedDigest: confirmed.details.digest as string,
+		reason: "The operator withdrew the preference.",
+		sources: "Synthetic operator withdrawal.",
+	};
+	const retireResults = await Promise.allSettled([
+		call(retire, retirement),
+		call(writer, { ...input, expectedDigest: confirmed.details.digest as string }),
+	]);
+	assert.equal(retireResults[0].status, "fulfilled");
+	assert.equal(retireResults[1].status, "rejected");
+	assert.ok(retireResults[0].status === "fulfilled");
+	const retired = retireResults[0].value;
+	assert.match(retired.content[0].text, /^Memory updated: editor-choice.md\n/);
+	assert.deepEqual(retired.details.written, ["editor-choice.md"]);
+	assert.equal(retired.details.initialized, false);
+	const reactivation = {
+		slug: input.slug,
+		expectedDigest: retired.details.digest as string,
+		outcome: "confirmed",
+		sources: "Synthetic restored operator preference.",
+		reactivate: true,
+	};
+	const abort = new AbortController();
+	abort.abort();
+	await assert.rejects(call(reviewer, reactivation, abort.signal), /abort|cancel/i);
+	const restored = await call(reviewer, reactivation);
+	await assert.rejects(
+		call(retire, { ...retirement, expectedDigest: restored.details.digest as string }, abort.signal),
+		/abort|cancel/i,
+	);
+	assert.match(readFileSync(join(root, `${input.slug}.md`), "utf8"), /status: "active"/);
 });
 
 test("edit adapter reports the receipt and notice and shares the write queue", async (t) => {

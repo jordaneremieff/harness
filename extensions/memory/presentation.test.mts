@@ -258,6 +258,80 @@ describe("memory_edit cards", () => {
 	});
 });
 
+describe("memory review and retirement cards", () => {
+	it("withholds reasons and sources in every mutation call view", () => {
+		for (const name of ["memory_review", "memory_retire"]) {
+			const args = {
+				slug: "subject",
+				expectedDigest: "a".repeat(64),
+				outcome: "confirmed",
+				reactivate: true,
+				reason: "private reason",
+				sources: "private source",
+			};
+			const before = structuredClone(args);
+			for (const view of [call, expandedCall]) {
+				const shown = screen(renderCall(name, args, theme, view));
+				assert.ok(shown.includes(`${name} · subject`));
+				assert.doesNotMatch(shown, /private reason|private source/);
+			}
+			assert.match(screen(renderCall(name, args, theme, expandedCall)), /"reason": "<withheld: 14 chars>"/);
+			assert.match(screen(renderCall(name, args, theme, expandedCall)), /"sources": "<withheld: 14 chars>"/);
+			assert.deepEqual(args, before);
+		}
+		assert.match(
+			screen(renderCall("memory_review", { slug: "subject", outcome: "confirmed", reactivate: true }, theme, call)),
+			/confirmed · reactivation requested/,
+		);
+	});
+
+	it("uses shared receipt semantics without claiming a review confirmed the note", () => {
+		for (const [name, operation, past] of [
+			["memory_review", "review", "reviewed"],
+			["memory_retire", "retire", "retired"],
+		]) {
+			const receipt = {
+				ok: true,
+				slug: "subject",
+				written: ["subject.md"],
+				notWritten: [],
+				captured: [{ revision: "prior" }],
+			};
+			const shown = screen(renderResult(name, result("stored", receipt), collapsed, theme, okContext));
+			assert.ok(shown.includes(`subject ${past}`));
+			assert.match(shown, /1 prior captures/);
+			assert.doesNotMatch(shown, /confirmed|reactivated/);
+			const failed = { ...receipt, ok: false, written: [], notWritten: ["subject.md"], error: "Source changed" };
+			const failure = screen(
+				renderResult(
+					name,
+					result(`Memory write incomplete: ${JSON.stringify(failed)}`, undefined),
+					collapsed,
+					theme,
+					errorContext,
+				),
+			);
+			assert.ok(failure.includes(`${operation} failed`));
+			assert.match(failure, /Source changed/);
+			assert.match(
+				screen(renderResult(name, result("", {}), { ...collapsed, isPartial: true }, theme, okContext)),
+				/note\.\.\./,
+			);
+		}
+	});
+
+	it("handles partial, malformed, hostile and narrow call views without leaking payloads", () => {
+		for (const name of ["memory_review", "memory_retire"])
+			for (const args of [null, {}, { slug: "subject\x1b[2J", reason: "r".repeat(10000), sources: "\x07" }])
+				for (const expanded of [false, true]) {
+					const shown = screen(renderCall(name, args, theme, { argsComplete: false, expanded }), 24);
+					assert.doesNotMatch(shown, /[\x1b\x07]|r{50}/);
+					assert.ok(shown.length < 1000);
+					wellFormed(shown);
+				}
+	});
+});
+
 describe("memory_search result cards", () => {
 	const indexPage = {
 		ok: true,
@@ -543,6 +617,7 @@ describe("memory_read result cards", () => {
 		for (const lifecycle of [
 			{ status: "superseded", supersededBy: "new-subject" },
 			{ status: "unknown", supersededBy: null, problem: "invalid or ambiguous frontmatter" },
+			{ status: "retired", supersededBy: null },
 		])
 			for (const view of [collapsed, expandedView]) {
 				const details = { ...notePage, lifecycle };
@@ -597,6 +672,114 @@ describe("memory_read result cards", () => {
 		);
 		const malformed = screen(renderResult("memory_read", result("fallback", "broken"), collapsed, theme, okContext));
 		assert.match(malformed, /fallback/);
+	});
+});
+
+describe("freshness evidence cards", () => {
+	const freshness = {
+		evaluatedOn: "2026-09-29",
+		verified: true,
+		verifiedDate: "2026-01-01",
+		policy: "before-use",
+		reviewAfter: "2026-09-01",
+		deadline: "due",
+		concern: {
+			date: "2026-09-28",
+			reason: "Only the release claim differs.\x1b[2J",
+			sources: "Current release source.",
+		},
+		lastReview: { date: "2026-01-01", digest: "b".repeat(64), sources: "Inspected prior source." },
+		retirement: null,
+		problems: ["Verification date requires interpretation"],
+	};
+	it("exposes policy, deadline and concerns without labeling the note fresh or false", () => {
+		const details = {
+			slug: "subject",
+			source: "note",
+			content: "Source body",
+			lifecycle: { status: "active", supersededBy: null },
+			freshness,
+		};
+		const response = result(JSON.stringify(details), details);
+		const before = structuredClone(response);
+		const compact = screen(renderResult("memory_read", response, collapsed, colorTheme, okContext), 300);
+		assert.match(compact, /\{warning\}.*subject/);
+		assert.match(compact, /policy before-use · review due · unresolved concern · 1 freshness problems/);
+		const expanded = screen(renderResult("memory_read", response, expandedView, theme, okContext), 300);
+		for (const pattern of [
+			/Freshness evaluated on: 2026-09-29/,
+			/Declared verified: true/,
+			/Declared verification date: 2026-01-01/,
+			/Review policy: before-use/,
+			/Review deadline: due/,
+			/Review after: 2026-09-01/,
+			/Unresolved concern reason: Only the release claim differs\.\\u\{1b\}\[2J/,
+			/Unresolved concern sources: Current release source\./,
+			/Last review digest: b{64}/,
+			/Last review sources: Inspected prior source\./,
+			/Freshness problem: Verification date requires interpretation/,
+			/Metadata records declarations, not proof of current truth\./,
+		])
+			assert.match(expanded, pattern);
+		assert.doesNotMatch(expanded, /\x1b|status false|status fresh/);
+		assert.deepEqual(response, before);
+	});
+
+	it("preserves retired and historical evidence in search and direct reads", () => {
+		const note = {
+			slug: "subject",
+			lifecycle: { status: "retired", supersededBy: null },
+			freshness: {
+				...freshness,
+				retirement: { date: "2026-09-29", reason: "Withdrawn by operator.", sources: "Current instruction." },
+			},
+		};
+		const details = {
+			notes: [note],
+			includeRetired: true,
+			excludedRetired: 0,
+			returned: 1,
+			totalNotes: 1,
+			scan: { complete: true, issueCount: 0, retiredNotes: 1 },
+		};
+		assert.match(screen(renderCall("memory_search", { includeRetired: true }, theme, call)), /includes retired/);
+		const search = screen(renderResult("memory_search", result("", details), expandedView, theme, okContext), 300);
+		assert.match(search, /Includes retired notes: true/);
+		assert.match(search, /Retired notes in this window: 1/);
+		assert.match(search, /status retired/);
+		assert.match(search, /Retirement reason: Withdrawn by operator\./);
+		const excluded = { ...details, notes: [], includeRetired: false, excludedRetired: 1, returned: 0, totalNotes: 0 };
+		assert.match(
+			screen(renderResult("memory_search", result("", excluded), collapsed, theme, okContext), 300),
+			/1 retired notes excluded in this window/,
+		);
+		const history = screen(
+			renderResult(
+				"memory_read",
+				result("", { ...note, source: "history", content: "Prior bytes" }),
+				expandedView,
+				theme,
+				okContext,
+			),
+			300,
+		);
+		assert.match(history, /historical evidence · prior status retired/);
+		assert.match(history, /Retirement sources: Current instruction\./);
+	});
+
+	it("renders unknown and malformed freshness data without upgrading it", () => {
+		for (const value of [
+			null,
+			{},
+			"bad",
+			{ policy: "unknown", deadline: "unknown", verified: "yes", problems: ["Malformed policy", 1] },
+		]) {
+			const details = { slug: "subject", content: "text", freshness: value };
+			const shown = screen(renderResult("memory_read", result("", details), expandedView, theme, okContext));
+			assert.doesNotMatch(shown, /Declared verified: true/);
+			if (value && typeof value === "object" && "verified" in value) assert.match(shown, /Declared verified: unknown/);
+			wellFormed(shown);
+		}
 	});
 });
 
@@ -733,6 +916,60 @@ describe("historical evidence cards", () => {
 			screen(renderCall("memory_history", { slug: "subject", cursor: "opaque" }, theme, call)),
 			/continuation/,
 		);
+	});
+	it("shows exact history-plan selections and page totals without deletion authority", () => {
+		const plan = {
+			capturedBefore: "2026-02-01T00:00:00.000Z",
+			keepNewest: 1,
+			scope: "metadata-page",
+			availableBytes: 300,
+			keepBytes: 100,
+			candidateBytes: 200,
+			kept: 1,
+			candidates: 1,
+			unavailable: 1,
+			digestsVerified: false,
+			meaning: "The retention floor includes unavailable revision names; it promises no recoverable floor.",
+		};
+		const details = {
+			slug: "subject",
+			plan,
+			coverage: { unavailable: 1, bodiesRead: false },
+			nextCursor: "opaque",
+			revisions: [
+				{
+					revision,
+					capturedAt: "2026-01-01T12:00:00.000Z",
+					digest: "a".repeat(64),
+					bytes: 200,
+					selection: "candidate",
+					reason: "before-cutoff-outside-floor",
+				},
+				{ revision: "newest-revision", bytes: 100, selection: "keep", reason: "newest-retention-floor" },
+			],
+		};
+		assert.match(screen(renderCall("memory_history", { slug: "subject", plan }, theme, call)), /read-only plan/);
+		assert.match(
+			screen(renderResult("memory_history", result("", details), collapsed, theme, okContext), 300),
+			/1 candidates on this page; read-only plan/,
+		);
+		const expanded = screen(renderResult("memory_history", result("", details), expandedView, theme, okContext), 300);
+		for (const pattern of [
+			/Read-only history plan: captured before 2026-02-01T00:00:00\.000Z; keep newest 1/,
+			/Available bytes on this metadata page: 300/,
+			/Keep bytes on this metadata page: 100/,
+			/Candidate bytes on this metadata page: 200/,
+			/Unavailable revisions on this page: 1/,
+			/Selection: candidate\nReason: before-cutoff-outside-floor/,
+			/Selection: keep\nReason: newest-retention-floor/,
+			/Capture-name digests are unverified/,
+			/Plan scope: The retention floor includes unavailable revision names; it promises no recoverable floor\./,
+			/authorizes no removal/,
+			/imposes no retained-storage bound/,
+			/Repeat slug and plan with nextCursor: opaque/,
+		])
+			assert.match(expanded, pattern);
+		assert.ok(expanded.includes(revision));
 	});
 	it("separates prior captures and policy omissions from live publication failure", () => {
 		const details = {

@@ -77,7 +77,7 @@ async function listCaptures(invoke: Invoke, slug: string): Promise<string[]> {
 	throw new Error("History continuation exceeded fixture bound");
 }
 
-test("loaded tools preserve a technical note through authoring, retrieval, correction and supersession", {
+test("loaded tools preserve a note through correction, review, retirement, reactivation and supersession", {
 	timeout: 40000,
 }, async () => {
 	const root = mkdtempSync(join(tmpdir(), "memory-lifecycle-runtime-"));
@@ -169,7 +169,15 @@ test("loaded tools preserve a technical note through authoring, retrieval, corre
 			settingsManager,
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(root),
-			tools: ["memory_search", "memory_read", "memory_history", "memory_write", "memory_edit"],
+			tools: [
+				"memory_search",
+				"memory_read",
+				"memory_history",
+				"memory_write",
+				"memory_edit",
+				"memory_review",
+				"memory_retire",
+			],
 		}));
 		await session.bindExtensions({ mode: "print", onError: (error) => errors.push(error.error) });
 		const model = modelRuntime.getModel("memory-lifecycle-fixture", "controlled");
@@ -179,6 +187,8 @@ test("loaded tools preserve a technical note through authoring, retrieval, corre
 			"memory_edit",
 			"memory_history",
 			"memory_read",
+			"memory_retire",
+			"memory_review",
 			"memory_search",
 			"memory_write",
 		]);
@@ -203,6 +213,8 @@ test("loaded tools preserve a technical note through authoring, retrieval, corre
 			details: `Introductory qualification.\n\n\`api_key=api_key\`\n\n\`\`\`js\npassword=process.env.PASSWORD\n# Fenced example\n\`\`\`\n\n${"Unicode 😀 context. ".repeat(900)}\nTAIL qualification.`,
 			sources: "Synthetic operator statement, 2026-01-01.",
 			verified: true,
+			reviewPolicy: "before-use",
+			reviewAfter: "2000-01-01",
 		};
 		const created = details(await invoke("memory_write", input));
 		assert.equal(created.initialized, true);
@@ -271,6 +283,121 @@ test("loaded tools preserve a technical note through authoring, retrieval, corre
 		assert.equal(captures.length, 2);
 		assert.equal(new Set(captures).size, 2);
 
+		const unresolved = details(
+			await invoke("memory_review", {
+				slug: input.slug,
+				expectedDigest: currentDigest,
+				outcome: "unresolved",
+				reason: "The current example needs a source check.",
+				sources: "Synthetic current-source comparison.",
+			}),
+		);
+		const unresolvedDigest = digest(unresolved.digest);
+		assert.equal(parseFrontmatter(readFileSync(path, "utf8")).body, parseFrontmatter(current).body);
+		const flagged = details(await invoke("memory_read", { slug: input.slug, digest: unresolvedDigest }));
+		const flaggedFreshness = flagged.freshness as JsonObject;
+		assert.equal(flaggedFreshness.policy, "before-use");
+		assert.equal(flaggedFreshness.deadline, "due");
+		assert.equal(flaggedFreshness.verified, false);
+		assert.equal(flaggedFreshness.verifiedDate, null);
+		assert.equal((flaggedFreshness.concern as JsonObject).reason, "The current example needs a source check.");
+		assert.match(sections.at(-1) ?? "", /configuration-notes: Configuration notes/);
+		const observedAgain = details(await invoke("memory_read", { slug: input.slug }));
+		assert.equal(observedAgain.digest, unresolvedDigest);
+		const confirmed = details(
+			await invoke("memory_review", {
+				slug: input.slug,
+				expectedDigest: unresolvedDigest,
+				outcome: "confirmed",
+				sources: "Whole synthetic note checked against the current fixture.",
+			}),
+		);
+		currentDigest = digest(confirmed.digest);
+		const confirmedRead = details(await invoke("memory_read", { slug: input.slug, digest: currentDigest }));
+		const confirmedFreshness = confirmedRead.freshness as JsonObject;
+		assert.equal(confirmedFreshness.verified, true);
+		assert.equal(confirmedFreshness.verifiedDate, new Date().toISOString().slice(0, 10));
+		assert.equal(confirmedFreshness.policy, "before-use");
+		assert.equal(confirmedFreshness.reviewAfter, "2000-01-01");
+		assert.equal(confirmedFreshness.deadline, "due");
+		assert.equal(confirmedFreshness.concern, null);
+		assert.equal((confirmedFreshness.lastReview as JsonObject).digest, unresolvedDigest);
+		current = readFileSync(path, "utf8");
+		const withdrawal = details(
+			await invoke("memory_retire", {
+				slug: input.slug,
+				expectedDigest: currentDigest,
+				reason: "The operator withdrew this subject.",
+				sources: "Synthetic operator withdrawal.",
+			}),
+		);
+		const withdrawnDigest = digest(withdrawal.digest);
+		const withdrawn = details(await invoke("memory_read", { slug: input.slug, digest: withdrawnDigest }));
+		assert.deepEqual(withdrawn.lifecycle, { status: "retired", supersededBy: null });
+		assert.equal((withdrawn.freshness as JsonObject).verified, true);
+		assert.equal(parseFrontmatter(readFileSync(path, "utf8")).body, parseFrontmatter(current).body);
+		assert.doesNotMatch(sections.at(-1) ?? "", /configuration-notes:/);
+		const withoutRetired = details(await invoke("memory_search", { query: "configuration" }));
+		assert.deepEqual(withoutRetired.notes, []);
+		assert.equal(withoutRetired.excludedRetired, 1);
+		const withRetired = details(await invoke("memory_search", { query: "configuration", includeRetired: true }));
+		assert.equal(((withRetired.notes as JsonObject[])[0].lifecycle as JsonObject).status, "retired");
+		const ordinaryReview = await invoke("memory_review", {
+			slug: input.slug,
+			expectedDigest: withdrawnDigest,
+			outcome: "confirmed",
+			sources: "Synthetic evidence.",
+		});
+		assert.equal(ordinaryReview.isError, true);
+		assert.equal((await invoke("memory_write", { ...input, expectedDigest: withdrawnDigest })).isError, true);
+		assert.equal((await invoke("memory_edit", { ...edit, expectedDigest: withdrawnDigest })).isError, true);
+		const restored = details(
+			await invoke("memory_review", {
+				slug: input.slug,
+				expectedDigest: withdrawnDigest,
+				outcome: "confirmed",
+				reactivate: true,
+				sources: "Synthetic operator restoration and complete source check.",
+				reviewPolicy: "on-change",
+				reviewAfter: null,
+			}),
+		);
+		const restoredRead = details(await invoke("memory_read", { slug: input.slug, digest: restored.digest }));
+		assert.deepEqual(restoredRead.lifecycle, { status: "active", supersededBy: null });
+		assert.equal((restoredRead.freshness as JsonObject).retirement, null);
+		assert.equal((restoredRead.freshness as JsonObject).policy, "on-change");
+		assert.equal((restoredRead.freshness as JsonObject).deadline, "unscheduled");
+		assert.match(sections.at(-1) ?? "", /configuration-notes: Configuration notes/);
+		const retiredAgain = details(
+			await invoke("memory_retire", {
+				slug: input.slug,
+				expectedDigest: restored.digest,
+				reason: "The subject is withdrawn before its replacement.",
+				sources: "Synthetic operator instruction.",
+			}),
+		);
+		currentDigest = digest(retiredAgain.digest);
+		current = readFileSync(path, "utf8");
+		const plan = { capturedBefore: "9999-01-01T00:00:00.000Z", keepNewest: 1 };
+		const fractionalPlan = await invoke("memory_history", {
+			slug: input.slug,
+			plan: { ...plan, keepNewest: 0.5 },
+		});
+		assert.equal(fractionalPlan.isError, true);
+		assert.match(text(fractionalPlan), /keepNewest|multipleOf|multiple of/i);
+		assert.equal((fractionalPlan.details as JsonObject | undefined)?.plan, undefined);
+		assert.equal(readFileSync(path, "utf8"), current);
+		const planned = details(await invoke("memory_history", { slug: input.slug, plan, limit: 1 }));
+		assert.equal((planned.plan as JsonObject).digestsVerified, false);
+		assert.equal((planned.plan as JsonObject).scope, "metadata-page");
+		assert.equal((planned.revisions as JsonObject[])[0].selection, "keep");
+		assert.equal((planned.coverage as JsonObject).bodiesRead, false);
+		const plannedNext = details(
+			await invoke("memory_history", { slug: input.slug, plan, limit: 1, cursor: planned.nextCursor }),
+		);
+		assert.equal((plannedNext.revisions as JsonObject[])[0].selection, "candidate");
+		assert.equal(readFileSync(path, "utf8"), current);
+
 		const token = `ghp_${"x".repeat(24)}`;
 		const refused = await invoke("memory_write", { ...input, slug: "refused", details: `\`\`\`\n${token}\n\`\`\`` });
 		assert.equal(refused.isError, true);
@@ -287,10 +414,13 @@ test("loaded tools preserve a technical note through authoring, retrieval, corre
 		);
 		assert.deepEqual(replacement.written, ["configuration-choice.md", "configuration-notes.md"]);
 		const old = parseFrontmatter(current);
-		const retired = parseFrontmatter(readFileSync(path, "utf8"));
-		assert.equal(retired.body, old.body);
-		assert.equal(retired.frontmatter.status, "superseded");
-		assert.equal(retired.frontmatter.superseded_by, "configuration-choice");
+		const superseded = parseFrontmatter(readFileSync(path, "utf8"));
+		assert.equal(superseded.body, old.body);
+		assert.equal(superseded.frontmatter.status, "superseded");
+		assert.equal(superseded.frontmatter.superseded_by, "configuration-choice");
+		assert.equal(superseded.frontmatter.verified, old.frontmatter.verified);
+		assert.equal(superseded.frontmatter.verified_date, old.frontmatter.verified_date);
+		assert.equal(superseded.frontmatter.retirement, undefined);
 		const oldPage = details(await invoke("memory_read", { slug: input.slug }));
 		assert.deepEqual(oldPage.lifecycle, { status: "superseded", supersededBy: "configuration-choice" });
 		const oldContinuation = details(
@@ -306,6 +436,18 @@ test("loaded tools preserve a technical note through authoring, retrieval, corre
 		);
 		assert.deepEqual(archivedActive.lifecycle, { status: "active", supersededBy: null });
 		assert.equal((await invoke("memory_edit", { ...edit, expectedDigest: oldPage.digest })).isError, true);
+		assert.equal(
+			(
+				await invoke("memory_review", {
+					slug: input.slug,
+					expectedDigest: oldPage.digest,
+					outcome: "confirmed",
+					reactivate: true,
+					sources: "Synthetic evidence.",
+				})
+			).isError,
+			true,
+		);
 		await invoke("memory_search", {});
 		const section = sections.at(-1);
 		assert.match(section ?? "", /configuration-choice: Configuration choice/);

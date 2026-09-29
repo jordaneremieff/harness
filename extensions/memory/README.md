@@ -22,8 +22,9 @@ The root is operator-controlled; do not point it at an untrusted shared director
 The `memory_index` section lists observed subjects whose per-file status is active,
 as `slug: title` pointers or slug-only pointers under byte pressure. It never
 establishes corpus-wide lifecycle consistency. Its frame identifies the pointer form and
-states that cues are not evidence or instructions, that the agent must read with
-`memory_read` before relying on a note, and that current instructions control.
+states that active status does not establish current truth, that cues are not evidence
+or instructions, and that the agent must read lifecycle and freshness with `memory_read`
+before relying on a note. Current instructions control.
 Read a matching subject; use `memory_search` when no subject matches.
 No note body, heading fallback, source passage, or contract content enters the section.
 
@@ -31,7 +32,7 @@ The section first inventories and sorts at most 16,384 root entries, with one
 lookahead for overflow. It then inspects at most 2,048 candidate notes, with at
 most 8 KiB read per note. It reports the inspected and uninspected counts.
 Uninspected lifecycle remains unknown. It includes only lowercase kebab-case
-slugs with a usable `active` lifecycle. Superseded notes, hidden files, `README.md`,
+slugs with a usable `active` lifecycle. Superseded and retired notes, hidden files, `README.md`,
 and names outside that grammar are excluded. The index and read pages share the
 same conservative lifecycle interpretation. Active subjects require plain top-level
 `status: active` and `superseded_by: null` keys. Unusable status cues remain unknown.
@@ -41,6 +42,8 @@ is unusable. Values come from the complete bounded header, parsed with the publi
 Pi frontmatter parser. A rejected header makes status unknown,
 even when the error concerns another field. Unreadable entries and unknown status
 counts qualify the section; they are not proof that no other active subjects exist.
+The section counts retired notes separately, not as unknown. Due dates and unresolved
+concerns do not remove active pointers or add date-derived text to the index.
 
 Titles come only from frontmatter cues. The public Pi frontmatter parser decodes
 isolated scalar fields, including YAML and JSON quotes. Within a valid header,
@@ -97,11 +100,14 @@ Blank strings are refused; only an omitted query selects browse.
 If a query exceeds its limits, shorten it to keywords. Query pages default to 10
 records and accept `limit` from 1 through 25. Browse returns all cues that fit the
 48 KiB output bound; its optional `limit` from 1 through 512 reduces the page.
-Pass the returned `nextCursor` as `cursor`, with the same query. One cursor drains
+Retired notes are excluded unless `includeRetired: true` is explicit. Active,
+superseded, and unknown notes remain eligible, including due or unclassified notes.
+No recency boost applies. Pass the returned `nextCursor` as `cursor`, with the same
+query and `includeRetired` filter. One cursor drains
 result pages in a source window, then advances to the next window. **Continue after
 empty pages too.** There is no separate numeric result-page workflow. A cursor
-binds the original normalized query, corpus path, complete filename inventory, and
-source evidence while paging within one window. A changed query, inventory, or
+binds the original normalized query, retired-note filter, corpus path, complete filename
+inventory, and source evidence while paging within one window. A changed query, filter, inventory, or
 same-window source refuses instead of silently skipping or duplicating results.
 Changing only `limit` is permitted. Earlier windows are not reread, so a completed
 cursor chain establishes traversal coverage, not a frozen whole-corpus snapshot.
@@ -134,8 +140,9 @@ ambiguous frontmatter. The complete bounded header must parse at its physical
 closing delimiter. Otherwise raw cues remain visible with a qualification, metadata
 receives no title weight, and the prompt index counts status as unknown. Unicode
 line and paragraph separators do not create Markdown delimiter lines.
-Status never suppresses search results. Prefer current active sources and inspect
-supersession pointers before applying a claim. Digests identify exact source bytes.
+Each note includes parsed `lifecycle` and `freshness` evidence from the same source.
+Prefer applicable active sources and inspect supersession pointers before applying
+a claim. Active status does not establish truth. Digests identify exact source bytes.
 Each matched note has at most one source passage. A body match takes priority over
 a frontmatter-only match for both string and array queries. For fused results, the
 best-ranked matching formulation selects the passage within that category.
@@ -153,7 +160,9 @@ Browse reads at most 8 KiB per candidate. Query reads support complete sources u
 to 64 KiB, with a one-byte oversize check included in the window byte budget.
 
 `scan` reports complete filename inventory, candidate count, window boundaries,
-bytes read, unavailable notes, and bounded issues. `scan.complete` means that this
+bytes read, unavailable notes, and bounded issues. `retiredNotes` and `excludedRetired`
+count retired notes observed and omitted in that source window. The result also returns
+`includeRetired` and `excludedRetired`; omitted retired notes do not become unknown gaps. `scan.complete` means that this
 one window covers all candidates; it does not imply source availability.
 `search.complete` also requires every candidate to be available. `totalNotes`,
 `totalMatches`, ranks, term frequencies, and result offsets are **window-local**.
@@ -178,14 +187,36 @@ note. Sources above 64 KiB require bounded ordinary file reads; the tool refuses
 them explicitly.
 
 Every note page includes a `lifecycle` record from the same complete bounded header
-interpretation used by retrieval. `status` is `active`, `superseded`, or `unknown`;
+interpretation used by retrieval. `status` is `active`, `superseded`, `retired`, or `unknown`;
 `supersededBy` is a validated replacement subject slug or null. Unknown or unusable
 metadata carries a `problem`. A valid plain status key and null replacement are
 required for `active`. A known `superseded` status remains visible even when its
 replacement is missing or invalid; that replacement stays null with a problem.
 Malformed or ambiguous headers remain unknown. The record does not validate note
-claims or repair metadata. `README` pages have `lifecycle: null` because the contract
-has no note lifecycle. Original source content remains unchanged on every page.
+claims or repair metadata. Retired notes remain directly readable and require a null
+replacement. Retirement never implies a successor. `README` pages have `lifecycle: null`
+and `freshness: null` because the contract has no note lifecycle. Original source
+content remains unchanged on every page.
+
+Every note page also returns `freshness`: the UTC `evaluatedOn` date, declared
+`verified` and `verifiedDate`, `policy`, `reviewAfter`, `deadline`, `concern`,
+`lastReview`, `retirement`, and `problems`. Unknown verification fields are null.
+Deadline states are `due`, `not-due`, `unscheduled`, and `unknown`; no state labels
+a note simply fresh. Malformed fields remain readable with a problem instead of
+normalization. Historical pages interpret those old declarations, not the current note.
+
+- `on-change` applies to standing preferences, decisions, and explicitly version-scoped
+  facts. Contrary evidence or changed scope requires review.
+- `before-use` requires a current defining-source check when a decision depends on current
+  environment or external behavior. Today's verification date does not bypass it.
+  That check does not require a memory write. Persist a review only when durable renewal,
+  concern resolution, or a policy adjustment has value.
+- An absent policy is `unclassified`; an invalid policy is `unknown`. Neither means false.
+- A subject-specific `review_after` requires a concrete reason. No universal interval or
+  automatic renewal applies. A due date retains the note and does not revoke a decision.
+- An unresolved concern qualifies only the disputed claim. Undisputed operator authority
+  and fresh independent evidence still apply within their scope.
+- Read times, search rank, capture times, and writer-touch dates do not renew verification.
 
 ### `memory_history`
 
@@ -214,6 +245,40 @@ For a correction:
 
 There is no raw restore, merge engine, automatic lifecycle reversal, or graph rollback.
 
+An optional `plan: { capturedBefore, keepNewest }` adds a read-only maintenance plan.
+Both fields are required: the cutoff is an exact UTC timestamp with milliseconds,
+and the retention floor is an integer from 0 through the inventory capacity. There
+is no retention default. Repeat the complete plan with `nextCursor`; changed plans
+or inventories refuse continuation.
+
+Each available revision receives `selection: keep | candidate` and a reason:
+`newest-retention-floor`, `at-or-after-cutoff`, or `before-cutoff-outside-floor`.
+Selection uses capture time and deterministic revision-ID order, not inferred causality.
+The `keepNewest` floor counts revision names, including unavailable entries. It does
+not promise a recoverable floor. The result's `meaning` states these limits.
+The `plan` result names its `metadata-page` scope and reports `availableBytes`,
+`keepBytes`, `candidateBytes`, `kept`, `candidates`, and `unavailable`. These totals
+cover only available records on that page; gaps remain unknown. `digestsVerified: false`
+and `coverage.bodiesRead: false` make the source boundary explicit. The plan opens no
+historical bodies, writes no plan state, and grants no deletion authority.
+
+A plan does not bound retained disk use, reclaim bytes, or create a quota. After a
+separate explicit instruction selects a backup destination and exact removal scope:
+
+1. Stop other corpus writers and recheck the complete selected inventory.
+2. Verify every selected source against its revision digest.
+3. Archive the complete selected files with a manifest of subject, revision, digest,
+   and byte length.
+4. Read the archive independently and verify every selected byte digest.
+5. Remove only approved captures. Preserve live notes and all unselected files.
+6. Report successful and remaining removals separately. Preserve the verified archive
+   after partial failure.
+
+Use ordinary file tools for that authorized procedure. There is no archive format,
+cleanup service, deletion tool, or automatic pruning. Full indefinite recovery and a
+fixed total-byte ceiling are incompatible for arbitrary new data. An explicit forget
+request separately accounts for live notes, retained captures, and external archives.
+
 ### `memory_write`
 
 Required fields are `slug`, `title`, `tags`, `summary`, `details`, `sources`, and
@@ -227,18 +292,33 @@ the claim.
 
 Omit `expectedDigest` to create; an existing slug refuses. Supply the current source
 digest to update; a missing or changed source refuses. Updates preserve `created`
-and existing `supersedes` links. A superseded note refuses updates. Read its replacement.
+and existing `supersedes` links. Retired and superseded notes refuse ordinary updates.
+Read a superseded note's replacement; use explicit confirmed reactivation for a retired note.
 Updates replace the complete note body, so use `memory_edit` for targeted changes.
 Reserve `memory_write` updates for genuine whole-note rewrites and preserve useful
 rationale and qualifications in the supplied fields. Stored `verified: true` means the caller attests to a current
 operator statement or authoritative source; the extension does not verify facts.
-`verified_date` becomes today's UTC date when true and null when false.
+`verified_date` becomes today's UTC date when true and null when false. Do not carry
+true forward from prior metadata without a whole-result check now. A wording-only
+change without a new authoritative check uses false.
+
+Optional `reviewPolicy` selects `on-change` or `before-use`; `reviewAfter` selects a
+subject-specific UTC date or null. Explain any deadline in the source evidence.
+A whole-note rewrite reselects both fields: omission removes the old policy/deadline.
+It omits the old digest-bound `last_review`, which remains in prior history. A rewrite
+with false preserves an unresolved concern; true clears it. Neither content edits
+nor confirmation automatically move a deadline.
 
 `supersedes` adds up to 16 `{slug, digest}` targets. The writer validates all target
 sources before publication, then writes the destination and marks replaced notes
 `status: superseded` with `superseded_by` in the same call. Existing target bodies
 remain byte-for-byte unchanged, including introductory prose, fenced headings and
-tails. A bounded transitive check refuses supersession cycles, including cycles through
+tails. A retired target accepts explicit supersession at its current supplied digest,
+without confirmation or reactivation. The writer preserves its historical verification,
+removes its current retirement metadata after prior capture, and marks it superseded.
+Retry accepts an already-superseded target only when it names this same destination.
+If B supersedes A and B is later retired, A remains superseded and points to B. No
+predecessor revival or supersession reversal occurs. A bounded transitive check refuses supersession cycles, including cycles through
 partial publications. It accepts at most 512 linked notes totaling 8 MiB. The byte
 check follows each bounded source read, so refusal can inspect one additional
 source of at most 64 KiB. Unavailable ancestors or exhausted bounds refuse the write
@@ -246,7 +326,7 @@ before publication.
 
 Preserved lifecycle metadata must be valid and unambiguous: `created` and `updated`
 are calendar dates; `supersedes` is a list of at most 16 unique subject slugs without
-self-links. `active` requires `superseded_by: null`; `superseded` requires a different
+self-links. `active` and `retired` require `superseded_by: null`; `superseded` requires a different
 subject slug. Scalar `supersedes`, duplicate links, and contradictory states refuse
 rather than normalize. Mutation requires exact `---` delimiter lines. Tolerant
 retrieval also accepts whitespace-padded delimiter lines, but does not repair them.
@@ -289,17 +369,18 @@ not count as title headings.
 Edits that hide that heading or introduce an earlier title also refuse. Changes to
 introductory prose preserve the original heading's identity despite offset shifts.
 Title, tags, and other frontmatter are not editable through this tool. The writer updates
-only `updated`, `verified`, and `verified_date` frontmatter lines; all other bytes
-survive, including comments, unknown metadata, introductory prose, extra sections,
-and unchanged body text. `updated`, `verified`, and `verified_date` must already
+`updated`, `verified`, and `verified_date` frontmatter lines. Verified edits also remove
+`review_flag`; unverified edits preserve it. Policy, deadline, and digest-bound prior
+review evidence remain unchanged. All other bytes survive, including comments, unknown
+metadata, introductory prose, extra sections, and unchanged body text. `updated`, `verified`, and `verified_date` must already
 exist as independent plain top-level keys. Missing generated keys and YAML aliases
 that would alter other metadata refuse. Supersession applies the same preservation
 check to its generated lifecycle fields.
 
 `verified` describes the whole resulting note, not just the replacement. True sets
 `verified_date` to today's UTC date; false clears it to null. A current digest is
-mandatory. Missing, changed, superseded, malformed, or unsafe sources refuse. The
-complete result must fit the 64 KiB source limit. Both mutation tools refuse C0
+mandatory. Missing, changed, inactive, malformed, or unsafe sources refuse. The
+complete result must fit the 64 KiB source limit. Mutation tools refuse C0
 controls other than tab, LF, and CR, plus DEL and unpaired surrogates. C1 controls
 and Unicode format characters are accepted, including emoji joiners and soft
 hyphens. Recognizable credentials refuse without echoing note text. A leading
@@ -312,6 +393,44 @@ atomic rename, cleanup, and receipt as writes. They do not initialize or replace
 `initialized` remains false. Success reports `Memory updated: <file>`. Publication
 and cleanup failures use the same `written` and `notWritten` receipt fields; input
 or lock refusals occur before publication and report a content-free error.
+
+### `memory_review`
+
+Required fields are `slug`, `expectedDigest`, `outcome`, and nonblank `sources`.
+This metadata-only operation preserves body bytes and uses the same queue, lock,
+prior capture, digest recheck, cancellation, atomic publication, and receipt as other
+mutations. Every successful review advances `updated` to today's UTC date. That is
+writer-touch metadata, not evidence of a content change or claim freshness.
+
+- `confirmed` attests to the whole current note against named sources inspected now.
+  It sets `verified: true`, sets today's `verified_date`, records `last_review` with
+  the exact pre-change source digest, and removes `review_flag`. A supplied `reason` refuses;
+  omit it for confirmation.
+- `unresolved` requires a nonblank `reason` and sources. It records `review_flag` and
+  preserves old verification fields as historical attestations. An unavailable source
+  is not confirmation. Report the exact source gap; persist only a durable concern.
+- Omitted `reviewPolicy` or `reviewAfter` preserves the field. Explicit null removes it.
+  A review never automatically advances a deadline.
+- A retired note requires `outcome: confirmed` plus `reactivate: true`. New evidence and
+  task authority justify that action; the argument itself proves no operator approval.
+  Reactivation removes retirement and restores active status. Active notes reject
+  `reactivate: true`. Superseded notes reject review and reactivation; follow the replacement.
+
+### `memory_retire`
+
+Required fields are `slug`, `expectedDigest`, `reason`, and `sources`. Retirement
+withdraws an active note after settled loss of applicability without requiring a
+successor. Age or an unresolved contradiction alone does not justify retirement.
+
+The operation preserves body bytes, historical verification, and outgoing supersession
+links. It sets `status: retired`, retains `superseded_by: null`, records the withdrawal
+in `retirement`, and updates the writer-touch date. Retirement date is the withdrawal
+date, not an inferred date when a fact became false. Direct reads and exact history
+remain available; ordinary search and next-run prompt pointers omit the note.
+
+Retirement shares the writer queue, lock, prior capture, digest recheck, cancellation,
+atomic publication, and receipt. It does not delete a note or reactivate predecessors.
+Ordinary write/edit calls never reactivate inactive notes.
 
 ## Technical examples and credential refusals
 
@@ -422,7 +541,7 @@ Exclude task state, handovers, TODOs, logs, repository-defined facts, secrets,
 sensitive personal data and speculation. Recognizable private-key and credential
 patterns are refused without echoing the matched content. This is a narrow guard,
 not a secret classifier. Never supply secrets: Pi already retains tool arguments
-before the writer validates them. Cards withhold write and edit body fields in both
+before the writer validates them. Cards withhold write/edit body fields and review/retirement reasons and sources in both
 collapsed and expanded views, not native history.
 
 Use `memory_edit` for targeted note changes rather than the ordinary `edit` tool,
@@ -437,7 +556,8 @@ its supported content determines an answer; report the exact gap when it does no
 Delete only after an explicit request to forget or remove a note. Identify the file,
 inspect active dependent notes and supersession links, then use ordinary file tools.
 Account for `.memory-history/<slug>/` under the same explicit forget scope: deleting
-only the current Markdown note leaves retained prior knowledge. Resolve any ambiguous
+only the current Markdown note leaves retained prior knowledge. Include external
+archives within the requested forget scope too. Resolve any ambiguous
 deletion scope before a destructive act. History cleanup is not secure erasure and
 does not erase native tool transcripts or independent backups. No automatic pruning,
 deletion schema, or dependent-note rewrite is added.
@@ -474,6 +594,30 @@ Rationale, constraints and qualifications.
 - Operator statement, 2026-01-01.
 ```
 
+Optional lifecycle fields use independent plain single-line values:
+
+```yaml
+review_policy: "on-change"
+review_after: null
+review_flag: {"date":"2026-01-02","reason":"A claim has conflicting sources.","sources":"Current source comparison."}
+last_review: {"date":"2026-01-01","digest":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","sources":"Whole source inspected."}
+retirement: {"date":"2026-01-03","reason":"The operator withdrew the preference.","sources":"Operator instruction."}
+```
+
+These are separate field examples, not a generated default header. `retirement` applies
+to retired notes. Existing notes need no rewrite, automatic classification, or migration.
+Reason strings accept at most 600 characters; lifecycle source strings accept at most
+1,500 characters. Added lifecycle metadata shares a 4 KiB serialized bound. Generated
+and changed headers fit the 8 KiB metadata window; complete notes fit 64 KiB.
+
+Metadata-only mutations replace an existing owned line in place, remove the complete
+line when clearing a field, or insert a missing optional key immediately before the
+closing delimiter with that delimiter's line ending. Core generated keys remain
+required. Duplicate owned keys, aliases, multiline owned values, and ambiguous insertion
+boundaries refuse. The writer reparses the complete header and checks exactly the
+intended change before capture or publication. Unknown metadata, BOM, delimiters,
+line endings, and body bytes otherwise remain unchanged.
+
 ## Presentation and verification
 
 Native tool cards show request subjects, outcomes and coverage limits. Collapsed
@@ -484,14 +628,17 @@ continuation instructions. Zero-match guidance appears without expansion. Raw cu
 remain untrusted source evidence, not attestations.
 
 Expanded read cards show the actual source text, digest and half-open code-point
-range instead of a serialized JSON string. Lifecycle status, replacement subjects
-and problems remain visible in both views. Historical reads label prior lifecycle,
+range instead of a serialized JSON string. Lifecycle status, replacement subjects,
+review policy, deadline state, concerns, and problem counts remain visible in both
+views. Expanded evidence includes verification declarations, review dates, exact
+review digests, concern sources, and retirement metadata without treating them as truth. Historical reads label prior lifecycle,
 revision identity, capture time, and the separate current-authority boundary.
-History cards show capture identities and metadata coverage. Mutation cards distinguish
+History cards show capture identities, metadata coverage, read-only plan selections,
+reasons, and page-local byte totals. Mutation cards distinguish
 live changes, captures, and credential-policy omissions. Terminal controls are escaped, and the
 expanded evidence body is limited to 32,000 UTF-16 units after escaping, including
-its explicit clipping notice. Write and edit payloads stay withheld in both call
-views. Presentation never changes model-visible evidence or retained native history.
+its explicit clipping notice. Write/edit payloads and review/retirement reasons and
+sources stay withheld in both call views. Presentation never changes model-visible evidence or retained native history.
 Semantic tool behavior is identical in TUI and headless modes.
 
 Run focused tests with `node --test extensions/memory/*.test.mts`. Run the native
@@ -500,6 +647,7 @@ The native lifecycle regression loads the extension in an isolated ordinary Pi
 session and drives its registered tools with a controlled provider. It checks
 technical-note creation, empty-window cursor continuation, Unicode current and
 historical paging, edit, current-digest correction, digest refusal, credential refusal,
-supersession, and the next prompt's qualified pointers. This establishes the
+unresolved review, whole-note confirmation, retirement, explicit reactivation,
+retired-target supersession, history plans, and the next prompt's qualified pointers. This establishes the
 host/tool contract, not live-model judgment or general retrieval quality.
 Repository gates cover type compatibility, lint, slice boundaries and the complete suite.

@@ -161,6 +161,173 @@ function maximalNote(index: number): string {
 	return `---\ntitle: ${"T".repeat(300)}\ntags: [${tags}]\nstatus: ${"s".repeat(80)}\nsupersedes: [${supersedes}]\nsuperseded_by: ${"z".repeat(160)}\n---\n\n# Heading ${index}\n`;
 }
 
+test("lifecycle selection excludes retired notes without changing lexical ranking among selected notes", async () => {
+	const retired = ACTIVE.replace("status: active", "status: retired");
+	const files = {
+		"README.md": README,
+		"active.md": ACTIVE,
+		"superseded.md": OLD,
+		"unknown.md": "# Unknown\nUse the dark theme.",
+	};
+	const root = corpus({
+		...files,
+		"retired.md": retired,
+		"retired-invalid.md": retired.replace("superseded_by: null", "superseded_by: [replacement]"),
+	});
+	const selectedRoot = corpus(files);
+	for (const query of [undefined, "dark theme", ["dark theme", "zebra-feature"]]) {
+		const page = await search(root, { query });
+		const baseline = await search(selectedRoot, { query });
+		assert.deepEqual(page.notes, baseline.notes);
+		assert.equal(page.includeRetired, false);
+		assert.equal(page.excludedRetired, 2);
+		assert.equal(page.totalNotes, 3);
+		assert.equal(object(page.scan).retiredNotes, 2);
+		assert.equal(object(page.scan).excludedRetired, 2);
+		if (query) {
+			assert.equal(object(page.search).notesSearched, 3);
+			assert.equal(object(page.search).excludedRetired, 2);
+			assert.deepEqual(object(page.search).terms, object(baseline.search).terms);
+		}
+		const included = await search(root, { query, includeRetired: true });
+		assert.equal(included.includeRetired, true);
+		assert.equal(included.excludedRetired, 0);
+		assert.equal(included.totalNotes, 5);
+		assert.equal(object(included.scan).retiredNotes, 2);
+		assert.equal(object(included.scan).excludedRetired, 0);
+		const inactive = notes(included).find((item) => item.slug === "retired-invalid");
+		assert.ok(inactive);
+		assert.equal(object(inactive.lifecycle).status, "retired");
+		assert.match(string(object(inactive.lifecycle).problem), /Retired status requires/);
+	}
+	const first = await search(root, { limit: 1 });
+	await rejects(
+		searchMemory(root, { includeRetired: true, cursor: string(first.nextCursor) }),
+		"changed",
+		/request changed/,
+	);
+	assert.equal((await search(root, { includeRetired: false, cursor: string(first.nextCursor) })).includeRetired, false);
+	const explicit = await search(root, { includeRetired: true, limit: 1 });
+	await rejects(searchMemory(root, { cursor: string(explicit.nextCursor) }), "changed", /request changed/);
+});
+
+test("retired-only source windows preserve exact exclusions and continuation", async () => {
+	const files: Record<string, string> = { "README.md": README };
+	for (let index = 0; index < 4096; index++)
+		files[`retired-${String(index).padStart(4, "0")}.md`] = "---\nstatus: retired\nsuperseded_by: null\n---\nneedle";
+	files["z-subject.md"] = "needle";
+	const root = corpus(files);
+	for (const query of [undefined, "needle"]) {
+		const first = await search(root, { query });
+		assert.deepEqual(first.notes, []);
+		assert.equal(first.totalNotes, 0);
+		assert.equal(first.excludedRetired, 4096);
+		assert.equal(first.corpusEmpty, false);
+		assert.equal(first.countScope, "source-window");
+		assert.equal(object(first.scan).windowNotes, 4096);
+		assert.equal(object(first.scan).unavailableNotes, 0);
+		const last = await search(root, { query, cursor: string(first.nextCursor) });
+		assert.deepEqual(
+			notes(last).map((item) => item.slug),
+			["z-subject"],
+		);
+		assert.equal(last.excludedRetired, 0);
+		assert.equal(last.totalNotes, 1);
+		assert.equal(last.nextCursor, null);
+	}
+});
+
+test("search and every note page expose source-specific freshness without renewing it", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-29T23:59:59.999Z") });
+	const concern = { date: "2026-09-28", reason: "One claim is disputed.", sources: "Conflicting synthetic source." };
+	const lastReview = { date: "2026-09-27", digest: "a".repeat(64), sources: "Synthetic prior source." };
+	const source =
+		ACTIVE.replace(
+			"---\n\n#",
+			`review_policy: before-use\nreview_after: 2026-09-30\nreview_flag: ${JSON.stringify(concern)}\nlast_review: ${JSON.stringify(lastReview)}\n---\n\n#`,
+		) + "qualified body\n".repeat(2000);
+	const root = corpus({ "README.md": README, "subject.md": source });
+	const before = readFileSync(join(root, "subject.md"));
+	const { text, pages } = await collect(root, "subject");
+	assert.equal(text, source);
+	assert.ok(pages.length > 1);
+	const expected = {
+		evaluatedOn: "2026-09-29",
+		verified: true,
+		verifiedDate: "2025-01-03",
+		policy: "before-use",
+		reviewAfter: "2026-09-30",
+		deadline: "not-due",
+		concern,
+		lastReview,
+		retirement: null,
+		problems: [],
+	};
+	for (const page of pages) assert.deepEqual(page.freshness, expected);
+	for (const query of [undefined, "theme", ["theme", "qualified"]]) {
+		const item = notes(await search(root, { query }))[0];
+		assert.deepEqual(item.freshness, expected);
+		assert.deepEqual(item.lifecycle, { status: "active", supersededBy: null });
+		assert.equal(item.review_policy, undefined);
+		assert.equal(item.review_flag, undefined);
+	}
+	t.mock.timers.tick(1);
+	const next = await read(root, { slug: "subject" });
+	assert.equal(object(next.freshness).evaluatedOn, "2026-09-30");
+	assert.equal(object(next.freshness).deadline, "due");
+	assert.equal(object(next.freshness).verifiedDate, "2025-01-03");
+	assert.deepEqual(readFileSync(join(root, "subject.md")), before);
+});
+
+test("freshness preserves declarations and qualifies absent or malformed current metadata", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-29T00:00:00.000Z") });
+	const cases: Array<[string, string, string, RegExp | null]> = [
+		["", "unclassified", "unscheduled", null],
+		["review_policy: on-change\nreview_after: null\n", "on-change", "unscheduled", null],
+		["review_policy: before-use\nreview_after: 2026-09-29\n", "before-use", "due", null],
+		[
+			"review_policy: other\nreview_after: 2026-02-30\n",
+			"unknown",
+			"unknown",
+			/Invalid review_policy|Invalid review_after/,
+		],
+		["review_policy: null\n", "unknown", "unscheduled", /Invalid review_policy/],
+		["policy: &policy on-change\nreview_policy: *policy\n", "unknown", "unscheduled", /Ambiguous review_policy/],
+		["review_flag: {date: 2026-09-29, reason: concern}\n", "unclassified", "unscheduled", /Invalid review_flag/],
+	];
+	for (const [fields, policy, deadline, problem] of cases) {
+		const source = ACTIVE.replace("---\n\n#", `${fields}---\n\n#`);
+		const root = corpus({ "README.md": README, "subject.md": source });
+		const freshness = object((await read(root, { slug: "subject" })).freshness);
+		assert.equal(freshness.policy, policy, fields);
+		assert.equal(freshness.deadline, deadline, fields);
+		if (problem) assert.match(array(freshness.problems).join("; "), problem);
+		else assert.deepEqual(freshness.problems, []);
+	}
+	const future = corpus({
+		"README.md": README,
+		"subject.md": ACTIVE.replace("verified_date: 2025-01-03", "verified_date: 2027-01-01"),
+	});
+	const freshness = object((await read(future, { slug: "subject" })).freshness);
+	assert.equal(freshness.verifiedDate, "2027-01-01");
+	assert.match(array(freshness.problems).join("; "), /in the future/);
+});
+
+test("freshness enforces the original header byte bound with BOM and CRLF intact", async () => {
+	const prefix =
+		"\uFEFF---\r\nstatus: active\r\nsuperseded_by: null\r\nverified: true\r\nverified_date: 2025-01-03\r\nreview_policy: on-change\r\ncustom: ";
+	const suffix = "\r\n---\r\n";
+	for (const size of [8192, 8193]) {
+		const header = `${prefix}${"x".repeat(size - Buffer.byteLength(prefix + suffix))}${suffix}`;
+		assert.equal(Buffer.byteLength(header), size);
+		const root = corpus({ "README.md": README, "subject.md": `${header}# Body\nneedle` });
+		const page = await read(root, { slug: "subject" });
+		const freshness = object(page.freshness);
+		assert.equal(freshness.policy, size === 8192 ? "on-change" : "unknown");
+		if (size > 8192) assert.match(array(freshness.problems).join("; "), /within 8 KiB/);
+	}
+});
+
 test("source byte windows advance through empty pages without claiming a frozen corpus snapshot", async () => {
 	const files: Record<string, string> = { "README.md": README };
 	for (let index = 0; index < 520; index++) files[`a-${String(index).padStart(3, "0")}.md`] = "x".repeat(65536);
@@ -240,7 +407,12 @@ test("returns compact literal cues with heading and filename fallback", async ()
 	assert.equal(result.totalNotes, 4);
 	const bySlug = new Map(notes(result).map((note) => [note.slug, note]));
 	assert.equal(bySlug.has("README"), false);
-	assert.deepEqual(bySlug.get("prefer-dark-theme"), {
+	const { lifecycle, freshness, ...activeCues } = object(bySlug.get("prefer-dark-theme"));
+	assert.deepEqual(lifecycle, { status: "active", supersededBy: null });
+	assert.equal(object(freshness).verified, true);
+	assert.equal(object(freshness).verifiedDate, "2025-01-03");
+	assert.equal(object(freshness).policy, "unclassified");
+	assert.deepEqual(activeCues, {
 		slug: "prefer-dark-theme",
 		title: "Prefer dark theme",
 		tags: "[preference, ui]",
@@ -248,8 +420,15 @@ test("returns compact literal cues with heading and filename fallback", async ()
 		supersedes: "[]",
 		superseded_by: "null",
 	});
-	assert.deepEqual(bySlug.get("heading"), { slug: "heading", title: "Heading only" });
-	assert.deepEqual(bySlug.get("plain"), { slug: "plain", title: "plain" });
+	for (const [slug, title] of [
+		["heading", "Heading only"],
+		["plain", "plain"],
+	]) {
+		const { lifecycle, freshness, ...cues } = object(bySlug.get(slug));
+		assert.deepEqual(cues, { slug, title });
+		assert.equal(object(lifecycle).status, "unknown");
+		assert.equal(object(freshness).policy, "unknown");
+	}
 	for (const query of [undefined]) {
 		const browse = await search(root, { query });
 		assert.equal(browse.search, undefined);
@@ -260,7 +439,7 @@ test("returns compact literal cues with heading and filename fallback", async ()
 	}
 });
 
-test("searches full source, cues, and slugs without lifecycle filtering", async () => {
+test("searches full source, cues, and slugs while retaining superseded notes", async () => {
 	const root = corpus({ "README.md": README, "prefer-dark-theme.md": ACTIVE, "old-edge-setting.md": OLD });
 	for (const query of ["UI", "old-edge", "zebra-feature"])
 		assert.equal((await search(root, { query })).totalMatches, 1);
@@ -407,6 +586,7 @@ test("reads original note and README source, preserving BOM and code-point pages
 	assert.equal(contract.file, "README.md");
 	assert.equal(contract.content, README);
 	assert.equal(contract.lifecycle, null);
+	assert.equal(contract.freshness, null);
 	const end = await read(root, { slug: "unicode", offset: Array.from(source).length, digest: string(pages[0].digest) });
 	assert.equal(end.content, "");
 	assert.equal(end.hasMore, false);
@@ -455,6 +635,11 @@ test("every note page exposes conservative lifecycle evidence without altering i
 	const cases: Array<[string, string, string | null, RegExp | null]> = [
 		['status: "active"\nsuperseded_by: null', "active", null, null],
 		['status: "superseded"\nsuperseded_by: "new-subject"', "superseded", "new-subject", null],
+		['status: "retired"\nsuperseded_by: null', "retired", null, null],
+		["status: retired\nsuperseded_by: new-subject", "retired", null, /Retired status requires/],
+		["status: retired\nsuperseded_by: [new-subject]", "retired", null, /Retired status requires/],
+		["status: retired\nsuperseded_by:\n  - new-subject", "retired", null, /Retired status requires/],
+		["status: retired", "retired", null, /Retired status requires/],
 		["replacement: &next new-subject\nstatus: superseded\nsuperseded_by: *next", "superseded", "new-subject", null],
 		["status: active\nsuperseded_by: new-subject", "unknown", null, /Active status requires/],
 		["status: superseded\nsuperseded_by: null", "superseded", null, /different lowercase subject slug/],
@@ -614,6 +799,9 @@ test("validates scalar inputs, integer bounds, query grammar, and safe continuat
 		{ query: ["a", "b"] },
 		{ query: null },
 		{ query: 2 },
+		{ includeRetired: 1 },
+		{ includeRetired: null },
+		{ includeRetired: "true" },
 		{ query: "x".repeat(201) },
 		{ index: 0 },
 		{ cursor: -1 },
@@ -1015,16 +1203,16 @@ test("defaults browse to byte-bounded cues and query to ten records with exact c
 	}
 });
 
-test("default browse returns a full compact index and accepts a larger explicit reducer", async () => {
+test("default browse pages all lifecycle records and accepts a larger explicit reducer", async () => {
 	const files: Record<string, string> = { "README.md": README };
 	for (let i = 0; i < 275; i += 1) files[`note-${String(i).padStart(3, "0")}.md`] = "# Compact cue\n";
 	const root = corpus(files);
-	const full = await search(root);
-	assert.equal(full.returned, 275);
-	assert.equal(full.nextCursor, null);
+	const full = await drain(root);
+	assert.equal(full.flatMap(notes).length, 275);
+	assert.equal(full.at(-1)?.nextCursor, null);
 	const reduced = await drain(root, { limit: 50 });
 	assert.equal(reduced[0].returned, 50);
-	assert.deepEqual(reduced.flatMap(notes), notes(full));
+	assert.deepEqual(reduced.flatMap(notes), full.flatMap(notes));
 	const largeFiles: Record<string, string> = { "README.md": README };
 	for (let i = 0; i < 100; i += 1)
 		largeFiles[`note-${String(i).padStart(3, "0")}.md`] =

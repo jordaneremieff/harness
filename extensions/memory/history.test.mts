@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { historyDirectory, newRevision, revisionIdentity } from "./history.ts";
-import { historyMemory, readMemory, searchMemory } from "./retrieval.ts";
+import { type HistoryOptions, historyMemory, readMemory, searchMemory } from "./retrieval.ts";
 import { editMemory, type MemoryWrite, MemoryWriteError, sourceDigest, writeMemory } from "./store.ts";
 
 function corpus(t: { after(fn: () => void): void }): string {
@@ -48,6 +48,223 @@ function revisions(
 	assert.ok(Array.isArray(page.revisions));
 	return page.revisions as Array<{ revision: string; capturedAt: string; digest: string; bytes: number }>;
 }
+
+test("history plans require explicit exact UTC cutoff and bounded retention floor", async (t) => {
+	const root = corpus(t);
+	writeFileSync(join(root, "README.md"), "Contract");
+	const cutoff = "2026-09-29T00:00:00.000Z";
+	for (const plan of [
+		null,
+		[],
+		{},
+		{ capturedBefore: cutoff },
+		{ keepNewest: 0 },
+		{ capturedBefore: cutoff, keepNewest: 0, remove: true },
+		...[
+			"2026-09-29",
+			"2026-09-29T00:00:00Z",
+			"2026-09-29T00:00:00.000+00:00",
+			"2026-02-30T00:00:00.000Z",
+			"2026-09-29T24:00:00.000Z",
+			null,
+			0,
+		].map((capturedBefore) => ({ capturedBefore, keepNewest: 0 })),
+		...[-1, 1.5, 16385, null, "1", Infinity].map((keepNewest) => ({ capturedBefore: cutoff, keepNewest })),
+	]) {
+		await assert.rejects(
+			historyMemory(root, { slug: "subject", plan } as HistoryOptions),
+			/options|unknown option|plan\./,
+		);
+	}
+	for (const keepNewest of [0, 16384]) {
+		const result = await historyMemory(root, { slug: "subject", plan: { capturedBefore: cutoff, keepNewest } });
+		const plan = result.plan as Record<string, unknown>;
+		assert.deepEqual(result.revisions, []);
+		assert.equal(plan.availableBytes, 0);
+		assert.equal(plan.keepBytes, 0);
+		assert.equal(plan.candidateBytes, 0);
+		assert.equal(plan.unavailable, 0);
+		assert.equal(plan.keepNewest, keepNewest);
+		assert.equal(result.nextCursor, null);
+	}
+	assert.equal(existsSync(join(root, ".memory-history")), false);
+});
+
+test("history plans bind both decisions to continuations and select exact names across metadata pages", async (t) => {
+	const root = corpus(t);
+	writeFileSync(join(root, "README.md"), "Contract");
+	const directory = historyDirectory(root, "subject", true) as string;
+	const records = [
+		["20260930T000000000Z", "000000000001", "Newest source."],
+		["20260929T000000000Z", "000000000001", "At the cutoff."],
+		["20260928T000000000Z", "000000000003", "Retained older tie."],
+		["20260928T000000000Z", "000000000002", "Candidate tie one."],
+		["20260928T000000000Z", "000000000001", "Candidate tie two 😀."],
+	].map(([stamp, suffix, source]) => {
+		const digest = sourceDigest(source);
+		const revision = `${stamp}-00000000-0000-0000-0000-${suffix}-${digest}`;
+		writeFileSync(join(directory, `${revision}.md`), source);
+		return { revision, digest, bytes: Buffer.byteLength(source) };
+	});
+	writeFileSync(join(directory, "unrecognized.md"), "Excluded entry.");
+	const plan = { capturedBefore: "2026-09-29T00:00:00.000Z", keepNewest: 3 };
+	const first = await historyMemory(root, { slug: "subject", limit: 1, plan });
+	const cursor = first.nextCursor as string;
+	for (const changed of [
+		undefined,
+		{ ...plan, keepNewest: 2 },
+		{ ...plan, capturedBefore: "2026-09-28T00:00:00.000Z" },
+	])
+		await assert.rejects(historyMemory(root, { slug: "subject", cursor, plan: changed }), /request changed/);
+	const plain = await historyMemory(root, { slug: "subject", limit: 1 });
+	assert.equal(plain.plan, undefined);
+	assert.equal((revisions(plain)[0] as Record<string, unknown>).selection, undefined);
+	await assert.rejects(
+		historyMemory(root, { slug: "subject", cursor: plain.nextCursor as string, plan }),
+		/request changed/,
+	);
+	const pages = [first];
+	let next = cursor;
+	for (let guard = 0; guard < 5; guard++) {
+		const page = await historyMemory(root, {
+			slug: "subject",
+			cursor: next,
+			limit: 2,
+			plan: { keepNewest: 3, capturedBefore: plan.capturedBefore },
+		});
+		pages.push(page);
+		if (!page.nextCursor) break;
+		next = page.nextCursor as string;
+	}
+	const selected = pages.flatMap((page) => page.revisions as Array<Record<string, unknown>>);
+	assert.deepEqual(
+		selected.map((item) => item.revision),
+		records.map((item) => item.revision),
+	);
+	assert.deepEqual(
+		selected.map((item) => item.selection),
+		["keep", "keep", "keep", "candidate", "candidate"],
+	);
+	assert.deepEqual(
+		selected.map((item) => item.reason),
+		[
+			"newest-retention-floor",
+			"newest-retention-floor",
+			"newest-retention-floor",
+			"before-cutoff-outside-floor",
+			"before-cutoff-outside-floor",
+		],
+	);
+	for (const page of pages) {
+		const items = page.revisions as Array<Record<string, unknown>>;
+		const totals = page.plan as Record<string, unknown>;
+		assert.equal(totals.scope, "metadata-page");
+		assert.equal(totals.digestsVerified, false);
+		assert.equal(
+			totals.availableBytes,
+			items.reduce((sum, item) => sum + (item.bytes as number), 0),
+		);
+		assert.equal(
+			totals.keepBytes,
+			items.reduce((sum, item) => sum + (item.selection === "keep" ? (item.bytes as number) : 0), 0),
+		);
+		assert.equal(
+			totals.candidateBytes,
+			items.reduce((sum, item) => sum + (item.selection === "candidate" ? (item.bytes as number) : 0), 0),
+		);
+		assert.equal((totals.kept as number) + (totals.candidates as number), items.length);
+		assert.equal((page.coverage as Record<string, unknown>).excludedEntries, 1);
+		assert.ok(Buffer.byteLength(JSON.stringify(page)) + 1 <= 48 * 1024);
+	}
+	const cutoff = await historyMemory(root, { slug: "subject", plan: { ...plan, keepNewest: 0 } });
+	assert.deepEqual(
+		(cutoff.revisions as Array<Record<string, unknown>>).map((item) => item.reason),
+		[
+			"at-or-after-cutoff",
+			"at-or-after-cutoff",
+			"before-cutoff-outside-floor",
+			"before-cutoff-outside-floor",
+			"before-cutoff-outside-floor",
+		],
+	);
+	writeFileSync(join(directory, `${newRevision("b".repeat(64))}.md`), "New inventory name.");
+	await assert.rejects(historyMemory(root, { slug: "subject", cursor, plan }), /inventory changed/);
+});
+
+test("history plans count unavailable names in the floor and report page gaps without source reads or writes", async (t) => {
+	const root = corpus(t);
+	writeFileSync(join(root, "README.md"), "Contract");
+	const directory = historyDirectory(root, "subject", true) as string;
+	const source = "Available older capture.";
+	const digest = sourceDigest(source);
+	const unavailable = `20260929T000000000Z-00000000-0000-0000-0000-000000000001-${digest}`;
+	const available = `20260928T000000000Z-00000000-0000-0000-0000-000000000001-${digest}`;
+	mkdirSync(join(directory, `${unavailable}.md`));
+	writeFileSync(join(directory, `${available}.md`), source);
+	const names = readdirSync(directory).sort();
+	const plan = { capturedBefore: "2026-09-30T00:00:00.000Z", keepNewest: 1 };
+	t.mock.method(fs, "readSync", () => {
+		throw new Error("Plans must not open historical bodies");
+	});
+	t.mock.method(fs, "writeFileSync", () => {
+		throw new Error("Plans must not write state");
+	});
+	syncBuiltinESMExports();
+	try {
+		const first = await historyMemory(root, { slug: "subject", plan, limit: 1 });
+		assert.deepEqual(first.revisions, []);
+		assert.equal((first.plan as Record<string, unknown>).unavailable, 1);
+		assert.equal((first.plan as Record<string, unknown>).availableBytes, 0);
+		assert.equal((first.coverage as Record<string, unknown>).bodiesRead, false);
+		assert.match(
+			(first.plan as Record<string, unknown>).meaning as string,
+			/including unavailable revisions.*gaps remain unknown.*no recoverable copies.*no retained storage/,
+		);
+		const last = await historyMemory(root, { slug: "subject", plan, cursor: first.nextCursor as string });
+		const item = (last.revisions as Array<Record<string, unknown>>)[0];
+		assert.equal(item.revision, available);
+		assert.equal(item.selection, "candidate");
+		assert.equal((last.plan as Record<string, unknown>).candidateBytes, Buffer.byteLength(source));
+		assert.equal((last.plan as Record<string, unknown>).keepBytes, 0);
+		assert.equal((last.plan as Record<string, unknown>).unavailable, 0);
+		assert.equal(last.nextCursor, null);
+	} finally {
+		t.mock.restoreAll();
+		syncBuiltinESMExports();
+	}
+	assert.deepEqual(readdirSync(directory).sort(), names);
+	assert.equal(readFileSync(join(directory, `${available}.md`), "utf8"), source);
+});
+
+test("historical pages expose captured retirement and freshness without claiming current lifecycle", async (t) => {
+	const root = corpus(t);
+	writeFileSync(join(root, "README.md"), "Contract");
+	const directory = historyDirectory(root, "subject", true) as string;
+	const retirement = { date: "2026-09-01", reason: "Withdrawal", sources: "Synthetic instruction." };
+	const prior = `---\nstatus: retired\nsuperseded_by: null\nverified: true\nverified_date: 2025-01-01\nreview_policy: on-change\nretirement: ${JSON.stringify(retirement)}\n---\n# Subject\n${"Historical source.\n".repeat(1500)}`;
+	const digest = sourceDigest(prior);
+	const revision = `20260902T000000000Z-00000000-0000-0000-0000-000000000001-${digest}`;
+	writeFileSync(join(directory, `${revision}.md`), prior);
+	writeFileSync(join(root, "subject.md"), "---\nstatus: active\nsuperseded_by: null\n---\n# Current subject");
+	let offset = 0;
+	let reconstructed = "";
+	let pages = 0;
+	for (let guard = 0; guard < 10; guard++) {
+		const page = await readMemory(root, { slug: "subject", revision, digest, offset });
+		assert.equal(page.source, "history");
+		assert.equal((page.lifecycle as Record<string, unknown>).status, "retired");
+		assert.deepEqual((page.freshness as Record<string, unknown>).retirement, retirement);
+		assert.equal((page.freshness as Record<string, unknown>).verifiedDate, "2025-01-01");
+		assert.match(page.authority as string, /Lifecycle describes this prior source, not the current note/);
+		reconstructed += page.content as string;
+		pages++;
+		if (!page.hasMore) break;
+		offset = page.nextOffset as number;
+	}
+	assert.ok(pages > 1);
+	assert.equal(reconstructed, prior);
+	assert.equal(((await readMemory(root, { slug: "subject" })).lifecycle as Record<string, unknown>).status, "active");
+});
 
 test("new notes and read-only history calls create no archives; overwrites capture separate exact prior inodes", async (t) => {
 	const root = corpus(t);
