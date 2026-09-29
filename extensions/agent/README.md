@@ -84,6 +84,40 @@ Nonzero process exits never restart.
 
 ## Start and control sessions
 
+Choose the session lifetime from the task:
+
+- `agent_spawn` creates a fresh session for a distinct task.
+- `agent_place` resolves a durable area owner when its reasoning should accumulate
+  across tasks. Reuse it when that context and ownership serve the work.
+- `agent_detach` starts execution in a separate process when the work must outlive
+  the current process. It does not transfer active execution.
+
+Write each assignment as a contract with:
+
+- **Objective:** the purpose, intended outcome, and operator benefit.
+- **Output format:** the result the owner needs, acceptance evidence, and end condition.
+- **Source guidance:** authoritative sources, instruction paths, known facts, and open questions.
+- **Boundaries:** permitted work, exclusions, ownership, and restrictions carried from the operator.
+
+Apply the universal AGENTS.md `Intent authority` section to assignments,
+corrections, and relayed decisions. Distinguish binding operator decisions from
+agent choices. Leave execution choices open where the contract permits judgment.
+
+Work runs in the background. The ordinary terminal response is the result;
+in-process settlement returns to the recorded owner automatically, with the
+[owner-delivery boundaries](#collaborate-between-sessions) below. A managed
+session sends interim reports, blocking questions, or corrections through
+`agent_send` to the owner ID in its session-ownership section. An interim report
+does not replace its terminal result. Detached settlements use primary notices.
+
+Use `agent_status` for orientation and `agent_inspect` for transcript or result
+evidence, not for waiting. Never poll with sleeps or repeated observation calls.
+Do independent work while useful agent work continues. Before a final conclusion,
+integrate needed results and resolve live work: continue useful work, redirect
+changed work, or abort superseded work. Settlement establishes execution, not
+verification or task acceptance. Do not duplicate an assigned task while its
+owner still works on it.
+
 Enter `/agent` or press **Ctrl+Alt+G** for the dashboard. Use `/agent help` for actions.
 The command and shortcut share one guarded opener. Repeated opens do not stack
 overlays, and a failed open releases the guard. The shortcut leaves the editor
