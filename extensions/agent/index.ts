@@ -309,6 +309,9 @@ export class AgentManager {
 	private readonly sessions = new Map<string, AgentWorkerSession>();
 	private readonly controls = new Map<string, Set<Promise<unknown>>>();
 	private readonly configurations = new Set<string>();
+	private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	private readonly detachedHosts = new Set<AgentWorkerSession>();
+	private readonly idleMs: number;
 	private readonly transfers = new Map<string, Promise<unknown>>();
 	private readonly creations = new Set<Promise<AgentWorkerSession>>();
 	private closing = false;
@@ -325,6 +328,9 @@ export class AgentManager {
 	private readonly agentDir: string;
 
 	constructor(store: AgentStore, modelRuntime: ModelRuntime, trustStore: ProjectTrustStore, rootAbort?: AbortController, agentDir = process.env.PI_AGENT_DIR ?? getAgentDir()) {
+		const minutes = process.env.PI_AGENT_IDLE_MINUTES === undefined ? 5 : Number(process.env.PI_AGENT_IDLE_MINUTES);
+		if (!Number.isFinite(minutes) || minutes < 0 || minutes > 35791 || process.env.PI_AGENT_IDLE_MINUTES?.trim() === "") throw new Error("PI_AGENT_IDLE_MINUTES must be a finite nonnegative number no greater than 35791");
+		this.idleMs = minutes * 60_000;
 		this.store = store;
 		this.detachedRuns = new DetachedRuns(store.root);
 		this.places = new PlaceBook(store.root);
@@ -555,6 +561,7 @@ export class AgentManager {
 			void this.admitOwnerNotices(ownerId, worker, pending).finally(() => {
 				this.deliveringOwners.delete(ownerId);
 				if (!this.sessions.has(ownerId)) this.deliverOwnerNotices();
+				this.refreshIdleRelease();
 			});
 		}
 	}
@@ -581,7 +588,42 @@ export class AgentManager {
 		return aggregateFooter([...this.retiredFooterStates, ...[...this.sessions.values()].map((worker) => worker.footerState())]);
 	}
 
+	private idleEligible(id: string, worker: AgentWorkerSession): boolean {
+		return !this.closing && !this.primary.has(id) && !this.detachedHosts.has(worker)
+			&& !worker.unavailableState() && !worker.hasActiveWork() && !worker.hasUnsavedResult()
+			&& !this.controls.has(id) && !this.configurations.has(id) && !this.opening.has(id) && !this.transfers.has(id)
+			&& !this.ownerNotices.get(id)?.size && !this.deliveringOwners.has(id)
+			&& !this.associationFailures.has(id) && !this.associationChanges.get(id)?.length
+			&& ![...this.childrenOf(id)].some((childId) => this.sessions.has(childId));
+	}
+
+	/** Timers own only host lifetime; saved sessions and associations remain unchanged. */
+	private refreshIdleRelease(): void {
+		if (!this.idleMs) return;
+		for (const [id, timer] of this.idleTimers) {
+			const worker = this.sessions.get(id);
+			if (worker && this.idleEligible(id, worker)) continue;
+			clearTimeout(timer);
+			this.idleTimers.delete(id);
+		}
+		for (const [id, worker] of this.sessions) {
+			if (this.idleTimers.has(id) || !this.idleEligible(id, worker)) continue;
+			const timer = setTimeout(() => {
+				this.idleTimers.delete(id);
+				if (this.sessions.get(id) !== worker || !this.idleEligible(id, worker)) return;
+				// close fences input synchronously before any asynchronous teardown.
+				void worker.close("idle").catch(() => {
+					// Incomplete cleanup retains claims; completed cleanup already retired the host.
+					this.publishFooter();
+				});
+			}, Math.max(1, this.idleMs));
+			timer.unref();
+			this.idleTimers.set(id, timer);
+		}
+	}
+
 	private publishFooter(final = false): void {
+		this.refreshIdleRelease();
 		const current = this.footerTotals();
 		for (const primary of this.primary.values()) {
 			const totals = primary.footer.observe(current);
@@ -811,9 +853,11 @@ export class AgentManager {
 		this.controls.set(sessionId, pending);
 		const task = Promise.resolve().then(action);
 		pending.add(task);
+		this.refreshIdleRelease();
 		try { return await task; } finally {
 			pending.delete(task);
 			if (!pending.size) this.controls.delete(sessionId);
+			this.refreshIdleRelease();
 		}
 	}
 
@@ -887,7 +931,7 @@ export class AgentManager {
 		if (pending) { const worker = await pending; worker.assertAvailable(); this.joinedWorkers.add(worker); this.associate(worker); return worker; }
 		const promise = this.loadWorker(sessionId, trust, promptUi, repairModel);
 		this.opening.set(sessionId, promise);
-		try { return await promise; } finally { this.opening.delete(sessionId); }
+		try { return await promise; } finally { this.opening.delete(sessionId); this.refreshIdleRelease(); }
 	}
 
 	private async loadWorker(sessionId: string, trust: boolean | undefined, promptUi?: TrustPromptUi, repairModel?: WorkerModelChoice, configuration?: InitialConfiguration): Promise<AgentWorkerSession> {
@@ -915,7 +959,11 @@ export class AgentManager {
 		if (this.sessions.has(sessionId) || this.opening.has(sessionId) || this.transfers.has(sessionId) || this.configurations.has(sessionId)) throw new Error(`session ${sessionId} already has a local owner`);
 		const task = this.loadWorker(sessionId, trust);
 		this.opening.set(sessionId, task);
-		try { return await task; } finally { this.opening.delete(sessionId); }
+		try {
+			const worker = await task;
+			this.detachedHosts.add(worker);
+			return worker;
+		} finally { this.opening.delete(sessionId); this.refreshIdleRelease(); }
 	}
 
 	async configure(sessionId: string, input: ConfigurationPatch, trust?: boolean, promptUi?: TrustPromptUi, callerSessionId?: string): Promise<ConfigurationResult> {
@@ -948,7 +996,7 @@ export class AgentManager {
 					return initial.result.outcome === "failed" ? initial.result : { ...initial.result, outcome: "failed", error: "Owner admission or cleanup failed after configuration. The reported native state is not rolled back." };
 				}
 			}, true);
-		} finally { this.configurations.delete(sessionId); }
+		} finally { this.configurations.delete(sessionId); this.refreshIdleRelease(); }
 	}
 
 	async attach(sessionId: string, trust?: boolean, promptUi?: TrustPromptUi, model?: string): Promise<string> {
@@ -965,7 +1013,7 @@ export class AgentManager {
 			return formatStatus(await worker.status(), "attached with explicit model");
 		})();
 		this.transfers.set(sessionId, transfer);
-		try { return await transfer; } finally { this.transfers.delete(sessionId); }
+		try { return await transfer; } finally { this.transfers.delete(sessionId); this.refreshIdleRelease(); }
 	}
 
 	async fork(sessionId: string, entryId?: string, trust?: boolean, promptUi?: TrustPromptUi): Promise<{ sessionId: string; text: string }> {
@@ -1102,6 +1150,7 @@ export class AgentManager {
 	private retireWorker(sessionId: string, worker: AgentWorkerSession): void {
 		if (this.sessions.get(sessionId) !== worker) return;
 		this.associationParents.delete(sessionId);
+		this.detachedHosts.delete(worker);
 		this.retiredFooterStates.push(worker.footerState());
 		this.sessions.delete(sessionId);
 		owners.workers.delete(sessionId);
@@ -1215,7 +1264,7 @@ export class AgentManager {
 			].join("\n") };
 		})();
 		this.transfers.set(id, transfer);
-		try { return await transfer; } finally { this.transfers.delete(id); }
+		try { return await transfer; } finally { this.transfers.delete(id); this.refreshIdleRelease(); }
 	}
 
 	/** State of detached runs; one run when a run id is given. */
@@ -1400,6 +1449,8 @@ export class AgentManager {
 	closeAll(): Promise<void> {
 		if (this.closeTask) return this.closeTask;
 		this.closing = true;
+		for (const timer of this.idleTimers.values()) clearTimeout(timer);
+		this.idleTimers.clear();
 		this.closeTask = this.closeSessions();
 		return this.closeTask;
 	}

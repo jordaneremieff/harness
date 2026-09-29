@@ -549,7 +549,12 @@ export class AgentWorkerSession {
 		const executeBash = session.executeBash.bind(session);
 		session.steer = (...args) => this.trackNativeQueue(admission, () => steer(...args));
 		session.followUp = (...args) => this.trackNativeQueue(admission, () => followUp(...args));
-		session.executeBash = (...args) => this.configuration ? Promise.reject(new Error("agent session configuration is in progress")) : executeBash(...args);
+		session.executeBash = (...args) => {
+			if (this.configuration) return Promise.reject(new Error("agent session configuration is in progress"));
+			const task = executeBash(...args);
+			this.publishFooter();
+			return task.finally(() => this.publishFooter());
+		};
 		session.prompt = (text, options) => {
 			if (this.configuration) return Promise.reject(new Error("agent session configuration is in progress"));
 			if (!admission.accepting || this.stopping) return Promise.reject(new Error("agent session native input is closed"));

@@ -745,6 +745,32 @@ owner's claim.
 Claims coordinate agent-extension processes on the same local filesystem;
 they do not fence arbitrary programs that bypass the store.
 
+### Idle host release
+
+After five idle minutes, the manager closes a managed host through its ordinary
+cleanup path. The session file, directory binding, and saved ownership
+associations remain intact. Cleanup releases the writer claim and retains
+observed spend once. The timer uses no model calls and does not keep the process
+alive. `PI_AGENT_IDLE_MINUTES` changes the window; `0` disables release.
+
+Active operations, native queues, input preparation, pending controls, open
+configuration, owner-addressed settlement notices, and any owned child host
+still open in this manager prevent release. Children release before their owners;
+the owner's full idle window starts only after its last child host closes.
+A new idle window starts after other busy states clear. Primary sessions and detached
+owners never receive an idle deadline. Unsaved results, uncertain association
+history, and incomplete cleanup retain their hosts for inspection. Incomplete
+cleanup keeps its unavailable host and retained claims; no automatic retry or
+claim removal occurs. Completed cleanup retires the host even if another cleanup
+step reports an error.
+
+`agent_send`, `agent_attach`, `agent_place`, and dashboard controls reuse the
+ordinary stored-session path when a host is closed. Stored steering still
+refuses and names `agent_send` as the turn-start action. Reopening keeps saved
+history without replaying a task; current trust, model, and claim checks apply.
+An idle release during restart confirmation changes the host snapshot, so the
+existing restart identity check requires another confirmation.
+
 ## Collaborate between sessions
 
 `agent_send` addresses a session by its full ID. A message from another session
@@ -998,6 +1024,7 @@ status require an open owner.
 |---|---|
 | `PI_AGENT_SESSIONS_DIR` | Store root, including `native/` sessions, `native/.claims/` writer claims, `places.json`, and `detached/` run records. Default: `<agentDir>/agent-sessions`. |
 | `PI_AGENT_DIR` | Agent directory for session discovery, settings, and trust. Default: Pi's `getAgentDir()`. |
+| `PI_AGENT_IDLE_MINUTES` | Idle managed-host release window in minutes. Default: `5`; `0` disables release. Fractions are allowed. Values must be finite numbers from `0` through `35791`; invalid values refuse manager creation. |
 | `PI_AGENT_LIVE` | Set to `1` to run the opt-in real-provider tests. It is a test switch, not a runtime capability limit. |
 
 The [worktree workflow](../../docs/conventions/worktrees.md) defines activation
@@ -1020,7 +1047,9 @@ boundaries, persistence, ownership, detached controls, and cleanup. Native
 editor tests cover command completion. Configuration tests cover shared input
 validation, native setters and clamping, saved identity/history, idle admission
 and shutdown races, hook and append failures, tool/slash output, and dialog drafts.
-Synthetic inspection tests cover typed
+Native idle-release tests cover timer expiry, stored-session reuse, retained
+history and associations, once-only spend, active and queued work, owner notices,
+configuration, detached ownership, and disabled release. Synthetic inspection tests cover typed
 omissions, unchanged native entries, and Unicode continuation through live-owner
 and read-only projections. Loader tests verify the public inspection registration;
 they do not establish behavior in an already-loaded host. Component tests cover
