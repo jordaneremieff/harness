@@ -277,8 +277,7 @@ function searchCall(args: unknown, theme: Theme, context: CallContext): Componen
 	const fields = record(args);
 	const { subject, qualifiers, hint } = querySubject(fields.query, context.argsComplete);
 	const detail = [...qualifiers];
-	const index = numberField(fields.index);
-	if (index !== null && index > 0) detail.push(`from ${index}`);
+	if (textField(fields.cursor)) detail.push("continuation");
 	const limit = numberField(fields.limit);
 	if (limit !== null && limit > 0) detail.push(`limit ${limit}`);
 	else if (fields.query === undefined && context.argsComplete !== false) detail.push("byte-bounded cues");
@@ -295,6 +294,7 @@ function readCall(args: unknown, theme: Theme, context: CallContext): Component 
 	if (offset !== null && offset > 0) detail.push(`offset ${offset}`);
 	const digest = textField(fields.digest);
 	if (digest !== null) detail.push(`digest ${previewMark(digest, DIGEST_PREFIX).text}`);
+	if (textField(fields.revision)) detail.push(`historical revision ${fields.revision}`);
 	return callCard("memory_read", subject, detail, slug?.clipped ?? false, stringifySafe(args), theme, context);
 }
 
@@ -357,8 +357,7 @@ function pageQualifiers(
 ): string {
 	const issues = numberField(scan.issueCount);
 	const unavailable = numberField(search.unavailableNotes) ?? numberField(scan.unavailableNotes);
-	const hasContinuation =
-		details.hasMore === true || textField(details.nextIndex) !== null || numberField(details.nextIndex) !== null;
+	const hasContinuation = details.hasMore === true || textField(details.nextCursor) !== null;
 	return joinedParts([
 		issues !== null && issues > 0 ? `${issues} scan issues` : "",
 		unavailable !== null && unavailable > 0 ? `${unavailable} unavailable notes` : "",
@@ -402,10 +401,15 @@ function scanEvidence(details: Record<string, unknown>): string[] {
 	const scan = record(details.scan);
 	const issues = Array.isArray(scan.issues) ? scan.issues.map(record) : [];
 	return [
-		`Directory scan: ${scan.complete === true ? "complete" : "partial or unknown"}`,
+		`Source coverage: ${scan.complete === true ? "complete in this window" : "partial or unknown"}`,
+		`Filename inventory: ${scan.inventoryComplete === true ? "complete" : "unknown"}`,
 		...numberLines([
 			["Entries visited", scan.visited],
 			["Visit limit", scan.visitCap],
+			["Candidate notes", scan.totalCandidates],
+			["Window start", scan.windowStart],
+			["Window end", scan.windowEnd],
+			["Window source bytes", scan.sourceBytes],
 			["Unavailable notes", record(details.search).unavailableNotes ?? scan.unavailableNotes],
 			["Scan issues", scan.issueCount],
 			["Scan issues shown", scan.issuesShown],
@@ -438,7 +442,7 @@ function queryCoverage(details: Record<string, unknown>): string[] {
 
 function searchContinuation(details: Record<string, unknown>): string {
 	if (details.hasMore === true)
-		return `Continue with the same query and nextIndex: ${numberField(details.nextIndex) ?? "unknown"}`;
+		return `Continue with the same query and nextCursor: ${textField(details.nextCursor) ?? "unknown"}`;
 	return details.hasMore === false ? "End of this result set; coverage limits still apply." : "Continuation: unknown.";
 }
 
@@ -484,7 +488,8 @@ function searchBody(details: Record<string, unknown>, notes: Record<string, unkn
 		querying ? `Query: ${typeof query === "string" ? query : stringList(query).join(" | ")}` : "",
 		...scanEvidence(details),
 		...queryCoverage(details),
-		...numberLines([["Page starts at index", details.index]]),
+		...numberLines([["Page starts at window offset", details.pageOffset]]),
+		textField(record(details.coverage).meaning) ?? "",
 		searchContinuation(details),
 		textField(details.guidance) ?? "",
 		"Cues and excerpts are discovery evidence. Read selected notes from offset 0 with their digests.",
@@ -529,12 +534,12 @@ function searchOverview(details: Record<string, unknown>, notes: Record<string, 
 	const returned = numberField(details.returned) ?? notes.length;
 	const query = isQueryPage(details.query);
 	const { complete, total } = pageCoverage(details, query);
-	const scope = query ? "coverage" : "directory scan";
+	const scope = "source coverage";
 	const clean = complete && (query || record(details.scan).issueCount === 0);
 	const color: OutcomeColor = clean ? (returned > 0 ? "success" : "muted") : "warning";
 	const noun = query ? "matches" : "notes";
 	const counted = total > 0 ? total : returned;
-	const count = details.corpusEmpty === true ? "corpus empty" : `${returned} of ${counted} ${noun}`;
+	const count = details.corpusEmpty === true ? "corpus empty" : `${returned} of ${counted} window ${noun}`;
 	const cueProblems = notes.filter((note) => textField(note.cueProblem)).length;
 	return {
 		outcome: { color, line: `${count} · ${scope} ${complete ? "complete" : "partial"}` },
@@ -570,6 +575,7 @@ function readResult(
 		{ color: lifecycle.color, line },
 		joinedParts([
 			previewMark(lifecycle.label, 200).text,
+			textField(details.revision) ? `revision ${details.revision}` : "",
 			lifecycle.problem ? `Lifecycle problem: ${previewMark(lifecycle.problem, ERROR_LIMIT).text}` : "",
 		]),
 		true,
@@ -589,9 +595,9 @@ function lifecycleView(details: Record<string, unknown>): LifecycleView {
 	const status = lifecycle.status === "active" || lifecycle.status === "superseded" ? lifecycle.status : "unknown";
 	const replacement = textField(lifecycle.supersededBy);
 	return {
-		label: `status ${status}${replacement ? ` · replacement ${replacement}` : ""}`,
+		label: `${details.source === "history" ? "historical evidence · prior " : ""}status ${status}${replacement ? ` · replacement ${replacement}` : ""}`,
 		problem,
-		color: status !== "active" || problem ? "warning" : "success",
+		color: details.source === "history" || status !== "active" || problem ? "warning" : "success",
 	};
 }
 
@@ -599,12 +605,15 @@ function readBody(details: Record<string, unknown>, lifecycle: LifecycleView, fa
 	const end = numberField(details.nextOffset);
 	const continuation =
 		details.hasMore === true
-			? `Continue at offset ${end ?? "unknown"} with the same digest.`
+			? `Continue at offset ${end ?? "unknown"} with the same digest${textField(details.revision) ? " and revision" : ""}.`
 			: details.hasMore === false
 				? "End of source."
 				: "Continuation: unknown.";
 	const header = [
 		lifecycle.label,
+		textField(details.revision) ? `Revision: ${details.revision}` : "",
+		textField(details.capturedAt) ? `Captured: ${details.capturedAt}` : "",
+		textField(details.authority) ?? "",
 		lifecycle.problem ? `Lifecycle problem: ${lifecycle.problem}` : "",
 		`Digest: ${textField(details.digest) ?? "unknown"}`,
 		`Source range: [${numberField(details.offset) ?? "?"}, ${end ?? "?"}) code points`,
@@ -645,6 +654,7 @@ type ReceiptView = {
 	digestPart: string;
 	errorText: string;
 	counts: string;
+	history: string;
 };
 
 function receiptView(receipt: Record<string, unknown>): ReceiptView {
@@ -660,32 +670,42 @@ function receiptView(receipt: Record<string, unknown>): ReceiptView {
 		digestPart: digest !== null ? `digest ${previewMark(digest, DIGEST_PREFIX).text}` : "",
 		errorText: error !== null ? previewMark(error, ERROR_LIMIT).text : "",
 		counts: `${written.length} written · ${notWritten.length} not written`,
+		history: joinedParts([
+			Array.isArray(receipt.captured) && receipt.captured.length
+				? `${receipt.captured.length} prior captures (not proof of write success)`
+				: "",
+			Array.isArray(receipt.historyOmitted) && receipt.historyOmitted.length
+				? `${receipt.historyOmitted.length} history omissions (credential policy)`
+				: "",
+		]),
 	};
 }
 
 function receiptOutcome(receipt: Record<string, unknown>, operation: "write" | "edit"): ReceiptOutcome {
 	const view = receiptView(receipt);
+	const verb = operation === "edit" ? "edited" : "written";
+	const initialization = receipt.initialized === true ? " · corpus initialized" : "";
 	if (receipt.ok === true) {
 		return {
 			color: view.notWritten.length > 0 ? "warning" : "success",
-			line: `${view.slugText || "note"} ${operation === "edit" ? "edited" : "written"}${receipt.initialized === true ? " · corpus initialized" : ""}`,
-			second: joinedParts([view.digestPart, view.notWritten.length > 0 ? view.counts : ""]),
-			hint: view.notWritten.length > 0,
+			line: `${view.slugText || "note"} ${verb}${initialization}`,
+			second: joinedParts([view.digestPart, view.notWritten.length > 0 ? view.counts : "", view.history]),
+			hint: view.notWritten.length > 0 || view.history !== "",
 		};
 	}
 	if (view.written.length > 0) {
 		return {
 			color: "warning",
 			line: `${view.slugText ? `${view.slugText} ` : ""}${operation} incomplete · ${view.counts}`,
-			second: joinedParts([view.digestPart, view.errorText]),
+			second: joinedParts([view.digestPart, view.errorText, view.history]),
 			hint: true,
 		};
 	}
 	return {
 		color: "error",
 		line: `${operation} failed${view.slugText ? ` · ${view.slugText}` : ""}${view.errorText ? ` · ${view.errorText}` : ""}`,
-		second: view.digestPart,
-		hint: false,
+		second: joinedParts([view.digestPart, view.history]),
+		hint: view.history !== "",
 	};
 }
 
@@ -726,6 +746,43 @@ function writeResult(
 	return fallbackCard(name, result, options, theme, context);
 }
 
+function historyResult(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: ResultContext,
+): Component {
+	if (options.isPartial) return partialCard("Reading history...", theme, context);
+	if (context.isError) return errorCard("memory_history", result, options, theme, context);
+	const details = record(result.details);
+	const revisions = Array.isArray(details.revisions) ? details.revisions.map(record) : [];
+	const coverage = record(details.coverage);
+	const body = [
+		textField(details.authority) ?? "",
+		`Coverage: ${stringifySafe(coverage)}`,
+		...revisions.map(
+			(revision) =>
+				`Revision: ${revision.revision}\nCaptured: ${revision.capturedAt}\nDigest: ${revision.digest}\nBytes: ${revision.bytes}`,
+		),
+		textField(details.nextCursor)
+			? `Repeat slug with nextCursor: ${details.nextCursor}`
+			: "End of captured revision inventory.",
+	].join("\n");
+	return resultCard(
+		{ color: "muted", line: `${textField(details.slug) ?? "subject"} · ${revisions.length} prior captures` },
+		joinedParts([
+			"historical evidence, not current authority",
+			textField(details.nextCursor) ? "continuation available" : "",
+			numberField(coverage.unavailable) ? `${coverage.unavailable} unavailable revisions` : "",
+		]),
+		true,
+		body,
+		options,
+		theme,
+		context,
+	);
+}
+
 /** Render a memory tool call card by tool name. */
 export function renderCall(name: string, args: unknown, theme: Theme, context: CallContext): Component {
 	switch (name) {
@@ -733,6 +790,16 @@ export function renderCall(name: string, args: unknown, theme: Theme, context: C
 			return searchCall(args, theme, context);
 		case "memory_read":
 			return readCall(args, theme, context);
+		case "memory_history":
+			return callCard(
+				name,
+				textField(record(args).slug) ?? "",
+				textField(record(args).cursor) ? ["continuation"] : [],
+				true,
+				stringifySafe(args),
+				theme,
+				context,
+			);
 		case "memory_write":
 			return writeCall(args, theme, context);
 		case "memory_edit":
@@ -755,6 +822,8 @@ export function renderResult(
 			return searchResult(result, options, theme, context);
 		case "memory_read":
 			return readResult(result, options, theme, context);
+		case "memory_history":
+			return historyResult(result, options, theme, context);
 		case "memory_write":
 		case "memory_edit":
 			return writeResult(name, result, options, theme, context);

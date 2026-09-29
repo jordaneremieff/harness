@@ -55,8 +55,12 @@ test("single edit returns the shared receipt and refreshes whole-note verificati
 		digest: sourceDigest(changed),
 		written: ["editor-choice.md"],
 		notWritten: [],
+		captured: result.captured,
+		historyOmitted: [],
 		initialized: false,
 	});
+	assert.equal(result.captured.length, 1);
+	assert.equal(result.captured[0].digest, sourceDigest(f.source));
 	assert.equal(body(changed), body(f.source).replace("Use editor A.", "Use editor B."));
 	const meta = parseFrontmatter<Record<string, unknown>>(changed).frontmatter;
 	assert.equal(meta.verified, false);
@@ -607,5 +611,5 @@ test("edits do not create or replace the corpus contract", (t) => {
 	const f = fixture(t);
 	rmSync(join(f.root, "README.md"));
 	assert.equal(editMemory(f.root, f.input).initialized, false);
-	assert.deepEqual(readdirSync(f.root), ["editor-choice.md"]);
+	assert.deepEqual(readdirSync(f.root).sort(), [".memory-history", "editor-choice.md"]);
 });

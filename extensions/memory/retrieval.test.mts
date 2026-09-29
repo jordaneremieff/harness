@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import {
+import fs, {
 	constants,
 	existsSync,
 	mkdirSync,
@@ -12,6 +12,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import {
@@ -105,16 +106,17 @@ async function rejects(
 }
 async function drain(root: string, options: SearchOptions = {}): Promise<Json[]> {
 	const pages: Json[] = [];
-	let index = 0;
+	let cursor: string | undefined;
+	const seen = new Set<string>();
 	for (let guard = 0; guard < 200; guard += 1) {
-		const page = await search(root, { ...options, index });
+		const page = await search(root, { ...options, cursor });
 		pages.push(page);
 		if (!page.hasMore) return pages;
-		const next = number(page.nextIndex);
-		assert.ok(next > index);
-		index = next;
+		cursor = string(page.nextCursor);
+		assert.equal(seen.has(cursor), false);
+		seen.add(cursor);
 	}
-	throw new Error("index walk exceeded guard");
+	throw new Error("cursor walk exceeded guard");
 }
 async function collect(root: string, slug: string): Promise<{ text: string; pages: Json[] }> {
 	let offset = 0;
@@ -158,6 +160,73 @@ function maximalNote(index: number): string {
 	const supersedes = Array.from({ length: 40 }, (_, key) => `slug-${index}-${key}`.padEnd(160, "y")).join(", ");
 	return `---\ntitle: ${"T".repeat(300)}\ntags: [${tags}]\nstatus: ${"s".repeat(80)}\nsupersedes: [${supersedes}]\nsuperseded_by: ${"z".repeat(160)}\n---\n\n# Heading ${index}\n`;
 }
+
+test("source byte windows advance through empty pages without claiming a frozen corpus snapshot", async () => {
+	const files: Record<string, string> = { "README.md": README };
+	for (let index = 0; index < 520; index++) files[`a-${String(index).padStart(3, "0")}.md`] = "x".repeat(65536);
+	files["zz-target.md"] = "latewindowtoken";
+	const root = corpus(files);
+	const first = await search(root, { query: "latewindowtoken", limit: 1 });
+	assert.deepEqual(first.notes, []);
+	assert.equal(first.hasMore, true);
+	assert.ok(number(object(first.scan).sourceBytes) <= 32 * 1024 * 1024);
+	assert.ok(number(object(first.scan).windowEnd) < 520);
+	assert.equal(object(first.coverage).frozenSnapshot, false);
+	const next = await search(root, { query: "latewindowtoken", cursor: string(first.nextCursor), limit: 1 });
+	assert.deepEqual(
+		notes(next).map((note) => note.slug),
+		["zz-target"],
+	);
+	assert.equal(next.nextCursor, null);
+	assert.equal(object(next.coverage).traversalComplete, true);
+	assert.equal(object(next.search).complete, false);
+});
+
+test("browse orders a slug before its extensions across result and source windows", async () => {
+	const files: Record<string, string> = { "README.md": README, "a.md": "# First subject" };
+	for (let index = 0; index < 4096; index++) files[`a-${String(index).padStart(4, "0")}.md`] = "# Related subject";
+	const root = corpus(files);
+	const pages = await drain(root, { limit: 512 });
+	const found = pages.flatMap(notes).map((note) => note.slug);
+	assert.deepEqual(found, ["a", ...Array.from({ length: 4096 }, (_, index) => `a-${String(index).padStart(4, "0")}`)]);
+	assert.equal(new Set(found).size, 4097);
+	assert.equal(object(pages.at(-1)?.scan).windowStart, 4096);
+});
+
+test("browse cursor binds query, complete inventory and source evidence beyond cue bytes", async () => {
+	const root = corpus({ "README.md": README, "a.md": `${ACTIVE}${"x".repeat(9000)}`, "b.md": ACTIVE });
+	const first = await search(root, { limit: 1 });
+	const cursor = string(first.nextCursor);
+	await rejects(searchMemory(root, { query: "dark", cursor }), "changed", /request changed/);
+	writeFileSync(join(root, "a.md"), `${ACTIVE}${"x".repeat(8999)}y`);
+	await rejects(searchMemory(root, { cursor }), "changed", /window changed/);
+	const fresh = await search(root, { limit: 1 });
+	writeFileSync(join(root, "new.txt"), "inventory only");
+	await rejects(searchMemory(root, { cursor: string(fresh.nextCursor) }), "changed", /inventory changed/);
+});
+
+test("hard inventory overflow bounds traversal before source work and qualifies the prompt", async (t) => {
+	const root = corpus({ "README.md": README });
+	let visits = 0;
+	t.mock.method(fs, "opendirSync", () => ({
+		readSync() {
+			visits++;
+			return { name: `entry-${visits}`, isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false };
+		},
+		closeSync() {},
+	}));
+	syncBuiltinESMExports();
+	try {
+		await rejects(searchMemory(root), "corpus", /16384 entries; 16385 visited/);
+		assert.equal(visits, 16385);
+		visits = 0;
+		assert.match((await memoryIndex(root)) ?? "", /16384 entries; 16385 visited/);
+		assert.equal(visits, 16385);
+	} finally {
+		t.mock.restoreAll();
+		syncBuiltinESMExports();
+	}
+});
 
 test("returns compact literal cues with heading and filename fallback", async () => {
 	const root = corpus({
@@ -265,7 +334,7 @@ test("malformed headers expose qualified raw cues without metadata title weights
 		assert.match(string(found.cueProblem), /invalid or ambiguous frontmatter/);
 		for (const match of array(found.matched)) assert.deepEqual(object(match).fields, ["body"]);
 		const index = await memoryIndex(root);
-		assert.match(index ?? "", /unknown status: 1/);
+		assert.match(index ?? "", /Unknown status: 1/);
 		assert.doesNotMatch(index ?? "", /^subject:/m);
 		assert.equal((await read(root, { slug: "subject" })).content, source);
 	}
@@ -417,7 +486,7 @@ test("every note page exposes conservative lifecycle evidence without altering i
 		}
 		const index = await memoryIndex(root);
 		assert.equal(/^subject:/m.test(index ?? ""), status === "active", header);
-		if (status === "unknown") assert.match(index ?? "", /unknown status: 1/);
+		if (status === "unknown") assert.match(index ?? "", /Unknown status: 1/);
 		assert.equal(readFileSync(join(root, "subject.md"), "utf8"), source);
 	}
 	const root = corpus({ "README.md": README, "plain.md": "# No metadata\nText" });
@@ -473,11 +542,11 @@ test("reports directory limits and counts unavailable notes beyond retained deta
 	const root = corpus(many);
 	for (const options of [{}, { query: "needle" }]) {
 		const limited = await search(root, options);
-		assert.equal(object(limited.scan).complete, false);
-		assert.equal(object(limited.scan).visited, 513);
-		assert.ok(issues(limited).includes("scan.limit"));
-		assert.equal(limited.corpusEmpty, null);
-		if (limited.search) assert.equal(object(limited.search).complete, false);
+		assert.equal(object(limited.scan).complete, true);
+		assert.equal(object(limited.scan).visited, 521);
+		assert.equal(object(limited.scan).inventoryComplete, true);
+		assert.equal(limited.corpusEmpty, true);
+		if (limited.search) assert.equal(object(limited.search).complete, true);
 	}
 });
 
@@ -546,11 +615,11 @@ test("validates scalar inputs, integer bounds, query grammar, and safe continuat
 		{ query: null },
 		{ query: 2 },
 		{ query: "x".repeat(201) },
-		{ index: -1 },
-		{ index: "1" },
-		{ index: 1.5 },
-		{ index: 1_000_001 },
-		{ index: NaN },
+		{ index: 0 },
+		{ cursor: -1 },
+		{ cursor: "invalid" },
+		{ cursor: "x".repeat(1025) },
+		{ cursor: null },
 		{ limit: 0 },
 		{ limit: 513 },
 		{ query: "needle", limit: 26 },
@@ -925,7 +994,8 @@ test("defaults browse to byte-bounded cues and query to ten records with exact c
 		const initial = await search(root, { query });
 		assert.equal(initial.pageSize, query === undefined ? 512 : 10);
 		assert.equal(initial.returned, query === undefined ? 60 : 10);
-		assert.equal(initial.nextIndex, query === undefined ? null : 10);
+		if (query === undefined) assert.equal(initial.nextCursor, null);
+		else assert.equal(typeof initial.nextCursor, "string");
 		for (const limit of [1, 25]) {
 			const pages = await drain(root, { query, limit });
 			assert.equal(pages[0].returned, limit);
@@ -941,10 +1011,7 @@ test("defaults browse to byte-bounded cues and query to ten records with exact c
 					Array.from({ length: 60 }, (_, i) => i + 1),
 				);
 		}
-		const beyond = await search(root, { query, index: 1_000_000 });
-		assert.equal(beyond.returned, 0);
-		assert.equal(beyond.nextIndex, null);
-		assert.equal(beyond.hasMore, false);
+		await rejects(searchMemory(root, { query, cursor: "invalid" }), "input", /cursor/);
 	}
 });
 
@@ -954,7 +1021,7 @@ test("default browse returns a full compact index and accepts a larger explicit 
 	const root = corpus(files);
 	const full = await search(root);
 	assert.equal(full.returned, 275);
-	assert.equal(full.nextIndex, null);
+	assert.equal(full.nextCursor, null);
 	const reduced = await drain(root, { limit: 50 });
 	assert.equal(reduced[0].returned, 50);
 	assert.deepEqual(reduced.flatMap(notes), notes(full));

@@ -37,11 +37,16 @@ const wellFormed = (text: string) =>
 	assert.ok(/^(?:[^\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])*$/.test(text), "unpaired surrogate in render");
 
 describe("memory_search call cards", () => {
-	it("quotes one query and names the continuation index and result limit", () => {
-		const view = renderCall("memory_search", { query: "provider lessons", index: 25, limit: 5 }, theme, call);
+	it("quotes one query and names continuation and result limit", () => {
+		const view = renderCall(
+			"memory_search",
+			{ query: "provider lessons", cursor: "opaque-cursor", limit: 5 },
+			theme,
+			call,
+		);
 		const shown = screen(view);
 		assert.match(shown, /memory_search · "provider lessons"/);
-		assert.match(shown, /from 25 · limit 5/);
+		assert.match(shown, /continuation · limit 5/);
 		assert.doesNotMatch(shown, /expand arguments/i);
 		assert.equal(lines(view).length, 2);
 	});
@@ -84,7 +89,7 @@ describe("memory_search call cards", () => {
 	});
 
 	it("shows full arguments with controls escaped when expanded", () => {
-		const view = renderCall("memory_search", { query: "line\nbreak\ttab", index: 0 }, theme, expandedCall);
+		const view = renderCall("memory_search", { query: "line\nbreak\ttab" }, theme, expandedCall);
 		const shown = screen(view);
 		assert.match(shown, /"query": "line\\nbreak\\ttab"/);
 		assert.doesNotMatch(shown, /[\x1b\x07]/);
@@ -262,7 +267,7 @@ describe("memory_search result cards", () => {
 		totalMatches: 5,
 		returned: 2,
 		hasMore: true,
-		nextIndex: 2,
+		nextCursor: "opaque-cursor",
 		notes: [
 			{ slug: "a", title: "A" },
 			{ slug: "b", title: "B" },
@@ -274,7 +279,7 @@ describe("memory_search result cards", () => {
 	it("reports the page with its coverage and continuation", () => {
 		const view = renderResult("memory_search", result("page text", indexPage), collapsed, theme, okContext);
 		const shown = screen(view);
-		assert.match(shown, /2 of 5 matches · coverage complete/);
+		assert.match(shown, /2 of 5 window matches · source coverage complete/);
 		assert.match(shown, /1 unavailable notes · continuation available/);
 		assert.match(shown, /• a · A/);
 		assert.match(shown, /• b · B/);
@@ -291,7 +296,7 @@ describe("memory_search result cards", () => {
 	it("treats array-query pages as query pages", () => {
 		const details = { ...indexPage, query: ["provider", "lessons"] };
 		const shown = screen(renderResult("memory_search", result("t", details), collapsed, colorTheme, okContext));
-		assert.match(shown, /2 of 5 matches · coverage complete/);
+		assert.match(shown, /2 of 5 window matches · source coverage complete/);
 		assert.match(shown, /\{success\}/);
 		const partialScan = {
 			...indexPage,
@@ -300,7 +305,7 @@ describe("memory_search result cards", () => {
 			scan: { complete: true, issueCount: 0 },
 		};
 		const partial = screen(renderResult("memory_search", result("t", partialScan), collapsed, colorTheme, okContext));
-		assert.match(partial, /matches · coverage partial/);
+		assert.match(partial, /window matches · source coverage partial/);
 		assert.match(partial, /\{warning\}/);
 	});
 
@@ -316,7 +321,7 @@ describe("memory_search result cards", () => {
 			scan: { complete: true, issueCount: 2, unavailableNotes: 1 },
 		};
 		const shown = screen(renderResult("memory_search", result("t", details), collapsed, colorTheme, okContext));
-		assert.match(shown, /9 of 9 notes · directory scan complete/);
+		assert.match(shown, /9 of 9 window notes · source coverage complete/);
 		assert.match(shown, /1 unavailable notes/);
 		assert.match(shown, /\{warning\}/);
 		assert.match(shown, /2 scan issues/);
@@ -335,7 +340,7 @@ describe("memory_search result cards", () => {
 			scan: { complete: true, issueCount: 0 },
 		};
 		const shown = screen(renderResult("memory_search", result("t", details), collapsed, colorTheme, okContext));
-		assert.match(shown, /corpus empty · directory scan complete/);
+		assert.match(shown, /corpus empty · source coverage complete/);
 		assert.match(shown, /\{muted\}/);
 	});
 
@@ -372,12 +377,13 @@ describe("memory_search result cards", () => {
 			],
 			scan: {
 				complete: false,
-				visited: 513,
-				visitCap: 512,
+				visited: 5000,
+				visitCap: 16384,
+				inventoryComplete: true,
 				issueCount: 21,
 				issuesShown: 1,
 				unavailableNotes: 1,
-				issues: [{ code: "scan.limit", message: "Directory coverage stops at its limit" }],
+				issues: [{ code: "note.unreadable", message: "Unreadable source remains unknown" }],
 			},
 			search: {
 				complete: false,
@@ -392,13 +398,14 @@ describe("memory_search result cards", () => {
 		const before = structuredClone(response);
 		const shown = screen(renderResult("memory_search", response, expandedView, theme, okContext), 200);
 		for (const pattern of [
-			/Directory scan: partial/,
+			/Source coverage: partial/,
+			/Filename inventory: complete/,
 			/Query coverage: partial/,
 			/Scan issues: 21/,
 			/Scan issues shown: 1/,
-			/scan.limit · Directory coverage stops at its limit/,
+			/note.unreadable · Unreadable source remains unknown/,
 			/Unavailable notes: 1/,
-			/nextIndex: 2/,
+			/nextCursor: opaque-cursor/,
 			/subject · Subject title/,
 			/status cue: "superseded"/,
 			/superseded_by cue: "replacement"/,
@@ -422,7 +429,7 @@ describe("memory_search result cards", () => {
 			returned: 6,
 			totalMatches: 6,
 			hasMore: false,
-			nextIndex: null,
+			nextCursor: null,
 			notes: Array.from({ length: 6 }, (_, index) => ({ slug: `subject-${index}`, title: `Title ${index}` })),
 		};
 		const shown = screen(
@@ -444,7 +451,7 @@ describe("memory_search result cards", () => {
 				renderResult("memory_search", result(JSON.stringify(empty), empty), view, theme, okContext),
 				200,
 			);
-			assert.match(shown, /0 of 0 matches · coverage partial/);
+			assert.match(shown, /0 of 0 window matches · source coverage partial/);
 			assert.match(shown, /Try alternate inflections, exact identifier forms, or quoted fragments/);
 		}
 	});
@@ -473,7 +480,7 @@ describe("memory_search result cards", () => {
 		const sparse = screen(
 			renderResult("memory_search", result("t", { notes: [{ slug: "a" }] }), collapsed, theme, okContext),
 		);
-		assert.match(sparse, /1 of 1 notes · directory scan partial/);
+		assert.match(sparse, /1 of 1 window notes · source coverage partial/);
 	});
 });
 
@@ -681,6 +688,65 @@ describe("memory_write result cards", () => {
 		);
 		const malformed = screen(renderResult("memory_write", result("fallback", "broken"), collapsed, theme, okContext));
 		assert.match(malformed, /fallback/);
+	});
+});
+
+describe("historical evidence cards", () => {
+	const revision = `20260101T120000000Z-00000000-0000-0000-0000-000000000001-${"a".repeat(64)}`;
+	it("keeps exact revision identity and prior lifecycle separate from current authority", () => {
+		const details = {
+			slug: "subject",
+			source: "history",
+			revision,
+			capturedAt: "2026-01-01T12:00:00.000Z",
+			digest: "a".repeat(64),
+			lifecycle: { status: "active", supersededBy: null },
+			content: "Old source",
+			authority: "Historical evidence, not current authority",
+			hasMore: true,
+			nextOffset: 12,
+		};
+		for (const options of [collapsed, expandedView]) {
+			const shown = screen(renderResult("memory_read", result("", details), options, theme, okContext), 300);
+			assert.match(shown, /historical evidence · prior status active/);
+			assert.ok(shown.includes(revision));
+		}
+		assert.ok(
+			screen(renderCall("memory_read", { slug: "subject", revision }, theme, expandedCall), 300).includes(revision),
+		);
+		const history = {
+			slug: "subject",
+			revisions: [{ revision, capturedAt: details.capturedAt, digest: details.digest, bytes: 100 }],
+			coverage: { unavailable: 1 },
+			nextCursor: "opaque",
+			authority: details.authority,
+		};
+		const expanded = screen(renderResult("memory_history", result("", history), expandedView, theme, okContext), 300);
+		assert.ok(expanded.includes(revision));
+		assert.match(expanded, /not current authority/);
+		assert.match(expanded, /nextCursor: opaque/);
+		assert.match(
+			screen(renderResult("memory_history", result("", history), collapsed, theme, okContext)),
+			/1 unavailable revisions/,
+		);
+		assert.match(
+			screen(renderCall("memory_history", { slug: "subject", cursor: "opaque" }, theme, call)),
+			/continuation/,
+		);
+	});
+	it("separates prior captures and policy omissions from live publication failure", () => {
+		const details = {
+			ok: false,
+			slug: "subject",
+			written: [],
+			notWritten: ["subject.md"],
+			captured: [{ revision }],
+			historyOmitted: [{ file: "other.md", reason: "credential-policy" }],
+		};
+		const shown = screen(renderResult("memory_write", result("", details), collapsed, theme, errorContext), 300);
+		assert.match(shown, /write failed/);
+		assert.match(shown, /1 prior captures \(not proof of write success\)/);
+		assert.match(shown, /1 history omissions \(credential policy\)/);
 	});
 });
 

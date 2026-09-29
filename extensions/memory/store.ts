@@ -18,6 +18,7 @@ import { basename, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { findMarkdownHeading } from "./headings.ts";
+import { HISTORY_DIRECTORY, historyDirectory, newRevision, revisionIdentity } from "./history.ts";
 
 export const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const DIGEST = /^[a-f0-9]{64}$/;
@@ -36,6 +37,9 @@ created and updated (YYYY-MM-DD), verified (boolean), verified_date (date or nul
 supersedes (list of slugs), and superseded_by (slug or null).
 The body contains # Title, ## Summary, ## Details, and ## Sources.
 Supersession preserves the replaced note with status: superseded and a reciprocal pointer.
+Writer overwrites retain safe prior bytes under .memory-history/<slug>/ before replacement.
+Historical captures are evidence, not current authority or proof of successful mutation.
+Explicit forget requests must account for retained subject history as well as current notes.
 `;
 
 export interface MemoryWrite {
@@ -62,6 +66,8 @@ export interface WriteReceipt {
 	digest?: string;
 	written: string[];
 	notWritten: string[];
+	captured: Array<{ slug: string; revision: string; capturedAt: string; digest: string; bytes: number }>;
+	historyOmitted: Array<{ file: string; reason: "credential-policy" }>;
 	initialized: boolean;
 	error?: string;
 }
@@ -146,17 +152,21 @@ function validate(input: MemoryWrite): void {
 
 /** Recognizable formats only: assignment syntax and entropy do not distinguish technical examples from secrets. */
 function checkCredentials(payload: string, location = "resulting note"): void {
-	const family = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(payload)
+	const family = credentialFamily(payload);
+	if (family)
+		throw new Error(
+			`Credential-like material refused in ${location} (${family}); use a descriptive placeholder instead of a credential value. No note content was written`,
+		);
+}
+
+function credentialFamily(payload: string): string | undefined {
+	return /-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(payload)
 		? "private-key marker"
 		: /\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b/i.test(
 					payload,
 				)
 			? "recognized token prefix"
 			: undefined;
-	if (family)
-		throw new Error(
-			`Credential-like material refused in ${location} (${family}); use a descriptive placeholder instead of a credential value. No note content was written`,
-		);
 }
 
 /** Open the inode itself, not a link target, and bound the read before allocation. */
@@ -364,6 +374,7 @@ interface Publication {
 	file: string;
 	content: string;
 	expected?: string;
+	prior?: string;
 }
 function targetPlans(root: string, input: MemoryWrite, today: string, signal?: AbortSignal): Publication[] {
 	return (input.supersedes ?? []).map((target) => {
@@ -375,7 +386,7 @@ function targetPlans(root: string, input: MemoryWrite, today: string, signal?: A
 			(source.meta.status !== "active" && source.meta.superseded_by !== input.slug)
 		)
 			throw new Error("A supersession target already names another replacement");
-		return { file, content: superseded(source, input.slug, today), expected: target.digest };
+		return { file, content: superseded(source, input.slug, today), expected: target.digest, prior: source.text };
 	});
 }
 function destinationSource(destination: string, input: { expectedDigest?: string }): Existing | undefined {
@@ -404,7 +415,7 @@ function planWrites(root: string, input: MemoryWrite, signal?: AbortSignal): Pub
 	if (contractExists) readSource(contractPath);
 	return [
 		...(contractExists ? [] : [{ file: "README.md", content: CONTRACT }]),
-		{ file, content, expected: input.expectedDigest },
+		{ file, content, expected: input.expectedDigest, prior: prior?.text },
 		...targets,
 	];
 }
@@ -505,7 +516,7 @@ function planEdit(root: string, input: MemoryEdit, signal?: AbortSignal): Public
 		changedHeader(source, { updated: today, verified: input.verified, verified_date: input.verified ? today : null }) +
 		editedBody(source, input.edits);
 	if (Buffer.byteLength(content) > MAX_BYTES) throw new Error("Note exceeds the 64 KiB source limit");
-	return [{ file, content, expected: input.expectedDigest }];
+	return [{ file, content, expected: input.expectedDigest, prior: source.text }];
 }
 
 export function editMemory(
@@ -550,7 +561,8 @@ function cleanup(staged: string[], release: () => void, receipt: WriteReceipt): 
 }
 
 export interface WriteHooks {
-	/** Test boundary for failures immediately before an atomic publication. */
+	/** Test boundaries immediately before archive and live publication. */
+	beforeCapture?: (file: string) => void;
 	beforePublish?: (file: string) => void;
 }
 
@@ -580,6 +592,53 @@ function validatePublications(plans: Publication[], destination: string): void {
 	}
 }
 
+/** Publish every safe prior copy before any live file changes. Captures survive failed mutations. */
+function capturePriors(
+	root: string,
+	plans: Publication[],
+	receipt: WriteReceipt,
+	staged: string[],
+	signal: AbortSignal | undefined,
+	hooks: WriteHooks,
+): void {
+	for (const plan of plans) {
+		checkAbort(signal);
+		if (plan.prior === undefined) continue;
+		if (credentialFamily(plan.prior)) {
+			receipt.historyOmitted.push({ file: plan.file, reason: "credential-policy" });
+			continue;
+		}
+		hooks.beforeCapture?.(plan.file);
+		checkAbort(signal);
+		if (sourceDigest(readSource(join(root, plan.file))) !== plan.expected)
+			throw new Error(`Source changed before history capture: ${plan.file}`);
+		const subject = basename(plan.file, ".md");
+		const directory = historyDirectory(root, subject, true) as string;
+		const digest = sourceDigest(plan.prior);
+		const revision = newRevision(digest);
+		const temp = stage(directory, plan.prior);
+		staged.push(temp);
+		linkSync(temp, join(directory, `${revision}.md`));
+		receipt.captured.push({
+			slug: subject,
+			revision,
+			capturedAt: revisionIdentity(revision).capturedAt,
+			digest,
+			bytes: Buffer.byteLength(plan.prior),
+		});
+		unlinkSync(temp);
+		// Sync the directory entry before live publication; filesystem power-loss guarantees remain external.
+		for (const path of [directory, join(root, HISTORY_DIRECTORY), root]) {
+			const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+			try {
+				fsyncSync(fd);
+			} finally {
+				closeSync(fd);
+			}
+		}
+	}
+}
+
 function mutate(
 	rootValue: string,
 	subject: string,
@@ -601,6 +660,8 @@ function mutate(
 		file: `${subject}.md`,
 		written: [],
 		notWritten: [],
+		captured: [],
+		historyOmitted: [],
 		initialized: false,
 	};
 	const staged: string[] = [];
@@ -613,6 +674,7 @@ function mutate(
 			staged.push(temp);
 			return { ...plan, temp };
 		});
+		capturePriors(root, prepared, receipt, staged, signal, hooks);
 		for (const plan of prepared) {
 			checkAbort(signal);
 			hooks.beforePublish?.(plan.file);

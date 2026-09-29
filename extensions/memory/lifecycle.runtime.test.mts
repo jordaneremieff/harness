@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -35,8 +35,50 @@ function digest(value: unknown): string {
 	return value as string;
 }
 
+type Invoke = (name: string, args: JsonObject) => Promise<ToolResultMessage>;
+
+async function readPages(invoke: Invoke, slug: string, digest: string, revision?: string): Promise<string> {
+	let offset = 0;
+	let collected = "";
+	for (let pageNumber = 1; pageNumber <= 8; pageNumber++) {
+		const page = details(await invoke("memory_read", { slug, digest, offset, ...(revision ? { revision } : {}) }));
+		assert.equal(page.offset, offset);
+		assert.equal(page.digest, digest);
+		assert.deepEqual(page.lifecycle, { status: "active", supersededBy: null });
+		assert.ok(Buffer.byteLength(JSON.stringify(page)) + 1 <= 48 * 1024);
+		assert.equal(typeof page.content, "string");
+		if (revision) {
+			assert.equal(page.source, "history");
+			assert.equal(page.revision, revision);
+			assert.match(page.authority as string, /Historical evidence only, not current authority/);
+		}
+		collected += page.content;
+		if (pageNumber === 1) assert.equal(page.contentCodePoints, 12000);
+		if (!page.hasMore) {
+			assert.ok(pageNumber > 1);
+			return collected;
+		}
+		assert.equal(typeof page.nextOffset, "number");
+		assert.ok((page.nextOffset as number) > offset);
+		offset = page.nextOffset as number;
+	}
+	throw new Error("Source continuation exceeded fixture bound");
+}
+
+async function listCaptures(invoke: Invoke, slug: string): Promise<string[]> {
+	const captures: string[] = [];
+	let cursor: string | undefined;
+	for (let guard = 0; guard < 4; guard++) {
+		const page = details(await invoke("memory_history", { slug, limit: 1, ...(cursor ? { cursor } : {}) }));
+		captures.push(...(page.revisions as JsonObject[]).map((item) => item.revision as string));
+		if (!page.nextCursor) return captures;
+		cursor = page.nextCursor as string;
+	}
+	throw new Error("History continuation exceeded fixture bound");
+}
+
 test("loaded tools preserve a technical note through authoring, retrieval, correction and supersession", {
-	timeout: 20000,
+	timeout: 40000,
 }, async () => {
 	const root = mkdtempSync(join(tmpdir(), "memory-lifecycle-runtime-"));
 	const corpus = join(root, "corpus");
@@ -127,7 +169,7 @@ test("loaded tools preserve a technical note through authoring, retrieval, corre
 			settingsManager,
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(root),
-			tools: ["memory_search", "memory_read", "memory_write", "memory_edit"],
+			tools: ["memory_search", "memory_read", "memory_history", "memory_write", "memory_edit"],
 		}));
 		await session.bindExtensions({ mode: "print", onError: (error) => errors.push(error.error) });
 		const model = modelRuntime.getModel("memory-lifecycle-fixture", "controlled");
@@ -135,6 +177,7 @@ test("loaded tools preserve a technical note through authoring, retrieval, corre
 		await session.setModel(model);
 		assert.deepEqual(session.getActiveToolNames().sort(), [
 			"memory_edit",
+			"memory_history",
 			"memory_read",
 			"memory_search",
 			"memory_write",
@@ -172,25 +215,7 @@ test("loaded tools preserve a technical note through authoring, retrieval, corre
 		const hit = found.notes[0] as JsonObject;
 		assert.equal(hit.slug, input.slug);
 		assert.equal(hit.digest, firstDigest);
-		let offset = 0;
-		let collected = "";
-		let pages = 0;
-		for (;;) {
-			assert.ok(++pages <= 8);
-			const page = details(await invoke("memory_read", { slug: input.slug, digest: firstDigest, offset }));
-			assert.equal(page.offset, offset);
-			assert.equal(page.digest, firstDigest);
-			assert.deepEqual(page.lifecycle, { status: "active", supersededBy: null });
-			assert.ok(Buffer.byteLength(JSON.stringify(page)) + 1 <= 48 * 1024);
-			assert.equal(typeof page.content, "string");
-			collected += page.content;
-			if (pages === 1) assert.equal(page.contentCodePoints, 12000);
-			if (!page.hasMore) break;
-			assert.equal(typeof page.nextOffset, "number");
-			assert.ok((page.nextOffset as number) > offset);
-			offset = page.nextOffset as number;
-		}
-		assert.ok(pages > 1);
+		const collected = await readPages(invoke, input.slug, firstDigest);
 		const path = join(corpus, `${input.slug}.md`);
 		assert.equal(collected, readFileSync(path, "utf8"));
 		assert.ok(collected.includes(input.details));
@@ -201,8 +226,8 @@ test("loaded tools preserve a technical note through authoring, retrieval, corre
 			edits: [{ oldText: "api_key=api_key", newText: "api_key=process.env.API_KEY" }],
 		};
 		const edited = details(await invoke("memory_edit", edit));
-		const currentDigest = digest(edited.digest);
-		const current = readFileSync(path, "utf8");
+		let currentDigest = digest(edited.digest);
+		let current = readFileSync(path, "utf8");
 		assert.ok(current.includes("`api_key=process.env.API_KEY`"));
 		assert.ok(current.includes("TAIL qualification."));
 		assert.equal(parseFrontmatter(current).frontmatter.verified_date, null);
@@ -215,6 +240,36 @@ test("loaded tools preserve a technical note through authoring, retrieval, corre
 		const staleRead = await invoke("memory_read", { slug: input.slug, digest: firstDigest, offset: 4000 });
 		assert.equal(staleRead.isError, true);
 		assert.match(text(staleRead), /source changed.*restart memory_read at offset 0/);
+
+		const history = details(await invoke("memory_history", { slug: input.slug, limit: 1 }));
+		assert.ok(Array.isArray(history.revisions));
+		const prior = history.revisions[0] as JsonObject;
+		assert.equal(prior.digest, firstDigest);
+		assert.equal(typeof prior.revision, "string");
+		const historical = await readPages(invoke, input.slug, firstDigest, prior.revision as string);
+		assert.equal(historical, collected);
+		assert.equal(readFileSync(path, "utf8"), current);
+		assert.equal(
+			(await invoke("memory_edit", { slug: input.slug, expectedDigest: currentDigest, edits: edit.edits })).isError,
+			true,
+		);
+		const currentRead = details(await invoke("memory_read", { slug: input.slug }));
+		const corrected = details(
+			await invoke("memory_edit", {
+				slug: input.slug,
+				expectedDigest: currentRead.digest,
+				verified: false,
+				edits: [{ oldText: "api_key=process.env.API_KEY", newText: "api_key=api_key" }],
+			}),
+		);
+		currentDigest = digest(corrected.digest);
+		current = readFileSync(path, "utf8");
+		assert.equal(parseFrontmatter(current).body, parseFrontmatter(historical).body);
+		assert.equal(parseFrontmatter(current).frontmatter.verified_date, null);
+		assert.equal(parseFrontmatter(current).frontmatter.status, "active");
+		const captures = await listCaptures(invoke, input.slug);
+		assert.equal(captures.length, 2);
+		assert.equal(new Set(captures).size, 2);
 
 		const token = `ghp_${"x".repeat(24)}`;
 		const refused = await invoke("memory_write", { ...input, slug: "refused", details: `\`\`\`\n${token}\n\`\`\`` });
@@ -246,10 +301,41 @@ test("loaded tools preserve a technical note through authoring, retrieval, corre
 			}),
 		);
 		assert.deepEqual(oldContinuation.lifecycle, oldPage.lifecycle);
+		const archivedActive = details(
+			await invoke("memory_read", { slug: input.slug, revision: prior.revision, digest: firstDigest }),
+		);
+		assert.deepEqual(archivedActive.lifecycle, { status: "active", supersededBy: null });
+		assert.equal((await invoke("memory_edit", { ...edit, expectedDigest: oldPage.digest })).isError, true);
 		await invoke("memory_search", {});
 		const section = sections.at(-1);
 		assert.match(section ?? "", /configuration-choice: Configuration choice/);
 		assert.doesNotMatch(section ?? "", /configuration-notes:/);
+
+		for (let index = 0; index < 4096; index++)
+			writeFileSync(join(corpus, `filler-${String(index).padStart(4, "0")}.md`), "# Ordinary subject\n");
+		for (const suffix of ["a", "b", "c"])
+			writeFileSync(join(corpus, `zz-${suffix}.md`), "# Late subject\nlatewindowtoken\n");
+		const query = "latewindowtoken";
+		const empty = details(await invoke("memory_search", { query, limit: 1 }));
+		assert.deepEqual(empty.notes, []);
+		assert.equal((empty.scan as JsonObject).windowEnd, 4096);
+		assert.equal(typeof empty.nextCursor, "string");
+		const next = details(await invoke("memory_search", { query, limit: 1, cursor: empty.nextCursor }));
+		assert.equal((next.notes as JsonObject[]).length, 1);
+		assert.equal((next.coverage as JsonObject).frozenSnapshot, false);
+		const slugs = (next.notes as JsonObject[]).map((note) => note.slug);
+		let cursor = next.nextCursor;
+		for (let guard = 0; cursor && guard < 5; guard++) {
+			const page = details(await invoke("memory_search", { query, limit: 1, cursor }));
+			slugs.push(...(page.notes as JsonObject[]).map((note) => note.slug));
+			cursor = page.nextCursor;
+		}
+		assert.deepEqual(slugs, ["zz-a", "zz-b", "zz-c"]);
+		assert.equal((await invoke("memory_search", { query: "changedquery", cursor: next.nextCursor })).isError, true);
+		writeFileSync(join(corpus, "zz-b.md"), "# Changed source\nlatewindowtoken\n");
+		assert.match(text(await invoke("memory_search", { query, cursor: next.nextCursor })), /Source window changed/);
+		writeFileSync(join(corpus, "zz-d.md"), "# Inventory change\n");
+		assert.match(text(await invoke("memory_search", { query, cursor: empty.nextCursor })), /inventory changed/);
 		assert.deepEqual(errors, []);
 	} finally {
 		if (session) {

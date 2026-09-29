@@ -19,7 +19,12 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 
-for (const form of ["titles", "slugs"] as const) {
+function compactNotes(corpus: string, count: number, source: (title: string) => string): void {
+	for (let i = 0; i < count; i++)
+		writeFileSync(join(corpus, `subject-${String(i).padStart(3, "0")}.md`), source("界😀".repeat(80)));
+}
+
+for (const form of ["titles", "slugs", "partial"] as const) {
 	test(`native ${form} reach a controlled provider, avoid unchanged deltas, and remove unavailable memory`, {
 		timeout: 20000,
 	}, async () => {
@@ -32,10 +37,9 @@ for (const form of ["titles", "slugs"] as const) {
 		const source = (title: string, body = "PRIVATE BODY") =>
 			`---\nstatus: active\nsuperseded_by: null\ntitle: ${title}\n---\n${body}\n`;
 		writeFileSync(join(corpus, "editor-choice.md"), source("Editor choice"));
-		if (form === "slugs") {
-			for (let i = 0; i < 274; i++)
-				writeFileSync(join(corpus, `subject-${String(i).padStart(3, "0")}.md`), source("界😀".repeat(80)));
-		}
+		if (form !== "titles") compactNotes(corpus, form === "partial" ? 2200 : 274, source);
+		mkdirSync(join(corpus, ".memory-history"));
+		writeFileSync(join(corpus, ".memory-history", "hidden.md"), "PRIVATE HISTORY BODY");
 		const previousRoot = process.env.PI_MEMORY_DIR;
 		process.env.PI_MEMORY_DIR = corpus;
 		const requests: TranscriptContext[] = [];
@@ -140,16 +144,23 @@ for (const form of ["titles", "slugs"] as const) {
 			const first = promptSection();
 			assert.equal(typeof first, "string");
 			assert.match(first as string, form === "titles" ? /editor-choice: Editor choice/ : /^editor-choice$/m);
+			assert.match(first as string, /^<memory_index>\n[\s\S]*\n<\/memory_index>$/);
 			assert.ok(Buffer.byteLength(first as string) <= 12 * 1024);
+			if (form === "partial") {
+				assert.match(first as string, /Metadata inspected: 2048 of 2201 candidate notes; uninspected: 153/);
+				assert.match(first as string, /Cross-note lifecycle validity is not established/);
+				assert.match(first as string, /Uninspected lifecycle is unknown/);
+				assert.ok((first as string).split("\n").filter((line) => /^subject-\d+$/.test(line)).length > 512);
+			}
 			if (form === "slugs") {
-				assert.match(first as string, /Active memory subjects \(slugs only\)/);
+				assert.match(first as string, /Observed memory subjects with active per-file status \(slugs only\)/);
 				assert.equal(
 					(first as string).split("\n").filter((line) => /^(editor-choice|subject-\d{3})$/.test(line)).length,
 					275,
 				);
-				assert.doesNotMatch(first as string, /Omitted active notes/);
+				assert.doesNotMatch(first as string, /Omitted observed active cues/);
 			}
-			assert.doesNotMatch(first as string, /PRIVATE BODY|PRIVATE CONTRACT/);
+			assert.doesNotMatch(first as string, /PRIVATE BODY|PRIVATE CONTRACT|PRIVATE HISTORY BODY/);
 			const system = getCurrentSystemMessage(requests[0].messages);
 			assert.ok(system);
 			assert.match(
@@ -169,7 +180,7 @@ for (const form of ["titles", "slugs"] as const) {
 
 			writeFileSync(join(corpus, "editor-choice.md"), source("Editor replacement"));
 			await session.prompt("Changed title");
-			if (form === "slugs") {
+			if (form !== "titles") {
 				assert.equal(promptSection(), first);
 				assert.deepEqual(patches(), [first]);
 				renameSync(join(corpus, "editor-choice.md"), join(corpus, "editor-replacement.md"));

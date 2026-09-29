@@ -161,7 +161,7 @@ test("separate processes cannot both commit from one source digest", async (t) =
 		});
 	const results = await Promise.all([run("First writer"), run("Second writer")]);
 	assert.deepEqual(results.sort(), ["refused", "written"]);
-	assert.ok(readdirSync(root).every((file) => !file.startsWith(".")));
+	assert.ok(readdirSync(root).every((file) => file === ".memory-history" || !file.startsWith(".")));
 });
 
 test("configuration refuses missing, empty and relative roots", () => {
@@ -297,7 +297,7 @@ test("a publication failure reports exactly committed and remaining files", (t) 
 	assert.equal(metadata(root, "old-a").status, "superseded");
 	assert.equal(metadata(root, "old-b").status, "active");
 	assert.ok(error.receipt.digest);
-	assert.ok(readdirSync(root).every((name) => !name.startsWith(".")));
+	assert.ok(readdirSync(root).every((name) => name === ".memory-history" || !name.startsWith(".")));
 	// Retry repairs the pending reciprocal link using current evidence.
 	writeMemory(root, {
 		...note("new"),

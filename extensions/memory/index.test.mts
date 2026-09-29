@@ -49,7 +49,7 @@ const input = {
 
 test("factory registers only the memory jobs, with native cards and trigger guidance", () => {
 	const all = tools();
-	assert.deepEqual([...all.keys()], ["memory_search", "memory_read", "memory_write", "memory_edit"]);
+	assert.deepEqual([...all.keys()], ["memory_search", "memory_read", "memory_history", "memory_write", "memory_edit"]);
 	for (const tool of all.values()) {
 		assert.equal(typeof tool.renderCall, "function");
 		assert.equal(typeof tool.renderResult, "function");
