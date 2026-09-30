@@ -215,12 +215,16 @@ This finite description applies to applicability, `when`, `state.observe`, and
 `state.resetWhen`; it does not limit valid nesting or grant admission. Before a
 proposal reaches storage, the local recursive validator checks every condition,
 the shared node/depth limits, field types, declared data, and action authority.
-Both descriptions use the same condition and program shape builders. The proposal
-schema also exposes all authoring fields at its object root, so provider adapters
-that project object properties retain the complete vocabulary. Its closed union
-branches still enforce operation-specific admission before execution. Policy does
-not request strict constrained sampling for this grammar. Stored rules and their
-validation contract do not change.
+Both descriptions use the same condition and program shape builders. The declared
+proposal schema is a flat object with all authoring fields and only `operation`,
+`id`, and `reason` required. It states combination rules in its description instead
+of repeating operation-by-form union branches. Execution validates the complete
+proposal against those closed branches before candidate admission or storage;
+refusals identify the field or authoring rule. Nested condition descriptions refer
+to `policy_rules view=authoring`, with the full grammar stated once on `applicability`.
+Provider adapters that project object properties retain the complete vocabulary.
+Policy does not request strict constrained sampling for this grammar. Stored
+rules, draft checks, and their validation contracts do not change.
 
 A program declares:
 

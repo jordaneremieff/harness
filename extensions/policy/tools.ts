@@ -29,7 +29,7 @@ import {
 } from "./local-rules.ts";
 import { capText, terminalSafe } from "./panel.ts";
 import { renderProposeCall, renderProposeResult, renderRulesCall, renderRulesResult } from "./presentation.ts";
-import { ProposalConditionSchema, ProposalProgramSchema } from "./program.ts";
+import { PROPOSAL_CONDITION_GRAMMAR, ProposalConditionSchema, ProposalProgramSchema } from "./program.ts";
 import {
 	contentRevision,
 	declaredAction,
@@ -171,7 +171,7 @@ const CommandProposal = {
 };
 const CliProposal = { ...CommandProposal, match: CliMatchSchema, onUnavailable: UnavailableSchema };
 
-export const PolicyProposeParams = Type.Union(
+const PolicyProposalSchema = Type.Union(
 	[
 		Type.Object({ operation: Type.Literal("add"), ...PredicateProposal }, { additionalProperties: false }),
 		Type.Object(
@@ -212,7 +212,7 @@ export const PolicyProposeParams = Type.Union(
 	],
 	{
 		type: "object",
-		// Providers that project only object fields still receive the complete authoring vocabulary.
+		// Shared field constraints supplement the closed operation variants.
 		properties: {
 			...FactsProposal,
 			...PredicateProposal,
@@ -222,6 +222,37 @@ export const PolicyProposeParams = Type.Union(
 			expectedRevision: RevisionSchema,
 		},
 		required: ["operation", "id", "reason"],
+	},
+);
+
+/** Describe fields once; the closed operation variants govern admission during execution. */
+export const PolicyProposeParams = Type.Object(
+	{
+		operation: Type.Union([
+			Type.Literal("add"),
+			Type.Literal("replace"),
+			Type.Literal("retire"),
+			Type.Literal("disable"),
+		]),
+		id: RuleIdSchema,
+		reason: ReasonSchema,
+		purpose: Type.Optional(PurposeSchema),
+		authority: Type.Optional(AuthoritySchema),
+		note: Type.Optional(NoteSchema),
+		match: Type.Optional(Type.Union([MatchSchema, CliMatchSchema])),
+		predicate: Type.Optional(RuleIdSchema),
+		language: Type.Optional(Type.Literal("facts/v1")),
+		program: Type.Optional(ProposalProgramSchema),
+		applicability: Type.Optional({ ...ProposalConditionSchema, description: PROPOSAL_CONDITION_GRAMMAR }),
+		scope: Type.Optional(ScopeSchema),
+		suggestion: Type.Optional(SuggestionSchema),
+		expectedRevision: Type.Optional(RevisionSchema),
+		onUnavailable: Type.Optional(UnavailableSchema),
+	},
+	{
+		additionalProperties: false,
+		description:
+			"add/replace require purpose, authority, reason, note, and exactly one of match, predicate, or program with language=facts/v1. replace also requires expectedRevision; add forbids it. retire/disable accept only operation, id, and reason. match.cli requires explicit top-level onUnavailable; literal match defaults to skip. Only match accepts top-level onUnavailable. Only match/predicate accept suggestion. Only input guide/deny actions permit steer-or-block authority.",
 	},
 );
 
@@ -651,7 +682,7 @@ export async function policyImportCommand(
 	return `Imported ${plan.rows.length} bundled policy definitions. Existing overrides remain unchanged.`;
 }
 
-type PolicyProposeInput = Static<typeof PolicyProposeParams>;
+type PolicyProposeInput = Static<typeof PolicyProposalSchema>;
 type PolicyProposeAddOrReplace = Extract<PolicyProposeInput, { operation: "add" | "replace" }>;
 type PolicyRulesInput = Static<typeof PolicyRulesParams>;
 
@@ -680,7 +711,33 @@ function proposalCandidate(params: PolicyProposeAddOrReplace): LocalRuleCandidat
 	});
 }
 
-const proposalValidator = Compile(PolicyProposeParams);
+const proposalValidator = Compile(PolicyProposalSchema);
+
+/** Diagnose the selected form rather than report errors from unrelated union branches. */
+function proposalAdmissionError(value: unknown): string {
+	if (!isJsonObject(value)) return "root: proposal must be an object";
+	const forms = ["match", "predicate", "program"].filter((key) => key in value);
+	if ((value.operation === "add" || value.operation === "replace") && forms.length !== 1)
+		return "match/predicate/program: add/replace require exactly one authoring form; program requires language=facts/v1";
+	const branch = PolicyProposalSchema.anyOf.find((entry) => {
+		const fields = entry.properties;
+		if (fields.operation.const !== value.operation) return false;
+		if (value.operation === "retire" || value.operation === "disable") return true;
+		if (!(forms[0] in fields)) return false;
+		if ("match" in fields)
+			return "cli" in fields.match.properties === (isJsonObject(value.match) && "cli" in value.match);
+		return true;
+	});
+	return Compile(branch ?? PolicyProposalSchema)
+		.Errors(value)
+		.map((error) => `${error.instancePath || "root"}: ${error.message}`)
+		.join("\n");
+}
+
+function validateProposal(value: unknown): asserts value is PolicyProposeInput {
+	if (!proposalValidator.Check(value))
+		throw new Error(`Validation failed for policy_propose:\n${proposalAdmissionError(value)}`);
+}
 
 /** Use the public proposal grammar and candidate admission without a registry write. */
 export function parseAuthoringDraft(value: unknown): ParsedDraft {
@@ -763,6 +820,7 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 		renderResult: (result, options, theme, context) => renderProposeResult(result, options, theme, context),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("policy_propose cancelled");
+			validateProposal(params);
 			await deps.loadRegistry(ctx);
 			const auditValue = makeRuleAudit(ctx, "agent-tool");
 			const event = await submitProposal(deps.registry, params, auditValue);

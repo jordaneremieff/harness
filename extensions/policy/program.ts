@@ -124,13 +124,15 @@ function conditionShape<C extends TSchema>(child: C) {
 }
 export const ConditionSchema = Type.Cyclic({ Condition: conditionShape(Type.Ref("Condition")) }, "Condition");
 
+export const PROPOSAL_CONDITION_GRAMMAR = `Conditions use exactly one of {all:[conditions]}, {any:[conditions]}, {not:condition}, or {op,path,value?,table?}. Nested conditions use the same leaf operators and field types. All/any arrays have 1-${PROGRAM_LIMITS.children} children. Conditions share a ${PROGRAM_LIMITS.nodes}-node budget across applicability, when, observe, and resetWhen; maximum nesting depth is ${PROGRAM_LIMITS.depth} from each root. Every nested object receives strict local validation. Read policy_rules view=authoring for operator semantics.`;
+
 /** Provider descriptions stop at child objects; recursive validation owns every nested condition. */
 export const ProposalConditionSchema = conditionShape(
 	Type.Object(
 		{},
 		{
 			additionalProperties: true,
-			description: `A nested condition using the same closed grammar: exactly one of {all:[conditions]}, {any:[conditions]}, {not:condition}, or {op,path,value?,table?}. Use the parent's leaf operators and field types. All/any arrays have 1-${PROGRAM_LIMITS.children} children. Conditions share a ${PROGRAM_LIMITS.nodes}-node budget across applicability, when, observe, and resetWhen; maximum nesting depth is ${PROGRAM_LIMITS.depth} from each root. Every nested object receives strict local validation.`,
+			description: "Nested condition; same grammar. See policy_rules view=authoring.",
 		},
 	),
 );

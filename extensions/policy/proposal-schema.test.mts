@@ -7,7 +7,7 @@ import { describe, it, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Compile } from "typebox/compile";
-import { RuleRegistry, validateLocalCandidate } from "./local-rules.ts";
+import { proposalRevision, RuleRegistry, validateLocalCandidate } from "./local-rules.ts";
 import { type Condition, PROGRAM_LIMITS, validateFactsProgram } from "./program.ts";
 import { PolicyProposeParams, registerRuleTools } from "./tools.ts";
 
@@ -84,7 +84,7 @@ async function setup(t: TestContext) {
 		registry,
 		registered,
 		bytes: () => readFile(join(dir, "rules.jsonl")),
-		execute: (args: Request) => {
+		execute: (args: Record<string, unknown>) => {
 			const validated = validateToolArguments(tool, {
 				type: "toolCall",
 				id: "schema-call",
@@ -114,17 +114,12 @@ describe("command-aware proposal admission", () => {
 		const tool = registered.get("policy_propose");
 		assert.ok(tool);
 		const schema = JSON.parse(JSON.stringify(tool.parameters));
-		const branches = schema.anyOf.filter(
-			(branch: { properties: { match?: { properties: { cli?: unknown } } } }) =>
-				branch.properties.match?.properties.cli,
+		const cli = schema.properties.match.anyOf.find(
+			(branch: { properties: { cli?: unknown } }) => branch.properties.cli,
 		);
-		assert.equal(branches.length, 2);
-		assert.deepEqual(
-			branches.map((branch: { properties: { operation: { const: string } } }) => branch.properties.operation.const),
-			["add", "replace"],
-		);
-		for (const branch of branches) {
-			assert.deepEqual(branch.properties.match.properties.cli.properties.subcommand, {
+		assert.ok(cli);
+		for (const operation of ["add", "replace"]) {
+			assert.deepEqual(cli.properties.cli.properties.subcommand, {
 				type: "array",
 				items: { type: "string", const: "push" },
 				minItems: 1,
@@ -145,8 +140,8 @@ describe("command-aware proposal admission", () => {
 			]) {
 				const input = {
 					...commandRequest(),
-					operation: branch.properties.operation.const,
-					...(branch.properties.operation.const === "replace" ? { expectedRevision: "000000000000" } : {}),
+					operation,
+					...(operation === "replace" ? { expectedRevision: "000000000000" } : {}),
 					match: { ...commandRequest().match, cli: { profile: "git", subcommand } },
 				};
 				const accepted = Array.isArray(subcommand) && subcommand.length === 1 && subcommand[0] === "push";
@@ -204,7 +199,7 @@ describe("command-aware proposal admission", () => {
 	it("requires explicit unknown behavior for CLI and rejects unsupported profile declarations", () => {
 		const input = commandRequest();
 		const { onUnavailable: _omitted, ...missing } = input;
-		assert.equal(transport.Check(missing), false);
+		assert.equal(transport.Check(missing), true, "execution enforces operation-by-form requirements");
 		assert.throws(
 			() =>
 				validateLocalCandidate({
@@ -227,6 +222,130 @@ describe("command-aware proposal admission", () => {
 		assert.equal(transport.Check({ ...input, onUnavailable: "maybe" }), false);
 		assert.equal(transport.Check({ ...input, match: { ...input.match, command: "other" } }), false);
 		assert.equal(transport.Check({ ...missing, match: { command: "git", anyFlags: ["-f"] } }), true);
+	});
+});
+
+describe("operation-by-form execution admission", () => {
+	it("rejects invalid combinations with field diagnostics before storage", async (t) => {
+		const fixture = await setup(t);
+		const before = await fixture.bytes();
+		const { language: _language, program: _program, ...common } = request();
+		const command = { ...common, match: { command: "scan" } };
+		const cases: Array<[Record<string, unknown>, RegExp]> = [
+			[common, /exactly one authoring form/],
+			[{ ...command, predicate: "routing.cat-read" }, /exactly one authoring form/],
+			[{ ...request(), match: command.match }, /exactly one authoring form/],
+			[{ ...request(), predicate: "routing.cat-read" }, /exactly one authoring form/],
+			[{ ...command, purpose: undefined }, /purpose/],
+			[{ ...command, authority: undefined }, /authority/],
+			[{ ...command, note: undefined }, /note/],
+			[{ ...command, operation: "replace" }, /expectedRevision/],
+			[{ ...command, expectedRevision: "000000000000" }, /expectedRevision/],
+			[{ ...common, program: request().program }, /language/],
+			[{ ...command, language: "facts/v1" }, /language/],
+			[{ ...request(), onUnavailable: "skip" }, /onUnavailable/],
+			[{ ...request(), suggestion: { command: "scan" } }, /suggestion/],
+			[{ ...common, predicate: "routing.cat-read", onUnavailable: "skip" }, /onUnavailable/],
+			[{ ...command, match: { command: "git", cli: { profile: "git", subcommand: ["push"] } } }, /onUnavailable/],
+			[
+				{
+					...request(),
+					authority: "steer-or-block",
+					program: { ...request().program, action: { kind: "rename-key", path: [], from: "a", to: "b" } },
+				},
+				/steer-or-block authority requires an input guide or deny action/,
+			],
+		];
+		for (const operation of ["retire", "disable"]) {
+			for (const field of [
+				"purpose",
+				"authority",
+				"note",
+				"match",
+				"predicate",
+				"language",
+				"program",
+				"applicability",
+				"scope",
+				"suggestion",
+				"expectedRevision",
+				"onUnavailable",
+			]) {
+				const values = {
+					...request(),
+					match: command.match,
+					predicate: "routing.cat-read",
+					scope: {},
+					suggestion: { command: "scan" },
+					expectedRevision: "000000000000",
+					onUnavailable: "skip",
+				};
+				cases.push([
+					{ operation, id: common.id, reason: common.reason, [field]: values[field as keyof typeof values] },
+					new RegExp(field),
+				]);
+			}
+		}
+		for (const [input, diagnostic] of cases) {
+			const clean = JSON.parse(JSON.stringify(input));
+			assert.equal(transport.Check(clean), true, JSON.stringify(clean));
+			await assert.rejects(fixture.execute(clean), diagnostic);
+			assert.deepEqual(await fixture.bytes(), before);
+		}
+		assert.equal((await fixture.registry.snapshot()).pending.length, 0);
+	});
+
+	it("accepts every add and replace form and both removal operations", async (t) => {
+		const fixture = await setup(t);
+		const { language, program, ...common } = request();
+		const forms = [
+			{ language, program },
+			{ match: { command: "scan" } },
+			{ match: { command: "git", cli: { profile: "git", subcommand: ["push"] } }, onUnavailable: "deny" },
+			{ predicate: "routing.cat-read" },
+		];
+		for (const [index, form] of forms.entries()) {
+			const id = `sample.form-${index}`;
+			await fixture.execute({ ...common, ...form, id });
+			const proposal = (await fixture.registry.snapshot()).pending.find((entry) => entry.ruleId === id);
+			assert.ok(proposal);
+			await fixture.registry.decide(
+				proposal.id,
+				"approved",
+				undefined,
+				{
+					surface: "command",
+					at: new Date().toISOString(),
+					session: "schema-test",
+					model: null,
+				},
+				proposalRevision(proposal),
+			);
+			const record = (await fixture.registry.snapshot()).records.get(id);
+			assert.ok(record);
+			await fixture.execute({
+				...common,
+				...form,
+				id,
+				operation: "replace",
+				expectedRevision: record.definition.revision,
+			});
+			const replacement = (await fixture.registry.snapshot()).pending.find((entry) => entry.ruleId === id);
+			assert.equal(replacement?.operation, "replace");
+			assert.ok(replacement);
+			await fixture.registry.decide(replacement.id, "rejected", undefined, {
+				surface: "command",
+				at: new Date().toISOString(),
+				session: "schema-test",
+				model: null,
+			});
+		}
+		await fixture.execute({ operation: "retire", id: "sample.form-0", reason: "Retire this rule." });
+		await fixture.execute({ operation: "disable", id: "sample.form-1", reason: "Disable this rule." });
+		assert.deepEqual(
+			(await fixture.registry.snapshot()).pending.map((entry) => entry.operation),
+			["retire", "disable"],
+		);
 	});
 });
 
@@ -307,17 +426,23 @@ describe("finite proposal description and recursive admission", () => {
 			].sort(),
 		);
 		assert.deepEqual(projected.required, ["operation", "id", "reason"]);
-		const variantFields = new Set(
-			schema.anyOf.flatMap((branch: { properties: object }) => Object.keys(branch.properties)),
-		);
-		assert.deepEqual(Object.keys(projected.properties).sort(), [...variantFields].sort());
-		assert.deepEqual(
-			projected.properties.program,
-			schema.anyOf.find((branch: { properties: { program?: unknown } }) => branch.properties.program).properties
-				.program,
-		);
+		assert.deepEqual(projected.properties, schema.properties);
+		assert.equal(JSON.stringify(projected).split("Conditions use exactly one of").length - 1, 1);
 		assert.equal(transport.Check({ operation: "retire", id: "sample.rule", reason: "Retire it." }), true);
-		assert.equal(transport.Check({ operation: "add", id: "sample.rule", reason: "Add it." }), false);
+		assert.equal(transport.Check({ operation: "add", id: "sample.rule", reason: "Add it." }), true);
+	});
+
+	it("declares a bounded flat object with one complete nested grammar statement", async (t) => {
+		const { registered } = await setup(t);
+		const schema = registered.get("policy_propose")?.parameters;
+		assert.ok(schema);
+		assert.equal(schema.type, "object");
+		for (const key of ["anyOf", "oneOf", "allOf"]) assert.equal(key in schema, false, key);
+		assert.deepEqual(schema.required, ["operation", "id", "reason"]);
+		const serialized = JSON.stringify(schema);
+		assert.ok(Buffer.byteLength(serialized) < 20_000, "the declaration must not repeat operation variants");
+		assert.equal(serialized.split("Conditions use exactly one of").length - 1, 1);
+		assert.match(serialized, /policy_rules view=authoring/);
 	});
 
 	it("registers finite schemas without recursive reference keywords", async (t) => {

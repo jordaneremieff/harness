@@ -551,12 +551,14 @@ describe("bundled catalog inspection and import approval", () => {
 			reason: "Edit the seeded definition.",
 		};
 		assert.equal(schema.Check(params), true);
-		assert.equal(schema.Check({ ...params, match: { command: "cat" } }), false);
+		assert.equal(schema.Check({ ...params, match: { command: "cat" } }), true);
+		await assert.rejects(call(tool, { ...params, match: { command: "cat" } }), /exactly one authoring form/);
 		assert.equal(schema.Check({ ...params, predicate: "../code" }), false);
 		await call(tool, params);
 		assert.equal((await reg.snapshot()).pending[0]?.candidate?.matcher.kind, "code");
+		const { expectedRevision: _revision, ...addition } = params;
 		await assert.rejects(
-			call(tool, { ...params, operation: "add", id: "operator.unknown", predicate: "unknown.matcher" }),
+			call(tool, { ...addition, operation: "add", id: "operator.unknown", predicate: "unknown.matcher" }),
 			/unavailable/,
 		);
 	});
@@ -776,7 +778,7 @@ describe("named data controls", () => {
 });
 
 describe("bounded tools and operator panel", () => {
-	it("exposes one closed proposal schema for both languages and no tool mutation gate", () => {
+	it("exposes flat proposal fields for both languages and no tool mutation gate", async (t) => {
 		const schema = Compile(PolicyProposeParams);
 		const add = {
 			purpose: "Use valid tool arguments.",
@@ -793,7 +795,9 @@ describe("bounded tools and operator panel", () => {
 		assert.equal(schema.Check({ ...add, authority: "correct" }), false);
 		assert.equal(schema.Check({ ...add, effect: "block" }), false);
 		assert.equal(schema.Check({ ...add, operation: "approve" }), false);
-		assert.equal(schema.Check({ ...add, operation: "replace" }), false);
+		assert.equal(schema.Check({ ...add, operation: "replace" }), true);
+		const tool = toolOf(tools(await registry(t)), "policy_propose");
+		await assert.rejects(call(tool, { ...add, operation: "replace" }), /expectedRevision/);
 		assert.equal(schema.Check({ ...add, operation: "replace", expectedRevision: "123456789abc" }), true);
 		assert.equal(
 			schema.Check({

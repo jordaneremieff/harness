@@ -191,40 +191,16 @@ describe("registration and lazy catalog use", () => {
 		await assert.rejects(stat(dir), /ENOENT/);
 	});
 
-	it("uses a top-level object proposal schema with closed least-authority variants", () => {
-		const schema = JSON.parse(JSON.stringify(PolicyProposeParams)) as {
-			type?: unknown;
-			anyOf?: Array<{
-				required?: string[];
-				properties?: Record<string, { const?: unknown }>;
-				additionalProperties?: unknown;
-			}>;
-		};
+	it("uses closed flat proposal fields without approval or state controls", () => {
+		const schema = JSON.parse(JSON.stringify(PolicyProposeParams));
 		assert.equal(schema.type, "object");
-		const arms = schema.anyOf ?? [];
-		assert.ok(arms.length > 0);
-		const byOperation = new Map(
-			arms
-				.filter(
-					(arm) =>
-						!arm.properties?.program &&
-						!arm.properties?.predicate &&
-						!arm.required?.includes("onUnavailable") &&
-						arm.properties?.operation?.const !== "replace",
-				)
-				.map((arm) => [arm.properties?.operation?.const, arm]),
-		);
-		for (const [operation, required] of [
-			["add", ["operation", "purpose", "authority", "id", "reason", "note", "match"]],
-			["retire", ["operation", "id", "reason"]],
-			["disable", ["operation", "id", "reason"]],
-		] as const) {
-			const arm = byOperation.get(operation);
-			assert.ok(arm, `${operation} proposal arm must exist`);
-			assert.equal(arm.additionalProperties, false, `${operation} proposal arm must reject unknown properties`);
-			assert.deepEqual(arm.required, required);
-		}
-		const propertyNames = new Set(arms.flatMap((arm) => Object.keys(arm.properties ?? {})));
+		assert.equal(schema.additionalProperties, false);
+		assert.equal(schema.anyOf, undefined);
+		assert.deepEqual(schema.required, ["operation", "id", "reason"]);
+		assert.deepEqual(schema.properties.operation.anyOf.map((entry: { const: string }) => entry.const), [
+			"add", "replace", "retire", "disable",
+		]);
+		const propertyNames = new Set(Object.keys(schema.properties));
 		for (const forbidden of ["approve", "reject", "decision", "state", "effect", "enable"]) {
 			assert.equal(propertyNames.has(forbidden), false, `${forbidden} must not be exposed`);
 		}
