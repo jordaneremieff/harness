@@ -2,6 +2,9 @@
 
 Use this reference when deciding whether to repair, retain, reposition,
 instrument, supersede, or remove an extension or harness integration.
+For local usage evidence, first use [extension-telemetry.md](extension-telemetry.md)
+to collect the requested window and reconcile coverage. Keep those observations
+separate from the causal judgments below.
 
 ## Trace six links separately
 

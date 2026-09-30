@@ -13,7 +13,7 @@ description: >
   Reclassifying an addition does not supply authority. Do not use for invoking
   or installing an unchanged resource, ordinary application code, unrelated
   uses of "tool", "skill", or "extension", or Pi core development.
-compatibility: Pi-specific workflow. The bundled skill validator uses dependency-free TypeScript and requires Node.js 22.19 or newer for direct execution; verify Pi-sensitive behavior against the active Pi installation. Uses the sibling repository instructions at `../../AGENTS.md` for the owning repository's binding rules.
+compatibility: Pi-specific workflow. The bundled skill validator uses dependency-free TypeScript and requires Node.js 22.19 or newer for direct execution; verify Pi-sensitive behavior against the active Pi installation. Uses the sibling repository instructions at `../../AGENTS.md` for the owning repository's binding rules and `../../extensions/` for extension telemetry source contracts.
 ---
 
 # Harness
@@ -140,6 +140,7 @@ No warrant is needed for a fixed repair, an operator-selected outcome or archite
 - **Extension or extension-owned surface:** read [extensions.md](references/extensions.md). Pull [extension-engineering.md](references/extension-engineering.md), [pi-grounding.md](references/pi-grounding.md), and [extension-research.md](references/extension-research.md) only for the implicated design questions.
 - **Prompt template, theme, package, settings, SDK/RPC/JSON integration, or standalone CLI:** use [surface selection](references/surface-selection.md), then read the current installed Pi document for the selected surface. Use [extensions.md](references/extensions.md) when extension code or an extension boundary participates.
 - **Managed extension removal after the disposition is settled:** read [removal.md](references/removal.md).
+- **Local extension telemetry collection:** read [extension-telemetry.md](references/extension-telemetry.md) for source inventory, windowed collection, and second-pass reconciliation before audit judgment.
 - **Usage, utility, retention, removal, or incident disposition for an extension:** read [extension-audit.md](references/extension-audit.md).
 
 **Complete when:** every loaded reference serves a live decision or verification claim.

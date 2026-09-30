@@ -42,6 +42,9 @@ boundaries, rather than a central feature catalog.
   continue the work.
 - [Worktrees](docs/conventions/worktrees.md) defines the development and
   publication workflow.
+- [Harness](skills/harness/SKILL.md) guides harness changes and audits. Its local
+  extension telemetry procedure inventories current sources, collects a bounded
+  window, and reconciles retained evidence before audit judgment.
 - [Survey](skills/survey/SKILL.md) prepares for a later task. Ask "Get up to speed
   on this topic, then wait", or use `/skill:survey <topic>`. It instructs the
   agent to return a short cited summary with source coverage and then wait;
