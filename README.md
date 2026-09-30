@@ -42,6 +42,10 @@ boundaries, rather than a central feature catalog.
   continue the work.
 - [Worktrees](docs/conventions/worktrees.md) defines the development and
   publication workflow.
+- [Survey](skills/survey/SKILL.md) prepares for a later task. Ask "Get up to speed
+  on this topic, then wait", or use `/skill:survey <topic>`. It instructs the
+  agent to return a short cited summary with source coverage and then wait;
+  these are instructions, not guaranteed enforcement.
 - [Memory](extensions/memory/README.md) retrieves prior operator knowledge before
   dependent choices. Its tools search bounded note sources in `PI_MEMORY_DIR`,
   combine alternative query formulations, read digest-checked source pages,
