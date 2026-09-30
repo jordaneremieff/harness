@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unwatchFile, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
 import { ModelRuntime, ProjectTrustStore, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
@@ -14,6 +15,7 @@ import { DetachedRuns, detachedRunEntry, formatRun, isProcessAlive, MAX_SUMMARY_
 import { createProgressWriter, executeDetachedRun, progressRecord } from "./detached-run.ts";
 import { withDetachedControl, type DetachedControlServerOptions } from "./detached-control.ts";
 import { defined } from "./test-assertions.mts";
+import { detachedTestEvidence } from "./test-detached-evidence.mts";
 import type { AgentWorkerSession, WorkerObservation } from "./worker.ts";
 
 const unusedControls = {
@@ -56,6 +58,40 @@ function waitForFile(path: string, directory: string): Promise<void> {
 		watcher.on("error", finish);
 		if (existsSync(path)) finish();
 	});
+}
+
+function controlProviderFixture(ready: string, aborting: string, release: string): string {
+	return `import { createAssistantMessageEventStream } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
+import { existsSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
+export default function(pi) {
+	pi.registerProvider("control-fixture", {
+		baseUrl: "https://example.invalid", apiKey: "synthetic", api: "openai-completions",
+		models: [{ id: "fixture", name: "Fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 128 }],
+		streamSimple: (_model, _context, options) => {
+			const stream = createAssistantMessageEventStream();
+			const response = { role: "assistant", content: [], api: "openai-completions", provider: "control-fixture", model: "fixture", timestamp: 0, stopReason: "aborted", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+			stream.push({ type: "start", partial: response });
+			writeFileSync(${JSON.stringify(ready)}, "ready");
+			const stop = () => {
+				let finished = false;
+				const finish = () => {
+					if (finished) return;
+					if (!existsSync(${JSON.stringify(release)})) {
+						// Publish readiness only after the watcher observes its initial missing-file state.
+						writeFileSync(${JSON.stringify(aborting)}, "aborting");
+						return;
+					}
+					finished = true;
+					unwatchFile(${JSON.stringify(release)}, finish);
+					stream.push({ type: "error", reason: "aborted", error: response }); stream.end(response);
+				};
+				watchFile(${JSON.stringify(release)}, { interval: 10 }, finish);
+			};
+			if (options?.signal?.aborted) stop(); else options?.signal?.addEventListener("abort", stop, { once: true });
+			return stream;
+		},
+	});
+}`;
 }
 
 function request(runs: DetachedRuns, root: string, overrides: { runId: string; sessionId: string; pid: number }) {
@@ -768,6 +804,27 @@ describe("detached run process", () => {
 		}
 	});
 
+	it("waits for the release watcher's initial stat before publishing abort readiness", { timeout: 15000 }, async (t) => {
+		const root = base();
+		const ready = join(root, "provider-ready");
+		const aborting = join(root, "provider-aborting");
+		const release = join(root, "provider-release");
+		t.after(() => { unwatchFile(release); rmSync(root, { recursive: true, force: true }); });
+		const fixture = join(root, "control-provider.ts");
+		writeFileSync(fixture, controlProviderFixture(ready, aborting, release));
+		type Provider = { streamSimple(model: unknown, context: unknown, options: { signal: AbortSignal }): { result(): Promise<{ stopReason: string }> } };
+		let provider: Provider | undefined;
+		const { default: register } = await import(pathToFileURL(fixture).href);
+		register({ registerProvider: (_name: string, value: Provider) => { provider = value; } });
+		const abort = new AbortController();
+		const stream = defined(provider).streamSimple(null, null, { signal: abort.signal });
+		abort.abort();
+		assert.equal(existsSync(aborting), false, "abort readiness must wait for the asynchronous initial stat");
+		await waitForFile(aborting, root);
+		writeFileSync(release, "release");
+		assert.equal((await stream.result()).stopReason, "aborted");
+	});
+
 	it("keeps a child active after client disconnect and waits for abort cleanup", { timeout: 60000 }, async (t) => {
 		const root = base();
 		const sessionsRoot = join(root, "sessions");
@@ -776,50 +833,35 @@ describe("detached run process", () => {
 		const ready = join(root, "provider-ready");
 		const aborting = join(root, "provider-aborting");
 		const release = join(root, "provider-release");
-		const fixture = join(root, "control-provider.ts");
-		writeFileSync(fixture, `import { createAssistantMessageEventStream } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-ai"))};
-import { existsSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
-export default function(pi) {
-	pi.registerProvider("control-fixture", {
-		baseUrl: "https://example.invalid", apiKey: "synthetic", api: "openai-completions",
-		models: [{ id: "fixture", name: "Fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 128 }],
-		streamSimple: (_model, _context, options) => {
-			const stream = createAssistantMessageEventStream();
-			const response = { role: "assistant", content: [], api: "openai-completions", provider: "control-fixture", model: "fixture", timestamp: 0, stopReason: "aborted", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-			stream.push({ type: "start", partial: response });
-			writeFileSync(${JSON.stringify(ready)}, "ready");
-			const stop = () => {
-				writeFileSync(${JSON.stringify(aborting)}, "aborting");
-				let finished = false;
-				const finish = () => {
-					if (finished || !existsSync(${JSON.stringify(release)})) return;
-					finished = true;
-					unwatchFile(${JSON.stringify(release)}, finish);
-					stream.push({ type: "error", reason: "aborted", error: response }); stream.end(response);
-				};
-				// Cleanup follows the release file's state, not a lossy directory notification.
-				watchFile(${JSON.stringify(release)}, { interval: 10 }, finish);
-				finish();
-			};
-			if (options?.signal?.aborted) stop(); else options?.signal?.addEventListener("abort", stop, { once: true });
-			return stream;
-		},
-	});
-}`);
-		const store = new AgentStore({ sessionsRoot });
-		const manager = new AgentManager(store, await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(root, "models-cache"), refreshOnCreate: false }), new ProjectTrustStore(agentDir), undefined, agentDir);
+		const runs = new DetachedRuns(sessionsRoot);
+		let stage = "create model runtime";
 		let child: ReturnType<typeof spawn> | undefined;
 		let completion: Promise<number> | undefined;
+		let bodyPassed = false;
+		const evidence = detachedTestEvidence(t, root, {
+			log: runs.logFile("process-control"), request: runs.requestFile("process-control"),
+			progress: runs.progressFile("process-control"), result: runs.resultFile("process-control"),
+		}, () => ({ stage, pid: child?.pid, exitCode: child?.exitCode, signalCode: child?.signalCode,
+			ready: existsSync(ready), aborting: existsSync(aborting), release: existsSync(release),
+			controlEndpoint: existsSync(`${runs.requestFile("process-control")}.control.json`) }));
+		const fixture = join(root, "control-provider.ts");
+		writeFileSync(fixture, controlProviderFixture(ready, aborting, release));
+		const store = new AgentStore({ sessionsRoot });
+		const manager = new AgentManager(store, await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(root, "models-cache"), refreshOnCreate: false }), new ProjectTrustStore(agentDir), undefined, agentDir);
 		// A test timeout does not unwind an unresolved await in the test body.
 		t.after(async () => {
 			if (child && child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await completion; }
 		});
 		try {
+			stage = "spawn managed session";
 			const created = await manager.spawn({ cwd: root, model: "control-fixture/fixture", trust: true }, { cwd: root, model: null }, undefined, { extensionPaths: [fixture] });
+			stage = "list session metadata";
 			const metadata = defined((await store.list(BACKGROUND_CONTEXT)).find((entry) => entry.id === created.sessionId));
+			stage = "close managed sessions";
 			await manager.closeAll();
+			stage = "close initial store";
 			await store.close(BACKGROUND_CONTEXT);
-			const runs = new DetachedRuns(sessionsRoot);
+			stage = "start detached child";
 			const started = await runs.start({ runId: "process-control", sessionId: created.sessionId, sessionsRoot, agentDir, cwd: root, prompt: "test", trusted: true,
 				spawn: (command, args, options) => {
 					const launched = spawn(command, args, { ...options, env: { PATH: process.env.PATH, HOME: root, PI_AGENT_DIR: agentDir, PI_AGENT_SESSIONS_DIR: sessionsRoot } });
@@ -831,30 +873,51 @@ export default function(pi) {
 					return launched;
 				},
 			});
+			stage = "wait for provider readiness";
 			await waitForFile(ready, root);
+			stage = "read status before disconnect";
 			const status = await withDetachedControl(started, (control) => control.status());
 			assert.ok(status.operation);
+			stage = "read status after disconnect";
 			const afterDisconnect = await withDetachedControl(started, (control) => control.status());
 			assert.equal(afterDisconnect.operation, status.operation);
 			const competing = new AgentStore({ sessionsRoot });
+			stage = "reject competing writer";
 			try { await assert.rejects(competing.open(metadata, BACKGROUND_CONTEXT), /exclusive writer claim/u); }
-			finally { await competing.close(BACKGROUND_CONTEXT); }
+			finally { stage = "close competing store"; await competing.close(BACKGROUND_CONTEXT); }
+			stage = "request remote abort";
 			assert.equal(await withDetachedControl(started, (control) => control.abort()), true);
+			stage = "wait for provider abort";
 			await waitForFile(aborting, root);
 			assert.equal(existsSync(runs.resultFile(started.runId)), false, "provider cleanup precedes the terminal result");
 			assert.equal(defined(child).exitCode, null);
 			writeFileSync(release, "release");
+			stage = "wait for detached child exit";
 			assert.equal(await completion, 1);
 			assert.match(runs.get(started.runId)?.error ?? "", /run stopped by remote abort/u);
 			assert.equal(existsSync(`${runs.requestFile(started.runId)}.control.json`), false);
 			const reopened = new AgentStore({ sessionsRoot });
-			try { const session = await reopened.open(metadata, BACKGROUND_CONTEXT); await session.close(BACKGROUND_CONTEXT); }
-			finally { await reopened.close(BACKGROUND_CONTEXT); }
+			stage = "reopen session";
+			try {
+				const session = await reopened.open(metadata, BACKGROUND_CONTEXT);
+				stage = "close reopened session";
+				await session.close(BACKGROUND_CONTEXT);
+			} finally { stage = "close reopened store"; await reopened.close(BACKGROUND_CONTEXT); }
+			bodyPassed = true;
+		} catch (error) {
+			evidence.capture(error);
+			throw error;
 		} finally {
+			stage = "stop child during cleanup";
 			if (child && child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await completion; }
+			stage = "close manager during cleanup";
 			await manager.closeAll();
+			stage = "close store during cleanup";
 			await store.close(BACKGROUND_CONTEXT);
-			rmSync(root, { recursive: true, force: true });
+			if (bodyPassed && !t.signal.aborted) {
+				rmSync(root, { recursive: true, force: true });
+				evidence.complete();
+			}
 		}
 	});
 

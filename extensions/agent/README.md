@@ -1095,5 +1095,14 @@ refresh, disposal, source failures, and read-only digest boundaries. Native TUI 
 also require an isolated interactive or PTY check for keys, focus, resize, and
 tool expansion; component snapshots alone do not establish those behaviors.
 
+The detached child abort-cleanup test retains its temporary directory on failure
+or timeout. Its diagnostic names the directory and includes the last awaited step,
+child state, file markers, and bounded tails of the child log and run records.
+The same snapshot is saved as `failure-evidence.json` before child cleanup.
+Successful runs remove the directory. The synthetic provider publishes abort
+readiness only after its release watcher observes the initial missing-file state,
+so the parent cannot create the release file before the watcher establishes its
+baseline. A focused regression checks this handshake.
+
 Repository gates are `npm test`, `npm run lint`, `npm run typecheck`, and
 `npm run check`.
