@@ -153,14 +153,22 @@ export function captureShortcut(shortcut: Parameters<ExtensionAPI["registerShort
 export function captureTool<P extends TSchema, D, S>(tool: ToolDefinition<P, D, S>) {
 	return {
 		name: tool.name,
+		outputSchema: tool.outputSchema,
 		execute: async (id: string, params: unknown, signal?: AbortSignal, _update?: undefined, ctx?: TestContext) => {
 			assert.ok(Value.Check(tool.parameters, params), "tool arguments satisfy the registered schema");
 			const toolContext = {
 				...hostContext(ctx),
 				tools: [],
-				executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+				executeTool: async () => {
+					throw new Error("Unexpected nested tool call");
+				},
 			} satisfies ExtensionToolContext;
 			const result = await tool.execute(id, params, signal, undefined, toolContext);
+			if (tool.outputSchema)
+				assert.ok(
+					Value.Check(tool.outputSchema, result.structuredContent),
+					"result satisfies the registered output schema",
+				);
 			assert.ok(typeof result.details === "object" && result.details !== null);
 			const details: Record<string, unknown> = {};
 			for (const [key, value] of Object.entries(result.details)) details[key] = value;

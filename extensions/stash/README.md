@@ -147,6 +147,48 @@ each opened artifact. It does not run or mark complete the ordinary whole-store
 permission sweep. Later ordinary list/read/write paths still perform that sweep.
 Search leaves artifact bytes and lifecycle state unchanged.
 
+## Native structured discovery
+
+`stash_list` declares an explicit `outputSchema` and returns `structuredContent`
+for native codemode callers. Direct calls retain their existing prose and render
+metadata; scripts do not parse that prose.
+
+Recent results use `kind: "recent"` and `records` containing only displayed
+`id`, terminal-safe `title`, and `state` (`open`, `active`, `closed`, or `unknown`).
+Only complete rows within the displayed text prefix enter the structured result.
+The serialized object also stays within 50 KiB, including JSON escaping.
+`selectedCount` counts the entries selected by the existing list operation;
+`omittedRecords` counts selected entries excluded from the structured page.
+`textTruncated` separately reports prose truncation. No body, path, project,
+session metadata, or undisplayed record is added.
+
+`limit` reports the requested limit. `limitReached` says only that selection
+reached it, not that another record exists. Recent listing has no cursor and
+measures no store-wide coverage: `nextCursor` and `coverage.complete` are null,
+even for an empty result. Use content search for supported continuation.
+
+Search results expose the existing page object unchanged, with `matches`,
+`skipped`, `coverage`, `nextCursor`, `consistency`, and `representation`. Their
+existing JSON bound, cumulative skips, and empty-page continuation rules apply.
+Tool-owned validation and store failures return `isError: true` with their error
+text and a structured `{ kind: "error", error, coverage: { complete: false },
+nextCursor: null }` object. Its error string is a bounded terminal-safe prefix.
+Scripts must check this variant; cancellation still throws. Host validation,
+interception, and cancellation failures need not supply a structured object.
+
+```javascript
+const page = await tools.stash_list({ state: "open" });
+if (page.kind === "error") throw new Error(page.error);
+if (page.kind === "recent") {
+  console.log({
+    handovers: page.records.map(({ id, title, state }) => ({ id, title, state })),
+    omitted: page.omittedRecords,
+    limitReached: page.limitReached,
+    coverage: page.coverage,
+  });
+}
+```
+
 ## Lifecycle
 
 New artifacts begin `open`. Pickup atomically changes an open artifact to `active`
@@ -479,6 +521,7 @@ The component derives its row budget from the host TUI and the overlay's height 
 - `capacity.ts`: bounded session-state restoration, context observations, configuration, and latched continuity requests.
 - `store.ts`: private, collision-safe filesystem store, atomic lifecycle transitions, and the rotation archive.
 - `search.ts`: bounded content discovery, stateless inventory-bound continuation, and transformed-field excerpts.
+- `list-result.ts`: explicit native output schema and byte-bounded recent records derived from displayed rows.
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.
 - `panel.ts`: interactive browser state and rendering.
 - `pickup.ts`: self-contained pickup message, operator amendment block, and already-active ownership handoff.

@@ -1813,6 +1813,7 @@ describe("stash_list content search", () => {
 		assert.equal(page.matches[0].field, "body");
 		assert.ok(page.matches[0].start > 32 * 1024);
 		assert.deepEqual(result.details, page);
+		assert.deepEqual(result.structuredContent, page);
 		assert.deepEqual(await readFile(path), before);
 		assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 16 * 1024);
 	});
@@ -1820,8 +1821,20 @@ describe("stash_list content search", () => {
 	it("rejects queryless cursors, blank queries, and aborted search", async () => {
 		const { tools } = registry();
 		const list = tools.get("stash_list");
-		await assert.rejects(list.execute("search", { cursor: "bad" }, undefined), /cursor requires query/);
-		await assert.rejects(list.execute("search", { query: " " }, undefined), /query must/);
+		for (const [params, pattern] of [
+			[{ cursor: "bad" }, /cursor requires query/],
+			[{ query: " " }, /query must/],
+		] as const) {
+			const result = await list.execute("search", params, undefined);
+			assert.equal(result.isError, true);
+			assert.match(result.content[0].text, pattern);
+			assert.deepEqual(result.structuredContent, {
+				kind: "error",
+				error: result.content[0].text,
+				coverage: { complete: false },
+				nextCursor: null,
+			});
+		}
 		await assert.rejects(list.execute("search", { query: "needle" }, AbortSignal.abort()), /cancelled/);
 	});
 
@@ -1830,9 +1843,20 @@ describe("stash_list content search", () => {
 		const result = await tools
 			.get("stash_list")
 			.execute("list", { tag: "nonexistent-tag", state: "closed" }, undefined);
-		assert.deepEqual(result, {
-			content: [{ type: "text", text: 'No stashes found with tag "nonexistent-tag" and state closed.' }],
-			details: { count: 0 },
+		assert.deepEqual(result.content, [
+			{ type: "text", text: 'No stashes found with tag "nonexistent-tag" and state closed.' },
+		]);
+		assert.deepEqual(result.details, { count: 0 });
+		assert.deepEqual(result.structuredContent, {
+			kind: "recent",
+			records: [],
+			limit: 10,
+			selectedCount: 0,
+			omittedRecords: 0,
+			textTruncated: false,
+			limitReached: false,
+			nextCursor: null,
+			coverage: { complete: null },
 		});
 	});
 });
