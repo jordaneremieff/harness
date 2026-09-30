@@ -31,16 +31,20 @@ Classify the baseline:
 
 - **Failure:** the skill should target the observed failure.
 - **Partial success:** the skill should close a specific gap.
-- **Success:** the skill may be unnecessary unless it reduces cost or makes
-  success more reliable.
+- **Success:** the skill is unnecessary unless it measurably reduces cost or
+  makes success more reliable on the same task. A convenience noticed after
+  the comparison does not turn a success into a gap; abandon or redesign.
 
 An explicit operator decision can waive comparative baseline or replacement
 proof. Record the override and its reason, then remove that proof from the
 blocking path rather than recreating it as a pilot or compatibility gate.
 
 Do not manufacture a failure by asking a weak model to perform a poorly
-specified task. Use a realistic operator prompt and the intended model or a
-close proxy. For a no-op correction such as fixing one stale path, a normal
+specified task. Do not put the skill's deliverable, method, or checklist into
+the baseline prompt: that prompt measures only what the skill adds beyond its
+own frame and hides what the frame costs against the plain request. Use the
+plain request the operator would make and the intended model or a close
+proxy. For a no-op correction such as fixing one stale path, a normal
 validation check may be enough; record why deeper evaluation is not
 proportionate.
 

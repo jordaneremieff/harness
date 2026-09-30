@@ -131,6 +131,7 @@ Checks:
   - SKILL.md exists and is readable
   - frontmatter has required name and description fields
   - name matches the parent directory and portable naming rules
+  - a hyphenated name is a warning; this repository names skills with one plain component
   - description is 1-1024 characters
   - standard optional fields and metadata values have portable types
   - unknown top-level fields are warnings; Pi-only fields are identified
@@ -419,6 +420,8 @@ function checkName(): void {
 		fail("name.characters", "name must contain only lowercase letters, digits, and hyphens");
 	if (value.startsWith("-") || value.endsWith("-")) fail("name.edges", "name must not start or end with a hyphen");
 	if (value.includes("--")) fail("name.consecutive", "name must not contain consecutive hyphens");
+	else if (value.includes("-") && !value.startsWith("-") && !value.endsWith("-"))
+		warn("name.components", `name '${value}' has more than one component; this repository names skills with one plain component`);
 	const parent = basename(skill.directory);
 	if (parent !== value) fail("name.directory", `name '${value}' does not match parent directory '${parent}'`);
 }

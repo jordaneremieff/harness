@@ -31,6 +31,13 @@ with 1–64 lowercase letters, digits, and hyphens, with no leading/trailing or
 consecutive hyphens. Match the parent directory to the name for portability,
 even when Pi tolerates a mismatch.
 
+This repository names each skill with one plain component: no hyphens and no
+joined words. The name is also a scope test. If no single component describes
+the capability honestly, the scope is unclear or bundles separate concerns;
+reconsider purpose and scope before drafting rather than compress the name or
+choose a vague word. The bundled validator warns on a hyphenated name; it
+cannot see joined words, so review checks those.
+
 Choose a name that predicts the skill's boundary and sorts naturally beside
 related skills. Neither noun-led nor verb-led naming is universally mandated;
 prefer the form operators and neighboring skills already use, unless it makes

@@ -65,7 +65,7 @@ let sequence = 0;
 after(() => rmSync(root, { recursive: true, force: true }));
 
 function createSkill({ frontmatter, body, files = {} }: CreateSkillOptions): string {
-	const directory = join(root, `fixture-${++sequence}`);
+	const directory = join(root, `fixture${++sequence}`);
 	mkdirSync(directory, { recursive: true });
 	writeFileSync(join(directory, "SKILL.md"), `---\n${frontmatter}\n---\n\n${body ?? `# ${basename(directory)}\n`}`);
 	for (const [relativePath, content] of Object.entries(files)) {
@@ -106,6 +106,35 @@ test("accepts portable optional fields and fragment/reference links", () => {
 	assert.deepEqual(report.counts.omitted, { fail: 0, warn: 0 });
 	assert.equal(report.counts.fail, 0);
 	assert.equal(report.counts.warn, 0);
+});
+
+test("does not add the component warning to a name that already fails the edge rule", () => {
+	const directory = join(root, "-abc");
+	mkdirSync(directory, { recursive: true });
+	writeFileSync(
+		join(directory, "SKILL.md"),
+		"---\nname: -abc\ndescription: Use when validating an edge-hyphen name. Do not use for valid names.\n---\n\n# -abc\n",
+	);
+	const { status, report } = runJson(directory);
+	assert.equal(status, 1);
+	assert.ok(report.fail.some((finding) => finding.code === "name.edges"), JSON.stringify(report));
+	assert.ok(!report.warn.some((finding) => finding.code === "name.components"), JSON.stringify(report));
+});
+
+test("warns on a hyphenated skill name without failing portable validation", () => {
+	const directory = join(root, "two-part");
+	mkdirSync(directory, { recursive: true });
+	writeFileSync(
+		join(directory, "SKILL.md"),
+		"---\nname: two-part\ndescription: Use when validating a two-part name. Do not use for single names.\n---\n\n# two-part\n",
+	);
+	const { status, report } = runJson(directory);
+	assert.equal(status, 0);
+	assert.equal(report.counts.fail, 0);
+	assert.ok(
+		report.warn.some((finding) => finding.code === "name.components" && /one plain component/.test(finding.message)),
+		JSON.stringify(report),
+	);
 });
 
 test("rejects invalid optional frontmatter value types", async (t) => {
