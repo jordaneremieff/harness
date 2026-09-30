@@ -602,16 +602,23 @@ describe("agent discovery, inspection, and control presentation", () => {
 		assert.match(pending, /Discovery pending/);
 	});
 
-	it("mirrors agent_send for steer and states the queue-admission limit", () => {
+	it("mirrors agent_send for steer and labels queued and handled dispositions", () => {
 		const args = { sessionId: "target-session", message: "First line\nSecond line", replyTo: "prior-message" };
 		const call = collapsed(renderSteerCall(args, theme, { expanded: false, argsComplete: true }));
 		assert.match(call, /agent_steer → target-session/);
 		assert.match(call, /reply to prior-message/);
 		assert.match(call, /First line Second line/);
-		const receipt = collapsed(renderSteerResult(reply(`session target-session: steering message queued. Queue admission does not confirm delivery or action.`), { expanded: false, isPartial: false }, theme, { isError: false }));
-		assert.match(receipt, /Queue admission \(not proof of delivery, action, or crash recovery\)/);
+		for (const text of [
+			"session target-session: steering message queued for the next model-call boundary.",
+			"session target-session: steering message handled by an input handler; it was not queued to the model.",
+		]) {
+			const receipt = collapsed(renderSteerResult(reply(text), { expanded: false, isPartial: false }, theme, { isError: false }));
+			assert.match(receipt, /Steering disposition \(not proof of action or crash recovery\)/);
+			assert.ok(receipt.replace(/\s+/gu, " ").includes(text));
+			assert.doesNotMatch(receipt, /Queue admission/u);
+		}
 		assert.ok(collapsed(renderSteerResult(reply("refused"), { expanded: false, isPartial: false }, theme, { isError: true })).match(/Steer error/));
-		assert.ok(collapsed(renderSteerResult(reply("queued"), { expanded: false, isPartial: true }, theme, { isError: false })).match(/Queue admission pending/));
+		assert.ok(collapsed(renderSteerResult(reply("queued"), { expanded: false, isPartial: true }, theme, { isError: false })).match(/Steering disposition pending/));
 	});
 
 	it("distinguishes an abort request from an idle target and a pending target", () => {

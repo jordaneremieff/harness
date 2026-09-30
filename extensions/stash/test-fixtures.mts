@@ -13,6 +13,7 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	ExtensionToolContext,
 	ExtensionUIContext,
 	RegisteredCommand,
 	SessionEntry,
@@ -154,7 +155,12 @@ export function captureTool<P extends TSchema, D, S>(tool: ToolDefinition<P, D, 
 		name: tool.name,
 		execute: async (id: string, params: unknown, signal?: AbortSignal, _update?: undefined, ctx?: TestContext) => {
 			assert.ok(Value.Check(tool.parameters, params), "tool arguments satisfy the registered schema");
-			const result = await tool.execute(id, params, signal, undefined, hostContext(ctx));
+			const toolContext = {
+				...hostContext(ctx),
+				tools: [],
+				executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+			} satisfies ExtensionToolContext;
+			const result = await tool.execute(id, params, signal, undefined, toolContext);
 			assert.ok(typeof result.details === "object" && result.details !== null);
 			const details: Record<string, unknown> = {};
 			for (const [key, value] of Object.entries(result.details)) details[key] = value;

@@ -8,7 +8,8 @@ import { createAgentSessionRuntime, createAgentSessionServices, createAgentSessi
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { FOOTER_ENTRY, restoreFooter } from "./footer.ts";
 
-test("native checkpoints stay in memory until the first assistant flushes the session file", () => {
+for (const role of ["user", "assistant"] as const) {
+ test(`native checkpoints stay in memory until the first ${role} message flushes the session file`, () => {
 	const root = mkdtempSync(join(tmpdir(), "footer-native-flush-"));
 	try {
 		const manager = SessionManager.create(root, join(root, "native"));
@@ -16,10 +17,11 @@ test("native checkpoints stay in memory until the first assistant flushes the se
 		assert.ok(file);
 		const saved = restoreFooter([], manager.getSessionId());
 		saved.spend.cost = 0.25;
+		manager.appendThinkingLevelChange("off");
 		manager.appendCustomEntry(FOOTER_ENTRY, saved);
 		assert.deepEqual(restoreFooter(manager.getEntries(), manager.getSessionId()), saved);
 		assert.equal(existsSync(file), false, "a custom checkpoint does not create an unflushed native file");
-		manager.appendMessage(fauxAssistantMessage("done"));
+		manager.appendMessage(role === "assistant" ? fauxAssistantMessage("done") : { role: "user", content: "start", timestamp: Date.now() });
 		assert.equal(existsSync(file), true);
 		assert.deepEqual(restoreFooter(SessionManager.open(file).getEntries(), manager.getSessionId()), saved);
 		saved.spend.cost = 0.5;
@@ -27,6 +29,7 @@ test("native checkpoints stay in memory until the first assistant flushes the se
 		assert.deepEqual(restoreFooter(SessionManager.open(file).getEntries(), manager.getSessionId()), saved, "later checkpoints append to the saved file");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
+}
 
 test("native primary reload, tree navigation, fork, new, and reopen keep exact-session totals", { timeout: 30_000 }, async () => {
 	const root = mkdtempSync(join(tmpdir(), "agent-footer-retention-"));

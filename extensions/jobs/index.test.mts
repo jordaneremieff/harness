@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { after, before, describe, it } from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import registerJobs from "./index.ts";
 import type { JobLogs, JobSnapshot } from "./manager.ts";
 
 interface Result {
+	isError?: boolean;
 	content: Array<{ type: string; text?: string }>;
 	details?: { job?: JobSnapshot; jobs?: JobSnapshot[] } & Partial<JobLogs>;
 }
@@ -20,7 +21,7 @@ interface Tool {
 		params: unknown,
 		signal: AbortSignal | undefined,
 		update: undefined,
-		ctx: ExtensionContext,
+		ctx: ExtensionToolContext,
 	): Promise<Result>;
 }
 class TestPi {
@@ -73,7 +74,7 @@ function textOf(result: Result): string {
 function setup(cwd = root, trusted = false) {
 	const pi = new TestPi();
 	registerJobs(pi as unknown as ExtensionAPI);
-	const ctx = {
+	const base = {
 		cwd,
 		isProjectTrusted: () => trusted,
 		mode: "print",
@@ -82,6 +83,11 @@ function setup(cwd = root, trusted = false) {
 		thinkingLevel: "low",
 		sessionManager: { getSessionId: () => "job-session", getSessionFile: () => undefined },
 	} as unknown as ExtensionContext;
+	const ctx = {
+		...base,
+		tools: [],
+		executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+	} satisfies ExtensionToolContext;
 	const call = (name: string, params: unknown, signal?: AbortSignal) =>
 		pi.tool(name).execute("call", params, signal, undefined, ctx);
 	return { pi, call };
@@ -119,7 +125,9 @@ describe("Command Jobs adapter", () => {
 		try {
 			const result = await call("bash", { command: 'printf "%s/%s/%s" "$PI_SESSION_ID" "$PI_PROVIDER" "$PI_MODEL"' });
 			assert.equal(result.content[0].text, "job-session/fixture/deterministic");
-			await assert.rejects(call("bash", { command: "printf failure >&2; exit 7" }), /failure[\s\S]*code 7/);
+			const failure = await call("bash", { command: "printf failure >&2; exit 7" });
+			assert.equal(failure.isError, true);
+			assert.match(textOf(failure), /failure[\s\S]*code 7/);
 			assert.deepEqual((await call("jobs", { action: "list" })).details, { jobs: [] });
 		} finally {
 			await pi.shutdown();

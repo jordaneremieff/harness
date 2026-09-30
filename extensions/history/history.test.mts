@@ -4,6 +4,7 @@ import {
 	SessionManager,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type ExtensionToolContext,
 	type SessionEntry,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -510,7 +511,11 @@ test("defensive execute validation rejects mutated parameters and observes cance
 	);
 	const sm = SessionManager.inMemory();
 	const id = user(sm, "original");
-	const ctx = { sessionManager: sm } as unknown as ExtensionContext;
+	const ctx = {
+		...({ sessionManager: sm } as unknown as ExtensionContext),
+		tools: [],
+		executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+	} satisfies ExtensionToolContext;
 	const search = tools[0];
 	const read = tools[1];
 	for (const args of [
@@ -550,8 +555,9 @@ test("defensive execute validation rejects mutated parameters and observes cance
 	const other = SessionManager.inMemory();
 	user(other, "replacement");
 	const b = await search.execute("call", { query: "original" }, undefined, undefined, {
+		...ctx,
 		sessionManager: other,
-	} as unknown as ExtensionContext);
+	});
 	assert.equal(JSON.parse((b.content[0] as { text: string }).text).matches.length, 0);
 });
 

@@ -1325,8 +1325,10 @@ export class AgentManager {
 		const content = fromSessionId
 			? `Message ${randomUUID()} from session ${fromSessionId}${replyTo ? `; reply to ${replyTo}` : ""}. Agent-carried message. Apply the universal AGENTS.md "Intent authority" section.\n\n${message}`
 			: message;
-		await this.withSessionControl(sessionId, async (worker) => { await worker.steer(content, images); }, (client) => client.steer(content, images), signal, undefined, undefined, false, true);
-		return `session ${sessionId}: steering message queued. Queue admission does not confirm delivery or action.`;
+		const disposition = await this.withSessionControl(sessionId, (worker) => worker.steer(content, images), (client) => client.steer(content, images), signal, undefined, undefined, false, true);
+		return disposition === "handled"
+			? `session ${sessionId}: steering message handled by an input handler; it was not queued to the model. This does not confirm action.`
+			: `session ${sessionId}: steering message queued for the next model-call boundary. Queue admission does not confirm delivery, action, or crash recovery.`;
 	}
 
 	async abort(sessionId: string, signal?: AbortSignal, callerSessionId?: string): Promise<string> {
@@ -1821,7 +1823,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 	registerTool<typeof SendParams, unknown>({
 		name: "agent_steer",
 		label: "Agent steer",
-		description: 'Redirect a live session, including a detached owner. Stored sessions refuse and name agent_send to start a turn. Apply Intent authority to corrections. Admission confirms an in-memory queue, not delivery, action, or crash recovery.',
+		description: 'Redirect a live session, including a detached owner. Stored sessions refuse and name agent_send to start a turn. Apply Intent authority to corrections. Reports queued for the next model-call boundary or handled by an input handler without model queueing. Neither confirms action; queues do not survive process loss.',
 		promptSnippet: "Redirect a running agent session",
 		parameters: SendParams,
 		renderCall: renderSteerCall,

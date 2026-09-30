@@ -576,7 +576,7 @@ export class AgentWorkerSession {
 			return this.trackNative(admission, sendCustomMessage(message, options));
 		};
 	}
-	private trackNativeQueue(admission: NativeAdmission, action: () => Promise<void>): Promise<void> {
+	private trackNativeQueue<T>(admission: NativeAdmission, action: () => Promise<T>): Promise<T> {
 		if (this.configuration) return Promise.reject(new Error("agent session configuration is in progress"));
 		if (!admission.accepting || this.stopping) return Promise.reject(new Error("agent session native input is closed"));
 		const generation = this.abortGeneration;
@@ -584,7 +584,7 @@ export class AgentWorkerSession {
 			if (generation !== this.abortGeneration || this.stopping || !admission.accepting) throw new Error("agent queued input aborted during preflight");
 		};
 		this.nativePreflights++;
-		const task = Promise.resolve().then(() => { admitted(); return action(); }).then(admitted).finally(() => { this.nativePreflights--; });
+		const task = Promise.resolve().then(() => { admitted(); return action(); }).then((disposition) => { admitted(); return disposition; }).finally(() => { this.nativePreflights--; });
 		return this.trackNative(admission, task);
 	}
 	private trackNative<T>(admission: NativeAdmission, task: Promise<T>): Promise<T> {
@@ -724,7 +724,7 @@ export class AgentWorkerSession {
 		if (admissionError) throw admissionError;
 	}
 	async sendUserMessage(...args: Parameters<AgentSession["sendUserMessage"]>): Promise<void> { await this.track(this.session.sendUserMessage(...args)); }
-	async steer(text: string, images?: ImageContent[]): Promise<void> { await this.session.steer(text, images); }
+	async steer(text: string, images?: ImageContent[]): ReturnType<AgentSession["steer"]> { return this.session.steer(text, images); }
 	async abort(): Promise<boolean> {
 		if (this.configuration) throw new Error("agent session configuration is in progress");
 		const active = this.hasPendingHostWork();
@@ -761,7 +761,7 @@ export class AgentWorkerSession {
 			requested: attempt.patch, after, afterSource: session ? "live" : "retained",
 			...(attempt.reasoning ? { reasoning: { requested: attempt.reasoning, effective: after.thinkingLevel, clamped: attempt.clamped ?? null } } : {}),
 			hookErrors: { count: attempt.hookErrors.count, events: [...attempt.hookErrors.events], omitted: attempt.hookErrors.count - attempt.hookErrors.events.length, observation: "Errors observed through native setters and awaited hooks. Native name and reasoning hooks are not all awaited; later activity is outside this snapshot." },
-			persistence: { nativeWrites: !attempt.writes ? "not-attempted" : failed ? "uncertain" : "completed", fileExists: Boolean(file && existsSync(file)), note: "Native history snapshot; disk contents are not independently verified. A new native session buffers entries until its first assistant response. No rollback or replay." },
+			persistence: { nativeWrites: !attempt.writes ? "not-attempted" : failed ? "uncertain" : "completed", fileExists: Boolean(file && existsSync(file)), note: "Native history snapshot; disk contents are not independently verified. A new native session buffers entries until its first user or assistant message. No rollback or replay." },
 			...(failed ? { error: `Configuration failed during ${attempt.stage}; inspect the actual state before another change.` } : {}),
 		});
 	}

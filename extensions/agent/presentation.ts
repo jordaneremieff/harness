@@ -299,7 +299,7 @@ export function renderSendCall(args: Partial<SendDisplayArgs>, theme: Theme, con
 	return renderMessageCall("agent_send", args, theme, context);
 }
 
-/** Steer is queue admission for a running session; the card mirrors agent_send without claiming delivery. */
+/** Steer reports native input disposition; the card does not claim delivery or action. */
 export function renderSteerCall(args: Partial<SendDisplayArgs>, theme: Theme, context: { expanded: boolean; argsComplete: boolean; lastComponent?: Component }): Component {
 	return renderMessageCall("agent_steer", args, theme, context);
 }
@@ -317,7 +317,7 @@ export function renderSendResult(result: AgentToolResult<unknown>, options: Tool
 }
 
 export function renderSteerResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; lastComponent?: Component }): Component {
-	return renderMessageResult(result, options, theme, context, { error: "Steer error", partial: "Queue admission pending", receipt: "Queue admission (not proof of delivery, action, or crash recovery)" });
+	return renderMessageResult(result, options, theme, context, { error: "Steer error", partial: "Steering disposition pending", receipt: "Steering disposition (not proof of action or crash recovery)" });
 }
 
 /** The summary argument selects the self path; execution still refuses a mismatched session ID. */

@@ -24,7 +24,7 @@ interface AttachmentService {
 interface ControlService {
 	status(context: Context): Promise<string>;
 	inspect(options: InspectOptions, context: Context): Promise<string>;
-	steer(message: string, images: ImageContent[] | null, context: Context): Promise<void>;
+	steer(message: string, images: ImageContent[] | null, context: Context): ReturnType<AgentWorkerSession["steer"]>;
 	abort(context: Context): Promise<boolean>;
 	compact(instructions: string | null, context: Context): Promise<string>;
 	command(name: string, args: string, context: Context): Promise<string>;
@@ -187,7 +187,7 @@ export async function createDetachedControlServer(options: DetachedControlServer
 		steer: async (message, images) => {
 			checkSteer(message, images);
 			if (!options.canSteer()) throw new ServerDrainingError();
-			await worker.steer(message, images ?? undefined);
+			return worker.steer(message, images ?? undefined);
 		},
 		abort: async () => (await options.requestAbort()) !== false,
 		compact: async (instructions) => {
@@ -269,7 +269,7 @@ export async function createDetachedControlServer(options: DetachedControlServer
 export interface DetachedControlClient {
 	status(): Promise<WorkerStatus>;
 	inspect(options?: InspectOptions): Promise<Inspection>;
-	steer(message: string, images?: ImageContent[]): Promise<void>;
+	steer(message: string, images?: ImageContent[]): ReturnType<AgentWorkerSession["steer"]>;
 	abort(): Promise<boolean>;
 	compact(instructions?: string): Promise<string>;
 	command(name: string, args: string): Promise<Awaited<ReturnType<AgentWorkerSession["runCommand"]>>>;
@@ -312,7 +312,12 @@ export async function withDetachedControl<T>(request: DetachedRunRequest, callba
 		const control: DetachedControlClient = {
 			status: async () => parseObservation<WorkerStatus>(await remote.status(context), request.sessionId),
 			inspect: async (input = {}) => { checkInspect(input); return parseObservation<Inspection>(await remote.inspect(input, context), request.sessionId); },
-			steer: async (message, images) => { checkSteer(message, images ?? null); await remote.steer(message, images ?? null, context); },
+			steer: async (message, images) => {
+				checkSteer(message, images ?? null);
+				const disposition = await remote.steer(message, images ?? null, context);
+				if (disposition !== "queued" && disposition !== "handled") throw new Error("invalid steering disposition");
+				return disposition;
+			},
 			abort: async () => remote.abort(context),
 			compact: async (instructions) => { checkInstructions(instructions ?? null); const result = await remote.compact(instructions ?? null, context); if (!text(result, MAX_OBSERVATION_BYTES)) throw new Error("invalid compact reply"); return result; },
 			command: async (name, args) => {

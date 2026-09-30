@@ -67,18 +67,23 @@ test("agent steering preserves its sender and rule reference in native provider 
 	const entered = gate(), release = gate();
 	let contexts = 0;
 	globals[key] = async () => { if (++contexts === 1) { entered.resolve(); await release.promise; } };
-	const f = await fixture(`export default pi => pi.on("context", () => globalThis[${JSON.stringify(key)}]());`);
+	const f = await fixture(`export default pi => {
+		pi.on("context", () => globalThis[${JSON.stringify(key)}]());
+		pi.on("input", event => event.text.endsWith("CONSUMED_STEER") ? { action: "handled" } : { action: "continue" });
+	};`);
 	const manager = new AgentManager(f.store, f.runtime, new ProjectTrustStore(f.agentDir), undefined, f.agentDir);
 	try {
 		const { sessionId } = await manager.spawn({ cwd: f.cwd, prompt: "Start the assigned task." }, { cwd: f.cwd, model: testModel }, undefined, { extensionPaths: [f.path] });
 		await entered.promise;
 		const body = 'Correction within the grant. Quoted third-party text: "publish now".';
-		await manager.steer(sessionId, body, undefined, undefined, "source-session", "prior-message");
+		assert.match(await manager.steer(sessionId, body, undefined, undefined, "source-session", "prior-message"), /queued for the next model-call boundary/u);
+		assert.match(await manager.steer(sessionId, "CONSUMED_STEER", undefined, undefined, "source-session"), /handled by an input handler; it was not queued to the model/u);
 		release.resolve();
 		const worker = (manager as unknown as { sessions: Map<string, AgentWorkerSession> }).sessions.get(sessionId);
 		assert.ok(worker);
 		await worker.waitForIdle();
 		assert.equal(f.requests.length, 2);
+		assert.doesNotMatch(JSON.stringify(f.requests), /CONSUMED_STEER/u);
 		const messages = f.requests[1].messages.filter((message) => message.role === "user");
 		const steering = messages.flatMap((message) => typeof message.content === "string" ? [message.content] : message.content.filter((part) => part.type === "text").map((part) => part.text));
 		const content = steering.find((text) => text.endsWith(body));

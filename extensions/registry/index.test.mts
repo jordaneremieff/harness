@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import registerRegistry, { RegistryParams, readSnapshot } from "./index.ts";
 
 const sourceInfo = { path: "/fixtures/SKILL.md", source: "fixture", scope: "temporary" as const, origin: "top-level" as const };
-const context = { cwd: "/fixtures", mode: "rpc", hasUI: true, isProjectTrusted: () => true } as ExtensionContext;
+const context = {
+	...({ cwd: "/fixtures", mode: "rpc", hasUI: true, isProjectTrusted: () => true } as ExtensionContext),
+	tools: [],
+	executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+} satisfies ExtensionToolContext;
 
 function handlerFor(
 	handlers: Map<string, (event: Record<string, unknown>) => Promise<void>>,
@@ -50,9 +54,9 @@ describe("Pi adapter", () => {
 		const { tool } = fixture();
 		let calls = 0;
 		let tokens: number | null = 7500;
-		const ctx = { ...context, model: { provider: "fixture", id: "selected" }, thinkingLevel: "high",
+		const ctx = { ...context, model: { provider: "fixture", id: "selected" } as NonNullable<ExtensionContext["model"]>, thinkingLevel: "high",
 			getContextUsage: () => { calls += 1; return { tokens, contextWindow: 10000, percent: tokens === null ? null : tokens / 100 }; },
-		} as ExtensionContext;
+		} satisfies ExtensionToolContext;
 		const first = await tool.execute("host", {}, undefined, undefined, ctx);
 		assert.ok(first.details);
 		assert.equal((first.details.context as { tokens: number }).tokens, 7500);

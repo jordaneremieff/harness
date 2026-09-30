@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { ModelRegistry, type ExtensionAPI, type ExtensionContext, type ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import registerRegistry, { RegistryParams } from "./index.ts";
 import { catalogHealth, type HealthRecord } from "./health.ts";
 import { lookup, type LookupResult } from "./lookup.ts";
@@ -28,7 +28,11 @@ function fixture(catalog = [model("preview-expires-on-1231"), model("stable")]) 
 		if (!(key in target)) throw new Error(`Forbidden runtime access: ${String(key)}`);
 		return Reflect.get(target, key, receiver);
 	} });
-	const ctx = { modelRegistry: new ModelRegistry(runtime as unknown as ModelRuntime), scopedModels: [] } as unknown as ExtensionContext;
+	const ctx = {
+		...({ modelRegistry: new ModelRegistry(runtime as unknown as ModelRuntime), scopedModels: [] } as unknown as ExtensionContext),
+		tools: [],
+		executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+	} satisfies ExtensionToolContext;
 	return { ctx, calls, catalog };
 }
 const run = (models: ModelSnapshot | undefined, params: RawParams = { kind: "model", health: true }) =>

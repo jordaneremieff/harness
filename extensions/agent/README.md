@@ -54,7 +54,7 @@ stops footer appends and refuses restart for that primary, including after reloa
 This state is separate from association failures. Pi's public extension API cannot
 repair that native history; restarting is not a repair.
 
-The primary readiness check has a public-API boundary in Pi 0.87.1.
+The primary readiness check has a public-API boundary in Pi 0.99.1.
 `ExtensionContext.isIdle()` excludes user Bash activity, and
 `hasPendingMessages()` excludes the TUI's private compaction queue. A failed
 post-compaction submission can leave messages in that private queue while the
@@ -298,10 +298,10 @@ Reload and replacement of a worker retain already observed spend. Idle and
 completion do not clear totals. Native custom entries save each primary's totals
 under its exact session ID, outside model context. Same-process reload retains
 in-memory checkpoints. Reopening restores checkpoints only from a native session
-file Pi actually saved. Before the first assistant message, Pi buffers custom
-entries in memory without creating the file; the first assistant message flushes
-those entries. Tree navigation does not undo incurred costs. New sessions
-and copied forks start at zero. Multiple primaries have separate checkpoints and
+file Pi actually saved. Before the first user or assistant message, Pi buffers
+custom and setup entries in memory without creating the file; that first
+conversation message flushes those entries. Tree navigation does not undo
+incurred costs. New sessions and copied forks start at zero. Multiple primaries have separate checkpoints and
 attachment baselines, so a later primary does not inherit earlier manager spend.
 Each departing primary clears its cell. A primary reload drops its old UI and
 message callbacks, but retains its manager, live hosts, and price baseline.
@@ -658,8 +658,11 @@ abort after admission if necessary. A client disconnect or canceled control
 request does not abort the run. Failed controls are never replayed automatically
 or retried by opening a local writer. A lost response leaves admission unknown.
 
-A successful steer confirms admission to the owner's in-memory queue, not
-delivery or action. Native pending queues and in-flight operations do not
+A successful steer reports the native disposition: `queued` means Pi queued
+it for the next model-call boundary, including after an input handler transformed
+it; `handled` means an input handler consumed it without queueing it to the model.
+Neither confirms action. Queue admission does not guarantee delivery or that the
+message remains queued. Native pending queues and in-flight operations do not
 survive process loss. At finalization, the run seals controls, drains admitted
 calls, checks idle again, and reads current session state. Remaining queued
 input causes an explicit failure; the host does not promise to recover that
@@ -997,7 +1000,7 @@ history. The settled result remains available only from that live owner;
 without `entryId`. It is lost when that owner closes. Native entries remain
 separately readable by their entry IDs.
 
-This refusal is not native-history repair. Pi 0.87.1 advances its in-memory leaf
+This refusal is not native-history repair. Pi 0.99.1 advances its in-memory leaf
 before persistence and exposes no rollback through a tool context. A failed tool
 can still be followed by native tool-result and assistant writes that refer to
 an entry absent from disk. Those later writes can break the saved context chain.
@@ -1018,9 +1021,9 @@ claim still requires ownership resolution.
 A parent created before association records existed restores no inferred
 children. Explicit `agent_attach` or `/agent attach` opens a known child without
 a task and records the association for that parent. Save the native parent
-before expecting later process recovery. Pi buffers custom entries until its
-first assistant message flushes the file. An in-memory session or an unflushed
-parent therefore has same-process continuity only. This is not a record migration.
+before expecting later process recovery. Pi buffers custom and setup entries
+until its first user or assistant message flushes the file. An in-memory session
+or an unflushed parent therefore has same-process continuity only. This is not a record migration.
 
 A rejected native reload before runtime replacement retains the old invalidated
 runner. A later successful reload rebinds control, and its retained shutdown
@@ -1029,7 +1032,7 @@ failure: its loader reports an extension factory error, omits that extension,
 and completes reload. If it omits this extension, the parent loses agent tools
 and shutdown handlers while retained children and writer claims remain live.
 A later successful reload recovers control. True quit from the omitted-extension
-runtime cannot call the lost cleanup handler. Pi 0.87.1 exposes no finalizer for
+runtime cannot call the lost cleanup handler. Pi 0.99.1 exposes no finalizer for
 that discarded extension owner; this cleanup guarantee is blocked at the native
 host. The extension adds no process hook or polling substitute. After process
 exit, retained claims still fail closed and require the ownership check described

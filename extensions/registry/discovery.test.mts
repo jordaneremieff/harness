@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Type } from "typebox";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import registerRegistry, { type RegistryParams } from "./index.ts";
 import { lookup } from "./lookup.ts";
 import { readModels } from "./models.ts";
@@ -17,12 +17,17 @@ const model = (id: string, reasoning = true): Model<Api> => ({ provider: "fixtur
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, thinkingLevelMap: { xhigh: "xhigh", max: null } });
 function context() {
 	const catalog = [model("a"), model("b", false)];
-	const ctx = { model: catalog[0], thinkingLevel: "high", scopedModels: [{ model: catalog[0], thinkingLevel: "medium" }],
+	const base = { model: catalog[0], thinkingLevel: "high", scopedModels: [{ model: catalog[0], thinkingLevel: "medium" }],
 		modelRegistry: { getAll: () => catalog, getAvailable: () => [catalog[0]], getError: () => undefined,
 			hasConfiguredAuth: (m: Model<Api>) => m.id === "a", getRegisteredProviderIds: () => [],
 			getProviderAuth: () => { throw new Error("must not resolve auth"); },
 			refresh: () => { throw new Error("must not refresh"); } },
 	} as unknown as ExtensionContext;
+	const ctx = {
+		...base,
+		tools: [],
+		executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+	} satisfies ExtensionToolContext;
 	return { ctx, catalog };
 }
 function host(): HostSnapshot {

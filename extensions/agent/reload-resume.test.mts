@@ -90,7 +90,8 @@ async function fixture() {
 	});
 	const tool = async (name: string, params: Record<string, unknown>, session = runtime.session) => {
 		const runner = session.extensionRunner, definition = runner.getToolDefinition(name); assert.ok(definition, name);
-		const result = await definition.execute("fixture", params, new AbortController().signal, undefined, runner.createContext());
+		const signal = new AbortController().signal;
+		const result = await definition.execute("fixture", params, signal, undefined, runner.createToolContext("fixture", signal));
 		return result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
 	};
 	const spawn = async (prompt?: string) => {

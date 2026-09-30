@@ -116,7 +116,7 @@ test("native draft assessment follows source results without a context transform
 					return true;
 				};
 				assert.throws(() => prepare({ draft }), matches);
-				await assert.rejects(definition.execute("invalid-draft", { draft }, undefined, undefined, active().extensionRunner.createContext()), matches);
+				await assert.rejects(definition.execute("invalid-draft", { draft }, undefined, undefined, active().extensionRunner.createToolContext("invalid-draft", undefined)), matches);
 			}
 			assert.equal(assessments().length, 0);
 		});
@@ -166,7 +166,7 @@ test("native draft assessment follows source results without a context transform
 			done();
 			const controller = new AbortController();
 			controller.abort();
-			await assert.rejects(tool().execute("cancelled-read", { resource: "governance", draft: proposal }, controller.signal, undefined, active().extensionRunner.createContext()), /source_unavailable/);
+			await assert.rejects(tool().execute("cancelled-read", { resource: "governance", draft: proposal }, controller.signal, undefined, active().extensionRunner.createToolContext("cancelled-read", controller.signal)), /source_unavailable/);
 			assert.equal(assessments().length, before);
 		});
 		await t.test("cancellation after admission preserves native assessment history without another request", async () => {

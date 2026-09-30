@@ -19,7 +19,7 @@ function deferred() {
 	return { promise, resolve };
 }
 
-async function fixture(inspect?: () => Promise<void>) {
+async function fixture(inspect?: () => Promise<void>, disposition: "queued" | "handled" = "queued") {
 	const root = mkdtempSync(join(tmpdir(), "agent-control-manager-"));
 	const cwd = join(root, "work");
 	const agentDir = join(root, "agent");
@@ -39,7 +39,7 @@ async function fixture(inspect?: () => Promise<void>) {
 			calls.push("inspect"); await inspect?.();
 			return { sessionId: request.sessionId, entries: [], nextCursor: null, options } as unknown as Awaited<ReturnType<AgentWorkerSession["inspect"]>>;
 		},
-		steer: async (text: string) => { calls.push(`steer:${text}`); },
+		steer: async (text: string) => { calls.push(`steer:${text}`); return disposition; },
 		compact: async () => { calls.push("compact"); return { summary: "native", firstKeptEntryId: "tip", tokensBefore: 10 }; },
 		runCommand: async () => { calls.push("command"); return { text: "done", sessionId: "replacement" }; },
 	};
@@ -64,6 +64,15 @@ test("manager controls reach the detached owner without a second session open", 
 		assert.equal(open.mock.callCount(), 0); assert.equal(list.mock.callCount(), 0);
 		await assert.rejects(f.manager.attach(f.request.sessionId), /running detached/u);
 		await assert.rejects(f.manager.send(f.request.sessionId, "another task"), /running detached/u);
+	} finally { await f.close(); }
+});
+
+test("manager reports an input handler disposition without queue admission", { timeout: 20_000 }, async () => {
+	const f = await fixture(undefined, "handled");
+	try {
+		const receipt = await f.manager.steer(f.request.sessionId, "consumed");
+		assert.match(receipt, /handled by an input handler; it was not queued to the model/u);
+		assert.doesNotMatch(receipt, /steering message queued/u);
 	} finally { await f.close(); }
 });
 

@@ -25,6 +25,7 @@ function observationHost(ctx: ContextFields): Emit {
 		registerEntryRenderer() {},
 		getAllTools: () => [{
 			name: "pillars",
+			exposure: "direct",
 			description: "Synthetic source tool",
 			parameters: Type.Object({}),
 			sourceInfo: {

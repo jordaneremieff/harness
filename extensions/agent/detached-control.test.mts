@@ -37,7 +37,7 @@ function fixture() {
 	const worker: DetachedControlServerOptions["worker"] = {
 		status: async () => status,
 		inspect: async (options) => { calls.inspections.push(options); return inspection; },
-		steer: async (message, images) => { calls.steers.push({ message, images }); },
+		steer: async (message, images) => { calls.steers.push({ message, images }); return "queued"; },
 		compact: async () => { throw new Error("unexpected compact"); },
 		runCommand: async () => { throw new Error("unexpected command"); },
 	};
@@ -87,7 +87,7 @@ describe("detached control over public Unix transport", () => {
 				await control.inspect({ view: "search", query: "literal", fromId: "known-tip", source: "user" });
 				await control.inspect({ view: "result", entryId: "result-entry", offset: 1200 });
 				await assert.rejects(control.inspect({ view: "branch", query: "invalid" }), /query/);
-				await control.steer("redirect", [image]);
+				assert.equal(await control.steer("redirect", [image]), "queued");
 				assert.equal(await control.abort(), true);
 			});
 			assert.deepEqual(f.calls.steers, [{ message: "redirect", images: [image] }]);
@@ -98,6 +98,17 @@ describe("detached control over public Unix transport", () => {
 		assert.equal(existsSync(dirname(endpoint.path)), false);
 		assert.equal(existsSync(f.descriptor), false);
 		await server.close();
+	});
+
+	it("returns handled input without claiming queue admission and rejects malformed dispositions", async () => {
+		const f = fixture();
+		f.worker.steer = async () => "handled";
+		const server = await createDetachedControlServer(f.options);
+		try {
+			assert.equal(await withDetachedControl(f.request, (control) => control.steer("consumed")), "handled");
+			f.worker.steer = async () => "invalid" as "handled";
+			await assert.rejects(withDetachedControl(f.request, (control) => control.steer("malformed")), /invalid steering disposition/u);
+		} finally { await server.close(); f.cleanup(); }
 	});
 
 	it("rejects steering before admission but accepts the sticky abort callback", async () => {
@@ -167,7 +178,7 @@ describe("detached control over public Unix transport", () => {
 		const f = fixture();
 		const entered = deferred();
 		const finish = deferred();
-		f.worker.steer = async () => { entered.resolve(); await finish.promise; };
+		f.worker.steer = async () => { entered.resolve(); await finish.promise; return "queued"; };
 		const server = await createDetachedControlServer(f.options);
 		const client = await rawClient(f.request);
 		try {

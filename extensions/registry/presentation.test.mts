@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import registerRegistry, { type RegistryParams } from "./index.ts";
 import { renderRegistryCall, renderRegistryResult } from "./presentation.ts";
 
@@ -13,7 +13,7 @@ const rows = (component: { render(width: number): string[] }, width = 100) =>
 const resultOf = (text: string, details: Record<string, unknown>) => ({ content: [{ type: "text" as const, text }], details });
 
 const sourceInfo = { path: "/fixtures/TOOL.ts", source: "fixture", scope: "temporary" as const, origin: "top-level" as const };
-const context = {
+const baseContext = {
 	cwd: "/fixtures",
 	mode: "rpc",
 	hasUI: false,
@@ -23,6 +23,11 @@ const context = {
 	getContextUsage: () => ({ tokens: 7500, contextWindow: 10000, percent: 75 }),
 	sessionManager: { getSessionId: () => "session-1", getSessionFile: () => null },
 } as unknown as ExtensionContext;
+const context = {
+	...baseContext,
+	tools: [],
+	executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+} satisfies ExtensionToolContext;
 
 function registryTool(): ToolDefinition<typeof RegistryParams, Record<string, unknown>> {
 	let tool: ToolDefinition<typeof RegistryParams, Record<string, unknown>> | undefined;
