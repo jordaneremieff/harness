@@ -49,9 +49,12 @@ function waitForFile(path: string, directory: string): Promise<void> {
 	if (existsSync(path)) return Promise.resolve();
 	return new Promise((resolve, reject) => {
 		const watcher = watch(directory, () => { if (existsSync(path)) finish(); });
+		// A directory watcher becomes live asynchronously and misses a file created before then; polling closes that gap.
+		const poll = setInterval(() => { if (existsSync(path)) finish(); }, 20);
 		const timer = setTimeout(() => finish(new Error(`fixture did not publish ${path}`)), 15000);
 		const finish = (error?: Error) => {
 			clearTimeout(timer);
+			clearInterval(poll);
 			watcher.close();
 			if (error) reject(error); else resolve();
 		};
