@@ -66,10 +66,16 @@
 - Perform active development for each extension, skill, prompt, or feature in one
   dedicated persistent Git worktree and stable branch. Reuse that worktree across
   sessions and tasks. Do not remove it after one implementation cycle. Run `npm
-  run worktrees:sync` before slice work and after `main` advances. Keep
-  provisional extensions in their worktrees without global Pi activation. Route
-  each active extension through its worktree entrypoint instead of the main
-  package copy. See `docs/conventions/worktrees.md`.
+  run worktrees:sync` from inside your worktree before slice work and after
+  `main` advances. A worktree that is behind `main` and holds uncommitted tracked
+  changes is deferred: the command leaves its branch at its current commit.
+  A deferred sibling is a worktree other than the one you work in; its work
+  belongs to its owner and is not part of your result. Do not announce its
+  deferral, treat it as extra work, or touch its uncommitted changes. Report
+  actual failures that affect your assigned outcome. Keep provisional extensions
+  in their worktrees without global Pi activation. Route each active extension
+  through its worktree entrypoint instead of the main package copy. See
+  `docs/conventions/worktrees.md`.
 - Each extension is an independent vertical slice with structural, semantic, state,
   and presentation boundaries. An extension must not import a sibling, parse
   sibling-formatted output, reproduce sibling-owned types or lifecycle states,
@@ -208,7 +214,8 @@ Before considering repository work complete:
 7. run `npm run typecheck` (TypeScript check against the installed Pi declarations);
 8. run `npm run check` (slice isolation, hardcoded counts);
 9. run the normal full test command;
-10. report remaining untracked or modified files honestly.
+10. report honestly the remaining untracked or modified files in each worktree
+    you changed.
 
 The automated gates are `npm run lint`, `npm run typecheck`, `npm run check` (slice isolation,
 hardcoded counts), and the normal full test command. Credential

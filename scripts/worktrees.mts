@@ -132,6 +132,8 @@ interface PromotionReport {
 	pushed?: boolean;
 	syncOk?: boolean;
 	branchFailures?: string[];
+	/** Worktrees left at their commit because uncommitted tracked changes block a rebase; never a failure. */
+	deferred?: string[];
 }
 
 const scriptPath = fileURLToPath(import.meta.url);
@@ -561,7 +563,23 @@ function hasTrackedChanges(path: string): boolean {
 	return git(path, ["status", "--porcelain", "--untracked-files=no"], { cwd: path }).stdout.trim().length > 0;
 }
 
-function syncBranch(context: HarnessContext, record: WorktreeRecord): { changed: boolean; failure?: string } {
+interface SyncOutcome {
+	changed: boolean;
+	deferred?: true;
+	failure?: string;
+}
+
+interface SyncResult {
+	changed: string[];
+	deferred: string[];
+	failures: string[];
+}
+
+/**
+ * A worktree holding uncommitted tracked changes while main has advanced is deferred: its branch
+ * stays at its commit. Deferral preserves the owner's changes and is not a sync failure.
+ */
+function syncBranch(context: HarnessContext, record: WorktreeRecord): SyncOutcome {
 	let changed = false;
 	let rebasing = false;
 	try {
@@ -569,9 +587,7 @@ function syncBranch(context: HarnessContext, record: WorktreeRecord): { changed:
 			throw new Error("branch has no common base with main");
 		}
 		if (!branchHasBase(context.repoRoot, record.branch)) {
-			if (hasTrackedChanges(record.path)) {
-				throw new Error("worktree has uncommitted changes and main has advanced");
-			}
+			if (hasTrackedChanges(record.path)) return { changed, deferred: true };
 			rebasing = true;
 			git(context.repoRoot, noHooks(["rebase", "main"]), { cwd: record.path });
 			rebasing = false;
@@ -590,18 +606,17 @@ function syncBranch(context: HarnessContext, record: WorktreeRecord): { changed:
 	}
 }
 
-function syncBranches(
-	context: HarnessContext,
-	records: readonly WorktreeRecord[],
-): { changed: string[]; failures: string[] } {
+function syncBranches(context: HarnessContext, records: readonly WorktreeRecord[]): SyncResult {
 	const changed: string[] = [];
+	const deferred: string[] = [];
 	const failures: string[] = [];
 	for (const record of records) {
 		const result = syncBranch(context, record);
 		if (result.changed) changed.push(record.name);
+		if (result.deferred) deferred.push(record.name);
 		if (result.failure !== undefined) failures.push(result.failure);
 	}
-	return { changed, failures };
+	return { changed, deferred, failures };
 }
 
 function devRecordPathsAt(repoRoot: string, ref: string, devRecordRoot: string | null): string[] {
@@ -1009,6 +1024,7 @@ function completePromotion(
 		pushed,
 		syncOk: branchResult.failures.length === 0,
 		branchFailures: branchResult.failures,
+		deferred: branchResult.deferred,
 	};
 }
 
@@ -1288,7 +1304,7 @@ function main(): void {
 			);
 		} else {
 			const hook = command === "sync" && args.includes("--hook");
-			console.error(hook ? `Worktree sync deferred: ${error.message}` : error.message);
+			console.error(hook ? `Worktree sync skipped: ${error.message}` : error.message);
 			process.exitCode = hook ? 0 : 1;
 		}
 	}
@@ -1315,13 +1331,27 @@ function setExtensionActive(
 	console.log(`${name} is ${command === "activate" ? "active" : "provisional"}`);
 }
 
+/** The worktree that contains the invocation directory, when the command runs inside one. */
+function worktreeContaining(records: readonly WorktreeRecord[], cwd: string): WorktreeRecord | undefined {
+	const target = canonicalPath(cwd);
+	return records.find((record) => {
+		if (!existsSync(record.path)) return false;
+		const path = canonicalPath(record.path);
+		return target === path || target.startsWith(`${path}${sep}`);
+	});
+}
+
 function reportReconciliation(
 	context: HarnessContext,
-	branchResult: ReturnType<typeof syncBranches>,
+	branchResult: SyncResult,
 	settingsResult: ReturnType<typeof reconcileSettings>,
 	problems: string[],
 	quiet: boolean,
+	ownDeferred: string | undefined,
 ): void {
+	if (!quiet && ownDeferred !== undefined) {
+		console.log(`Deferred: ${ownDeferred} has uncommitted tracked changes and is behind main; commit them, then sync.`);
+	}
 	if (!quiet || branchResult.changed.length > 0 || settingsResult.changed || branchResult.failures.length > 0) {
 		if (branchResult.changed.length > 0) {
 			console.log(`Updated from main: ${branchResult.changed.join(", ")}`);
@@ -1375,10 +1405,12 @@ function executeCommand(context: HarnessContext, args: string[]): void {
 		throw new Error(`Unknown command: ${command}`);
 	}
 
-	let branchResult: { changed: string[]; failures: string[] } = { changed: [], failures: [] };
+	let branchResult: SyncResult = { changed: [], deferred: [], failures: [] };
 	if (command === "sync") branchResult = syncBranches(context, records);
 	const settingsResult = reconcileSettings(context, records);
-	reportReconciliation(context, branchResult, settingsResult, problems, quiet);
+	const own = worktreeContaining(records, process.cwd());
+	const ownDeferred = own !== undefined && branchResult.deferred.includes(own.name) ? own.name : undefined;
+	reportReconciliation(context, branchResult, settingsResult, problems, quiet, ownDeferred);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : undefined;

@@ -40,6 +40,7 @@ interface SerializedPromotionReport {
 	stage: string;
 	reason: string;
 	branchFailures?: string[];
+	deferred?: string[];
 }
 
 interface PromoteResult {
@@ -326,8 +327,14 @@ describe("Pi package reconciliation", () => {
 });
 
 describe("promotion internal checkout hooks", () => {
-	for (const recordOnMain of [false, true]) {
-		it(`suppresses checkout hooks with a development record ${recordOnMain ? "on" : "absent from"} main`, () => {
+	for (const { recordOnMain, json } of [
+		{ recordOnMain: false, json: false },
+		{ recordOnMain: false, json: true },
+		{ recordOnMain: true, json: false },
+		{ recordOnMain: true, json: true },
+	]) {
+		const outputFlags = json ? ["--json"] : [];
+		it(`suppresses checkout hooks with a development record ${recordOnMain ? "on" : "absent from"} main (${json ? "JSON" : "text"} output)`, () => {
 			const root = realpathSync(mkdtempSync(join(tmpdir(), "worktree-checkout-hooks-")));
 			try {
 				const repo = join(root, "harness");
@@ -375,6 +382,7 @@ describe("promotion internal checkout hooks", () => {
 				git(target, ["add", "."]);
 				git(target, ["commit", "-q", "-m", "Update feature and development record"]);
 				writeFileSync(join(sibling, "target/code.txt"), "uncommitted sibling\n");
+				const siblingBefore = git(repo, ["rev-parse", "feature/sibling"]);
 				writeFileSync(settings, JSON.stringify({ packages: [{ source: repo, extensions: [] }] }));
 				writeFileSync(join(hooks, "post-checkout"), '#!/bin/sh\nprintf "%s\\n" "$PWD" >> "$CHECKOUT_MARKER"\nexit 1\n', {
 					mode: 0o755,
@@ -385,23 +393,28 @@ describe("promotion internal checkout hooks", () => {
 				rmSync(marker);
 
 				const script = fileURLToPath(new URL("./worktrees.mts", import.meta.url));
-				const result = spawnSync(process.execPath, [script, "promote", "feature/target", "--no-push", "--json"], {
-					cwd: repo,
-					env,
-					encoding: "utf8",
-					timeout: 30_000,
-				});
+				const result = spawnSync(
+					process.execPath,
+					[script, "promote", "feature/target", "--no-push", ...outputFlags],
+					{ cwd: repo, env, encoding: "utf8", timeout: 30_000 },
+				);
 				assert.equal(existsSync(marker), false, result.stderr || result.stdout);
-				const report: SerializedPromotionReport = JSON.parse(result.stdout);
-				assert.equal(report.ok, true);
-				assert.equal(report.gates.test, "pass");
+				assert.equal(result.status, 0, result.stderr || result.stdout);
+				assert.equal(result.stderr, "");
 				assert.equal(readFileSync(gateMarker, "utf8"), "passed");
-				assert.equal(report.pushed, false);
-				assert.equal(report.syncOk, false);
-				assert.equal(result.status, 1);
-				assert.ok(report.branchFailures);
-				assert.equal(report.branchFailures.length, 1);
-				assert.match(report.branchFailures[0], /^sibling: .*uncommitted changes and main has advanced/);
+				if (json) {
+					const report: SerializedPromotionReport = JSON.parse(result.stdout);
+					assert.equal(report.ok, true);
+					assert.equal(report.gates.test, "pass");
+					assert.equal(report.pushed, false);
+					assert.equal(report.syncOk, true);
+					assert.deepEqual(report.branchFailures, []);
+					assert.deepEqual(report.deferred, ["sibling"]);
+				} else {
+					assert.match(result.stdout, /Promoted to main:/);
+					assert.doesNotMatch(result.stdout, /sibling|Deferred/);
+				}
+				assert.equal(git(repo, ["rev-parse", "feature/sibling"]), siblingBefore);
 				assert.equal(readFileSync(join(sibling, "target/code.txt"), "utf8"), "uncommitted sibling\n");
 				assert.equal(readFileSync(join(repo, "target/code.txt"), "utf8"), "shipped\n");
 				assert.equal(readFileSync(join(target, "target/LOG.md"), "utf8"), "branch record\n");
@@ -414,6 +427,165 @@ describe("promotion internal checkout hooks", () => {
 			}
 		});
 	}
+});
+
+describe("synchronization defers worktrees with uncommitted tracked changes", () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "worktree-deferred-")));
+	const repo = join(root, "harness");
+	const worktrees = join(root, "harness.worktrees");
+	const target = join(worktrees, "target");
+	const sibling = join(worktrees, "sibling");
+	const settings = join(root, "settings.json");
+	const script = fileURLToPath(new URL("./worktrees.mts", import.meta.url));
+	const env = {
+		...cleanGitEnvironment(process.env),
+		GIT_CONFIG_GLOBAL: "/dev/null",
+		GIT_CONFIG_NOSYSTEM: "1",
+		GIT_AUTHOR_NAME: "Fixture",
+		GIT_AUTHOR_EMAIL: "fixture@example.com",
+		GIT_COMMITTER_NAME: "Fixture",
+		GIT_COMMITTER_EMAIL: "fixture@example.com",
+		PI_HARNESS_ROOT: repo,
+		PI_WORKTREE_ROOT: worktrees,
+		PI_SETTINGS_PATH: settings,
+	};
+	const git = (cwd: string, args: string[]): string =>
+		execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+	const sync = (cwd: string, extra: string[] = []) =>
+		spawnSync(process.execPath, [script, "sync", ...extra], { cwd, env, encoding: "utf8", timeout: 30_000 });
+
+	before(() => {
+		mkdirSync(join(repo, "target"), { recursive: true });
+		mkdirSync(join(repo, "sibling"));
+		mkdirSync(join(repo, "extensions"));
+		mkdirSync(join(repo, "scripts"));
+		writeFileSync(join(repo, "scripts/worktrees.mts"), readFileSync(script, "utf8"));
+		git(repo, ["init", "-q", "-b", "main"]);
+		writeFileSync(join(repo, "target/code.txt"), "initial\n");
+		writeFileSync(join(repo, "sibling/code.txt"), "initial\n");
+		git(repo, ["add", "."]);
+		git(repo, ["commit", "-q", "-m", "Initial features"]);
+		git(repo, ["worktree", "add", "-q", "-b", "feature/target", target]);
+		git(repo, ["worktree", "add", "-q", "-b", "feature/sibling", sibling]);
+		writeFileSync(join(repo, "target/code.txt"), "main advanced\n");
+		git(repo, ["commit", "-q", "-am", "Advance main"]);
+		writeFileSync(join(target, "target/scratch.txt"), "untracked\n");
+		writeFileSync(join(sibling, "sibling/code.txt"), "uncommitted sibling\n");
+		writeFileSync(settings, JSON.stringify({ packages: [{ source: repo, extensions: [] }] }));
+	});
+
+	after(() => rmSync(root, { recursive: true, force: true }));
+
+	it("rebases an untracked-only worktree without a deferred sibling notice from main", () => {
+		const result = sync(repo);
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(result.stderr, "");
+		assert.match(result.stdout, /Updated from main: target/);
+		assert.doesNotMatch(result.stdout, /sibling|Deferred/);
+		assert.equal(git(repo, ["merge-base", "--is-ancestor", "main", "feature/target"]), "");
+		assert.equal(git(repo, ["rev-parse", "feature/sibling"]), git(repo, ["rev-parse", "main~1"]));
+		assert.equal(readFileSync(join(target, "target/scratch.txt"), "utf8"), "untracked\n");
+		assert.equal(readFileSync(join(sibling, "sibling/code.txt"), "utf8"), "uncommitted sibling\n");
+		rmSync(join(target, "target/scratch.txt"));
+	});
+
+	it("prints no notice from outside every worktree", () => {
+		const result = sync(root);
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(result.stderr, "");
+		assert.doesNotMatch(result.stdout, /sibling|Deferred/);
+	});
+
+	it("prints no notice from a current clean worktree", () => {
+		assert.equal(git(target, ["status", "--porcelain"]), "");
+		const result = sync(target);
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(result.stderr, "");
+		assert.doesNotMatch(result.stdout, /sibling|Deferred/);
+	});
+
+	it("keeps hook runs silent about the deferred worktree", () => {
+		const result = sync(sibling, ["--hook"]);
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(result.stderr, "");
+		assert.equal(result.stdout, "");
+	});
+
+	it("tells the owner inside the deferred worktree, without a failure", () => {
+		const result = sync(sibling);
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(result.stderr, "");
+		assert.match(
+			result.stdout,
+			/^Deferred: sibling has uncommitted tracked changes and is behind main; commit them, then sync\.$/m,
+		);
+		assert.equal(result.stdout.split("\n").filter((line) => line.startsWith("Deferred:")).length, 1);
+		assert.equal(readFileSync(join(sibling, "sibling/code.txt"), "utf8"), "uncommitted sibling\n");
+	});
+
+	it("tells the owner from a subdirectory of the deferred worktree", () => {
+		const result = sync(join(sibling, "sibling"));
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(result.stderr, "");
+		assert.match(result.stdout, /^Deferred: sibling /m);
+		assert.equal(result.stdout.split("\n").filter((line) => line.startsWith("Deferred:")).length, 1);
+	});
+
+	it("reports the deferred worktree as behind and dirty without changing its branch", () => {
+		const before = git(repo, ["rev-parse", "feature/sibling"]);
+		const result = spawnSync(process.execPath, [script, "status"], {
+			cwd: repo,
+			env,
+			encoding: "utf8",
+			timeout: 30_000,
+		});
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(result.stderr, "");
+		assert.equal(
+			result.stdout.split("\n").find((line) => line.startsWith("feature\tsibling\t")),
+			`feature\tsibling\tbehind\tdirty\tbranch\t${sibling}`,
+		);
+		assert.equal(git(repo, ["rev-parse", "feature/sibling"]), before);
+		assert.equal(readFileSync(join(sibling, "sibling/code.txt"), "utf8"), "uncommitted sibling\n");
+	});
+
+	it("keeps the owner's partial commit hook silent while tracked changes remain", () => {
+		writeFileSync(join(repo, ".git/hooks/post-commit"), hookContent(), { mode: 0o755 });
+		writeFileSync(join(sibling, "partial.txt"), "partial commit\n");
+		git(sibling, ["add", "partial.txt"]);
+		const result = spawnSync("git", ["commit", "-q", "-m", "Commit one file"], {
+			cwd: sibling,
+			env,
+			encoding: "utf8",
+			timeout: 30_000,
+		});
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(result.stderr, "");
+		assert.equal(result.stdout, "");
+		assert.equal(git(repo, ["merge-base", "main", "feature/sibling"]), git(repo, ["rev-parse", "main~1"]));
+		assert.equal(readFileSync(join(sibling, "sibling/code.txt"), "utf8"), "uncommitted sibling\n");
+	});
+
+	it("reports a missing active entrypoint even when its tracked changes defer the branch", () => {
+		const active = join(worktrees, "active");
+		const entrypoint = join(active, "extensions/active/index.ts");
+		git(repo, ["worktree", "add", "-q", "-b", "extension/active", active, "main~1"]);
+		mkdirSync(dirname(entrypoint), { recursive: true });
+		writeFileSync(entrypoint, "export default function active() {}\n");
+		git(active, ["add", "extensions/active/index.ts"]);
+		git(active, ["-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "Add active extension"]);
+		const beforeHead = git(repo, ["rev-parse", "extension/active"]);
+		rmSync(entrypoint);
+		writeFileSync(settings, JSON.stringify({ packages: [{ source: repo, extensions: [] }, entrypoint] }));
+		const beforeSettings = readFileSync(settings, "utf8");
+		const result = sync(root);
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /Active extension has no worktree entrypoint: active/);
+		assert.doesNotMatch(result.stdout, /Deferred/);
+		assert.equal(git(repo, ["rev-parse", "extension/active"]), beforeHead);
+		assert.equal(existsSync(entrypoint), false);
+		assert.equal(readFileSync(settings, "utf8"), beforeSettings);
+	});
 });
 
 describe("promotion against a real repository", () => {
@@ -586,7 +758,8 @@ describe("promotion against a real repository", () => {
 	});
 
 	it("lands shipped code, holds development records, and pushes", () => {
-		const { report } = promote(["demo"]);
+		const { report, status } = promote(["demo"]);
+		assert.equal(status, 1);
 		assert.equal(report.ok, true);
 		assert.equal(report.promoted.length, 2);
 		assert.equal(report.held.length, 1);

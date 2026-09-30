@@ -70,7 +70,7 @@ function fixture(t: TestContext) {
 	return { root, repo, tree, settings, env, git, call, lock: join(repo, ".git", "worktrees.lock") };
 }
 
-test("concurrent hooks defer before a second rebase or settings write", async (t) => {
+test("concurrent hooks skip before a second rebase or settings write", async (t) => {
 	const f = fixture(t);
 	const bin = join(f.root, "bin");
 	mkdirSync(bin);
@@ -111,7 +111,7 @@ process.exitCode = result.status ?? 1;
 		await entered;
 		const hook = await f.call(["sync", "--hook"], f.tree, overrides);
 		assert.equal(hook.status, 0, hook.stderr);
-		assert.match(hook.stderr, /deferred.*another worktree command/i);
+		assert.match(hook.stderr, /skipped.*another worktree command/i);
 		assert.equal(attempts, 1);
 		assert.equal(f.git(["rev-parse", "HEAD"], f.tree), beforeHead);
 		assert.equal(f.git(["rev-parse", "main"]), beforeMain);

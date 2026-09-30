@@ -33,25 +33,32 @@ time.
 
 ## Synchronization
 
-Run the reconciliation command before slice work and after `main` changes:
+Run the reconciliation command from inside your worktree before slice work and
+after `main` changes:
 
 ```bash
 npm run worktrees:sync
 ```
 
 The command creates a missing worktree for each branch in the four namespaces.
-It rebases a branch when `main` has advanced. It refuses to rebase a branch
-holding uncommitted tracked changes because automatic conflict resolution could
-damage active work. Untracked files never block a rebase; Git already refuses a
-rebase that would overwrite one. Synchronization updates source and Pi routing;
-it does not install dependencies. Refresh dependencies separately in each
-affected worktree after package changes.
+It rebases a branch when `main` has advanced. A worktree that is behind `main`
+and holds uncommitted tracked changes is deferred: the command leaves its branch
+at its current commit and preserves those changes instead of attempting a
+rebase. Deferred work belongs to the session that owns the worktree. Other
+sessions leave those edits untouched and do not announce the deferral or treat
+it as extra work. They still report failures that affect their assigned outcome.
+Sync and hook runs print no deferral notice for other worktrees.
+A non-hook sync run inside a deferred worktree prints one `Deferred:` line so the
+owner commits before slice work. Untracked files alone do not trigger deferral;
+Git refuses a rebase that would overwrite one. Synchronization updates source
+and Pi routing; it does not install dependencies. Refresh dependencies
+separately in each affected worktree after package changes.
 
 All worktree commands acquire one exclusive `worktrees.lock` file in the shared
 Git directory before inspecting or changing worktrees. This prevents concurrent
 hooks and explicit commands from racing a rebase or Pi settings update. An
 explicit command refuses contention with a nonzero exit; `promote --json`
-reports `stage: "coordination"`. A hook reports deferred synchronization and
+reports `stage: "coordination"`. A hook reports skipped synchronization and
 exits successfully without changing worktrees or settings. There is no retry
 queue: run `npm run worktrees:sync` after the active command exits, or let the
 next eligible hook reconcile the worktrees.
@@ -79,8 +86,9 @@ other existing hooks.
 The hooks run reconciliation after checkout, commit, merge, and rebase
 operations on `main` and the four slice namespaces. Each hook resolves the main
 checkout from Git at run time, so moving the repository does not strand it. Run
-the command again after the reconciliation script itself moves. A dirty divergent worktree
-waits until its next clean branch event. A manual reset still requires the
+the command again after the reconciliation script itself moves. A deferred
+worktree is rebased by the next hook or explicit sync run that finds no
+uncommitted tracked changes in that worktree. A manual reset still requires the
 explicit reconciliation command.
 
 Inspect the invariant with:
@@ -90,9 +98,11 @@ npm run worktrees:status
 ```
 
 Each row reports the kind, slice name, base state, worktree state, load state,
-and path. Load state is `active` or `provisional` for extensions; skills,
-prompts, and features report `branch` because Pi loads them from `main` after
-promotion.
+and path. `dirty` counts both tracked changes and untracked files; a worktree
+with common history that is `behind` and holds uncommitted tracked changes is
+deferred. Untracked files alone do not trigger deferral. Load state is `active`
+or `provisional` for extensions; skills, prompts, and features report `branch`
+because Pi loads them from `main` after promotion.
 
 ## Promotion
 
@@ -161,10 +171,12 @@ The JSON report always carries `ok`, `name`, and `kind`, and on failure carries
 `stage`, `reason`, and `recover`. `recover` is `null` when the command already
 restored the repository itself.
 
-After the push, the command synchronizes the sibling worktrees. A sibling that
-cannot rebase does not undo the promotion: the report keeps `ok` true, sets
-`syncOk` to false, lists the failures in `branchFailures`, and the command exits
-nonzero. Resolve the sibling, then run `npm run worktrees:sync`.
+After the push, the command synchronizes the sibling worktrees. A deferred
+sibling appears only in the report's `deferred` list; deferral does not affect
+`syncOk` or the exit code. A sibling rebase conflict or broken state does not
+undo the promotion: the report keeps `ok` true, sets `syncOk` to false, lists the
+failure in `branchFailures`, and the command exits nonzero. Resolve that
+sibling, then run `npm run worktrees:sync`.
 
 ## Entrypoint load checks
 
