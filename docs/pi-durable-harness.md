@@ -55,6 +55,38 @@ records bounded `nestedCalls` metadata on the calling tool's result. Policy's
 from codemode scripts. This does not move the `before_agent_start` snapshot:
 pre-selection guidance and execution interception remain separate boundaries.
 
+## Native codemode composition
+
+Verified 2026-09-30 against installed coding-agent 0.99.1
+`docs/{sdk,extensions,settings}.md`, `examples/sdk/14-codemode-mcp.ts`, and
+`dist/extensions/codemode/{index,tool,execute}.js`. The CLI supplies the built-in
+factory; SDK hosts supply the exported `createCodemodeExtension()` themselves.
+Activating it through `defaultTools: ["+codemode"]` preserves the inherited tool
+selection. Default `on` mode preserves direct declarations alongside script
+access. No replacement host or shared adapter is needed.
+
+A tool with `outputSchema` resolves to `structuredContent` inside the native
+script, including data-bearing error results. Other successful calls resolve
+to text; failed calls without structured data reject. Scripts must distinguish
+promise rejection from structured tool errors. Agent observations, stash
+listing/search, memory search, and registry provide their bounded public data
+through this contract. The [composition guide](codemode-reconnaissance.md)
+keeps each source's errors, coverage, and continuation fields.
+
+Installed `dist/core/tools/read.js` returns image content without an output
+schema. Codemode's `toScriptValue()` selects only text in that case. A controlled
+native session confirms that direct image reads retain an image block while
+nested reads return only text. Keep `on` mode and direct image reads rather than
+hide them behind `only` mode. Installed `dist/extensions/tool-search/tool.js`
+limits native `tool_search` discovery to inactive `codemode` and `deferred`
+tools; it does not discover these direct harness tools.
+
+Controlled native sessions also exercise nested policy denial and delivery of a
+Pillars draft assessment to the next provider request. These checks establish
+pipeline behavior, not model compliance, exhaustive source coverage, or parity
+with old live owners retained across a reload. `agent_compact` uses `model-only`
+exposure because its continuation contract requires a model-issued tool call.
+
 ## Checked source boundary
 
 Verified 2026-09-30. The active installation, npm `latest`, checkout

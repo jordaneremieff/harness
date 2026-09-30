@@ -1,0 +1,188 @@
+# Read-only reconnaissance with native codemode
+
+Use Pi's native `codemode` to read independent sources together and return a
+small result. The agent, stash, memory, and registry extensions expose bounded
+objects through `outputSchema` and `structuredContent`. Scripts use those
+objects directly, without parsing terminal prose or JSON strings.
+
+This composition adds no shared runtime, store, or cross-extension import.
+Each extension still owns its data, bounds, errors, and continuation rules.
+
+## Enable the native tool
+
+The CLI supplies the built-in extension. Add `+codemode` to the existing
+`defaultTools` selection without removing its other entries. For otherwise
+default settings:
+
+```json
+{
+  "defaultTools": ["+codemode"]
+}
+```
+
+Keep native codemode's default `on` mode. It preserves direct tool declarations
+alongside script access. In `only` mode, Pi hides direct tool declarations.
+Native `read` has no output schema, so a script receives its text but not its
+image blocks. Use direct `read` for images. Activating codemode does not require
+an MCP server or `tool_search`.
+
+Leave `tool_search` inactive for this workflow. Its discovery covers inactive
+`codemode` and `deferred` tools, not these direct harness tools. Inside a script,
+`describeTool(name)` and `searchTools(query)` inspect callable tools. The script
+catalog and its discovery helpers are distinct from the `tool_search` tool.
+
+SDK hosts must supply the native factory themselves. With the normal resource
+loader, the essential setup is:
+
+```typescript
+import {
+  createAgentSession,
+  createCodemodeExtension,
+  DefaultResourceLoader,
+  getAgentDir,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+
+const cwd = process.cwd();
+const agentDir = getAgentDir();
+const settingsManager = SettingsManager.create(cwd, agentDir);
+settingsManager.applyOverrides({ defaultTools: ["+codemode"] });
+const resourceLoader = new DefaultResourceLoader({
+  cwd,
+  agentDir,
+  settingsManager,
+  extensionFactories: [createCodemodeExtension({ mode: "on" })],
+});
+await resourceLoader.reload();
+const { session } = await createAgentSession({
+  cwd,
+  agentDir,
+  settingsManager,
+  resourceLoader,
+  sessionManager: SessionManager.inMemory(cwd),
+});
+try {
+  await session.bindExtensions({});
+  await session.prompt("Use codemode for bounded read-only reconnaissance.");
+} finally {
+  try {
+    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+  } finally {
+    session.dispose();
+  }
+}
+```
+
+The configured resources must include the contributing extensions. An SDK
+session does not inherit another session's registrations. Extension-owned
+shutdown remains the embedding host's responsibility; `dispose()` disconnects
+the session but does not emit `session_shutdown`.
+
+## Compose independent observations
+
+Send the following JavaScript as the native `codemode` tool's `code` input.
+Replace the example search terms with the task's subject. This example returns
+one bounded page per source, not an exhaustive inventory.
+
+```javascript
+// @options: {"timeout_ms": 30000, "max_output_tokens": 6000}
+const requests = [
+  ["agent_list", { limit: 3 }],
+  ["agent_status", {}],
+  ["agent_runs", {}],
+  ["stash_list", { query: "recon", limit: 3 }],
+  ["memory_search", { query: ["recon", "reconnaissance"], limit: 3 }],
+  ["registry", { kind: "tool", search: "read", limit: 3 }],
+];
+const settled = await Promise.allSettled(
+  requests.map(([name, args]) => tools[name](args)),
+);
+
+return settled.map((result, index) => {
+  const tool = requests[index][0];
+  if (result.status === "rejected") {
+    return { tool, status: "rejected", error: String(result.reason) };
+  }
+  const value = result.value;
+  if (typeof value !== "object" || value === null) {
+    return { tool, status: "unexpected-shape" };
+  }
+  const failed = value.kind === "error" || value.ok === false ||
+    typeof value.unavailable === "string" || [
+    "unavailable", "cancelled", "stale_cursor", "io_error", "invalid_arguments",
+  ].includes(value.outcome);
+  if (failed) return { tool, status: "tool-error", evidence: value };
+
+  const { rows, sessions, runs, matches, notes, records, ...metadata } = value;
+  const items = rows ?? sessions ?? runs ?? matches ?? notes ?? records ?? [];
+  const selected = items.slice(0, 3);
+  return {
+    tool,
+    status: "fulfilled",
+    records: selected,
+    scriptOmitted: items.length - selected.length,
+    metadata,
+  };
+});
+```
+
+`Promise.allSettled` keeps one rejected source from discarding successful
+siblings. A fulfilled promise does not establish successful tool execution:
+native codemode also resolves data-bearing error results to their structured
+object. Check the tool's error fields as well as the promise state. Registry's
+`missing`, `ambiguous`, and `partial` outcomes still require interpretation;
+the retained `outcome` is not replaced by the promise's `fulfilled` status.
+
+The example keeps non-record metadata intact and reports its own record
+omissions. Its output budget is a separate native limit. If Pi truncates that
+output, follow the reported output path or request less data before drawing a
+conclusion. Do not mistake a short script result for complete source coverage.
+
+## Preserve source boundaries
+
+| Tool | Records | Required interpretation |
+| --- | --- | --- |
+| `agent_list` | `rows` | Keep `coverage`, `nextCursor`, `scope`, and `continuation`. Filename order is not activity order. |
+| `agent_status` | `sessions` | Keep `source`, `coverage`, `observedAt`, `boundary`, and any `unavailable`. A stored capture is not live owner state. |
+| `agent_runs` | `runs` | Keep `found`, `coverage`, `observedAt`, and `boundary`. A recorded run state is not current execution evidence. |
+| `stash_list` with query | `matches` | Keep `skipped`, `coverage`, `nextCursor`, `consistency`, and `representation`. Search does not activate a handover. |
+| `stash_list` without query | `records` | Keep `omittedRecords`, `textTruncated`, and `limitReached`. `coverage.complete: null` means store-wide coverage is unknown. |
+| `memory_search` | `notes` | Keep `scan`, `coverage`, `countScope`, `hasMore`, and `nextCursor`. Ranking and counts cover one source window. |
+| `registry` | `records` | Keep `outcome`, availability/coverage fields, `resultBounded`, `pageBlocked`, and `cursor`. Registration, activation, and callability are separate facts. |
+
+Follow each source's cursor independently:
+
+- For `agent_list`, repeat the query and cwd with `nextCursor` as `cursor`.
+- For stash search, repeat the query and filters with `nextCursor` as `cursor`.
+- For memory search, repeat the query and `includeRetired` with `nextCursor` as
+  `cursor`. Continue after empty pages while a cursor remains.
+- For registry, pass only `cursor`. A blocked page or stale cursor is not the end
+  of a complete inventory.
+
+Read selected memory notes with their digests before relying on their content.
+Read selected stashes before resuming them. Discovery records grant no authority.
+A script does not upgrade historical evidence into an operator decision.
+
+## Native execution boundaries
+
+Nested calls use Pi's argument validation, `tool_call`, and `tool_result`
+pipeline. Policy therefore intercepts the nested calls rather than only the
+outer script. A successful nested Pillars source read with a draft delivers the
+assessment task to the normal continuation. It does not prove that the model
+applied the assessment.
+
+Only script output reaches the model as the codemode result. Pi retains bounded
+nested-call metadata, not complete nested results. Return the evidence needed
+for the conclusion, including errors and coverage. Avoid `store()` for this
+one-pass read-only workflow.
+
+Use `agent_status` for orientation, not periodic progress checks. Use direct
+`agent_compact` for compaction: its `model-only` exposure excludes nested script
+calls. Parallel execution does not grant permission to use mutating tools, and a
+script failure does not undo completed side effects.
+
+See the [checked Pi contracts](pi-durable-harness.md#native-codemode-composition),
+[agent](../extensions/agent/README.md), [stash](../extensions/stash/README.md),
+[memory](../extensions/memory/README.md), and
+[registry](../extensions/registry/README.md) for the owning contracts.
