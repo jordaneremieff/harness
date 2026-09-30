@@ -146,6 +146,57 @@ uses native host notifications. RPC receives these notifications; Pi's
 print/JSON no-UI context discards them. Model-facing tools return their output
 as tool results instead.
 
+### Structured observations in codemode
+
+`agent_list`, `agent_status`, `agent_inspect`, and `agent_runs` declare native
+`outputSchema` contracts and return matching `structuredContent`. Their human
+text and presentation details remain unchanged. Native codemode scripts receive
+objects rather than display text:
+
+- `agent_list` returns `rows`, `nextCursor`, and metadata `coverage`, together
+  with its source, ordering, continuation, and authority qualifications.
+- `agent_inspect` returns its existing bounded inspection: history entries,
+  exact-entry fragments, selected ancestry evidence, or identified saved results.
+  Saved results expose `entryId`, `operationId`, and `status`; fragmented native
+  content remains in `text` with `nextOffset`. Unsaved results retain their
+  live-owner persistence warning. Script access does not widen capture or search.
+- `agent_status` returns `source`, `sessions`, and `coverage`. The source separates
+  inventory, live owner, detached owner, read-only capture, and detached record.
+  Live records include model, operation, tool names, and entry count. Stored
+  records contain capture availability and never invent live fields. A detached
+  control failure retains the run record and an `unavailable` reason.
+- `agent_runs` returns `runs`, `found`, and `coverage`. Records include identities,
+  state, timestamps, process ID, bounded progress, errors, and summaries. They
+  exclude request prompts and private store/configuration/log paths. `found:false`
+  means the requested run produced no valid record, not that every source was read.
+
+Status and run projections fit the `OBSERVATION_BYTES` budget in
+[`observations.ts`](observations.ts). They retain whole records and report
+`coverage.total`, `returned`, `omitted`, and `complete`; omitted identities are
+not truncated into other identities. These counts describe the returned source
+collection, not an audit of every file or owner. These projections add no cursor
+or archive index. Existing human text and source enumeration retain their existing
+behavior. Discovery and inspection retain their own bounds and continuations.
+
+Every structured observation remains evidence, not approval or task acceptance.
+Thrown refusals still reject script calls. Partial captures and incomplete
+coverage remain explicit returned data. Native argument validation, `tool_call`,
+`tool_result`, and cancellation still govern nested execution. A hook that redacts
+text must also replace structured data under Pi's native result contract.
+
+Reload retains live managers. If a retained owner does not supply structured
+status or run data, the tool preserves its human text and returns an
+`unavailable` reason with `coverage.complete:false`. Status uses
+`source:"unavailable"`; runs uses `found:null`. Empty arrays in that response do
+not establish an empty inventory. A fresh owner supplies the structured contract;
+reload does not replace active owners or migrate their state.
+
+`agent_compact` uses native `model-only` exposure. It remains directly declared,
+including in codemode's `only` mode, but nested tool execution cannot call it.
+Self-compaction binds to a direct tool result at the native turn boundary;
+nested calls do not create those transcript results. Other agent controls retain
+their existing exposure.
+
 ### Tool previews
 
 Session tools place requested model and thinking configuration below the call

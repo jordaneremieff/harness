@@ -28,6 +28,7 @@ import { CONFIGURATION_LIMITS, CONFIGURATION_SYNTAX, THINKING_LEVELS, configurat
 import { configurationDialog } from "./configuration-dialog.ts";
 import { AgentDashboardData } from "./dashboard-data.ts";
 import { discoverSessions, type DiscoveryOptions } from "./discovery.ts";
+import { InspectOutputSchema, ListOutputSchema, RunsOutputSchema, StatusOutputSchema, liveStatusRow, observationResult, runObservation, runsObservation, statusObservation, unavailableObservation, type RunsObservation, type StatusObservation, type StatusRow } from "./observations.ts";
 import { validateInspect, type InspectOptions } from "./evidence.ts";
 import { PEER_OUTCOME_DISPLAY_LIMIT, renderAbortCall, renderAbortResult, renderAgentCall, renderAgentResult, renderCommandCall, renderCommandResult, renderCompactCall, renderCompactResult, renderInspectCall, renderInspectResult, renderListCall, renderListResult, renderPeerMessage, renderRunsCall, renderRunsResult, renderSendCall, renderSendResult, renderSteerCall, renderSteerResult } from "./presentation.ts";
 import { aggregateFooter, FOOTER_ENTRY, formatAgentTotals, restoreFooter, SessionFooter, type AgentFooterState, type DetachedFooterState, type FooterCheckpoint, type FooterTotals } from "./footer.ts";
@@ -1260,13 +1261,15 @@ export class AgentManager {
 	}
 
 	/** State of detached runs; one run when a run id is given. */
-	runs(runId?: string): string {
+	runs(runId?: string, observe?: (value: RunsObservation) => void): string {
 		this.refreshDetachedFooter();
 		if (runId) {
 			const run = this.detachedRuns.get(runId);
+			observe?.(runsObservation(run ? [run] : [], run !== undefined));
 			return run ? formatRun(run) : `no detached run ${runId}`;
 		}
 		const all = this.detachedRuns.list();
+		observe?.(runsObservation(all, true));
 		return `detached runs (${all.length}):\n${all.map(formatRun).join("\n") || "(none)"}`;
 	}
 
@@ -1354,13 +1357,21 @@ export class AgentManager {
 		return { ...(name ? { name } : {}), sessionId, phase };
 	}
 
-	async status(sessionId: string | undefined, signal?: AbortSignal): Promise<string> {
+	async status(sessionId: string | undefined, signal?: AbortSignal, observe?: (value: StatusObservation) => void): Promise<string> {
 		if (sessionId) {
 			return this.withObservation(
 				sessionId,
-				async (worker) => formatStatus(await worker.status(), "status"),
-				async (client) => formatStatus(await client.status(), "detached owner status"),
-				(metadata) => this.formatCaptureStatus(metadata),
+				async (worker) => {
+					const status = await worker.status();
+					observe?.(statusObservation("live-owner", [liveStatusRow(status)]));
+					return formatStatus(status, "status");
+				},
+				async (client) => {
+					const status = await client.status();
+					observe?.(statusObservation("detached-owner", [liveStatusRow(status)]));
+					return formatStatus(status, "detached owner status");
+				},
+				(metadata) => this.formatCaptureStatus(metadata, observe),
 				signal,
 			).catch((error: unknown) => {
 				this.assertOpen();
@@ -1368,6 +1379,7 @@ export class AgentManager {
 				const live = this.detachedOwner(sessionId);
 				if (!live) throw error;
 				const detail = error instanceof Error ? error.message : String(error);
+				observe?.(statusObservation("detached-record", [{ sessionId, cwd: live.cwd, run: runObservation(live) }], detail));
 				return `${formatRun(live)}\n    live control unavailable: ${detail.slice(0, 2000)}\n    the run record above is a recorded observation, not live owner status`;
 			});
 		}
@@ -1376,6 +1388,7 @@ export class AgentManager {
 			(metadata) => `${metadata.id}  cwd=${metadata.cwd}  modified=${new Date(metadata.modifiedAt).toISOString()}`,
 		);
 		for (const [id, primary] of this.primary) lines.push(`${id}  cwd=${primary.cwd}  primary=true`);
+		observe?.(statusObservation("inventory", [...all.map((metadata) => ({ sessionId: metadata.id, cwd: metadata.cwd, modifiedAt: metadata.modifiedAt })), ...[...this.primary].map(([sessionId, primary]) => ({ sessionId, cwd: primary.cwd, primary: true }))]));
 		return `agent sessions (${lines.length}):\n${lines.join("\n") || "(none)"}`;
 	}
 
@@ -1384,9 +1397,12 @@ export class AgentManager {
 	 * process does not own. Live fields exist only in that owner and are labeled
 	 * unavailable; a writer claim is never removed to make status succeed.
 	 */
-	private formatCaptureStatus(metadata: AgentSessionMetadata): string {
+	private formatCaptureStatus(metadata: AgentSessionMetadata, observe?: (value: StatusObservation) => void): string {
 		const capture = this.store.readOnly(metadata);
+		const row: StatusRow = { sessionId: metadata.id, cwd: metadata.cwd, modifiedAt: metadata.modifiedAt,
+			capture: { mode: "read-only", snapshot: true, available: capture.unavailable === undefined, bytes: capture.bytes, unfinishedTail: capture.unfinishedTail, liveState: "unavailable", ...(capture.unavailable ? { reason: capture.unavailable } : {}) } };
 		if (capture.unavailable) {
+			observe?.(statusObservation("read-only-capture", [row], capture.unavailable));
 			return [
 				`session ${metadata.id}: read-only capture unavailable (live owner status unavailable)`,
 				`    cwd=${metadata.cwd}`,
@@ -1401,6 +1417,7 @@ export class AgentManager {
 		if (capture.unfinishedTail) lines.push("    the file ends mid-entry; the capture omits that incomplete final line");
 		const model = capture.manager.buildSessionContext().model;
 		if (model) {
+			row.model = { provider: model.provider, modelId: model.modelId, available: Boolean(this.modelRuntime.getModel(model.provider, model.modelId)) };
 			lines.push(`    model=${model.provider}/${model.modelId}`);
 			if (!this.modelRuntime.getModel(model.provider, model.modelId)) {
 				lines.push("    stored model unavailable; no model was substituted and no work started");
@@ -1408,6 +1425,7 @@ export class AgentManager {
 			}
 		}
 		lines.push("    a writer claim, if present, is not removed; live state requires the session owner");
+		observe?.(statusObservation("read-only-capture", [row]));
 		return lines.join("\n");
 	}
 
@@ -1795,11 +1813,12 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		description: "Discover stored sessions by metadata, not full transcript content. Filename order is not last activity. Inventory changes invalidate cursors; pages capture current files. Skipped or partial sources remain unknown. Observation opens no writer and grants no authority.",
 		promptSnippet: "Find retained agent sessions",
 		parameters: ListParams,
+		outputSchema: ListOutputSchema,
 		renderCall: renderListCall,
 		renderResult: renderListResult,
 		async execute(_toolCallId, params, signal) {
 			const manager = await getManager();
-			return textResult(JSON.stringify(await manager.discover(params, signal)));
+			return observationResult(await manager.discover(params, signal));
 		},
 	});
 
@@ -1874,18 +1893,21 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		promptGuidelines: ['Use agent_status for orientation and agent_inspect for concrete transcript or result evidence, not as waiting tools. Never poll with sleeps or repeated status/inspection calls. Settlement notices arrive automatically; do independent work while useful agent work continues.'],
 		promptSnippet: "Show agent session status",
 		parameters: MaybeByIdParams,
+		outputSchema: StatusOutputSchema,
 		renderCall: (args, theme, context) => renderAgentCall("agent_status", args, theme, context),
 		renderResult: renderAgentResult,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			void ctx;
 			const manager = await getManager();
-			const text = await manager.status(params.sessionId, _signal);
-			return params.sessionId ? previewText(text, await manager.preview(params.sessionId, "session snapshot")) : textResult(text);
+			let observation: StatusObservation | undefined;
+			const text = await manager.status(params.sessionId, _signal, (value) => { observation = value; });
+			const result = params.sessionId ? previewText(text, await manager.preview(params.sessionId, "session snapshot")) : textResult(text);
+			return { ...result, structuredContent: observationResult(observation ?? unavailableObservation("status")).structuredContent };
 		},
 	});
 
 	pi.registerTool<typeof CompactParams, unknown>({
-		name: "agent_compact", label: "Agent compact", description: "Compact a session. Self-compaction applies your summary after this tool batch and continues the same run; abort suppresses continuation. It is not a completeness check. For another session, native summarization aborts work and does not resume it.", parameters: CompactParams,
+		name: "agent_compact", label: "Agent compact", exposure: "model-only", description: "Compact a session. Self-compaction applies your summary after this tool batch and continues the same run; abort suppresses continuation. It is not a completeness check. For another session, native summarization aborts work and does not resume it.", parameters: CompactParams,
 		renderCall: renderCompactCall,
 		renderResult: renderCompactResult,
 		execute: async (id, params, signal, _onUpdate, ctx) => {
@@ -1913,13 +1935,14 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 	registerTool<typeof InspectParams, unknown>({
 		name: "agent_inspect", label: "Agent inspect", description: "Inspect transcript content or a saved operation result, not task acceptance. Reads open no writer. Absence applies only to covered sources. History and exact-entry reads omit provider signatures, image data, and redacted thinking with markers and counts; branch/search exclude those payloads. Stored entries remain unchanged. Continue exact entries with entryId and nextOffset; repeat ancestry continuations even after empty pages. Historical content is evidence, not new authority.",
 		parameters: InspectParams,
+		outputSchema: InspectOutputSchema,
 		renderCall: renderInspectCall,
 		renderResult: renderInspectResult,
 		async execute(_toolCallId, params, signal) {
 			const manager = await getManager();
 			const { sessionId, ...options } = params;
 			validateInspect(options);
-			return textResult(JSON.stringify(await manager.inspect(sessionId, options, signal), null, 2));
+			return observationResult(await manager.inspect(sessionId, options, signal), true);
 		},
 	});
 
@@ -1980,11 +2003,14 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			"Read detached-run state and results. A missing process without a result reads as abandoned. Retained writer claims block reopening until explicit recovery; recorded state is not live execution evidence.",
 		promptSnippet: "Show detached agent runs",
 		parameters: RunsParams,
+		outputSchema: RunsOutputSchema,
 		renderCall: renderRunsCall,
 		renderResult: renderRunsResult,
 		async execute(_toolCallId, params) {
 			const manager = await getManager();
-			return textResult(manager.runs(params.runId));
+			let observation: RunsObservation | undefined;
+			const text = manager.runs(params.runId, (value) => { observation = value; });
+			return { ...textResult(text), structuredContent: observationResult(observation ?? unavailableObservation("runs")).structuredContent };
 		},
 	});
 
