@@ -6,6 +6,7 @@ import type { Context, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getCurrentSystemMessage, type ImageContent, type ThinkingContent } from "@earendil-works/pi-ai";
 import {
 	createAgentSessionServices, createAgentSessionFromServices, createAgentSessionRuntime,
+	createCodemodeExtension, createMcpExtension, createToolSearchExtension,
 	createEventBus, getAgentDir, hasTrustRequiringProjectResources, ModelRegistry, SessionManager, SettingsManager,
 	type AgentSession, type AgentSessionEvent, type AgentSessionRuntime, type CreateAgentSessionRuntimeFactory,
 	type ContextEditableContent, type LoadExtensionsResult, type ModelRuntime, type ProjectTrustStore, type SessionEntry,
@@ -418,7 +419,16 @@ export class AgentWorkerSession {
 		inheritProviders(modelRuntime, new ModelRegistry(this.options.modelRuntime), (this.lastChoice ?? this.options.model)?.provider);
 		const services = await createAgentSessionServices({
 			cwd, agentDir: this.agentDir, settingsManager: settings, modelRuntime,
-			resourceLoaderOptions: { eventBus: this.eventBus, additionalExtensionPaths: this.options.extensionPaths ?? metadata?.extensionPaths ?? [], additionalSkillPaths: this.options.skillPaths ?? metadata?.skillPaths ?? [] },
+			resourceLoaderOptions: {
+				eventBus: this.eventBus,
+				additionalExtensionPaths: this.options.extensionPaths ?? metadata?.extensionPaths ?? [],
+				additionalSkillPaths: this.options.skillPaths ?? metadata?.skillPaths ?? [],
+				extensionFactories: [
+					{ name: "codemode", factory: createCodemodeExtension(), replaceable: true, builtin: true },
+					{ name: "tool-search", factory: createToolSearchExtension(), replaceable: true, builtin: true },
+					{ name: "mcp", factory: createMcpExtension(), replaceable: true, builtin: true },
+				],
+			},
 			resourceLoaderReloadOptions: { resolveProjectTrust: async ({ extensionsResult }) => this.resolveTrust(cwd, extensionsResult, settings) },
 		});
 		const errors = [...services.diagnostics.filter((item) => item.type === "error").map((item) => item.message), ...services.resourceLoader.getExtensions().errors.map((item) => `${item.path}: ${item.error}`)];

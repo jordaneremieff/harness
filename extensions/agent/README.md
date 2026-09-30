@@ -5,6 +5,16 @@ uses Pi's public session services, `AgentSessionRuntime`, and `SessionManager`.
 Pi owns resources, context, model requests, extension events, queues, and
 compaction. The primary session stays available while the agent works.
 
+Managed sessions load Pi's exported `codemode`, `tool-search`, and `mcp` built-in
+extensions with the same names and replacement rules as the CLI. At the same
+working directory, native project trust, `-builtin:<name>` settings, and
+`defaultTools` govern them as they do for a primary. `codemode` and `tool_search`
+register inactive unless settings or configured MCP servers activate them.
+The MCP extension connects configured servers through the native session-start
+hook; no MCP server tools register without a configured or extension-registered
+server. Pi does not export the CLI's `llama.cpp` factory. Managed sessions inherit
+the parent's registered providers instead of loading that private factory.
+
 This extension provides runtime tools and a native `/agent` board for session
 supervision, readable conversations, messages, and explicit actions.
 It also provides `/restart` for the current interactive Pi CLI process.
