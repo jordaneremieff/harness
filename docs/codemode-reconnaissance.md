@@ -28,8 +28,10 @@ an MCP server or `tool_search`.
 
 Leave `tool_search` inactive for this workflow. Its discovery covers inactive
 `codemode` and `deferred` tools, not these direct harness tools. Inside a script,
-`describeTool(name)` and `searchTools(query)` inspect callable tools. The script
-catalog and its discovery helpers are distinct from the `tool_search` tool.
+`describeTool(name)` and `searchTools(query)` inspect callable tools, and
+`describeNamespace(name)` reads a namespace such as an MCP server. The script
+catalog and its discovery helpers are distinct from the `tool_search` tool. See
+[Find MCP and deferred tools](#find-mcp-and-deferred-tools).
 
 SDK hosts must supply the native factory themselves. With the normal resource
 loader, the essential setup is:
@@ -164,6 +166,56 @@ Read selected memory notes with their digests before relying on their content.
 Read selected stashes before resuming them. Discovery records grant no authority.
 A script does not upgrade historical evidence into an operator decision.
 
+## Find MCP and deferred tools
+
+MCP tools from a server with the default `codemode` exposure are deferred. Pi
+neither declares them to the model nor lists them in the `codemode` description,
+so that description stays the same while such servers connect. A script finds them
+through these sources:
+
+- The `mcp_servers` section of the system prompt names each enabled server that
+  has `codemode` or `deferred` tools, how its tools are reached, and a one-line
+  summary, within a fixed character cap; when servers do not fit, the section
+  counts the omitted ones. The section is absent when no such server is enabled.
+- `searchTools(query, { limit, namespace })` ranks tools with BM25 over names,
+  descriptions, schema text, and the namespace's name, description, and
+  instructions. Pass `namespace` to search one server.
+- `describeNamespace(name)` resolves to `{ name, description?, instructions?,
+  tools }`, with script identifiers as tool names, or to `undefined`. It is how
+  scripts read the server's full instructions. Name a namespace as
+  `mcp__dev-radius`, `mcp__dev_radius`, `dev-radius`, or `dev_radius`.
+
+```javascript
+const found = await searchTools("list pages", { namespace: "dev-docs", limit: 5 });
+const namespace = await describeNamespace("dev-docs");
+return {
+  found,
+  namespace: namespace && {
+    name: namespace.name,
+    tools: namespace.tools,
+    instructions: namespace.instructions?.slice(0, 2000),
+  },
+};
+```
+
+The example cuts the instructions to a bounded excerpt. Check for an `undefined`
+result before reading fields: an unknown namespace does not reject.
+
+A script that calls `searchTools`, `describeNamespace`, `describeTool`, or reads
+`ALL_TOOLS` waits for servers that are still connecting. A script that only names
+`mcp__<server>` waits for that server. Pi activates `codemode` itself when an
+enabled server has `codemode` exposure, unless `autoEnableCodemode` is false in
+`mcp.json`, and activates `tool_search` for `deferred` exposure.
+
+`registry` with `kind: "tool"` lists MCP tools with their exposure (`deferred` for
+default servers), namespace, and configured presence; callability still comes
+only from the invocation's tool context. The registry extension reports the
+namespace `name` and `description`, omits `instructions`, and sets
+`instructionsOmitted: true` when instructions exist, as its
+[README](../extensions/registry/README.md) states. Use `describeNamespace()` for
+the full text. The [checked Pi contract](pi-durable-harness.md#mcp-and-deferred-tool-discovery)
+records the exposure, naming, and waiting rules with their sources.
+
 ## Native execution boundaries
 
 Nested calls use Pi's argument validation, `tool_call`, and `tool_result`
@@ -182,7 +234,8 @@ Use `agent_status` for orientation, not periodic progress checks. Use direct
 calls. Parallel execution does not grant permission to use mutating tools, and a
 script failure does not undo completed side effects.
 
-See the [checked Pi contracts](pi-durable-harness.md#native-codemode-composition),
+See the [checked Pi contracts](pi-durable-harness.md#native-codemode-composition)
+and [MCP discovery](pi-durable-harness.md#mcp-and-deferred-tool-discovery),
 [agent](../extensions/agent/README.md), [stash](../extensions/stash/README.md),
 [memory](../extensions/memory/README.md), and
 [registry](../extensions/registry/README.md) for the owning contracts.
