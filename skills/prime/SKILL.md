@@ -1,5 +1,5 @@
 ---
-name: survey
+name: prime
 description: >
   Get up to speed on a topic before the operator gives the task. Use for
   preparation-only requests such as "survey this area", "orient yourself",
@@ -10,7 +10,7 @@ description: >
 compatibility: Requires Pi with source-discovery tools and ordinary worker sessions that deliver native completion events. Uses the available read-only source tools and current model registry; no fixed provider or model roster.
 ---
 
-# Survey
+# Prime
 
 Prepare for a later task. Establish what is known now, what remains historical
 or uncertain, and which relevant sources were examined. Do not begin the task.

@@ -45,8 +45,8 @@ boundaries, rather than a central feature catalog.
 - [Harness](skills/harness/SKILL.md) guides harness changes and audits. Its local
   extension telemetry procedure inventories current sources, collects a bounded
   window, and reconciles retained evidence before audit judgment.
-- [Survey](skills/survey/SKILL.md) prepares for a later task. Ask "Get up to speed
-  on this topic, then wait", or use `/skill:survey <topic>`. It instructs the
+- [Prime](skills/prime/SKILL.md) prepares for a later task. Ask "Get up to speed
+  on this topic, then wait", or use `/skill:prime <topic>`. It instructs the
   agent to return a short cited summary with source coverage and then wait;
   these are instructions, not guaranteed enforcement.
 - [Memory](extensions/memory/README.md) retrieves prior operator knowledge before
