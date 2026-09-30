@@ -83,8 +83,7 @@ local `main`. Without push authority, do not contact or change the remote.
 
 Require a clean tracked state in the main checkout. Stop if an untracked file
 exists under the target path in the main checkout. Require a clean target
-worktree, including no untracked files. Report unrelated dirty worktrees, but do
-not force or change them.
+worktree, including no untracked files. Leave unrelated dirty worktrees unchanged.
 
 When `mainChangeRequired` is true:
 
@@ -150,8 +149,9 @@ After the local destination succeeds, or after an authorized push succeeds:
 6. Run the focused loader check with each remaining absolute worktree entrypoint.
 
 The preflight worktree and settings invariants prevent `deactivate` from creating
-missing worktrees or normalizing unrelated settings. If a dirty sibling blocks
-the final sync, do not force or change that worktree. Report the exact failure.
+missing worktrees or normalizing unrelated settings. Synchronization defers a
+sibling that is behind `main` and holds uncommitted tracked changes. Leave that
+worktree unchanged. Report an actual synchronization failure, not a deferral.
 Never delete a remote extension branch without separate explicit authority.
 
 ## Failure and completion
@@ -177,4 +177,5 @@ Use [verification by claim](verification.md). Confirm these postconditions:
 - unrelated dirty worktrees and excluded data remain unchanged;
 - `main` equals `origin/main` after an authorized push;
 - the remote extension branch remains unless separately authorized; and
-- final Git status reports every remaining modified or untracked file.
+- final Git status reports every remaining modified or untracked file in the
+  worktrees changed by the removal.
