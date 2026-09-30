@@ -1,218 +1,253 @@
 # Autonomous delivery through ordinary Pi sessions
 
-This package-level workflow connects an invocation such as `/evo` to the
-registered agent execution capability. It owns coordination semantics, not a
-runtime adapter. Participating extensions remain independently loadable. The
-coordinator uses native registered tools; no extension imports a sibling,
-reads a sibling store, or decodes a sibling's formatted output.
+This package-level workflow connects an invocation such as `/evo` to registered
+full Pi sessions. It owns outcome development and coordination, not a runtime
+adapter. The invoking session owns selection, synthesis, acceptance, and the
+integrated operator result. Participating extensions remain independently
+loadable; use their public controls, never sibling imports, private stores, or
+parsers for sibling-formatted output.
 
-## Discover the execution contract
+Read the invocation's direction and grant before orientation. The
+[evo invocation contract](../extensions/evo/README.md#invocation) defines directed
+focus; its [authority contract](../extensions/evo/README.md#authority) defines the
+elevated grant and reserved acts. Apply **Intent authority** in the universal
+`AGENTS.md` throughout. Historical records inform judgment, not fresh authority.
 
-Discover the current registered tools for ordinary Pi agent sessions and read
-their schemas and descriptions before use. The agent extension supplies this
-capability. Discovery must establish creation, observation of real transcript
+## Orient to the operator's work
+
+Reconstruct what the operator accomplishes with agents, the current purposes and
+corrections, and the capabilities actually available for that work. Start from
+the governing conversation and bounded public resource and evidence reads. Use
+retained sessions, operator preferences, current workflows, and public host
+capabilities where they answer a selection question. Distinguish shipped,
+active, provisional, and merely proposed capabilities; a source file or resource
+listing does not establish usable behavior.
+
+Read only enough to form a useful purpose and identify the uncertainty that
+decides the next act. Broaden a read for a named gap, not an exhaustive inventory.
+Preserve each source's scope, freshness, coverage, and unavailable boundaries.
+Batch independent reads through available public composition tools when useful,
+without losing those qualifications. Do not read another extension's private
+records or infer complete history from a bounded search.
+
+Bare `/evo` infers a useful purpose and acts without asking for a topic. Current
+capabilities and plausible uses suffice to start; populated stores, incident
+history, and proof of a defect are not prerequisites. Directed runs keep the
+supplied focus. Stronger leads outside it are recommendations, not substitute
+work. Keep an inferred purpose provisional; it never expands authority or
+replaces an operator's request.
+
+Use history to learn from delivered outcomes and corrections, not to create a
+fixed roadmap or work quota. Maintenance-heavy recent sessions are activity
+samples, not complete operator priorities. Recent harness development volume is
+not evidence of operator value. Distinguish capabilities for ordinary agent-assisted work
+from improvements to harness development itself; the latter can serve an
+explicit maintenance purpose but do not stand in for the former.
+
+## Develop a useful outcome
+
+Imagine what the harness could make possible, easier, clearer, or more effective.
+Addition, enhancement, refinement, repair, and removal are legitimate
+contributions. Combine or extend what works and explore new uses. Passing tests
+and healthy contracts describe the current system, not the limit of useful work.
+A plausible possibility supplies a reason to explore, not proof of value.
+
+Develop a promising possibility into a concrete before/after use path: what the
+operator supplies, what agents do, what usable result improves, and what work the
+operator must still do. Choose an ordinary task that exposes the intended
+difference, then consider variations that reveal its useful reach. This is a way
+to reason about the outcome, not a required form, separate artifact, or invented
+user story. Keep known facts, inferred needs, and conjectured benefits distinct.
+
+Give the possibility enough form to learn from it through a use case, sketch,
+example, draft, or bounded experiment within authority. Investigate the
+uncertainty that changes selection. Let results, surprises, disagreement, and
+other participants' contributions refine, combine, redirect, or end the approach.
+Do not freeze an implementation recipe before this development. Exploration
+produces selection evidence; it does not wait for a proven failure to begin.
+
+Compare the developed outcome with the current approach and plausible
+alternatives. Weigh expected operator value, reach across a coherent class of
+tasks, repeated user effort, implementation and operating cost, risk, and
+remaining uncertainty. Include context cost, setup, maintenance, and manual
+handoffs where they matter. Specialization is not automatically low value;
+generic infrastructure is not automatically ambitious. Combining patches counts
+only when their composition improves the selected use path, not merely when
+all patches are individually valid. Do not prefer a trivial repair because its
+evidence is easier to obtain, or inflate scope to look substantive.
+
+Select the strongest worthwhile authorized contribution and carry its use path
+into acceptance: what observable difference will show that this operator task
+is better served? State scope, decisive evidence, and an end condition. Stop
+exploration when it supports that decision, then deliver. No fixed candidate
+count, novelty quota, or one-context or one-worktree cap applies. Already-delivered
+work is material to build on or a reason not to repeat a candidate, not a reason
+to stop evolution. An idea list, assessment, or plan is not completion while
+worthwhile authorized work remains.
+
+## Apply capability and authority rules
+
+The harness skill owns classification, warrant, and new-surface approval. Apply
+those rules to the actual capability and mechanism, not to imagination itself.
+Existing-surface improvements are not automatically infrastructure, but a new
+persistent or recurring mechanism retains its required warrant even there.
+Fixed repairs, ordinary maintenance, removals, and operator-selected outcomes or
+architectures retain the skill's exemptions. A correctly classified
+agent-proposed skill needs a usefulness rationale, not an incident or omission.
+Do not reclassify a capability to obtain an exemption.
+
+Before writing a new enumerated surface, apply the operator grant and the skill's
+approval rule. The elevated `/evo` grant covers necessary new surfaces within
+declared intent; state the required warrant in the result rather than ask again.
+A promising idea, reversibility, or sufficient warrant does not itself grant
+authority. Develop an unapproved surface's proposal in chat, not an implementation
+disguised as an experiment. Complete independent authorized work while holding
+only the act that requires a missing decision.
+
+## Collaborate from the shared purpose
+
+Discover the current registered full-session controls and read their schemas and
+descriptions before use. Establish creation, observation of real transcript
 content and operation outcomes, correction delivery, and native context/session
-control. Check active availability, not just configured presence. Use the
-current public controls rather than a frozen list of tool names or private
-lifecycle states.
+control. Check active availability, not just configured presence; use no frozen
+tool list or private lifecycle vocabulary.
 
-A full session uses the ordinary Pi host with the selected workspace's resources,
-instructions, tools, extensions, trust decisions, and model configuration. A
-headless host is not a TUI-parity claim. A missing capability, failed bootstrap,
-or rejected trust decision is explicit. Do not silently substitute a reduced
-worker loop, a separate implementation backend, or direct local implementation
-and call it full-session delivery. Complete independent authorized work while
-reporting the precise unavailable layer.
+Use full ordinary Pi sessions for implementation, with the selected workspace's
+resources, instructions, tools, extensions, trust decisions, and model
+configuration. A headless host is not a TUI-parity claim. A missing capability,
+failed bootstrap, or rejected trust decision is explicit. Do not silently
+substitute a reduced worker loop, separate implementation backend, or local-only
+implementation and call it full-session delivery.
 
-## Develop possibilities into outcomes
+Where collaboration helps, invite a full-session collaborator to develop or
+challenge the use path or its decisive uncertainty while the approach remains
+open, not only review a prescribed patch. Share discoveries that change
+selection or another task's question while they still affect the work. The
+coordinator synthesizes contributions against the purpose and revises the split
+when needed. No mandatory council, fork, roster, or candidate count applies.
+Parallelize independent investigation and review where useful. Auxiliary helpers
+remain distinct from full-session implementation.
 
-The invoking session owns the purpose, exploration, selection, composition,
-acceptance, and final operator result. Evo's purpose is to evolve what the
-operator can accomplish with the harness. Addition, enhancement, refinement,
-repair, and removal are legitimate contributions. Existing contracts and passing
-tests describe the current capability; they do not define the limits of useful
-work. A healthy system is a starting point for development, not a completion
-condition.
+Each execution contract carries:
 
-Begin with possibilities for what the harness could make possible, easier,
-clearer, or more effective. Use operator purposes, current capabilities, ordinary
-workflows, session evidence, and public host capabilities as material. Combine
-or extend what works and explore new uses. A promising possibility supplies a
-reason to explore before there is proof of a defect or proof of value. State its
-intended benefit and distinguish conjecture from known facts. Sparse history does
-not close this space, and an invented defect does not justify an idea.
+- the purpose, selected use path, expected benefit, known facts, uncertainties,
+  and alternatives needed to judge the approach;
+- source pointers, relevant instructions, permitted edits and acts, explicit
+  exclusions, and inherited-work attribution;
+- acceptance evidence, required checks, and the terminal end condition; and
+- integration ownership, dependencies on other units, and the result consumer.
 
-Give promising ideas enough form to learn from them: a use case, sketch, example,
-draft, or bounded experiment within current authority. Work through how the
-operator would use the capability and what would change from the current
-approach. Investigate the uncertainty that decides the next act. Let results,
-surprises, and other participants' contributions refine, combine, redirect, or
-end the approach. Bound this development by its purpose and decision value,
-not by an exhaustive audit, a fixed candidate count, or a demand for novelty.
-
-Exploration produces evidence for selection rather than waiting for selection
-proof before it starts. Compare expected operator value, reach, cost, risk, and
-remaining uncertainty. Check factual claims at their defining layer and perform
-obtainable, proportionate checks that change the decision. Do not impose recurring
-operator recordkeeping or prefer a trivial repair merely because its evidence is
-easier. An already-delivered contribution is material to build on or a reason not
-to repeat that candidate, not a reason to stop evolution.
-
-The harness skill owns capability classification, warrant, and approval rules.
-Apply them to the proposed capability and mechanism, not to imagination itself.
-An existing-surface improvement is not automatically infrastructure. A new
-persistent or recurring mechanism retains its required warrant even inside an
-existing surface. Fixed repairs, ordinary maintenance, removals, and
-operator-selected outcomes or architectures retain the skill's exemptions. A
-correctly classified agent-proposed skill needs a usefulness rationale rather
-than an incident, measured omission, structural evidence, or binding requirement.
-Classification must describe the capability, not serve as an exemption tactic.
-Before writing a new enumerated surface, apply the existing operator grant and
-the skill's approval rule. The elevated `/evo` grant covers necessary new
-surfaces within declared intent, with the required warrant stated in the result.
-Sketches and experiments do not extend that grant: develop an unapproved surface's
-proposal in chat, not its implementation. A promising idea, reversibility, or a
-sufficient warrant does not itself grant authority.
-
-Select the strongest worthwhile authorized contribution, define its acceptance,
-and carry it into execution. An idea list, an assessment, and a plan are not
-completion while worthwhile authorized work remains. Stop exploration when it
-supports that decision, then focus implementation and review on the selected
-outcome.
-
-Before no-change, assess value-creation opportunities as well as known defects.
-Passing checks or rejected repairs alone do not complete that assessment. Return
-scoped no-change when bounded creative exploration yields no worthwhile
-contribution and no concrete lead merits further development in that scope.
-Name the possibilities considered, how they were developed or checked, and why
-they do not justify a change. If no plausible possibility emerged, describe the
-explored scope and reasoning without inventing one. Do not claim that the whole
-harness has no useful work.
-
-Distinguish no-change from blocked work. If a worthwhile contribution needs an
-unavailable fact, capability, or authority, name that exact boundary and the
-affected act; do not reclassify it as worthless. A boundary that prevents
-exploration permits a blocked result without fabricated candidates. A
-candidate-specific boundary does not end independent authorized work.
-
-## Own a coherent effort
-
-For the selected outcome, state its scope, acceptance evidence, and end condition.
-Bound implementation and review to that outcome. Context size and the number of
-worktrees do not define task completion. Stop when acceptance and authorized
-delivery are complete, or when an exact unresolved boundary prevents the remaining
-work.
-
-Each execution contract includes:
-
-- the purpose, objective, and expected operator benefit;
-- source pointers, relevant instructions, verified facts, and remaining questions;
-- permitted edits and acts, explicit exclusions, and inherited-work attribution;
-- acceptance evidence, required checks, and a terminal end condition;
-- the owner of integration, dependencies on other units, and the result consumer.
-
-Distinguish operator decisions from provisional plans. Supply the possibilities,
-reasoning, uncertainties, and rejected alternatives needed to judge the result,
-not a frozen agent-authored implementation recipe. Leave room for execution
-owners to develop the approach and return useful discoveries; the coordinator
-integrates them against the shared purpose and constraints. A normal self-contained terminal response is a valid
-full-session result; do not impose an auxiliary worker's submission protocol.
+Separate binding operator decisions from revisable agent-authored recipes.
+Execution owners retain room to develop the approach within scope. A normal
+self-contained terminal response is a valid full-session result; do not impose
+an auxiliary worker's submission protocol. Keep concurrent edit ownership
+disjoint. One coordinator serializes shared worktree synchronization,
+integration, promotion, push, and activation.
 
 Use a fresh execution session for each distinct task by default. Keep corrections,
-review repairs, and native compaction in that session while its task remains open.
-Reuse an existing owner only when its retained context and work ownership serve
-this task; state that reason and check its current operation before admission.
-A fresh session for a correction loses task context without completing the task.
+review repairs, and native compaction in that session while its task is open.
+Reuse an existing owner only when retained context and ownership serve this task;
+state that reason and check its current operation before admission.
 
-Parallelize independent research and review when useful. Auxiliary helpers are
-not implementation replacements. Keep concurrent edit ownership disjoint. One
-coordinator serializes shared worktree synchronization, integration, promotion,
-push, and activation. A worker's local commit does not establish a release.
+## Accept the outcome, not just the changes
 
-## Review after execution settles
+Prompt admission, idle state, provider completion, and task acceptance are
+different facts. After an execution unit settles, inspect its real changes and
+the defining sources for consequential claims. Reconcile checks and release
+state with the task contract. Read public transcript/result content when a
+summary omits evidence; a stash lifecycle or task label does not prove completion.
 
-A prompt receipt establishes admission only. An idle session establishes no
-acceptance. Provider completion is an execution observation, not proof that
-checks passed or that the requested outcome occurred.
+Return to the selected operator task. Check whether the result actually makes
+that task easier or more capable and what burden remains. When that difference
+decides acceptance, exercise a realistic use path at the layer that owns the
+claim. For example, a capability meant to reduce manual handoffs needs evidence
+of the resulting task flow, not only valid generated instructions. A hypothetical
+example develops an idea; a controlled dispatch test establishes delivered input;
+an observed use establishes what happened under its stated conditions. None
+alone proves general model quality or operator value.
 
-After the execution unit settles, inspect its real changes and the defining
-sources for consequential claims. Reconcile its actual checks and release state
-with its contract. Read the public transcript/result surface when the summary
-omits evidence. Do not infer completion from a stash lifecycle or task label.
-Return applicable findings to the same execution owner and verify the resulting
-correction before acceptance. Each finding gets the disposition required by the
-repository: fixed with a regression where feasible, shown false with source
-evidence, or blocked with the exact unavailable layer.
+Required source, focused, load, and repository-wide checks still bind. Passing
+tests, test counts, source existence, generated text, and worker summaries do not
+replace outcome evidence. Use obtainable, proportionate checks that decide the
+claim, not a new evaluation framework, recurring journal, or operator ceremony.
+If a required use check needs unavailable access or authority, name the exact
+boundary and narrow the affected acceptance claim; do not invent evidence.
 
-Avoid recursive audit growth: findings belong to the selected outcome and its
-required safety and completion gates. Reject unrelated expansion explicitly.
+Return applicable findings to the same execution owner and verify the correction.
+Each finding gets the repository-required disposition: fixed with a regression
+where feasible, shown false with source evidence, or blocked with the exact
+unavailable layer. Bound review to the selected outcome and required safety and
+completion gates; reject unrelated expansion rather than grow recursive audits.
 
-## Preserve continuity without a second runtime
+## Preserve continuity and ownership
 
-Use the host's native compaction and session controls. Before capacity limits,
-preserve the objective, authority, source qualifications, acceptance criteria,
+Use native compaction and session controls, not another scheduler, worker store,
+model loop, telemetry stream, or permanent task journal. Before capacity limits,
+preserve purpose, selected use path, authority, source qualifications, acceptance,
 open findings, owned sessions, and the next action through an existing continuity
-surface if the session alone does not suffice. Do not create a second scheduler,
-worker store, model loop, telemetry stream, or permanent task journal.
+surface when session context alone does not suffice.
 
-Use the registered self-compaction path for continuity within an active task.
-The agent tool accepts a bounded agent-authored summary for the current native
-session ID. Pi applies it at the completed tool boundary and continues that
-same run, retaining the requesting batch. Preserve the governing frame in the
-summary; the mechanism neither reconstructs omitted decisions nor certifies
-completion. Do not type a slash command into the operator's editor.
-
-Other owner-wait controls still refuse self-targets. Do not retry a refused
-self-control through another name. Compaction through another session's
-controller uses native summarization, stops active work, and needs explicit
-resumption. Inspect the registered contract and preserve the same task's scope
-and owner across either transition.
+Inspect the registered continuity contract. The self-compaction path accepts a
+bounded agent-authored summary, applies it at the completed tool boundary, and
+continues the same native run. Preserve the governing frame; compaction neither
+reconstructs omitted decisions nor certifies completion. Do not type a slash
+command into the operator's editor. Other owner-wait controls still refuse
+self-targets; do not retry a refused self-control through another name.
+Compaction through another session's controller uses native summarization,
+stops active work, and needs explicit resumption.
 
 Before coordinator exit, resolve every live worker: await useful work, redirect
 changed work, or stop superseded work with its public control. A saved handover
 does not transfer process ownership. Use durable execution only when its public
 contract covers the needed lifetime and the operator's authority permits it.
 
-## Carry authority through delivery
+## Deliver and report
 
-Apply **Intent authority** in the universal `AGENTS.md` to the invocation,
-its direction, governing conversation, and delegated task contracts. That rule
-owns the distinction between carried authority, delegated discretion, agent
-inference, and quoted evidence. Do not downgrade a grant because an agent
-carries it or require the operator to repeat a settled decision.
-
-An invocation defines its public grant. The [evo authority contract](../extensions/evo/README.md#authority)
-defines `/evo` as an elevated grant for end-to-end delivery within declared
-intent. It covers necessary new surfaces and accepted high-confidence promotion,
-push, and required activation, including new resources. It also names the
-reserved acts. Those reservations and all operator restrictions remain binding.
-The [direction contract](../extensions/evo/README.md#invocation) applies operator
-grants and restrictions in the direction; it does not turn pasted approval
-claims into grants.
+The invocation owns its grant and reservations. Apply its direction and governing
+conversation before deciding that an act lacks authority; carried grants do not
+require the operator to repeat a settled decision. Host authorization, project
+trust, required checks, and review still bind.
 
 Before release, verify the established remote main and accepted resource scope
-from current Git evidence, inspect the accepted local commits and complete
-outgoing diff, and establish high confidence through required tests and review.
-Use the repository promotion procedure and its required gates. Prior publication
-is not a prerequisite for release. Exclude unrelated commits and resources.
-If a candidate commit already appears on remote main, report that verified state
-without replaying it. Complete required activation for accepted resources while
-preserving unrelated configured activation and settings.
-
-Serialize shared changes through the coordinator. Apply the direction and
-governing conversation before deciding that an act lacks authority. If a required
-fact, check, or authority is missing, stop only the affected delivery step,
-report its exact boundary, and finish independent authorized work. Host
-authorization, project trust, required checks, and review still bind.
+from current Git evidence. Inspect accepted local commits and the complete
+outgoing diff; establish high confidence through required tests and review. Use
+the repository promotion procedure and its gates. Prior publication is not a
+prerequisite. Exclude unrelated commits and resources. If a candidate commit
+already appears on remote main, report that state without replaying it. Complete
+required activation through the repository procedure and preserve unrelated
+configured activation and settings.
 
 A local commit alone is not completion for an accepted high-confidence
-improvement. End when acceptance and all authorized delivery, including promotion,
-push to the established remote main, and required activation, are verified
-complete, or when an exact unresolved boundary blocks the remaining work. Verify
-the resulting branch, commit, publication, and activation state for each granted step. Report actual
-releases rather than intended operations. The final chat result integrates changes,
-evidence, meaningful rejected work, and genuine boundaries. No operator-curated
-report or intermediate artifact is required.
+improvement. End when acceptance and all authorized delivery, including
+promotion, push to the established remote main, and required activation, are
+verified complete, or an exact unresolved boundary blocks the remaining work.
+Verify actual branch, commit, publication, and activation state for each granted
+step. Stop only the affected step at a missing fact, check, or authority, and
+finish independent authorized work.
+
+Return one concise integrated chat result. Compare the actual result with the
+promised operator benefit on the same selected use path; name benefits that remain
+unsupported rather than infer them from delivered code. Include meaningful
+changes, checked evidence and its limits, local commits, actual releases,
+strongest rejected work, and genuine blockers. No operator-curated report or
+intermediate artifact is required.
+
+### No-change and blocked work
+
+Before no-change, assess value-creation opportunities as well as defects. Return
+scoped no-change only when bounded creative development yields no worthwhile
+contribution and no concrete lead merits further development in that scope.
+Name possibilities considered, how they were developed or checked, and why they
+do not justify change. If no plausible possibility emerged, explain the explored
+scope and reasoning without inventing one. Passing checks, sparse history,
+rejected repairs, and task size alone do not justify no-change. Do not claim the
+whole harness has no useful work.
+
+A worthwhile contribution that needs an unavailable fact, capability, or
+authority is blocked, not worthless. Name the boundary and affected act. A
+boundary that prevents exploration permits a blocked result without fabricated
+candidates; a candidate-specific boundary does not end independent authorized
+work.
 
 ## Host lifetime
 
