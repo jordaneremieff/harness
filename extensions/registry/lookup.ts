@@ -161,7 +161,7 @@ function unavailableTargetResult(request: LookupRequest, query: Query): LookupRe
 		]),
 		blocks: [],
 		footer: [],
-		details: { query, scanned: false },
+		details: { query, scanned: false, reason: "The matched resource has no usable absolute file source." },
 	});
 }
 
@@ -539,7 +539,7 @@ export async function lookup(request: LookupRequest): Promise<LookupResult> {
 		if (!(error instanceof QueryError)) throw error;
 		return finish(error.reason, {
 			header: baseHeader(error.reason, request.snapshot.at, [error.message, ...BOUNDARY_LINES]),
-			blocks: [], footer: [], details: { reason: error.reason },
+			blocks: [], footer: [], details: { reason: error.reason, message: error.message },
 		});
 	}
 }

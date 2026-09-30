@@ -64,8 +64,16 @@ export interface ResourceRecord {
 	configured?: boolean;
 	parameters?: ToolInfo["parameters"];
 	promptGuidelines?: string[];
-	/** Set on tools: the tool is in the active set right now. */
+	/** Active membership does not establish the final model declaration. */
 	active?: boolean;
+	exposure?: ToolInfo["exposure"];
+	namespace?: ToolInfo["namespace"];
+	annotations?: ToolInfo["annotations"];
+	/** Membership in the invocation's ctx.tools, not inferred from exposure or activation. */
+	callable?: boolean;
+	callableEvidence?: "tool_context";
+	/** The final declaration is not exposed by these accessors. */
+	modelDeclared?: null;
 	/** Set on skills when a prior observation or a file read established it. */
 	modelInvocable?: Attested<boolean>;
 	/** Set on skills from a prior observation. */
@@ -89,12 +97,15 @@ export function skillIdentity(name: string, source: SourceInfo): string {
 export interface SurfaceAvailability {
 	tools: boolean;
 	activeTools: boolean;
+	callableTools?: boolean;
 	commands: boolean;
 }
 
 export interface HostSnapshot {
-	tools: Array<{ name: string; description?: string; sourceInfo: SourceInfo; parameters?: ToolInfo["parameters"]; promptGuidelines?: string[] }>; 
+	tools: Array<{ name: string; description?: string; sourceInfo: SourceInfo; parameters?: ToolInfo["parameters"]; promptGuidelines?: string[];
+		exposure?: ToolInfo["exposure"]; namespace?: ToolInfo["namespace"]; annotations?: ToolInfo["annotations"] }>;
 	activeTools: string[];
+	callableTools?: string[];
 	commands: Array<{
 		name: string;
 		description?: string;
@@ -137,23 +148,27 @@ type CommandEntry = HostSnapshot["commands"][number];
 
 function buildToolRecords(snapshot: HostSnapshot, activeSet: Set<string>): ResourceRecord[] {
 	if (!snapshot.availability.tools) return [];
-	const records: ResourceRecord[] = [];
-	for (const tool of snapshot.tools) {
-		const record: ResourceRecord = {
-			kind: "tool",
-			name: tool.name,
-			sourceInfo: tool.sourceInfo,
-			evidence: "registration",
-			at: snapshot.at,
-			configured: true,
-		};
-		if (tool.description !== undefined) record.description = tool.description;
-		if (tool.parameters !== undefined) record.parameters = tool.parameters;
-		if (tool.promptGuidelines !== undefined) record.promptGuidelines = [...tool.promptGuidelines];
-		if (snapshot.availability.activeTools) record.active = activeSet.has(tool.name);
-		records.push(record);
+	const callable = new Set(snapshot.callableTools);
+	return snapshot.tools.map((tool) => buildToolRecord(tool, snapshot, activeSet, callable));
+}
+
+function buildToolRecord(tool: HostSnapshot["tools"][number], snapshot: HostSnapshot, active: Set<string>, callable: Set<string>): ResourceRecord {
+	const record: ResourceRecord = {
+		kind: "tool", name: tool.name, sourceInfo: tool.sourceInfo, evidence: "registration",
+		at: snapshot.at, configured: true, modelDeclared: null,
+	};
+	if (tool.description !== undefined) record.description = tool.description;
+	if (tool.parameters !== undefined) record.parameters = tool.parameters;
+	if (tool.promptGuidelines !== undefined) record.promptGuidelines = [...tool.promptGuidelines];
+	if (snapshot.availability.activeTools) record.active = active.has(tool.name);
+	if (tool.exposure !== undefined) record.exposure = tool.exposure;
+	if (tool.namespace !== undefined) record.namespace = { ...tool.namespace };
+	if (tool.annotations !== undefined) record.annotations = { ...tool.annotations };
+	if (snapshot.availability.callableTools) {
+		record.callable = callable.has(tool.name);
+		record.callableEvidence = "tool_context";
 	}
-	return records;
+	return record;
 }
 
 function buildCommandRecord(

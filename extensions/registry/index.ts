@@ -9,10 +9,11 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { lookup } from "./lookup.ts";
+import { RegistryOutputSchema } from "./output.ts";
 import { readContext } from "./host.ts";
 import { readModels } from "./models.ts";
 import { ObservationStore } from "./observer.ts";
@@ -87,10 +88,21 @@ export const RegistryParams = Type.Object(
  * Each surface is probed independently so one absent accessor is reported as
  * unavailable instead of collapsing the whole snapshot into an empty result.
  */
-export function readSnapshot(pi: ExtensionAPI, observation: ObservationSnapshot | null, at: number): HostSnapshot {
+export function readSnapshot(pi: ExtensionAPI, observation: ObservationSnapshot | null, at: number, ctx?: Pick<ExtensionToolContext, "tools">): HostSnapshot {
 	const availability: SurfaceAvailability = { tools: false, activeTools: false, commands: false };
 	let tools: HostSnapshot["tools"] = [];
 	let activeTools: string[] = [];
+	let callableTools: string[] | undefined;
+	if (ctx) {
+		availability.callableTools = false;
+		try {
+			const callable = ctx.tools;
+			if (Array.isArray(callable)) {
+				callableTools = callable.map((tool) => tool.name);
+				availability.callableTools = true;
+			}
+		} catch { /* A missing callable snapshot is not an empty callable set. */ }
+	}
 	let commands: HostSnapshot["commands"] = [];
 	try {
 		const all = pi.getAllTools();
@@ -100,6 +112,9 @@ export function readSnapshot(pi: ExtensionAPI, observation: ObservationSnapshot 
 				...(tool.description === undefined ? {} : { description: tool.description }),
 				sourceInfo: tool.sourceInfo,
 				parameters: tool.parameters,
+				...(tool.exposure === undefined ? {} : { exposure: tool.exposure }),
+				...(tool.namespace === undefined ? {} : { namespace: { ...tool.namespace } }),
+				...(tool.annotations === undefined ? {} : { annotations: { ...tool.annotations } }),
 				...(tool.promptGuidelines === undefined ? {} : { promptGuidelines: [...tool.promptGuidelines] }),
 			}));
 			availability.tools = true;
@@ -130,7 +145,7 @@ export function readSnapshot(pi: ExtensionAPI, observation: ObservationSnapshot 
 	} catch {
 		availability.commands = false;
 	}
-	return { tools, activeTools, commands, observation, availability, at };
+	return { tools, activeTools, ...(callableTools ? { callableTools } : {}), commands, observation, availability, at };
 }
 
 function sessionFacts(ctx: ExtensionContext) {
@@ -197,6 +212,7 @@ export default function registerRegistry(pi: ExtensionAPI) {
 			"Treat a registry partial, unavailable, or not_yet_observed result as incomplete evidence, not absence. Search is literal: no matching phrase does not prove no relevant capability exists. Try another short term or inspect a bounded kind list.",
 		],
 		parameters: RegistryParams,
+		outputSchema: RegistryOutputSchema,
 		renderCall: renderRegistryCall,
 		renderResult: renderRegistryResult,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -208,9 +224,9 @@ export default function registerRegistry(pi: ExtensionAPI) {
 					snapshot: { tools: [], activeTools: [], commands: [], observation: null,
 						availability: { tools: false, activeTools: false, commands: false }, at },
 				});
-				return { content: [{ type: "text" as const, text: result.text }], details: result.details };
+				return { content: [{ type: "text" as const, text: result.text }], details: result.details, structuredContent: result.structuredContent };
 			}
-			const snapshot = readSnapshot(pi, observations.snapshot(), at);
+			const snapshot = readSnapshot(pi, observations.snapshot(), at, ctx);
 			let modelQuery = params.kind === "model";
 			if (params.cursor !== undefined) {
 				try { modelQuery = decodeCursor(params.cursor).query.kind === "model"; }
@@ -225,7 +241,7 @@ export default function registerRegistry(pi: ExtensionAPI) {
 				epoch,
 				signal: abortSignal,
 			});
-			return { content: [{ type: "text" as const, text: result.text }], details: result.details };
+			return { content: [{ type: "text" as const, text: result.text }], details: result.details, structuredContent: result.structuredContent };
 		},
 	});
 }

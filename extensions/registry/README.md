@@ -90,10 +90,20 @@ its evidence time. Use exact `name: "provider/id"` with `kind: "model"` for
 provider, ID, output limit, extension-provider registration, and scope thinking pin.
 Offline health reports retain full records beside their findings.
 
-Structured `details.records` retain the complete projected records in both
-forms; compact text does not shrink the evidence used by continuation checks.
+The tool declares `outputSchema` and returns `structuredContent` on every outcome.
+Native codemode scripts receive this object rather than the human text. Its
+`records`, `outcome`, `returnedRecords`, `resultBounded`, and `omittedRecordBlocks`
+fields are always present. Query-specific fields retain pagination, source
+coverage, and failure evidence. A `cursor`, when present, resumes with no other
+arguments. `pageBlocked` means the page cannot advance; `omittedDetails` means
+oversized outer metadata was omitted. An empty array alone never establishes
+absence.
+
+`structuredContent` mirrors the already bounded `details` data. Both
+`details.records` and `structuredContent.records` retain the complete projected
+records in both text forms; compact text does not shrink the evidence used by continuation checks.
 Resource schemas and guidelines still require tool detail. The complete-result
-bound still includes structured details, so compact text does not guarantee that
+bound includes content, details, and structuredContent together, so compact text does not guarantee that
 an arbitrarily large record fits. Descriptions and other display previews retain
 their existing bounded, terminal-safe form.
 
@@ -167,9 +177,8 @@ scan, or separate context estimator is added.
 
 ## Agent discovery
 
-Active tools remain directly available to the agent through Pi's normal tool
-definitions. Use a visible tool directly when its purpose and arguments fit the
-task. The registry supplies discovery when a resource name, tool argument,
+Tool activation, model declaration, and nested-call access are separate facts.
+Use a visible tool directly when its purpose and arguments fit the task. The registry supplies discovery when a resource name, tool argument,
 model capability, or instruction source is uncertain; it is not a required
 lookup before every action.
 
@@ -210,7 +219,16 @@ its schema and registered guidance without activating it.
   `not_yet_observed`; overflow returns `partial`, including for zero matches.
 - Tool records come from `getAllTools()` and distinguish configured presence
   from `getActiveTools()` membership. If the active-tool accessor fails, active
-  status is unavailable rather than false.
+  status is unavailable rather than false. `exposure`, `namespace`, and
+  `annotations` retain native metadata when present; annotations are unverified
+  author hints, not permission. `callable` comes only from membership in the
+  invocation's `ctx.tools`, with `callableEvidence: "tool_context"`. Failed or
+  absent context access omits that fact rather than reporting false.
+  `modelDeclared: null` states that final declaration is unavailable here:
+  `prepareLoadout` can hide active declarations. The tool never infers it from
+  activation. Pi's public `ToolInfo` omits output schemas, so registry does not
+  report them. Discovery does not execute or activate any discovered tool,
+  including hidden tools; nested-call checks still apply.
 - Command, skill, and prompt records come from `getCommands()`. Results preserve
   Pi's invocation name and every `sourceInfo` field: `path`, `source`, `scope`,
   `origin`, and optional `baseDir`.
@@ -262,8 +280,10 @@ to mutate them after that validation.
 
 ## Request and output boundaries
 
-- Each complete tool result, including `details`, fits within 50 KiB and 2,000
-  lines. The renderer measures serialized JSON overhead, not just visible text.
+- Each complete tool result, including `details` and `structuredContent`, fits
+  within 50 KiB and 2,000 lines. The renderer measures serialized JSON overhead
+  and both structured copies, not just visible text. This can shorten pages;
+  continuations resume after the last retained record.
 - Size-limited pages omit whole tail records with an explicit notice. Their
   cursors resume after the last returned record, not after omitted records.
   Displayed page counts and `returnedRecords` reflect only the retained records
@@ -301,7 +321,8 @@ to mutate them after that validation.
   alone do not prove dispatch to a particular record: extension commands can
   shadow same-name prompts. The final provider payload is not visible here.
 - Cursors also detect changes to search metadata, tool schemas/guidelines,
-  active-tool state, model availability/auth configuration/selection/scope
+  active-tool state, callable membership, exposure/namespace/annotations,
+  model availability/auth configuration/selection/scope
   (including scope order), extension-provider registration, and retained context
   observations. Read timestamps alone do not invalidate model
   pages. If one required registry accessor fails, results preserve independently
@@ -339,8 +360,11 @@ and continuation invalidation after usage guidance changes. Compact-output tests
 check full-record recovery through exact selectors, per-kind caveats, retained
 host facts and uncertainty, and smaller list text with unchanged structured
 records.
-These tests establish component and adapter behavior, not model-backed utility
-or global activation. Adapter tests also require zero host probes after caller
+Schema tests validate every outcome, source kinds, continuation, partial
+coverage, and bounded pages. The native codemode test uses the public factory
+and real QuickJS executor with fixture host accessors and nested dispatch. It
+establishes object delivery and record selection, not full session dispatch,
+model-backed utility, or global activation. Adapter tests also require zero host probes after caller
 or session cancellation. Current-context tests cover fresh reads, zero and overflow,
 post-compaction unknown state, accessor failures, and no estimate probes on
 resource pages, continuations, or rejected queries. Catalog-health tests cover

@@ -2,13 +2,14 @@
  * Rendering and result bounds.
  *
  * The bound is applied to the complete tool result — the serialized content and
- * details together — not to the model-visible text alone. Over-budget results
+ * details and structuredContent together — not to the model-visible text alone. Over-budget results
  * drop whole record blocks from the tail and say so; the outcome line and the
  * observation boundaries always survive, so a bounded result never reads as an
  * empty one.
  */
 
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import type { HostFact } from "./host.ts";
 import type { Query } from "./query.ts";
 import type { ObservationSnapshot, ResourceRecord } from "./records.ts";
@@ -48,6 +49,7 @@ export interface Assembled {
 export interface BoundedResult {
 	text: string;
 	details: Record<string, unknown>;
+	structuredContent: JsonObject;
 	droppedBlocks: number;
 }
 
@@ -82,14 +84,12 @@ export function oneLine(value: string, max = 400): string {
 	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-function serialize(text: string, details: Record<string, unknown>): string {
-	return JSON.stringify({ content: [{ type: "text", text }], details });
-}
-
 function measure(text: string, details: Record<string, unknown>): { bytes: number; lines: number } {
-	const serialized = serialize(text, details);
-	const detailLines = JSON.stringify(details, null, 2).replace(/\\n/g, "\n").split("\n").length;
-	return { bytes: Buffer.byteLength(serialized, "utf8"), lines: text.split("\n").length + detailLines + 6 };
+	const envelope = { content: [{ type: "text", text }], details, structuredContent: details };
+	return {
+		bytes: Buffer.byteLength(JSON.stringify(envelope), "utf8"),
+		lines: JSON.stringify(envelope, null, 2).replace(/\\n/g, "\n").split("\n").length,
+	};
 }
 
 /** Header, page notice, and footer for one retained block count. */
@@ -134,6 +134,7 @@ function oversizedResult(assembled: Assembled): BoundedResult {
 		omittedDetails: true,
 		omittedRecordBlocks: assembled.blocks.length,
 		returnedRecords: 0,
+		records: [],
 		pageBlocked: true,
 	};
 	const text = [
@@ -141,12 +142,12 @@ function oversizedResult(assembled: Assembled): BoundedResult {
 		"[result bounded: oversized metadata omitted; this page cannot advance; no absence is established]",
 		...BOUNDARY_LINES,
 	].join("\n");
-	return { text, details: minimal, droppedBlocks: assembled.blocks.length };
+	return { text, details: minimal, structuredContent: minimal, droppedBlocks: assembled.blocks.length };
 }
 
 /**
  * Drop whole blocks from the tail until the serialized result fits both bounds.
- * A single oversized head is cut on a byte boundary as the last resort.
+ * Oversized outer metadata falls back to an explicit blocked page.
  */
 export function boundResult(assembled: Assembled): BoundedResult {
 	let kept = assembled.blocks.length;
@@ -157,7 +158,7 @@ export function boundResult(assembled: Assembled): BoundedResult {
 		const details = boundDetails(assembled, kept, dropped, cursor);
 		const size = measure(text, details);
 		if (size.bytes <= MAX_RESULT_BYTES && size.lines <= MAX_RESULT_LINES) {
-			return { text, details, droppedBlocks: dropped };
+			return { text, details, structuredContent: JSON.parse(JSON.stringify(details)) as JsonObject, droppedBlocks: dropped };
 		}
 		if (kept === 0) return oversizedResult(assembled);
 		kept -= 1;
@@ -185,7 +186,7 @@ export function resourceBoundaries(records: ResourceRecord[]): string[] {
 		INVENTORY_BOUNDARY,
 		PROMPT_BOUNDARY,
 		...(kinds.size ? ["Registration origins are not immutable executing bytes."] : []),
-		...(kinds.has("tool") ? ["Configured presence is not active status or activation authority."] : []),
+		...(kinds.has("tool") ? ["Configured presence is not active status or activation authority. Active, callable, and model-declared are separate facts. ctx.tools membership is not execution permission; tool-call checks still apply. Model declaration and output schemas are unavailable from getAllTools."] : []),
 		...(kinds.has("command") || kinds.has("prompt") || kinds.has("skill")
 			? ["Slash names do not prove dispatch; extension commands can shadow same-name prompts."] : []),
 		...(kinds.has("skill") ? ["Skill modelInvocable is default skill-list eligibility from the disable flag, not visibility or permission; active tools and later hooks affect visibility."] : []),
@@ -229,6 +230,10 @@ function toolRecordLines(record: ResourceRecord): string[] {
 	return [
 		`  configured: ${record.configured === true}`,
 		`  active: ${record.active === undefined ? "unavailable (the active-tool surface did not answer)" : record.active}`,
+		`  callable: ${record.callable === undefined ? "unavailable (no ctx.tools snapshot)" : `${record.callable} (ctx.tools)`}`,
+		`  exposure: ${record.exposure ?? "unavailable"} | model declaration: unavailable`,
+		...(record.namespace ? [`  namespace: ${escapeJsonControls(JSON.stringify(record.namespace))}`] : []),
+		...(record.annotations ? [`  annotations (unverified hints): ${escapeJsonControls(JSON.stringify(record.annotations))}`] : []),
 	];
 }
 
@@ -259,6 +264,12 @@ function recordDetail(record: ResourceRecord): Record<string, unknown> {
 	if (record.invocation !== undefined) detail.invocation = record.invocation;
 	if (record.configured !== undefined) detail.configured = record.configured;
 	if (record.active !== undefined) detail.active = record.active;
+	if (record.exposure !== undefined) detail.exposure = record.exposure;
+	if (record.namespace !== undefined) detail.namespace = { ...record.namespace };
+	if (record.annotations !== undefined) detail.annotations = { ...record.annotations };
+	if (record.callable !== undefined) detail.callable = record.callable;
+	if (record.callableEvidence !== undefined) detail.callableEvidence = record.callableEvidence;
+	if (record.modelDeclared === null) detail.modelDeclared = null;
 	if (record.modelInvocable !== undefined) detail.modelInvocable = { ...record.modelInvocable };
 	if (record.baseDir !== undefined) detail.baseDir = { ...record.baseDir };
 	if (record.observationIdentityMismatch === true) detail.observationIdentityMismatch = true;
