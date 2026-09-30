@@ -218,10 +218,26 @@ its schema and registered guidance without activating it.
   time. It reads no contents. Missing observation returns `unavailable` with
   `not_yet_observed`; overflow returns `partial`, including for zero matches.
 - Tool records come from `getAllTools()` and distinguish configured presence
-  from `getActiveTools()` membership. If the active-tool accessor fails, active
+  from `getActiveTools()` membership. The registration snapshot is read at call
+  time, and registry does not wait for MCP servers that are still connecting.
+  A page taken before a server connects has none of its tools, so missing
+  `mcp__<server>__*` records do not show that the server has no tools or is not
+  configured. After a successful connection, a fresh registry query includes
+  the registered tools. Codemode `describeNamespace(name)` waits for the
+  server's startup work, but returns no namespace when no matching callable
+  tools exist. If the active-tool accessor fails, active
   status is unavailable rather than false. `exposure`, `namespace`, and
   `annotations` retain native metadata when present; annotations are unverified
-  author hints, not permission. `callable` comes only from membership in the
+  author hints, not permission. A `namespace` carries `name` and `description`
+  only. When Pi supplies namespace `instructions`, such as an MCP server's
+  guidance, the record sets `instructionsOmitted: true` instead of the text, and
+  the result text adds one boundary line. The text is unbounded and the same on
+  every tool of its server, so it never reaches the snapshot, a record, or a
+  result; the flag is absent when Pi supplied no non-empty instructions. Read
+  the guidance with the codemode helper `describeNamespace(name)`, using the
+  record's namespace name. Registry does not return the omitted text, and the
+  `describeNamespace` helper requires an active codemode tool.
+  `callable` comes only from membership in the
   invocation's `ctx.tools`, with `callableEvidence: "tool_context"`. Failed or
   absent context access omits that fact rather than reporting false.
   `modelDeclared: null` states that final declaration is unavailable here:
@@ -324,7 +340,10 @@ to mutate them after that validation.
   active-tool state, callable membership, exposure/namespace/annotations,
   model availability/auth configuration/selection/scope
   (including scope order), extension-provider registration, and retained context
-  observations. Read timestamps alone do not invalidate model
+  observations. A namespace change means a change to the fields a record shows:
+  `name`, `description`, or whether non-empty `instructions` exist. Editing the
+  instruction text does not move a cursor, because no page shows that text.
+  Read timestamps alone do not invalidate model
   pages. If one required registry accessor fails, results preserve independently
   available matching registration evidence and report an incomplete inventory.
   Its displayed count and `total` describe only known matches, never the complete
@@ -364,7 +383,12 @@ Schema tests validate every outcome, source kinds, continuation, partial
 coverage, and bounded pages. The native codemode test uses the public factory
 and real QuickJS executor with fixture host accessors and nested dispatch. It
 establishes object delivery and record selection, not full session dispatch,
-model-backed utility, or global activation. Adapter tests also require zero host probes after caller
+model-backed utility, or global activation. Namespace tests check that instruction
+text of any length leaves records, results, snapshots, and cursors unchanged except
+for the `instructionsOmitted` flag. A native session test loads Pi's public MCP and
+codemode factories against a dependency-free stdio server and runs `registry`
+through the ordinary tool pipeline, so the records come from Pi's own
+registration. Adapter tests also require zero host probes after caller
 or session cancellation. Current-context tests cover fresh reads, zero and overflow,
 post-compaction unknown state, accessor failures, and no estimate probes on
 resource pages, continuations, or rejected queries. Catalog-health tests cover

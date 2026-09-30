@@ -21,7 +21,8 @@ const resource = Type.Object({
 	active: Type.Optional(Type.Boolean()), callable: Type.Optional(Type.Boolean()),
 	callableEvidence: Type.Optional(Type.Literal("tool_context")), modelDeclared: Type.Optional(Type.Null()),
 	exposure: Type.Optional(StringEnum(["direct", "model-only", "codemode", "deferred", "hidden"])),
-	namespace: Type.Optional(Type.Object({ name: text, description: Type.Optional(text) }, closed)),
+	namespace: Type.Optional(Type.Object({ name: text, description: Type.Optional(text),
+		instructionsOmitted: Type.Optional(Type.Literal(true, { description: "Pi supplied namespace instructions that registry does not carry. Read them with codemode describeNamespace(name)." })) }, closed)),
 	annotations: Type.Optional(Type.Object({ readOnlyHint: Type.Optional(Type.Boolean()), destructiveHint: Type.Optional(Type.Boolean()),
 		idempotentHint: Type.Optional(Type.Boolean()), openWorldHint: Type.Optional(Type.Boolean()) }, closed)),
 	// Registered parameter schemas are arbitrary JSON Schema, not registry-owned fields.

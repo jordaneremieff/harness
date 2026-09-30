@@ -31,7 +31,7 @@ import {
 	decodeCursor,
 	type RawParams,
 } from "./query.ts";
-import type { HostSnapshot, ObservationSnapshot, SurfaceAvailability } from "./records.ts";
+import { projectNamespace, type HostSnapshot, type ObservationSnapshot, type SurfaceAvailability } from "./records.ts";
 
 export const RegistryParams = Type.Object(
 	{
@@ -113,7 +113,7 @@ export function readSnapshot(pi: ExtensionAPI, observation: ObservationSnapshot 
 				sourceInfo: tool.sourceInfo,
 				parameters: tool.parameters,
 				...(tool.exposure === undefined ? {} : { exposure: tool.exposure }),
-				...(tool.namespace === undefined ? {} : { namespace: { ...tool.namespace } }),
+				...(tool.namespace === undefined ? {} : { namespace: projectNamespace(tool.namespace) }),
 				...(tool.annotations === undefined ? {} : { annotations: { ...tool.annotations } }),
 				...(tool.promptGuidelines === undefined ? {} : { promptGuidelines: [...tool.promptGuidelines] }),
 			}));

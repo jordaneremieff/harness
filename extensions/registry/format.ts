@@ -179,6 +179,8 @@ export const INVENTORY_BOUNDARY = "Not a complete extension inventory: extension
 export const PROMPT_BOUNDARY = "Final provider payload and serialized system instructions are not readable here; observed prompt inputs do not establish them.";
 export const MODEL_SCOPE_BOUNDARY = "No preference data; model scope order is session cycle order, not operator preference.";
 
+const NAMESPACE_INSTRUCTIONS_BOUNDARY = "Namespace instructions are not shown here (instructionsOmitted). Read them with the codemode helper describeNamespace(name), where name is the record's namespace name.";
+
 export function resourceBoundaries(records: ResourceRecord[]): string[] {
 	const kinds = new Set(records.map((record) => record.kind));
 	return [
@@ -187,6 +189,7 @@ export function resourceBoundaries(records: ResourceRecord[]): string[] {
 		PROMPT_BOUNDARY,
 		...(kinds.size ? ["Registration origins are not immutable executing bytes."] : []),
 		...(kinds.has("tool") ? ["Configured presence is not active status or activation authority. Active, callable, and model-declared are separate facts. ctx.tools membership is not execution permission; tool-call checks still apply. Model declaration and output schemas are unavailable from getAllTools."] : []),
+		...(records.some((record) => record.namespace?.instructionsOmitted === true) ? [NAMESPACE_INSTRUCTIONS_BOUNDARY] : []),
 		...(kinds.has("command") || kinds.has("prompt") || kinds.has("skill")
 			? ["Slash names do not prove dispatch; extension commands can shadow same-name prompts."] : []),
 		...(kinds.has("skill") ? ["Skill modelInvocable is default skill-list eligibility from the disable flag, not visibility or permission; active tools and later hooks affect visibility."] : []),

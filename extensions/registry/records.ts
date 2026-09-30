@@ -42,6 +42,29 @@ export interface ObservationSnapshot {
 	overflowBytes: boolean;
 }
 
+/**
+ * Registry's bounded view of a Pi tool namespace.
+ *
+ * Pi's namespace `instructions` are unbounded, server-supplied guidance that
+ * Pi returns on request (codemode `describeNamespace`). The projection keeps
+ * only the name, the description, and the fact that instructions exist, so neither
+ * the snapshot, the records, nor any result carries the text.
+ */
+export interface ToolNamespace {
+	name: string;
+	description?: string;
+	/** Present only when Pi supplied a non-empty `instructions` string. */
+	instructionsOmitted?: true;
+}
+
+/** Project a Pi namespace field by field; fields registry does not name are never copied. */
+export function projectNamespace(namespace: NonNullable<ToolInfo["namespace"]>): ToolNamespace {
+	const projected: ToolNamespace = { name: namespace.name };
+	if (namespace.description !== undefined) projected.description = namespace.description;
+	if (typeof namespace.instructions === "string" && namespace.instructions.length > 0) projected.instructionsOmitted = true;
+	return projected;
+}
+
 /** Tri-state for a fact the tool can only know from an observation or a file read. */
 export interface Attested<T> {
 	value: T;
@@ -67,7 +90,7 @@ export interface ResourceRecord {
 	/** Active membership does not establish the final model declaration. */
 	active?: boolean;
 	exposure?: ToolInfo["exposure"];
-	namespace?: ToolInfo["namespace"];
+	namespace?: ToolNamespace;
 	annotations?: ToolInfo["annotations"];
 	/** Membership in the invocation's ctx.tools, not inferred from exposure or activation. */
 	callable?: boolean;
@@ -103,7 +126,7 @@ export interface SurfaceAvailability {
 
 export interface HostSnapshot {
 	tools: Array<{ name: string; description?: string; sourceInfo: SourceInfo; parameters?: ToolInfo["parameters"]; promptGuidelines?: string[];
-		exposure?: ToolInfo["exposure"]; namespace?: ToolInfo["namespace"]; annotations?: ToolInfo["annotations"] }>;
+		exposure?: ToolInfo["exposure"]; namespace?: ToolNamespace; annotations?: ToolInfo["annotations"] }>;
 	activeTools: string[];
 	callableTools?: string[];
 	commands: Array<{
