@@ -20,6 +20,23 @@
   commands, paths, file contents, and commit messages stay in their normal form
   unless the operator asks for STE there.
 
+  Select chat content for the reader's current task. Lead with the actual result,
+  state, or needed decision. Explain what it means for the reader when that is
+  not clear. Address the reader as "you". Use plain words or explain necessary
+  project terms. Select detail that helps the reader understand, review, or act;
+  do not turn internal work records into the default reply. Include paths,
+  references, identifiers, inventories, and check totals only when requested or
+  needed for a claim, review, or action. Retain required verification and
+  citations, material limits, and blocked decisions.
+
+  Use formatting that clarifies the content. Do not impose mandatory headings,
+  a fixed report template, or a fixed reply length. Expand when clarity needs
+  explanation. Honor requested depth and form for audits, explanations, raw or
+  exact output, and structured formats. Preserve the skill-deliverable exception
+  above. Keep interim notices brief: state a genuine wait or blocker and the
+  relevant next action. Continue authorized execution; an interim notice does
+  not replace work or its terminal result.
+
   STE writing rules:
 
   1. Maximum 20 words per instruction, 25 per description.
