@@ -154,6 +154,34 @@ test("result selection returns an exact native entry and preserves full Unicode 
 	assert.throws(() => projectInspection(native, native.getSessionId(), { view: "result", entryId: malformed }), /Malformed/);
 });
 
+test("history result previews continue as the same exact native entry", () => {
+	for (const text of ["0123456789".repeat(600), "Complete result 中文🧪\\n".repeat(3000)]) {
+		const native = SessionManager.inMemory();
+		const id = native.appendCustomEntry("agent.result", { operationId: "operation-a", status: "completed", text });
+		const expected = JSON.stringify(native.getEntry(id));
+		const history = projectInspection(native, native.getSessionId(), {});
+		assert.ok("result" in history && history.result);
+		assert.equal(history.result.entryId, id);
+		assert.ok(history.result.nextOffset !== null);
+		assert.ok(Buffer.byteLength(history.result.text) <= 2400);
+		native.appendCustomEntry("agent.result", { operationId: "operation-b", status: "completed", text: "later result" });
+		for (const view of ["history", "result"] as const) {
+			let full: string = history.result.text;
+			let offset: number | null = history.result.nextOffset;
+			while (offset !== null) {
+				const page = projectInspection(native, native.getSessionId(), { view, entryId: history.result.entryId, offset });
+				assert.ok("text" in page);
+				assert.equal(page.offset, offset);
+				assert.ok(Buffer.byteLength(page.text) <= 12000);
+				assert.ok(page.nextOffset === null || page.nextOffset > offset);
+				full += page.text; offset = page.nextOffset;
+			}
+			assert.equal(full, expected);
+			assert.equal(JSON.parse(full).data.text, text);
+		}
+	}
+});
+
 test("branch summaries expose alternate tips, while missing ancestry remains incomplete", () => {
 	const native = SessionManager.inMemory();
 	const old = user(native, "old alternative");

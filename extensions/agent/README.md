@@ -591,7 +591,11 @@ instead of reporting a complete empty inventory.
 `agent_inspect` has explicit evidence views:
 
 - `history`, the default, retains existing whole-history pages and exact-entry
-  reads. History pages now identify their saved result with `result.entryId`.
+  reads. History pages identify their saved result with `result.entryId`.
+  `result.text` starts the same native-entry inspection representation as an
+  exact-entry or `result` read. Continue with `entryId=result.entryId` and
+  `offset=result.nextOffset`; the reconstructed JSON contains the outcome in
+  `data`, including `data.text` and `data.status`.
 - `branch` follows one known native parent chain, newest first. Omit `fromId`
   for the current leaf, or use a known entry ID. A branch summary exposes its
   abandoned tip as `fromId`; pass that ID to inspect the alternate ancestry.

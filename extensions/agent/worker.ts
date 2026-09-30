@@ -226,7 +226,7 @@ function inspectionPage(all: SessionEntry[], base: InspectionBase, result: Sessi
 		const source = inspectionSource(entry);
 		return { id: entry.id, parentId: entry.parentId, type: entry.type, role: entry.type === "message" ? entry.message.role : undefined, ...fragment(source.text, 0, 1200), ...(source.omissions ? { omissions: source.omissions } : {}), ...(preview ? { preview } : {}) };
 	});
-	return { ...base, result: result?.type === "custom" ? { entryId: result.id as string | undefined, ...fragment(JSON.stringify(result.data), 0, 2400) } : undefined, entries, nextCursor: start || null, order: "newestFirst" as const, detail: "Use entryId and offset for the complete inspection representation, not raw storage. Provider signatures, image data, and redacted thinking are omitted with markers and counts. Offsets are UTF-16 positions in this representation." };
+	return { ...base, result: result?.type === "custom" ? { entryId: result.id as string | undefined, ...fragment(inspectionSource(result).text, 0, 2400) } : undefined, entries, nextCursor: start || null, order: "newestFirst" as const, detail: "Use entryId and offset for the complete inspection representation, not raw storage. Provider signatures, image data, and redacted thinking are omitted with markers and counts. Offsets are UTF-16 positions in this representation." };
 }
 
 function selectedInspection(manager: SessionManager, sessionId: string, options: InspectOptions, owner?: InspectionOwner, capture?: InspectionCapture) {

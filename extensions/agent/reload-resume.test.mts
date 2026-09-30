@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -349,6 +349,38 @@ test("a close error retires the host when native cleanup and claim release still
 	} finally { await f.close(); }
 });
 
+test("registered inspection reconstructs a long saved result from its history preview", { timeout: 30_000 }, async () => {
+	const f = await fixture();
+	try {
+		f.state.response = "Result paragraph 中文🧪\\n".repeat(2000);
+		const id = await f.spawn("RETURN_LONG_RESULT");
+		await f.worker(id).waitForIdle();
+		const native = f.childSession(id).sessionManager;
+		const before = JSON.stringify(native.getEntries()), leaf = native.getLeafId(), claims = f.claims();
+		const file = f.childSession(id).sessionFile; assert.ok(file);
+		const bytes = readFileSync(file);
+		const history = JSON.parse(await f.tool("agent_inspect", { sessionId: id }));
+		assert.ok(history.result.entryId);
+		assert.ok(history.result.nextOffset !== null);
+		let full = history.result.text, offset = history.result.nextOffset;
+		while (offset !== null) {
+			const page = JSON.parse(await f.tool("agent_inspect", { sessionId: id, entryId: history.result.entryId, offset }));
+			assert.equal(page.entryId, history.result.entryId);
+			assert.equal(page.offset, offset);
+			assert.ok(page.nextOffset === null || page.nextOffset > offset);
+			full += page.text; offset = page.nextOffset;
+		}
+		const result = JSON.parse(full);
+		assert.equal(result.data.status, "completed");
+		assert.equal(result.data.text, f.state.response);
+		assert.equal(full, JSON.stringify(native.getEntry(history.result.entryId)));
+		assert.equal(JSON.stringify(native.getEntries()), before);
+		assert.equal(native.getLeafId(), leaf);
+		assert.deepEqual(readFileSync(file), bytes);
+		assert.deepEqual(f.claims(), claims);
+	} finally { await f.close(); }
+});
+
 test("native parent reload retains active execution, native queues, claims, costs, and child resources", { timeout: 30_000 }, async () => {
 	const f = await fixture();
 	try {
@@ -367,7 +399,7 @@ test("native parent reload retains active execution, native queues, claims, cost
 		assert.equal(f.events.filter((event) => event.type === "abort").length, 0);
 		f.release(); await f.wait(() => /agents 0/u.test(f.statuses.at(-1) ?? ""));
 		const result = (await f.inspect(id)).result; assert.ok(result);
-		assert.equal(JSON.parse(result.text).status, "completed");
+		assert.equal(JSON.parse(result.text).data.status, "completed");
 		assert.ok(f.events.some((event) => event.type === "resource" && event.sessionId === id && event.version === 1));
 		assert.ok(f.events.some((event) => event.type === "model" && event.sessionId === id && String(event.context).includes("QUEUE_SURVIVES")));
 		await f.tool("agent_send", { sessionId: id, message: "EXPLICIT_CONTINUE" });
@@ -699,7 +731,7 @@ for (const settlement of ["complete", "abort"] as const) test(`association refus
 			await f.runtime.session.reload();
 			await f.tool("agent_abort", { sessionId: active });
 			const result = (await f.inspect(active)).result; assert.ok(result);
-			assert.equal(JSON.parse(result.text).status, "aborted");
+			assert.equal(JSON.parse(result.text).data.status, "aborted");
 		} else f.release();
 		await f.worker(active).waitForIdle();
 		assert.equal(f.statuses.at(-1), settlement === "abort" ? "agents 0 · $0.25" : "agents 0 · $0.50");
