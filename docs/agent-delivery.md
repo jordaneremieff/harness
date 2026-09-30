@@ -67,14 +67,23 @@ Do not freeze an implementation recipe before this development. Exploration
 produces selection evidence; it does not wait for a proven failure to begin.
 
 Compare the developed outcome with the current approach and plausible
-alternatives. Weigh expected operator value, reach across a coherent class of
-tasks, repeated user effort, implementation and operating cost, risk, and
-remaining uncertainty. Include context cost, setup, maintenance, and manual
-handoffs where they matter. Specialization is not automatically low value;
+alternatives. The current approach is a session on the current harness given
+the plain request the operator makes for such work. Record that request in the
+use path before the candidate takes shape, from the governing conversation or
+retained sessions rather than from the candidate's intended output; acceptance
+runs it as the before arm, the run without the candidate. Weigh expected
+operator value, reach across a coherent class of tasks, repeated user effort,
+implementation and operating cost, risk, and remaining uncertainty. Include
+context cost, setup, maintenance, and manual handoffs where they matter. Specialization is not automatically low value;
 generic infrastructure is not automatically ambitious. Combining patches counts
 only when their composition improves the selected use path, not merely when
 all patches are individually valid. Do not prefer a trivial repair because its
 evidence is easier to obtain, or inflate scope to look substantive.
+
+A skill or prompt candidate also needs its one-component name before
+implementation; the harness skill's design reference
+(`skills/harness/references/skill-design.md`) owns the skill naming rule and
+its scope test. A candidate that fails the test returns to scope development.
 
 Select the strongest worthwhile authorized contribution and carry its use path
 into acceptance: what observable difference will show that this operator task
@@ -165,6 +174,29 @@ of the resulting task flow, not only valid generated instructions. A hypothetica
 example develops an idea; a controlled dispatch test establishes delivered input;
 an observed use establishes what happened under its stated conditions. None
 alone proves general model quality or operator value.
+
+When the claim is that the operator's task is better served, compare against
+the plain request recorded in the use path. A repair, removal, or maintenance
+change is accepted on its required checks. The before arm runs that plain
+request and its follow-ups on the current harness with the same facts and
+authorization. It carries an artifact form only when the operator's own request
+in the governing conversation or retained sessions names that form; a form the
+candidate introduces stays out, with its method and checklist. A before arm
+that asks for an output only the candidate introduces measures what the
+candidate adds beyond that output, not whether the candidate is needed, and
+cannot support the use path. If the before arm reaches the selected outcome,
+the candidate fails acceptance, unless its use path claimed lower cost or
+higher reliability on that task before the comparison and repeated matched
+runs show that difference. When the operator selected the outcome or waived
+the comparison, report the comparison result without treating it as a veto. A
+benefit noticed only after the comparison starts a new use path with its own
+comparison; do not deliver the original candidate on it or rewrite the
+acceptance rationale around it. Count context, output, time, and cost on the
+same task: a candidate that costs more without a difference in the operator's
+result is a burden, not an improvement, and an artifact the request did not
+ask for is cost, not a difference. For a single-run claim, one matched pair
+does not prove general equivalence, but it removes the candidate's
+demonstrated benefit, and showing one stays the candidate's burden.
 
 Required source, focused, load, and repository-wide checks still bind. Passing
 tests, test counts, source existence, generated text, and worker summaries do not

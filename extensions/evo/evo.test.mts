@@ -483,6 +483,67 @@ test("collaboration preserves the use path and accepts observed task improvement
 	]);
 });
 
+test("acceptance compares the candidate against the operator's plain request and rejects equivalent baselines", () => {
+	assertContracts(deliveryWorkflow, [
+		[
+			"plain request defines the current approach",
+			/current approach is a session on the current harness given the plain request the operator makes/,
+		],
+		[
+			"plain request precedes the candidate",
+			/Record that request in the use path before the candidate takes shape, from the governing conversation or retained sessions rather than from the candidate's intended output/,
+		],
+		[
+			"comparison scoped to task claims",
+			/When the claim is that the operator's task is better served, compare against the plain request recorded in the use path/,
+		],
+		["maintenance accepted on checks", /repair, removal, or maintenance change is accepted on its required checks/],
+		["before arm runs the request and follow-ups", /before arm runs that plain request and its follow-ups on the current harness/],
+		[
+			"before arm excludes the candidate",
+			/carries an artifact form only when the operator's own request.*names that form; a form the candidate introduces stays out, with its method and checklist/,
+		],
+		[
+			"restated output measures only the addition",
+			/asks for an output only the candidate introduces measures what the candidate adds beyond that output, not whether the candidate is needed/,
+		],
+		["equivalent baseline fails acceptance", /before arm reaches the selected outcome, the candidate fails acceptance/],
+		[
+			"cost or reliability claim precedes the comparison",
+			/claimed lower cost or higher reliability on that task before the comparison and repeated matched runs show that difference/,
+		],
+		["operator-selected outcome is not vetoed", /report the comparison result without treating it as a veto/],
+		["later benefit starts a new use path", /benefit noticed only after the comparison starts a new use path with its own comparison/],
+		[
+			"rationale rewriting forbidden",
+			/do not deliver the original candidate on it or rewrite the acceptance rationale around it/,
+		],
+		[
+			"cost on the same task counts",
+			/costs more without a difference in the operator's result is a burden, not an improvement/,
+		],
+		["unrequested artifact is cost", /artifact the request did not ask for is cost, not a difference/],
+		["burden stays with the candidate", /For a single-run claim.*showing one stays the candidate's burden/],
+		[
+			"one-component name before implementation",
+			/skill or prompt candidate also needs its one-component name before implementation/,
+		],
+		[
+			"naming rules owned elsewhere",
+			/design reference \(`skills\/harness\/references\/skill-design.md`\) owns the skill naming rule and its scope test/,
+		],
+		["failed name test returns to scope", /candidate that fails the test returns to scope development/],
+	]);
+	const normalized = deliveryWorkflow.replace(/\s+/g, " ");
+	const develop = normalized.indexOf("## Develop a useful outcome");
+	const accept = normalized.indexOf("## Accept the outcome, not just the changes");
+	const plainRequest = normalized.indexOf("Record that request in the use path before the candidate");
+	const nameTest = normalized.indexOf("one-component name before implementation");
+	const comparison = normalized.indexOf("The before arm runs that plain request");
+	assert.ok(develop >= 0 && plainRequest > develop && nameTest > plainRequest && nameTest < accept);
+	assert.ok(accept > develop && comparison > accept);
+});
+
 test("delivery preserves release gates and distinguishes scoped no-change from blocked work", () => {
 	assertContracts(deliveryWorkflow, [
 		[
