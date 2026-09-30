@@ -257,12 +257,12 @@ Verify actual branch, commit, publication, and activation state for each granted
 step. Stop only the affected step at a missing fact, check, or authority, and
 finish independent authorized work.
 
-Return one concise integrated chat result. Compare the actual result with the
-promised operator benefit on the same selected use path; name benefits that remain
-unsupported rather than infer them from delivered code. Include meaningful
-changes, checked evidence and its limits, local commits, actual releases,
-strongest rejected work, and genuine blockers. No operator-curated report or
-intermediate artifact is required.
+Return one integrated chat result under the [chat reporting rule](../AGENTS.md).
+Compare the actual result with the promised operator benefit on the same selected
+use path; name benefits that remain unsupported rather than infer them from
+delivered code. State material limits and blocked decisions that affect
+acceptance, use, or the next action. No operator-curated report or intermediate
+artifact is required.
 
 ### No-change and blocked work
 
