@@ -10,10 +10,22 @@ extensions with the same names and replacement rules as the CLI. At the same
 working directory, native project trust, `-builtin:<name>` settings, and
 `defaultTools` govern them as they do for a primary. `codemode` and `tool_search`
 register inactive unless settings or configured MCP servers activate them.
-The MCP extension connects configured servers through the native session-start
-hook; no MCP server tools register without a configured or extension-registered
-server. Pi does not export the CLI's `llama.cpp` factory. Managed sessions inherit
-the parent's registered providers instead of loading that private factory.
+The MCP extension reads `mcp.json` from Pi's agent directory
+(`PI_CODING_AGENT_DIR`) and starts connecting configured servers in the
+background through the native session-start hook. Neither worker creation nor
+the first prompt waits for a server with the default `codemode` exposure,
+including one that never answers `initialize`. The first model request lists
+such a server in the `mcp_servers` system-prompt section, and the configured
+server has already activated `codemode`. Server tools are not declared to the
+model. A `codemode` script calls them as `tools.mcp__<server>__<tool>`, where a
+`-` in the server or tool name becomes `_` and tools whose names then collide
+all get a hash suffix. `describeNamespace("<server>")` returns the server's
+description, instructions, and tool names. Closing a worker stops the stdio
+process of a connected server. Without a configured server, no `mcp__` tools
+register. `mcp-native.test.mts` covers these claims against a real stdio server
+and a real managed session. Pi does not export the CLI's `llama.cpp` factory.
+Managed sessions inherit the parent's registered providers instead of loading
+that private factory.
 
 This extension provides runtime tools and a native `/agent` board for session
 supervision, readable conversations, messages, and explicit actions.
@@ -73,7 +85,7 @@ stops footer appends and refuses restart for that primary, including after reloa
 This state is separate from association failures. Pi's public extension API cannot
 repair that native history; restarting is not a repair.
 
-The primary readiness check has a public-API boundary in Pi 0.99.1.
+The primary readiness check has a public-API boundary in Pi 0.99.2.
 `ExtensionContext.isIdle()` excludes user Bash activity, and
 `hasPendingMessages()` excludes the TUI's private compaction queue. A failed
 post-compaction submission can leave messages in that private queue while the
@@ -1145,7 +1157,7 @@ history. The settled result remains available only from that live owner;
 without `entryId`. It is lost when that owner closes. Native entries remain
 separately readable by their entry IDs.
 
-This refusal is not native-history repair. Pi 0.99.1 advances its in-memory leaf
+This refusal is not native-history repair. Pi 0.99.2 advances its in-memory leaf
 before persistence and exposes no rollback through a tool context. A failed tool
 can still be followed by native tool-result and assistant writes that refer to
 an entry absent from disk. Those later writes can break the saved context chain.
@@ -1177,7 +1189,7 @@ failure: its loader reports an extension factory error, omits that extension,
 and completes reload. If it omits this extension, the parent loses agent tools
 and shutdown handlers while retained children and writer claims remain live.
 A later successful reload recovers control. True quit from the omitted-extension
-runtime cannot call the lost cleanup handler. Pi 0.99.1 exposes no finalizer for
+runtime cannot call the lost cleanup handler. Pi 0.99.2 exposes no finalizer for
 that discarded extension owner; this cleanup guarantee is blocked at the native
 host. The extension adds no process hook or polling substitute. After process
 exit, retained claims still fail closed and require the ownership check described
