@@ -17,6 +17,9 @@ Current consumers:
 
 | Variable | Extension | Purpose |
 |---|---|---|
+| `PI_AGENT_SESSIONS_DIR` | agent | Store root for native sessions, writer claims, places, and detached run records; default `<agentDir>/agent-sessions`. |
+| `PI_AGENT_DIR` | agent | Agent directory for session discovery, settings, and trust; default Pi's `getAgentDir()`. |
+| `PI_AGENT_IDLE_MINUTES` | agent | Idle managed-host release window in minutes; default `5`, `0` disables release. Invalid values refuse manager creation. |
 | `PI_MEMORY_DIR` | memory | Required absolute corpus directory; unset, empty, or relative returns Memory unavailable, with no default. |
 | `PI_BRAVE_API_KEY` | brave | Brave Web Search subscription token. Precedence: explicit client option, then this variable. |
 | `PI_STASH_DIR` | stash | Stash store directory override; default `<agentDir>/stash`. |
@@ -39,7 +42,6 @@ Current consumers:
 ## Rules
 
 - Name every extension-read variable in the `PI_*` namespace. No exceptions.
-- Exemption — host-injected discovery variables: `HERDR_*` are injected into the process environment by the external herdr multiplexer for the pane it hosts, not by the operator, and are not configuration. Names: `HERDR_ENV`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`, `HERDR_TAB_ID`, `HERDR_WORKSPACE_ID`.
 - Document the variable in the extension README when the extension reads it.
 - Keep defaults derivable from the Pi agent directory
   (`getAgentDir()`/`~/.pi/agent`) so tests and isolated deployments can
