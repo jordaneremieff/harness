@@ -40,6 +40,10 @@ boundaries, rather than a central feature catalog.
   from corrections to earlier reports and keeps relevant unchanged constraints
   visible. It states missing evidence, preserves release limits, and does not
   continue the work.
+- [Choice model](skills/choice-model/SKILL.md) guides quantitative decisions with
+  a reusable calculation, feasibility checks, and the inputs that change the
+  choice. Use `/skill:choice-model` with alternatives, assumptions, and constraints,
+  or ask a what-if question about an existing model or spreadsheet.
 - [Worktrees](docs/conventions/worktrees.md) defines the development and
   publication workflow.
 - [Memory](extensions/memory/README.md) retrieves prior operator knowledge before
