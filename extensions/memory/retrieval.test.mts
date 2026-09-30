@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
+import { Value } from "typebox/value";
+import { memorySearchOutputSchema } from "./search-output.ts";
 import {
 	MemoryRetrievalError,
 	memoryIndex,
@@ -85,7 +87,9 @@ function boundedJson(value: Json): Json {
 	return value;
 }
 async function search(root: string, options: SearchOptions = {}): Promise<Json> {
-	return boundedJson(await searchMemory(root, options));
+	const result = boundedJson(await searchMemory(root, options));
+	Value.Assert(memorySearchOutputSchema, result);
+	return result;
 }
 async function read(root: string, options: ReadOptions): Promise<Json> {
 	return boundedJson(await readMemory(root, options));

@@ -3,20 +3,27 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { Value } from "typebox/value";
 import { type JsonObject, type Tool, validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import memory from "./index.ts";
+import { memorySearchOutputSchema } from "./search-output.ts";
 
 interface Registered {
 	name: string;
 	description: string;
 	parameters: unknown;
+	outputSchema?: unknown;
 	promptGuidelines?: string[];
 	execute(
 		id: string,
 		args: unknown,
 		signal: AbortSignal,
-	): Promise<{ content: Array<{ type: string; text: string }>; details: Record<string, unknown> }>;
+	): Promise<{
+		content: Array<{ type: string; text: string }>;
+		details: Record<string, unknown>;
+		structuredContent?: JsonObject;
+	}>;
 	renderCall: unknown;
 	renderResult: unknown;
 }
@@ -58,6 +65,10 @@ test("factory registers only the memory jobs, with native cards and trigger guid
 	for (const tool of all.values()) {
 		assert.equal(typeof tool.renderCall, "function");
 		assert.equal(typeof tool.renderResult, "function");
+	}
+	assert.equal(all.get("memory_search")?.outputSchema, memorySearchOutputSchema);
+	for (const tool of all.values()) {
+		if (tool.name !== "memory_search") assert.equal(tool.outputSchema, undefined);
 	}
 	const searchParameters = JSON.stringify(all.get("memory_search")?.parameters);
 	assert.match(searchParameters, /quoted, case-insensitive literal fragments/);
@@ -143,6 +154,35 @@ test("registered jobs round-trip source evidence and serialize concurrent update
 		limit: 3,
 	});
 	assert.ok(JSON.stringify(search.details).includes("editor-choice"));
+	const requests: JsonObject[] = [
+		{},
+		{ query: "editor" },
+		{ query: ["editor choice", "durable preference"] },
+		{ query: "absenttoken" },
+	];
+	for (const args of requests) {
+		const page = await call(all.get("memory_search") as Registered, args);
+		Value.Assert(memorySearchOutputSchema, page.structuredContent);
+		assert.equal(page.structuredContent, page.details);
+		assert.deepEqual(page.structuredContent, JSON.parse(page.content[0].text));
+		assert.ok(Buffer.byteLength(JSON.stringify(page.structuredContent)) + 1 <= 48 * 1024);
+		assert.deepEqual(Object.keys(page).sort(), ["content", "details", "structuredContent"]);
+	}
+	const structured = search.structuredContent;
+	assert.ok(structured);
+	Value.Assert(memorySearchOutputSchema, structured);
+	for (const invalid of [
+		{ ...structured, nextCursor: 17 },
+		{ ...structured, privateSource: "not public" },
+		{ ...structured, notes: [{ slug: "incomplete" }] },
+		{ ...structured, notes: [{ ...(structured.notes as JsonObject[])[0], digest: "not-a-digest" }] },
+		{ ...structured, notes: [{ ...(structured.notes as JsonObject[])[0], sourceBuffer: "not public" }] },
+	])
+		assert.equal(Value.Check(memorySearchOutputSchema, invalid), false);
+	await assert.rejects(
+		call(all.get("memory_search") as Registered, {}, AbortSignal.abort()),
+		/Memory retrieval cancelled/,
+	);
 	const read = await call(all.get("memory_read") as Registered, {
 		slug: input.slug,
 		digest: first.details.digest as string,

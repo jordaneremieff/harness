@@ -14,12 +14,15 @@ import {
 } from "@earendil-works/pi-ai";
 import {
 	createAgentSession,
+	createCodemodeExtension,
 	DefaultResourceLoader,
 	ModelRuntime,
 	parseFrontmatter,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { Value } from "typebox/value";
+import { memorySearchOutputSchema } from "./search-output.ts";
 
 function text(result: ToolResultMessage): string {
 	return result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
@@ -33,6 +36,13 @@ function digest(value: unknown): string {
 	assert.equal(typeof value, "string");
 	assert.match(value as string, /^[a-f0-9]{64}$/);
 	return value as string;
+}
+
+function scriptValue(result: ToolResultMessage): JsonObject {
+	assert.equal(result.isError, false, text(result));
+	const output = result.content.filter((part) => part.type === "text");
+	assert.equal(output.length, 2);
+	return JSON.parse(output[1].text) as JsonObject;
 }
 
 type Invoke = (name: string, args: JsonObject) => Promise<ToolResultMessage>;
@@ -113,7 +123,21 @@ test("loaded tools preserve a note through correction, review, retirement, react
 			noContextFiles: true,
 			additionalExtensionPaths: [fileURLToPath(new URL("./index.ts", import.meta.url))],
 			extensionFactories: [
+				createCodemodeExtension({ models: false }),
 				(pi) => {
+					pi.on("tool_result", (event) => {
+						if (event.toolName !== "memory_search") return;
+						if (event.isError) {
+							assert.equal(event.structuredContent, undefined);
+							return;
+						}
+						Value.Assert(memorySearchOutputSchema, event.structuredContent);
+						assert.deepEqual(event.structuredContent, event.details);
+						assert.deepEqual(
+							event.structuredContent,
+							JSON.parse(event.content[0].type === "text" ? event.content[0].text : ""),
+						);
+					});
 					pi.registerProvider("memory-lifecycle-fixture", {
 						baseUrl: "https://memory.invalid",
 						api: "memory-lifecycle-fixture",
@@ -170,6 +194,7 @@ test("loaded tools preserve a note through correction, review, retirement, react
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(root),
 			tools: [
+				"codemode",
 				"memory_search",
 				"memory_read",
 				"memory_history",
@@ -184,6 +209,7 @@ test("loaded tools preserve a note through correction, review, retirement, react
 		assert.ok(model);
 		await session.setModel(model);
 		assert.deepEqual(session.getActiveToolNames().sort(), [
+			"codemode",
 			"memory_edit",
 			"memory_history",
 			"memory_read",
@@ -227,6 +253,41 @@ test("loaded tools preserve a note through correction, review, retirement, react
 		const hit = found.notes[0] as JsonObject;
 		assert.equal(hit.slug, input.slug);
 		assert.equal(hit.digest, firstDigest);
+		const composed = scriptValue(
+			await invoke("codemode", {
+				code: `
+const page = await tools.memory_search({ query: ["api_key configuration", "environment references"] });
+const browse = await tools.memory_search({});
+let refused = false;
+try { await tools.memory_search({query: "configuration", cursor: "invalid"}); }
+catch (error) { refused = /cursor/.test(error.message); }
+const sample = ALL_TOOLS.find(tool => tool.name === "memory_search").description;
+return {
+  type: typeof page,
+  selected: page.notes.filter(note => note.lifecycle.status === "active").map(note => ({
+    slug: note.slug, digest: note.digest, policy: note.freshness.policy,
+    deadline: note.freshness.deadline, rank: note.rank, formulations: note.formulations.length
+  })),
+  browseHasDigest: "digest" in browse.notes[0],
+  scope: page.countScope, snapshot: page.coverage.frozenSnapshot,
+  privateState: "details" in page || "sourceEvidence" in page.notes[0] || "analysis" in page.notes[0],
+  declared: sample.includes("digest?: string") && sample.includes("nextCursor:") && sample.includes("freshness:"),
+  refused
+};`,
+			}),
+		);
+		assert.deepEqual(composed, {
+			type: "object",
+			selected: [
+				{ slug: input.slug, digest: firstDigest, policy: "before-use", deadline: "due", rank: 1, formulations: 2 },
+			],
+			browseHasDigest: false,
+			scope: "source-window",
+			snapshot: false,
+			privateState: false,
+			declared: true,
+			refused: true,
+		});
 		const collected = await readPages(invoke, input.slug, firstDigest);
 		const path = join(corpus, `${input.slug}.md`);
 		assert.equal(collected, readFileSync(path, "utf8"));
@@ -473,6 +534,35 @@ test("loaded tools preserve a note through correction, review, retirement, react
 			cursor = page.nextCursor;
 		}
 		assert.deepEqual(slugs, ["zz-a", "zz-b", "zz-c"]);
+		const combined = scriptValue(
+			await invoke("codemode", {
+				code: `
+let cursor;
+const notes = [], windows = [];
+for (let guard = 0; guard < 8; guard++) {
+  const page = await tools.memory_search({ query: "latewindowtoken", limit: 1, ...(cursor ? {cursor} : {}) });
+  if (typeof page !== "object") throw new Error("Expected a structured page");
+  notes.push(...page.notes.map(note => ({slug: note.slug, digest: note.digest, status: note.lifecycle.status})));
+  windows.push({returned: page.returned, end: page.scan.windowEnd, complete: page.coverage.traversalComplete});
+  cursor = page.nextCursor;
+  if (cursor === null) break;
+}
+if (cursor !== null) throw new Error("Fixture page limit reached");
+return {notes, windows};`,
+			}),
+		);
+		assert.deepEqual(
+			(combined.notes as JsonObject[]).map((note) => note.slug),
+			slugs,
+		);
+		for (const note of combined.notes as JsonObject[]) {
+			digest(note.digest);
+			assert.equal(note.status, "unknown");
+		}
+		assert.equal((combined.windows as JsonObject[])[0].returned, 0);
+		assert.equal((combined.windows as JsonObject[])[0].end, 4096);
+		assert.equal((combined.windows as JsonObject[])[0].complete, false);
+		assert.equal((combined.windows as JsonObject[]).at(-1)?.complete, true);
 		assert.equal((await invoke("memory_search", { query: "changedquery", cursor: next.nextCursor })).isError, true);
 		writeFileSync(join(corpus, "zz-b.md"), "# Changed source\nlatewindowtoken\n");
 		assert.match(text(await invoke("memory_search", { query, cursor: next.nextCursor })), /Source window changed/);

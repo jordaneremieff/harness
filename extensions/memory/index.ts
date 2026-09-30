@@ -1,9 +1,10 @@
-import { Type } from "@earendil-works/pi-ai";
+import { type JsonObject, Type } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { renderCall, renderResult } from "./presentation.ts";
 import { historyMemory, memoryIndex, readMemory, searchMemory } from "./retrieval.ts";
 import { REVISION_PATTERN } from "./history.ts";
+import { memorySearchOutputSchema } from "./search-output.ts";
 import {
 	DIGEST,
 	editMemory,
@@ -78,9 +79,14 @@ export default function memory(pi: ExtensionAPI): void {
 				}),
 			),
 		}),
+		outputSchema: memorySearchOutputSchema,
 		async execute(_id, args, signal) {
 			const details = await searchMemory(memoryRoot(), args, signal);
-			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
+			return {
+				content: [{ type: "text", text: JSON.stringify(details) }],
+				details,
+				structuredContent: details as JsonObject,
+			};
 		},
 		renderCall: (args, theme, context) => renderCall("memory_search", args, theme, context),
 		renderResult: (result, options, theme, context) => renderResult("memory_search", result, options, theme, context),

@@ -172,6 +172,40 @@ Unreadable, unsupported, or oversized notes remain unknown. Each serialized resu
 fits 48 KiB; record selection uses cumulative byte accounting, not repeated
 serialization of progressively shorter full pages.
 
+`memory_search` declares an explicit output schema and returns that same public
+page as `structuredContent`. Native codemode scripts receive an object, not a JSON
+string. Model-facing text and native-card `details` retain the existing page.
+No scanner buffers, ranking scores, store handles, or additional source fields
+enter the structured result. Its serialized page keeps the same 48 KiB bound.
+Browse notes omit `digest` and `rank`; query hits include them. Raw cues remain
+strings, separate from parsed `lifecycle` and `freshness`. Unavailable sources,
+unknown metadata, and nullable `corpusEmpty` retain their existing meaning.
+Invalid requests, changed cursors, unavailable corpora, and cancellation still
+fail the call; codemode receives a rejected promise, not an empty success page.
+
+For example, a bounded script collects candidates without parsing nested text:
+
+```javascript
+const query = ["editor choice", "editing preference"];
+const candidates = [];
+const coverage = [];
+let cursor;
+for (let pageNumber = 0; pageNumber < 8; pageNumber++) {
+  const page = await tools.memory_search({ query, limit: 5, ...(cursor ? { cursor } : {}) });
+  candidates.push(...page.notes
+    .filter(note => note.lifecycle.status === "active")
+    .map(note => ({ slug: note.slug, digest: note.digest, freshness: note.freshness })));
+  coverage.push({ scan: page.scan, coverage: page.coverage });
+  cursor = page.nextCursor;
+  if (cursor === null) break;
+}
+return { candidates, coverage, nextCursor: cursor };
+```
+
+The script preserves a remaining cursor if its own page limit stops traversal.
+Window counts and ranks are not corpus-wide totals. Keep every page's coverage
+gaps; selected candidates still require source reads and freshness checks.
+
 ### `memory_read`
 
 Pass a `slug`, or `README` for the corpus contract. Pass the search result's `digest`
@@ -650,4 +684,10 @@ historical paging, edit, current-digest correction, digest refusal, credential r
 unresolved review, whole-note confirmation, retirement, explicit reactivation,
 retired-target supersession, history plans, and the next prompt's qualified pointers. This establishes the
 host/tool contract, not live-model judgment or general retrieval quality.
+The same native regression uses Pi's public codemode factory to verify object
+results, declared fields, candidate filtering, digest and freshness access, thrown
+refusals, and continuation through an empty source window. Retrieval regressions
+validate cue, lexical, fused, partial, malformed-metadata, and byte-limited pages
+against the declared output schema. Adapter tests check that text, details, and
+structured data contain the same public page.
 Repository gates cover type compatibility, lint, slice boundaries and the complete suite.
