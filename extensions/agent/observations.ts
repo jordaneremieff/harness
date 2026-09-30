@@ -35,16 +35,20 @@ export function runObservation(run: DetachedRunView): RunObservation {
 export const RunsOutputSchema = object({ runs: Type.Array(runSchema), found: Type.Union([Type.Boolean(), Type.Null()]), coverage, observedAt: text, boundary: text, unavailable: Type.Optional(text) });
 export type RunsObservation = Static<typeof RunsOutputSchema>;
 
+const runningToolSchema = object({ toolCallId: text, name: text, startedAt: text, elapsedMs: count });
+const activityResultSchema = object({ operationId: text, status: text });
+const activitySchema = object({ runningTools: Type.Optional(Type.Array(runningToolSchema)), operation: Type.Optional(nullableText), result: Type.Optional(activityResultSchema), state: Type.Union([Type.Literal("working"), Type.Literal("idle")]), currentTool: Type.Optional(text), lastText: Type.Optional(text), pending: count, lastPersistedAt: nullableText });
 const statusRowSchema = object({
 	sessionId: text, cwd: text, modifiedAt: Type.Optional(Type.Number()), primary: Type.Optional(Type.Boolean()), name: Type.Optional(text), tipId: Type.Optional(nullableText),
 	model: Type.Optional(object({ provider: text, modelId: text, thinkingLevel: Type.Optional(text), available: Type.Optional(Type.Boolean()) })),
 	operation: Type.Optional(nullableText), entryCount: Type.Optional(count), tools: Type.Optional(Type.Array(text)), activeTools: Type.Optional(Type.Array(text)), extensions: Type.Optional(Type.Array(text)), lastError: Type.Optional(text),
-	capture: Type.Optional(capture), run: Type.Optional(runSchema),
+	capture: Type.Optional(capture), run: Type.Optional(runSchema), activity: Type.Optional(activitySchema), unavailable: Type.Optional(text),
 });
 export type StatusRow = Static<typeof statusRowSchema>;
 export const StatusOutputSchema = object({
 	source: Type.Union([Type.Literal("inventory"), Type.Literal("live-owner"), Type.Literal("detached-owner"), Type.Literal("read-only-capture"), Type.Literal("detached-record"), Type.Literal("unavailable")]),
 	sessions: Type.Array(statusRowSchema), coverage, observedAt: text, boundary: text, unavailable: Type.Optional(text),
+	inventory: Type.Optional(object({ stored: count, held: count, primaries: count, detached: count })),
 });
 export type StatusObservation = Static<typeof StatusOutputSchema>;
 
@@ -76,10 +80,19 @@ export function unavailableObservation(kind: "status" | "runs"): StatusObservati
 		unavailable: "The retained owner did not supply structured observation data. Its text remains available; a fresh owner is required for structured status and runs." };
 	return kind === "status" ? { ...common, source: "unavailable", sessions: [] } : { ...common, found: null, runs: [] };
 }
+/** Supervision prioritizes process-held workers, never stored-file metadata rows. */
+export function supervisionObservation(held: StatusRow[], primaries: StatusRow[], runs: DetachedRunView[], stored: number): StatusObservation {
+	const workers = [...held].sort((a, b) => Number(b.activity?.state === "working") - Number(a.activity?.state === "working")).map(({ tools: _tools, activeTools: _activeTools, extensions: _extensions, ...row }) => row);
+	const seen = new Set(workers.map((row) => row.sessionId));
+	const roots = primaries.filter((row) => !seen.has(row.sessionId));
+	for (const row of roots) seen.add(row.sessionId);
+	const detached = runs.filter((run) => !seen.has(run.currentSessionId ?? run.sessionId)).map((run) => ({ sessionId: run.currentSessionId ?? run.sessionId, cwd: run.cwd, run: runObservation(run) }));
+	return { ...statusObservation("inventory", [...workers, ...roots, ...detached]), inventory: { stored, held: workers.length, primaries: roots.length, detached: detached.length } };
+}
 export function liveStatusRow(status: WorkerStatus): StatusRow {
 	return { sessionId: status.sessionId, cwd: status.cwd, name: status.name, tipId: status.tipId,
 		model: { provider: status.model.provider, modelId: status.model.modelId, thinkingLevel: status.model.thinkingLevel }, operation: status.operation,
-		entryCount: status.entryCount, tools: [...status.tools], activeTools: [...status.activeTools], extensions: [...status.extensions], lastError: status.lastError };
+		entryCount: status.entryCount, tools: [...status.tools], activeTools: [...status.activeTools], extensions: [...status.extensions], lastError: status.lastError, ...(status.activity ? { activity: { ...status.activity } } : {}) };
 }
 
 const inspectionBase = {
@@ -91,6 +104,12 @@ const selection = {
 	coverage: Type.Optional(object({ visits: Type.Optional(count), slots: Type.Optional(count), scannedBytes: Type.Optional(count), complete: Type.Boolean(), reason: Type.Optional(text) })), scope: Type.Optional(text), boundary: Type.Optional(text),
 };
 export const InspectOutputSchema = Type.Union([
+	object({ ...inspectionBase, view: Type.Literal("activity"), text, observedAt: text, nextCursor: nullableCount,
+		turns: Type.Array(object({ startIndex: count, endIndex: count, partial: Type.Boolean(), rows: Type.Array(object({ entryId: text, timestamp: text, kind: text, text, toolCallId: Type.Optional(text), outcome: Type.Optional(text), isError: Type.Optional(Type.Boolean()), durationMs: Type.Optional(count), ageMs: Type.Optional(count), runningForMs: Type.Optional(count), resultEntryId: Type.Optional(text), count: Type.Optional(count), entryIds: Type.Optional(Type.Array(text)) })) })),
+		metadata: object({ name: Type.Optional(text), cwd: text, model: Type.Optional(object({ provider: text, modelId: text, thinkingLevel: Type.Optional(text) })), entryCount: count, lastPersistedAt: nullableText, lastPersistedAgeMs: nullableCount,
+			ownerState: Type.Union([Type.Literal("working"), Type.Literal("idle"), Type.Literal("unavailable")]), currentTools: Type.Array(text), runningTools: Type.Array(runningToolSchema), operation: nullableText, result: Type.Optional(activityResultSchema), pending: nullableCount, lastText: Type.Optional(text), lastError: Type.Optional(text) }),
+		coverage: object({ turnsConsidered: count, turnsRendered: count, considered: count, rendered: count, omitted: count, failuresOmitted: count, lookaheadEntries: count, truncated: Type.Boolean(), headerTruncated: Type.Boolean(), excerptsClipped: Type.Boolean(), entryLimitReached: Type.Boolean(), rowLimitReached: Type.Boolean(), thinking: count }),
+	}),
 	object({ ...inspectionBase, result: Type.Optional(object({ entryId: Type.Optional(text), ...fragment })), entries: Type.Array(object({ id: text, parentId: nullableText, type: text, role: Type.Optional(text), ...fragment, omissions: Type.Optional(omissions), preview: Type.Optional(object({ text, truncated: Type.Boolean() })) })), nextCursor: nullableCount, order: Type.Literal("newestFirst"), detail: text, resultOffset: Type.Optional(count), resultPersistence: Type.Optional(text) }),
 	object({ ...inspectionBase, ...selection, entryId: text, offset: count, ...fragment, omissions: Type.Optional(omissions), status: Type.Optional(Type.Union([Type.Literal("completed"), Type.Literal("failed"), Type.Literal("aborted")])), resultPersistence: Type.Optional(text), detail: Type.Optional(text) }),
 	object({ ...inspectionBase, ...selection }),

@@ -1,6 +1,7 @@
 import type { AgentToolResult, MessageRenderer, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { keyText } from "@earendil-works/pi-coding-agent";
 import { Box, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { activityDuration } from "./activity.ts";
 
 const MESSAGE_DISPLAY_LIMIT = 32_000;
 export const PEER_OUTCOME_DISPLAY_LIMIT = 32;
@@ -238,6 +239,103 @@ function snapshotLines(preview: Record<string, unknown>, theme: Theme): string[]
 	return lines;
 }
 
+function statusActivityLines(value: unknown, theme: Theme): string[] {
+	const activity = peerRecord(value);
+	if (activity.state !== "working" && activity.state !== "idle") return [];
+	const pending = countField(activity.pending);
+	const tool = peerField(activity, "currentTool");
+	const persisted = peerField(activity, "lastPersistedAt");
+	const parts = [`Activity: ${activity.state}`, tool ? `tool ${displayPreview(tool, 100)}` : undefined, pending === undefined ? "pending unknown" : `${pending} pending`];
+	const lines = [theme.fg("muted", parts.filter(Boolean).join(" · "))];
+	lines.push(theme.fg("dim", persisted ? `Last persisted: ${displayPreview(persisted, 80)}` : "Last persisted: unavailable"));
+	lines.push(...runningActivityLines(activity, theme));
+	const text = peerField(activity, "lastText");
+	if (text) lines.push(theme.fg("toolOutput", `Assistant in progress: ${displayPreview(text, 240)}`));
+	return lines;
+}
+
+function runningToolLine(value: unknown): string | undefined {
+	const tool = peerRecord(value);
+	const name = peerField(tool, "name");
+	const callId = peerField(tool, "toolCallId");
+	if (!name || !callId) return undefined;
+	const elapsed = countField(tool.elapsedMs);
+	const started = peerField(tool, "startedAt");
+	const parts = [`Running: ${displayPreview(name, 80)}`, `call ${displayPreview(callId, 160)}`];
+	if (elapsed !== undefined && elapsed >= 0) parts.push(`${activityDuration(elapsed)} elapsed`);
+	if (started) parts.push(`since ${displayPreview(started, 80)}`);
+	return parts.join(" · ");
+}
+
+function savedActivityResult(value: unknown): string | undefined {
+	const result = peerRecord(value);
+	const status = peerField(result, "status");
+	const operationId = peerField(result, "operationId");
+	if (!operationId || !["completed", "failed", "aborted"].includes(status)) return undefined;
+	return `Last saved result: ${status} · operation ${displayPreview(operationId, 120)} · not task acceptance`;
+}
+
+function runningActivityLines(activity: Record<string, unknown>, theme: Theme): string[] {
+	const lines: string[] = [];
+	const operation = peerField(activity, "operation");
+	if (operation) lines.push(theme.fg("muted", `Operation: ${displayPreview(operation, 120)}`));
+	const running = Array.isArray(activity.runningTools) ? activity.runningTools : [];
+	for (const value of running.slice(0, 4)) {
+		const line = runningToolLine(value);
+		if (line) lines.push(theme.fg("muted", line));
+	}
+	if (running.length > 4) lines.push(theme.fg("muted", `${running.length - 4} more running tools; expand for details`));
+	const result = savedActivityResult(activity.result);
+	if (result) lines.push(theme.fg("muted", result));
+	return lines;
+}
+
+function statusConfiguration(session: Record<string, unknown>): string {
+	const model = peerRecord(session.model);
+	const provider = peerField(model, "provider");
+	const id = peerField(model, "modelId");
+	const thinking = peerField(model, "thinkingLevel");
+	const entries = countField(session.entryCount);
+	const identity = provider && id ? displayPreview(`${provider}/${id}`, 300) : "unknown";
+	return `Model: ${identity} · thinking ${thinking ? displayPreview(thinking, 40) : "unknown"} · entries ${entries ?? "unknown"}`;
+}
+
+function statusSessionLines(value: unknown, theme: Theme, multiple: boolean, inventory: boolean): string[] {
+	const session = peerRecord(value);
+	const lines = statusActivityLines(session.activity, theme);
+	const label = displayPreview(peerField(session, "name") || peerField(session, "sessionId"), 120);
+	if (lines.length) {
+		lines.unshift(multiple ? theme.fg("accent", label) : theme.fg("muted", statusConfiguration(session)));
+		return lines;
+	}
+	if (!inventory) return [];
+	const state = peerField(peerRecord(session.run), "state");
+	const kind = session.primary === true ? "primary" : "live activity unavailable";
+	return [theme.fg("muted", `${label} · ${state ? `recorded run ${displayPreview(state, 40)}` : kind}`)];
+}
+
+function statusInventoryLines(value: unknown, theme: Theme): string[] {
+	const inventory = peerRecord(value);
+	const counts = [inventory.stored, inventory.held, inventory.primaries, inventory.detached].map(countField);
+	if (!counts.every((count) => count !== undefined)) return [];
+	return [theme.fg("muted", `${counts[1]} held · ${counts[2]} primaries · ${counts[3]} detached · ${counts[0]} stored`), theme.fg("dim", "agent_list discovers stored sessions")];
+}
+
+function statusSummary(value: unknown, theme: Theme): string[] | undefined {
+	const observation = peerRecord(value);
+	if (!Array.isArray(observation.sessions) || !peerField(observation, "source")) return undefined;
+	const sessions = observation.sessions;
+	const lines = sessions.slice(0, 4).flatMap((session) => statusSessionLines(session, theme, sessions.length > 1, Boolean(observation.inventory)));
+	lines.push(...statusInventoryLines(observation.inventory, theme));
+	if (!lines.length) return undefined;
+	const coverage = peerRecord(observation.coverage);
+	const omitted = countField(coverage.omitted);
+	if (observation.sessions.length > 4) lines.push(theme.fg("muted", `${observation.sessions.length - 4} more session records; expand for details`));
+	if (omitted) lines.push(theme.fg("muted", `${omitted} session records omitted by observation bound`));
+	if (coverage.complete === false) lines.push(theme.fg("muted", "Coverage incomplete"));
+	return lines;
+}
+
 function resultPreview(value: string, limit: number): string {
 	const prefix = displayPrefix(value, limit);
 	const lines = prefix.split("\n").slice(0, 3).join("\n");
@@ -247,6 +345,13 @@ function resultPreview(value: string, limit: number): string {
 function boundedResult(value: string): string {
 	const prefix = displayPrefix(value, MESSAGE_DISPLAY_LIMIT);
 	return displayText(prefix) + (prefix.length < value.length ? "\n[Display limit; full result remains in native tool history.]" : "");
+}
+
+function collapsedAgentResultLines(result: AgentToolResult<unknown>, output: string, theme: Theme, knownPhase: boolean, isError: boolean): string[] {
+	const status = statusSummary(result.structuredContent, theme);
+	const lines = status ?? [theme.fg(isError ? "error" : "toolOutput", resultPreview(output, knownPhase ? 240 : 600))];
+	if (status || knownPhase || output.length > 600 || output.includes("\n")) lines.push(theme.fg("dim", toolExpansionHint("result and identifiers")));
+	return lines;
 }
 
 export function renderAgentResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; lastComponent?: Component }): Component {
@@ -261,10 +366,7 @@ export function renderAgentResult(result: AgentToolResult<unknown>, options: Too
 	if (options.expanded) {
 		lines.push(theme.fg("toolOutput", boundedResult(output)));
 		if (knownPhase) lines.push(theme.fg("dim", boundedResult(JSON.stringify(preview, null, 2))));
-	} else {
-		lines.push(theme.fg(context.isError ? "error" : "toolOutput", resultPreview(output, knownPhase ? 240 : 600)));
-		if (knownPhase || output.length > 600 || output.includes("\n")) lines.push(theme.fg("dim", toolExpansionHint("result and identifiers")));
-	}
+	} else lines.push(...collapsedAgentResultLines(result, output, theme, knownPhase, context.isError));
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
@@ -521,6 +623,7 @@ function inspectQualifier(args: Record<string, unknown>): { qualifier: string; h
 	for (const [key, label] of [["offset", "offset"], ["cursor", "cursor"], ["limit", "limit"]] as const) {
 		const value = countField(args[key]);
 		if (value !== undefined) parts.push(`${label} ${value}`);
+		else if (key === "limit" && args.view === "activity" && args.limit === undefined) parts.push("limit 4 (default)");
 	}
 	if (peerField(args, "continuation")) parts.push("continuation");
 	return { qualifier: parts.join(" · "), hidden };
@@ -602,6 +705,50 @@ function inspectHistorySummary(parsed: Record<string, unknown>, sessionLabel: st
 	return lines;
 }
 
+function activityOwnerLine(metadata: Record<string, unknown>, owner: string): string {
+	const state = ["working", "idle", "unavailable"].includes(peerField(metadata, "ownerState")) ? peerField(metadata, "ownerState") : "unavailable";
+	const age = countField(metadata.lastPersistedAgeMs);
+	const persisted = age !== undefined && age >= 0 ? `last persisted ${activityDuration(age)} ago` : "persisted age unavailable";
+	return `${owner} · owner ${state} · ${persisted}`;
+}
+
+function activityTurnCount(coverage: Record<string, unknown>, count: number): string {
+	const rendered = countField(coverage.turnsRendered);
+	const considered = countField(coverage.turnsConsidered);
+	if (rendered !== undefined && considered !== undefined) return `${rendered}/${considered} turns rendered`;
+	return `${count} ${count === 1 ? "turn" : "turns"}`;
+}
+
+function activityBounds(coverage: Record<string, unknown>, parsed: Record<string, unknown>, considered: number, omitted: number): string {
+	const bounds = [`${considered} considered`, `${omitted} omitted`];
+	const thinking = countField(coverage.thinking);
+	if (thinking !== undefined) bounds.push(`${thinking} thinking blocks omitted`);
+	for (const [field, label] of [["truncated", "digest byte bound"], ["headerTruncated", "header byte bound"], ["excerptsClipped", "excerpts clipped"], ["entryLimitReached", "entry limit"], ["rowLimitReached", "row limit"]] as const) {
+		if (coverage[field] === true) bounds.push(label);
+	}
+	if (Array.isArray(parsed.turns) && parsed.turns.some((turn) => peerRecord(turn).partial === true)) bounds.push("partial turn");
+	if (countField(parsed.nextCursor) !== undefined) bounds.push("older turns available");
+	return bounds.join(" · ");
+}
+
+function inspectActivitySummary(parsed: Record<string, unknown>, sessionLabel: string, owner: string, theme: Theme): string[] | undefined {
+	if (!Array.isArray(parsed.turns)) return undefined;
+	const coverage = peerRecord(parsed.coverage);
+	const rendered = countField(coverage.rendered);
+	const considered = countField(coverage.considered);
+	const omitted = countField(coverage.omitted);
+	if (rendered === undefined || considered === undefined || omitted === undefined) return undefined;
+	const metadata = peerRecord(parsed.metadata);
+	const turns = activityTurnCount(coverage, parsed.turns.length);
+	const headline = [`activity · ${turns} · ${rendered} ${rendered === 1 ? "entry" : "entries"}`];
+	if (sessionLabel) headline.unshift(sessionLabel);
+	const lines = [theme.fg("toolOutput", headline.join(" · "))];
+	lines.push(theme.fg("muted", activityOwnerLine(metadata, owner)));
+	lines.push(theme.fg("muted", activityBounds(coverage, parsed, considered, omitted)));
+	lines.push(...runningActivityLines(metadata, theme));
+	return lines;
+}
+
 function inspectSummary(output: string, theme: Theme, args: Record<string, unknown>): string[] | undefined {
 	const parsed = jsonObject(output);
 	if (!parsed) return undefined;
@@ -616,5 +763,11 @@ function inspectSummary(output: string, theme: Theme, args: Record<string, unkno
 }
 
 export function renderInspectResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: { isError: boolean; args?: unknown; lastComponent?: Component }): Component {
-	return outcomeCard(result, options, theme, context, { error: "Inspect error", partial: "Inspection pending" }, inspectSummary);
+	return outcomeCard(result, options, theme, context, { error: "Inspect error", partial: "Inspection pending" }, (output, theme, args) => {
+		const activity = peerRecord(result.structuredContent);
+		if (activity.view !== "activity") return inspectSummary(output, theme, args);
+		const session = peerField(activity, "sessionId");
+		const sessionLabel = session && session !== peerField(args, "sessionId") ? displayPreview(session, 300) : "";
+		return inspectActivitySummary(activity, sessionLabel, inspectOwnerLabel(activity), theme);
+	});
 }

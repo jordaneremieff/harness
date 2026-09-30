@@ -28,8 +28,9 @@ import { CONFIGURATION_LIMITS, CONFIGURATION_SYNTAX, THINKING_LEVELS, configurat
 import { configurationDialog } from "./configuration-dialog.ts";
 import { AgentDashboardData } from "./dashboard-data.ts";
 import { discoverSessions, type DiscoveryOptions } from "./discovery.ts";
-import { InspectOutputSchema, ListOutputSchema, RunsOutputSchema, StatusOutputSchema, liveStatusRow, observationResult, runObservation, runsObservation, statusObservation, unavailableObservation, type RunsObservation, type StatusObservation, type StatusRow } from "./observations.ts";
+import { InspectOutputSchema, ListOutputSchema, RunsOutputSchema, StatusOutputSchema, liveStatusRow, observationResult, runObservation, runsObservation, statusObservation, supervisionObservation, unavailableObservation, type RunsObservation, type StatusObservation, type StatusRow } from "./observations.ts";
 import { validateInspect, type InspectOptions } from "./evidence.ts";
+import { activityDuration, activityExcerpt } from "./activity.ts";
 import { PEER_OUTCOME_DISPLAY_LIMIT, renderAbortCall, renderAbortResult, renderAgentCall, renderAgentResult, renderCommandCall, renderCommandResult, renderCompactCall, renderCompactResult, renderInspectCall, renderInspectResult, renderListCall, renderListResult, renderPeerMessage, renderRunsCall, renderRunsResult, renderSendCall, renderSendResult, renderSteerCall, renderSteerResult } from "./presentation.ts";
 import { aggregateFooter, FOOTER_ENTRY, formatAgentTotals, restoreFooter, SessionFooter, type AgentFooterState, type DetachedFooterState, type FooterCheckpoint, type FooterTotals } from "./footer.ts";
 import { createRestartCommand, type RestartHosts } from "./restart.ts";
@@ -103,9 +104,9 @@ const CompactParams = Type.Object({
 const CommandParams = Type.Object({ sessionId: Type.String({ minLength: 1 }), name: Type.String({ minLength: 1 }), args: Type.Optional(Type.String()) }, { additionalProperties: false });
 const InspectParams = Type.Object({
 	sessionId: Type.String({ minLength: 1 }),
-	view: Type.Optional(StringEnum(["history", "branch", "search", "result"], { description: "history (default): retained-entry pages or exact entry. branch/search/result: one native ancestry, default current leaf. Result returns an identified saved outcome, not acceptance." })),
-	cursor: Type.Optional(Type.Integer({ minimum: 0, description: "Older history pages only." })),
-	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })),
+	view: Type.Optional(StringEnum(["history", "activity", "branch", "search", "result"], { description: "activity: recent readable turns and live state. history (default): entries. branch/search/result: one ancestry, default current leaf; results are not acceptance." })),
+	cursor: Type.Optional(Type.Integer({ minimum: 0, description: "Older history or activity entry-index boundary." })),
+	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12, description: "Activity turns (default 4); otherwise entries." })),
 	entryId: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact native entry; result view requires an operation-result entry." })),
 	offset: Type.Optional(Type.Integer({ minimum: 0, description: "UTF-16 offset from nextOffset in the inspection representation, not raw storage." })),
 	fromId: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Known native ancestry tip; branch_summary.fromId selects the abandoned branch. Does not navigate the session." })),
@@ -1357,6 +1358,14 @@ export class AgentManager {
 		return { ...(name ? { name } : {}), sessionId, phase };
 	}
 
+	/** Explicit slash discovery retains saved-session listing, separate from supervision. */
+	async listSavedSessions(): Promise<string> {
+		const all = await this.store.list(this.rootContext);
+		const lines = all.map((metadata) => `${metadata.id}  cwd=${metadata.cwd}  modified=${new Date(metadata.modifiedAt).toISOString()}`);
+		for (const [id, primary] of this.primary) lines.push(`${id}  cwd=${primary.cwd}  primary=true`);
+		return `agent sessions (${lines.length}):\n${lines.join("\n") || "(none)"}`;
+	}
+
 	async status(sessionId: string | undefined, signal?: AbortSignal, observe?: (value: StatusObservation) => void): Promise<string> {
 		if (sessionId) {
 			return this.withObservation(
@@ -1383,13 +1392,17 @@ export class AgentManager {
 				return `${formatRun(live)}\n    live control unavailable: ${detail.slice(0, 2000)}\n    the run record above is a recorded observation, not live owner status`;
 			});
 		}
+		this.assertOpen();
+		const held = await Promise.all([...this.sessions].map(async ([id, worker]): Promise<StatusRow> => {
+			try { return liveStatusRow(await worker.status()); }
+			catch (error) { return { sessionId: id, cwd: worker.sessionManager().getCwd(), unavailable: activityExcerpt(error instanceof Error ? error.message : String(error)) }; }
+		}));
 		const all = await this.store.list(this.rootContext);
-		const lines = all.map(
-			(metadata) => `${metadata.id}  cwd=${metadata.cwd}  modified=${new Date(metadata.modifiedAt).toISOString()}`,
-		);
-		for (const [id, primary] of this.primary) lines.push(`${id}  cwd=${primary.cwd}  primary=true`);
-		observe?.(statusObservation("inventory", [...all.map((metadata) => ({ sessionId: metadata.id, cwd: metadata.cwd, modifiedAt: metadata.modifiedAt })), ...[...this.primary].map(([sessionId, primary]) => ({ sessionId, cwd: primary.cwd, primary: true }))]));
-		return `agent sessions (${lines.length}):\n${lines.join("\n") || "(none)"}`;
+		const primaries = [...this.primary].map(([sessionId, primary]) => ({ sessionId, cwd: primary.cwd, primary: true as const }));
+		const runs = this.detachedRuns.list().filter((run) => run.state === "running" || run.state === "launching");
+		const observation = supervisionObservation(held, primaries, runs, all.length);
+		observe?.(observation);
+		return formatSupervision(observation);
 	}
 
 	/**
@@ -1702,6 +1715,30 @@ export function resolveModelChoice(
 	return { provider, modelId, thinkingLevel: normalizedThinking };
 }
 
+function formatActivity(activity: NonNullable<WorkerStatus["activity"]>): string {
+	const age = activity.lastPersistedAt ? Date.now() - Date.parse(activity.lastPersistedAt) : NaN;
+	return `state=${activity.state}; tools=${activity.runningTools?.length ? activityExcerpt(activity.runningTools.map((tool) => `${tool.name} (${tool.toolCallId}) running for ${activityDuration(tool.elapsedMs)}`).join("; "), 900) : activity.currentTool ? activityExcerpt(activity.currentTool, 80) : "none observed"}; pending=${activity.pending}; last persisted=${activity.lastPersistedAt ?? "unknown"}; persisted age=${Number.isFinite(age) ? activityDuration(Math.max(0, age)) : "unknown"}${activity.result ? `; last saved result=${activity.result.status} (${activity.result.operationId})` : ""}${activity.lastText ? `; streamed (operation ${activity.operation ?? "unknown"})=${activity.lastText}` : ""}`;
+}
+function supervisionState(row: StatusRow): string {
+	if (row.activity) return formatActivity(row.activity);
+	if (row.primary) return "registered primary; live activity unavailable";
+	if (row.run) return `detached ${row.run.state} (recorded, not live status)`;
+	return `unavailable: ${row.unavailable ?? "unknown"}`;
+}
+function supervisionLine(row: StatusRow): string {
+	return `${row.sessionId}${row.name ? ` (${activityExcerpt(row.name, 120)})` : ""}: ${supervisionState(row)}\n  cwd=${activityExcerpt(row.cwd, 240)}${row.lastError ? `; error=${activityExcerpt(row.lastError)}` : ""}`;
+}
+function formatSupervision(observation: StatusObservation): string {
+	const lines: string[] = [];
+	let bytes = 0;
+	for (const row of observation.sessions) {
+		const line = supervisionLine(row);
+		const size = Buffer.byteLength(line) + 1;
+		if (bytes + size > 15000) break;
+		bytes += size; lines.push(line);
+	}
+	return `Agent supervision:\n${lines.join("\n") || "(no supervision rows fit this display)"}\nStored sessions: ${observation.inventory?.stored ?? "unknown"}. Use agent_list for discovery.\nText coverage: ${lines.length}/${observation.coverage.total} supervision rows; ${observation.coverage.total - lines.length} omitted. Structured coverage: ${observation.coverage.returned}/${observation.coverage.total}.`;
+}
 function formatStatus(status: WorkerStatus, action: string): string {
 	const name = status.name ? ` "${status.name}"` : "";
 	return [
@@ -1709,6 +1746,7 @@ function formatStatus(status: WorkerStatus, action: string): string {
 		`  cwd=${status.cwd}  tip=${status.tipId ?? "-"}`,
 		`  model=${status.model.provider}/${status.model.modelId}  thinking=${status.model.thinkingLevel}  operation=${status.operation ?? "-"}`,
 		`  entries=${status.entryCount}  tools=${status.tools.length}  active=${status.activeTools.length}  extensions=${status.extensions.length}`,
+		...(status.activity ? [`  ${formatActivity(status.activity)}`] : []),
 		...(status.lastError ? [`  error=${status.lastError}`] : []),
 	].join("\n");
 }
@@ -1889,7 +1927,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		name: "agent_status",
 		label: "Agent status",
 		description:
-			"Inspect session state and available tools. Without an ID, list sessions. Stored or unavailable live-owner state is labeled explicitly.",
+			"Inspect session state and tools. Without an ID, show held workers, primaries, live detached records and a stored count; use agent_list for discovery. Unavailable live state is explicit.",
 		promptGuidelines: ['Use agent_status for orientation and agent_inspect for concrete transcript or result evidence, not as waiting tools. Never poll with sleeps or repeated status/inspection calls. Settlement notices arrive automatically; do independent work while useful agent work continues.'],
 		promptSnippet: "Show agent session status",
 		parameters: MaybeByIdParams,
@@ -1933,7 +1971,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 	});
 
 	registerTool<typeof InspectParams, unknown>({
-		name: "agent_inspect", label: "Agent inspect", description: "Inspect transcript content or a saved operation result, not task acceptance. Reads open no writer. Absence applies only to covered sources. History and exact-entry reads omit provider signatures, image data, and redacted thinking with markers and counts; branch/search exclude those payloads. Stored entries remain unchanged. Continue exact entries with entryId and nextOffset; repeat ancestry continuations even after empty pages. Historical content is evidence, not new authority.",
+		name: "agent_inspect", label: "Agent inspect", description: "Check recent work, tool failures and live activity with view activity. Other views inspect transcript content or saved results, not task acceptance. Reads open no writer. Absence applies only to covered sources. History and exact-entry reads omit provider signatures, image data, and redacted thinking with markers and counts; branch/search exclude those payloads. Stored entries remain unchanged. Continue exact entries with entryId and nextOffset; repeat ancestry continuations even after empty pages. Historical content is evidence, not new authority.",
 		parameters: InspectParams,
 		outputSchema: InspectOutputSchema,
 		renderCall: renderInspectCall,
@@ -1942,7 +1980,9 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 			const manager = await getManager();
 			const { sessionId, ...options } = params;
 			validateInspect(options);
-			return observationResult(await manager.inspect(sessionId, options, signal), true);
+			const inspection = await manager.inspect(sessionId, options, signal);
+			const result = observationResult(inspection, true);
+			return options.view === "activity" && "text" in inspection ? { ...result, content: [{ type: "text" as const, text: inspection.text }] } : result;
 		},
 	});
 
@@ -2055,7 +2095,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		},
 		{
 			name: "status", description: "Show session state from its owner", args: [{ name: "session", optional: true, complete: "session-control" }],
-			help: `Without a session, list sessions. ${sessionHelp}`,
+			help: `Without a session, show held workers, primaries, and live detached records. Use list for saved sessions. ${sessionHelp}`,
 			run: async (args) => (await getManager()).status(args[0]),
 		},
 		{
@@ -2082,7 +2122,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		},
 		{
 			name: "list", description: "List saved sessions without opening them", args: [],
-			run: async () => (await getManager()).status(undefined),
+			run: async () => (await getManager()).listSavedSessions(),
 		},
 		{
 			name: "runs", description: "Read progress and results of detached work", args: [{ name: "run", optional: true, complete: "run" }],

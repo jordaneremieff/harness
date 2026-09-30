@@ -31,7 +31,7 @@ test("inspection omits opaque signatures before preview and exact-entry paginati
 	assert.ok(!page.entries[0].text.includes("OPAQUE-"), "opaque signatures must not occupy the serialized preview");
 	assert.match(page.entries[0].text, /The substantive answer/);
 	const detail = projectInspection(manager, manager.getSessionId(), { entryId: id });
-	assert.ok("text" in detail);
+	assert.ok("nextOffset" in detail);
 	assert.ok(!detail.text.includes("OPAQUE-"), "opaque signatures must not enter exact-entry chunks");
 	assert.match(detail.text, /Visible reasoning/);
 	assert.match(detail.text, /The substantive answer/);
@@ -47,7 +47,7 @@ async function readInspection(inspect: Inspect, entryId: string, offset = 0, pre
 	let previousOmissions: unknown;
 	for (;;) {
 		const chunk = await inspect({ entryId, offset });
-		assert.ok("text" in chunk);
+		assert.ok("nextOffset" in chunk);
 		assert.equal(chunk.entryId, entryId);
 		assert.equal(chunk.offset, offset);
 		assert.ok(Buffer.byteLength(chunk.text) <= 12000);
@@ -244,7 +244,7 @@ test("inspection pages preserve entry identity and bounded UTF-8 detail reconstr
 		let text = "";
 		do {
 			const page = await worker.inspect({ entryId: target.id, offset });
-			assert.ok("text" in page && typeof page.text === "string");
+			assert.ok("nextOffset" in page && typeof page.text === "string");
 			assert.ok(Buffer.byteLength(JSON.stringify(page, null, 2), "utf8") < 32000);
 			text += page.text;
 			offset = page.nextOffset ?? undefined;

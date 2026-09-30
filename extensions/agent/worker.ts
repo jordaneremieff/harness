@@ -16,6 +16,7 @@ import { boundedConfigurationResult, configurationModel, configurationThinkingLe
 import { ASSOCIATION_ENTRY, type AssociationSource } from "./associations.ts";
 import { queryEvidence, validateInspect, type InspectOptions } from "./evidence.ts";
 import { OwnedSpend, type AgentFooterState } from "./footer.ts";
+import { activityExcerpt, projectActivity, type ActivityOwner, type LiveActivity } from "./activity.ts";
 import type { AgentSessionMetadata, AgentStore, StoredAgentSession } from "./store.ts";
 
 export const META_CUSTOM_TYPE = "agent.meta";
@@ -56,7 +57,7 @@ export interface WorkerStatus {
 	sessionId: string; cwd: string; name?: string; tipId: string | null;
 	model: { provider: string; modelId: string; thinkingLevel: ThinkingLevel };
 	operation: string | null; tools: string[]; activeTools: string[]; extensions: string[];
-	entryCount: number; lastError?: string;
+	entryCount: number; lastError?: string; activity?: LiveActivity;
 }
 export type UnavailableHostState = "terminal" | "cleanup-incomplete" | "stopping" | "replacement-failed";
 export interface WorkerCommandResult { text: string; sessionId?: string }
@@ -113,10 +114,7 @@ function entryPreview(entry: SessionEntry): { text: string; truncated: boolean }
 }
 
 /** Owner-only inspection state. Omitted for a read-only snapshot of persisted entries. */
-export interface InspectionOwner {
-	operation: string | null;
-	lastError: string | undefined;
-}
+export type InspectionOwner = ActivityOwner;
 
 /** Capture bounds attached to a read-only inspection. */
 export interface InspectionCapture {
@@ -261,7 +259,7 @@ export function projectInspection(
 	capture?: InspectionCapture,
 ) {
 	validateInspect(options);
-	if (options.view && options.view !== "history") return selectedInspection(manager, sessionId, options, owner, capture);
+	if (options.view && options.view !== "history" && options.view !== "activity") return selectedInspection(manager, sessionId, options, owner, capture);
 	const all = manager.getEntries();
 	const result = lastCustom(all, RESULT_TYPE);
 	const base: InspectionBase = {
@@ -271,6 +269,11 @@ export function projectInspection(
 		...(capture ? { capture: inspectionCapture(capture) } : {}),
 		...(owner?.lastError ? { lastError: fragment(owner.lastError, 0, 2400) } : {}),
 	};
+	if (options.view === "activity") {
+		const activity = projectActivity(manager, all, options, owner);
+		const captureText = capture ? `\nCapture: ${capture.available ? "available" : "unavailable"}; bytes=${capture.bytes}; unfinishedTail=${capture.unfinishedTail}${capture.reason ? `; ${activityExcerpt(capture.reason)}` : ""}.` : "";
+		return { ...base, ...activity, text: activity.text + captureText };
+	}
 	return options.entryId ? inspectionEntry(manager, sessionId, base, options.entryId, options.offset) : inspectionPage(all, base, result, options);
 }
 
@@ -302,8 +305,9 @@ export class AgentWorkerSession {
 	private replacementFailed = false;
 	private invalidated = false;
 	private lastChoice: WorkerModelChoice | undefined;
-	private readonly toolsRunning = new Map<string, string>();
+	private readonly toolsRunning = new Map<string, { name: string; startedAt: number }>();
 	private lastText: string | undefined;
+	private streamingText = false;
 	private readonly options: WorkerCreateOptions;
 	private readonly spend = new OwnedSpend();
 	private eventBus = createEventBus();
@@ -404,7 +408,7 @@ export class AgentWorkerSession {
 			this.options.onSessionClosed?.(previous.metadata.id);
 			this.options.onSessionReplaced?.(previous.metadata.id, this.sessionId());
 			this.notify({ kind: "replaced", previousId: previous.metadata.id, sessionId: this.sessionId() });
-			this.toolsRunning.clear(); this.lastText = undefined;
+			this.toolsRunning.clear(); this.lastText = undefined; this.streamingText = false;
 		}
 		this.options.onSessionCreated?.(this.sessionId());
 	}
@@ -649,7 +653,7 @@ export class AgentWorkerSession {
 		if (failure) throw failure;
 		this.unsavedResult = undefined;
 		const id = randomUUID();
-		this.operation = id; this.lastError = undefined; this.operationAborted = false; this.lastText = undefined;
+		this.operation = id; this.lastError = undefined; this.operationAborted = false; this.lastText = undefined; this.streamingText = false; this.toolsRunning.clear();
 		this.operationStart = this.sessionManager().getEntries().length;
 		this.sessionManager().appendCustomEntry(START_TYPE, { operationId: id });
 		this.publishFooter();
@@ -667,14 +671,21 @@ export class AgentWorkerSession {
 		const result: WorkerResult = { operationId, status: this.operationAborted || message?.stopReason === "aborted" ? "aborted" : error ? "failed" : "completed", ...(text ? { text } : {}), ...(error ? { error: { message: error } } : {}) };
 		if (failure) this.unsavedResult = result;
 		else this.sessionManager().appendCustomEntry(RESULT_TYPE, result);
-		this.operation = undefined;
+		this.operation = undefined; this.streamingText = false;
 		this.notify({ kind: "settled", sessionId: this.sessionId(), result, saved: !failure });
+	}
+	private observeLiveActivity(event: AgentSessionEvent): void {
+		if (event.type === "tool_execution_start") this.toolsRunning.set(event.toolCallId, { name: event.toolName, startedAt: Date.now() });
+		if (event.type === "tool_execution_end") this.toolsRunning.delete(event.toolCallId);
+		if (!["message_start", "message_update", "message_end"].includes(event.type)) return;
+		if (!("message" in event) || event.message.role !== "assistant") return;
+		if (event.type === "message_start") { this.lastText = undefined; this.streamingText = true; }
+		if (event.type === "message_update") { this.streamingText = true; this.lastText = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join(""); }
+		if (event.type === "message_end") this.streamingText = false;
 	}
 	private receive(event: AgentSessionEvent): void {
 		if (event.type === "agent_start" && !this.operation) this.begin();
-		if (event.type === "tool_execution_start") this.toolsRunning.set(event.toolCallId, event.toolName);
-		if (event.type === "tool_execution_end") this.toolsRunning.delete(event.toolCallId);
-		if (event.type === "message_update" && event.message.role === "assistant") this.lastText = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+		this.observeLiveActivity(event);
 		if (event.type === "entry_appended") this.notify({ kind: "entry", entry: event.entry });
 		if (event.type === "agent_settled" && !this.ownedRun) this.finish();
 		if (event.type !== "message_update") this.publishFooter();
@@ -845,7 +856,7 @@ export class AgentWorkerSession {
 	}
 	setOnUpdate(onUpdate?: (update: WorkerUpdate) => void): void { this.options.onUpdate = onUpdate; }
 	observe(listener: (event: AgentSessionEvent) => void): () => void { this.observers.add(listener); return () => { this.observers.delete(listener); }; }
-	observation(): WorkerObservation { return { currentTool: this.toolsRunning.values().next().value, lastText: this.lastText, pending: this.session.pendingMessageCount }; }
+	observation(): WorkerObservation { return { currentTool: this.toolsRunning.values().next().value?.name, lastText: this.lastText, pending: this.session.pendingMessageCount }; }
 	hasPendingHostWork(): boolean { return !this.session.isIdle || this.session.isBashRunning || this.tasks.size > 0 || this.session.pendingMessageCount > 0; }
 	lastErrorMessage(): string | undefined { return this.lastError; }
 	async operationResult(id: string): Promise<WorkerResult | undefined> {
@@ -853,14 +864,26 @@ export class AgentWorkerSession {
 		const entry = this.sessionManager().getEntries().findLast((entry) => entry.type === "custom" && entry.customType === RESULT_TYPE && (entry.data as WorkerResult)?.operationId === id);
 		return entry?.type === "custom" ? entry.data as WorkerResult : undefined;
 	}
+	private activity(): LiveActivity {
+		const saved = this.sessionManager().getEntries().findLast((entry) => entry.type === "custom" && entry.customType === RESULT_TYPE);
+		const result = saved?.type === "custom" ? saved.data as WorkerResult : undefined;
+		return { state: this.hasActiveWork() ? "working" : "idle", currentTool: this.observation().currentTool,
+			runningTools: [...this.toolsRunning].map(([toolCallId, tool]) => ({ toolCallId, name: tool.name, startedAt: new Date(tool.startedAt).toISOString(), elapsedMs: Math.max(0, Date.now() - tool.startedAt) })),
+			operation: this.operation ?? null, ...(typeof result?.operationId === "string" && ["completed", "failed", "aborted"].includes(result.status) ? { result: { operationId: activityExcerpt(result.operationId, 256), status: result.status } } : {}),
+			...(this.streamingText && this.lastText ? { lastText: activityExcerpt(this.lastText, 600) } : {}),
+			pending: this.session.pendingMessageCount, lastPersistedAt: this.sessionManager().getEntries().at(-1)?.timestamp ?? null };
+	}
 	async status(): Promise<WorkerStatus> {
 		const session = this.session;
 		const model = selectedModel(session);
-		return { sessionId: this.sessionId(), cwd: session.sessionManager.getCwd(), name: session.sessionManager.getSessionName(), tipId: session.sessionManager.getLeafId(), model: { provider: model.provider, modelId: model.id, thinkingLevel: session.thinkingLevel }, operation: this.operation ?? null, tools: session.getAllTools().map((tool) => tool.name), activeTools: session.getActiveToolNames(), extensions: session.resourceLoader.getExtensions().extensions.map((extension) => extension.path), entryCount: session.sessionManager.getEntries().length, ...(this.lastError ? { lastError: this.lastError.slice(0, 2000) } : {}) };
+		return { sessionId: this.sessionId(), cwd: session.sessionManager.getCwd(), name: session.sessionManager.getSessionName(), tipId: session.sessionManager.getLeafId(), model: { provider: model.provider, modelId: model.id, thinkingLevel: session.thinkingLevel }, operation: this.operation ?? null, tools: session.getAllTools().map((tool) => tool.name), activeTools: session.getActiveToolNames(), extensions: session.resourceLoader.getExtensions().extensions.map((extension) => extension.path), entryCount: session.sessionManager.getEntries().length, activity: this.activity(), ...(this.lastError ? { lastError: this.lastError.slice(0, 2000) } : {}) };
 	}
 	async inspect(options: InspectOptions = {}) {
 		this.assertAvailable();
-		const inspection = projectInspection(this.sessionManager(), this.sessionId(), options, { operation: this.operation ?? null, lastError: this.lastError });
+		const model = this.session.model;
+		const inspection = projectInspection(this.sessionManager(), this.sessionId(), options, { operation: this.operation ?? null, lastError: this.lastError,
+			activity: this.activity(), currentTools: [...this.toolsRunning.values()].map((tool) => tool.name), runningCallIds: [...this.toolsRunning.keys()],
+			...(model ? { model: { provider: model.provider, modelId: model.id, thinkingLevel: this.session.thinkingLevel } } : {}) });
 		return this.unsavedResult && !options.entryId && (options.view ?? "history") === "history" ? { ...inspection, result: { entryId: undefined, ...fragment(JSON.stringify(this.unsavedResult), Math.max(0, options.offset ?? 0), 12000) }, resultOffset: Math.max(0, options.offset ?? 0), resultPersistence: "not saved; retained only by the live owner", detail: "Continue the unsaved result with offset=result.nextOffset and no entryId. Native entries remain separately readable by entryId." } : inspection;
 	}
 	async waitForIdle(): Promise<void> {

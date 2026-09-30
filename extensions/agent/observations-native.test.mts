@@ -47,11 +47,15 @@ test("native codemode composes observations under hooks and keeps compaction mod
 			const live = await tools.agent_status({sessionId:${"SELF_ID"}});
 			const saved = await tools.agent_status({sessionId:row.sessionId});
 			const result = await tools.agent_inspect({sessionId:row.sessionId,view:"result"});
+			const activity = await tools.agent_inspect({sessionId:row.sessionId,view:"activity"});
+			const inventory = await tools.agent_status({});
 			const runs = await tools.agent_runs({runId:"absent-run"});
 			let refusal;
 			try { await tools.agent_list({query:"blocked"}); } catch(error) { refusal=String(error); }
 			return {id:row.sessionId, live:live.source, operation:live.sessions[0].operation, saved:saved.source,
 				resultId:result.entryId,status:result.status,operationId:result.operationId,
+				activityView:activity.view,activityText:activity.text,activityOwner:activity.metadata.ownerState,
+				liveActivity:live.sessions[0].activity.state,inventoryFirst:inventory.sessions[0].sessionId,storedCount:inventory.inventory.stored,
 				skipped:listed.coverage.skipped.length,partial:saved.sessions[0].capture.unfinishedTail,missingRun:runs.found,hook:runs.boundary,refusal,
 				compactCallable:typeof tools.agent_compact === "function"};`;
 		const stream = (_model: unknown, context: Parameters<NonNullable<ReturnType<typeof f.runtime.getRegisteredNativeProvider>>["stream"]>[1]) => {
@@ -72,11 +76,16 @@ test("native codemode composes observations under hooks and keeps compaction mod
 		const workers = (manager as unknown as { sessions: Map<string, typeof f.worker> }).sessions;
 		const worker = workers.get(self); assert.ok(worker);
 		const schemas = new Map<string, TSchema>([["agent_list", ListOutputSchema], ["agent_status", StatusOutputSchema], ["agent_inspect", InspectOutputSchema], ["agent_runs", RunsOutputSchema]]);
-		const failures: string[] = []; const seen = new Set<string>();
+		const failures: string[] = []; const seen = new Set<string>(); let activityText = "", inventoryText = "";
 		worker.observe(event => {
 			if (event.type !== "tool_execution_end" || event.isError || !schemas.has(event.toolName)) return;
 			const schema = schemas.get(event.toolName); if (!schema) return;
 			const value = (event.result as { structuredContent?: unknown }).structuredContent;
+			if (event.toolName === "agent_inspect" && value && typeof value === "object" && "view" in value && value.view === "activity") {
+				activityText = (event.result as { content: { type: string; text?: string }[] }).content.filter((part) => part.type === "text").map((part) => part.text).join("");
+				assert.ok("text" in value); assert.equal(activityText, value.text);
+			}
+			if (event.toolName === "agent_status" && value && typeof value === "object" && "source" in value && value.source === "inventory") inventoryText = (event.result as { content: { type: string; text?: string }[] }).content.filter((part) => part.type === "text").map((part) => part.text).join("");
 			seen.add(event.toolName);
 			if (!Check(schema, value)) failures.push(JSON.stringify([...Errors(schema, value)]));
 		});
@@ -88,6 +97,13 @@ test("native codemode composes observations under hooks and keeps compaction mod
 		assert.equal(result.message.isError, false, JSON.stringify(result));
 		const output = JSON.stringify(result.message.content);
 		for (const expected of [stored.getSessionId(), resultId, "saved-operation", "failed", "live-owner", "read-only-capture", "OBSERVATION_BLOCKED", "NATIVE_RESULT_HOOK"]) assert.ok(output.includes(expected), output);
+		assert.match(activityText, /^Session /); assert.match(activityText, /last saved result: failed/);
+		assert.match(inventoryText, /Agent supervision:/); assert.match(inventoryText, /Use agent_list/);
+		assert.ok(Buffer.byteLength(inventoryText) < 16000); assert.ok(!inventoryText.includes(stored.getSessionId()));
+		const listing = await manager.listSavedSessions();
+		assert.equal(typeof listing, "string"); assert.match(listing, /^agent sessions \(/u);
+		assert.ok(listing.includes(stored.getSessionId()), "explicit slash listing retains stored sessions");
+		assert.match(output, /liveActivity[\\"\s:]*working/); assert.match(output, /activityOwner[\\"\s:]*unavailable/);
 		assert.match(output, /compactCallable[\\"\s:]*false/); assert.match(output, /missingRun[\\"\s:]*false/);
 		assert.match(output, /partial[\\"\s:]*true/); assert.match(output, /skipped[\\"\s:]*1/);
 		const probe = entries.find(entry => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === "probe");

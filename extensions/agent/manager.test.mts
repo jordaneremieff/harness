@@ -563,7 +563,8 @@ describe("command registration", () => {
 		process.env.PI_AGENT_SESSIONS_DIR = test.sessionsRoot;
 		try {
 			const calls: Array<{ method: string; args: unknown[] }> = [];
-			for (const method of ["spawn", "status", "attach", "fork", "abort", "rewind", "place", "listPlaces", "unbindPlace", "detach", "runs", "send", "steer"] as const) {
+			const listSavedSessions = test.manager.listSavedSessions.bind(test.manager);
+			for (const method of ["spawn", "status", "listSavedSessions", "attach", "fork", "abort", "rewind", "place", "listPlaces", "unbindPlace", "detach", "runs", "send", "steer"] as const) {
 				t.mock.method(test.manager, method, (...args: unknown[]) => { calls.push({ method, args }); return ["spawn", "fork", "rewind", "detach"].includes(method) ? { sessionId: "created", runId: "run", text: method } : method; });
 			}
 			let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
@@ -571,7 +572,7 @@ describe("command registration", () => {
 			const notices: string[] = [];
 			const ctx = { cwd: test.cwd, model: defaultModel, mode: "tui", hasUI: true, isProjectTrusted: () => true, sessionManager: { getSessionId: () => "command-parent" }, ui: { custom: () => { throw new Error("custom UI must stay unopened"); }, notify: (text: string) => notices.push(text) } } as unknown as ExtensionCommandContext;
 			for (const [input, method] of [
-				["new Check the parser", "spawn"], ["list", "status"], ["status selected", "status"],
+				["new Check the parser", "spawn"], ["list", "listSavedSessions"], ["status selected", "status"],
 				["attach selected", "attach"], ["fork selected", "fork"], ["abort selected", "abort"],
 				["rewind selected entry Use current files", "rewind"], ["place . Check the parser", "place"],
 				["places", "listPlaces"], ["unbind .", "unbindPlace"], ["detach selected Next task", "detach"],
@@ -591,6 +592,15 @@ describe("command registration", () => {
 				assert.match(defined(notices.at(-1)), /Unknown action/);
 			}
 			assert.equal(calls.length, count);
+			t.mock.method(test.manager, "listSavedSessions", listSavedSessions);
+			const stored = await test.store.create(test.cwd, test.context);
+			const id = stored.metadata.id;
+			await stored.close(test.context);
+			await command.handler("list", ctx);
+			const listing = defined(notices.at(-1));
+			assert.equal(typeof listing, "string");
+			assert.ok(listing.startsWith("agent sessions ("));
+			assert.ok(listing.includes(id));
 		} finally {
 			if (previous === undefined) delete process.env.PI_AGENT_SESSIONS_DIR; else process.env.PI_AGENT_SESSIONS_DIR = previous;
 			await test.close();

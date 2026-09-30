@@ -4,7 +4,7 @@ import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-age
 
 export interface InspectOptions {
 	cursor?: number; limit?: number; entryId?: string; offset?: number;
-	view?: "history" | "branch" | "search" | "result";
+	view?: "history" | "activity" | "branch" | "search" | "result";
 	fromId?: string; query?: string; source?: "user" | "assistant" | "toolResult" | "summary" | "custom";
 	continuation?: string; operationId?: string;
 }
@@ -62,9 +62,10 @@ function validateSelection(value: Record<string, unknown>) {
 export function validateInspect(value: unknown): asserts value is InspectOptions {
 	if (!object(value) || Object.keys(value).some((key) => !["cursor", "limit", "entryId", "offset", "view", "fromId", "query", "source", "continuation", "operationId"].includes(key))) throw new Error("Invalid inspect options");
 	validateNumbers(value); validateStrings(value);
-	if (value.view !== undefined && !["history", "branch", "search", "result"].includes(String(value.view))) throw new Error("Invalid inspect view");
+	if (value.view !== undefined && !["history", "activity", "branch", "search", "result"].includes(String(value.view))) throw new Error("Invalid inspect view");
 	if (value.source !== undefined && !["user", "assistant", "toolResult", "summary", "custom"].includes(String(value.source))) throw new Error("Invalid inspect source");
-	if ((value.view ?? "history") === "history") validateHistory(value);
+	if (value.view === "activity") rejectFields(value, ["entryId", "offset", "fromId", "query", "source", "continuation", "operationId"], "Activity accepts cursor and limit only");
+	else if ((value.view ?? "history") === "history") validateHistory(value);
 	else validateSelection(value);
 }
 function content(entry: SessionEntry): unknown {

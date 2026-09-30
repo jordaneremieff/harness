@@ -357,6 +357,71 @@ describe("agent session tool presentation", () => {
 		assert.deepEqual(result, before);
 	});
 
+	it("shows explicit worker activity without treating missing activity as idle", () => {
+		const render = (activity: unknown) => renderAgentResult({ content: [], details: undefined, structuredContent: { source: "live-owner", sessions: [{ activity }] } as never }, { expanded: false, isPartial: false }, theme, { isError: false });
+		const activity = { state: "working", currentTool: "read\u202e", lastText: "Check the source\u001b", pending: 2, lastPersistedAt: "2026-09-28T01:00:00Z", operation: "task-2", result: { operationId: "task-1", status: "failed" }, runningTools: [{ toolCallId: "call-7", name: "read", startedAt: "2026-09-28T01:00:00Z", elapsedMs: 1500 }] };
+		const before = structuredClone(activity);
+		const card = render(activity);
+		const text = screen(card, 180);
+		assert.match(text, /Activity: working · tool read\\u\{202e\} · 2 pending/);
+		assert.match(text, /Last persisted: 2026-09-28T01:00:00Z/);
+		assert.match(text, /Assistant in progress: Check the source\\u\{1b\}/);
+		assert.match(text, /Operation: task-2/);
+		assert.match(text, /Running: read · call call-7 · 1s elapsed · since 2026-09-28T01:00:00Z/);
+		assert.match(text, /Last saved result: failed · operation task-1 · not task acceptance/);
+		assert.doesNotMatch(text, /stalled|stuck/);
+		assert.deepEqual(activity, before);
+		for (const width of [12, 40, 100]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
+		assert.match(screen(render({ state: "idle", pending: 0, lastPersistedAt: null }), 180), /Activity: idle · 0 pending\nLast persisted: unavailable/);
+		assert.match(screen(render({ state: "working" }), 180), /pending unknown/);
+		for (const missing of [null, undefined, {}, { state: "other", pending: 0 }]) assert.doesNotMatch(screen(render(missing)), /Activity:|idle|Last persisted/);
+	});
+
+	it("retains the single-session model and entry count beside live activity", () => {
+		const session = { sessionId: "worker", model: { provider: "provider", modelId: "model", thinkingLevel: "high" }, entryCount: 42, activity: { state: "working", pending: 0, lastPersistedAt: null } };
+		const render = (value: unknown) => renderAgentResult({ content: [{ type: "text", text: "worker status" }], details: undefined, structuredContent: { source: "live-owner", sessions: [value] } as never }, { expanded: false, isPartial: false }, theme, { isError: false });
+		const card = render(session);
+		const text = screen(card, 180);
+		assert.match(text, /Model: provider\/model · thinking high · entries 42\nActivity: working/);
+		assert.equal((text.match(/Model:/gu) ?? []).length, 1);
+		const absent = screen(render({ ...session, model: undefined, entryCount: undefined }), 180);
+		assert.match(absent, /Model: unknown · thinking unknown · entries unknown/);
+		assert.match(screen(render({ ...session, entryCount: 0 }), 180), /entries 0/);
+		for (const width of [12, 40, 100]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
+	});
+
+	it("uses readable elapsed durations for running tool cards", () => {
+		for (const [elapsedMs, expected] of [[123, "123ms"], [65_000, "1m 5s"], [3_661_000, "1h 1m 1s"], [90_061_000, "1d 1h 1m"]] as const) {
+			const activity = { state: "working", pending: 0, lastPersistedAt: null, runningTools: [{ name: "read", toolCallId: "call", elapsedMs }] };
+			const result = { content: [], details: undefined, structuredContent: { source: "live-owner", sessions: [{ activity }] } };
+			assert.ok(screen(renderAgentResult(result, { expanded: false, isPartial: false }, theme, { isError: false }), 180).includes(`${expected} elapsed`));
+		}
+	});
+
+	it("summarizes status inventory and keeps omitted records explicit", () => {
+		const structuredContent = {
+			source: "inventory", sessions: Array.from({ length: 5 }, (_, i) => ({ sessionId: `session-${i}`, activity: { state: "working", pending: 0, lastPersistedAt: null } })),
+			inventory: { stored: 50, held: 5, primaries: 1, detached: 2 }, coverage: { omitted: 3, complete: false },
+		};
+		const result = { content: [{ type: "text" as const, text: "Full status source" }], details: undefined, structuredContent };
+		const text = screen(renderAgentResult(result, { expanded: false, isPartial: false }, theme, { isError: false }), 180);
+		assert.match(text, /session-0/);
+		assert.match(text, /5 held · 1 primaries · 2 detached · 50 stored/);
+		assert.match(text, /agent_list discovers stored sessions/);
+		assert.match(text, /1 more session records; expand for details/);
+		assert.match(text, /3 session records omitted by observation bound/);
+		assert.match(text, /Coverage incomplete/);
+		assert.doesNotMatch(text, /session-4/);
+		assert.match(screen(renderAgentResult(result, { expanded: true, isPartial: false }, theme, { isError: false })), /Full status source/);
+		const recorded: Parameters<typeof renderAgentResult>[0] = { ...result, structuredContent: { ...structuredContent, sessions: [{ sessionId: "primary", primary: true }, { sessionId: "detached", run: { state: "running" } }] } };
+		const recordedText = screen(renderAgentResult(recorded, { expanded: false, isPartial: false }, theme, { isError: false }), 180);
+		assert.match(recordedText, /primary · primary/);
+		assert.match(recordedText, /detached · recorded run running/);
+		assert.doesNotMatch(recordedText, /Activity: (working|idle)/);
+		const empty = { ...result, structuredContent: { source: "inventory", sessions: [], inventory: { stored: 50, held: 0, primaries: 0, detached: 0 }, coverage: { omitted: 0, complete: true } } };
+		assert.match(screen(renderAgentResult(empty, { expanded: false, isPartial: false }, theme, { isError: false }), 180), /0 held · 0 primaries · 0 detached · 50 stored/);
+	});
+
 	it("uses only known snapshot shapes and does not infer configuration from text", () => {
 		for (const preview of [null, {}, { phase: "other", model: { provider: "p", modelId: "fake" } }]) {
 			const text = screen(renderAgentResult({ content: [{ type: "text", text: "provider/model high" }], details: { preview } }, { expanded: false, isPartial: false }, theme, { isError: false }));
@@ -651,6 +716,48 @@ describe("agent discovery, inspection, and control presentation", () => {
 		assert.match(search, /view search · query needle · source assistant · continuation/);
 		const entry = collapsed(renderInspectCall({ sessionId: SESSION, entryId: "e5", offset: 1200, fromId: "e9" }, theme, { expanded: false }));
 		assert.match(entry, /view history · entry e5 · from e9 · offset 1200/);
+	});
+
+	it("shows activity page bounds, explicit owner state, and persisted age", () => {
+		const args = { sessionId: SESSION, view: "activity" };
+		assert.match(collapsed(renderInspectCall(args, theme, { expanded: false })), /view activity · limit 4 \(default\)/);
+		assert.match(collapsed(renderInspectCall({ ...args, limit: 12, cursor: 0 }, theme, { expanded: false })), /view activity · cursor 0 · limit 12/);
+		const digest = "Session worker\nowner: working\nRecent turns first; rows chronological.\nassistant: Check the source.\nCoverage: 1/2 turns rendered.";
+		const activityReply = (structuredContent: unknown) => ({ ...reply(digest), structuredContent: structuredContent as never });
+		const activity = {
+			sessionId: SESSION, view: "activity", liveOwner: true,
+			turns: [{ startIndex: 2, endIndex: 3, partial: false, rows: [] }, { startIndex: 3, endIndex: 5, partial: true, rows: [{ entryId: "e4", timestamp: "2026-09-28T01:00:00Z", kind: "assistant", text: "Check the source." }] }],
+			coverage: { considered: 4, rendered: 2, omitted: 2, turnsRendered: 1, turnsConsidered: 2, truncated: true, thinking: 3 },
+			metadata: { ownerState: "working", lastPersistedAgeMs: 2100 }, nextCursor: 0, text: digest,
+		};
+		const before = structuredClone(activity);
+		const card = renderInspectResult(activityReply(activity), { expanded: false, isPartial: false }, theme, { isError: false, args });
+		const text = collapsed(card);
+		assert.match(text, /^activity · 1\/2 turns rendered · 2 entries/);
+		assert.match(text, /live owner · owner working · last persisted 2s ago/);
+		assert.match(text.replace(/\s+/gu, " "), /4 considered · 2 omitted · 3 thinking blocks omitted · digest byte bound · partial turn · older turns available/);
+		assert.deepEqual(activity, before);
+		for (const width of [12, 40, 100]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
+		const stored = { ...activity, liveOwner: false, capture: { available: true, mode: "read-only" }, turns: [], coverage: { considered: 0, rendered: 0, omitted: 0, turnsRendered: 0, turnsConsidered: 0, truncated: false }, metadata: { ownerState: "unavailable", lastPersistedAgeMs: null }, nextCursor: null };
+		const storedText = collapsed(renderInspectResult(activityReply(stored), { expanded: false, isPartial: false }, theme, { isError: false, args }));
+		assert.match(storedText, /activity · 0\/0 turns rendered · 0 entries/);
+		assert.match(storedText, /read-only capture · owner unavailable · persisted age unavailable/);
+		assert.doesNotMatch(storedText, /idle|older turns available|oldest|absent/);
+		const expanded = collapsed(renderInspectResult(activityReply(activity), { expanded: true, isPartial: false }, theme, { isError: false, args }));
+		assert.equal(expanded, digest);
+		const emptyTurns = { ...activity, turns: [{ startIndex: 2, endIndex: 5, partial: true, rows: [] }], coverage: { ...activity.coverage, rendered: 0, omitted: 4, turnsRendered: 0, turnsConsidered: 1 } };
+		assert.match(collapsed(renderInspectResult(activityReply(emptyTurns), { expanded: false, isPartial: false }, theme, { isError: false, args })), /activity · 0\/1 turns rendered · 0 entries/);
+		const unknown = collapsed(renderInspectResult(activityReply({ ...stored, metadata: { ownerState: "other", lastPersistedAgeMs: -1 } }), { expanded: false, isPartial: false }, theme, { isError: false, args }));
+		assert.match(unknown, /owner unavailable · persisted age unavailable/);
+		const longAge = { ...activity, metadata: { ...activity.metadata, lastPersistedAgeMs: 3_661_000 } };
+		assert.match(collapsed(renderInspectResult(activityReply(longAge), { expanded: false, isPartial: false }, theme, { isError: false, args })), /last persisted 1h 1m 1s ago/);
+		const clipping = { ...activity, coverage: { ...activity.coverage, truncated: false, headerTruncated: true, excerptsClipped: true, entryLimitReached: true, rowLimitReached: true } };
+		const clipped = screen(renderInspectResult(activityReply(clipping), { expanded: false, isPartial: false }, theme, { isError: false, args }), 240);
+		assert.match(clipped, /header byte bound · excerpts clipped · entry limit · row limit/);
+		assert.doesNotMatch(clipped, /digest byte bound/);
+		const malformed = collapsed(renderInspectResult(activityReply({ view: "activity", turns: "bad" }), { expanded: false, isPartial: false }, theme, { isError: false, args }));
+		assert.match(malformed, /Session worker\nowner: working/);
+		assert.doesNotMatch(malformed, /0 turns|owner idle/);
 	});
 
 	it("summarizes a history page, a read-only capture, and an exact entry", () => {

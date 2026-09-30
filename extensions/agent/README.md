@@ -129,9 +129,10 @@ session sends interim reports, blocking questions, or corrections through
 `agent_send` to the owner ID in its session-ownership section. An interim report
 does not replace its terminal result. Detached settlements use primary notices.
 
-Use `agent_status` for orientation and `agent_inspect` for transcript or result
-evidence, not for waiting. Never poll with sleeps or repeated observation calls.
-Do independent work while useful agent work continues. Before a final conclusion,
+Use `agent_status` for orientation and `agent_inspect` with `view:"activity"`
+to check recent work and owner status together. Use the other inspection views
+for exact transcript or result evidence, not for waiting. Never poll with sleeps
+or repeated observation calls. Do independent work while useful agent work continues. Before a final conclusion,
 integrate needed results and resolve live work: continue useful work, redirect
 changed work, or abort superseded work. Settlement establishes execution, not
 verification or task acceptance. Do not duplicate an assigned task while its
@@ -158,22 +159,34 @@ as tool results instead.
 ### Structured observations in codemode
 
 `agent_list`, `agent_status`, `agent_inspect`, and `agent_runs` declare native
-`outputSchema` contracts and return matching `structuredContent`. Their human
-text and presentation details remain unchanged. Native codemode scripts receive
-objects rather than display text:
+`outputSchema` contracts and return matching `structuredContent`. Native
+codemode scripts receive objects rather than display text. Tool cards retain
+human-readable summaries and expansion:
 
 - `agent_list` returns `rows`, `nextCursor`, and metadata `coverage`, together
   with its source, ordering, continuation, and authority qualifications.
 - `agent_inspect` returns its existing bounded inspection: history entries,
-  exact-entry fragments, selected ancestry evidence, or identified saved results.
-  Saved results expose `entryId`, `operationId`, and `status`; fragmented native
-  content remains in `text` with `nextOffset`. Unsaved results retain their
+  exact-entry fragments, selected ancestry evidence, identified saved results,
+  or an `activity` digest with input-delimited turns. Activity includes `text`,
+  `turns`, `coverage`, `nextCursor`, `observedAt`, and `metadata`. Metadata reports
+  identity, configuration, entry count, last persisted time and age, owner state,
+  current tools, exact running call IDs with start times and elapsed durations,
+  current operation, last saved result, pending input, and available in-progress
+  assistant text or last error. Unavailable
+  owner state stays explicit. Saved results expose `entryId`, `operationId`, and
+  `status`; fragmented native content remains in `text` with `nextOffset`. Unsaved results retain their
   live-owner persistence warning. Script access does not widen capture or search.
 - `agent_status` returns `source`, `sessions`, and `coverage`. The source separates
   inventory, live owner, detached owner, read-only capture, and detached record.
-  Live records include model, operation, tool names, and entry count. Stored
-  records contain capture availability and never invent live fields. A detached
-  control failure retains the run record and an `unavailable` reason.
+  Live records include model, operation, tool names, entry count, and available
+  `activity`: working or idle state, current tool, running call IDs and durations,
+  current operation, last saved result, in-progress assistant text, pending input,
+  and last persisted time. Without a session ID, status lists process-held
+  workers first, with working workers before idle workers, then primaries and
+  active detached runs. Its `inventory` counts stored sessions, held workers,
+  primaries, and active detached runs; `agent_list` discovers stored sessions.
+  Stored records contain capture availability and never invent live fields.
+  A detached control failure retains the run record and an `unavailable` reason.
 - `agent_runs` returns `runs`, `found`, and `coverage`. Records include identities,
   state, timestamps, process ID, bounded progress, errors, and summaries. They
   exclude request prompts and private store/configuration/log paths. `found:false`
@@ -184,8 +197,8 @@ Status and run projections fit the `OBSERVATION_BYTES` budget in
 `coverage.total`, `returned`, `omitted`, and `complete`; omitted identities are
 not truncated into other identities. These counts describe the returned source
 collection, not an audit of every file or owner. These projections add no cursor
-or archive index. Existing human text and source enumeration retain their existing
-behavior. Discovery and inspection retain their own bounds and continuations.
+or archive index. Discovery and inspection retain their own bounds and
+continuations.
 
 Every structured observation remains evidence, not approval or task acceptance.
 Thrown refusals still reject script calls. Partial captures and incomplete
@@ -213,7 +226,12 @@ heading when those fields apply. Omitted values remain unresolved rather than
 borrowing a model from the parent display. Result previews use structured
 session snapshots for spawn, fork, rewind, attach, place, and status. Detach
 labels its snapshot **Selected before transfer**; it does not establish the
-child runtime's later model selection. Missing metadata remains unknown.
+child runtime's later model selection. Status snapshots show explicit activity,
+current tool, pending input, in-progress assistant text, and last persisted time
+when available. Running tools retain their call IDs, start times, and elapsed
+durations. Saved result labels distinguish terminal outcomes from task acceptance.
+The collapsed card shows up to four session records and four running tools per
+record; expansion retains the full returned text. Missing metadata remains unknown.
 
 `agent_compact` returns no session snapshot, so its card names the target and
 the path instead. A call with `summary` is a self-compaction request: the card
@@ -232,7 +250,8 @@ call card shows the tool name, the request, and the per-call values that exist:
 the list query or directory filter with its page state, the steer target with
 its message preview and reply reference, the command name with its arguments,
 the inspect target with the selected view, entry, query, source, offset, or
-continuation, and the run id or the whole run list. No card repeats a static
+continuation, and the run id or the whole run list. Activity calls show the
+turn limit and any older-entry cursor. No card repeats a static
 description of the tool. A call shows the expansion key only when it hides or
 clips an argument. A collapsed result card summarizes the outcome instead of
 showing JSON and repeats the request only when the result identifies something
@@ -240,8 +259,10 @@ else: sessions on the page against the inventory with skipped files, partial
 metadata, and the next page, the inspect view with its entry or match count,
 capture mode, coverage reason, continuation, and whether a shown operation
 result is saved or held only by the live owner, command output with a
-replacement session, and detached-run counts by state. A bounded or empty page reports its coverage,
-so it cannot read as proof of absence. Queue admission and abort request keep
+replacement session, and detached-run counts by state. Activity results show
+turn and entry counts, owner state, age of persisted output, omitted entries,
+partial turns, truncation, and older-page availability. A bounded or empty page
+reports its coverage, so it cannot read as proof of absence. Queue admission and abort request keep
 their exact claims. Expanded cards show the full arguments and returned text
 with escaped controls and the display bound; the machine-readable result stays
 intact in native tool history. Unexpected or malformed output falls back to a
@@ -257,6 +278,46 @@ intact. Terminal controls display as escaped text. Preview rendering neither
 opens a session nor changes task admission, delivery, or lifecycle behavior.
 
 ### Observe sessions and runs
+
+`agent_inspect({sessionId, view:"activity"})` returns recent readable work and
+owner status in one observation. It does not require a separate status request.
+The default page covers four recent turns; `limit` accepts up to twelve.
+A user message starts a turn. A custom input starts a turn only when no prior
+message exists or the prior message is an assistant response with a terminal
+stop reason (`stop`, `length`, `error`, or `aborted`). Consecutive inputs and
+mid-turn peer or steering inputs stay in the current turn. Rows within each
+turn are chronological; recent turns appear first. Failed tool results and errors
+have priority when the digest cannot retain every row. The header counts failed
+entries omitted from the selected window. Consecutive identical custom entries
+collapse into one row with a count and their source entry IDs.
+The digest retains at most 16,000 UTF-8 bytes. Selection stops at 128 entries,
+and rendered rows also stop at 128. The header retains at most 8,000 bytes.
+Text excerpts retain a 400-UTF-16-unit escaped prefix; failed tool output retains
+both its beginning and end within that budget. Input and result arrays inspect
+up to twelve blocks with a 600-unit excerpt budget. Tool argument prefixes retain
+240 units, and in-progress assistant text prefixes retain 600. Omission notices
+sit outside prefix bounds.
+Thinking is omitted with a count;
+images appear as labels. Continue with the returned `nextCursor` as `cursor`
+for older turns. A partial turn or omitted entry remains
+explicit in `turns` and `coverage`; an empty page does not establish no work.
+`coverage.truncated` means rows exceeded the digest byte budget. Header clipping,
+excerpt clipping, the entry limit, and the row limit have separate coverage flags.
+The text reports only active coverage flags. Tool calls without a selected result
+use up to 128 later entries to find a matching result. A result outside the page
+is labeled `result after this page` with its entry ID. Older-page calls never use
+current time to imply an unresolved call age.
+
+Activity metadata separates live owner state from persisted evidence. A stored
+snapshot reports owner state as unavailable, not idle. The last persisted time
+and its age measure persisted entries, not model thought or a stalled worker.
+Running tools expose exact call IDs, start times, and elapsed durations. Tool
+rows retain available persisted ages, running durations, and literal `isError`
+values. Text durations use readable units; structured fields retain milliseconds. The worker supplies `lastText` only before the assistant message is
+finalized. Age alone never classifies a stall. Status without a session ID shows
+process-held workers,
+primaries, and active detached runs, with stored-session counts and a pointer
+to `agent_list`; it does not dump the stored transcript inventory.
 
 Bare `/agent` and **Ctrl+Alt+G** open a board for supervising ordinary sessions.
 Each session occupies one row: state, title, place, model/thinking level, spend,
@@ -423,7 +484,8 @@ remain free text, without placeholder or model-ID suggestions.
 | Action | Result |
 |---|---|
 | `new [prompt]` | Create a separate session and optionally start work. |
-| `list`, `status [session]` | List sessions or request one session's status. |
+| `list` | List saved sessions and registered primaries. |
+| `status [session]` | Show held work, primaries, and live detached records, or request one session's status. |
 | `attach session [provider/model]` | Reopen a session without starting work; optionally repair its idle model choice. |
 | `configure session name [text]`, `configure session model provider/model [level]`, `configure session thinking level` | Change an idle session's configuration without a task or replacement. |
 | `send session message` | Start the session's next task; active work refuses another task. |
@@ -558,13 +620,15 @@ every conversation message or establish live ownership.
 ```text
 agent_list({query: "cache cleanup", limit: 5})
 agent_list({query: "cache cleanup", limit: 5, cursor: "<nextCursor>"})
+agent_inspect({sessionId: "<session>", view: "activity", limit: 4})
+agent_inspect({sessionId: "<session>", view: "activity", cursor: 12})
 agent_inspect({sessionId: "<session>", view: "result"})
 agent_inspect({sessionId: "<session>", view: "result", entryId: "<result-entry>", offset: 12000})
 agent_inspect({sessionId: "<session>", view: "search", query: "cleanup", source: "toolResult"})
 agent_inspect({sessionId: "<session>", entryId: "<matched-entry>"})
 ```
 
-Use the returned offset rather than assuming the example's value. Existing
+Use the returned offset or cursor rather than assuming the example's value. Existing
 `agent_attach`, `agent_send`, and `agent_fork` controls reuse a selected session;
 observation starts no work and changes no ownership.
 
@@ -590,6 +654,13 @@ instead of reporting a complete empty inventory.
 
 `agent_inspect` has explicit evidence views:
 
+- `activity` presents recent input-delimited turns as readable rows with native
+  entry IDs, timestamps, kind, and text. Tool rows retain available call IDs,
+  outcomes, durations, persisted ages, running durations, `isError`, and result
+  entry IDs. Coverage reports considered, rendered, and omitted entries plus
+  truncation and the count of omitted thinking blocks.
+  Use the native entry ID with `history` for exact source evidence. This digest
+  adds no summary model, store, watcher, or execution authority.
 - `history`, the default, retains existing whole-history pages and exact-entry
   reads. History pages identify their saved result with `result.entryId`.
   `result.text` starts the same native-entry inspection representation as an
@@ -1152,8 +1223,12 @@ Native idle-release tests cover timer expiry, stored-session reuse, retained
 history and associations, once-only spend, active and queued work, owner notices,
 configuration, detached ownership, and disabled release. Synthetic inspection tests cover typed
 omissions, unchanged native entries, and Unicode continuation through live-owner
-and read-only projections. Loader tests verify the public inspection registration;
-they do not establish behavior in an already-loaded host. Component tests cover
+and read-only projections. Presentation tests cover activity call limits and
+cursors, turn and entry counts, persisted age, unavailable owner state,
+coverage bounds, running call IDs and durations, saved result labels, and status
+activity without inferred idleness. Loader tests
+verify the public inspection registration; they do not establish behavior in
+an already-loaded host. Component tests cover
 board filtering, uncapped paging, native chat components, message drafts,
 refresh, disposal, source failures, and read-only digest boundaries. Native TUI changes
 also require an isolated interactive or PTY check for keys, focus, resize, and

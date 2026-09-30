@@ -138,14 +138,14 @@ test("result selection returns an exact native entry and preserves full Unicode 
 	let offset = result.nextOffset;
 	while (offset !== null) {
 		const page = projectInspection(native, native.getSessionId(), { view: "result", entryId: id, offset });
-		assert.ok("text" in page); full += page.text; offset = page.nextOffset;
+		assert.ok("nextOffset" in page); full += page.text; offset = page.nextOffset;
 	}
 	assert.equal(JSON.parse(full).data.text, text);
 	const history = projectInspection(native, native.getSessionId(), { limit: 1 });
 	assert.ok("result" in history); assert.equal(history.result?.entryId, id);
 	native.appendCustomEntry("agent.operation", { operationId: "operation-b" });
 	const pending = projectInspection(native, native.getSessionId(), { view: "result" });
-	assert.ok("coverage" in pending); assert.match(defined(pending.coverage?.reason), /no result/);
+	assert.ok("coverage" in pending && "reason" in pending.coverage); assert.match(defined(pending.coverage.reason), /no result/);
 	assert.ok(!("text" in pending));
 	const prior = projectInspection(native, native.getSessionId(), { view: "result", operationId: "operation-a" });
 	assert.ok("entryId" in prior); assert.equal(prior.entryId, id);
@@ -170,7 +170,7 @@ test("history result previews continue as the same exact native entry", () => {
 			let offset: number | null = history.result.nextOffset;
 			while (offset !== null) {
 				const page = projectInspection(native, native.getSessionId(), { view, entryId: history.result.entryId, offset });
-				assert.ok("text" in page);
+				assert.ok("offset" in page);
 				assert.equal(page.offset, offset);
 				assert.ok(Buffer.byteLength(page.text) <= 12000);
 				assert.ok(page.nextOffset === null || page.nextOffset > offset);
