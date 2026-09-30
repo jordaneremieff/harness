@@ -153,9 +153,13 @@ separate from those development entrypoints.
 The installed extension loader binds Pi core imports to the running install.
 `dist/core/extensions/loader.js` aliases coding-agent, agent-core, TUI, AI and
 its named compatibility/provider subpaths, plus TypeBox root/compile/value.
-Server, client, and Chord are not in that alias map; their package resolution
-must be checked separately. Matching a checkout lockfile does not establish
-that every loaded extension resolves the same dependency instance.
+Server, client, and Chord are not in that alias map. The harness declares them
+as runtime dependencies, not host-supplied peers. Verified 2026-09-30 against
+installed 0.99.1 `docs/packages.md` and `dist/core/package-manager.js`: managed
+Git installs and updates use `npm install --omit=dev --legacy-peer-deps`, so a
+peer-only server declaration leaves the agent extension unable to load.
+Matching a checkout lockfile does not establish that every loaded extension
+resolves the same dependency instance.
 
 The CLI supplies codemode, tool search, MCP, and llama.cpp as `builtin: true`
 factory entries from `dist/extensions/index.js`, consumed by `dist/main.js`.

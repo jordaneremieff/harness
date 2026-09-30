@@ -20,6 +20,15 @@ supervision, readable conversations, messages, and explicit actions.
 It also provides `/restart` for the current interactive Pi CLI process.
 It does not provide a conversation editor or workspace.
 
+## Runtime dependencies
+
+The package installs `@earendil-works/pi-server`, `@earendil-works/pi-client`,
+and `@earendil-works/chord` as runtime dependencies for detached controls.
+Pi does not supply these packages through its extension loader. They must stay
+in `dependencies`, not `peerDependencies`: managed Git installs and updates
+suppress automatic peer installation. A development checkout with peers installed
+does not verify this distribution boundary.
+
 ## Restart this Pi process
 
 Use `/restart` without arguments to stop Pi gracefully and resume the exact saved
