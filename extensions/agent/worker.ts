@@ -48,7 +48,7 @@ export type WorkerUpdate =
 	| { kind: "replaced"; previousId: string; sessionId: string }
 	| { kind: "entry"; entry: SessionEntry }
 	| { kind: "error"; message: string }
-	| { kind: "settled"; sessionId: string; result: WorkerResult; saved?: boolean };
+	| { kind: "settled"; sessionId: string; name?: string; result: WorkerResult; saved?: boolean };
 export interface WorkerResult {
 	operationId: string; status: "completed" | "failed" | "aborted";
 	text?: string; error?: { message: string };
@@ -672,7 +672,12 @@ export class AgentWorkerSession {
 		if (failure) this.unsavedResult = result;
 		else this.sessionManager().appendCustomEntry(RESULT_TYPE, result);
 		this.operation = undefined; this.streamingText = false;
-		this.notify({ kind: "settled", sessionId: this.sessionId(), result, saved: !failure });
+		this.notify({ kind: "settled", sessionId: this.sessionId(), ...this.settledName(), result, saved: !failure });
+	}
+	/** The current session name travels with the settlement; a blank name is omitted. */
+	private settledName(): { name?: string } {
+		const name = this.sessionManager().getSessionName()?.trim();
+		return name ? { name } : {};
 	}
 	private observeLiveActivity(event: AgentSessionEvent): void {
 		if (event.type === "tool_execution_start") this.toolsRunning.set(event.toolCallId, { name: event.toolName, startedAt: Date.now() });

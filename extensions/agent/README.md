@@ -1028,8 +1028,12 @@ primary no longer receives results of sessions it did not create. When no
 owning session is live in this process, because the owner closed, detached, is
 unknown, or has a failed association write, the notice reaches the registered
 primary sessions instead and says so in its content; its collapsed card marks
-the same state. A notice that its owner cannot admit yet waits in memory and
-reaches that owner later, or falls back when the owner retires. Detached-run
+the same state. The notice names the settled session when it has a name: its
+content opens with the name and ID, and the collapsed card title reads
+`<name> completed`, `failed`, or `aborted` instead of `Peer <status>`, with the
+name bounded and control characters shown as text. A notice that its owner
+cannot admit yet waits in memory and reaches that owner later, or falls back
+when the owner retires. Detached-run
 summaries keep their separate announcement to registered primaries.
 
 These results and detached-run summaries carry an explicit
