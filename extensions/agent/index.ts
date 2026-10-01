@@ -1286,7 +1286,7 @@ export class AgentManager {
 			const batch = settled.slice(offset, offset + PEER_OUTCOME_DISPLAY_LIMIT);
 			const lines = batch.map((run) => {
 				const detail = run.error || run.summary || (run.state === "abandoned"
-					? "the process is gone; completed work remains; a retained writer claim blocks reopening"
+					? "the process is gone; completed work remains; the next open replaces its dead writer claim"
 					: "no result summary; reopen the session to review its work");
 				const flat = detail.replace(/\s+/gu, " ").trim();
 				const summary = flat.length > MAX_SUMMARY_CHARS ? `${flat.slice(0, MAX_SUMMARY_CHARS)}…` : flat;
@@ -2040,7 +2040,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		name: "agent_runs",
 		label: "Agent runs",
 		description:
-			"Read detached-run state and results. A missing process without a result reads as abandoned. Retained writer claims block reopening until explicit recovery; recorded state is not live execution evidence.",
+			"Read detached-run state and results. A missing process without a result reads as abandoned. The next open replaces a dead local writer claim; a live claim still refuses. Recorded state is not live execution evidence.",
 		promptSnippet: "Show detached agent runs",
 		parameters: RunsParams,
 		outputSchema: RunsOutputSchema,

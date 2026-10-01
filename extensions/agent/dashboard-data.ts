@@ -1,10 +1,9 @@
 /** Read-only, process-local observations of ordinary native sessions. */
-import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, type Stats } from "node:fs";
-import { hostname } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { CURRENT_SESSION_VERSION, parseSessionEntries, type SessionEntry, type SessionHeader } from "@earendil-works/pi-coding-agent";
+import { claimPath, observeClaim as observeClaimFile, type ClaimObservation } from "./claims.ts";
 import type { AgentSessionSummary } from "./command.ts";
 import type { DetachedRunView } from "./detached.ts";
 import { MAX_CAPTURE_BYTES } from "./store.ts";
@@ -12,7 +11,7 @@ import { MAX_CAPTURE_BYTES } from "./store.ts";
 export interface SessionDigest extends AgentSessionSummary {
 	path: string;
 	createdAt: number;
-	state: "working" | "idle" | "done" | "failed" | "stopped" | "interrupted" | "new" | "orphaned" | "unavailable";
+	state: "working" | "idle" | "done" | "failed" | "stopped" | "interrupted" | "new" | "unavailable";
 	owner?: "here" | "window" | "detached" | "unknown";
 	ownerLabel?: string;
 	/** All captured native usage, across branches; incomplete when partial. */
@@ -53,15 +52,9 @@ interface CachedDigest {
 	turnStart?: number;
 	readError?: string;
 }
-interface Claim {
-	kind: "absent" | "live" | "dead" | "unknown";
-	label?: string;
-	error?: string;
-}
 
 const HEADER_BYTES = 16 * 1024;
 const HEAD_BYTES = 1024 * 1024;
-const CLAIM_BYTES = 16 * 1024;
 const REPLY_CHARS = 32 * 1024;
 const TASK_CHARS = 4096;
 const ENTRY_TYPES = new Set(["message", "model_change", "thinking_level_change", "usage", "compaction", "branch_summary", "custom", "custom_message", "context_edit", "label", "session_info"]);
@@ -326,38 +319,15 @@ function observeAssistant(branch: BranchState, message: AssistantMessage): void 
 	if (row.state !== "interrupted") pending.clear();
 }
 
-function observeClaim(nativeRoot: string, row: SessionDigest): Claim {
-	let fd: number | undefined;
+/** Observation reads the claim and never removes it; a dead owner leaves the transcript outcome in force. */
+function observeClaim(nativeRoot: string, row: SessionDigest): ClaimObservation {
 	try {
-		const directory = join(nativeRoot, ".claims");
-		const stat = lstatSync(directory);
+		const stat = lstatSync(join(nativeRoot, ".claims"));
 		if (!stat.isDirectory() || stat.isSymbolicLink()) return { kind: "unknown", error: "Writer claim directory is not a regular directory" };
-		const key = createHash("sha256").update(JSON.stringify([resolve(row.cwd), row.sessionId])).digest("hex");
-		fd = openSync(join(directory, `${key}.lock`), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-		const info = fstatSync(fd);
-		if (!info.isFile() || info.size > CLAIM_BYTES) return { kind: "unknown", error: "Writer claim exceeds its read bound or is not a regular file" };
-		const bytes = readBytes(fd, 0, CLAIM_BYTES + 1);
-		if (bytes.length > CLAIM_BYTES) return { kind: "unknown", error: "Writer claim exceeds its read bound" };
-		const claim: unknown = JSON.parse(bytes.toString("utf8"));
-		return classifyClaim(claim, row);
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "absent" } : { kind: "unknown", error: `Writer claim is unreadable: ${reason(error)}` };
-	} finally { if (fd !== undefined) closeSync(fd); }
-}
-
-function classifyClaim(claim: unknown, row: SessionDigest): Claim {
-	if (!record(claim) || claim.sessionId !== row.sessionId || claim.cwd !== resolve(row.cwd)
-		|| !nonempty(claim.host) || !timestamp(claim.createdAt) || new Date(claim.createdAt).toISOString() !== claim.createdAt || !Number.isSafeInteger(claim.pid)
-		|| Number(claim.pid) <= 0 || Number(claim.pid) > 2147483647) return { kind: "unknown", error: "Writer claim is invalid" };
-	if (claim.host !== hostname()) return { kind: "unknown", label: claim.host, error: "Writer claim belongs to another host" };
-	const pid = Number(claim.pid);
-	try { process.kill(pid, 0); }
-	catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ESRCH") return { kind: "dead", label: `PID ${pid}`, error: "Writer claim remains after its process exited" };
-		if (code !== "EPERM") return { kind: "unknown", error: `Writer process check failed (${code ?? "unknown"})` };
 	}
-	return { kind: "live", label: `PID ${pid}` };
+	return observeClaimFile(claimPath(nativeRoot, row), row);
 }
 
 function applyLocalOwner(row: SessionDigest, overlay: DashboardOverlay): void {
@@ -374,10 +344,9 @@ function applyDetachedOwner(row: SessionDigest, run: DetachedRunView): void {
 	if (run.progress?.error) row.error = run.progress.error;
 }
 
-function applyClaim(row: SessionDigest, claim: Claim): void {
-	if (claim.kind === "dead" || claim.kind === "unknown") {
-		row.owner = "unknown"; row.ownerLabel = claim.label; row.error = claim.error;
-		row.state = claim.kind === "dead" ? "orphaned" : "unavailable";
+function applyClaim(row: SessionDigest, claim: ClaimObservation): void {
+	if (claim.kind === "unknown") {
+		row.owner = "unknown"; row.ownerLabel = claim.label; row.error = claim.error; row.state = "unavailable";
 	} else if (claim.kind === "live") {
 		row.owner = "window"; row.ownerLabel = claim.label; row.live = true;
 		if (row.state === "interrupted") row.state = "working";
@@ -406,7 +375,7 @@ function applyOverlay(cached: CachedDigest, nativeRoot: string, overlay?: Dashbo
 	else if (liveRun) applyDetachedOwner(row, liveRun);
 	else {
 		const claim = observeClaim(nativeRoot, row);
-		if (claim.kind === "absent") applyRunResult(row, runs);
+		if (claim.kind === "absent" || claim.kind === "dead") applyRunResult(row, runs);
 		else applyClaim(row, claim);
 	}
 	if (row.state === "working" && cached.turnStart !== undefined) row.durationMs = Math.max(0, Date.now() - cached.turnStart);

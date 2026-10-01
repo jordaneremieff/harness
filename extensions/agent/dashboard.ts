@@ -38,7 +38,6 @@ export const sessionAppearance: Record<SessionDigest["state"], StateAppearance> 
 	stopped: { label: "Stopped", glyph: "■", color: "warning" },
 	interrupted: { label: "Interrupted", glyph: "↯", color: "warning" },
 	new: { label: "New", glyph: "·", color: "dim" },
-	orphaned: { label: "Orphaned", glyph: "⊗", color: "error" },
 	unavailable: { label: "Unavailable", glyph: "?", color: "error" },
 };
 const oneLine = (text: string) => cleanDashboardText(text).replace(/\s+/g, " ").trim();
@@ -60,7 +59,7 @@ function stateLabel(row: SessionDigest): string {
 }
 function sectionOf(row: SessionDigest, now: number): string {
 	if (row.state === "working") return "Working";
-	if (row.state === "orphaned" || row.state === "unavailable") return "Attention";
+	if (row.state === "unavailable") return "Attention";
 	if (now - row.modifiedAt <= 24 * 60 * 60 * 1000 && ["failed", "stopped", "interrupted"].includes(row.state)) return "Attention";
 	const today = new Date(now); today.setHours(0, 0, 0, 0);
 	const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
@@ -218,7 +217,7 @@ export class AgentDashboard implements Component {
 	}
 	private refusal(row: SessionDigest): string | undefined {
 		if (row.owner === "window") return `Open in ${oneLine(row.ownerLabel || "another Pi window")} · ${basename(row.cwd)}`;
-		if (["orphaned", "unavailable"].includes(row.state) || row.owner === "unknown") return `${sessionAppearance[row.state].label}: ${oneLine(row.error || row.ownerLabel || "session control is unavailable")}`;
+		if (row.state === "unavailable" || row.owner === "unknown") return `${sessionAppearance[row.state].label}: ${oneLine(row.error || row.ownerLabel || "session control is unavailable")}`;
 		return undefined;
 	}
 	private finishInput(): void { this.inputMode = undefined; this.focused = this.hostFocused; this.redraw(); }
@@ -321,9 +320,9 @@ export class AgentDashboard implements Component {
 		while (hints.length && visibleWidth([...hints, back].join(" · ")) > width) hints.pop();
 		return this.theme.fg("muted", truncateToWidth([...hints, back].join(" · "), width));
 	}
-	private heading(): string {
+	private heading(width: number): string {
 		if (this.state.actionResult !== undefined) return this.theme.bold("Action result");
-		if (this.state.conversation) return this.conversationHeading();
+		if (this.state.conversation) return this.conversationHeading(width);
 		return `${this.theme.bold("Agents")}  ${totals(this.state.snapshot)}`;
 	}
 	private content(width: number, height: number): string[] {
@@ -356,7 +355,7 @@ export class AgentDashboard implements Component {
 		const extras = extraHeight ? this.inputLines(inner).slice(-extraHeight) : [];
 		const contentHeight = Math.max(1, height - 5 - extras.length);
 		this.viewport = contentHeight;
-		const summary = this.heading();
+		const summary = this.heading(inner);
 		const rendered = this.content(inner, contentHeight);
 		const content = Array.from({ length: contentHeight }, (_, index) => rendered[index] ?? "");
 		const border = (left: string, right: string) => this.theme.fg("borderMuted", left + "─".repeat(width - 2) + right);
@@ -454,9 +453,13 @@ export class AgentDashboard implements Component {
 		if (reply.length > budget) body[budget - 1] = this.theme.fg("dim", "… Enter reads the conversation");
 		return [...header, ...Array.from({ length: budget }, (_, index) => body[index] ?? ""), ...detail].slice(0, height);
 	}
-	private conversationHeading(): string {
+	/** The title yields width first so the follow marker, state and cost stay visible. */
+	private conversationHeading(width: number): string {
 		const row = this.state.snapshot?.sessions.find((item) => item.sessionId === this.state.conversation);
-		return `${this.theme.bold(row ? titleOf(row) : "Conversation")}  ${this.theme.fg("muted", this.follow ? "TAIL" : "BROWSE")}${row ? ` · ${stateLabel(row)} · ${costOf(row)}` : ""}`;
+		const marker = this.follow ? "TAIL" : "BROWSE";
+		const detail = row ? ` · ${stateLabel(row)} · ${costOf(row)}` : "";
+		const title = truncateToWidth(row ? titleOf(row) : "Conversation", Math.max(1, width - 2 - visibleWidth(marker) - visibleWidth(detail)));
+		return `${this.theme.bold(title)}  ${this.theme.fg("muted", marker)}${detail}`;
 	}
 	private renderConversation(width: number, height: number): string[] {
 		if (this.historyError) return [this.theme.fg("error", "Conversation unavailable"), ...wrapTextWithAnsi(cleanDashboardText(this.historyError), width), "r retries"];
@@ -488,7 +491,7 @@ export class AgentDashboard implements Component {
 		return lines.slice(this.resultScroll, this.resultScroll + height);
 	}
 	private renderHelp(width: number, height: number): string[] {
-		const lines = ["Agent board", "", "↑↓ or j/k selects a session. Page Up/Down moves a page. Home/End reaches either end.", "Enter opens the conversation. / searches name, task, place, model, state or ID. Enter keeps a filter; Escape cancels its edit.", "m opens a message. Enter sends to an idle agent or steers active work. Escape keeps the draft. n starts a new agent.", "a opens all native actions. Actions retain their trust and ownership checks.", "", "Conversation", "↑↓ scrolls. Page Up/Down or b/Space pages. Home starts; End follows new output. o loads earlier messages.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A dead writer claim shows Orphaned. The board never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files retain bounded identity metadata and a conversation tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds unresolved Orphaned and Unavailable sessions regardless of age, plus Failed, Stopped and Interrupted outcomes from the last 24 hours. Older outcomes retain their state in date groups.", "Refresh runs once per second while this overlay is visible. Only changed files are parsed. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it. Escape returns or closes."];
+		const lines = ["Agent board", "", "↑↓ or j/k selects a session. Page Up/Down moves a page. Home/End reaches either end.", "Enter opens the conversation. / searches name, task, place, model, state or ID. Enter keeps a filter; Escape cancels its edit.", "m opens a message. Enter sends to an idle agent or steers active work. Escape keeps the draft. n starts a new agent.", "a opens all native actions. Actions retain their trust and ownership checks.", "", "Conversation", "↑↓ scrolls. Page Up/Down or b/Space pages. Home starts; End follows new output. o loads earlier messages.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A same-host claim whose process no longer exists leaves the transcript outcome in force; the next control through this window replaces that claim. The board itself never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files retain bounded identity metadata and a conversation tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds Unavailable sessions regardless of age, plus Failed, Stopped and Interrupted outcomes from the last 24 hours. Older outcomes retain their state in date groups.", "Refresh runs once per second while this overlay is visible. Only changed files are parsed. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it. Escape returns or closes."];
 		const wrapped = lines.flatMap((line) => wrapTextWithAnsi(line, width));
 		this.helpScroll = Math.min(this.helpScroll, Math.max(0, wrapped.length - height));
 		return wrapped.slice(this.helpScroll, this.helpScroll + height);

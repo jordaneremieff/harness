@@ -47,26 +47,27 @@ it("shows one row per session, all records, meaningful state and spend before th
 it("keeps unresolved ownership in Attention and bounds terminal outcomes by the shared observation time", async (t) => {
 	const now = new Date(2026, 0, 3, 12).getTime();
 	t.mock.timers.enable({ apis: ["Date"], now });
-	const states = ["failed", "stopped", "interrupted", "orphaned", "unavailable"] as const;
+	const states = ["failed", "stopped", "interrupted", "unavailable"] as const;
 	const day = 24 * 60 * 60 * 1000;
-	const rows = states.flatMap((state) => [row(`recent-${state}`, { state, modifiedAt: now - 1000 }), row(`old-${state}`, { state, owner: state === "orphaned" || state === "unavailable" ? "unknown" : undefined, modifiedAt: now - 2 * day })]);
+	const rows = states.flatMap((state) => [row(`recent-${state}`, { state, modifiedAt: now - 1000 }), row(`old-${state}`, { state, owner: state === "unavailable" ? "unknown" : undefined, modifiedAt: now - 2 * day })]);
 	rows.push(row("boundary", { state: "failed", modifiedAt: now - day }), row("today", { modifiedAt: now }));
 	const f = fixture(rows); await tick(); f.terminal.rows = 52;
 	try {
-		assert.match(f.screen(200), /8 need attention/);
+		assert.match(f.screen(200), /6 need attention/);
 		const ordered = dashboardRecords(f.panel.state.snapshot, "").map((item) => item.sessionId);
 		assert.ok(ordered.indexOf("boundary") < ordered.indexOf("today"));
 		assert.ok(["failed", "stopped", "interrupted"].every((state) => ordered.indexOf(`old-${state}`) > ordered.indexOf("today")));
-		assert.ok(["orphaned", "unavailable"].every((state) => ordered.indexOf(`old-${state}`) < ordered.indexOf("today")));
+		assert.ok(ordered.indexOf("old-unavailable") < ordered.indexOf("today"));
+		assert.doesNotMatch(f.screen(200), /Orphaned/);
 		const text = f.screen(200);
 		assert.ok(text.indexOf(" Today") < text.indexOf(" Earlier"));
 		assert.match(text, /! Session old-failed/);
 		assert.match(text, /■ Session old-stopped/);
 		t.mock.timers.tick(1);
-		assert.match(f.screen(200), /8 need attention/);
+		assert.match(f.screen(200), /6 need attention/);
 		await f.panel.refresh();
-		assert.match(f.screen(200), /7 need attention/);
-		assert.ok(dashboardRecords(f.panel.state.snapshot, "").findIndex((item) => item.sessionId === "boundary") > 7);
+		assert.match(f.screen(200), /5 need attention/);
+		assert.ok(dashboardRecords(f.panel.state.snapshot, "").findIndex((item) => item.sessionId === "boundary") > 5);
 	} finally { f.panel.dispose(); }
 });
 
@@ -169,6 +170,22 @@ it("renders native chat, follows fresh output, browses without jumps, and expand
 		assert.match(f.screen(), /Assistant result sentinel/);
 		f.panel.handleInput("x"); assert.match(f.screen(), /User asks for a check/);
 		f.panel.handleInput("\x1b"); assert.equal(f.panel.state.conversation, undefined);
+	} finally { f.panel.dispose(); }
+});
+
+it("keeps the follow marker, state and cost visible beside a long conversation title", async () => {
+	const f = fixture([row("long", { name: `${"A long first message used as the title ".repeat(8)}END`, state: "failed", cost: 3.5 })]); await tick();
+	try {
+		f.panel.handleInput("\r"); await tick();
+		for (const width of [120, 80, 40]) {
+			const lines = f.panel.render(width);
+			const heading = stripVTControlCharacters(lines[1]);
+			assert.match(heading, /TAIL · Failed · \$3\.50/, `${width} columns`);
+			assert.doesNotMatch(heading, /END/);
+			assert.ok(visibleWidth(lines[1]) <= width);
+		}
+		f.panel.handleInput("\x1b[H");
+		assert.match(stripVTControlCharacters(f.panel.render(80)[1]), /BROWSE · Failed · \$3\.50/);
 	} finally { f.panel.dispose(); }
 });
 

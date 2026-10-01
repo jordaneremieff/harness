@@ -134,7 +134,7 @@ describe("detached run records", () => {
 			assert.equal(runs.liveFor("session-2"), undefined, "an abandoned run does not hold its session");
 			assert.ok(view);
 			assert.match(formatRun(view), /abandoned {2}session=session-2/u);
-			assert.match(formatRun(view), /completed work remains; a retained writer claim blocks reopening/u);
+			assert.match(formatRun(view), /completed work remains; the next open replaces its dead writer claim/u);
 			assert.doesNotMatch(formatRun(view), /session is reopenable/u);
 		} finally {
 			rmSync(root, { recursive: true, force: true });

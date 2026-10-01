@@ -426,7 +426,7 @@ export function formatRun(run: DetachedRunView): string {
 	}
 	if (run.error) lines.push(`    error=${oneLine(run.error)}`);
 	else if (run.summary) lines.push(`    ${oneLine(run.summary)}`);
-	if (run.state === "abandoned") lines.push("    the process is gone; completed work remains; a retained writer claim blocks reopening");
+	if (run.state === "abandoned") lines.push("    the process is gone; completed work remains; the next open replaces its dead writer claim");
 	return lines.join("\n");
 }
 

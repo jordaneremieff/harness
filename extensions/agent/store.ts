@@ -1,10 +1,11 @@
 /** Ordinary Pi JSONL sessions with exclusive local writer claims. */
-import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, opendirSync, readdirSync, readSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readdirSync, readSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Context } from "@earendil-works/pi-agent-core";
 import { CURRENT_SESSION_VERSION, parseSessionEntries, SessionManager } from "@earendil-works/pi-coding-agent";
+import { claimPath, classifyClaim, readClaimFile, type ClaimFile } from "./claims.ts";
 
 export interface AgentSessionMetadata {
 	id: string;
@@ -56,16 +57,45 @@ export class AgentStore {
 		mkdirSync(this.nativeRoot, { recursive: true });
 	}
 
+	/**
+	 * Replace a claim whose same-host owner process no longer exists, then take
+	 * the claim once. A live, foreign-host, unreadable, or invalid claim refuses,
+	 * as does a claim that changes between its read and its removal. PID reuse
+	 * can only make a dead owner read as live, which refuses.
+	 */
+	private replaceDeadClaim(path: string, cwd: string, id: string, cause: unknown): number {
+		const refuse = (detail: string, reason: unknown = cause) => new Error(`session ${id} has an exclusive writer claim at ${path}: ${detail}`, { cause: reason });
+		const dead = this.deadClaim(path, cwd, id);
+		if ("refusal" in dead) throw refuse(dead.refusal, dead.cause);
+		const current = lstatSync(path, { throwIfNoEntry: false });
+		if (current && (current.dev !== dead.file.dev || current.ino !== dead.file.ino)) throw refuse("writer claim changed during replacement");
+		if (current) {
+			try { unlinkSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+		}
+		try { return openSync(path, "wx", 0o600); } catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") throw refuse(`another writer replaced the dead claim of ${dead.label} first`, error);
+			throw error;
+		}
+	}
+
+	/** Read and classify an existing claim; only a dead same-host owner yields a replaceable file. */
+	private deadClaim(path: string, cwd: string, id: string): { file: ClaimFile; label: string } | { refusal: string; cause?: unknown } {
+		let file: ClaimFile;
+		try { file = readClaimFile(path); } catch (error) { return { refusal: `writer claim is unreadable (${error instanceof Error ? error.message : String(error)})`, cause: error }; }
+		const observed = classifyClaim(file.claim, { sessionId: id, cwd });
+		if (observed.kind === "dead") return { file, label: observed.label };
+		if (observed.kind === "live") return { refusal: `${observed.label} is live` };
+		return { refusal: observed.kind === "unknown" ? observed.error : "writer claim changed during replacement" };
+	}
+
 	private claim(cwd: string, id: string): () => void {
-		const directory = join(this.nativeRoot, ".claims");
-		mkdirSync(directory, { recursive: true });
-		const key = createHash("sha256").update(JSON.stringify([resolve(cwd), id])).digest("hex");
-		const path = join(directory, `${key}.lock`);
+		mkdirSync(join(this.nativeRoot, ".claims"), { recursive: true });
+		const path = claimPath(this.nativeRoot, { sessionId: id, cwd });
 		const token = randomUUID();
 		let fd: number;
 		try { fd = openSync(path, "wx", 0o600); } catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`session ${id} has an exclusive writer claim at ${path}. Claims are never removed automatically; establish that no writer survives before manual removal.`, { cause: error });
-			throw error;
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			fd = this.replaceDeadClaim(path, cwd, id, error);
 		}
 		try { writeFileSync(fd, JSON.stringify({ token, pid: process.pid, host: hostname(), sessionId: id, cwd: resolve(cwd), createdAt: new Date().toISOString() })); }
 		catch (error) { closeSync(fd); unlinkSync(path); throw error; }

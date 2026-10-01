@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { test } from "node:test";
+import { hostname, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { mock, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
-import { AgentStore } from "./store.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { claimPath } from "./claims.ts";
+import { AgentStore, type AgentSessionMetadata } from "./store.ts";
+
+const DEAD_PID = 2147483647;
+function writeClaim(store: AgentStore, metadata: AgentSessionMetadata, content: string | object): string {
+	const path = claimPath(store.nativeRoot, { sessionId: metadata.id, cwd: metadata.cwd });
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, typeof content === "string" ? content : JSON.stringify({ token: "stale", pid: DEAD_PID, host: hostname(), sessionId: metadata.id, cwd: metadata.cwd, createdAt: new Date(0).toISOString(), ...content }));
+	return path;
+}
+function ownerPid(path: string): number { return (JSON.parse(readFileSync(path, "utf8")) as { pid: number }).pid; }
 
 const source = `import { AgentStore } from ${JSON.stringify(new URL("./store.ts", import.meta.url).href)};
 const [root, raw, crash] = process.argv.slice(1); const store = new AgentStore({sessionsRoot:root});
@@ -28,13 +39,50 @@ test("writer claims exclude a second process until native owner cleanup", async 
 		await session.close(); assert.equal(child(f.store.root, session.metadata).opened, true);
 	} finally { await f.close(); }
 });
-test("a crashed writer retains its claim and requires explicit recovery", async () => {
+test("a later open replaces the claim of a writer process that exited without release", async () => {
 	const f = fixture();
 	try {
 		const session = await f.store.create(f.cwd); await session.close();
 		assert.equal(child(f.store.root, session.metadata, true).opened, true);
-		await assert.rejects(f.store.open(session.metadata), /never removed automatically/u);
+		const path = claimPath(f.store.nativeRoot, { sessionId: session.metadata.id, cwd: session.metadata.cwd });
+		assert.notEqual(ownerPid(path), process.pid);
+		const reopened = await f.store.open(session.metadata);
+		assert.equal(ownerPid(path), process.pid);
 		assert.equal(readdirSync(join(f.store.nativeRoot, ".claims")).length, 1);
+		assert.match(child(f.store.root, session.metadata).error, /exclusive writer claim/u);
+		await reopened.close();
+		assert.deepEqual(readdirSync(join(f.store.nativeRoot, ".claims")), []);
+	} finally { await f.close(); }
+});
+test("open and adopt replace a dead same-host claim; live, foreign-host, and invalid claims refuse", async (t) => {
+	const f = fixture();
+	const nativeKill = process.kill;
+	const spy = mock.method(process, "kill", (pid: number, signal?: string | number) => {
+		if (pid === DEAD_PID) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+		return nativeKill(pid, signal);
+	});
+	t.after(() => spy.mock.restore());
+	try {
+		const session = await f.store.create(f.cwd); await session.close();
+		const metadata = session.metadata;
+		const path = writeClaim(f.store, metadata, {});
+		const opened = await f.store.open(metadata);
+		assert.equal(ownerPid(path), process.pid); await opened.close();
+		writeClaim(f.store, metadata, {});
+		const adopted = f.store.adopt(SessionManager.open(metadata.path, f.store.nativeRoot));
+		assert.equal(ownerPid(path), process.pid); await adopted.close();
+		const refusals: Array<[string, string | object]> = [["foreign", { host: "foreign.example" }], ["invalid", "{"], ["identity", { sessionId: "different" }]];
+		for (const [name, content] of refusals) {
+			writeClaim(f.store, metadata, content);
+			const before = readFileSync(path, "utf8");
+			await assert.rejects(f.store.open(metadata), /exclusive writer claim/u, name);
+			assert.equal(readFileSync(path, "utf8"), before, name);
+		}
+		spy.mock.mockImplementation(() => { throw Object.assign(new Error("denied"), { code: "EPERM" }); });
+		writeClaim(f.store, metadata, {});
+		const before = readFileSync(path, "utf8");
+		await assert.rejects(f.store.open(metadata), /exclusive writer claim.*is live/u);
+		assert.equal(readFileSync(path, "utf8"), before);
 	} finally { await f.close(); }
 });
 test("native storage never opens or deletes durable-format files", async () => {

@@ -337,8 +337,8 @@ to `agent_list`; it does not dump the stored transcript inventory.
 Bare `/agent` and **Ctrl+Alt+G** open a board for supervising ordinary sessions.
 Each session occupies one row: state, title, place, model/thinking level, spend,
 and age of the last file update. Working sessions come first, followed by
-Attention and date groups. Orphaned and Unavailable sessions remain in Attention
-until their unresolved condition changes. Failed, Stopped and Interrupted outcomes
+Attention and date groups. Unavailable sessions remain in Attention until their
+condition changes. Failed, Stopped and Interrupted outcomes
 remain there for 24 hours; older outcomes keep their state glyph and color in
 their date group. The attention count uses the same observation time as the
 sections. The board windows the full list without a display-count cap. The header
@@ -413,8 +413,10 @@ connects that user message to the tail; an unseen gap never implies zero time.
 
 Local manager activity, detached records, and read-only writer claims supply
 ownership. A same-host live PID plus a pending transcript turn identifies work
-in another window. Dead claims show Orphaned; foreign-host or unreadable claims
-remain unavailable for control. PID reuse limits liveness certainty. Transcript
+in another window. A same-host claim whose process no longer exists leaves the
+transcript outcome and any detached-run result in force; the board reads that
+claim and never removes it. Foreign-host, invalid, or unreadable claims show
+Unavailable and refuse control. PID reuse limits liveness certainty. Transcript
 observations include persisted messages, not uncommitted streaming tokens.
 The help view holds these boundaries instead of repeated caveats on every row.
 
@@ -920,11 +922,16 @@ Session inventory instead retains the row's stored metadata and reports the
 observed host state separately. Completion and dashboard rows preserve other
 sessions without reporting a closed host as open or active.
 
-An abrupt process exit retains the claim, so reopening then fails closed.
-Graceful quit releases successfully closed hosts; forced process death does not.
-The error names the claim file. Idle restoration after verified-dead claim removal
-is not automatic crash recovery. Confirm that no writer survives before manual
-removal; the extension never guesses that another process is safe to replace.
+An abrupt process exit leaves the claim file behind. Graceful quit releases
+successfully closed hosts; forced process death does not. The next open of that
+session reads the claim: a same-host claim whose process no longer exists is
+replaced and the open proceeds with ordinary idle restoration; it replays no
+interrupted work. A live same-host claim, a claim from another host, and an
+unreadable or invalid claim refuse, and the error names the claim file. A
+process that refuses a signal probe counts as live. PID reuse can only make a
+dead owner read as live, which refuses; it never causes a replacement. The
+claim is removed only on this control path, after its owner is read as dead,
+and only if the file is still the one that was read.
 Read-only observation does not take a claim, so `agent_status` and
 `agent_inspect` can report a session that another process owns; they read a
 bounded point-in-time snapshot of its persisted entries and do not remove the
@@ -1175,8 +1182,8 @@ Shared children open once; cycles are refused. Each unavailable child reports
 its own failure without preventing independent children from opening. Current
 model, project-trust, and exclusive-claim checks still apply. A denied project
 trust decision excludes project resources rather than replaying prior trust.
-An unavailable model requires explicit repair. A foreign or retained writer
-claim still requires ownership resolution.
+An unavailable model requires explicit repair. A live or foreign writer claim
+still requires ownership resolution; a dead same-host claim is replaced.
 
 A parent created before association records existed restores no inferred
 children. Explicit `agent_attach` or `/agent attach` opens a known child without
@@ -1195,8 +1202,8 @@ A later successful reload recovers control. True quit from the omitted-extension
 runtime cannot call the lost cleanup handler. Pi 0.99.2 exposes no finalizer for
 that discarded extension owner; this cleanup guarantee is blocked at the native
 host. The extension adds no process hook or polling substitute. After process
-exit, retained claims still fail closed and require the ownership check described
-above before manual removal.
+exit, the next open replaces the dead claims under the rule described above;
+while the process lives, its retained claims refuse.
 
 Reopening retains persisted conversation history. It does not replay an
 interrupted model request, tool call, or pending queue. Inspection identifies

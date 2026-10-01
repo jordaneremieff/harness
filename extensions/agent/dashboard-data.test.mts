@@ -147,6 +147,9 @@ test("same-host claims distinguish live windows, dead owners, and permission-lim
 	f.put("active", [user()]); f.claim("active");
 	f.put("done", [user(), assistant()]); f.claim("done");
 	f.put("dead", [user()]); const path = f.claim("dead", { pid: 2147483647 });
+	const finishedPath = f.put("dead-finished", [user(), assistant()]); f.claim("dead-finished", { pid: 2147483647 });
+	utimesSync(finishedPath, new Date(time), new Date(time + 1000));
+	const runs = [run(f.cwd, { sessionId: "dead-finished", state: "failed", finishedAt: stamp(2000), error: "Detached owner failed" })];
 	const original = readFileSync(path, "utf8");
 	const nativeKill = process.kill;
 	const spy = mock.method(process, "kill", (pid: number, signal?: string | number) => {
@@ -154,15 +157,21 @@ test("same-host claims distinguish live windows, dead owners, and permission-lim
 		return nativeKill(pid, signal);
 	});
 	t.after(() => spy.mock.restore());
-	let rows = await f.data.read();
+	let rows = await f.data.read(overlay({ runs }));
 	assert.equal(rows.find((row) => row.sessionId === "active")?.state, "working");
 	assert.equal(rows.find((row) => row.sessionId === "active")?.owner, "window");
 	assert.equal(rows.find((row) => row.sessionId === "done")?.state, "done");
-	assert.equal(rows.find((row) => row.sessionId === "dead")?.state, "orphaned");
-	assert.equal(readFileSync(path, "utf8"), original);
+	const dead = rows.find((row) => row.sessionId === "dead");
+	assert.equal(dead?.state, "interrupted"); assert.equal(dead?.owner, undefined); assert.equal(dead?.error, undefined);
+	const finished = rows.find((row) => row.sessionId === "dead-finished");
+	assert.equal(finished?.state, "failed"); assert.equal(finished?.error, "Detached owner failed");
+	assert.equal(readFileSync(path, "utf8"), original, "observation leaves a dead claim in place");
 	spy.mock.mockImplementation(() => { throw Object.assign(new Error("denied"), { code: "EPERM" }); });
-	rows = await f.data.read();
+	rows = await f.data.read(overlay({ runs }));
 	assert.equal(rows.find((row) => row.sessionId === "dead")?.state, "working");
+	assert.equal(rows.find((row) => row.sessionId === "dead")?.owner, "window");
+	assert.equal(rows.find((row) => row.sessionId === "dead-finished")?.state, "done");
+	assert.equal(readFileSync(path, "utf8"), original);
 });
 
 test("claim content, host, identity, PID, size, and filesystem type fail conservatively", async (t) => {
