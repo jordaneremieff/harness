@@ -4,17 +4,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { after, before, describe, it } from "node:test";
-import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import {
+	createBashToolDefinition,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type ExtensionToolContext,
+} from "@earendil-works/pi-coding-agent";
+import type { TSchema } from "typebox";
+import { Check } from "typebox/value";
 import registerJobs from "./index.ts";
 import type { JobLogs, JobSnapshot } from "./manager.ts";
 
 interface Result {
 	isError?: boolean;
+	structuredContent?: unknown;
 	content: Array<{ type: string; text?: string }>;
 	details?: { job?: JobSnapshot; jobs?: JobSnapshot[] } & Partial<JobLogs>;
 }
 interface Tool {
 	name: string;
+	outputSchema: TSchema;
 	parameters: { properties: Record<string, unknown>; additionalProperties?: boolean };
 	execute(
 		id: string,
@@ -86,10 +95,16 @@ function setup(cwd = root, trusted = false) {
 	const ctx = {
 		...base,
 		tools: [],
-		executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+		executeTool: async () => {
+			throw new Error("Unexpected nested tool call");
+		},
 	} satisfies ExtensionToolContext;
-	const call = (name: string, params: unknown, signal?: AbortSignal) =>
-		pi.tool(name).execute("call", params, signal, undefined, ctx);
+	const call = async (name: string, params: unknown, signal?: AbortSignal) => {
+		const tool = pi.tool(name);
+		const result = await tool.execute("call", params, signal, undefined, ctx);
+		assert.ok(Check(tool.outputSchema, result.structuredContent), "result matches its declared output schema");
+		return result;
+	};
 	return { pi, call };
 }
 async function settled(call: ReturnType<typeof setup>["call"], id: string) {
@@ -108,6 +123,9 @@ describe("Command Jobs adapter", () => {
 		const { pi, call } = setup();
 		try {
 			assert.deepEqual([...pi.tools.keys()], ["bash", "jobs"]);
+			const schema = pi.tool("bash").outputSchema;
+			assert.ok("anyOf" in schema && Array.isArray(schema.anyOf));
+			assert.deepEqual(schema.anyOf[0], createBashToolDefinition(root).outputSchema);
 			assert.deepEqual(Object.keys(pi.tool("jobs").parameters.properties), ["action", "id", "cursor"]);
 			assert.equal(pi.tool("jobs").parameters.additionalProperties, false);
 			assert.deepEqual((await call("jobs", { action: "list" })).details, { jobs: [] });
@@ -125,8 +143,10 @@ describe("Command Jobs adapter", () => {
 		try {
 			const result = await call("bash", { command: 'printf "%s/%s/%s" "$PI_SESSION_ID" "$PI_PROVIDER" "$PI_MODEL"' });
 			assert.equal(result.content[0].text, "job-session/fixture/deterministic");
+			assert.equal((result.structuredContent as { output: string }).output, result.content[0].text);
 			const failure = await call("bash", { command: "printf failure >&2; exit 7" });
 			assert.equal(failure.isError, true);
+			assert.equal((failure.structuredContent as { exit_code: number }).exit_code, 7);
 			assert.match(textOf(failure), /failure[\s\S]*code 7/);
 			assert.deepEqual((await call("jobs", { action: "list" })).details, { jobs: [] });
 		} finally {
@@ -148,6 +168,7 @@ describe("Command Jobs adapter", () => {
 			);
 			const id = jobOf(started).id;
 			assert.equal(jobOf(started).status, "running");
+			assert.deepEqual(started.structuredContent, started.details);
 			controller.abort();
 			assert.equal((await call("bash", { command: "printf independent" })).content[0].text, "independent");
 			const final = await settled(call, id);
@@ -156,6 +177,8 @@ describe("Command Jobs adapter", () => {
 			const logs = await call("jobs", { action: "logs", id });
 			assert.match(textOf(logs), /job-session[\s\S]*stderr/);
 			assert.ok(!textOf(logs).includes("\u001b"));
+			assert.deepEqual(logs.structuredContent, logs.details);
+			assert.ok(detailsOf(logs).text?.includes("\u001b"));
 			assert.ok(Buffer.byteLength(textOf(logs)) < 50 * 1024);
 			const next = await call("jobs", { action: "logs", id, cursor: detailsOf(logs).next });
 			assert.equal(detailsOf(next).text, "");
@@ -177,10 +200,7 @@ describe("Command Jobs adapter", () => {
 		assert.equal((await settled(call, firstId)).status, "cancelled");
 		await pi.shutdown();
 		await pi.shutdown();
-		assert.equal(
-			jobOf(await call("jobs", { action: "status", id: jobOf(second).id })).status,
-			"cancelled",
-		);
+		assert.equal(jobOf(await call("jobs", { action: "status", id: jobOf(second).id })).status, "cancelled");
 		await assert.rejects(call("bash", { command: "printf never", background: true }), /closed/);
 	});
 
