@@ -65,6 +65,16 @@ Activating it through `defaultTools: ["+codemode"]` preserves the inherited tool
 selection. Default `on` mode preserves direct declarations alongside script
 access. No replacement host or shared adapter is needed.
 
+In `on` mode, `prepareCodemodeLoadout()` in `dist/extensions/codemode/tool.js`
+appends a TypeScript declaration of each declared tool's input and output
+types to that tool's description. `codemode.inlineBudget` bounds only
+codemode's own listing of undeclared tools, and local schema references expand
+inline. Every declared tool therefore carries its parameter schema twice (JSON
+schema and TypeScript) plus its output type on each request. Trimming an
+`outputSchema` changes what scripts receive, and `codemode` exposure changes
+how the model reaches a tool, so the harness keeps both; a smaller appended
+declaration is an upstream renderer change.
+
 A tool with `outputSchema` resolves to `structuredContent` inside the native
 script, including data-bearing error results. Other successful calls resolve
 to text; failed calls without structured data reject. Scripts must distinguish
@@ -153,6 +163,15 @@ how a script uses them.
   pending servers when the source text contains `searchTools`,
   `describeNamespace`, `describeTool`, or `ALL_TOOLS`. `tool_search` and the
   resource tools wait for all pending servers.
+- **Shutdown of a pending connection.** `McpConnection.close()` in
+  `dist/extensions/mcp/runtime.js` closes only the client it stores after a
+  completed handshake. A stdio server that has not answered `initialize` when
+  the session shuts down keeps running until its request timeout (`timeout`,
+  default 60 seconds) ends the attempt. The harness adds no process-level
+  cleanup: the transport is private to Pi, the default transport factory is
+  not exported, and a harness-built transport would need its own copy of the
+  MCP package, which the loader does not alias. A connected server exits on
+  shutdown and on session replacement.
 - **Names.** A tool is named `mcp__<server>__<tool>` and a namespace
   `mcp__<server>`, with every character other than letters, digits, and `_`
   replaced by `_` (`createMcpToolName()` and `mcpNamespace()`). Colliding tool
