@@ -21,7 +21,10 @@ model. A `codemode` script calls them as `tools.mcp__<server>__<tool>`, where a
 `-` in the server or tool name becomes `_` and tools whose names then collide
 all get a hash suffix. `describeNamespace("<server>")` returns the server's
 description, instructions, and tool names. Closing a worker stops the stdio
-process of a connected server. Without a configured server, no `mcp__` tools
+process of a connected server. A server still waiting for its `initialize`
+answer at close is not stopped by Pi's MCP runtime; its process ends when the
+server's request timeout expires (`timeout` in `mcp.json`, 60 seconds by
+default). Without a configured server, no `mcp__` tools
 register. `mcp-native.test.mts` covers these claims against a real stdio server
 and a real managed session. Pi does not export the CLI's `llama.cpp` factory.
 Managed sessions inherit the parent's registered providers instead of loading
