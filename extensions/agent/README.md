@@ -985,13 +985,15 @@ card shows the event or outcome first, then a literal message, result, or run
 excerpt from the source. For a detached-run batch, a failed or abandoned run
 summary takes priority. The producer sends settled runs in batches of at most
 32. Each batch shows its outcomes. A failed or abandoned excerpt requires every
-run line to match its metadata. Message cards refer to the universal AGENTS.md
-`Intent authority` section. Operation and detached-run cards label results as
-unverified evidence. The card reports saved or unsaved operation state only
-when metadata supplies it. Each collapsed
-row fits the available width; source IDs do not displace the excerpt. Oversized
-metadata reports an unknown outcome and an unchecked source; an unmatched
-notification preamble remains visible.
+run line to match its metadata. The collapsed card adds a line only for a
+condition that applies: an unsaved result, a settlement reported to primaries
+without a live owner, an unchecked source, or an unavailable source. The
+message content carries the authority statements; the expanded card ends with
+one line that restates the boundary: the universal AGENTS.md `Intent authority`
+section for message cards, unverified peer data for operation and detached-run
+cards. Each collapsed row fits the available width; source IDs do not displace
+the excerpt. Oversized metadata reports an unknown outcome and an unchecked
+source; an unmatched notification preamble remains visible.
 
 Expansion exposes the sanitized original notification and exact valid message,
 reply, session, operation, and run IDs. Invalid IDs use bounded excerpts and

@@ -157,16 +157,14 @@ function peerEvidenceId(value: string): string {
 		: `${displayPreview(value, 128)} [invalid ID; full metadata in native history]`;
 }
 
+/** The collapsed card carries the outcome, the excerpt, and only the warnings that apply; the content holds the authority statements. */
 function addCollapsedPeer(box: Box, content: string, details: Record<string, unknown>, theme: Theme): void {
 	peerLine(box, `↳ ${displayPreview(peerPreviewBody(content, details), 220) || "(no text)"}`, "customMessageText", theme);
-	if (details.kind === "operation" && typeof details.saved === "boolean") peerLine(box, details.saved ? "Result saved" : "Result not saved", details.saved ? "muted" : "warning", theme);
+	if (details.kind === "operation" && details.saved === false) peerLine(box, "Result not saved", "warning", theme);
 	if (details.kind === "operation" && details.delivery === "no-owner") peerLine(box, "No live owning session; reported to primaries", "warning", theme);
 	if (details.kind === "runs" && Array.isArray(details.outcomes) && details.outcomes.length > PEER_OUTCOME_DISPLAY_LIMIT) {
 		peerLine(box, "Source not checked (metadata limit)", "warning", theme);
 	} else if (!peerSourceKnown(details)) peerLine(box, "Source unavailable", "warning", theme);
-	peerLine(box, details.kind === "message" ? "AGENTS.md: Intent authority" : "Unverified peer data", "muted", theme);
-	const expandKey = keyText("app.tools.expand");
-	peerLine(box, expandKey ? `${expandKey} to expand IDs and full text` : "Expand for IDs and full text", "dim", theme);
 }
 
 function addPeerEvidence(box: Box, content: string, details: Record<string, unknown>, theme: Theme): void {
