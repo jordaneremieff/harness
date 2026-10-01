@@ -44,8 +44,8 @@ Segments join with a dim `│` separator:
    See below.
 
 Usage metrics come from one pass over `ctx.sessionManager.getEntries()` per
-render, like Pi's default footer. This includes abandoned branches and
-pre-compaction entries; compaction does not bound retained history. Context
+render. This includes abandoned branches and pre-compaction entries;
+compaction does not bound retained history. Context
 usage comes separately from `ctx.getContextUsage()` and describes the active
 model context, not cumulative session usage. No second history store or
 incremental accounting cache is maintained.
