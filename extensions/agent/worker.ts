@@ -23,6 +23,8 @@ export const META_CUSTOM_TYPE = "agent.meta";
 const RESULT_TYPE = "agent.result";
 const START_TYPE = "agent.operation";
 export interface WorkerModelChoice { provider: string; modelId: string; thinkingLevel?: ThinkingLevel }
+/** Selected session configuration at notice emission, not a routed response identity. */
+export interface PeerSessionMetadata { name?: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel }
 export type ReplacedSessionContext = ReturnType<AgentSession["createReplacedSessionContext"]>;
 export interface InitialConfiguration { patch: ConfigurationPatch; result?: ConfigurationResult }
 interface ConfigurationAttempt {
@@ -48,7 +50,7 @@ export type WorkerUpdate =
 	| { kind: "replaced"; previousId: string; sessionId: string }
 	| { kind: "entry"; entry: SessionEntry }
 	| { kind: "error"; message: string }
-	| { kind: "settled"; sessionId: string; name?: string; result: WorkerResult; saved?: boolean };
+	| ({ kind: "settled"; sessionId: string; result: WorkerResult; saved?: boolean } & PeerSessionMetadata);
 export interface WorkerResult {
 	operationId: string; status: "completed" | "failed" | "aborted";
 	text?: string; error?: { message: string };
@@ -672,12 +674,13 @@ export class AgentWorkerSession {
 		if (failure) this.unsavedResult = result;
 		else this.sessionManager().appendCustomEntry(RESULT_TYPE, result);
 		this.operation = undefined; this.streamingText = false;
-		this.notify({ kind: "settled", sessionId: this.sessionId(), ...this.settledName(), result, saved: !failure });
+		this.notify({ kind: "settled", sessionId: this.sessionId(), ...this.settledMetadata(), result, saved: !failure });
 	}
-	/** The current session name travels with the settlement; a blank name is omitted. */
-	private settledName(): { name?: string } {
+	private settledMetadata(): PeerSessionMetadata {
 		const name = this.sessionManager().getSessionName()?.trim();
-		return name ? { name } : {};
+		const model = this.session.model;
+		const thinkingLevel = this.session.thinkingLevel;
+		return { ...(name ? { name } : {}), ...(model ? { provider: model.provider, modelId: model.id } : {}), ...(thinkingLevel !== undefined ? { thinkingLevel } : {}) };
 	}
 	private observeLiveActivity(event: AgentSessionEvent): void {
 		if (event.type === "tool_execution_start") this.toolsRunning.set(event.toolCallId, { name: event.toolName, startedAt: Date.now() });

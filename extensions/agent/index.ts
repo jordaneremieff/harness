@@ -42,7 +42,7 @@ import { PlaceBook } from "./places.ts";
 import { MAX_CONTINUITY_SUMMARY, SelfCompaction } from "./self-compaction.ts";
 import { planRewind } from "./rewind.ts";
 import { type AgentSessionMetadata, AgentStore } from "./store.ts";
-import { AgentWorkerSession, projectInspection, type InitialConfiguration, type WorkerCommandResult, type WorkerResult, type WorkerStatus, type WorkerModelChoice, type WorkerUpdate } from "./worker.ts";
+import { AgentWorkerSession, projectInspection, type InitialConfiguration, type PeerSessionMetadata, type WorkerCommandResult, type WorkerResult, type WorkerStatus, type WorkerModelChoice, type WorkerUpdate } from "./worker.ts";
 
 export { createAgentModelRuntime, inheritProviders } from "./model-runtime.ts";
 
@@ -164,10 +164,8 @@ function textResult(text: string): AgentToolResult<unknown> {
 }
 
 /** One settled operation, addressed to the session that owns it. */
-interface SettlementNotice {
+interface SettlementNotice extends PeerSessionMetadata {
 	sessionId: string;
-	/** Current session name, bounded; absent when the session has none. */
-	name?: string;
 	operationId: string;
 	status: WorkerResult["status"];
 	saved: boolean;
@@ -182,6 +180,9 @@ function settlementNotice(update: WorkerUpdate & { kind: "settled" }): Settlemen
 	return {
 		sessionId: update.sessionId,
 		...(update.name ? { name: update.name.slice(0, 200) } : {}),
+		...(update.provider ? { provider: update.provider } : {}),
+		...(update.modelId ? { modelId: update.modelId } : {}),
+		...(update.thinkingLevel !== undefined ? { thinkingLevel: update.thinkingLevel } : {}),
 		operationId: update.result.operationId,
 		status: update.result.status,
 		saved: update.saved !== false,
@@ -200,6 +201,9 @@ function settlementDetails(notice: SettlementNotice, withoutOwner: boolean): Rec
 		kind: "operation",
 		sessionId: notice.sessionId,
 		...(notice.name ? { name: notice.name } : {}),
+		...(notice.provider ? { provider: notice.provider } : {}),
+		...(notice.modelId ? { modelId: notice.modelId } : {}),
+		...(notice.thinkingLevel !== undefined ? { thinkingLevel: notice.thinkingLevel } : {}),
 		operationId: notice.operationId,
 		status: notice.status,
 		...(notice.saved ? {} : { saved: false }),
@@ -1305,12 +1309,12 @@ export class AgentManager {
 		}
 	}
 
-	async send(sessionId: string, message: string, fromSessionId?: string, replyTo?: string, fromName?: string): Promise<string> {
+	async send(sessionId: string, message: string, fromSessionId?: string, replyTo?: string, source?: PeerSessionMetadata): Promise<string> {
 		this.assertAssociationWriter(sessionId);
 		if (fromSessionId) this.assertAssociationWriter(fromSessionId);
 		if (fromSessionId) {
 			const messageId = randomUUID();
-			const details = { kind: "message", messageId, fromSessionId, toSessionId: sessionId, ...(replyTo ? { replyTo } : {}), ...(fromName ? { name: fromName } : {}) };
+			const details = { kind: "message", messageId, fromSessionId, toSessionId: sessionId, ...(replyTo ? { replyTo } : {}), ...source };
 			const content = `Message ${messageId} from session ${fromSessionId}${replyTo ? `; reply to ${replyTo}` : ""}. Agent-carried message. Apply the universal AGENTS.md "Intent authority" section.\n\n${message}`;
 			const primary = this.primary.get(sessionId);
 			if (primary) {
@@ -1878,7 +1882,12 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			void ctx;
 			const manager = await getManager();
-			return textResult(await manager.send(params.sessionId, params.message, ctx.sessionManager.getSessionId(), params.replyTo, ctx.sessionManager.getSessionName()));
+			const model = ctx.model;
+			const name = ctx.sessionManager.getSessionName();
+			const thinkingLevel = ctx.thinkingLevel;
+			return textResult(await manager.send(params.sessionId, params.message, ctx.sessionManager.getSessionId(), params.replyTo, {
+				...(name ? { name } : {}), ...(model ? { provider: model.provider, modelId: model.id } : {}), ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+			}));
 		},
 	});
 

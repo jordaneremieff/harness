@@ -72,24 +72,31 @@ function peerName(details: Record<string, unknown>): string {
 	return displayPreview(peerField(details, "name"), PEER_NAME_DISPLAY_LIMIT);
 }
 
-function peerHeading(details: Record<string, unknown>): { title: string; failed: boolean } {
+function peerHeading(details: Record<string, unknown>): { source: string; status: string; failed: boolean } {
 	const kind = peerField(details, "kind");
-	const name = peerName(details);
-	const source = name ? ` · ${name}` : "";
+	const id = peerField(details, kind === "message" ? "fromSessionId" : "sessionId");
+	const source = peerName(details) || (peerIdentity(id) ? id : "source unavailable");
 	if (kind === "operation") {
 		const status = peerField(details, "status");
-		if (!["completed", "failed", "aborted"].includes(status)) return { title: "Peer outcome unknown", failed: false };
-		return { title: `Agent ${status}${source}`, failed: status !== "completed" };
+		if (!["completed", "failed", "aborted"].includes(status)) return { source, status: "outcome unknown", failed: false };
+		return { source, status, failed: status !== "completed" };
 	}
 	if (kind === "runs") {
-		if (Array.isArray(details.outcomes) && details.outcomes.length > PEER_OUTCOME_DISPLAY_LIMIT) return { title: "Runs: outcome unknown", failed: false };
 		const outcomes = runOutcomes(details);
-		if (!outcomes) return { title: "Runs: outcome unknown", failed: false };
+		if (!outcomes) return { source: "runs", status: "outcome unknown", failed: false };
 		const failed = outcomes.filter((item) => item.status === "failed").length;
 		const abandoned = outcomes.filter((item) => item.status === "abandoned").length;
-		return { title: `Runs: ${outcomes.length}${failed ? ` · ${failed} failed` : ""}${abandoned ? ` · ${abandoned} abandoned` : ""}`, failed: failed + abandoned > 0 };
+		return { source: "runs", status: `${outcomes.length}${failed ? ` · ${failed} failed` : ""}${abandoned ? ` · ${abandoned} abandoned` : ""}`, failed: failed + abandoned > 0 };
 	}
-	return { title: kind === "message" ? `Agent message${source}` : "Peer kind unknown", failed: false };
+	return { source, status: kind === "message" ? "message" : "kind unknown", failed: false };
+}
+
+function peerConfiguration(details: Record<string, unknown>): string[] {
+	if (details.kind !== "message" && details.kind !== "operation") return [];
+	const provider = displayPreview(peerField(details, "provider"), 128);
+	const model = displayPreview(peerField(details, "modelId"), 200);
+	const thinking = displayPreview(peerField(details, "thinkingLevel"), 40);
+	return [provider && model ? `${provider}/${model}` : provider ? `provider: ${provider}` : model ? `model: ${model}` : "", thinking ? `thinking: ${thinking}` : ""].filter(Boolean);
 }
 
 function messageBody(content: string, details: Record<string, unknown>): string {
@@ -153,9 +160,7 @@ function peerEvidenceId(value: string): string {
 		: `${displayPreview(value, 128)} [invalid ID; full metadata in native history]`;
 }
 
-function addPeerSource(box: Box, details: Record<string, unknown>, theme: Theme): void {
-	const source = details.kind === "message" ? peerField(details, "fromSessionId") : details.kind === "operation" ? peerField(details, "sessionId") : "";
-	if (peerIdentity(source) && !peerName(details)) peerLine(box, `${details.kind === "message" ? "From session" : "Session"} ${source}`, "muted", theme);
+function addPeerWarnings(box: Box, details: Record<string, unknown>, theme: Theme): void {
 	if (details.kind === "operation" && details.saved === false) peerLine(box, "Result not saved", "warning", theme);
 	if (details.kind === "operation" && details.delivery === "no-owner") peerLine(box, "No live owning session; reported to primaries", "warning", theme);
 	if (details.kind === "runs" && Array.isArray(details.outcomes) && details.outcomes.length > PEER_OUTCOME_DISPLAY_LIMIT) {
@@ -166,6 +171,8 @@ function addPeerSource(box: Box, details: Record<string, unknown>, theme: Theme)
 function addPeerEvidence(box: Box, details: Record<string, unknown>, theme: Theme): void {
 	const name = peerName(details);
 	if (name) box.addChild(new Text(theme.fg("muted", `name: ${name}`), 0, 0));
+	const configuration = peerConfiguration(details);
+	if (configuration.length) peerLine(box, `Session configuration at ${details.kind === "message" ? "send" : "settlement"}: ${configuration.join(" · ")}`, "muted", theme);
 	for (const key of ["fromSessionId", "toSessionId", "messageId", "replyTo", "sessionId", "operationId"]) {
 		const value = peerField(details, key);
 		if (value) box.addChild(new Text(theme.fg("muted", `${key}: ${peerEvidenceId(value)}`), 0, 0));
@@ -183,13 +190,17 @@ function addPeerEvidence(box: Box, details: Record<string, unknown>, theme: Them
 /** Presentation does not alter message content, queue custody, or primary state. */
 export const renderPeerMessage: MessageRenderer = (message, { expanded, outputPad }, theme) => {
 	const details = peerRecord(message.details);
-	const { title, failed } = peerHeading(details);
+	const { source, status, failed } = peerHeading(details);
 	const content = typeof message.content === "string" ? message.content : message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
 	const body = peerBody(content, details);
 	const prefix = displayPrefix(body, MESSAGE_DISPLAY_LIMIT);
 	const box = new Box(outputPad, 1, (line) => theme.bg("customMessageBg", line.replace(/\x1b\[(?:0|49)?m/g, (reset) => reset + theme.getBgAnsi("customMessageBg"))));
-	peerLine(box, theme.bold(title), failed ? "error" : "customMessageLabel", theme);
-	addPeerSource(box, details, theme);
+	const configuration = peerConfiguration(details);
+	const heading = theme.fg("customMessageLabel", theme.bold(`[agent] ${source}`))
+		+ theme.fg("muted", " · ") + theme.fg(failed ? "error" : "customMessageLabel", theme.bold(status))
+		+ (configuration.length ? theme.fg("muted", ` · ${configuration.join(" · ")}`) : "");
+	box.addChild(new Text(heading, 0, 0));
+	addPeerWarnings(box, details, theme);
 	box.addChild(new Spacer(1));
 	box.addChild(new Markdown(prefix.trim() ? displayText(prefix) : "(no text)", 0, 0, getMarkdownTheme(), { color: (text) => theme.fg("customMessageText", text) }, { preserveBackslashEscapes: true }));
 	if (prefix.length < body.length) peerLine(box, "Display limit; full notification remains in native history.", "warning", theme);

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { AgentWorkerSession } from "./worker.ts";
+import { AgentWorkerSession, type WorkerUpdate } from "./worker.ts";
 import { fixture } from "./native-fixture.mts";
 import { defined } from "./test-assertions.mts";
 
@@ -42,6 +42,36 @@ test("native turn and pre-settle boundaries commit drafts and continue before fi
 		assert.match(JSON.stringify(f.requests[2]), /SETTLE_CONTINUE/u);
 		assert.equal((await f.worker.operationResult(defined(id)))?.status, "completed");
 		assert.equal(f.worker.sessionManager().getEntries().filter((entry) => entry.type === "custom_message" && entry.customType.startsWith("boundary.")).length, 2);
+	} finally { await f.close(); }
+});
+
+test("settlement captures the current native session selection rather than creation arguments or response identity", async () => {
+	const updates: WorkerUpdate[] = [];
+	const f = await fixture(`export default pi => {
+		pi.on("agent_before_settle", async (_event, ctx) => {
+			pi.setSessionName("Settled MixedCase");
+			if (!ctx.model || !await pi.setModel({ ...ctx.model, id: "Selected-MixedCase" })) throw new Error("selection rejected");
+			pi.setThinkingLevel("high");
+		});
+	}`, { onUpdate: (update) => updates.push(update) });
+	try {
+		await f.worker.start("Report the result");
+		await f.worker.waitForIdle();
+		const notices = updates.filter((update) => update.kind === "settled");
+		assert.equal(notices.length, 1);
+		const notice = notices[0];
+		assert.equal(notice.result.status, "completed");
+		assert.equal(notice.name, "Settled MixedCase");
+		assert.equal(notice.provider, f.options.model?.provider);
+		assert.equal(notice.modelId, "Selected-MixedCase");
+		assert.notEqual(notice.modelId, f.options.model?.modelId);
+		assert.equal(notice.thinkingLevel, "high");
+		const response = f.worker.sessionManager().getEntries().findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
+		assert.ok(response?.type === "message" && response.message.role === "assistant");
+		assert.notEqual(notice.modelId, response.message.model);
+		const before = structuredClone(notice);
+		await f.worker.configure({ name: "Later name", thinkingLevel: "low" });
+		assert.deepEqual(notice, before, "later configuration does not rewrite captured display metadata");
 	} finally { await f.close(); }
 });
 

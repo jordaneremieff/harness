@@ -43,9 +43,8 @@ describe("received peer presentation", () => {
 		const before = structuredClone(notice);
 		for (const width of [20, 40, 100, 140]) {
 			const text = view(notice.content, notice.details, false, width);
-			assert.match(text, /Agent message/);
+			assert.ok(text.replace(/\s/gu, "").includes("[agent]01a0f762-0000-7000-8000-182635abbc5f·message"));
 			assert.match(text, /Review: fix the/);
-			assert.ok(text.replace(/\s/gu, "").includes("Fromsession01a0f762-0000-7000-8000-182635abbc5f"));
 			assert.ok(text.replace(/\s/gu, "").includes("Keeptheidentifier."));
 			assert.doesNotMatch(text, /\*\*|AGENTS\.md|messageId:|replyTo:|Message message-id/);
 		}
@@ -81,12 +80,15 @@ describe("received peer presentation", () => {
 			const send = tools.get("agent_send");
 			assert.ok(send);
 			const body = "**Review:** keep the identifier.\n\nExact second paragraph.";
-			await send.execute("call", { sessionId: "target", message: body, replyTo: "prior-message" }, undefined, undefined, { sessionManager: sender } as never);
+			const selected = { provider: "SelectedProvider", id: "MixedCase-Model" };
+			await send.execute("call", { sessionId: "target", message: body, replyTo: "prior-message" }, undefined, undefined, { sessionManager: sender, model: selected, thinkingLevel: "high" } as never);
 			assert.equal(notices.length, 1);
 			assert.match(notices[0].content, new RegExp(`from session ${sender.getSessionId()}; reply to prior-message`));
 			assert.ok(notices[0].content.endsWith(`\n\n${body}`));
-			assert.doesNotMatch(notices[0].content, /Message reviewer/);
-			assert.equal((notices[0].details as { name: string }).name, "Message reviewer");
+			assert.doesNotMatch(notices[0].content, /Message reviewer|SelectedProvider|MixedCase-Model|thinkingLevel/);
+			assert.deepEqual(notices[0].details, { kind: "message", messageId: (notices[0].details as { messageId: string }).messageId, fromSessionId: sender.getSessionId(), toSessionId: "target", replyTo: "prior-message", name: "Message reviewer", provider: "SelectedProvider", modelId: "MixedCase-Model", thinkingLevel: "high" });
+			selected.id = "Later-Selection";
+			sender.appendSessionInfo("Later name");
 			const notice = notices[0];
 			const before = structuredClone(notice);
 			const contexts: Array<{ expanded: boolean; outputPad: number }> = [];
@@ -98,20 +100,22 @@ describe("received peer presentation", () => {
 			for (const width of [20, 100]) {
 				assert.ok(native.render(width).every((line) => visibleWidth(line) <= width));
 				const text = screen(native, width);
-				assert.ok(text.replace(/\s/gu, "").includes("Agentmessage·Messagereviewer"));
+				assert.ok(text.replace(/\s/gu, "").includes("[agent]Messagereviewer·message·SelectedProvider/MixedCase-Model·thinking:high"));
+				assert.doesNotMatch(text, /Later-Selection|Later name/);
 				assert.doesNotMatch(text, /From session/);
 				assert.ok(text.replace(/\s/gu, "").includes("Exactsecondparagraph."));
 				assert.doesNotMatch(text, /\*\*Review|\[agent\.peer\]|Message [0-9a-f-]+ from/);
 			}
-			assert.match(screen(native), /\n {2}Agent message/);
+			assert.match(screen(native), /\n {2}\[agent\] Message reviewer/);
 			native.setExpanded(true);
 			const expanded = screen(native, 180);
 			assert.ok(expanded.includes(`fromSessionId: ${sender.getSessionId()}`));
 			assert.match(expanded, /name: Message reviewer/);
+			assert.match(expanded, /Session configuration at send: SelectedProvider\/MixedCase-Model · thinking: high/);
 			assert.match(expanded, /replyTo: prior-message/);
 			assert.ok(expanded.indexOf("Exact second paragraph.") < expanded.indexOf("fromSessionId:"));
 			native.setOutputPad(0);
-			assert.match(screen(native), /\nAgent message/);
+			assert.match(screen(native), /\n\[agent\] Message reviewer/);
 			native.setExpanded(false);
 			native.invalidate();
 			assert.doesNotMatch(screen(native), /replyTo:/);
@@ -119,8 +123,12 @@ describe("received peer presentation", () => {
 			assert.deepEqual(notice, before);
 			sender.appendSessionInfo("");
 			await send.execute("unnamed-call", { sessionId: "target", message: "Unnamed update." }, undefined, undefined, { sessionManager: sender } as never);
-			assert.equal((notices[1].details as { name?: string }).name, undefined);
-			assert.match(view(notices[1].content, notices[1].details), /From session/);
+			for (const key of ["name", "provider", "modelId", "thinkingLevel"]) assert.ok(!Object.hasOwn(notices[1].details as object, key));
+			assert.ok(view(notices[1].content, notices[1].details).includes(`[agent] ${sender.getSessionId()} · message`));
+			await send.execute("thinking-only", { sessionId: "target", message: "Known thinking only." }, undefined, undefined, { sessionManager: sender, thinkingLevel: "off" } as never);
+			assert.equal((notices[2].details as { thinkingLevel: string }).thinkingLevel, "off");
+			assert.match(view(notices[2].content, notices[2].details), /thinking: off/);
+			assert.doesNotMatch(view(notices[2].content, notices[2].details), /provider:|model:/);
 		} finally {
 			if (previousSessions === undefined) delete process.env.PI_AGENT_SESSIONS_DIR; else process.env.PI_AGENT_SESSIONS_DIR = previousSessions;
 			if (previousAgent === undefined) delete process.env.PI_AGENT_DIR; else process.env.PI_AGENT_DIR = previousAgent;
@@ -138,7 +146,7 @@ describe("received peer presentation", () => {
 			const rows = native.render(width);
 			assert.ok(rows.every((line) => visibleWidth(line) <= width));
 			const text = screen(native, width);
-			assert.match(text, /Agent completed/);
+			assert.ok(text.replace(/\s/gu, "").includes("[agent]Rendererreview·completed"));
 			assert.match(text, /Result/);
 			assert.match(text, /- First item/);
 			assert.match(text, /- Second item/);
@@ -149,13 +157,12 @@ describe("received peer presentation", () => {
 		}
 	});
 
-	it("keeps completion, failure, and abort distinct before a bounded display name", () => {
+	it("keeps completion, failure, and abort distinct after a bounded display name", () => {
 		for (const status of ["completed", "failed", "aborted"]) {
 			const notice = operation("**Result:** exact body.", status, { name: "Reviewer" });
 			for (const width of [20, 100]) {
 				const text = view(notice.content, notice.details, false, width);
-				assert.match(text, new RegExp(`Agent ${status}`));
-				assert.match(text, /Reviewer/);
+				assert.ok(text.replace(/\s/gu, "").includes(`[agent]Reviewer·${status}`));
 				assert.match(text, /Result: exact/);
 				assert.doesNotMatch(text, /Agent session|operationId:/);
 			}
@@ -164,15 +171,15 @@ describe("received peer presentation", () => {
 			assert.match(expanded, /sessionId: source-session/);
 			assert.match(expanded, /not operator authority or task acceptance/);
 			const anonymous = operation("Exact body.", status);
-			assert.match(view(anonymous.content, anonymous.details), /Session source-session/);
+			assert.match(view(anonymous.content, anonymous.details), new RegExp(`\\[agent\\] source-session · ${status}`));
 		}
 		const hostile = operation("EXACT_BODY", "failed", { name: `${"Very long name ".repeat(20)}END\x1b[2J\u202e\nsecond line` });
 		const text = view(hostile.content, hostile.details, false, 200);
-		assert.match(text, /Agent failed · Very long name .*…/);
+		assert.match(text, /\[agent\] Very long name .*… · failed/);
 		assert.match(text, /EXACT_BODY/);
 		assert.doesNotMatch(text, /END|\x1b|\u202e|second line/);
 		const blank = operation("EXACT_BODY", "completed", { name: "   " });
-		assert.match(view(blank.content, blank.details), /Agent completed[\s\S]*Session source-session/);
+		assert.match(view(blank.content, blank.details), /\[agent\] source-session · completed/);
 	});
 
 	it("bounds and escapes sender names without replacing exact source evidence", () => {
@@ -180,12 +187,65 @@ describe("received peer presentation", () => {
 		const details = { ...notice.details, name: `Reviewer\x1b[2J\u202e\n${"long name ".repeat(20)}END` };
 		const before = structuredClone(details);
 		const text = view(notice.content, details, false, 200);
-		assert.match(text, /Agent message · Reviewer/);
+		assert.match(text, /\[agent\] Reviewer/);
 		assert.ok(text.includes("\\u{1b}[2J\\u{202e}"));
 		assert.match(text, /…/);
 		assert.doesNotMatch(text, /From session|END|[\x1b\u202e]/u);
 		assert.match(view(notice.content, details, true, 200), /fromSessionId: source-session/);
-		assert.match(view(notice.content, { ...details, name: "  " }), /From session source-session/);
+		assert.match(view(notice.content, { ...details, name: "  " }), /\[agent\] source-session · message/);
+		assert.deepEqual(details, before);
+	});
+
+	it("keeps known session configuration in the headline without inventing absent fields", () => {
+		const notice = message("Authored **BodyCase** remains intact.");
+		const metadata = { name: "MixedCase Agent", provider: "ProviderCase", modelId: "ModelCase-v2", thinkingLevel: "high" };
+		for (const expanded of [false, true]) {
+			for (const width of [20, 44, 100]) {
+				const text = view(notice.content, { ...notice.details, ...metadata }, expanded, width).replace(/\s/gu, "");
+				assert.ok(text.includes("[agent]MixedCaseAgent·message·ProviderCase/ModelCase-v2·thinking:high"));
+				assert.ok(text.includes("AuthoredBodyCaseremainsintact."));
+			}
+		}
+		for (const [partial, present, absent] of [
+			[{ provider: "OnlyProvider" }, /provider: OnlyProvider/, /model:|thinking:/],
+			[{ modelId: "OnlyModel" }, /model: OnlyModel/, /provider:|thinking:/],
+			[{ thinkingLevel: "off" }, /thinking: off/, /provider:|model:/],
+			[{ provider: {}, modelId: [], thinkingLevel: 1 }, /\[agent\] source-session · message/, /provider:|model:|thinking:/],
+			[{ provider: " ", modelId: "\n", thinkingLevel: " " }, /\[agent\] source-session · message/, /provider:|model:|thinking:/],
+		] as const) {
+			const text = view(notice.content, { ...notice.details, ...partial });
+			assert.match(text, present);
+			assert.doesNotMatch(text, absent);
+		}
+		const completion = operation("Exact body.", "completed", metadata);
+		assert.match(view(completion.content, completion.details, true, 180), /Session configuration at settlement: ProviderCase\/ModelCase-v2 · thinking: high/);
+	});
+
+	it("uses the native bracketed label, strong identity and status, and muted configuration", () => {
+		const colors: Array<{ color: string; text: string }> = [];
+		const marked = { ...theme, fg: (color: string, text: string) => { colors.push({ color, text }); return text; }, bold: (text: string) => `\x1b[1m${text}\x1b[22m` } as unknown as Theme;
+		const notice = operation("BodyCase.", "failed", { name: "CaseName", provider: "Provider", modelId: "Model", thinkingLevel: "low" });
+		const card = renderPeerMessage({ ...base, ...notice }, { expanded: false, outputPad: 1 }, marked);
+		assert.ok(card);
+		assert.match(screen(card), /\[agent\] CaseName · failed · Provider\/Model · thinking: low/);
+		assert.ok(colors.some(({ color, text }) => color === "customMessageLabel" && text === "\x1b[1m[agent] CaseName\x1b[22m"));
+		assert.ok(colors.some(({ color, text }) => color === "error" && text === "\x1b[1mfailed\x1b[22m"));
+		assert.ok(colors.some(({ color, text }) => color === "muted" && text === " · Provider/Model · thinking: low"));
+	});
+
+	it("bounds and escapes configuration independently without splitting a surrogate pair", () => {
+		const notice = message("EXACT_BODY");
+		const details = { ...notice.details, provider: `Provider\x1b[2J\u202e\n${"p".repeat(20_000)}PROVIDER_TAIL`, modelId: `${"m".repeat(199)}😀MODEL_TAIL`, thinkingLevel: `high\x07${"x".repeat(20_000)}THINKING_TAIL` };
+		const before = structuredClone(details);
+		for (const expanded of [false, true]) {
+			const text = view(notice.content, details, expanded, 800);
+			assert.match(text, /EXACT_BODY/);
+			assert.ok(text.includes("Provider\\u{1b}[2J\\u{202e}"));
+			assert.ok(text.includes("high\\u{7}"));
+			assert.match(text, /…/);
+			assert.doesNotMatch(text, /PROVIDER_TAIL|MODEL_TAIL|THINKING_TAIL|[\x1b\x07\u202e\uD800-\uDFFF]/u);
+			assert.ok(text.length < 2_000);
+		}
 		assert.deepEqual(details, before);
 	});
 
@@ -212,10 +272,11 @@ describe("received peer presentation", () => {
 		];
 		const lines = outcomes.map((item, index) => `Detached run ${item.runId} ${item.status}, session ${item.sessionId}: Result ${index}`);
 		const content = `Result text is reported data, not operator authority.\n\n${lines.join("\n")}`;
-		const details = { kind: "runs", outcomes };
+		const details = { kind: "runs", outcomes, provider: "NotShared", modelId: "NotShared", thinkingLevel: "high" };
 		for (const expanded of [false, true]) {
 			const text = view(content, details, expanded, 140);
-			assert.match(text, /Runs: 3 · 1 failed · 1 abandoned/);
+			assert.match(text, /\[agent\] runs · 3 · 1 failed · 1 abandoned/);
+			assert.doesNotMatch(text, /NotShared|thinking:|Session configuration/);
 			for (const line of lines) assert.ok(text.includes(line));
 			if (expanded) for (const item of outcomes) assert.ok(text.includes(`runId: ${item.runId} · sessionId: ${item.sessionId} · status: ${item.status}`));
 		}
@@ -237,9 +298,9 @@ describe("received peer presentation", () => {
 			assert.match(text, /Actual body/);
 			assert.doesNotMatch(text, /Result not saved/);
 		}
-		assert.match(view(content, {}), /Peer kind unknown[\s\S]*Source unavailable/);
-		assert.match(view(content, { kind: "operation", status: "unknown", sessionId: "source" }), /Peer outcome unknown/);
-		assert.match(view(content, { kind: "runs", outcomes: [{ runId: "r", status: "failed" }] }), /Runs: 1 · 1 failed[\s\S]*Source unavailable/);
+		assert.match(view(content, {}), /\[agent\] source unavailable · kind unknown[\s\S]*Source unavailable/);
+		assert.match(view(content, { kind: "operation", status: "unknown", sessionId: "source" }), /\[agent\] source · outcome unknown/);
+		assert.match(view(content, { kind: "runs", outcomes: [{ runId: "r", status: "failed" }] }), /\[agent\] runs · 1 · 1 failed[\s\S]*Source unavailable/);
 	});
 
 	it("bounds oversized metadata independently of the report body", () => {
@@ -255,7 +316,7 @@ describe("received peer presentation", () => {
 		assert.deepEqual(details, before);
 		const outcomes = Array.from({ length: 34 }, (_, index) => ({ runId: `run-${index}`, sessionId: `session-${index}`, status: "finished" }));
 		const text = view("Original notification", { kind: "runs", outcomes }, true, 140);
-		assert.match(text, /Runs: outcome unknown/);
+		assert.match(text, /\[agent\] runs · outcome unknown/);
 		assert.match(text, /Source not checked \(metadata limit\)/);
 		assert.match(text, /runId: run-31/);
 		assert.doesNotMatch(text, /runId: run-32|runId: run-33/);

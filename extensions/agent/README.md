@@ -1002,27 +1002,36 @@ full arguments remain in Pi's native tool call. Display bounds never change the
 transmitted message. Results distinguish admission receipts from send errors.
 
 Received messages and completion notices keep Pi's violet custom-message
-identity. A bold heading states the report type or completion state, then the
-source's name when supplied. Unnamed messages and operations show the full
-session ID on a wrapped source line. `agent_send` captures the sender's current
-session name as optional display metadata; the original content envelope stays
-unchanged. Names are bounded and terminal controls appear as visible escapes.
+identity and native lowercase bracketed label. The headline shows
+`[agent] <name or session ID> · <message or outcome>`, followed by the known
+`provider/model` and `thinking: <level>` in muted text. Identity and status are
+bold. Names and configuration values retain their original case. An unnamed
+source uses its full valid session ID; the headline wraps at the terminal width.
+
+`agent_send` captures the sender's current session name, selected provider/model,
+and thinking level at emission. Completion notices capture the worker's current
+session selection at settlement, not its creation arguments or the physical
+responder behind a virtual model. These optional display fields travel in the
+existing notice metadata. Missing fields stay absent; rendering performs no
+session lookup. The original content envelopes stay unchanged. Names and
+configuration values are bounded, and terminal controls appear as visible escapes.
 
 Both default and expanded cards show the message body as native Markdown, with
 paragraph spacing, lists, links, code, and width-aware wrapping. The renderer
 honors Pi's `outputPad` setting. Only a fully matching current envelope permits
 removal of its technical preamble from the displayed body; an unmatched
-notification stays visible. Detached-run batches show every report with its
-source instead of selecting one excerpt. The producer sends settled runs in
-batches of at most 32.
+notification stays visible. Detached-run batches use a `[agent] runs` headline
+with outcome counts, not one shared session configuration. They show every
+report with its source instead of selecting one excerpt. The producer sends
+settled runs in batches of at most 32.
 
 Applicable warnings precede the body: an unsaved result, a settlement reported
 to primaries without a live owner, an unchecked source, or an unavailable source.
 Oversized metadata reports an unknown outcome and an unchecked source.
 The configured native tool-expansion key adds source details after the readable
-body: exact valid message, reply, session, operation, and run IDs. A visible
-hint names that key. Invalid IDs use bounded excerpts and point to full metadata
-in native history. Large batches show at most 32 run metadata rows with an
+body: exact valid message, reply, session, operation, and run IDs, plus the
+capture boundary for any session configuration. A visible hint names that key.
+Invalid IDs use bounded excerpts and point to full metadata in native history. Large batches show at most 32 run metadata rows with an
 omission notice. Expansion ends with the universal AGENTS.md `Intent authority`
 reference for messages, or the reported-data and task-acceptance boundary for
 operation and detached-run results. It does not duplicate the body as raw text.
@@ -1037,9 +1046,10 @@ transcript space. The renderer does not pin the primary answer or guarantee
 its visibility after arbitrary arrivals. Rendering changes neither provider
 content nor delivery timing.
 
-Native reload refreshes the renderer. Existing live managers retain their send
-methods across reload; a process restart applies sender-name metadata to those
-owners. Notices without a name still show their source ID.
+Native reload refreshes the renderer. Existing live managers and workers retain
+their producer methods across reload; a process restart applies the changed
+metadata producers to those owners. Notices without metadata do not gain it
+retroactively. Notices without a name still show their source ID.
 
 Admission means the message entered the recipient's execution path. It does
 not mean that the recipient replied, understood the message, or acted on it.
@@ -1066,13 +1076,11 @@ owning session is live in this process, because the owner closed, detached, is
 unknown, or has a failed association write, the notice reaches the registered
 primary sessions instead and says so in its content; its collapsed card marks
 the same state. The notice names the settled session when it has a name: its
-content opens with the name and ID, and the card title reads
-`Agent completed · <name>`, `Agent failed · <name>`, or
-`Agent aborted · <name>`. The status precedes the bounded name, with control
-characters shown as text. A notice that its owner
-cannot admit yet waits in memory and reaches that owner later, or falls back
-when the owner retires. Detached-run
-summaries keep their separate announcement to registered primaries.
+content opens with the name and ID. The card uses the source-first headline
+described above, with `completed`, `failed`, or `aborted` as its status.
+A notice that its owner cannot admit yet waits in memory and reaches that owner
+later, or falls back when the owner retires. Detached-run summaries keep their
+separate announcement to registered primaries.
 
 These results and detached-run summaries carry an explicit
 reported-data label in model-visible content. Settlement is an execution
