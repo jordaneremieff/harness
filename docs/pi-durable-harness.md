@@ -6,6 +6,37 @@ observation where those contracts preserve its capabilities. An exported
 kernel does not by itself replace ordinary extension loading, project trust,
 resource discovery, or submitted-result retrieval.
 
+## Release review coverage
+
+<!-- pi-release-reviewed-through: unknown -->
+
+The declaration above records the latest Pi release through which the harness
+completed cumulative release intake. Its value is a numeric major.minor.patch
+version or `unknown`. Targeted contract checks and dependency versions do not
+establish that coverage; the initial declaration is unknown.
+
+Evo reads this declaration from the common ancestor of local main and main's
+configured upstream, using the immutable commit. This excludes dirty files,
+provisional branch declarations, and local-main coverage not present in the
+upstream history. Upstream tracking refs are conservative local evidence, not
+a fresh remote check. Missing Git evidence or an invalid declaration requires
+baseline recovery; never substitute the installed version or lockfile.
+
+The coordinator owns advancement. Review every cumulative changelog entry after
+the prior declaration through the running release, resolve applicable findings,
+complete consumer adoption and required repository checks, and accept the whole
+range before changing the declaration. Include that change in promotion only
+with completed adoption. Verify publication before reporting completion; a
+publication failure leaves delivery incomplete and the published baseline
+unchanged. Partial or failed intake and unrelated directed work do not advance
+the declaration.
+
+When prior complete coverage cannot be established, read all available cumulative
+release notes through the running version in bounded pages and assess current
+harness effects and opportunities. Assess superseded behavior against the current
+host rather than recreating historical implementations. Only completed adoption
+establishes the first numeric declaration. No runtime command writes it.
+
 ## Standalone distillation boundary
 
 Verified 2026-09-30 against installed coding-agent 0.99.2.

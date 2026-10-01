@@ -37,6 +37,14 @@ supplied focus. Stronger leads outside it are recommendations, not substitute
 work. Keep an inferred purpose provisional; it never expands authority or
 replaces an operator's request.
 
+When the kickoff reports unaccounted Pi releases, a bare run treats the release
+intake as its purpose; a directed run keeps its focus and reports intake as a
+pending lead. Unknown coverage makes autonomous baseline recovery the bare run's
+first priority, followed by cumulative changelog review if no prior complete
+review is established. Dependency installation does not establish release
+coverage. Follow the [review coverage procedure](pi-durable-harness.md#release-review-coverage)
+before advancing its declaration.
+
 Use history to learn from delivered outcomes and corrections, not to create a
 fixed roadmap or work quota. Maintenance-heavy recent sessions are activity
 samples, not complete operator priorities. Recent harness development volume is

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -12,13 +12,17 @@ import {
 import {
 	createAgentSession,
 	DefaultResourceLoader,
+	getPackageDir,
 	type ExtensionAPI,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
+	VERSION,
 } from "@earendil-works/pi-coding-agent";
 import { MAX_DIRECTION_CODE_POINTS } from "./command.ts";
 import { buildEvoKickoff } from "./kickoff.ts";
+import { readPiReleaseIntake } from "./release.ts";
+import { releaseFixture } from "./release-fixture.mts";
 
 function deferred() {
 	let resolve!: () => void;
@@ -38,6 +42,7 @@ async function ordinarySession(
 	mode: "tui" | "rpc" | "print" | "json",
 	configure?: (pi: ExtensionAPI) => void,
 	holdResponse?: ReturnType<typeof deferred>,
+	extensionPath = fileURLToPath(new URL("./index.ts", import.meta.url)),
 ) {
 	const agentDir = mkdtempSync(join(tmpdir(), "evo-runtime-"));
 	const modelRuntime = await ModelRuntime.create({
@@ -62,7 +67,7 @@ async function ordinarySession(
 		noSkills: true,
 		noPromptTemplates: true,
 		noContextFiles: true,
-		additionalExtensionPaths: [fileURLToPath(new URL("./index.ts", import.meta.url))],
+		additionalExtensionPaths: [extensionPath],
 		extensionFactories: [
 			(pi) => {
 				pi.registerProvider("evo-fixture", {
@@ -193,6 +198,9 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
 					texts[index],
 					buildEvoKickoff({
 						harnessRoot: resolve(fileURLToPath(new URL("../..", import.meta.url))),
+						release: await readPiReleaseIntake({
+							harnessRoot: resolve(fileURLToPath(new URL("../..", import.meta.url))),
+						}),
 						invocationCwd: runtime.cwd,
 						direction,
 					}),
@@ -304,6 +312,72 @@ test("headless invalid input and asynchronous send failure have observable error
 		assert.equal(runtime.errors[1]?.event, "send_user_message");
 		assert.equal(runtime.errors[1]?.error, "controlled send refusal");
 		assert.equal(runtime.requests.length, 0);
+	} finally {
+		await runtime.close();
+	}
+});
+
+test("real evo command retains pending releases despite aligned dependencies and never writes coverage", {
+	timeout: 20000,
+}, async (t) => {
+	const headings = [
+		...readFileSync(join(getPackageDir(), "CHANGELOG.md"), "utf8").matchAll(/^## \[(\d+\.\d+\.\d+)\] - /gm),
+	].map((match) => match[1]);
+	const installedIndex = headings.indexOf(VERSION);
+	assert.ok(installedIndex >= 0 && installedIndex + 2 < headings.length);
+	const baseline = headings[installedIndex + 2];
+	const fixture = releaseFixture(baseline);
+	t.after(fixture.close);
+	const extensionDir = join(fixture.root, "extensions", "evo");
+	mkdirSync(extensionDir, { recursive: true });
+	for (const file of ["index.ts", "command.ts", "kickoff.ts", "release.ts"]) {
+		copyFileSync(new URL(file, import.meta.url), join(extensionDir, file));
+	}
+	writeFileSync(
+		join(fixture.root, "package-lock.json"),
+		JSON.stringify({
+			packages: { "node_modules/@earendil-works/pi-coding-agent": { version: VERSION } },
+		}),
+	);
+	if (fixture.git("diff", "--", "package-lock.json")) fixture.commit();
+	fixture.publish();
+	const expected = await readPiReleaseIntake({ harnessRoot: fixture.root });
+	assert.equal(expected.state, "behind", expected.reason);
+	assert.deepEqual(
+		expected.releases.map((release) => release.version),
+		headings.slice(installedIndex, installedIndex + 2).reverse(),
+	);
+	const markerPath = join(fixture.root, "docs", "pi-durable-harness.md");
+	const before = readFileSync(markerPath, "utf8");
+	const commitBefore = fixture.git("rev-parse", "HEAD");
+	const runtime = await ordinarySession("print", undefined, undefined, join(extensionDir, "index.ts"));
+	try {
+		for (const direction of ["", " Improve document explanations"]) {
+			const settled = deferred();
+			const unsubscribe = runtime.session.subscribe((event) => {
+				if (event.type === "agent_settled") settled.resolve();
+			});
+			await runtime.session.prompt(`/evo${direction}`);
+			await settled.promise;
+			unsubscribe();
+		}
+		const texts = userTexts(runtime.requests[1]);
+		assert.equal(
+			texts[0],
+			buildEvoKickoff({
+				harnessRoot: fixture.root,
+				invocationCwd: runtime.cwd,
+				release: expected,
+			}),
+		);
+		assert.match(texts[0], /purpose is the harness-wide release intake/);
+		assert.match(texts[1], /pending lead/);
+		for (const release of expected.releases) {
+			assert.ok(texts[0].includes(`- ${release.version} (${release.date})`));
+		}
+		assert.equal(readFileSync(markerPath, "utf8"), before);
+		assert.equal(fixture.git("rev-parse", "HEAD"), commitBefore);
+		assert.deepEqual(runtime.errors, []);
 	} finally {
 		await runtime.close();
 	}

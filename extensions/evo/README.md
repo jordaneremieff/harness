@@ -18,8 +18,9 @@ development, collaboration, acceptance, continuity, and release checks.
 /evo <direction>
 ```
 
-Bare `/evo` infers a useful purpose without asking the operator for a topic.
-Current capabilities and plausible uses suffice to start; incident history,
+Bare `/evo` prioritizes pending Pi release intake or unresolved release coverage.
+When review coverage matches the running host, it infers a useful purpose without
+asking the operator for a topic. Current capabilities and plausible uses suffice to start; incident history,
 populated stores, and proof of a defect are not prerequisites. The coordinator
 loads the harness skill, repository instructions, and delivery workflow before
 selection or governed work.
@@ -60,6 +61,69 @@ The kickoff encodes the direction as one JSON string on one line inside
 `<evo-direction-json>`. Escaped delimiters and newlines cannot create new prompt
 sections. The decoded text directs the run within the authority boundary above.
 Framing is not a sandbox or proof of model compliance.
+
+## Release intake
+
+After an upgrade, start a new Pi process and run bare `/evo`. The command reads
+`VERSION` and `getPackageDir()` from the running Pi host and its cumulative
+`CHANGELOG.md`. A new session inside an old process does not reload Pi core.
+The package directory follows Pi's own environment override and binary-install
+rules; evo does not poll another installation or perform a hot upgrade.
+
+The baseline is the explicit `pi-release-reviewed-through` declaration in
+[the host contract document](../../docs/pi-durable-harness.md#release-review-coverage).
+It describes completed release review, not dependency installation. The command
+does not use the lockfile or a checkout-version row as review evidence. It reads
+the document by immutable commit at the common ancestor of local `main` and
+its configured upstream. Dirty files, provisional branches, and an unpublished
+marker on local main do not suppress pending intake. Local upstream tracking is
+conservative evidence, not a fresh network check; evo does not fetch.
+
+The declaration starts as `unknown` because targeted contract checks do not
+establish exhaustive release coverage. A bare run first recovers a defensible
+published baseline from repository evidence. If none exists, it reads the
+available cumulative changelog through the running version in bounded pages and
+reviews its effects on the current harness. Superseded changes are assessed
+against the current host, not implemented again. The operator does not need to
+paste notes or select a topic.
+
+The kickoff distinguishes:
+
+- **Aligned:** published review coverage matches the running version and the
+  changelog boundary exists. The command does not repeat completed intake.
+- **Behind:** the running host has later changelog entries. Every entry in the
+  interval appears oldest first, with its source path and inclusive line range.
+  Bare runs select harness-wide intake; directed runs retain their focus and
+  report intake as a pending lead.
+- **Ahead:** published coverage exceeds the running host. Report the host
+  mismatch without lowering coverage.
+- **Unavailable:** Git evidence, the declaration, version syntax, or changelog
+  validation failed. Bare runs prioritize autonomous baseline/source recovery,
+  not an unrelated topic or an automatic stop. Directed runs report the pending
+  coverage question without replacing their focus.
+
+Both version endpoints must occur in the cumulative changelog before the command
+claims interval coverage. It rejects malformed, duplicate, and out-of-order
+release headings. Numeric version gaps do not imply missing publications. Coverage
+means every entry in the installed file, not proof that upstream omitted none.
+
+Each Git operation has a five-second timeout and a 128,000-byte output cap.
+Changelog reads stop at 2,000,000 bytes; the parser accepts at most 512 release
+headings. Exceeding either input limit produces actionable unavailable evidence.
+Embedded notes have a 40,000-byte UTF-8 cap, measured after JSON escaping.
+Every selected release retains its path and line range if its text does not fit.
+The kickoff requires direct bounded reads of omitted text. Note lines are JSON
+strings, separate from trusted instructions.
+
+A bare intake aligns dependencies while retaining wildcard peers, runs
+`npm ci` in affected worktrees, repairs consumers, refreshes the host contract
+document, and audits extensions, skills, prompts, and scripts for every release
+in scope. It adopts new capabilities where they serve the operator's work.
+The coordinator advances coverage only after complete review, resolved applicable
+findings, required checks, and accepted adoption. Promotion includes the marker
+only with completed adoption; publication must succeed before completion is
+claimed. Partial, failed, and unrelated directed runs leave coverage unchanged.
+The command itself never writes the marker.
 
 ## Outcome and ownership
 
@@ -159,8 +223,11 @@ selected slices' dedicated worktrees.
 
 ## Implementation and checks
 
-- `index.ts` registers `/evo`, resolves its evidence root, reports invalid input,
-  and selects follow-up delivery.
+- `index.ts` registers `/evo`, resolves its evidence root, reads release intake,
+  reports invalid input, and selects follow-up delivery.
+- `release.ts` reads published review coverage and bounds cumulative release notes.
+- `release.test.mts` checks source validation, publication boundaries, context
+  limits, recovery priority, and directed focus with isolated Git fixtures.
 - `command.ts` sanitizes and bounds the direction.
 - `kickoff.ts` frames intent, direction, authority, and the required workflow read.
 - `evo.test.mts` checks parser boundaries, JSON isolation, direction precedence,
@@ -170,7 +237,9 @@ selected slices' dedicated worktrees.
 - `evo.runtime.test.mts` loads the real extension into ordinary Pi sessions with a
   controlled provider. It checks exact delivered requests in all modes, repeated
   requests, preflight lifetime, active follow-up delivery, retained outcome, and
-  error routing without live credentials.
+  error routing without live credentials. An isolated harness fixture verifies
+  pending release delivery even when its lockfile matches the running host, and
+  verifies that dispatch does not write coverage.
 
 ```bash
 node --test extensions/evo/*.test.mts

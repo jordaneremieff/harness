@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { parseEvoInvocation } from "./command.ts";
 import { buildEvoKickoff } from "./kickoff.ts";
+import { readPiReleaseIntake } from "./release.ts";
 
 const HARNESS_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
@@ -23,10 +24,12 @@ export default function registerEvo(pi: ExtensionAPI): void {
 				reportInvalidInvocation(ctx, invocation.error);
 				return;
 			}
+			const release = await readPiReleaseIntake({ harnessRoot: HARNESS_ROOT });
 			const kickoff = buildEvoKickoff({
 				harnessRoot: HARNESS_ROOT,
 				invocationCwd: ctx.cwd,
 				direction: invocation.direction,
+				release,
 			});
 			pi.sendUserMessage(kickoff, { deliverAs: "followUp" });
 		},
