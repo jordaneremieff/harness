@@ -411,6 +411,16 @@ prefix. Text is deduplicated and terminal-safe. Only guidance actually selected
 for projection consumes its once/cooldown allowance. Current command rules guide
 at most once per observation period and only after a successful result.
 
+Result guidance appends text while preserving the `structuredContent` visible to
+this hook, including data on error results. It never restores data removed or
+replaced by an earlier handler. Direct calls retain their result annotation.
+For nested calls identified by Pi's public `parentToolCallId`, policy also sends
+the same selected text as a hidden custom message with `triggerTurn:false`.
+Pi appends it after the current turn's tool results, so guidance reaches the
+next normal model request even when a codemode script discards the nested result
+or extracts only its data. This delivery reuses the same selection and
+once/cooldown allowance; it neither forces another turn nor adds a policy queue.
+
 Completion-triggered guidance enters the next actual `context` request. Pi's
 `tool_result` hook precedes final error classification, and `tool_execution_end`
 has no result-patch return. Policy therefore retains the triggered notice rather
@@ -1138,7 +1148,7 @@ adjudication remain distinct from deterministic validation.
 | `PI_POLICY_DIR` | Private rule/data/telemetry directory; default `<agentDir>/policy` |
 | `--policy-mode` | Session mode; overrides the environment |
 | `PI_POLICY_MODE` | `observe` by default, or `notice`, `annotate`, `enforce` |
-| `PI_POLICY_TEST_PI_ROOT` | Test-only explicit Pi package root for `pi-hooks.test.mts`, `proposal-schema.test.mts`, and the package schema test in `scripts/extension-load-check.test.mts`; runtime does not read it |
+| `PI_POLICY_TEST_PI_ROOT` | Test-only explicit Pi package root for `pi-hooks.test.mts`, `nested-guidance.test.mts`, `proposal-schema.test.mts`, and the package schema test in `scripts/extension-load-check.test.mts`; runtime does not read it |
 
 Focused checks:
 
@@ -1168,7 +1178,14 @@ message replacement, boundary drafts, and boundary continuation rather than
 silently ignoring effects outside these policy checks. It drives the low-level
 loop, not the full session settlement lifecycle.
 
-These tests require the current Pi APIs introduced in 0.87.0. Ordinary callback
+[nested-guidance.test.mts](nested-guidance.test.mts) runs the production policy
+runtime inside an ordinary `AgentSession` with native codemode and a controlled
+provider. It checks structured success/error shapes, discarded-result guidance,
+request ordering, direct annotations, earlier redaction, and guidance limits.
+Its rules and observation clock are synthetic; it does not access the operator's
+store or a remote provider.
+
+These tests require the current Pi APIs. Ordinary callback
 fakes do not establish those host behaviors. Use `PI_POLICY_TEST_PI_ROOT` to
 exercise a different installed Pi package rather than assume the repository
 dependency snapshot represents it.

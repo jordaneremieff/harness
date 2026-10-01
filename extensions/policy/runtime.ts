@@ -593,7 +593,10 @@ export class PolicyRuntime {
 	async toolResult(
 		event: ToolResultEvent,
 		ctx: ExtensionContext,
-	): Promise<{ isError?: true; content?: ToolResultEvent["content"] } | undefined> {
+	): Promise<
+		| { isError?: true; content?: ToolResultEvent["content"]; structuredContent?: ToolResultEvent["structuredContent"] }
+		| undefined
+	> {
 		if (this.closed || !this.enabled()) return;
 		const generation = this.generation;
 		await this.load(ctx);
@@ -612,7 +615,13 @@ export class PolicyRuntime {
 		this.notice(call, ctx);
 		if (text) {
 			call.effects.annotationBytes = Buffer.byteLength(text, "utf8");
-			return this.annotatedResult(text, event.content, correction);
+			if (event.parentToolCallId !== undefined) {
+				this.pi.sendMessage(
+					{ customType: "policy_result_guidance", content: text, display: false },
+					{ triggerTurn: false },
+				);
+			}
+			return this.annotatedResult(text, event, correction);
 		}
 		if (correction) return { isError: true };
 	}
@@ -628,10 +637,14 @@ export class PolicyRuntime {
 
 	private annotatedResult(
 		text: string,
-		content: ToolResultEvent["content"],
+		event: ToolResultEvent,
 		correction: boolean,
-	): { isError?: true; content: ToolResultEvent["content"] } {
-		return { ...(correction ? { isError: true as const } : {}), content: [...content, { type: "text", text }] };
+	): { isError?: true; content: ToolResultEvent["content"]; structuredContent?: ToolResultEvent["structuredContent"] } {
+		return {
+			...(correction ? { isError: true as const } : {}),
+			content: [...event.content, { type: "text", text }],
+			structuredContent: event.structuredContent,
+		};
 	}
 	private guidance(evaluations: ProgramEvaluation[], projected?: (id: string) => void): string | undefined {
 		if (this.effectiveMode() !== "annotate" && this.effectiveMode() !== "enforce") return;
