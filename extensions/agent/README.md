@@ -1001,31 +1001,45 @@ splitting a surrogate pair; an explicit notice reports any omitted text. The
 full arguments remain in Pi's native tool call. Display bounds never change the
 transmitted message. Results distinguish admission receipts from send errors.
 
-Received peer messages use Pi's native custom-message expansion. The collapsed
-card shows the event or outcome first, then a literal message, result, or run
-excerpt from the source. For a detached-run batch, a failed or abandoned run
-summary takes priority. The producer sends settled runs in batches of at most
-32. Each batch shows its outcomes. A failed or abandoned excerpt requires every
-run line to match its metadata. The collapsed card adds a line only for a
-condition that applies: an unsaved result, a settlement reported to primaries
-without a live owner, an unchecked source, or an unavailable source. The
-message content carries the authority statements; the expanded card ends with
-one line that restates the boundary: the universal AGENTS.md `Intent authority`
-section for message cards, unverified peer data for operation and detached-run
-cards. Each collapsed row fits the available width; source IDs do not displace
-the excerpt. Oversized metadata reports an unknown outcome and an unchecked
-source; an unmatched notification preamble remains visible.
+Received messages and completion notices keep Pi's violet custom-message
+identity. A bold heading states the report type or completion state, then the
+source's name when supplied. Unnamed messages and operations show the full
+session ID on a wrapped source line. `agent_send` captures the sender's current
+session name as optional display metadata; the original content envelope stays
+unchanged. Names are bounded and terminal controls appear as visible escapes.
 
-Expansion exposes the sanitized original notification and exact valid message,
-reply, session, operation, and run IDs. Invalid IDs use bounded excerpts and
-point to full metadata in native history. Large batches show at most 32 run
-metadata rows with a notice for the omitted rows.
-An explicit display-limit notice preserves access through native history;
-`agent_inspect` retains the stored operation outcome and `agent_runs` retains
-run outcomes. The renderer changes neither provider content nor delivery timing.
-Global expansion intentionally permits full blocks. Compact defaults reduce
-late-message footprint, but do not pin the primary answer or guarantee its
-visibility after arbitrary arrivals.
+Both default and expanded cards show the message body as native Markdown, with
+paragraph spacing, lists, links, code, and width-aware wrapping. The renderer
+honors Pi's `outputPad` setting. Only a fully matching current envelope permits
+removal of its technical preamble from the displayed body; an unmatched
+notification stays visible. Detached-run batches show every report with its
+source instead of selecting one excerpt. The producer sends settled runs in
+batches of at most 32.
+
+Applicable warnings precede the body: an unsaved result, a settlement reported
+to primaries without a live owner, an unchecked source, or an unavailable source.
+Oversized metadata reports an unknown outcome and an unchecked source.
+The configured native tool-expansion key adds source details after the readable
+body: exact valid message, reply, session, operation, and run IDs. A visible
+hint names that key. Invalid IDs use bounded excerpts and point to full metadata
+in native history. Large batches show at most 32 run metadata rows with an
+omission notice. Expansion ends with the universal AGENTS.md `Intent authority`
+reference for messages, or the reported-data and task-acceptance boundary for
+operation and detached-run results. It does not duplicate the body as raw text.
+
+Each body displays at most 32,000 source UTF-16 code units without splitting a
+surrogate pair. Controls are escaped before Markdown rendering. An explicit
+display-limit notice points to the complete notification in native history;
+expansion does not bypass that limit. `agent_inspect` retains the operation
+outcome and `agent_runs` retains run outcomes. Long reports use native transcript
+scrolling rather than a clipped preview, so successive reports occupy more
+transcript space. The renderer does not pin the primary answer or guarantee
+its visibility after arbitrary arrivals. Rendering changes neither provider
+content nor delivery timing.
+
+Native reload refreshes the renderer. Existing live managers retain their send
+methods across reload; a process restart applies sender-name metadata to those
+owners. Notices without a name still show their source ID.
 
 Admission means the message entered the recipient's execution path. It does
 not mean that the recipient replied, understood the message, or acted on it.
@@ -1052,9 +1066,10 @@ owning session is live in this process, because the owner closed, detached, is
 unknown, or has a failed association write, the notice reaches the registered
 primary sessions instead and says so in its content; its collapsed card marks
 the same state. The notice names the settled session when it has a name: its
-content opens with the name and ID, and the collapsed card title reads
-`<name> completed`, `failed`, or `aborted` instead of `Peer <status>`, with the
-name bounded and control characters shown as text. A notice that its owner
+content opens with the name and ID, and the card title reads
+`Agent completed · <name>`, `Agent failed · <name>`, or
+`Agent aborted · <name>`. The status precedes the bounded name, with control
+characters shown as text. A notice that its owner
 cannot admit yet waits in memory and reaches that owner later, or falls back
 when the owner retires. Detached-run
 summaries keep their separate announcement to registered primaries.
@@ -1275,7 +1290,10 @@ omissions, unchanged native entries, and Unicode continuation through live-owner
 and read-only projections. Presentation tests cover activity call limits and
 cursors, turn and entry counts, persisted age, unavailable owner state,
 coverage bounds, running call IDs and durations, saved result labels, and status
-activity without inferred idleness. Loader tests
+activity without inferred idleness. Received-message tests cover formatted
+Markdown, source names and exact IDs, unchanged delivery content, narrow widths,
+native expansion and output padding, terminal-control escaping, explicit display
+limits, and completion/error states. Loader tests
 verify the public inspection registration; they do not establish behavior in
 an already-loaded host. Component tests cover
 board filtering, uncapped paging, native chat components, message drafts,

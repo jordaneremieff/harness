@@ -543,7 +543,7 @@ Verified 2026-10-01 against installed coding-agent 0.99.2
 `dist/core/messages.js`, and the public `MessageRenderer` declarations.
 `registerMessageRenderer` receives native expansion state. The default custom
 message component displays its complete body even when collapsed; a registered
-renderer supplies a compact view without altering the retained message.
+renderer owns its presentation without altering the retained message.
 The host applies its global tool-expansion state to these components.
 Renderer failure falls back to the default body, so malformed metadata must
 produce an explicit safe view rather than throw.
@@ -551,12 +551,14 @@ produce an explicit safe view rather than throw.
 Display and delivery are separate contracts. An idle custom message with
 `triggerTurn: true` starts a provider turn; active steering preserves the host
 queue. Provider conversion includes message content but omits display metadata.
-The agent extension uses the native rendering boundary, not queue changes, to
-limit the default footprint of late peer evidence. Peer-operation outcomes
-remain separate from primary-session state and task acceptance. Native
-expansion and arbitrary message arrivals prevent a permanent-visibility
-promise. Controlled provider tests establish content and turn behavior;
-isolated terminal trials establish display and expansion behavior, not model
+The agent extension uses the native rendering boundary, not queue changes, for
+readable Markdown bodies, source labels, and completion states. Its default view
+shows the body within an explicit display bound; native expansion adds source
+details below that body. Longer reports occupy more transcript space.
+Peer-operation outcomes remain separate from primary-session state and task
+acceptance. Arbitrary message arrivals prevent a permanent-visibility promise.
+Controlled provider tests establish content and turn behavior; isolated terminal
+trials establish display and expansion behavior, not model
 judgment about the evidence.
 
 ## Configuration and source context

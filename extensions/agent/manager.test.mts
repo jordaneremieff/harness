@@ -321,7 +321,7 @@ describe("detached run visibility", () => {
 			assert.match(render(first, false), /Runs: 32/);
 			const failure = render(last, false);
 			assert.match(failure, /Runs: 1 · 1 failed/);
-			assert.match(failure, /↳ failed: Late parser failure/);
+			assert.match(failure, /Detached run batch-32 failed, session session-batch-32: Late parser failure/);
 			assert.doesNotMatch(failure, /Source unavailable|Source not checked/);
 			assert.equal((render(first, true).match(/runId: batch-/gu) ?? []).length, 32);
 			assert.equal(runs.get(runIds[32])?.acknowledged, true);

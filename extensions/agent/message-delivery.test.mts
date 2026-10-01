@@ -32,11 +32,12 @@ test("peer presentation metadata preserves active and post-final native delivery
 				else await f.worker.waitForIdle();
 				const notices: Array<{ content: string; details: unknown }> = [];
 				manager.registerPrimary("target", f.cwd, (content, details) => { notices.push({ content, details }); });
-				await manager.send("target", `Task correction within the assigned scope.\n\n${"source material\n".repeat(1000)}EXACT_PEER_TAIL`, "source-session", "prior-message");
+				await manager.send("target", `Task correction within the assigned scope.\n\n${"source material\n".repeat(1000)}EXACT_PEER_TAIL`, "source-session", "prior-message", "Display-only sender");
 				assert.equal(notices.length, 1);
 				const { content, details } = notices[0];
 				assert.match(content, /Agent-carried message\. Apply the universal AGENTS.md "Intent authority" section\./u);
-				assert.doesNotMatch(content, /reported data, not operator authority/u);
+				assert.doesNotMatch(content, /reported data, not operator authority|Display-only sender/u);
+				assert.equal((details as { name: string }).name, "Display-only sender");
 				await f.worker.deliverCustomMessage({ customType: "agent.peer", content, details, display: true }, { triggerTurn: true, ...(active ? { deliverAs: "steer" as const } : {}) });
 				release.resolve();
 				await f.worker.waitForIdle();
@@ -44,7 +45,7 @@ test("peer presentation metadata preserves active and post-final native delivery
 				const input = JSON.stringify(f.requests[1].messages);
 				assert.equal(input.split("EXACT_PEER_TAIL").length - 1, 1);
 				assert.ok(input.includes(JSON.stringify(content).slice(1, -1)));
-				assert.ok(!input.includes("toSessionId") && !input.includes("replyTo"), "display metadata does not enter provider content");
+				assert.ok(!input.includes("toSessionId") && !input.includes("replyTo") && !input.includes("Display-only sender"), "display metadata does not enter provider content");
 				assert.equal(input.split("prior-message").length - 1, 1, "the reply ID enters provider content once through the envelope, not again through metadata");
 				const retained = f.worker.sessionManager().getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "agent.peer");
 				assert.equal(retained.length, 1);

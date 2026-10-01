@@ -1305,12 +1305,12 @@ export class AgentManager {
 		}
 	}
 
-	async send(sessionId: string, message: string, fromSessionId?: string, replyTo?: string): Promise<string> {
+	async send(sessionId: string, message: string, fromSessionId?: string, replyTo?: string, fromName?: string): Promise<string> {
 		this.assertAssociationWriter(sessionId);
 		if (fromSessionId) this.assertAssociationWriter(fromSessionId);
 		if (fromSessionId) {
 			const messageId = randomUUID();
-			const details = { kind: "message", messageId, fromSessionId, toSessionId: sessionId, ...(replyTo ? { replyTo } : {}) };
+			const details = { kind: "message", messageId, fromSessionId, toSessionId: sessionId, ...(replyTo ? { replyTo } : {}), ...(fromName ? { name: fromName } : {}) };
 			const content = `Message ${messageId} from session ${fromSessionId}${replyTo ? `; reply to ${replyTo}` : ""}. Agent-carried message. Apply the universal AGENTS.md "Intent authority" section.\n\n${message}`;
 			const primary = this.primary.get(sessionId);
 			if (primary) {
@@ -1878,7 +1878,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			void ctx;
 			const manager = await getManager();
-			return textResult(await manager.send(params.sessionId, params.message, ctx.sessionManager.getSessionId(), params.replyTo));
+			return textResult(await manager.send(params.sessionId, params.message, ctx.sessionManager.getSessionId(), params.replyTo, ctx.sessionManager.getSessionName()));
 		},
 	});
 
