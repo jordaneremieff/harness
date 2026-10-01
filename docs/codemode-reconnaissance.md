@@ -20,6 +20,20 @@ default settings:
 }
 ```
 
+Activation decides adoption. The built-in registers `codemode` inactive, and an
+inactive tool is not declared to the model, so the model cannot call it and
+has nothing to discover. An agent asked to use codemode in such a session can
+only fall back to other tools or explain the gap. Once the tool is declared,
+Pi's own tool description and its system prompt guidance select it for
+batched calls and output filtering without harness instructions. Check the
+declaration before changing instructions or policy: `registry` with
+`kind: "tool"` and `name: "codemode"` reports `configured` and `active`
+separately. `/reload` activates a tool newly added to `defaultTools` in a
+running session; `--tools` replaces the whole selection, so an invocation that
+passes it must name `codemode` too. Managed sessions created by the
+[agent extension](../extensions/agent/README.md) load the built-in through its
+public factory and follow the same setting.
+
 Keep native codemode's default `on` mode. It preserves direct tool declarations
 alongside script access. In `only` mode, Pi hides direct tool declarations.
 Native `read` has no output schema, so a script receives its text but not its
@@ -215,6 +229,21 @@ namespace `name` and `description`, omits `instructions`, and sets
 [README](../extensions/registry/README.md) states. Use `describeNamespace()` for
 the full text. The [checked Pi contract](pi-durable-harness.md#mcp-and-deferred-tool-discovery)
 records the exposure, naming, and waiting rules with their sources.
+
+## Orchestration versus native execution
+
+The sandbox reaches the world only through declared tools. Use a script to run
+independent calls together, to filter or join structured tool output before it
+enters model context, to loop a project command over cases and return only the
+verdicts, or to reduce a few reads to one small structure. `bash` resolves
+inside a script to `{ output, exit_code, ... }` with up to 1 MiB of output, more
+than the model's truncated view.
+
+Keep a native runtime for application code, project libraries, framework
+shells, tests, binary formats, compression, and long-running or interactive
+processes. The script supplies the loop, selection, assertions, and reduction
+around a plain single-purpose `bash` command; it does not generate source for
+another language to feed through a heredoc.
 
 ## Native execution boundaries
 
