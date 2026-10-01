@@ -311,7 +311,7 @@ export class AgentDashboard implements Component {
 		const next = matchesKey(data, "home") ? 0 : matchesKey(data, "end") ? length : current + this.delta(data, this.viewport);
 		return Math.max(0, Math.min(Math.max(0, length - this.viewport), next));
 	}
-	private commonInput(data: string): boolean {
+	private focusInput(data: string): boolean {
 		if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
 			this.state.focus = this.state.focus === "sessions" ? "conversation" : "sessions"; return true;
 		}
@@ -320,6 +320,10 @@ export class AgentDashboard implements Component {
 			return true;
 		}
 		if (this.state.focus === "conversation" && matchesKey(data, "enter")) { this.compose(); return true; }
+		return false;
+	}
+	private commonInput(data: string): boolean {
+		if (this.focusInput(data)) return true;
 		switch (data) {
 			case "[": this.move(-1); return true;
 			case "]": this.move(1); return true;
