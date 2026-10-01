@@ -6,6 +6,7 @@ import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { authoringGuide, checkDraft, DraftCasesSchema, type ParsedDraft, validateDraftCases } from "./authoring.ts";
 import { ruleScopeVisibility } from "./classify.ts";
+import { registerControlTool } from "./control.ts";
 import { snapshotData } from "./data.ts";
 import { dataFileApprovalText, dataReview, normalizeDataArtifact, readDataArtifact, safeJson } from "./data-import.ts";
 import {
@@ -322,6 +323,9 @@ export interface ToolDeps {
 	registry: RuleRegistry;
 	loadRegistry(ctx: ExtensionContext): Promise<RuleSnapshot>;
 	getMode?(): PolicyMode | "unavailable";
+	resetRevision?(id: string): string;
+	reset?(id: string, reason: string, revision: string): void;
+	telemetry?(from: string, to: string): Promise<unknown>;
 	inspect?(view: PolicyInspectionView, params: Record<string, unknown>, ctx: ExtensionContext): Promise<unknown>;
 }
 
@@ -912,6 +916,7 @@ function registerApprovalTool(pi: ExtensionAPI, deps: ToolDeps): void {
 
 export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 	registerApprovalTool(pi, deps);
+	registerControlTool(pi, deps);
 	pi.registerTool<typeof PolicyProposeParams, Record<string, unknown>>({
 		name: "policy_propose",
 		label: "Policy propose",

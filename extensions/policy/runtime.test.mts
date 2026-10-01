@@ -41,6 +41,26 @@ function rule(id: string, program: FactsProgram): RuleRecord {
 		staleOverride: false,
 	};
 }
+it("binds reset revisions to runtime instance, exact selector, and current period", () => {
+	const records = [
+		rule("sample", {
+			phase: "completion",
+			when: success,
+			action: { kind: "observe", label: "calls" },
+			onUnavailable: "skip",
+		}),
+	];
+	const first = fixture(records);
+	const second = fixture(records);
+	const single = first.runtime.resetRevision("sample");
+	assert.notEqual(single, first.runtime.resetRevision("--all"));
+	assert.notEqual(single, second.runtime.resetRevision("sample"));
+	assert.throws(() => first.runtime.reset(undefined, "All periods.", single), /revision changed/);
+	assert.throws(() => second.runtime.reset(["sample"], "New runtime.", single), /revision changed/);
+	first.runtime.reset(["sample"], "Fresh period.", single);
+	assert.throws(() => first.runtime.reset(["sample"], "Repeated.", single), /revision changed/);
+});
+
 function fixture(
 	programs: RuleRecord[],
 	mode: PolicyMode = "enforce",
@@ -196,20 +216,24 @@ function shellRule(effect: "block" | "steer" = "block"): RuleRecord {
 }
 describe("compact command inspection", () => {
 	it("omits non-matching evaluations and counts rules once across input views", async (t) => {
-		const records = PACKAGE_CATALOG.map(({ id, matcher, ...definition }): RuleRecord => ({
-			id,
-			source: { kind: "package" },
-			matcher,
-			definition: { ...definition, state: "active" },
-			matcherAvailable: true,
-			staleOverride: false,
-		}));
+		const records = PACKAGE_CATALOG.map(
+			({ id, matcher, ...definition }): RuleRecord => ({
+				id,
+				source: { kind: "package" },
+				matcher,
+				definition: { ...definition, state: "active" },
+				matcherAvailable: true,
+				staleOverride: false,
+			}),
+		);
 		const f = fixture(records, "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
 		for (const command of ["rg -n -m 12 'x' dir/", "cd /x && rg -n 'a' index.ts | head; echo done"]) {
-			const preview = await f.runtime.inspect("preview", { tool: "bash", input: { command } }, f.ctx) as {
-				decision: { denied: boolean }; nonMatchingRules: number;
-				input: { evaluations: unknown[] }; results: unknown[];
+			const preview = (await f.runtime.inspect("preview", { tool: "bash", input: { command } }, f.ctx)) as {
+				decision: { denied: boolean };
+				nonMatchingRules: number;
+				input: { evaluations: unknown[] };
+				results: unknown[];
 			};
 			assert.ok(Buffer.byteLength(JSON.stringify(preview)) < 2500);
 			assert.equal(preview.decision.denied, false);
@@ -222,7 +246,9 @@ describe("compact command inspection", () => {
 	it("names the matched nested segment without unrelated command text", async (t) => {
 		const f = fixture([shellRule()], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
-		const denied = await f.call("nested", { command: "printf safe && echo ready | wc -c; printf '%s' $(cat notes.md)" });
+		const denied = await f.call("nested", {
+			command: "printf safe && echo ready | wc -c; printf '%s' $(cat notes.md)",
+		});
 		assert.ok(denied);
 		assert.ok(denied.reason.startsWith(`[policy] ${shellRule().definition.note}`));
 		assert.match(denied.reason, /Matched command: cat notes\.md/);
@@ -244,10 +270,15 @@ describe("compact command inspection", () => {
 	});
 
 	it("bounds and redacts segments before denial projection", async (t) => {
-		const blocker: RuleRecord = { ...shellRule(), matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "scan" } } };
+		const blocker: RuleRecord = {
+			...shellRule(),
+			matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "scan" } },
+		};
 		const f = fixture([blocker], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
-		const denied = await f.call("bounded", { command: `echo unrelated; scan --token sample-private-value ${"界".repeat(500)}` });
+		const denied = await f.call("bounded", {
+			command: `echo unrelated; scan --token sample-private-value ${"界".repeat(500)}`,
+		});
 		assert.ok(denied);
 		assert.match(denied.reason, /Matched command: scan --token \[redacted\]/);
 		assert.doesNotMatch(denied.reason, /sample-private-value|unrelated/);
@@ -301,13 +332,12 @@ async function completed(f: ReturnType<typeof fixture>, id: string, error: boole
 }
 
 describe("pre-call shell guidance", () => {
-	const shellFixture = (mode: PolicyMode = "enforce") => fixture(
-		[shellRule()], mode, Type.Object({ command: Type.String() }), false, "/unused", "bash",
-	);
+	const shellFixture = (mode: PolicyMode = "enforce") =>
+		fixture([shellRule()], mode, Type.Object({ command: Type.String() }), false, "/unused", "bash");
 	it("projects once before tools, without consuming rule guidance state", async () => {
 		const f = shellFixture();
 		const before = await f.views();
-		const result = await f.handlers.get("before_agent_start")?.({}, f.ctx) as {
+		const result = (await f.handlers.get("before_agent_start")?.({}, f.ctx)) as {
 			message: { customType: string; content: string; display: boolean };
 		};
 		assert.equal(result.message.customType, "policy_shell_contract");
@@ -347,13 +377,21 @@ describe("pre-call shell guidance", () => {
 	it("has one latch across overlapping callbacks and rejects stale work", async () => {
 		const f = shellFixture();
 		let release: () => void = () => {};
-		f.setLoadGate(new Promise<void>((resolve) => { release = resolve; }));
+		f.setLoadGate(
+			new Promise<void>((resolve) => {
+				release = resolve;
+			}),
+		);
 		const first = f.runtime.beforeAgentStart(f.ctx);
 		const second = f.runtime.beforeAgentStart(f.ctx);
 		release();
 		assert.equal((await Promise.all([first, second])).filter(Boolean).length, 1);
 		const stale = shellFixture();
-		stale.setLoadGate(new Promise<void>((resolve) => { release = resolve; }));
+		stale.setLoadGate(
+			new Promise<void>((resolve) => {
+				release = resolve;
+			}),
+		);
 		const pending = stale.runtime.beforeAgentStart(stale.ctx);
 		await stale.handlers.get("session_shutdown")?.({}, stale.ctx);
 		release();
@@ -371,8 +409,18 @@ describe("completion-triggered recovery guidance", () => {
 		await f.result("first", true);
 		await f.finish("first", true);
 		assert.equal(await f.runtime.context(f.ctx), undefined);
-		await f.runtime.toolResult({ type: "tool_result", toolName: "other", toolCallId: "second", input: {},
-			isError: true, content: [{ type: "text", text: "failure" }], details: {} }, f.ctx);
+		await f.runtime.toolResult(
+			{
+				type: "tool_result",
+				toolName: "other",
+				toolCallId: "second",
+				input: {},
+				isError: true,
+				content: [{ type: "text", text: "failure" }],
+				details: {},
+			},
+			f.ctx,
+		);
 		await f.runtime.toolEnd({ toolName: "other", toolCallId: "second", isError: true, result: {} }, f.ctx);
 		await f.result("success");
 		await f.finish("success");
@@ -392,7 +440,7 @@ describe("completion-triggered recovery guidance", () => {
 	it("coalesces continued failures and preserves notices through compaction without repeating idle context", async () => {
 		const f = fixture([recoveryRule()]);
 		for (let i = 0; i < 5; i++) await completed(f, `failure-${i}`, true);
-		const before = await f.runtime.inspect("state", {}, f.ctx) as { retainedGuidance: unknown[] };
+		const before = (await f.runtime.inspect("state", {}, f.ctx)) as { retainedGuidance: unknown[] };
 		assert.equal(before.retainedGuidance.length, 1);
 		await f.handlers.get("session_compact")?.({}, f.ctx);
 		await f.handlers.get("turn_start")?.({}, f.ctx);
@@ -452,8 +500,18 @@ describe("completion-triggered recovery guidance", () => {
 		await f.call("partial", {});
 		await f.handlers.get("tool_execution_update")?.({}, f.ctx);
 		await f.call("text", {});
-		await f.runtime.toolResult({ type: "tool_result", toolName: "sample", toolCallId: "text", input: {},
-			isError: false, content: [{ type: "text", text: "ERROR failed invalid" }], details: {} }, f.ctx);
+		await f.runtime.toolResult(
+			{
+				type: "tool_result",
+				toolName: "sample",
+				toolCallId: "text",
+				input: {},
+				isError: false,
+				content: [{ type: "text", text: "ERROR failed invalid" }],
+				details: {},
+			},
+			f.ctx,
+		);
 		await f.finish("text", false);
 		await completed(f, "failure", true);
 		await f.finish("failure", true);
@@ -472,26 +530,61 @@ describe("completion-triggered recovery guidance", () => {
 				assert.equal(output !== undefined, mode === "annotate" || mode === "enforce");
 			});
 
-	for (const change of ["revision", "disable", "retire", "scope", "reset", "mode", "degraded", "tree", "shutdown", "reload", "new", "resume", "fork"])
+	for (const change of [
+		"revision",
+		"disable",
+		"retire",
+		"scope",
+		"reset",
+		"mode",
+		"degraded",
+		"tree",
+		"shutdown",
+		"reload",
+		"new",
+		"resume",
+		"fork",
+	])
 		it(`${change}: invalidates retained guidance`, async () => {
 			const r = recoveryRule();
 			const f = fixture([r]);
 			await completed(f, "first", true);
 			await completed(f, "second", true);
 			switch (change) {
-				case "revision": r.definition.revision = "fedcba654321"; break;
-				case "disable":
-					r.override = { state: "disabled", reason: "test", againstDefinitionRevision: r.definition.revision,
-						audit: { surface: "command", session: "session", model: null, at: new Date().toISOString() } };
+				case "revision":
+					r.definition.revision = "fedcba654321";
 					break;
-				case "retire": r.definition.state = "retired"; break;
-				case "scope": r.definition.scope = { cwdPrefixes: ["/elsewhere"] }; break;
-				case "reset": f.runtime.reset([r.id], "operator reset"); break;
-				case "mode": f.setMode("observe"); break;
-				case "degraded": f.snapshot.health = { ...f.snapshot.health, status: "degraded" }; break;
-				case "tree": await f.handlers.get("session_tree")?.({}, f.ctx); break;
-				case "shutdown": await f.handlers.get("session_shutdown")?.({}, f.ctx); break;
-				default: await f.handlers.get("session_start")?.({ reason: change }, f.ctx);
+				case "disable":
+					r.override = {
+						state: "disabled",
+						reason: "test",
+						againstDefinitionRevision: r.definition.revision,
+						audit: { surface: "command", session: "session", model: null, at: new Date().toISOString() },
+					};
+					break;
+				case "retire":
+					r.definition.state = "retired";
+					break;
+				case "scope":
+					r.definition.scope = { cwdPrefixes: ["/elsewhere"] };
+					break;
+				case "reset":
+					f.runtime.reset([r.id], "operator reset");
+					break;
+				case "mode":
+					f.setMode("observe");
+					break;
+				case "degraded":
+					f.snapshot.health = { ...f.snapshot.health, status: "degraded" };
+					break;
+				case "tree":
+					await f.handlers.get("session_tree")?.({}, f.ctx);
+					break;
+				case "shutdown":
+					await f.handlers.get("session_shutdown")?.({}, f.ctx);
+					break;
+				default:
+					await f.handlers.get("session_start")?.({ reason: change }, f.ctx);
 			}
 			assert.equal(await f.runtime.context(f.ctx), undefined);
 			delete r.definition.scope;
@@ -1231,10 +1324,7 @@ describe("final observations and guidance", () => {
 		assert.equal(policy.dataSnapshots.find((row) => row.name === "absent")?.status, "missing");
 		assert.deepEqual(policy.coverage.dataSnapshots, { total: 3, omitted: 0 });
 		assert.ok(Buffer.byteLength(JSON.stringify(policy.dataSnapshots)) <= 32768);
-		assert.doesNotMatch(
-			JSON.stringify(f.records),
-			/payload-input|payload-output|unused-key|unused-value|aaaabbbbcccc/,
-		);
+		assert.doesNotMatch(JSON.stringify(f.records), /payload-input|payload-output|unused-key|unused-value|aaaabbbbcccc/);
 	});
 	it("reports omitted named-data snapshots within the serialized byte bound", async () => {
 		const rules = Array.from({ length: 100 }, (_, index) =>

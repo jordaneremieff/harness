@@ -12,6 +12,7 @@ import {
 	type PendingProposal,
 	proposalRevision,
 	RuleRegistry,
+	targetIdentity,
 	type RuleSnapshot,
 } from "./local-rules.ts";
 import { POLICY_MODES, type PolicyMode, resolvePolicyMode, resolvePolicyModeValue } from "./mode.ts";
@@ -44,11 +45,9 @@ const POLICY_USAGE = [
 	"  /policy                                      Open the policy panel (TUI only)",
 	"  /policy list                                 Print rules, proposals, and authority health",
 	"  /policy show <id-or-proposal-id>              Show a rule or proposal",
-	"  /policy approve <proposal-id> <steer|block>   Approve a selectable add action",
-	"  /policy approve <proposal-id> exact <revision> Approve an exact action",
-	"  /policy approve <proposal-id> <steer|block> <revision> Approve a selectable replacement action",
-	"  /policy approve <proposal-id>                Approve a retire or disable proposal",
-	"  /policy reject <proposal-id>                 Reject a proposal",
+	"  /policy approve [rule-name|proposal-id]      Select and review a pending proposal (TUI)",
+	"  /policy approve <target> <steer|block|exact> <revision> Exact approval; completion fills revision",
+	"  /policy reject [rule-name|proposal-id] [revision] Reject a pending proposal; TUI selects if omitted",
 	"  /policy disable <id> <reason...>              Disable a rule",
 	"  /policy enable <id> <reason...>               Enable a rule",
 	"  /policy effect <id> <steer|block> <reason...>  Select an authorized steer/block effect",
@@ -117,12 +116,20 @@ function primaryChoices(verb: string, snapshot: RuleSnapshot | undefined, regist
 	const records = [...(snapshot?.records.values() ?? [])];
 	const proposals = snapshot?.pending ?? [];
 	if (verb === "show" || verb === "explain")
-		return [...records.map((record) => record.id), ...(verb === "show" ? proposals.map((proposal) => proposal.id) : [])];
+		return [
+			...records.map((record) => record.id),
+			...(verb === "show" ? proposals.map((proposal) => proposal.id) : []),
+		];
 	if (verb === "approve" || verb === "reject") return proposals.map((proposal) => proposal.id);
 	if (SELECTABLE_VERBS.has(verb))
 		return records.filter((record) => selectableForAction(record, verb)).map((record) => record.id);
 	if (verb === "reset")
-		return [...records.filter((record) => selectableForAction(record, verb)).map((record) => record.id), "--all"];
+		return [
+			...records
+				.filter((record) => effectiveState(record) === "active" && record.matcherAvailable)
+				.map((record) => record.id),
+			"--all",
+		];
 	if (verb === "catalog" || verb === "import")
 		return [...registry.catalogRows().map((row) => row.id), ...(verb === "import" ? ["--all"] : [])];
 	if (verb === "data") return ["list", "show", "set", "set-file", "remove"];
@@ -160,6 +167,59 @@ function fourthChoices(verb: string, parts: string[], snapshot: RuleSnapshot | u
 	return binding?.revision === parts[3] ? ["exact"] : [];
 }
 
+function primaryCompletions(verb: string, partial: string, snapshot: RuleSnapshot, registry: RuleRegistry): AutocompleteItem[] {
+	if (verb === "show") return showCompletions(partial, snapshot);
+	if (verb === "approve" || verb === "reject") return proposalCompletions(verb, partial, snapshot);
+	return primaryChoices(verb, snapshot, registry).filter((value) => value.startsWith(partial)).map((value) => ({ value: `${verb} ${value}`, label: value }));
+}
+
+function showCompletions(partial: string, snapshot: RuleSnapshot): AutocompleteItem[] {
+	const records = [...snapshot.records.values()].filter((record) => record.id.startsWith(partial)).map((record) => ({ value: `show ${record.id}`, label: record.id, description: choiceText(record.definition.purpose) }));
+	const pending = snapshot.pending.filter((proposal) => proposal.id.startsWith(partial) || proposal.ruleId.startsWith(partial)).map((proposal) => ({ value: `show ${proposal.id}`, label: `${proposal.ruleId} · pending ${proposal.operation}`, description: choiceText(proposal.candidate?.purpose ?? proposal.reason) }));
+	return [...records, ...pending];
+}
+
+function proposalCompletions(verb: string, partial: string, snapshot: RuleSnapshot): AutocompleteItem[] {
+	return snapshot.pending
+		.filter((p) => p.id.startsWith(partial) || p.ruleId.startsWith(partial))
+		.flatMap((p) => {
+			const effects =
+				verb === "reject" ? [""] : candidatePermitsEffectChoice(p.candidate) ? ["steer", "block"] : ["exact"];
+			return effects.map((effect) => ({
+				value: `${verb} ${p.id} ${effect ? `${effect} ` : ""}${proposalRevision(p)}`,
+				label: `${p.ruleId}${effect ? ` · ${effect}` : ""}`,
+				description: `${p.operation}: ${choiceText(p.candidate?.purpose ?? p.reason)}`,
+			}));
+		});
+}
+
+function effectCompletions(target: string, partial: string, snapshot: RuleSnapshot): AutocompleteItem[] {
+	const p = snapshot.pending.find((p) => p.id === target || p.ruleId === target);
+	if (!p) return [];
+	return (candidatePermitsEffectChoice(p.candidate) ? ["steer", "block"] : ["exact"])
+		.filter((effect) => effect.startsWith(partial))
+		.map((effect) => ({
+			value: `approve ${p.id} ${effect} ${proposalRevision(p)}`,
+			label: effect,
+			description: p.ruleId,
+		}));
+}
+
+async function importCompletion(registry: RuleRegistry, selection: string): Promise<AutocompleteItem[]> {
+	try {
+		const plan = await registry.planImport(selection);
+		return [
+			{
+				value: `import ${selection} exact ${plan.revision}`,
+				label: "exact",
+				description: "Import the reviewed definitions; preserve overrides",
+			},
+		];
+	} catch {
+		return [];
+	}
+}
+
 function completionChoicesForPosition(
 	verb: string,
 	parts: string[],
@@ -193,7 +253,11 @@ type PolicyVerbHandler = (
 	snapshot: RuleSnapshot,
 ) => void | Promise<void>;
 
-async function policyTelemetryVerb(env: PolicyCommandEnv, ctx: ExtensionCommandContext, parts: string[]): Promise<void> {
+async function policyTelemetryVerb(
+	env: PolicyCommandEnv,
+	ctx: ExtensionCommandContext,
+	parts: string[],
+): Promise<void> {
 	if (parts.length !== 2) {
 		env.output(ctx, "Usage: /policy telemetry <from YYYY-MM-DD> <to YYYY-MM-DD> (inclusive, at most 31 days)", true);
 		return;
@@ -307,19 +371,30 @@ async function policyPreviewVerb(
 	env.output(ctx, JSON.stringify(await env.runtime.inspect("preview", params, ctx), null, 2));
 }
 
-function policyResetVerb(
+async function policyResetVerb(
 	env: PolicyCommandEnv,
 	ctx: ExtensionCommandContext,
 	_verb: string,
 	parts: string[],
 	_trimmed: string,
-	_snapshot: RuleSnapshot,
-): void {
+	snapshot: RuleSnapshot,
+): Promise<void> {
+	const revisions = new Map(
+		primaryChoices("reset", snapshot, env.registry).map((id) => [id, env.runtime.resetRevision(id)]),
+	);
+	let revision: string | undefined;
+	const completed = await controlArguments(ctx, "reset", parts, snapshot, env.registry, (id) => {
+		revision = revisions.get(id);
+		if (revision === undefined) throw new Error(`No admitted observation period for ${id}`);
+	});
+	if (!completed) return env.output(ctx, "Policy reset canceled. No observation periods changed.");
+	parts = completed;
 	if (parts.length < 2) {
 		env.output(ctx, "Usage: /policy reset <id|--all> <reason...>", true);
 		return;
 	}
-	env.runtime.reset(parts[0] === "--all" ? undefined : [parts[0]], parts.slice(1).join(" "));
+	await env.loadRegistry(ctx);
+	env.runtime.reset(parts[0] === "--all" ? undefined : [parts[0]], parts.slice(1).join(" "), revision);
 	env.output(ctx, "Started a new policy observation period.");
 }
 
@@ -346,14 +421,72 @@ async function policyImportVerb(
 	trimmed: string,
 	_snapshot: RuleSnapshot,
 ): Promise<void> {
-	const text = await policyImportCommand(
-		env.registry,
-		trimmed.slice(verb.length).trim(),
-		makeRuleAudit(ctx, "command"),
-		(title, artifact) => env.reviewArtifact(ctx, title, artifact),
+	let args = trimmed.slice(verb.length).trim();
+	if (!args && ctx.mode === "tui" && ctx.hasUI) {
+		const selection = await ctx.ui.select("Import which bundled definitions?", [
+			...env.registry.catalogRows().map((row) => row.id),
+			"--all",
+		]);
+		if (!selection) return env.output(ctx, "Policy import canceled. No rules changed.");
+		args = selection;
+	}
+	const text = await policyImportCommand(env.registry, args, makeRuleAudit(ctx, "command"), (title, artifact) =>
+		env.reviewArtifact(ctx, title, artifact),
 	);
 	await env.loadRegistry(ctx);
 	env.output(ctx, text);
+}
+
+function supplyDataRevision(json: string, snapshot: RuleSnapshot): string {
+	const supplied: unknown = JSON.parse(json);
+	if (
+		!supplied ||
+		typeof supplied !== "object" ||
+		Array.isArray(supplied) ||
+		Object.hasOwn(supplied, "expectedRevision")
+	)
+		return json;
+	const value = supplied as Record<string, unknown>;
+	const data = value.data as { name?: unknown } | undefined;
+	if (!data || typeof data.name !== "string") return json;
+	return JSON.stringify({ ...value, expectedRevision: snapshot.data.get(data.name)?.revision ?? null });
+}
+
+async function dataEditor(
+	ctx: ExtensionCommandContext,
+	action: string,
+	snapshot: RuleSnapshot,
+): Promise<string | undefined> {
+	const json = await ctx.ui.editor(
+		action === "set" ? "Data JSON: data (current target revision is supplied)" : "Data file JSON: path",
+		"",
+	);
+	if (!json?.trim()) return undefined;
+	return `${action} ${action === "set" ? supplyDataRevision(json, snapshot) : json}`;
+}
+
+async function dataArguments(
+	ctx: ExtensionCommandContext,
+	supplied: string,
+	snapshot: RuleSnapshot,
+): Promise<string | undefined> {
+	if (ctx.mode !== "tui" || !ctx.hasUI) return supplied;
+	const args = supplied || (await ctx.ui.select("Policy data action", ["list", "show", "set", "set-file", "remove"]));
+	if (!args) return undefined;
+	if (args === "set" || args === "set-file") return dataEditor(ctx, args, snapshot);
+	const tokens = args.split(/\s+/);
+	if (tokens[0] !== "show" && tokens[0] !== "remove") return args;
+	if (!tokens[1]) {
+		const name = await ctx.ui.select("Select policy data", [...snapshot.data.keys()]);
+		if (!name) return undefined;
+		tokens.push(name);
+	}
+	if (tokens[0] === "remove" && tokens.length === 2) {
+		const binding = snapshot.data.get(tokens[1]);
+		if (!binding) throw new Error(`No policy data named ${tokens[1]}.`);
+		tokens.push(binding.revision);
+	}
+	return tokens.join(" ");
 }
 
 async function policyDataVerb(
@@ -364,9 +497,11 @@ async function policyDataVerb(
 	trimmed: string,
 	_snapshot: RuleSnapshot,
 ): Promise<void> {
+	const args = await dataArguments(ctx, trimmed.slice(verb.length).trim(), _snapshot);
+	if (args === undefined) return env.output(ctx, "Policy data action canceled.");
 	const text = await policyDataCommand(
 		env.registry,
-		trimmed.slice(verb.length).trim(),
+		args,
 		makeRuleAudit(ctx, "command"),
 		(title, message) => env.reviewArtifact(ctx, title, message),
 		ctx.cwd,
@@ -393,10 +528,10 @@ function replaceApprovalArguments(
 function addApprovalArguments(
 	parts: string[],
 	choice: "steer" | "block" | undefined,
-): { effect: "steer" | "block" } | string {
-	if (parts.length !== 2 || choice === undefined)
-		return "Approving an add proposal requires: /policy approve <proposal-id> <steer|block>";
-	return { effect: choice };
+): { effect: "steer" | "block"; revision?: string } | string {
+	if ((parts.length !== 2 && parts.length !== 3) || choice === undefined)
+		return "Approving an add proposal requires: /policy approve <proposal-id> <steer|block> [revision]";
+	return { effect: choice, ...(parts[2] ? { revision: parts[2] } : {}) };
 }
 
 /** Validate one approve invocation; a string result is the error to report. */
@@ -409,9 +544,73 @@ function approveArguments(
 	const choice = parts[1] === "steer" || parts[1] === "block" ? parts[1] : undefined;
 	if (proposal.operation === "replace") return replaceApprovalArguments(parts, choice);
 	if (proposal.operation === "add") return addApprovalArguments(parts, choice);
+	if (parts.length === 3 && parts[1] === "exact") return { revision: parts[2] };
 	if (parts.length !== 1)
-		return `Approving a ${proposal.operation} proposal forbids an effect: /policy approve <proposal-id>`;
+		return `Approving a ${proposal.operation} proposal uses: /policy approve <target> exact <revision>`;
 	return {};
+}
+
+function proposalCommands(proposal: PendingProposal): string {
+	const effects = candidatePermitsEffectChoice(proposal.candidate) ? ["steer", "block"] : ["exact"];
+	const commands = effects
+		.map((effect) => `/policy approve ${proposal.id} ${effect} ${proposalRevision(proposal)}`)
+		.join("\n");
+	const artifact = JSON.stringify(proposal, null, 2);
+	if (Buffer.byteLength(terminalSafe(artifact)) > 28 * 1024)
+		return `Proposal ${proposal.ruleId} is too large for complete command display. This is not a complete review. Use policy_rules with id ${proposal.id} to inspect the complete artifact. After that review, select only the authorized effect:\n${commands}`;
+	return `${artifact}\nExact approval commands (select only the authorized effect):\n${commands}`;
+}
+
+function choiceText(text: string): string {
+	return capText(terminalSafe(text).replace(/[\r\n]+/g, " "), 240);
+}
+
+function pendingSelectionText(snapshot: RuleSnapshot, target?: string): string {
+	return `${target ? `No unique pending proposal named "${target}".` : "Select a pending proposal by rule name."}\n${snapshot.pending.map((p) => `${p.ruleId}: ${p.operation}`).join("\n") || "No pending proposals."}`;
+}
+
+async function selectProposal(
+	ctx: ExtensionCommandContext,
+	snapshot: RuleSnapshot,
+	target: string | undefined,
+	action: string,
+): Promise<PendingProposal | undefined> {
+	if (target) {
+		const matches = snapshot.pending.filter((p) => p.id === target || p.ruleId === target);
+		return matches.length === 1 ? matches[0] : undefined;
+	}
+	if (ctx.mode !== "tui" || !ctx.hasUI || !snapshot.pending.length) return undefined;
+	const choices = snapshot.pending.map(
+		(p) => `${p.ruleId} · ${p.operation} · ${choiceText(p.candidate?.purpose ?? p.reason)}`,
+	);
+	const selected = await ctx.ui.select(`${action} which policy proposal?`, choices);
+	return selected === undefined ? undefined : snapshot.pending[choices.indexOf(selected)];
+}
+
+async function approvalParts(
+	env: PolicyCommandEnv,
+	ctx: ExtensionCommandContext,
+	proposal: PendingProposal,
+	parts: string[],
+): Promise<string[] | undefined> {
+	const choices = candidatePermitsEffectChoice(proposal.candidate) ? ["steer", "block"] : ["exact"];
+	const missingRevision =
+		parts.length === 2 && choices.includes(parts[1]) && (proposal.operation !== "add" || choices[0] === "exact");
+	const interactive = ctx.mode === "tui" && ctx.hasUI;
+	if (parts.length > 1 && !(missingRevision && interactive)) return parts;
+	if (!interactive) {
+		env.output(ctx, proposalCommands(proposal));
+		return undefined;
+	}
+	const effect =
+		parts[1] ?? (choices.length === 1 ? choices[0] : await ctx.ui.select(`Effect for ${proposal.ruleId}`, choices));
+	if (
+		effect &&
+		(await env.reviewArtifact(ctx, `Approve ${proposal.ruleId} as ${effect}`, JSON.stringify(proposal, null, 2)))
+	)
+		return [proposal.id, effect, proposalRevision(proposal)];
+	env.output(ctx, "Policy approval canceled. No rules changed.");
+	return undefined;
 }
 
 async function policyApproveVerb(
@@ -422,21 +621,26 @@ async function policyApproveVerb(
 	_trimmed: string,
 	snapshot: RuleSnapshot,
 ): Promise<void> {
-	if (parts.length < 1 || parts.length > 3) {
+	if (parts.length > 3) {
 		env.output(ctx, "Usage: /policy approve <proposal-id> [steer|block|exact <revision>]", true);
 		return;
 	}
-	const proposal = snapshot.pending.find((entry) => entry.id === parts[0]);
-	if (!proposal) {
-		env.output(ctx, `No pending proposal with id "${parts[0]}".`, true);
-		return;
-	}
-	const decision = approveArguments(parts, proposal);
+	const proposal = await selectProposal(ctx, snapshot, parts[0], "Approve");
+	if (!proposal) return env.output(ctx, pendingSelectionText(snapshot, parts[0]));
+	const resolvedParts = await approvalParts(env, ctx, proposal, parts);
+	if (!resolvedParts) return;
+	const decision = approveArguments(resolvedParts, proposal);
 	if (typeof decision === "string") {
 		env.output(ctx, decision, true);
 		return;
 	}
-	await env.registry.decide(proposal.id, "approved", decision.effect, makeRuleAudit(ctx, "command"), decision.revision);
+	await env.registry.decide(
+		proposal.id,
+		"approved",
+		decision.effect,
+		makeRuleAudit(ctx, "command"),
+		decision.revision ?? proposalRevision(proposal),
+	);
 	await env.loadRegistry(ctx);
 	env.output(ctx, `Approved ${proposal.operation} proposal ${proposal.id} for ${proposal.ruleId}.`);
 }
@@ -447,15 +651,92 @@ async function policyRejectVerb(
 	_verb: string,
 	parts: string[],
 	_trimmed: string,
-	_snapshot: RuleSnapshot,
+	snapshot: RuleSnapshot,
 ): Promise<void> {
-	if (parts.length !== 1) {
-		env.output(ctx, "Usage: /policy reject <proposal-id>", true);
+	if (parts.length > 2) return env.output(ctx, "Usage: /policy reject [rule-name|proposal-id] [revision]", true);
+	const proposal = await selectProposal(ctx, snapshot, parts[0], "Reject");
+	if (!proposal) return env.output(ctx, pendingSelectionText(snapshot, parts[0]));
+	await env.registry.decide(
+		proposal.id,
+		"rejected",
+		undefined,
+		makeRuleAudit(ctx, "command"),
+		parts[1] ?? proposalRevision(proposal),
+	);
+	await env.loadRegistry(ctx);
+	env.output(ctx, `Rejected ${proposal.operation} proposal for ${proposal.ruleId}.`);
+}
+
+function validateControlTarget(
+	verb: string,
+	id: string | undefined,
+	snapshot: RuleSnapshot,
+	onTarget?: (id: string) => void,
+): void {
+	if (!id) return;
+	if (verb === "reset" && id === "--all") {
+		onTarget?.(id);
 		return;
 	}
-	await env.registry.decide(parts[0], "rejected", undefined, makeRuleAudit(ctx, "command"));
-	await env.loadRegistry(ctx);
-	env.output(ctx, `Rejected proposal ${parts[0]}.`);
+	const record = snapshot.records.get(id);
+	if (!record) throw new Error(`No rule named ${id} existed at command admission`);
+	if (verb === "reset" && (effectiveState(record) !== "active" || !record.matcherAvailable))
+		throw new Error(`No active available observation period for ${id}`);
+	onTarget?.(id);
+}
+
+async function selectControlTarget(
+	ctx: ExtensionCommandContext,
+	verb: string,
+	snapshot: RuleSnapshot,
+	registry: RuleRegistry,
+): Promise<string | undefined> {
+	const choices = primaryChoices(verb, snapshot, registry);
+	if (!choices.length) return undefined;
+	const labels = choices.map((id) =>
+		id === "--all"
+			? "All active observation periods"
+			: `${id} · ${choiceText(snapshot.records.get(id)?.definition.purpose ?? "")}`,
+	);
+	const selected = await ctx.ui.select(`Select policy ${verb} target`, labels);
+	if (selected === undefined) return undefined;
+	const id = choices[labels.indexOf(selected)];
+	if (!id) return undefined;
+	return id;
+}
+
+async function controlArguments(
+	ctx: ExtensionCommandContext,
+	verb: string,
+	supplied: string[],
+	snapshot: RuleSnapshot,
+	registry: RuleRegistry,
+	onTarget?: (id: string) => void,
+): Promise<string[] | undefined> {
+	const parts = [...supplied];
+	const validateTarget = () => validateControlTarget(verb, parts[0], snapshot, onTarget);
+	if (ctx.mode !== "tui" || !ctx.hasUI) {
+		validateTarget();
+		return parts;
+	}
+	if (!parts[0]) {
+		const id = await selectControlTarget(ctx, verb, snapshot, registry);
+		if (!id) return undefined;
+		parts.push(id);
+	}
+	validateTarget();
+	if (verb === "effect" && !parts[1]) {
+		const effect = await ctx.ui.select(`Effect for ${parts[0]}`, ["steer", "block"]);
+		if (!effect) return undefined;
+		parts.push(effect);
+	}
+	const reasonAt = verb === "effect" ? 2 : 1;
+	if (parts.length === reasonAt) {
+		const reason = await ctx.ui.input(`Reason to ${verb} ${parts[0]}`);
+		if (!reason?.trim()) return undefined;
+		parts.push(reason);
+	}
+	return parts;
 }
 
 async function policyLifecycleVerb(
@@ -464,8 +745,11 @@ async function policyLifecycleVerb(
 	verb: string,
 	parts: string[],
 	_trimmed: string,
-	_snapshot: RuleSnapshot,
+	snapshot: RuleSnapshot,
 ): Promise<void> {
+	const completed = await controlArguments(ctx, verb, parts, snapshot, env.registry);
+	if (!completed) return env.output(ctx, "Policy control canceled. No rules changed.");
+	parts = completed;
 	if (parts.length < 2) {
 		env.output(ctx, `Usage: /policy ${verb} <id> <reason...>`, true);
 		return;
@@ -473,9 +757,10 @@ async function policyLifecycleVerb(
 	const [id, ...reasons] = parts;
 	const reason = reasons.join(" ");
 	const audit = makeRuleAudit(ctx, "command");
-	if (verb === "disable") await env.registry.disable(id, reason, audit);
-	else if (verb === "enable") await env.registry.enable(id, reason, audit);
-	else await env.registry.retire(id, reason, audit);
+	const expectedIdentity = targetIdentity(snapshot.records.get(id)) ?? undefined;
+	if (verb === "disable") await env.registry.disable(id, reason, audit, expectedIdentity);
+	else if (verb === "enable") await env.registry.enable(id, reason, audit, expectedIdentity);
+	else await env.registry.retire(id, reason, audit, expectedIdentity);
 	await env.loadRegistry(ctx);
 	env.output(ctx, `${verb === "retire" ? "Retired" : verb === "disable" ? "Disabled" : "Enabled"} ${id}.`);
 }
@@ -486,13 +771,22 @@ async function policyEffectVerb(
 	_verb: string,
 	parts: string[],
 	_trimmed: string,
-	_snapshot: RuleSnapshot,
+	snapshot: RuleSnapshot,
 ): Promise<void> {
+	const completed = await controlArguments(ctx, "effect", parts, snapshot, env.registry);
+	if (!completed) return env.output(ctx, "Policy control canceled. No rules changed.");
+	parts = completed;
 	if (parts.length < 3 || (parts[1] !== "steer" && parts[1] !== "block")) {
 		env.output(ctx, "Usage: /policy effect <id> <steer|block> <reason...>", true);
 		return;
 	}
-	await env.registry.setEffect(parts[0], parts[1], parts.slice(2).join(" "), makeRuleAudit(ctx, "command"));
+	await env.registry.setEffect(
+		parts[0],
+		parts[1],
+		parts.slice(2).join(" "),
+		makeRuleAudit(ctx, "command"),
+		targetIdentity(snapshot.records.get(parts[0])) ?? undefined,
+	);
 	await env.loadRegistry(ctx);
 	env.output(ctx, `Set ${parts[0]} effect to ${parts[1]}.`);
 }
@@ -551,6 +845,9 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		registry,
 		loadRegistry,
 		getMode: () => (ensureMode() ? mode : "unavailable"),
+		resetRevision: (id) => runtime.resetRevision(id),
+		reset: (id, reason, revision) => runtime.reset(id === "--all" ? undefined : [id], reason, revision),
+		telemetry: async (from, to) => ({ report: formatTelemetry(await readTelemetry(dir, from, to)) }),
 		inspect: (view, params, ctx) => runtime.inspect(view, params, ctx),
 	});
 	runtime.attach();
@@ -684,7 +981,12 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 	};
 	pi.registerCommand("policy", {
 		description: "Inspect policy behavior, data, observation periods, and operator gates",
-		getArgumentCompletions(prefix: string): AutocompleteItem[] {
+		async getArgumentCompletions(prefix: string): Promise<AutocompleteItem[]> {
+			try {
+				completionSnapshot = await loadRegistry();
+			} catch {
+				return [];
+			}
 			const parts = prefix.trimStart().split(/\s+/);
 			const position = parts.length - 1;
 			const partial = parts[position] ?? "";
@@ -694,6 +996,10 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 				label: value,
 			});
 			if (position === 0) return VERBS.filter((v) => v.startsWith(partial)).map((value) => ({ value, label: value }));
+			if (position === 1) return primaryCompletions(verb, partial, completionSnapshot, registry);
+			if (position === 2 && verb === "approve") return effectCompletions(parts[1], partial, completionSnapshot);
+			if (verb === "import" && position === 2 && "exact".startsWith(partial))
+				return importCompletion(registry, parts[1]);
 			const choices = completionChoicesForPosition(verb, parts, position, completionSnapshot, registry);
 			return choices.filter((v) => v.startsWith(partial)).map(complete);
 		},

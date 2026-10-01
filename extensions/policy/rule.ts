@@ -46,7 +46,7 @@ export interface RuleScope {
 	cwdPrefixes?: string[];
 }
 
-export type AuditSurface = "package" | "agent-tool" | "approval-tool" | "command" | "panel";
+export type AuditSurface = "package" | "agent-tool" | "approval-tool" | "control-tool" | "command" | "panel";
 
 /** The starter catalog records bundled provenance, not continuing authority. */
 export interface PackageRuleAudit {
@@ -57,10 +57,14 @@ export type SessionRuleAudit = {
 	at: string;
 	session: string;
 	model: string | null;
-} & ({ surface: "agent-tool" | "command" | "panel" } | { surface: "approval-tool"; authorization: string });
+} & (
+	| { surface: "agent-tool" | "command" | "panel" }
+	| { surface: "approval-tool"; authorization: string }
+	| { surface: "control-tool"; authorization: string; targetRevision: string }
+);
 
 export type RuleAudit = PackageRuleAudit | SessionRuleAudit;
-export type OperatorRuleAudit = SessionRuleAudit & { surface: "command" | "panel" | "approval-tool" };
+export type OperatorRuleAudit = SessionRuleAudit & { surface: "command" | "panel" | "approval-tool" | "control-tool" };
 export type AgentRuleAudit = SessionRuleAudit & { surface: "agent-tool" };
 
 export type RuleMatcher =

@@ -118,8 +118,8 @@ argument. Use actual configured tool names and their schemas in live rules.
 
    The command supplies omitted source and capture-time metadata, then presents
    the complete normalized artifact for approval. A table without `maxAgeMs` is
-   revision-controlled and does not require periodic renewal. No model tool can
-   change these bindings.
+   revision-controlled and does not require periodic renewal. Context-authorized
+   chat uses `policy_control` for the same binding changes.
 
 3. Submit an inert rule through `policy_propose`:
 
@@ -651,6 +651,62 @@ cannot reject proposals, change data, import rules, reset state, or directly
 change rule controls. Its audit surface is `approval-tool`, not a forged command
 or panel action; unrelated writes through that surface are refused.
 
+### `policy_control`
+
+Ordinary chat covers rejection and the remaining operator controls. For example,
+"reject that proposal", "disable that rule", or "reset its observation period"
+requires no command or copied revision when the conversation identifies the
+operation and target. The agent resolves the target, reads the relevant artifact,
+and supplies the exact revision plus a bounded `authorization` explanation.
+This explanation records agent judgment; it is not independent proof of intent.
+A recommendation, quoted text, or inspection result does not authorize a change.
+Unresolved target, effect, or authority requires a narrow question. A stale refusal
+requires fresh inspection and reassessment, not automatic substitution.
+
+Execution validates closed operation-specific arguments. The provider-facing
+schema exposes one bounded flat object so adapters retain every field; required
+combinations and prohibited extra fields are checked again before any operation:
+
+| Operation | Arguments beyond `operation` | Revision source |
+| --- | --- | --- |
+| `inspect` | `id` | Complete stored rule and full-state `revision`; pending artifact only when no stored rule exists |
+| `reject` | `proposalId`, `revision`, `authorization` | `proposalRevision` from `policy_rules` pending lookup |
+| `disable`, `enable`, `retire` | `id`, `reason`, `revision`, `authorization` | `inspect` |
+| `effect` | `id`, `effect`, `reason`, `revision`, `authorization` | `inspect`; effect is `steer` or `block` only for selectable actions |
+| `import-preview` | `selection` | Complete source/target plan and `revision`; selection is a rule ID or `--all` |
+| `import` | `selection`, `revision`, `authorization` | `import-preview` |
+| `data-preview` | `artifact` or `path` | Normalized complete artifact and `revision` |
+| `data-set` | `artifact`, `revision`, `authorization` | `data-preview`; artifact contains explicit `data` and `expectedRevision` |
+| `data-set-file` | `path`, `revision`, `authorization` | `data-preview`; execution rereads the source |
+| `data-remove` | `name`, `revision`, `authorization` | Binding revision from `policy_rules` data view |
+| `reset-preview` | `id` | Reset `revision`; target is one rule ID or `--all` |
+| `reset` | `id`, `reason`, `revision`, `authorization` | `reset-preview` |
+| `mode` | None | Reports startup-selected mode; no live mode setter |
+| `telemetry` | `from`, `to` | Inclusive local-day range, with the same bounded reader as the command |
+
+Preparation operations never authorize a mutation. Proposal submission and
+approval remain `policy_propose` and `policy_approve`. `policy_rules` retains
+complete pending proposal lookup, including replacement, retirement, and disable
+proposals for existing rules. `inspect` returns one complete stored artifact,
+not an unbounded combined listing; its output uses the escaped event bound.
+For large file data, `data-preview` returns `complete:false`, the source path,
+and normalized revision instead of clipped data. The agent must read the complete
+named file before approval. Inline data requires explicit `source` and `capturedAt`
+so inspection and execution normalize identically.
+
+Persistent rule and data mutations use the same registry lock and event log as
+commands. Reset changes only session-local runtime state and writes no registry
+event. The distinct
+`control-tool` audit records authorization and the exact target revision. Both
+write admission and replay enforce that revision. Rule controls bind the complete
+record, including override state. Rejection binds the original proposal ID and
+revision. Imports bind source and current target identities. Data changes bind
+the complete normalized artifact and prior binding revision. Reset tokens bind
+this runtime instance, the exact selector, and current observation periods;
+reload or a prior reset invalidates them. Reset does not change another session.
+Control readback reports state and session mode without claiming enforcement.
+No operation changes mode or executes an arbitrary command.
+
 ### `policy_rules`
 
 Views are `rules` (default), `catalog`, `capabilities`, `state`, `health`, `data`,
@@ -699,7 +755,7 @@ telemetry; it is not a promise that the complete invocation performs no writes.
 ### Tool cards
 
 Proposal and inspection tools draw compact TUI cards and stay legible without
-expansion. `policy_approve` uses the native tool display and returns its readback
+expansion. `policy_approve` and `policy_control` use the native tool display and return readback
 as model-visible JSON text.
 
 `policy_propose`: the collapsed heading names the operation and rule id. One dim
@@ -729,11 +785,9 @@ to text in every collapsed value.
 /policy catalog [rule-id]
 /policy import <rule-id|--all> [exact <import-revision>]
 /policy show <rule-or-proposal-id>
-/policy approve <selectable-add-proposal> <steer|block>
-/policy approve <selectable-replacement> <steer|block> <proposal-revision>
-/policy approve <exact-proposal> exact <proposal-revision>
-/policy approve <retire-or-disable-proposal>
-/policy reject <proposal-id>
+/policy approve [rule-name|proposal-id]
+/policy approve <target> <steer|block|exact> <proposal-revision>
+/policy reject [rule-name|proposal-id] [proposal-revision]
 /policy disable <id> <reason...>
 /policy enable <id> <reason...>
 /policy effect <selectable-rule-id> <steer|block> <reason...>
@@ -753,6 +807,31 @@ to text in every collapsed value.
 /policy data remove <name> <current-revision> [exact]
 /policy help
 ```
+
+In the TUI, `/policy approve` and `/policy reject` select a proposal by readable
+rule name. `/policy approve local.example` asks for a selectable effect and shows
+the complete artifact before approval. `/policy reject local.example` rejects
+that exact pending proposal. The selection never means "the latest proposal".
+Commands without UI list the available names or return complete exact commands;
+they never guess an effect or select a target.
+
+Autocomplete labels show rule names and bounded purpose text. Selecting an
+approval effect inserts the complete proposal ID, effect, and revision.
+Completion refreshes the registry before selection; execution rechecks the revision.
+A changed proposal therefore refuses rather than silently targeting its replacement.
+Exact syntax remains available for scripts and diagnosis.
+
+Incomplete TUI commands use native selection and input dialogs for lifecycle,
+effect, reset, import, and data controls. For example, `/policy disable` selects
+a rule and asks for its reason; `/policy effect local.example` asks for effect
+and reason. `/policy import` selects bundled definitions and opens the complete
+review. `/policy data remove sample` supplies the current revision internally and
+opens the data review. Data set and set-file accept JSON through the native editor
+when omitted. The guided set editor supplies omitted `expectedRevision` from the
+selected binding snapshot (null for a new name). It preserves an explicit revision;
+the complete review and write still check the captured target. Exact command and
+file artifacts remain strict. Cancellation changes no rule or binding. Complete explicit commands
+retain their direct behavior; no redundant confirmation is added.
 
 Set JSON contains `data`, `expectedRevision` (null for a new binding), and an
 optional exact `approveRevision`. Reset immediately invalidates the selected

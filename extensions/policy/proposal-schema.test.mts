@@ -425,6 +425,35 @@ describe("finite proposal description and recursive admission", () => {
 				"suggestion",
 			].sort(),
 		);
+		const control = registered.get("policy_control");
+		assert.ok(control);
+		const controlSchema = JSON.parse(JSON.stringify(control.parameters));
+		const projectedControl = payload.tools.find((item) => item.name === "policy_control");
+		assert.ok(projectedControl);
+		assert.deepEqual(projectedControl.input_schema.properties, controlSchema.properties);
+		assert.deepEqual(
+			Object.keys(projectedControl.input_schema.properties).sort(),
+			[
+				"operation",
+				"id",
+				"selection",
+				"proposalId",
+				"name",
+				"revision",
+				"authorization",
+				"reason",
+				"effect",
+				"artifact",
+				"path",
+				"from",
+				"to",
+			].sort(),
+		);
+		assert.deepEqual(projectedControl.input_schema.required, ["operation"]);
+		assert.ok(
+			Buffer.byteLength(JSON.stringify(controlSchema)) < 6000,
+			"control transport does not repeat closed variants",
+		);
 		assert.deepEqual(projected.required, ["operation", "id", "reason"]);
 		assert.deepEqual(projected.properties, schema.properties);
 		assert.equal(JSON.stringify(projected).split("Conditions use exactly one of").length - 1, 1);
@@ -447,7 +476,12 @@ describe("finite proposal description and recursive admission", () => {
 
 	it("registers finite schemas without recursive reference keywords", async (t) => {
 		const { registered } = await setup(t);
-		assert.deepEqual([...registered.keys()].sort(), ["policy_approve", "policy_propose", "policy_rules"]);
+		assert.deepEqual([...registered.keys()].sort(), [
+			"policy_approve",
+			"policy_control",
+			"policy_propose",
+			"policy_rules",
+		]);
 		for (const tool of registered.values()) {
 			const serialized = JSON.stringify(tool.parameters);
 			assert.doesNotMatch(serialized, /"\$(?:ref|defs|dynamicRef|recursiveRef)"/);

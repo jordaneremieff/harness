@@ -1,7 +1,7 @@
 /** Controlled real Pi dispatcher tests. No provider, credential, or external tool executes. */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
@@ -10,6 +10,7 @@ import type { AgentEvent, AgentTurnContext } from "@earendil-works/pi-agent-core
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, SessionBoundaryDraft, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
 import { PACKAGE_CATALOG } from "./catalog.ts";
 import { proposalRevision, RuleRegistry } from "./local-rules.ts";
 import type { FactsProgram } from "./program.ts";
@@ -205,13 +206,19 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 			};
 		};
 		const prepared = await runner.emitBeforeAgentStart("Run controlled tools", undefined, {
-			cwd: base, selectedTools: tools.map((tool) => tool.name),
+			cwd: base,
+			selectedTools: tools.map((tool) => tool.name),
 		});
 		const preparationMessages = prepared.messages.map((message: Record<string, unknown>) => ({
-			...message, role: "custom", timestamp: Date.now(),
+			...message,
+			role: "custom",
+			timestamp: Date.now(),
 		}));
 		const messages = await runAgentLoop(
-			[{ role: "user", content: "Run controlled tools", timestamp: Date.now() }, ...host.convertToLlm(preparationMessages)],
+			[
+				{ role: "user", content: "Run controlled tools", timestamp: Date.now() },
+				...host.convertToLlm(preparationMessages),
+			],
 			{ systemPrompt: "Controlled test", messages: [], tools },
 			{
 				model,
@@ -368,29 +375,209 @@ const contextProgram: FactsProgram = {
 };
 
 describe(`ordinary Pi ${version} policy hooks`, () => {
+	it("executes contextual rejection and complete native command selections against isolated state", async () => {
+		const f = await setup([]);
+		try {
+			f.setTools(host.wrapRegisteredTools(f.runner.getAllRegisteredTools(), f.runner));
+			const submit = async (id: string) => {
+				await f.run([
+					{
+						id: `propose-${id}`,
+						name: "policy_propose",
+						arguments: {
+							operation: "add",
+							id,
+							purpose: "Bound scans.",
+							authority: "exact",
+							reason: "Protect scans.",
+							note: "Bound scans.",
+							match: { command: "scan" },
+						},
+					},
+				]);
+				const p = (await f.registry.snapshot()).pending.find((p) => p.ruleId === id);
+				assert.ok(p);
+				return p;
+			};
+			const rejected = await submit("local.reject");
+			await f.run([
+				{
+					id: "reject",
+					name: "policy_control",
+					arguments: {
+						operation: "reject",
+						proposalId: rejected.id,
+						revision: proposalRevision(rejected),
+						authorization: "The operator said reject that proposal; the preceding artifact is local.reject.",
+					},
+				},
+			]);
+			assert.equal((await f.registry.snapshot()).pending.length, 0);
+			const p = await submit("local.complete");
+			const command = f.runner.getRegisteredCommands().find((command: { name: string }) => command.name === "policy");
+			assert.ok(command);
+			const provider = new CombinedAutocompleteProvider([command], f.base);
+			const line = "/policy approve local.complete";
+			const suggestions = await provider.getSuggestions([line], 0, line.length, {
+				signal: new AbortController().signal,
+			});
+			assert.ok(suggestions);
+			const item = suggestions.items.find((item) => item.label === "local.complete · exact");
+			assert.ok(item);
+			assert.match(item.value, new RegExp(proposalRevision(p)));
+			const applied = provider.applyCompletion([line], 0, line.length, item, suggestions.prefix);
+			assert.equal(applied.lines[0].trim(), `/policy approve ${p.id} exact ${proposalRevision(p)}`);
+			await command.handler(applied.lines[0].trim().slice("/policy ".length), f.runner.createCommandContext());
+			assert.equal((await f.registry.snapshot()).pending.length, 0);
+			assert.ok((await f.registry.snapshot()).records.has(p.ruleId));
+			await submit("local.named");
+			await command.handler("reject local.named", f.runner.createCommandContext());
+			assert.equal((await f.registry.snapshot()).pending.length, 0);
+			const reset = await f.invoke("policy_control", { operation: "reset-preview", id: "--all" });
+			await f.run([
+				{
+					id: "reset",
+					name: "policy_control",
+					arguments: {
+						operation: "reset",
+						id: "--all",
+						revision: reset.details.revision,
+						reason: "Start a fresh observation period.",
+						authorization: "The operator selected a reset of all observation periods.",
+					},
+				},
+			]);
+			const stale = await f.run([
+				{
+					id: "stale-reset",
+					name: "policy_control",
+					arguments: {
+						operation: "reset",
+						id: "--all",
+						revision: reset.details.revision,
+						reason: "Reset again.",
+						authorization: "The operator repeated the reset.",
+					},
+				},
+			]);
+			assert.match(JSON.stringify(stale.messages), /Observation period revision changed/);
+			const control = async (operation: string, input: Record<string, unknown>) => {
+				const run = await f.run([
+					{
+						id: `control-${operation}`,
+						name: "policy_control",
+						arguments: {
+							operation,
+							...input,
+							authorization: "The operator selected this exact control in the controlled conversation.",
+						},
+					},
+				]);
+				assert.ok(
+					run.messages.some(
+						(message: { role: string; toolName?: string; isError?: boolean }) =>
+							message.role === "toolResult" && message.toolName === "policy_control" && !message.isError,
+					),
+					JSON.stringify(run.messages),
+				);
+			};
+			for (const operation of ["disable", "enable", "effect", "retire"]) {
+				const target = await f.invoke("policy_control", { operation: "inspect", id: "routing.cat-read" });
+				await control(operation, {
+					id: "routing.cat-read",
+					revision: target.details.revision,
+					reason: "Selected native control.",
+					...(operation === "effect" ? { effect: "steer" } : {}),
+				});
+			}
+			const plan = await f.invoke("policy_control", { operation: "import-preview", selection: "--all" });
+			await control("import", { selection: "--all", revision: plan.details.revision });
+			assert.equal((await f.registry.snapshot()).records.get("routing.cat-read")?.definition.state, "active");
+			const artifact = {
+				data: { name: "native", kind: "table", source: "controlled", capturedAt: 1, rows: [{ key: "a", value: "b" }] },
+				expectedRevision: null,
+			};
+			const data = await f.invoke("policy_control", { operation: "data-preview", artifact });
+			await control("data-set", { artifact, revision: data.details.revision });
+			let binding = (await f.registry.snapshot()).data.get("native");
+			assert.ok(binding);
+			await control("data-remove", { name: "native", revision: binding.revision });
+			const path = join(f.base, "data.json");
+			await writeFile(path, JSON.stringify(artifact));
+			const file = await f.invoke("policy_control", { operation: "data-preview", path });
+			await control("data-set-file", { path, revision: file.details.revision });
+			binding = (await f.registry.snapshot()).data.get("native");
+			assert.ok(binding);
+			await control("data-remove", { name: "native", revision: binding.revision });
+			assert.equal((await f.registry.snapshot()).data.size, 0);
+			const mode = await f.invoke("policy_control", { operation: "mode" });
+			assert.equal(mode.details.mode, "enforce");
+			const telemetry = await f.invoke("policy_control", {
+				operation: "telemetry",
+				from: "2026-01-01",
+				to: "2026-01-01",
+			});
+			assert.ok(telemetry.content.length);
+			await f.telemetry();
+			assert.deepEqual(f.errors, []);
+		} finally {
+			await f.cleanup();
+		}
+	});
 	it("activates a pending rule through the native tool pipeline and enforces its selected effect", async () => {
 		const f = await setup([]);
 		try {
 			let executions = 0;
 			f.setTools([
 				...host.wrapRegisteredTools(f.runner.getAllRegisteredTools(), f.runner),
-				{ name: "sample", description: "controlled", parameters: inputSchema,
-					execute: async () => { executions++; return { content: [{ type: "text" as const, text: "body" }], details: {} }; } },
+				{
+					name: "sample",
+					description: "controlled",
+					parameters: inputSchema,
+					execute: async () => {
+						executions++;
+						return { content: [{ type: "text" as const, text: "body" }], details: {} };
+					},
+				},
 			]);
-			await f.run([{ id: "propose", name: "policy_propose", arguments: {
-				operation: "add", id: "local.controlled", purpose: "Block a selected sample argument.",
-				authority: "steer-or-block", reason: "Exercise selected effect.", note: "Do not pass old.",
-				language: "facts/v1", program: { phase: "input", selector: { tools: ["sample"] },
-					when: { op: "exists", path: ["input", "old"] }, action: { kind: "deny" }, onUnavailable: "skip" },
-			} }]);
+			await f.run([
+				{
+					id: "propose",
+					name: "policy_propose",
+					arguments: {
+						operation: "add",
+						id: "local.controlled",
+						purpose: "Block a selected sample argument.",
+						authority: "steer-or-block",
+						reason: "Exercise selected effect.",
+						note: "Do not pass old.",
+						language: "facts/v1",
+						program: {
+							phase: "input",
+							selector: { tools: ["sample"] },
+							when: { op: "exists", path: ["input", "old"] },
+							action: { kind: "deny" },
+							onUnavailable: "skip",
+						},
+					},
+				},
+			]);
 			const p = (await f.registry.snapshot()).pending.find((entry) => entry.ruleId === "local.controlled");
 			assert.ok(p);
 			await f.run([{ id: "before", arguments: { old: "value" } }]);
 			assert.equal(executions, 1);
-			await f.run([{ id: "approve", name: "policy_approve", arguments: {
-				proposalId: p.id, proposalRevision: proposalRevision(p), effect: "block",
-				authorization: "The test supplies approval of this exact pending rule as a blocking rule.",
-			} }]);
+			await f.run([
+				{
+					id: "approve",
+					name: "policy_approve",
+					arguments: {
+						proposalId: p.id,
+						proposalRevision: proposalRevision(p),
+						effect: "block",
+						authorization: "The test supplies approval of this exact pending rule as a blocking rule.",
+					},
+				},
+			]);
 			assert.equal((await f.registry.snapshot()).pending.length, 0);
 			assert.match(JSON.stringify(f.requestContexts), /approval-tool|Approval does not change session mode/);
 			const after = await f.run([{ id: "after", arguments: { old: "value" } }]);
@@ -398,18 +585,26 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 			assert.match(JSON.stringify(after.messages), /Do not pass old/);
 			await f.telemetry();
 			assert.deepEqual(f.errors, []);
-		} finally { await f.cleanup(); }
+		} finally {
+			await f.cleanup();
+		}
 	});
 	it("supplies the installed shell contract before the first bash selection without another request", async () => {
 		const f = await setup([]);
 		try {
 			let executions = 0;
-			f.setTools([{ name: "bash", description: "inert shell fixture", parameters: Type.Object({ command: Type.String() }),
-				execute: async () => {
-					assert.match(JSON.stringify(f.requestContexts[0]), /Shell contract snapshot/);
-					executions++;
-					return { content: [{ type: "text", text: "ok" }], details: {} };
-				} }]);
+			f.setTools([
+				{
+					name: "bash",
+					description: "inert shell fixture",
+					parameters: Type.Object({ command: Type.String() }),
+					execute: async () => {
+						assert.match(JSON.stringify(f.requestContexts[0]), /Shell contract snapshot/);
+						executions++;
+						return { content: [{ type: "text", text: "ok" }], details: {} };
+					},
+				},
+			]);
 			await f.run([{ id: "shell-first", name: "bash", arguments: { command: "printf safe" } }], { endAfterTurn: true });
 			assert.equal(executions, 1);
 			assert.equal(f.requests(), 1);
@@ -433,13 +628,18 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				const messageEntry = ctx.sessionManager.getEntry(event.messageEntryId);
 				assert.ok(messageEntry?.type === "message");
 				assert.deepEqual(messageEntry.message, event.message);
-				assert.deepEqual(messageEntry,
-					event.context.contextEntries.find((entry) => entry.sourceEntry.id === event.messageEntryId)?.sourceEntry);
-				assert.deepEqual(event.toolResultEntryIds.map((id) => {
-					const entry = ctx.sessionManager.getEntry(id);
-					assert.ok(entry?.type === "message");
-					return entry.message;
-				}), event.toolResults);
+				assert.deepEqual(
+					messageEntry,
+					event.context.contextEntries.find((entry) => entry.sourceEntry.id === event.messageEntryId)?.sourceEntry,
+				);
+				assert.deepEqual(
+					event.toolResultEntryIds.map((id) => {
+						const entry = ctx.sessionManager.getEntry(id);
+						assert.ok(entry?.type === "message");
+						return entry.message;
+					}),
+					event.toolResults,
+				);
 				assert.deepEqual(event.context.contextMessages.slice(-2), event.toolResults);
 				assert.deepEqual(event.context.llmMessages.slice(-2), event.toolResults);
 				assert.deepEqual(event.context.pendingMessages, []);
@@ -447,24 +647,47 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 			});
 		});
 		try {
-			f.setTools([{ name: "sample", description: "controlled", parameters: inputSchema,
-				execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) }]);
-			const calls = [{ id: "first", arguments: {} }, { id: "second", arguments: {} }];
+			f.setTools([
+				{
+					name: "sample",
+					description: "controlled",
+					parameters: inputSchema,
+					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+				},
+			]);
+			const calls = [
+				{ id: "first", arguments: {} },
+				{ id: "second", arguments: {} },
+			];
 			const stopped = await f.run(calls, { endAfterTurn: true });
 			assert.deepEqual(stopped.finishedTurns, [{ stopReason: "toolUse", action: "end" }]);
 			assert.equal(f.requests(), 1);
 			assert.equal(boundaries.length, 1);
-			assert.deepEqual(boundaries[0].toolResults.map((result) => result.toolCallId), ["first", "second"]);
+			assert.deepEqual(
+				boundaries[0].toolResults.map((result) => result.toolCallId),
+				["first", "second"],
+			);
 			assert.deepEqual(stopped.messages.slice(-2), boundaries[0].toolResults);
 			await f.telemetry();
 			assert.deepEqual(f.errors, []);
-		} finally { await f.cleanup(); }
+		} finally {
+			await f.cleanup();
+		}
 
 		const natural = await setup([]);
 		try {
-			natural.setTools([{ name: "sample", description: "controlled", parameters: inputSchema,
-				execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) }]);
-			const result = await natural.run([{ id: "first", arguments: {} }, { id: "second", arguments: {} }]);
+			natural.setTools([
+				{
+					name: "sample",
+					description: "controlled",
+					parameters: inputSchema,
+					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+				},
+			]);
+			const result = await natural.run([
+				{ id: "first", arguments: {} },
+				{ id: "second", arguments: {} },
+			]);
 			assert.equal(natural.requests(), 2);
 			assert.deepEqual(result.finishedTurns, [
 				{ stopReason: "toolUse", action: undefined },
@@ -509,14 +732,18 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 			});
 		});
 		try {
-			f.setTools(["sample", "other"].map((name) => ({
-				name, description: "controlled", parameters: inputSchema,
-				execute: async (id: string) => {
-					if (id === "second") await firstEnded;
-					if (id === "success") await secondEnded;
-					return { content: [{ type: "text" as const, text: "body" }], details: {} };
-				},
-			})));
+			f.setTools(
+				["sample", "other"].map((name) => ({
+					name,
+					description: "controlled",
+					parameters: inputSchema,
+					execute: async (id: string) => {
+						if (id === "second") await firstEnded;
+						if (id === "success") await secondEnded;
+						return { content: [{ type: "text" as const, text: "body" }], details: {} };
+					},
+				})),
+			);
 			await f.run([
 				{ id: "success", arguments: {} },
 				{ id: "second", name: "other", arguments: {} },
@@ -525,13 +752,17 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 			assert.deepEqual(f.endings, ["first", "second", "success"]);
 			assert.equal(f.requests(), 2);
 			assert.match(JSON.stringify(f.requestContexts[1]), /actual failed assumption or tool contract/);
-			const state = (await f.states()).observationPeriods.find((row: { id: string }) => row.id === "recovery.repeated-errors");
+			const state = (await f.states()).observationPeriods.find(
+				(row: { id: string }) => row.id === "recovery.repeated-errors",
+			);
 			assert.equal(state.count, 0);
 			await f.run([]);
 			assert.doesNotMatch(JSON.stringify(f.requestContexts[2]), /actual failed assumption or tool contract/);
 			await f.telemetry();
 			assert.deepEqual(f.errors, []);
-		} finally { await f.cleanup(); }
+		} finally {
+			await f.cleanup();
+		}
 	});
 
 	it("does not force a model request for a stopped failing batch and clears retained guidance on reload", async () => {
@@ -539,9 +770,23 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 		assert.ok(row?.matcher.kind === "declarative" && row.matcher.language === "facts/v1");
 		const f = await setup([]);
 		try {
-			f.setTools([{ name: "sample", description: "controlled", parameters: inputSchema,
-				execute: async () => { throw new Error("controlled failure"); } }]);
-			await f.run([{ id: "first", arguments: {} }, { id: "second", arguments: {} }], { endAfterTurn: true });
+			f.setTools([
+				{
+					name: "sample",
+					description: "controlled",
+					parameters: inputSchema,
+					execute: async () => {
+						throw new Error("controlled failure");
+					},
+				},
+			]);
+			await f.run(
+				[
+					{ id: "first", arguments: {} },
+					{ id: "second", arguments: {} },
+				],
+				{ endAfterTurn: true },
+			);
 			assert.equal(f.requests(), 1);
 			assert.equal((await f.states()).retainedGuidance.length, 1);
 			await f.runner.emit({ type: "session_start", reason: "reload" });

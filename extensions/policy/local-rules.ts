@@ -86,7 +86,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const REVISION = /^[0-9a-f]{12}$/;
 const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const EFFECTS = ["steer", "block"] as const;
-const SESSION_SURFACES = ["agent-tool", "approval-tool", "command", "panel"] as const;
+const SESSION_SURFACES = ["agent-tool", "approval-tool", "control-tool", "command", "panel"] as const;
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 export interface LocalRuleCandidate {
@@ -335,7 +335,14 @@ function validateAudit(value: unknown): RuleAudit {
 		exact(value, ["surface"]);
 		return { surface: "package" };
 	}
-	exact(value, ["at", "session", "model", "surface", ...(value.surface === "approval-tool" ? ["authorization"] : [])]);
+	exact(value, [
+		"at",
+		"session",
+		"model",
+		"surface",
+		...(value.surface === "approval-tool" || value.surface === "control-tool" ? ["authorization"] : []),
+		...(value.surface === "control-tool" ? ["targetRevision"] : []),
+	]);
 	const at = text(value.at, "audit.at", MAX_AUDIT_FIELD_LENGTH);
 	if (!ISO_8601.test(at) || Number.isNaN(Date.parse(at))) throw new Error("audit.at must be an ISO-8601 timestamp");
 	const session = text(value.session, "audit.session", MAX_AUDIT_FIELD_LENGTH);
@@ -344,6 +351,15 @@ function validateAudit(value: unknown): RuleAudit {
 		throw new Error("audit.model must be provider/id or null");
 	}
 	const surface = oneOf(value.surface, SESSION_SURFACES, "audit.surface");
+	if (surface === "control-tool")
+		return {
+			at,
+			session,
+			model,
+			surface,
+			authorization: text(value.authorization, "audit.authorization", MAX_REASON_LENGTH),
+			targetRevision: validateRevision(value.targetRevision, "audit.targetRevision"),
+		};
 	return surface === "approval-tool"
 		? {
 				at,
@@ -384,7 +400,10 @@ function validateCliFlagSpellings(spec: CommandShapeSpec): void {
 			throw new Error(`matcher.spec.${field} requires supported Git push option spellings`);
 }
 
-function validateOperandIndexes(raw: Record<string, unknown>, operands: NonNullable<CommandShapeSpec["operands"]>): void {
+function validateOperandIndexes(
+	raw: Record<string, unknown>,
+	operands: NonNullable<CommandShapeSpec["operands"]>,
+): void {
 	const at = raw.at;
 	if (at === undefined) return;
 	if (!object(at) || Object.keys(at).length > MAX_LIST_ENTRIES)
@@ -713,8 +732,8 @@ function validateDecisionEvent(value: Record<string, unknown>): Extract<RuleEven
 	if (value.effect !== undefined) event.effect = oneOf(value.effect, EFFECTS, "effect");
 	if (value.proposalRevision !== undefined)
 		event.proposalRevision = validateRevision(value.proposalRevision, "proposalRevision");
-	if (event.decision === "rejected" && (event.effect !== undefined || event.proposalRevision !== undefined))
-		throw new Error("rejected decision must not contain an effect or proposal revision");
+	if (event.decision === "rejected" && event.effect !== undefined)
+		throw new Error("rejected decision must not contain an effect");
 	return event;
 }
 
@@ -743,11 +762,7 @@ function validateOverrideEvent(value: Record<string, unknown>): Extract<RuleEven
 	const slot: OverrideEventSlot = {
 		reason: text(value.override.reason, "override.reason", MAX_REASON_LENGTH),
 		audit,
-		againstDefinitionRevision: text(
-			value.override.againstDefinitionRevision,
-			"override.againstDefinitionRevision",
-			12,
-		),
+		againstDefinitionRevision: text(value.override.againstDefinitionRevision, "override.againstDefinitionRevision", 12),
 	};
 	if (!REVISION.test(slot.againstDefinitionRevision))
 		throw new Error("override.againstDefinitionRevision must be 12 lowercase hexadecimal characters");
@@ -846,7 +861,7 @@ function orderedRecords(records: ReadonlyMap<string, RuleRecord>): Map<string, R
 	return new Map([...records].sort(([left], [right]) => left.localeCompare(right)));
 }
 
-function targetIdentity(record: RuleRecord | undefined): string | null {
+export function targetIdentity(record: RuleRecord | undefined): string | null {
 	if (!record) return null;
 	const { matcherAvailable: _available, staleOverride: _stale, ...identity } = record;
 	return contentRevision(identity);
@@ -972,10 +987,7 @@ function approvalTargetValid(proposal: ProposalEvent, existing: RuleRecord | und
 	);
 }
 
-function approvalRevisionValid(
-	proposal: ProposalEvent,
-	event: Extract<RuleEvent, { kind: "decision" }>,
-): boolean {
+function approvalRevisionValid(proposal: ProposalEvent, event: Extract<RuleEvent, { kind: "decision" }>): boolean {
 	const exactApproval = !candidatePermitsEffectChoice(proposal.candidate) || proposal.operation === "replace";
 	return !exactApproval || event.proposalRevision === proposalRevision(proposal);
 }
@@ -1150,6 +1162,7 @@ function applyRuleEvent(
 		event.kind !== "decision"
 	)
 		return;
+	if (!controlTargetMatches(event, state)) return;
 	if (event.kind === "data") {
 		reduceDataEvent(state, event);
 		return;
@@ -1385,19 +1398,13 @@ function assertWritableAuthority(event: RuleEvent): void {
 		throw new Error("approval-tool authority permits only pending proposal approval");
 }
 
-function assertImportTransition(
-	event: Extract<RuleEvent, { kind: "import" }>,
-	reduction: RuleReduction,
-): void {
+function assertImportTransition(event: Extract<RuleEvent, { kind: "import" }>, reduction: RuleReduction): void {
 	if (!importTargetsMatch(event, reduction.records))
 		throw new Error("import target identity changed; inspect a fresh import plan");
 	importedRecords(event, reduction.records, hasCodeMatcher);
 }
 
-function assertDataTransition(
-	event: Extract<RuleEvent, { kind: "data" }>,
-	reduction: RuleReduction,
-): void {
+function assertDataTransition(event: Extract<RuleEvent, { kind: "data" }>, reduction: RuleReduction): void {
 	const name = event.operation === "set" ? event.data.name : event.name;
 	const current = reduction.data.get(name);
 	if ((current?.revision ?? null) !== event.expectedRevision)
@@ -1441,16 +1448,12 @@ export function assertProposalTransition(
 		throw new Error(`rule store already contains ${MAX_PENDING_PROPOSALS} pending proposals`);
 }
 
-function assertApprovalShape(
-	event: Extract<RuleEvent, { kind: "decision" }>,
-	proposal: ProposalEvent,
-): void {
+function assertApprovalShape(event: Extract<RuleEvent, { kind: "decision" }>, proposal: ProposalEvent): void {
 	if (event.decision !== "approved" || (proposal.operation !== "add" && proposal.operation !== "replace")) return;
 	const choice = candidatePermitsEffectChoice(proposal.candidate);
 	if (!choice && event.effect !== undefined)
 		throw new Error("exact approval uses the exact proposed action, not steer or block");
-	if (choice && !event.effect)
-		throw new Error("approving a steer-or-block proposal requires effect steer or block");
+	if (choice && !event.effect) throw new Error("approving a steer-or-block proposal requires effect steer or block");
 	if ((!choice || proposal.operation === "replace") && event.proposalRevision !== proposalRevision(proposal))
 		throw new Error("approval requires the current exact proposal revision");
 	if (event.proposalRevision !== undefined && event.proposalRevision !== proposalRevision(proposal))
@@ -1479,21 +1482,19 @@ function assertApprovalTargets(
 }
 
 function toolApprovalMatches(event: DecisionEvent, proposal: ProposalEvent): boolean {
+	if (event.proposalRevision !== undefined && event.proposalRevision !== proposalRevision(proposal)) return false;
 	return (
 		event.audit.surface !== "approval-tool" ||
 		(event.decision === "approved" && event.proposalRevision === proposalRevision(proposal))
 	);
 }
 
-function assertDecisionTransition(
-	event: Extract<RuleEvent, { kind: "decision" }>,
-	reduction: RuleReduction,
-): void {
+function assertDecisionTransition(event: Extract<RuleEvent, { kind: "decision" }>, reduction: RuleReduction): void {
 	const proposal = reduction.pending.find((entry) => entry.id === event.proposalId);
 	if (!proposal) throw new Error(`no pending proposal with id "${event.proposalId}"`);
 	if (!toolApprovalMatches(event, proposal))
 		throw new Error(
-			"proposal revision changed; inspect the pending proposal and resolve approval against its current revision",
+			"proposal revision changed; inspect the pending proposal and resolve the decision against its current exact proposal revision",
 		);
 	if (event.decision === "approved" && proposal.operation !== "add") {
 		const target = reduction.records.get(proposal.ruleId);
@@ -1503,12 +1504,9 @@ function assertDecisionTransition(
 	if (event.decision === "approved" && (proposal.operation === "add" || proposal.operation === "replace")) {
 		assertApprovalShape(event, proposal);
 		assertApprovalTargets(event, proposal, reduction);
-	} else if (
-		event.effect !== undefined ||
-		(event.proposalRevision !== undefined && event.audit.surface !== "approval-tool")
-	) {
+	} else if (event.effect !== undefined) {
 		throw new Error(
-			`${event.decision === "approved" ? `approving a ${proposal.operation} proposal` : "rejecting a proposal"} does not accept an effect or proposal revision`,
+			`${event.decision === "approved" ? `approving a ${proposal.operation} proposal` : "rejecting a proposal"} does not accept an effect`,
 		);
 	}
 }
@@ -1552,11 +1550,44 @@ function assertRuleTransition(
 }
 
 function assertTransition(event: Exclude<RuleEvent, CatalogEvent>, reduction: RuleReduction): void {
+	if (!controlTargetMatches(event, reduction))
+		throw new Error(
+			"control target revision changed or operation not authorized; inspect the current target and reassess the operator decision",
+		);
 	if (event.kind === "import") assertImportTransition(event, reduction);
 	else if (event.kind === "data") assertDataTransition(event, reduction);
 	else if (event.kind === "proposal") assertProposalTransition(event, reduction);
 	else if (event.kind === "decision") assertDecisionTransition(event, reduction);
 	else assertRuleTransition(event, reduction);
+}
+
+function controlDataRevision(event: DataSetEvent | DataRemoveEvent): string {
+	return event.operation === "set"
+		? contentRevision({ data: event.data, expectedRevision: event.expectedRevision })
+		: event.expectedRevision;
+}
+
+/** Control authority is bound to the complete reviewed target, including override state. */
+function controlTargetMatches(
+	event: RuleEvent,
+	state: {
+		records: ReadonlyMap<string, RuleRecord>;
+		pending: ReadonlyMap<string, ProposalEvent> | readonly ProposalEvent[];
+	},
+): boolean {
+	if (event.kind === "catalog" || event.kind === "proposal") return true;
+	const audit = event.kind === "override" && event.operation === "set" ? event.override.audit : event.audit;
+	if (audit.surface !== "control-tool") return true;
+	let revision: string | null | undefined;
+	if (event.kind === "decision") {
+		const pending = Array.isArray(state.pending) ? state.pending : [...state.pending.values()];
+		const proposal = pending.find((p) => p.id === event.proposalId);
+		if (event.decision !== "rejected" || !proposal) return false;
+		revision = proposalRevision(proposal);
+	} else if (event.kind === "import") revision = event.revision;
+	else if (event.kind === "data") revision = controlDataRevision(event);
+	else revision = targetIdentity(state.records.get(event.ruleId));
+	return revision === audit.targetRevision;
 }
 
 export interface RuleRegistryOptions {
@@ -2012,9 +2043,10 @@ export class RuleRegistry {
 		return this.mutate(() => ({ event, result: event }));
 	}
 
-	disable(ruleId: string, reason: string, audit: SessionRuleAudit): Promise<OverrideEvent> {
+	disable(ruleId: string, reason: string, audit: SessionRuleAudit, expectedIdentity?: string): Promise<OverrideEvent> {
 		return this.mutate((reduction) => {
 			const existing = reduction.records.get(ruleId);
+			assertTargetIdentity(existing, expectedIdentity);
 			const event: SetOverrideEvent = {
 				kind: "override",
 				id: randomUUID(),
@@ -2032,9 +2064,10 @@ export class RuleRegistry {
 		});
 	}
 
-	enable(ruleId: string, reason: string, audit: SessionRuleAudit): Promise<OverrideEvent> {
+	enable(ruleId: string, reason: string, audit: SessionRuleAudit, expectedIdentity?: string): Promise<OverrideEvent> {
 		return this.mutate((reduction) => {
 			const existing = reduction.records.get(ruleId);
+			assertTargetIdentity(existing, expectedIdentity);
 			const event: OverrideEvent = existing?.override?.effect
 				? {
 						kind: "override",
@@ -2060,9 +2093,16 @@ export class RuleRegistry {
 		});
 	}
 
-	setEffect(ruleId: string, effect: RuleEffect, reason: string, audit: SessionRuleAudit): Promise<OverrideEvent> {
+	setEffect(
+		ruleId: string,
+		effect: RuleEffect,
+		reason: string,
+		audit: SessionRuleAudit,
+		expectedIdentity?: string,
+	): Promise<OverrideEvent> {
 		return this.mutate((reduction) => {
 			const existing = reduction.records.get(ruleId);
+			assertTargetIdentity(existing, expectedIdentity);
 			if (existing && !permitsEffectChoice(existing))
 				throw new Error("this action requires an exact replacement proposal; steer/block overrides do not change it");
 			const event: SetOverrideEvent = {
@@ -2082,7 +2122,7 @@ export class RuleRegistry {
 		});
 	}
 
-	retire(ruleId: string, reason: string, audit: SessionRuleAudit): Promise<DefinitionEvent> {
+	retire(ruleId: string, reason: string, audit: SessionRuleAudit, expectedIdentity?: string): Promise<DefinitionEvent> {
 		const event: DefinitionEvent = {
 			kind: "definition",
 			id: randomUUID(),
@@ -2091,11 +2131,19 @@ export class RuleRegistry {
 			reason,
 			audit,
 		};
-		return this.mutate(() => ({ event, result: event }));
+		return this.mutate((reduction) => {
+			assertTargetIdentity(reduction.records.get(ruleId), expectedIdentity);
+			return { event, result: event };
+		});
 	}
 }
 
-export function makeRuleAudit<TSurface extends Exclude<AuditSurface, "package" | "approval-tool">>(
+function assertTargetIdentity(record: RuleRecord | undefined, expected?: string): void {
+	if (expected !== undefined && targetIdentity(record) !== expected)
+		throw new Error("Rule target revision changed; inspect the current rule");
+}
+
+export function makeRuleAudit<TSurface extends Exclude<AuditSurface, "package" | "approval-tool" | "control-tool">>(
 	ctx: AuditContextLike,
 	surface: TSurface,
 	now: Date = new Date(),

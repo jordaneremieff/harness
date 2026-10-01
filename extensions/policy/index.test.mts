@@ -184,7 +184,12 @@ async function callTool(tool: RegisteredTool, params: unknown, ctx: unknown): Pr
 describe("registration and lazy catalog use", () => {
 	it("registers only the unified tools and performs no rule-store I/O at session startup", async () => {
 		const { dir, pi, ctx } = await setup();
-		assert.deepEqual([...pi.tools.keys()].sort(), ["policy_approve", "policy_propose", "policy_rules"]);
+		assert.deepEqual([...pi.tools.keys()].sort(), [
+			"policy_approve",
+			"policy_control",
+			"policy_propose",
+			"policy_rules",
+		]);
 		assert.deepEqual([...pi.commands.keys()], ["policy"]);
 		assert.equal(pi.handlers.has("user_bash"), false, "Operator shell commands remain outside model-tool policy");
 		await pi.emit("session_start", { type: "session_start" }, ctx);
@@ -197,9 +202,10 @@ describe("registration and lazy catalog use", () => {
 		assert.equal(schema.additionalProperties, false);
 		assert.equal(schema.anyOf, undefined);
 		assert.deepEqual(schema.required, ["operation", "id", "reason"]);
-		assert.deepEqual(schema.properties.operation.anyOf.map((entry: { const: string }) => entry.const), [
-			"add", "replace", "retire", "disable",
-		]);
+		assert.deepEqual(
+			schema.properties.operation.anyOf.map((entry: { const: string }) => entry.const),
+			["add", "replace", "retire", "disable"],
+		);
 		const propertyNames = new Set(Object.keys(schema.properties));
 		for (const forbidden of ["approve", "reject", "decision", "state", "effect", "enable"]) {
 			assert.equal(propertyNames.has(forbidden), false, `${forbidden} must not be exposed`);
@@ -358,22 +364,35 @@ describe("panel command and shortcut", () => {
 		await pi.command().handler("", ctx as never);
 		assert.equal(warn.mock.callCount(), 1);
 		assert.equal(notifications.length, 2);
-		assert.ok(notifications.every(({ message, type }) => /mode configuration is invalid/.test(message) && type === "error"));
+		assert.ok(
+			notifications.every(({ message, type }) => /mode configuration is invalid/.test(message) && type === "error"),
+		);
 		await assert.rejects(stat(dir), /ENOENT/);
 	});
 
-	for (const [mode, hasUI] of [["rpc", true], ["json", false], ["print", false], ["tui", false]] as const) {
+	for (const [mode, hasUI] of [
+		["rpc", true],
+		["json", false],
+		["print", false],
+		["tui", false],
+	] as const) {
 		it(`keeps the panel out of ${mode} mode with hasUI=${hasUI}`, async (t) => {
 			const { dir, pi, notifications } = await setup();
 			const ctx = context(notifications, { mode, hasUI });
 			ctx.ui.custom = async () => assert.fail("No custom UI outside a usable TUI");
 			const errors: string[] = [];
-			const stderr = mock.method(process.stderr, "write", (value: string) => { errors.push(value); return true; });
+			const stderr = mock.method(process.stderr, "write", (value: string) => {
+				errors.push(value);
+				return true;
+			});
 			t.after(() => stderr.mock.restore());
 			await pi.command().handler("", ctx as never);
 			await pi.shortcut().handler(ctx as unknown as ExtensionContext);
-			const messages = hasUI ? notifications.map(({ message }) => message)
-				: mode === "json" ? pi.entries.map(({ data }) => (data as { text: string }).text) : errors;
+			const messages = hasUI
+				? notifications.map(({ message }) => message)
+				: mode === "json"
+					? pi.entries.map(({ data }) => (data as { text: string }).text)
+					: errors;
 			assert.equal(messages.length, 2);
 			assert.ok(messages.every((text) => /requires TUI mode.*\/policy list/.test(text)));
 			await assert.rejects(stat(dir), /ENOENT/);
@@ -388,12 +407,17 @@ describe("telemetry operator command", () => {
 		assert.match(notifications.at(-1)?.message ?? "", /2026-02-01 through 2026-02-02/);
 		assert.match(notifications.at(-1)?.message ?? "", /unavailable/);
 		await assert.rejects(stat(dir), /ENOENT/);
-		assert.deepEqual(pi.completions()("tele"), [{ value: "telemetry", label: "telemetry" }]);
+		assert.deepEqual(await pi.completions()("tele"), [{ value: "telemetry", label: "telemetry" }]);
 	});
 
 	it("rejects missing, invalid, reversed, and overlong ranges", async () => {
 		const { dir, pi, ctx, notifications } = await setup();
-		for (const args of ["telemetry", "telemetry 2026-02-30 2026-03-01", "telemetry 2026-03-01 2026-02-01", "telemetry 2026-01-01 2026-03-01"]) {
+		for (const args of [
+			"telemetry",
+			"telemetry 2026-02-30 2026-03-01",
+			"telemetry 2026-03-01 2026-02-01",
+			"telemetry 2026-01-01 2026-03-01",
+		]) {
 			await pi.command().handler(args, ctx as never);
 			assert.equal(notifications.at(-1)?.type, "error");
 		}
@@ -447,11 +471,17 @@ describe("unified tools and command gates", () => {
 	it("completes data actions, stored names, exact revisions, and whole-state reset", async () => {
 		const { pi, ctx, notifications } = await setup();
 		const command = pi.command();
-		const completions = (prefix: string) =>
-			(pi.completions()(prefix) as Array<{ value: string }>).map((item) => item.value);
-		assert.deepEqual(completions("data "), ["data list", "data show", "data set", "data set-file", "data remove"]);
-		assert.deepEqual(completions("data show "), []);
-		assert.deepEqual(completions("reset --"), ["reset --all"]);
+		const completions = async (prefix: string) =>
+			((await pi.completions()(prefix)) as Array<{ value: string }>).map((item) => item.value);
+		assert.deepEqual(await completions("data "), [
+			"data list",
+			"data show",
+			"data set",
+			"data set-file",
+			"data remove",
+		]);
+		assert.deepEqual(await completions("data show "), []);
+		assert.deepEqual(await completions("reset --"), ["reset --all"]);
 		const artifact = {
 			expectedRevision: null,
 			data: { name: "rooms", kind: "table", source: "test", capturedAt: 1, rows: [{ key: "lobby", value: "1" }] },
@@ -461,15 +491,15 @@ describe("unified tools and command gates", () => {
 		assert.ok(approval);
 		await command.handler(`data set ${approval}`, ctx as never);
 		assert.equal(notifications.at(-1)?.type, "info");
-		assert.deepEqual(completions("data show ro"), ["data show rooms"]);
-		assert.deepEqual(completions("data remove "), ["data remove rooms"]);
-		const [remove] = completions("data remove rooms ");
+		assert.deepEqual(await completions("data show ro"), ["data show rooms"]);
+		assert.deepEqual(await completions("data remove "), ["data remove rooms"]);
+		const [remove] = await completions("data remove rooms ");
 		assert.match(remove, /^data remove rooms [a-f0-9]{12}$/);
-		assert.deepEqual(completions(`${remove} `), [`${remove} exact`]);
-		assert.deepEqual(completions("data remove rooms 000000000000 "), []);
+		assert.deepEqual(await completions(`${remove} `), [`${remove} exact`]);
+		assert.deepEqual(await completions("data remove rooms 000000000000 "), []);
 		await command.handler(`${remove} exact`, ctx as never);
-		assert.deepEqual(completions("data show "), []);
-		assert.deepEqual(completions("data remove rooms "), []);
+		assert.deepEqual(await completions("data show "), []);
+		assert.deepEqual(await completions("data remove rooms "), []);
 	});
 	it("resolves set-file paths against the command context and commits only after exact approval", async () => {
 		const { dir, pi, notifications } = await setup();
@@ -576,7 +606,7 @@ describe("unified tools and command gates", () => {
 		);
 
 		await pi.command().handler(`approve ${proposalId}`, ctx as never);
-		assert.match(notifications.at(-1)?.message ?? "", /requires.*steer\|block/);
+		assert.match(notifications.at(-1)?.message ?? "", /Policy approval canceled/);
 		await pi.command().handler(`approve ${proposalId} block`, ctx as never);
 		assert.match(notifications.at(-1)?.message ?? "", /Approved add proposal/);
 		const blocked = (await pi.emit(
@@ -668,10 +698,13 @@ describe("unified tools and command gates", () => {
 		const details = replaced.details as { proposalId: string; proposalRevision: string };
 		await command.handler(`approve ${details.proposalId} exact ${details.proposalRevision}`, ctx as never);
 		assert.match(notifications.at(-1)?.message ?? "", /Selectable replacement approval requires/);
-		const completions = pi.completions()(`approve ${details.proposalId} `) as Array<{ value: string }>;
+		const completions = (await pi.completions()(`approve ${details.proposalId} `)) as Array<{ value: string }>;
 		assert.deepEqual(
 			completions.map((row) => row.value),
-			[`approve ${details.proposalId} steer`, `approve ${details.proposalId} block`],
+			[
+				`approve ${details.proposalId} steer ${details.proposalRevision}`,
+				`approve ${details.proposalId} block ${details.proposalRevision}`,
+			],
 		);
 		await command.handler(`approve ${details.proposalId} block ${details.proposalRevision}`, ctx as never);
 		assert.match(notifications.at(-1)?.message ?? "", /Approved replace proposal/);
@@ -702,12 +735,12 @@ describe("unified tools and command gates", () => {
 	it("requires reasons for every direct change and composes package overrides", async () => {
 		const { dir, pi, ctx, notifications } = await setup();
 		const command = pi.command();
-		for (const verb of ["disable routing.cat-read", "enable routing.cat-read", "retire local.missing"] as const) {
+		for (const verb of ["disable routing.cat-read", "enable routing.cat-read", "retire routing.cat-read"] as const) {
 			await command.handler(verb, ctx as never);
-			assert.match(notifications.at(-1)?.message ?? "", new RegExp(`Usage: /policy ${verb.split(" ")[0]}`));
+			assert.match(notifications.at(-1)?.message ?? "", /Policy control canceled/);
 		}
 		await command.handler("effect routing.cat-read steer", ctx as never);
-		assert.match(notifications.at(-1)?.message ?? "", /Usage: \/policy effect/);
+		assert.match(notifications.at(-1)?.message ?? "", /Policy control canceled/);
 		assert.equal((await storedEvents(dir)).length, 1, "reasonless changes must append no authority event");
 
 		await command.handler("effect routing.cat-read steer calibrated failure cost", ctx as never);
@@ -721,12 +754,199 @@ describe("unified tools and command gates", () => {
 		assert.match(text, /routing\.cat-read.*state=active.*effect=steer.*override reason=context restored/);
 	});
 
+	it("guides incomplete TUI controls with safe labels and refuses changes during a prompt", async () => {
+		const { pi, ctx, dir, notifications } = await setup();
+		const registry = new RuleRegistry(dir);
+		const command = pi.command();
+		const prompts: string[] = [];
+		const guided = {
+			...ctx,
+			ui: {
+				...(ctx as { ui: object }).ui,
+				select: async (title: string, choices: string[]) => {
+					prompts.push(title);
+					for (const choice of choices) assert.doesNotMatch(choice, /[\u0000-\u001f\u007f-\u009f]/);
+					return choices.find((choice) => choice.startsWith("local.guided")) ?? choices[0];
+				},
+				input: async () => "Selected reason.",
+				custom: async () => true,
+			},
+		};
+		await callTool(
+			pi.tool("policy_propose"),
+			{
+				operation: "add",
+				id: "local.guided",
+				purpose: "Bound\u001b[31m scans.\nSafely.",
+				authority: "steer-or-block",
+				reason: "Selected rule.",
+				note: "Bound scans.",
+				match: { command: "scan" },
+			},
+			ctx,
+		);
+		await command.handler("approve", guided as never);
+		assert.equal((await registry.snapshot()).pending.length, 0);
+		assert.ok(prompts.some((title) => title.includes("which policy proposal")));
+		for (const args of ["disable local.guided", "enable local.guided", "effect local.guided", "reset local.guided"]) {
+			await command.handler(args, guided as never);
+			assert.equal(notifications.at(-1)?.type, "info", notifications.at(-1)?.message);
+			assert.doesNotMatch(notifications.at(-1)?.message ?? "", /Usage:|failed|canceled/);
+		}
+		const stale = {
+			...guided,
+			ui: {
+				...guided.ui,
+				input: async () => {
+					await registry.setEffect("local.guided", "block", "Concurrent effect.", {
+						surface: "command",
+						at: new Date().toISOString(),
+						session: "concurrent",
+						model: null,
+					});
+					return "Pause this rule.";
+				},
+			},
+		};
+		await command.handler("disable local.guided", stale as never);
+		assert.match(notifications.at(-1)?.message ?? "", /target revision changed/);
+		assert.notEqual((await registry.snapshot()).records.get("local.guided")?.override?.state, "disabled");
+		await callTool(
+			pi.tool("policy_propose"),
+			{ operation: "disable", id: "local.guided", reason: "Pending pause." },
+			ctx,
+		);
+		await command.handler("reject", guided as never);
+		assert.equal((await registry.snapshot()).pending.length, 0);
+		const data = { name: "guided", kind: "table", rows: [{ key: "a", value: "b" }] };
+		const dataUi = { ...guided, ui: { ...guided.ui, editor: async () => JSON.stringify({ data }) } };
+		await command.handler("data set", dataUi as never);
+		assert.equal((await registry.snapshot()).data.get("guided")?.rows[0].value, "b");
+		data.rows[0].value = "c";
+		await command.handler("data set", dataUi as never);
+		assert.equal((await registry.snapshot()).data.get("guided")?.rows[0].value, "c");
+		await command.handler("data set", {
+			...dataUi,
+			ui: { ...dataUi.ui, editor: async () => JSON.stringify({ data, expectedRevision: "000000000000" }) },
+		} as never);
+		assert.match(notifications.at(-1)?.message ?? "", /revision changed/);
+		await command.handler("data remove guided", guided as never);
+		assert.equal((await registry.snapshot()).data.size, 0);
+		let asked = false;
+		await command.handler("disable local.absent", {
+			...guided,
+			ui: {
+				...guided.ui,
+				input: async () => {
+					asked = true;
+					return "Pause.";
+				},
+			},
+		} as never);
+		assert.equal(asked, false);
+		assert.match(notifications.at(-1)?.message ?? "", /existed at command admission/);
+		await command.handler("reset local.guided", {
+			...guided,
+			ui: {
+				...guided.ui,
+				input: async () => {
+					await command.handler("reset local.guided Concurrent reset", ctx as never);
+					return "Reset after another command.";
+				},
+			},
+		} as never);
+		assert.match(notifications.at(-1)?.message ?? "", /Observation period revision changed/);
+		await command.handler("reset", {
+			...guided,
+			ui: {
+				...guided.ui,
+				select: async (_title: string, choices: string[]) => {
+					await command.handler("reset local.guided Concurrent picker reset", ctx as never);
+					return choices.find((choice) => choice.startsWith("local.guided"));
+				},
+			},
+		} as never);
+		assert.match(notifications.at(-1)?.message ?? "", /Observation period revision changed/);
+		await command.handler("disable local.guided Hide from reset", ctx as never);
+		const resetChoices = await pi.completions()("reset local.guided");
+		assert.deepEqual(resetChoices, []);
+		assert.deepEqual(await pi.completions()("import invalid.catalog "), []);
+		assert.ok(((await pi.completions()("import routing.cat-read ")) as unknown[])?.length);
+	});
+
+	it("reviews exact and replacement effects without asking for omitted revisions", async () => {
+		const { pi, ctx, dir, notifications } = await setup();
+		let reviews = 0;
+		const guided = {
+			...ctx,
+			ui: {
+				...(ctx as { ui: object }).ui,
+				custom: async () => {
+					reviews++;
+					return true;
+				},
+			},
+		};
+		const base = {
+			operation: "add",
+			id: "local.exact",
+			purpose: "Protect scans.",
+			authority: "exact",
+			reason: "Selected rule.",
+			note: "Bound scans.",
+			match: { command: "scan" },
+		};
+		await callTool(pi.tool("policy_propose"), base, ctx);
+		await pi.command().handler("approve local.exact exact", guided as never);
+		assert.equal(reviews, 1);
+		assert.match(notifications.at(-1)?.message ?? "", /Approved add/);
+		const registry = new RuleRegistry(dir);
+		const record = (await registry.snapshot()).records.get("local.exact");
+		assert.ok(record);
+		await callTool(
+			pi.tool("policy_propose"),
+			{ ...base, operation: "replace", authority: "steer-or-block", expectedRevision: record.definition.revision },
+			ctx,
+		);
+		await pi.command().handler("approve local.exact block", guided as never);
+		assert.equal(reviews, 2);
+		assert.match(notifications.at(-1)?.message ?? "", /Approved replace/);
+		assert.equal((await registry.snapshot()).records.get("local.exact")?.definition.effect, "block");
+	});
+
+	it("keeps complete commands and the inspection route visible for oversized headless proposals", async () => {
+		const { pi, ctx, notifications } = await setup();
+		const at = Object.fromEntries(
+			Array.from({ length: 4 }, (_, index) => [String(index), Array.from({ length: 64 }, () => "x".repeat(200))]),
+		);
+		const proposed = await callTool(
+			pi.tool("policy_propose"),
+			{
+				operation: "add",
+				id: "local.large",
+				purpose: "Protect scans.",
+				authority: "exact",
+				reason: "Selected rule.",
+				note: "Bound scans.",
+				match: { command: "scan", operands: { at } },
+			},
+			ctx,
+		);
+		const p = proposed.details as { proposalId: string; proposalRevision: string };
+		await pi.command().handler("approve local.large", { ...ctx, mode: "rpc" } as never);
+		const output = notifications.at(-1)?.message ?? "";
+		assert.match(output, /not a complete review/);
+		assert.match(output, /policy_rules/);
+		assert.ok(output.includes(`/policy approve ${p.proposalId} exact ${p.proposalRevision}`));
+		assert.ok(Buffer.byteLength(output) < 32768);
+	});
+
 	it("completes references and effects at each command token position", async () => {
 		const { pi, ctx } = await setup();
 		const command = pi.command();
 		const complete = pi.completions();
-		const completions = (prefix: string): string[] =>
-			(complete(prefix) as Array<{ value: string }>).map((item) => item.value);
+		const completions = async (prefix: string): Promise<string[]> =>
+			((await complete(prefix)) as Array<{ value: string }>).map((item) => item.value);
 		await callTool(pi.tool("policy_rules"), {}, ctx);
 		const proposed = await callTool(
 			pi.tool("policy_propose"),
@@ -741,32 +961,40 @@ describe("unified tools and command gates", () => {
 			},
 			ctx,
 		);
-		const proposalId = (proposed.details as { proposalId: string }).proposalId;
+		const { proposalId, proposalRevision: revision } = proposed.details as {
+			proposalId: string;
+			proposalRevision: string;
+		};
 
-		assert.ok(completions("sh").includes("show"));
-		assert.ok(completions("show rou").includes("show routing.cat-read"));
-		assert.ok(completions("show ").includes(`show ${proposalId}`));
-		assert.deepEqual(completions("approve "), [`approve ${proposalId}`]);
-		assert.deepEqual(completions("reject "), [`reject ${proposalId}`]);
-		assert.deepEqual(completions(`approve ${proposalId} `), [
-			`approve ${proposalId} steer`,
-			`approve ${proposalId} block`,
+		assert.ok((await completions("sh")).includes("show"));
+		assert.ok((await completions("show rou")).includes("show routing.cat-read"));
+		assert.ok((await completions("show ")).includes(`show ${proposalId}`));
+		const shown = await complete("show local.scan") as Array<{ value: string; label: string; description: string }>;
+		assert.deepEqual(shown, [{ value: `show ${proposalId}`, label: "local.scan · pending add", description: "Keep search output bounded." }]);
+		assert.deepEqual(await completions("approve "), [
+			`approve ${proposalId} steer ${revision}`,
+			`approve ${proposalId} block ${revision}`,
 		]);
-		assert.deepEqual(completions("effect routing.cat-read "), [
+		assert.deepEqual(await completions("reject "), [`reject ${proposalId} ${revision}`]);
+		assert.deepEqual(await completions(`approve ${proposalId} `), [
+			`approve ${proposalId} steer ${revision}`,
+			`approve ${proposalId} block ${revision}`,
+		]);
+		assert.deepEqual(await completions("effect routing.cat-read "), [
 			"effect routing.cat-read steer",
 			"effect routing.cat-read block",
 		]);
-		assert.ok(completions("disable routing.").includes("disable routing.cat-read"));
-		assert.deepEqual(completions("enable routing.cat-read"), []);
-		assert.ok(completions("retire ").includes("retire routing.cat-read"));
+		assert.ok((await completions("disable routing.")).includes("disable routing.cat-read"));
+		assert.deepEqual(await completions("enable routing.cat-read"), []);
+		assert.ok((await completions("retire ")).includes("retire routing.cat-read"));
 
 		await command.handler(`approve ${proposalId} steer`, ctx as never);
-		assert.ok(completions("retire ").includes("retire local.scan"));
-		assert.ok(completions("catalog ").includes("catalog routing.cat-read"));
-		assert.ok(completions("import ").includes("import --all"));
-		assert.ok(completions("effect local.").includes("effect local.scan"));
+		assert.ok((await completions("retire ")).includes("retire local.scan"));
+		assert.ok((await completions("catalog ")).includes("catalog routing.cat-read"));
+		assert.ok((await completions("import ")).includes("import --all"));
+		assert.ok((await completions("effect local.")).includes("effect local.scan"));
 		await command.handler("disable routing.cat-read completion setup", ctx as never);
-		assert.ok(completions("enable routing.").includes("enable routing.cat-read"));
+		assert.ok((await completions("enable routing.")).includes("enable routing.cat-read"));
 	});
 
 	it("approves disable through the shortcut panel with panel audit and preserves an effect override", async () => {

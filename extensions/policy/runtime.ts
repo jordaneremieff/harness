@@ -1,4 +1,5 @@
 /** One event interpreter for approved plans, corrections, observations, and guidance. */
+import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { captureFor, ruleScopeMatches as scopeMatches } from "./classify.ts";
 import { compileRule } from "./compiler.ts";
@@ -32,7 +33,7 @@ import {
 	textContentBytes,
 	trackPending,
 } from "./record.ts";
-import { effectiveEffect, effectiveState, ruleGuidance } from "./rule.ts";
+import { contentRevision, effectiveEffect, effectiveState, ruleGuidance } from "./rule.ts";
 import { shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin } from "./state.ts";
 import { PolicyWriter } from "./store.ts";
@@ -246,16 +247,33 @@ export class PolicyRuntime {
 		for (const [id, notice] of this.retainedGuidance)
 			if (!samePin(notice.pin, this.state.pin(id))) this.retainedGuidance.delete(id);
 	}
-	reset(ids: string[] | undefined, reason: string): void {
+	private readonly resetIdentity = randomUUID();
+	resetRevision(id: string): string {
+		const periods = this.state
+			.snapshot(this.now(), this.turn)
+			.filter((period) => id === "--all" || period.id === id)
+			.map(({ id, revision, generation }) => ({ id, revision, generation }))
+			.sort((a, b) => a.id.localeCompare(b.id));
+		if (id !== "--all" && !periods.length) throw new Error(`No active rule named ${id}`);
+		return contentRevision({ instance: this.resetIdentity, selector: id, generation: this.generation, periods });
+	}
+	private assertResetRevision(ids: string[] | undefined, expectedRevision: string | undefined): void {
+		if (expectedRevision === undefined) return;
+		if ((ids && ids.length !== 1) || this.resetRevision(ids?.[0] ?? "--all") !== expectedRevision)
+			throw new Error("Observation period revision changed; inspect the current reset target");
+	}
+	reset(ids: string[] | undefined, reason: string, expectedRevision?: string): void {
+		this.assertResetRevision(ids, expectedRevision);
 		if (!reason.trim() || reason.length > 1000) throw new Error("A bounded reset reason is required");
 		if (ids)
 			for (const id of ids) {
 				if (!this.state.pin(id)) throw new Error(`No active rule named ${id}`);
 			}
-		if (ids) for (const id of ids) {
-			this.state.reset(reason, this.now(), id);
-			this.retainedGuidance.delete(id);
-		}
+		if (ids)
+			for (const id of ids) {
+				this.state.reset(reason, this.now(), id);
+				this.retainedGuidance.delete(id);
+			}
 		else {
 			this.retainedGuidance.clear();
 			this.generation++;
@@ -525,12 +543,7 @@ export class PolicyRuntime {
 	}
 
 	/** Commit approved corrections into the live input, or report the call as denied. */
-	private applyInputCorrections(
-		call: ObservedCall,
-		event: ToolCallEvent,
-		plan: InputPlan,
-		denied: boolean,
-	): boolean {
+	private applyInputCorrections(call: ObservedCall, event: ToolCallEvent, plan: InputPlan, denied: boolean): boolean {
 		if (this.effectiveMode() !== "enforce" || denied || !plan.changed) return denied;
 		if (commitInput(event.input as Record<string, unknown>, plan.candidate)) {
 			call.input = plan.candidate;
@@ -547,13 +560,18 @@ export class PolicyRuntime {
 		return [...ids].flatMap((id) => {
 			const record = snapshot.records.get(id);
 			if (!record) return [];
-			const segments = new Set(denials.filter((entry) => entry.id === id).flatMap((entry) => {
-				if (!entry.matchedSegment) return [];
-				const segment = entry.inputView === "effective" && plan.corrections.length > 0
-					? "[corrected input omitted]"
-					: entry.matchedSegment;
-				return [`Matched command: ${segment}`];
-			}));
+			const segments = new Set(
+				denials
+					.filter((entry) => entry.id === id)
+					.flatMap((entry) => {
+						if (!entry.matchedSegment) return [];
+						const segment =
+							entry.inputView === "effective" && plan.corrections.length > 0
+								? "[corrected input omitted]"
+								: entry.matchedSegment;
+						return [`Matched command: ${segment}`];
+					}),
+			);
 			return [ruleGuidance(record), ...segments];
 		});
 	}
@@ -681,10 +699,13 @@ export class PolicyRuntime {
 	}
 
 	/** Record the final call shape and classify the outcome from observed evidence. */
-	private finishOutcome(call: ObservedCall, result: Result, event: { isError: boolean }, ctx: ExtensionContext): CallOutcome {
-		const text = (result.content ?? [])
-			.map((part) => part.text ?? "")
-			.join("");
+	private finishOutcome(
+		call: ObservedCall,
+		result: Result,
+		event: { isError: boolean },
+		ctx: ExtensionContext,
+	): CallOutcome {
+		const text = (result.content ?? []).map((part) => part.text ?? "").join("");
 		call.abortRequested = ctx.signal?.aborted === true;
 		call.outputBytes = textContentBytes(result.content);
 		return call.resultSeen
@@ -699,18 +720,24 @@ export class PolicyRuntime {
 	/** Run completion-phase evaluations and observation completion once. */
 	private completeCall(call: ObservedCall, result: Result, outcome: CallOutcome): ProgramEvaluation[] {
 		const rules = this.currentRules(call);
-		const completion = evaluatePrograms(rules, "completion", this.contextFor(call, result, outcome))
-			.filter((entry) => entry.action.kind !== "guide");
+		const completion = evaluatePrograms(rules, "completion", this.contextFor(call, result, outcome)).filter(
+			(entry) => entry.action.kind !== "guide",
+		);
 		const completionContext = this.contextFor(call, result, outcome);
 		this.stale += call.rules.length - rules.length;
 		for (const rule of rules) {
 			const selected = observationSelected(rule, completionContext);
 			const pin = call.pins.get(rule.id);
-			if (pin && selected === true && !this.state.complete(pin, programFacts(rule, completionContext), call.turn, this.now()))
+			if (
+				pin &&
+				selected === true &&
+				!this.state.complete(pin, programFacts(rule, completionContext), call.turn, this.now())
+			)
 				this.stale++;
 		}
-		const guides = evaluatePrograms(rules, "completion", this.contextFor(call, result, outcome))
-			.filter((entry) => entry.action.kind === "guide");
+		const guides = evaluatePrograms(rules, "completion", this.contextFor(call, result, outcome)).filter(
+			(entry) => entry.action.kind === "guide",
+		);
 		completion.push(...guides);
 		this.collect(call, completion);
 		if (this.effectiveMode() === "annotate" || this.effectiveMode() === "enforce")
@@ -955,7 +982,11 @@ export class PolicyRuntime {
 		const inputEvaluations = relevantEvaluations(plan.evaluations);
 		const allResults = results ? [...results.semantic, ...results.guides] : [];
 		const resultEvaluations = relevantEvaluations(allResults);
-		const relevantIds = new Set([...plan.matches, ...inputEvaluations.map((e) => e.id), ...resultEvaluations.map((e) => e.id)]);
+		const relevantIds = new Set([
+			...plan.matches,
+			...inputEvaluations.map((e) => e.id),
+			...resultEvaluations.map((e) => e.id),
+		]);
 		const evaluatedIds = new Set([...plan.evaluations, ...allResults].map((e) => e.id));
 		const wouldCorrectInput = this.effectiveMode() === "enforce" && plan.valid && !plan.denied && plan.changed;
 		return {
