@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import type { ExtensionContext, KeybindingsManager, SessionEntry, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { Input, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
+import { Input, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Keybinding, type TUI } from "@earendil-works/pi-tui";
 import type { AgentSessionSummary } from "./command.ts";
 import type { DetachedRunView } from "./detached.ts";
 import type { SessionDigest } from "./dashboard-data.ts";
@@ -392,7 +392,7 @@ export class AgentDashboard implements Component {
 		return this.state.focus === "sessions" ? this.sessionNavigation() : "Conversation · ↑↓ scroll";
 	}
 	private sessionNavigation(): string {
-		const label = (action: string) => this.keys.getKeys(action).slice(0, 1).map((key) => key === "up" ? "↑" : key === "down" ? "↓" : key === "enter" ? "Enter" : key).join("/");
+		const label = (action: Keybinding) => this.keys.getKeys(action).slice(0, 1).map((key) => key === "up" ? "↑" : key === "down" ? "↓" : key === "enter" ? "Enter" : key).join("/");
 		const navigation = [label("tui.select.up"), label("tui.select.down")].filter(Boolean);
 		const select = navigation.length ? navigation.join(navigation.join("") === "↑↓" ? "" : "/") : "j/k";
 		const confirm = label("tui.select.confirm");

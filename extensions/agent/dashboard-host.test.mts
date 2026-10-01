@@ -24,7 +24,7 @@ it("closes each overlay before native dialogs and restores selection and convers
 			assert.equal(inOverlay, false); inOverlay = true;
 			let resolve!: (value: unknown) => void;
 			const result = new Promise((done) => { resolve = done; });
-			const component = factory({ terminal: { rows: 24 }, requestRender() {} } as unknown as TUI, theme, keys, (request) => { component.dispose?.(); inOverlay = false; resolve(request); });
+			const component = factory({ terminal: { rows: 24 }, requestRender() {} } as unknown as TUI, theme, keys, (request) => { if (component instanceof AgentDashboard) component.dispose(); inOverlay = false; resolve(request); });
 			await tick();
 			if (component instanceof AgentActionPicker) { component.render(100); component.handleInput("\r"); return result; }
 			assert.ok(component instanceof AgentDashboard); const panel = component; overlays++;

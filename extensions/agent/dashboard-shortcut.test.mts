@@ -66,7 +66,7 @@ it("keeps the native editor draft intact across a mounted dashboard and uses onl
 		const component = await factory(tui, theme, keys, (value) => close(value));
 		if (component instanceof AgentActionPicker) { component.render(80); component.handleInput("\r"); }
 		else { assert.ok(component instanceof AgentDashboard); panel = component; }
-		try { return await response as never; } finally { component.dispose?.(); }
+		try { return await response as never; } finally { if (component instanceof AgentDashboard) component.dispose(); }
 	});
 	ctx.ui = new Proxy({ ...ctx.ui, select: async () => "status: Read status" }, { get(target, key) { assert.ok(key in target, `Unexpected UI access: ${String(key)}`); return Reflect.get(target, key); } });
 	const opened = command.openDashboard(ctx); await tick(); assert.ok(panel);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { initTheme, SessionManager, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
-import { CURSOR_MARKER, KeybindingsManager as Keys, TUI_KEYBINDINGS, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, KeybindingsManager as Keys, TUI_KEYBINDINGS, visibleWidth, type KeyId, type TUI } from "@earendil-works/pi-tui";
 import { AgentDashboard, dashboardRecords, dashboardText, elapsed, readAgentDashboard, showAgentDashboard, type AgentObservationSources, type DashboardActions } from "./dashboard.ts";
 import type { SessionDigest } from "./dashboard-data.ts";
 
@@ -494,7 +494,7 @@ it("retains a recipient draft through focus changes and leaves foreign sessions 
 	} finally { f.panel.dispose(); }
 });
 
-for (const confirm of [["ctrl+y"], []]) it(`honors ${confirm.length ? "remapped" : "disabled"} session confirmation`, async () => {
+for (const confirm of [["ctrl+y"], []] satisfies KeyId[][]) it(`honors ${confirm.length ? "remapped" : "disabled"} session confirmation`, async () => {
 	const f = fixture();
 	const configured = new Keys(TUI_KEYBINDINGS, { "tui.select.confirm": confirm, "tui.select.up": ["ctrl+p"], "tui.select.down": ["ctrl+n"] }) as KeybindingsManager;
 	const panel = new AgentDashboard(f.sources, f.tui, theme, configured, () => {}); await tick();

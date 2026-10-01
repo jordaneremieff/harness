@@ -1,7 +1,8 @@
 import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { SelectList, truncateToWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
+import { SelectList, truncateToWidth, wrapTextWithAnsi, type Component, type Keybinding, type TUI } from "@earendil-works/pi-tui";
 
 export interface DashboardActionChoice { name: string; description: string }
+type PickerTui = Pick<TUI, "requestRender"> & { terminal: Pick<TUI["terminal"], "rows"> };
 
 /** Native selection with a viewport bounded by the current terminal height. */
 export class AgentActionPicker implements Component {
@@ -10,11 +11,11 @@ export class AgentActionPicker implements Component {
 	private selected = 0;
 	private cramped = false;
 	private readonly choices: DashboardActionChoice[];
-	private readonly tui: Pick<TUI, "terminal" | "requestRender">;
+	private readonly tui: PickerTui;
 	private readonly theme: Theme;
 	private readonly keys: KeybindingsManager;
 	private readonly done: (choice?: string) => void;
-	constructor(choices: DashboardActionChoice[], tui: Pick<TUI, "terminal" | "requestRender">, theme: Theme, keys: KeybindingsManager, done: (choice?: string) => void) {
+	constructor(choices: DashboardActionChoice[], tui: PickerTui, theme: Theme, keys: KeybindingsManager, done: (choice?: string) => void) {
 		this.choices = choices; this.tui = tui; this.theme = theme; this.keys = keys; this.done = done;
 	}
 	private selection(visible: number): SelectList {
@@ -42,7 +43,7 @@ export class AgentActionPicker implements Component {
 		const height = Math.max(1, this.tui.terminal.rows - 2);
 		width = Math.max(1, width);
 		this.cramped = height < 8 || width < 24;
-		const label = (action: string) => this.keys.getKeys(action).slice(0, 1).map((key) => key === "up" ? "↑" : key === "down" ? "↓" : key === "enter" ? "Enter" : key === "escape" ? "Esc" : key).join("/");
+		const label = (action: Keybinding) => this.keys.getKeys(action).slice(0, 1).map((key) => key === "up" ? "↑" : key === "down" ? "↓" : key === "enter" ? "Enter" : key === "escape" ? "Esc" : key).join("/");
 		const cancel = label("tui.select.cancel");
 		if (this.cramped) return [truncateToWidth(`Resize for actions${cancel ? ` · ${cancel} back` : ""}`, width)];
 		const description = wrapTextWithAnsi(this.choices[this.selected]?.description ?? "No actions", width).slice(0, Math.min(3, height - 6));
