@@ -474,7 +474,7 @@ function summarizeRunEntryUsage(entries: PiSessionEntry[], participant: Particip
 			toolCalls += entry.message.content.filter((part) => part.type === "toolCall").length;
 		} else if (entry.type === "message" && entry.message.role === "toolResult") {
 			usage = entry.message.usage;
-		} else if (entry.type === "compaction" || entry.type === "branch_summary") {
+		} else if (entry.type === "compaction" || entry.type === "branch_summary" || entry.type === "usage") {
 			usage = entry.usage;
 		}
 		if (!usage) continue;
