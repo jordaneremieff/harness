@@ -4,7 +4,8 @@ import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, Keybindin
 import { Editor, KeybindingsManager as Keys, TUI_KEYBINDINGS, type TUI } from "@earendil-works/pi-tui";
 import registerAgentExtension from "./index.ts";
 import { createAgentCommand } from "./command.ts";
-import type { AgentDashboard } from "./dashboard.ts";
+import { AgentDashboard } from "./dashboard.ts";
+import { AgentActionPicker } from "./dashboard-actions.ts";
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 function deferred() {
@@ -62,8 +63,10 @@ it("keeps the native editor draft intact across a mounted dashboard and uses onl
 	});
 	ctx = context(async (factory) => {
 		const response = new Promise((resolve) => { close = resolve; });
-		panel = await factory(tui, theme, keys, (value) => close(value)) as AgentDashboard;
-		try { return await response as never; } finally { panel.dispose(); }
+		const component = await factory(tui, theme, keys, (value) => close(value));
+		if (component instanceof AgentActionPicker) { component.render(80); component.handleInput("\r"); }
+		else { assert.ok(component instanceof AgentDashboard); panel = component; }
+		try { return await response as never; } finally { component.dispose?.(); }
 	});
 	ctx.ui = new Proxy({ ...ctx.ui, select: async () => "status: Read status" }, { get(target, key) { assert.ok(key in target, `Unexpected UI access: ${String(key)}`); return Reflect.get(target, key); } });
 	const opened = command.openDashboard(ctx); await tick(); assert.ok(panel);

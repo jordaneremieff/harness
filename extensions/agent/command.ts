@@ -4,6 +4,7 @@ import type { ExtensionContext, RegisteredCommand } from "@earendil-works/pi-cod
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { showAgentDashboard, type AgentObservationSources, type DashboardTarget } from "./dashboard.ts";
 import type { UnavailableHostState } from "./worker.ts";
+import { selectDashboardAction } from "./dashboard-actions.ts";
 
 export interface AgentSessionSummary {
 	sessionId: string;
@@ -142,10 +143,9 @@ function dashboardArgumentError(argument: CommandArgument, words: string[]): str
 }
 
 export async function chooseDashboardAction(actions: AgentCommandAction[], target: DashboardTarget | undefined, ctx: ExtensionContext): Promise<string | undefined> {
-	const labels = actions.map((action) => `${action.name}: ${action.description}`);
-	const choice = await ctx.ui.select("Agent actions", labels);
+	const choice = await selectDashboardAction(actions, ctx);
 	if (choice === undefined) return undefined;
-	const action = actions[labels.indexOf(choice)];
+	const action = actions.find((item) => item.name === choice);
 	if (!action) return undefined;
 	if (action.dialog) return action.dialog(target, ctx);
 	const args = await dashboardArguments(action, target, ctx);

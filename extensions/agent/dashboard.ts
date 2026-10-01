@@ -27,6 +27,7 @@ export interface DashboardState {
 	snapshot?: AgentDashboardSnapshot;
 	selected?: string;
 	filter: string;
+	focus?: "sessions" | "conversation";
 	views: Map<string, ConversationView>;
 	drafts: Map<string, string>;
 	notice?: string;
@@ -108,6 +109,7 @@ export class AgentDashboard implements Component {
 	private inputMode?: "filter" | "message" | "new";
 	private filterBefore = "";
 	private selectionBefore?: string;
+	private focusBefore: "sessions" | "conversation" = "sessions";
 	private composerId?: string;
 	private editingHidden = false;
 	private closed = false;
@@ -144,6 +146,7 @@ export class AgentDashboard implements Component {
 	constructor(sources: AgentObservationSources, tui: Pick<TUI, "requestRender" | "terminal">, theme: Theme, keys: KeybindingsManager, done: (request?: ActionRequest) => void, state?: DashboardState, actions?: DashboardActions) {
 		this.sources = sources; this.tui = tui; this.theme = theme; this.keys = keys; this.done = done; this.actions = actions;
 		this.state = state ?? { filter: "", views: new Map(), drafts: new Map() };
+		this.state.focus ??= "sessions";
 		this.editor = new AgentMessageEditor(tui as TUI, theme, (text) => { void this.submit(text); });
 		this.input.onSubmit = () => this.finishInput();
 		this.resumeRefresh();
@@ -236,6 +239,7 @@ export class AgentDashboard implements Component {
 		const row = this.selected(); if (!create && !row) return;
 		const refusal = !create && row ? this.refusal(row) : undefined;
 		if (refusal) { this.state.notice = refusal; this.redraw(); return; }
+		if (!create) this.state.focus = "conversation";
 		this.inputMode = create ? "new" : "message"; this.composerId = create ? undefined : row?.sessionId;
 		this.editor = new AgentMessageEditor(this.tui as TUI, this.theme, (text) => { void this.submit(text); });
 		this.editor.setText(this.state.drafts.get(this.composerId ?? "new") ?? ""); this.focused = this.hostFocused;
@@ -279,6 +283,7 @@ export class AgentDashboard implements Component {
 		if (matchesKey(data, "escape")) {
 			if (this.inputMode === "filter") {
 				this.state.filter = this.filterBefore;
+				this.state.focus = this.focusBefore;
 				this.select(this.selectionBefore); this.selectValid(); void this.readConversation();
 			} else this.saveDraft();
 			this.finishInput(); return;
@@ -307,7 +312,14 @@ export class AgentDashboard implements Component {
 		return Math.max(0, Math.min(Math.max(0, length - this.viewport), next));
 	}
 	private commonInput(data: string): boolean {
-		if (matchesKey(data, "enter")) { this.compose(); return true; }
+		if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
+			this.state.focus = this.state.focus === "sessions" ? "conversation" : "sessions"; return true;
+		}
+		if (this.state.focus === "sessions" && this.keys.matches(data, "tui.select.confirm")) {
+			if (this.selected()) this.state.focus = "conversation";
+			return true;
+		}
+		if (this.state.focus === "conversation" && matchesKey(data, "enter")) { this.compose(); return true; }
 		switch (data) {
 			case "[": this.move(-1); return true;
 			case "]": this.move(1); return true;
@@ -316,7 +328,7 @@ export class AgentDashboard implements Component {
 			case "n": this.compose(true); return true;
 			case "r": void this.refresh(); return true;
 			case "/":
-				if (!this.submitting) { this.filterBefore = this.state.filter; this.selectionBefore = this.state.selected; this.inputMode = "filter"; this.input.setValue(this.state.filter); this.focused = this.hostFocused; }
+				if (!this.submitting) { this.filterBefore = this.state.filter; this.selectionBefore = this.state.selected; this.focusBefore = this.state.focus ?? "sessions"; this.state.focus = "sessions"; this.inputMode = "filter"; this.input.setValue(this.state.filter); this.focused = this.hostFocused; }
 				return true;
 			case "a": {
 				if (!this.actions || this.submitting) return true;
@@ -324,6 +336,13 @@ export class AgentDashboard implements Component {
 			}
 			default: return false;
 		}
+	}
+	private sessionInput(data: string): void {
+		const rows = this.rows();
+		const index = rows.findIndex((row) => row.sessionId === this.state.selected);
+		if (matchesKey(data, "home")) this.move(-index);
+		else if (matchesKey(data, "end")) this.move(rows.length - 1 - index);
+		else this.move(this.delta(data, this.viewport));
 	}
 	private conversationInput(data: string): void {
 		const view = this.view(); if (!view) return;
@@ -345,18 +364,39 @@ export class AgentDashboard implements Component {
 		else if (matchesKey(data, "escape")) this.back();
 		else if (this.help) this.helpScroll = Math.max(0, this.helpScroll + this.delta(data, this.viewport));
 		else if (this.state.actionResult !== undefined) this.resultScroll = this.scrollTo(data, this.resultScroll, this.resultLength);
-		else if (!this.commonInput(data)) this.conversationInput(data);
+		else if (!this.commonInput(data)) {
+			if (this.state.focus === "sessions") this.sessionInput(data);
+			else this.conversationInput(data);
+		}
 		this.redraw();
 	}
-	private hint(width: number): string {
-		let back = "Esc close"; let hints = ["[ ] agents", "↑↓ scroll", "Enter message", "/ find", "? help"];
-		if (this.inputMode === "filter") { back = "Esc cancel"; hints = ["Enter keep filter"]; }
-		else if (this.inputMode) {
-			back = "Esc keep draft";
-			hints = [`${this.keys.getKeys("tui.input.submit").join("/") || "Enter"} send`, `${this.keys.getKeys("tui.input.newLine").join("/") || "Ctrl+J"} newline`];
-		} else if (this.help || this.state.actionResult !== undefined) { back = "Esc back"; hints = ["↑↓ scroll", "PgUp/PgDn page"]; }
-		while (hints.length && visibleWidth([...hints, back].join(" · ")) > width) hints.pop();
-		return this.theme.fg("muted", truncateToWidth([...hints, back].join(" · "), width));
+	private hints(width: number): string[] {
+		const row = this.selected();
+		let hints = [`Tab ${this.state.focus === "sessions" ? "conversation" : "sessions"}`, "/ find", "a actions", ...(row && !this.refusal(row) ? ["m message"] : []), "n new", "? help", "Esc close"];
+		if (this.inputMode === "filter") hints = ["Enter keep filter", "Esc cancel"];
+		else if (this.inputMode) hints = [`${this.keys.getKeys("tui.input.submit").join("/") || "Enter"} send`, `${this.keys.getKeys("tui.input.newLine").join("/") || "Ctrl+J"} newline`, "Esc keep draft"];
+		else if (this.help || this.state.actionResult !== undefined) hints = ["↑↓ scroll", "PgUp/PgDn page", "Esc back"];
+		const lines: string[] = [];
+		for (const hint of hints) {
+			const last = lines.length - 1;
+			if (last >= 0 && visibleWidth(`${lines[last]} · ${hint}`) <= width) lines[last] += ` · ${hint}`;
+			else lines.push(truncateToWidth(hint, width));
+		}
+		return lines.map((line) => this.theme.fg("muted", line));
+	}
+	private navigationHeading(): string {
+		if (this.help) return "Controls and observation boundaries";
+		if (this.state.actionResult !== undefined) return "Action result · Esc returns to the board";
+		if (this.inputMode === "filter") return "Find sessions · type a name, task, place or ID";
+		if (this.inputMode) return "Message draft";
+		return this.state.focus === "sessions" ? this.sessionNavigation() : "Conversation · ↑↓ scroll";
+	}
+	private sessionNavigation(): string {
+		const label = (action: string) => this.keys.getKeys(action).slice(0, 1).map((key) => key === "up" ? "↑" : key === "down" ? "↓" : key === "enter" ? "Enter" : key).join("/");
+		const navigation = [label("tui.select.up"), label("tui.select.down")].filter(Boolean);
+		const select = navigation.length ? navigation.join(navigation.join("") === "↑↓" ? "" : "/") : "j/k";
+		const confirm = label("tui.select.confirm");
+		return `Sessions · ${select} select${confirm ? ` · ${confirm} read` : ""}`;
 	}
 	private content(width: number, height: number): string[] {
 		if (this.help) return this.renderHelp(width, height);
@@ -388,27 +428,33 @@ export class AgentDashboard implements Component {
 		};
 		if (height < 6 || width < 24) return small();
 		const inner = width - 4;
+		const hints = this.hints(inner);
 		const extras = this.inputLines(inner);
-		if (this.inputMode && extras.length > height - 6) return small();
-		const shownExtras = extras.slice(0, Math.max(0, height - 6));
-		const contentHeight = Math.max(1, height - 5 - shownExtras.length);
+		const available = height - 4 - hints.length;
+		if (available < 1 || (this.inputMode && extras.length >= available)) return small();
+		const shownExtras = extras.slice(0, Math.max(0, available - 1));
+		const contentHeight = available - shownExtras.length;
 		this.viewport = contentHeight;
 		const heading = this.state.actionResult !== undefined ? "Action result" : `Agents  ${totals(this.state.snapshot)}`;
 		const rendered = this.content(inner, contentHeight);
 		const content = Array.from({ length: contentHeight }, (_, index) => rendered[index] ?? "");
 		const border = (left: string, right: string) => this.theme.fg("borderMuted", left + "─".repeat(width - 2) + right);
 		const frame = (line: string) => `${this.theme.fg("borderMuted", "│")} ${pad(line, inner)} ${this.theme.fg("borderMuted", "│")}`;
-		return [border("╭", "╮"), frame(this.theme.bold(heading)), frame(""), ...content.map(frame), ...shownExtras.map(frame), frame(this.hint(inner)), border("╰", "╯")];
+		return [border("╭", "╮"), frame(this.theme.bold(heading)), frame(this.theme.fg("accent", this.navigationHeading())), ...content.map(frame), ...shownExtras.map(frame), ...hints.map(frame), border("╰", "╯")];
 	}
 	private renderWorkspace(width: number, height: number): string[] {
 		const rows = this.rows(); const selected = this.selected();
 		if (this.state.snapshot?.error) return [this.theme.fg("error", "Store unavailable"), ...wrapTextWithAnsi(cleanDashboardText(this.state.snapshot.error), width), "r retries"];
 		if (!rows.length || !selected) return [this.state.snapshot ? this.state.filter ? `No sessions match “${oneLine(this.state.filter)}”` : "No agent sessions yet. Press n to start one." : "Read in progress…"];
 		const split = width >= 116;
-		if (!split) return [this.selector(rows, selected, width), ...this.renderConversation(width, Math.max(1, height - 1), false)];
+		if (!split) {
+			if (this.state.focus === "sessions" && this.inputMode !== "message" && this.inputMode !== "new") return this.renderRoster(rows, width, height);
+			return [this.selector(rows, selected, width), ...this.renderConversation(width, Math.max(1, height - 1), false)];
+		}
 		const railWidth = 32;
 		const roster = this.renderRoster(rows, railWidth, height);
 		const conversation = this.renderConversation(width - railWidth - 3, height, true);
+		if (this.state.focus === "sessions") this.viewport = Math.max(1, height - 1);
 		return Array.from({ length: height }, (_, index) => `${pad(roster[index] ?? "", railWidth)} ${this.theme.fg("borderMuted", "│")} ${conversation[index] ?? ""}`);
 	}
 	private rosterTitles(rows: SessionDigest[], width: number): Map<string, string> {
@@ -477,6 +523,7 @@ export class AgentDashboard implements Component {
 	private conversationHeader(width: number, height: number, withTitle: boolean): string[] {
 		const row = this.selected();
 		const header = [this.conversationHeading(width, withTitle)];
+		if (row && this.refusal(row)) header.push(this.theme.fg("warning", truncateToWidth(`Read-only: ${this.refusal(row)}`, width)));
 		if (row && height >= 10) header.push(this.theme.fg("muted", truncateToWidth(oneLine(`${basename(row.cwd)} · ${row.model ? `${row.model.modelId} ${row.model.thinkingLevel ?? "off"}` : "model unknown"}`), width)));
 		if (row && height >= 18) header.push(this.theme.fg("dim", truncateToWidth(activityOf(row, this.state.snapshot?.observedAt ?? Date.now()), width)));
 		if (row?.state === "working") header.push(this.theme.fg("accent", truncateToWidth(row.currentTool ? `› ${oneLine(row.currentTool.name)} ${oneLine(row.currentTool.argument)}` : "› Thinking", width)));
@@ -525,7 +572,7 @@ export class AgentDashboard implements Component {
 		return lines.slice(this.resultScroll, this.resultScroll + height);
 	}
 	private renderHelp(width: number, height: number): string[] {
-		const lines = ["Agent conversations", "", "[ and ] select the previous or next session. The keys stay the same at every width. A wide terminal adds a session rail; a narrow terminal keeps one selected-session line.", "↑↓ or j/k scrolls. Page Up/Down or b/Space pages. Home starts; End follows new output. o loads earlier messages.", "/ searches name, task, place, model, state or ID. Enter keeps a filter; Escape restores the previous filter and selection.", "Enter or m opens the selected session's draft. The native editor submits with its configured submit key and inserts newlines with its configured newline key. Escape hides the editor and retains the draft. n drafts a task for a new agent.", "The recipient stays fixed while the editor is open or a submission is in progress. A fresh ownership check selects send for an idle agent or steer for active work. A refused submission retains the draft.", "a opens all native actions. Actions retain their trust and ownership checks. Escape returns from help or a result; otherwise it closes the dashboard.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "Each visited session keeps its reading position, follow mode, loaded-message limit, expansion, thinking visibility and draft for this open dashboard, including native action dialogs. Closing the dashboard ends that state.", "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A same-host claim whose process no longer exists leaves the transcript outcome in force; the next control through this window replaces that claim. The dashboard never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files retain bounded identity metadata and a conversation tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds Unavailable sessions regardless of age, plus Failed, Stopped and Interrupted outcomes from the last 24 hours. Older outcomes retain their state in date groups.", "Refresh runs once per second while this overlay is visible. Only changed files are parsed. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it."];
+		const lines = ["Agent conversations", "", this.sessionNavigation(), "Sessions is selected when the board opens. The selection keys above or j/k select a session. The configured confirmation key reads it; Tab also switches between Sessions and Conversation. A wide terminal previews the selected conversation beside the list. A narrow terminal shows the focused area.", "In Conversation, ↑↓ or j/k scrolls. Page Up/Down or b/Space pages the focused area. Home/End selects the first/last session or starts/follows the conversation. o loads earlier messages in Conversation. [ and ] selects sessions from either area.", "/ searches name, task, place, model, state or ID and focuses Sessions. Enter keeps the filter and shows the matches; Escape restores the previous filter, selection and focus.", "m opens the selected session's draft from either area. Enter opens a draft only in Conversation. The native editor submits with its configured submit key and inserts newlines with its configured newline key. Escape hides the editor and retains the draft. n drafts a task for a new agent.", "The recipient stays fixed while the editor is open or a submission is in progress. A fresh ownership check selects send for an idle agent or steer for active work. A refused submission retains the draft.", "a opens all native actions. Actions retain their trust and ownership checks. Escape returns from help or a result; otherwise it closes the dashboard.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "Each visited session keeps its reading position, follow mode, loaded-message limit, expansion, thinking visibility and draft for this open dashboard, including native action dialogs. The board also retains its focused area through dialogs and resize. Closing the dashboard ends that state.", "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A same-host claim whose process no longer exists leaves the transcript outcome in force; the next control through this window replaces that claim. The dashboard never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files retain bounded identity metadata and a conversation tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds Unavailable sessions regardless of age, plus Failed, Stopped and Interrupted outcomes from the last 24 hours. Older outcomes retain their state in date groups.", "Refresh runs once per second while this overlay is visible. Only changed files are parsed. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it."];
 		const wrapped = lines.flatMap((line) => wrapTextWithAnsi(line, width));
 		this.helpScroll = Math.min(this.helpScroll, Math.max(0, wrapped.length - height));
 		return wrapped.slice(this.helpScroll, this.helpScroll + height);

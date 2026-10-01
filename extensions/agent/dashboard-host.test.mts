@@ -3,7 +3,8 @@ import { it } from "node:test";
 import { initTheme, SessionManager, type ExtensionContext, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as Keys, TUI_KEYBINDINGS, type Component, type TUI } from "@earendil-works/pi-tui";
 import { createAgentCommand } from "./command.ts";
-import { type AgentDashboard, showAgentDashboard, type AgentObservationSources } from "./dashboard.ts";
+import { AgentDashboard, showAgentDashboard, type AgentObservationSources } from "./dashboard.ts";
+import { AgentActionPicker } from "./dashboard-actions.ts";
 import type { SessionDigest } from "./dashboard-data.ts";
 
 initTheme("dark");
@@ -20,13 +21,15 @@ it("closes each overlay before native dialogs and restores selection and convers
 	const ctx = { mode: "tui", hasUI: true, ui: {
 		custom: async (factory: Factory, options: unknown) => {
 			assert.deepEqual(options, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: { top: 1, bottom: 1 } } });
-			assert.equal(inOverlay, false); inOverlay = true; overlays++;
+			assert.equal(inOverlay, false); inOverlay = true;
 			let resolve!: (value: unknown) => void;
 			const result = new Promise((done) => { resolve = done; });
-			const panel = factory({ terminal: { rows: 24 }, requestRender() {} } as unknown as TUI, theme, keys, (request) => { panel.dispose(); inOverlay = false; resolve(request); }) as AgentDashboard;
+			const component = factory({ terminal: { rows: 24 }, requestRender() {} } as unknown as TUI, theme, keys, (request) => { component.dispose?.(); inOverlay = false; resolve(request); });
 			await tick();
+			if (component instanceof AgentActionPicker) { component.render(100); component.handleInput("\r"); return result; }
+			assert.ok(component instanceof AgentDashboard); const panel = component; overlays++;
 			if (overlays === 1) panel.handleInput("a");
-			else { screens.push(panel.render(100).join("\n")); panel.handleInput("\x1b"); screens.push(panel.render(100).join("\n")); assert.equal(panel.state.selected, "native-id"); panel.handleInput("\x1b"); }
+			else { screens.push(panel.render(100).join("\n")); panel.handleInput("\x1b"); screens.push(panel.render(100).join("\n")); assert.equal(panel.state.selected, "native-id"); assert.equal(panel.state.focus, "sessions"); panel.handleInput("\x1b"); }
 			return result;
 		},
 		select: async () => { assert.equal(inOverlay, false); return "status: Read owner"; },
@@ -35,7 +38,7 @@ it("closes each overlay before native dialogs and restores selection and convers
 	const command = createAgentCommand([{ name: "status", description: "Read owner", args: [{ name: "session", complete: "session-control" }], run: async (args) => { assert.equal(inOverlay, false); assert.deepEqual(args, ["native-id"]); actions++; return "owner status sentinel"; } }], sources);
 	await command.openDashboard(ctx);
 	assert.equal(overlays, 2); assert.equal(actions, 1); assert.equal(inOverlay, false);
-	assert.match(screens[0], /owner status sentinel/); assert.match(screens[1], /TAIL/);
+	assert.match(screens[0], /owner status sentinel/); assert.match(screens[1], /Sessions · ↑↓ select/);
 });
 
 it("restores the board after canceled dialogs and exposes action errors in a scrollable result", async () => {
@@ -62,7 +65,7 @@ it("keeps passage and draft state through a native action dialog", async () => {
 	const ctx = { mode: "tui", hasUI: true, ui: { custom: async (factory: Factory) => {
 		let resolve!: (value: unknown) => void; const result = new Promise((done) => { resolve = done; });
 		const panel = factory({ terminal: { rows: 36 }, requestRender() {} } as unknown as TUI, theme, keys, (value) => { panel.dispose(); resolve(value); }) as AgentDashboard;
-		await tick(); panel.render(120);
+		await tick(); panel.state.focus = "conversation"; panel.render(120);
 		if (++count === 1) {
 			panel.handleInput("o"); panel.render(120); panel.handleInput("\x1b[H"); panel.handleInput("j"); panel.handleInput("j"); panel.handleInput("x"); panel.render(120);
 			panel.handleInput("m"); panel.handleInput("native draft"); panel.handleInput("\x1b");
@@ -87,7 +90,7 @@ it("the composer calls the same native command action and leaves the overlay ope
 		return result;
 	} } } as unknown as ExtensionContext;
 	const open = command.openDashboard(ctx); await tick();
-	panel.handleInput("\r"); panel.handleInput("Message with spaces"); panel.handleInput("\n"); panel.handleInput("café 世界");
+	panel.handleInput("\r"); assert.equal(panel.state.focus, "conversation"); panel.handleInput("\r"); panel.handleInput("Message with spaces"); panel.handleInput("\n"); panel.handleInput("café 世界");
 	assert.deepEqual(calls, [], "Ctrl+J inserts a newline instead of submitting");
 	panel.handleInput("\r"); await tick();
 	assert.deepEqual(calls, [["native-id", "Message with spaces\ncafé 世界"]]); assert.match(panel.render(80).join("\n"), /Admitted/);

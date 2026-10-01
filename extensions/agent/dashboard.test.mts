@@ -21,7 +21,7 @@ function fixture(rows = [row()], overrides: Partial<AgentObservationSources> = {
 	const terminal = { rows: 36 };
 	const tui = { terminal, requestRender() {} } as unknown as TUI;
 	const requests: unknown[] = [];
-	const panel = new AgentDashboard(sources, tui, theme, keys, (request) => requests.push(request), undefined, actions);
+	const panel = new AgentDashboard(sources, tui, theme, keys, (request) => requests.push(request), { filter: "", focus: "conversation", views: new Map(), drafts: new Map() }, actions);
 	const screen = (width = 120) => stripVTControlCharacters(panel.render(width).join("\n"));
 	return { panel, sources, tui, terminal, screen, requests, native };
 }
@@ -438,6 +438,74 @@ it("renders the complete focused editor or a resize notice without accepting hid
 		assert.ok(f.panel.render(80).some((line) => line.includes(CURSOR_MARKER)));
 		assert.equal(f.panel.state.drafts.get("sample"), text);
 	} finally { f.panel.dispose(); }
+});
+
+it("opens in Sessions, uses arrows to select, and Enter reads before any message draft", async () => {
+	const f = fixture([row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1 })]);
+	const calls: unknown[] = [];
+	const panel = new AgentDashboard(f.sources, f.tui, theme, keys, () => {}, undefined, { run: async () => undefined, compose: async (...args) => { calls.push(args); return "sent"; } });
+	await tick();
+	try {
+		const screen = () => stripVTControlCharacters(panel.render(80).join("\n"));
+		assert.equal(panel.state.focus, "sessions");
+		assert.match(screen(), /Sessions · ↑↓ select · Enter read/);
+		assert.match(screen(), /Session a/); assert.match(screen(), /Session b/);
+		assert.doesNotMatch(screen(), /Assistant result sentinel/);
+		for (const width of [40, 80, 140]) {
+			const text = stripVTControlCharacters(panel.render(width).join("\n"));
+			for (const hint of ["Tab conversation", "/ find", "a actions", "m message", "n new", "? help", "Esc close"]) assert.ok(text.includes(hint), `${width}: ${hint}`);
+		}
+		panel.handleInput("\x1b[B"); await tick(); assert.equal(panel.state.selected, "b");
+		panel.handleInput("\r"); assert.equal(panel.state.focus, "conversation");
+		assert.match(screen(), /Assistant result sentinel/); assert.doesNotMatch(screen(), /Message draft/); assert.deepEqual(calls, []);
+		panel.handleInput("\x1b[A"); assert.equal(panel.state.selected, "b");
+		panel.handleInput("\x1b[Z"); assert.equal(panel.state.focus, "sessions");
+		panel.render(140); assert.equal(panel.state.focus, "sessions");
+		panel.handleInput("\x1b[A"); assert.equal(panel.state.selected, "a");
+	} finally { panel.dispose(); f.panel.dispose(); }
+});
+
+it("keeps filter matches in Sessions and restores the prior focus, selection and filter on cancel", async () => {
+	const f = fixture([row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1 })]); await tick();
+	try {
+		f.panel.handleInput("/"); f.panel.handleInput("Session b"); await tick();
+		assert.equal(f.panel.state.focus, "sessions"); assert.equal(f.panel.state.selected, "b");
+		f.panel.handleInput("\x1b"); assert.equal(f.panel.state.focus, "conversation"); assert.equal(f.panel.state.selected, "a"); assert.equal(f.panel.state.filter, "");
+		f.panel.handleInput("/"); f.panel.handleInput("no match"); f.panel.handleInput("\r");
+		assert.equal(f.panel.state.focus, "sessions"); assert.equal(f.panel.state.selected, undefined);
+		assert.match(f.screen(80), /No sessions match/); assert.match(f.screen(80), /\/ find/); assert.doesNotMatch(f.screen(80), /m message/);
+		f.panel.handleInput("\r"); assert.equal(f.panel.state.focus, "sessions");
+		f.panel.handleInput("/"); f.panel.handleInput("\x15"); f.panel.handleInput("Session b"); f.panel.handleInput("\r");
+		assert.equal(f.panel.state.focus, "sessions"); assert.equal(f.panel.state.selected, "b");
+		f.panel.handleInput("\r"); assert.equal(f.panel.state.focus, "conversation");
+	} finally { f.panel.dispose(); }
+});
+
+it("retains a recipient draft through focus changes and leaves foreign sessions read-only", async () => {
+	const f = fixture([row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1, owner: "window", ownerLabel: "another window" })], {}, { run: async () => undefined, compose: async () => "sent" }); await tick();
+	try {
+		f.panel.handleInput("m"); f.panel.handleInput("Keep this draft"); f.panel.handleInput("\x1b");
+		f.panel.handleInput("\t"); f.panel.handleInput("\x1b[B"); await tick();
+		f.panel.handleInput("\r");
+		assert.match(f.screen(80), /Read-only: Open in another window/);
+		assert.doesNotMatch(f.screen(80), /m message|Enter message/);
+		f.panel.handleInput("\t"); f.panel.handleInput("\x1b[A"); await tick();
+		f.panel.handleInput("m"); assert.match(f.screen(80), /Keep this draft/); assert.equal(f.panel.state.selected, "a");
+	} finally { f.panel.dispose(); }
+});
+
+for (const confirm of [["ctrl+y"], []]) it(`honors ${confirm.length ? "remapped" : "disabled"} session confirmation`, async () => {
+	const f = fixture();
+	const configured = new Keys(TUI_KEYBINDINGS, { "tui.select.confirm": confirm, "tui.select.up": ["ctrl+p"], "tui.select.down": ["ctrl+n"] }) as KeybindingsManager;
+	const panel = new AgentDashboard(f.sources, f.tui, theme, configured, () => {}); await tick();
+	try {
+		panel.handleInput("\r"); assert.equal(panel.state.focus, "sessions");
+		const screen = stripVTControlCharacters(panel.render(100).join("\n"));
+		assert.doesNotMatch(screen, /Enter read|↑↓ select/); assert.match(screen, /ctrl\+p\/ctrl\+n select/);
+		panel.handleInput("?"); assert.doesNotMatch(panel.render(100).join("\n"), /Enter opens its conversation/); panel.handleInput("\x1b");
+		if (confirm.length) { assert.match(screen, /ctrl\+y read/); panel.handleInput("\x19"); assert.equal(panel.state.focus, "conversation"); }
+		else { panel.handleInput("\x19"); assert.equal(panel.state.focus, "sessions"); panel.handleInput("\t"); assert.equal(panel.state.focus, "conversation"); }
+	} finally { panel.dispose(); f.panel.dispose(); }
 });
 
 it("renders failures explicitly and gives headless callers a digest without opening TUI", async () => {
