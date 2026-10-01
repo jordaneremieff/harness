@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import { initTheme, SessionManager, type ExtensionContext, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as Keys, TUI_KEYBINDINGS, type Component, type TUI } from "@earendil-works/pi-tui";
 import { createAgentCommand } from "./command.ts";
 import { type AgentDashboard, showAgentDashboard, type AgentObservationSources } from "./dashboard.ts";
 import type { SessionDigest } from "./dashboard-data.ts";
 
+initTheme("dark");
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const keys = new Keys(TUI_KEYBINDINGS) as KeybindingsManager;
 const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text } as Theme;
@@ -24,8 +25,8 @@ it("closes each overlay before native dialogs and restores selection and convers
 			const result = new Promise((done) => { resolve = done; });
 			const panel = factory({ terminal: { rows: 24 }, requestRender() {} } as unknown as TUI, theme, keys, (request) => { panel.dispose(); inOverlay = false; resolve(request); }) as AgentDashboard;
 			await tick();
-			if (overlays === 1) { panel.handleInput("\r"); await tick(); panel.handleInput("a"); }
-			else { screens.push(panel.render(100).join("\n")); panel.handleInput("\x1b"); screens.push(panel.render(100).join("\n")); assert.equal(panel.state.selected, "native-id"); panel.handleInput("\x1b"); panel.handleInput("\x1b"); }
+			if (overlays === 1) panel.handleInput("a");
+			else { screens.push(panel.render(100).join("\n")); panel.handleInput("\x1b"); screens.push(panel.render(100).join("\n")); assert.equal(panel.state.selected, "native-id"); panel.handleInput("\x1b"); }
 			return result;
 		},
 		select: async () => { assert.equal(inOverlay, false); return "status: Read owner"; },
@@ -53,6 +54,30 @@ it("restores the board after canceled dialogs and exposes action errors in a scr
 	assert.match(views[1], /Native session/); assert.match(views[2], /exact refusal sentinel/); assert.equal(closed, true);
 });
 
+it("keeps passage and draft state through a native action dialog", async () => {
+	const native = SessionManager.inMemory("/work");
+	for (let index = 0; index < 100; index++) native.appendMessage({ role: "user", content: `native passage ${index}`, timestamp: index });
+	const observed = { ...sources, conversation: async () => ({ entries: native.getBranch(), partial: false, revision: "1" }) };
+	let count = 0; let before: unknown;
+	const ctx = { mode: "tui", hasUI: true, ui: { custom: async (factory: Factory) => {
+		let resolve!: (value: unknown) => void; const result = new Promise((done) => { resolve = done; });
+		const panel = factory({ terminal: { rows: 36 }, requestRender() {} } as unknown as TUI, theme, keys, (value) => { panel.dispose(); resolve(value); }) as AgentDashboard;
+		await tick(); panel.render(120);
+		if (++count === 1) {
+			panel.handleInput("o"); panel.render(120); panel.handleInput("\x1b[H"); panel.handleInput("j"); panel.handleInput("j"); panel.handleInput("x"); panel.render(120);
+			panel.handleInput("m"); panel.handleInput("native draft"); panel.handleInput("\x1b");
+			before = structuredClone(panel.state.views.get("native-id")); panel.handleInput("a");
+		} else {
+			assert.deepEqual(panel.state.views.get("native-id"), before);
+			assert.equal(panel.state.drafts.get("native-id"), "native draft");
+			assert.match(panel.render(120).join("\n"), /BROWSE/); panel.handleInput("\x1b");
+		}
+		return result;
+	} } } as unknown as ExtensionContext;
+	await showAgentDashboard(observed, ctx, { run: async () => undefined, compose: async () => "Admitted" });
+	assert.equal(count, 2);
+});
+
 it("the composer calls the same native command action and leaves the overlay open", async () => {
 	const calls: string[][] = []; let panel!: AgentDashboard; let finish!: () => void;
 	const command = createAgentCommand([{ name: "send", description: "Send", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async (args) => { calls.push(args); return "Admitted"; } }], sources);
@@ -62,7 +87,9 @@ it("the composer calls the same native command action and leaves the overlay ope
 		return result;
 	} } } as unknown as ExtensionContext;
 	const open = command.openDashboard(ctx); await tick();
-	panel.handleInput("m"); panel.handleInput("Message with spaces"); panel.handleInput("\r"); await tick();
-	assert.deepEqual(calls, [["native-id", "Message with spaces"]]); assert.match(panel.render(80).join("\n"), /Admitted/);
+	panel.handleInput("\r"); panel.handleInput("Message with spaces"); panel.handleInput("\n"); panel.handleInput("café 世界");
+	assert.deepEqual(calls, [], "Ctrl+J inserts a newline instead of submitting");
+	panel.handleInput("\r"); await tick();
+	assert.deepEqual(calls, [["native-id", "Message with spaces\ncafé 世界"]]); assert.match(panel.render(80).join("\n"), /Admitted/);
 	panel.handleInput("\x1b"); await open;
 });

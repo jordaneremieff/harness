@@ -1,11 +1,11 @@
 import { basename } from "node:path";
 import type { ExtensionContext, KeybindingsManager, SessionEntry, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Input, Markdown, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
+import { Input, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
 import type { AgentSessionSummary } from "./command.ts";
 import type { DetachedRunView } from "./detached.ts";
 import type { SessionDigest } from "./dashboard-data.ts";
 import { AgentConversation, cleanDashboardText, type ConversationDocument } from "./dashboard-conversation.ts";
+import { AgentMessageEditor } from "./dashboard-composer.ts";
 
 export interface AgentObservationSources {
 	sessions(): Promise<AgentSessionSummary[]>;
@@ -15,11 +15,19 @@ export interface AgentObservationSources {
 }
 export type DashboardTarget = { kind: "session"; session: AgentSessionSummary } | { kind: "run"; run: DetachedRunView };
 export interface AgentDashboardSnapshot { observedAt: number; sessions: SessionDigest[]; error?: string }
+interface ConversationView {
+	follow: boolean;
+	scroll: number;
+	anchor?: { id: string; offset: number };
+	messageLimit: number;
+	expanded: boolean;
+	showThinking: boolean;
+}
 export interface DashboardState {
 	snapshot?: AgentDashboardSnapshot;
 	selected?: string;
 	filter: string;
-	conversation?: string;
+	views: Map<string, ConversationView>;
 	drafts: Map<string, string>;
 	notice?: string;
 	actionResult?: string;
@@ -91,14 +99,17 @@ export function dashboardText(snapshot: AgentDashboardSnapshot): string {
 	]), "Use /agent help for actions."].join("\n");
 }
 
-/** One overlay owns its refresh clock, selected conversation, native input and render caches. */
+/** View state spans native action dialogs; only the selected transcript stays loaded. */
 export class AgentDashboard implements Component {
 	readonly state: DashboardState;
-	private readonly input = new Input({ prompt: "› " });
+	private readonly input = new Input({ prompt: "Find › " });
+	private editor: AgentMessageEditor;
 	private hostFocused = false;
 	private inputMode?: "filter" | "message" | "new";
 	private filterBefore = "";
+	private selectionBefore?: string;
 	private composerId?: string;
+	private editingHidden = false;
 	private closed = false;
 	private refreshing = false;
 	private submitting = false;
@@ -109,23 +120,21 @@ export class AgentDashboard implements Component {
 	private helpScroll = 0;
 	private resultScroll = 0;
 	private resultLength = 0;
-	private pageSize = 1;
 	private viewport = 1;
-	private scroll = 0;
-	private follow = true;
-	private expanded = false;
-	private showThinking = false;
-	private messageLimit = 80;
 	private history?: { id: string; entries: SessionEntry[]; partial: boolean; revision: string };
 	private historyError?: string;
 	private historyGeneration = 0;
 	private conversation?: AgentConversation;
 	private document?: ConversationDocument;
 	private conversationWidth?: number;
-	private pendingAnchor?: { id: string; offset: number };
-	private preview?: { text: string; component: Markdown };
+	private conversationStart = 0;
+	private anchorPending = true;
 	get focused(): boolean { return this.hostFocused; }
-	set focused(value: boolean) { this.hostFocused = value; this.input.focused = value && this.inputMode !== undefined; }
+	set focused(value: boolean) {
+		this.hostFocused = value;
+		this.input.focused = value && !this.editingHidden && this.inputMode === "filter";
+		this.editor.focused = value && !this.editingHidden && (this.inputMode === "message" || this.inputMode === "new");
+	}
 	private readonly sources: AgentObservationSources;
 	private readonly tui: Pick<TUI, "requestRender" | "terminal">;
 	private readonly theme: Theme;
@@ -134,8 +143,9 @@ export class AgentDashboard implements Component {
 	private readonly actions?: DashboardActions;
 	constructor(sources: AgentObservationSources, tui: Pick<TUI, "requestRender" | "terminal">, theme: Theme, keys: KeybindingsManager, done: (request?: ActionRequest) => void, state?: DashboardState, actions?: DashboardActions) {
 		this.sources = sources; this.tui = tui; this.theme = theme; this.keys = keys; this.done = done; this.actions = actions;
-		this.state = state ?? { filter: "", drafts: new Map() };
-		this.input.onSubmit = () => { if (this.inputMode === "filter") this.finishInput(); else void this.submit(); };
+		this.state = state ?? { filter: "", views: new Map(), drafts: new Map() };
+		this.editor = new AgentMessageEditor(tui as TUI, theme, (text) => { void this.submit(text); });
+		this.input.onSubmit = () => this.finishInput();
 		this.resumeRefresh();
 		void this.refresh();
 	}
@@ -162,10 +172,26 @@ export class AgentDashboard implements Component {
 		this.tui.requestRender();
 	}
 	private rows(): SessionDigest[] { return dashboardRecords(this.state.snapshot, this.state.filter); }
-	private selected(): SessionDigest | undefined { return this.rows().find((row) => row.sessionId === this.state.selected); }
-	private selectValid(): void {
+	private selected(): SessionDigest | undefined { return this.state.snapshot?.sessions.find((row) => row.sessionId === this.state.selected); }
+	private view(): ConversationView | undefined {
+		const id = this.state.selected; if (!id) return undefined;
+		let view = this.state.views.get(id);
+		if (!view) { view = { follow: true, scroll: 0, messageLimit: 80, expanded: false, showThinking: false }; this.state.views.set(id, view); }
+		return view;
+	}
+	private select(id: string | undefined): boolean {
+		if (id === this.state.selected) return false;
+		this.rememberAnchor();
+		this.state.selected = id;
+		this.historyGeneration++;
+		this.history = undefined; this.historyError = undefined; this.conversation = undefined; this.document = undefined; this.conversationWidth = undefined;
+		this.anchorPending = true;
+		return true;
+	}
+	private selectValid(): boolean {
+		if (this.submitting || this.inputMode === "message" || this.inputMode === "new") return false;
 		const rows = this.rows();
-		if (!rows.some((row) => row.sessionId === this.state.selected)) this.state.selected = rows[0]?.sessionId;
+		return !rows.some((row) => row.sessionId === this.state.selected) && this.select(rows[0]?.sessionId);
 	}
 	async refresh(): Promise<void> {
 		if (this.closed || this.refreshPaused || this.refreshing) return;
@@ -175,37 +201,35 @@ export class AgentDashboard implements Component {
 			if (this.closed || this.refreshPaused) return;
 			this.state.snapshot = snapshot;
 			this.selectValid();
-			if (this.state.conversation) await this.readConversation();
+			await this.readConversation();
 		} finally { this.refreshing = false; this.redraw(); }
 	}
 	private rememberAnchor(): void {
-		if (this.follow || !this.document) return;
-		const anchor = this.document.anchors.findLast((item) => item.line <= this.scroll);
-		if (anchor) this.pendingAnchor = { id: anchor.id, offset: this.scroll - anchor.line };
+		const view = this.view();
+		if (!view || this.anchorPending || this.history?.id !== this.state.selected || !this.document) return;
+		if (view.follow) { view.anchor = undefined; return; }
+		const anchor = this.document.anchors.findLast((item) => item.line <= view.scroll);
+		if (anchor) view.anchor = { id: anchor.id, offset: view.scroll - anchor.line };
 	}
 	private async readConversation(): Promise<void> {
-		const id = this.state.conversation;
+		const id = this.state.selected;
 		if (!id || this.refreshPaused) return;
 		const generation = ++this.historyGeneration;
 		try {
 			const data = await this.sources.conversation(id);
-			if (this.closed || this.refreshPaused || generation !== this.historyGeneration || id !== this.state.conversation) return;
+			if (this.closed || this.refreshPaused || generation !== this.historyGeneration || id !== this.state.selected) return;
 			this.historyError = undefined;
 			if (this.history?.id === id && this.history.revision === data.revision) return;
-			this.rememberAnchor(); this.history = { id, ...data }; this.conversation = undefined;
-		} catch (error) { if (!this.closed && !this.refreshPaused && generation === this.historyGeneration) this.historyError = errorText(error); }
+			this.rememberAnchor(); this.anchorPending = true;
+			this.history = { id, ...data }; this.conversation = undefined;
+		} catch (error) { if (!this.closed && !this.refreshPaused && generation === this.historyGeneration && id === this.state.selected) this.historyError = errorText(error); }
 		this.redraw();
 	}
-	private openConversation(): void {
-		const row = this.selected(); if (!row) return;
-		this.state.conversation = row.sessionId; this.follow = true; this.scroll = 0; this.messageLimit = 80;
-		this.history = undefined; this.conversation = undefined; this.document = undefined; this.historyError = undefined;
-		void this.readConversation(); this.redraw();
-	}
-	private move(delta: number, edge?: "first" | "last"): void {
+	private move(delta: number): void {
+		if (this.submitting) return;
 		const rows = this.rows(); const index = rows.findIndex((row) => row.sessionId === this.state.selected);
-		const next = edge === "first" ? 0 : edge === "last" ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, index + delta));
-		this.state.selected = rows[next]?.sessionId; this.redraw();
+		const next = Math.max(0, Math.min(rows.length - 1, index + delta));
+		if (this.select(rows[next]?.sessionId)) void this.readConversation();
 	}
 	private compose(create = false): void {
 		if (!this.actions?.compose || this.submitting) return;
@@ -213,12 +237,16 @@ export class AgentDashboard implements Component {
 		const refusal = !create && row ? this.refusal(row) : undefined;
 		if (refusal) { this.state.notice = refusal; this.redraw(); return; }
 		this.inputMode = create ? "new" : "message"; this.composerId = create ? undefined : row?.sessionId;
-		this.input.setValue(this.state.drafts.get(this.composerId ?? "new") ?? ""); this.focused = this.hostFocused; this.redraw();
+		this.editor = new AgentMessageEditor(this.tui as TUI, this.theme, (text) => { void this.submit(text); });
+		this.editor.setText(this.state.drafts.get(this.composerId ?? "new") ?? ""); this.focused = this.hostFocused;
 	}
 	private refusal(row: SessionDigest): string | undefined {
 		if (row.owner === "window") return `Open in ${oneLine(row.ownerLabel || "another Pi window")} · ${basename(row.cwd)}`;
 		if (row.state === "unavailable" || row.owner === "unknown") return `${sessionAppearance[row.state].label}: ${oneLine(row.error || row.ownerLabel || "session control is unavailable")}`;
 		return undefined;
+	}
+	private saveDraft(): void {
+		if (!this.submitting && (this.inputMode === "message" || this.inputMode === "new")) this.state.drafts.set(this.composerId ?? "new", this.editor.getText());
 	}
 	private finishInput(): void { this.inputMode = undefined; this.focused = this.hostFocused; this.redraw(); }
 	private async submissionMode(create: boolean, id?: string): Promise<"new" | "send" | "steer"> {
@@ -228,36 +256,43 @@ export class AgentDashboard implements Component {
 		const refusal = this.refusal(row); if (refusal) throw new Error(refusal);
 		return row.state === "working" ? "steer" : "send";
 	}
-	private async submit(): Promise<void> {
+	private async submit(text: string): Promise<void> {
 		if (this.submitting || !this.actions?.compose) return;
-		const text = this.input.getValue().trim(); if (!text) return;
 		const create = this.inputMode === "new"; const id = this.composerId;
+		if (!text.trim()) { this.editor.setText(this.state.drafts.get(id ?? "new") ?? ""); return; }
+		// Native Editor clears before its callback. Keep the submitted value, not that cleared state.
+		this.state.drafts.set(id ?? "new", text); this.editor.setText(text);
 		this.submitting = true; this.state.notice = "Send in progress…"; this.redraw();
 		try {
 			const mode = await this.submissionMode(create, id);
 			if (this.closed) return;
 			const receipt = await this.actions.compose(mode, id, text);
 			if (this.closed) return;
-			this.state.drafts.delete(id ?? "new"); this.input.setValue(""); this.finishInput();
+			this.state.drafts.delete(id ?? "new"); this.editor.setText(""); this.finishInput();
 			this.state.notice = receipt || "Action returned no receipt";
 			await this.refresh();
-		} catch (error) { if (!this.closed) this.state.notice = `Refused: ${errorText(error)}`; }
-		finally { this.submitting = false; this.redraw(); }
+		} catch (error) {
+			if (!this.closed) { this.editor.setText(text); this.state.notice = `Refused: ${errorText(error)}`; }
+		} finally { this.submitting = false; this.redraw(); }
 	}
 	private editInput(data: string): void {
 		if (matchesKey(data, "escape")) {
-			if (this.inputMode === "filter") { this.state.filter = this.filterBefore; this.selectValid(); }
+			if (this.inputMode === "filter") {
+				this.state.filter = this.filterBefore;
+				this.select(this.selectionBefore); this.selectValid(); void this.readConversation();
+			} else this.saveDraft();
 			this.finishInput(); return;
 		}
-		if (this.submitting) return;
-		this.input.handleInput(data);
-		if (this.inputMode === "filter") { this.state.filter = this.input.getValue(); this.selectValid(); }
-		else if (this.inputMode) this.state.drafts.set(this.composerId ?? "new", this.input.getValue());
+		if (this.submitting || this.editingHidden) return;
+		if (this.inputMode === "filter") {
+			this.input.handleInput(data);
+			this.state.filter = this.input.getValue();
+			if (this.selectValid()) void this.readConversation();
+		} else { this.editor.handleInput(data); this.saveDraft(); }
 	}
 	private back(): void {
 		if (this.help) this.help = false;
 		else if (this.state.actionResult !== undefined) this.state.actionResult = undefined;
-		else if (this.state.conversation) { this.state.conversation = undefined; this.historyGeneration++; this.history = undefined; this.conversation = undefined; this.document = undefined; }
 		else { this.dispose(); this.done(); }
 	}
 	private delta(data: string, page: number): number {
@@ -272,11 +307,17 @@ export class AgentDashboard implements Component {
 		return Math.max(0, Math.min(Math.max(0, length - this.viewport), next));
 	}
 	private commonInput(data: string): boolean {
+		if (matchesKey(data, "enter")) { this.compose(); return true; }
 		switch (data) {
+			case "[": this.move(-1); return true;
+			case "]": this.move(1); return true;
 			case "?": this.help = true; this.helpScroll = 0; return true;
 			case "m": this.compose(); return true;
 			case "n": this.compose(true); return true;
 			case "r": void this.refresh(); return true;
+			case "/":
+				if (!this.submitting) { this.filterBefore = this.state.filter; this.selectionBefore = this.state.selected; this.inputMode = "filter"; this.input.setValue(this.state.filter); this.focused = this.hostFocused; }
+				return true;
 			case "a": {
 				if (!this.actions || this.submitting) return true;
 				const row = this.selected(); this.dispose(); this.done({ target: row ? { kind: "session", session: row } : undefined }); return true;
@@ -285,21 +326,17 @@ export class AgentDashboard implements Component {
 		}
 	}
 	private conversationInput(data: string): void {
-		if (this.keys.matches(data, "app.tools.expand") || data === "x") { this.rememberAnchor(); this.expanded = !this.expanded; this.conversation = undefined; }
-		else if (this.keys.matches(data, "app.thinking.toggle")) { this.rememberAnchor(); this.showThinking = !this.showThinking; this.conversation = undefined; }
-		else if (data === "o") { this.rememberAnchor(); this.messageLimit += 80; this.conversation = undefined; }
-		else if (matchesKey(data, "end")) this.follow = true;
+		const view = this.view(); if (!view) return;
+		if (this.keys.matches(data, "app.tools.expand") || data === "x") { this.rememberAnchor(); this.anchorPending = true; view.expanded = !view.expanded; this.conversation = undefined; }
+		else if (this.keys.matches(data, "app.thinking.toggle")) { this.rememberAnchor(); this.anchorPending = true; view.showThinking = !view.showThinking; this.conversation = undefined; }
+		else if (data === "o") { this.rememberAnchor(); this.anchorPending = true; view.messageLimit += 80; this.conversation = undefined; }
+		else if (matchesKey(data, "end")) { view.follow = true; view.anchor = undefined; this.anchorPending = false; }
 		else if (this.delta(data, this.viewport) || matchesKey(data, "home")) {
-			this.follow = false; this.pendingAnchor = undefined;
-			this.scroll = this.scrollTo(data, this.scroll, this.document?.lines.length ?? 0);
+			view.follow = false; this.anchorPending = false;
+			const last = Math.max(0, (this.document?.lines.length ?? 0) - 1);
+			view.scroll = matchesKey(data, "home") ? 0 : Math.max(0, Math.min(last, view.scroll + this.delta(data, this.viewport)));
+			this.rememberAnchor();
 		}
-	}
-	private boardInput(data: string): void {
-		if (data === "/") { this.filterBefore = this.state.filter; this.inputMode = "filter"; this.input.setValue(this.state.filter); this.focused = this.hostFocused; }
-		else if (matchesKey(data, "enter")) this.openConversation();
-		else if (matchesKey(data, "home")) this.move(0, "first");
-		else if (matchesKey(data, "end")) this.move(0, "last");
-		else if (this.delta(data, this.pageSize)) this.move(this.delta(data, this.pageSize));
 	}
 	handleInput(data: string): void {
 		if (this.closed) return;
@@ -308,84 +345,76 @@ export class AgentDashboard implements Component {
 		else if (matchesKey(data, "escape")) this.back();
 		else if (this.help) this.helpScroll = Math.max(0, this.helpScroll + this.delta(data, this.viewport));
 		else if (this.state.actionResult !== undefined) this.resultScroll = this.scrollTo(data, this.resultScroll, this.resultLength);
-		else if (!this.commonInput(data)) {
-			if (this.state.conversation) this.conversationInput(data); else this.boardInput(data);
-		}
+		else if (!this.commonInput(data)) this.conversationInput(data);
 		this.redraw();
 	}
 	private hint(width: number): string {
-		const back = this.inputMode ? "Esc cancel" : this.help || this.state.actionResult !== undefined || this.state.conversation ? "Esc back" : "Esc close";
-		const hints = this.inputMode ? ["Enter send"] : this.help || this.state.actionResult !== undefined ? ["↑↓ scroll", "PgUp/PgDn page"] : this.state.conversation ? ["↑↓ scroll", "End tail", "m message", "x tools", "o earlier", "a actions", "? help"] : ["↑↓ select", "Enter chat", "/ find", "m message", "a actions", "? help"];
-		if (this.inputMode === "filter") hints[0] = "Enter keep filter";
+		let back = "Esc close"; let hints = ["[ ] agents", "↑↓ scroll", "Enter message", "/ find", "? help"];
+		if (this.inputMode === "filter") { back = "Esc cancel"; hints = ["Enter keep filter"]; }
+		else if (this.inputMode) {
+			back = "Esc keep draft";
+			hints = [`${this.keys.getKeys("tui.input.submit").join("/") || "Enter"} send`, `${this.keys.getKeys("tui.input.newLine").join("/") || "Ctrl+J"} newline`];
+		} else if (this.help || this.state.actionResult !== undefined) { back = "Esc back"; hints = ["↑↓ scroll", "PgUp/PgDn page"]; }
 		while (hints.length && visibleWidth([...hints, back].join(" · ")) > width) hints.pop();
 		return this.theme.fg("muted", truncateToWidth([...hints, back].join(" · "), width));
-	}
-	private heading(width: number): string {
-		if (this.state.actionResult !== undefined) return this.theme.bold("Action result");
-		if (this.state.conversation) return this.conversationHeading(width);
-		return `${this.theme.bold("Agents")}  ${totals(this.state.snapshot)}`;
 	}
 	private content(width: number, height: number): string[] {
 		if (this.help) return this.renderHelp(width, height);
 		if (this.state.actionResult !== undefined) return this.renderResult(width, height);
-		if (this.state.conversation) return this.renderConversation(width, height);
-		return this.renderBoard(width, height);
+		return this.renderWorkspace(width, height);
 	}
 	private inputLines(width: number): string[] {
 		const lines: string[] = [];
 		if (this.state.notice) lines.push(this.theme.fg("warning", truncateToWidth(oneLine(this.state.notice), width)));
-		if (!this.inputMode) return lines;
-		if (this.inputMode !== "filter") lines.push(this.theme.fg("accent", truncateToWidth(this.composerHeading(), width)));
-		lines.push(...this.input.render(width).slice(0, 1));
+		if (this.inputMode === "filter") lines.push(...this.input.render(width));
+		else if (this.inputMode) lines.push(this.theme.fg("accent", truncateToWidth(this.composerHeading(width), width)), ...this.editor.render(width));
 		return lines;
 	}
-	private composerHeading(): string {
+	private composerHeading(width: number): string {
 		if (this.inputMode === "new") return "New agent · task";
 		const row = this.state.snapshot?.sessions.find((item) => item.sessionId === this.composerId);
-		return `${row?.state === "working" ? "Steer" : "Send to"} ${row ? titleOf(row) : "session"}`;
+		const prefix = row?.state === "working" ? "Steer" : "Send to";
+		const title = row ? this.rosterTitles(this.rows(), Math.max(1, width - prefix.length - 1)).get(row.sessionId) ?? titleOf(row) : this.composerId ?? "session";
+		return `${prefix} ${title}`;
 	}
 	render(width: number): string[] {
 		this.renderRequestedAt = undefined; this.resumeRefresh();
 		width = Math.max(1, width);
 		const height = Math.max(1, this.tui.terminal.rows - 2);
-		if (height < 6 || width < 24) return [truncateToWidth(`Agents · ${this.rows().length} sessions · Esc close`, width)];
+		this.editingHidden = false; this.focused = this.hostFocused;
+		const small = () => {
+			this.editingHidden = true; this.focused = this.hostFocused;
+			return [truncateToWidth(this.inputMode ? "Resize to edit · Esc keeps draft" : `Agents · ${this.rows().length} sessions · Esc close`, width)];
+		};
+		if (height < 6 || width < 24) return small();
 		const inner = width - 4;
-		const footer = this.hint(inner);
-		const extraHeight = Math.max(0, height - 6);
-		const extras = extraHeight ? this.inputLines(inner).slice(-extraHeight) : [];
-		const contentHeight = Math.max(1, height - 5 - extras.length);
+		const extras = this.inputLines(inner);
+		if (this.inputMode && extras.length > height - 6) return small();
+		const shownExtras = extras.slice(0, Math.max(0, height - 6));
+		const contentHeight = Math.max(1, height - 5 - shownExtras.length);
 		this.viewport = contentHeight;
-		const summary = this.heading(inner);
+		const heading = this.state.actionResult !== undefined ? "Action result" : `Agents  ${totals(this.state.snapshot)}`;
 		const rendered = this.content(inner, contentHeight);
 		const content = Array.from({ length: contentHeight }, (_, index) => rendered[index] ?? "");
 		const border = (left: string, right: string) => this.theme.fg("borderMuted", left + "─".repeat(width - 2) + right);
 		const frame = (line: string) => `${this.theme.fg("borderMuted", "│")} ${pad(line, inner)} ${this.theme.fg("borderMuted", "│")}`;
-		return [border("╭", "╮"), frame(summary), frame(""), ...content.map(frame), ...extras.map(frame), frame(footer), border("╰", "╯")];
+		return [border("╭", "╮"), frame(this.theme.bold(heading)), frame(""), ...content.map(frame), ...shownExtras.map(frame), frame(this.hint(inner)), border("╰", "╯")];
 	}
-	private renderBoard(width: number, height: number): string[] {
+	private renderWorkspace(width: number, height: number): string[] {
 		const rows = this.rows(); const selected = this.selected();
 		if (this.state.snapshot?.error) return [this.theme.fg("error", "Store unavailable"), ...wrapTextWithAnsi(cleanDashboardText(this.state.snapshot.error), width), "r retries"];
-		if (!rows.length) return [this.state.snapshot ? this.state.filter ? `No sessions match “${oneLine(this.state.filter)}”` : "No agent sessions yet. Press n to start one." : "Read in progress…"];
-		const split = width >= 136;
-		const leftWidth = split ? Math.min(108, Math.floor(width * 0.54)) : width;
-		const listHeight = split ? height : Math.min(height, Math.max(3, height - Math.max(4, Math.floor(height * 0.43)) - 1));
-		const previewHeight = split ? height : Math.max(0, height - listHeight - 1);
-		const roster = this.renderRoster(rows, leftWidth, listHeight);
-		if (!previewHeight) return roster;
-		const preview = selected ? this.renderPreview(selected, split ? width - leftWidth - 3 : width, previewHeight) : [];
-		if (split) return Array.from({ length: height }, (_, index) => `${pad(roster[index] ?? "", leftWidth)} ${this.theme.fg("borderMuted", "│")} ${preview[index] ?? ""}`);
-		return [...roster, this.theme.fg("borderMuted", "─".repeat(width)), ...preview];
-	}
-	private columns(width: number): { title: number; place: number; model: number; cost: number; age: number } {
-		const place = width >= 64 ? 12 : 0; const model = width >= 72 ? 19 : width >= 56 ? 15 : 0;
-		const cost = 9; const age = width >= 48 ? 7 : 0;
-		return { title: Math.max(8, width - 3 - place - model - cost - age), place, model, cost, age };
+		if (!rows.length || !selected) return [this.state.snapshot ? this.state.filter ? `No sessions match “${oneLine(this.state.filter)}”` : "No agent sessions yet. Press n to start one." : "Read in progress…"];
+		const split = width >= 116;
+		if (!split) return [this.selector(rows, selected, width), ...this.renderConversation(width, Math.max(1, height - 1), false)];
+		const railWidth = 32;
+		const roster = this.renderRoster(rows, railWidth, height);
+		const conversation = this.renderConversation(width - railWidth - 3, height, true);
+		return Array.from({ length: height }, (_, index) => `${pad(roster[index] ?? "", railWidth)} ${this.theme.fg("borderMuted", "│")} ${conversation[index] ?? ""}`);
 	}
 	private rosterTitles(rows: SessionDigest[], width: number): Map<string, string> {
-		const cols = this.columns(width);
 		const groups = new Map<string, SessionDigest[]>();
 		for (const row of this.state.snapshot?.sessions ?? rows) {
-			const key = JSON.stringify([truncateToWidth(titleOf(row), cols.title - 1), cols.place ? truncateToWidth(oneLine(basename(row.cwd)), cols.place - 1) : ""]);
+			const key = truncateToWidth(titleOf(row), width);
 			const group = groups.get(key) ?? []; group.push(row); groups.set(key, group);
 		}
 		const titles = new Map<string, string>();
@@ -395,27 +424,19 @@ export class AgentDashboard implements Component {
 				let length = Math.min(6, row.sessionId.length);
 				while (length < row.sessionId.length && group.some((other) => other.sessionId !== row.sessionId && other.sessionId.slice(-length) === row.sessionId.slice(-length))) length++;
 				const suffix = row.sessionId.slice(-length);
-				const title = truncateToWidth(titleOf(row), Math.max(0, cols.title - 2 - visibleWidth(suffix)));
+				const title = truncateToWidth(titleOf(row), Math.max(0, width - 1 - visibleWidth(suffix)));
 				titles.set(row.sessionId, `${title} ${suffix}`.trimStart());
 			}
 		}
 		return titles;
 	}
-	private rosterRow(row: SessionDigest, width: number, title: string): string {
-		const cols = this.columns(width);
-		const cell = (text: string, size: number) => size ? `${pad(oneLine(text), size - 1)} ` : "";
-		const selected = row.sessionId === this.state.selected;
-		const appearance = sessionAppearance[row.state];
-		const level = row.model?.thinkingLevel ?? "off";
-		const short = ({ xhigh: "xh", high: "hi", medium: "med", low: "lo", minimal: "min" } as Record<string, string>)[level] ?? level;
-		const model = row.model ? `${row.model.modelId}${level !== "off" ? ` ${short}` : ""}` : "—";
-		const line = `${selected ? "›" : " "}${this.theme.fg(appearance.color, appearance.glyph)} ${cell(title, cols.title)}${this.theme.fg("muted", cell(basename(row.cwd), cols.place))}${this.theme.fg("muted", cell(model, cols.model))}${cell(costOf(row), cols.cost)}${this.theme.fg("dim", cell(elapsed((this.state.snapshot?.observedAt ?? Date.now()) - row.modifiedAt), cols.age))}`;
-		return selected ? this.theme.bg("selectedBg", pad(line, width)) : line;
+	private selector(rows: SessionDigest[], row: SessionDigest, width: number): string {
+		const position = `${rows.findIndex((item) => item.sessionId === row.sessionId) + 1}/${rows.length}${this.state.filter ? ` of ${this.state.snapshot?.sessions.length ?? 0}` : ""}`;
+		const titleWidth = Math.max(1, width - visibleWidth(position) - 4);
+		const title = this.rosterTitles(rows, titleWidth).get(row.sessionId) ?? titleOf(row);
+		return `${this.theme.fg(sessionAppearance[row.state].color, sessionAppearance[row.state].glyph)} ${pad(title, titleWidth)}  ${position}`;
 	}
-	private renderRoster(rows: SessionDigest[], width: number, height: number): string[] {
-		const cols = this.columns(width);
-		const cell = (text: string, size: number) => size ? `${pad(text, size - 1)} ` : "";
-		const header = `   ${cell("SESSION", cols.title)}${cell("PLACE", cols.place)}${cell("MODEL", cols.model)}${cell("COST", cols.cost)}${cell("AGE", cols.age)}`;
+	private rosterEntries(rows: SessionDigest[]): Array<{ row?: SessionDigest; text?: string }> {
 		const entries: Array<{ row?: SessionDigest; text?: string }> = [];
 		let section = "";
 		for (const row of rows) {
@@ -423,66 +444,79 @@ export class AgentDashboard implements Component {
 			if (next !== section) { section = next; entries.push({ text: next }); }
 			entries.push({ row });
 		}
+		return entries;
+	}
+	private rosterRow(row: SessionDigest, width: number, title: string): string {
+		const selected = row.sessionId === this.state.selected; const appearance = sessionAppearance[row.state];
+		const line = `${selected ? "›" : " "}${this.theme.fg(appearance.color, appearance.glyph)} ${pad(title, width - 3)}`;
+		return selected ? this.theme.bg("selectedBg", line) : line;
+	}
+	private renderRoster(rows: SessionDigest[], width: number, height: number): string[] {
+		const entries = this.rosterEntries(rows);
 		const selectedIndex = entries.findIndex((entry) => entry.row?.sessionId === this.state.selected);
-		const headerHeight = height >= 6 ? 2 : height >= 4 ? 1 : 0;
-		this.pageSize = Math.max(1, height - headerHeight);
-		const start = Math.min(Math.max(0, entries.length - this.pageSize), Math.max(0, selectedIndex - Math.floor(this.pageSize / 2)));
-		const filter = this.state.filter ? `“${oneLine(this.state.filter)}” · ${rows.length} of ${this.state.snapshot?.sessions.length ?? 0}` : `${rows.length} sessions`;
-		const lines = [this.theme.fg("dim", `${filter}${start > 0 ? " · ↑ more" : ""}${start + this.pageSize < entries.length ? " · ↓ more" : ""}`), this.theme.fg("muted", header)].slice(0, headerHeight);
-		const titles = this.rosterTitles(rows, width);
-		for (const entry of entries.slice(start, start + this.pageSize)) {
+		const headerHeight = height >= 4 ? 1 : 0;
+		const pageSize = Math.max(1, height - headerHeight);
+		const start = Math.min(Math.max(0, entries.length - pageSize), Math.max(0, selectedIndex - Math.floor(pageSize / 2)));
+		const filter = this.state.filter ? `${rows.length} of ${this.state.snapshot?.sessions.length ?? 0} · ${oneLine(this.state.filter)}` : `${rows.length} sessions`;
+		const lines = headerHeight ? [this.theme.fg("dim", truncateToWidth(`${filter}${start > 0 ? " · ↑" : ""}${start + pageSize < entries.length ? " · ↓" : ""}`, width))] : [];
+		const titles = this.rosterTitles(rows, width - 3);
+		for (const entry of entries.slice(start, start + pageSize)) {
 			if (!entry.row) { lines.push(this.theme.fg("accent", ` ${entry.text}`)); continue; }
 			lines.push(this.rosterRow(entry.row, width, titles.get(entry.row.sessionId) ?? titleOf(entry.row)));
 		}
-		return Array.from({ length: height }, (_, index) => lines[index] ?? "");
-	}
-	private renderPreview(row: SessionDigest, width: number, height: number): string[] {
-		const appearance = sessionAppearance[row.state];
-		const status = `${stateLabel(row)} · ${basename(row.cwd)} · ${row.model ? `${row.model.modelId} ${row.model.thinkingLevel}` : "model unknown"} · ${costOf(row)}`;
-		const header = [...(height > 4 ? [this.theme.bold(truncateToWidth(titleOf(row), width))] : []), this.theme.fg(appearance.color, truncateToWidth(oneLine(status), width))];
-		if (height > 13) header.push(this.theme.fg("dim", activityOf(row, this.state.snapshot?.observedAt ?? Date.now())));
-		if (row.state === "working") header.push(this.theme.fg("accent", truncateToWidth(row.currentTool ? `› ${oneLine(row.currentTool.name)} ${oneLine(row.currentTool.argument)}` : "› Thinking", width)));
-		else if (row.error) header.push(this.theme.fg("error", truncateToWidth(oneLine(row.error), width)));
-		if (height > 4) header.push("");
-		const text = row.latestReply || (row.state === "new" ? "No reply yet. Press m to give this agent a task." : "No assistant reply in the available history.");
-		if (this.preview?.text !== text) this.preview = { text, component: new Markdown(cleanDashboardText(text), 0, 0, getMarkdownTheme()) };
-		const reply = this.preview.component.render(Math.max(1, Math.min(100, width)));
-		const detail = height > 18 ? ["", this.theme.fg("dim", "TASK"), ...wrapTextWithAnsi(oneLine(row.firstMessage || "No task recorded"), width).slice(0, 2).map((line) => this.theme.fg("muted", line)), "", this.theme.fg("dim", truncateToWidth(oneLine(row.cwd), width)), this.theme.fg("dim", oneLine(row.sessionId))] : [];
-		const budget = Math.max(1, height - header.length - detail.length);
-		const body = reply.slice(0, budget);
-		if (reply.length > budget) body[budget - 1] = this.theme.fg("dim", "… Enter reads the conversation");
-		return [...header, ...Array.from({ length: budget }, (_, index) => body[index] ?? ""), ...detail].slice(0, height);
+		return lines;
 	}
 	/** The title yields width first so the follow marker, state and cost stay visible. */
-	private conversationHeading(width: number): string {
-		const row = this.state.snapshot?.sessions.find((item) => item.sessionId === this.state.conversation);
-		const marker = this.follow ? "TAIL" : "BROWSE";
+	private conversationHeading(width: number, withTitle: boolean): string {
+		const row = this.selected(); const view = this.view();
+		const marker = view?.follow ? "TAIL" : "BROWSE";
 		const detail = row ? ` · ${stateLabel(row)} · ${costOf(row)}` : "";
-		const title = truncateToWidth(row ? titleOf(row) : "Conversation", Math.max(1, width - 2 - visibleWidth(marker) - visibleWidth(detail)));
-		return `${this.theme.bold(title)}  ${this.theme.fg("muted", marker)}${detail}`;
+		const title = withTitle ? `${this.theme.bold(truncateToWidth(row ? titleOf(row) : "Conversation", Math.max(1, width - 2 - visibleWidth(marker) - visibleWidth(detail))))}  ` : "";
+		return `${title}${this.theme.fg("muted", marker)}${detail}`;
 	}
-	private renderConversation(width: number, height: number): string[] {
-		if (this.historyError) return [this.theme.fg("error", "Conversation unavailable"), ...wrapTextWithAnsi(cleanDashboardText(this.historyError), width), "r retries"];
-		if (!this.history) return ["Read in progress…"];
-		const meaningful = this.history.entries.filter((entry) => ["message", "custom_message", "compaction", "branch_summary"].includes(entry.type));
-		const start = Math.max(0, meaningful.length - this.messageLimit);
-		const row = this.state.snapshot?.sessions.find((item) => item.sessionId === this.history?.id);
+	private conversationHeader(width: number, height: number, withTitle: boolean): string[] {
+		const row = this.selected();
+		const header = [this.conversationHeading(width, withTitle)];
+		if (row && height >= 10) header.push(this.theme.fg("muted", truncateToWidth(oneLine(`${basename(row.cwd)} · ${row.model ? `${row.model.modelId} ${row.model.thinkingLevel ?? "off"}` : "model unknown"}`), width)));
+		if (row && height >= 18) header.push(this.theme.fg("dim", truncateToWidth(activityOf(row, this.state.snapshot?.observedAt ?? Date.now()), width)));
+		if (row?.state === "working") header.push(this.theme.fg("accent", truncateToWidth(row.currentTool ? `› ${oneLine(row.currentTool.name)} ${oneLine(row.currentTool.argument)}` : "› Thinking", width)));
+		else if (row?.error) header.push(this.theme.fg("error", truncateToWidth(oneLine(row.error), width)));
+		return header;
+	}
+	private conversationDocument(meaningful: SessionEntry[], view: ConversationView, width: number): { document: ConversationDocument; start: number } {
+		let start = Math.max(0, meaningful.length - view.messageLimit);
+		if (!view.follow && view.anchor) {
+			const anchored = meaningful.findIndex((entry) => entry.id === view.anchor?.id || view.anchor?.id.startsWith(`${entry.id}:`));
+			if (anchored >= 0) start = Math.min(start, anchored);
+		}
 		const measure = Math.min(112, width);
-		if (!this.conversation) this.conversation = new AgentConversation(meaningful.slice(start), row?.cwd ?? ".", this.tui as TUI, this.expanded, this.showThinking);
-		if (this.conversationWidth !== undefined && this.conversationWidth !== measure && !this.pendingAnchor) this.rememberAnchor();
+		if (this.conversationWidth !== undefined && this.conversationWidth !== measure) { this.rememberAnchor(); this.anchorPending = true; }
+		if (!this.conversation) {
+			this.conversation = new AgentConversation(meaningful.slice(start), this.selected()?.cwd ?? ".", this.tui as TUI, view.expanded, view.showThinking);
+			this.conversationStart = start;
+		}
 		this.conversationWidth = measure;
 		this.document = this.conversation.render(measure);
-		const top = `${start ? `${start} earlier messages · o loads more` : "Start of conversation"}${this.history.partial ? " · partial file capture" : ""}`;
-		this.viewport = Math.max(1, height - 1);
-		if (this.pendingAnchor && !this.follow) {
-			const anchor = this.document.anchors.find((item) => item.id === this.pendingAnchor?.id);
-			if (anchor) this.scroll = anchor.line + this.pendingAnchor.offset;
-			this.pendingAnchor = undefined;
+		return { document: this.document, start: this.conversationStart };
+	}
+	private renderConversation(width: number, height: number, withTitle: boolean): string[] {
+		const header = this.conversationHeader(width, height, withTitle); const view = this.view();
+		if (this.historyError) return [...header, this.theme.fg("error", "Conversation unavailable"), ...wrapTextWithAnsi(cleanDashboardText(this.historyError), width), "r retries"];
+		if (!this.history || !view) return [...header, "Read in progress…"];
+		const meaningful = this.history.entries.filter((entry) => ["message", "custom_message", "compaction", "branch_summary"].includes(entry.type));
+		const { document, start } = this.conversationDocument(meaningful, view, width);
+		this.viewport = Math.max(1, height - header.length - 1);
+		if (this.anchorPending && !view.follow && view.anchor) {
+			const anchor = document.anchors.find((item) => item.id === view.anchor?.id);
+			if (anchor) view.scroll = anchor.line + view.anchor.offset;
 		}
-		this.scroll = this.follow ? Math.max(0, this.document.lines.length - this.viewport) : Math.max(0, Math.min(this.scroll, this.document.lines.length - this.viewport));
-		const gutter = " ".repeat(Math.min(3, Math.floor((width - measure) / 2)));
-		const content = this.document.lines.slice(this.scroll, this.scroll + this.viewport).map((line) => gutter + line);
-		return [this.theme.fg("dim", `${top} · ${this.scroll + (this.document.lines.length ? 1 : 0)}–${Math.min(this.document.lines.length, this.scroll + this.viewport)} / ${this.document.lines.length}`), ...(content.length ? content : ["No conversation messages yet."])];
+		this.anchorPending = false;
+		view.scroll = view.follow ? Math.max(0, document.lines.length - this.viewport) : Math.max(0, Math.min(view.scroll, document.lines.length - 1));
+		this.rememberAnchor();
+		const top = `${start ? `${start} earlier messages · o loads more` : "Start of conversation"}${this.history.partial ? " · partial file capture" : ""}`;
+		const gutter = " ".repeat(Math.min(3, Math.floor((width - Math.min(112, width)) / 2)));
+		const content = document.lines.slice(view.scroll, view.scroll + this.viewport).map((line) => gutter + line);
+		return [...header, this.theme.fg("dim", `${top} · ${view.scroll + (document.lines.length ? 1 : 0)}–${Math.min(document.lines.length, view.scroll + this.viewport)} / ${document.lines.length}`), ...(content.length ? content : ["No conversation messages yet."])];
 	}
 	private renderResult(width: number, height: number): string[] {
 		const lines = wrapTextWithAnsi(cleanDashboardText(this.state.actionResult ?? ""), width);
@@ -491,13 +525,13 @@ export class AgentDashboard implements Component {
 		return lines.slice(this.resultScroll, this.resultScroll + height);
 	}
 	private renderHelp(width: number, height: number): string[] {
-		const lines = ["Agent board", "", "↑↓ or j/k selects a session. Page Up/Down moves a page. Home/End reaches either end.", "Enter opens the conversation. / searches name, task, place, model, state or ID. Enter keeps a filter; Escape cancels its edit.", "m opens a message. Enter sends to an idle agent or steers active work. Escape keeps the draft. n starts a new agent.", "a opens all native actions. Actions retain their trust and ownership checks.", "", "Conversation", "↑↓ scrolls. Page Up/Down or b/Space pages. Home starts; End follows new output. o loads earlier messages.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A same-host claim whose process no longer exists leaves the transcript outcome in force; the next control through this window replaces that claim. The board itself never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files retain bounded identity metadata and a conversation tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds Unavailable sessions regardless of age, plus Failed, Stopped and Interrupted outcomes from the last 24 hours. Older outcomes retain their state in date groups.", "Refresh runs once per second while this overlay is visible. Only changed files are parsed. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it. Escape returns or closes."];
+		const lines = ["Agent conversations", "", "[ and ] select the previous or next session. The keys stay the same at every width. A wide terminal adds a session rail; a narrow terminal keeps one selected-session line.", "↑↓ or j/k scrolls. Page Up/Down or b/Space pages. Home starts; End follows new output. o loads earlier messages.", "/ searches name, task, place, model, state or ID. Enter keeps a filter; Escape restores the previous filter and selection.", "Enter or m opens the selected session's draft. The native editor submits with its configured submit key and inserts newlines with its configured newline key. Escape hides the editor and retains the draft. n drafts a task for a new agent.", "The recipient stays fixed while the editor is open or a submission is in progress. A fresh ownership check selects send for an idle agent or steer for active work. A refused submission retains the draft.", "a opens all native actions. Actions retain their trust and ownership checks. Escape returns from help or a result; otherwise it closes the dashboard.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "Each visited session keeps its reading position, follow mode, loaded-message limit, expansion, thinking visibility and draft for this open dashboard, including native action dialogs. Closing the dashboard ends that state.", "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A same-host claim whose process no longer exists leaves the transcript outcome in force; the next control through this window replaces that claim. The dashboard never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files retain bounded identity metadata and a conversation tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds Unavailable sessions regardless of age, plus Failed, Stopped and Interrupted outcomes from the last 24 hours. Older outcomes retain their state in date groups.", "Refresh runs once per second while this overlay is visible. Only changed files are parsed. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it."];
 		const wrapped = lines.flatMap((line) => wrapTextWithAnsi(line, width));
 		this.helpScroll = Math.min(this.helpScroll, Math.max(0, wrapped.length - height));
 		return wrapped.slice(this.helpScroll, this.helpScroll + height);
 	}
-	invalidate(): void { this.rememberAnchor(); this.input.invalidate(); this.preview?.component.invalidate(); this.conversation?.invalidate(); }
-	dispose(): void { this.closed = true; this.pauseRefresh(); this.historyGeneration++; this.input.focused = false; }
+	invalidate(): void { this.rememberAnchor(); this.anchorPending = true; this.input.invalidate(); this.editor.invalidate(); this.conversation?.invalidate(); }
+	dispose(): void { this.rememberAnchor(); this.saveDraft(); this.closed = true; this.pauseRefresh(); this.historyGeneration++; this.input.focused = false; this.editor.focused = false; }
 }
 
 export async function showAgentDashboard(sources: AgentObservationSources, ctx: ExtensionContext, actions?: DashboardActions): Promise<void> {
@@ -506,7 +540,7 @@ export async function showAgentDashboard(sources: AgentObservationSources, ctx: 
 		if (ctx.hasUI) ctx.ui.notify(text, "info"); else process.stderr.write(`${text}\n`);
 		return;
 	}
-	const state: DashboardState = { filter: "", drafts: new Map() };
+	const state: DashboardState = { filter: "", views: new Map(), drafts: new Map() };
 	for (;;) {
 		const request = await ctx.ui.custom<ActionRequest | undefined>((tui, theme, keys, done) => new AgentDashboard(sources, tui, theme, keys, done, state, actions), {
 			overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: { top: 1, bottom: 1 } },

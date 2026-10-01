@@ -334,64 +334,84 @@ process-held workers,
 primaries, and active detached runs, with stored-session counts and a pointer
 to `agent_list`; it does not dump the stored transcript inventory.
 
-Bare `/agent` and **Ctrl+Alt+G** open a board for supervising ordinary sessions.
-Each session occupies one row: state, title, place, model/thinking level, spend,
-and age of the last file update. Working sessions come first, followed by
-Attention and date groups. Unavailable sessions remain in Attention until their
-condition changes. Failed, Stopped and Interrupted outcomes
-remain there for 24 hours; older outcomes keep their state glyph and color in
-their date group. The attention count uses the same observation time as the
-sections. The board windows the full list without a display-count cap. The header
-shows active work, attention, and total retained spend. Selection follows the
-full session ID across refreshes. Colliding visible titles and places receive
-unique ID tails inside the title column, preserved when the title is clipped.
-Short terminals omit column labels and counts before session rows, and shrink
-the preview to keep the selected row visible.
+Bare `/agent` and **Ctrl+Alt+G** open the selected session's conversation.
+Wide terminals add a narrow session rail beside it; narrow terminals show one
+selected-session line with its position in the list. The same keys work at both
+sizes. There is no separate board-to-conversation step or clipped reply preview.
+The header shows active work, attention, and total retained spend. The selected
+conversation shows state, cost, current work, and configuration; taller views
+also show observed duration and tool-call count. Detached runs share session
+rows instead of a separate tab.
 
-The selected preview leads with the latest assistant reply, rendered as Markdown.
-It shows current work, configuration, and cost. Taller previews also show
-latest-turn duration when known and tool-call count; the clipped original task and full
-identity appear when more height is available. Wide terminals place the preview
-beside the board; narrow terminals place it below, or omit it when space is too
-short. Detached runs share session rows instead of a separate tab.
+Working sessions come first, followed by Attention and date groups. Unavailable
+sessions remain in Attention until their condition changes. Failed, Stopped and
+Interrupted outcomes remain there for 24 hours; older outcomes keep their state
+glyph and color in their date group. The attention count uses the same
+observation time as the sections. The rail windows the full list without a
+display-count cap. Selection follows the full session ID across refreshes and
+list reordering. Colliding visible titles receive unique ID tails in the rail,
+selector, and composer heading.
 
-| Key | Action |
+| Key outside input | Action |
 | --- | --- |
-| Up/Down or `j/k` | Select a session; scroll a conversation or result |
-| Page Up/Down or `b` / Space | Move a page |
-| Home/End | Reach the first/last session; start/follow a conversation |
+| `[` / `]` | Select the previous/next session without leaving the conversation |
+| Up/Down or `j/k` | Scroll the conversation or result, never change sessions |
+| Page Up/Down or `b` / Space | Scroll a page |
+| Home/End | Start the loaded conversation/follow new output |
 | `/` | Filter the full list by title, task, directory, model, state, or ID |
-| Enter in the filter | Keep the filter |
-| Enter on a row | Read the current conversation branch |
-| `m` | Open an inline message draft for the selected session |
-| `n` | Open an inline task draft for a new agent |
-| Enter in a draft | Send to an idle session or steer active work |
+| Enter or `m` | Open or resume the selected session's message draft |
+| `n` | Open or resume a task draft for a new agent |
 | `a` | Open all native actions |
 | `x` or Pi's tool-expansion key | Expand or collapse tools and summaries |
 | Pi's thinking-visibility key | Show or hide thinking in the conversation |
 | `o` | Load earlier conversation messages |
 | `r` | Refresh immediately |
 | `?` | Read controls and observation boundaries |
-| Escape | Cancel an input edit, return to the board, or close |
+| Escape | Return from help or a result; otherwise close the dashboard |
+
+In the filter, Enter keeps the filter and Escape restores the previous filter
+and selection. In a message draft, the native editor's configured submit and
+newline keys apply. The defaults include Enter to submit and Ctrl+J to insert a
+newline. Escape hides the editor and saves the draft; a second Escape closes the
+dashboard. Session selection is locked while an editor is open or a submission
+is in progress. Brackets and navigation keys retain their native editing
+behavior inside the editor.
+
+Each visited session retains its entry anchor and within-entry scroll offset,
+follow mode, loaded-message limit, tool/summary expansion, thinking visibility,
+and draft for the current dashboard interaction. A switch reads the newly
+selected transcript and restores that session's view; only one transcript stays
+cached. Refresh, resize, and native action dialogs preserve these view settings.
+If a bounded file capture no longer contains an anchored entry, the view stays in
+browse mode at an available position. Closing the dashboard discards this
+interaction state; it is not persisted to disk.
 
 The conversation uses Pi's exported native user, assistant, tool, custom-message,
 and summary components. Built-in tools use Pi's tool definitions; other tools
 use Pi's generic renderer. No tool executes during rendering. Tools and thinking
 start collapsed. The conversation follows new persisted output until the operator
-scrolls up; End resumes tail-follow. Earlier-message loading, expansion, and
-resize preserve the browsed message. Images appear as labels and provider
+scrolls up; End resumes tail-follow. Images appear as labels and provider
 signatures are omitted. Text fields have a marked display bound.
 `agent_inspect` remains the model-facing source inspection surface.
 
-The composer uses native input and the same command actions as `/agent send`,
-`/agent steer`, and `/agent new`. It rechecks ownership at submission. Another
-Pi window receives no message through this board; a short refusal identifies
-its owner. Detached steering uses the existing detached control path. Escape
-retains a draft; failed admission retains it too. A receipt does not prove
-message delivery or completed work. Native action dialogs close the overlay
-first, then restore selection and conversation with a scrollable result.
+The multiline composer uses Pi's native editor and the same command actions as
+`/agent send`, `/agent steer`, and `/agent new`. Each composition starts a fresh
+editor with that recipient's draft, so undo and editor-local state do not cross
+recipients. Large paste markers expand to their complete text before draft save
+or submission. Native line-ending, tab, and submit whitespace normalization
+apply. The dashboard reserves the editor's full rendered height. If the terminal
+is too small, a resize notice replaces input and rejects hidden edits; Escape
+still retains the draft.
 
-While open, the board refreshes once per second. It stats native session files
+Submission captures its recipient before any asynchronous work and rechecks
+ownership to select send or steer from current state. Another Pi window receives
+no message through this dashboard; a short refusal identifies its owner.
+Detached steering uses the existing detached control path. Failed admission
+retains the submitted draft. A receipt does not prove message delivery or
+completed work. Native action dialogs close the overlay first, then restore the
+selected conversation and its view state with a scrollable result.
+
+While open, the dashboard refreshes once per second. It stats native session files
 and caches digests by file identity, size, and modification metadata. Only changed
 files are parsed; the selected conversation has its own cache. Close disposes
 the refresh clock. Each clock tick requests a render independently of source
