@@ -324,9 +324,13 @@ async function startCreation(
 	const model = modelResult.model;
 	const thinkingLevel = thinkingResult.level;
 	const distiller = distillerLabel(model, thinkingLevel);
-	let entries: ReturnType<typeof ctx.sessionManager.buildContextEntries>;
+	let projection: ReturnType<typeof ctx.sessionManager.buildSessionProjection>;
 	try {
-		entries = ctx.sessionManager.buildContextEntries();
+		// Pi's canonical persisted-context projection: compaction- and
+		// branch-aware, with the latest branch-relative context edits applied.
+		// There is deliberately no fallback to raw selected entries when this
+		// fails; the capture error is surfaced instead.
+		projection = ctx.sessionManager.buildSessionProjection();
 	} catch (error) {
 		surface(
 			`Could not read the session transcript: ${safeLine(error instanceof Error ? error.message : String(error))}`,
@@ -354,7 +358,7 @@ async function startCreation(
 			cwd: ctx.cwd,
 			thinkingLevel,
 			hint,
-			entries,
+			projection,
 			project: ctx.cwd,
 			branch,
 			sessionId,

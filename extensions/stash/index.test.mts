@@ -38,7 +38,7 @@ import {
 	stringArray,
 	testAssistantMessage,
 	testModel,
-	transcriptEntries,
+	transcriptProjection,
 	type CustomOptions,
 	type TestContext,
 	type TestUi,
@@ -341,7 +341,7 @@ describe("stash entrypoint", () => {
 				cwd: "/workspace",
 				sessionManager: {
 					getSessionId: () => "checkpoint-owner",
-					buildContextEntries: () => [],
+					buildSessionProjection: () => SessionManager.inMemory().buildSessionProjection(),
 				},
 			},
 		);
@@ -358,7 +358,10 @@ describe("stash entrypoint", () => {
 		const { tools } = registry();
 		const ctx: TestContext = {
 			cwd: dir,
-			sessionManager: { getSessionId: () => "checkpoint-owner", buildContextEntries: () => [] },
+			sessionManager: {
+				getSessionId: () => "checkpoint-owner",
+				buildSessionProjection: () => SessionManager.inMemory().buildSessionProjection(),
+			},
 		};
 		try {
 			process.env.PI_STASH_CHECKPOINT_DIR = "working";
@@ -1001,7 +1004,7 @@ function creationCtx(ui: TestUi, extra: TestContext & { registryModels?: Model<A
 		modelRegistry: registry,
 		sessionManager: {
 			getSessionId: () => "sess-1",
-			buildContextEntries: () => [],
+			buildSessionProjection: () => SessionManager.inMemory().buildSessionProjection(),
 		},
 		ui,
 		...rest,
@@ -1041,6 +1044,140 @@ async function flushUnderMockTimers(tickMs: number): Promise<void> {
 }
 
 describe("stash creation", () => {
+	it("captures branch-relative projected text and references without changing raw history", async () => {
+		const manager = SessionManager.inMemory(dir);
+		manager.appendMessage({ role: "user", content: "KEEP_USER", timestamp: 0 });
+		const omittedUser = manager.appendMessage({ role: "user", content: "OMIT_USER", timestamp: 0 });
+		const assistant = manager.appendMessage(testAssistantMessage("OLD_ASSISTANT"));
+		const custom = manager.appendCustomMessageEntry("note", "OLD_CUSTOM", false);
+		const omittedTool = manager.appendMessage({
+			role: "toolResult",
+			toolCallId: "omit-call",
+			toolName: "read",
+			isError: false,
+			timestamp: 0,
+			content: [{ type: "text", text: "/workspace/omitted.md https://example.com/omitted OMIT-101" }],
+		});
+		const replacedTool = manager.appendMessage({
+			role: "toolResult",
+			toolCallId: "replace-call",
+			toolName: "read",
+			isError: true,
+			timestamp: 0,
+			content: [{ type: "text", text: "/workspace/original.md https://example.com/original OLD-102" }],
+		});
+		manager.appendContextEdit(omittedUser, null);
+		manager.appendContextEdit(assistant, { content: "NEW_ASSISTANT" });
+		manager.appendContextEdit(custom, { content: "NEW_CUSTOM" });
+		manager.appendContextEdit(omittedTool, null);
+		manager.appendContextEdit(replacedTool, { content: "/workspace/intermediate.md" });
+		manager.appendContextEdit(replacedTool, {
+			content: "/workspace/replacement.md https://example.com/replacement NEW-103",
+		});
+		const editedLeaf = manager.getLeafId();
+		assert.ok(editedLeaf);
+		const rawBefore = JSON.stringify(manager.getEntries());
+		const prompts: string[] = [];
+		const stream: DistillStreamFunction = (model, context, options) => {
+			const user = context.messages.find((message) => message.role === "user");
+			assert.ok(user && typeof user.content === "string");
+			prompts.push(user.content);
+			return completedDistillStream("SKIP_STASH")(model, context, options);
+		};
+		const { commands, events, sent } = registry({ distillStream: stream });
+		const capture = async () => {
+			const { done, notify } = settledNotify(() => {});
+			const ctx = creationCtx({ notify }, { cwd: dir, sessionManager: manager });
+			try {
+				await commands.get("stash").handler("new retained effort", ctx);
+				await done;
+			} finally {
+				await events.get("session_shutdown")({}, ctx);
+			}
+			return prompts.at(-1) ?? "";
+		};
+		const edited = await capture();
+		assert.match(edited, /KEEP_USER/);
+		assert.match(edited, /\[ASSISTANT\]\nNEW_ASSISTANT/);
+		assert.match(edited, /\[custom message\]\nNEW_CUSTOM/);
+		assert.match(edited, /\[tool result: read \(error\)\]\n\/workspace\/replacement.md/);
+		assert.doesNotMatch(
+			edited,
+			/OMIT_USER|OLD_ASSISTANT|OLD_CUSTOM|omitted.md|original.md|intermediate.md|OMIT-101|OLD-102/,
+		);
+		const references = edited.split("Observed references from tool results:")[1];
+		assert.ok(references);
+		assert.match(references, /- \/workspace\/replacement.md/);
+		assert.match(references, /- https:\/\/example.com\/replacement/);
+		assert.match(references, /- NEW-103/);
+		assert.equal(JSON.stringify(manager.getEntries()), rawBefore);
+		assert.match(JSON.stringify(manager.getEntry(omittedTool)), /omitted.md/);
+		assert.match(JSON.stringify(manager.getEntry(replacedTool)), /original.md/);
+
+		manager.branch(replacedTool);
+		const original = await capture();
+		assert.match(original, /OMIT_USER/);
+		assert.match(original, /OLD_ASSISTANT/);
+		assert.match(original, /OLD_CUSTOM/);
+		assert.match(original, /- \/workspace\/omitted.md/);
+		assert.match(original, /- \/workspace\/original.md/);
+		assert.doesNotMatch(original, /replacement.md|NEW_ASSISTANT|NEW_CUSTOM/);
+		manager.branch(editedLeaf);
+		assert.equal(await capture(), edited);
+		assert.equal(JSON.stringify(manager.getEntries()), rawBefore);
+		assert.equal(sent.length, 0);
+	});
+
+	it("reports synchronous projection failures in each mode without a raw fallback or occupied slot", async () => {
+		let requests = 0;
+		const stream: DistillStreamFunction = (...args) => {
+			requests++;
+			return completedDistillStream("SKIP_STASH")(...args);
+		};
+		const { commands, events } = registry({ distillStream: stream });
+		for (const mode of ["tui", "rpc", "print", "json"] as const) {
+			const notices: string[] = [];
+			const statuses: Array<string | undefined> = [];
+			const manager = SessionManager.inMemory(dir);
+			manager.buildContextEntries = () => {
+				throw new Error("RAW_FALLBACK");
+			};
+			manager.buildSessionProjection = () => {
+				throw new Error("projection unavailable\nnext line");
+			};
+			const ctx = creationCtx(
+				{
+					notify: (message) => notices.push(message),
+					setStatus: (_key, value) => {
+						statuses.push(value);
+					},
+				},
+				{ mode, hasUI: mode === "tui" || mode === "rpc", cwd: dir, sessionManager: manager },
+			);
+			if (ctx.hasUI) {
+				await commands.get("stash").handler("new capture failure", ctx);
+				assert.match(notices.join("\n"), /Could not read the session transcript: projection unavailable/);
+				assert.doesNotMatch(notices.join("\n"), /RAW_FALLBACK|already in flight/);
+			} else {
+				await assert.rejects(
+					commands.get("stash").handler("new capture failure", ctx),
+					/Could not read the session transcript: projection unavailable/,
+				);
+			}
+			assert.equal(requests, 0);
+			assert.deepEqual(statuses, []);
+		}
+		const { done, notify } = settledNotify(() => {});
+		const ctx = creationCtx({ notify }, { cwd: dir, sessionManager: SessionManager.inMemory(dir) });
+		try {
+			await commands.get("stash").handler("new recovered capture", ctx);
+			await done;
+			assert.equal(requests, 1);
+		} finally {
+			await events.get("session_shutdown")({}, ctx);
+		}
+	});
+
 	afterEach(() => {
 		mock.timers.reset();
 	});
@@ -1120,7 +1257,7 @@ describe("stash creation", () => {
 		const { commands, sent, events } = registry();
 		const notices: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notices.push(message));
-		const entries = transcriptEntries([
+		const projection = transcriptProjection([
 			{ type: "message", message: { role: "user", content: "REGISTRY_CONTEXT_BODY" } },
 		]);
 		const ctx = creationCtx(
@@ -1130,7 +1267,7 @@ describe("stash creation", () => {
 				model,
 				modelRegistry,
 				thinkingLevel: "off",
-				sessionManager: { getSessionId: () => "registry-owner", buildContextEntries: () => entries },
+				sessionManager: { getSessionId: () => "registry-owner", buildSessionProjection: () => projection },
 			},
 		);
 		try {
@@ -1619,7 +1756,12 @@ describe("stash creation", () => {
 			{
 				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
 			},
-			{ sessionManager: { getSessionId: () => "sess-worker", buildContextEntries: () => [] } },
+			{
+				sessionManager: {
+					getSessionId: () => "sess-worker",
+					buildSessionProjection: () => SessionManager.inMemory().buildSessionProjection(),
+				},
+			},
 		);
 		await commands.get("stash").handler("new race probe", owner);
 		const shutdownHandler = events.get("session_shutdown");
@@ -1643,7 +1785,10 @@ describe("stash creation", () => {
 		const foreign = creationCtx(
 			{ notify: (text: string) => notices.push(text) },
 			{
-				sessionManager: { getSessionId: () => "foreign", buildContextEntries: () => [] },
+				sessionManager: {
+					getSessionId: () => "foreign",
+					buildSessionProjection: () => SessionManager.inMemory().buildSessionProjection(),
+				},
 			},
 		);
 		await commands.get("stash").handler("new owner effort", owner);

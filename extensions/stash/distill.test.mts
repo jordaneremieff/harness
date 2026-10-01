@@ -7,7 +7,7 @@ import {
 	boundTranscript,
 	buildDistillPrompt,
 	DISTILL_SYSTEM_PROMPT,
-	entriesToTranscript,
+	projectionToTranscript,
 	escapeRawControlChars,
 	extractArtifacts,
 	isHintedDistill,
@@ -26,7 +26,7 @@ import {
 	controlledDistillStream,
 	testAssistantMessage,
 	testModel,
-	transcriptEntries,
+	transcriptProjection,
 } from "./test-fixtures.mts";
 import {
 	createAssistantMessageEventStream,
@@ -36,12 +36,12 @@ import {
 	type Model,
 	type Usage,
 } from "@earendil-works/pi-ai";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 const NOW = new Date("2027-03-01T08:00:00Z");
 
-function sessionEntries() {
-	return transcriptEntries([
+function sessionProjection() {
+	return transcriptProjection([
 		{ type: "message", message: { role: "user", content: "Start the migration work." } },
 		{
 			type: "message",
@@ -127,7 +127,7 @@ const baseOptions = (
 	cwd: "/workspace",
 	thinkingLevel: "low" as const,
 	hint: "port the first tool",
-	entries: sessionEntries(),
+	projection: sessionProjection(),
 	project: "/workspace",
 	branch: "main",
 	sessionId: "sess-9",
@@ -141,7 +141,7 @@ const baseOptions = (
 
 describe("transcript serialization", () => {
 	it("renders roles, tool calls, tool results, and compaction notes", () => {
-		const text = entriesToTranscript(sessionEntries());
+		const text = projectionToTranscript(sessionProjection());
 		assert.match(text, /\[USER\]\nStart the migration work/);
 		assert.match(text, /\[ASSISTANT\]\nI will port the first tool/);
 		assert.match(text, /\[tool call: bash\]/);
@@ -151,8 +151,8 @@ describe("transcript serialization", () => {
 	});
 
 	it("marks failed tool results and omits thinking content", () => {
-		const text = entriesToTranscript(
-			transcriptEntries([
+		const text = projectionToTranscript(
+			transcriptProjection([
 				{
 					type: "message",
 					message: {
@@ -441,6 +441,88 @@ describe("payload validation", () => {
 });
 
 describe("distill job", () => {
+	it("preserves native summaries and text without checkpoints, state, signatures, or excluded shell output", async () => {
+		const manager = SessionManager.inMemory(dir);
+		manager.appendMessage({ role: "system", content: "SYSTEM_CHECKPOINT", toolsAdded: [], timestamp: 0 });
+		const kept = manager.appendMessage({ role: "user", content: "RETAINED_USER", timestamp: 0 });
+		manager.appendMessage({ role: "user", content: "ABANDONED_BRANCH", timestamp: 0 });
+		manager.branchWithSummary(kept, "BRANCH_SUMMARY");
+		manager.appendCustomMessageEntry("note", "CUSTOM_CONTEXT", false, { hidden: "CUSTOM_DETAILS" });
+		manager.appendCustomEntry("state", { hidden: "STATE_ONLY" });
+		manager.appendCompaction("OLD_COMPACTION", kept, 0);
+		const assistant = testAssistantMessage("VISIBLE_ASSISTANT");
+		assistant.content = [
+			{ type: "thinking", thinking: "HIDDEN_THINKING", thinkingSignature: "HIDDEN_THINKING_SIGNATURE" },
+			{ type: "text", text: "VISIBLE_ASSISTANT", textSignature: "HIDDEN_TEXT_SIGNATURE" },
+			{ type: "toolCall", name: "read", id: "call", arguments: {}, thoughtSignature: "HIDDEN_CALL_SIGNATURE" },
+		];
+		manager.appendMessage(assistant);
+		manager.appendMessage({
+			role: "bashExecution",
+			command: "printf visible",
+			output: "SHELL_OUTPUT",
+			exitCode: undefined,
+			cancelled: true,
+			truncated: false,
+			timestamp: 0,
+		});
+		manager.appendMessage({
+			role: "bashExecution",
+			command: "printf hidden",
+			output: "EXCLUDED_SHELL",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			excludeFromContext: true,
+			timestamp: 0,
+		});
+		manager.appendCompaction("CURRENT_COMPACTION", kept, 0);
+		const rawBefore = JSON.stringify(manager.getEntries());
+		const { factory, calls } = fakeFactory("SKIP_STASH");
+		const outcome = await startDistillJob(baseOptions(factory, { projection: manager.buildSessionProjection() }))
+			.result;
+		assert.equal(outcome.ok, false);
+		assert.equal(calls.prompted.length, 1);
+		const prompt = calls.prompted[0];
+		assert.match(prompt, /\[compaction summary: CURRENT_COMPACTION\]/);
+		assert.match(prompt, /\[branch summary: BRANCH_SUMMARY\]/);
+		assert.match(prompt, /\[custom message\]\nCUSTOM_CONTEXT/);
+		assert.match(prompt, /RETAINED_USER/);
+		assert.match(prompt, /VISIBLE_ASSISTANT/);
+		assert.match(prompt, /\[tool call: read\]/);
+		assert.match(prompt, /\[bash execution\]\nRan `printf visible`/);
+		assert.match(prompt, /SHELL_OUTPUT/);
+		assert.match(prompt, /command cancelled/);
+		assert.doesNotMatch(
+			prompt,
+			/SYSTEM_CHECKPOINT|OLD_COMPACTION|ABANDONED_BRANCH|CUSTOM_DETAILS|STATE_ONLY|HIDDEN_|EXCLUDED_SHELL|printf hidden/,
+		);
+		assert.equal(JSON.stringify(manager.getEntries()), rawBefore);
+		assert.equal(manager.buildSessionProjection().messages.filter((message) => message.role === "system").length, 1);
+	});
+
+	it("extracts only projected tool references even outside the retained transcript window", async () => {
+		const manager = SessionManager.inMemory(dir);
+		manager.appendMessage({ role: "user", content: "a".repeat(80_000), timestamp: 0 });
+		const target = manager.appendMessage({
+			role: "toolResult",
+			toolCallId: "call",
+			toolName: "read",
+			content: [{ type: "text", text: "/workspace/stale-middle.md" }],
+			isError: false,
+			timestamp: 0,
+		});
+		manager.appendContextEdit(target, { content: "/workspace/retained-reference.md" });
+		manager.appendMessage({ role: "user", content: "z".repeat(160_000), timestamp: 0 });
+		const { factory, calls } = fakeFactory("SKIP_STASH");
+		await startDistillJob(baseOptions(factory, { projection: manager.buildSessionProjection() })).result;
+		const [transcript, references] = calls.prompted[0].split("Observed references from tool results:");
+		assert.match(transcript, /characters omitted/);
+		assert.doesNotMatch(transcript, /retained-reference.md|stale-middle.md/);
+		assert.match(references, /- \/workspace\/retained-reference.md/);
+		assert.doesNotMatch(references, /stale-middle.md/);
+	});
+
 	it("writes a validated artifact with session metadata", async () => {
 		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
 		const job = startDistillJob(baseOptions(factory));
@@ -461,7 +543,7 @@ describe("distill job", () => {
 
 	it("redacts credential-shaped transcript content before the distiller", async () => {
 		const secret = "sk-ant-oa" + "t01-abcdefghijklmnopqrstuvwxyz123456";
-		const entries = transcriptEntries([
+		const projection = transcriptProjection([
 			{
 				type: "message",
 				message: {
@@ -474,14 +556,14 @@ describe("distill job", () => {
 			{ type: "message", message: { role: "user", content: "Keep going." } },
 		]);
 		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
-		await startDistillJob(baseOptions(factory, { entries })).result;
+		await startDistillJob(baseOptions(factory, { projection })).result;
 		assert.equal(calls.prompted.length, 1);
 		assert.ok(!calls.prompted[0].includes(secret), "the secret must not reach the distiller");
 		assert.match(calls.prompted[0], /\[REDACTED\]/);
 	});
 
 	it("redacts userinfo credentials from the observed references", async () => {
-		const entries = transcriptEntries([
+		const projection = transcriptProjection([
 			{
 				type: "message",
 				message: {
@@ -493,7 +575,7 @@ describe("distill job", () => {
 			},
 		]);
 		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
-		await startDistillJob(baseOptions(factory, { entries })).result;
+		await startDistillJob(baseOptions(factory, { projection })).result;
 		assert.equal(calls.prompted.length, 1);
 		assert.ok(!calls.prompted[0].includes("p4ssw0rd123"), "the userinfo password must not reach the distiller");
 		assert.match(calls.prompted[0], /https:\/\/deployer:\[REDACTED\]@example\.com/);
@@ -503,7 +585,7 @@ describe("distill job", () => {
 		// Parentheses are valid in userinfo per RFC 3986 and terminate the
 		// reference regex; the pre-extraction redaction must remove the password
 		// before the reference is cut.
-		const entries = transcriptEntries([
+		const projection = transcriptProjection([
 			{
 				type: "message",
 				message: {
@@ -515,7 +597,7 @@ describe("distill job", () => {
 			},
 		]);
 		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
-		await startDistillJob(baseOptions(factory, { entries })).result;
+		await startDistillJob(baseOptions(factory, { projection })).result;
 		assert.equal(calls.prompted.length, 1);
 		assert.ok(
 			!calls.prompted[0].includes("longpassword"),
@@ -569,7 +651,7 @@ describe("distill job", () => {
 		assert.equal(received[1].messages.length, 2);
 		assert.equal(
 			received[1].messages[1].content,
-			buildDistillPrompt("port the first tool", entriesToTranscript(sessionEntries())),
+			buildDistillPrompt("port the first tool", projectionToTranscript(sessionProjection())),
 		);
 		assert.equal(received[2]?.reasoning, "high");
 		assert.equal(received[2]?.thinkingBudgets?.high, 4567);

@@ -354,8 +354,8 @@ bounded dispatch and persistence, not real-model compliance or long-term utility
 
 ## Background distillation
 
-`/stash new <hint>` captures the compaction-aware active-path entries from the
-live session, then calls the current session's configured
+`/stash new <hint>` captures Pi's canonical persisted-context projection with
+`sessionManager.buildSessionProjection()`, then calls the current session's configured
 `modelRegistry.streamSimple()` with no tools. Registered providers and their
 request-time authentication remain available without a child session, resource
 loader, or separate model registry. The distiller receives the explicit system
@@ -364,8 +364,8 @@ first as the sole effort the artifact may cover, then the bounded transcript
 (first quarter and last three quarters, marked at the cut). Concurrent or prior
 mainline work in the same live session is out of scope for a hinted stash even
 when it is longer, more recent, or more urgent-looking. A bounded reference
-section retains deduplicated paths, work-item keys, and URLs observed in tool
-results, including references outside the retained transcript window; those
+section retains deduplicated paths, work-item keys, and URLs observed in projected
+tool results, including references outside the retained transcript window; those
 references are candidates for the hinted effort only. It returns one
 fenced JSON payload that the extension validates against the same shape and
 caps as `stash_write` before writing through the atomic store with project,
@@ -378,6 +378,26 @@ is repaired the same way, emitting an escaped backslash plus the escaped
 control so the parsed value keeps both. The rewrite only touches characters
 inside string literals, so a payload that would parse is unchanged and the
 parsed value keeps the literal character. A `SKIP_STASH` reply writes nothing.
+
+Capture honors compaction, the active branch, and its latest context edits.
+Omitted messages contribute neither transcript text nor tool-result references.
+Replacements apply to user, assistant, tool-result, and custom messages. These
+messages contribute their replacement content with their role and tool-result
+name/error metadata preserved. Shell executions and summaries are not
+content-replacement targets. Compaction and branch summaries,
+custom messages, and user/assistant/tool-result text remain available. Only the
+current compaction contributes a summary, even when an older compaction entry
+lies within its retained range. Shell executions use Pi's public text conversion,
+which excludes executions marked out of context. Shell output is not relabeled
+as a tool result or included in the tool-result reference section.
+
+System prompts (including compaction checkpoints), non-context state, thinking,
+provider signatures, and image payloads are excluded. Images retain a text
+placeholder. Raw history stays unchanged and remains available through history
+tools. This is a persisted-context snapshot, not a promise of parity with later
+transient context hooks or the final provider input. A synchronous projection
+failure reports a capture error before a job starts; it never falls back to raw
+entries.
 
 ### Distillation model and thinking
 
@@ -525,7 +545,7 @@ The component derives its row budget from the host TUI and the overlay's height 
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.
 - `panel.ts`: interactive browser state and rendering.
 - `pickup.ts`: self-contained pickup message, operator amendment block, and already-active ownership handoff.
-- `distill.ts`: transcript capture, prompt building, payload validation, configured model streaming, retry usage, and cancellation.
+- `distill.ts`: projection serialization, prompt building, payload validation, configured model streaming, retry usage, and cancellation.
 - `redact.ts`: deterministic credential redaction for transcript, references, payloads, and lifecycle outcomes.
 - `text.ts`: terminal-safe text and output bounds local to this extension.
 - `test-fixtures.mts`: typed model and transcript fixtures, registration capture, and the partial host context for entrypoint tests.
@@ -551,6 +571,13 @@ usage totals, invalid responses, and byte-exact artifact output. An entrypoint
 test registers a synthetic provider in a real isolated ModelRuntime and invokes
 the command without a stream override. It checks registry binding, request-time
 authentication, tool-free input, storage, and no turn in the live session.
+
+Native SessionManager regressions exercise context omissions and replacements,
+branch navigation, retained compaction and branch summaries, and unchanged raw
+history. Command-stream tests inspect the actual distiller request and its
+reference section; capture-failure tests cover TUI, RPC, print, and JSON modes.
+These tests use synthetic sessions and controlled replies, not provider-quality
+evaluation.
 
 The stash files type-check clean against the installed Pi declarations.
 Lifecycle behavior is covered by the focused and full tests in

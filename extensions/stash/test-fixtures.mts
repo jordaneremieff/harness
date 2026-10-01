@@ -17,8 +17,10 @@ import type {
 	ExtensionUIContext,
 	RegisteredCommand,
 	SessionEntry,
+	SessionProjection,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
 import type { StashPanel, StashPanelResult, PanelTheme } from "./panel.ts";
@@ -115,7 +117,7 @@ export interface TestContext {
 	model?: Model<Api>;
 	thinkingLevel?: ExtensionContext["thinkingLevel"];
 	modelRegistry?: DistillModelRegistry & Partial<Pick<ExtensionContext["modelRegistry"], "streamSimple">>;
-	sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionId" | "buildContextEntries">;
+	sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionId" | "buildSessionProjection">;
 }
 
 // These entrypoint drives supply only the context members each exercised path reads.
@@ -205,6 +207,14 @@ type EntryInput =
 	  }
 	| { type: "compaction"; summary: string }
 	| { type: "custom_message"; customType: string; content: string; display: boolean };
+
+export function transcriptProjection(inputs: EntryInput[]): SessionProjection {
+	const entries = transcriptEntries(inputs).map((entry, index) => ({
+		...entry,
+		parentId: index === 0 ? null : `entry-${index - 1}`,
+	}));
+	return SessionManager.inMemory("/workspace", undefined, entries).buildSessionProjection();
+}
 
 export function transcriptEntries(inputs: EntryInput[]): SessionEntry[] {
 	return inputs.map((entry, index): SessionEntry => {

@@ -1,14 +1,19 @@
 /**
  * Background distillation for /stash new <hint>.
  *
- * A bounded, tool-free model stream distills the live session transcript
- * plus an operator hint into a stash payload. The extension owns transcript
- * capture, cancellation, payload validation, and the store
- * write. The live session receives no turn; the job reports through a result
- * promise that never rejects.
+ * A bounded, tool-free model stream distills the live session's
+ * persisted-context projection plus an operator hint into a stash payload.
+ * The extension owns projection capture, cancellation, payload validation,
+ * and the store write. The live session receives no turn; the job reports
+ * through a result promise that never rejects.
  */
 
-import { type ModelRegistry, type SessionEntry, SettingsManager } from "@earendil-works/pi-coding-agent";
+import {
+	type ModelRegistry,
+	type SessionProjection,
+	SettingsManager,
+	convertToLlm,
+} from "@earendil-works/pi-coding-agent";
 import {
 	type Api,
 	type AssistantMessage,
@@ -41,22 +46,14 @@ const VALID_THINKING_LEVELS: Record<ModelThinkingLevel, true> = {
 	max: true,
 };
 
-/**
- * Structural view of an LLM message. Kept local so this module does not depend
- * on the transitive pi-agent-core package; only role and content are read.
- */
+/** Only text, image placeholders, and tool-call names enter the transcript. */
 interface TranscriptPart {
 	type?: unknown;
 	text?: unknown;
 	name?: unknown;
 }
 
-interface TranscriptMessage {
-	role: string;
-	content: string | readonly (TranscriptPart | undefined)[];
-	isError?: boolean;
-	toolName?: string;
-}
+type ProjectedMessage = SessionProjection["messages"][number];
 
 const URL_REFERENCE = /\bhttps?:\/\/[^\s"'`<>{}[\]()]+/giu;
 const WORK_ITEM_REFERENCE = /\b[A-Z][A-Z0-9]{1,9}-\d{1,6}\b/g;
@@ -146,7 +143,7 @@ interface DistillJobOptions {
 	cwd: string;
 	thinkingLevel: ModelThinkingLevel;
 	hint: string;
-	entries: readonly SessionEntry[];
+	projection: SessionProjection;
 	project: string;
 	branch?: string;
 	sessionId?: string;
@@ -326,22 +323,55 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-/** Serialize the compaction-aware active-path entries into a flat transcript. */
-export function entriesToTranscript(entries: readonly SessionEntry[]): string {
+/**
+ * Serialize Pi's persisted-context projection into a flat transcript. The
+ * projection applies the latest branch-relative context edits, so omitted
+ * entries contribute nothing and replacements contribute their replaced
+ * content. System prompts (including compaction checkpoints), thinking, and
+ * non-context state stay out of the handover.
+ */
+export function projectionToTranscript(projection: Pick<SessionProjection, "entries">): string {
 	const parts: string[] = [];
-	for (const entry of entries) {
-		if (entry.type === "message") {
-			const text = messageToText(entry.message as unknown as TranscriptMessage);
+	for (const projected of projection.entries) {
+		for (const message of projected.messages) {
+			const text = projectedMessageToText(message);
 			if (text) parts.push(text);
-		} else if (entry.type === "compaction") {
-			parts.push(`[compaction summary: ${entry.summary}]`);
-		} else if (entry.type === "branch_summary") {
-			parts.push(`[branch summary: ${entry.summary}]`);
-		} else if (entry.type === "custom_message") {
-			parts.push(`[custom message]\n${typeof entry.content === "string" ? entry.content : partsToText(entry.content)}`);
 		}
 	}
 	return parts.join("\n\n");
+}
+
+/** Render one projected message; undefined means it stays out of the transcript. */
+function projectedMessageToText(message: ProjectedMessage): string | undefined {
+	switch (message.role) {
+		case "system":
+			return undefined;
+		case "compactionSummary":
+			return `[compaction summary: ${message.summary}]`;
+		case "branchSummary":
+			return `[branch summary: ${message.summary}]`;
+		case "custom":
+			return `[custom message]\n${contentText(message.content)}`;
+		case "bashExecution":
+			return bashExecutionToTranscript(message);
+		case "user":
+		case "assistant":
+		case "toolResult":
+			return messageToText(message);
+		default:
+			return undefined;
+	}
+}
+
+/**
+ * Reuse Pi's public per-message conversion for bash execution output so the
+ * transcript rendering does not drift from the model-visible form. The
+ * conversion also drops executions the session excluded from context.
+ */
+function bashExecutionToTranscript(message: Extract<ProjectedMessage, { role: "bashExecution" }>): string | undefined {
+	const converted = convertToLlm([message]);
+	const text = contentText(converted[0]?.content);
+	return text ? `[bash execution]\n${text}` : undefined;
 }
 
 function partsToText(parts: readonly (TranscriptPart | undefined)[]): string {
@@ -354,20 +384,25 @@ function partsToText(parts: readonly (TranscriptPart | undefined)[]): string {
 	return lines.join("\n");
 }
 
-function toolResultTexts(entries: readonly SessionEntry[]): string[] {
+function contentText(content: unknown): string {
+	return typeof content === "string" ? content : Array.isArray(content) ? partsToText(content) : "";
+}
+
+/** Projected tool-result text: post-omission, with replaced content. */
+function toolResultTexts(projection: Pick<SessionProjection, "entries">): string[] {
 	const texts: string[] = [];
-	for (const entry of entries) {
-		if (entry.type !== "message") continue;
-		const message = entry.message as unknown as TranscriptMessage;
-		if (message.role !== "toolResult") continue;
-		const text = typeof message.content === "string" ? message.content : partsToText(message.content);
-		if (text) texts.push(text);
+	for (const projected of projection.entries) {
+		for (const message of projected.messages) {
+			if (message.role !== "toolResult") continue;
+			const text = contentText(message.content);
+			if (text) texts.push(text);
+		}
 	}
 	return texts;
 }
 
-function messageToText(message: TranscriptMessage): string {
-	const content = typeof message.content === "string" ? message.content : partsToText(message.content);
+function messageToText(message: Extract<ProjectedMessage, { role: "user" | "assistant" | "toolResult" }>): string {
+	const content = contentText(message.content);
 	const lines: string[] = [];
 	if (message.role === "toolResult") {
 		const name = typeof message.toolName === "string" ? message.toolName : "unknown";
@@ -707,12 +742,12 @@ async function runDistill(options: DistillJobOptions, signal: AbortSignal): Prom
 		// before the payload is written, so no secret depends on the model's
 		// discretion. The operator hint is trusted input and is not redacted.
 		// Redaction runs BEFORE bounding so a size cut can never bisect a
-		// credential into a surviving fragment, and on the tool-result text
-		// BEFORE reference extraction so a lossy extraction cannot truncate a
+		// credential into a surviving fragment, and on the projected tool-result
+		// text BEFORE reference extraction so a lossy extraction cannot truncate a
 		// credential into a surviving fragment (the post-extraction pass then
 		// stays as defense in depth).
-		const transcript = boundTranscript(redactSecrets(entriesToTranscript(options.entries)));
-		const artifacts = extractArtifacts(toolResultTexts(options.entries).map(redactSecrets)).map(redactSecrets);
+		const transcript = boundTranscript(redactSecrets(projectionToTranscript(options.projection)));
+		const artifacts = extractArtifacts(toolResultTexts(options.projection).map(redactSecrets)).map(redactSecrets);
 		const prompt = buildDistillPrompt(options.hint, transcript, artifacts);
 		const reply = await promptDistiller(options, signal, prompt);
 		if (!("response" in reply)) return reply;
