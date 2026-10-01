@@ -197,9 +197,9 @@ export const renderPeerMessage: MessageRenderer = (message, { expanded, outputPa
 	const box = new Box(outputPad, 1, (line) => theme.bg("customMessageBg", line.replace(/\x1b\[(?:0|49)?m/g, (reset) => reset + theme.getBgAnsi("customMessageBg"))));
 	const configuration = peerConfiguration(details);
 	const heading = theme.fg("customMessageLabel", theme.bold(`[agent] ${source}`))
-		+ theme.fg("muted", " · ") + theme.fg(failed ? "error" : "customMessageLabel", theme.bold(status))
-		+ (configuration.length ? theme.fg("muted", ` · ${configuration.join(" · ")}`) : "");
+		+ theme.fg("muted", " · ") + theme.fg(failed ? "error" : "customMessageLabel", theme.bold(status));
 	box.addChild(new Text(heading, 0, 0));
+	if (configuration.length) peerLine(box, configuration.join(" · "), "muted", theme);
 	addPeerWarnings(box, details, theme);
 	box.addChild(new Spacer(1));
 	box.addChild(new Markdown(prefix.trim() ? displayText(prefix) : "(no text)", 0, 0, getMarkdownTheme(), { color: (text) => theme.fg("customMessageText", text) }, { preserveBackslashEscapes: true }));

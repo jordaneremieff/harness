@@ -1002,11 +1002,12 @@ full arguments remain in Pi's native tool call. Display bounds never change the
 transmitted message. Results distinguish admission receipts from send errors.
 
 Received messages and completion notices keep Pi's violet custom-message
-identity and native lowercase bracketed label. The headline shows
-`[agent] <name or session ID> · <message or outcome>`, followed by the known
-`provider/model` and `thinking: <level>` in muted text. Identity and status are
-bold. Names and configuration values retain their original case. An unnamed
-source uses its full valid session ID; the headline wraps at the terminal width.
+identity and native lowercase bracketed label. The primary header row shows
+`[agent] <name or session ID> · <message or outcome>` in bold. Known
+`provider/model` and `thinking: <level>` appear in a separate muted row directly
+beneath it. That row is absent when no configuration fields are known. Both
+rows wrap at the terminal width. Names and configuration values retain their
+original case. An unnamed source uses its full valid session ID.
 
 `agent_send` captures the sender's current session name, selected provider/model,
 and thinking level at emission. Completion notices capture the worker's current

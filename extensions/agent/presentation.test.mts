@@ -100,7 +100,8 @@ describe("received peer presentation", () => {
 			for (const width of [20, 100]) {
 				assert.ok(native.render(width).every((line) => visibleWidth(line) <= width));
 				const text = screen(native, width);
-				assert.ok(text.replace(/\s/gu, "").includes("[agent]Messagereviewer·message·SelectedProvider/MixedCase-Model·thinking:high"));
+				assert.ok(text.replace(/\s/gu, "").includes("[agent]Messagereviewer·message"));
+				assert.ok(text.replace(/\s/gu, "").includes("SelectedProvider/MixedCase-Model·thinking:high"));
 				assert.doesNotMatch(text, /Later-Selection|Later name/);
 				assert.doesNotMatch(text, /From session/);
 				assert.ok(text.replace(/\s/gu, "").includes("Exactsecondparagraph."));
@@ -196,13 +197,14 @@ describe("received peer presentation", () => {
 		assert.deepEqual(details, before);
 	});
 
-	it("keeps known session configuration in the headline without inventing absent fields", () => {
+	it("keeps known session configuration in the header without inventing absent fields", () => {
 		const notice = message("Authored **BodyCase** remains intact.");
 		const metadata = { name: "MixedCase Agent", provider: "ProviderCase", modelId: "ModelCase-v2", thinkingLevel: "high" };
 		for (const expanded of [false, true]) {
 			for (const width of [20, 44, 100]) {
 				const text = view(notice.content, { ...notice.details, ...metadata }, expanded, width).replace(/\s/gu, "");
-				assert.ok(text.includes("[agent]MixedCaseAgent·message·ProviderCase/ModelCase-v2·thinking:high"));
+				assert.ok(text.includes("[agent]MixedCaseAgent·message"));
+				assert.ok(text.includes("ProviderCase/ModelCase-v2·thinking:high"));
 				assert.ok(text.includes("AuthoredBodyCaseremainsintact."));
 			}
 		}
@@ -221,16 +223,26 @@ describe("received peer presentation", () => {
 		assert.match(view(completion.content, completion.details, true, 180), /Session configuration at settlement: ProviderCase\/ModelCase-v2 · thinking: high/);
 	});
 
-	it("uses the native bracketed label, strong identity and status, and muted configuration", () => {
+	it("separates native identity and status from muted configuration even at wide widths", () => {
 		const colors: Array<{ color: string; text: string }> = [];
 		const marked = { ...theme, fg: (color: string, text: string) => { colors.push({ color, text }); return text; }, bold: (text: string) => `\x1b[1m${text}\x1b[22m` } as unknown as Theme;
 		const notice = operation("BodyCase.", "failed", { name: "CaseName", provider: "Provider", modelId: "Model", thinkingLevel: "low" });
 		const card = renderPeerMessage({ ...base, ...notice }, { expanded: false, outputPad: 1 }, marked);
 		assert.ok(card);
-		assert.match(screen(card), /\[agent\] CaseName · failed · Provider\/Model · thinking: low/);
+		for (const width of [100, 240]) {
+			const rows: string[] = screen(card, width).split("\n").map((row) => row.trim());
+			const header = rows.findIndex((row) => row.startsWith("[agent]"));
+			assert.ok(header >= 0);
+			assert.deepEqual(rows.slice(header, header + 4), ["[agent] CaseName · failed", "Provider/Model · thinking: low", "", "BodyCase."]);
+		}
 		assert.ok(colors.some(({ color, text }) => color === "customMessageLabel" && text === "\x1b[1m[agent] CaseName\x1b[22m"));
 		assert.ok(colors.some(({ color, text }) => color === "error" && text === "\x1b[1mfailed\x1b[22m"));
-		assert.ok(colors.some(({ color, text }) => color === "muted" && text === " · Provider/Model · thinking: low"));
+		assert.ok(colors.some(({ color, text }) => color === "muted" && text === "Provider/Model · thinking: low"));
+		const missing = operation("BodyCase.", "failed", { name: "CaseName" });
+		const rows = view(missing.content, missing.details, false, 240).split("\n").map((row) => row.trim());
+		const header = rows.findIndex((row) => row.startsWith("[agent]"));
+		assert.ok(header >= 0);
+		assert.deepEqual(rows.slice(header, header + 3), ["[agent] CaseName · failed", "", "BodyCase."]);
 	});
 
 	it("bounds and escapes configuration independently without splitting a surrogate pair", () => {
