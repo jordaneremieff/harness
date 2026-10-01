@@ -1,8 +1,9 @@
-# Extension evaluation suites
+# Harness evaluation suites
 
 The package-level `evals/` application owns evaluation planning, execution,
-checks, and review state. An extension owns its task cases and synthetic
-fixtures. Evaluation definitions do not become extension runtime dependencies.
+checks, and review state. Each extension, skill, or prompt owns its task cases
+and synthetic fixtures. Evaluation definitions do not become runtime dependencies
+of the evaluated surface.
 
 ## Import contract
 
@@ -22,8 +23,23 @@ outside this allowance. No test uses this contract to execute paid inference.
 Current extension consumers include the registry discovery suite
 (`registry/registry.eval.mts`, `registry/registry-evals.test.mts`) and the Pillars
 command suite (`pillars/commands.eval.mts`, `pillars/evaluation.test.mts`).
-Prompt suites also use the package evaluation facade outside the extension
-slice boundary.
+Prompt and skill suites also use the package evaluation facade outside the
+extension slice boundary. Skill suites use `*.eval.mts` within their skill
+directory; deterministic tests live in `scripts/*.test.mts` so the normal test
+command includes them. These suites import `evals/vitest-evals.mts`, and their
+tests use `evals/subjects/pi-sdk.mts` for resource validation and deterministic
+checks. Use explicit relative imports. This does not broaden the extension
+import allowance or add runtime dependencies to skills.
+
+The Audit skill owns its [trigger](../../skills/audit/audit-trigger.eval.mts),
+[direct-output](../../skills/audit/audit-output.eval.mts), and
+[plain-request baseline](../../skills/audit/audit-baseline.eval.mts) suites.
+Validate them with `npm run evals -- validate <suite-path>` and run their
+structural tests with `node --test skills/audit/scripts/audit-evaluation.test.mts`.
+They use synthetic evidence and selected read-only resources. They do not prove
+complete collection from real session stores or refusal of available mutation
+tools. Trigger evidence is a candidate skill read, not a direct slash invocation.
+Output quality and comparative usefulness remain semantic review questions.
 
 ## Execution and evidence
 

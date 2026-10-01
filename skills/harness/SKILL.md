@@ -140,8 +140,9 @@ No warrant is needed for a fixed repair, an operator-selected outcome or archite
 - **Extension or extension-owned surface:** read [extensions.md](references/extensions.md). Pull [extension-engineering.md](references/extension-engineering.md), [pi-grounding.md](references/pi-grounding.md), and [extension-research.md](references/extension-research.md) only for the implicated design questions.
 - **Prompt template, theme, package, settings, SDK/RPC/JSON integration, or standalone CLI:** use [surface selection](references/surface-selection.md), then read the current installed Pi document for the selected surface. Use [extensions.md](references/extensions.md) when extension code or an extension boundary participates.
 - **Managed extension removal after the disposition is settled:** read [removal.md](references/removal.md).
-- **Local extension telemetry collection:** read [extension-telemetry.md](references/extension-telemetry.md) for source inventory, windowed collection, and second-pass reconciliation before audit judgment.
-- **Usage, utility, retention, removal, or incident disposition for an extension:** read [extension-audit.md](references/extension-audit.md).
+- **Session or harness evidence audit:** use the [Audit skill](../audit/SKILL.md) as the entrypoint. It owns intent resolution, bounded collection, unit separation, reconciliation, and audit reporting.
+- **Extension-specific audit collection:** from the Audit skill, read [extension-telemetry.md](../audit/references/extension-telemetry.md) for source contracts, windowed collection, and second-pass reconciliation.
+- **Extension utility, retention, removal, or incident disposition:** from the Audit skill, read [extension-audit.md](references/extension-audit.md) after collection.
 
 **Complete when:** every loaded reference serves a live decision or verification claim.
 

@@ -1,9 +1,13 @@
 # Local extension telemetry collection
 
-Use this reference to collect evidence for an ad hoc audit of one extension or
-the active extension set. Complete collection before applying the dispositions
-in [extension-audit.md](extension-audit.md). Counts describe observations, not
-usefulness, correct application, or reasons to retain an extension.
+The [Audit skill](../SKILL.md) owns the audit entrypoint, question,
+general collection discipline, and report. Read this reference only when the
+selected scope includes extension telemetry. It defines extension-specific
+source contracts, windowed collection, and reconciliation. Complete collection
+before applying the dispositions in
+`../harness/references/extension-audit.md`.
+Counts describe observations, not usefulness, correct application, or reasons
+to retain an extension.
 
 ## Contents
 

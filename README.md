@@ -42,9 +42,14 @@ boundaries, rather than a central feature catalog.
   continue the work.
 - [Worktrees](docs/conventions/worktrees.md) defines the development and
   publication workflow.
-- [Harness](skills/harness/SKILL.md) guides harness changes and audits. Its local
-  extension telemetry procedure inventories current sources, collects a bounded
-  window, and reconciles retained evidence before audit judgment.
+- [Audit](skills/audit/SKILL.md) audits local Pi session and harness activity
+  from ordinary intent or `/skill:audit`. It is read-only by default, chooses a
+  bounded scope, separates evidence units, reconciles load-bearing figures, and
+  reports unknowns without inferring repairs or publication.
+- [Harness](skills/harness/SKILL.md) guides harness changes. Its causal
+  extension audit reference supports the Audit skill when an extension scope
+  needs disposition analysis; the Audit skill owns extension telemetry
+  collection.
 - [Prime](skills/prime/SKILL.md) prepares for a later task. Ask "Get up to speed
   on this topic, then wait", or use `/skill:prime <topic>`. It instructs the
   agent to return a short cited summary with source coverage and then wait;
