@@ -368,6 +368,38 @@ const contextProgram: FactsProgram = {
 };
 
 describe(`ordinary Pi ${version} policy hooks`, () => {
+	it("activates a pending rule through the native tool pipeline and enforces its selected effect", async () => {
+		const f = await setup([]);
+		try {
+			let executions = 0;
+			f.setTools([
+				...host.wrapRegisteredTools(f.runner.getAllRegisteredTools(), f.runner),
+				{ name: "sample", description: "controlled", parameters: inputSchema,
+					execute: async () => { executions++; return { content: [{ type: "text" as const, text: "body" }], details: {} }; } },
+			]);
+			await f.run([{ id: "propose", name: "policy_propose", arguments: {
+				operation: "add", id: "local.controlled", purpose: "Block a selected sample argument.",
+				authority: "steer-or-block", reason: "Exercise selected effect.", note: "Do not pass old.",
+				language: "facts/v1", program: { phase: "input", selector: { tools: ["sample"] },
+					when: { op: "exists", path: ["input", "old"] }, action: { kind: "deny" }, onUnavailable: "skip" },
+			} }]);
+			const p = (await f.registry.snapshot()).pending.find((entry) => entry.ruleId === "local.controlled");
+			assert.ok(p);
+			await f.run([{ id: "before", arguments: { old: "value" } }]);
+			assert.equal(executions, 1);
+			await f.run([{ id: "approve", name: "policy_approve", arguments: {
+				proposalId: p.id, proposalRevision: proposalRevision(p), effect: "block",
+				authorization: "The test supplies approval of this exact pending rule as a blocking rule.",
+			} }]);
+			assert.equal((await f.registry.snapshot()).pending.length, 0);
+			assert.match(JSON.stringify(f.requestContexts), /approval-tool|Approval does not change session mode/);
+			const after = await f.run([{ id: "after", arguments: { old: "value" } }]);
+			assert.equal(executions, 1);
+			assert.match(JSON.stringify(after.messages), /Do not pass old/);
+			await f.telemetry();
+			assert.deepEqual(f.errors, []);
+		} finally { await f.cleanup(); }
+	});
 	it("supplies the installed shell contract before the first bash selection without another request", async () => {
 		const f = await setup([]);
 		try {

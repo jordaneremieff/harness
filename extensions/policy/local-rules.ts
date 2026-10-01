@@ -86,7 +86,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const REVISION = /^[0-9a-f]{12}$/;
 const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const EFFECTS = ["steer", "block"] as const;
-const SESSION_SURFACES = ["agent-tool", "command", "panel"] as const;
+const SESSION_SURFACES = ["agent-tool", "approval-tool", "command", "panel"] as const;
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 export interface LocalRuleCandidate {
@@ -335,7 +335,7 @@ function validateAudit(value: unknown): RuleAudit {
 		exact(value, ["surface"]);
 		return { surface: "package" };
 	}
-	exact(value, ["at", "session", "model", "surface"]);
+	exact(value, ["at", "session", "model", "surface", ...(value.surface === "approval-tool" ? ["authorization"] : [])]);
 	const at = text(value.at, "audit.at", MAX_AUDIT_FIELD_LENGTH);
 	if (!ISO_8601.test(at) || Number.isNaN(Date.parse(at))) throw new Error("audit.at must be an ISO-8601 timestamp");
 	const session = text(value.session, "audit.session", MAX_AUDIT_FIELD_LENGTH);
@@ -343,12 +343,16 @@ function validateAudit(value: unknown): RuleAudit {
 	if (model !== null && (!model.includes("/") || model.startsWith("/") || model.endsWith("/"))) {
 		throw new Error("audit.model must be provider/id or null");
 	}
-	return {
-		at,
-		session,
-		model,
-		surface: oneOf(value.surface, SESSION_SURFACES, "audit.surface"),
-	};
+	const surface = oneOf(value.surface, SESSION_SURFACES, "audit.surface");
+	return surface === "approval-tool"
+		? {
+				at,
+				session,
+				model,
+				surface,
+				authorization: text(value.authorization, "audit.authorization", MAX_REASON_LENGTH),
+			}
+		: { at, session, model, surface };
 }
 
 function validateShapeFlags(value: Record<string, unknown>, spec: CommandShapeSpec): void {
@@ -1074,6 +1078,7 @@ function applyDecisionEvent(
 	if (isAgentSurface(event.audit)) return;
 	const proposal = state.pending.get(event.proposalId);
 	if (!proposal) return;
+	if (!toolApprovalMatches(event, proposal)) return;
 	let decided = event.decision === "rejected";
 	if (event.decision === "approved" && applyApproval(state, proposal, event, eventLine, available)) decided = true;
 	if (event.decision === "approved" && proposal.operation === "retire" && !decided)
@@ -1138,6 +1143,13 @@ function applyRuleEvent(
 	eventLine: number | undefined,
 	available: (key: string) => boolean,
 ): void {
+	if (
+		event.kind !== "catalog" &&
+		event.kind !== "proposal" &&
+		eventSurface(event) === "approval-tool" &&
+		event.kind !== "decision"
+	)
+		return;
 	if (event.kind === "data") {
 		reduceDataEvent(state, event);
 		return;
@@ -1369,6 +1381,8 @@ function assertWritableAuthority(event: RuleEvent): void {
 	if (eventSurface(event) === "agent-tool") {
 		throw new Error(`${event.kind} events require an operator surface`);
 	}
+	if (eventSurface(event) === "approval-tool" && (event.kind !== "decision" || event.decision !== "approved"))
+		throw new Error("approval-tool authority permits only pending proposal approval");
 }
 
 function assertImportTransition(
@@ -1464,12 +1478,23 @@ function assertApprovalTargets(
 		throw new Error("replacement target revision changed");
 }
 
+function toolApprovalMatches(event: DecisionEvent, proposal: ProposalEvent): boolean {
+	return (
+		event.audit.surface !== "approval-tool" ||
+		(event.decision === "approved" && event.proposalRevision === proposalRevision(proposal))
+	);
+}
+
 function assertDecisionTransition(
 	event: Extract<RuleEvent, { kind: "decision" }>,
 	reduction: RuleReduction,
 ): void {
 	const proposal = reduction.pending.find((entry) => entry.id === event.proposalId);
 	if (!proposal) throw new Error(`no pending proposal with id "${event.proposalId}"`);
+	if (!toolApprovalMatches(event, proposal))
+		throw new Error(
+			"proposal revision changed; inspect the pending proposal and resolve approval against its current revision",
+		);
 	if (event.decision === "approved" && proposal.operation !== "add") {
 		const target = reduction.records.get(proposal.ruleId);
 		if (target && effectiveState(target) === "retired")
@@ -1478,7 +1503,10 @@ function assertDecisionTransition(
 	if (event.decision === "approved" && (proposal.operation === "add" || proposal.operation === "replace")) {
 		assertApprovalShape(event, proposal);
 		assertApprovalTargets(event, proposal, reduction);
-	} else if (event.effect !== undefined || event.proposalRevision !== undefined) {
+	} else if (
+		event.effect !== undefined ||
+		(event.proposalRevision !== undefined && event.audit.surface !== "approval-tool")
+	) {
 		throw new Error(
 			`${event.decision === "approved" ? `approving a ${proposal.operation} proposal` : "rejecting a proposal"} does not accept an effect or proposal revision`,
 		);
@@ -2067,7 +2095,7 @@ export class RuleRegistry {
 	}
 }
 
-export function makeRuleAudit<TSurface extends Exclude<AuditSurface, "package">>(
+export function makeRuleAudit<TSurface extends Exclude<AuditSurface, "package" | "approval-tool">>(
 	ctx: AuditContextLike,
 	surface: TSurface,
 	now: Date = new Date(),

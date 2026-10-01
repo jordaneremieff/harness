@@ -16,8 +16,23 @@ correction. Never invent a tool's failure contract or a private identifier.
    change, or when automatic policy diagnostics identify a verified repeatable
    recovery that warrants a narrowly scoped candidate. Do not propose an
    unverified recovery.
-6. The operator reviews and explicitly approves the complete proposal before
-   activation. Checks and proposal submission grant no activation authority.
+6. Present the complete pending proposal for operator review. After clear
+   contextual approval, call `policy_approve` with its `proposalId`,
+   `proposalRevision`, authorized `effect`, and an `authorization` explanation.
+   Use `steer` or `block` for selectable actions and `exact` for exact actions,
+   retire, or disable. Resolve IDs and revisions yourself; the operator need not
+   type a command, ID, fixed phrase, or extra confirmation. Inspect `policy_rules`
+   with the rule ID or proposal ID when the artifact is not fully in context.
+7. Verify the returned state and mode. Approval does not change session mode;
+   denial and correction require `enforce`. A replacement preserves overrides.
+
+Checks and proposal submission grant no activation authority. Agent inference or
+recommendation is not operator approval. Faithfully carried operator decisions
+retain their scope and restrictions. Resolve material ambiguity from context or
+ask only for the missing decision. The authorization explanation records the
+agent's judgment; the tool does not prove natural-language intent. After a stale
+revision refusal, inspect the changed artifact and reassess the approval's scope
+instead of silently approving a different revision. Commands remain available.
 
 `check` does not save a proposal, change data, execute a tool, consume live
 observation state, or approve anything. The actual inspection invocation still

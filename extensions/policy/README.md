@@ -148,7 +148,9 @@ argument. Use actual configured tool names and their schemas in live rules.
    }
    ```
 
-4. Inspect the complete proposal, then approve its exact revision:
+4. Review the complete proposal and approve it in ordinary chat. The agent
+   resolves the pending proposal and exact revision, then calls `policy_approve`
+   with `effect:"exact"`. The command remains available:
 
    ```text
    /policy approve <proposal-id> exact <proposal-revision>
@@ -592,8 +594,10 @@ complete final check against the registered outer tool schema.
 All proposals remain inert. Exact approval binds the complete proposal, including
 purpose, authority, conditions, scope, state, data bindings, and action parameters.
 Selectable replacement binds both the proposal revision and chosen effect.
-Agent-origin decision, override, data, or direct-retirement events cannot grant
-authority. Retirement does not free an id.
+An agent's proposal or recommendation grants no activation authority.
+Unapproved `agent-tool` decisions and control events remain inert. Authorized
+approval uses a distinct `approval-tool` audit with the agent's explanation of
+the operator decision. Retirement does not free an id.
 
 For example, this ordinary proposal references a reader predicate and explicitly
 requires the alternative reader:
@@ -615,6 +619,38 @@ requires the alternative reader:
 }
 ```
 
+### `policy_approve`
+
+After the agent presents a complete pending proposal, ordinary contextual approval
+such as "yes, make that a blocking rule" is sufficient when the target and effect
+are clear. The agent calls `policy_approve` with `proposalId`, `proposalRevision`,
+`effect`, and `authorization`. You do not need to type an ID, slash command, rigid
+phrase, or second confirmation. Existing commands and the panel remain available.
+
+The agent resolves the decision from the conversation, including faithfully
+carried operator authority with its scope and restrictions. A recommendation,
+self-generated inference, quoted third-party statement, or pending proposal is
+not operator approval. Material ambiguity requires context resolution or a narrow
+question, not a guessed target or effect. `authorization` is a bounded explanation
+of that judgment, not independent proof. Neither the extension nor its tests
+claim to verify natural-language intent.
+
+For `steer-or-block` add/replace proposals, `effect` must be `steer` or `block`.
+For exact add/replace actions and retire/disable proposals, use `exact`. Every tool
+approval binds the complete current proposal revision, and replacement also
+checks the target definition revision. Checks and append share the existing
+registry transaction. A stale result requires inspection and a fresh assessment
+of the approval's scope, not silent approval of a changed artifact.
+
+The result reads back the rule's current state, effect, revision, matcher
+availability, scope status, and session mode. Approval never changes mode;
+denial and correction require `enforce`, an active available rule, and matching
+scope and conditions. Replacement preserves existing overrides, including
+disablement. Concurrent authorized changes can affect the readback. The tool
+cannot reject proposals, change data, import rules, reset state, or directly
+change rule controls. Its audit surface is `approval-tool`, not a forged command
+or panel action; unrelated writes through that surface are refused.
+
 ### `policy_rules`
 
 Views are `rules` (default), `catalog`, `capabilities`, `state`, `health`, `data`,
@@ -624,7 +660,11 @@ examples through the production runtime. The catalog view shows bundled starter 
 it does not make them active or replace the stored catalog. Active command-shape
 rules retain their complete matcher in rule inspection and `/policy show`,
 including CLI selection, flag clauses, and unavailable behavior.
-Optional `id` narrows supported views. Explain accepts a rule id,
+Optional `id` narrows supported views. The rules view accepts a rule ID or pending
+proposal ID, including a new rule that has no active record yet. It returns the
+complete pending candidate and proposal revision without an all-rules listing.
+`policy_propose` also includes the revision in model-visible text, so nested
+callers do not depend on renderer-only details. Explain accepts a rule id,
 or `call:<call-id>` for bounded current-session recorded decisions, including
 unmatched calls. Call explanations expose selected metadata, not arbitrary stored
 payloads. Evaluation metadata includes phase and input view, so original and
@@ -658,7 +698,9 @@ telemetry; it is not a promise that the complete invocation performs no writes.
 
 ### Tool cards
 
-Both tools draw a compact TUI card and stay legible without expansion.
+Proposal and inspection tools draw compact TUI cards and stay legible without
+expansion. `policy_approve` uses the native tool display and returns its readback
+as model-visible JSON text.
 
 `policy_propose`: the collapsed heading names the operation and rule id. One dim
 row adds the authority, the authoring form, and the expected revision for

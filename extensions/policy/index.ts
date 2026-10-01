@@ -547,7 +547,12 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		return valid;
 	};
 	runtime = new PolicyRuntime(pi, loadRegistry, () => mode, dir, ensureMode);
-	registerRuleTools(pi, { registry, loadRegistry, inspect: (view, params, ctx) => runtime.inspect(view, params, ctx) });
+	registerRuleTools(pi, {
+		registry,
+		loadRegistry,
+		getMode: () => (ensureMode() ? mode : "unavailable"),
+		inspect: (view, params, ctx) => runtime.inspect(view, params, ctx),
+	});
 	runtime.attach();
 	let panelState: PolicyPanelResult = { view: "rules", filter: "" };
 	const output = (ctx: ExtensionContext, text: string, error = false): void => {

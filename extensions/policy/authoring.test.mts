@@ -417,7 +417,9 @@ test("check requests enforce aggregate, event, time, turn, and output bounds", a
 test("authoring guidance permits verified recovery candidates but requires activation approval", async () => {
 	const guide = (await authoringGuide()).replace(/\s+/g, " ");
 	assert.match(guide, /when automatic policy diagnostics identify a verified repeatable recovery/);
-	assert.match(guide, /explicitly approves the complete proposal before activation/);
+	assert.match(guide, /Present the complete pending proposal for operator review\. After clear contextual approval, call `policy_approve`/);
+	assert.match(guide, /Checks and proposal submission grant no activation authority/);
+	assert.match(guide, /Agent inference or recommendation is not operator approval/);
 	assert.doesNotMatch(guide, /policy_propose` only under operator instruction/);
 });
 

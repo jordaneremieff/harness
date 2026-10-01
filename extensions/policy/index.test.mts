@@ -184,7 +184,7 @@ async function callTool(tool: RegisteredTool, params: unknown, ctx: unknown): Pr
 describe("registration and lazy catalog use", () => {
 	it("registers only the unified tools and performs no rule-store I/O at session startup", async () => {
 		const { dir, pi, ctx } = await setup();
-		assert.deepEqual([...pi.tools.keys()].sort(), ["policy_propose", "policy_rules"]);
+		assert.deepEqual([...pi.tools.keys()].sort(), ["policy_approve", "policy_propose", "policy_rules"]);
 		assert.deepEqual([...pi.commands.keys()], ["policy"]);
 		assert.equal(pi.handlers.has("user_bash"), false, "Operator shell commands remain outside model-tool policy");
 		await pi.emit("session_start", { type: "session_start" }, ctx);

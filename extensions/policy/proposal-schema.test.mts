@@ -447,7 +447,7 @@ describe("finite proposal description and recursive admission", () => {
 
 	it("registers finite schemas without recursive reference keywords", async (t) => {
 		const { registered } = await setup(t);
-		assert.deepEqual([...registered.keys()].sort(), ["policy_propose", "policy_rules"]);
+		assert.deepEqual([...registered.keys()].sort(), ["policy_approve", "policy_propose", "policy_rules"]);
 		for (const tool of registered.values()) {
 			const serialized = JSON.stringify(tool.parameters);
 			assert.doesNotMatch(serialized, /"\$(?:ref|defs|dynamicRef|recursiveRef)"/);
