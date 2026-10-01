@@ -69,10 +69,11 @@ Restart does not preserve:
   not a claim that all extensions are idle.
 
 Preflight requires an interactive standalone Pi CLI, an executable Node binary,
-a readable Pi entrypoint, and a non-empty absolute session file. New sessions
-without their first saved assistant response are refused. SDK and managed-child
-hosts are refused. Every process-local agent manager participates, including
-nested hosts and owners retained after reload. Incomplete opens, creations,
+a readable Pi entrypoint, and a non-empty absolute session file. Pi first saves
+a new session when a user or assistant message exists; setup-only sessions remain
+unsaved and are refused. SDK and managed-child hosts are refused. Every
+process-local agent manager participates, including nested hosts and owners
+retained after reload. Incomplete opens, creations,
 controls, cleanup, association saves, footer saves, pending delivery, and live-only
 unsaved results block restart. The command checks identity and readiness again
 after confirmation. Saved custom entries appended during confirmation do not
