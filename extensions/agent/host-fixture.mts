@@ -5,12 +5,14 @@
  * child process, it takes the claim through runHost, announces readiness, and
  * serves fixture methods until it retires or is killed.
  */
+import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { HostError, parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
 import { runHost, type HostRuntime } from "./host-process.ts";
+import type { HostConnection } from "./host-client.ts";
 
 export interface FixtureState {
 	starts?: number;
@@ -66,37 +68,123 @@ export function fixtureMetadata(root: string, storageId = storageIdForRoot(root)
 	};
 }
 
-/** Poll a test condition without a fixed sleep. */
-export async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		if (predicate()) return;
-		if (Date.now() >= deadline) throw new Error("fixture condition was not reached before its deadline");
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
+export interface EventLog<T> extends Array<T> {
+	/** Resolve from recorded producer events, including events recorded before this call. */
+	waitFor(predicate: (events: readonly T[]) => boolean, timeoutMs?: number): Promise<void>;
+	waitForCount(count: number, timeoutMs?: number): Promise<void>;
 }
 
-function createFixtureRuntime(statePath: string): HostRuntime {
+/** An ordinary array whose push records a producer event and notifies pending consumers. */
+export function eventLog<T>(): EventLog<T> {
+	const events: T[] = [];
+	const listeners = new Set<() => void>();
+	const waitFor = (predicate: (events: readonly T[]) => boolean, timeoutMs = 5000): Promise<void> => {
+		if (predicate(events)) return Promise.resolve();
+		return new Promise((resolve, reject) => {
+			const finish = (error?: Error): void => {
+				clearTimeout(timer);
+				listeners.delete(check);
+				if (error) reject(error);
+				else resolve();
+			};
+			const check = (): void => { if (predicate(events)) finish(); };
+			const timer = setTimeout(() => finish(new Error("fixture producer event did not arrive")), timeoutMs);
+			listeners.add(check);
+		});
+	};
+	Object.defineProperties(events, {
+		push: { value: (...values: T[]) => {
+			const length = Array.prototype.push.apply(events, values);
+			for (const listener of [...listeners]) listener();
+			return length;
+		} },
+		waitFor: { value: waitFor },
+		waitForCount: { value: (count: number, timeoutMs?: number) => waitFor((items) => items.length >= count, timeoutMs) },
+	});
+	return events as EventLog<T>;
+}
+
+/** Observe the actual exit of an owned child, not writer-claim release. */
+export function waitForProcessExit(child: ChildProcess, timeoutMs = 10000): Promise<void> {
+	if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+	return new Promise((resolve, reject) => {
+		const finish = (error?: Error): void => {
+			clearTimeout(timer);
+			child.off("exit", onExit);
+			child.off("error", onError);
+			if (error) reject(error);
+			else resolve();
+		};
+		const onExit = (): void => finish();
+		const onError = (error: Error): void => finish(error);
+		const timer = setTimeout(() => finish(new Error("fixture process did not exit")), timeoutMs);
+		child.once("exit", onExit);
+		child.once("error", onError);
+	});
+}
+
+/** Observe permanent connection closure from its public event. */
+export function waitForConnectionClose(host: HostConnection, timeoutMs = 10000): Promise<void> {
+	if (host.closed) return Promise.resolve();
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => { unsubscribe(); reject(new Error("fixture connection did not close")); }, timeoutMs);
+		const unsubscribe = host.onClose(() => { clearTimeout(timer); unsubscribe(); resolve(); });
+		if (host.closed) { clearTimeout(timer); unsubscribe(); resolve(); }
+	});
+}
+
+/** Recheck persistent fixture state only on real host change notifications. */
+export async function waitForFixtureState(host: Pick<HostConnection, "subscribeChanges">, path: string, predicate: (state: FixtureState) => boolean, timeoutMs = 5000): Promise<void> {
+	if (!host.subscribeChanges) throw new Error("fixture host has no change notifications");
+	let unsubscribe: (() => void) | undefined;
+	let settled = false;
+	let finish: (error?: Error) => void = () => {};
+	const completed = new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(() => finish(new Error("fixture state event did not arrive")), timeoutMs);
+		finish = (error) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			unsubscribe?.();
+			if (error) reject(error);
+			else resolve();
+		};
+	});
+	void completed.catch(() => {});
+	try {
+		unsubscribe = await host.subscribeChanges(() => { if (predicate(readFixtureState(path))) finish(); });
+		if (settled) unsubscribe();
+		else if (predicate(readFixtureState(path))) finish();
+	} catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+	await completed;
+}
+
+export function createFixtureRuntime(statePath: string): HostRuntime {
 	const waiters: Array<(value: unknown) => void> = [];
 	const changeListeners = new Set<() => void>();
 	let busy = false;
-	const poll = setInterval(() => {
-		const state = readFixtureState(statePath);
-		if (state.release !== true || waiters.length === 0) return;
+	const publishState = (patch: FixtureState): void => {
+		writeFixtureState(statePath, patch);
+		for (const listener of [...changeListeners]) listener();
+	};
+	const releaseWaits = (): void => {
 		const released = waiters.splice(0);
+		publishState({ release: true, waitCompleted: (readFixtureState(statePath).waitCompleted ?? 0) + released.length });
 		for (const resolve of released) resolve({ released: true });
-		writeFixtureState(statePath, { waitCompleted: (readFixtureState(statePath).waitCompleted ?? 0) + released.length });
-	}, 10);
-	poll.unref();
+	};
 	const startWait = (signal?: AbortSignal): Promise<unknown> => {
-		writeFixtureState(statePath, { waitsStarted: (readFixtureState(statePath).waitsStarted ?? 0) + 1 });
+		publishState({ waitsStarted: (readFixtureState(statePath).waitsStarted ?? 0) + 1 });
+		if (readFixtureState(statePath).release === true) {
+			publishState({ waitCompleted: (readFixtureState(statePath).waitCompleted ?? 0) + 1 });
+			return Promise.resolve({ released: true });
+		}
 		return new Promise((resolve, reject) => {
 			const waiter = (value: unknown) => resolve(value);
 			waiters.push(waiter);
 			signal?.addEventListener("abort", () => {
 				const index = waiters.indexOf(waiter);
 				if (index >= 0) waiters.splice(index, 1);
-				writeFixtureState(statePath, { waitsCancelled: (readFixtureState(statePath).waitsCancelled ?? 0) + 1 });
+				publishState({ waitsCancelled: (readFixtureState(statePath).waitsCancelled ?? 0) + 1 });
 				reject(signal.reason instanceof Error ? signal.reason : new Error("fixture wait cancelled"));
 			}, { once: true });
 		});
@@ -120,13 +208,16 @@ function createFixtureRuntime(statePath: string): HostRuntime {
 				case "wait":
 				case "receipts":
 					return startWait(signal);
+				case "release-waits":
+					releaseWaits();
+					return { released: true };
 				case "effect": {
 					const state = readFixtureState(statePath);
 					writeFixtureState(statePath, { effects: (state.effects ?? 0) + 1 });
 					return { effect: true };
 				}
 				case "hang":
-					writeFixtureState(statePath, { hangsStarted: (readFixtureState(statePath).hangsStarted ?? 0) + 1, ...(signal === undefined ? {} : { hangsSignaled: true }) });
+					publishState({ hangsStarted: (readFixtureState(statePath).hangsStarted ?? 0) + 1, ...(signal === undefined ? {} : { hangsSignaled: true }) });
 					return new Promise(() => {});
 				case "touch":
 					for (const listener of [...changeListeners]) listener();
@@ -146,7 +237,6 @@ function createFixtureRuntime(statePath: string): HostRuntime {
 			}
 		},
 		close: async () => {
-			clearInterval(poll);
 			writeFixtureState(statePath, { closed: (readFixtureState(statePath).closed ?? 0) + 1 });
 		},
 		isIdle: () => !busy,

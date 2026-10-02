@@ -5,12 +5,14 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { ServiceCall } from "@earendil-works/chord";
+import type { JsonValue, ServiceCall } from "@earendil-works/chord";
 import { ServerError, type ServerHost } from "@earendil-works/pi-server";
+import { Client } from "@earendil-works/pi-client";
+import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { createUnixServer } from "@earendil-works/pi-server/unix";
-import { HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
-import { acquireHost, connectHost, snapshotHost, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
-import { fixtureMetadata, readFixtureState, waitUntil, writeFixtureState } from "./host-fixture.mts";
+import { HOST_RUNTIME_VERSION, HOST_SERVICE_ID, HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
+import { acquireHost, connectHost, snapshotHost, waitForHostRelease, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
+import { fixtureMetadata, readFixtureState, eventLog, waitForFixtureState, waitForConnectionClose, writeFixtureState } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { markerFixture } from "./durable-runtime-fixture.mts";
 
@@ -36,15 +38,6 @@ function track(t: { after(fn: () => void): void }, pid: number): void {
 	});
 }
 
-function alive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 async function openHost(t: { after(fn: () => void): void }, root: string, options: HostLaunchOptions = launch()): Promise<HostConnection> {
 	const connection = await acquireHost(fixtureMetadata(root), options);
 	track(t, connection.pid);
@@ -61,8 +54,8 @@ async function observeFrames(connection: HostConnection, scope: HostObservationS
 	return connection.observe(scope);
 }
 
-/** One live host surface that predates the runtime-version member and rejects every method as an old runtime does. */
-async function openOlderHost(root: string): Promise<{ readonly metadata: ReturnType<typeof fixtureMetadata>; close(): Promise<void> }> {
+/** One versioned service fixture; version zero predates the runtime-version member. */
+async function openVersionedHost(root: string, version = 0, status?: JsonValue): Promise<{ readonly metadata: ReturnType<typeof fixtureMetadata>; calls: string[]; close(): Promise<void> }> {
 	const metadata = fixtureMetadata(root);
 	const paths = hostPaths(metadata);
 	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
@@ -72,10 +65,14 @@ async function openOlderHost(root: string): Promise<{ readonly metadata: ReturnT
 		JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: metadata.storageId, cwd: metadata.cwd, createdAt: new Date().toISOString() }),
 		{ mode: 0o600 },
 	);
+	const calls: string[] = [];
 	const host: ServerHost = {
 		serverServices: {
 			attachClient: () => ({
 				invokeService: async (call: ServiceCall) => {
+					calls.push(call.member);
+					if (version > 0 && call.member === "runtime-version") return { version };
+					if (status !== undefined && call.member === "status") return status;
 					throw new ServerError("service_invalid_value", `unknown durable host method ${call.member}`);
 				},
 				release: () => {},
@@ -86,12 +83,12 @@ async function openOlderHost(root: string): Promise<{ readonly metadata: ReturnT
 	};
 	const server = createUnixServer(host, { serverId: paths.serverId, path: paths.socket, mode: 0o600 });
 	await server.start();
-	return { metadata, close: async () => { await server.close().catch(() => undefined); } };
+	return { metadata, calls, close: async () => { await server.close().catch(() => undefined); } };
 }
 
 it("detects an older host and refuses its new-only methods with the update reason", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
-	const older = await openOlderHost(root);
+	const older = await openVersionedHost(root);
 	t.after(() => older.close());
 	const connection = await connectHost(older.metadata, launch());
 	t.after(() => connection.close().catch(() => {}));
@@ -109,6 +106,65 @@ it("detects an older host and refuses its new-only methods with the update reaso
 	// An older host still serves the methods all versions share; its own error passes through.
 	await assert.rejects(connection.request("status", {}), /unknown durable host method status/u);
 	await connection.close();
+});
+
+it("keeps compatible newer-host reads but refuses mutations and unknown newer output", async (t) => {
+	const root = fixtureRoot(t);
+	const status = { conversation: { conversationId: 1, identity: "fixture", busy: false, lastText: null, live: null, inbox: null, agent: { thinkingLevel: "off", extensions: [], tools: [] }, tasks: [] as JsonValue[], submissions: [] } };
+	const server = await openVersionedHost(root, HOST_RUNTIME_VERSION + 1, status);
+	t.after(() => server.close());
+	const client = await connectHost(server.metadata, { retryAttempts: 0 });
+	t.after(() => client.close());
+	assert.deepEqual(await client.request("status"), status);
+	await assert.rejects(client.request("close"), /This Pi runs older code.*Restart this Pi/u);
+	await assert.rejects(client.request("submit", { message: "task" }), /Restart this Pi/u);
+	assert.equal(server.calls.includes("close"), false);
+	assert.equal(server.calls.includes("submit"), false);
+	status.conversation.tasks.push({ id: 1, kind: "fixture", status: "future-state", background: false, abortRequested: false });
+	await assert.rejects(client.request("status"), /unsupported status.*Restart this Pi/u);
+	assert.equal(client.closed, false, "unsupported data does not authorize transport recovery");
+});
+
+it("waits for an owned launch's readiness frame instead of probing its socket", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const config = fixtureMetadata(root);
+	const markers = markerFixture(t, root);
+	const release = markers.hold("ready");
+	const code = `
+		import { runHost } from ${JSON.stringify(new URL("./host-process.ts", import.meta.url).href)};
+		import { formatHostReady } from ${JSON.stringify(new URL("./host-protocol.ts", import.meta.url).href)};
+		import { publishFixtureMarker } from ${JSON.stringify(new URL("./testdata/durable-runtime/signal.ts", import.meta.url).href)};
+		let ready;
+		const host = await runHost(() => ({ request: async () => ({}), close: async () => {}, isIdle: () => true }), { metadata: JSON.parse(process.argv.at(-1)), idleMs: 0, announceReady: value => { ready = value; } });
+		await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "ready");
+		process.stdout.write(formatHostReady(ready));
+		await host.done;
+	`;
+	const started = acquireHost(config, { runner: "--input-type=module", runnerArgs: ["--eval", code], launchTimeoutMs: 5000, env: { DURABLE_TEST_NOTIFY: markers.notifyPath } });
+	t.after(async () => { release(); const client = await started.catch(() => undefined); if (client) { await client.request("close").catch(() => undefined); await client.close(); } });
+	await markers.marker("ready");
+	let attached = false;
+	const attaching = connectHost(config).then((client) => { attached = true; return client; });
+	t.after(async () => { await (await attaching).close(); });
+	const paths = hostPaths(config);
+	const raw = await Client.connect({ serverId: paths.serverId, transportFactory: createUnixTransportFactory({ path: paths.socket }) });
+	t.after(() => raw.dispose());
+	await raw.request({ serverId: paths.serverId }, { serviceId: HOST_SERVICE_ID, member: "status", args: [null, randomUUID()] });
+	assert.equal(attached, false, "a listening socket does not replace the held readiness frame");
+	release();
+	const [first, second] = await Promise.all([started, attaching]);
+	assert.equal(first.pid, second.pid);
+});
+
+it("reports a foreign live launch as starting elsewhere without retry polling", async (t) => {
+	const root = fixtureRoot(t);
+	const config = fixtureMetadata(root);
+	const paths = hostPaths(config);
+	mkdirSync(dirname(paths.claim), { recursive: true });
+	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: config.storageId, cwd: config.cwd, createdAt: new Date().toISOString() }));
+	await assert.rejects(connectHost(config), /starting elsewhere.*no readiness event/u);
+	await assert.rejects(acquireHost(config), /starting elsewhere/u);
+	await assert.rejects(waitForHostRelease(config), /No process-exit or close-completion event/u);
 });
 
 it("launches a host, echoes, and attaches to the live claim", { timeout: 30000 }, async (t) => {
@@ -157,7 +213,7 @@ it("resends a retry-safe call after a killed host", { timeout: 30000 }, async (t
 	const statePath = join(root, "state.json");
 	const connection = await openHost(t, root);
 	const pending = connection.request("receipts", {}, { requestId: "receipts-1" });
-	await waitUntil(() => (readFixtureState(statePath).waitsStarted ?? 0) >= 1);
+	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
 	writeFixtureState(statePath, { release: true });
@@ -175,10 +231,10 @@ it("rejects an unsafe call instead of resending it", { timeout: 30000 }, async (
 	const config = fixtureMetadata(root);
 	const connection = await openHost(t, root);
 	const pending = connection.request("hang");
-	await waitUntil(() => (readFixtureState(statePath).hangsStarted ?? 0) >= 1);
+	await waitForFixtureState(connection, statePath, (state) => (state.hangsStarted ?? 0) >= 1);
 	process.kill(connection.pid, "SIGKILL");
 	await assert.rejects(pending, /connection was lost|disconnected|closed/iu);
-	await waitUntil(() => connection.closed);
+	await waitForConnectionClose(connection);
 	await connection.close();
 	const again = await acquireHost(config, launch());
 	track(t, again.pid);
@@ -193,10 +249,10 @@ it("aborting a wait cancels the host-side wait without harming the host", { time
 	const connection = await openHost(t, root);
 	const controller = new AbortController();
 	const pending = connection.request("receipts", { wait: true }, { signal: controller.signal });
-	await waitUntil(() => (readFixtureState(statePath).waitsStarted ?? 0) >= 1);
+	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	controller.abort();
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
-	await waitUntil(() => (readFixtureState(statePath).waitsCancelled ?? 0) >= 1);
+	await waitForFixtureState(connection, statePath, (state) => (state.waitsCancelled ?? 0) >= 1);
 	assert.equal(readFixtureState(statePath).waitCompleted ?? 0, 0, "the cancelled wait did not complete");
 	assert.deepEqual(await connection.request("echo", { alive: true }), { alive: true });
 	assert.equal(connection.closed, false);
@@ -209,11 +265,11 @@ it("aborting without the wait flag leaves the host-side wait running", { timeout
 	const connection = await openHost(t, root);
 	const controller = new AbortController();
 	const pending = connection.request("receipts", {}, { signal: controller.signal });
-	await waitUntil(() => (readFixtureState(statePath).waitsStarted ?? 0) >= 1);
+	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	controller.abort();
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
-	writeFixtureState(statePath, { release: true });
-	await waitUntil(() => (readFixtureState(statePath).waitCompleted ?? 0) >= 1);
+	await connection.request("release-waits");
+	await waitForFixtureState(connection, statePath, (state) => (state.waitCompleted ?? 0) >= 1);
 	assert.equal(readFixtureState(statePath).waitsCancelled ?? 0, 0, "no cancel was sent for a plain read");
 	assert.deepEqual(await connection.request("echo", { alive: true }), { alive: true });
 	await connection.close();
@@ -225,7 +281,7 @@ it("aborting an unsafe call never cancels host work", { timeout: 30000 }, async 
 	const connection = await openHost(t, root);
 	const controller = new AbortController();
 	const pending = connection.request("hang", {}, { signal: controller.signal });
-	await waitUntil(() => (readFixtureState(statePath).hangsStarted ?? 0) >= 1);
+	await waitForFixtureState(connection, statePath, (state) => (state.hangsStarted ?? 0) >= 1);
 	controller.abort();
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
 	assert.equal(readFixtureState(statePath).hangsSignaled, undefined, "unsafe work receives no cancel signal");
@@ -237,15 +293,15 @@ it("aborting an unsafe call never cancels host work", { timeout: 30000 }, async 
 it("reports initial and changed state and stops on cancel", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const connection = await openHost(t, root);
-	const changes: number[] = [];
+	const changes = eventLog<number>();
 	const unsubscribe = await subscribeChanges(connection, () => changes.push(changes.length));
-	await waitUntil(() => changes.length >= 1);
+	await changes.waitForCount(1);
 	await connection.request("touch");
-	await waitUntil(() => changes.length >= 2);
+	await changes.waitForCount(2);
 	unsubscribe();
 	const settled = changes.length;
 	await connection.request("touch");
-	await new Promise((resolve) => setTimeout(resolve, 50));
+	await connection.request("echo", { barrier: true });
 	assert.equal(changes.length, settled, "cancelled subscription stopped");
 	assert.deepEqual(await connection.request("echo", { alive: true }), { alive: true });
 	await connection.close();
@@ -255,15 +311,15 @@ it("re-subscribes after a host kill while a safe call is pending", { timeout: 30
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
 	const connection = await openHost(t, root);
-	const changes: number[] = [];
+	const changes = eventLog<number>();
 	const unsubscribe = await subscribeChanges(connection, () => changes.push(changes.length));
-	await waitUntil(() => changes.length >= 1);
+	await changes.waitForCount(1);
 	const pending = connection.request("receipts", { requestId: "changes-resume" });
-	await waitUntil(() => (readFixtureState(statePath).waitsStarted ?? 0) >= 1);
+	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
 	writeFixtureState(statePath, { release: true });
-	await waitUntil(() => connection.pid !== firstPid && changes.length >= 2, 15000);
+	await changes.waitFor(() => connection.pid !== firstPid && changes.length >= 2, 15000);
 	track(t, connection.pid);
 	assert.deepEqual(await pending, { released: true });
 	await unsubscribe();
@@ -276,7 +332,7 @@ it("closing the connection with admitted work does not cancel it", { timeout: 30
 	const config = fixtureMetadata(root);
 	const connection = await openHost(t, root);
 	const pending = connection.request("hang");
-	await waitUntil(() => (readFixtureState(statePath).hangsStarted ?? 0) >= 1);
+	await waitForFixtureState(connection, statePath, (state) => (state.hangsStarted ?? 0) >= 1);
 	await connection.close();
 	await assert.rejects(pending);
 	const again = await acquireHost(config, launch());
@@ -293,8 +349,8 @@ it("retires an idle host and relaunches it on the next access", { timeout: 30000
 	const connection = await acquireHost(config, launch({ env: { PI_AGENT_IDLE_MINUTES: "0.01" } }));
 	const firstPid = connection.pid;
 	await connection.close();
-	await waitUntil(() => (readFixtureState(statePath).closed ?? 0) >= 1);
-	await waitUntil(() => !alive(firstPid), 10000);
+	await waitForHostRelease(config, { signal: AbortSignal.timeout(10000) });
+	assert.ok((readFixtureState(statePath).closed ?? 0) >= 1);
 	const second = await acquireHost(config, launch());
 	track(t, second.pid);
 	assert.notEqual(second.pid, firstPid);
@@ -302,12 +358,15 @@ it("retires an idle host and relaunches it on the next access", { timeout: 30000
 	await second.close();
 });
 
-it("reads a cold snapshot through the helper", { timeout: 30000 }, async (t) => {
+it("reads a snapshot through a bounded helper connection", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
 	const snapshot = await snapshotHost(fixtureMetadata(root), { view: "list" }, launch());
 	assert.equal((snapshot as { starts?: number }).starts, 1);
 	assert.equal(readFixtureState(statePath).starts, 1);
+	const client = await connectHost(fixtureMetadata(root));
+	track(t, client.pid);
+	await client.close();
 });
 
 it("refuses to replace a claim owned by another host", { timeout: 30000 }, async (t) => {
@@ -339,7 +398,8 @@ it("reports terminal closure through onClose after a kill", { timeout: 30000 }, 
 		closed = true;
 	});
 	process.kill(connection.pid, "SIGKILL");
-	await waitUntil(() => closed, 10000);
+	await waitForConnectionClose(connection);
+	assert.equal(closed, true);
 	unsubscribe();
 	assert.equal(connection.closed, true);
 	await connection.close();
@@ -352,23 +412,13 @@ function observationLaunch(extra: Partial<HostLaunchOptions> = {}): HostLaunchOp
 	return { runner: observationFixturePath, ...extra };
 }
 
-/** Poll an async condition without a fixed sleep. */
-async function untilAsync(check: () => Promise<boolean> | boolean, timeoutMs = 20000, label = "condition"): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		if (await check()) return;
-		if (Date.now() >= deadline) throw new Error(`${label} was not reached before its deadline`);
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-}
-
 it("pushes live conversation frames and stops on observation close", { timeout: 60000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const config = fixtureMetadata(root);
 	const connection = await acquireHost(config, observationLaunch());
 	track(t, connection.pid);
 	t.after(() => connection.close().catch(() => {}));
-	const frames: ConversationFrame[] = [];
+	const frames = eventLog<ConversationFrame>();
 	const observation = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
 	observation.onFrame((frame) => {
 		if (frame?.scope === "conversation") frames.push(frame);
@@ -381,7 +431,7 @@ it("pushes live conversation frames and stops on observation close", { timeout: 
 	if (base.scope !== "conversation") assert.fail("expected a conversation frame");
 	assert.equal(base.conversationId, 1);
 	await connection.request("submit", { sessionId: config.storageId, message: "transport prompt", requestId: "observation-1" });
-	await untilAsync(() => frames.some((frame) => frame.entries.some((entry) => entry.kind === "pi.assistant")), 30000, "live answer frame");
+	await frames.waitFor((items) => items.some((frame) => frame.entries.some((entry) => entry.kind === "pi.assistant")), 30000);
 	const answered = frames[frames.length - 1];
 	assert.ok(answered !== undefined && answered.scope === "conversation");
 	assert.ok(answered.revision > base.revision, "the published frame advances the revision");
@@ -392,12 +442,13 @@ it("pushes live conversation frames and stops on observation close", { timeout: 
 
 	await observation.close();
 	const settled = frames.length;
+	const witness = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
+	t.after(() => witness.close());
+	const witnessed = eventLog<ConversationFrame>();
+	witness.onFrame((frame) => { if (frame?.scope === "conversation") witnessed.push(frame); });
 	await connection.request("submit", { sessionId: config.storageId, message: "after close", requestId: "observation-2" });
-	await untilAsync(async () => {
-		const snapshot = (await connection.request("snapshot", { sessionId: config.storageId })) as { entries: readonly { kind: string }[] };
-		return snapshot.entries.filter((entry) => entry.kind === "pi.user").length >= 2;
-	}, 30000, "second answer placed");
-	await new Promise((resolve) => setTimeout(resolve, 200));
+	await witnessed.waitFor((items) => items.some((frame) => frame.entries.filter((entry) => entry.kind === "pi.assistant").length >= 2), 30000);
+	await witness.close();
 	assert.equal(frames.length, settled, "a closed observation receives no further frames");
 });
 
@@ -408,12 +459,12 @@ it("signals unavailable without relaunching after a host kill while observing", 
 	track(t, connection.pid);
 	t.after(() => connection.close().catch(() => {}));
 	const observation = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
-	const events: Array<{ fresh: boolean; state?: string }> = [];
+	const events = eventLog<{ fresh: boolean; state?: string }>();
 	observation.onFrame((_frame, isFresh, state) => events.push({ fresh: isFresh, state }));
 	assert.deepEqual(events, [{ fresh: true, state: "live" }], "the baseline arrives with the live state");
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
-	await untilAsync(() => events.some((event) => event.state === "unavailable"), 40000, "unavailable signal");
+	await events.waitFor((items) => items.some((event) => event.state === "unavailable"), 40000);
 	const unavailable = events.filter((event) => event.state === "unavailable");
 	assert.equal(unavailable.length, 1, "one unavailable signal per listener");
 	assert.equal(unavailable[0]?.fresh, false);

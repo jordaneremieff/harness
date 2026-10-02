@@ -10,7 +10,7 @@ import { dashboardText } from "./dashboard-roster.ts";
 import { connectHost, type HostConnection } from "./host-client.ts";
 import { runHost } from "./host-process.ts";
 import { HOST_RUNTIME_VERSION, hostPaths, type HostMetadata } from "./host-protocol.ts";
-import { waitUntil } from "./host-fixture.mts";
+import { eventLog, waitForConnectionClose } from "./host-fixture.mts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
 import { connectPrimaryChannel, type PrimaryChannel, type PrimaryChannelOptions, type PrimaryInfo } from "./primary-channel.ts";
 import type { createPrimaryChannel } from "./primary-channel.ts";
@@ -77,6 +77,7 @@ function fakeConnection(metadata: HostMetadata, handler: (method: string, params
 			return handler(method, params);
 		},
 		onClose(callback) {
+			if (closed) { queueMicrotask(callback); return () => {}; }
 			listeners.add(callback);
 			return () => {
 				listeners.delete(callback);
@@ -93,6 +94,7 @@ function fakeConnection(metadata: HostMetadata, handler: (method: string, params
 			for (const listener of [...changes]) listener();
 		},
 		async close() {
+			if (closed) return;
 			closed = true;
 			for (const listener of [...listeners]) listener();
 		},
@@ -102,7 +104,7 @@ function fakeConnection(metadata: HostMetadata, handler: (method: string, params
 /** A structural stand-in for one registered primary client. */
 function fakePrimary(signal: AbortSignal) {
 	const sent: Array<{ text: string; details: unknown }> = [];
-	const statuses: Array<string | undefined> = [];
+	const statuses = eventLog<string | undefined>();
 	return {
 		sent,
 		statuses,
@@ -129,6 +131,7 @@ function deferred() {
 }
 
 interface CapturedPrimaryChannel {
+	readonly closedEvent: Promise<void>;
 	readonly options: PrimaryChannelOptions;
 	readonly updates: Array<{ name: string | undefined; model: { provider: string; modelId: string } | undefined; thinkingLevel: string | undefined }>;
 	closed: boolean;
@@ -141,7 +144,8 @@ function primaryFactory(onClose?: (channel: CapturedPrimaryChannel, invocation: 
 	const factory = async (options: PrimaryChannelOptions): Promise<PrimaryChannel> => {
 		invocations += 1;
 		const invocation = invocations;
-		const captured: CapturedPrimaryChannel = { options, updates: [], closed: false };
+		const closedEvent = deferred();
+		const captured: CapturedPrimaryChannel = { options, updates: [], closed: false, closedEvent: closedEvent.promise };
 		channels.push(captured);
 		const info = (): PrimaryInfo => ({
 			id: options.id,
@@ -163,6 +167,7 @@ function primaryFactory(onClose?: (channel: CapturedPrimaryChannel, invocation: 
 			},
 			close: async () => {
 				captured.closed = true;
+				closedEvent.resolve();
 				await onClose?.(captured, invocation);
 			},
 		};
@@ -220,9 +225,11 @@ it("preserves supplied admission keys and creates absent keys", async (t) => {
 it("closes a host opened for a primary that aborts mid-registration", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	let release: ((connection: HostConnection) => void) | undefined;
+	const openingStarted = deferred();
 	const manager = new AgentManager(managerOptions(root, {
 		acquire: () => new Promise<HostConnection>((resolve) => {
 			release = resolve;
+			openingStarted.resolve();
 		}),
 		connect: noHost,
 		observe: async () => ({ conversations: [{ busy: true }] }),
@@ -233,12 +240,12 @@ it("closes a host opened for a primary that aborts mid-registration", { timeout:
 	const controller = new AbortController();
 	const primary = fakePrimary(controller.signal);
 	const registering = manager.registerPrimary("owner-1", primary.client);
-	await waitUntil(() => release !== undefined);
+	await openingStarted.promise;
 	controller.abort();
 	const connection = fakeConnection(hostMetadata(record), async () => ({}));
 	release?.(connection);
 	await registering;
-	await waitUntil(() => connection.closed);
+	await waitForConnectionClose(connection);
 	assert.equal(connection.closed, true, "the raced host client is closed");
 	assert.deepEqual(manager.connectedStorageIds(), []);
 	manager.close();
@@ -301,7 +308,7 @@ it("clears the footer and closes the primary channel when the primary aborts", {
 		await channel.options.deliver({ sourceId: "s1", text: "before" });
 		assert.equal(primary.sent.length, 1);
 		controller.abort();
-		await waitUntil(() => channel.closed);
+		await channel.closedEvent;
 		assert.equal(primary.statuses.at(-1), undefined, "abort clears the durable footer");
 		assert.throws(() => channel.options.deliver({ sourceId: "s2", text: "after" }), /closed/u);
 		assert.deepEqual(primary.sent.map((message) => message.text), ["before"], "no delivery reaches a released primary");
@@ -405,7 +412,7 @@ it("refreshes the durable footer from published views at startup and after a hos
 	const primary = fakePrimary(new AbortController().signal);
 	try {
 		await manager.registerPrimary("owner-1", primary.client);
-		await waitUntil(() => primary.statuses.some((text) => text?.includes("agents 1") === true));
+		await primary.statuses.waitFor((items) => items.some((text) => text?.includes("agents 1") === true));
 		assert.ok(connection, "a live due record connects without launching");
 		publish("idle");
 		let changes = 0;
@@ -418,7 +425,7 @@ it("refreshes the durable footer from published views at startup and after a hos
 		const afterClose = changes;
 		connection.change();
 		assert.equal(changes, afterClose);
-		await waitUntil(() => primary.statuses.some((text) => text?.includes("agents 0") === true));
+		await primary.statuses.waitFor((items) => items.some((text) => text?.includes("agents 0") === true));
 		assert.equal(methods.includes("dashboard"), false, "the footer never requests native dashboard state");
 	} finally { manager.close(); }
 });
@@ -472,7 +479,7 @@ it("returns a failed attach configuration instead of a recovery status", async (
 
 it("stops repeated live host losses in Attention and permits an explicit attach retry", async (t) => {
 	const root = fixtureRoot(t);
-	const connections: FakeConnection[] = [];
+	const connections = eventLog<FakeConnection>();
 	const manager = new AgentManager(managerOptions(root, {
 		createPrimary: primaryFactory().factory,
 		acquire: async (metadata, options) => {
@@ -490,7 +497,7 @@ it("stops repeated live host losses in Attention and permits an explicit attach 
 	manager.catalog.markRecoveryDue(record.storageId, true);
 	for (let index = 0; index < 3; index++) {
 		await connections[index]?.close();
-		await waitUntil(() => connections.length === index + 2);
+		await connections.waitForCount(index + 2);
 	}
 	await connections[3]?.close();
 	await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
@@ -505,7 +512,7 @@ it("stops repeated live host losses in Attention and permits an explicit attach 
 
 it("does not relaunch an unmarked host or a host released with the last primary", async (t) => {
 	const root = fixtureRoot(t);
-	const connections: FakeConnection[] = [];
+	const connections = eventLog<FakeConnection>();
 	const controller = new AbortController();
 	const manager = new AgentManager(managerOptions(root, {
 		createPrimary: primaryFactory().factory,
@@ -566,7 +573,7 @@ it("keeps hundreds of clean catalog records out of board reads and host launches
 
 it("launches only marked-due records and caps concurrent recovery at two", { timeout: 60000 }, async (t) => {
 	const root = fixtureRoot(t);
-	const acquired: string[] = [];
+	const acquired = eventLog<string>();
 	const gates = new Map<string, () => void>();
 	const activity = { active: 0, peak: 0 };
 	let flowing = false;
@@ -598,7 +605,7 @@ it("launches only marked-due records and caps concurrent recovery at two", { tim
 	const clean = createRecord(manager, root, "clean");
 	const primary = fakePrimary(new AbortController().signal);
 	const registering = manager.registerPrimary("owner-1", primary.client);
-	await waitUntil(() => acquired.length >= 2);
+	await acquired.waitForCount(2);
 	assert.equal(activity.peak, 2, "at most two recoveries run at once");
 	assert.equal(acquired.length, 2, "the queue holds the other due records until a slot frees");
 	for (const gate of [...gates.values()]) gate();
@@ -610,7 +617,7 @@ it("launches only marked-due records and caps concurrent recovery at two", { tim
 
 it("serializes simultaneous primary registrations without duplicate recovery", { timeout: 60000 }, async (t) => {
 	const root = fixtureRoot(t);
-	const launched: string[] = [];
+	const launched = eventLog<string>();
 	const gates = new Map<string, () => void>();
 	const activity = { active: 0, peak: 0 };
 	let flowing = false;
@@ -646,7 +653,7 @@ it("serializes simultaneous primary registrations without duplicate recovery", {
 		manager.registerPrimary("owner-1", first.client),
 		manager.registerPrimary("owner-2", second.client),
 	]);
-	await waitUntil(() => launched.length >= 2);
+	await launched.waitForCount(2);
 	assert.equal(activity.peak, 2, "the global recovery queue runs at most two launches");
 	assert.equal(launched.length, 2, "the queue holds the remaining due records until a slot frees");
 	for (const gate of [...gates.values()]) gate();
@@ -658,7 +665,7 @@ it("serializes simultaneous primary registrations without duplicate recovery", {
 
 it("refuses to recover a due record with an unknown or live writer claim", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
-	const acquired: string[] = [];
+	const acquired = eventLog<string>();
 	const connected: string[] = [];
 	const manager = new AgentManager(managerOptions(root, {
 		createPrimary: primaryFactory().factory,
@@ -716,7 +723,7 @@ it("closes a delivery-only recovery connection when no work remains", { timeout:
 	assert.equal(active.closed, false, "pending deliveries keep the recovery connection open");
 	recoveryState = { workPending: false, deliveriesPending: false };
 	active.change();
-	await waitUntil(() => active.closed);
+	await waitForConnectionClose(active);
 	assert.deepEqual(manager.connectedStorageIds(), [], "delivery-only connections stay out of the client map");
 });
 
@@ -829,7 +836,7 @@ function recordedHost(metadata: HostMetadata, runtimeVersion: number, work: { pe
 	return { connection, requests };
 }
 
-for (const version of [0, 1]) {
+for (const version of [0, 1, 2]) {
 	it(`keeps version ${version} readable and blocks its unsafe process close`, async (t) => {
 		const root = fixtureRoot(t);
 		const steps: RecordedHost[] = [];
@@ -853,7 +860,7 @@ for (const version of [0, 1]) {
 
 /** Exercise the replacement invariant independently of a version mismatch. */
 function replaceHost(manager: AgentManager, record: CatalogRecord, client: HostConnection): Promise<HostConnection> {
-	return (manager as unknown as { performHostUpdate(record: CatalogRecord, client: HostConnection): Promise<HostConnection> }).performHostUpdate(record, client);
+	return (manager as unknown as { replaceIdleHost(record: CatalogRecord, client: HostConnection): Promise<HostConnection> }).replaceIdleHost(record, client);
 }
 
 it("replaces an idle host only after its writer claim releases", { timeout: 15000 }, async (t) => {
@@ -954,6 +961,205 @@ it("keeps status readable from a busy older host and reports the pending update"
 		const overview = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
 		assert.ok(overview.failures.some((failure) => failure.storageId === record.storageId && /Host runtime version 0/u.test(failure.error)), "the pending update is visible in status");
 	} finally { manager.close(); }
+});
+
+it("never replaces a newer host and reports that this Pi needs a restart", async (t) => {
+	const root = fixtureRoot(t);
+	const steps: RecordedHost[] = [];
+	const manager = new AgentManager(managerOptions(root, {
+		acquire: async (metadata) => { const step = recordedHost(metadata, HOST_RUNTIME_VERSION + 1, { pending: false }); steps.push(step); return step.connection; },
+		connect: noHost,
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	await manager.control("attach", { sessionId: record.storageId }, { id: "caller", cwd: root });
+	assert.equal(steps.length, 1);
+	assert.equal(steps[0].requests.some((entry) => entry.method === "close"), false);
+	const status = await manager.status() as { failures: Array<{ error: string }> };
+	assert.ok(status.failures.some((failure) => /This Pi runs older code.*Restart this Pi/u.test(failure.error)));
+	const page = await manager.dashboardPage();
+	assert.match(page.rows[0].health?.lastError ?? "", /Restart this Pi/u);
+	await assert.rejects(manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root }), /Restart this Pi/u);
+	assert.equal(steps[0].requests.some((entry) => entry.method === "submit"), false);
+	steps[0].connection.change();
+	await manager.status();
+	assert.equal(steps.length, 1);
+	assert.equal([...(manager as unknown as { crashes: { entries: Iterable<[string, unknown]> } }).crashes.entries].length, 0);
+});
+
+it("releases a blocked older host only after all concurrent reads finish", async (t) => {
+	const root = fixtureRoot(t);
+	const clients: FakeConnection[] = [];
+	const replies: Array<(value: unknown) => void> = [];
+	let entered!: () => void;
+	const bothEntered = new Promise<void>((resolve) => { entered = resolve; });
+	const manager = new AgentManager(managerOptions(root, {
+		connect: async (metadata) => {
+			const client = fakeConnection(metadata, async (method) => {
+				assert.equal(method, "status");
+				return new Promise((resolve) => { replies.push(resolve); if (replies.length === 2) entered(); });
+			}, 1);
+			clients.push(client);
+			return client;
+		}, acquire: noHost,
+	}));
+	const record = createRecord(manager, root);
+	const first = manager.status(record.storageId);
+	const second = manager.status(record.storageId);
+	t.after(async () => { for (const reply of replies) reply({}); await Promise.allSettled([first, second]); manager.close(); });
+	await bothEntered;
+	assert.equal(clients.length, 1, "concurrent readers share their attachment");
+	replies[0]({});
+	await first;
+	assert.equal(clients[0].closed, false, "the other read still owns its connection");
+	replies[1]({});
+	await second;
+	assert.equal(clients[0].closed, true, "the manager does not veto idle retirement after its reads");
+});
+
+it("releases an older host's real transport and permits idle retirement", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	let attached: HostConnection | undefined;
+	let read = false;
+	let scheduled!: (check: () => void) => void;
+	const retirement = new Promise<() => void>((resolve) => { scheduled = resolve; });
+	const manager = new AgentManager(managerOptions(root, {
+		connect: async (metadata) => {
+			attached = await connectHost(metadata, { retryAttempts: 0 });
+			Object.defineProperty(attached, "runtimeVersion", { value: 1 });
+			return attached;
+		}, acquire: noHost,
+	}));
+	const record = createRecord(manager, root);
+	const host = await runHost(() => ({
+		request: async () => { read = true; return {}; },
+		isIdle: () => true,
+		close: async () => {},
+	}), { metadata: hostMetadata(record), idleMs: 1, announceReady: () => {}, scheduleIdleCheck: (check) => { if (read) scheduled(check); return () => {}; } });
+	t.after(async () => { manager.close(); await host.close(); });
+	await manager.status(record.storageId);
+	assert.equal(attached?.closed, true);
+	(await retirement)();
+	await host.done;
+	assert.equal(existsSync(hostPaths(record).claim), false);
+});
+
+it("retains native work until all other clients leave and the old host becomes idle", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const checks = eventLog<() => void>();
+	let idle = false;
+	let observed = false;
+	let acquired = 0;
+	const manager = new AgentManager(managerOptions(root, {
+		connect: async (metadata) => { const link = await connectHost(metadata, { retryAttempts: 0 }); Object.defineProperty(link, "runtimeVersion", { value: 2 }); return link; },
+		acquire: async (metadata) => { acquired++; return fakeConnection(metadata, async () => ({})); },
+	}));
+	const record = createRecord(manager, root);
+	const host = await runHost(() => ({ request: async () => { observed = true; return {}; }, isIdle: () => idle, close: async () => {} }), {
+		metadata: hostMetadata(record), idleMs: 1, announceReady: () => {}, scheduleIdleCheck: (check) => { if (observed) checks.push(check); return () => {}; },
+	});
+	const otherWindow = await connectHost(hostMetadata(record), { retryAttempts: 0 });
+	t.after(async () => { manager.close(); await otherWindow.close(); await host.close(); });
+	await manager.status(record.storageId);
+	assert.deepEqual(manager.connectedStorageIds(), []);
+	await otherWindow.request("status");
+	assert.equal(checks.length, 0, "the other window still prevents retirement");
+	await otherWindow.close();
+	await checks.waitForCount(1);
+	checks[0]();
+	assert.equal(existsSync(hostPaths(record).claim), true, "pending native work survives client release");
+	await checks.waitForCount(2);
+	idle = true;
+	checks[1]();
+	await host.done;
+	await manager.control("attach", { sessionId: record.storageId }, { id: "caller", cwd: root });
+	assert.equal(acquired, 1);
+	assert.equal((await manager.status() as { failures: unknown[] }).failures.length, 0, "the obsolete version notice clears");
+});
+
+it("shares one real attach across concurrent reads and a canceled live selection", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const entered = deferred();
+	const gate = deferred();
+	const links: HostConnection[] = [];
+	let acquisitions = 0;
+	const manager = new AgentManager(managerOptions(root, {
+		connect: async (metadata) => { const link = await connectHost(metadata, { retryAttempts: 0 }); links.push(link); entered.resolve(); await gate.promise; return link; },
+		acquire: async () => { acquisitions++; throw new Error("observation must not launch"); },
+	}));
+	const record = createRecord(manager, root);
+	const host = await runHost(() => ({ request: async () => ({}), close: async () => {}, isIdle: () => true }), { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
+	t.after(async () => { gate.resolve(); manager.close(); await host.close(); });
+	const cancel = new AbortController();
+	const reads = Promise.all([manager.status(record.storageId), manager.snapshot(record.storageId), manager.observeLive(record.storageId, "conversation", () => {}, cancel.signal)]);
+	await entered.promise;
+	assert.equal(links.length, 1);
+	cancel.abort();
+	gate.resolve();
+	const results = await reads;
+	assert.equal(results[2], undefined);
+	assert.equal(links.length, 1);
+	assert.equal(acquisitions, 0);
+	manager.close();
+	await waitForConnectionClose(links[0]);
+	assert.equal(links.every((link) => link.closed), true);
+});
+
+it("closes an attachment whose subscription fails", async (t) => {
+	const root = fixtureRoot(t);
+	const links: FakeConnection[] = [];
+	const manager = new AgentManager(managerOptions(root, {
+		connect: async (metadata) => { const link = fakeConnection(metadata, async () => ({})); link.subscribeChanges = async () => { throw new Error("subscription rejected"); }; links.push(link); return link; },
+		acquire: noHost, observe: async () => ({}),
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	await manager.status(record.storageId);
+	assert.equal(links.length, 1);
+	assert.equal(links[0].closed, true);
+	assert.deepEqual(manager.connectedStorageIds(), []);
+});
+
+it("closes a shared attachment that completes after manager shutdown", async (t) => {
+	const root = fixtureRoot(t);
+	const entered = deferred();
+	const gate = deferred();
+	const links: FakeConnection[] = [];
+	const manager = new AgentManager(managerOptions(root, {
+		connect: async (metadata) => { const link = fakeConnection(metadata, async () => ({})); links.push(link); entered.resolve(); await gate.promise; return link; },
+		acquire: noHost,
+	}));
+	t.after(() => { gate.resolve(); manager.close(); });
+	const record = createRecord(manager, root);
+	const reading = manager.status(record.storageId);
+	await entered.promise;
+	assert.equal(links[0].closed, false);
+	manager.close();
+	gate.resolve();
+	await assert.rejects(reading, /released while opening/u);
+	assert.equal(links[0].closed, true);
+	assert.deepEqual(manager.connectedStorageIds(), []);
+});
+
+it("lets explicit acquisition follow a failed shared attachment without making the read launch", async (t) => {
+	const root = fixtureRoot(t);
+	const entered = deferred();
+	const gate = deferred();
+	let acquisitions = 0;
+	const manager = new AgentManager(managerOptions(root, {
+		connect: async () => { entered.resolve(); await gate.promise; throw new Error("absent"); },
+		acquire: async (metadata) => { acquisitions++; return fakeConnection(metadata, async () => ({})); },
+		observe: async () => ({}),
+	}));
+	t.after(() => { gate.resolve(); manager.close(); });
+	const record = createRecord(manager, root);
+	const read = manager.status(record.storageId);
+	await entered.promise;
+	const attach = manager.control("attach", { sessionId: record.storageId }, { id: "caller", cwd: root });
+	assert.equal(acquisitions, 0);
+	gate.resolve();
+	await Promise.all([read, attach]);
+	assert.equal(acquisitions, 1);
 });
 
 it("refreshes the registered primary identity after model, thinking, and name changes", async (t) => {

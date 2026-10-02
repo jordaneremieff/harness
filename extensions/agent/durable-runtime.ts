@@ -356,9 +356,10 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 		}
 		return host.request(method, params);
 	}
-	const closeHost = async (): Promise<void> => {
+	const closeHost = async (): Promise<"process-exit" | undefined> => {
 		if (closed) return;
 		closed = true;
+		const workPending = !(await host.refreshIdle());
 		restoreDispatch();
 		controller.abort();
 		if (publishTimer !== undefined) {
@@ -366,10 +367,20 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 			publishTimer = undefined;
 		}
 		unsubscribeChanges?.();
-		await settleRecoveryMarker();
+		if (workPending) markRecoveryDue(true);
+		else await settleRecoveryMarker();
 		await flushCatalogView();
 		changeListeners.clear();
+		if (workPending) {
+			// Native close seals admission synchronously, but joins even noncooperative task code.
+			// Process death ends those invocations without manufacturing a durable task outcome.
+			void host.close().catch((error: unknown) => process.stderr.write(`Native close: ${String(error)}\n`));
+			try { try { await deliveries.close(); } finally { await services.close(); } }
+			catch (error) { process.stderr.write(`Service close: ${String(error)}\n`); }
+			return "process-exit";
+		}
 		try { await deliveries.close(); } finally { try { await services.close(); } finally { await host.close(); } }
+		return undefined;
 	};
 	return { request, isIdle: () => host.isIdle(), onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, close: closeHost };
 }

@@ -29,7 +29,8 @@ export interface HostRuntime {
 	 * stop on it, admitted Durable work does not.
 	 */
 	request(method: string, params: unknown, requestId: string, signal?: AbortSignal): Promise<unknown>;
-	close(): Promise<void>;
+	/** Busy native work requires process death rather than an unbounded task join. */
+	close(): Promise<void> | Promise<"process-exit" | undefined>;
 	isIdle(): boolean;
 	/**
 	 * Subscribe to actual storage writes for the change-notification service.
@@ -51,6 +52,8 @@ export interface RunHostOptions {
 	readonly env?: Readonly<Record<string, string | undefined>>;
 	/** Readiness announcement. Defaults to the stdout readiness line. */
 	readonly announceReady?: (ready: HostReady) => void;
+	/** Dedicated process owner's terminal exit; embedded hosts must not supply it. */
+	readonly exit?: () => never;
 	/** Schedule one idle check and return its cancellation function. Defaults to a wall-clock timer. */
 	readonly scheduleIdleCheck?: (check: () => void, delayMs: number) => () => void;
 }
@@ -222,10 +225,12 @@ class HostProcessServer implements HostProcess {
 	private readonly claim: HeldClaim;
 	private readonly idleMs: number;
 	private server: Server | undefined;
+	private socketIdentity: { dev: number; ino: number } | undefined;
 	private cancelIdleCheck: (() => void) | undefined;
 	private readonly scheduleIdleCheck: NonNullable<RunHostOptions["scheduleIdleCheck"]>;
 	private connectionCount = 0;
 	private closing = false;
+	private readonly cancelableRequests = new AbortController();
 	private closePromise: Promise<void> | undefined;
 	private resolveDone: () => void = () => {};
 	private rejectDone: (error: Error) => void = () => {};
@@ -236,7 +241,10 @@ class HostProcessServer implements HostProcess {
 	private observationAgain = false;
 	private unsubscribeObservation: (() => void) | undefined;
 
-	constructor(runtime: HostRuntime, paths: HostPaths, claim: HeldClaim, idleMs: number, scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"]) {
+	private readonly exit: (() => never) | undefined;
+
+	constructor(runtime: HostRuntime, paths: HostPaths, claim: HeldClaim, idleMs: number, scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"], exit?: () => never) {
+		this.exit = exit;
 		this.runtime = runtime;
 		this.paths = paths;
 		this.claim = claim;
@@ -264,6 +272,8 @@ class HostProcessServer implements HostProcess {
 		this.server = server;
 		try {
 			await server.start();
+			const socket = lstatSync(this.paths.socket);
+			this.socketIdentity = { dev: socket.dev, ino: socket.ino };
 		} catch (error) {
 			await server.close().catch(() => undefined);
 			throw error;
@@ -475,10 +485,11 @@ class HostProcessServer implements HostProcess {
 			await this.shutdown();
 			return {};
 		}
+		if (this.closing) throw new ServerError("service_invalid_value", "The durable host process is shutting down");
 		try {
 			// Only an observational wait receives the disconnect or cancel signal;
 			// admitted Durable work never sees one.
-			const signal = isCancelableHostWait(call.member, params) ? context.abortSignal : undefined;
+			const signal = isCancelableHostWait(call.member, params) ? this.waitSignal(context.abortSignal) : undefined;
 			const result = await this.runtime.request(call.member, params, requestId, signal);
 			if (call.member === "observe-open") {
 				const token = (result as { token?: unknown } | undefined)?.token;
@@ -490,6 +501,10 @@ class HostProcessServer implements HostProcess {
 			// message is preserved so consumers keep actionable errors.
 			throw new ServerError("service_invalid_value", error instanceof Error ? error.message : String(error));
 		}
+	}
+
+	private waitSignal(caller?: AbortSignal): AbortSignal {
+		return caller ? AbortSignal.any([caller, this.cancelableRequests.signal]) : this.cancelableRequests.signal;
 	}
 
 	private onConnectionCountChanged(count: number): void {
@@ -530,24 +545,43 @@ class HostProcessServer implements HostProcess {
 		return this.closePromise;
 	}
 
+	/** Remove only our published endpoint before another writer receives the claim. */
+	private unpublishSocket(): void {
+		const socket = lstatSync(this.paths.socket, { throwIfNoEntry: false });
+		if (socket === undefined) return;
+		if (!socket.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino)
+			throw new Error("Durable host socket changed before shutdown; refusing to unlink another endpoint");
+		unlinkSync(this.paths.socket);
+	}
+
 	private async performShutdown(): Promise<void> {
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = undefined;
 		this.closing = true;
 		this.unsubscribeObservation?.();
 		this.unsubscribeObservation = undefined;
+		this.cancelableRequests.abort(new Error("The durable host process is shutting down"));
 		try {
-			const server = this.server;
-			if (server) await server.close();
-			await this.runtime.close();
+			await closeRuntime(this.runtime, this.exit);
+			this.unpublishSocket();
 			this.claim.release();
+			// A clean transport close follows writer release, so clients need no filesystem notification.
+			await this.server?.close();
 			this.resolveDone();
 		} catch (error) {
+			await this.server?.close().catch(() => undefined);
 			const failure = error instanceof Error ? error : new Error(String(error));
 			this.rejectDone(failure);
 			throw failure;
 		}
 	}
+}
+
+/** Keep the live claim until process death when native close cannot join pending work. */
+async function closeRuntime(runtime: HostRuntime, exit?: () => never): Promise<void> {
+	if (await runtime.close() !== "process-exit") return;
+	if (!exit) throw new Error("Busy native shutdown requires its dedicated process owner");
+	exit();
 }
 
 function claimRecord(identity: ClaimIdentity, token: string): ClaimRecord {
@@ -579,18 +613,16 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	let runtime: HostRuntime | undefined;
 	try {
 		runtime = await createRuntime();
-		const host = new HostProcessServer(runtime, paths, claim, idleMs, options.scheduleIdleCheck);
+		const host = new HostProcessServer(runtime, paths, claim, idleMs, options.scheduleIdleCheck, options.exit);
 		await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));
 		return host;
 	} catch (error) {
+		let releasedRuntime = true;
 		if (runtime) {
-			try {
-				await runtime.close();
-			} catch {
-				// Retain the failure that stopped the host.
-			}
+			try { await closeRuntime(runtime, options.exit); }
+			catch { releasedRuntime = false; }
 		}
-		cleanupClaim(claim);
+		if (releasedRuntime) cleanupClaim(claim);
 		throw error;
 	}
 }

@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { DefaultResourceLoader, SessionManager, SettingsManager, createAgentSession, type AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { waitUntil } from "./host-fixture.mts";
+import { eventLog, type EventLog } from "./host-fixture.mts";
 import { AgentManager } from "./manager.ts";
 import { connectPrimaryChannel } from "./primary-channel.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
@@ -36,7 +36,9 @@ interface NoticeFixture {
 	readonly session: AgentSession;
 	readonly sessionManager: SessionManager;
 	readonly sessionsRoot: string;
-	readonly requests: TranscriptContext[];
+	readonly requests: EventLog<TranscriptContext>;
+	/** Hold the provider before its request event. */
+	holdRequest(): { held: Promise<void>; release(): void };
 	/** Hold the next provider response open so the session stays streaming. */
 	armGate(): void;
 	release(): void;
@@ -74,10 +76,15 @@ async function noticeFixture(t: { after(fn: () => void): void }): Promise<Notice
 	process.env.PI_AGENT_SESSIONS_DIR = sessionsRoot;
 	let session: AgentSession | undefined;
 	let sessionManager: SessionManager | undefined;
-	const requests: TranscriptContext[] = [];
+	const requests = eventLog<TranscriptContext>();
+	let requestGate: Promise<void> | undefined;
+	let requestHeld: (() => void) | undefined;
+	let releaseRequest: (() => void) | undefined;
 	let gate: Promise<void> | undefined;
 	let releaseGate: (() => void) | undefined;
 	t.after(() => {
+		releaseRequest?.();
+		releaseGate?.();
 		try {
 			// The manager closes registered channels through the live extension ctx, so close it before dispose.
 			closeAgentManagers();
@@ -97,7 +104,6 @@ async function noticeFixture(t: { after(fn: () => void): void }): Promise<Notice
 	sessionManager = SessionManager.create(cwd, sessionsRoot);
 	const runtime = await createTestRuntime();
 	const stream = (_model: unknown, context: TranscriptContext) => {
-		requests.push(structuredClone(context));
 		const message = assistantMessage("DELIVERY_COMPLETE");
 		const events = createAssistantMessageEventStream();
 		const emit = () => {
@@ -105,8 +111,13 @@ async function noticeFixture(t: { after(fn: () => void): void }): Promise<Notice
 			events.push({ type: "done", reason: "stop", message });
 			events.end(message);
 		};
-		if (gate === undefined) emit();
-		else void gate.then(emit);
+		const begin = () => {
+			requests.push(structuredClone(context));
+			if (gate === undefined) emit();
+			else void gate.then(emit);
+		};
+		if (requestGate === undefined) begin();
+		else { requestHeld?.(); void requestGate.then(begin); }
 		return events;
 	};
 	runtime.registerNativeProvider({
@@ -123,7 +134,7 @@ async function noticeFixture(t: { after(fn: () => void): void }): Promise<Notice
 	session = (await createAgentSession({ cwd, agentDir, modelRuntime: runtime, settingsManager, sessionManager, model: testModel, resourceLoader: loader })).session;
 	await session.bindExtensions({});
 	const id = sessionManager.getSessionId();
-	await waitUntil(() => existsSync(join(sessionsRoot, ".primaries", `${id}.json`)), MESSAGE_LIMIT_MS);
+	assert.equal(existsSync(join(sessionsRoot, ".primaries", `${id}.json`)), true, "bindExtensions awaits primary registration");
 
 	const deliver = async (sourceId: string, text: string, wake: boolean): Promise<void> => {
 		const connection = await connectPrimaryChannel({ id, sessionsRoot });
@@ -138,6 +149,15 @@ async function noticeFixture(t: { after(fn: () => void): void }): Promise<Notice
 		sessionManager,
 		sessionsRoot,
 		requests,
+		holdRequest: () => {
+			const held = eventLog<void>();
+			requestGate = new Promise<void>((resolve) => { releaseRequest = resolve; });
+			requestHeld = () => { held.push(undefined); };
+			return {
+				held: held.waitForCount(1, MESSAGE_LIMIT_MS),
+				release: () => { releaseRequest?.(); requestGate = undefined; requestHeld = undefined; },
+			};
+		},
 		armGate: () => {
 			gate = new Promise<void>((resolve) => {
 				releaseGate = resolve;
@@ -167,10 +187,26 @@ it("retains a full wake-false notice and its source details without a primary mo
 	assert.equal(fixture.requests.length, 0, "a wake-false notice starts no provider request");
 });
 
+it("keeps a provider request consumer pending until the provider leaves its gate", { timeout: 30000 }, async (t) => {
+	const fixture = await noticeFixture(t);
+	const gate = fixture.holdRequest();
+	let requested = false;
+	const pending = fixture.requests.waitForCount(1, MESSAGE_LIMIT_MS).then(() => { requested = true; });
+	await fixture.deliver("model:held", "held notice", true);
+	await gate.held;
+	assert.equal(requested, false);
+	assert.equal(fixture.requests.length, 0);
+	gate.release();
+	await pending;
+	await fixture.session.waitForIdle();
+	assert.equal(requested, true);
+	assert.equal(fixture.requests.length, 1);
+});
+
 it("starts exactly one primary model turn for a wake-true notice when idle", { timeout: 30000 }, async (t) => {
 	const fixture = await noticeFixture(t);
 	await fixture.deliver("model:1", "model notice body", true);
-	await waitUntil(() => fixture.requests.length === 1, MESSAGE_LIMIT_MS);
+	await fixture.requests.waitForCount(1, MESSAGE_LIMIT_MS);
 	await fixture.session.waitForIdle();
 	assert.equal(fixture.requests.length, 1, "one notice starts one turn");
 	assert.equal(fixture.customEntries().length, 1);
@@ -180,8 +216,8 @@ it("defers a wake-false notice to the turn boundary while the primary streams", 
 	const fixture = await noticeFixture(t);
 	fixture.armGate();
 	const run = fixture.session.prompt("start the task");
-	await waitUntil(() => fixture.requests.length === 1, MESSAGE_LIMIT_MS);
-	await waitUntil(() => fixture.session.isStreaming, MESSAGE_LIMIT_MS);
+	await fixture.requests.waitForCount(1, MESSAGE_LIMIT_MS);
+	assert.equal(fixture.session.isStreaming, true, "the held provider request occurs during the active turn");
 	await fixture.deliver("operator:stream", "streamed operator notice", false);
 	assert.equal(fixture.customEntries().length, 0, "the notice waits for the turn boundary instead of steering the running turn");
 	assert.equal(fixture.requests.length, 1, "the deferred notice starts no second provider request while streaming");

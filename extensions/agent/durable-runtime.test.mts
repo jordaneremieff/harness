@@ -319,6 +319,34 @@ it("does not rerun an unsafe effect after SIGKILL and delivers the retained resu
 	}
 });
 
+for (const stop of ["SIGTERM", "close"] as const) for (const mode of ["request", "effect"] as const) it(`retains pending ${mode} work through ${stop} process shutdown`, { timeout: 30000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const catalog = new AgentCatalog(f.root);
+	const first = await acquireHost(f.metadata, { env: f.env(mode) });
+	trackHost(t, first.pid);
+	const submitted = await first.request("submit", { message: "retain pending native work", requestId: "process-stop", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
+	await f.marker(mode === "request" ? "requested" : "effect");
+	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true);
+	if (stop === "SIGTERM") process.kill(first.pid, "SIGTERM");
+	else await first.request("close").catch(() => undefined);
+	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+	await first.close();
+	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "process exit retains the recovery marker");
+	const second = await acquireHost(f.metadata, { env: f.env("answer") });
+	trackHost(t, second.pid);
+	try {
+		assert.notEqual(second.pid, first.pid);
+		const receipt = await waitForReceipt(second, f.ownerId, submitted.submissionId);
+		assert.equal(receipt.status, "done");
+		assert.match(receipt.answer ?? "", /durable runtime answer/u);
+		if (mode === "effect") {
+			assert.equal(readFileSync(join(f.testDir, "effect.txt"), "utf8").trim().split("\n").length, 1);
+			const interrupted = await second.request("inspect", { view: "search", query: "interrupted" }) as SearchPage;
+			assert.ok(interrupted.matches.length >= 1, "native recovery records the interrupted unsafe effect");
+		}
+	} finally { await second.close(); }
+});
+
 it("marks recovery due before admission and reports the recovery state", { timeout: 120000 }, async (t) => {
 	const f = runtimeFixture(t);
 	const catalog = new AgentCatalog(dirname(dirname(f.storagePath)));

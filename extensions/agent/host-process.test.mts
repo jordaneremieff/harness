@@ -12,7 +12,7 @@ import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { observeClaim } from "./claims.ts";
 import { HOST_CHANGE_SERVICE_ID, HOST_SERVICE_ID, HostError, hostPaths, parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
 import { HostClaimRefusedError, resolveIdleMs, runHost, type HostProcess, type HostRuntime } from "./host-process.ts";
-import { waitUntil } from "./host-fixture.mts";
+import { eventLog } from "./host-fixture.mts";
 
 function noop(): void {}
 
@@ -130,10 +130,15 @@ it("waits for runtime idle before retiring", { timeout: 15000 }, async (t) => {
 	const config = metadata(root);
 	let idle = false;
 	const runtime: HostRuntime = { request: async () => ({}), close: async () => {}, isIdle: () => idle };
-	const host = await runHost(() => runtime, { metadata: config, idleMs: 40, announceReady: noop });
-	await new Promise((resolve) => setTimeout(resolve, 160));
+	const checks = eventLog<() => void>();
+	const host = await runHost(() => runtime, { metadata: config, idleMs: 40, announceReady: noop, scheduleIdleCheck: (check) => { checks.push(check); return noop; } });
+	t.after(() => host.close());
+	await checks.waitForCount(1);
+	checks[0]();
 	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "live", "busy host stays");
+	await checks.waitForCount(2);
 	idle = true;
+	checks[1]();
 	await host.done;
 	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "absent");
 });
@@ -142,13 +147,17 @@ it("cancels a wait on caller abort and on client disconnect", { timeout: 15000 }
 	const root = fixtureRoot(t);
 	let started = 0;
 	let aborted = 0;
+	const starts = eventLog<number>();
+	const aborts = eventLog<number>();
 	const runtime: HostRuntime = {
 		request: async (method, _params, _requestId, signal) => {
 			if (method !== "receipts") return { method };
 			started += 1;
+			starts.push(started);
 			return new Promise((_resolve, reject) => {
 				signal?.addEventListener("abort", () => {
 					aborted += 1;
+					aborts.push(aborted);
 					reject(signal.reason ?? new Error("aborted"));
 				}, { once: true });
 			});
@@ -162,18 +171,20 @@ it("cancels a wait on caller abort and on client disconnect", { timeout: 15000 }
 	const first = await connectClient(config);
 	const controller = new AbortController();
 	const pending = call(first, config, "receipts", { wait: true }, controller.signal);
-	await waitUntil(() => started === 1);
+	await starts.waitForCount(1);
+	assert.equal(aborted, 0, "the producer stays pending until cancellation");
 	controller.abort();
 	await assert.rejects(pending, (error: unknown) => error instanceof Error);
-	await waitUntil(() => aborted === 1);
+	await aborts.waitForCount(1);
 	await first.dispose();
 
 	const second = await connectClient(config);
 	const pendingDisconnect = call(second, config, "receipts", { wait: true });
-	await waitUntil(() => started === 2);
+	await starts.waitForCount(2);
+	assert.equal(aborted, 1, "the second producer stays pending until disconnect");
 	await second.dispose();
 	await assert.rejects(pendingDisconnect, (error: unknown) => error instanceof Error);
-	await waitUntil(() => aborted === 2);
+	await aborts.waitForCount(2);
 });
 
 it("publishes changed state to a public subscription", { timeout: 15000 }, async (t) => {
@@ -199,14 +210,14 @@ it("publishes changed state to a public subscription", { timeout: 15000 }, async
 	const { host, metadata: config } = await startHost(root, 0, () => runtime);
 	t.after(() => host.close().catch(() => {}));
 	const client = await connectClient(config);
-	const updates: unknown[] = [];
+	const updates = eventLog<unknown>();
 	const subscription = await client.subscribeService({ serverId: hostPaths(config).serverId }, HOST_CHANGE_SERVICE_ID, "singleton", (update) => {
 		updates.push(update);
 	});
 	assert.equal(subscription.snapshot.serviceId, HOST_CHANGE_SERVICE_ID);
 	subscription.start();
 	await call(client, config, "touch");
-	await waitUntil(() => updates.length >= 1);
+	await updates.waitForCount(1);
 	await subscription.dispose();
 	await client.dispose();
 });

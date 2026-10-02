@@ -35,9 +35,13 @@ stopping work.
 - Host retirement requires no clients and no active work. `PI_AGENT_IDLE_MINUTES`
   controls the idle interval; zero disables retirement. A finished conversation
   does not retire a host while a primary still holds its client connection.
-- A process `close` request closes the transport and runtime, releases the writer
-  claim, and ends the runner. Concurrent close paths share one shutdown. This is
-  different from closing a client connection.
+- A process `close` request differs from a client disconnect. Idle shutdown
+  finishes runtime cleanup, unpublishes the owned endpoint, releases the writer
+  claim, then closes transport. Busy shutdown retains the recovery marker,
+  attempts final catalog publication, seals native admission, and exits through
+  the runner. It keeps the live claim until process death; the next host
+  replaces the dead claim and resumes retained native work. Concurrent close
+  paths share one shutdown.
 - Local protocol validation rejects only the malformed request and leaves its
   healthy connection usable. A failed runtime-version attachment disposes its
   client. Application or protocol errors from a live writer do not authorize a
@@ -256,32 +260,44 @@ versions and a restart message, instead of dispatching across two contracts. An
 open live observation reconnects to a live host only. The observation link
 never relaunches a lost host; it signals its listeners unavailable and leaves
 relaunch to the manager's bounded recovery pool. Separately, when any read
-meets an older host, the manager applies the version check described below. A listener that attaches after a frame arrives receives that
+meets a host of another version, the manager applies the version check
+described below. A listener that attaches after a frame arrives receives that
 current frame at once.
 
 Every host advertises a runtime version in its readiness line and answers a
 `runtime-version` request. A host that reports no version predates the
-handshake and reads as version 0. Process close requires the current runtime
-version because it must close the transport and runtime, release the writer
-claim, and end the process. Older hosts keep serving their supported reads, but
-their close method does not provide that contract, so their automatic update is
-blocked: status, the dashboard roster, and unsupported-method errors say so and
-name the remedy (close their older Pi clients so the idle host can retire, then
-use `agent_attach`). A host whose Durable runtime already closed does not
-recover through idle retirement.
+handshake and reads as version 0. Process close requires runtime version 3. A
+manager replaces only an older host with a supported close contract; it never
+replaces a newer host. Compatible bounded reads from a newer host remain
+available. Mutations and persistent observations of a newer host require a
+restart of this Pi, and unsupported newer data receives an explicit version
+error.
 
-A host that supports process close is replaced when it is idle. The manager
-first verifies that no native work or delivery remains, requests process close,
-and confirms writer release before it acquires the replacement; a close
-acknowledgment or a disconnected client is not release proof, and a failed
-verification leaves the update pending. While the host works, the window keeps
-using the methods the host supports and marks the storage `Host runtime version
-N; this Pi runs version M. It updates when idle.` Replacement never interrupts
-active work and shares the three replacements per sixty seconds cap with crash
-recovery; `agent_attach` clears a stopped update. A newer-only method (timers,
-reset, live observation) against an older host returns a clear refusal instead
-of a raw unknown-method error. Local validation errors and live-writer
-application errors never authorize another writer.
+Versions 0 to 2 do not provide the current process-close contract, so their
+automatic update is blocked. This manager disconnects from such a host after
+the last concurrent bounded operation and refuses persistent observation of it.
+Other Pi windows and live observations still prevent its idle retirement:
+close every client, allow configured retirement after native work ends, then
+use `agent_attach`. A completed conversation does not release its Pi manager. A
+host whose Durable runtime already closed does not recover through idle
+retirement.
+
+An older host with a supported close contract is replaced when it is idle. The
+manager first verifies that no native work or delivery remains, requests
+process close, and checks the actual writer claim after close completion or
+owned process exit before it acquires the replacement; neither a close response
+nor socket loss alone authorizes replacement. While the host works, the window
+keeps using the methods the host supports and marks the storage `Host runtime
+version N; this Pi runs version M. It updates when idle.` Replacement never
+interrupts active work and shares the three replacements per sixty seconds cap
+with crash recovery; `agent_attach` clears a stopped update. A newer-only
+method against an older host returns a clear refusal instead of a raw
+unknown-method error. Local validation errors and live-writer application
+errors never authorize another writer.
+
+Owned launches supply readiness events. For a host launched elsewhere, this Pi
+makes one bounded attach attempt and reports when no readiness event is
+available.
 
 The host sets a top-level `recoveryDue` marker before it admits work, and when
 opening finds pending native work or pending delivery. Startup recovery reads

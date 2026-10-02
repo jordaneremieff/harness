@@ -194,10 +194,7 @@ export class AgentCatalog {
 				throw new Error("Agent metadata is invalid");
 			parseHostMetadata(hostMetadata(record));
 			if (!isThinkingLevel(record.thinkingLevel)) throw new Error("Agent metadata has an unknown reasoning level");
-			if (record.view !== undefined) {
-				parseCatalogView(record.view);
-				this.checkViewIdentity(storageId, record.view);
-			}
+			if (record.view !== undefined) record.view = this.observedView(storageId, record.view);
 			if (record.recoveryDue !== undefined && typeof record.recoveryDue !== "boolean")
 				throw new Error("Agent metadata has an invalid recovery marker");
 			return record;
@@ -216,6 +213,17 @@ export class AgentCatalog {
 		const parsed = parseCatalogView(view);
 		this.checkViewIdentity(record.storageId, parsed);
 		return this.rewrite({ ...record, view: parsed });
+	}
+
+	/** Unknown cached values are unavailable observations, not alternate native state shapes. */
+	private observedView(storageId: string, value: CatalogView): CatalogView {
+		if (value?.storageId !== undefined && value.storageId !== storageId) throw new Error("Agent view storageId does not match its catalog record");
+		if (Array.isArray(value?.rows)) this.checkViewIdentity(storageId, value);
+		try { return parseCatalogView(value); }
+		catch {
+			const states = Array.isArray(value?.rows) ? value.rows.slice(0, 5).map((row) => String(row?.state).slice(0, 64)) : [];
+			return { storageId, updatedAt: new Date().toISOString(), rows: [], coverage: { complete: false, omitted: 0 }, unavailable: `Host metadata is unsupported by this Pi (states: ${JSON.stringify(states)}). Restart this Pi if the host runs newer code. No cached state was interpreted.` };
+		}
 	}
 
 	private checkViewIdentity(storageId: string, view: CatalogView): void {

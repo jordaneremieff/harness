@@ -8,14 +8,14 @@ import { createPrimaryChannel, connectPrimaryChannel, type PrimaryChannel } from
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
 import { acquireHost, connectHost, waitForHostRelease, type HostConnection, type HostObservationListener } from "./host-client.ts";
-import { HOST_RUNTIME_VERSION, hostMethodMinVersion, hostPaths, hostUpdatePendingError, type HostMetadata } from "./host-protocol.ts";
+import { HOST_RUNTIME_VERSION, hostMethodMinVersion, hostRequestVersionError, newerHostError, hostPaths, hostUpdatePendingError, type HostMetadata } from "./host-protocol.ts";
 import { observeClaim, observeClaimAsync } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
 import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
 import { emptyConversationSnapshot, type ConversationSnapshotPage } from "./durable-observation.ts";
 import type { HostObservationScope } from "./host-client.ts";
 
-export const MANAGER_PROTOCOL = 11;
+export const MANAGER_PROTOCOL = 12;
 export interface AgentCaller {
 	id: string;
 	cwd: string;
@@ -150,6 +150,8 @@ export class AgentManager {
 	readonly places: PlaceBook;
 	private readonly options: AgentManagerOptions;
 	private readonly clients = new Map<string, HostConnection>();
+	private readonly clientUses = new Map<string, number>();
+	private readonly attaching = new Set<string>();
 	private readonly opening = new Map<string, Promise<HostConnection>>();
 	private readonly launchRows = new Map<string, AgentConversationSummary>();
 	private readonly recovering = new Set<string>();
@@ -179,58 +181,90 @@ export class AgentManager {
 		this.failures = new BoundedMap(options.failureLimit ?? DEFAULT_FAILURE_LIMIT);
 	}
 
-	private async connection(record: CatalogRecord, primary?: PrimaryClient): Promise<HostConnection> {
+	private async connection(record: CatalogRecord, primary?: PrimaryClient, launch = true): Promise<HostConnection> {
 		if (this.shuttingDown) throw new Error("Agent manager is closed");
 		const existing = this.clients.get(record.storageId);
 		if (existing && !existing.closed) return existing;
 		const pending = this.opening.get(record.storageId);
-		if (pending) return pending;
-		const open = (this.options.acquire ?? acquireHost)(hostMetadata(record), MANAGED_LINK).then(async (client) => {
-			if (this.shuttingDown || primary?.signal.aborted) {
-				await client.close().catch(() => undefined);
-				throw new Error(this.shuttingDown ? "Agent manager closed while opening its host" : "Agent primary released while opening its host");
-			}
-			this.clients.set(record.storageId, client);
-			await this.subscribe(record.storageId, client);
-			if (client.runtimeVersion === HOST_RUNTIME_VERSION) return client;
-			// An idle older host is replaced now, transparently for this caller; a busy one stays until idle.
-			this.noteHostVersion(record.storageId, client.runtimeVersion);
-			return this.replaceOutdatedHost(record, client, primary);
-		}).finally(() => { this.opening.delete(record.storageId); });
+		if (pending) {
+			if (!launch || !this.attaching.has(record.storageId)) return pending;
+			try { return await pending; }
+			catch { return this.connection(record, primary); }
+		}
+		if (!launch) this.attaching.add(record.storageId);
+		const acquire = launch ? this.options.acquire ?? acquireHost : this.options.connect ?? connectHost;
+		const open = Promise.resolve().then(() => acquire(hostMetadata(record), MANAGED_LINK))
+			.then((client) => this.adoptClient(record, client, primary, launch))
+			.finally(() => { this.opening.delete(record.storageId); this.attaching.delete(record.storageId); });
 		this.opening.set(record.storageId, open);
 		return open;
 	}
 
+	private async adoptClient(record: CatalogRecord, client: HostConnection, primary: PrimaryClient | undefined, launch: boolean): Promise<HostConnection> {
+		if (this.shuttingDown || primary?.signal.aborted) {
+			await client.close().catch(() => undefined);
+			throw new Error("Agent manager or primary released while opening its host");
+		}
+		const winner = this.clients.get(record.storageId);
+		if (winner && winner !== client && !winner.closed) { await client.close(); return winner; }
+		await this.subscribeClient(record.storageId, client);
+		if (client.runtimeVersion === HOST_RUNTIME_VERSION) { this.clearUpdatePending(record.storageId); return client; }
+		this.noteHostVersion(record.storageId, client.runtimeVersion);
+		if (client.runtimeVersion > HOST_RUNTIME_VERSION || !launch) return client;
+		return this.replaceOutdatedHost(record, client, primary);
+	}
+
+	private async subscribeClient(storageId: string, client: HostConnection): Promise<void> {
+		this.clients.set(storageId, client);
+		try { await this.subscribe(storageId, client); }
+		catch (error) {
+			if (this.clients.get(storageId) === client) this.clients.delete(storageId);
+			await client.close().catch(() => undefined);
+			throw error;
+		}
+	}
+
 	/** Reuse a writer or a launch already owned by this manager; never acquire one. */
 	private async observationConnection(record: CatalogRecord, primary?: PrimaryClient): Promise<HostConnection | undefined> {
-		const existing = this.clients.get(record.storageId);
-		if (existing && !existing.closed) return existing;
-		const pending = this.opening.get(record.storageId);
-		try {
-			const client = await (pending ?? (this.options.connect ?? connectHost)(hostMetadata(record), MANAGED_LINK));
-			if (this.shuttingDown || primary?.signal.aborted) {
-				if (!pending) await client.close().catch(() => undefined);
-				return undefined;
-			}
-			if (!pending) {
-				this.clients.set(record.storageId, client);
-				await this.subscribe(record.storageId, client);
-				if (client.runtimeVersion !== HOST_RUNTIME_VERSION) this.noteHostVersion(record.storageId, client.runtimeVersion);
-			}
-			return client;
-		} catch {
+		try { return await this.connection(record, primary, false); }
+		catch (error) {
+			if (this.shuttingDown || primary?.signal.aborted) throw error;
+			const paths = hostPaths(record);
+			if (observeClaim(paths.claim, paths.identity).kind === "live") throw error;
 			return undefined;
 		}
 	}
 
-	private async observe(record: CatalogRecord, method: string, params: Record<string, unknown>, primary?: PrimaryClient): Promise<unknown> {
-		if (this.shuttingDown) throw new Error("Agent manager is closed");
-		const client = await this.observationConnection(record, primary);
-		if (client) return client.request(method, params);
-		if (primary?.signal.aborted) throw new Error("Agent primary released during observation");
-		if (this.options.observe) return this.options.observe(record, method, params);
-		const { observeDurableStorage } = await import("./durable-runtime.ts");
-		return observeDurableStorage(record, method, params);
+	/** A blocked older host keeps no manager link after the last bounded operation. */
+	private async withClientLease<T>(storageId: string, operation: () => Promise<T>): Promise<T> {
+		this.clientUses.set(storageId, (this.clientUses.get(storageId) ?? 0) + 1);
+		try { return await operation(); }
+		finally {
+			const remaining = (this.clientUses.get(storageId) ?? 1) - 1;
+			if (remaining > 0) this.clientUses.set(storageId, remaining);
+			else {
+				this.clientUses.delete(storageId);
+				const client = this.clients.get(storageId);
+				if (client && client.runtimeVersion < hostMethodMinVersion("close")) {
+					this.clients.delete(storageId);
+					this.subscriptions.get(storageId)?.();
+					this.subscriptions.delete(storageId);
+					await client.close();
+				}
+			}
+		}
+	}
+
+	private observe(record: CatalogRecord, method: string, params: Record<string, unknown>, primary?: PrimaryClient): Promise<unknown> {
+		return this.withClientLease(record.storageId, async () => {
+			if (this.shuttingDown) throw new Error("Agent manager is closed");
+			const client = await this.observationConnection(record, primary);
+			if (client) return client.request(method, params);
+			if (primary?.signal.aborted) throw new Error("Agent primary released during observation");
+			if (this.options.observe) return this.options.observe(record, method, params);
+			const { observeDurableStorage } = await import("./durable-runtime.ts");
+			return observeDurableStorage(record, method, params);
+		});
 	}
 
 	async spawn(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
@@ -253,7 +287,11 @@ export class AgentManager {
 		return this.startSpawn(record, created, row, input, caller, onCreated);
 	}
 
-	private async startSpawn(record: CatalogRecord, created: boolean, row: AgentConversationSummary, input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
+	private startSpawn(record: CatalogRecord, created: boolean, row: AgentConversationSummary, input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
+		return this.withClientLease(record.storageId, () => this.performSpawn(record, created, row, input, caller, onCreated));
+	}
+
+	private async performSpawn(record: CatalogRecord, created: boolean, row: AgentConversationSummary, input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
 		this.launchRows.set(record.storageId, row);
 		try {
 			const opening = this.connection(record);
@@ -262,6 +300,8 @@ export class AgentManager {
 			let client: HostConnection;
 			try { client = await opening; }
 			catch (error) { if (created) this.catalog.discardUnopened(record); throw error; }
+			const versionError = input.prompt ? hostRequestVersionError("submit", client.runtimeVersion) : undefined;
+			if (versionError) throw versionError;
 			const admission = input.prompt ? await client.request("submit", { sessionId: record.storageId, message: input.prompt, requestId: input.requestId ?? randomUUID(), ownerId: caller.id, ...originParams(input.origin) }) : undefined;
 			const outcome = { sessionId: record.storageId, cwd: record.cwd, admission, lifetime: "independent host process" };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
@@ -291,11 +331,16 @@ export class AgentManager {
 			this.recoveryErrors.delete(record.storageId);
 			this.failures.delete(record.storageId);
 		}
-		const client = await this.connection(record);
-		if (method === "attach") return this.attachClient(client, sessionId, input.model);
-		if ((method === "submit" || method === "rewind" || method === "fork") && params.requestId === undefined) Object.assign(params, { requestId: randomUUID() });
-		const outcome = await client.request(method, params);
-		return ["fork", "rewind", "configure"].includes(method) ? this.mutationSnapshot(client, outcome, sessionId) : outcome;
+		return this.withClientLease(record.storageId, async () => {
+			const client = await this.connection(record);
+			const requested = method === "attach" ? input.model === undefined ? "status" : "configure" : method;
+			const versionError = hostRequestVersionError(requested, client.runtimeVersion);
+			if (versionError) throw versionError;
+			if (method === "attach") return this.attachClient(client, sessionId, input.model);
+			if ((method === "submit" || method === "rewind" || method === "fork") && params.requestId === undefined) Object.assign(params, { requestId: randomUUID() });
+			const outcome = await client.request(method, params);
+			return ["fork", "rewind", "configure"].includes(method) ? this.mutationSnapshot(client, outcome, sessionId) : outcome;
+		});
 	}
 
 	private async attachClient(client: HostConnection, sessionId: string, model: unknown): Promise<unknown> {
@@ -479,15 +524,17 @@ export class AgentManager {
 	): Promise<(() => void) | undefined> {
 		if (this.shuttingDown || signal?.aborted) return undefined;
 		const record = this.catalog.read(sessionId);
-		const client = await this.observationConnection(record);
-		if (!client?.observe || signal?.aborted) return undefined;
-		const observationScope: HostObservationScope = scope === "tasks" ? { scope: "tasks", sessionId: record.storageId } : { scope: "conversation", sessionId };
-		const observation = await client.observe(observationScope, { ...(signal === undefined ? {} : { signal }) });
-		const off = observation.onFrame(listener);
-		return () => {
-			off();
-			void observation.close().catch(() => undefined);
-		};
+		return this.withClientLease(record.storageId, async () => {
+			const client = await this.observationConnection(record);
+			if (!client?.observe || signal?.aborted) return undefined;
+			if (client.runtimeVersion < hostMethodMinVersion("close")) throw hostUpdatePendingError("persistent observation", client.runtimeVersion);
+			const versionError = hostRequestVersionError("observe-open", client.runtimeVersion);
+			if (versionError) throw versionError;
+			const observationScope: HostObservationScope = scope === "tasks" ? { scope: "tasks", sessionId: record.storageId } : { scope: "conversation", sessionId };
+			const observation = await client.observe(observationScope, { ...(signal === undefined ? {} : { signal }) });
+			const off = observation.onFrame(listener);
+			return () => { off(); void observation.close().catch(() => undefined); };
+		});
 	}
 
 	async status(sessionId?: string): Promise<unknown> {
@@ -670,12 +717,12 @@ export class AgentManager {
 		} catch (error) { close(); throw error; }
 	}
 
-	/** Note one connected host when it runs older code; current hosts stay silent. */
+	/** Record the direction of a runtime mismatch; current hosts stay silent. */
 	private noteOlderHost(storageId: string, client: HostConnection): void {
 		if (client.runtimeVersion !== HOST_RUNTIME_VERSION) this.noteHostVersion(storageId, client.runtimeVersion);
 	}
 
-	/** Mark one connected storage host as older code; a replacement runs when the host is idle. */
+	/** Record a mismatch; only an older host with a supported close contract permits replacement. */
 	private noteHostVersion(storageId: string, version: number): void {
 		if (version === HOST_RUNTIME_VERSION) return;
 		if (this.updatePending.get(storageId) !== version) {
@@ -685,8 +732,9 @@ export class AgentManager {
 		this.scheduleHostUpdate(storageId);
 	}
 
-	/** One plain status line for an older host. */
+	/** The version direction decides which process needs a restart. */
 	private updateMessage(version: number): string {
+		if (version > HOST_RUNTIME_VERSION) return newerHostError(version).message;
 		const action = version < hostMethodMinVersion("close") ? hostUpdatePendingError("close", version).message : "It updates when idle.";
 		return `Host runtime version ${version}; this Pi runs version ${HOST_RUNTIME_VERSION}. ${action}`;
 	}
@@ -750,8 +798,12 @@ export class AgentManager {
 
 	/** Close one idle older host through its own close method and relaunch it with current code. */
 	private async performHostUpdate(record: CatalogRecord, client: HostConnection, primary?: PrimaryClient): Promise<HostConnection> {
+		if (client.runtimeVersion >= HOST_RUNTIME_VERSION || client.runtimeVersion < hostMethodMinVersion("close")) return client;
+		return this.replaceIdleHost(record, client, primary);
+	}
+
+	private async replaceIdleHost(record: CatalogRecord, client: HostConnection, primary?: PrimaryClient): Promise<HostConnection> {
 		if (client.closed || this.clients.get(record.storageId) !== client) return client;
-		if (client.runtimeVersion < hostMethodMinVersion("close")) return client;
 		if ((await this.hostIsIdle(client)) !== true) return client;
 		if (!this.noteReplacement(record.storageId)) return client;
 		// Detach first: the closing host's close notification must not queue an independent recovery.
@@ -784,7 +836,7 @@ export class AgentManager {
 	private scheduleHostUpdate(storageId: string): void {
 		if (this.shuttingDown || this.queuedUpdates.has(storageId)) return;
 		const client = this.clients.get(storageId);
-		if (!client || client.closed || client.runtimeVersion === HOST_RUNTIME_VERSION || client.runtimeVersion < hostMethodMinVersion("close")) return;
+		if (!client || client.closed || client.runtimeVersion >= HOST_RUNTIME_VERSION || client.runtimeVersion < hostMethodMinVersion("close")) return;
 		let record: CatalogRecord;
 		try { record = this.catalog.read(storageId); } catch { return; }
 		this.queuedUpdates.add(storageId);
@@ -792,7 +844,7 @@ export class AgentManager {
 			try {
 				if (this.shuttingDown) return;
 				const current = this.clients.get(storageId);
-				if (!current || current.closed || current.runtimeVersion === HOST_RUNTIME_VERSION) return;
+				if (!current || current.closed || current.runtimeVersion >= HOST_RUNTIME_VERSION) return;
 				await this.replaceOutdatedHost(record, current);
 			} catch (error) {
 				this.recordRecoveryError(storageId, errorText(error));

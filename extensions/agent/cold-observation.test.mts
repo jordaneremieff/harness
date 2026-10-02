@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createInterface } from "node:readline";
 import { existsSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { fixtureMetadata } from "./host-fixture.mts";
+import { createFixtureRuntime, eventLog, fixtureMetadata, waitForFixtureState, waitForProcessExit } from "./host-fixture.mts";
+import { parseHostReadyLine } from "./host-protocol.ts";
+import { fileURLToPath } from "node:url";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRuntime, fixtureRegistry, hostOptions } from "./durable-host-fixture.mts";
 import { it } from "node:test";
 import { closeColdObservations, coldObservationMetrics, disposeColdStorage, observeColdStorage, openColdObservationSnapshot, resetColdObservationMetrics, type ColdObservationHooks } from "./cold-observation.ts";
 import { runtimeFixture, waitForReceipt } from "./durable-runtime-fixture.mts";
-import { acquireHost } from "./host-client.ts";
+import { acquireHost, connectHost } from "./host-client.ts";
 
 it("rereads an absent storage that appears during its empty observation open", async () => {
 	const root = mkdtempSync(join(tmpdir(), "cold-absent-"));
@@ -43,8 +47,15 @@ it("rereads an absent storage that appears during its empty observation open", a
 /** Build a real storage with one retained answer through the production runner. */
 async function coldSource(t: { after(fn: () => void): void }) {
 	const f = runtimeFixture(t);
-	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
-	const pid = primary.pid;
+	const child = spawn(process.execPath, [fileURLToPath(new URL("./durable-runner.ts", import.meta.url)), JSON.stringify(f.metadata)], {
+		cwd: f.cwd, env: { ...process.env, ...f.env("answer") }, stdio: ["ignore", "pipe", "pipe"],
+	});
+	t.after(() => { child.kill("SIGKILL"); });
+	child.stderr?.on("data", () => {});
+	const exited = waitForProcessExit(child, 30000);
+	void exited.catch(() => {});
+	await runnerReady(child);
+	const primary = await connectHost(f.metadata);
 	let submissionId: number;
 	try {
 		const submitted = await primary.request("submit", { message: "COLD_SOURCE", requestId: "cold-source", ownerId: f.ownerId, origin: "operator" }) as { submissionId: number };
@@ -54,18 +65,89 @@ async function coldSource(t: { after(fn: () => void): void }) {
 	} finally {
 		await primary.close().catch(() => undefined);
 	}
-	return { f, submissionId, pid };
+	return { f, submissionId, exited };
 }
 
-/** Wait for a retired host process, bounded. */
-async function waitForExit(pid: number, timeoutMs = 10000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		try { process.kill(pid, 0); } catch { return; }
-		if (Date.now() >= deadline) throw new Error("host did not exit before its deadline");
-		await new Promise((resolve) => setTimeout(resolve, 25));
-	}
+/** Resolve on the production runner's readiness frame, bounded only for failure. */
+async function runnerReady(child: ChildProcess): Promise<void> {
+	if (!child.stdout) throw new Error("runner has no readiness stream");
+	const lines = createInterface({ input: child.stdout });
+	try {
+		await new Promise<void>((resolve, reject) => {
+			const finish = (error?: Error): void => {
+				clearTimeout(timer);
+				lines.off("line", onLine);
+				child.off("exit", onExit);
+				child.off("error", onError);
+				if (error) reject(error);
+				else resolve();
+			};
+			const onLine = (line: string): void => {
+				try { if (parseHostReadyLine(line)) finish(); }
+				catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+			};
+			const onExit = (): void => finish(new Error("runner exited before readiness"));
+			const onError = (error: Error): void => finish(error);
+			const timer = setTimeout(() => finish(new Error("runner readiness frame did not arrive")), 10000);
+			lines.on("line", onLine);
+			child.once("exit", onExit);
+			child.once("error", onError);
+		});
+	} finally { lines.close(); }
+	child.stdout.on("data", () => {});
 }
+
+it("keeps fixture event consumers pending before the producer records its event", async () => {
+	const events = eventLog<number>();
+	let completed = false;
+	const pending = events.waitForCount(1).then(() => { completed = true; });
+	assert.equal(completed, false);
+	events.push(1);
+	await pending;
+	assert.equal(completed, true);
+	await events.waitForCount(1);
+});
+
+it("keeps a fixture receipt pending until its release protocol request", async (t) => {
+	const f = runtimeFixture(t);
+	const path = join(f.root, "state.json");
+	const runtime = createFixtureRuntime(path);
+	const observed = {
+		subscribeChanges: async (listener: () => void) => {
+			const unsubscribe = runtime.onChange?.(listener) ?? (() => {});
+			listener();
+			return unsubscribe;
+		},
+	};
+	let stateReached = false;
+	const state = waitForFixtureState(observed, path, (value) => (value.waitsStarted ?? 0) >= 1).then(() => { stateReached = true; });
+	assert.equal(stateReached, false);
+	let released = false;
+	const receipt = runtime.request("receipts", {}, "held").then(() => { released = true; });
+	await state;
+	assert.equal(released, false);
+	await runtime.request("release-waits", {}, "release");
+	await receipt;
+	assert.equal(released, true);
+	await runtime.close();
+});
+
+it("keeps an owned process exit consumer pending until the child exits", async (t) => {
+	const child = spawn(process.execPath, ["-e", "process.stdout.write('held\\n'); process.stdin.once('data', () => process.exit(0));"], { stdio: ["pipe", "pipe", "ignore"] });
+	t.after(() => { child.kill("SIGKILL"); });
+	const held = eventLog<string>();
+	const lines = createInterface({ input: child.stdout });
+	t.after(() => lines.close());
+	lines.on("line", (line) => held.push(line));
+	let exited = false;
+	const pending = waitForProcessExit(child).then(() => { exited = true; });
+	await held.waitForCount(1);
+	assert.deepEqual(held, ["held"]);
+	assert.equal(exited, false);
+	child.stdin.end("release");
+	await pending;
+	assert.equal(exited, true);
+});
 
 it("reuses one snapshot and result for an unchanged source", async (t) => {
 	const { f } = await coldSource(t);
@@ -103,8 +185,8 @@ it("rejects a snapshot whose database identity changed during the open", async (
 });
 
 it("reuses a real fresh closed database across two cold reads", async (t) => {
-	const { f, pid } = await coldSource(t);
-	await waitForExit(pid);
+	const { f, exited } = await coldSource(t);
+	await exited;
 	resetColdObservationMetrics();
 	await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId });
 	assert.equal(coldObservationMetrics().opens, 1);

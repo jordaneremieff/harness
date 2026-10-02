@@ -123,12 +123,74 @@ it("a wire close exits the durable process and releases its writer claim", { tim
 	assert.equal(existsSync(hostPaths(fixture.metadata).claim), false);
 });
 
-it("waits for writer release through filesystem notification", { timeout: 15000 }, async (t) => {
+for (const ownedExit of [false, true]) it(`preserves the busy writer claim with ${ownedExit ? "an explicit" : "no"} process exit owner`, async (t) => {
+	const metadata = fixtureMetadata(root(t));
+	let exits = 0;
+	const exit = (): never => { exits++; assert.equal(existsSync(hostPaths(metadata).claim), true); throw new Error("fixture process exit"); };
+	const host = await runHost(() => ({ request: async () => ({}), isIdle: () => false, close: async () => "process-exit" as const }), {
+		metadata, idleMs: 0, announceReady: () => {}, ...(ownedExit ? { exit } : {}),
+	});
+	await assert.rejects(host.close(), ownedExit ? /fixture process exit/u : /dedicated process owner/u);
+	assert.equal(exits, ownedExit ? 1 : 0);
+	assert.equal(existsSync(hostPaths(metadata).claim), true, "a callback or refusal is not proof of writer death");
+});
+
+it("quiesces observational waits before runtime shutdown without closing transport early", { timeout: 15000 }, async (t) => {
+	const metadata = fixtureMetadata(root(t));
+	const started = deferred();
+	let cancelled = false;
+	const host = await runHost(() => ({
+		request: async (_method, _params, _id, signal) => new Promise((_resolve, reject) => {
+			signal?.addEventListener("abort", () => { cancelled = true; reject(signal.reason); }, { once: true });
+			started.resolve();
+		}),
+		isIdle: () => true,
+		close: async () => { assert.equal(cancelled, true); },
+	}), { metadata, idleMs: 0, announceReady: () => {} });
+	t.after(() => host.close());
+	const client = await connectHost(metadata, { retryAttempts: 0 });
+	t.after(() => client.close());
+	const waiting = client.request("receipts", { wait: true });
+	const rejected = assert.rejects(waiting);
+	await started.promise;
+	assert.equal(cancelled, false);
+	await client.request("close").catch(() => undefined);
+	await rejected;
+	await host.done;
+	assert.equal(existsSync(hostPaths(metadata).claim), false);
+});
+
+it("disconnects only after runtime shutdown and writer release", { timeout: 15000 }, async (t) => {
+	const metadata = fixtureMetadata(root(t));
+	const closing = deferred();
+	const release = deferred();
+	let dispatched = 0;
+	const host = await runHost(() => ({
+		request: async () => { dispatched++; return {}; },
+		isIdle: () => true,
+		close: async () => { closing.resolve(); await release.promise; },
+	}), { metadata, idleMs: 0, announceReady: () => {} });
+	t.after(async () => { release.resolve(); await host.close(); });
+	const client = await connectHost(metadata, { retryAttempts: 0 });
+	t.after(() => client.close());
+	const closed = client.request("close").catch(() => undefined);
+	await closing.promise;
+	assert.equal(client.closed, false, "disconnect must not precede runtime cleanup");
+	assert.equal(existsSync(hostPaths(metadata).claim), true);
+	await assert.rejects(client.request("submit", { message: "too late" }), /shutting down/u);
+	assert.equal(dispatched, 0);
+	release.resolve();
+	await closed;
+	assert.equal(existsSync(hostPaths(metadata).claim), false, "the protocol completion proves release without a filesystem event");
+	await host.done;
+});
+
+it("waits for writer release through close completion", { timeout: 15000 }, async (t) => {
 	const metadata = fixtureMetadata(root(t));
 	const host = await runHost(() => ({ request: async () => ({}), isIdle: () => true, close: async () => {} }), { metadata, idleMs: 0, announceReady: () => {} });
 	t.after(() => host.close());
 	let settled = false;
-	const released = hostClient.waitForHostRelease(metadata).then(() => { settled = true; });
+	const released = hostClient.waitForHostRelease(metadata, { after: host.done }).then(() => { settled = true; });
 	const client = await connectHost(metadata, { retryAttempts: 0 });
 	t.after(() => client.close());
 	await client.request("status");

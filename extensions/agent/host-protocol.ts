@@ -20,10 +20,10 @@ export const HOST_SERVICE_ID = "pi.agent.host";
 /**
  * Host runtime contract version. Bump this when the host method set or the wire
  * contract changes. A host that reports no version predates this handshake and
- * reads as version 0, so a current client can recognize it and replace it when
- * it goes idle.
+ * reads as version 0. A replacement requires an older host with the current
+ * process-close contract; blocked hosts retire only after all clients release.
  */
-export const HOST_RUNTIME_VERSION = 2;
+export const HOST_RUNTIME_VERSION = 3;
 /** Method member that reports the runtime version of one live host. */
 export const HOST_RUNTIME_VERSION_MEMBER = "runtime-version";
 /** Chord service identity for the host's coalesced change notifications. */
@@ -226,7 +226,7 @@ export function isRetrySafeHostMethod(method: string): boolean {
  */
 const HOST_METHOD_MIN_VERSION: ReadonlyMap<string, number> = new Map([
 	[HOST_RUNTIME_VERSION_MEMBER, 1],
-	["close", 2],
+	["close", 3],
 	["reset", 1],
 	["timer-schedule", 1],
 	["timer-list", 1],
@@ -241,11 +241,24 @@ export function hostMethodMinVersion(method: string): number {
 	return HOST_METHOD_MIN_VERSION.get(method) ?? 0;
 }
 
+const HOST_READ_METHODS = new Set(["runtime-version", "status", "list", "inspect", "snapshot", "dashboard", "recovery-state", "receipts", "timer-list"]);
+
+/** Newer hosts retain bounded reads, never mutations under an unknown contract. */
+export function hostRequestVersionError(method: string, runtimeVersion: number): HostError | undefined {
+	if (runtimeVersion > HOST_RUNTIME_VERSION && !HOST_READ_METHODS.has(method)) return newerHostError(runtimeVersion, `Refused ${method}.`);
+	if (hostMethodMinVersion(method) > runtimeVersion) return hostUpdatePendingError(method, runtimeVersion);
+	return undefined;
+}
+
+export function newerHostError(runtimeVersion: number, detail = ""): HostError {
+	return new HostError(`Host runtime version ${runtimeVersion}; this Pi runs version ${HOST_RUNTIME_VERSION}. This Pi runs older code. ${detail} Restart this Pi to load the current agent code. The newer host stays running.`, "unavailable");
+}
+
 /** Clear refusal when an older host does not serve a method the caller needs. */
 export function hostUpdatePendingError(method: string, runtimeVersion: number): HostError {
 	const reason = method === "close" ? "cannot close its process safely" : `does not support ${method}`;
 	const action = runtimeVersion < hostMethodMinVersion("close")
-		? "Automatic update is blocked. Close its older Pi clients so an idle host can retire, then use agent_attach."
+		? "Automatic update is blocked. This manager releases its link after each bounded operation. Close every other client, including other Pi windows and live observations; let an idle host retire before agent_attach."
 		: "It updates when idle.";
 	return new HostError(`This agent's host runs older code and ${reason}. ${action}`, "unavailable");
 }

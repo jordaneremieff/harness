@@ -9,7 +9,7 @@ export async function runDurableAgentHost(metadataJson: string): Promise<void> {
 	process.stdout.on("error", detachedOutput);
 	process.stderr.on("error", detachedOutput);
 	const metadata = parseHostMetadata(JSON.parse(metadataJson));
-	const host = await runHost(() => createDurableRuntime(metadata), { metadata });
+	const host = await runHost(() => createDurableRuntime(metadata), { metadata, exit: () => process.exit(0) });
 	const stop = () => { void host.close().catch((error: unknown) => { process.stderr.write(`${String(error)}\n`); process.exitCode = 1; }); };
 	process.once("SIGTERM", stop);
 	process.once("SIGINT", stop);

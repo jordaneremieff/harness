@@ -10,7 +10,6 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, watch, type FSWatcher } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { JsonValue, ServiceCall, ServiceSubscriptionSnapshot } from "@earendil-works/chord";
 import { Client, ServerError, type ServiceSubscription } from "@earendil-works/pi-client";
@@ -19,12 +18,14 @@ import { observeClaim, readClaimFile } from "./claims.ts";
 import {
 	HOST_CHANGE_SERVICE_ID,
 	HOST_OBSERVE_MEMBER,
+	HOST_RUNTIME_VERSION,
 	HOST_RUNTIME_VERSION_MEMBER,
 	HOST_SERVICE_ID,
 	HostError,
 	hostMethodMinVersion,
+	hostRequestVersionError,
+	newerHostError,
 	hostPaths,
-	hostUpdatePendingError,
 	isCancelableHostWait,
 	isRetrySafeHostMethod,
 	observationServiceId,
@@ -35,6 +36,7 @@ import {
 	type HostReady,
 } from "./host-protocol.ts";
 import { frameFromOps, isObservationFrame, type ObservationFrame } from "./live-frames.ts";
+import { AgentConversationSummarySchema, ListRowSchema, observationSchema, structuredObservation } from "./observation-schema.ts";
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30_000;
 // An unresolved project trust decision includes time for the primary UI answer.
@@ -42,8 +44,8 @@ const TRUST_LAUNCH_TIMEOUT_MS = 330_000;
 const DEFAULT_RETRY_ATTEMPTS = 1;
 const STDIO_CAPTURE_LIMIT = 64 * 1024;
 const CONNECT_WAIT_LIMIT_MS = 5000;
-const CONNECT_RETRY_INTERVAL_MS = 25;
 const launchedChildren = new Map<number, ChildProcess>();
+const launchedReadiness = new WeakMap<ChildProcess, Promise<HostReady>>();
 
 /** Pi exposes codec failures by Error.name, but does not re-export their class from pi-client. */
 function isProtocolValidationError(error: unknown): error is Error {
@@ -212,26 +214,25 @@ function claimPid(paths: HostPaths): number {
 }
 
 async function connectClient(serverId: string, socketPath: string): Promise<Client> {
-	return Client.connect({ serverId, transportFactory: createUnixTransportFactory({ path: socketPath }) });
+	const client = new Client({ serverId, transportFactory: createUnixTransportFactory({ path: socketPath }) });
+	const deadline = AbortSignal.timeout(CONNECT_WAIT_LIMIT_MS);
+	const abort = (): void => client.disconnect("Durable host connect or handshake did not complete before its deadline");
+	deadline.addEventListener("abort", abort, { once: true });
+	try { await client.connect(); return client; }
+	catch (error) { await client.dispose(); throw error; }
+	finally { deadline.removeEventListener("abort", abort); }
 }
 
-/** Bounded reconciliation for the short window between a winning claim and a listening socket. */
-async function connectWithWait(paths: HostPaths, timeoutMs: number): Promise<Client> {
-	const deadline = Date.now() + Math.min(Math.max(0, timeoutMs), CONNECT_WAIT_LIMIT_MS);
-	let lastError: Error | undefined;
-	for (;;) {
-		try {
-			return await connectClient(paths.serverId, paths.socket);
-		} catch (error) {
-			lastError = toError(error);
-		}
-		// A present socket that refuses means the owner is dead; only wait while the
-		// endpoint is still absent.
-		if (existsSync(paths.socket)) break;
-		if (Date.now() >= deadline) break;
-		await new Promise((resolve) => setTimeout(resolve, CONNECT_RETRY_INTERVAL_MS));
+/** Owned launches have a readiness event. A foreign launch gets one attach attempt, never timed retries. */
+async function connectWhenReady(paths: HostPaths): Promise<Client> {
+	const child = launchedChildren.get(claimPid(paths));
+	if (child) await launchedReadiness.get(child);
+	try { return await connectClient(paths.serverId, paths.socket); }
+	catch (error) {
+		if (!child && observeClaim(paths.claim, paths.identity).kind === "live")
+			throw new HostError("The host is starting elsewhere or its live endpoint is unavailable. This Pi has no readiness event for that process. Retry the read after startup; no replacement was started.", "unavailable", { cause: error });
+		throw error;
 	}
-	throw lastError ?? new Error(`durable host endpoint is missing at ${paths.socket}`);
 }
 
 /** Find the readiness line in already-captured stdout; a malformed matching line throws. */
@@ -308,12 +309,14 @@ async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions):
 		launchedChildren.set(pid, child);
 		child.once("exit", () => { launchedChildren.delete(pid); });
 	}
-	const ready = await waitForReady(child, timeoutMs);
+	const readiness = waitForReady(child, timeoutMs);
+	launchedReadiness.set(child, readiness);
+	const ready = await readiness;
 	detachChild(child);
 	const paths = hostPaths(metadata);
 	try {
 		if (ready.socketPath !== paths.socket) throw new Error(`durable host readiness path does not match the storage endpoint: ${ready.socketPath}`);
-		const client = await connectWithWait(paths, timeoutMs);
+		const client = await connectClient(paths.serverId, paths.socket);
 		return { client, pid: ready.pid, socketPath: paths.socket, runtimeVersion: ready.runtimeVersion };
 	} catch (error) {
 		child.kill("SIGKILL");
@@ -322,10 +325,10 @@ async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions):
 }
 
 /** Attach only to a live host. */
-async function attachLink(metadata: HostMetadata, options: HostLaunchOptions): Promise<Link> {
+async function attachLink(metadata: HostMetadata): Promise<Link> {
 	const paths = hostPaths(metadata);
 	if (observeClaim(paths.claim, paths.identity).kind !== "live") throw new Error(`no live durable host for ${metadata.storageId}`);
-	const client = await connectWithWait(paths, options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS);
+	const client = await connectWhenReady(paths);
 	try {
 		return { client, pid: claimPid(paths), socketPath: paths.socket, runtimeVersion: await readRuntimeVersion(client, paths.serverId) };
 	} catch (error) {
@@ -343,7 +346,7 @@ async function attachLink(metadata: HostMetadata, options: HostLaunchOptions): P
  */
 async function readRuntimeVersion(client: Client, serverId: string): Promise<number> {
 	try {
-		const value = await client.request({ serverId }, { serviceId: HOST_SERVICE_ID, member: HOST_RUNTIME_VERSION_MEMBER, args: [] });
+		const value = await client.request({ serverId }, { serviceId: HOST_SERVICE_ID, member: HOST_RUNTIME_VERSION_MEMBER, args: [] }, AbortSignal.timeout(CONNECT_WAIT_LIMIT_MS));
 		const version = (value as { version?: unknown } | undefined)?.version;
 		if (typeof version !== "number" || !Number.isSafeInteger(version) || version <= 0) throw new Error("host runtime version is malformed");
 		return version;
@@ -353,46 +356,46 @@ async function readRuntimeVersion(client: Client, serverId: string): Promise<num
 	}
 }
 
-/** Observe claim deletion or an owned child exit; the deadline only rejects a stalled shutdown. */
+/** Prove release at a close completion or owned process exit, without filesystem notifications. */
 export function waitForHostRelease(metadata: HostMetadata, options: { signal?: AbortSignal; after?: Promise<unknown> } = {}): Promise<void> {
 	const paths = hostPaths(metadata);
 	const deadline = AbortSignal.timeout(CONNECT_WAIT_LIMIT_MS);
 	const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
 	return new Promise<void>((resolveReleased, rejectReleased) => {
-		let watcher: FSWatcher | undefined;
 		const child = launchedChildren.get(claimPid(paths));
 		let settled = false;
 		const finish = (error?: Error): void => {
 			if (settled) return;
 			settled = true;
-			watcher?.close();
-			child?.off("exit", check);
+			child?.off("exit", exited);
 			signal.removeEventListener("abort", abort);
 			if (error) rejectReleased(error);
 			else resolveReleased();
 		};
-		const check = (): void => {
+		const check = (): boolean => {
 			const owner = observeClaim(paths.claim, paths.identity);
 			if (owner.kind === "absent" || owner.kind === "dead") finish();
 			else if (owner.kind === "unknown") finish(new Error(`durable host writer claim cannot be verified: ${owner.error}`));
+			return settled;
+		};
+		const exited = (): void => {
+			if (!check()) finish(new Error("The previous host exited but a live writer still owns the claim"));
+		};
+		const completed = (): void => {
+			if (!check() && !child) finish(new Error("Host close completed without confirmed writer release; replacement is blocked"));
 		};
 		const abort = (): void => finish(new Error(`durable host writer release was not confirmed before observation ended (claim: ${observeClaim(paths.claim, paths.identity).kind})`, { cause: signal.reason }));
 		if (signal.aborted) { abort(); return; }
 		check();
 		if (settled) return;
-		try {
-			watcher = watch(paths.claim, check);
-			watcher.on("error", (error) => finish(error));
-			child?.once("exit", check);
-			// Recheck at the protocol boundary as well as on persistent filesystem state.
-			void options.after?.then(check, check);
-			signal.addEventListener("abort", abort, { once: true });
-			// Claim state persists, so this read closes the watch-installation gap.
-			check();
-		} catch (error) {
-			check();
-			if (!settled) finish(toError(error));
+		if (!child && !options.after) {
+			finish(new Error("No process-exit or close-completion event is available for this live foreign host; writer release is unconfirmed"));
+			return;
 		}
+		child?.once("exit", exited);
+		void options.after?.then(completed, completed);
+		signal.addEventListener("abort", abort, { once: true });
+		check();
 	});
 }
 
@@ -403,7 +406,7 @@ async function acquireLink(metadata: HostMetadata, options: HostLaunchOptions): 
 	if (observation.kind === "unknown") throw new Error(`durable host writer claim cannot be replaced: ${observation.error}`);
 	if (observation.kind === "live") {
 		try {
-			return await attachLink(metadata, options);
+			return await attachLink(metadata);
 		} catch (error) {
 			if (error instanceof HostError || error instanceof ServerError || isProtocolValidationError(error)) throw error;
 			// A killed owner still reads as live until the process is reaped; wait
@@ -415,7 +418,7 @@ async function acquireLink(metadata: HostMetadata, options: HostLaunchOptions): 
 		return await launchRunner(metadata, options);
 	} catch (launchError) {
 		// Another process may have won a concurrent launch; join its host.
-		if (observeClaim(paths.claim, paths.identity).kind === "live") return attachLink(metadata, options);
+		if (observeClaim(paths.claim, paths.identity).kind === "live") return attachLink(metadata);
 		throw launchError;
 	}
 }
@@ -510,7 +513,8 @@ class HostConnectionImpl implements HostConnection {
 		if (this.closedValue) return Promise.reject(new Error("durable host connection is closed"));
 		if (!isWellFormedRequestText(method)) return Promise.reject(new HostError("host request method must be 1..128 well-formed characters", "invalid"));
 		if (options.requestId !== undefined && !isWellFormedRequestText(options.requestId)) return Promise.reject(new HostError("host requestId must be 1..128 well-formed characters", "invalid"));
-		if (hostMethodMinVersion(method) > this.runtimeVersionValue) return Promise.reject(hostUpdatePendingError(method, this.runtimeVersionValue));
+		const versionError = hostRequestVersionError(method, this.runtimeVersionValue);
+		if (versionError) return Promise.reject(versionError);
 		const signal = options.signal;
 		if (signal?.aborted) return Promise.reject(abortReason(signal));
 		const id = options.requestId ?? randomUUID();
@@ -555,10 +559,31 @@ class HostConnectionImpl implements HostConnection {
 		const wireSignal = isCancelableHostWait(call.method, call.params) ? call.signal : undefined;
 		void this.client.request({ serverId: this.serverId }, call.call, wireSignal).then(
 			(result) => {
-				if (this.pending.delete(call.id)) call.resolve(result);
+				if (!this.pending.delete(call.id)) return;
+				try { call.resolve(this.checkedRead(call.method, result)); }
+				catch (error) { call.reject(toError(error)); }
 			},
 			(error) => this.handleFailure(call, error),
 		);
+	}
+
+	private checkedRead(method: string, value: unknown): unknown {
+		if (this.runtimeVersionValue <= HOST_RUNTIME_VERSION) return value;
+		try {
+			if (method === "status" || method === "inspect") return structuredObservation(observationSchema(method), value);
+			if (method === "dashboard") {
+				if (!Array.isArray(value)) throw new Error("dashboard is not an array");
+				for (const row of value) structuredObservation(AgentConversationSummarySchema, row);
+			}
+			if (method === "list") this.checkListRows(value);
+			return value;
+		} catch { throw newerHostError(this.runtimeVersionValue, `The host returned unsupported ${method} data.`); }
+	}
+
+	private checkListRows(value: unknown): void {
+		const items = (value as { items?: unknown } | null)?.items;
+		if (!Array.isArray(items)) throw new Error("list has no items");
+		for (const row of items) structuredObservation(ListRowSchema, { ...row, sessionId: row?.identity, storageId: this.storageId, cwd: this.metadata.cwd });
 	}
 
 	async subscribeChanges(listener: () => void, signal?: AbortSignal): Promise<() => void> {
@@ -640,7 +665,8 @@ class HostConnectionImpl implements HostConnection {
 	 */
 	async observe(scope: HostObservationScope, options: { readonly signal?: AbortSignal } = {}): Promise<HostObservation> {
 		if (this.closedValue) throw new Error("durable host connection is closed");
-		if (hostMethodMinVersion("observe-open") > this.runtimeVersionValue) throw hostUpdatePendingError("observe-open", this.runtimeVersionValue);
+		const versionError = hostRequestVersionError("observe-open", this.runtimeVersionValue);
+		if (versionError) throw versionError;
 		const signal = options.signal;
 		if (signal?.aborted) throw abortReason(signal);
 		const id = this.nextObservationId;
@@ -846,7 +872,7 @@ class HostConnectionImpl implements HostConnection {
 		try {
 			// An open observation reconnects to a live host only. Launch authority belongs to
 			// the manager's bounded recovery pool; an observation never relaunches a dead host.
-			link = retryable.length > 0 ? await acquireLink(this.metadata, this.launchOptions) : await attachLink(this.metadata, this.launchOptions);
+			link = retryable.length > 0 ? await acquireLink(this.metadata, this.launchOptions) : await attachLink(this.metadata);
 		} catch (error) {
 			this.shutdownLocal(toError(error));
 			return;
@@ -915,7 +941,7 @@ export async function acquireHost(metadata: HostMetadata, options: HostLaunchOpt
 /** Attach to a running host and fail when none is live. */
 export async function connectHost(metadata: HostMetadata, options: HostLaunchOptions = {}): Promise<HostConnection> {
 	const parsed = parseHostMetadata(metadata);
-	return connectLink(parsed, await attachLink(parsed, options), options);
+	return connectLink(parsed, await attachLink(parsed), options);
 }
 
 /**

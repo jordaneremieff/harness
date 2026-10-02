@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { createServer, type Socket } from "node:net";
 import { spawnSync } from "node:child_process";
+import { eventLog } from "./host-fixture.mts";
 import { ServerError, type ServerHost } from "@earendil-works/pi-server";
 import { createUnixServer } from "@earendil-works/pi-server/unix";
 import { connectPrimaryChannel, createPrimaryChannel, PRIMARY_ENDPOINT_VERSION, primaryEndpointOwnerState, primaryEndpointPath, primaryEndpointStatus, PrimaryChannelConflictError, PrimaryChannelUnavailableError, probePrimaryChannel, type PrimaryChannelOptions, type PrimaryDelivery } from "./primary-channel.ts";
@@ -60,16 +61,6 @@ async function fixture(t: { after(fn: () => void): void }): Promise<Fixture> {
 	const channel = await createPrimaryChannel(options);
 	t.after(() => void channel.close().catch(() => undefined));
 	return { root, id, options, delivered, prompted, channel };
-}
-
-/** Poll one bounded test condition without a fixed sleep. */
-async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		if (predicate()) return;
-		if (Date.now() >= deadline) throw new Error("condition was not reached before its deadline");
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
 }
 
 /** One recorded endpoint with an independent v4 server identity. */
@@ -155,15 +146,26 @@ it("routes a trust prompt and returns the primary decision", async (t) => {
 it("uses the human-decision deadline for trustPrompt, not the handshake deadline", async (t) => {
 	const root = testRoot(t);
 	const id = uuidV7();
+	let release = () => {};
+	const decision = new Promise<void>((resolve) => { release = resolve; });
+	const prompted = eventLog<string>();
 	const channel = await createPrimaryChannel(channelOptions(root, id, {
-		promptTrust: async () => { await new Promise((resolve) => setTimeout(resolve, 400)); return { trusted: true, remember: false }; },
+		promptTrust: async (cwd) => { prompted.push(cwd); await decision; return { trusted: true, remember: false }; },
 	}));
+	t.after(release);
 	t.after(() => void channel.close().catch(() => undefined));
 	const client = await connectPrimaryChannel({ id, sessionsRoot: root, timeoutMs: 150 });
 	try {
-		const started = Date.now();
-		assert.deepEqual(await client.trustPrompt("/work/slow"), { trusted: true, remember: false });
-		assert.ok(Date.now() - started >= 350, "waited past the handshake deadline");
+		const deadlines: number[] = [];
+		const timeout = AbortSignal.timeout.bind(AbortSignal);
+		t.mock.method(AbortSignal, "timeout", (ms: number) => { deadlines.push(ms); return timeout(ms); });
+		let completed = false;
+		const pending = client.trustPrompt("/work/slow").then((value) => { completed = true; return value; });
+		await prompted.waitForCount(1);
+		assert.equal(completed, false, "the decision producer still holds the consumer");
+		assert.deepEqual(deadlines, [300000], "the request uses the human-decision deadline, not the 150ms handshake deadline");
+		release();
+		assert.deepEqual(await pending, { trusted: true, remember: false });
 	} finally {
 		await client.close();
 	}
@@ -353,8 +355,9 @@ it("removes the endpoint when the abort signal fires", async (t) => {
 	const path = primaryEndpointPath(root, id);
 	assert.ok(existsSync(path));
 	controller.abort();
-	await waitUntil(() => !existsSync(path));
-	await waitUntil(() => !existsSync(channel.socketPath));
+	await channel.close();
+	assert.equal(existsSync(path), false);
+	assert.equal(existsSync(channel.socketPath), false);
 });
 
 it("rewrites the endpoint identity when a registered primary changes", async (t) => {

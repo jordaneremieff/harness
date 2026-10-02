@@ -229,6 +229,17 @@ it("refuses view writes through a symlink, corrupt record, or wrong identity", (
 	assert.equal(readFileSync(victim, "utf8"), JSON.stringify(record), "the symlink target is unchanged");
 });
 
+it("rejects unknown cached states without losing the host's address", (t) => {
+	const { catalog, input } = fixture(t);
+	const record = catalog.create(input);
+	const row = { id: record.storageId, storageId: record.storageId, cwd: record.cwd, modifiedAt: 1, owner: "unknown", state: "future-state", cost: 0, partial: false };
+	writeFileSync(catalog.path(record.storageId), JSON.stringify({ ...record, view: { storageId: record.storageId, updatedAt: new Date().toISOString(), rows: [row], coverage: { complete: true, omitted: 0 } } }));
+	const readable = catalog.read(record.storageId);
+	assert.equal(readable.storagePath, record.storagePath);
+	assert.deepEqual(readable.view?.rows, []);
+	assert.match(readable.view?.unavailable ?? "", /unsupported.*future-state.*Restart this Pi/u);
+});
+
 it("refuses a view for another storage on publication and read", (t) => {
 	const { catalog, input } = fixture(t);
 	const record = catalog.create(input);
