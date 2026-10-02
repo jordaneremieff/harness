@@ -29,7 +29,11 @@ export interface AgentCommandAction {
 	help?: string;
 	confirm?: string;
 	dialog?(target: DashboardTarget | undefined, ctx: ExtensionContext): Promise<string | AgentActionOutcome | undefined>;
-	run(args: string[], ctx: ExtensionContext, onCreated?: (row: AgentConversationSummary) => void): Promise<string | AgentActionOutcome | undefined>;
+	run(
+		args: string[],
+		ctx: ExtensionContext,
+		onCreated?: (row: AgentConversationSummary) => void,
+	): Promise<string | AgentActionOutcome | undefined>;
 }
 
 function plain(text: string): string {
@@ -106,7 +110,7 @@ function argumentHelp(action: AgentCommandAction, args: string[]): string | unde
 	return undefined;
 }
 
-/** Both native entry points share argument validation and the original action closure. */
+/** Text commands validate arguments before invoking the original action closure. */
 export async function executeAgentAction(
 	action: AgentCommandAction,
 	args: string[],
@@ -209,7 +213,7 @@ export function createAgentCommand(
 						return { text: actionOutcomeText(result) ?? "Message admitted", sessionId: id };
 					},
 					newAgent: async ({ prompt, onCreated }) => {
-						const result = await executeAgentAction(requireAction("new"), [prompt], ctx, onCreated);
+						const result = await requireAction("new").run([prompt], ctx, onCreated);
 						return { text: actionOutcomeText(result) ?? "Agent requested", sessionId: outcomeSessionId(result) };
 					},
 					action: async (name, target, surface) => {

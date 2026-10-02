@@ -27,11 +27,12 @@ export interface ScheduleDraft {
 export interface AgentDraftState {
 	schedule?: ScheduleDraft;
 	draft: string;
+	draftRevision: number;
 	mode: "steer" | "followUp";
 	history: string[];
 	view: AgentReadingState;
 	receipt?: string;
-	pending?: { text: string; mode: "steer" | "followUp" };
+	pending?: { text: string; mode: "steer" | "followUp"; revision: number };
 }
 export interface DashboardState {
 	selected?: string;
@@ -47,6 +48,7 @@ export function agentState(state: DashboardState, id: string): AgentDraftState {
 	if (!value) {
 		value = {
 			draft: "",
+			draftRevision: 0,
 			mode: "steer",
 			history: [],
 			view: { follow: true, scroll: 0, expanded: false, showThinking: false },
@@ -54,6 +56,26 @@ export function agentState(state: DashboardState, id: string): AgentDraftState {
 		state.agents.set(id, value);
 	}
 	return value;
+}
+const draftListeners = new WeakMap<AgentDraftState, Set<() => void>>();
+export function notifyAgentState(state: AgentDraftState): void {
+	for (const listener of draftListeners.get(state) ?? []) listener();
+}
+export function updateDraft(state: AgentDraftState, text: string): void {
+	if (state.draft === text) return;
+	state.draft = text;
+	state.draftRevision++;
+	notifyAgentState(state);
+}
+/** Active consoles release their state listener when selection changes or the overlay closes. */
+export function subscribeAgentState(state: AgentDraftState, listener: () => void): () => void {
+	let listeners = draftListeners.get(state);
+	if (!listeners) {
+		listeners = new Set();
+		draftListeners.set(state, listeners);
+	}
+	listeners.add(listener);
+	return () => listeners.delete(listener);
 }
 /** Interaction state is local to the overlay; retained values contain no source handles. */
 export class DashboardNavigation {
@@ -68,7 +90,7 @@ export class DashboardNavigation {
 	enter(screen: DashboardScreen, target = this.state.selected): void {
 		this.back.push({ screen: this.screen, target: this.target });
 		this.screen = screen;
-		this.target = target;
+		this.target = screen === "find" ? undefined : target;
 		this.generation++;
 	}
 	escape(): "close" | "back" {

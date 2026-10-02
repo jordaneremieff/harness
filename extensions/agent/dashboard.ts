@@ -1,5 +1,5 @@
 import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { Input, matchesKey, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
+import { Input, matchesKey, wrapTextWithAnsi, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
 import type { AgentConversationPage, AgentConversationSummary, AgentConversationSnapshot } from "./dashboard-types.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
 import { AgentConsole } from "./agent-console.ts";
@@ -7,8 +7,22 @@ import { AgentComposer } from "./agent-composer.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
 import { dashboardActions } from "./dashboard-actions.ts";
 import { dashboardGeometry, fitHints, fitLine } from "./dashboard-layout.ts";
-import { dashboardRecords, rosterLines, coverageText, rosterTotals, rosterAge } from "./dashboard-roster.ts";
-import { agentState, dashboardSessionState, DashboardNavigation, type DashboardState } from "./dashboard-state.ts";
+import {
+	dashboardRecords,
+	rosterLines,
+	coverageText,
+	rosterTotals,
+	rosterAge,
+	attentionReason,
+} from "./dashboard-roster.ts";
+import {
+	agentState,
+	dashboardSessionState,
+	DashboardNavigation,
+	updateDraft,
+	notifyAgentState,
+	type DashboardState,
+} from "./dashboard-state.ts";
 import { agentDisplayName } from "./action-outcome.ts";
 import type { TaskLabel, ConversationFrame } from "./live-frames.ts";
 import { firstTaskEntry } from "./dashboard-conversation.ts";
@@ -91,6 +105,7 @@ export class AgentDashboard implements Component, Focusable {
 	private lastAgeText = "";
 	private bodyHeight = 10;
 	private creating = false;
+	private rosterOrderLocked = false;
 	focused = true;
 	private readonly tui: TUI;
 	private readonly theme: Theme;
@@ -235,23 +250,37 @@ export class AgentDashboard implements Component, Focusable {
 		this.loadedPages = pages.length;
 		return pages;
 	}
+	private reconcileOrder(filtered: AgentConversationSummary[]): void {
+		if (
+			(this.navigation.screen === "roster" && !this.rosterOrderLocked) ||
+			!this.rows.length ||
+			this.navigation.screen === "find"
+		) {
+			this.rows = filtered;
+			return;
+		}
+		this.rows = this.rows
+			.flatMap((row) => {
+				const current = filtered.find((item) => item.id === row.id);
+				return current ? [current] : this.navigation.screen === "roster" ? [] : [row];
+			})
+			.concat(filtered.filter((row) => !this.rows.some((item) => item.id === row.id)));
+	}
 	private reconcile(): void {
 		const previousId = this.navigation.target ?? this.state.selected;
 		const frame = previousId ? this.source.frame(previousId) : undefined;
 		if (previousId && frame && this.source.availability(previousId)?.state === "live" && this.page)
-			this.page = { ...this.page, rows: this.page.rows.map((row) => row.id === previousId ? this.observedRow(row, frame) : row) };
+			this.page = {
+				...this.page,
+				rows: this.page.rows.map((row) => (row.id === previousId ? this.observedRow(row, frame) : row)),
+			};
 		const filtered = dashboardRecords(
 			this.page
 				? { observedAt: Date.parse(this.page.observedAt), sessions: this.page.rows, coverage: this.page.coverage }
 				: undefined,
 			this.navigation.screen === "find" ? this.find.getValue() : this.state.filter,
 		);
-		if (this.navigation.screen === "roster" || !this.rows.length || this.navigation.screen === "find")
-			this.rows = filtered;
-		else
-			this.rows = this.rows
-				.map((row) => filtered.find((item) => item.id === row.id) ?? row)
-				.concat(filtered.filter((row) => !this.rows.some((item) => item.id === row.id)));
+		this.reconcileOrder(filtered);
 		this.navigation.reconcile(this.rows);
 		const id = this.navigation.target ?? this.state.selected;
 		const row = this.page?.rows.find((item) => item.id === id);
@@ -261,6 +290,7 @@ export class AgentDashboard implements Component, Focusable {
 		} else if (row) this.select(row);
 		else if (this.navigation.screen === "roster" || this.navigation.screen === "find") {
 			this.saveConsole();
+			this.console?.dispose();
 			this.console = undefined;
 			this.source.select(undefined);
 			this.sourceGeneration++;
@@ -283,6 +313,7 @@ export class AgentDashboard implements Component, Focusable {
 	private select(row: AgentConversationSummary): void {
 		this.selectedMark = rosterMark(row);
 		this.saveConsole();
+		this.console?.dispose();
 		this.history = new ConversationHistory();
 		this.console = new AgentConsole(
 			row,
@@ -324,11 +355,17 @@ export class AgentDashboard implements Component, Focusable {
 				!this.snapshot.entries.some((entry) => entry.id === console.state.view.anchor?.id)
 			)
 				void this.readHistory(console.state.view.before);
-			console.status = row.state === "starting" ? "STARTING" : snapshot.partial ? "RETAINED · partial history" : "RETAINED";
+			console.status =
+				row.state === "starting" ? "STARTING" : snapshot.partial ? "RETAINED · partial history" : "RETAINED";
 			if (snapshot.nextBefore) console.status += " · Earlier messages available";
 			this.redraw();
 		} catch (error) {
-			if (generation === this.sourceGeneration && !this.closed && this.console && this.source.availability(row.id)?.state !== "live") {
+			if (
+				generation === this.sourceGeneration &&
+				!this.closed &&
+				this.console &&
+				this.source.availability(row.id)?.state !== "live"
+			) {
 				this.console.status = `Conversation unavailable: ${String(error)}`;
 				this.redraw();
 			}
@@ -341,7 +378,11 @@ export class AgentDashboard implements Component, Focusable {
 			owner: "here",
 			name: frame.status.name ?? row.name,
 			firstMessage: frame.status.firstMessage ?? row.firstMessage,
-			state: frame.status.busy ? "working" : row.state === "starting" || row.state === "working" || row.state === "unavailable" ? "idle" : row.state,
+			state: frame.status.busy
+				? "working"
+				: row.state === "starting" || row.state === "new" || row.state === "working" || row.state === "unavailable"
+					? "idle"
+					: row.state,
 			model: frame.status.agent.model
 				? { ...frame.status.agent.model, thinkingLevel: frame.status.agent.thinkingLevel }
 				: row.model,
@@ -350,8 +391,9 @@ export class AgentDashboard implements Component, Focusable {
 	private updateObservedRow(console: AgentConsole, frame: ConversationFrame): void {
 		if (this.source.availability(console.row.id)?.state !== "live") return;
 		console.row = this.observedRow(console.row, frame);
-		if (this.page) this.page = { ...this.page, rows: this.page.rows.map((row) => row.id === console.row.id ? console.row : row) };
-		this.rows = this.rows.map((row) => row.id === console.row.id ? console.row : row);
+		if (this.page)
+			this.page = { ...this.page, rows: this.page.rows.map((row) => (row.id === console.row.id ? console.row : row)) };
+		this.rows = this.rows.map((row) => (row.id === console.row.id ? console.row : row));
 	}
 	private frameChanged(): void {
 		const console = this.console;
@@ -392,6 +434,7 @@ export class AgentDashboard implements Component, Focusable {
 			}, wait);
 	}
 	private back(): void {
+		this.rosterOrderLocked = false;
 		this.saveConsole();
 		this.state.newTask = this.newComposer.getText();
 		if (this.navigation.screen === "find") {
@@ -412,6 +455,8 @@ export class AgentDashboard implements Component, Focusable {
 		this.redraw();
 	}
 	private move(delta: number): void {
+		this.navigation.generation++;
+		this.rosterOrderLocked = this.navigation.screen === "roster";
 		const index = this.rows.findIndex((row) => row.id === this.state.selected);
 		const next = index + delta;
 		if (this.loadMore && delta < 0) {
@@ -434,7 +479,8 @@ export class AgentDashboard implements Component, Focusable {
 		if (!console || console.state.pending || !text.trim()) return;
 		const { row, state } = console;
 		const mode = state.mode;
-		state.pending = { text, mode };
+		const revision = state.draftRevision;
+		state.pending = { text, mode, revision };
 		state.receipt = "Sending…";
 		this.redraw();
 		try {
@@ -446,17 +492,16 @@ export class AgentDashboard implements Component, Focusable {
 						? `Steer sent to ${agentDisplayName(row)}`
 						: `Follow-up queued for ${agentDisplayName(row)}`
 					: `Sent to ${agentDisplayName(row)}`;
-			if (state.draft === text) {
-				state.draft = "";
+			if (state.draftRevision === revision && state.draft === text) {
 				state.mode = "steer";
-				if (this.console?.row.id === row.id) this.console.composer.setText("");
+				updateDraft(state, "");
 			}
-			console.composer.addToHistory(text);
 			this.queueRoster();
 		} catch (error) {
 			state.receipt = `Delivery not confirmed. Draft retained; check the conversation before resending. ${error instanceof Error ? error.message : String(error)}`;
 		} finally {
 			state.pending = undefined;
+			notifyAgentState(state);
 			this.redraw();
 		}
 	}
@@ -467,23 +512,26 @@ export class AgentDashboard implements Component, Focusable {
 		this.notice = "Starting agent…";
 		this.redraw();
 		try {
-			const result = await Promise.resolve().then(() => this.operations.newAgent({
-				prompt: text,
-				onCreated: (row) => {
-					if (this.closed || generation !== this.navigation.generation) return;
-					this.state.selected = row.id;
-					this.state.filter = "";
-					this.navigation.roster();
-					generation = this.navigation.generation;
-					if (this.page) this.page = { ...this.page, rows: [...this.page.rows.filter((item) => item.id !== row.id), row] };
-					this.rows = [...this.rows.filter((item) => item.id !== row.id), row];
-					this.select(row);
-					this.snapshot = { entries: [], partial: false, revision: "starting", nextBefore: null };
-					this.setConversation();
-					if (this.console) this.console.status = "STARTING";
-					this.redraw();
-				},
-			}));
+			const result = await Promise.resolve().then(() =>
+				this.operations.newAgent({
+					prompt: text,
+					onCreated: (row) => {
+						if (this.closed || generation !== this.navigation.generation) return;
+						this.state.selected = row.id;
+						this.state.filter = "";
+						this.navigation.roster();
+						generation = this.navigation.generation;
+						if (this.page)
+							this.page = { ...this.page, rows: [...this.page.rows.filter((item) => item.id !== row.id), row] };
+						this.rows = [...this.rows.filter((item) => item.id !== row.id), row];
+						this.select(row);
+						this.snapshot = { entries: [], partial: false, revision: "starting", nextBefore: null };
+						this.setConversation();
+						if (this.console) this.console.status = "STARTING";
+						this.redraw();
+					},
+				}),
+			);
 			if (this.state.newTask === text) {
 				this.state.newTask = "";
 				this.newComposer.setText("");
@@ -511,7 +559,10 @@ export class AgentDashboard implements Component, Focusable {
 		const console = this.console;
 		const snapshot = this.snapshot;
 		if (!console || !snapshot) return;
-		const first = firstTaskEntry({ ...snapshot, partial: snapshot.partial || console.row.state === "starting" }, console.row);
+		const first = firstTaskEntry(
+			{ ...snapshot, partial: snapshot.partial || console.row.state === "starting" },
+			console.row,
+		);
 		console.setContent(first ? [first, ...snapshot.entries] : snapshot.entries, this.history.newer() ? [] : live);
 	}
 	private async readHistory(before?: number): Promise<void> {
@@ -614,11 +665,32 @@ export class AgentDashboard implements Component, Focusable {
 		});
 		this.redraw();
 	}
+	/** A created branch has an identity before a bounded metadata page necessarily includes it. */
+	private openBranch(id: string): void {
+		const source = this.console?.row;
+		if (!source) return;
+		const branch: AgentConversationSummary = this.page?.rows.find((row) => row.id === id) ?? {
+			id,
+			storageId: source.storageId,
+			cwd: source.cwd,
+			modifiedAt: Date.now(),
+			owner: "unknown",
+			state: "new",
+			cost: Number.NaN,
+			partial: true,
+		};
+		if (!this.rows.some((row) => row.id === id)) this.rows.push(branch);
+		this.select(branch);
+	}
 	private actionResult(result: DashboardResult, name: string, id: string): void {
 		if (result.sessionId && result.sessionId !== id) {
 			this.state.selected = result.sessionId;
 			this.state.filter = "";
 			this.navigation.roster();
+			if (name === "fork" || name === "rewind") {
+				this.navigation.enter("console", result.sessionId);
+				this.openBranch(result.sessionId);
+			}
 			return;
 		}
 		if (name === "status" || result.text.includes("\n")) {
@@ -644,11 +716,15 @@ export class AgentDashboard implements Component, Focusable {
 			return;
 		}
 		const generation = this.navigation.generation;
+		this.notice = undefined;
+		console.state.receipt = undefined;
 		try {
 			this.hidden = true;
 			const result = await Promise.resolve().then(() => this.operations.action(choice.name, console.row, this.surface));
 			if (!result) return;
 			console.state.receipt = result.text;
+			if (result.sessionId && result.sessionId !== console.row.id && ["fork", "rewind"].includes(choice.name))
+				await this.refreshRoster();
 			if (!this.closed && generation === this.navigation.generation)
 				this.actionResult(result, choice.name, console.row.id);
 			this.queueRoster();
@@ -715,6 +791,9 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		console.composer.handleInput(data);
 	}
+	private emptyStore(): boolean {
+		return Boolean(this.page?.coverage.complete && !this.page.rows.length && !this.state.filter);
+	}
 	private rosterEnter(): void {
 		if (this.loadMore) {
 			const cursor = this.page?.coverage.nextCursor ?? undefined;
@@ -724,7 +803,7 @@ export class AgentDashboard implements Component, Focusable {
 			});
 			return;
 		}
-		if (!this.rows.length && this.page?.coverage.complete) {
+		if (this.emptyStore()) {
 			this.navigation.enter("new");
 			return;
 		}
@@ -732,6 +811,7 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	private rosterInput(data: string): void {
 		this.notice = undefined;
+		if (!matchesKey(data, "up") && !matchesKey(data, "down")) this.rosterOrderLocked = false;
 		const actions: Record<string, () => void> = {
 			n: () => this.navigation.enter("new"),
 			a: () => {
@@ -801,7 +881,7 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		if (this.tui.terminal.columns < 60 || this.tui.terminal.rows < 20) return;
 		const screen = this.navigation.screen;
-		if (this.console && screen !== "find") this.console.state.receipt = undefined;
+		if (this.console && !["find", "actions", "result"].includes(screen)) this.console.state.receipt = undefined;
 		if (["roster", "actions", "help", "tasks", "result"].includes(screen) && data.includes("\x1b[200~")) {
 			this.notice = "Paste into a message field";
 			this.redraw();
@@ -825,22 +905,25 @@ export class AgentDashboard implements Component, Focusable {
 		if (names[screen]) return names[screen];
 		if (screen === "console" || screen === "actions")
 			return `Agents > ${this.console ? agentDisplayName(this.console.row) : "Agent"}${screen === "actions" ? " > Actions" : ""}`;
-		return `Agents · ${this.page?.rows.length ?? 0} ${this.page?.coverage.complete ? "agents" : "loaded agents"} · ${rosterTotals(this.page ? { sessions: this.page.rows, observedAt: Date.parse(this.page.observedAt) } : undefined)}`;
+		return `Agents · ${this.page?.rows.length ?? 0} ${this.page?.coverage.complete ? "agents" : "loaded agents"} · ${rosterTotals(this.page ? { sessions: this.page.rows, observedAt: Date.parse(this.page.observedAt), coverage: this.page.coverage } : undefined)}`;
 	}
 	private actionLines(): string[] {
 		if (!this.console) return [];
 		const choices = dashboardActions(this.console.row);
 		const capacity = Math.max(1, Math.floor((this.bodyHeight - 2) / 2));
 		const start = Math.max(0, Math.min(choices.length - capacity, this.actionIndex - Math.floor(capacity / 2)));
-		return choices
-			.slice(start, start + capacity)
-			.flatMap((choice, index) => [
-				`${start + index === this.actionIndex ? "›" : " "} ${choice.label}${choice.disabled ? ` · ${choice.disabled}` : ""}`,
-				`  ${choice.description}`,
-			]);
+		const visible = choices.slice(start, start + capacity);
+		const lines = visible.flatMap((choice, index) => [
+			`${start + index === this.actionIndex ? "›" : " "} ${choice.label}${choice.disabled ? ` · ${choice.disabled}` : ""}`,
+			`  ${choice.description}`,
+		]);
+		if (visible.length < choices.length)
+			lines.push(`${this.actionIndex + 1}/${choices.length} actions · +${choices.length - visible.length} more`);
+		return lines;
 	}
-	private readerLines(): string[] {
-		const content = this.navigation.screen === "help" ? HELP : this.result.split("\n");
+	private readerLines(width: number): string[] {
+		const source = this.navigation.screen === "help" ? HELP : this.result.split("\n");
+		const content = source.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)));
 		this.helpOffset = Math.max(0, Math.min(this.helpOffset, Math.max(0, content.length - this.bodyHeight)));
 		return content.slice(this.helpOffset, this.helpOffset + this.bodyHeight);
 	}
@@ -852,7 +935,7 @@ export class AgentDashboard implements Component, Focusable {
 				? (this.tasks?.render(width, this.bodyHeight) ?? ["Reading tasks…"])
 				: screen === "actions"
 					? this.actionLines()
-					: this.readerLines();
+					: this.readerLines(width);
 		const hints =
 			screen === "help" || screen === "result"
 				? ["↑↓ scroll", "PgUp/PgDn read"]
@@ -860,17 +943,23 @@ export class AgentDashboard implements Component, Focusable {
 		return [
 			this.title(),
 			...Array.from({ length: this.bodyHeight }, (_, index) => body[index] ?? ""),
-			this.notice ?? "",
+			(screen === "actions" ? this.console?.state.receipt : undefined) ?? this.notice ?? "",
 			fitHints(hints, "Esc back", width),
 		];
 	}
 	private messageLabel(width: number, focused: boolean): string {
 		if (this.navigation.screen === "new") return `New agent · Enter starts · ${this.creating ? "Starting…" : "Task"}`;
 		if (this.navigation.screen === "find") return "Find loaded agents · Enter keeps filter · Esc cancels";
-		return this.console?.messageLabel(focused, width) ?? "Enter or n starts a new agent";
+		return (
+			this.console?.messageLabel(focused, width) ??
+			(this.emptyStore() ? "Enter or n starts a new agent" : "No selected agent · n starts a new agent")
+		);
 	}
 	private statusText(): string {
-		if (this.console) return this.console.status;
+		if (this.console) {
+			const reason = attentionReason(this.console.row);
+			return reason ? `${reason} · ${this.console.status}` : this.console.status;
+		}
 		if (!this.page) return "Loading roster…";
 		if (this.state.filter) return `No agents match ${this.state.filter}`;
 		return this.page.coverage.complete
@@ -890,9 +979,25 @@ export class AgentDashboard implements Component, Focusable {
 					["↑↓ select", "Enter open", "Tab message", "n new", "a actions", "/ find", "? help"],
 					this.state.filter ? "Esc clear find" : "Esc close",
 				]
-			: [["Enter new agent", "n new", "/ find", "? help"], "Esc close"];
+			: this.emptyStore()
+				? [["Enter new agent", "n new", "/ find", "? help"], "Esc close"]
+				: [["n new", "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
 		const [items, back] = hints[screen] ?? normal;
 		return fitHints(items, back, width);
+	}
+	private rosterViewport(width: number, height: number, compact: boolean): string[] {
+		const lines = rosterLines(
+			this.rows,
+			this.loadMore ? undefined : this.state.selected,
+			width,
+			height,
+			Date.now(),
+			this.theme,
+			compact,
+		);
+		if (!this.rows.length && this.page?.rows.length)
+			lines[lines.length - 1] = `0 matches of ${this.page.rows.length} loaded`;
+		return lines;
 	}
 	private dashboardBody(
 		width: number,
@@ -900,15 +1005,7 @@ export class AgentDashboard implements Component, Focusable {
 		conversation: string[],
 	): string[] {
 		if (geometry.wide) {
-			const roster = rosterLines(
-				this.rows,
-				this.loadMore ? undefined : this.state.selected,
-				38,
-				geometry.bodyHeight,
-				Date.now(),
-				this.theme,
-				false,
-			);
+			const roster = this.rosterViewport(38, geometry.bodyHeight, false);
 			if (this.page?.coverage.nextCursor && roster.length < geometry.bodyHeight)
 				roster.push(this.loadMore ? "› Load more agents · Enter" : "  Load more agents");
 			return conversation.map(
@@ -916,15 +1013,7 @@ export class AgentDashboard implements Component, Focusable {
 			);
 		}
 		if (this.navigation.screen === "console") return conversation;
-		const roster = rosterLines(
-			this.rows,
-			this.loadMore ? undefined : this.state.selected,
-			width,
-			4,
-			Date.now(),
-			this.theme,
-			true,
-		);
+		const roster = this.rosterViewport(width, 4, true);
 		return [
 			...roster,
 			this.page?.coverage.nextCursor
@@ -940,7 +1029,7 @@ export class AgentDashboard implements Component, Focusable {
 		const focused = screen === "message" || screen === "console";
 		const editor =
 			screen === "new" ? this.newComposer.render(width) : (this.console?.composer.render(width) ?? ["", "", ""]);
-		const geometry = dashboardGeometry(width, height, editor.length, screen === "console");
+		const geometry = dashboardGeometry(width, height, editor.length, screen === "console", screen === "find" ? 1 : 0);
 		this.bodyHeight = geometry.bodyHeight;
 		const status = this.statusText();
 		const conversation =
@@ -949,7 +1038,7 @@ export class AgentDashboard implements Component, Focusable {
 				index === Math.floor(geometry.bodyHeight / 2) ? status : "",
 			);
 		const body = this.dashboardBody(width, geometry, conversation);
-		if (screen === "find") body[0] = this.find.render(width)[0] ?? "";
+		if (screen === "find") body.unshift(this.find.render(width)[0] ?? "");
 		return [
 			this.title(),
 			this.console ? status : "",
@@ -986,6 +1075,7 @@ export class AgentDashboard implements Component, Focusable {
 		if (this.closed) return;
 		this.saveConsole();
 		this.closed = true;
+		this.console?.dispose();
 		this.sourceGeneration++;
 		for (const off of this.unsubscribe) off();
 		this.source.select(undefined);

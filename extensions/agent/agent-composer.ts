@@ -46,7 +46,7 @@ export class AgentComposer implements Component, Focusable {
 			options.keys,
 		);
 		this.editor.disableSubmit = true;
-		this.editor.onChange = (text) => options.onChange?.(text);
+		this.editor.onChange = () => options.onChange?.(this.editor.getExpandedText());
 		this.editor.onEscape = () => options.onEscape();
 	}
 

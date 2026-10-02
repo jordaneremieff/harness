@@ -579,7 +579,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 					text?: string;
 				};
 				const label = await agentLabel(sessionId);
-				const commandText = typeof result?.text === "string" ? excerpt(result.text, 80) : "";
+				const commandText = typeof result?.text === "string" ? result.text : "";
 				return outcome(
 					result?.reloaded === true
 						? `Reloaded host registrations for “${label}”`

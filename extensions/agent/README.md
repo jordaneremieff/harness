@@ -306,21 +306,31 @@ The dashboard is one full-screen overlay. It observes agents only: it projects
 no primary conversation, reads no primary draft, and writes no primary editor
 text. Selection, drafts, successful-message history, reading positions, and
 Steer/Follow-up disposition survive closing and reopening in the same primary
-process. Different primary sessions have independent UI state.
+process. Different primary sessions have independent UI state. A successful
+admission clears only the submitted draft revision, including after the
+dashboard reopens; newer text stays. Every truncated dashboard list keeps the
+focused entry and its neighbors visible and states the hidden count.
 
-The New agent field accepts a task in your own words. Enter starts the agent
+The New agent field accepts a task in your own words and treats it literally,
+including text such as `--help`. Enter starts the agent
 with the primary's current directory and model, selects it, and keeps the
 dashboard open. Its task, model, and reasoning appear immediately with a
 Starting state in the Working group, before the host is ready. The conversation
-then follows the host's live output. Esc keeps the unsent task. Configure
-changes name, model, and reasoning afterwards; staged fields change nothing before Apply. Model search
-uses available model metadata, not a typed model identity. An owner refusal
-returns Configure to its staged fields; Cancel abandons that configuration.
+then follows the host's live output. A late startup completion never moves a
+selection the operator has changed since. Esc keeps the unsent task. Configure
+changes name, model, and reasoning afterwards; staged fields change nothing
+before Apply. Model search uses available model metadata, not a typed model
+identity. Esc in the model picker returns to its saved search, and the Model
+and Reasoning pickers start on the completed values. An owner refusal returns
+Configure to its staged fields; Cancel abandons that configuration.
 
 Actions apply only to the selected agent. They expose Stop current work,
 Configure, Tasks, Fork, Rewind, Reset context, Schedule message, Scheduled
 messages, Compact, Reconnect, Run agent command, and Details. Disabled actions
 state their reason. Stop, Reset, Rewind, and Compact confirm with Cancel selected.
+A refusal appears on the restored Actions screen at once. Fork and Rewind open
+the created branch's console while their action still has focus. Details and
+command results wrap to the available width and keep all returned text.
 Native dialogs temporarily hide the dashboard and restore it afterwards. Esc
 returns one form step; Esc at the first step returns to Actions. Completed
 editor fields return prefilled; completed input values appear above the field,
@@ -406,13 +416,18 @@ Unknown cost stays unknown and partial cost stays a lower bound.
 Working and Attention precede retained date groups. Attention names unavailable
 or conflicted storage, a host error, failed compaction, failed work with an
 error, or exhausted retries. Done and deliberately stopped work do not require
-attention by themselves. Selection follows identity, not roster index. Text
-entry locks its recipient even while published metadata changes.
+attention by themselves. The selected view shows the one concrete Attention
+reason. Selection follows identity, not roster index, and roster order stays
+fixed during an arrow sequence. Text entry locks its recipient even while
+published metadata changes.
 
 Coverage carries `complete`, `storagesVisited`, `skipped`, `omitted`, and
 `nextCursor`. Load more agents continues that cursor. Find searches loaded
-name, task, path, model, state, and identity, not transcript text. An empty page
-or missing view is not proof of absence. A dead or absent writer claim marks
+name, task, path, model, state, and identity, not transcript text. Find
+previews the selected match before the filter is committed; Esc restores the
+previous filter and selection. A filter with no match is not an empty store:
+Enter does nothing and Esc clears the filter. An empty page or missing view is
+not proof of absence. A dead or absent writer claim marks
 previously working retained metadata Interrupted. Claim errors remain explicit.
 Host health belongs to the publication time; later publications clear it.
 The manager adds current recovery errors without rewriting published views.

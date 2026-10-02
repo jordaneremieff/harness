@@ -254,15 +254,23 @@ export class AgentTasksView {
 		if (this.error !== undefined || count === 0) {
 			lines.push(this.emptyLine(width));
 		} else {
-			this.viewportRows = Math.max(1, height - 1);
+			const truncated = this.ordered.length > height - 1;
+			this.viewportRows = Math.max(1, height - 1 - (truncated ? 1 : 0));
 			const start = Math.max(
 				0,
 				Math.min(this.ordered.length - this.viewportRows, this.selectedIndex - Math.floor(this.viewportRows / 2)),
 			);
-			for (let index = start; index < this.ordered.length && lines.length < height; index++) {
+			for (let index = start; index < Math.min(this.ordered.length, start + this.viewportRows); index++) {
 				const ordered = this.ordered[index];
 				if (ordered !== undefined) lines.push(this.rowLine(ordered, index, width));
 			}
+			if (truncated)
+				lines.push(
+					this.fitLine(
+						`${this.selectedIndex + 1}/${this.ordered.length} tasks · +${this.ordered.length - this.viewportRows} more`,
+						width,
+					),
+				);
 		}
 		while (lines.length < height) lines.push(" ".repeat(width));
 		return lines.slice(0, height);

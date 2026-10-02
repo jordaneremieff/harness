@@ -3,6 +3,23 @@ import { it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { dashboardRecords, dashboardText, rosterLines, coverageText, rosterTotals } from "./dashboard-roster.ts";
 import { row, theme } from "./dashboard-test-fixture.mts";
+for (const [width, height, compact] of [
+	[38, 36, false],
+	[80, 4, true],
+] as const) {
+	it(`truncated roster keeps focus and neighbors and states hidden rows at ${width}`, () => {
+		const rows = Array.from({ length: 100 }, (_, index) => row(String(index), { name: `Agent${index}` }));
+		for (const selected of [0, 50, 99]) {
+			const lines = rosterLines(rows, String(selected), width, height, 0, theme, compact);
+			const text = lines.join("\n");
+			assert.match(text, new RegExp(`› Agent${selected}`));
+			assert.match(text, /\+\d+ more/);
+			if (selected > 0) assert.match(text, new RegExp(`Agent${selected - 1}`));
+			if (selected < 99) assert.match(text, new RegExp(`Agent${selected + 1}`));
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		}
+	});
+}
 it("starting agents show their launch state in the Working group", () => {
 	const starting = row("starting", { state: "starting", owner: "unknown" });
 	const snapshot = { observedAt: 0, sessions: [row("done", { state: "done" }), starting] };

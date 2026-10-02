@@ -3,6 +3,7 @@ import { it } from "node:test";
 import { AgentTasksView } from "./agent-tasks.ts";
 import { theme } from "./dashboard-test-fixture.mts";
 import type { TasksFrame } from "./live-frames.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
 const frame: TasksFrame = {
 	scope: "tasks",
 	storageId: "storage",
@@ -25,6 +26,36 @@ const frame: TasksFrame = {
 		conversations: [2],
 	})),
 };
+for (const [width, height] of [
+	[140, 42],
+	[80, 21],
+]) {
+	it(`Tasks shows focus, neighbors and hidden counts at ${width}`, async () => {
+		const tasks = Array.from({ length: 100 }, (_, index) => ({
+			...frame.tasks[0],
+			id: index + 1,
+			kind: `task-${index + 1}`,
+		}));
+		const view = new AgentTasksView({ theme, id: "storage", source: { tasks: async () => ({ ...frame, tasks }) } });
+		try {
+			await view.refresh();
+			for (const position of [0, 49, 99]) {
+				view.handleInput("\x1b[H");
+				for (let step = 0; step < position; step++) view.handleInput("\x1b[B");
+				const lines = view.render(width, height);
+				const text = lines.join("\n");
+				assert.match(text, new RegExp(`› task-${position + 1} ·`));
+				if (position > 0) assert.match(text, new RegExp(`task-${position} ·`));
+				if (position < 99) assert.match(text, new RegExp(`task-${position + 2} ·`));
+				assert.match(text, new RegExp(`\\+${100 - (height - 2)} more`));
+				assert.equal(lines.length, height);
+				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			}
+		} finally {
+			view.dispose();
+		}
+	});
+}
 it("Tasks selection stays visible under paging and resolves full identities", async () => {
 	const choices: string[][] = [];
 	const view = new AgentTasksView({

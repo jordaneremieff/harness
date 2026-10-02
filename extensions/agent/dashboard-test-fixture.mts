@@ -4,7 +4,7 @@ import type { AgentConversationSummary, AgentConversationPage } from "./dashboar
 import type { AgentObservationSource } from "./agent-observation.ts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { AgentDashboard, type DashboardOperations } from "./dashboard.ts";
-import { createDashboardState } from "./dashboard-state.ts";
+import { createDashboardState, type DashboardState } from "./dashboard-state.ts";
 initTheme("dark");
 export const keys = new KeybindingsManager(TUI_KEYBINDINGS) as AppKeys;
 setKeybindings(keys);
@@ -16,15 +16,41 @@ export const theme = {
 export const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 export function deferred<T = void>() {
 	let resolve!: (value: T) => void;
-	const promise = new Promise<T>((done) => { resolve = done; });
+	const promise = new Promise<T>((done) => {
+		resolve = done;
+	});
 	return { promise, resolve };
 }
 export function conversationFrame(patch: Partial<ConversationFrame> = {}): ConversationFrame {
 	return {
-		scope: "conversation", storageId: "storage", conversationId: 1, revision: 1,
-		observedAt: new Date(0).toISOString(), entries: [], live: [], nextBefore: null,
-		coverage: { complete: true, entries: 0, bytes: 0, hiddenExcluded: 0, entryLimitReached: false, byteLimitReached: false },
-		status: { conversationId: 1 as ConversationFrame["status"]["conversationId"], identity: "one", busy: true, lastText: null, live: {}, inbox: {}, usage: undefined, tasks: [], submissions: [], agent: { model: { provider: "test", modelId: "model" }, thinkingLevel: "high", extensions: [], tools: [] } },
+		scope: "conversation",
+		storageId: "storage",
+		conversationId: 1,
+		revision: 1,
+		observedAt: new Date(0).toISOString(),
+		entries: [],
+		live: [],
+		nextBefore: null,
+		coverage: {
+			complete: true,
+			entries: 0,
+			bytes: 0,
+			hiddenExcluded: 0,
+			entryLimitReached: false,
+			byteLimitReached: false,
+		},
+		status: {
+			conversationId: 1 as ConversationFrame["status"]["conversationId"],
+			identity: "one",
+			busy: true,
+			lastText: null,
+			live: {},
+			inbox: {},
+			usage: undefined,
+			tasks: [],
+			submissions: [],
+			agent: { model: { provider: "test", modelId: "model" }, thinkingLevel: "high", extensions: [], tools: [] },
+		},
 		...patch,
 	};
 }
@@ -91,7 +117,13 @@ export function source(rows: readonly AgentConversationSummary[] = [row()]): Age
 		subscribeRoster: () => () => {},
 	};
 }
-export function fixture(width = 80, height = 24, observed = source(), operations?: Partial<DashboardOperations>) {
+export function fixture(
+	width = 80,
+	height = 24,
+	observed = source(),
+	operations?: Partial<DashboardOperations>,
+	retained?: DashboardState,
+) {
 	let renders = 0;
 	let closes = 0;
 	const terminal = { rows: height, columns: width };
@@ -101,7 +133,7 @@ export function fixture(width = 80, height = 24, observed = source(), operations
 			renders++;
 		},
 	} as unknown as TUI;
-	const state = createDashboardState();
+	const state = retained ?? createDashboardState();
 	const ui = new AgentDashboard(
 		tui,
 		theme,
@@ -120,5 +152,15 @@ export function fixture(width = 80, height = 24, observed = source(), operations
 		},
 		{ hide() {}, show() {} },
 	);
-	return { ui, tui, state, counts: () => ({ renders, closes }), resize(width: number, height: number) { terminal.columns = width; terminal.rows = height; ui.invalidate(); } };
+	return {
+		ui,
+		tui,
+		state,
+		counts: () => ({ renders, closes }),
+		resize(width: number, height: number) {
+			terminal.columns = width;
+			terminal.rows = height;
+			ui.invalidate();
+		},
+	};
 }

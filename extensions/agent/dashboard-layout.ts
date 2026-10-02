@@ -9,10 +9,16 @@ export function fitHints(items: readonly string[], backHint: string, width: numb
 	while (kept.length && visibleWidth([...kept, backHint].join(" · ")) > width) kept.pop();
 	return fitLine([...kept, backHint].join(" · "), width);
 }
-export function dashboardGeometry(width: number, height: number, editorRows: number, console = false) {
+export function dashboardGeometry(
+	width: number,
+	height: number,
+	editorRows: number,
+	console = false,
+	reservedRows = 0,
+) {
 	const wide = width >= 110 && !console;
 	const rosterHeight = console || wide ? 0 : 5;
-	const bodyHeight = Math.max(0, height - 6 - editorRows - rosterHeight);
+	const bodyHeight = Math.max(0, height - 6 - editorRows - rosterHeight - reservedRows);
 	return {
 		wide,
 		rosterWidth: wide ? 38 : width,

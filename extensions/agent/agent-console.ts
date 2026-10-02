@@ -1,7 +1,7 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import type { AgentConversationSummary, AgentConversationEntry } from "./dashboard-types.ts";
-import type { AgentDraftState } from "./dashboard-state.ts";
+import { updateDraft, subscribeAgentState, type AgentDraftState } from "./dashboard-state.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { ConversationView } from "./conversation-view.ts";
 import { fitLine } from "./dashboard-layout.ts";
@@ -13,6 +13,8 @@ export class AgentConsole {
 	row: AgentConversationSummary;
 	status = "Loading conversation…";
 	readonly state: AgentDraftState;
+	private readonly unsubscribe: () => void;
+	private historyCount: number;
 	constructor(
 		row: AgentConversationSummary,
 		state: AgentDraftState,
@@ -30,13 +32,20 @@ export class AgentConsole {
 			keys,
 			onSubmit: submit,
 			onChange: (text) => {
-				state.draft = text;
+				updateDraft(state, text);
 			},
 			onEscape: onBack,
 		});
 		this.composer.setText(state.draft);
 		for (const text of state.history) this.composer.addToHistory(text);
+		this.historyCount = state.history.length;
 		this.conversation = new ConversationView(tui, state.view);
+		this.unsubscribe = subscribeAgentState(state, () => {
+			if (this.composer.getText() !== state.draft) this.composer.setText(state.draft);
+			for (const text of state.history.slice(this.historyCount)) this.composer.addToHistory(text);
+			this.historyCount = state.history.length;
+			tui.requestRender();
+		});
 	}
 	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[] = []): void {
 		this.conversation.setContent(entries, live, this.row.cwd);
@@ -56,7 +65,10 @@ export class AgentConsole {
 		return fitLine(footerText(this.row, width), width);
 	}
 	save(): void {
-		this.state.draft = this.composer.getText();
+		updateDraft(this.state, this.composer.getText());
 		this.conversation.save();
+	}
+	dispose(): void {
+		this.unsubscribe();
 	}
 }

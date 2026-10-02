@@ -80,6 +80,18 @@ export function needsAttention(row: AgentConversationSummary): boolean {
 	if (retry !== undefined && retry.attempt >= retry.maxAttempts) return true;
 	return row.state === "failed" && Boolean(row.error);
 }
+/** One governing Attention reason; full recovery records belong in Details. */
+export function attentionReason(row: AgentConversationSummary): string | undefined {
+	if (row.owner === "unavailable" || row.state === "unavailable")
+		return `Unavailable: ${oneLine(row.error || row.ownerLabel || "Storage cannot be read")}`;
+	if (row.health?.lastError) return `Host error: ${oneLine(row.health.lastError)}`;
+	const failure = row.health?.compactionFailure;
+	if (failure) return `Compaction failed (${failure.reason}): ${oneLine(failure.errorMessage || "No error text")}`;
+	const retry = row.health?.autoRetry;
+	if (retry && retry.attempt >= retry.maxAttempts) return `Retries exhausted: ${oneLine(retry.errorMessage)}`;
+	if (row.state === "failed" && row.error) return `Work failed: ${oneLine(row.error)}`;
+	return undefined;
+}
 export function sectionOf(row: AgentConversationSummary, now: number): string {
 	if (needsAttention(row)) return "Attention";
 	if (row.state === "working" || row.state === "starting") return "Working";
@@ -213,6 +225,12 @@ export function rosterLines(
 		lines.push(...rosterRow(row, rows, selected, width, now, theme, compact));
 	}
 	while (compact && lines.length < 3) lines.push("");
-	lines.push(`${rows.slice(start, start + capacity).length} of ${rows.length} loaded agents shown`);
+	const shown = rows.slice(start, start + capacity).length;
+	const hidden = rows.length - shown;
+	lines.push(
+		hidden && !compact
+			? `${shown}/${rows.length} loaded · +${hidden} more`
+			: `${shown} of ${rows.length} loaded agents shown${hidden ? ` · +${hidden} more` : ""}`,
+	);
 	return lines.slice(0, height);
 }

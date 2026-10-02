@@ -12,6 +12,8 @@ import { createAgentCommand, executeAgentAction } from "./command.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import registerAgentExtension from "./index.ts";
 import { defined } from "./test-assertions.mts";
+import { source, row, theme, keys, turn } from "./dashboard-test-fixture.mts";
+import type { AgentDashboard } from "./dashboard.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
 import type { ActionDialogExtras } from "./action-dialogs.ts";
 const noSource = {
@@ -100,16 +102,84 @@ const rows: AgentConversationSummary[] = [
 		partial: false,
 	},
 ];
+it("dashboard New-agent task text is literal even when it is a help flag", async () => {
+	for (const text of ["--help", "-h"]) {
+		const admitted: string[][] = [];
+		const rows = [row("one")];
+		const command = createAgentCommand(
+			[
+				{
+					name: "new",
+					description: "Start",
+					args: [{ name: "task", rest: true, optional: true }],
+					run: async (args, _ctx, onCreated) => {
+						admitted.push(args);
+						const created = row("created", { firstMessage: args[0], state: "starting" });
+						rows.push(created);
+						onCreated?.(created);
+						return { text: "Started", sessionId: "created" };
+					},
+				},
+			],
+			source(rows),
+			extras,
+		);
+		let ui: AgentDashboard | undefined;
+		let finish = () => {};
+		const ctx = {
+			mode: "tui",
+			hasUI: true,
+			sessionManager: { getSessionId: () => `literal-task-${text}` },
+			ui: {
+				custom: async (
+					factory: (tui: TUI, currentTheme: typeof theme, currentKeys: typeof keys, done: () => void) => AgentDashboard,
+				) =>
+					new Promise<void>((resolve) => {
+						finish = resolve;
+						ui = factory(
+							{ terminal: { rows: 24, columns: 80 }, requestRender() {} } as unknown as TUI,
+							theme,
+							keys,
+							resolve,
+						);
+					}),
+				notify() {},
+			},
+		} as unknown as ExtensionCommandContext;
+		const opened = command.openDashboard(ctx);
+		await turn();
+		assert.ok(ui);
+		try {
+			ui.handleInput("n");
+			ui.handleInput(text);
+			ui.handleInput("\r");
+			await turn();
+			assert.deepEqual(admitted, [[text]]);
+			assert.equal(ui.state.newTask, "");
+		} finally {
+			ui.dispose();
+			finish();
+			await opened;
+		}
+	}
+});
 it("passes the dashboard creation callback through the native new action", async () => {
 	const created: string[] = [];
-	const result = await executeAgentAction({
-		name: "new", description: "New agent", args: [{ name: "task", rest: true }],
-		run: async (args, _ctx, onCreated) => {
-			assert.deepEqual(args, ["task"]);
-			onCreated?.(rows[0]);
-			return { text: "Started", sessionId: rows[0].id };
+	const result = await executeAgentAction(
+		{
+			name: "new",
+			description: "New agent",
+			args: [{ name: "task", rest: true }],
+			run: async (args, _ctx, onCreated) => {
+				assert.deepEqual(args, ["task"]);
+				onCreated?.(rows[0]);
+				return { text: "Started", sessionId: rows[0].id };
+			},
 		},
-	}, ["task"], context().ctx, (row) => created.push(row.id));
+		["task"],
+		context().ctx,
+		(row) => created.push(row.id),
+	);
 	assert.deepEqual(created, [rows[0].id]);
 	assert.deepEqual(result, { text: "Started", sessionId: rows[0].id });
 });

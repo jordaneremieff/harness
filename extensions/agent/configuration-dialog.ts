@@ -18,18 +18,16 @@ function values(snapshot: AgentConversationSummary, patch: ConfigurationPatch) {
 		level: patch.thinkingLevel ?? snapshot.model?.thinkingLevel ?? "(unavailable)",
 	};
 }
-async function fieldPatch(
-	choice: string,
-	shown: ReturnType<typeof values>,
-	ctx: ExtensionContext,
-): Promise<ConfigurationPatch> {
-	if (choice === "Reasoning") {
-		const value = await ctx.ui.select("Reasoning level (Pi clamps it to the selected model)", [...THINKING_LEVELS]);
-		return value === undefined ? {} : validateConfigurationPatch({ thinkingLevel: value });
-	}
-	if (choice === "Model") {
-		const query = await ctx.ui.input("Find an available model", "Model name or provider; blank shows all");
-		if (query === undefined) return {};
+function preferredChoices(value: string, choices: readonly string[]): string[] {
+	return choices.includes(value) ? [value, ...choices.filter((choice) => choice !== value)] : [...choices];
+}
+async function modelPatch(shown: ReturnType<typeof values>, ctx: ExtensionContext): Promise<ConfigurationPatch> {
+	let query = "";
+	for (;;) {
+		const hint = query ? `Saved: ${query} (blank keeps it)` : "Model name or provider; blank shows all";
+		const input = await ctx.ui.input(`Find an available model\n${hint}`, hint);
+		if (input === undefined) return {};
+		if (input.trim()) query = input;
 		const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
 		const models = ctx.modelRegistry
 			.getAvailable()
@@ -37,11 +35,25 @@ async function fieldPatch(
 			.filter((identity) => terms.every((term) => identity.toLocaleLowerCase().includes(term)))
 			.sort();
 		if (!models.length) throw new Error("No available model matches that search");
-		const model = await ctx.ui.select("Model (exact provider/model)", models);
-		return model === undefined ? {} : validateConfigurationPatch({ model });
+		const model = await ctx.ui.select("Model (exact provider/model)", preferredChoices(shown.model, models));
+		if (model !== undefined) return validateConfigurationPatch({ model });
 	}
+}
+async function fieldPatch(
+	choice: string,
+	shown: ReturnType<typeof values>,
+	ctx: ExtensionContext,
+): Promise<ConfigurationPatch> {
+	if (choice === "Reasoning") {
+		const value = await ctx.ui.select(
+			"Reasoning level (Pi clamps it to the selected model)",
+			preferredChoices(shown.level, THINKING_LEVELS),
+		);
+		return value === undefined ? {} : validateConfigurationPatch({ thinkingLevel: value });
+	}
+	if (choice === "Model") return modelPatch(shown, ctx);
 	if (choice !== "Name") return {};
-	const value = await ctx.ui.input("Session name (blank clears)", shown.name);
+	const value = await ctx.ui.input(`Session name (blank clears)\nCurrent: ${shown.name}`, shown.name);
 	return value === undefined ? {} : validateConfigurationPatch({ name: value });
 }
 
