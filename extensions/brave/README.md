@@ -192,6 +192,41 @@ the first returned match or `null`. It contains no duplicate record list, raw
 HTML, or raw base. `outputTruncated` means another eligible record remains or
 extraction reached a limit; URL-policy omissions remain separately visible.
 
+## Durable agents
+
+The extension has a native Pi Durable form beside its ordinary entrypoint. The
+factory emits one contribution on the `durable:contribution` channel; the agent
+session host installs it into the session registry. An ordinary Pi session has
+no listener on that channel, so the emission has no effect there. The
+contribution names `extensions/brave/index.ts` as its source, so the host can
+match it to the resolved path of the loaded extension.
+
+`extensions/brave/durable.ts` builds the native extension from the shared
+`capability.ts` surface: parameter schemas, descriptions, model guidance, and
+the `web_search` execution. It adds no documents, hooks, tasks, or commands,
+and `create()` uses no ordinary session API. The native form registers
+`web_read`, then `web_search`, and one prompt section, `web-guidance`, carrying
+in one section the same guidance text as the ordinary prompt snippet and
+prompt guidelines.
+
+Replay classes:
+
+| Tool | Replay | Why |
+|---|---|---|
+| `web_read` | `safe` | A rerun repeats an idempotent public GET with no credential and no external mutation. Each call rebuilds the snapshot from the live page and checks the same source digest, so a continuation still refuses a changed source. |
+| `web_search` | `unsafe` | A rerun would repeat a billed Brave query. If the process dies after intent and before the result, the model receives an interrupted result instead. |
+
+The native tool result carries the same text and details data as the ordinary
+tool. Durable results must be strict JSON, so an optional details key with no
+value (`alteredQuery`, `nextOffset`) is absent instead of `undefined`. The
+Durable form has no terminal cards: `renderCall` and `renderResult` are
+ordinary-session surfaces.
+
+`extensions/brave/durable.test.mts` runs the contribution in a real Durable
+Harness over `MemoryStorage` with the pi-ai faux provider. It drives one
+model-issued call per tool and checks both replay classes across a close and
+reopen over retained storage.
+
 ## Configuration
 
 The `web_search` subscription token comes from `PI_BRAVE_API_KEY` in the Pi
@@ -401,6 +436,7 @@ Unicode across parser chunks, label and retention limits, distinct identities,
 source-bound pagination, insufficient budgets, cancellation, and unchanged text.
 Registered link tests use the native HTTP parser and controlled DNS to establish
 source-only traffic, visible continuation, and unchanged private-open refusal.
-The load check establishes Pi
+Real-Harness durable tests cover the native contribution's registrations,
+model guidance, replay classes, and a close and reopen for each class. The load check establishes Pi
 loader acceptance; neither check establishes live-session activation or general
 research time savings.

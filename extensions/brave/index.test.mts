@@ -3,6 +3,7 @@ import { Resolver } from "node:dns/promises";
 import { Agent } from "node:http";
 import { Duplex } from "node:stream";
 import { afterEach, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { type JsonObject, type Tool, validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerBraveSearch from "./index.ts";
@@ -29,12 +30,19 @@ interface RegisteredTool {
 interface ToolRegistry {
 	get(name: string): RegisteredTool;
 	keys(): IterableIterator<string>;
+	contributions(): unknown[];
 }
 
 function registry(): ToolRegistry {
 	const tools = new Map<string, RegisteredTool>();
+	const contributions: unknown[] = [];
 	const host = {
 		registerTool: (registered: RegisteredTool) => tools.set(registered.name, registered),
+		events: {
+			emit: (channel: string, data: unknown) => {
+				if (channel === "durable:contribution") contributions.push(data);
+			},
+		},
 	};
 	registerBraveSearch(host as unknown as ExtensionAPI);
 	return {
@@ -44,6 +52,7 @@ function registry(): ToolRegistry {
 			return tool;
 		},
 		keys: () => tools.keys(),
+		contributions: () => contributions,
 	};
 }
 
@@ -75,6 +84,15 @@ afterEach(() => {
 });
 
 describe("Brave extension entrypoint", () => {
+	it("emits one native durable contribution from the ordinary factory", () => {
+		const emitted = registry().contributions();
+		assert.equal(emitted.length, 1);
+		const contribution = emitted[0] as { name?: unknown; source?: unknown; create?: unknown };
+		assert.equal(contribution.name, "brave");
+		assert.equal(contribution.source, fileURLToPath(new URL("./index.ts", import.meta.url)));
+		assert.equal(typeof contribution.create, "function");
+	});
+
 	it("registers the public-page reader first, then web search, with bounded schemas", () => {
 		const tools = registry();
 		assert.deepEqual([...tools.keys()], ["web_read", "web_search"]);
