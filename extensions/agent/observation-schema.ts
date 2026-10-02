@@ -31,6 +31,7 @@ const nullableCount = nullable(count);
 const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const thinkingLevel = union(thinkingLevels.map((level) => literal(level)));
 const stopReasons = ["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"] as const;
+const textRoles = ["user", "assistant", "toolResult", "system"] as const;
 
 /** Exact JSON value; no arbitrary unknown leaves. */
 export const JsonValueSchema: TSchema = Type.Cyclic(
@@ -122,6 +123,16 @@ const inboxItem = union([
 ]);
 export const InboxStateSchema = object({ items: Type.Array(inboxItem) });
 
+/** One pending scheduled input as reported by status. */
+const timerStatusRow = object({
+	id,
+	target: string,
+	deadline: number,
+	mode: union([literal("followUp"), literal("steer")]),
+	status: union([literal("pending"), literal("unsettled")]),
+	overdue: boolean,
+});
+
 /** One conversation's observation status, as returned by every status variant. */
 export const ConversationStatusSchema = object({
 	conversationId: id,
@@ -132,6 +143,7 @@ export const ConversationStatusSchema = object({
 	busy: boolean,
 	cwd: Type.Optional(string),
 	lastText: nullableText,
+	lastTextRole: Type.Optional(union(textRoles.map((role) => literal(role)))),
 	live: nullable(LiveStateSchema),
 	inbox: nullable(InboxStateSchema),
 	usage: Type.Optional(UsageStateSchema),
@@ -164,6 +176,8 @@ export const ConversationStatusSchema = object({
 			reason: Type.Optional(string),
 		}),
 	),
+	/** Bounded pending scheduled inputs, nearest deadline first. */
+	timers: Type.Optional(Type.Array(timerStatusRow)),
 	parent: Type.Optional(object({ conversationId: id, at: id })),
 	ownerTaskId: Type.Optional(id),
 });
@@ -235,6 +249,8 @@ export type ListOutput = Static<typeof ListOutputSchema>;
  * - live host status with inventory: `{conversation|conversations, inventory, pid, storageId}`;
  * - cold primary status: the same without `pid` and with `live: false`;
  * - a bare `{conversation}` from the native attach path.
+ * A conversation status carries `timers`: its bounded pending scheduled inputs,
+ * nearest deadline first, with `overdue` set when the deadline has passed.
  */
 export const StatusOutputSchema = union([
 	object({

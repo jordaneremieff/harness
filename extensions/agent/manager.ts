@@ -11,7 +11,10 @@ import { acquireHost, connectHost, type HostConnection } from "./host-client.ts"
 import { hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { observeClaim } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
-import type { AgentConversationPage, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
+import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
+import type { ConversationSnapshotPage } from "./durable-observation.ts";
+import type { HostObservationScope } from "./host-client.ts";
+import type { ObservationFrame } from "./live-frames.ts";
 
 export const MANAGER_PROTOCOL = 9;
 export interface AgentCaller {
@@ -394,7 +397,47 @@ export class AgentManager {
 		return { rows, skipped: view.coverage.complete ? 0 : 1, omitted: view.coverage.omitted };
 	}
 
-	async snapshot(sessionId: string): Promise<AgentConversationSnapshot> { return this.observe(this.catalog.read(sessionId), "snapshot", { sessionId }) as Promise<AgentConversationSnapshot>; }
+	async snapshot(sessionId: string, params: { before?: number; limit?: number; maxBytes?: number } = {}): Promise<ConversationSnapshotPage> {
+		return this.observe(this.catalog.read(sessionId), "snapshot", { sessionId, ...params }) as Promise<ConversationSnapshotPage>;
+	}
+
+	/**
+	 * Attach-only live observation for one conversation or the storage's task
+	 * graph. A storage with no live writer stays cold and returns undefined, so
+	 * opening a view never launches a host by itself.
+	 */
+	async observeLive(
+		sessionId: string,
+		scope: "conversation" | "tasks",
+		listener: (frame: ObservationFrame, fresh: boolean) => void,
+		signal?: AbortSignal,
+	): Promise<(() => void) | undefined> {
+		if (this.shuttingDown) return undefined;
+		const record = this.catalog.read(sessionId);
+		let client = this.clients.get(record.storageId);
+		if (!client || client.closed) {
+			try {
+				client = await (this.options.connect ?? connectHost)(hostMetadata(record), MANAGED_LINK);
+			} catch {
+				// No live writer: the caller keeps its cold reading.
+				return undefined;
+			}
+			if (this.shuttingDown) {
+				await client.close().catch(() => undefined);
+				return undefined;
+			}
+			this.clients.set(record.storageId, client);
+			await this.subscribe(record.storageId, client);
+		}
+		if (!client.observe) return undefined;
+		const observationScope: HostObservationScope = scope === "tasks" ? { scope: "tasks", sessionId: record.storageId } : { scope: "conversation", sessionId };
+		const observation = await client.observe(observationScope, { ...(signal === undefined ? {} : { signal }) });
+		const off = observation.onFrame(listener);
+		return () => {
+			off();
+			void observation.close().catch(() => undefined);
+		};
+	}
 
 	async status(sessionId?: string): Promise<unknown> {
 		if (sessionId) return this.observe(this.catalog.read(sessionId), "status", { sessionId });

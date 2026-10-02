@@ -15,6 +15,7 @@ export const AGENT_CONTROL_TOOL_NAMES = [
 	"agent_abort",
 	"agent_fork",
 	"agent_rewind",
+	"agent_reset",
 	"agent_configure",
 	"agent_compact",
 	"agent_command",
@@ -47,6 +48,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		snippet: "Send a task to an agent session",
 		guidelines: [
 			"A child conversation sends interim reports, blocking questions, and corrections with agent_send to the owner identity in its instructions. Do not replace the terminal result with an interim report. Reuse an existing session when its retained context and ownership serve the task; do not duplicate its work.",
+			"With deliverAt, the input is scheduled at that absolute time instead of being admitted now; the storage host must run at the deadline.",
 		],
 	},
 	agent_steer: {
@@ -55,10 +57,19 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 	},
 	agent_abort: {
 		snippet: "Abort an agent session operation",
-		guidelines: ["Self-targets refuse."],
+		guidelines: [
+			"Self-targets refuse.",
+			"With timerId from agent_status, cancel only that scheduled input and leave other work running.",
+		],
 	},
 	agent_fork: { snippet: "Fork an agent session for side work" },
 	agent_rewind: { snippet: "Rewind an agent session to an entry and re-derive the work" },
+	agent_reset: {
+		snippet: "Reset an agent's active context with an optional handoff",
+		guidelines: [
+			"History, identity, files, settings, and scheduled inputs stay; the reset places at the next native boundary while the agent is busy and starts no model turn.",
+		],
+	},
 	agent_configure: { snippet: "Configure an idle session without starting work" },
 	agent_compact: { snippet: "Compact an agent while preserving its continuity" },
 	agent_command: { snippet: "Run a command through an agent's owner" },
@@ -66,6 +77,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		snippet: "Show agent session status",
 		guidelines: [
 			"Use agent_status for orientation and agent_inspect for concrete transcript or result evidence, not as waiting tools. Never poll with sleeps or repeated status/inspection calls. Settlement notices arrive automatically; do independent work while useful agent work continues.",
+			"A selected session's status lists its bounded pending scheduled inputs with timer ID, target, deadline, mode, and overdue flag.",
 		],
 	},
 	agent_list: { snippet: "Find retained agent sessions" },

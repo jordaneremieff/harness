@@ -9,12 +9,15 @@ import { createAgentCommand, type AgentCommandAction } from "./command.ts";
 import { configurationDialog } from "./configuration-dialog.ts";
 import { THINKING_LEVELS, parseConfigurationArguments } from "./configuration.ts";
 import { createAgentContribution, type AgentControlDispatch } from "./durable-agents.ts";
+import { createResetTimerActions, registerResetTimerTools } from "./durable-reset-timers.ts";
 import { AGENT_CONTROL_GUIDANCE, type AgentControlToolName } from "./control-guidance.ts";
 import { ListOutputSchema, StatusOutputSchema, InspectOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { createAgentToolCards, renderAgentPeerMessage } from "./tool-cards.ts";
 import { AgentManager, MANAGER_PROTOCOL, type AgentCaller } from "./manager.ts";
 import { createRestartCommand, type RestartHosts } from "./restart.ts";
 import { MAX_CONTINUITY_SUMMARY, SelfCompaction } from "./self-compaction.ts";
+import { bindPrimaryObserver, createPrimaryObserver } from "./peer-primary.ts";
+import { createPeerObservationSource } from "./peer-observation.ts";
 import { promptProjectTrust } from "./trust-support.ts";
 
 export { AgentManager } from "./manager.ts";
@@ -32,8 +35,9 @@ export function agentRestartHosts(): RestartHosts {
 }
 const id = Type.String({ minLength: 1, maxLength: 256 });
 const maybeTrust = Type.Optional(Type.Boolean());
-const byId = Type.Object({ sessionId: id, trust: maybeTrust }, { additionalProperties: false });
+const abort = Type.Object({ sessionId: id, trust: maybeTrust, background: Type.Optional(Type.Boolean()), timerId: Type.Optional(Type.Integer({ minimum: 1 })) }, { additionalProperties: false });
 const message = Type.Object({ sessionId: id, message: Type.String({ minLength: 1 }), replyTo: Type.Optional(id) }, { additionalProperties: false });
+const send = Type.Object({ sessionId: id, message: Type.String({ minLength: 1 }), replyTo: Type.Optional(id), deliverAt: Type.Optional(Type.String({ minLength: 1, description: "Absolute ISO 8601 date-time; schedule the input instead of sending it now." })), mode: Type.Optional(StringEnum(["followUp", "steer"])) }, { additionalProperties: false });
 const spawn = Type.Object({ cwd: Type.Optional(Type.String()), name: Type.Optional(Type.String({ maxLength: 256 })), prompt: Type.Optional(Type.String()), model: Type.Optional(Type.String()), thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)), trust: maybeTrust }, { additionalProperties: false });
 const nativeEntryId = Type.Integer({ minimum: 1 });
 const inspect = Type.Object({
@@ -64,6 +68,8 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	} }));
 	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
 	const cards = createAgentToolCards();
+	const primaryObserver = createPrimaryObserver();
+	bindPrimaryObserver(pi, primaryObserver);
 	const primaries = new Map<string, AbortController>();
 	const getManager = (): AgentManager => {
 		const agentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
@@ -91,11 +97,15 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	};
 	register("agent_spawn", "Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. The host survives this Pi process.", spawn, (input, ctx) => getManager().spawn({ ...input, origin: "model" }, caller(ctx, pi)));
 	register("agent_list", "Discover Durable agent identities and names without a writer. Repeat the query and cursor to continue bounded results.", Type.Object({ query: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })), cwd: Type.Optional(Type.String()), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })), cursor: Type.Optional(Type.String({ maxLength: 2048 })) }, { additionalProperties: false }), (input) => getManager().list(input));
-	register("agent_status", "Read Durable conversations and live host state. Unavailable evidence remains explicit.", Type.Object({ sessionId: Type.Optional(id) }, { additionalProperties: false }), (input) => getManager().status(input.sessionId as string | undefined));
+	register("agent_status", "Read Durable conversations and live host state. A selected session lists its bounded pending scheduled inputs with timer ID and deadline. Unavailable evidence remains explicit.", Type.Object({ sessionId: Type.Optional(id) }, { additionalProperties: false }), (input) => getManager().status(input.sessionId as string | undefined));
 	register("agent_inspect", "Read retained Durable entries, results, and task state. Pass returned next objects as cursor. Result reads use submissionId or operationId; exact reads use entryId. Images and signatures are omitted.", inspect, (input, ctx) => control("inspect", input, ctx));
-	register("agent_send", "Admit a task, report, or correction. Idle agents start; busy agents receive durable steering. A receipt does not prove action.", message, (input, ctx) => control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx));
+	register("agent_send", "Admit a task, report, or correction. Idle agents start; busy agents receive durable steering. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.", send, (input, ctx, callId) => {
+		if (input.deliverAt === undefined) return control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx);
+		if (input.replyTo !== undefined) throw new Error("replyTo cannot be combined with deliverAt");
+		return control("timer-schedule", { sessionId: input.sessionId, message: input.message, deliverAt: input.deliverAt, mode: input.mode ?? "followUp", origin: "model", scheduleId: `timer:send:${ctx.sessionManager.getSessionId()}:${callId}`, requestId: `timer-delivery:send:${ctx.sessionManager.getSessionId()}:${callId}` }, ctx);
+	});
 	register("agent_steer", "Steer live or retained work through its Durable owner. Admitted steering survives process loss. Carried operator decisions retain their original scope; agent claims remain claims.", message, (input, ctx) => control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx));
-	register("agent_abort", "Abort this agent's native task tree without deleting retained evidence. Other storage conversations remain separate.", byId, (input, ctx) => control("abort", input, ctx));
+	register("agent_abort", "Abort this agent's native task tree without deleting retained evidence. With timerId, cancel only that scheduled input. Other storage conversations remain separate.", abort, (input, ctx) => input.timerId === undefined ? control("abort", input, ctx) : control("timer-cancel", { sessionId: input.sessionId, timerId: input.timerId }, ctx));
 	register("agent_attach", "Connect to a Durable storage host without new input. Retained unfinished work resumes automatically.", Type.Object({ sessionId: id, model: Type.Optional(Type.String()), trust: maybeTrust }, { additionalProperties: false }), (input, ctx) => control("attach", input, ctx));
 	register("agent_fork", "Create an idle native conversation branch in the same storage. The source remains unchanged.", Type.Object({ sessionId: id, entryId: Type.Optional(id), trust: maybeTrust }, { additionalProperties: false }), (input, ctx) => control("fork", input, ctx));
 	register("agent_rewind", "Fork before a mistaken entry and redo the work under your correction. The source stays unchanged. Files remain current.", Type.Object({ sessionId: id, entryId: id, correction: Type.String({ minLength: 1 }), trust: maybeTrust }, { additionalProperties: false }), (input, ctx) => control("rewind", { ...input, origin: "model" }, ctx));
@@ -216,10 +226,12 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			const removed = getManager().places.unbind(resolved);
 			return outcome(removed ? `Removed the directory binding for ${resolved}` : `No directory binding for ${resolved}`);
 		} },
+		...createResetTimerActions((ctx) => ({ control: (method, input) => control(method, input, ctx), label: agentLabel })),
 	];
-	const command = createAgentCommand(actions, { list: () => getManager().dashboardPage(), snapshot: (sessionId) => getManager().snapshot(sessionId) });
+	registerResetTimerTools(pi, (ctx) => ({ control: (method, input) => control(method, input, ctx), label: agentLabel }));
+	const command = createAgentCommand(actions, createPeerObservationSource({ list: () => getManager().dashboardPage(), snapshot: (id, params) => getManager().snapshot(id, params), observeLive: (id, scope, listener) => getManager().observeLive(id, scope, listener) }), { primary: primaryObserver });
 	pi.registerCommand("agent", command);
-	pi.registerShortcut("ctrl+alt+g", { description: "Open the agent dashboard", handler: (ctx) => command.openDashboard(ctx) });
+	pi.registerShortcut("ctrl+alt+g", { description: "Open the agent peer window", handler: (ctx) => command.openDashboard(ctx) });
 	pi.registerCommand("restart", createRestartCommand({ hosts: agentRestartHosts, managedChild: () => false }));
 	pi.registerMessageRenderer("agent.peer", renderAgentPeerMessage);
 	pi.on("session_start", async (_event, ctx) => {

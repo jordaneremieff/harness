@@ -12,23 +12,26 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { JsonValue, ServiceCall } from "@earendil-works/chord";
+import type { JsonValue, ServiceCall, ServiceSubscriptionSnapshot } from "@earendil-works/chord";
 import { Client, ServerError, type ServiceSubscription } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { observeClaim, readClaimFile } from "./claims.ts";
 import {
 	HOST_CHANGE_SERVICE_ID,
+	HOST_OBSERVE_MEMBER,
 	HOST_SERVICE_ID,
 	HostError,
 	hostPaths,
 	isCancelableHostWait,
 	isRetrySafeHostMethod,
+	observationServiceId,
 	parseHostMetadata,
 	parseHostReadyLine,
 	type HostMetadata,
 	type HostPaths,
 	type HostReady,
 } from "./host-protocol.ts";
+import { frameFromOps, isObservationFrame, type ObservationFrame } from "./live-frames.ts";
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30_000;
 // An unresolved project trust decision includes time for the primary UI answer.
@@ -57,6 +60,18 @@ export interface HostLaunchOptions {
 	readonly retryAttempts?: number;
 }
 
+/** What one live observation reads: one conversation, or the storage's live task graph. */
+export type HostObservationScope = { readonly scope: "conversation"; readonly sessionId: string; readonly conversationId?: number } | { readonly scope: "tasks"; readonly sessionId: string };
+
+/** One open live observation. `frame` is the latest delivered reading, never a cached cold copy. */
+export interface HostObservation {
+	readonly scope: HostObservationScope;
+	readonly frame: ObservationFrame;
+	/** Add or remove one frame listener; `fresh` marks a frame from a new subscription. */
+	onFrame(listener: (frame: ObservationFrame, fresh: boolean) => void): () => void;
+	close(): Promise<void>;
+}
+
 /** One client link to a durable host. Access is limited by the private Unix directory and socket permissions. */
 export interface HostConnection {
 	readonly pid: number;
@@ -74,6 +89,13 @@ export interface HostConnection {
 	 * connection implements it.
 	 */
 	subscribeChanges?(listener: () => void, signal?: AbortSignal): Promise<() => void>;
+	/**
+	 * Open one host-owned live observation. Frames arrive as published state,
+	 * coalesced by the host; cancelling the returned handle or aborting `signal`
+	 * closes only this observation. A connection recovery reopens a fresh
+	 * subscription from the host's current snapshot.
+	 */
+	observe?(scope: HostObservationScope, options?: { readonly signal?: AbortSignal }): Promise<HostObservation>;
 	/** Called once when this connection closes permanently; returns an unsubscribe function. */
 	onClose(callback: () => void): () => void;
 	close(): Promise<void>;
@@ -103,6 +125,39 @@ interface ChangeEntry {
 	subscription: ServiceSubscription | undefined;
 	disposed: boolean;
 	removeAbort: () => void;
+}
+
+interface ObservationEntry {
+	readonly id: number;
+	readonly scope: HostObservationScope;
+	readonly listeners: Set<(frame: ObservationFrame, fresh: boolean) => void>;
+	token: string | undefined;
+	subscription: ServiceSubscription | undefined;
+	frame: ObservationFrame | undefined;
+	disposed: boolean;
+	removeAbort: () => void;
+}
+
+/** One observation request's parameters; the token keys the host's subscription. */
+function observationParams(scope: HostObservationScope, token: string): Record<string, unknown> {
+	return {
+		token,
+		scope: scope.scope,
+		sessionId: scope.sessionId,
+		...(scope.scope === "conversation" && scope.conversationId !== undefined ? { conversationId: scope.conversationId } : {}),
+	};
+}
+
+/** Latest frame carried in the subscription baseline, when the host published one. */
+function frameFromSnapshot(snapshot: ServiceSubscriptionSnapshot): ObservationFrame | undefined {
+	for (const instance of snapshot.instances) {
+		for (const member of instance.members) {
+			if (member.kind !== "state" || member.name !== HOST_OBSERVE_MEMBER) continue;
+			const frame = frameFromOps(member.ops as unknown as readonly unknown[]);
+			if (frame !== undefined) return frame;
+		}
+	}
+	return undefined;
 }
 
 function toError(value: unknown): Error {
@@ -293,6 +348,8 @@ class HostConnectionImpl implements HostConnection {
 	private socketPathValue: string;
 	private readonly pending = new Map<string, PendingCall>();
 	private readonly changeEntries = new Map<number, ChangeEntry>();
+	private readonly observationEntries = new Map<number, ObservationEntry>();
+	private nextObservationId = 1;
 	private readonly pendingChanges = new Set<() => void>();
 	private nextChangeId = 1;
 	private changeScheduled = false;
@@ -487,6 +544,130 @@ class HostConnectionImpl implements HostConnection {
 		this.changeEntries.clear();
 	}
 
+	/**
+	 * Open one live observation. The returned handle owns one subscription; its
+	 * close, an aborted `signal`, or the connection closing stops frame delivery.
+	 * A recovery reopens a fresh token and subscription from the host snapshot.
+	 */
+	async observe(scope: HostObservationScope, options: { readonly signal?: AbortSignal } = {}): Promise<HostObservation> {
+		if (this.closedValue) throw new Error("durable host connection is closed");
+		const signal = options.signal;
+		if (signal?.aborted) throw abortReason(signal);
+		const id = this.nextObservationId;
+		this.nextObservationId += 1;
+		const entry: ObservationEntry = { id, scope, listeners: new Set(), token: undefined, subscription: undefined, frame: undefined, disposed: false, removeAbort: () => {} };
+		this.observationEntries.set(id, entry);
+		try {
+			await this.bindObservation(entry);
+		} catch (error) {
+			this.observationEntries.delete(id);
+			throw toError(error);
+		}
+		const frame = entry.frame;
+		if (frame === undefined) {
+			await this.releaseObservation(id);
+			throw new Error("durable host observation produced no frame");
+		}
+		if (signal) {
+			const onAbort = () => {
+				void this.releaseObservation(id);
+			};
+			signal.addEventListener("abort", onAbort, { once: true });
+			entry.removeAbort = () => signal.removeEventListener("abort", onAbort);
+		}
+		return {
+			scope,
+			get frame(): ObservationFrame {
+				const current = entry.frame;
+				if (current === undefined) throw new Error("durable host observation has no current frame");
+				return current;
+			},
+			onFrame: (listener) => {
+				entry.listeners.add(listener);
+				return () => {
+					entry.listeners.delete(listener);
+				};
+			},
+			close: () => this.releaseObservation(id),
+		};
+	}
+
+	/** Reopen one observation on the current client link and deliver its baseline. */
+	private async bindObservation(entry: ObservationEntry): Promise<void> {
+		if (this.closedValue || entry.disposed) return;
+		const token = randomUUID();
+		const opened = (await this.client.request(
+			{ serverId: this.serverId },
+			{ serviceId: HOST_SERVICE_ID, member: "observe-open", args: [observationParams(entry.scope, token) as JsonValue, token] },
+		)) as { frame?: unknown } | undefined;
+		if (this.closedValue || entry.disposed) {
+			this.closeObservationToken(token);
+			return;
+		}
+		const subscription = await this.client.subscribeService({ serverId: this.serverId }, observationServiceId(token), "singleton", (update) => {
+			if (update.type !== "state") return;
+			const frame = frameFromOps(update.ops as unknown as readonly unknown[]);
+			if (frame !== undefined) this.deliverObservation(entry, frame, false);
+		});
+		if (this.closedValue || entry.disposed) {
+			await subscription.dispose().catch(() => undefined);
+			this.closeObservationToken(token);
+			return;
+		}
+		const openedFrame = isObservationFrame(opened?.frame) ? opened.frame : undefined;
+		const baseline = frameFromSnapshot(subscription.snapshot) ?? openedFrame;
+		const previous = entry.subscription;
+		entry.token = token;
+		entry.subscription = subscription;
+		if (baseline !== undefined) entry.frame = baseline;
+		if (previous) await previous.dispose().catch(() => undefined);
+		subscription.start();
+		if (baseline !== undefined) this.deliverObservation(entry, baseline, true);
+	}
+
+	private deliverObservation(entry: ObservationEntry, frame: ObservationFrame, fresh: boolean): void {
+		entry.frame = frame;
+		for (const listener of [...entry.listeners]) {
+			try {
+				listener(frame, fresh);
+			} catch {
+				// One listener failure never stops the others.
+			}
+		}
+	}
+
+	private async releaseObservation(id: number): Promise<void> {
+		const entry = this.observationEntries.get(id);
+		if (!entry || entry.disposed) return;
+		entry.disposed = true;
+		entry.removeAbort();
+		this.observationEntries.delete(id);
+		const token = entry.token;
+		entry.token = undefined;
+		const subscription = entry.subscription;
+		entry.subscription = undefined;
+		if (subscription) await subscription.dispose().catch(() => undefined);
+		if (token !== undefined) this.closeObservationToken(token);
+	}
+
+	private closeObservationToken(token: string): void {
+		if (this.closedValue) return;
+		void this.client
+			.request({ serverId: this.serverId }, { serviceId: HOST_SERVICE_ID, member: "observe-close", args: [{ token }, randomUUID()] })
+			.catch(() => undefined);
+	}
+
+	private disposeObservationEntries(): void {
+		for (const entry of [...this.observationEntries.values()]) {
+			entry.disposed = true;
+			entry.removeAbort();
+			const subscription = entry.subscription;
+			entry.subscription = undefined;
+			if (subscription) void subscription.dispose().catch(() => undefined);
+		}
+		this.observationEntries.clear();
+	}
+
 	/** Coalesce a burst of write notifications into one listener call per turn. */
 	private queueChange(listener: () => void): void {
 		if (this.closedValue) return;
@@ -527,7 +708,8 @@ class HostConnectionImpl implements HostConnection {
 
 	private async recover(cause: Error): Promise<void> {
 		const calls = [...this.pending.values()];
-		if (!calls.some((call) => isRetrySafeHostMethod(call.method) && call.attempts < this.retryAttempts)) {
+		const recoverable = calls.some((call) => isRetrySafeHostMethod(call.method) && call.attempts < this.retryAttempts) || this.observationEntries.size > 0;
+		if (!recoverable) {
 			this.shutdownLocal(cause);
 			return;
 		}
@@ -542,6 +724,9 @@ class HostConnectionImpl implements HostConnection {
 		this.installClient(link);
 		await previous.dispose().catch(() => undefined);
 		for (const entry of this.changeEntries.values()) void this.bindChangeEntry(entry).catch(() => undefined);
+		// A recovered observation starts from the host's current snapshot; the new
+		// subscription's baseline replaces any stale frame.
+		for (const entry of [...this.observationEntries.values()]) void this.bindObservation(entry).catch(() => undefined);
 		for (const call of calls) {
 			if (!this.pending.has(call.id)) continue;
 			if (!isRetrySafeHostMethod(call.method) || call.attempts >= this.retryAttempts) {
@@ -560,6 +745,7 @@ class HostConnectionImpl implements HostConnection {
 		this.unsubscribeState?.();
 		this.unsubscribeState = undefined;
 		this.disposeChangeEntries();
+		this.disposeObservationEntries();
 		this.rejectAll(error);
 		void this.client.dispose().catch(() => undefined);
 		this.notifyClosed();
@@ -578,6 +764,7 @@ class HostConnectionImpl implements HostConnection {
 		this.unsubscribeState?.();
 		this.unsubscribeState = undefined;
 		this.disposeChangeEntries();
+		this.disposeObservationEntries();
 		this.rejectAll(new Error("durable host client closed the connection"));
 		await this.client.dispose().catch(() => undefined);
 		this.notifyClosed();

@@ -25,6 +25,7 @@ import { AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationState, AgentConversationSummary, DashboardAutoRetry, DashboardCompactionFailure, DashboardHealth } from "./dashboard-types.ts";
 import { AgentDeliveryDoc, AgentMetaDoc, pendingDeliveries, settleDeliveries, undeliveredForOwner, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
+import { timerStatusRows } from "./durable-timers.ts";
 
 /** Byte/unit bounds used by every projection in this module. */
 export const ENTRY_PREVIEW_UNITS = 1200;
@@ -80,6 +81,14 @@ export interface DurableInspectParams {
 	readonly operationId?: string;
 }
 
+/** Entry kinds a conversation surface never displays. They are not part of the visible transcript. */
+const HIDDEN_TRANSCRIPT_KINDS: ReadonlySet<string> = new Set(["pi.system"]);
+
+/** True for an entry kind the transcript surface hides; hidden entries never consume transcript bounds. */
+export function isHiddenTranscriptKind(kind: string): boolean {
+	return HIDDEN_TRANSCRIPT_KINDS.has(kind);
+}
+
 export interface ConversationSummary {
 	readonly conversationId: ConversationId;
 	readonly identity: string;
@@ -92,9 +101,14 @@ export interface ConversationSummary {
 	readonly ownerTaskId?: number;
 }
 
+/** Author role of one retained entry's text, when it has one. */
+export type DurableTextRole = "user" | "assistant" | "toolResult" | "system";
+
 export interface ConversationStatus extends ConversationSummary {
 	readonly cwd?: string;
 	readonly lastText: string | null;
+	/** Author role of `lastText`, so a card can label the retained tail accurately. */
+	readonly lastTextRole?: DurableTextRole;
 	readonly live: unknown;
 	readonly inbox: unknown;
 	readonly usage: UsageState | undefined;
@@ -122,6 +136,15 @@ export interface ConversationStatus extends ConversationSummary {
 		readonly entryId?: number;
 		readonly answerEntryId?: number;
 		readonly reason?: string;
+	}[];
+	/** Bounded pending scheduled inputs for this conversation, nearest deadline first. */
+	readonly timers?: readonly {
+		readonly id: number;
+		readonly target: string;
+		readonly deadline: number;
+		readonly mode: "followUp" | "steer";
+		readonly status: "pending" | "unsettled";
+		readonly overdue: boolean;
 	}[];
 }
 
@@ -292,6 +315,25 @@ function messageTextOf(entry: EntryRecord | undefined): string | null {
 	const text = (entry.model ?? []).map(textOfMessage).join("\n");
 	const cut = fragment(text, 0, ENTRY_PREVIEW_UNITS);
 	return cut.text;
+}
+
+/** Author role of one entry's retained text: the first model message's role, else its kind. */
+function textRoleOf(entry: EntryRecord | undefined): DurableTextRole | undefined {
+	if (!entry) return undefined;
+	const role = entry.model?.[0]?.role;
+	if (role === "user" || role === "assistant" || role === "toolResult" || role === "system") return role;
+	switch (entry.kind) {
+		case "pi.user":
+			return "user";
+		case "pi.assistant":
+			return "assistant";
+		case "pi.tool-result":
+			return "toolResult";
+		case "pi.system":
+			return "system";
+		default:
+			return undefined;
+	}
 }
 
 function boundedLimit(value: number | undefined, fallback: number, max: number): number {
@@ -492,6 +534,7 @@ export async function readConversationStatus(
 	const conversation = await harness.conversation(conversationId, context);
 	if (!conversation) return undefined;
 	const [live, inbox, usage, agent, newest, inspection] = await Promise.all([
+		// The newest entry supplies the retained tail text and its author role.
 		harness.snapshot(LiveDoc, conversationId, context),
 		harness.snapshot(InboxDoc, conversationId, context),
 		harness.snapshot(UsageDoc, conversationId, context),
@@ -499,10 +542,12 @@ export async function readConversationStatus(
 		conversation.entries({}, 1, undefined, context),
 		harness.inspect(context),
 	]);
+	const liveTaskIds = new Set(inspection.tasks.map((task) => Number(task.record.id)));
 	return {
 		...summary,
 		cwd: agent.cwd ?? options.cwd,
 		lastText: messageTextOf(newest.items[0]),
+		...(textRoleOf(newest.items[0]) === undefined ? {} : { lastTextRole: textRoleOf(newest.items[0]) }),
 		live: live ?? null,
 		inbox: inbox ?? null,
 		usage,
@@ -516,6 +561,7 @@ export async function readConversationStatus(
 		},
 		tasks: inspection.tasks.filter((task) => task.record.conversationId === conversationId).map(trimTask),
 		submissions: inspection.submissions.filter((submission) => submission.conversationId === conversationId).map(trimSubmission),
+		timers: await timerStatusRows(harness, conversationId, context, liveTaskIds),
 	};
 }
 
@@ -526,6 +572,13 @@ export async function readUsage(harness: Harness, context: Context): Promise<Usa
 /** Bounds of one dashboard snapshot. */
 export const SNAPSHOT_ENTRY_LIMIT = 200;
 export const SNAPSHOT_BYTE_LIMIT = 64 * 1024;
+/** Largest byte bound one caller may request for a transcript page. */
+export const SNAPSHOT_BYTE_LIMIT_MAX = 1024 * 1024;
+
+/** One bounded active transcript, oldest first; the page variant adds continuation. */
+export async function readConversationSnapshot(harness: Harness, conversationId: ConversationId, context: Context): Promise<AgentConversationSnapshot> {
+	return readConversationSnapshotPage(harness, conversationId, {}, context);
+}
 
 /**
  * Active entries without deriving model context. The view mount already holds
@@ -802,7 +855,7 @@ export async function readDashboard(
 	return summaries;
 }
 
-function snapshotEntry(entry: EntryRecord): AgentConversationEntry {
+export function snapshotEntry(entry: EntryRecord): AgentConversationEntry {
 	return {
 		id: String(entry.id),
 		kind: entry.kind,
@@ -812,31 +865,161 @@ function snapshotEntry(entry: EntryRecord): AgentConversationEntry {
 	};
 }
 
-/** One bounded, oldest-first active transcript with native model messages. */
-export async function readConversationSnapshot(harness: Harness, conversationId: ConversationId, context: Context): Promise<AgentConversationSnapshot> {
-	const conversation = await harness.conversation(conversationId, context);
-	if (!conversation) throw new Error(`conversation ${conversationId} does not exist`);
-	const entries = await activeEntries(conversation, context);
-	const selected: AgentConversationEntry[] = [];
+function snapshotEntryBytes(entry: EntryRecord): number {
+	return Buffer.byteLength(JSON.stringify(snapshotEntry(entry)), "utf8");
+}
+
+/** Coverage of one bounded snapshot selection. */
+export interface ConversationSnapshotCoverage {
+	/** True when the page carries every visible entry the source returned within its scope. */
+	readonly complete: boolean;
+	readonly entries: number;
+	readonly bytes: number;
+	/** Hidden kinds met during selection; they never consume the entry or byte bounds. */
+	readonly hiddenExcluded: number;
+	readonly entryLimitReached: boolean;
+	readonly byteLimitReached: boolean;
+}
+
+/** One bounded transcript selection over records in newest-first order. */
+export interface SnapshotSelection {
+	/** Selected entries, oldest first. */
+	readonly entries: readonly EntryRecord[];
+	readonly partial: boolean;
+	/** Pass as `before` to continue strictly older than the oldest selected entry. */
+	readonly nextBefore: EntryId | null;
+	readonly coverage: ConversationSnapshotCoverage;
+}
+
+/**
+ * Bound one newest-first record slice to a transcript page. Hidden kinds are
+ * excluded before either bound applies, so a large prompt record cannot push
+ * the first user input out of the page.
+ */
+export function selectSnapshotEntries(records: readonly EntryRecord[], limit = SNAPSHOT_ENTRY_LIMIT, maxBytes = SNAPSHOT_BYTE_LIMIT): SnapshotSelection {
+	const selected: EntryRecord[] = [];
+	let entries = 0;
 	let bytes = 0;
-	let partial = false;
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index];
+	let hiddenExcluded = 0;
+	let stop: { readonly index: number; readonly reason: "entry" | "byte" } | undefined;
+	for (let index = 0; index < records.length; index++) {
+		const entry = records[index];
 		if (entry === undefined) continue;
-		const dto = snapshotEntry(entry);
-		const size = Buffer.byteLength(JSON.stringify(dto), "utf8");
-		if (selected.length >= SNAPSHOT_ENTRY_LIMIT || (selected.length > 0 && bytes + size > SNAPSHOT_BYTE_LIMIT)) {
-			partial = true;
+		if (isHiddenTranscriptKind(entry.kind)) {
+			hiddenExcluded++;
+			continue;
+		}
+		const size = snapshotEntryBytes(entry);
+		if (entries >= limit) {
+			stop = { index, reason: "entry" };
 			break;
 		}
+		if (entries > 0 && bytes + size > maxBytes) {
+			stop = { index, reason: "byte" };
+			break;
+		}
+		entries++;
 		bytes += size;
-		selected.push(dto);
+		selected.push(entry);
 	}
-	selected.reverse();
-	const oldest = entries[0];
-	const newest = entries[entries.length - 1];
-	const revision = oldest === undefined || newest === undefined ? "empty" : `${oldest.id}-${newest.id}-${entries.length}`;
-	return { entries: selected, partial: partial || selected.length < entries.length, revision };
+	// The stop entry is always visible, so a stop always drops older visible
+	// entries; hidden records never consume the page.
+	const partial = stop !== undefined;
+	const ordered = [...selected].reverse();
+	const oldest = ordered[0];
+	return {
+		entries: ordered,
+		partial,
+		nextBefore: partial && oldest !== undefined ? oldest.id : null,
+		coverage: { complete: !partial, entries, bytes, hiddenExcluded, entryLimitReached: stop?.reason === "entry", byteLimitReached: stop?.reason === "byte" },
+	};
+}
+
+/** Bounds of one earlier-page read; the source query walks history older than `before`. */
+export const SNAPSHOT_CONTINUATION_PAGE = 64;
+export const SNAPSHOT_CONTINUATION_PAGES = 8;
+
+/** Optional bounds and anchor for one transcript page. */
+export interface ConversationSnapshotParams {
+	/** Return committed entries strictly older than this entry ID. */
+	readonly before?: EntryId;
+	readonly limit?: number;
+	readonly maxBytes?: number;
+}
+
+/** One bounded transcript page with its earlier-page anchor. */
+export interface ConversationSnapshotPage extends AgentConversationSnapshot {
+	/** Pass as `before` to continue strictly older than the oldest entry in `entries`; null at the oldest visible entry. */
+	readonly nextBefore: number | null;
+	readonly coverage: ConversationSnapshotCoverage;
+}
+
+/** Parse one host snapshot request into bounded page parameters. */
+export function parseConversationSnapshotParams(params: RequestParams | undefined): ConversationSnapshotParams {
+	const limit = requestInteger(params, "limit");
+	const maxBytes = requestInteger(params, "maxBytes");
+	return {
+		...(params?.before === undefined ? {} : { before: requestRequiredId(params.before, "before") as EntryId }),
+		...(limit === undefined ? {} : { limit: boundedLimit(limit, SNAPSHOT_ENTRY_LIMIT, SNAPSHOT_ENTRY_LIMIT) }),
+		...(maxBytes === undefined ? {} : { maxBytes: boundedLimit(maxBytes, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_BYTE_LIMIT_MAX) }),
+	};
+}
+
+function snapshotPage(selection: SnapshotSelection, before: EntryId | undefined): ConversationSnapshotPage {
+	const entries = selection.entries.map((entry) => snapshotEntry(entry));
+	const first = entries[0];
+	const last = entries[entries.length - 1];
+	const revision = first === undefined || last === undefined ? `${before === undefined ? "empty" : `before-${before}`}` : `${first.id}-${last.id}-${entries.length}`;
+	return { entries, partial: selection.partial, revision, nextBefore: selection.nextBefore, coverage: selection.coverage };
+}
+
+/** One earlier page from the conversation's fork-aware history, newest first at the source. */
+async function readEarlierSnapshot(conversation: Conversation, before: EntryId, limit: number, maxBytes: number, context: Context): Promise<ConversationSnapshotPage> {
+	const collected: EntryRecord[] = [];
+	let cursor: Cursor | undefined;
+	let sourceComplete = false;
+	for (let page = 0; page < SNAPSHOT_CONTINUATION_PAGES; page++) {
+		const result = await conversation.entries({ maxEntryId: (before - 1) as EntryId }, SNAPSHOT_CONTINUATION_PAGE, cursor, context);
+		collected.push(...result.items);
+		cursor = result.next;
+		if (cursor === undefined) {
+			sourceComplete = true;
+			break;
+		}
+		if (selectSnapshotEntries(collected, limit, maxBytes).partial) break;
+	}
+	const selection = selectSnapshotEntries(collected, limit, maxBytes);
+	if (!selection.partial && !sourceComplete) {
+		// The source has more records, but every visible entry in the scanned
+		// window fits: report the bound instead of claiming completeness.
+		const oldest = selection.entries[0];
+		return {
+			...snapshotPage(selection, before),
+			partial: true,
+			nextBefore: oldest?.id ?? null,
+			coverage: { ...selection.coverage, complete: false },
+		};
+	}
+	return snapshotPage(selection, before);
+}
+
+/**
+ * One bounded, oldest-first transcript page. Without `before` it reads the
+ * active transcript; with `before` it continues strictly older through the
+ * conversation's history. Hidden kinds are excluded before either bound.
+ */
+export async function readConversationSnapshotPage(
+	harness: Harness,
+	conversationId: ConversationId,
+	params: ConversationSnapshotParams,
+	context: Context,
+): Promise<ConversationSnapshotPage> {
+	const conversation = await harness.conversation(conversationId, context);
+	if (!conversation) throw new Error(`conversation ${conversationId} does not exist`);
+	if (params.before !== undefined) return readEarlierSnapshot(conversation, params.before, params.limit ?? SNAPSHOT_ENTRY_LIMIT, params.maxBytes ?? SNAPSHOT_BYTE_LIMIT, context);
+	const entries = await activeEntries(conversation, context);
+	const selection = selectSnapshotEntries([...entries].reverse(), params.limit ?? SNAPSHOT_ENTRY_LIMIT, params.maxBytes ?? SNAPSHOT_BYTE_LIMIT);
+	return snapshotPage(selection, undefined);
 }
 
 export async function readReceipts(harness: Harness, ownerId: string | undefined, context: Context): Promise<readonly DeliveryReceipt[]> {
@@ -1668,8 +1851,8 @@ export class DurableObservation {
 		return readDashboard(this.harness, this.storageId, params, options, context);
 	}
 
-	async snapshot(conversationId: ConversationId, context: Context = BACKGROUND_CONTEXT): Promise<AgentConversationSnapshot> {
-		return readConversationSnapshot(this.harness, conversationId, context);
+	async snapshot(conversationId: ConversationId, context: Context = BACKGROUND_CONTEXT): Promise<ConversationSnapshotPage> {
+		return readConversationSnapshotPage(this.harness, conversationId, {}, context);
 	}
 
 	async usage(context: Context = BACKGROUND_CONTEXT): Promise<UsageState> {
@@ -1756,7 +1939,7 @@ export class DurableObservation {
 				return this.requestDashboard(params, context);
 			case "snapshot": {
 				const conversation = await this.target(params, context);
-				return readConversationSnapshot(this.harness, conversation.id, context);
+				return readConversationSnapshotPage(this.harness, conversation.id, parseConversationSnapshotParams(params), context);
 			}
 			case "receipts":
 				return this.requestReceipts(params, context);

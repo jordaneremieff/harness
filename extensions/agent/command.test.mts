@@ -7,6 +7,9 @@ import { chooseDashboardAction, createAgentCommand, executeAgentAction, type Age
 import type { AgentConversationSummary, DashboardTarget } from "./dashboard-types.ts";
 import registerAgentExtension from "./index.ts";
 import { defined } from "./test-assertions.mts";
+import type { PrimaryObserver } from "./peer-contract.ts";
+
+const noPrimary = { attach() {}, observe() {}, subscribe: () => () => {}, snapshot: () => { throw new Error("primary not requested"); }, sendPlain() {}, handoffToNative: () => "", nativeDraft: () => "" } as unknown as PrimaryObserver;
 
 function registration() {
 	let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
@@ -40,7 +43,7 @@ function completionFixture(sessions: () => Promise<readonly AgentConversationSum
 		{ name: "steer", description: "Redirect work", args: [{ name: "session", complete: "session-control" }, { name: "message", rest: true }], run: async () => undefined },
 		{ name: "abort", description: "Stop work", args: [{ name: "session", complete: "session-control" }], run: async () => undefined },
 		{ name: "status", description: "Read owner status", args: [{ name: "session", complete: "session-control" }], run: async () => undefined },
-	], { list: async () => page(await sessions()), snapshot: async () => { throw new Error("not requested"); } });
+	], { list: async () => page(await sessions()), snapshot: async () => { throw new Error("not requested"); } }, { primary: noPrimary });
 }
 
 describe("agent command discovery and help", () => {
@@ -60,7 +63,7 @@ describe("agent command discovery and help", () => {
 		const actions = await suggest(native, "/agent ");
 		assert.ok(actions);
 		assert.ok(actions.items.length > 0);
-		assert.deepEqual(actions.items.map((item) => item.label), ["new", "list", "status", "send", "steer", "abort", "attach", "fork", "compact", "inspect", "rewind", "configure", "command", "place", "places", "unbind", "help"]);
+		assert.deepEqual(actions.items.map((item) => item.label), ["new", "list", "status", "send", "steer", "abort", "attach", "fork", "compact", "inspect", "rewind", "configure", "command", "place", "places", "unbind", "reset", "schedule", "timers", "timer-cancel", "help"]);
 		assert.ok(actions.items.every((item) => item.description && !item.description.includes(" | ")));
 		assert.equal(actions.items.filter((item) => item.label === "list").length, 1);
 		assert.ok(!actions.items.some((item) => item.label === "runs" || item.label === "detach"));
@@ -135,7 +138,7 @@ describe("agent command discovery and help", () => {
 
 	it("searches multiword descriptions without metadata reads or action execution", async () => {
 		const forbidden = async (): Promise<never> => { throw new Error("must not execute"); };
-		const command = createAgentCommand([{ name: "send", description: "Give a session its next task", args: [{ name: "message", rest: true }], run: forbidden }], { list: forbidden, snapshot: forbidden });
+		const command = createAgentCommand([{ name: "send", description: "Give a session its next task", args: [{ name: "message", rest: true }], run: forbidden }], { list: forbidden, snapshot: forbidden }, { primary: noPrimary });
 		const complete = defined(command.getArgumentCompletions);
 		assert.equal(defined(await complete("next task"))[0].value, "send ");
 		assert.equal(await complete("send next task"), null);
@@ -144,7 +147,7 @@ describe("agent command discovery and help", () => {
 
 	it("preserves text that contains help words and reports invocation errors", async () => {
 		const calls: string[][] = [];
-		const command = createAgentCommand([{ name: "new", description: "Start work", args: [{ name: "prompt", optional: true, rest: true }], run: async (args) => { calls.push(args); throw new Error("trust denied"); } }], { list: async () => page([]), snapshot: async () => { throw new Error("not requested"); } });
+		const command = createAgentCommand([{ name: "new", description: "Start work", args: [{ name: "prompt", optional: true, rest: true }], run: async (args) => { calls.push(args); throw new Error("trust denied"); } }], { list: async () => page([]), snapshot: async () => { throw new Error("not requested"); } }, { primary: noPrimary });
 		const { ctx, notices } = context();
 		await command.handler("new help with --help output", ctx);
 		assert.deepEqual(calls, [["help", "with", "--help", "output"]]);
@@ -265,7 +268,7 @@ describe("dashboard action dispatch", () => {
 		const command = createAgentCommand([
 			{ name: "new", description: "Start", args: [{ name: "task", rest: true, optional: true }], run: async () => ({ text: "Started agent “Review parser”", sessionId: "open-2" }) },
 			{ name: "send", description: "Send", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async () => JSON.stringify({ sessionId: "open-2", submissionId: 47, deduped: false }) },
-		], { list: async () => page(rows), snapshot: async () => { throw new Error("not requested"); } });
+		], { list: async () => page(rows), snapshot: async () => { throw new Error("not requested"); } }, { primary: noPrimary });
 		const ctx = { mode: "print", hasUI: true, ui: { notify: (text: string) => notices.push(text) } } as unknown as ExtensionCommandContext;
 		await command.handler("new task", ctx);
 		assert.deepEqual(notices, ["Started agent “Review parser”"]);
@@ -279,20 +282,6 @@ describe("dashboard action dispatch", () => {
 		const action: AgentCommandAction = { name: "send", description: "Send task", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async () => ({ text: "Queued", sessionId: "open-2" }) };
 		assert.deepEqual(await chooseDashboardAction([action], rows[1], ctx), { text: "Queued", sessionId: "open-2" });
 		assert.match(prompts[0] ?? "", /Review parser/);
-	});
-	it("hides the board around a native prompt or dialog and shows it again", async () => {
-		const states: boolean[] = [];
-		const surface = { hide: () => states.push(true), show: () => states.push(false) };
-		const action: AgentCommandAction = { name: "send", description: "Send task", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async () => "Queued" };
-		assert.equal(await chooseDashboardAction([action], target, dialogs("send: Send task", ["hello"]).ctx, surface), "Queued");
-		assert.deepEqual(states, [true, false]);
-		const dialogAction: AgentCommandAction = { name: "configure", description: "Change configuration", args: [{ name: "session", complete: "session" }], dialog: async () => "patched", run: async () => undefined };
-		states.length = 0;
-		assert.equal(await chooseDashboardAction([dialogAction], target, dialogs("configure: Change configuration").ctx, surface), "patched");
-		assert.deepEqual(states, [true, false]);
-		states.length = 0;
-		assert.equal(await chooseDashboardAction([action], target, dialogs(undefined).ctx, surface), undefined);
-		assert.deepEqual(states, [], "a canceled picker never hides the board");
 	});
 });
 

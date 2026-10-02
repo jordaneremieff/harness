@@ -21,6 +21,10 @@ export const HOST_SERVICE_ID = "pi.agent.host";
 export const HOST_CHANGE_SERVICE_ID = "pi.agent.host.changes";
 /** State member published on every actual host write. */
 export const HOST_CHANGE_MEMBER = "change";
+/** Chord service identity prefix for one observation token's live frames. */
+export const HOST_OBSERVE_SERVICE_ID = "pi.agent.host.observe";
+/** State member published on the observation service. */
+export const HOST_OBSERVE_MEMBER = "frame";
 /** Readiness line the host prints after it starts listening. */
 export const HOST_READY_PREFIX = "PI_AGENT_HOST_READY ";
 /** Largest Unix socket path length that works on every supported host (macOS sun_path is 104 bytes). */
@@ -182,7 +186,20 @@ export function parseHostReadyLine(line: string): HostReady | undefined {
  * by request ID or acknowledgement state; read methods are naturally safe.
  * Unknown methods are never retried.
  */
-const HOST_RETRY_SAFE_METHODS: ReadonlySet<string> = new Set(["submit", "report", "acknowledge", "inspect", "status", "list", "receipts", "dashboard", "snapshot"]);
+const HOST_RETRY_SAFE_METHODS: ReadonlySet<string> = new Set(["submit", "report", "acknowledge", "inspect", "status", "list", "receipts", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "timer-list"]);
+
+/** Service id one observation token subscribes to for live frames. */
+export function observationServiceId(token: string): string {
+	return `${HOST_OBSERVE_SERVICE_ID}:${token}`;
+}
+
+/** Token carried by one observation service id; undefined for any other service id. */
+export function observationTokenFromServiceId(serviceId: string): string | undefined {
+	const prefix = `${HOST_OBSERVE_SERVICE_ID}:`;
+	if (!serviceId.startsWith(prefix)) return undefined;
+	const token = serviceId.slice(prefix.length);
+	return token === "" ? undefined : token;
+}
 
 export function isRetrySafeHostMethod(method: string): boolean {
 	return HOST_RETRY_SAFE_METHODS.has(method);

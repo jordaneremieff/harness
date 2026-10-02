@@ -26,6 +26,7 @@ import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { AGENT_CONTROL_TOOL_NAMES, agentControlGuidanceLines } from "./control-guidance.ts";
+import { parseDeliverAt, TimerTask, type TimerMode } from "./durable-timers.ts";
 import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
 import {
 	InspectOutputSchema,
@@ -52,7 +53,11 @@ export type AgentControlMethod =
 	| "attach"
 	| "command"
 	| "receipts"
-	| "acknowledge";
+	| "acknowledge"
+	| "reset"
+	| "timer-schedule"
+	| "timer-list"
+	| "timer-cancel";
 
 /** One host control call. The host returns a structured result the tool formats for the model. */
 export type AgentControlDispatch = (
@@ -248,6 +253,32 @@ const SendParams = Type.Object(
 				description: "Conversation that receives the answer; default: the calling conversation.",
 			}),
 		),
+		deliverAt: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description: "Absolute ISO 8601 date-time; schedule the input instead of admitting it now.",
+			}),
+		),
+		mode: Type.Optional(
+			StringEnum(["followUp", "steer"]),
+		),
+	},
+	{ additionalProperties: false },
+);
+
+const SteerParams = Type.Object(
+	{
+		sessionId: Type.String({
+			minLength: 1,
+			description: "External identity: storage id for the root, storageId:conversationId otherwise.",
+		}),
+		message: Type.String({ minLength: 1 }),
+		replyTo: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description: "Conversation that receives the answer; default: the calling conversation.",
+			}),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -257,6 +288,9 @@ const AbortParams = Type.Object(
 		sessionId: Type.String({ minLength: 1 }),
 		background: Type.Optional(
 			Type.Boolean({ description: "Also stop background work such as anchors and reporters." }),
+		),
+		timerId: Type.Optional(
+			Type.Integer({ minimum: 1, description: "Timer ID from agent_status; cancels only that scheduled input." }),
 		),
 	},
 	{ additionalProperties: false },
@@ -385,8 +419,22 @@ const PlaceParams = Type.Object(
 	{ additionalProperties: false },
 );
 
+const ResetParams = Type.Object(
+	{
+		sessionId: Type.String({
+			minLength: 1,
+			description: "Conversation to reset: storage id for the root, storageId:conversationId otherwise.",
+		}),
+		handoff: Type.Optional(
+			Type.String({ description: "Operator-authored text for the new context; absent starts it without a message." }),
+		),
+	},
+	{ additionalProperties: false },
+);
+
 type SpawnInput = Static<typeof SpawnParams>;
 type SendInput = Static<typeof SendParams>;
+type SteerInput = Static<typeof SteerParams>;
 type AbortInput = Static<typeof AbortParams>;
 type ForkInput = Static<typeof ForkParams>;
 type RewindInput = Static<typeof RewindParams>;
@@ -398,6 +446,7 @@ type ListInput = Static<typeof ListParams>;
 type InspectInput = Static<typeof InspectParams>;
 type AttachInput = Static<typeof AttachParams>;
 type PlaceInput = Static<typeof PlaceParams>;
+type ResetInput = Static<typeof ResetParams>;
 
 // ─── Extension ──────────────────────────────────────────────────────────────
 
@@ -900,33 +949,78 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			? sendForeign(api, sessionId, message, whenBusy, replyTo)
 			: sendLocal(api, context, sessionId, message, whenBusy, replyTo);
 
+	/**
+	 * Schedule one delivery through the host control. The host creates a timer
+	 * task whose input fixes the deadline, message, mode, origin, and request
+	 * ID, so a replayed call reuses the pending timer and a crash after the
+	 * deadline admits the input at most once.
+	 */
+	const scheduleSend = async (
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		args: SendInput,
+	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
+		if (args.deliverAt === undefined) return errorResult("deliverAt is required for a scheduled input.");
+		if (args.replyTo !== undefined) return errorResult("replyTo cannot be combined with deliverAt; the answer reports to this conversation.");
+		let deadline: number;
+		try {
+			deadline = parseDeliverAt(args.deliverAt);
+		} catch (error) {
+			return errorResult(error instanceof Error ? error.message : String(error));
+		}
+		const mode: TimerMode = args.mode ?? "followUp";
+		const scheduleId = `timer:${host.storageId}:${api.taskId}`;
+		return dispatchControl(
+			"timer-schedule",
+			{
+				sessionId: args.sessionId,
+				message: args.message,
+				deliverAt: deadline,
+				mode,
+				origin: "model",
+				ownerId: identity(api.conversationId),
+				scheduleId,
+				requestId: `${scheduleId}:delivery`,
+			},
+			`Scheduling an input for ${args.sessionId} failed`,
+		);
+	};
+
 	const sendTool = durable.defineTool({
 		name: "agent_send",
 		description:
-			"Send a message to an agent conversation. A busy conversation receives it after its current answer; the answer reports back to you.",
+			"Send a message to an agent conversation. A busy conversation receives it after its current answer; the answer reports back to you. With deliverAt, schedule the input instead of admitting it now.",
 		parameters: SendParams,
 		replay: "safe",
 		execute: async (args: SendInput, api, context) =>
-			sendTarget(api, context, args.sessionId, args.message, "followUp", args.replyTo),
+			args.deliverAt === undefined
+				? sendTarget(api, context, args.sessionId, args.message, "followUp", args.replyTo)
+				: scheduleSend(api, args),
 	});
 
 	const steerTool = durable.defineTool({
 		name: "agent_steer",
 		description:
 			"Redirect a live agent conversation. The message reaches it at its next step; the answer reports back to you.",
-		parameters: SendParams,
+		parameters: SteerParams,
 		replay: "safe",
-		execute: async (args: SendInput, api, context) =>
+		execute: async (args: SteerInput, api, context) =>
 			sendTarget(api, context, args.sessionId, args.message, "steer", args.replyTo),
 	});
 
 	const abortTool = durable.defineTool({
 		name: "agent_abort",
 		description:
-			"Stop a conversation's current work without deleting its transcript. Background work such as anchors and reporters survives unless background is true.",
+			"Stop a conversation's current work without deleting its transcript. With timerId, cancel only that scheduled input from agent_status. Background work such as anchors and reporters survives unless background is true.",
 		parameters: AbortParams,
 		replay: "unsafe",
 		execute: async (args: AbortInput, api, context) => {
+			if (args.timerId !== undefined) {
+				return dispatchControl(
+					"timer-cancel",
+					{ sessionId: args.sessionId, timerId: args.timerId },
+					`Cancellation of timer ${args.timerId} failed`,
+				);
+			}
 			if (target(args.sessionId).kind === "foreign") {
 				return dispatchControl(
 					"abort",
@@ -1191,7 +1285,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_status",
 			description:
-				"Inspect conversation state and tools through the session host's common observation. Without a target, report the storage overview.",
+				"Inspect conversation state and tools through the session host's common observation. A selected session lists its bounded pending scheduled inputs with timer ID and deadline. Without a target, report the storage overview.",
 			parameters: StatusParams,
 			replay: "safe",
 			execute: async (args: StatusInput) =>
@@ -1315,6 +1409,24 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		},
 	});
 
+	const resetTool = durable.defineTool({
+		name: "agent_reset",
+		description:
+			"Reset one conversation's active context with an optional handoff. History, identity, files, settings, and timers stay. The write places at the next native boundary while the conversation is busy and starts no model turn.",
+		parameters: ResetParams,
+		replay: "safe",
+		execute: async (args: ResetInput, api) =>
+			dispatchControl(
+				"reset",
+				{
+					sessionId: args.sessionId,
+					...(args.handoff === undefined ? {} : { handoff: args.handoff }),
+					requestId: `reset:${host.storageId}:${api.taskId}`,
+				},
+				`Reset of ${args.sessionId} failed`,
+			),
+	});
+
 	const guidance = durable.section("agent-controls", (input) => {
 		const selected = input.agent.tools.map((tool) => tool.name);
 		const anyControl = selected.some((name) => (AGENT_CONTROL_TOOL_NAMES as readonly string[]).includes(name));
@@ -1324,7 +1436,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	return durable.defineExtension({
 		name: "agent",
-		tasks: [Anchor, Reporter],
+		tasks: [Anchor, Reporter, TimerTask],
 		tools: [
 			spawnTool,
 			sendTool,
@@ -1340,6 +1452,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			inspectTool,
 			attachTool,
 			placeTool,
+			resetTool,
 		],
 		sections: [guidance],
 	});

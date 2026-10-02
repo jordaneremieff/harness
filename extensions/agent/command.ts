@@ -2,7 +2,8 @@ import { basename } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
-import { showAgentDashboard, type DashboardActions } from "./dashboard.ts";
+import { showPeerWindow } from "./peer-window.ts";
+import type { PeerAgentActions, PrimaryObserver } from "./peer-contract.ts";
 import type { AgentConversationSummary, AgentObservationSources, DashboardTarget } from "./dashboard-types.ts";
 import { selectDashboardAction } from "./dashboard-actions.ts";
 import { actionOutcomeText, agentDisplayName, outcomeSessionId } from "./action-outcome.ts";
@@ -96,26 +97,18 @@ function targetArgument(argument: CommandArgument, target?: DashboardTarget): st
 	return undefined;
 }
 
-/** Hide the board while a native dialog takes the screen, then show it again. */
-interface PromptSurface { hide(): void; show(): void }
-async function hideAround<T>(surface: PromptSurface | undefined, action: () => Promise<T>): Promise<T> {
-	if (surface === undefined) return action();
-	surface.hide();
-	try { return await action(); } finally { surface.show(); }
-}
-
-async function askDashboardArgument(action: AgentCommandAction, argument: CommandArgument, ctx: ExtensionContext, agent?: string, surface?: PromptSurface): Promise<string[] | undefined> {
-	const value = await hideAround(surface, () => ctx.ui.input(`${usage(action)} · ${argument.name}${agent ? ` · ${agent}` : ""}${argument.optional ? " (optional; blank to omit)" : ""}`, argument.rest ? "Free text" : argument.name));
+async function askDashboardArgument(action: AgentCommandAction, argument: CommandArgument, ctx: ExtensionContext, agent?: string): Promise<string[] | undefined> {
+	const value = await ctx.ui.input(`${usage(action)} · ${argument.name}${agent ? ` · ${agent}` : ""}${argument.optional ? " (optional; blank to omit)" : ""}`, argument.rest ? "Free text" : argument.name);
 	if (value === undefined) return undefined;
 	return value.trim() ? value.trim().split(/\s+/) : [];
 }
 
-async function dashboardArguments(action: AgentCommandAction, target: DashboardTarget | undefined, ctx: ExtensionContext, agent?: string, surface?: PromptSurface): Promise<string[] | string | undefined> {
+async function dashboardArguments(action: AgentCommandAction, target: DashboardTarget | undefined, ctx: ExtensionContext, agent?: string): Promise<string[] | string | undefined> {
 	const args: string[] = [];
 	for (const [index, argument] of action.args.entries()) {
 		const preset = index === 0 ? targetArgument(argument, target) : undefined;
 		if (preset !== undefined) { args.push(preset); continue; }
-		const words = await askDashboardArgument(action, argument, ctx, agent, surface);
+		const words = await askDashboardArgument(action, argument, ctx, agent);
 		if (words === undefined) return undefined;
 		if (!words.length && argument.optional) break;
 		const error = dashboardArgumentError(argument, words);
@@ -130,7 +123,7 @@ function dashboardArgumentError(argument: CommandArgument, words: string[]): str
 	return undefined;
 }
 
-export async function chooseDashboardAction(actions: AgentCommandAction[], target: DashboardTarget | undefined, ctx: ExtensionContext, surface?: PromptSurface): Promise<string | AgentActionOutcome | undefined> {
+export async function chooseDashboardAction(actions: AgentCommandAction[], target: DashboardTarget | undefined, ctx: ExtensionContext): Promise<string | AgentActionOutcome | undefined> {
 	const agent = target === undefined ? undefined : agentDisplayName(target);
 	const choice = await selectDashboardAction(actions, ctx, agent);
 	if (choice === undefined) return undefined;
@@ -138,13 +131,13 @@ export async function chooseDashboardAction(actions: AgentCommandAction[], targe
 	if (!action) return undefined;
 	if (action.dialog) {
 		const dialog = action.dialog;
-		return await hideAround(surface, () => dialog(target, ctx));
+		return await dialog(target, ctx);
 	}
-	const args = await dashboardArguments(action, target, ctx, agent, surface);
+	const args = await dashboardArguments(action, target, ctx, agent);
 	if (!Array.isArray(args)) return args;
 	const help = argumentHelp(action, args);
 	if (help) return help;
-	if (action.confirm && !await hideAround(surface, () => ctx.ui.confirm(`Confirm /agent ${action.name}`, `${action.confirm}\n\n${usage(action)}\nArguments: ${args.join(" ")}`))) return undefined;
+	if (action.confirm && !await ctx.ui.confirm(`Confirm /agent ${action.name}`, `${action.confirm}\n\n${usage(action)}\nArguments: ${args.join(" ")}`)) return undefined;
 	return await executeAgentAction(action, args, ctx) ?? "Action returned no text. This is not proof of task completion.";
 }
 
@@ -165,8 +158,13 @@ async function displayResult(result: string | AgentActionOutcome | undefined, so
 	return actionOutcomeText(result, nameFor);
 }
 
+/** Dependencies the command needs to open the peer window. */
+export interface AgentCommandPeerOptions {
+	primary: PrimaryObserver;
+}
+
 /** The same actions own execution, argument validation, help, and native completion. */
-export function createAgentCommand(actions: AgentCommandAction[], sources: AgentObservationSources): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
+export function createAgentCommand(actions: AgentCommandAction[], sources: AgentObservationSources, options: AgentCommandPeerOptions): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) => `Unknown action "${plain(name).slice(0, 80)}". Use /agent help, or type /agent and a space to choose an action.`;
 	const overview = () => [
@@ -190,24 +188,49 @@ export function createAgentCommand(actions: AgentCommandAction[], sources: Agent
 		description: action.description,
 	}));
 
-	let dashboardOpen = false;
-	const openDashboard = async (ctx: ExtensionContext): Promise<void> => {
-		if (!ctx.hasUI || ctx.mode !== "tui" || dashboardOpen) return;
-		dashboardOpen = true;
-		try {
-			const dashboardActions: DashboardActions = {
-				run: (target, overlay) => chooseDashboardAction(commands, target, ctx, overlay ? { hide: () => overlay.setHidden(true), show: () => overlay.setHidden(false) } : undefined),
-				compose: async (mode, sessionId, text) => {
-					const action = find(mode);
-					if (!action) throw new Error(`Agent action unavailable: ${mode}`);
-					return executeAgentAction(action, mode === "new" ? [text] : [sessionId ?? "", text], ctx);
-				},
-			};
-			await showAgentDashboard(sources, ctx, dashboardActions);
-		}
-		finally { dashboardOpen = false; }
+	let peerOpen = false;
+	const requireAction = (name: string): AgentCommandAction => {
+		const action = find(name);
+		if (!action) throw new Error(`Agent action unavailable: ${name}`);
+		return action;
 	};
-	const showDashboard = (ctx: ExtensionContext) => ctx.mode === "tui" ? openDashboard(ctx) : showAgentDashboard(sources, ctx);
+	/** Operator-origin peer actions; the window only presents and routes them. */
+	const peerActions = (ctx: ExtensionContext): PeerAgentActions => ({
+		submit: async ({ id, text, mode }) => {
+			const result = await executeAgentAction(requireAction(mode === "steer" ? "steer" : "send"), [id, text], ctx);
+			return { text: actionOutcomeText(result) ?? (mode === "steer" ? "Queued a correction" : "Sent a task"), sessionId: outcomeSessionId(result) ?? id };
+		},
+		newAgent: async ({ prompt }) => {
+			const result = await executeAgentAction(requireAction("new"), prompt ? [prompt] : [], ctx);
+			return { text: actionOutcomeText(result) ?? "Requested a new agent", sessionId: outcomeSessionId(result) };
+		},
+		fork: async ({ id, entryId }) => {
+			const result = await executeAgentAction(requireAction("fork"), entryId ? [id, entryId] : [id], ctx);
+			return { text: actionOutcomeText(result) ?? "Requested a branch", sessionId: outcomeSessionId(result) ?? id };
+		},
+		repair: async ({ id, entryId, correction }) => {
+			const result = await executeAgentAction(requireAction("rewind"), [id, entryId, correction], ctx);
+			return { text: actionOutcomeText(result) ?? "Requested a corrected branch", sessionId: outcomeSessionId(result) ?? id };
+		},
+	});
+	const openDashboard = async (ctx: ExtensionContext): Promise<void> => {
+		if (!ctx.hasUI || peerOpen) return;
+		peerOpen = true;
+		try {
+			await showPeerWindow({
+				ctx,
+				source: sources,
+				primary: options.primary,
+				actions: peerActions(ctx),
+				runActions: async (target) => {
+					const result = await chooseDashboardAction(commands, target, ctx);
+					const text = await displayResult(result, sources);
+					return text === undefined ? undefined : { text, sessionId: outcomeSessionId(result) };
+				},
+			});
+		}
+		finally { peerOpen = false; }
+	};
 	return {
 		openDashboard,
 		description: "Manage durable sessions; add a space to choose an action",
@@ -235,7 +258,7 @@ export function createAgentCommand(actions: AgentCommandAction[], sources: Agent
 			const [name, ...args] = input.trim().split(/\s+/);
 			const notify = (text: string) => ctx.ui.notify(text, "info");
 			try {
-				if (!name) return await showDashboard(ctx);
+				if (!name) return await openDashboard(ctx);
 				if (["--help", "-h"].includes(name)) return notify(overview());
 				const action = find(name);
 				if (!action) return notify(unknown(name));

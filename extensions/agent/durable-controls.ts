@@ -188,6 +188,70 @@ function intentIndex(state: Readonly<AgentDeliveryState>, conversationId: Conver
 	return state.intents.findIndex((intent) => intent.conversationId === conversationId && intent.requestId === requestId);
 }
 
+/** One admission's delivery identity, written before the submission it describes. */
+export interface DeliveryAdmission {
+	readonly requestId: string;
+	readonly ownerId: string;
+	readonly message: UserInput;
+	readonly whenBusy?: "steer" | "followUp" | "reject";
+	readonly operationId?: string;
+	readonly origin?: DeliveryOrigin;
+}
+
+/** What the admission intent lookup found: no record, an unlinked record, or a retained submission. */
+export type DeliveryIntentState =
+	| { readonly kind: "new" }
+	| { readonly kind: "unlinked" }
+	| { readonly kind: "linked"; readonly submissionId: SubmissionId };
+
+/** Write the conversation's display metadata for one admitted input on the caller's session transaction. */
+export async function recordAdmissionMeta(tx: Tx, conversationId: ConversationId, message: UserInput | DeliveryMessage): Promise<void> {
+	const meta = await tx.doc(AgentMetaDoc, conversationId);
+	writeFirstMessage(meta, message);
+	(meta as { updatedAt: number | null }).updatedAt = Date.now();
+}
+
+/**
+ * Record one delivery intent on the caller's session transaction. A repeated
+ * request ID returns the retained state instead of writing a second intent.
+ * The timer task uses this through its own task commit, so a fired input and
+ * its answer keep the same origin rule as any other admission.
+ */
+export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission): Promise<DeliveryIntentState> {
+	const state = await tx.doc(AgentDeliveryDoc);
+	await recordAdmissionMeta(tx, conversationId, admission.message);
+	const index = intentIndex(state, conversationId, admission.requestId);
+	if (index >= 0) {
+		const prior = state.intents[index];
+		if (prior !== undefined && prior.submissionId !== null) return { kind: "linked", submissionId: prior.submissionId };
+		return { kind: "unlinked" };
+	}
+	state.intents.push({
+		requestId: admission.requestId,
+		ownerId: admission.ownerId,
+		conversationId,
+		message: storedMessage(admission.message),
+		whenBusy: admission.whenBusy ?? null,
+		operationId: admission.operationId ?? null,
+		submissionId: null,
+		origin: admission.origin ?? "model",
+	});
+	return { kind: "new" };
+}
+
+/** Link one retained intent to its submission; true when a different submission was already linked. */
+export async function linkDeliveryIntent(tx: Tx, conversationId: ConversationId, requestId: string, submissionId: SubmissionId): Promise<boolean> {
+	const state = await tx.doc(AgentDeliveryDoc);
+	const index = intentIndex(state, conversationId, requestId);
+	const intent = state.intents[index];
+	if (intent === undefined) return false;
+	if (intent.submissionId === null) {
+		state.intents[index] = { ...intent, submissionId };
+		return false;
+	}
+	return intent.submissionId !== submissionId;
+}
+
 function storedMessage(message: UserInput): DeliveryMessage {
 	if (typeof message === "string") return message;
 	return message.map((part) =>
@@ -228,38 +292,13 @@ export async function submitConversation(
 	const { message, requestId, ownerId, whenBusy, operationId, origin } = params;
 	let deduped = (await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined;
 	if (ownerId !== undefined) {
-		const existing = await conversation.commit(async (tx) => {
-			const state = await tx.doc(AgentDeliveryDoc);
-			writeFirstMessage(await tx.doc(AgentMetaDoc, conversation.id), message);
-			const meta = await tx.doc(AgentMetaDoc, conversation.id);
-			(meta as { updatedAt: number | null }).updatedAt = Date.now();
-			const index = intentIndex(state, conversation.id, requestId);
-			if (index >= 0) {
-				const prior = state.intents[index];
-				if (prior !== undefined) {
-					deduped = prior.submissionId !== null;
-					return prior.submissionId;
-				}
-			}
-			state.intents.push({
-				requestId,
-				ownerId,
-				conversationId: conversation.id,
-				message: storedMessage(message),
-				whenBusy: whenBusy ?? null,
-				operationId: operationId ?? null,
-				submissionId: null,
-				origin: origin ?? "model",
-			});
-			return null;
-		}, context);
-		if (existing !== null) deduped = true;
+		const state = await conversation.commit(
+			(tx) => recordDeliveryIntent(tx, conversation.id, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), ...(origin === undefined ? {} : { origin }) }),
+			context,
+		);
+		if (state.kind === "linked") deduped = true;
 	} else {
-		await conversation.commit(async (tx) => {
-			const meta = await tx.doc(AgentMetaDoc, conversation.id);
-			writeFirstMessage(meta, message);
-			(meta as { updatedAt: number | null }).updatedAt = Date.now();
-		}, context);
+		await conversation.commit((tx) => recordAdmissionMeta(tx, conversation.id, message), context);
 	}
 	const submission = await conversation.submit(
 		{
@@ -271,15 +310,8 @@ export async function submitConversation(
 		context,
 	);
 	if (ownerId !== undefined) {
-		await conversation.commit(async (tx) => {
-			const state = await tx.doc(AgentDeliveryDoc);
-			const index = intentIndex(state, conversation.id, requestId);
-			if (index < 0) return;
-			const intent = state.intents[index];
-			if (intent === undefined) return;
-			if (intent.submissionId === null) state.intents[index] = { ...intent, submissionId: submission.id };
-			else if (intent.submissionId !== submission.id) deduped = true;
-		}, context);
+		const relinked = await conversation.commit((tx) => linkDeliveryIntent(tx, conversation.id, requestId, submission.id), context);
+		if (relinked) deduped = true;
 	}
 	return { submissionId: submission.id, conversationId: conversation.id, deduped };
 }

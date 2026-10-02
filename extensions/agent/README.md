@@ -6,9 +6,11 @@ its client connection, not the agent's work. Reopening the primary reconnects
 to its agents and recovers unfinished work when their hosts died.
 
 The ordinary primary still owns its terminal, `/restart`, and primary
-self-compaction. `/agent` and `ctrl+alt+g` open the agent dashboard. That board
-reads Durable conversations; it is not the upstream equal-peer terminal client.
-The published coding-agent package does not expose that client integration.
+self-compaction. `/agent` and `ctrl+alt+g` open the peer window: the real
+primary conversation and a Durable agent side by side, each with its own
+transcript, editor, and footer. The primary pane is a projection of the actual
+ordinary session, not a second session; its native InteractiveMode stays
+underneath and Escape returns to it.
 
 ## Runtime and identity
 
@@ -85,9 +87,10 @@ selection and MCP server configuration follow the current Pi settings.
 | Tool | Effect |
 |---|---|
 | `agent_spawn` | Create a root storage. Inside a Durable agent, the same cwd uses a native child; a different cwd uses a new storage host. An optional prompt starts work. |
-| `agent_send` | Admit a task, report, or correction. Busy recipients receive Durable steering. |
+| `agent_send` | Admit a task, report, or correction. Busy recipients receive Durable steering. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
-| `agent_abort` | Abort the selected conversation without deleting its retained evidence. |
+| `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. |
+| `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
 | `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. An explicit model is applied first; a failed configuration returns its failure instead of a status snapshot. |
 | `agent_configure` | Change an idle conversation's name, exact model, or reasoning level. |
 | `agent_fork` | Create an idle native fork at an entry or current leaf. |
@@ -96,7 +99,7 @@ selection and MCP server configuration follow the current Pi settings.
 | `agent_command` | Invoke a contributed command, reload host registrations while idle, or fork to a tree entry. |
 | `agent_place` | Resolve the longest directory binding, or create one, with optional work. |
 | `agent_list` | Page through stored identities and conversation metadata. |
-| `agent_status` | Read conversation and host state, including capability limits. |
+| `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results. |
 
 All agents have independent process lifetimes. There is no separate detach
@@ -104,9 +107,9 @@ operation or detached-run registry.
 
 `/agent` exposes `new`, `list`, `status`, `send`, `steer`, `abort`, `attach`,
 `fork`, `compact`, `inspect`, `rewind`, `configure`, `command`, `place`, `places`,
-and `unbind`. `help` shows action syntax. Tab completes actions and session
-identities without executing them. The dashboard supports selection, direct
-messages, steering, a new task, and a configuration dialog.
+`unbind`, `reset`, `schedule`, `timers`, and `timer-cancel`. `help` shows action
+syntax. Tab completes actions and session identities without executing them.
+Without an action, `/agent` opens the peer window.
 
 `/agent unbind <area>` removes only the directory binding. It does not delete
 storage or abort work.
@@ -167,7 +170,7 @@ the full source. A delivery receipt never proves task acceptance or that an
 agent acted on a correction.
 
 Each admission records its origin before the submission: `operator` for the
-board composer and `/agent` actions, `model` for agent tools. The delivery
+peer-window composers and `/agent` actions, `model` for agent tools. The delivery
 intent stores that origin, so it survives a host crash and relaunch; an intent
 from before the field existed reads as `model`. An operator-only answer group
 displays and retains its notice with no primary turn and no steering. When any
@@ -176,8 +179,24 @@ behavior. A fallback broadcast never wakes a recipient's model. The notice
 names the agent by stored name, first-task excerpt, or short identity; full
 identities and submission rows stay in the details. The notice card shows the
 agent label, the outcome (finished, failed, or stopped), the answer body, and
-how to open the conversation on the board. Catalog follow-ups between Durable
-hosts keep their existing form.
+how to open the peer window; the model-facing caveats stay in the message
+content, not the card. Catalog follow-ups between Durable hosts keep their
+existing form.
+
+A scheduled input is a native `agent.timer` background task in the target's
+storage. Its input persists the absolute deadline, target conversation,
+message, mode, admission origin, and a deterministic request ID before it
+waits on Durable's task-context `sleep(until)`. Replay never recomputes the
+deadline. On fire it admits the input once through request-ID deduplication,
+and the answer follows the notice and wake rule of its origin. A timer that
+was due while its host was down fires once after the host reopens and records
+that it ran overdue. A pending timer is live work, so the host does not retire
+while it waits. A timer fires only while its storage host runs; Pi starts no
+operating-system alarm, and a reset never cancels a timer.
+
+A reset admits a native `pi.reset` write with an optional handoff message. It
+places at the next boundary when the conversation is busy, starts no model
+turn, and leaves history inspectable.
 
 A registered primary refreshes its recorded model, reasoning level, and session
 name when the ordinary session changes them, so `agent_status` and endpoint
@@ -197,10 +216,10 @@ that marker and queues recovery through the same bounded pool. The manager owns
 these relaunches; managed connections do not independently relaunch on request
 retries. Three automatic replacements are permitted per storage within sixty
 seconds. Further losses stop automatic recovery and put a host error in the
-board's Attention group. Inspect the error, then use `agent_attach` to clear the
+All view's Attention group. Inspect the error, then use `agent_attach` to clear the
 stop and retry. Intentional disconnects and unmarked storage do not relaunch.
 
-## Observation and dashboard
+## Observation and the peer window
 
 Observation uses public Durable entries, documents, submissions, task outcomes,
 and views. The roster needs no storage read; a deep read of an inactive storage
@@ -217,13 +236,70 @@ continues an unfinished scan, not rows dropped by the digest bound. A no-target 
 and separate omitted counts for sessions, primaries, and failures, then points
 to `agent_list` for paged discovery. Provider signatures, image payloads, and
 redacted thinking are omitted with markers and counts. Task outcomes are
-execution evidence, not acceptance.
+execution evidence, not acceptance. Hidden native kinds such as `pi.system`
+never consume the transcript bound, and a snapshot page continues to earlier
+entries through its `before` anchor. A status carries the author role of its
+newest text, so the card says `Latest reply` or `Latest input`.
 
-The dashboard receives host-published conversation metadata through
+### Peer window
+
+The window is one full-screen overlay: a strip with the All count and key hints,
+then two equal panes. The left pane is the real primary; the right pane is the
+selected Durable agent. Each pane has a transcript viewport, its own editor and
+draft, and a footer with model, reasoning level, retained cost, and state. The
+editor and footer sit on the pane's bottom rows. F2 and F3 focus the primary
+and agent panes, F4 expands or restores the focused pane, F5 closes it without
+aborting work, F6 opens All, F7 starts a new agent, F8 opens Tasks, and
+PageUp/PageDown scroll. The editors accept the same actions as slash commands:
+`/all`, `/new`, `/view`, `/focus`, `/expand`, `/restore`, `/close`, `/tasks`,
+`/fork`, `/repair`, `/scroll`, `/mode`, `/steer`, `/send`, `/followup`,
+`/auto`, `/refresh`, `/pi`, `/continue`, and `/help`. Escape returns to native
+Pi without aborting either peer. Drafts, reading positions, and follow state
+survive focus changes, Expand, Close, and reopening within the Pi process.
+
+The primary pane projects the actual ordinary session from
+`ctx.sessionManager` and public message, tool, and run events. Plain text goes
+to that session through `pi.sendUserMessage`, as steering or a follow-up while
+it is busy. Any other slash text moves to the native editor through
+`ctx.ui.setEditorText` and returns focus to Pi, so Pi owns command expansion,
+completion, attachments, and submission; the window never submits slash text.
+An existing native draft is kept for restore. The primary's fork and tree
+navigation stay native Pi actions.
+
+The agent pane renders Pi's published chat components: user inputs, assistant
+text, thinking collapsed as the primary chat shows it, tool calls with their
+stored arguments and the built-in presentation when one exists, and each
+result attached to its call. A contributed tool without a built-in
+presentation shows its name and arguments as readable text. The host publishes
+live frames from Durable views over the same transport: committed partial
+assistant text, thinking, and running tool output arrive before the turn
+ends, and the committed entry replaces its partial. Frames carry a revision
+and coverage, one watch serves every observer of a scope, and the last close
+stops it. Observation attaches to a running host; it never launches one.
+Two Pi windows on one store follow and steer the same agent through its single
+host; closing one window aborts nothing. The agent composer admits operator
+input as a follow-up or steering. Fork and Repair act on a committed entry and
+place the new conversation beside its source; files do not roll back.
+
+Tasks shows the selected storage's live task graph from Durable's
+`watchTaskGraph`: kind, state, phase, background boundary, abort request, and
+owned conversations. Selecting a conversation opens it. Terminal tasks leave
+the graph; their results stay in the transcript. A storage without a running
+host reports `no live host`, because Durable publishes no cold task-graph read.
+
+The window does not embed InteractiveMode. The published extension API exposes
+no live InteractiveMode view, editor state, dialog, widget, or renderer
+registry to mount in a pane, and `getAllTools()` returns tool metadata without
+renderers. Those layers, and upstream's experimental coding-agent client and
+services (`packages/coding-agent/src/experimental`), are source-only.
+
+### All view
+
+The All view receives host-published conversation metadata through
 `dashboard-types.ts`. It does not parse ordinary JSONL. Each Durable host
 publishes one bounded view beside its catalog record: rows, `updatedAt`,
 `coverage.complete`, `coverage.omitted`, and an optional `unavailable` reason.
-The board reads only those views. It does not bootstrap services, copy a
+The All view reads only those views. It does not bootstrap services, copy a
 database, or launch a host for the roster. Missing or unavailable metadata is an
 explicit `unavailable` row, not proof of absence.
 
@@ -238,26 +314,19 @@ Host health fields are retained at the view's publication time, not a fresh
 check; a later view can clear them. The manager adds its current recovery errors,
 including crash-loop stops, without changing the host's published view.
 
-The transcript renders the selected conversation with Pi's published chat
-components: user inputs, assistant text, thinking (collapsed as the primary
-chat shows it), tool calls with their stored arguments and the built-in
-presentation when the tool has one, and each result attached to its call. A
-contributed tool without a built-in presentation shows its name and arguments
-as readable text. A bounded snapshot can omit the oldest entries; when it does
-and the session summary carries a first task, the board shows that task above
-the retained entries and labels the transcript partial. Blank-line runs between
-blocks are reduced to one line.
+A transcript page can omit the oldest entries. The agent pane then shows the
+first task from the session summary above the retained entries and labels the
+transcript partial; scrolling above the first loaded entry reads the earlier
+page through its `before` anchor. Blank-line runs between blocks are reduced to
+one line.
 
-`a` opens the native action list over the board. The board stays mounted and
-keeps its selection across action dialogs and results. Actions that need an
-agent use the selected one; actions that need none stay available. A native
-prompt or dialog takes the screen while it is open, and the board returns
-afterward. A result shows its display text and names the affected agent. A
-result that carries a new agent identity selects that agent and follows its
-tail. Prompts name an agent by its stored name, else a first-task excerpt, else
-a short identity. An active find filter stays visible in the board header with
-its match count; Escape clears the filter before a later Escape closes the
-board.
+View → Agent actions opens the native action list for the agent in the pane.
+A native prompt or dialog takes the screen while it is open, and the window
+returns afterward. A result shows its display text and names the affected
+agent; a result that carries a new agent identity opens that agent. Prompts
+name an agent by its stored name, else a first-task excerpt, else a short
+identity. An active All filter stays visible with its match count; Escape
+clears the filter before a later Escape closes All.
 
 Attention means a row needs operator action: an unavailable or claim-conflicted
 storage, a host's last error or failed compaction, a failed run that carries an
@@ -265,7 +334,7 @@ error, or a provider retry whose attempts are exhausted. A stopped session and
 an interrupted turn keep their state glyph in their date group; a terminal
 outcome without an error is a record, not a request.
 
-Board detail selection uses a deep read. The cold path opens a cached public
+Opening a stopped agent uses a deep read. The cold path opens a cached public
 snapshot of the storage database; the cache key includes the database and WAL
 identity by device, inode, size, and nanosecond modification time, plus writer
 claim state. An unchanged identity reuses the snapshot and its bounded per-method
@@ -280,11 +349,6 @@ active conversations and retained native cost from the same published rows and
 refreshes on host change notifications, not a receipt poll. `+?` marks
 incomplete or unreadable cost. Repeated observations do not accumulate the same
 usage twice.
-
-The actual primary Pi conversation remains an ordinary terminal session. The
-board does not display a fabricated Durable copy as that primary. Equal-peer
-navigation of the real primary and agents requires a published upstream client
-integration beyond the current extension surface.
 
 ## Primary restart and continuity
 

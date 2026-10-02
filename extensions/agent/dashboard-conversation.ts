@@ -100,14 +100,19 @@ export class AgentConversation {
 	private readonly tui: TUI;
 	private readonly expanded: boolean;
 	private readonly showThinking: boolean;
-	constructor(entries: readonly AgentConversationEntry[], cwd: string, tui: TUI, expanded: boolean, showThinking: boolean) {
-		this.cwd = cwd; this.tui = tui; this.expanded = expanded; this.showThinking = showThinking;
+	private readonly renderCustom?: (entry: AgentConversationEntry) => Component | undefined;
+	constructor(entries: readonly AgentConversationEntry[], cwd: string, tui: TUI, expanded: boolean, showThinking: boolean, renderCustom?: (entry: AgentConversationEntry) => Component | undefined) {
+		this.cwd = cwd; this.tui = tui; this.expanded = expanded; this.showThinking = showThinking; this.renderCustom = renderCustom;
 		this.definitions = nativeTools(cwd);
 		for (const source of entries) this.appendEntry(source);
 	}
 	private appendEntry(source: AgentConversationEntry): void {
 		try {
 			const entry = displayValue(source) as AgentConversationEntry;
+			if (entry.kind === "pi.custom_message" && this.renderCustom) {
+				const component = this.renderCustom(entry);
+				if (component) { this.blocks.push({ id: entry.id, component }); return; }
+			}
 			if (entry.kind === "pi.compaction") { this.appendCompaction(entry); return; }
 			if (entry.kind === "pi.reset") this.blocks.push({ id: `${entry.id}:reset`, component: new Text("── New context ──", 1, 1) });
 			for (const message of entry.model ?? []) this.appendMessage(entry.id, message);

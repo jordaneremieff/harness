@@ -17,7 +17,8 @@ import { ServerError } from "@earendil-works/pi-server";
 import type { RoutedServerServiceAttachment, Server, ServerHost } from "@earendil-works/pi-server";
 import { createUnixServer } from "@earendil-works/pi-server/unix";
 import { type ClaimFile, type ClaimIdentity, classifyClaim, readClaimFile } from "./claims.ts";
-import { formatHostReady, HOST_CHANGE_MEMBER, HOST_CHANGE_SERVICE_ID, HOST_SERVICE_ID, hostPaths, isCancelableHostWait, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
+import { formatHostReady, HOST_CHANGE_MEMBER, HOST_CHANGE_SERVICE_ID, HOST_OBSERVE_MEMBER, HOST_OBSERVE_SERVICE_ID, HOST_SERVICE_ID, hostPaths, isCancelableHostWait, observationTokenFromServiceId, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
+import { isObservationFrame } from "./live-frames.ts";
 
 /** The host-side surface the parent runtime must supply. */
 export interface HostRuntime {
@@ -88,6 +89,26 @@ interface ChangeSubscription {
 	unsubscribe: () => void;
 	sequence: number;
 	pending: boolean;
+}
+
+/** One connection-scoped live-frame subscription; one token per observation. */
+interface ObservationSubscription {
+	readonly subscriptionId: string;
+	readonly token: string;
+	readonly publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>;
+	readonly context: Context;
+	sequence: number;
+	revision: number;
+	closed: boolean;
+	close: () => void;
+}
+
+/** Per-attachment subscription state: change subscriptions, observation tokens, and their subscriptions. */
+interface AttachmentState {
+	readonly subscriptions: Map<string, ChangeSubscription>;
+	readonly observations: Map<string, ObservationSubscription>;
+	/** Observation tokens this attachment opened; only these may subscribe. */
+	readonly tokens: Set<string>;
 }
 
 const IDLE_MINUTES_MAX = 35791;
@@ -205,6 +226,12 @@ class HostProcessServer implements HostProcess {
 	private closePromise: Promise<void> | undefined;
 	private resolveDone: () => void = () => {};
 	private rejectDone: (error: Error) => void = () => {};
+	/** Live observation subscriptions across every attachment; frames publish on actual host writes. */
+	private readonly observations = new Set<ObservationSubscription>();
+	private observationPumpScheduled = false;
+	private observationPumping = false;
+	private observationAgain = false;
+	private unsubscribeObservation: (() => void) | undefined;
 
 	constructor(runtime: HostRuntime, paths: HostPaths, claim: HeldClaim, idleMs: number) {
 		this.runtime = runtime;
@@ -234,6 +261,8 @@ class HostProcessServer implements HostProcess {
 			await server.close().catch(() => undefined);
 			throw error;
 		}
+		// The runtime commit source wakes frame publication for every open observation.
+		this.unsubscribeObservation = this.runtime.onChange?.(() => this.scheduleObservationPump());
 		announce({ pid: this.pid, socketPath: this.paths.socket });
 		this.scheduleRetirement();
 	}
@@ -251,32 +280,42 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private attachment(): RoutedServerServiceAttachment {
-		const subscriptions = new Map<string, ChangeSubscription>();
+		const state: AttachmentState = { subscriptions: new Map(), observations: new Map(), tokens: new Set() };
 		return {
-			invokeService: (call, publish, context) => this.invokeService(call, publish, context, subscriptions),
+			invokeService: (call, publish, context) => this.invokeService(call, publish, context, state),
 			release: () => {
-				for (const entry of subscriptions.values()) entry.unsubscribe();
-				subscriptions.clear();
+				for (const entry of state.subscriptions.values()) entry.unsubscribe();
+				state.subscriptions.clear();
+				for (const entry of state.observations.values()) entry.close();
+				state.observations.clear();
+				for (const token of state.tokens) this.closeObservationToken(token);
+				state.tokens.clear();
 			},
 		};
 	}
 
-	/** Route Chord control calls for the change service, then host methods. */
+	/** Route Chord control calls for the change and observation services, then host methods. */
 	private async invokeService(
 		call: ServiceCall,
 		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>,
 		context: Context,
-		subscriptions: Map<string, ChangeSubscription>,
+		state: AttachmentState,
 	): Promise<JsonValue | undefined> {
 		const control = decodeServiceControlCall(call);
-		if (control?.type === "subscribe" && control.serviceId === HOST_CHANGE_SERVICE_ID) return this.subscribeChanges(control.subscriptionId, publish, context, subscriptions) as unknown as JsonValue;
+		if (control?.type === "subscribe") {
+			if (control.serviceId === HOST_CHANGE_SERVICE_ID) return this.subscribeChanges(control.subscriptionId, publish, context, state) as unknown as JsonValue;
+			const token = observationTokenFromServiceId(control.serviceId);
+			if (token !== undefined) return (await this.subscribeObservation(control.subscriptionId, token, publish, context, state)) as unknown as JsonValue;
+		}
 		if (control?.type === "unsubscribe") {
-			subscriptions.get(control.subscriptionId)?.unsubscribe();
-			subscriptions.delete(control.subscriptionId);
+			state.subscriptions.get(control.subscriptionId)?.unsubscribe();
+			state.subscriptions.delete(control.subscriptionId);
+			state.observations.get(control.subscriptionId)?.close();
+			state.observations.delete(control.subscriptionId);
 			return { unsubscribed: true };
 		}
 		if (control !== undefined) return undefined;
-		return this.dispatch(call, context);
+		return this.dispatch(call, context, state);
 	}
 
 	/**
@@ -288,8 +327,9 @@ class HostProcessServer implements HostProcess {
 		subscriptionId: string,
 		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>,
 		context: Context,
-		subscriptions: Map<string, ChangeSubscription>,
+		state: AttachmentState,
 	): ServiceSubscriptionSnapshot {
+		const subscriptions = state.subscriptions;
 		const entry: ChangeSubscription = { id: subscriptionId, publish, context, unsubscribe: () => {}, sequence: 0, pending: false };
 		const notify = (): void => {
 			if (entry.pending) return;
@@ -312,12 +352,111 @@ class HostProcessServer implements HostProcess {
 	}
 
 	/**
+	 * One live-frame subscription. The initial snapshot is the token's current
+	 * frame, so a subscription never starts from a gap; later publications come
+	 * from the observation pump, one coalesced state update per observed change.
+	 */
+	private async subscribeObservation(
+		subscriptionId: string,
+		token: string,
+		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>,
+		context: Context,
+		state: AttachmentState,
+	): Promise<ServiceSubscriptionSnapshot> {
+		if (!state.tokens.has(token)) throw new ServerError("service_not_found", `unknown observation token ${token}`);
+		const baseline = await this.runtime.request("observe-frame", { token }, randomUUID());
+		if (!isObservationFrame(baseline)) throw new ServerError("service_invalid_value", `observation token ${token} returned no frame`);
+		const entry: ObservationSubscription = {
+			subscriptionId,
+			token,
+			publish,
+			context,
+			sequence: baseline.revision,
+			revision: baseline.revision,
+			closed: false,
+			close: () => {},
+		};
+		entry.close = () => this.closeObservationSubscription(entry);
+		state.observations.set(subscriptionId, entry);
+		this.observations.add(entry);
+		// Close the open/subscribe gap: a commit between the baseline and
+		// registration publishes on the next pump, which is scheduled now.
+		this.scheduleObservationPump();
+		return {
+			serviceId: HOST_OBSERVE_SERVICE_ID,
+			mode: "singleton",
+			instances: [{ members: [{ name: HOST_OBSERVE_MEMBER, kind: "state", sequence: baseline.revision, ops: [["r", baseline as unknown as JsonValue]] }] }],
+		};
+	}
+
+	private closeObservationSubscription(entry: ObservationSubscription): void {
+		if (entry.closed) return;
+		entry.closed = true;
+		this.observations.delete(entry);
+		this.closeObservationToken(entry.token);
+	}
+
+	/** Release one runtime token; the runtime stops the watch when the last token closes. */
+	private closeObservationToken(token: string): void {
+		void this.runtime.request("observe-close", { token }, randomUUID()).catch(() => undefined);
+	}
+
+	/** Coalesce runtime write notifications into one frame check per turn. */
+	private scheduleObservationPump(): void {
+		if (this.closing || this.observations.size === 0) return;
+		if (this.observationPumping) {
+			this.observationAgain = true;
+			return;
+		}
+		if (this.observationPumpScheduled) return;
+		this.observationPumpScheduled = true;
+		queueMicrotask(() => {
+			this.observationPumpScheduled = false;
+			void this.pumpObservations().catch(() => undefined);
+		});
+	}
+
+	/** Publish one state update per subscription whose frame revision advanced. */
+	private async pumpObservations(): Promise<void> {
+		if (this.closing) return;
+		if (this.observationPumping) {
+			this.observationAgain = true;
+			return;
+		}
+		this.observationPumping = true;
+		try {
+			do {
+				this.observationAgain = false;
+				await Promise.all([...this.observations].map((entry) => this.publishObservation(entry)));
+			} while (this.observationAgain && !this.closing);
+		} finally {
+			this.observationPumping = false;
+		}
+	}
+
+	/** Read one subscription's frame and publish it when its revision advanced. */
+	private async publishObservation(entry: ObservationSubscription): Promise<void> {
+		if (entry.closed || this.closing) return;
+		let frame: unknown;
+		try {
+			frame = await this.runtime.request("observe-frame", { token: entry.token }, randomUUID());
+		} catch {
+			return;
+		}
+		if (entry.closed || !isObservationFrame(frame) || frame.revision === entry.revision) return;
+		entry.revision = frame.revision;
+		entry.sequence += 1;
+		const update: ServiceProviderUpdate = { type: "state", member: HOST_OBSERVE_MEMBER, sequence: entry.sequence, ops: [["r", frame as unknown as JsonValue]] };
+		await Promise.resolve(entry.publish(entry.subscriptionId, update, entry.context)).catch(() => undefined);
+	}
+
+	/**
 	 * Dispatch one public service call. The durable request ID travels as the
 	 * second argument so a caller retry after link loss reuses it. The context
 	 * signal follows the public cancel envelope; only observational waits in the
 	 * runtime observe it, so a disconnect never cancels admitted Durable work.
 	 */
-	private async dispatch(call: ServiceCall, context: Context): Promise<JsonValue | undefined> {
+	private async dispatch(call: ServiceCall, context: Context, state: AttachmentState): Promise<JsonValue | undefined> {
 		if (call.serviceId !== HOST_SERVICE_ID) throw new ServerError("service_not_found", `unknown host service ${call.serviceId}`);
 		const [rawParams, rawRequestId] = call.args;
 		const params = rawParams === null ? undefined : rawParams;
@@ -327,6 +466,10 @@ class HostProcessServer implements HostProcess {
 			// admitted Durable work never sees one.
 			const signal = isCancelableHostWait(call.member, params) ? context.abortSignal : undefined;
 			const result = await this.runtime.request(call.member, params, requestId, signal);
+			if (call.member === "observe-open") {
+				const token = (result as { token?: unknown } | undefined)?.token;
+				if (typeof token === "string") state.tokens.add(token);
+			}
 			return result as JsonValue | undefined;
 		} catch (error) {
 			// The public protocol carries bounded structural codes; the runtime
@@ -380,6 +523,9 @@ class HostProcessServer implements HostProcess {
 			clearTimeout(this.idleTimer);
 			this.idleTimer = undefined;
 		}
+		this.closing = true;
+		this.unsubscribeObservation?.();
+		this.unsubscribeObservation = undefined;
 		try {
 			const server = this.server;
 			if (server) await server.close();

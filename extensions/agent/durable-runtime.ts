@@ -25,7 +25,7 @@ function controlParams(input: unknown): Record<string, unknown> {
 const controlsKey = Symbol.for("pi.agent.durable.controls");
 const globals = globalThis as typeof globalThis & { [controlsKey]?: AgentControlDispatch };
 /** Methods that admit work or delivery into this storage. */
-const ADMITTING_METHODS: ReadonlySet<string> = new Set(["submit", "report", "rewind", "command", "compact", "spawn", "place"]);
+const ADMITTING_METHODS: ReadonlySet<string> = new Set(["submit", "report", "rewind", "command", "compact", "spawn", "place", "reset", "timer-schedule"]);
 /** Coalesce a burst of native commits into one catalog view publication. */
 const PUBLISH_COALESCE_MS = 250;
 

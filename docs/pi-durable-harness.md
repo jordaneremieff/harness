@@ -327,6 +327,37 @@ Durable agents instead install native Codemode and MCP extensions through
 `extensions/agent/durable-execution.ts`. Their scripts create native nested
 call tasks rather than invoke an ordinary extension runner.
 
+## Upstream main after 1.0.0
+
+Checked 2026-10-02 against upstream main `9b3c19d` with `git diff 7fbbd5f
+origin/main`, and `npm view <package> dist-tags` for coding-agent, agent-core,
+AI, TUI, durable, server, and client. Every package's npm `latest` is 1.0.0. The
+eight commits after `7fbbd5f` change no file in `packages/durable`,
+`packages/server`, `packages/client`, or `packages/coding-agent/src/experimental`.
+
+Unreleased changes that reach this harness after the next release:
+
+- Coding-agent pins `brace-expansion` 5.0.12 as a direct dependency. The installed
+  1.0.0 `npm-shrinkwrap.json` ships 5.0.9, so `npm audit` reports that finding
+  until a release carries the pin. The harness does not patch core.
+- pi-ai retries "Selected model is at capacity" errors. Durable generation and
+  compaction classify retries through pi-ai's `isRetryableAssistantError`
+  (`pi-durable/dist/harness/{generation,compaction}.js`), so agents gain that
+  retry with the pi-ai release, not through harness code.
+- pi-ai defines later Anthropic tools inline (`inline-tools-2026-09-15` beta)
+  instead of resending the whole tool list. A Durable agent whose registrations
+  change mid-conversation keeps the 1.0.0 cache behavior until that release.
+- Coding-agent adds a copy key to OAuth sign-in screens and ignores empty
+  `--models` entries. These affect the ordinary primary only.
+
+The upstream root `tui-plan.md` describes the alternate-screen layout work. Its
+public primitives (`VStack`, `HStack`, `ScrollView`, `isViewportTUI`, mouse
+events) already ship in pi-tui 1.0.0 (`dist/index.d.ts`), and installed
+InteractiveMode mounts a constrained chat viewport in fullscreen mode. An
+extension overlay is not a constrained layout root: `compositeOverlays` in
+`pi-tui/dist/tui.js` renders the component at full width and slices rows, so the
+agent peer window clips its own viewports.
+
 ## Pi Durable 1.0.0
 
 Verified 2026-10-02 against the published 1.0.0 package's `README.md`,
@@ -453,8 +484,12 @@ Cancellation of an observation does not cancel admitted work. The contribution
 host's close callbacks run after its abort signal and before storage closes.
 
 The published coding-agent package excludes the experimental peer client and
-service distribution. The agent dashboard therefore uses Durable data without
-claiming equal-peer navigation of the real ordinary primary.
+service distribution, and the extension API exposes no live InteractiveMode
+view to mount in a pane. The agent peer window therefore projects the real
+ordinary primary from its session manager and public events beside Durable
+agent panes, submits plain text to that same session, and hands slash text and
+native editor work back to InteractiveMode. It does not host the primary as a
+Durable conversation.
 
 ## Released ordinary-session changes
 
@@ -713,11 +748,11 @@ task and changes no global model defaults.
 ## Footer retention boundary
 
 The agent footer reads cumulative native usage per Durable conversation from the
-same bounded dashboard page as the board. It refreshes on host change
+same bounded roster page as the peer window's All view. It refreshes on host change
 notifications, not on a receipt poll, and it writes no ordinary footer
 checkpoints. Repeated observations do not add another local delta. Missing or
 invalid cost remains marked incomplete.
-The dashboard and footer share native observation records; neither parses
+The All view and footer share native observation records; neither parses
 ordinary JSONL. A page reports `complete`, `storagesVisited`, `skipped`,
 `omitted`, and `nextCursor`; a continuation cursor means more inventory to
 inspect and may end at an empty page, so a bounded or empty page is not proof of
@@ -868,7 +903,7 @@ scheduler or transcript. The ordinary SDK remains the primary terminal host.
 | Nested tools | Native call tasks, selected ToolTask hook chain, argument validation, committed intent, replay policy, and structured results |
 | Observation | Public native entries, documents, submissions, and task views; bounded status and dashboard pages with explicit coverage; cold inspection uses a bounded SQLite snapshot without resume |
 | Owner delivery | Host durable-delivery owns retained intents, receipts, and reports; catalog follow-up or registered primary channel; labeled broadcast fallback only for an absent or dead owner, acknowledged only over complete discovery and deliveries; no exactly-once cross-host promise |
-| UI | Existing agent dashboard over Durable data with one bounded roster page and explicit coverage; the published experimental peer-client integration remains unavailable |
+| UI | Peer window: the projected real primary beside Durable agent panes, live frames from host-owned Durable view and task-graph watches, and one bounded All roster with explicit coverage; an embeddable InteractiveMode view and the experimental peer client remain unpublished |
 | Handover and doctrine | Native transport and retention carry content; its meaning and authority remain application concerns |
 
 ## Refresh

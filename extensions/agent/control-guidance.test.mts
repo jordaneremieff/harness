@@ -18,6 +18,7 @@ const CURRENT_TOOLS = [
 	"agent_inspect",
 	"agent_list",
 	"agent_place",
+	"agent_reset",
 	"agent_rewind",
 	"agent_send",
 	"agent_spawn",
@@ -46,6 +47,7 @@ it("keeps the approved snippets", () => {
 		"Rewind an agent session to an entry and re-derive the work",
 	);
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_place.snippet, "Work in the session bound to an area");
+	assert.equal(AGENT_CONTROL_GUIDANCE.agent_reset.snippet, "Reset an agent's active context with an optional handoff");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_attach.snippet, "Attach to a stored agent session");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_configure.snippet, "Configure an idle session without starting work");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_list.snippet, "Find retained agent sessions");

@@ -128,6 +128,11 @@ it("validates every status variant, including unavailable rows", async (t) => {
 	const status = await readConversationStatus(host.harness, fixtureStorageId, 1 as ConversationId, {}, BACKGROUND_CONTEXT);
 	assert.ok(status);
 	structuredObservation(ConversationStatusSchema, status);
+	assert.equal(status.lastTextRole, "assistant", "the retained answer carries its author role");
+	const userTail = { ...status, lastText: "operator tail", lastTextRole: "user" };
+	structuredObservation(ConversationStatusSchema, userTail);
+	const { lastTextRole: _role, ...withoutRole } = status;
+	structuredObservation(ConversationStatusSchema, withoutRole);
 	assert.ok(status.live === null || typeof status.live === "object");
 	const inventory = { contributions: [], ordinaryOnly: [] as string[] };
 	structuredObservation(StatusOutputSchema, { conversation: status, inventory, pid: 4242, storageId: fixtureStorageId });

@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { LiveDoc, type ConversationId, type LiveState, type SubmissionId } from "@earendil-works/pi-durable";
+import { LiveDoc, SystemEntry, UserEntry, type ConversationId, type LiveState, type SubmissionId } from "@earendil-works/pi-durable";
+import type { Message } from "@earendil-works/pi-ai";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DurableHost } from "./durable-host.ts";
-import { ACTIVITY_DIGEST_BYTES, ACTIVITY_SCAN_BYTES, DurableObservation, dashboardHealth, reduceActivityMetadata, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
+import { ACTIVITY_DIGEST_BYTES, ACTIVITY_SCAN_BYTES, DurableObservation, dashboardHealth, reduceActivityMetadata, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
 import { answerMessage, failingTool, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, redactedAnswerMessage, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 
 function fixtureRoot(t: { after(fn: () => void): void }): string {
@@ -554,6 +555,94 @@ it("bounds stream-only oversized metadata with no rows and flags the byte limit"
 		assert.equal(activity.coverage.complete, false);
 		assert.equal(activity.coverage.omittedEntries, 0);
 		assert.ok((activity.metadata.streamedText?.length ?? 0) < big.length, "streamed text is shortened");
+	} finally {
+		await host.close();
+	}
+});
+
+interface SnapshotPageShape {
+	entries: readonly { id: string; kind: string; model?: readonly unknown[] }[];
+	partial: boolean;
+	revision: string;
+	nextBefore: number | null;
+	coverage: { complete: boolean; entries: number; bytes: number; hiddenExcluded: number; entryLimitReached: boolean; byteLimitReached: boolean };
+}
+
+it("keeps the first user entry when a hidden system entry exceeds the transcript byte bound", { timeout: 30000 }, async (t) => {
+	const storagePath = join(fixtureRoot(t), "hidden.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("first answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	try {
+		const submitted = await host.submit({ message: "first prompt", requestId: "hidden-1" });
+		assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
+		// A real prompt patch carries its payload inside the system message; one
+		// larger than the transcript byte bound used to end the newest-first scan.
+		const huge = "x".repeat(SNAPSHOT_BYTE_LIMIT + 4096);
+		await host.harness.commit(
+			(tx) => tx.appendEntry(SystemEntry, 1 as ConversationId, { model: [{ role: "system", content: "", sections: { huge }, timestamp: Date.now() } as unknown as Message] }),
+			BACKGROUND_CONTEXT,
+		);
+		const snapshot = (await host.request("snapshot")) as SnapshotPageShape;
+		assert.ok(snapshot.entries.some((entry) => entry.kind === "pi.user"), "the first user input survives");
+		assert.ok(snapshot.entries.some((entry) => entry.kind === "pi.assistant"), "the answer survives");
+		assert.ok(!snapshot.entries.some((entry) => entry.kind === "pi.system"), "hidden kinds stay out of the transcript payload");
+		assert.equal(snapshot.partial, false, "hidden exclusion alone never marks the page partial");
+		assert.ok(snapshot.coverage.hiddenExcluded >= 1, "the scan reports the hidden record it skipped");
+		assert.ok(snapshot.coverage.bytes < SNAPSHOT_BYTE_LIMIT, "the visible payload stays inside the byte bound");
+	} finally {
+		await host.close();
+	}
+});
+
+it("continues the transcript backwards from the page anchor to the first input", { timeout: 30000 }, async (t) => {
+	const storagePath = join(fixtureRoot(t), "pages.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("a0"), answerMessage("a1"), answerMessage("a2"), answerMessage("a3")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	try {
+		for (let index = 0; index < 4; index++) {
+			const submitted = await host.submit({ message: `prompt ${index}`, requestId: `pages-${index}` });
+			assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
+		}
+		const first = (await host.request("snapshot", { limit: 3 })) as SnapshotPageShape;
+		assert.equal(first.entries.length, 3);
+		assert.equal(first.coverage.entryLimitReached, true, "the entry bound stopped the page");
+		assert.ok(first.nextBefore !== null, "a bounded page carries its earlier anchor");
+		const second = (await host.request("snapshot", { limit: 3, before: first.nextBefore })) as SnapshotPageShape;
+		assert.ok(second.entries.length > 0);
+		const firstIds = new Set(first.entries.map((entry) => entry.id));
+		assert.ok(second.entries.every((entry) => !firstIds.has(entry.id)), "pages do not overlap");
+		assert.ok(Number(second.entries[second.entries.length - 1]?.id) < Number(first.entries[0]?.id), "the second page is strictly older");
+		let collected = [...second.entries];
+		let before = second.nextBefore;
+		let guard = 0;
+		while (before !== null && guard++ < 10) {
+			const page = (await host.request("snapshot", { limit: 3, before })) as SnapshotPageShape;
+			collected = [...page.entries, ...collected];
+			before = page.nextBefore;
+		}
+		assert.equal(before, null, "the oldest page carries no anchor");
+		assert.ok(collected.some((entry) => entry.kind === "pi.user" && JSON.stringify(entry.model ?? []).includes("prompt 0")), "paging reaches the first input");
+		assert.ok([...first.entries, ...collected].some((entry) => entry.kind === "pi.assistant" && JSON.stringify(entry.model ?? []).includes("a3")), "the newest page joins the older pages");
+	} finally {
+		await host.close();
+	}
+});
+
+it("carries the author role of the retained tail text", { timeout: 30000 }, async (t) => {
+	const storagePath = join(fixtureRoot(t), "roles.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("tail answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	try {
+		const submitted = await host.submit({ message: "tail question", requestId: "roles-1" });
+		assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
+		const answered = (await host.request("status")) as { conversations: readonly { lastText: string | null; lastTextRole?: string }[] };
+		const answerRow = answered.conversations[0];
+		assert.ok(answerRow);
+		assert.match(answerRow.lastText ?? "", /tail answer/u);
+		assert.equal(answerRow.lastTextRole, "assistant", "the answer is labeled as the assistant's");
+		await host.harness.commit((tx) => tx.appendEntry(UserEntry, 1 as ConversationId, { model: [{ role: "user", content: "operator tail", timestamp: Date.now() }] }), BACKGROUND_CONTEXT);
+		const asked = (await host.request("status")) as { conversations: readonly { lastText: string | null; lastTextRole?: string }[] };
+		const userRow = asked.conversations[0];
+		assert.ok(userRow);
+		assert.equal(userRow.lastText, "operator tail");
+		assert.equal(userRow.lastTextRole, "user", "the operator input is labeled as the user's");
 	} finally {
 		await host.close();
 	}

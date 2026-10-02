@@ -68,8 +68,8 @@ it("derives stable host paths and a short socket path for a deep agent directory
 });
 
 it("classifies retry-safe methods and cancelable waits", () => {
-	for (const method of ["submit", "report", "acknowledge", "inspect", "status", "list", "receipts", "dashboard", "snapshot"]) assert.equal(isRetrySafeHostMethod(method), true, method);
-	for (const method of ["abort", "compact", "configure", "command", "fork", "rewind", "unknown"]) assert.equal(isRetrySafeHostMethod(method), false, method);
+	for (const method of ["submit", "report", "acknowledge", "inspect", "status", "list", "receipts", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "timer-list"]) assert.equal(isRetrySafeHostMethod(method), true, method);
+	for (const method of ["abort", "compact", "configure", "command", "fork", "rewind", "reset", "timer-schedule", "timer-cancel", "unknown"]) assert.equal(isRetrySafeHostMethod(method), false, method);
 	assert.equal(isCancelableHostWait("receipts", { wait: true }), true);
 	assert.equal(isCancelableHostWait("receipts", { wait: false }), false);
 	assert.equal(isCancelableHostWait("receipts", {}), false);

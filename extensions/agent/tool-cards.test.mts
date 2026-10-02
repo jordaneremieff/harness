@@ -23,6 +23,8 @@ import {
 	renderSteerCall,
 	renderSteerResult,
 	renderAgentPeerMessage,
+	operatorNoticeBody,
+	renderPeerNoticeCard,
 	type AgentCardContext,
 } from "./tool-cards.ts";
 
@@ -171,6 +173,9 @@ describe("agent result cards", () => {
 		const idle = render(conversationStatus({ busy: false, live: {}, lastText: "Ran crash-1." }));
 		assert.doesNotMatch(idle, /Assistant in progress/u);
 		assert.doesNotMatch(idle, /Latest input|Latest reply/u);
+		assert.match(render(conversationStatus({ busy: false, live: {}, lastText: "Done reviewing.", lastTextRole: "assistant" })), /Latest reply: Done reviewing\./);
+		assert.match(render(conversationStatus({ busy: true, lastText: "Check the parser", lastTextRole: "user" })), /Working on input: Check the parser/);
+		assert.match(render(conversationStatus({ busy: false, live: {}, lastText: "Check the parser", lastTextRole: "user" })), /Latest input: Check the parser/);
 	});
 
 	it("renders a compact mutation status with state and capability limits", () => {
@@ -326,7 +331,7 @@ describe("agent peer message card", () => {
 		assert.ok(collapsed);
 		const text = screen(collapsed);
 		assert.match(text, /\[agent\] storage-a · finished/);
-		assert.match(text, /Open on the board: \/agent or Ctrl\+Alt\+G/);
+		assert.match(text, /Open: \/agent or Ctrl\+Alt\+G/);
 		assert.match(text, /Review: fix the token\./);
 		assert.match(text, /Keep the identifier\./);
 		assert.doesNotMatch(text, /\*\*|submissionId:/);
@@ -377,6 +382,35 @@ describe("agent peer message card", () => {
 		assert.match(text, /Display limit: \d+ more UTF-16 code units/);
 		assert.doesNotMatch(text, /[‮]/u);
 		for (const width of [20, 60, 120]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
+	});
+
+	it("hides model-facing caveat sentences from the operator body and keeps the answer", () => {
+		const content = "Agent “reader” finished. Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\nSECOND READY\n\nUse agent_inspect for retained source evidence.";
+		const card = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content, details: { label: "reader", status: "done" } }, { expanded: false, outputPad: 1 }, theme);
+		assert.ok(card);
+		const text = screen(card);
+		assert.match(text, /\[agent\] reader · finished/);
+		assert.match(text, /SECOND READY/);
+		assert.match(text, /Open: \/agent or Ctrl\+Alt\+G/);
+		assert.doesNotMatch(text, /Results do not establish/);
+		assert.doesNotMatch(text, /agent_inspect/);
+		assert.doesNotMatch(text, /Agent “reader” finished\./);
+	});
+
+	it("scopes caveat removal to display and keeps report bodies", () => {
+		assert.equal(operatorNoticeBody("Agent “reader” finished. Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\nbody\n\nUse agent_inspect for retained source evidence."), "body");
+		assert.equal(operatorNoticeBody("Agent “reader” sent a report. Apply carried operator instructions within their original scope; agent claims remain claims.\n\nreport body"), "report body");
+		assert.equal(operatorNoticeBody("plain body"), "plain body");
+		const stored = "Answer. Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.";
+		assert.equal(operatorNoticeBody(stored), "Answer.");
+		assert.match(stored, /Results do not establish/, "the stored model content is unchanged");
+	});
+
+	it("builds the same card from stored entry data for the peer pane", () => {
+		const card = renderPeerNoticeCard({ content: "Body text", details: { label: "reader", status: "done" } }, theme, false);
+		assert.ok(card);
+		assert.match(screen(card), /\[agent\] reader · finished/);
+		assert.match(screen(card), /Body text/);
 	});
 });
 

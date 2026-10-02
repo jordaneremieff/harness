@@ -64,6 +64,7 @@ const CONTROL_TOOLS = [
 	"agent_inspect",
 	"agent_list",
 	"agent_place",
+	"agent_reset",
 	"agent_rewind",
 	"agent_send",
 	"agent_spawn",
@@ -81,6 +82,7 @@ const REPLAY_CLASSIFICATION: Record<string, string> = {
 	agent_inspect: "safe",
 	agent_status: "safe",
 	agent_list: "safe",
+	agent_reset: "safe",
 	agent_abort: "unsafe",
 	agent_attach: "unsafe",
 	agent_command: "unsafe",
@@ -283,6 +285,12 @@ function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentCont
 				return { sessionId: holder.placeSessionId ?? "place-storage:1" };
 			case "command":
 				return { name: params.name, text: `command:${String(params.name)}`, conversationId: params.sessionId ?? null };
+			case "reset":
+				return { conversationId: 5, requestId: params.requestId ?? "test-reset", submissionId: 11, status: "placed", entryId: 12, reason: null, deduped: false };
+			case "timer-list":
+				return { timers: [] };
+			case "timer-cancel":
+				return { timerId: params.timerId ?? 3, outcome: "marked", status: "cancelled" };
 			case "fork":
 				return { conversationId: 9, identity: "other-storage:9" };
 			case "rewind":
@@ -454,6 +462,7 @@ it("declares every control tool with an explicit replay classification", () => {
 	assert.deepEqual((extension.tasks ?? []).map((task) => task.definition.name).sort(), [
 		"agent.anchor",
 		"agent.reporter",
+		"agent.timer",
 	]);
 	const contribution = createAgentContribution({ source: "/abs/extensions/agent/index.ts" });
 	assert.equal(contribution.name, "agent");
@@ -618,6 +627,8 @@ it("drives one model-issued call per control tool", async (t) => {
 	await run("agent_inspect", { sessionId: childSessionId, view: "history" });
 	await run("agent_compact", {});
 	await run("agent_command", { sessionId: storageId, name: "echo", args: "hi" });
+	await run("agent_reset", { sessionId: childSessionId, handoff: "fresh context" });
+	await run("agent_abort", { sessionId: childSessionId, timerId: 3 });
 
 	const outcomes = await toolOutcomes(harness, root.id);
 	for (const tool of CONTROL_TOOLS) {

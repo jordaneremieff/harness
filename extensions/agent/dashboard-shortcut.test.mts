@@ -1,78 +1,179 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { it } from "node:test";
-import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { Editor, KeybindingsManager as Keys, TUI_KEYBINDINGS, type TUI } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { KeybindingsManager as Keys, setKeybindings, TUI_KEYBINDINGS, type TUI } from "@earendil-works/pi-tui";
+import { createAgentCommand, type AgentCommandAction } from "./command.ts";
+import type { AgentConversationPage, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
+import type { PrimaryObserver, PrimarySnapshot } from "./peer-contract.ts";
+import { PeerWindow } from "./peer-window.ts";
 import registerAgentExtension from "./index.ts";
-import { createAgentCommand } from "./command.ts";
-import { AgentDashboard } from "./dashboard.ts";
-import { AgentActionPicker } from "./dashboard-actions.ts";
 
+initTheme("dark");
+setKeybindings(new Keys(TUI_KEYBINDINGS));
+const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
+const keys = new Keys(TUI_KEYBINDINGS) as KeybindingsManager;
+const tui = { terminal: { rows: 24, columns: 80 }, requestRender() {} } as unknown as TUI;
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
-function deferred() {
-	let resolve!: () => void; let reject!: (error: Error) => void;
-	const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
-	return { promise, resolve, reject };
+const F5 = "\x1b[15~";
+const F6 = "\x1b[17~";
+const DOWN = "\x1b[B";
+const ENTER = "\r";
+
+function row(overrides: Partial<AgentConversationSummary> & { id: string }): AgentConversationSummary {
+	return { storageId: "storage", name: "Agent", cwd: "/work", owner: "here", state: "idle", modifiedAt: 1, cost: 0, partial: false, ...overrides };
 }
-function registrations() {
-	let command!: Parameters<ExtensionAPI["registerCommand"]>[1];
-	let shortcut!: Parameters<ExtensionAPI["registerShortcut"]>[1];
-	const api: Partial<ExtensionAPI> = { events: { emit() {}, on: () => () => {} }, registerTool() {}, registerMessageRenderer() {}, on: () => () => {},
-		registerCommand(name, value) { if (name === "agent") command = value; else assert.equal(name, "restart"); },
-		registerShortcut(key, value) { assert.equal(key, "ctrl+alt+g"); assert.equal(shortcut, undefined); shortcut = value; },
+const rows = [row({ id: "agent:one", name: "One", state: "working", modifiedAt: 2 }), row({ id: "agent:two", name: "Two", modifiedAt: 1 })];
+const source = {
+	async list(): Promise<AgentConversationPage> { return { rows, coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null }, observedAt: new Date(0).toISOString() }; },
+	async snapshot(id: string): Promise<AgentConversationSnapshot> { return { entries: [{ id: `${id}:u`, kind: "pi.user", model: [{ role: "user", content: "task", timestamp: 1 }] }], partial: false, revision: "r1" }; },
+};
+const primaryValue: PrimarySnapshot = {
+	descriptor: { id: "primary", kind: "primary", name: "this Pi", cwd: "/work", model: "test/model", thinkingLevel: "high", state: "idle", cost: 0 },
+	entries: [],
+	revision: "p1",
+	live: [],
+	liveRevision: "l1",
+	busy: false,
+};
+const primary: PrimaryObserver = {
+	attach() {}, observe() {}, subscribe: () => () => {}, snapshot: () => primaryValue, sendPlain() {}, handoffToNative: () => "", nativeDraft: () => "",
+};
+
+interface Capture { window?: PeerWindow; opens: number; close?: () => void }
+function context(capture: Capture): ExtensionCommandContext {
+	const ui = {
+		custom: async (factory: (tui: TUI, theme: Theme, keys: KeybindingsManager, done: (value?: unknown) => void) => { dispose?(): void }) => {
+			capture.opens++;
+			let finish!: (value?: unknown) => void;
+			const result = new Promise((resolve) => { finish = resolve; });
+			let component!: { dispose?(): void };
+			const complete = (value?: unknown) => { component.dispose?.(); finish(value); };
+			capture.close = () => complete(undefined);
+			component = factory(tui, theme, keys, complete);
+			capture.window = component as PeerWindow;
+			return result as never;
+		},
+		notify() {}, getEditorText: () => "", setEditorText() {}, select: async () => undefined, input: async () => undefined, confirm: async () => false,
 	};
-	registerAgentExtension(api as ExtensionAPI);
-	assert.equal(shortcut.description, "Open the agent dashboard");
-	return { command, shortcut };
+	return { mode: "tui", hasUI: true, cwd: "/work", sessionManager: { getSessionId: () => "session-1", getSessionName: () => undefined, buildSessionProjection: () => ({ entries: [], messages: [], thinkingLevel: "off", model: null }) }, ui } as unknown as ExtensionCommandContext;
 }
-function context(custom: ExtensionContext["ui"]["custom"], notify: (text: string) => void = () => {}) {
-	const ui = new Proxy({ custom, notify }, { get(target, key) { assert.ok(key in target, `Unexpected UI access: ${String(key)}`); return Reflect.get(target, key); } });
-	return { mode: "tui", hasUI: true, ui } as ExtensionContext;
-}
-it("registers Ctrl+Alt+G and shares a guard across command and shortcut through pending UI, close, and failure", async () => {
-	const { command, shortcut } = registrations();
-	let pending = deferred(); let opens = 0;
-	const notices: string[] = [];
-	const ctx = context(async () => { opens++; await pending.promise; return undefined as never; }, (text) => notices.push(text));
-	assert.equal("waitForIdle" in ctx, false);
-	const first = shortcut.handler(ctx);
-	await shortcut.handler(ctx); await command.handler("", ctx as ExtensionCommandContext); assert.equal(opens, 1);
-	pending.resolve(); await first;
-	pending = deferred(); const second = command.handler("", ctx as ExtensionCommandContext);
-	await shortcut.handler(ctx); assert.equal(opens, 2); pending.resolve(); await second;
-	pending = deferred(); const failed = Promise.resolve(shortcut.handler(ctx));
-	const rejection = assert.rejects(failed, /UI unavailable/); pending.reject(new Error("UI unavailable")); await rejection;
-	pending = deferred(); const commandFailure = command.handler("", ctx as ExtensionCommandContext);
-	pending.reject(new Error("command UI unavailable")); await commandFailure; assert.deepEqual(notices, ["command UI unavailable"]);
-	pending = deferred(); const restored = shortcut.handler(ctx); assert.equal(opens, 5); pending.resolve(); await restored;
+
+it("opens the peer window through /agent, selects an agent in All, and keeps one open guard", async () => {
+	const calls: string[][] = [];
+	const action: AgentCommandAction = { name: "send", description: "Send a task", args: [{ name: "session" }, { name: "message", rest: true }], run: async (args) => { calls.push(args); return "Sent"; } };
+	const command = createAgentCommand([action], source, { primary });
+	const capture: Capture = { opens: 0 };
+	const ctx = context(capture);
+	const opened = command.handler("", ctx);
+	assert.ok(capture.window instanceof PeerWindow, "the command opens the peer window");
+	const window = capture.window;
+	await window.ready();
+	assert.deepEqual(window.state.right, { kind: "agent", id: "agent:one" }, "the working agent pairs with the primary");
+
+	window.handleInput("OR"); // F3: focus the agent pane.
+	window.handleInput(F5);
+	assert.equal(window.state.right, undefined);
+	window.handleInput(F6);
+	window.handleInput(DOWN);
+	window.handleInput(ENTER);
+	assert.deepEqual(window.state.right, { kind: "agent", id: "agent:one" }, "All opens the selected agent in the agent pane");
+	assert.equal(window.state.focus, "right");
+
+	await command.handler("", ctx);
+	assert.equal(capture.opens, 1, "a second open while the window is mounted does nothing");
+	capture.close?.();
+	await opened;
 });
+
+it("routes submit, new, fork, and repair through the operator command actions", async () => {
+	const calls: Array<{ name: string; args: string[] }> = [];
+	const action = (name: string, args: AgentCommandAction["args"], outcome: string): AgentCommandAction => ({ name, description: name, args, run: async (received) => { calls.push({ name, args: received }); return { text: outcome, sessionId: name === "new" || name === "fork" ? "agent:new" : received[0] }; } });
+	const command = createAgentCommand([
+		action("send", [{ name: "session" }, { name: "message", rest: true }], "Sent"),
+		action("steer", [{ name: "session" }, { name: "message", rest: true }], "Steered"),
+		action("new", [{ name: "task", rest: true, optional: true }], "Created"),
+		action("fork", [{ name: "session" }, { name: "entry", optional: true }], "Forked"),
+		action("rewind", [{ name: "session" }, { name: "entry" }, { name: "correction", rest: true }], "Repaired"),
+	], source, { primary });
+	const capture: Capture = { opens: 0 };
+	const ctx = context(capture);
+	const opened = command.handler("", ctx);
+	const windowValue = capture.window;
+	assert.ok(windowValue instanceof PeerWindow, "the command opens the peer window");
+	const window = windowValue;
+	await window.ready();
+
+	window.handleInput("\x1bOR"); // F3: focus the agent pane.
+	for (const char of "do it") window.handleInput(char);
+	window.handleInput(ENTER);
+	await tick();
+	assert.deepEqual(calls.at(-1), { name: "send", args: ["agent:one", "do it"] });
+
+	window.handleInput("\x1b[18~"); // F7: new agent task.
+	for (const char of "make two") window.handleInput(char);
+	window.handleInput(ENTER);
+	await tick();
+	assert.deepEqual(calls.at(-1), { name: "new", args: ["make two"] });
+	assert.ok([window.state.left, window.state.right].some((slot) => slot?.kind === "agent" && slot.id === "agent:new"), "the created agent opens in a pane");
+
+	for (const char of "/fork") window.handleInput(char);
+	window.handleInput(ENTER);
+	window.handleInput(ENTER);
+	await tick();
+	assert.deepEqual(calls.at(-1), { name: "fork", args: ["agent:new", "agent:new:u"] });
+
+	for (const char of "/repair") window.handleInput(char);
+	window.handleInput(ENTER);
+	window.handleInput(ENTER);
+	for (const char of "other file") window.handleInput(char);
+	window.handleInput(ENTER);
+	await tick();
+	assert.deepEqual(calls.at(-1), { name: "rewind", args: ["agent:new", "agent:new:u", "other file"] });
+
+	capture.close?.();
+	await opened;
+});
+
+it("registers Ctrl+Alt+G for the peer window and opens it against an isolated store", async () => {
+	const previous = process.env.PI_AGENT_SESSIONS_DIR;
+	const root = mkdtempSync(join(tmpdir(), "peer-wiring-"));
+	process.env.PI_AGENT_SESSIONS_DIR = root;
+	try {
+		let command!: Parameters<ExtensionAPI["registerCommand"]>[1];
+		let shortcut!: Parameters<ExtensionAPI["registerShortcut"]>[1];
+		const api: Partial<ExtensionAPI> = { events: { emit() {}, on: () => () => {} }, registerTool() {}, registerMessageRenderer() {}, on: () => () => {},
+			registerCommand(name, value) { if (name === "agent") command = value; else assert.equal(name, "restart"); },
+			registerShortcut(key, value) { assert.equal(key, "ctrl+alt+g"); shortcut = value; },
+			getThinkingLevel: () => "off",
+		};
+		registerAgentExtension(api as ExtensionAPI);
+		assert.equal(shortcut.description, "Open the agent peer window");
+		const capture: Capture = { opens: 0 };
+		const ctx = context(capture);
+		const opened = shortcut.handler(ctx as ExtensionContext);
+		assert.ok(capture.window instanceof PeerWindow, "Ctrl+Alt+G opens the peer window");
+		capture.close?.();
+		await opened;
+		assert.equal(typeof command.handler, "function");
+	} finally {
+		if (previous === undefined) delete process.env.PI_AGENT_SESSIONS_DIR;
+		else process.env.PI_AGENT_SESSIONS_DIR = previous;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 it("does nothing for shortcut calls without a terminal UI", async () => {
-	const { shortcut } = registrations();
-	const ctx = context(async () => { assert.fail("No UI requested"); });
-	for (const mode of ["print", "json", "rpc", "tui"] as const) await shortcut.handler({ ...ctx, mode, hasUI: false });
-	await shortcut.handler({ ...ctx, mode: "rpc", hasUI: true });
-});
-it("keeps the native editor draft intact across a mounted dashboard and uses only the common context for actions", async () => {
-	const keys = new Keys(TUI_KEYBINDINGS) as KeybindingsManager;
-	const tui = { terminal: { rows: 24 }, requestRender() {} } as unknown as TUI;
-	const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text } as Theme;
-	const editor = new Editor(tui, { borderColor: (text) => text, selectList: { selectedPrefix: (text) => text, selectedText: (text) => text, description: (text) => text, scrollInfo: (text) => text, noMatch: (text) => text } });
-	editor.setText("Unsent draft\nsecond line"); const before = editor.getText();
-	let panel: AgentDashboard | undefined; let actions = 0; let ctx!: ExtensionContext;
-	const command = createAgentCommand([{ name: "status", description: "Read status", args: [], run: async (_args, actual) => { assert.equal(actual, ctx); actions++; return "Status read"; } }], {
-		list: async () => ({ rows: [], coverage: { complete: true, storagesVisited: 0, skipped: 0, omitted: 0, nextCursor: null }, observedAt: new Date().toISOString() }), snapshot: async () => { throw new Error("No selection"); },
-	});
-	ctx = context(async (factory) => {
-		let finish!: (value?: unknown) => void;
-		const response = new Promise((resolve) => { finish = resolve; });
-		const component = await factory(tui, theme, keys, (value) => finish(value));
-		if (component instanceof AgentActionPicker) { component.render(80); component.handleInput("\r"); }
-		else { assert.ok(component instanceof AgentDashboard); panel = component; }
-		try { return await response as never; } finally { if (component instanceof AgentDashboard) component.dispose(); }
-	});
-	ctx.ui = new Proxy({ ...ctx.ui, select: async () => "status: Read status" }, { get(target, key) { assert.ok(key in target, `Unexpected UI access: ${String(key)}`); return Reflect.get(target, key); } });
-	const opened = command.openDashboard(ctx); await tick(); assert.ok(panel);
-	await command.openDashboard(ctx); assert.match(panel.render(80).join("\n"), /Agents/);
-	panel.handleInput("a"); await tick(); assert.equal(actions, 1); assert.match(panel.render(80).join("\n"), /Status read/);
-	panel.handleInput("\x1b"); panel.handleInput("\x1b"); await opened;
-	assert.equal(editor.getText(), before);
+	let opens = 0;
+	const ctx = context({ opens: 0 });
+	const ui = { ...ctx.ui, custom: async () => { opens++; throw new Error("no UI"); } } as unknown as ExtensionCommandContext["ui"];
+	const modes = ["print", "json", "rpc", "tui"] as const;
+	const command = createAgentCommand([], source, { primary });
+	for (const mode of modes) await command.openDashboard({ ...ctx, mode, hasUI: false, ui } as unknown as ExtensionContext);
+	await command.openDashboard({ ...ctx, mode: "rpc", hasUI: true, ui } as unknown as ExtensionContext);
+	assert.equal(opens, 0, "no window opens without a terminal UI");
+	await tick();
 });

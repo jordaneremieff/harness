@@ -5,8 +5,9 @@ import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
-import { acquireHost, connectHost, snapshotHost, type HostConnection, type HostLaunchOptions } from "./host-client.ts";
+import { acquireHost, connectHost, snapshotHost, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState, waitUntil, writeFixtureState } from "./host-fixture.mts";
+import type { ConversationFrame } from "./live-frames.ts";
 
 const fixturePath = fileURLToPath(new URL("./host-fixture.mts", import.meta.url));
 
@@ -48,6 +49,11 @@ async function openHost(t: { after(fn: () => void): void }, root: string, option
 async function subscribeChanges(connection: HostConnection, listener: () => void): Promise<() => void> {
 	if (!connection.subscribeChanges) throw new Error("host connection does not publish change notifications");
 	return connection.subscribeChanges(listener);
+}
+
+async function observeFrames(connection: HostConnection, scope: HostObservationScope) {
+	if (!connection.observe) throw new Error("host connection does not publish live frames");
+	return connection.observe(scope);
 }
 
 it("launches a host, echoes, and attaches to the live claim", { timeout: 30000 }, async (t) => {
@@ -281,5 +287,90 @@ it("reports terminal closure through onClose after a kill", { timeout: 30000 }, 
 	await waitUntil(() => closed, 10000);
 	unsubscribe();
 	assert.equal(connection.closed, true);
+	await connection.close();
+});
+
+const observationFixturePath = fileURLToPath(new URL("./live-observation-fixture.mts", import.meta.url));
+
+/** Launch options for the real DurableHost fixture; idle retirement is disabled by its pinned host. */
+function observationLaunch(extra: Partial<HostLaunchOptions> = {}): HostLaunchOptions {
+	return { runner: observationFixturePath, ...extra };
+}
+
+/** Poll an async condition without a fixed sleep. */
+async function untilAsync(check: () => Promise<boolean> | boolean, timeoutMs = 20000, label = "condition"): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		if (await check()) return;
+		if (Date.now() >= deadline) throw new Error(`${label} was not reached before its deadline`);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
+it("pushes live conversation frames and stops on observation close", { timeout: 60000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const config = fixtureMetadata(root);
+	const connection = await acquireHost(config, observationLaunch());
+	track(t, connection.pid);
+	t.after(() => connection.close().catch(() => {}));
+	const frames: ConversationFrame[] = [];
+	const observation = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
+	observation.onFrame((frame) => {
+		if (frame.scope === "conversation") frames.push(frame);
+	});
+	const base = observation.frame;
+	assert.equal(base.scope, "conversation");
+	if (base.scope !== "conversation") assert.fail("expected a conversation frame");
+	assert.equal(base.conversationId, 1);
+	await connection.request("submit", { sessionId: config.storageId, message: "transport prompt", requestId: "observation-1" });
+	await untilAsync(() => frames.some((frame) => frame.entries.some((entry) => entry.kind === "pi.assistant")), 30000, "live answer frame");
+	const answered = frames[frames.length - 1];
+	assert.ok(answered !== undefined && answered.scope === "conversation");
+	assert.ok(answered.revision > base.revision, "the published frame advances the revision");
+	assert.equal(answered.status.lastTextRole, "assistant");
+	const revisions = frames.map((frame) => frame.revision);
+	assert.equal(new Set(revisions).size, revisions.length, "a coalesced publisher never repeats a revision");
+	assert.ok(revisions.every((revision, index) => index === 0 || revision > (revisions[index - 1] ?? 0)), "published revisions strictly increase");
+
+	await observation.close();
+	const settled = frames.length;
+	await connection.request("submit", { sessionId: config.storageId, message: "after close", requestId: "observation-2" });
+	await untilAsync(async () => {
+		const snapshot = (await connection.request("snapshot", { sessionId: config.storageId })) as { entries: readonly { kind: string }[] };
+		return snapshot.entries.filter((entry) => entry.kind === "pi.user").length >= 2;
+	}, 30000, "second answer placed");
+	await new Promise((resolve) => setTimeout(resolve, 200));
+	assert.equal(frames.length, settled, "a closed observation receives no further frames");
+});
+
+it("reopens a fresh snapshot after a host kill while observing", { timeout: 60000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const config = fixtureMetadata(root);
+	const connection = await acquireHost(config, observationLaunch({ launchTimeoutMs: 20000 }));
+	track(t, connection.pid);
+	t.after(() => connection.close().catch(() => {}));
+	const observation = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
+	const fresh: ConversationFrame[] = [];
+	observation.onFrame((frame, isFresh) => {
+		if (isFresh && frame.scope === "conversation") fresh.push(frame);
+	});
+	assert.equal(fresh.length, 0, "the initial baseline is returned by observe, not re-delivered");
+	const firstPid = connection.pid;
+	process.kill(firstPid, "SIGKILL");
+	await untilAsync(() => connection.pid !== firstPid && fresh.length >= 1, 40000, "fresh frame after recovery");
+	assert.equal(connection.closed, false, "an observed connection recovers instead of shutting down");
+	track(t, connection.pid);
+	assert.equal(fresh[0]?.conversationId, 1);
+});
+
+it("keeps the task-graph observation live across a host recovery", { timeout: 60000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const config = fixtureMetadata(root);
+	const connection = await acquireHost(config, observationLaunch({ launchTimeoutMs: 20000 }));
+	track(t, connection.pid);
+	t.after(() => connection.close().catch(() => {}));
+	const observation = await observeFrames(connection, { scope: "tasks", sessionId: config.storageId });
+	assert.equal(observation.frame.scope, "tasks");
+	await observation.close();
 	await connection.close();
 });

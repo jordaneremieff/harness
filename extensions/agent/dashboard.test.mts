@@ -1,758 +1,129 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { stripVTControlCharacters } from "node:util";
-import { initTheme, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
-import { CURSOR_MARKER, KeybindingsManager as Keys, TUI_KEYBINDINGS, visibleWidth, type KeyId, type TUI } from "@earendil-works/pi-tui";
-import { AgentDashboard, dashboardRecords, dashboardText, elapsed, readAgentDashboard, showAgentDashboard, type DashboardActions } from "./dashboard.ts";
-import type { AgentConversationEntry, AgentConversationPage, AgentConversationSummary, AgentObservationSources } from "./dashboard-types.ts";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { KeybindingsManager as Keys, setKeybindings, TUI_KEYBINDINGS, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import type { AgentConversationSummary } from "./dashboard-types.ts";
+import { AgentRoster, coverageText, dashboardRecords, dashboardText, elapsed, sessionAppearance } from "./dashboard.ts";
 
-initTheme("dark");
-const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
-const keys = new Keys({ ...TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: ["ctrl+o"], description: "Tools" }, "app.thinking.toggle": { defaultKeys: ["ctrl+t"], description: "Thinking" } }) as KeybindingsManager;
-const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text } as Theme;
-const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-const userEntry = (id: string, content: string, timestamp = 1): AgentConversationEntry => ({ id, kind: "pi.user", model: [{ role: "user", content, timestamp }] });
-const assistantEntry = (id: string, text: string, timestamp = 2): AgentConversationEntry => ({
-	id, kind: "pi.assistant",
-	model: [{ role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "test", model: "test", usage, stopReason: "stop", timestamp }],
-});
-function row(id = "sample", overrides: Partial<AgentConversationSummary> = {}): AgentConversationSummary {
-	return { id, storageId: "storage", name: `Session ${id}`, cwd: `/work/${id}`, owner: "here", modifiedAt: Date.now(), state: "done", cost: 1.25, partial: false, latestReply: "**The result is ready.**\n\nThe tests pass.", firstMessage: "TASK SENTINEL", durationMs: 60000, toolCalls: 4, model: { provider: "test", modelId: "test-model", thinkingLevel: "high" }, ...overrides };
-}
-const page = (rows: readonly AgentConversationSummary[], coverage: Partial<AgentConversationPage["coverage"]> = {}): AgentConversationPage => ({ rows, coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null, ...coverage }, observedAt: new Date().toISOString() });
-function fixture(rows: AgentConversationSummary[] = [row()], overrides: Partial<AgentObservationSources> = {}, actions?: DashboardActions) {
-	const entries: AgentConversationEntry[] = [userEntry("u1", "User asks for a check", 1), assistantEntry("a1", "Assistant result sentinel", 2)];
-	const sources: AgentObservationSources = {
-		list: async () => page(rows),
-		snapshot: async () => ({ entries: [...entries], revision: String(entries.length), partial: false }),
-		...overrides,
-	};
-	const terminal = { rows: 36 };
-	const tui = { terminal, requestRender() {} } as unknown as TUI;
-	const requests: unknown[] = [];
-	const panel = new AgentDashboard(sources, tui, theme, keys, (request) => requests.push(request), { filter: "", focus: "conversation", views: new Map(), drafts: new Map() }, actions);
-	const screen = (width = 120) => stripVTControlCharacters(panel.render(width).join("\n"));
-	return { panel, sources, tui, terminal, screen, requests, entries };
+setKeybindings(new Keys(TUI_KEYBINDINGS));
+const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
+const DOWN = "\x1b[B";
+const ENTER = "\r";
+const ESCAPE = "\x1b";
+const page = (sessions: readonly AgentConversationSummary[]) => ({ sessions, coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null }, observedAt: 0 });
+
+function row(overrides: Partial<AgentConversationSummary> & { id: string }): AgentConversationSummary {
+	return { storageId: "storage", cwd: "/work", owner: "here", state: "idle", cost: 0.5, partial: false, modifiedAt: 10, ...overrides };
 }
 
-it("shows the selected native conversation with a rail, complete session selection and total spend", async () => {
-	const rows = Array.from({ length: 75 }, (_, index) => row(String(index), { modifiedAt: Date.now() - index * 1000 }));
-	rows[0].state = "working"; rows[0].currentTool = { name: "read", argument: "source.ts" };
-	const f = fixture(rows); await tick();
-	try {
-		assert.equal(dashboardRecords(f.panel.state.snapshot, "").length, 75);
-		assert.match(f.screen(200), /1 working.*\$93\.75 spent/);
-		assert.match(f.screen(200), /TAIL · Working/);
-		assert.match(f.screen(200), /read source.ts/);
-		assert.match(f.screen(200), /Assistant result sentinel/);
-		assert.doesNotMatch(f.screen(200), /The result is ready/);
-		assert.doesNotMatch(f.screen(200), /select for model|Stored|Latest toolResult|omitted/);
-		for (let index = 0; index < 74; index++) f.panel.handleInput("]");
-		await tick(); assert.equal(f.panel.state.selected, "74");
-		assert.match(f.screen(), /Session 74/);
-		f.panel.handleInput("/"); f.panel.handleInput("test-model 74"); f.panel.handleInput("\r");
-		assert.equal(f.panel.state.selected, "74"); assert.match(f.screen(), /1 of 75/);
-	} finally { f.panel.dispose(); }
-});
-
-it("shows page coverage for skipped stores, unloaded rows, and more pages", async () => {
-	const f = fixture([], { list: async () => page([row()], { complete: false, skipped: 2, omitted: 3, nextCursor: "cursor" }) });
-	await tick();
-	try {
-		assert.match(f.screen(200), /2 stores skipped \(unknown, not absent\) · 3 rows not loaded · more inventory to inspect/);
-		const snapshot = await readAgentDashboard(f.sources);
-		assert.match(dashboardText(snapshot), /Coverage: 2 stores skipped \(unknown, not absent\) · 3 rows not loaded · more inventory to inspect/);
-	} finally { f.panel.dispose(); }
-});
-
-it("shows coverage beside an empty roster instead of claiming absence", async () => {
-	const f = fixture([], { list: async () => page([], { complete: false, skipped: 1, omitted: 0, nextCursor: null }) });
-	await tick();
-	try {
-		assert.match(f.screen(80), /No agent sessions yet/);
-		assert.match(f.screen(80), /1 store skipped \(unknown, not absent\) · coverage incomplete/);
-	} finally { f.panel.dispose(); }
-});
-
-it("groups Attention by operator need and keeps stopped or interrupted signals in date groups", async (t) => {
-	const now = new Date(2026, 0, 3, 12).getTime();
-	t.mock.timers.enable({ apis: ["Date"], now });
-	const day = 24 * 60 * 60 * 1000;
-	const rows = [
-		row("failed-error", { state: "failed", error: "provider refused", modifiedAt: now - 10 * day }),
-		row("failed-plain", { state: "failed", modifiedAt: now - 1000 }),
-		row("stopped", { state: "stopped", error: "stopped by operator", modifiedAt: now - 1000 }),
-		row("interrupted", { state: "interrupted", modifiedAt: now - 1000 }),
-		row("recovered", { state: "done", modifiedAt: now - 1000 }),
-		row("recovered-idle", { state: "idle", modifiedAt: now - 1000 }),
-		row("host-error", { state: "idle", health: { lastError: "host notification failed" }, modifiedAt: now - 10 * day }),
-		row("compaction", { state: "idle", health: { compactionFailure: { reason: "overflow", errorMessage: "too large", at: new Date(now).toISOString() } }, modifiedAt: now - 10 * day }),
-		row("retry-active", { state: "working", health: { autoRetry: { attempt: 1, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit" } }, modifiedAt: now }),
-		row("retry-exhausted", { state: "working", health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit" } }, modifiedAt: now - 1000 }),
-		row("conflicted", { owner: "unavailable", state: "idle", ownerLabel: "claim held", modifiedAt: now - 1000 }),
-		row("unavailable", { state: "unavailable", owner: "unknown", modifiedAt: now - 10 * day }),
-	];
-	const f = fixture(rows); await tick(); f.terminal.rows = 60;
-	try {
-		assert.match(f.screen(200), /1 working · 6 need attention/);
-		const ordered = dashboardRecords(f.panel.state.snapshot, "").map((item) => item.id);
-		const position = (id: string) => ordered.indexOf(id);
-		assert.equal(ordered[0], "retry-active", "only the active retry is in Working");
-		for (const id of ["failed-error", "host-error", "compaction", "retry-exhausted", "conflicted", "unavailable"]) assert.ok(position(id) < position("failed-plain"), `${id} needs attention`);
-		for (const id of ["failed-plain", "stopped", "interrupted", "recovered", "recovered-idle"]) assert.ok(position(id) > position("unavailable"), `${id} stays in a date group`);
-		const text = f.screen(200);
-		assert.match(text, /! Session failed-error/);
-		assert.match(text, /■ Session stopped/);
-		assert.match(text, /↯ Session interrupted/);
-		assert.doesNotMatch(f.screen(200), /Orphaned/);
-	} finally { f.panel.dispose(); }
-});
-
-it("omits unknown duration but preserves an observed zero duration beside the conversation", async () => {
-	let current = row("sample", { state: "working", durationMs: undefined });
-	const f = fixture([current], { list: async () => page([current]) }); await tick(); f.terminal.rows = 52;
-	try {
-		assert.doesNotMatch(f.screen(200), /duration ·|NaN/);
-		assert.match(f.screen(200), /4 tool calls · active/);
-		current = { ...current, durationMs: 0 }; await f.panel.refresh();
-		assert.match(f.screen(200), /0s duration · 4 tool calls/);
-	} finally { f.panel.dispose(); }
-});
-
-it("retains selection by ID across refresh and filters name, place, model and state", async () => {
-	const modifiedAt = Date.now();
-	let rows = [row("one", { modifiedAt }), row("two", { modifiedAt })];
-	const f = fixture(rows, { list: async () => page(rows) }); await tick();
-	try {
-		f.panel.handleInput("]"); assert.equal(f.panel.state.selected, "two");
-		f.panel.handleInput("j"); assert.equal(f.panel.state.selected, "two", "scroll never changes the session");
-		rows = [row("two", { state: "working" }), row("one", { modifiedAt: 1 })];
-		await f.panel.refresh(); assert.equal(f.panel.state.selected, "two");
-		assert.equal(dashboardRecords(f.panel.state.snapshot, "working test-model two").length, 1);
-		f.panel.handleInput("/"); f.panel.handleInput("no match"); assert.match(f.screen(), /No sessions match/);
-		f.panel.handleInput("\x1b"); assert.equal(f.panel.state.filter, ""); assert.equal(f.panel.state.selected, "two");
-		rows = []; await f.panel.refresh(); assert.equal(f.panel.state.selected, undefined);
-		assert.match(f.screen(), /No agent sessions yet/);
-	} finally { f.panel.dispose(); }
-});
-
-it("fits terminal cells at wide, narrow and short dimensions including Unicode and controls", async () => {
-	const f = fixture([row("unicode", { name: "宽字符 🧭 é\x1b[2J\r title", latestReply: "## A reply\n\n- First\n- Second\n\n```ts\nconst value = true;\n```" })]); await tick();
-	try {
-		for (const [width, height] of [[200, 52], [120, 36], [80, 24], [40, 12], [40, 8], [40, 7], [20, 6], [1, 1]]) {
-			f.terminal.rows = height;
-			f.panel.state.notice = "A receipt stays within the terminal";
-			const lines = f.panel.render(width);
-			assert.ok(lines.length <= Math.max(1, height - 2));
-			assert.ok(lines.every((line) => visibleWidth(line) <= width), `${width} columns`);
-			assert.doesNotMatch(lines.join("\n"), /\x1b\[2J/);
-		}
-	} finally { f.panel.dispose(); }
-});
-
-it("keeps the selected session visible on the same surface at short and narrow sizes", async () => {
-	const now = Date.now();
-	const f = fixture(Array.from({ length: 20 }, (_, index) => row(String(index), { modifiedAt: now - index * 86400000 })));
-	await tick();
-	try {
-		for (const [width, height] of [[100, 14], [80, 10]]) {
-			f.terminal.rows = height;
-			for (const key of ["]", "]", "[", "j", "k"]) {
-				f.panel.handleInput(key); await tick();
-				const screen = f.screen(width);
-				assert.ok(screen.includes(`✓ Session ${f.panel.state.selected} `), `${width}x${height} selected session`);
-				assert.doesNotMatch(screen, /SESSION\s+PLACE/);
-			}
-			assert.match(f.screen(width), /TAIL|BROWSE/);
-		}
-	} finally { f.panel.dispose(); }
-});
-
-it("reserves unique ID tails for colliding visible titles in the rail and narrow selector", async () => {
-	const modifiedAt = Date.now();
-	const rows = [row("first-a123456", { name: "probe", cwd: "/work/probe", modifiedAt }), row("second-b123456", { name: "probe", cwd: "/work/probe", modifiedAt }), row("other-c123456", { name: "probe", cwd: "/work/elsewhere", modifiedAt })];
-	const f = fixture(rows); await tick();
-	try {
-		for (const width of [200, 120]) {
-			const screen = f.screen(width);
-			assert.match(screen, /probe a123456/); assert.match(screen, /probe b123456/); assert.match(screen, /probe c123456/);
-		}
-		assert.match(f.screen(80), /probe a123456/);
-		f.panel.handleInput("]"); await tick(); assert.match(f.screen(80), /probe c123456/);
-		f.panel.handleInput("/"); f.panel.handleInput("first-a123456"); f.panel.handleInput("\r");
-		assert.match(f.screen(80), /probe a123456/);
-		f.panel.state.filter = "";
-		rows[0] = { ...rows[0], name: `${"长".repeat(60)} first` };
-		rows[1] = { ...rows[1], name: `${"长".repeat(60)} second` };
-		await f.panel.refresh();
-		for (const width of [200, 120, 80]) {
-			const lines = f.panel.render(width);
-			const screen = stripVTControlCharacters(lines.join("\n"));
-			assert.match(screen, /长.* a123456/);
-			if (width >= 120) assert.match(screen, /长.* b123456/);
-			assert.ok(lines.every((line) => visibleWidth(line) <= width));
-		}
-	} finally { f.panel.dispose(); }
-});
-
-it("renders native chat, follows fresh output, browses without jumps, and expands tools", async () => {
-	const f = fixture(); let revision = 1;
-	f.sources.snapshot = async () => ({ entries: [...f.entries], revision: String(revision), partial: false });
-	for (let index = 0; index < 90; index++) f.entries.push(userEntry(`m${index}`, `message ${index}`, index + 3));
-	await tick();
-	try {
-		assert.match(f.screen(), /TAIL/); assert.match(f.screen(), /message 89/); assert.match(f.screen(), /earlier messages/);
-		f.panel.handleInput("\x1b[H"); const browsing = f.screen(); assert.match(browsing, /BROWSE/);
-		f.entries.push(userEntry("fresh", "fresh live output", 100)); revision++;
-		await f.panel.refresh(); assert.doesNotMatch(f.screen(), /fresh live output/);
-		f.panel.handleInput("\x1b[F"); assert.match(f.screen(), /fresh live output/);
-		f.panel.handleInput("o"); f.panel.handleInput("\x1b[H"); assert.match(f.screen(), /User asks for a check/);
-		assert.match(f.screen(), /Assistant result sentinel/);
-		f.panel.handleInput("x"); assert.match(f.screen(), /User asks for a check/);
-		f.panel.handleInput("\x1b"); assert.equal(f.requests.length, 1);
-	} finally { f.panel.dispose(); }
-});
-
-it("keeps the follow marker, state and cost visible beside a long conversation title", async () => {
-	const f = fixture([row("long", { name: `${"A long first message used as the title ".repeat(8)}END`, state: "failed", cost: 3.5 })]); await tick();
-	try {
-		for (const width of [120, 80, 40]) {
-			const lines = f.panel.render(width);
-			const heading = stripVTControlCharacters(lines.find((line) => line.includes("TAIL")) ?? "");
-			assert.match(heading, /TAIL · Failed · \$3\.50/, `${width} columns`);
-			assert.doesNotMatch(heading, /END/);
-			assert.ok(visibleWidth(lines[1]) <= width);
-		}
-		f.panel.handleInput("\x1b[H");
-		assert.match(f.screen(80), /BROWSE · Failed · \$3\.50/);
-	} finally { f.panel.dispose(); }
-});
-
-it("uses the native input, preserves rejected drafts, selects send or steer from fresh state, and blocks foreign control", async () => {
-	let current = row("target", { owner: "here", state: "idle" });
-	let reject = true;
-	const calls: unknown[] = [];
-	const f = fixture([current], { list: async () => page([current]) }, { run: async () => undefined, compose: async (...args) => { calls.push(args); if (reject) throw new Error("admission refused"); return "Native receipt"; } });
-	await tick(); f.panel.focused = true;
-	try {
-		f.panel.handleInput("m"); f.panel.handleInput("hello 世界"); f.panel.handleInput("\r"); await tick();
-		assert.match(f.screen(), /admission refused/); assert.match(f.screen(), /hello 世界/);
-		assert.deepEqual(calls[0], ["send", "target", "hello 世界"]);
-		reject = false; current = { ...current, state: "working" };
-		f.panel.handleInput("\r"); await tick(); assert.deepEqual(calls[1], ["steer", "target", "hello 世界"]);
-		assert.match(f.screen(), /Native receipt/); assert.equal(f.panel.state.drafts.size, 0);
-		current = { ...current, owner: "unavailable", ownerLabel: "Pi window (pid 22)" }; await f.panel.refresh();
-		f.panel.handleInput("m"); assert.match(f.screen(), /Pi window/); assert.equal(calls.length, 2);
-		f.panel.handleInput("n"); f.panel.handleInput("a new task"); f.panel.handleInput("\r"); await tick();
-		assert.deepEqual(calls[2], ["new", undefined, "a new task"]);
-	} finally { f.panel.dispose(); }
-});
-
-it("allows compose for a readable cold storage and refuses an unclaimable one", async () => {
-	const calls: unknown[] = [];
-	const cold = row("cold", { owner: "unknown", state: "idle", modifiedAt: 2 });
-	const unreadable = row("unreadable", { owner: "unavailable", state: "unavailable", error: "claim refused", modifiedAt: 1 });
-	const f = fixture([cold, unreadable], {}, { run: async () => undefined, compose: async (...args) => { calls.push(args); return "Admitted"; } });
-	await tick(); f.panel.focused = true;
-	try {
-		f.panel.state.selected = "cold";
-		assert.match(f.screen(80), /m message/);
-		f.panel.handleInput("m");
-		assert.doesNotMatch(f.screen(80), /Read-only/);
-		f.panel.handleInput("cold task"); f.panel.handleInput("\r"); await tick();
-		assert.deepEqual(calls[0], ["send", "cold", "cold task"]);
-		f.panel.state.selected = "unreadable"; f.panel.handleInput("m");
-		assert.match(f.screen(80), /Read-only: claim refused/);
-		assert.doesNotMatch(f.screen(80), /m message/);
-		assert.equal(calls.length, 1);
-	} finally { f.panel.dispose(); }
-});
-
-it("coalesces refreshes, stops the live clock on disposal and rejects late reads", async (t) => {
-	t.mock.timers.enable({ apis: ["setInterval"] });
-	let calls = 0; let release!: (page: AgentConversationPage) => void;
-	const f = fixture([], { list: async () => { calls++; return new Promise<AgentConversationPage>((resolve) => { release = resolve; }); } });
-	await tick(); t.mock.timers.tick(3000); assert.equal(calls, 1);
-	release(page([row()])); await tick(); t.mock.timers.tick(1000); assert.equal(calls, 2);
-	f.panel.dispose(); release(page([row("late")])); await tick(); t.mock.timers.tick(5000);
-	assert.equal(calls, 2); assert.equal(f.panel.state.snapshot?.sessions[0].id, "sample");
-});
-
-it("keeps a visible board responsive while a source read exceeds the visibility limit", async (t) => {
-	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
-	let calls = 0; let renders = 0; let release!: (page: AgentConversationPage) => void;
-	const f = fixture([], { list: async () => { calls++; return calls === 1 ? new Promise<AgentConversationPage>((resolve) => { release = resolve; }) : page([row()]); } });
-	f.tui.requestRender = () => { renders++; f.panel.render(120); };
-	await tick();
-	try {
-		for (let index = 0; index < 8; index++) { t.mock.timers.tick(1000); await tick(); }
-		assert.equal(calls, 1); assert.ok(renders >= 8);
-		f.panel.handleInput("?"); assert.match(f.screen(), /Agent conversations/);
-		f.panel.handleInput("\x1b");
-		release(page([row()])); await tick(); t.mock.timers.tick(1000); await tick();
-		assert.equal(calls, 2);
-		f.panel.handleInput("\x1b"); assert.equal(f.requests.length, 1);
-		t.mock.timers.tick(10000); await tick(); assert.equal(calls, 2);
-	} finally { f.panel.dispose(); }
-});
-
-for (const resume of ["render", "key"] as const) it(`pauses unseen refresh and resumes on a later ${resume} without disabling Escape`, async (t) => {
-	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
-	let calls = 0; let requests = 0;
-	const f = fixture([], { list: async () => { calls++; return page([row()]); } });
-	f.tui.requestRender = () => { requests++; }; await tick(); f.panel.render(120);
-	try {
-		for (let index = 0; index < 6; index++) { t.mock.timers.tick(1000); await tick(); }
-		assert.equal(calls, 6);
-		const pausedRequests = requests;
-		t.mock.timers.tick(10000); await tick(); await f.panel.refresh();
-		assert.equal(calls, 6); assert.equal(requests, pausedRequests);
-		assert.deepEqual(f.requests, [], "a pause must not close another native overlay");
-		if (resume === "render") f.panel.render(120); else f.panel.handleInput("?");
-		t.mock.timers.tick(1000); await tick(); assert.equal(calls, 7);
-		if (resume === "key") f.panel.handleInput("\x1b");
-		f.panel.handleInput("\x1b"); assert.equal(f.requests.length, 1);
-		t.mock.timers.tick(10000); await tick(); assert.equal(calls, 7);
-	} finally { f.panel.dispose(); }
-});
-
-it("does not let a late source result restart a hidden board", async (t) => {
-	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
-	let calls = 0; let renders = 0; let release!: (page: AgentConversationPage) => void;
-	const f = fixture([], { list: async () => { calls++; return calls === 1 ? new Promise<AgentConversationPage>((resolve) => { release = resolve; }) : page([row()]); } });
-	f.tui.requestRender = () => { renders++; }; await tick();
-	try {
-		for (let index = 0; index < 6; index++) { t.mock.timers.tick(1000); await tick(); }
-		const before = renders;
-		release(page([row("late")])); await tick(); t.mock.timers.tick(10000); await tick();
-		assert.equal(calls, 1); assert.equal(renders, before); assert.equal(f.panel.state.snapshot === undefined, true);
-		f.panel.render(120); t.mock.timers.tick(1000); await tick();
-		assert.equal(calls, 2); assert.equal(f.panel.state.snapshot?.sessions[0].id, "sample");
-	} finally { f.panel.dispose(); }
-});
-
-it("ignores a conversation result after Escape or disposal", async () => {
-	let release!: (data: Awaited<ReturnType<AgentObservationSources["snapshot"]>>) => void;
-	const f = fixture(undefined, { snapshot: async () => new Promise((resolve) => { release = resolve; }) }); await tick();
-	f.panel.handleInput("\x1b"); release({ entries: [], revision: "late", partial: false }); await tick();
-	assert.equal(f.requests.length, 1); assert.match(f.screen(), /Read in progress/); f.panel.dispose();
-});
-
-it("restores each session's passage, follow mode, earlier history and display settings across switches and fresh output", async () => {
-	const a: AgentConversationEntry[] = []; const b: AgentConversationEntry[] = [];
-	for (let index = 0; index < 100; index++) a.push(userEntry(`a${index}`, `A${index} ${"passage words ".repeat(20)}`, index));
-	b.push(userEntry("b1", "B cause correction", 1));
-	let revision = 1;
-	const f = fixture([row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1 })], { snapshot: async (id) => ({ entries: [...(id === "a" ? a : b)], revision: String(revision), partial: false }) });
-	await tick();
-	try {
-		f.screen(160); f.panel.handleInput("o"); f.screen(160); f.panel.handleInput("\x1b[H"); f.panel.handleInput("j"); f.panel.handleInput("j");
-		f.panel.handleInput("x"); f.panel.handleInput("\x14"); f.screen(160);
-		const before = structuredClone(f.panel.state.views.get("a"));
-		assert.ok(before?.anchor); assert.ok(before.anchor.offset > 0); assert.equal(before.follow, false); assert.equal(before.messageLimit, 160);
-		assert.equal(before.expanded, true); assert.equal(before.showThinking, true);
-		f.panel.handleInput("]"); await tick(); assert.match(f.screen(80), /B cause correction/);
-		assert.equal(f.panel.state.views.get("b")?.follow, true); assert.equal(f.panel.state.views.get("b")?.expanded, false);
-		assert.equal(f.panel.state.views.get("b")?.messageLimit, 80); assert.equal(f.panel.state.views.get("b")?.showThinking, false);
-		a.push(userEntry("a100", "new A output", 101)); revision++;
-		await f.panel.refresh(); f.panel.handleInput("["); await tick();
-		assert.match(f.screen(80), /A1 passage/); assert.doesNotMatch(f.screen(80), /new A output/);
-		assert.deepEqual(f.panel.state.views.get("a")?.anchor, before.anchor);
-		assert.equal(f.panel.state.views.get("a")?.messageLimit, 160);
-		f.screen(160); await f.panel.refresh(); f.screen(160);
-		assert.deepEqual(f.panel.state.views.get("a")?.anchor, before.anchor);
-		f.panel.handleInput("\x1b[F"); assert.match(f.screen(160), /new A output/);
-		f.panel.handleInput("]"); await tick(); f.screen(80);
-		assert.equal(f.panel.state.views.get("b")?.follow, true);
-	} finally { f.panel.dispose(); }
-});
-
-for (const width of [80, 160]) it(`keeps browse navigation monotonic after a near-tail anchor survives a resize to ${width} columns`, async () => {
-	const f = fixture();
-	for (let index = 0; index < 20; index++) f.entries.push(userEntry(`r${index}`, `resize passage ${index}`, index));
-	f.sources.snapshot = async () => ({ entries: [...f.entries], revision: "resize", partial: false });
-	await tick();
-	try {
-		f.terminal.rows = 12; f.screen(80);
-		for (let index = 0; index < 5; index++) f.panel.handleInput("k");
-		f.screen(80);
-		const before = structuredClone(f.panel.state.views.get("sample")); assert.ok(before?.anchor); assert.ok(before.scroll > 0);
-		f.terminal.rows = 48; f.screen(width);
-		const view = f.panel.state.views.get("sample"); assert.ok(view);
-		assert.deepEqual(view.anchor, before.anchor); assert.equal(view.scroll, before.scroll);
-		for (const key of ["j", "\x1b[B"]) {
-			const previous: number = view.scroll; f.panel.handleInput(key); f.screen(width);
-			assert.equal(view.scroll, previous + 1, `${JSON.stringify(key)} moves down one line`);
-		}
-		for (const key of ["\x1b[6~", " "]) {
-			const previous: number = view.scroll; f.panel.handleInput(key); f.screen(width);
-			assert.ok(view.scroll >= previous, `${JSON.stringify(key)} never moves upward`);
-		}
-		for (const key of ["k", "\x1b[A"]) {
-			const previous: number = view.scroll; f.panel.handleInput(key); f.screen(width);
-			assert.equal(view.scroll, previous - 1, `${JSON.stringify(key)} moves up one line`);
-		}
-		const previous: number = view.scroll; f.panel.handleInput("\x1b[5~"); f.screen(width); assert.ok(view.scroll < previous);
-		f.panel.handleInput("\x1b[H"); f.screen(width); assert.equal(view.scroll, 0);
-		f.panel.handleInput("\x1b[F"); f.screen(width); assert.equal(view.follow, true);
-		f.panel.state.actionResult = Array.from({ length: 60 }, (_, index) => `result ${index}`).join("\n");
-		f.screen(width); f.panel.handleInput("\x1b[F"); const resultTail = f.screen(width);
-		f.panel.handleInput("j"); assert.equal(f.screen(width), resultTail, "result navigation retains its full-page bound");
-	} finally { f.panel.dispose(); }
-});
-
-it("keeps an anchor at the first loaded message when new messages move the tail window", async () => {
-	const f = fixture(); let revision = 1;
-	for (let index = 0; index < 90; index++) f.entries.push(userEntry(`w${index}`, `window message ${index}`, index));
-	f.sources.snapshot = async () => ({ entries: [...f.entries], revision: String(revision), partial: false });
-	await tick();
-	try {
-		f.screen(); f.panel.handleInput("\x1b[H"); f.panel.handleInput("j"); f.screen();
-		const anchor = structuredClone(f.panel.state.views.get("sample")?.anchor); assert.ok(anchor);
-		for (let index = 0; index < 5; index++) f.entries.push(userEntry(`n${index}`, `new message ${index}`, 100 + index));
-		revision++; await f.panel.refresh(); f.screen();
-		assert.deepEqual(f.panel.state.views.get("sample")?.anchor, anchor);
-		assert.equal(f.panel.state.views.get("sample")?.follow, false);
-		const earlier = f.screen().match(/\d+ earlier messages/)?.[0]; assert.ok(earlier);
-		f.panel.handleInput("\x1b[F"); assert.ok(f.screen().includes(earlier), "the count describes the still-loaded document");
-	} finally { f.panel.dispose(); }
-});
-
-it("isolates recipient drafts and native undo while preserving multiline pasted text through refusal", async () => {
-	const calls: unknown[] = []; let reject = true;
-	const f = fixture([row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1 })], {}, { run: async () => undefined, compose: async (...args) => { calls.push(args); if (reject) throw new Error("refused once"); return "Admitted"; } });
-	await tick(); f.panel.focused = true;
-	try {
-		const payload = Array.from({ length: 14 }, (_, index) => `A draft café 世界 ${index}`).join("\n");
-		f.panel.handleInput("\r"); f.panel.handleInput(`\x1b[200~${payload}\x1b[201~`); f.panel.handleInput("\x1b");
-		assert.equal(f.panel.state.drafts.get("a"), payload);
-		f.panel.handleInput("]"); await tick(); f.panel.handleInput("\r"); f.panel.handleInput("\x1f");
-		assert.doesNotMatch(f.screen(), /A draft/); assert.equal(f.panel.state.drafts.get("b"), "");
-		f.panel.handleInput("B[]"); f.panel.handleInput("\n"); f.panel.handleInput("next");
-		assert.equal(f.panel.state.selected, "b"); assert.equal(calls.length, 0);
-		f.panel.handleInput("\x1b"); assert.equal(f.panel.state.drafts.get("b"), "B[]\nnext");
-		f.panel.handleInput("["); await tick(); f.panel.handleInput("\r"); f.panel.handleInput("\r"); await tick();
-		assert.deepEqual(calls[0], ["send", "a", payload]); assert.equal(f.panel.state.drafts.get("a"), payload);
-		assert.match(f.screen(), /refused once/);
-		reject = false; f.panel.handleInput("\r"); await tick();
-		assert.deepEqual(calls[1], ["send", "a", payload]); assert.equal(f.panel.state.drafts.has("a"), false);
-		assert.equal(f.panel.state.drafts.get("b"), "B[]\nnext");
-	} finally { f.panel.dispose(); }
-});
-
-it("never retargets a pending submission after blur, refresh or attempted navigation", async () => {
-	let rows = [row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1 })];
-	let reject!: (error: Error) => void; const calls: unknown[] = []; let actions = 0;
-	const f = fixture(rows, { list: async () => page(rows) }, { run: async () => { actions++; return undefined; }, compose: async (...args) => { calls.push(args); return new Promise((_resolve, fail) => { reject = fail; }); } });
-	await tick();
-	try {
-		f.panel.handleInput("m"); f.panel.handleInput("correction for A"); f.panel.handleInput("\r"); await tick();
-		f.panel.handleInput("\x1b"); f.panel.handleInput("]"); f.panel.handleInput("/"); f.panel.handleInput("n"); f.panel.handleInput("a");
-		rows = [row("b", { state: "working" }), row("a", { modifiedAt: 1 })]; await f.panel.refresh();
-		assert.equal(f.panel.state.selected, "a"); assert.equal(actions, 0); assert.deepEqual(f.requests, []);
-		assert.deepEqual(calls, [["send", "a", "correction for A"]]);
-		reject(new Error("delayed refusal")); await tick(); assert.equal(f.panel.state.drafts.get("a"), "correction for A");
-		f.panel.handleInput("["); await tick(); assert.equal(f.panel.state.selected, "b");
-		f.panel.handleInput("m"); assert.doesNotMatch(f.screen(), /Send to Session a|correction for A/);
-		f.panel.handleInput("\x1b"); f.panel.handleInput("]"); await tick(); f.panel.handleInput("m");
-		assert.match(f.screen(), /correction for A/);
-	} finally { f.panel.dispose(); }
-});
-
-it("rejects a late conversation result for a different selected session", async () => {
-	const late: AgentConversationEntry[] = [userEntry("lb", "late B content", 1)];
-	let release!: (data: Awaited<ReturnType<AgentObservationSources["snapshot"]>>) => void;
-	const f = fixture([row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1 })]);
-	const normal = f.sources.snapshot;
-	f.sources.snapshot = async (id) => id === "b" ? new Promise((resolve) => { release = resolve; }) : normal(id);
-	await tick();
-	try {
-		f.panel.handleInput("]"); f.panel.handleInput("["); await tick();
-		release({ entries: late, revision: "late", partial: false }); await tick();
-		assert.equal(f.panel.state.selected, "a"); assert.match(f.screen(), /Assistant result sentinel/); assert.doesNotMatch(f.screen(), /late B content/);
-	} finally { f.panel.dispose(); }
-});
-
-it("renders the complete focused editor or a resize notice without accepting hidden edits", async () => {
-	const calls: unknown[] = [];
-	const f = fixture(undefined, {}, { run: async () => undefined, compose: async (...args) => { calls.push(args); return "Admitted"; } });
-	await tick(); f.panel.focused = true;
-	try {
-		const text = Array.from({ length: 20 }, (_, index) => `line ${index} 世界`).join("\n");
-		f.panel.state.drafts.set("sample", text); f.panel.handleInput("m");
-		for (const [width, height] of [[160, 40], [80, 24], [40, 20]]) {
-			f.terminal.rows = height; const lines = f.panel.render(width);
-			assert.ok(lines.length <= height - 2); assert.ok(lines.every((line) => visibleWidth(line) <= width));
-			assert.equal(lines.filter((line) => line.includes(CURSOR_MARKER)).length, 1);
-		}
-		f.panel.focused = false; assert.ok(f.panel.render(80).every((line) => !line.includes(CURSOR_MARKER)));
-		f.panel.focused = true; f.terminal.rows = 8; assert.match(f.screen(80), /Resize to edit/);
-		f.panel.handleInput("hidden"); f.panel.handleInput("\r"); assert.equal(calls.length, 0); assert.equal(f.panel.state.drafts.get("sample"), text);
-		f.panel.handleInput("\x1b"); assert.equal(f.requests.length, 0);
-		f.terminal.rows = 36; f.panel.render(80); f.panel.handleInput("m");
-		assert.ok(f.panel.render(80).some((line) => line.includes(CURSOR_MARKER)));
-		assert.equal(f.panel.state.drafts.get("sample"), text);
-	} finally { f.panel.dispose(); }
-});
-
-it("opens in Sessions, uses arrows to select, and Enter reads before any message draft", async () => {
-	const f = fixture([row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1 })]);
-	const calls: unknown[] = [];
-	const panel = new AgentDashboard(f.sources, f.tui, theme, keys, () => {}, undefined, { run: async () => undefined, compose: async (...args) => { calls.push(args); return "sent"; } });
-	await tick();
-	try {
-		const screen = () => stripVTControlCharacters(panel.render(80).join("\n"));
-		assert.equal(panel.state.focus, "sessions");
-		assert.match(screen(), /Sessions · ↑↓ select · Enter read/);
-		assert.match(screen(), /Session a/); assert.match(screen(), /Session b/);
-		assert.doesNotMatch(screen(), /Assistant result sentinel/);
-		for (const width of [40, 80, 140]) {
-			const text = stripVTControlCharacters(panel.render(width).join("\n"));
-			for (const hint of ["Tab conversation", "/ find", "a actions", "m message", "n new", "? help", "Esc close"]) assert.ok(text.includes(hint), `${width}: ${hint}`);
-		}
-		panel.handleInput("\x1b[B"); await tick(); assert.equal(panel.state.selected, "b");
-		panel.handleInput("\r"); assert.equal(panel.state.focus, "conversation");
-		assert.match(screen(), /Assistant result sentinel/); assert.doesNotMatch(screen(), /Message draft/); assert.deepEqual(calls, []);
-		panel.handleInput("\x1b[A"); assert.equal(panel.state.selected, "b");
-		panel.handleInput("\x1b[Z"); assert.equal(panel.state.focus, "sessions");
-		panel.render(140); assert.equal(panel.state.focus, "sessions");
-		panel.handleInput("\x1b[A"); assert.equal(panel.state.selected, "a");
-	} finally { panel.dispose(); f.panel.dispose(); }
-});
-
-it("keeps filter matches in Sessions and restores the prior focus, selection and filter on cancel", async () => {
-	const f = fixture([row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1 })]); await tick();
-	try {
-		f.panel.handleInput("/"); f.panel.handleInput("Session b"); await tick();
-		assert.equal(f.panel.state.focus, "sessions"); assert.equal(f.panel.state.selected, "b");
-		f.panel.handleInput("\x1b"); assert.equal(f.panel.state.focus, "conversation"); assert.equal(f.panel.state.selected, "a"); assert.equal(f.panel.state.filter, "");
-		f.panel.handleInput("/"); f.panel.handleInput("no match"); f.panel.handleInput("\r");
-		assert.equal(f.panel.state.focus, "sessions"); assert.equal(f.panel.state.selected, undefined);
-		assert.match(f.screen(80), /No sessions match/); assert.match(f.screen(80), /\/ find/); assert.doesNotMatch(f.screen(80), /m message/);
-		f.panel.handleInput("\r"); assert.equal(f.panel.state.focus, "sessions");
-		f.panel.handleInput("/"); f.panel.handleInput("\x15"); f.panel.handleInput("Session b"); f.panel.handleInput("\r");
-		assert.equal(f.panel.state.focus, "sessions"); assert.equal(f.panel.state.selected, "b");
-		f.panel.handleInput("\r"); assert.equal(f.panel.state.focus, "conversation");
-	} finally { f.panel.dispose(); }
-});
-
-it("retains a recipient draft through focus changes and leaves foreign sessions read-only", async () => {
-	const f = fixture([row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1, owner: "unavailable", ownerLabel: "another window" })], {}, { run: async () => undefined, compose: async () => "sent" }); await tick();
-	try {
-		// Attention first: the unavailable row is selected. Move to the healthy date row and draft there.
-		f.panel.handleInput("]"); assert.equal(f.panel.state.selected, "a");
-		f.panel.handleInput("m"); f.panel.handleInput("Keep this draft"); f.panel.handleInput("\x1b");
-		f.panel.handleInput("["); await tick();
-		f.panel.handleInput("\r");
-		assert.equal(f.panel.state.selected, "b");
-		assert.match(f.screen(80), /Read-only: .*another window/);
-		assert.doesNotMatch(f.screen(80), /m message|Enter message/);
-		f.panel.handleInput("]"); await tick();
-		f.panel.handleInput("m"); assert.match(f.screen(80), /Keep this draft/); assert.equal(f.panel.state.selected, "a");
-	} finally { f.panel.dispose(); }
-});
-
-for (const confirm of [["ctrl+y"], []] satisfies KeyId[][]) it(`honors ${confirm.length ? "remapped" : "disabled"} session confirmation`, async () => {
-	const f = fixture();
-	const configured = new Keys(TUI_KEYBINDINGS, { "tui.select.confirm": confirm, "tui.select.up": ["ctrl+p"], "tui.select.down": ["ctrl+n"] }) as KeybindingsManager;
-	const panel = new AgentDashboard(f.sources, f.tui, theme, configured, () => {}); await tick();
-	try {
-		panel.handleInput("\r"); assert.equal(panel.state.focus, "sessions");
-		const screen = stripVTControlCharacters(panel.render(100).join("\n"));
-		assert.doesNotMatch(screen, /Enter read|↑↓ select/); assert.match(screen, /ctrl\+p\/ctrl\+n select/);
-		panel.handleInput("?"); assert.doesNotMatch(panel.render(100).join("\n"), /Enter opens its conversation/); panel.handleInput("\x1b");
-		if (confirm.length) { assert.match(screen, /ctrl\+y read/); panel.handleInput("\x19"); assert.equal(panel.state.focus, "conversation"); }
-		else { panel.handleInput("\x19"); assert.equal(panel.state.focus, "sessions"); panel.handleInput("\t"); assert.equal(panel.state.focus, "conversation"); }
-	} finally { panel.dispose(); f.panel.dispose(); }
-});
-
-it("renders failures explicitly and gives headless callers a digest without opening TUI", async () => {
-	const f = fixture([], { list: async () => { throw new Error("store denied"); } }); await tick();
-	try {
-		assert.match(f.screen(), /Store unavailable/); assert.match(f.screen(), /store denied/);
-		const snapshot = await readAgentDashboard(f.sources); assert.match(dashboardText(snapshot), /store denied/);
-		let notice = "";
-		await showAgentDashboard(f.sources, { mode: "rpc", hasUI: true, ui: { notify: (text: string) => { notice = text; }, custom: () => assert.fail("no TUI") } } as never);
-		assert.match(notice, /store denied/);
-		assert.equal(elapsed(59000), "59s"); assert.equal(elapsed(60000), "1m0s"); assert.equal(elapsed(90000), "1m30s");
-	} finally { f.panel.dispose(); }
-});
-
-it("shows host recovery detail on the selected row and never labels an absent report healthy", async () => {
-	const now = Date.now();
-	const recovering = row("recovering", { modifiedAt: now, health: { lastError: "host notification failed", compactionFailure: { reason: "overflow", errorMessage: "prompt too large", at: "2026-10-02T00:00:00.000Z" } } });
-	const healthy = row("healthy", { modifiedAt: now - 1000, health: {} });
-	const plain = row("plain", { modifiedAt: now - 2000 });
-	const f = fixture([recovering, healthy, plain]);
-	await tick();
-	try {
-		f.panel.state.selected = "recovering";
-		const recoveringScreen = f.screen(200);
-		assert.match(recoveringScreen, /Last host error: host notification failed/);
-		assert.match(recoveringScreen, /Last compaction failure \(overflow\) at 2026-10-02T00:00:00\.000Z: prompt too large/);
-		const recoveringRailMarked = recoveringScreen.split("\n").some((line) => { const rail = line.split(" │ ")[0] ?? ""; return rail.includes("Session recovering") && rail.trimEnd().endsWith("!"); });
-		assert.ok(recoveringRailMarked, "the rail marks the recovery signal");
-		f.panel.state.selected = "healthy";
-		const healthyScreen = f.screen(200);
-		assert.doesNotMatch(healthyScreen, /Last host error|Last compaction failure|provider retry/);
-		const healthyRailMarked = healthyScreen.split("\n").some((line) => { const rail = line.split(" │ ")[0] ?? ""; return rail.includes("Session healthy") && rail.trimEnd().endsWith("!"); });
-		assert.ok(!healthyRailMarked, "an empty report adds no marker");
-		f.panel.state.selected = "plain";
-		assert.doesNotMatch(f.screen(200), /Last host error|Last compaction failure|provider retry/);
-	} finally { f.panel.dispose(); }
-});
-
-it("holds a settled recovery signal in Attention at any transcript age and leaves active retry in Working", async (t) => {
-	const now = new Date(2026, 0, 3, 12).getTime();
-	t.mock.timers.enable({ apis: ["Date"], now });
-	const day = 24 * 60 * 60 * 1000;
-	let rows = [
-		row("errored", { modifiedAt: now - 10 * day, state: "idle", owner: "here", health: { lastError: "host notification failed" } }),
-		row("compacted", { modifiedAt: now - 10 * day, state: "idle", owner: "here", health: { compactionFailure: { reason: "overflow", errorMessage: "too large", at: new Date(now).toISOString() } } }),
-		row("retrying", { modifiedAt: now, state: "working", owner: "here", health: { autoRetry: { attempt: 1, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit" } } }),
-		row("plain", { modifiedAt: now - 10 * day, state: "idle", owner: "here" }),
-	];
-	const f = fixture(rows, { list: async () => page(rows) }); await tick();
-	try {
-		assert.match(f.screen(200), /1 working · 2 need attention/);
-		let ordered = dashboardRecords(f.panel.state.snapshot, "").map((item) => item.id);
-		assert.equal(ordered[0], "retrying");
-		assert.ok(ordered.indexOf("errored") < ordered.indexOf("plain"));
-		assert.ok(ordered.indexOf("compacted") < ordered.indexOf("plain"));
-		rows = rows.map((item) => item.id === "errored" || item.id === "compacted" ? { ...item, health: {} } : item);
-		await f.panel.refresh();
-		assert.doesNotMatch(f.screen(200), /need attention/);
-		ordered = dashboardRecords(f.panel.state.snapshot, "").map((item) => item.id);
-		assert.equal(ordered[0], "retrying");
-		assert.ok(ordered.indexOf("errored") > ordered.indexOf("retrying"));
-	} finally { f.panel.dispose(); }
-});
-
-it("shows an in-progress provider retry instead of the thinking fallback while keeping Working", async () => {
-	const f = fixture([row("retry", { state: "working", owner: "here", currentTool: undefined, health: { autoRetry: { attempt: 2, maxAttempts: 4, delayMs: 4000, errorMessage: "rate limit exceeded" } } })]);
-	await tick();
-	try {
-		f.panel.state.selected = "retry";
-		const screen = f.screen(200);
-		assert.match(screen, /Working/);
-		assert.match(screen, /provider retry 2\/4 after 4s: rate limit exceeded/);
-		assert.doesNotMatch(screen, /› Thinking/);
-	} finally { f.panel.dispose(); }
-});
-
-it("keeps the recovery marker and the unique title suffix together in the narrow rail", async () => {
-	const now = Date.now();
-	const rows = [
-		row("first-a123456", { name: "probe", cwd: "/work/probe", modifiedAt: now, health: { lastError: "host notification failed" } }),
-		row("second-b123456", { name: "probe", cwd: "/work/probe", modifiedAt: now - 1000 }),
-	];
-	const f = fixture(rows); await tick();
-	try {
-		for (const width of [200, 120]) {
-			const screen = f.screen(width);
-			const marked = screen.split("\n").some((line) => { const rail = line.split(" │ ")[0] ?? ""; return rail.includes("probe a123456") && rail.trimEnd().endsWith("!"); });
-			assert.ok(marked, `${width}: the marked row keeps its marker and suffix`);
-			assert.match(screen, /probe b123456/, `${width}: the unmarked duplicate keeps its suffix`);
-		}
-	} finally { f.panel.dispose(); }
-});
-
-it("bounds and sanitizes host recovery text at every width", async () => {
-	const f = fixture([row("health", { health: { lastError: `bad \x1b[2J ${"宽".repeat(200)}`, compactionFailure: { reason: "manual", at: "2026-10-02T00:00:00.000Z" } } })]);
-	await tick();
-	try {
-		f.panel.state.selected = "health";
-		for (const width of [200, 120, 80, 40]) {
-			const lines = f.panel.render(width);
-			assert.ok(lines.every((line) => visibleWidth(line) <= width), `${width} columns`);
-			assert.doesNotMatch(lines.join("\n"), /\x1b\[2J/, `${width}: the injected sequence never reaches the rendered output`);
-		}
-	} finally { f.panel.dispose(); }
-});
-
-it("selects and follows an agent created from the new-task draft", async () => {
-	let spawned = false;
-	const f = fixture([row("old", { modifiedAt: 1 })], { list: async () => page(spawned ? [row("fresh", { modifiedAt: 2 }), row("old", { modifiedAt: 1 })] : [row("old", { modifiedAt: 1 })]) }, {
-		run: async () => undefined,
-		compose: async (mode) => { assert.equal(mode, "new"); spawned = true; return { text: "Started agent “fresh”", sessionId: "fresh" }; },
+function roster(rows: readonly AgentConversationSummary[], events: { selected: string[]; cancelled: number }, primary = true) {
+	const instance = new AgentRoster({
+		tui: { terminal: { rows: 24 }, requestRender() {} } as unknown as Pick<TUI, "requestRender" | "terminal">,
+		theme,
+		onSelect: (key) => events.selected.push(key),
+		onCancel: () => { events.cancelled++; },
+		...(primary ? { primary: { label: "Primary · this Pi", detail: "work · test/model" } } : {}),
 	});
-	await tick();
-	try {
-		f.panel.handleInput("n"); f.panel.handleInput("fresh task"); f.panel.handleInput("\r"); await tick();
-		assert.equal(f.panel.state.selected, "fresh");
-		assert.equal(f.panel.state.focus, "conversation");
-		assert.equal(f.panel.state.views.get("fresh")?.follow, true);
-		assert.match(f.screen(), /Started agent/);
-	} finally { f.panel.dispose(); }
+	instance.setSnapshot(page(rows));
+	instance.focused = true;
+	return instance;
+}
+
+it("filters and sorts records by title, directory, state, and section order", () => {
+	const rows = [
+		row({ id: "b", name: "Parser audit", state: "idle", modifiedAt: 5 }),
+		row({ id: "a", name: "Review parser", state: "working", modifiedAt: 1 }),
+		row({ id: "c", name: "Old job", state: "done", modifiedAt: 1 }),
+	];
+	const snapshot = page(rows);
+	assert.deepEqual(dashboardRecords(snapshot, "").map((item) => item.id), ["a", "b", "c"]);
+	assert.deepEqual(dashboardRecords(snapshot, "parser").map((item) => item.id), ["a", "b"]);
+	assert.deepEqual(dashboardRecords(snapshot, "/work").map((item) => item.id), ["a", "b", "c"]);
+	assert.deepEqual(dashboardRecords(snapshot, "working").map((item) => item.id), ["a"]);
+	assert.deepEqual(dashboardRecords(snapshot, "zzz"), []);
+	assert.equal(elapsed(3_600_000 + 120_000), "1h2m");
+	assert.equal(sessionAppearance.working.glyph, "●");
 });
 
-it("keeps the board open for actions and selects an agent returned by an action", async () => {
-	const targets: Array<string | undefined> = [];
-	const f = fixture([row("target", { modifiedAt: 2 }), row("branched", { modifiedAt: 1 })], {}, {
-		run: async (target) => { targets.push(target?.id); return { text: "Created branch", sessionId: "branched" }; },
+it("renders the pinned primary row and selects it with Enter", () => {
+	const events = { selected: [] as string[], cancelled: 0 };
+	const view = roster([row({ id: "a", name: "Alpha" })], events);
+	const lines = view.render(80, 10);
+	const screen = lines.join("\n");
+	assert.match(screen, /Primary · this Pi/);
+	assert.match(screen, /work · test\/model/);
+	assert.match(screen, /Alpha/);
+	assert.ok(lines.every((line) => visibleWidth(line) <= 80));
+	view.handleInput(ENTER);
+	assert.deepEqual(events.selected, ["primary"]);
+});
+
+it("moves through sections with the arrow keys and selects an agent", () => {
+	const events = { selected: [] as string[], cancelled: 0 };
+	const view = roster([row({ id: "agent:one", name: "One", state: "working" }), row({ id: "agent:two", name: "Two" })], events);
+	view.render(80, 12);
+	view.handleInput(DOWN);
+	view.handleInput(ENTER);
+	assert.deepEqual(events.selected, ["agent:one"]);
+	view.handleInput(DOWN);
+	view.handleInput(ENTER);
+	assert.deepEqual(events.selected, ["agent:one", "agent:two"]);
+});
+
+it("filters while typing and clears the filter before it cancels", () => {
+	const events = { selected: [] as string[], cancelled: 0 };
+	const view = roster([row({ id: "agent:one", name: "Parser audit" }), row({ id: "agent:two", name: "Other" })], events);
+	view.handleInput("p");
+	view.handleInput("a");
+	view.handleInput("r");
+	const screen = view.render(80, 10).join("\n");
+	assert.match(screen, /1 of 2 · par/);
+	assert.match(screen, /Parser audit/);
+	assert.doesNotMatch(screen, /Other/);
+	view.handleInput(ESCAPE);
+	assert.equal(events.cancelled, 0, "the first escape clears the filter");
+	assert.match(view.render(80, 10).join("\n"), /Other/);
+	view.handleInput(ESCAPE);
+	assert.equal(events.cancelled, 1);
+});
+
+it("adds ID suffixes for duplicate titles and shows coverage", () => {
+	const events = { selected: [] as string[], cancelled: 0 };
+	const first = row({ id: "sameprefix-one", name: "Review parser" });
+	const second = row({ id: "sameprefix-two", name: "Review parser" });
+	const view = new AgentRoster({
+		tui: { terminal: { rows: 24 }, requestRender() {} } as unknown as Pick<TUI, "requestRender" | "terminal">,
+		theme,
+		onSelect: (key) => events.selected.push(key),
+		onCancel: () => { events.cancelled++; },
 	});
-	await tick();
-	try {
-		f.panel.handleInput("a"); await tick();
-		assert.deepEqual(f.requests, [], "the board stays open");
-		assert.deepEqual(targets, ["target"]);
-		assert.equal(f.panel.state.selected, "branched");
-		assert.match(f.screen(), /Created branch/);
-		f.panel.handleInput("\x1b");
-		assert.equal(f.panel.state.actionResult, undefined);
-		assert.deepEqual(f.requests, [], "the first Escape returns to the board");
-		assert.equal(f.panel.state.selected, "branched");
-	} finally { f.panel.dispose(); }
+	view.setSnapshot({ ...page([first, second]), coverage: { complete: false, storagesVisited: 2, skipped: 1, omitted: 2, nextCursor: null } });
+	const screen = view.render(120, 10).join("\n");
+	assert.match(screen, /Review parser ix-one/);
+	assert.match(screen, /Review parser ix-two/);
+	assert.match(screen, /1 store skipped \(unknown, not absent\)/);
+	assert.match(screen, /2 rows not loaded/);
+	assert.match(screen, /coverage incomplete/);
+	assert.equal(coverageText(undefined), "");
 });
 
-it("shows outcome text and summarizes a legacy control result in the board", async () => {
-	let result: string | { text: string; sessionId?: string } = { text: "Started agent “target”", sessionId: "target" };
-	const f = fixture([row("target")], {}, { run: async () => result, compose: async () => undefined });
-	await tick();
-	try {
-		f.panel.handleInput("a"); await tick();
-		assert.match(f.screen(), /Started agent “target”/);
-		f.panel.handleInput("\x1b");
-		result = JSON.stringify({ sessionId: "target", submissionId: 47, deduped: false });
-		f.panel.handleInput("a"); await tick();
-		const text = f.screen();
-		assert.doesNotMatch(text, /submissionId|\{/);
-		assert.match(text, /Input admitted for “Session target” \(submission 47\)/);
-	} finally { f.panel.dispose(); }
+it("keeps the selected row across snapshots and renders safely at narrow widths", () => {
+	const events = { selected: [] as string[], cancelled: 0 };
+	const view = roster([row({ id: "agent:one", name: "One" }), row({ id: "agent:two", name: "Two" })], events);
+	view.handleInput(DOWN);
+	view.setSnapshot({ ...page([row({ id: "agent:two", name: "Two" })]), observedAt: 5 });
+	view.handleInput(ENTER);
+	assert.deepEqual(events.selected, ["agent:two"]);
+	for (const width of [80, 40, 24]) {
+		assert.ok(view.render(width, 12).every((line) => visibleWidth(line) <= width), `width ${width}`);
+	}
 });
 
-it("shows the active find filter with its match count and clears it before closing", async () => {
-	const f = fixture([row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1 })]);
-	await tick();
-	try {
-		f.panel.handleInput("/"); f.panel.handleInput("Session b"); f.panel.handleInput("\r");
-		assert.match(f.screen(160), /find “Session b” 1 match of 2/);
-		f.panel.handleInput("\x1b");
-		assert.equal(f.panel.state.filter, "");
-		assert.deepEqual(f.requests, [], "the first Escape clears the filter");
-		f.panel.handleInput("\x1b");
-		assert.equal(f.requests.length, 1, "the second Escape closes");
-	} finally { f.panel.dispose(); }
-});
-
-it("pluralizes session counts", async () => {
-	const f = fixture([row("one")]);
-	await tick();
-	try {
-		const screen = f.screen(160);
-		assert.match(screen, /1 session/);
-		assert.doesNotMatch(screen, /1 sessions/);
-	} finally { f.panel.dispose(); }
-});
-
-it("shows the first task from the session summary when the bounded transcript drops it", async () => {
-	const late: AgentConversationEntry[] = [assistantEntry("late", "Late answer sentinel", 2)];
-	const f = fixture([row("bounded", { firstMessage: "FIRST TASK SENTINEL" })], { snapshot: async () => ({ entries: [...late], partial: true, revision: "partial" }) });
-	await tick();
-	try {
-		const screen = f.screen(160);
-		assert.match(screen, /FIRST TASK SENTINEL/);
-		assert.match(screen, /First task from session summary/);
-		assert.match(screen, /Late answer sentinel/);
-	} finally { f.panel.dispose(); }
+it("renders a bounded plain-text summary for status reads", () => {
+	const snapshot = page([row({ id: "a", name: "Alpha", state: "working", cost: 1.25, partial: true })]);
+	const text = dashboardText(snapshot);
+	assert.match(text, /Alpha/);
+	assert.match(text, /≥\$1.25/);
+	assert.match(text, /● Working/);
+	assert.match(text, /1 working/);
 });

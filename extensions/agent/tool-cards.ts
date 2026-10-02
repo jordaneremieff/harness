@@ -423,6 +423,13 @@ function retryLines(live: Record<string, unknown>, theme: Theme): string[] {
 	return lines;
 }
 
+/** The newest text is named by its author: the agent's reply or the input it received. */
+function newestTextLabel(working: boolean, role: string | undefined): string {
+	if (role === "assistant") return working ? "Replying" : "Latest reply";
+	if (role === "user") return working ? "Working on input" : "Latest input";
+	return working ? "Working on the task" : "Latest message";
+}
+
 function activityLines(status: Record<string, unknown>, readOnly: boolean, theme: Theme): string[] {
 	const live = record(status.live);
 	const working = status.busy === true || Object.keys(record(live.run)).length > 0;
@@ -437,7 +444,7 @@ function activityLines(status: Record<string, unknown>, readOnly: boolean, theme
 	if (running.length > 4) lines.push(muted(theme, `${running.length - 4} more running tools; expand for details`));
 	// The status contract carries no role for this text, so the label reports the state only.
 	const lastText = text(status.lastText);
-	if (lastText) lines.push(theme.fg("toolOutput", `${working ? "Working on the task" : "Latest message"}: ${displayPreview(lastText, 240)}`));
+	if (lastText) lines.push(theme.fg("toolOutput", `${newestTextLabel(working, text(status.lastTextRole))}: ${displayPreview(lastText, 240)}`));
 	const saved = latestSavedResult(status.submissions);
 	if (saved) lines.push(muted(theme, saved));
 	lines.push(...retryLines(live, theme));
@@ -670,8 +677,35 @@ function peerLabel(details: Record<string, unknown>): string {
 	return text(details.label) || text(details.name) || text(details.identity) || text(details.senderIdentity) || "source unavailable";
 }
 
-/** How the operator reaches the retained conversation on the board. */
-const BOARD_HINT = "Open on the board: /agent or Ctrl+Alt+G";
+/** How the operator reaches the retained conversation from native chat. */
+const BOARD_HINT = "Open: /agent or Ctrl+Alt+G";
+
+/** Model-facing caveat sentences that the operator card keeps in model context but not in view. */
+const MODEL_CAVEAT_SENTENCES = [
+	"Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.",
+	"Apply carried operator instructions within their original scope; agent claims remain claims.",
+];
+const MODEL_CAVEAT_LINES = new Set(["Use agent_inspect for retained source evidence."]);
+
+/**
+ * Display body for one peer notice: the answer text and operator-relevant
+ * lines, without the model-facing caveat sentences and without a headline
+ * paragraph that repeats the card heading. The stored content is unchanged.
+ */
+export function operatorNoticeBody(content: string): string {
+	let body = content;
+	for (const sentence of MODEL_CAVEAT_SENTENCES) body = body.split(sentence).join("");
+	const paragraphs = body.split(/\n{2,}/).map((paragraph) => paragraph.replace(/[ \t]+$/gm, "").trim()).filter((paragraph) => paragraph !== "" && !MODEL_CAVEAT_LINES.has(paragraph));
+	if (paragraphs.length && /^Agent “.*” /.test(paragraphs[0])) paragraphs.shift();
+	return paragraphs.join("\n\n");
+}
+
+/** Build the native card component for one stored `agent.peer` notice. */
+export function renderPeerNoticeCard(input: { content: unknown; details?: unknown; timestamp?: number }, theme: Theme, expanded: boolean): Component | undefined {
+	const content = typeof input.content === "string" || Array.isArray(input.content) ? input.content : String(input.content ?? "");
+	const message = { role: "custom", customType: "agent.peer", content, display: true, details: input.details, timestamp: input.timestamp ?? 0 } as Parameters<typeof renderAgentPeerMessage>[0];
+	return renderAgentPeerMessage(message, { expanded, outputPad: 0 }, theme);
+}
 
 /** Explicit warnings; an absent flag is not a health verdict. */
 function peerWarnings(details: Record<string, unknown>, failed: boolean): string[] {
@@ -698,7 +732,7 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 	const reason = text(details.reason);
 	if (reason) box.addChild(new Text(theme.fg("muted", displayPreview(reason, 240)), 0, 0));
 	box.addChild(new Spacer(1));
-	const body = peerBody(content);
+	const body = peerBody(operatorNoticeBody(content));
 	box.addChild(new Markdown(body.body, 0, 0, getMarkdownTheme(), { color: (value) => theme.fg("customMessageText", value) }));
 	if (body.omitted > 0) box.addChild(new Text(theme.fg("warning", `Display limit: ${body.omitted} more UTF-16 code units. Full text remains in native history.`), 0, 0));
 	box.addChild(new Spacer(1));

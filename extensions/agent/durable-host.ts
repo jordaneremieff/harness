@@ -13,14 +13,18 @@
  * power loss. `DurableObservation` reads a cold copy of the same file without a
  * writer claim.
  */
+import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { Harness, ROOT_CONVERSATION_ID, UsageDoc, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { acknowledgeDeliveries, acknowledgeReports, AgentDeliveryDoc, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
-import { durableIdentity, optionalParam, parseInspectParams, readConversationList, readConversationSnapshot, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
+import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseInspectParams, readConversationList, readConversationSnapshotPage, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
+import { LiveObservationService, type ObservationScope } from "./live-observation.ts";
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
+import { resetConversation } from "./durable-reset.ts";
+import { TIMER_TASK_NAME, cancelTimer, listTimers, parseDeliverAt, scheduleTimer, type TimerMode } from "./durable-timers.ts";
 
 export type { AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
 export type { ConfigurationResult } from "./configuration.ts";
@@ -75,6 +79,27 @@ export class DurableHostClosedError extends Error {
 export const TRANSCRIPT_MAX_BYTES = 16 * 1024;
 
 const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** Live observation services keyed by the Harness they observe; watches stop with the host lifecycle. */
+const liveObservations = new WeakMap<Harness, LiveObservationService>();
+
+const OBSERVATION_TOKEN = /^[A-Za-z0-9._:-]{1,128}$/u;
+
+/** One observation token from request parameters. */
+function observationToken(params: RequestParams | undefined): string {
+	const token = requestRequiredString(params, "token");
+	if (!OBSERVATION_TOKEN.test(token)) throw new TypeError("token must be 1..128 letters, digits, dot, underscore, colon, or dash");
+	return token;
+}
+
+/** Resolve one observation scope; conversations resolve through the same identity rules as status. */
+function observationScope(storageId: string, params: RequestParams | undefined): ObservationScope {
+	const scope = requestRequiredString(params, "scope");
+	if (scope === "tasks") return { scope: "tasks" };
+	if (scope !== "conversation") throw new TypeError("scope must be conversation or tasks");
+	const conversationId = resolveSessionConversationId(storageId, requestString(params, "sessionId"), requestPositiveId(params?.conversationId, "conversationId"));
+	return { scope: "conversation", conversationId };
+}
 
 function modelRefFrom(value: unknown): ModelRef | null | undefined {
 	if (value === undefined) return undefined;
@@ -165,14 +190,16 @@ export class DurableHost {
 	private idleDirty = true;
 	private commitGeneration = 0;
 	private readonly defaultCwd: string | undefined;
+	private readonly registry: HarnessOptions["registry"];
 	private readonly retryMaxAttempts: number | undefined;
 
-	private constructor(harness: Harness, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, retryMaxAttempts: number | undefined) {
+	private constructor(harness: Harness, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined) {
 		this.harness = harness;
 		this.storageId = storageId;
 		this.rootConversation = root;
 		this.models = models;
 		this.storagePath = storagePath;
+		this.registry = registry;
 		this.retryMaxAttempts = retryMaxAttempts;
 		const commandMap = new Map<string, DurableHostCommand>();
 		if (Array.isArray(commands)) for (const command of commands as readonly DurableHostCommand[]) commandMap.set(command.name, command);
@@ -264,7 +291,7 @@ export class DurableHost {
 						}),
 			});
 			if (options.resume !== false) await reconcileDeliveries(harness, context);
-			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.retryMaxAttempts);
+			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts);
 			// A fresh host has no commit to trigger the subscriber; establish the idle cache now.
 			await host.refreshIdle(context);
 			return host;
@@ -339,12 +366,26 @@ export class DurableHost {
 				return this.configureRequest(params, requestContext);
 			case "command":
 				return this.commandRequest(params, requestContext);
+			case "reset":
+				return this.resetRequest(params, requestContext);
+			case "timer-schedule":
+				return this.timerScheduleRequest(params, requestContext);
+			case "timer-list":
+				return this.timerListRequest(requestContext);
+			case "timer-cancel":
+				return this.timerCancelRequest(params, requestContext);
 			case "dashboard": {
 				const conversationId = requestPositiveId(params?.conversationId, "conversationId");
 				return readDashboard(this.harness, this.storageId, conversationId === undefined ? {} : { conversationId: conversationId as ConversationId }, this.dashboardOptions(params), requestContext);
 			}
 			case "snapshot":
 				return this.snapshotRequest(params, requestContext);
+			case "observe-open":
+				return this.observeOpenRequest(params, requestContext);
+			case "observe-frame":
+				return this.observeFrameRequest(params, requestContext);
+			case "observe-close":
+				return this.observeCloseRequest(params, requestContext);
 			case "close":
 				await this.close();
 				return {};
@@ -573,9 +614,92 @@ export class DurableHost {
 		return { name, conversationId: conversation.id, identity: this.identity(conversation.id), text };
 	}
 
+	/**
+	 * Reset one conversation's active context through a retained write
+	 * submission. Placed immediately while idle, at the next boundary while
+	 * busy; an admitted reset starts no model turn.
+	 */
+	private async resetRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		const conversation = await this.target(params, context);
+		const handoff = requestString(params, "handoff");
+		const requestId = requestString(params, "requestId") ?? randomUUID();
+		const result = await resetConversation(conversation, { ...(handoff === undefined ? {} : { handoff }), requestId }, context);
+		return { ...result, identity: this.identity(conversation.id) };
+	}
+
+	private timerMode(params: RequestParams | undefined): TimerMode {
+		const value = params?.mode;
+		if (value === undefined) return "followUp";
+		if (value === "followUp" || value === "steer") return value;
+		throw new TypeError("mode must be followUp or steer");
+	}
+
+	/**
+	 * Create one host-owned scheduled input. The deadline, target, message,
+	 * mode, origin, and request identity commit as the task input before any
+	 * sleep, so a restart resumes the same deadline and admits at most once.
+	 */
+	private async timerScheduleRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		const conversation = await this.target(params, context);
+		if (this.registry.snapshot().task(TIMER_TASK_NAME) === undefined) throw new Error("Scheduled inputs require the agent contribution in this storage");
+		const message = requestRequiredString(params, "message");
+		const deadline = parseDeliverAt(params?.deliverAt);
+		const mode = this.timerMode(params);
+		const origin = this.originParam(params) ?? "model";
+		const ownerId = requestRequiredString(params, "ownerId");
+		const scheduleId = requestString(params, "scheduleId") ?? `timer:${randomUUID()}`;
+		const requestId = requestString(params, "requestId") ?? `timer-delivery:${randomUUID()}`;
+		return await scheduleTimer(
+			this.harness,
+			{ scheduleId, deadline, conversationId: conversation.id, identity: this.identity(conversation.id), message, mode, origin, ownerId, requestId, createdAt: Date.now() },
+			context,
+		);
+	}
+
+	private async timerListRequest(context: Context): Promise<unknown> {
+		return listTimers(this.harness, context);
+	}
+
+	private async timerCancelRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		const timerId = requestPositiveId(params?.timerId, "timerId");
+		if (timerId === undefined) throw new TypeError("timerId is required");
+		return cancelTimer(this.harness, timerId, context);
+	}
+
 	private async snapshotRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
-		return readConversationSnapshot(this.harness, conversation.id, context);
+		return readConversationSnapshotPage(this.harness, conversation.id, parseConversationSnapshotParams(params), context);
+	}
+
+	// ----- live observation -----------------------------------------------------------------
+
+	/** Lazily created per open Harness; watches stop when the host lifecycle aborts. */
+	private liveObservation(): LiveObservationService {
+		let service = liveObservations.get(this.harness);
+		if (service === undefined) {
+			service = new LiveObservationService(this.harness, { storageId: this.storageId }, withAbortSignal(this.lifecycle.signal, BACKGROUND_CONTEXT));
+			liveObservations.set(this.harness, service);
+		}
+		return service;
+	}
+
+	private async observeOpenRequest(params: RequestParams | undefined, _context: Context): Promise<unknown> {
+		const token = observationToken(params);
+		const scope = observationScope(this.storageId, params);
+		const frame = await this.liveObservation().open(token, scope);
+		return { token, frame };
+	}
+
+	private async observeFrameRequest(params: RequestParams | undefined, _context: Context): Promise<unknown> {
+		const token = observationToken(params);
+		const frame = await this.liveObservation().frame(token);
+		if (frame === undefined) throw new TypeError(`unknown observation token ${token}`);
+		return frame;
+	}
+
+	private async observeCloseRequest(params: RequestParams | undefined, _context: Context): Promise<unknown> {
+		const token = observationToken(params);
+		return { closed: await this.liveObservation().close(token) };
 	}
 
 	/**
