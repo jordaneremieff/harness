@@ -54,3 +54,20 @@ test("status and run projections bound records without exposing request data or 
 	assert.ok(Buffer.byteLength(JSON.stringify(escaped)) < OBSERVATION_BYTES);
 	assert.equal(escaped.coverage.complete, false); valid(StatusOutputSchema, json(escaped));
 });
+
+test("status rows and activity metadata carry compaction failure and provider retry observations", () => {
+	const compactionFailure = { reason: "threshold" as const, errorMessage: "x".repeat(5000), at: "2026-10-02T00:00:00.000Z" };
+	const autoRetry = { attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit exceeded" };
+	const base = { sessionId: "session", cwd: "/work", tipId: null, model: { provider: "test", modelId: "model", thinkingLevel: "off" as const }, operation: null, tools: [] as string[], activeTools: [] as string[], extensions: [] as string[], entryCount: 1, lastError: "host error", compactionFailure, autoRetry };
+	valid(StatusOutputSchema, json(statusObservation("live-owner", [liveStatusRow(base)])));
+	const manager = SessionManager.inMemory();
+	const value = projectInspection(manager, manager.getSessionId(), { view: "activity" }, { operation: null, lastError: "host error", compactionFailure, autoRetry, activity: { state: "working", pending: 0, lastPersistedAt: null } });
+	assert.ok("turns" in value);
+	assert.equal(value.metadata.compactionFailure?.reason, "threshold");
+	assert.match(value.metadata.compactionFailure?.errorMessage ?? "", /characters omitted/u);
+	assert.match(value.metadata.autoRetry?.errorMessage ?? "", /^rate limit exceeded$/u);
+	assert.match(value.text, /last compaction failure \(threshold\): x{600} \[4400 characters omitted\]/u);
+	assert.match(value.text, /provider retry 2\/3 after 4s: rate limit exceeded/u);
+	assert.match(value.text, /last error: host error/u);
+	valid(InspectOutputSchema, json(value));
+});

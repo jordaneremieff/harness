@@ -17,7 +17,7 @@ import { boundedConfigurationResult, configurationModel, configurationThinkingLe
 import { ASSOCIATION_ENTRY, type AssociationSource } from "./associations.ts";
 import { queryEvidence, validateInspect, type InspectOptions } from "./evidence.ts";
 import { OwnedSpend, type AgentFooterState } from "./footer.ts";
-import { activityExcerpt, projectActivity, type ActivityOwner, type LiveActivity } from "./activity.ts";
+import { activityExcerpt, projectActivity, type ActiveAutoRetry, type ActivityOwner, type CompactionFailure, type LiveActivity } from "./activity.ts";
 import type { AgentSessionMetadata, AgentStore, StoredAgentSession } from "./store.ts";
 
 export const META_CUSTOM_TYPE = "agent.meta";
@@ -60,7 +60,7 @@ export interface WorkerStatus {
 	sessionId: string; cwd: string; name?: string; tipId: string | null;
 	model: { provider: string; modelId: string; thinkingLevel: ThinkingLevel };
 	operation: string | null; tools: string[]; activeTools: string[]; extensions: string[];
-	entryCount: number; lastError?: string; activity?: LiveActivity;
+	entryCount: number; lastError?: string; compactionFailure?: CompactionFailure; autoRetry?: ActiveAutoRetry; activity?: LiveActivity;
 }
 export type UnavailableHostState = "terminal" | "cleanup-incomplete" | "stopping" | "replacement-failed";
 export interface WorkerCommandResult { text: string; sessionId?: string }
@@ -303,6 +303,8 @@ export class AgentWorkerSession {
 	private configurationSession: AgentSession | undefined;
 	private startup: Promise<void> | undefined;
 	private lastError: string | undefined;
+	private lastCompactionFailure: CompactionFailure | undefined;
+	private activeAutoRetry: ActiveAutoRetry | undefined;
 	private terminal = false;
 	private cleanupFailed = false;
 	private replacementFailed = false;
@@ -692,9 +694,20 @@ export class AgentWorkerSession {
 		if (event.type === "message_update") { this.streamingText = true; this.lastText = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join(""); }
 		if (event.type === "message_end") this.streamingText = false;
 	}
+	/** A failed compaction stays visible until a later one succeeds; an in-flight retry until it ends. */
+	private observeRecovery(event: AgentSessionEvent): void {
+		if (event.type === "compaction_end") {
+			if (event.aborted) return;
+			if (event.result && event.errorMessage === undefined) { this.lastCompactionFailure = undefined; return; }
+			this.lastCompactionFailure = { reason: event.reason, ...(event.errorMessage !== undefined ? { errorMessage: event.errorMessage } : {}), at: new Date().toISOString() };
+		}
+		if (event.type === "auto_retry_start") this.activeAutoRetry = { attempt: event.attempt, maxAttempts: event.maxAttempts, delayMs: event.delayMs, errorMessage: event.errorMessage };
+		if (event.type === "auto_retry_end") this.activeAutoRetry = undefined;
+	}
 	private receive(event: AgentSessionEvent): void {
 		if (event.type === "agent_start" && !this.operation) this.begin();
 		this.observeLiveActivity(event);
+		this.observeRecovery(event);
 		if (event.type === "entry_appended") this.notify({ kind: "entry", entry: event.entry });
 		if (event.type === "agent_settled" && !this.ownedRun) this.finish();
 		if (event.type !== "message_update") this.publishFooter();
@@ -885,12 +898,18 @@ export class AgentWorkerSession {
 	async status(): Promise<WorkerStatus> {
 		const session = this.session;
 		const model = selectedModel(session);
-		return { sessionId: this.sessionId(), cwd: session.sessionManager.getCwd(), name: session.sessionManager.getSessionName(), tipId: session.sessionManager.getLeafId(), model: { provider: model.provider, modelId: model.id, thinkingLevel: session.thinkingLevel }, operation: this.operation ?? null, tools: session.getAllTools().map((tool) => tool.name), activeTools: session.getActiveToolNames(), extensions: session.resourceLoader.getExtensions().extensions.map((extension) => extension.path), entryCount: session.sessionManager.getEntries().length, activity: this.activity(), ...(this.lastError ? { lastError: this.lastError.slice(0, 2000) } : {}) };
+		const failure = this.lastCompactionFailure;
+		const retry = this.activeAutoRetry;
+		return { sessionId: this.sessionId(), cwd: session.sessionManager.getCwd(), name: session.sessionManager.getSessionName(), tipId: session.sessionManager.getLeafId(), model: { provider: model.provider, modelId: model.id, thinkingLevel: session.thinkingLevel }, operation: this.operation ?? null, tools: session.getAllTools().map((tool) => tool.name), activeTools: session.getActiveToolNames(), extensions: session.resourceLoader.getExtensions().extensions.map((extension) => extension.path), entryCount: session.sessionManager.getEntries().length, activity: this.activity(),
+			...(failure ? { compactionFailure: { ...failure, ...(failure.errorMessage ? { errorMessage: failure.errorMessage.slice(0, 2000) } : {}) } } : {}),
+			...(retry ? { autoRetry: { ...retry, errorMessage: retry.errorMessage.slice(0, 2000) } } : {}),
+			...(this.lastError ? { lastError: this.lastError.slice(0, 2000) } : {}) };
 	}
 	async inspect(options: InspectOptions = {}) {
 		this.assertAvailable();
 		const model = this.session.model;
 		const inspection = projectInspection(this.sessionManager(), this.sessionId(), options, { operation: this.operation ?? null, lastError: this.lastError,
+			compactionFailure: this.lastCompactionFailure, autoRetry: this.activeAutoRetry,
 			activity: this.activity(), currentTools: [...this.toolsRunning.values()].map((tool) => tool.name), runningCallIds: [...this.toolsRunning.keys()],
 			...(model ? { model: { provider: model.provider, modelId: model.id, thinkingLevel: this.session.thinkingLevel } } : {}) });
 		return this.unsavedResult && !options.entryId && (options.view ?? "history") === "history" ? { ...inspection, result: { entryId: undefined, ...fragment(JSON.stringify(this.unsavedResult), Math.max(0, options.offset ?? 0), 12000) }, resultOffset: Math.max(0, options.offset ?? 0), resultPersistence: "not saved; retained only by the live owner", detail: "Continue the unsaved result with offset=result.nextOffset and no entryId. Native entries remain separately readable by entryId." } : inspection;

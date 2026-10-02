@@ -188,7 +188,10 @@ human-readable summaries and expansion:
   identity, configuration, entry count, last persisted time and age, owner state,
   current tools, exact running call IDs with start times and elapsed durations,
   current operation, last saved result, pending input, and available in-progress
-  assistant text or last error. Unavailable
+  assistant text, last error, the last failed compaction with its reason, message,
+  and time, and an in-progress provider retry with its attempt counts, delay, and
+  message. A later successful compaction clears the failure; the retry's end
+  clears the retry. Unavailable
   owner state stays explicit. Saved results expose `entryId`, `operationId`, and
   `status`; fragmented native content remains in `text` with `nextOffset`. Unsaved results retain their
   live-owner persistence warning. Script access does not widen capture or search.
@@ -197,7 +200,9 @@ human-readable summaries and expansion:
   Live records include model, operation, tool names, entry count, and available
   `activity`: working or idle state, current tool, running call IDs and durations,
   current operation, last saved result, in-progress assistant text, pending input,
-  and last persisted time. Without a session ID, status lists process-held
+  and last persisted time. Live records also retain the last host error, the last
+  failed compaction with its reason and time, and an in-progress provider retry.
+  Without a session ID, status lists process-held
   workers first, with working workers before idle workers, then primaries and
   active detached runs. Its `inventory` counts stored sessions, held workers,
   primaries, and active detached runs; `agent_list` discovers stored sessions.
@@ -330,7 +335,11 @@ and its age measure persisted entries, not model thought or a stalled worker.
 Running tools expose exact call IDs, start times, and elapsed durations. Tool
 rows retain available persisted ages, running durations, and literal `isError`
 values. Text durations use readable units; structured fields retain milliseconds. The worker supplies `lastText` only before the assistant message is
-finalized. Age alone never classifies a stall. Status without a session ID shows
+finalized. Age alone never classifies a stall. The owner snapshot also retains the
+last host error, the last failed native compaction with its reason and time, and an
+in-progress provider retry with its attempt counts, delay, and message; a later
+successful compaction clears the failure, and the retry's end clears the retry.
+Status without a session ID shows
 process-held workers,
 primaries, and active detached runs, with stored-session counts and a pointer
 to `agent_list`; it does not dump the stored transcript inventory.
@@ -794,7 +803,8 @@ reads a bounded point-in-time snapshot of the persisted entries instead: no
 writer claim is taken, `SessionManager.open` is not called, and the source file
 is never repaired, rewritten, or truncated. A file above the capture bound, or
 an unfinished tail, is reported explicitly. Live owner fields (the current
-operation and last error) stay unavailable and are labeled that way. Host
+operation, last error, last failed compaction, and in-progress provider retry) stay
+unavailable and are labeled that way. Host
 operation and result entries record observed outcomes, not a second execution
 engine or a crash-replay log.
 

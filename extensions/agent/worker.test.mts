@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { AgentWorkerSession, type WorkerUpdate } from "./worker.ts";
 import { fixture } from "./native-fixture.mts";
+import { testModel } from "./test-runtime.mts";
 import { defined } from "./test-assertions.mts";
 
  test("idle native sessions persist without fabricated assistant messages and reopen before a request", async () => {
@@ -128,4 +131,101 @@ test("native compaction uses the ordinary hook and persists a real compaction en
 		await f.worker.start("next"); await f.worker.waitForIdle();
 		assert.match(JSON.stringify(f.requests.at(-1)), /NATIVE_SUMMARY/u);
 	} finally { await f.close(); }
+});
+
+test("a failed native compaction stays observable until a later compaction succeeds", { timeout: 15000 }, async () => {
+	const key = `compaction${randomUUID().replaceAll("-", "")}`;
+	const globals = globalThis as unknown as Record<string, unknown>;
+	globals[key] = 0;
+	const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const summarizerFailure: AssistantMessage = { role: "assistant", content: [], api: testModel.api, provider: testModel.provider, model: testModel.id, stopReason: "error", errorMessage: "summarizer unavailable", timestamp: Date.now(), usage };
+	const reply: AssistantMessage = { role: "assistant", content: [{ type: "text", text: "DONE" }], api: testModel.api, provider: testModel.provider, model: testModel.id, stopReason: "stop", timestamp: Date.now(), usage };
+	let phase: "ok" | "fail" = "ok";
+	const stream = () => {
+		const events = createAssistantMessageEventStream();
+		if (phase === "fail") { events.push({ type: "error", reason: "error", error: summarizerFailure }); events.end(summarizerFailure); return events; }
+		events.push({ type: "start", partial: reply }); events.push({ type: "done", reason: "stop", message: reply }); events.end(reply); return events;
+	};
+	const f = await fixture(`export default pi => pi.on("session_before_compact", () => {
+		const attempt = globalThis[${JSON.stringify(key)}];
+		globalThis[${JSON.stringify(key)}] = attempt + 1;
+		if (attempt % 2 === 0) return { cancel: true };
+	});`, {}, { compaction: { keepRecentTokens: 1 } });
+	let worker = f.worker;
+	try {
+		const provider = f.runtime.getRegisteredNativeProvider(testModel.provider); assert.ok(provider);
+		f.runtime.registerNativeProvider({ ...provider, stream, streamSimple: stream });
+		await f.worker.close();
+		worker = await AgentWorkerSession.create(f.options);
+		await worker.start("first"); await worker.waitForIdle();
+		await worker.start("second"); await worker.waitForIdle();
+		await assert.rejects(worker.compact(), /Compaction cancelled/u);
+		assert.equal((await worker.status()).compactionFailure, undefined, "an aborted compaction is not recorded as a failure");
+		phase = "fail";
+		await assert.rejects(worker.compact(), /Summarization failed: summarizer unavailable/u);
+		const failed = await worker.status();
+		assert.equal(failed.compactionFailure?.reason, "manual");
+		assert.match(failed.compactionFailure?.errorMessage ?? "", /Compaction failed: Summarization failed: summarizer unavailable/u);
+		assert.ok(Date.parse(failed.compactionFailure?.at ?? "") > 0);
+		const failedInspection = await worker.inspect({ view: "activity" });
+		assert.ok("turns" in failedInspection);
+		assert.equal(failedInspection.metadata.compactionFailure?.reason, "manual");
+		assert.match(failedInspection.text, /last compaction failure \(manual\): Compaction failed: Summarization failed: summarizer unavailable at /u);
+		phase = "ok";
+		await assert.rejects(worker.compact(), /Compaction cancelled/u);
+		const aborted = await worker.status();
+		assert.equal(aborted.compactionFailure?.reason, "manual", "an aborted compaction does not clear the retained failure");
+		assert.match(aborted.compactionFailure?.errorMessage ?? "", /summarizer unavailable/u);
+		const recovered = await worker.compact();
+		assert.ok(recovered.summary);
+		const cleared = await worker.status();
+		assert.equal(cleared.compactionFailure, undefined);
+		const clearedInspection = await worker.inspect({ view: "activity" });
+		assert.ok("turns" in clearedInspection);
+		assert.doesNotMatch(clearedInspection.text, /last compaction failure/u);
+		assert.equal(clearedInspection.metadata.compactionFailure, undefined);
+	} finally { await worker.close(); delete globals[key]; await f.close(); }
+});
+
+test("an in-flight provider retry is observable and clears when the retry ends", { timeout: 15000 }, async () => {
+	const f = await fixture("export default function() {}", {}, { retry: { enabled: true, maxRetries: 1, baseDelayMs: 5 } });
+	const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const failure: AssistantMessage = { role: "assistant", content: [], api: testModel.api, provider: testModel.provider, model: testModel.id, stopReason: "error", errorMessage: "rate limit exceeded", timestamp: Date.now(), usage };
+	const recovered: AssistantMessage = { role: "assistant", content: [{ type: "text", text: "RECOVERED" }], api: testModel.api, provider: testModel.provider, model: testModel.id, stopReason: "stop", timestamp: Date.now(), usage };
+	let calls = 0;
+	let pending: ReturnType<typeof createAssistantMessageEventStream> | undefined;
+	let began!: () => void;
+	const started = new Promise<void>((done) => { began = done; });
+	const stream = () => {
+		calls++;
+		const events = createAssistantMessageEventStream();
+		if (calls === 1) { events.push({ type: "error", reason: "error", error: failure }); events.end(failure); return events; }
+		began(); pending = events;
+		return events;
+	};
+	let worker = f.worker;
+	try {
+		const provider = f.runtime.getRegisteredNativeProvider(testModel.provider); assert.ok(provider);
+		f.runtime.registerNativeProvider({ ...provider, stream, streamSimple: stream });
+		await f.worker.close();
+		worker = await AgentWorkerSession.create(f.options);
+		const operation = await worker.start("trigger the provider failure");
+		await started;
+		const live = await worker.status();
+		assert.deepEqual(live.autoRetry, { attempt: 1, maxAttempts: 1, delayMs: 5, errorMessage: "rate limit exceeded" });
+		const inspection = await worker.inspect({ view: "activity" });
+		assert.ok("turns" in inspection);
+		assert.equal(inspection.metadata.autoRetry?.attempt, 1);
+		assert.match(inspection.text, /provider retry 1\/1 after 5ms: rate limit exceeded/u);
+		assert.ok(pending);
+		pending.push({ type: "start", partial: recovered }); pending.push({ type: "done", reason: "stop", message: recovered }); pending.end(recovered);
+		await worker.waitForIdle();
+		const settled = await worker.status();
+		assert.equal(settled.autoRetry, undefined);
+		const settledInspection = await worker.inspect({ view: "activity" });
+		assert.ok("turns" in settledInspection);
+		assert.doesNotMatch(settledInspection.text, /provider retry/u);
+		assert.equal(settledInspection.metadata.autoRetry, undefined);
+		assert.equal((await worker.operationResult(defined(operation)))?.status, "completed");
+	} finally { await worker.close(); await f.close(); }
 });

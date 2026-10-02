@@ -37,11 +37,13 @@ export type RunsObservation = Static<typeof RunsOutputSchema>;
 
 const runningToolSchema = object({ toolCallId: text, name: text, startedAt: text, elapsedMs: count });
 const activityResultSchema = object({ operationId: text, status: text });
+const compactionFailureSchema = object({ reason: Type.Union([Type.Literal("manual"), Type.Literal("threshold"), Type.Literal("overflow")]), errorMessage: Type.Optional(text), at: text });
+const autoRetrySchema = object({ attempt: count, maxAttempts: count, delayMs: count, errorMessage: text });
 const activitySchema = object({ runningTools: Type.Optional(Type.Array(runningToolSchema)), operation: Type.Optional(nullableText), result: Type.Optional(activityResultSchema), state: Type.Union([Type.Literal("working"), Type.Literal("idle")]), currentTool: Type.Optional(text), lastText: Type.Optional(text), pending: count, lastPersistedAt: nullableText });
 const statusRowSchema = object({
 	sessionId: text, cwd: text, modifiedAt: Type.Optional(Type.Number()), primary: Type.Optional(Type.Boolean()), name: Type.Optional(text), tipId: Type.Optional(nullableText),
 	model: Type.Optional(object({ provider: text, modelId: text, thinkingLevel: Type.Optional(text), available: Type.Optional(Type.Boolean()) })),
-	operation: Type.Optional(nullableText), entryCount: Type.Optional(count), tools: Type.Optional(Type.Array(text)), activeTools: Type.Optional(Type.Array(text)), extensions: Type.Optional(Type.Array(text)), lastError: Type.Optional(text),
+	operation: Type.Optional(nullableText), entryCount: Type.Optional(count), tools: Type.Optional(Type.Array(text)), activeTools: Type.Optional(Type.Array(text)), extensions: Type.Optional(Type.Array(text)), lastError: Type.Optional(text), compactionFailure: Type.Optional(compactionFailureSchema), autoRetry: Type.Optional(autoRetrySchema),
 	capture: Type.Optional(capture), run: Type.Optional(runSchema), activity: Type.Optional(activitySchema), unavailable: Type.Optional(text),
 });
 export type StatusRow = Static<typeof statusRowSchema>;
@@ -92,7 +94,7 @@ export function supervisionObservation(held: StatusRow[], primaries: StatusRow[]
 export function liveStatusRow(status: WorkerStatus): StatusRow {
 	return { sessionId: status.sessionId, cwd: status.cwd, name: status.name, tipId: status.tipId,
 		model: { provider: status.model.provider, modelId: status.model.modelId, thinkingLevel: status.model.thinkingLevel }, operation: status.operation,
-		entryCount: status.entryCount, tools: [...status.tools], activeTools: [...status.activeTools], extensions: [...status.extensions], lastError: status.lastError, ...(status.activity ? { activity: { ...status.activity } } : {}) };
+		entryCount: status.entryCount, tools: [...status.tools], activeTools: [...status.activeTools], extensions: [...status.extensions], lastError: status.lastError, compactionFailure: status.compactionFailure, autoRetry: status.autoRetry, ...(status.activity ? { activity: { ...status.activity } } : {}) };
 }
 
 const inspectionBase = {
@@ -107,7 +109,7 @@ export const InspectOutputSchema = Type.Union([
 	object({ ...inspectionBase, view: Type.Literal("activity"), text, observedAt: text, nextCursor: nullableCount,
 		turns: Type.Array(object({ startIndex: count, endIndex: count, partial: Type.Boolean(), rows: Type.Array(object({ entryId: text, timestamp: text, kind: text, text, toolCallId: Type.Optional(text), outcome: Type.Optional(text), isError: Type.Optional(Type.Boolean()), durationMs: Type.Optional(count), ageMs: Type.Optional(count), runningForMs: Type.Optional(count), resultEntryId: Type.Optional(text), count: Type.Optional(count), entryIds: Type.Optional(Type.Array(text)) })) })),
 		metadata: object({ name: Type.Optional(text), cwd: text, model: Type.Optional(object({ provider: text, modelId: text, thinkingLevel: Type.Optional(text) })), entryCount: count, lastPersistedAt: nullableText, lastPersistedAgeMs: nullableCount,
-			ownerState: Type.Union([Type.Literal("working"), Type.Literal("idle"), Type.Literal("unavailable")]), currentTools: Type.Array(text), runningTools: Type.Array(runningToolSchema), operation: nullableText, result: Type.Optional(activityResultSchema), pending: nullableCount, lastText: Type.Optional(text), lastError: Type.Optional(text) }),
+			ownerState: Type.Union([Type.Literal("working"), Type.Literal("idle"), Type.Literal("unavailable")]), currentTools: Type.Array(text), runningTools: Type.Array(runningToolSchema), operation: nullableText, result: Type.Optional(activityResultSchema), pending: nullableCount, lastText: Type.Optional(text), lastError: Type.Optional(text), compactionFailure: Type.Optional(compactionFailureSchema), autoRetry: Type.Optional(autoRetrySchema) }),
 		coverage: object({ turnsConsidered: count, turnsRendered: count, considered: count, rendered: count, omitted: count, failuresOmitted: count, lookaheadEntries: count, truncated: Type.Boolean(), headerTruncated: Type.Boolean(), excerptsClipped: Type.Boolean(), entryLimitReached: Type.Boolean(), rowLimitReached: Type.Boolean(), thinking: count }),
 	}),
 	object({ ...inspectionBase, result: Type.Optional(object({ entryId: Type.Optional(text), ...fragment })), entries: Type.Array(object({ id: text, parentId: nullableText, type: text, role: Type.Optional(text), ...fragment, omissions: Type.Optional(omissions), preview: Type.Optional(object({ text, truncated: Type.Boolean() })) })), nextCursor: nullableCount, order: Type.Literal("newestFirst"), detail: text, resultOffset: Type.Optional(count), resultPersistence: Type.Optional(text) }),

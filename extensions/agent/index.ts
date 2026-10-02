@@ -1735,7 +1735,12 @@ function supervisionState(row: StatusRow): string {
 	return `unavailable: ${row.unavailable ?? "unknown"}`;
 }
 function supervisionLine(row: StatusRow): string {
-	return `${row.sessionId}${row.name ? ` (${activityExcerpt(row.name, 120)})` : ""}: ${supervisionState(row)}\n  cwd=${activityExcerpt(row.cwd, 240)}${row.lastError ? `; error=${activityExcerpt(row.lastError)}` : ""}`;
+	const conditions = [
+		row.lastError ? `error=${activityExcerpt(row.lastError)}` : "",
+		row.compactionFailure ? `compaction=${row.compactionFailure.reason}: ${activityExcerpt(row.compactionFailure.errorMessage ?? "no error text")}` : "",
+		row.autoRetry ? `retry=${row.autoRetry.attempt}/${row.autoRetry.maxAttempts}: ${activityExcerpt(row.autoRetry.errorMessage)}` : "",
+	].filter(Boolean).join("; ");
+	return `${row.sessionId}${row.name ? ` (${activityExcerpt(row.name, 120)})` : ""}: ${supervisionState(row)}\n  cwd=${activityExcerpt(row.cwd, 240)}${conditions ? `; ${conditions}` : ""}`;
 }
 function formatSupervision(observation: StatusObservation): string {
 	const lines: string[] = [];
@@ -1756,6 +1761,8 @@ function formatStatus(status: WorkerStatus, action: string): string {
 		`  model=${status.model.provider}/${status.model.modelId}  thinking=${status.model.thinkingLevel}  operation=${status.operation ?? "-"}`,
 		`  entries=${status.entryCount}  tools=${status.tools.length}  active=${status.activeTools.length}  extensions=${status.extensions.length}`,
 		...(status.activity ? [`  ${formatActivity(status.activity)}`] : []),
+		...(status.compactionFailure ? [`  compaction=${status.compactionFailure.reason} at ${status.compactionFailure.at}: ${status.compactionFailure.errorMessage ?? "no error text"}`] : []),
+		...(status.autoRetry ? [`  retry=attempt ${status.autoRetry.attempt}/${status.autoRetry.maxAttempts} after ${activityDuration(status.autoRetry.delayMs)}: ${status.autoRetry.errorMessage}`] : []),
 		...(status.lastError ? [`  error=${status.lastError}`] : []),
 	].join("\n");
 }

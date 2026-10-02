@@ -3,6 +3,10 @@ import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-age
 
 export const ACTIVITY_LIMITS = { bytes: 16000, entries: 128, rows: 128, afterEntries: 128, excerpt: 400, stream: 600 } as const;
 export interface RunningTool { toolCallId: string; name: string; startedAt: string; elapsedMs: number }
+/** Last compaction that ended without a result; a later successful compaction clears it. */
+export interface CompactionFailure { reason: "manual" | "threshold" | "overflow"; errorMessage?: string; at: string }
+/** Provider retry in progress between a failed model attempt and its repeat. */
+export interface ActiveAutoRetry { attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 export interface LiveActivity {
 	state: "working" | "idle";
 	currentTool?: string;
@@ -16,6 +20,8 @@ export interface LiveActivity {
 export interface ActivityOwner {
 	operation: string | null;
 	lastError: string | undefined;
+	compactionFailure?: CompactionFailure;
+	autoRetry?: ActiveAutoRetry;
 	activity?: LiveActivity;
 	currentTools?: string[];
 	runningCallIds?: string[];
@@ -218,6 +224,12 @@ function savedResult(all: SessionEntry[]) {
 	const data = saved?.type === "custom" && record(saved.data) ? saved.data : undefined;
 	return data && typeof data.operationId === "string" && typeof data.status === "string" ? { operationId: activityExcerpt(data.operationId, 256), status: activityExcerpt(data.status, 40) } : undefined;
 }
+function observedCompactionFailure(failure: CompactionFailure | undefined) {
+	return failure ? { ...failure, ...(failure.errorMessage ? { errorMessage: activityExcerpt(failure.errorMessage, 600) } : {}) } : undefined;
+}
+function observedAutoRetry(retry: ActiveAutoRetry | undefined) {
+	return retry ? { ...retry, errorMessage: activityExcerpt(retry.errorMessage, 600) } : undefined;
+}
 function activityMetadata(manager: SessionManager, all: SessionEntry[], observedAt: string, owner?: ActivityOwner) {
 	const lastPersistedAt = all.at(-1)?.timestamp ?? null;
 	return {
@@ -229,6 +241,8 @@ function activityMetadata(manager: SessionManager, all: SessionEntry[], observed
 		runningTools: owner?.activity?.runningTools ?? [], operation: owner?.operation ?? null, result: savedResult(all),
 		lastText: owner?.activity?.lastText ? activityExcerpt(owner.activity.lastText, ACTIVITY_LIMITS.stream) : undefined,
 		lastError: owner?.lastError ? activityExcerpt(owner.lastError, 600) : undefined,
+		compactionFailure: observedCompactionFailure(owner?.compactionFailure),
+		autoRetry: observedAutoRetry(owner?.autoRetry),
 	};
 }
 type ActivityMetadata = ReturnType<typeof activityMetadata>;
@@ -297,6 +311,8 @@ function liveHeader(metadata: ActivityMetadata, owner?: ActivityOwner): string[]
 	if (metadata.runningTools.length) lines.push(`running calls: ${activityExcerpt(metadata.runningTools.map((tool) => `${tool.name} (${tool.toolCallId}) running for ${activityDuration(tool.elapsedMs)}`).join("; "), 900)}`);
 	if (metadata.lastText) lines.push(`streamed assistant text (not yet persisted; operation=${activityExcerpt(owner.operation ?? "unknown", 256)}; state=${metadata.ownerState}): ${metadata.lastText}`);
 	if (metadata.lastError) lines.push(`last error: ${metadata.lastError}`);
+	if (metadata.compactionFailure) lines.push(`last compaction failure (${metadata.compactionFailure.reason}): ${metadata.compactionFailure.errorMessage ?? "no error text"} at ${metadata.compactionFailure.at}`);
+	if (metadata.autoRetry) lines.push(`provider retry ${metadata.autoRetry.attempt}/${metadata.autoRetry.maxAttempts} after ${activityDuration(metadata.autoRetry.delayMs)}: ${metadata.autoRetry.errorMessage}`);
 	return lines;
 }
 function activityHeader(manager: SessionManager, all: SessionEntry[], metadata: ActivityMetadata, owner?: ActivityOwner): string {
