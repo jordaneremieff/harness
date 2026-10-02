@@ -32,6 +32,7 @@ function tools() {
 	memory({
 		registerTool: (tool: Registered) => all.set(tool.name, tool),
 		on: () => () => {},
+		events: { emit: () => {} },
 	} as unknown as ExtensionAPI);
 	return all;
 }

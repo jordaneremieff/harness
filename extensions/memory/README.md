@@ -89,6 +89,39 @@ title and compact pointers, metadata-budget qualifications, unchanged suppressio
 changed cues, removal, and restoration. These tests establish delivery and coverage, not model comprehension
 or improved answer quality.
 
+## Durable agents
+
+Agent sessions on Pi Durable receive the memory corpus through the native
+contribution in `durable.ts`. The ordinary factory in `index.ts` emits it on the
+`durable:contribution` channel with the entrypoint path as its source, and the
+agent host installs it. The corpus and its revision history stay external; no
+note content enters a Durable document.
+
+The contribution offers the same tools as the ordinary form, with the same
+names, parameter schemas, descriptions, and execution against `PI_MEMORY_DIR`.
+`memory_search`, `memory_read`, and `memory_history` are replay-safe: a rerun
+after process loss rescans current sources and repeats no external effect.
+`memory_write`, `memory_edit`, `memory_review`, and `memory_retire` are unsafe:
+corpus publication has no durable operation identity, so a rerun can refuse
+after a partial publication or capture history again. An interruption produces
+an interrupted result; inspect the corpus with the read tools before retrying.
+The ordinary same-process file mutation queue serializes corpus writes in both
+forms.
+
+Two prompt sections carry the ordinary model-facing surface. `memory` holds the
+usage guidelines that the ordinary tools declare as `promptGuidelines`.
+`memory_index` renders the same bounded pointer index as the ordinary
+`before_agent_start` hook. Durable renders sections before every request, but
+the index text depends only on corpus content, so an unchanged corpus produces
+identical bytes and adds no system-prompt delta; a changed corpus reaches the
+next request. Tool result details carry the ordinary structured object under
+`details.structuredContent`; `memory_search` keeps its declared output schema.
+
+`durable.test.mts` runs the contribution in a real Harness over `MemoryStorage`
+with the pi-ai faux provider. It drives a model-issued call for each tool,
+checks the corpus effect of each mutation, checks the two prompt sections, and
+checks the replay policy recorded in the durable tool intent.
+
 ## Tools
 
 ### `memory_search`
