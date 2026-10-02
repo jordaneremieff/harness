@@ -60,7 +60,7 @@ async function fixture() {
 			pi.registerProvider({id:"reload-local",name:"Reload",getModels:()=>[{id:"controlled",name:"Controlled",provider:"reload-local",api:"reload-local",baseUrl:"https://invalid.test",reasoning:false,input:["text"],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:128000,maxTokens:4096}],auth:{apiKey:{name:"Synthetic",check:async()=>({type:"api_key"}),resolve:async()=>({auth:{}})}},stream,streamSimple:stream});
 		}`);
 	writeProvider(1);
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [provider, entry], cacheWarming: { mode: "off" }, retry: { enabled: false }, autoCompact: false }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [provider, entry], cacheWarming: { mode: "off" }, retry: { enabled: false }, compaction: { enabled: false } }));
 	const statuses: Array<string | undefined> = [], errors: unknown[] = [], notices: string[] = [];
 	const bind = async (session: AgentSession) => session.bindExtensions({ mode: "print", onError: (error) => { errors.push(error); }, uiContext: { setStatus: (_key: string, text: string | undefined) => { statuses.push(text); for (const listener of listeners) listener(); }, notify: (text: string) => notices.push(text) } as never });
 	const runtimes: AgentSessionRuntime[] = [];
