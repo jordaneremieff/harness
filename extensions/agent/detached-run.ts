@@ -12,7 +12,7 @@
 
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ProjectTrustStore, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DetachedRuns, MAX_SUMMARY_CHARS, readDetachedRequest, type DetachedRunProgress, type DetachedRunRequest } from "./detached.ts";
 import { createDetachedControlServer } from "./detached-control.ts";

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { AgentStore } from "./store.ts";
 import type { AssistantMessage, ImageContent, TextContent, ToolCall } from "@earendil-works/pi-ai";
 import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";

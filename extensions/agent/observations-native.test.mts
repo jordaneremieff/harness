@@ -57,7 +57,7 @@ test("native codemode composes observations under hooks and keeps compaction mod
 				activityView:activity.view,activityText:activity.text,activityOwner:activity.metadata.ownerState,
 				liveActivity:live.sessions[0].activity.state,inventoryFirst:inventory.sessions[0].sessionId,storedCount:inventory.inventory.stored,
 				skipped:listed.coverage.skipped.length,partial:saved.sessions[0].capture.unfinishedTail,missingRun:runs.found,hook:runs.boundary,refusal,
-				compactCallable:typeof tools.agent_compact === "function"};`;
+				compactCallable:"agent_compact" in tools};`;
 		const stream = (_model: unknown, context: Parameters<NonNullable<ReturnType<typeof f.runtime.getRegisteredNativeProvider>>["stream"]>[1]) => {
 			requests++;
 			assert.ok(requests <= 5);

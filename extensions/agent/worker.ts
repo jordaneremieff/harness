@@ -2,7 +2,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { Context, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Context } from "@earendil-works/chord";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getCurrentSystemMessage, type ImageContent, type ThinkingContent } from "@earendil-works/pi-ai";
 import {
 	createAgentSessionServices, createAgentSessionFromServices, createAgentSessionRuntime,

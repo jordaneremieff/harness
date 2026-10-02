@@ -10,9 +10,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { basename, join, resolve } from "node:path";
 import { existsSync, mkdirSync, realpathSync, statSync, watch, type FSWatcher } from "node:fs";
 import { randomUUID } from "node:crypto";
-import type { Context } from "@earendil-works/pi-agent-core";
+import type { Context } from "@earendil-works/chord";
 import { StringEnum, type ImageContent } from "@earendil-works/pi-ai";
-import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type {
 	AgentToolResult,
 	ExtensionAPI,

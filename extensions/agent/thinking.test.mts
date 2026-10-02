@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ModelRuntime, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { resolveModelChoice } from "./index.ts";
 import { AgentStore } from "./store.ts";

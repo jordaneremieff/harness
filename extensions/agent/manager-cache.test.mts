@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { type ExtensionAPI, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import registerAgentExtension, { AgentManager } from "./index.ts";
 import { AgentStore } from "./store.ts";

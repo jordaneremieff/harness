@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { mock, test } from "node:test";
-import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { claimPath } from "./claims.ts";
 import { AgentStore, type AgentSessionMetadata } from "./store.ts";

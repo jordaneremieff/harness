@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { ModelRuntime, ProjectTrustStore, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createDetachedControlServer } from "./detached-control.ts";

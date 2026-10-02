@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { CustomMessageComponent, initTheme, ProjectTrustStore, SessionManager, type ExtensionAPI, type MessageRenderer, type Theme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text, visibleWidth, getKeybindings, setKeybindings, KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import registerAgentExtension, { AgentManager } from "./index.ts";

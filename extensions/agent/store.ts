@@ -3,7 +3,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { Context } from "@earendil-works/pi-agent-core";
+import type { Context } from "@earendil-works/chord";
 import { CURRENT_SESSION_VERSION, parseSessionEntries, SessionManager } from "@earendil-works/pi-coding-agent";
 import { claimPath, classifyClaim, readClaimFile, type ClaimFile } from "./claims.ts";
 
