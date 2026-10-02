@@ -132,8 +132,13 @@ termination of an uncooperative shell descendant.
 
 Retained outcomes include submission and answer entry IDs. The source storage's
 durable-delivery watcher is the sole retained-output delivery owner: after every
-native commit it settles intents, routes each unacknowledged receipt or report,
-and only then acknowledges the source. A catalog owner receives an untrusted
+native commit it settles intents atomically and groups receipts by native answer
+entry. A result notice lists every submission that shares that answer. Primary
+notice details retain each submission's request, operation, input entry, and owner.
+Each recipient receives one notice for that answer,
+including when owner routes overlap. Distinct answers and unanswered submissions
+stay separate. The watcher acknowledges every receipt in the answer group in one
+commit only after all required recipients accept it. Reports remain separate. A catalog owner receives an untrusted
 follow-up in its own host. A noncatalog owner is an ordinary primary reached
 through its registered primary channel. Only an absent or proven-dead owner
 endpoint permits fallback: the watcher broadcasts to every live primary within
@@ -143,8 +148,9 @@ details. It acknowledges the row only after discovery and every delivery
 complete; a partial or unavailable scan leaves the row pending and reports that
 coverage explicitly. A live or unknown owner endpoint refuses fallback and
 retries. The primary does not poll receipts. Delivery is at-least-once; stable
-request and source IDs let each receiver deduplicate, and a crash after display
-but before acknowledgement can repeat a notice. Transmitted peer bodies have a
+answer-based request and source IDs let each receiver deduplicate retries and
+host restarts. A primary process loss after display but before acknowledgement
+can repeat a notice if its in-memory deduplication was lost. Transmitted peer bodies have a
 text bound and an explicit truncation marker; `agent_inspect` retains access to
 the full source. A delivery receipt never proves task acceptance or that an
 agent acted on a correction.

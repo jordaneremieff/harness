@@ -31,6 +31,7 @@ import {
 	type SubmissionId,
 	type SubmissionRecord,
 	type TaskId,
+	type Tx,
 	type UsageState,
 	type UserInput,
 } from "@earendil-works/pi-durable";
@@ -778,43 +779,32 @@ function receiptRow(intent: DeliveryIntent, record: Extract<SubmissionRecord, { 
 	};
 }
 
-/**
- * Record one receipt for a settled submission unless its receipt already exists.
- */
-async function finalizeReceipt(harness: Harness, intent: DeliveryIntent, context: Context): Promise<void> {
-	const submissionId = intent.submissionId;
-	if (submissionId === null) return;
-	const submission = await harness.submission(submissionId, context);
-	if (!submission) return;
-	const record = await submission.status(context);
-	if (record.type !== "input" || (record.status !== "done" && record.status !== "unanswered")) return;
+async function finalizeReceipt(tx: Tx, state: AgentDeliveryState, intent: DeliveryIntent, index: number): Promise<void> {
+	if (intent.submissionId !== null && state.receipts[String(intent.submissionId)] !== undefined) return;
+	const record = await tx.submissionByRequest(intent.conversationId, intent.requestId);
+	if (record === undefined || record.type !== "input") return;
+	if (intent.submissionId === null) state.intents[index] = { ...intent, submissionId: record.id };
+	if (record.status !== "done" && record.status !== "unanswered") return;
+	if (state.receipts[String(record.id)] !== undefined) return;
 	let answer: string | null = null;
 	if (record.status === "done") {
-		const entry = await harness.commit((tx) => tx.entry(AssistantEntry, record.answer), context);
+		const entry = await tx.entry(AssistantEntry, record.answer);
 		const text = assistantTextOf(entry?.model);
-		answer = text === "" ? null : text.length > 1200 ? text.slice(0, 1200) : text;
+		answer = text === "" ? null : text.slice(0, 1200);
 	}
-	await harness.commit(async (tx) => {
-		const current = await tx.doc(AgentDeliveryDoc);
-		const key = String(record.id);
-		if (current.receipts[key] !== undefined) return;
-		current.receipts[key] = receiptRow(intent, record, answer);
-	}, context);
+	state.receipts[String(record.id)] = receiptRow(intent, record, answer);
 }
 
 /**
- * Record a receipt for every intent whose submission has settled and whose
- * receipt is absent. Safe to call at any time; concurrent calls converge on one
- * receipt per submission.
+ * Materialize settled inputs in one commit. Native run settlement assigns one
+ * answer to all run inputs atomically, so no observer sees a partial answer
+ * group. Request lookup covers admission before its intent link is written.
  */
 export async function settleDeliveries(harness: Harness, context: Context): Promise<void> {
-	const state = await harness.snapshot(AgentDeliveryDoc, context);
-	if (!state) return;
-	for (const intent of state.intents) {
-		if (intent.submissionId === null) continue;
-		if (state.receipts[String(intent.submissionId)] !== undefined) continue;
-		await finalizeReceipt(harness, intent, context);
-	}
+	await harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		for (const [index, intent] of state.intents.entries()) await finalizeReceipt(tx, state, intent, index);
+	}, context);
 }
 
 /** Mark receipts delivered by their owner. Only the owning caller can acknowledge its rows. */

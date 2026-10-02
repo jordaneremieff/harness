@@ -7,10 +7,10 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { SubmissionId } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
-import { AgentDeliveryDoc, settleDeliveries } from "./durable-controls.ts";
+import { AgentDeliveryDoc, type AgentDeliveryState, settleDeliveries } from "./durable-controls.ts";
 import { startDurableDelivery } from "./durable-delivery.ts";
 import { DurableHost, type RequestParams } from "./durable-host.ts";
-import { fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
+import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, gateTool, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import type { HostConnection } from "./host-client.ts";
 import { waitUntil } from "./host-fixture.mts";
 import type { HostMetadata } from "./host-protocol.ts";
@@ -104,6 +104,13 @@ async function deliveryState(host: DurableHost) {
 	return host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
 }
 
+async function receiptSourceId(host: DurableHost, submissionId: SubmissionId): Promise<string> {
+	await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
+	const receipt = (await deliveryState(host))?.receipts[String(submissionId)];
+	assert.ok(receipt);
+	return `${host.storageId}:answer:${receipt.answerEntryId}`;
+}
+
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (!(await predicate())) {
@@ -121,6 +128,80 @@ async function addReceipt(source: DurableHost, ownerId: string, requestId = "sou
 	await source.wait(admitted.submissionId, BACKGROUND_CONTEXT);
 	return admitted.submissionId;
 }
+
+for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live steer with its answer for ${recipients} recipients`, { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const owner = randomUUID();
+	const steerOwner = recipients === "same" ? owner : randomUUID();
+	const received: PrimaryDelivery[] = [];
+	let releaseTool = () => {};
+	let releaseDelivery = () => {};
+	const toolGate = new Promise<void>((resolve) => { releaseTool = resolve; });
+	const deliveryGate = new Promise<void>((resolve) => { releaseDelivery = resolve; });
+	t.after(() => { releaseTool(); releaseDelivery(); });
+	// With an absent steering owner, fallback and direct delivery overlap at this recipient.
+	const channel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot,
+		deliver: async (message) => { received.push(message); await deliveryGate; }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	if (recipients === "distinct") {
+		const other = await createPrimaryChannel({ id: steerOwner, cwd: root, sessionsRoot,
+			deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+		t.after(() => other.close());
+	}
+	let started = false;
+	const sourcePath = join(root, "source.sqlite");
+	const source = await DurableHost.open({ storagePath: sourcePath, storageId: "source-storage", cwd: root,
+		models: await scriptedRuntime([toolCallMessage("gate"), answerMessage(), answerMessage()]),
+		registry: fixtureRegistry([gateTool(toolGate, () => { started = true; })]),
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
+	t.after(() => source.close());
+	const revisions: AgentDeliveryState[] = [];
+	const unsubscribe = source.harness.subscribeCommits((publication) => {
+		for (const change of publication.changes)
+			if (change.type === "document" && change.record.kind === "agent.delivery" && change.value !== null)
+				revisions.push(change.value as unknown as AgentDeliveryState);
+	});
+	t.after(unsubscribe);
+	const errors: Error[] = [];
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath),
+		catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal, onError: (error) => errors.push(error) });
+	t.after(() => watcher.close());
+	const original = await source.request("submit", { message: "run", requestId: "original", operationId: "first-operation", ownerId: owner }, BACKGROUND_CONTEXT) as { submissionId: SubmissionId };
+	await waitUntil(() => started);
+	const steer = await source.request("submit", { message: "correct", requestId: "steer", operationId: "steer-operation", ownerId: steerOwner, whenBusy: "steer" }, BACKGROUND_CONTEXT) as { submissionId: SubmissionId };
+	const ids = [original.submissionId, steer.submissionId];
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		const index = state.intents.findIndex((intent) => intent.requestId === "steer");
+		const intent = state.intents[index];
+		assert.ok(intent);
+		state.intents[index] = { ...intent, submissionId: null };
+	}, BACKGROUND_CONTEXT);
+	releaseTool();
+	await waitUntil(() => received.length === 1);
+	const pending = await deliveryState(source);
+	assert.ok(ids.every((id) => pending?.receipts[String(id)]?.acknowledged === false));
+	assert.equal(pending?.receipts[String(original.submissionId)]?.answerEntryId, pending?.receipts[String(steer.submissionId)]?.answerEntryId);
+	const details = received[0]?.details as { submissions: { submissionId: SubmissionId; requestId: string; operationId: string }[] };
+	assert.deepEqual(details.submissions.map((member) => member.submissionId), ids);
+	assert.deepEqual(details.submissions.map((member) => member.requestId), ["original", "steer"]);
+	assert.deepEqual(details.submissions.map((member) => member.operationId), ["first-operation", "steer-operation"]);
+	assert.match(received[0]?.text ?? "", new RegExp(`submissions ${ids.join(", ")}`, "u"));
+	releaseDelivery();
+	await waitFor(async () => ids.every((id) => revisions.at(-1)?.receipts[String(id)]?.acknowledged === true));
+	assert.equal(received.length, recipients === "distinct" ? 2 : 1, "one answer reaches each recipient once, including overlapping owner routes");
+	for (const revision of revisions) {
+		const members = ids.flatMap((id) => revision.receipts[String(id)] ?? []);
+		assert.ok(members.length === 0 || members.length === 2, "receipt materialization is atomic");
+		assert.ok(members.every((member) => member.acknowledged) || members.every((member) => !member.acknowledged), "answer acknowledgement is atomic");
+	}
+	const later = await addReceipt(source, owner, "later-answer");
+	await waitFor(async () => (await deliveryState(source))?.receipts[String(later)]?.acknowledged === true);
+	assert.equal(received.length, recipients === "distinct" ? 3 : 2, "equal text from a distinct answer entry remains a separate notice");
+	assert.notEqual(received[0]?.sourceId, received.at(-1)?.sourceId);
+	assert.deepEqual(errors, []);
+});
 
 it("routes a receipt and a report only after the target admits them", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
@@ -173,12 +254,12 @@ it("routes a receipt and a report only after the target admits them", { timeout:
 	});
 	assert.equal(calls.length, 2, "one submission per delivered row");
 	const receiptCall = calls.find(
-		(call) => typeof call.params.requestId === "string" && (call.params.requestId as string).includes(":submission:"),
+		(call) => typeof call.params.requestId === "string" && (call.params.requestId as string).includes(":answer:"),
 	) as SubmitRecord;
 	const reportCall = calls.find(
 		(call) => typeof call.params.requestId === "string" && (call.params.requestId as string).includes(":report:"),
 	) as SubmitRecord;
-	const expectedReceipt = `deliver:source-storage:submission:${submissionId}`;
+	const expectedReceipt = `deliver:${await receiptSourceId(source, submissionId)}`;
 	const expectedReport = `deliver:source-storage:report:${createHash("sha256").update("report:source-report").digest("hex").slice(0, 32)}`;
 	assert.equal(receiptCall.requestId, expectedReceipt);
 	assert.equal(receiptCall.params.requestId, expectedReceipt);
@@ -190,7 +271,7 @@ it("routes a receipt and a report only after the target admits them", { timeout:
 		assert.equal(call.params.ownerId, undefined, "the target submission records no owner intent");
 		assert.match(String(call.params.message), /original scope; agent claims remain claims/u);
 	}
-	assert.match(String(receiptCall.params.message), new RegExp(`submission ${submissionId}`, "u"));
+	assert.match(String(receiptCall.params.message), new RegExp(`submissions ${submissionId}`, "u"));
 	assert.match(String(reportCall.params.message), /source report:source-report/u);
 	assert.deepEqual(errors, []);
 	await new Promise((resolve) => setTimeout(resolve, 100));
@@ -213,12 +294,12 @@ it("resumes after reopen and native dedup keeps one submission", { timeout: 3000
 	const sourcePath = join(root, "source.sqlite");
 	const first = await openHost(sourcePath, "source-storage", root);
 	const submissionId = await addReceipt(first, owner);
+	const expected = `deliver:${await receiptSourceId(first, submissionId)}`;
 	await first.close();
 	const target = await openHost(record.storagePath, record.storageId, root);
 	t.after(async () => {
 		await target.close().catch(() => undefined);
 	});
-	const expected = `deliver:source-storage:submission:${submissionId}`;
 	const preAdmission = (await target.request(
 		"submit",
 		{ sessionId: owner, message: "already admitted", requestId: expected, whenBusy: "followUp" },
@@ -291,7 +372,7 @@ it("delivers a noncatalog owner to its registered primary channel with source me
 	await waitFor(async () => (await deliveryState(source))?.receipts[String(submissionId)]?.acknowledged === true);
 	const message = received[0];
 	const details = message.details as Record<string, unknown>;
-	assert.equal(message.sourceId, `source-storage:${submissionId}`);
+	assert.equal(message.sourceId, await receiptSourceId(source, submissionId));
 	assert.equal(details.originalOwnerId, owner);
 	assert.equal(details.storageId, "source-storage");
 	assert.equal(details.saved, true);
@@ -612,7 +693,7 @@ it("broadcasts a fallback to every registered live primary exactly once", { time
 		[second, secondReceived],
 	] as const) {
 		const details = received[0]?.details as Record<string, unknown>;
-		assert.equal(received[0]?.sourceId, `source-storage:${submissionId}`);
+		assert.equal(received[0]?.sourceId, await receiptSourceId(source, submissionId));
 		assert.equal(details.fallback, true);
 		assert.equal(details.label, "no live owning session");
 		assert.equal(details.originalOwnerId, absentOwner);
@@ -682,7 +763,7 @@ it("retries a failed broadcast without duplicating a successful receiver", { tim
 		15000,
 	);
 	assert.ok(failingAttempts >= 2, `the failed candidate was retried, attempts ${failingAttempts}`);
-	const expected = `source-storage:${submissionId}`;
+	const expected = await receiptSourceId(source, submissionId);
 	assert.ok(stableKeys.length >= 1, "the stable receiver got the row");
 	assert.equal(new Set(stableKeys).size, 1, "the retry preserves one source key for receiver dedup");
 	for (const key of stableKeys) assert.equal(key, expected);
@@ -788,7 +869,7 @@ it("leaves the broadcast pending when a registered live candidate is unreachable
 		onError: (error) => errors.push(error),
 	});
 	await waitUntil(() => received.length >= 1 && errors.length >= 1, 15000);
-	const expected = `source-storage:${submissionId}`;
+	const expected = await receiptSourceId(source, submissionId);
 	assert.equal(received[0]?.sourceId, expected);
 	const details = received[0]?.details as Record<string, unknown>;
 	assert.equal(details.fallback, true);
@@ -888,7 +969,7 @@ it("bounds long peer bodies without mutating the retained originals", { timeout:
 		return state?.receipts[String(submissionId)]?.acknowledged === true && state.reports[0]?.acknowledged === true;
 	});
 	const bySource = new Map(received.map((message) => [message.sourceId, message]));
-	const receiptMessage = bySource.get(`source-storage:${submissionId}`);
+	const receiptMessage = bySource.get(await receiptSourceId(source, submissionId));
 	const reportMessage = bySource.get("source-storage:report:long-report");
 	assert.ok(receiptMessage, "the long answer was delivered");
 	assert.ok(reportMessage, "the long report was delivered");
@@ -900,7 +981,7 @@ it("bounds long peer bodies without mutating the retained originals", { timeout:
 		assert.equal(details.originalOwnerId, owner);
 	}
 	const receiptDetails = receiptMessage.details as Record<string, unknown>;
-	assert.equal(receiptDetails.submissionId, submissionId);
+	assert.equal((receiptDetails.submissions as { submissionId: number }[])[0]?.submissionId, submissionId);
 	assert.ok(String(receiptDetails.answer).length <= 16_000 + 200);
 	const reportDetails = reportMessage.details as Record<string, unknown>;
 	assert.equal(reportDetails.reportSourceId, "report:long-report");

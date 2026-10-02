@@ -18,8 +18,8 @@
  * as proof that the candidate is not live.
  *
  * Delivery is at-least-once. Request IDs and channel source IDs derive from the
- * source storage and the submission or report identity, so a retry or a reopen
- * reuses them and the receiver's deduplication prevents a duplicate display.
+ * source storage and the answer, unanswered submission, or report identity.
+ * Retries and reopens reuse them for recipient-local deduplication.
  */
 import { createHash } from "node:crypto";
 import { opendir } from "node:fs/promises";
@@ -29,7 +29,6 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
 import {
 	AgentDeliveryDoc,
-	acknowledgeDeliveries,
 	acknowledgeReports,
 	type DeliveryReceipt,
 	type DeliveryReport,
@@ -99,9 +98,34 @@ export interface DurableDelivery {
 	close(): Promise<void>;
 }
 
-type DeliveryRow =
-	| { readonly kind: "receipt"; readonly receipt: DeliveryReceipt }
-	| { readonly kind: "report"; readonly report: DeliveryReport };
+type ReceiptRow = {
+	readonly kind: "receipt";
+	readonly receipt: DeliveryReceipt;
+	readonly receipts: DeliveryReceipt[];
+	readonly deliveredTo: Set<string>;
+};
+
+type DeliveryRow = ReceiptRow | { readonly kind: "report"; readonly report: DeliveryReport; readonly deliveredTo: Set<string> };
+
+/** Answer entries are storage-wide identities; unanswered inputs remain separate. */
+function receiptKey(receipt: DeliveryReceipt): string {
+	return receipt.answerEntryId === null ? `submission:${receipt.submissionId}` : `answer:${receipt.answerEntryId}`;
+}
+
+function receiptRows(receipts: readonly DeliveryReceipt[]): ReceiptRow[] {
+	const groups = new Map<string, ReceiptRow>();
+	for (const receipt of receipts) {
+		const key = receiptKey(receipt);
+		const group = groups.get(key);
+		if (group === undefined) groups.set(key, { kind: "receipt", receipt, receipts: [receipt], deliveredTo: new Set() });
+		else group.receipts.push(receipt);
+	}
+	return [...groups.values()];
+}
+
+function submissionLabel(row: ReceiptRow): string {
+	return `submissions ${row.receipts.map((receipt) => receipt.submissionId).join(", ")}`;
+}
 
 interface SourceStatus {
 	readonly name?: string | null;
@@ -114,7 +138,7 @@ interface SourceStatus {
 
 /** Stable request ID for one settled receipt; reused across retries and reopens. */
 function receiptRequestId(metadata: HostMetadata, receipt: DeliveryReceipt): string {
-	return `deliver:${metadata.storageId}:submission:${receipt.submissionId}`;
+	return `deliver:${metadata.storageId}:${receiptKey(receipt)}`;
 }
 
 /** Stable request ID for one report, bounded by a digest of the source identity. */
@@ -126,25 +150,24 @@ function reportRequestId(metadata: HostMetadata, report: DeliveryReport): string
 /** Stable receiver dedup key for one routed row. */
 function rowSourceId(metadata: HostMetadata, row: DeliveryRow): string {
 	return row.kind === "receipt"
-		? `${metadata.storageId}:${row.receipt.submissionId}`
+		? `${metadata.storageId}:${receiptKey(row.receipt)}`
 		: `${metadata.storageId}:${row.report.sourceId}`;
 }
 
-function rowOwner(row: DeliveryRow): string {
-	return row.kind === "receipt" ? row.receipt.ownerId : row.report.ownerId;
-}
-
-function rowAcknowledged(row: DeliveryRow): boolean {
-	return row.kind === "receipt" ? row.receipt.acknowledged : row.report.acknowledged;
+function rowOwners(row: DeliveryRow): string[] {
+	return row.kind === "receipt"
+		? [...new Set(row.receipts.filter((receipt) => !receipt.acknowledged).map((receipt) => receipt.ownerId))]
+		: row.report.acknowledged ? [] : [row.report.ownerId];
 }
 
 /** Catalog follow-up text; the peer body is bounded. */
-function receiptFollowText(metadata: HostMetadata, receipt: DeliveryReceipt): string {
+function receiptFollowText(metadata: HostMetadata, row: ReceiptRow): string {
+	const receipt = row.receipt;
 	const result =
 		receipt.status === "done"
 			? (receipt.answer ?? "No assistant text.")
 			: `No answer: ${receipt.reason ?? "the submission settled unanswered"}`;
-	return `Agent result from ${metadata.storageId}:${receipt.conversationId} (submission ${receipt.submissionId}). Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}`;
+	return `Agent result from ${metadata.storageId}:${receipt.conversationId} (${submissionLabel(row)}). Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}`;
 }
 
 function reportFollowText(report: DeliveryReport): string {
@@ -159,7 +182,7 @@ function channelText(row: DeliveryRow, identity: string, originalOwnerId: string
 			row.receipt.status === "done"
 				? (row.receipt.answer ?? "No assistant text.")
 				: `No answer: ${row.receipt.reason ?? "the submission settled unanswered"}`;
-		return `Agent ${identity} ${row.receipt.status}.${label} Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}\n\nUse agent_inspect for retained source evidence.`;
+		return `Agent ${identity} ${row.receipt.status} (${submissionLabel(row)}).${label} Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}\n\nUse agent_inspect for retained source evidence.`;
 	}
 	return `Agent ${identity} sent a report.${label} Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${boundedPeerText(row.report.message).text}\n\nUse agent_inspect for retained source evidence.`;
 }
@@ -257,9 +280,19 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	};
 
 	const acknowledgeRow = async (row: DeliveryRow): Promise<void> => {
-		if (row.kind === "receipt")
-			await acknowledgeDeliveries(host.harness, row.receipt.ownerId, [row.receipt.submissionId], BACKGROUND_CONTEXT);
-		else await acknowledgeReports(host.harness, row.report.ownerId, [row.report.sourceId], BACKGROUND_CONTEXT);
+		if (row.kind === "report") {
+			await acknowledgeReports(host.harness, row.report.ownerId, [row.report.sourceId], BACKGROUND_CONTEXT);
+			return;
+		}
+		await host.harness.commit(async (tx) => {
+			const state = await tx.doc(AgentDeliveryDoc);
+			for (const receipt of row.receipts) {
+				const key = String(receipt.submissionId);
+				const current = state.receipts[key];
+				if (current !== undefined && current.ownerId === receipt.ownerId && !current.acknowledged)
+					state.receipts[key] = { ...current, acknowledged: true };
+			}
+		}, BACKGROUND_CONTEXT);
 	};
 
 	/** Read the source conversation status; absent or failed stays undefined. */
@@ -323,16 +356,19 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			const receipt = row.receipt;
 			return {
 				...shared,
-				submissionId: receipt.submissionId,
-				requestId: receipt.requestId,
+				submissions: row.receipts.map((member) => ({
+					submissionId: member.submissionId,
+					requestId: member.requestId,
+					operationId: member.operationId,
+					entryId: member.entryId,
+					ownerId: member.ownerId,
+				})),
 				conversationId: receipt.conversationId,
-				operationId: receipt.operationId,
 				status: receipt.status,
-				entryId: receipt.entryId,
 				answerEntryId: receipt.answerEntryId,
 				answer: body.text,
 				reason: receipt.reason,
-				acknowledged: receipt.acknowledged,
+				acknowledged: row.receipts.every((member) => member.acknowledged),
 			} as unknown as JsonValue;
 		}
 		const report = row.report;
@@ -364,6 +400,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			details: await rowDetails(row, identity, originalOwnerId, deliveryRecipient, liveOwner, fallback),
 		};
 		await connection.deliver(message);
+		row.deliveredTo.add(`primary:${deliveryRecipient}`);
 	};
 
 	/** Direct delivery to the registered owner: the endpoint is live and the recipient is the owner. */
@@ -383,6 +420,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		identity: string,
 		owner: string,
 	): Promise<"delivered" | "skipped" | "failed"> => {
+		if (row.deliveredTo.has(`primary:${id}`)) return "delivered";
 		const state = primaryEndpointOwnerState(sessionsRoot, id);
 		if (state === "absent" || state === "dead") return "skipped";
 		let connection: PrimaryChannelConnection;
@@ -446,8 +484,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	};
 
 	/** Noncatalog owners: live or unknown endpoints refuse fallback; absent or dead owners use it. */
-	const deliverPrimary = async (row: DeliveryRow): Promise<void> => {
-		const owner = rowOwner(row);
+	const deliverPrimary = async (row: DeliveryRow, owner: string): Promise<void> => {
+		if (row.deliveredTo.has(`primary:${owner}`)) return;
 		if (!PRIMARY_ID.test(owner))
 			throw new Error(`delivery owner ${owner} is not a canonical primary id; refusing fallback`);
 		const identity = row.kind === "receipt" ? host.identity(row.receipt.conversationId) : row.report.senderIdentity;
@@ -455,20 +493,18 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (state === "live") await deliverLiveOwner(row, identity, owner);
 		else if (state === "unknown") throw new Error(`primary owner ${owner} has an unknown endpoint; refusing fallback`);
 		else await deliverFallbackOwner(row, identity, owner);
-		if (closed || signal.aborted) return;
-		await acknowledgeRow(row);
 	};
 
 	/** Catalog owners: untrusted follow-up into the owner's own host; no ownerId intent. */
-	const deliverCatalog = async (record: CatalogRecord, row: DeliveryRow): Promise<void> => {
+	const deliverCatalog = async (record: CatalogRecord, row: DeliveryRow, owner: string): Promise<void> => {
 		const connection = await targetConnection(record);
 		if (row.kind === "receipt") {
 			const requestId = receiptRequestId(metadata, row.receipt);
 			await connection.request(
 				"submit",
 				{
-					sessionId: row.receipt.ownerId,
-					message: receiptFollowText(metadata, row.receipt),
+					sessionId: owner,
+					message: receiptFollowText(metadata, row),
 					requestId,
 					whenBusy: "followUp",
 				},
@@ -482,22 +518,34 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 				{ requestId, signal },
 			);
 		}
-		if (closed || signal.aborted) return;
-		await acknowledgeRow(row);
 	};
 
-	/** Route every unacknowledged row; a catalog record selects follow-up delivery, otherwise the primary channel. */
+	const routeOwner = async (row: DeliveryRow, owner: string): Promise<void> => {
+		const record = ownerRecord(owner);
+		if (record !== undefined) await deliverCatalog(record, row, owner);
+		else await deliverPrimary(row, owner);
+	};
+
+	/** All owner routes must complete before the answer group is acknowledged. */
+	const routeRow = async (row: DeliveryRow, owners: readonly string[]): Promise<void> => {
+		let failure: Error | undefined;
+		for (const owner of owners) {
+			if (closed || signal.aborted) return;
+			try { await routeOwner(row, owner); }
+			catch (error) { failure ??= asError(error); }
+		}
+		if (failure !== undefined) throw failure;
+		if (!closed && !signal.aborted) await acknowledgeRow(row);
+	};
+
+	/** Route independent answers and reports even when another route fails. */
 	const routeRows = async (rows: readonly DeliveryRow[]): Promise<Error | undefined> => {
 		let failure: Error | undefined;
 		for (const row of rows) {
-			if (rowAcknowledged(row)) continue;
-			try {
-				const record = ownerRecord(rowOwner(row));
-				if (record !== undefined) await deliverCatalog(record, row);
-				else await deliverPrimary(row);
-			} catch (error) {
-				failure ??= asError(error);
-			}
+			const owners = rowOwners(row);
+			if (owners.length === 0) continue;
+			try { await routeRow(row, owners); }
+			catch (error) { failure ??= asError(error); }
 		}
 		return failure;
 	};
@@ -508,8 +556,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const state = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
 		if (state === undefined) return;
 		const rows: DeliveryRow[] = [
-			...Object.values(state.receipts).map((receipt): DeliveryRow => ({ kind: "receipt", receipt })),
-			...state.reports.map((report): DeliveryRow => ({ kind: "report", report })),
+			...receiptRows(Object.values(state.receipts)),
+			...state.reports.map((report): DeliveryRow => ({ kind: "report", report, deliveredTo: new Set() })),
 		];
 		const failure = await routeRows(rows);
 		if (failure !== undefined) throw failure;

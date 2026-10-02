@@ -103,9 +103,10 @@ it("spawns a cross-cwd child in an independent storage and delivers its result t
 			assert.equal(found.matches.length, 1, JSON.stringify(found));
 			const excerpt = found.matches[0]?.excerpt ?? "";
 			assert.match(excerpt, /CHILD_RESULT/u);
-			const submission = /\(submission (\d+)\)/u.exec(excerpt)?.[1];
+			const submission = /\(submissions (\d+)\)/u.exec(excerpt)?.[1];
 			assert.ok(submission, excerpt);
-			const deliveryRequest = `deliver:${record.storageId}:submission:${submission}`;
+			const result = await child.request("inspect", { view: "result", submissionId: Number(submission) }) as { answerEntryId: number };
+			const deliveryRequest = `deliver:${record.storageId}:answer:${result.answerEntryId}`;
 			const repeat = await primary.request("submit", { message: "DUPLICATE_DELIVERY", requestId: deliveryRequest }) as SubmitResult;
 			assert.equal(repeat.deduped, true, "the delivery request ID is retained and deduplicated");
 			const after = await primary.request("inspect", { view: "search", query: "DUPLICATE_DELIVERY" }) as { matches: unknown[] };
@@ -185,7 +186,7 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 			cwd: f.cwd, signal: controller.signal,
 			send: (_text, details) => {
 				const value = details as Record<string, unknown>;
-				if (value.storageId !== f.metadata.storageId || String(value.submissionId) !== String(submitted.submissionId)) return;
+				if (value.storageId !== f.metadata.storageId || !(value.submissions as { submissionId: number }[]).some((member) => String(member.submissionId) === String(submitted.submissionId))) return;
 				receipt = value;
 				resolveDelivered();
 			},
@@ -204,7 +205,7 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 	}
 });
 
-it("relaunches a connected host after SIGKILL while its primary stays alive", { timeout: 30000 }, async (t) => {
+for (const steerDuringRun of [false, true]) it(`relaunches a connected host after SIGKILL with ${steerDuringRun ? "steering" : "one input"} while its primary stays alive`, { timeout: 30000 }, async (t) => {
 	const f = runtimeFixture(t);
 	const ownerId = randomUUID();
 	const controller = new AbortController();
@@ -215,23 +216,28 @@ it("relaunches a connected host after SIGKILL while its primary stays alive", { 
 		root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir,
 		acquire: async (metadata, options) => {
 			assert.equal(options?.retryAttempts, 0, "the manager owns every automatic relaunch");
-			const client = await acquireHost(metadata, { ...options, env: f.env(pids.length === 0 ? "request" : "answer") });
+			const client = await acquireHost(metadata, { ...options, env: f.env(pids.length === 0 ? (steerDuringRun ? "effect" : "request") : "answer") });
 			pids.push(client.pid);
 			if (pids.length === 2) resolveRecovered();
 			trackHost(t, client.pid);
 			return client;
 		},
 	});
-	let receipt: Record<string, unknown> | undefined;
+	const receipts: Record<string, unknown>[] = [];
 	let resolveDelivered: () => void = () => {};
 	const delivered = new Promise<void>((resolve) => { resolveDelivered = resolve; });
 	try {
 		await manager.registerPrimary(ownerId, {
 			cwd: f.cwd, signal: controller.signal,
-			send: (_text, details) => { receipt = details as Record<string, unknown>; resolveDelivered(); },
+			send: (_text, details) => { receipts.push(details as Record<string, unknown>); resolveDelivered(); },
 		});
 		const submitted = await manager.control("submit", { sessionId: f.metadata.storageId, message: "recover without restarting the primary", requestId: "connected-crash" }, { id: ownerId, cwd: f.cwd }) as SubmitResult;
-		await waitForFile(join(f.testDir, "requested"));
+		await waitForFile(join(f.testDir, steerDuringRun ? "effect" : "requested"));
+		const expectedIds = [submitted.submissionId];
+		if (steerDuringRun) {
+			const steered = await manager.control("submit", { sessionId: f.metadata.storageId, message: "include the correction", requestId: "crash-steer", whenBusy: "steer" }, { id: ownerId, cwd: f.cwd }) as SubmitResult;
+			expectedIds.push(steered.submissionId);
+		}
 		assert.equal(manager.catalog.read(f.metadata.storageId).recoveryDue, true);
 		killHost(pids[0] as number);
 		await within(delivered, 15000, "the live primary received no recovered result").catch(async (error) => { throw new Error(`${String(error)}; pids=${JSON.stringify(pids)}; status=${JSON.stringify(await manager.status())}`); });
@@ -239,11 +245,16 @@ it("relaunches a connected host after SIGKILL while its primary stays alive", { 
 		assert.equal(controller.signal.aborted, false);
 		assert.equal(pids.length, 2, "channel loss automatically launches one replacement");
 		assert.notEqual(pids[1], pids[0]);
-		assert.equal(receipt?.status, "done");
-		assert.equal(String(receipt?.submissionId), String(submitted.submissionId));
+		const receipt = receipts[0];
+		assert.ok(receipt);
+		assert.equal(receipt.status, "done");
+		assert.deepEqual((receipt.submissions as { submissionId: number }[]).map((member) => String(member.submissionId)), expectedIds.map(String));
 		assert.match(String(receipt?.answer), /durable runtime answer/u);
+		await waitForExit(pids[1] as number);
+		assert.equal(receipts.length, 1, "the host retires after one notice and acknowledgement of every input");
+		assert.equal(manager.catalog.read(f.metadata.storageId).recoveryDue, false);
 		const history = await manager.control("inspect", { sessionId: f.metadata.storageId, view: "history", source: "user", limit: 10 }, { id: ownerId, cwd: f.cwd }) as HistoryPage;
-		assert.equal(history.entries.length, 1, "relaunch resumes the retained submission without another input");
+		assert.equal(history.entries.length, expectedIds.length, "relaunch resumes retained submissions without another input");
 	} finally { controller.abort(); manager.close(); }
 });
 
