@@ -288,9 +288,17 @@ test("issues one capacity notice per threshold crossing and re-arms through the 
 		context,
 		host: h.host,
 		invocationId: "capacity-reset",
+		harness: h.harness,
 	});
 	assert.match(reset, /episode reset to 2/u);
-	const status = await command.run({ args: "capacity", conversation: h.root, context, host: h.host, invocationId: "capacity-status" });
+	const status = await command.run({
+		args: "capacity",
+		conversation: h.root,
+		context,
+		host: h.host,
+		invocationId: "capacity-status",
+		harness: h.harness,
+	});
 	assert.match(status, /Episode 2/u);
 
 	h.faux.setResponses([fauxAssistantMessage("fourth"), fauxAssistantMessage("fifth")]);
@@ -299,6 +307,46 @@ test("issues one capacity notice per threshold crossing and re-arms through the 
 	text = await modelText(h.root);
 	assert.equal(occurrences(text, "[stash-capacity"), 2, "reset re-arms the crossing");
 	assert.match(text, /\[stash-capacity e=2 c=\d+ /u);
+});
+
+test("estimates context from reported assistant usage and labels the source", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 2000);
+	process.env.PI_STASH_CHECKPOINT_PERCENT = "1";
+	process.env.PI_STASH_DECISION_PERCENT = "2";
+	t.after(() => {
+		delete process.env.PI_STASH_CHECKPOINT_PERCENT;
+		delete process.env.PI_STASH_DECISION_PERCENT;
+	});
+
+	// No accepted usage exists on the first request, so the crossing that follows
+	// must be decided by request text and labeled as such.
+	h.faux.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+	const longPrompt = `${"context ".repeat(140)}question`;
+	const first = await (await h.root.submit({ type: "input", content: longPrompt }, context)).wait(context);
+	assert.equal(first.status, "done");
+	let text = await modelText(h.root);
+	assert.equal(occurrences(text, "[stash-capacity"), 1);
+	assert.match(text, /No accepted assistant usage is available\. Request text estimates context use/u);
+
+	// The next short prompt cannot cross on its own text. The prior assistant's
+	// reported usage decides, and the notice says so.
+	const command = h.contribution.commands?.[0];
+	assert.ok(command);
+	await command.run({
+		args: "capacity reset",
+		conversation: h.root,
+		context,
+		host: h.host,
+		invocationId: "capacity-source-reset",
+		harness: h.harness,
+	});
+	h.faux.setResponses([fauxAssistantMessage("third"), fauxAssistantMessage("fourth")]);
+	const second = await (await h.root.submit({ type: "input", content: "hi" }, context)).wait(context);
+	assert.equal(second.status, "done");
+	text = await modelText(h.root);
+	assert.equal(occurrences(text, "[stash-capacity"), 2);
+	assert.match(text, /The newest reported assistant usage plus an estimate for later messages gives \d+\.\d% \(\S+ tokens of 2k\)\./u);
+	assert.match(text, /\[stash-capacity e=2 c=\d+ checkpoint decision\]/u);
 });
 
 test("runs /stash new as a background distilling task with a receipt", { timeout: 30000 }, async (t) => {
@@ -315,6 +363,7 @@ test("runs /stash new as a background distilling task with a receipt", { timeout
 		context,
 		host: h.host,
 		invocationId: "distill-1",
+		harness: h.harness,
 	});
 	const taskId = /task (\d+)/u.exec(started)?.[1];
 	assert.ok(taskId, started);
@@ -327,18 +376,67 @@ test("runs /stash new as a background distilling task with a receipt", { timeout
 	assert.equal(entries[0]?.meta.sessionId, String(h.root.id));
 });
 
+test("aborts only the recorded distillation task", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t);
+	capacityOff(t);
+	const command = h.contribution.commands?.[0];
+	assert.ok(command);
+	h.faux.setResponses([fauxAssistantMessage("conversation still works")]);
+	const started = await command.run({
+		args: "new abort this one",
+		conversation: h.root,
+		context,
+		host: h.host,
+		invocationId: "abort-new",
+		harness: h.harness,
+	});
+	const taskId = Number(/task (\d+)/u.exec(started)?.[1]) as Durable.TaskId;
+	assert.ok(taskId, started);
+	const aborting = await command.run({
+		args: "abort",
+		conversation: h.root,
+		context,
+		host: h.host,
+		invocationId: "abort-1",
+		harness: h.harness,
+	});
+	assert.match(aborting, new RegExp(`task ${String(taskId)} is aborting`, "u"));
+	const settled = await h.harness.waitForTask(taskId, context);
+	assert.equal(settled.state.outcome?.status, "aborted");
+	assert.equal((await listStashes(h.storeDir, {})).length, 0, "the aborted task writes no artifact");
+	// The task clears its recorded id, so a later abort reports nothing in flight.
+	const again = await command.run({
+		args: "abort",
+		conversation: h.root,
+		context,
+		host: h.host,
+		invocationId: "abort-2",
+		harness: h.harness,
+	});
+	assert.match(again, /No stash distillation task is running/u);
+	// The abort does not touch ordinary conversation work.
+	await answerWith(h.root, h.faux, [fauxAssistantMessage("conversation still works")], "are you alive?");
+});
+
 test("reports lifecycle failures from the command without changing the store", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t);
 	capacityOff(t);
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
 	await assert.rejects(
-		command.run({ args: "complete missing-id done", conversation: h.root, context, host: h.host, invocationId: "missing-1" }),
+		command.run({
+			args: "complete missing-id done",
+			conversation: h.root,
+			context,
+			host: h.host,
+			invocationId: "missing-1",
+			harness: h.harness,
+		}),
 		/no stash matches/u,
 	);
 	assert.equal((await listStashes(h.storeDir, {})).length, 0);
 	await assert.rejects(
-		command.run({ args: "new", conversation: h.root, context, host: h.host, invocationId: "empty-new" }),
+		command.run({ args: "new", conversation: h.root, context, host: h.host, invocationId: "empty-new", harness: h.harness }),
 		/Usage: \/stash new/u,
 	);
 });
@@ -350,7 +448,14 @@ test("keys pickup submissions by invocation identity", { timeout: 30000 }, async
 	assert.ok(command);
 	const written = await writeStash(h.storeDir, { title: "Pickup target", summary: "Body." });
 	h.faux.setResponses([fauxAssistantMessage("picked up"), fauxAssistantMessage("picked up again")]);
-	const call = (invocationId: string) => ({ args: `get ${written.record.id}`, conversation: h.root, context, host: h.host, invocationId });
+	const call = (invocationId: string) => ({
+		args: `get ${written.record.id}`,
+		conversation: h.root,
+		context,
+		host: h.host,
+		invocationId,
+		harness: h.harness,
+	});
 	const first = await command.run(call("pickup-1"));
 	const firstId = /submission (\d+)/u.exec(first)?.[1];
 	assert.ok(firstId, first);

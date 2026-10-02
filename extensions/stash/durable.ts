@@ -81,6 +81,8 @@ export interface StashDurableCommand {
 export interface StashDurableCommandCall {
 	readonly args: string;
 	readonly conversation: Durable.Conversation;
+	/** The host's open Harness, for task-level control such as abortTask(). */
+	readonly harness: Durable.Harness;
 	readonly context: Context;
 	readonly host: StashDurableHost;
 	/** Unique per invocation and stable across retries of the same invocation. */
@@ -183,6 +185,8 @@ interface CapacityEstimate {
 	estimatedTokens: number;
 	intakeTokens: number;
 	contextWindow?: number;
+	/** Which observation supplied estimatedTokens. */
+	source: "reported_usage" | "request_text";
 }
 
 interface CapacityLatches {
@@ -192,12 +196,45 @@ interface CapacityLatches {
 
 type CapacityMemo = { episode: number; conversation: string; text: string };
 
-function contextWindowFor(message: Message | undefined, models: Models): number | undefined {
-	if (message?.role !== "assistant") return undefined;
-	const model = models.getModel(message.provider, message.model);
-	return model && model.contextWindow > 0 ? model.contextWindow : undefined;
+/** Total context tokens from provider usage, matching Pi's context-token calculation. */
+function usageContextTokens(usage: AssistantMessage["usage"] | undefined): number {
+	if (!usage) return 0;
+	return usage.totalTokens > 0 ? usage.totalTokens : usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 }
 
+/** Newest assistant usage Pi accepts: completed, non-error, and non-zero. */
+function reportedUsageFor(
+	messages: readonly Message[],
+): { message: AssistantMessage; index: number } | undefined {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message?.role !== "assistant") continue;
+		if (message.stopReason === "aborted" || message.stopReason === "error") continue;
+		if (usageContextTokens(message.usage) <= 0) continue;
+		return { message, index };
+	}
+	return undefined;
+}
+
+function modelContextWindow(
+	model: { readonly provider: string; readonly modelId: string } | undefined,
+	models: Models,
+): number | undefined {
+	return model === undefined ? undefined : providerContextWindow(model.provider, model.modelId, models);
+}
+
+function providerContextWindow(provider: string, modelId: string, models: Models): number | undefined {
+	const found = models.getModel(provider, modelId);
+	return found && found.contextWindow > 0 ? found.contextWindow : undefined;
+}
+
+/**
+ * Estimate context use the way Pi's host does: the newest accepted assistant
+ * usage plus a text estimate for the messages after it. Without accepted usage,
+ * the whole request text is the estimate. The context window comes from
+ * `host.services.modelRuntime` for the usage's model, the stored agent model,
+ * or the newest assistant's model.
+ */
 function estimateContext(
 	messages: readonly Message[],
 	models: Models,
@@ -210,15 +247,27 @@ function estimateContext(
 		totalChars += length;
 		if (message.role === "user" || message.role === "toolResult") intakeChars += length;
 	}
-	let contextWindow = agentModel ? models.getModel(agentModel.provider, agentModel.modelId)?.contextWindow : undefined;
-	if (contextWindow !== undefined && contextWindow <= 0) contextWindow = undefined;
+	const reported = reportedUsageFor(messages);
+	let contextWindow = reported
+		? providerContextWindow(reported.message.provider, reported.message.model, models)
+		: undefined;
+	contextWindow ??= modelContextWindow(agentModel, models);
 	for (let index = messages.length - 1; contextWindow === undefined && index >= 0; index--) {
-		contextWindow = contextWindowFor(messages[index], models);
+		const message = messages[index];
+		if (message?.role === "assistant")
+			contextWindow = providerContextWindow(message.provider, message.model, models);
 	}
+	const intakeTokens = Math.ceil(intakeChars / 4);
+	if (!reported) {
+		return { estimatedTokens: Math.ceil(totalChars / 4), intakeTokens, contextWindow, source: "request_text" };
+	}
+	let trailingChars = 0;
+	for (let index = reported.index + 1; index < messages.length; index++) trailingChars += contentText(messages[index]?.content).length;
 	return {
-		estimatedTokens: Math.ceil(totalChars / 4),
-		intakeTokens: Math.ceil(intakeChars / 4),
+		estimatedTokens: usageContextTokens(reported.message.usage) + Math.ceil(trailingChars / 4),
+		intakeTokens,
 		contextWindow,
+		source: "reported_usage",
 	};
 }
 
@@ -266,7 +315,10 @@ function capacityRequest(
 function capacityObservation(estimate: CapacityEstimate): string {
 	if (estimate.contextWindow !== undefined) {
 		const percent = (estimate.estimatedTokens / estimate.contextWindow) * 100;
-		return `This request's context is estimated at ${percent.toFixed(1)}% (${formatCount(estimate.estimatedTokens)} tokens of ${formatCount(estimate.contextWindow)}) from message text. This is an estimate, not a provider count or a safe remaining budget.`;
+		const total = `${percent.toFixed(1)}% (${formatCount(estimate.estimatedTokens)} tokens of ${formatCount(estimate.contextWindow)})`;
+		return estimate.source === "reported_usage"
+			? `The newest reported assistant usage plus an estimate for later messages gives ${total}. This is not a live provider reading or a safe remaining budget.`
+			: `No accepted assistant usage is available. Request text estimates context use at ${total}. This is an estimate, not a provider count or a safe remaining budget.`;
 	}
 	return `Current context use is unknown. Estimated text intake reached ${formatCount(estimate.intakeTokens)} tokens (text characters / 4, not a context percentage).`;
 }
@@ -312,7 +364,7 @@ type DistillReceiptEntry = {
 	usage?: StashUsageRecord;
 };
 
-type DistillReceiptState = { last?: DistillReceiptEntry };
+type DistillReceiptState = { last?: DistillReceiptEntry; activeTaskId?: number };
 
 type DistillTaskInput = { hint: string };
 
@@ -381,6 +433,7 @@ function resolveDurableDistillModel(
 interface StashBinding {
 	readonly storeDir: string;
 	readonly capacityDoc: Durable.ConversationDocToken<CapacityDocState>;
+	readonly receiptDoc: Durable.ConversationDocToken<DistillReceiptState>;
 	createDistillTask(tx: Durable.Tx, conversationId: Durable.ConversationId, hint: string): Promise<Durable.TaskId>;
 }
 
@@ -391,6 +444,7 @@ const STASH_DURABLE_USAGE = [
 	"",
 	"Create:",
 	"  /stash new <hint>           start a native distillation task; the artifact appears in stash_list",
+	"  /stash abort                stop the recorded distillation task",
 	"",
 	"Retrieve & manage:",
 	"  /stash get <id> [note]      activate a handover and queue it as the next message",
@@ -402,7 +456,7 @@ const STASH_DURABLE_USAGE = [
 	"  /stash help                 show this usage",
 	"",
 	"  <id> may be a full stash id or a unique prefix.",
-	"A distillation task is background work; the host's task controls stop it, so /stash abort has no Durable form.",
+	"/stash abort stops one background task and leaves other conversation work untouched.",
 ].join("\n");
 
 function bindingOrThrow(host: StashDurableHost): StashBinding {
@@ -418,6 +472,8 @@ async function runStashCommand(call: StashDurableCommandCall): Promise<string> {
 	switch (verb) {
 		case "new":
 			return await startDistillCommand(binding, call.conversation, call.context, parts);
+		case "abort":
+			return await abortCommand(binding, call);
 		case "get":
 			return await pickupCommand(binding, call, parts);
 		case "complete":
@@ -436,7 +492,7 @@ async function runStashCommand(call: StashDurableCommandCall): Promise<string> {
 	}
 }
 
-/** Create the background distillation task and return immediately. */
+/** Create the background distillation task, record its id, and return immediately. */
 async function startDistillCommand(
 	binding: StashBinding,
 	conversation: Durable.Conversation,
@@ -445,8 +501,31 @@ async function startDistillCommand(
 ): Promise<string> {
 	const hint = parts.slice(1).join(" ").trim();
 	if (!hint) throw new Error("Usage: /stash new <hint>");
-	const taskId = await conversation.commit((tx) => binding.createDistillTask(tx, conversation.id, hint), context);
+	const taskId = await conversation.commit(async (tx) => {
+		const id = await binding.createDistillTask(tx, conversation.id, hint);
+		const receipt = await tx.doc(binding.receiptDoc, conversation.id);
+		receipt.activeTaskId = id;
+		return id;
+	}, context);
 	return `Stash distillation started as task ${taskId}.\nThe artifact appears in stash_list when the task completes; the stash.distill receipt records its outcome and usage.`;
+}
+
+/** Abort the one recorded distillation task; other conversation work stays untouched. */
+async function abortCommand(binding: StashBinding, call: StashDurableCommandCall): Promise<string> {
+	const activeTaskId = await call.conversation.commit(async (tx) => {
+		const receipt = await tx.doc(binding.receiptDoc, call.conversation.id);
+		return receipt.activeTaskId ?? null;
+	}, call.context);
+	if (activeTaskId === null) return "No stash distillation task is running.";
+	const result = await call.harness.abortTask(activeTaskId as Durable.TaskId, call.context);
+	if (result === "terminal") {
+		await call.conversation.commit(async (tx) => {
+			const receipt = await tx.doc(binding.receiptDoc, call.conversation.id);
+			delete receipt.activeTaskId;
+		}, call.context);
+		return `Stash distillation task ${activeTaskId} is already terminal; the recorded id was cleared.`;
+	}
+	return `Stash distillation task ${activeTaskId} is aborting.`;
 }
 
 /** Activate one artifact and queue its pickup message as the next user input. */
@@ -849,6 +928,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 								title: record.title,
 								usage: state.usage,
 							};
+							delete receipt.activeTaskId;
 							return {
 								status: "terminal" as const,
 								outcome: {
@@ -875,10 +955,11 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 			},
 		},
 		abort: async (_task, runtime, context) => {
-			await runtime.commit(
-				() => ({ status: "terminal" as const, outcome: { status: "aborted" as const } }),
-				context,
-			);
+			await runtime.commit(async (tx) => {
+				const receipt = await tx.doc(receiptDoc, runtime.conversationId);
+				delete receipt.activeTaskId;
+				return { status: "terminal" as const, outcome: { status: "aborted" as const } };
+			}, context);
 		},
 	});
 
@@ -957,6 +1038,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		await runtime.commit(async (tx) => {
 			const receipt = await tx.doc(doc, runtime.conversationId);
 			receipt.last = { at: new Date(runtime.now()).toISOString(), status, message, usage };
+			delete receipt.activeTaskId;
 			return terminal;
 		}, context);
 	}
@@ -964,6 +1046,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 	bindings.set(host, {
 		storeDir,
 		capacityDoc,
+		receiptDoc,
 		createDistillTask: (tx, conversationId, hint) =>
 			tx.createTask(distillTask, { hint }, { ownership: { kind: "conversation" }, conversationId, background: true }),
 	});

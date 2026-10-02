@@ -533,10 +533,14 @@ parent's latches. `/stash capacity reset` increments the counter, which re-arms
 both requests while the old notices remain in the context. Compaction removes
 the notices and re-arms the crossing in the ordinary way.
 
-The context observation is an estimate from request text (UTF-16 characters /
-4) against the resolved model's context window, taken from the stored agent
-model or the newest assistant message. It is labeled as an estimate, never as a
-provider count or a safe remaining budget. When the context window is unknown,
+The context observation follows Pi's host method: the newest accepted assistant
+message's reported usage (total tokens, or input plus output plus cache reads
+and writes) plus a text estimate for the messages after it, against the
+context window from `host.services.modelRuntime` for that usage's model, the
+stored agent model, or the newest assistant's model. The notice says the
+estimate came from reported assistant usage. Without accepted usage, the whole
+request text (UTF-16 characters / 4) is the estimate and the notice says so.
+Neither form is a safe remaining budget. When the context window is unknown,
 the optional `PI_STASH_INTAKE_TOKEN_BUDGET` trigger applies instead; without a
 budget, unknown use produces no automatic request. Thresholds, the budget, and
 `PI_STASH_CAPACITY` are read from the same environment variables as the
@@ -546,14 +550,17 @@ ordinary hook.
 
 The contribution registers one `stash` command for agent controls. `/stash
 new <hint>` creates a background `stash.distill` task owned by the
-conversation; the command returns the task id immediately. The task captures
-the conversation's committed model context as a bounded, redacted transcript
-plus observed references, resolves the model and thinking level (honoring
-`PI_STASH_MODEL` and `PI_STASH_THINKING`), streams one tool-free distillation
-request, and publishes through the replayable writer. Its terminal outcome and
-usage are committed to the `stash.distill` conversation document, which records
-the last attempt's status, artifact id, path, title, message, and token and cost
-totals.
+conversation and records its id in the `stash.distill` document; the command
+returns the task id immediately. `/stash abort` reads that recorded id and
+aborts exactly that task through the host's `abortTask()`, leaving other
+conversation work untouched; the task clears the recorded id when it becomes
+terminal. The task captures the conversation's committed model context as a
+bounded, redacted transcript plus observed references, resolves the model and
+thinking level (honoring `PI_STASH_MODEL` and `PI_STASH_THINKING`), streams one
+tool-free distillation request, and publishes through the replayable writer.
+Its terminal outcome and usage are committed to the same document, which
+records the last attempt's status, artifact id, path, title, message, and token
+and cost totals.
 
 The remaining command verbs operate directly on the external store: `get`
 activates an artifact and queues the pickup message as the next user input,
@@ -568,8 +575,6 @@ Durable differences from the ordinary entrypoint:
 
 - There is no TUI browser and no `ctrl+alt+s` shortcut. Discovery is
   `stash_list` and the explicit `get` and lifecycle verbs.
-- `/stash abort` has no equivalent single-task control: the distillation is a
-  background task stopped through the host's task controls.
 - Distillation captures the committed Durable model context rather than Pi's
   persisted-session projection, and its usage is reported through the
   `stash.distill` document rather than session status and notifications.
