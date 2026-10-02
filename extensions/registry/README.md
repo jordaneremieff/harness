@@ -384,18 +384,26 @@ The native form reads Durable facts instead of a Pi session:
   The conversation's selected model and thinking level come from the resolved
   agent. A Durable conversation has no Pi model scope, so scope fields stay
   unavailable rather than empty.
-- The no-argument summary reports the host's `cwd` and the Durable coverage:
-  every contribution name and every configured extension without a Durable
-  form, from `host.inventory.ordinaryOnly`. Resource results add one boundary
-  line when ordinary-only extensions exist.
+- The no-argument summary reports the Durable agent identity (storage ID,
+  conversation ID, and the external agent ID), `cwd`, the resolved model and
+  thinking level, the context estimate, and the Durable coverage: every
+  contribution name and every configured extension without a Durable form, from
+  `host.inventory.ordinaryOnly`. Resource results add one boundary line when
+  ordinary-only extensions exist.
 
 Documented differences from the ordinary tool:
 
-- Context usage is unavailable: Durable exposes no context estimate to a tool,
-  so the summary reports `unavailable` with the resolved model and thinking
-  level.
-- Session facts (`mode`, `hasUI`, `projectTrusted`, `sessionId`,
-  `sessionFile`) are unavailable; the working directory comes from the host.
+- Agent identity is native: the storage ID, the conversation ID, and the
+  external agent ID (`<storageId>` for the root conversation, or
+  `<storageId>:<conversationId>` otherwise). The working directory comes from
+  the host. `mode`, `hasUI`, `projectTrusted`, `sessionId`, and `sessionFile`
+  stay unavailable.
+- Context usage is an estimate read from committed state at call time: the
+  newest assistant entry's reported usage, converted to tokens, against the
+  model's context window. No response after a reset or compaction, a zero-usage
+  response, or a bounded scan that finds nothing leaves the state `unknown`;
+  a missing model window or a failed read leaves it `unavailable`. The estimate
+  never reports zero.
 - Durable tool records carry no `promptGuidelines`: the Durable tool registry
   has no such field, so this contribution renders its guidance as a prompt
   section instead. Search matches registered names and descriptions only.
@@ -439,8 +447,10 @@ records.
 `durable.test.mts` runs the contribution through a real pi-durable Harness over
 `MemoryStorage` with pi-ai's faux provider. It drives one model-issued call per
 query kind and checks the declared `replay: "safe"` class, the native-fact
-records, Durable coverage, the structured-content carrier, and that an aborted
-host binds the call to `cancelled` without reading any host fact.
+records, Durable coverage, the structured-content carrier, the root and
+non-root agent identity, and the committed-usage context estimate. It also
+checks that an aborted host binds the call to `cancelled` without reading any
+host fact.
 Schema tests validate every outcome, source kinds, continuation, partial
 coverage, and bounded pages. The native codemode test uses the public factory
 and real QuickJS executor with fixture host accessors and nested dispatch. It

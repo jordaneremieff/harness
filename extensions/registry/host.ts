@@ -99,13 +99,13 @@ export function readContext(ctx: ExtensionContext, at: number): ContextSnapshot 
 
 export const CONTEXT_BOUNDARY = "Pi estimates context from assistant usage and trailing messages; unknown usage can follow compaction. This is not a safe remaining budget, a final provider payload count, or a compaction threshold.";
 
-export function contextLines(context: ContextSnapshot): string[] {
+export function contextLines(context: ContextSnapshot, boundary: string = CONTEXT_BOUNDARY): string[] {
 	return [
 		"CURRENT SESSION",
 		`- model: ${context.model === null ? "unavailable" : JSON.stringify(context.model)} | thinking level: ${context.thinkingLevel === null ? "unavailable" : JSON.stringify(context.thinkingLevel)}`,
 		`- context usage: ${context.state} (host_estimate at ${new Date(context.at).toISOString()})`,
 		`- context tokens: ${context.tokens ?? "unknown"} | context window: ${context.contextWindow ?? "unavailable"} | context percent: ${context.percent ?? "unknown"}`,
-		CONTEXT_BOUNDARY,
+		boundary,
 	];
 }
 
@@ -116,6 +116,24 @@ export interface SessionFacts {
 	projectTrusted?: boolean;
 	sessionId?: string;
 	sessionFile?: string | null;
+	/** Durable agent identity; absent in an ordinary Pi session. */
+	storageId?: string;
+	conversationId?: string;
+	agentId?: string;
+}
+
+function identityFacts(session: SessionFacts): HostFact[] {
+	const facts: HostFact[] = [];
+	if (session.storageId !== undefined && session.storageId.length > 0) {
+		facts.push({ key: "storageId", value: session.storageId });
+	}
+	if (session.conversationId !== undefined && session.conversationId.length > 0) {
+		facts.push({ key: "conversationId", value: session.conversationId });
+	}
+	if (session.agentId !== undefined && session.agentId.length > 0) {
+		facts.push({ key: "agentId", value: session.agentId });
+	}
+	return facts;
 }
 
 /**
@@ -142,6 +160,7 @@ export function hostFacts(session: SessionFacts, accessors: HostAccessors = inst
 		{ key: "sessionId", value: session.sessionId ?? null },
 		{ key: "sessionFile", value: session.sessionFile === null ? "(ephemeral)" : session.sessionFile ?? null,
 			note: "ephemeral only if the accessor answered without a file" },
+		...identityFacts(session),
 		fact("installedVersion", accessors.version),
 		fact("packageDir", accessors.packageDir, exists),
 		fact("docsPath", accessors.docsPath, exists),

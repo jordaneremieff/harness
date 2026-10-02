@@ -12,11 +12,12 @@ import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
-import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
 import type { SourceInfo } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import {
 	createRegistryDurableContribution,
+	readContextEstimate,
 	type RegistryDurableHost,
 	type RegistryDurableServices,
 } from "./durable.ts";
@@ -310,11 +311,21 @@ test("durable registry answers model-issued queries from native Durable facts", 
 		assert.equal(summaryDetails.host, true);
 		assert.deepEqual(summaryDetails.counts, { tool: 1, command: 1, skill: 1, prompt: 1 });
 		assert.deepEqual(summaryDetails.availability, { tools: true, activeTools: true, commands: true });
-		assert.equal(objectOf(summaryDetails.context).state, "unavailable");
+		const summaryContext = objectOf(summaryDetails.context);
+		assert.equal(summaryContext.state, "available");
+		assert.equal(summaryContext.model, "faux/faux-1");
+		assert.equal(summaryContext.contextWindow, 200000);
+		assert.equal(typeof summaryContext.tokens, "number");
+		assert.ok((summaryContext.tokens as number) > 0);
+		assert.equal(summaryContext.percent, ((summaryContext.tokens as number) / 200000) * 100);
 		assert.match(textOf(summary), /DURABLE COVERAGE/);
 		assert.match(textOf(summary), /contributions: 2 \(registry, other\)/);
 		assert.match(textOf(summary), new RegExp(ORDINARY_ONLY.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-		assert.match(textOf(summary), /context usage: unavailable/);
+		assert.match(textOf(summary), /context usage: available/);
+		assert.ok(textOf(summary).includes(`- cwd: ${CWD}`));
+		assert.match(textOf(summary), /- storageId: registry-durable-test/);
+		assert.match(textOf(summary), /- conversationId: 1(\n|$)/);
+		assert.match(textOf(summary), /- agentId: <registry-durable-test>(\n|$)/);
 		assert.doesNotMatch(JSON.stringify(summary), /fixture instructions|fixture system prompt/);
 		assert.doesNotMatch(textOf(tool), /fixture system prompt/);
 	} finally {
@@ -346,4 +357,153 @@ test("an aborted host signal cancels the query without probing host facts", asyn
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 	}
+});
+
+test("reports the Durable agent identity for the root and a non-root conversation", async () => {
+	const { faux, models, services } = fixture();
+	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE).create(host(services));
+	const { harness, root } = await open(models, extension);
+	try {
+		const other = await harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "faux-1" } } },
+			BACKGROUND_CONTEXT,
+		);
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("registry", {}, { id: "root-summary" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("Root done."),
+		]);
+		await (await root.submit({ type: "input", content: "Root summary." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("registry", {}, { id: "other-summary" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("Other done."),
+		]);
+		await (await other.submit({ type: "input", content: "Other summary." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const rootText = textOf(toolResult((await root.context(BACKGROUND_CONTEXT)).messages, "root-summary"));
+		const otherText = textOf(toolResult((await other.context(BACKGROUND_CONTEXT)).messages, "other-summary"));
+		assert.match(rootText, /- storageId: registry-durable-test/);
+		assert.match(rootText, /- conversationId: 1(\n|$)/);
+		assert.match(rootText, /- agentId: <registry-durable-test>(\n|$)/);
+		assert.match(otherText, new RegExp(`- conversationId: ${String(other.id)}(\\n|$)`));
+		assert.match(otherText, new RegExp(`- agentId: <registry-durable-test:${String(other.id)}>(\\n|$)`));
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
+});
+
+const TEST_CONVERSATION = 2 as unknown as Durable.ConversationId;
+
+function testUsage(input: number, output: number): Usage {
+	return {
+		input,
+		output,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: input + output,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
+function assistantEntry(id: number, usage: Usage, stopReason: AssistantMessage["stopReason"] = "stop"): Durable.EntryRecord {
+	return {
+		id: id as unknown as Durable.EntryId,
+		conversationId: TEST_CONVERSATION,
+		kind: Durable.AssistantEntry.kind,
+		model: [
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "fixture response" }],
+				api: "faux",
+				provider: "faux",
+				model: "faux-1",
+				usage,
+				stopReason,
+				timestamp: id,
+			},
+		],
+	};
+}
+
+function headEntry(id: number, kind: string): Durable.EntryRecord {
+	return {
+		id: id as unknown as Durable.EntryId,
+		conversationId: TEST_CONVERSATION,
+		kind,
+		head: id as unknown as Durable.EntryId,
+	};
+}
+
+function estimateApi(entries: readonly Durable.EntryRecord[]): Durable.ToolExecutionApi {
+	const tx = { scanEntries: async () => ({ items: entries, next: undefined }) };
+	return {
+		conversationId: TEST_CONVERSATION,
+		commit: async (change: (tx: unknown) => unknown) => change(tx),
+	} as unknown as Durable.ToolExecutionApi;
+}
+
+test("the Durable context estimate reads committed usage and honors context boundaries", async () => {
+	const { services } = fixture();
+	const durableHost = host(services);
+	const agent = {
+		model: { provider: "faux", modelId: "faux-1" },
+		thinkingLevel: "off",
+		extensions: [],
+		tools: [],
+		sections: [],
+	} as unknown as Durable.Agent;
+	const estimate = (entries: readonly Durable.EntryRecord[]) =>
+		readContextEstimate(durableHost, estimateApi(entries), agent, 7, BACKGROUND_CONTEXT);
+
+	const available = await estimate([assistantEntry(9, testUsage(100, 25))]);
+	assert.equal(available.state, "available");
+	assert.equal(available.at, 7);
+	assert.equal(available.model, "faux/faux-1");
+	assert.equal(available.thinkingLevel, "off");
+	assert.equal(available.tokens, 125);
+	assert.equal(available.contextWindow, 200000);
+	assert.equal(available.percent, (125 / 200000) * 100);
+
+	const afterReset = await estimate([headEntry(9, Durable.ResetEntry.kind), assistantEntry(8, testUsage(100, 25))]);
+	assert.equal(afterReset.state, "unknown");
+	assert.equal(afterReset.tokens, null);
+	assert.equal(afterReset.percent, null);
+	assert.equal(afterReset.contextWindow, 200000);
+
+	const afterCompaction = await estimate([headEntry(9, Durable.CompactionEntry.kind), assistantEntry(8, testUsage(100, 25))]);
+	assert.equal(afterCompaction.state, "unknown");
+	assert.equal(afterCompaction.tokens, null);
+
+	const zero = await estimate([assistantEntry(9, testUsage(0, 0))]);
+	assert.equal(zero.state, "unknown");
+	assert.equal(zero.tokens, null);
+
+	const older = await estimate([assistantEntry(9, testUsage(0, 0)), assistantEntry(8, testUsage(40, 10))]);
+	assert.equal(older.state, "available");
+	assert.equal(older.tokens, 50);
+
+	const empty = await estimate([]);
+	assert.equal(empty.state, "unknown");
+	assert.equal(empty.tokens, null);
+
+	const failing = {
+		conversationId: TEST_CONVERSATION,
+		commit: async () => { throw new Error("transaction unavailable"); },
+	} as unknown as Durable.ToolExecutionApi;
+	const unavailable = await readContextEstimate(durableHost, failing, agent, 7, BACKGROUND_CONTEXT);
+	assert.equal(unavailable.state, "unavailable");
+	assert.equal(unavailable.tokens, null);
+	assert.equal(unavailable.contextWindow, 200000);
+
+	const windowlessServices: RegistryDurableServices = {
+		...services,
+		modelRuntime: { ...services.modelRuntime, getModel: () => undefined },
+	};
+	const windowless = await readContextEstimate(
+		host(windowlessServices),
+		estimateApi([assistantEntry(9, testUsage(1, 1))]),
+		agent,
+		7,
+		BACKGROUND_CONTEXT,
+	);
+	assert.equal(windowless.state, "unavailable");
+	assert.equal(windowless.contextWindow, null);
 });

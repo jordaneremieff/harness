@@ -14,14 +14,15 @@
 
 import { randomUUID } from "node:crypto";
 import type * as Durable from "@earendil-works/pi-durable";
-import type { SourceInfo } from "@earendil-works/pi-coding-agent";
+import type { Usage } from "@earendil-works/pi-ai";
+import { calculateContextTokens, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { REGISTRY_DESCRIPTION, REGISTRY_PROMPT_GUIDELINES, REGISTRY_PROMPT_SNIPPET, RegistryParams } from "./contract.ts";
 import type { ContextSnapshot } from "./host.ts";
 import { type DurableLookupContext, lookup } from "./lookup.ts";
 import { readDurableModels, type DurableModelReader } from "./models.ts";
 import { ObservationStore, type ObservableOptions } from "./observer.ts";
 import { RegistryOutputSchema } from "./output.ts";
-import { decodeCursor, type RawParams } from "./query.ts";
+import { decodeCursor, hasAnySelector, type RawParams } from "./query.ts";
 import type { HostSnapshot, ObservationSnapshot, SurfaceAvailability } from "./records.ts";
 
 /** One configured skill, as the host resource loader reports it. */
@@ -258,6 +259,112 @@ function durableContext(agent: Durable.Agent | undefined, at: number): ContextSn
 	};
 }
 
+const DURABLE_CONTEXT_BOUNDARY =
+	"The estimate converts the newest assistant entry's reported usage into tokens against the model's context window and adds no later entries. Unknown usage can follow a reset or compaction without a later response. This is not a safe remaining budget, a final provider payload count, or a compaction threshold.";
+
+/** Entries one context-estimate scan visits. The tool runs after an assistant response, so the bound is generous. */
+const CONTEXT_SCAN_PAGE = 50;
+const CONTEXT_SCAN_MAX_PAGES = 4;
+
+/**
+ * Newest assistant usage inside the active context. The scan stops at any
+ * active-context head marker, so usage from before a reset or compaction never
+ * counts, and a bounded scan that finds no usage stays unknown.
+ */
+async function newestAssistantUsage(
+	host: RegistryDurableHost,
+	api: Durable.ToolExecutionApi,
+	context: ToolContext,
+): Promise<Usage | undefined> {
+	return api.commit(async (tx) => {
+		let cursor: Durable.Cursor | undefined;
+		for (let page = 0; page < CONTEXT_SCAN_MAX_PAGES; page += 1) {
+			const scanned = await tx.scanEntries({ conversationId: api.conversationId }, CONTEXT_SCAN_PAGE, cursor);
+			const found = usageInPage(host, scanned.items);
+			if (found.kind === "usage") return found.usage;
+			if (found.kind === "head" || scanned.next === undefined) return undefined;
+			cursor = scanned.next;
+		}
+		return undefined;
+	}, context);
+}
+
+/** What one newest-first page establishes: a usage, a context head, or nothing yet. */
+type PageUsage = { readonly kind: "usage"; readonly usage: Usage } | { readonly kind: "head" } | { readonly kind: "none" };
+
+function usageInPage(host: RegistryDurableHost, entries: readonly Durable.EntryRecord[]): PageUsage {
+	for (const entry of entries) {
+		if (entry.head !== undefined) return { kind: "head" };
+		const usage = assistantUsageOf(host, entry);
+		if (usage !== undefined) return { kind: "usage", usage };
+	}
+	return { kind: "none" };
+}
+
+/** A usable assistant usage from one entry; zero, aborted, and error responses do not count. */
+function assistantUsageOf(host: RegistryDurableHost, entry: Durable.EntryRecord): Usage | undefined {
+	if (!host.durable.AssistantEntry.is(entry)) return undefined;
+	for (const message of entry.model ?? []) {
+		if (message.role !== "assistant") continue;
+		if (message.stopReason === "aborted" || message.stopReason === "error") continue;
+		if (calculateContextTokens(message.usage) > 0) return message.usage;
+	}
+	return undefined;
+}
+
+/**
+ * Context estimate from committed state: the newest assistant usage in the
+ * active context against the resolved model's context window. A missing model
+ * window or a failed read is unavailable; no usable usage is unknown, never
+ * zero.
+ */
+export async function readContextEstimate(
+	host: RegistryDurableHost,
+	api: Durable.ToolExecutionApi,
+	agent: Durable.Agent | undefined,
+	at: number,
+	context: ToolContext,
+): Promise<ContextSnapshot> {
+	const snapshot = durableContext(agent, at);
+	const ref = agent?.model;
+	if (ref === undefined) return snapshot;
+	let contextWindow: number | undefined;
+	try {
+		contextWindow = host.services.modelRuntime.getModel(ref.provider, ref.modelId)?.contextWindow;
+	} catch {
+		/* The model read stays unavailable. */
+	}
+	if (contextWindow === undefined || !Number.isFinite(contextWindow) || contextWindow <= 0) return snapshot;
+	snapshot.contextWindow = contextWindow;
+	let usage: Usage | undefined;
+	try {
+		usage = await newestAssistantUsage(host, api, context);
+	} catch {
+		snapshot.state = "unavailable";
+		return snapshot;
+	}
+	if (usage === undefined) {
+		snapshot.state = "unknown";
+		return snapshot;
+	}
+	const tokens = calculateContextTokens(usage);
+	if (!Number.isFinite(tokens) || tokens <= 0) {
+		snapshot.state = "unknown";
+		return snapshot;
+	}
+	snapshot.state = "available";
+	snapshot.tokens = tokens;
+	snapshot.percent = (tokens / contextWindow) * 100;
+	return snapshot;
+}
+
+/** External agent ID form for one Durable conversation. */
+function agentIdentity(host: RegistryDurableHost, conversationId: Durable.ConversationId): string {
+	return conversationId === host.durable.ROOT_CONVERSATION_ID
+		? `<${host.storageId}>`
+		: `<${host.storageId}:${String(conversationId)}>`;
+}
+
 function durableLookupContext(host: RegistryDurableHost): DurableLookupContext {
 	const coverage = {
 		contributions: host.inventory.contributions.map((entry) => entry.name),
@@ -347,11 +454,22 @@ export function createRegistryDurableContribution(source: string): RegistryDurab
 					const at = Date.now();
 					const signal = combineSignals(context.abortSignal, host.signal);
 					const { snapshot, agent } = await resolveCall(host, api, context, signal, at);
+					const params = args as RawParams;
+					const contextSnapshot =
+						params.cursor === undefined && !hasAnySelector(params) && !signal.aborted
+							? await readContextEstimate(host, api, agent, at, context)
+							: undefined;
 					const result = await lookup({
-						params: args as RawParams,
+						params,
 						snapshot,
-						session: { cwd: host.cwd },
-						readContext: () => durableContext(agent, at),
+						session: {
+							cwd: host.cwd,
+							storageId: host.storageId,
+							conversationId: String(api.conversationId),
+							agentId: agentIdentity(host, api.conversationId),
+						},
+						readContext: () => contextSnapshot ?? durableContext(agent, at),
+						contextBoundary: DURABLE_CONTEXT_BOUNDARY,
 						...(modelQueryOf(args) && !signal.aborted
 							? { models: readDurableModels(host.services.modelRuntime, agent ?? {}, at) }
 							: {}),

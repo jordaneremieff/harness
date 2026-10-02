@@ -72,6 +72,8 @@ export interface LookupRequest {
 	accessors?: HostAccessors;
 	scan?: (path: string, needle: string, signal?: AbortSignal) => Promise<ScanResult>;
 	durable?: DurableLookupContext;
+	/** Replaces the shared context-estimate boundary when the estimate has another shape. */
+	contextBoundary?: string;
 }
 
 export interface LookupResult extends BoundedResult {
@@ -112,7 +114,7 @@ function hostSummary(request: LookupRequest, records: ResourceRecord[]): LookupR
 			...baseHeader("host_summary", snapshot.at, []),
 			...hostFactLines(hostFacts(request.session, request.accessors ?? installedAccessors)),
 			"",
-			...(context ? [...contextLines(context).map(escapeJsonControls), ""] : []),
+			...(context ? [...contextLines(context, request.contextBoundary).map(escapeJsonControls), ""] : []),
 			"SURFACES",
 			`- tool registry: ${snapshot.availability.tools ? `available (${counts.tool} configured)` : "unavailable"}`,
 			`- active tools: ${activeCount === null ? "unavailable" : `available (${activeCount} active)`}`,
