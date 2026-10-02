@@ -39,6 +39,12 @@ export const ACTIVITY_TURN_LIMIT_MAX = 12;
 /** Entry and byte bounds for one activity scan page set. */
 export const ACTIVITY_SCAN_ENTRIES = 200;
 export const ACTIVITY_SCAN_BYTES = 64 * 1024;
+/** Whole serialized activity digest bound, metadata and coverage included. */
+export const ACTIVITY_DIGEST_BYTES = 16_000;
+/** Selection margin covering the finalized coverage.bytes digits and flags. */
+const ACTIVITY_DIGEST_SELECT_BYTES = ACTIVITY_DIGEST_BYTES - 64;
+/** Running-tool row cap applied only when the full metadata does not fit. */
+const ACTIVITY_METADATA_TOOL_LIMIT = 16;
 
 export interface EntryOmissions {
 	readonly providerSignatures: number;
@@ -1106,7 +1112,14 @@ interface ActivityPage {
 		readonly scannedBytes: number;
 		readonly complete: boolean;
 		readonly entryLimitReached: boolean;
+		/** The scan stopped at its own byte bound. */
+		readonly scanByteLimitReached: boolean;
+		/** The digest byte bound dropped rows. */
 		readonly byteLimitReached: boolean;
+		/** Exact serialized size of this whole page, this field included. */
+		readonly bytes: number;
+		/** Rows dropped from the digest by the byte bound. */
+		readonly omittedEntries: number;
 	};
 	readonly detail: string;
 }
@@ -1128,15 +1141,22 @@ interface ActivityScan {
 	readonly scannedBytes: number;
 }
 
+/** Activity continuation cursor: resume strictly older than this entry. */
+function activityAfter(cursor: Cursor | undefined): EntryId | undefined {
+	const value = cursor?.after;
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? (value as EntryId) : undefined;
+}
+
 async function scanActivity(conversation: Conversation, params: DurableInspectParams, turnLimit: number, context: Context): Promise<ActivityScan> {
 	const collected: EntryRecord[] = [];
-	let cursor: Cursor | undefined = params.cursor;
+	const after = activityAfter(params.cursor);
+	let cursor: Cursor | undefined = after === undefined ? params.cursor : undefined;
 	let complete = false;
 	let scannedEntries = 0;
 	let scannedBytes = 0;
 	// Collect newest-first until one more than the requested turn count or either bound.
 	while (scannedEntries < ACTIVITY_SCAN_ENTRIES && scannedBytes < ACTIVITY_SCAN_BYTES) {
-		const page = await conversation.entries({}, 32, cursor, context);
+		const page = await conversation.entries(after === undefined ? {} : { maxEntryId: (after - 1) as EntryId }, 32, cursor, context);
 		collected.push(...page.items);
 		scannedEntries += page.items.length;
 		for (const entry of page.items) scannedBytes += Buffer.byteLength(searchableText(entry), "utf8");
@@ -1193,28 +1213,232 @@ async function activityMetadata(harness: Harness, conversation: Conversation, op
 	};
 }
 
-async function readActivity(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, options: DurableInspectionOptions, context: Context): Promise<ActivityPage> {
-	const turnLimit = boundedLimit(params.limit, ACTIVITY_TURN_LIMIT_DEFAULT, ACTIVITY_TURN_LIMIT_MAX);
-	const scan = await scanActivity(conversation, params, turnLimit, context);
-	const selected = groupActivityTurns(scan.collected).slice(-turnLimit).reverse();
-	const oldestSelected = selected[selected.length - 1]?.[0];
-	const nextCursor: Cursor | null = scan.complete || oldestSelected === undefined ? null : ({ after: oldestSelected.id } as Cursor);
+interface ActivityRow {
+	readonly turnIndex: number;
+	readonly entryIndex: number;
+	readonly failure: boolean;
+	readonly row: DurableEntryRow;
+}
+
+interface ActivityCoverage {
+	scannedEntries: number;
+	scannedBytes: number;
+	complete: boolean;
+	entryLimitReached: boolean;
+	scanByteLimitReached: boolean;
+	byteLimitReached: boolean;
+	bytes: number;
+	omittedEntries: number;
+	metadataTruncated: boolean;
+}
+
+interface ActivityBase {
+	readonly view: "activity";
+	readonly sessionId: string;
+	readonly conversationId: ConversationId;
+	readonly nextCursor: Cursor | null;
+	readonly metadata: DurableActivityMetadata;
+	readonly detail: string;
+}
+
+interface ActivityDraft extends ActivityBase {
+	turns: TurnRow[];
+	coverage: ActivityCoverage;
+}
+
+const activityBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), "utf8");
+
+/** Surrogate-safe truncation of one metadata text field. */
+function boundMetadataText(value: string, units: number): string {
+	if (value.length <= units) return value;
+	let end = units;
+	const code = value.charCodeAt(end - 1);
+	if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+	return value.slice(0, end);
+}
+
+/** Final marker for an error body that cannot fit even at the smallest bound. */
+const ACTIVITY_METADATA_OMISSION = "[omitted: activity metadata exceeded the digest bound]";
+
+/** Shrink the error bodies to one bound; fields stay present. */
+function shrinkMetadataErrors(metadata: DurableActivityMetadata, units: number): DurableActivityMetadata {
 	return {
-		view: "activity",
-		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
-		conversationId: conversation.id,
-		turns: selected.map((turn) => ({ entries: turn.map((entry) => entryRow(entry, ENTRY_PREVIEW_UNITS)) })),
-		nextCursor,
-		metadata: await activityMetadata(harness, conversation, options, context),
+		...metadata,
+		...(metadata.lastError === undefined ? {} : { lastError: boundMetadataText(metadata.lastError, units) }),
+		...(metadata.compactionFailure === undefined
+			? {}
+			: { compactionFailure: { ...metadata.compactionFailure, ...(metadata.compactionFailure.errorMessage === undefined ? {} : { errorMessage: boundMetadataText(metadata.compactionFailure.errorMessage, units) }) } }),
+		...(metadata.autoRetry === undefined ? {} : { autoRetry: { ...metadata.autoRetry, errorMessage: boundMetadataText(metadata.autoRetry.errorMessage, units) } }),
+	};
+}
+
+/** Replace every error body with the final omission marker. */
+function omitMetadataErrors(metadata: DurableActivityMetadata): DurableActivityMetadata {
+	return {
+		...metadata,
+		...(metadata.lastError === undefined ? {} : { lastError: ACTIVITY_METADATA_OMISSION }),
+		...(metadata.compactionFailure === undefined ? {} : { compactionFailure: { ...metadata.compactionFailure, errorMessage: ACTIVITY_METADATA_OMISSION } }),
+		...(metadata.autoRetry === undefined ? {} : { autoRetry: { ...metadata.autoRetry, errorMessage: ACTIVITY_METADATA_OMISSION } }),
+	};
+}
+
+/**
+ * Shrink metadata until `fits` accepts it. Streaming text shrinks and drops
+ * first, then running-tool rows; error bodies shrink last, so `lastError`,
+ * `compactionFailure`, and `autoRetry` survive a metadata-only overflow.
+ */
+export function reduceActivityMetadata(
+	metadata: DurableActivityMetadata,
+	fits: (candidate: DurableActivityMetadata) => boolean,
+): { readonly metadata: DurableActivityMetadata; readonly truncated: boolean } {
+	if (fits(metadata)) return { metadata, truncated: false };
+	let current = metadata;
+	if (current.streamedText !== undefined) {
+		current = { ...current, streamedText: boundMetadataText(current.streamedText, 512) };
+		if (!fits(current)) {
+			const { streamedText: _dropped, ...withoutStream } = current;
+			current = withoutStream as DurableActivityMetadata;
+		}
+	}
+	if (current.runningTools.length > ACTIVITY_METADATA_TOOL_LIMIT && !fits(current)) current = { ...current, runningTools: current.runningTools.slice(0, ACTIVITY_METADATA_TOOL_LIMIT) };
+	if (current.runningTools.length > 0 && !fits(current)) current = { ...current, runningTools: [] };
+	for (const units of [1024, 256, 64]) {
+		if (fits(current)) break;
+		current = shrinkMetadataErrors(current, units);
+	}
+	if (!fits(current)) current = omitMetadataErrors(current);
+	return { metadata: current, truncated: true };
+}
+
+/** True for an assistant error or abort, or an error tool result. */
+function isFailureEntry(entry: EntryRecord): boolean {
+	for (const message of entry.model ?? []) {
+		if (message.role === "toolResult" && message.isError === true) return true;
+		if (message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted" || message.errorMessage !== undefined)) return true;
+	}
+	return false;
+}
+
+/** Rebuild the turn structure newest-first from selected rows in chronological order. */
+function activityTurns(rows: readonly ActivityRow[]): TurnRow[] {
+	const ordered = [...rows].sort((left, right) => left.turnIndex - right.turnIndex || left.entryIndex - right.entryIndex);
+	const turns: { turnIndex: number; entries: DurableEntryRow[] }[] = [];
+	for (const row of ordered) {
+		let current = turns[turns.length - 1];
+		if (current === undefined || current.turnIndex !== row.turnIndex) {
+			current = { turnIndex: row.turnIndex, entries: [] };
+			turns.push(current);
+		}
+		current.entries.push(row.row);
+	}
+	return turns.map((turn) => ({ entries: turn.entries })).reverse();
+}
+
+function activityDraft(base: ActivityBase, scan: ActivityScan, rows: readonly ActivityRow[], totalRows: number, metadataTruncated: boolean, hasOlder: boolean): ActivityDraft {
+	const omittedEntries = totalRows - rows.length;
+	return {
+		...base,
+		turns: activityTurns(rows),
 		coverage: {
 			scannedEntries: scan.scannedEntries,
 			scannedBytes: scan.scannedBytes,
-			complete: scan.complete,
+			complete: scan.complete && !hasOlder && omittedEntries === 0 && !metadataTruncated,
 			entryLimitReached: scan.scannedEntries >= ACTIVITY_SCAN_ENTRIES,
-			byteLimitReached: scan.scannedBytes >= ACTIVITY_SCAN_BYTES,
+			scanByteLimitReached: scan.scannedBytes >= ACTIVITY_SCAN_BYTES,
+			byteLimitReached: omittedEntries > 0 || metadataTruncated,
+			bytes: 0,
+			omittedEntries,
+			metadataTruncated,
 		},
-		detail: "Newest turns first, bounded and redacted. Continue with nextCursor.",
 	};
+}
+
+/** Set coverage.bytes to the stable size of the whole draft. */
+function finalizedActivity(draft: ActivityDraft): ActivityDraft {
+	let bytes = 0;
+	for (;;) {
+		draft.coverage.bytes = bytes;
+		const next = activityBytes(draft);
+		if (next === bytes) return draft;
+		bytes = next;
+	}
+}
+
+function activityCandidates(groups: readonly (readonly EntryRecord[])[]): ActivityRow[] {
+	const candidates: ActivityRow[] = [];
+	for (let turnIndex = 0; turnIndex < groups.length; turnIndex++) {
+		const entries = groups[turnIndex] ?? [];
+		for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+			const entry = entries[entryIndex];
+			if (entry === undefined) continue;
+			candidates.push({ turnIndex, entryIndex, failure: isFailureEntry(entry), row: entryRow(entry, ENTRY_PREVIEW_UNITS) });
+		}
+	}
+	return candidates;
+}
+
+/** Failure rows first, then ordinary rows, each newest-first when it still fits. */
+function selectActivityRows(ranked: readonly ActivityRow[], fits: (rows: ActivityRow[]) => boolean): ActivityRow[] {
+	const kept: ActivityRow[] = [];
+	for (const row of ranked) {
+		if (!row.failure) continue;
+		const candidate = [...kept, row];
+		if (fits(candidate)) kept.push(row);
+	}
+	for (const row of ranked) {
+		if (row.failure) continue;
+		const candidate = [...kept, row];
+		if (fits(candidate)) kept.push(row);
+	}
+	return kept;
+}
+
+/** Drop the oldest ordinary row, or the oldest row when only failures remain. */
+function dropOldestOrdinary(kept: ActivityRow[]): void {
+	for (let index = kept.length - 1; index >= 0; index--) {
+		const row = kept[index];
+		if (row !== undefined && !row.failure) {
+			kept.splice(index, 1);
+			return;
+		}
+	}
+	kept.pop();
+}
+
+/** Finalize and, if the fixed point exceeds the bound, drop rows until it holds. */
+function boundedActivity(base: ActivityBase, scan: ActivityScan, candidates: readonly ActivityRow[], kept: ActivityRow[], metadataTruncated: boolean, hasOlder: boolean): ActivityDraft {
+	let final = finalizedActivity(activityDraft(base, scan, kept, candidates.length, metadataTruncated, hasOlder));
+	while (activityBytes(final) > ACTIVITY_DIGEST_BYTES && kept.length > 0) {
+		dropOldestOrdinary(kept);
+		final = finalizedActivity(activityDraft(base, scan, kept, candidates.length, metadataTruncated, hasOlder));
+	}
+	return final;
+}
+
+async function readActivity(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, options: DurableInspectionOptions, context: Context): Promise<ActivityPage> {
+	const turnLimit = boundedLimit(params.limit, ACTIVITY_TURN_LIMIT_DEFAULT, ACTIVITY_TURN_LIMIT_MAX);
+	const scan = await scanActivity(conversation, params, turnLimit, context);
+	const allGroups = groupActivityTurns(scan.collected);
+	const groups = allGroups.slice(-turnLimit);
+	const candidates = activityCandidates(groups);
+	const oldestSelected = groups[0]?.[0];
+	const hasOlder = allGroups.length > turnLimit || !scan.complete;
+	const baseFor = (metadata: DurableActivityMetadata): ActivityBase => ({
+		view: "activity",
+		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
+		conversationId: conversation.id,
+		nextCursor: oldestSelected === undefined || !hasOlder ? null : ({ after: oldestSelected.id } as Cursor),
+		metadata,
+		detail: "Newest turns first, redacted, failure rows survive the 16000-byte digest bound; nextCursor resumes older turns and unfinished scans only, not rows dropped by the bound.",
+	});
+	// A metadata-only overflow must fit before any row is considered.
+	const reduced = reduceActivityMetadata(await activityMetadata(harness, conversation, options, context), (candidate) =>
+		activityBytes(activityDraft(baseFor(candidate), scan, [], candidates.length, false, hasOlder)) <= ACTIVITY_DIGEST_SELECT_BYTES,
+	);
+	const base = baseFor(reduced.metadata);
+	const ranked = [...candidates].reverse();
+	const kept = selectActivityRows(ranked, (rows) => activityBytes(activityDraft(base, scan, rows, candidates.length, reduced.truncated, hasOlder)) <= ACTIVITY_DIGEST_SELECT_BYTES);
+	return boundedActivity(base, scan, candidates, kept, reduced.truncated, hasOlder);
 }
 
 interface ResultPage {

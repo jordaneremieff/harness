@@ -19,15 +19,25 @@ function catalogInput(root: string): { cwd: string; agentDir: string; packageDir
 
 it("returns a partial dashboard page with a cursor at the storage bound instead of throwing", async (t) => {
 	const root = fixtureRoot(t);
-	const manager = new AgentManager({ root, agentDir: join(root, "agent"), packageDir: join(root, "package"), observe: async () => [] });
+	let observes = 0;
+	const manager = new AgentManager({
+		root,
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
+		observe: async () => {
+			observes += 1;
+			return [];
+		},
+	});
 	t.after(() => manager.close());
 	for (let index = 0; index < 321; index++) manager.catalog.create(catalogInput(root));
 	const page = await manager.dashboardPage();
+	assert.equal(observes, 0, "the board reads catalog metadata, not native host state");
 	assert.equal(page.coverage.complete, false, "the catalog scan did not reach its end");
 	assert.ok(page.coverage.nextCursor !== null, "the unscanned remainder returns a cursor");
 	assert.equal(page.coverage.storagesVisited, 320, "the page bound visits sixteen pages of twenty storages");
 	const overview = structuredObservation(StatusOutputSchema, buildStatusOverview(page, [], [])) as { coverage: { byteLimitReached: boolean; complete: boolean } };
-	assert.equal(overview.coverage.byteLimitReached, false, "the empty rows fit the byte bound");
+	assert.equal(overview.coverage.byteLimitReached, true, "unavailable metadata rows reach the status byte bound");
 	assert.equal(overview.coverage.complete, false);
 	assert.ok(Buffer.byteLength(JSON.stringify(overview), "utf8") <= 48 * 1024);
 });
@@ -51,4 +61,46 @@ it("matches a list query against the first message", async (t) => {
 	assert.equal(found.rows[0]?.sessionId, identity);
 	const missing = structuredObservation(ListOutputSchema, await manager.list({ query: "unicorn" }));
 	assert.equal(missing.rows.length, 0);
+});
+
+it("re-reads 50 published views without observation or launch", async (t) => {
+	const root = fixtureRoot(t);
+	let acquires = 0;
+	let observes = 0;
+	const manager = new AgentManager({
+		root,
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
+		acquire: async () => {
+			acquires += 1;
+			throw new Error("the board launched a host");
+		},
+		observe: async () => {
+			observes += 1;
+			throw new Error("the board observed native state");
+		},
+	});
+	t.after(() => manager.close());
+	const storageIds: string[] = [];
+	for (let index = 0; index < 50; index++) {
+		const record = manager.catalog.create(catalogInput(root));
+		storageIds.push(record.storageId);
+		manager.catalog.updateView(record.storageId, {
+			updatedAt: new Date().toISOString(),
+			rows: [{ id: `${record.storageId}:1`, storageId: record.storageId, cwd: record.cwd, modifiedAt: 1, owner: "here", state: index === 0 ? "working" : "idle", cost: 0, partial: false }],
+			coverage: { complete: true, omitted: 0 },
+		});
+	}
+	const first = await manager.dashboardPage();
+	assert.equal(acquires, 0);
+	assert.equal(observes, 0);
+	assert.deepEqual(first.rows.map((row) => row.storageId).sort(), storageIds.slice().sort());
+	const interrupted = first.rows.find((row) => row.storageId === storageIds[0]) as { state?: string; owner?: string; ownerLabel?: string } | undefined;
+	assert.equal(interrupted?.state, "interrupted", "an absent claim interrupts a working row");
+	assert.equal(interrupted?.owner, "unknown");
+	assert.match(interrupted?.ownerLabel ?? "", /^Host metadata at /u);
+	const second = await manager.dashboardPage();
+	assert.deepEqual(second.rows, first.rows, "an unchanged cold catalog returns the same rows");
+	assert.equal(acquires, 0);
+	assert.equal(observes, 0);
 });

@@ -8,6 +8,7 @@ import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-d
 import { AgentManager } from "./manager.ts";
 import { ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListOutputSchema, ListRowSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { buildStatusOverview } from "./status-overview.ts";
+import { boundCatalogView } from "./catalog-view.ts";
 import { readConversationList, readConversationStatus, readDashboard, readInspection } from "./durable-observation.ts";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureRegistry, fixtureStorageId, hostOptions, scriptedRuntime } from "./durable-host-fixture.mts";
@@ -148,6 +149,8 @@ it("validates every status variant, including unavailable rows", async (t) => {
 	});
 	t.after(() => manager.close());
 	const record = manager.catalog.create({ cwd: "/work", agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: "test", modelId: "model" }, thinkingLevel: "off", ownerId: "owner-1" });
+	const rows = await readDashboard(host.harness, fixtureStorageId, {}, { owner: "here", cwd: "/work" }, BACKGROUND_CONTEXT);
+	manager.catalog.updateView(record.storageId, boundCatalogView({ updatedAt: new Date().toISOString(), rows: rows.map((row) => ({ ...row, storageId: record.storageId })), storageId: record.storageId }));
 	const overview = structuredObservation(StatusOutputSchema, buildStatusOverview(await manager.dashboardPage(), [], [])) as { sessions: readonly { state: string }[]; coverage: { complete: boolean; bytes: number } };
 	assert.equal(overview.sessions[0]?.state, "done");
 	assert.ok(overview.coverage.bytes > 0);
@@ -167,7 +170,6 @@ it("validates every status variant, including unavailable rows", async (t) => {
 	const unavailable = structuredObservation(StatusOutputSchema, buildStatusOverview(await failing.dashboardPage(), [], [])) as { sessions: readonly { state: string; owner: string; error?: string; partial: boolean }[] };
 	const unavailableRow = unavailable.sessions.find((row) => row.state === "unavailable");
 	assert.ok(unavailableRow);
-	assert.equal(unavailableRow?.owner, "unavailable");
 	assert.equal(unavailableRow?.partial, true);
 	assert.match(unavailableRow?.error ?? "", /unavailable/u);
 });

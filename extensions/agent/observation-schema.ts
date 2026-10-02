@@ -336,7 +336,17 @@ export const ActivityOutputSchema = object({
 		compactionFailure: Type.Optional(compactionFailure),
 		autoRetry: Type.Optional(autoRetry),
 	}),
-	coverage: object({ scannedEntries: count, scannedBytes: count, complete: boolean, entryLimitReached: boolean, byteLimitReached: boolean }),
+	coverage: object({
+		scannedEntries: count,
+		scannedBytes: count,
+		complete: boolean,
+		entryLimitReached: boolean,
+		scanByteLimitReached: boolean,
+		byteLimitReached: boolean,
+		bytes: count,
+		omittedEntries: count,
+		metadataTruncated: boolean,
+	}),
 	detail: string,
 });
 

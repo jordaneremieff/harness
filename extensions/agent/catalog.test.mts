@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { AgentCatalog, hostMetadata, storageIdOf } from "./catalog.ts";
+import { boundCatalogView, type CatalogViewRow } from "./catalog-view.ts";
 import { hostPaths } from "./host-protocol.ts";
 
 function fixture(t: { after(fn: () => void): void }) {
@@ -120,6 +131,85 @@ it("keeps a record whose bytes changed after create", (t) => {
 	writeFileSync(catalog.path(record.storageId), `${JSON.stringify({ ...record, name: "Changed" })}\n`);
 	assert.equal(catalog.discardUnopened(record), "record-changed");
 	assert.equal(existsSync(catalog.path(record.storageId)), true);
+});
+
+it("writes a bounded view and keeps host identity comparison unchanged", (t) => {
+	const { catalog, input } = fixture(t);
+	const first = catalog.createTracked(input, "request");
+	assert.equal(first.record.view, undefined, "a new record has no projection");
+	const row: CatalogViewRow = {
+		id: first.record.storageId,
+		storageId: first.record.storageId,
+		cwd: input.cwd,
+		modifiedAt: 1,
+		owner: "here",
+		state: "idle",
+		cost: 0,
+		partial: false,
+	};
+	const view = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", rows: [row], rootId: first.record.storageId });
+	const updated = catalog.updateView(first.record.storageId, view);
+	assert.deepEqual(updated.view, view);
+	assert.deepEqual(catalog.read(first.record.storageId).view, view);
+	assert.deepEqual(hostMetadata(updated), hostMetadata(first.record), "the projection does not change host metadata");
+	assert.equal(catalog.createTracked(input, "request").created, false, "spawn dedup ignores the projection");
+	assert.ok(Buffer.byteLength(`${JSON.stringify(catalog.read(first.record.storageId))}\n`, "utf8") <= 32 * 1024);
+});
+
+it("persists the recovery marker independently of the view", (t) => {
+	const { catalog, input } = fixture(t);
+	const { record } = catalog.createTracked(input, "request");
+	assert.equal(catalog.read(record.storageId).recoveryDue, undefined, "a missing marker stays absent");
+	assert.equal(catalog.markRecoveryDue(record.storageId, true).recoveryDue, true);
+	assert.equal(catalog.read(record.storageId).recoveryDue, true);
+	assert.deepEqual(
+		hostMetadata(catalog.read(record.storageId)),
+		hostMetadata(record),
+		"the marker does not change host metadata",
+	);
+	const view = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", rows: [] });
+	catalog.updateView(record.storageId, view);
+	const cleared = catalog.markRecoveryDue(record.storageId, false);
+	assert.equal(cleared.recoveryDue, false);
+	assert.deepEqual(cleared.view, view, "the marker preserves the view");
+});
+
+it("refuses view writes through a symlink, corrupt record, or wrong identity", (t) => {
+	const { catalog, input } = fixture(t);
+	const { record } = catalog.createTracked(input, "request");
+	const other = catalog.createTracked(input, "other").record;
+	writeFileSync(catalog.path(record.storageId), readFileSync(catalog.path(other.storageId)));
+	assert.throws(
+		() => catalog.markRecoveryDue(record.storageId, true),
+		/invalid/u,
+		"a stored identity mismatch is refused",
+	);
+	writeFileSync(catalog.path(record.storageId), "{ not json");
+	assert.throws(
+		() => catalog.updateView(record.storageId, boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", rows: [] })),
+		/JSON/u,
+		"a corrupt record is refused",
+	);
+	const victim = join(catalog.root, "victim.json");
+	writeFileSync(victim, JSON.stringify(record));
+	writeFileSync(catalog.path(record.storageId), JSON.stringify(record));
+	unlinkSync(catalog.path(record.storageId));
+	symlinkSync(victim, catalog.path(record.storageId));
+	assert.throws(
+		() => catalog.markRecoveryDue(record.storageId, true),
+		/ELOOP|symbolic/u,
+		"a symlinked record is refused",
+	);
+	assert.equal(readFileSync(victim, "utf8"), JSON.stringify(record), "the symlink target is unchanged");
+});
+
+it("refuses a view for another storage on publication and read", (t) => {
+	const { catalog, input } = fixture(t);
+	const record = catalog.create(input);
+	const view = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", rows: [], storageId: "another" });
+	assert.throws(() => catalog.updateView(record.storageId, view), /storageId/u);
+	writeFileSync(catalog.path(record.storageId), JSON.stringify({ ...record, view }));
+	assert.throws(() => catalog.read(record.storageId), /storageId/u);
 });
 
 /** Write one shared-shape writer claim for the record's host path. */

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { it } from "node:test";
-import { hostMetadata } from "./catalog.ts";
+import { hostMetadata, type CatalogRecord } from "./catalog.ts";
 import type { HostConnection } from "./host-client.ts";
-import type { HostMetadata } from "./host-protocol.ts";
+import { hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { waitUntil } from "./host-fixture.mts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
 import { connectPrimaryChannel, type PrimaryChannel, type PrimaryChannelOptions, type PrimaryInfo } from "./primary-channel.ts";
@@ -31,6 +32,25 @@ function createRecord(manager: AgentManager, root: string, ownerId = "owner-1") 
 		thinkingLevel: "off",
 		ownerId,
 	});
+}
+
+/** One syntactically valid writer claim owned by `pid` on this host. */
+function claimFor(record: CatalogRecord, pid: number): unknown {
+	return { sessionId: record.storageId, cwd: resolve(record.cwd), host: hostname(), pid, createdAt: new Date().toISOString() };
+}
+
+/** Write a claim file a startup scan would observe as live, dead, or unknown. */
+function writeClaim(record: CatalogRecord, value: unknown): void {
+	const paths = hostPaths(record);
+	mkdirSync(join(paths.directory, ".claims"), { recursive: true, mode: 0o700 });
+	writeFileSync(paths.claim, typeof value === "string" ? value : `${JSON.stringify(value)}\n`, { mode: 0o600 });
+}
+
+/** A pid whose process has already exited, so a claim on it classifies as dead. */
+function deadProcessId(): number {
+	const child = spawnSync(process.execPath, ["-e", ""], { stdio: ["ignore", "ignore", "ignore"] });
+	if (child.pid === undefined) throw new Error("the probe process did not report a pid");
+	return child.pid;
 }
 
 interface FakeConnection extends HostConnection {
@@ -202,6 +222,7 @@ it("closes a host opened for a primary that aborts mid-registration", { timeout:
 		createPrimary: primaryFactory().factory,
 	}));
 	const record = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(record.storageId, true);
 	const controller = new AbortController();
 	const primary = fakePrimary(controller.signal);
 	const registering = manager.registerPrimary("owner-1", primary.client);
@@ -346,38 +367,43 @@ it("re-registers the same owner with the real primary channel after abort", { ti
 	}
 });
 
-it("refreshes the durable footer at startup and after a host change", { timeout: 15000 }, async (t) => {
+it("refreshes the durable footer from published views at startup and after a host change", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const factory = primaryFactory();
-	let working = false;
+	const methods: string[] = [];
 	let connection: FakeConnection | undefined;
 	const manager = new AgentManager(managerOptions(root, {
 		createPrimary: factory.factory,
-		acquire: async (metadata) => {
+		connect: async (metadata) => {
 			connection = fakeConnection(metadata, async (method) => {
-				if (method === "status") return { conversations: [{ busy: true }] };
-				if (method === "dashboard") {
-					return working
-						? [{ id: metadata.storageId, storageId: metadata.storageId, cwd: metadata.cwd, name: "child", modifiedAt: Date.now(), owner: "here", state: "working", cost: 0, partial: false }]
-						: [];
-				}
+				methods.push(method);
+				if (method === "recovery-state") return { workPending: true, deliveriesPending: true };
 				return {};
 			});
 			return connection;
 		},
-		connect: noHost,
-		observe: async (_metadata, method) => (method === "dashboard" ? [] : { conversations: [{ busy: true }] }),
+		observe: async () => {
+			throw new Error("the footer must read catalog views, not native state");
+		},
 	}));
-	createRecord(manager, root);
+	const record = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	writeClaim(record, claimFor(record, process.pid));
+	const publish = (state: string) => manager.catalog.updateView(record.storageId, {
+		updatedAt: new Date().toISOString(),
+		rows: [{ id: `${record.storageId}:1`, storageId: record.storageId, cwd: record.cwd, modifiedAt: 1, owner: "here", state, cost: 0, partial: false }],
+		coverage: { complete: true, omitted: 0 },
+	});
+	publish("working");
 	const primary = fakePrimary(new AbortController().signal);
 	try {
 		await manager.registerPrimary("owner-1", primary.client);
-		await waitUntil(() => primary.statuses.some((text) => text !== undefined));
-		assert.match(primary.statuses.filter((text): text is string => text !== undefined).at(-1) ?? "", /agents 0 · \$0\.00/u);
-		assert.ok(connection, "startup recovery acquired the busy storage");
-		working = true;
-		connection.change();
 		await waitUntil(() => primary.statuses.some((text) => text?.includes("agents 1") === true));
+		assert.ok(connection, "a live due record connects without launching");
+		publish("idle");
+		connection.change();
+		await waitUntil(() => primary.statuses.some((text) => text?.includes("agents 0") === true));
+		assert.equal(methods.includes("dashboard"), false, "the footer never requests native dashboard state");
 	} finally { manager.close(); }
 });
 
@@ -426,6 +452,200 @@ it("returns a failed attach configuration instead of a recovery status", async (
 		assert.equal(outcome.outcome, "failed");
 		assert.equal(outcome.recovery, undefined);
 	} finally { manager.close(); }
+});
+
+it("keeps hundreds of clean catalog records out of board reads and host launches", { timeout: 60000 }, async (t) => {
+	const root = fixtureRoot(t);
+	let acquires = 0;
+	let observes = 0;
+	const factory = primaryFactory();
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: factory.factory,
+		acquire: async (metadata) => {
+			acquires += 1;
+			return fakeConnection(metadata, async () => ({}));
+		},
+		observe: async () => {
+			observes += 1;
+			return [];
+		},
+	}));
+	t.after(() => manager.close());
+	for (let index = 0; index < 240; index += 1) createRecord(manager, root, `owner-${index}`);
+	const primary = fakePrimary(new AbortController().signal);
+	await manager.registerPrimary("owner-1", primary.client);
+	assert.equal(acquires, 0, "clean records launch no host at startup");
+	assert.equal(observes, 0, "startup reads no native host state");
+	assert.equal(factory.invocations, 1, "the primary channel is the only startup work");
+	const page = (await manager.dashboardPage()) as unknown as { rows: Array<{ storageId: string; state: string; owner: string; partial: boolean }> };
+	assert.equal(acquires, 0, "clean records launch no host");
+	assert.equal(observes, 0, "the board reads no native host state");
+	assert.equal(page.rows.length, 240, "every clean record has one explicit metadata row");
+	for (const row of page.rows) {
+		assert.equal(row.state, "unavailable");
+		assert.equal(row.owner, "unknown");
+		assert.equal(row.partial, true);
+	}
+	const again = (await manager.dashboardPage()) as unknown as { rows: Array<{ storageId: string; state: string }> };
+	assert.deepEqual(again.rows.map((row) => row.storageId).sort(), page.rows.map((row) => row.storageId).sort(), "the second refresh returns the same records");
+	assert.equal(acquires, 0);
+	assert.equal(observes, 0);
+});
+
+it("launches only marked-due records and caps concurrent recovery at two", { timeout: 60000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const acquired: string[] = [];
+	const gates = new Map<string, () => void>();
+	const activity = { active: 0, peak: 0 };
+	let flowing = false;
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		acquire: async (metadata) => {
+			const storageId = metadata.storageId;
+			acquired.push(storageId);
+			activity.active += 1;
+			activity.peak = Math.max(activity.peak, activity.active);
+			if (!flowing) {
+				await new Promise<void>((release) => gates.set(storageId, () => {
+					flowing = true;
+					release();
+				}));
+			}
+			activity.active -= 1;
+			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: false, deliveriesPending: false } : {}));
+		},
+		observe: async () => ({ conversations: [] }),
+		connect: noHost,
+	}));
+	t.after(() => manager.close());
+	const due = Array.from({ length: 5 }, (_, index) => {
+		const record = createRecord(manager, root, `due-${index}`);
+		manager.catalog.markRecoveryDue(record.storageId, true);
+		return record;
+	});
+	const clean = createRecord(manager, root, "clean");
+	const primary = fakePrimary(new AbortController().signal);
+	const registering = manager.registerPrimary("owner-1", primary.client);
+	await waitUntil(() => acquired.length >= 2);
+	assert.equal(activity.peak, 2, "at most two recoveries run at once");
+	assert.equal(acquired.length, 2, "the queue holds the other due records until a slot frees");
+	for (const gate of [...gates.values()]) gate();
+	await registering;
+	assert.deepEqual(acquired.slice().sort(), due.map((record) => record.storageId).sort(), "every due record recovers once and the clean record never launches");
+	assert.equal(acquired.includes(clean.storageId), false);
+	assert.deepEqual(manager.connectedStorageIds(), [], "delivery-only recovery stays out of the persistent client map");
+});
+
+it("serializes simultaneous primary registrations without duplicate recovery", { timeout: 60000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const launched: string[] = [];
+	const gates = new Map<string, () => void>();
+	const activity = { active: 0, peak: 0 };
+	let flowing = false;
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		acquire: async (metadata) => {
+			const storageId = metadata.storageId;
+			launched.push(storageId);
+			activity.active += 1;
+			activity.peak = Math.max(activity.peak, activity.active);
+			if (!flowing) {
+				await new Promise<void>((release) => gates.set(`${storageId}:${launched.length}`, () => {
+					flowing = true;
+					release();
+				}));
+			}
+			activity.active -= 1;
+			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: true, deliveriesPending: true } : {}));
+		},
+		observe: async () => ({ conversations: [] }),
+		connect: noHost,
+	}));
+	t.after(() => manager.close());
+	const due = Array.from({ length: 5 }, (_, index) => {
+		const record = createRecord(manager, root, `due-${index}`);
+		manager.catalog.markRecoveryDue(record.storageId, true);
+		return record;
+	});
+	const clean = createRecord(manager, root, "clean");
+	const first = fakePrimary(new AbortController().signal);
+	const second = fakePrimary(new AbortController().signal);
+	const registering = Promise.all([
+		manager.registerPrimary("owner-1", first.client),
+		manager.registerPrimary("owner-2", second.client),
+	]);
+	await waitUntil(() => launched.length >= 2);
+	assert.equal(activity.peak, 2, "the global recovery queue runs at most two launches");
+	assert.equal(launched.length, 2, "the queue holds the remaining due records until a slot frees");
+	for (const gate of [...gates.values()]) gate();
+	await registering;
+	assert.deepEqual(launched.slice().sort(), due.map((record) => record.storageId).sort(), "each due record launches exactly once across both registrations");
+	assert.equal(new Set(launched).size, launched.length, "no duplicate launch");
+	assert.equal(launched.includes(clean.storageId), false, "the clean control record never launches");
+});
+
+it("refuses to recover a due record with an unknown or live writer claim", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const acquired: string[] = [];
+	const connected: string[] = [];
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		acquire: async (metadata) => {
+			acquired.push(metadata.storageId);
+			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: false, deliveriesPending: false } : {}));
+		},
+		connect: async (metadata) => {
+			connected.push(metadata.storageId);
+			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: false, deliveriesPending: false } : {}));
+		},
+		observe: async () => ({ conversations: [] }),
+	}));
+	t.after(() => manager.close());
+	const absent = createRecord(manager, root, "absent");
+	manager.catalog.markRecoveryDue(absent.storageId, true);
+	const dead = createRecord(manager, root, "dead");
+	manager.catalog.markRecoveryDue(dead.storageId, true);
+	writeClaim(dead, claimFor(dead, deadProcessId()));
+	const unknown = createRecord(manager, root, "unknown");
+	manager.catalog.markRecoveryDue(unknown.storageId, true);
+	writeClaim(unknown, "{ not json");
+	const live = createRecord(manager, root, "live");
+	manager.catalog.markRecoveryDue(live.storageId, true);
+	writeClaim(live, claimFor(live, process.pid));
+	const primary = fakePrimary(new AbortController().signal);
+	await manager.registerPrimary("owner-1", primary.client);
+	assert.deepEqual(acquired.slice().sort(), [absent.storageId, dead.storageId].sort(), "absent and dead claims launch recovery");
+	assert.deepEqual(connected, [live.storageId], "a live claim connects without launching");
+	assert.equal(acquired.includes(unknown.storageId), false, "an unknown claim does not launch");
+	assert.equal(connected.includes(unknown.storageId), false, "an unknown claim does not connect");
+});
+
+it("closes a delivery-only recovery connection when no work remains", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	let recoveryState: { workPending: boolean; deliveriesPending: boolean } = { workPending: false, deliveriesPending: true };
+	let connection: FakeConnection | undefined;
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		acquire: async (metadata) => {
+			connection = fakeConnection(metadata, async (method) => (method === "recovery-state" ? recoveryState : {}));
+			return connection;
+		},
+		observe: async () => ({ conversations: [] }),
+		connect: noHost,
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	const controller = new AbortController();
+	const primary = fakePrimary(controller.signal);
+	await manager.registerPrimary("owner-1", primary.client);
+	const active = connection;
+	assert.ok(active);
+	assert.equal(active.closed, false, "pending deliveries keep the recovery connection open");
+	recoveryState = { workPending: false, deliveriesPending: false };
+	active.change();
+	await waitUntil(() => active.closed);
+	assert.deepEqual(manager.connectedStorageIds(), [], "delivery-only connections stay out of the client map");
 });
 
 it("pages list rows and reports unavailable storages", { timeout: 15000 }, async (t) => {

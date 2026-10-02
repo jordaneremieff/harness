@@ -149,35 +149,73 @@ text bound and an explicit truncation marker; `agent_inspect` retains access to
 the full source. A delivery receipt never proves task acceptance or that an
 agent acted on a correction.
 
+The host sets a top-level `recoveryDue` marker before it admits work, and when
+opening finds pending native work or pending delivery. Startup recovery reads
+only that marker from bounded catalog pages; it does not open, copy, or
+status-probe every storage. Recovery acquisitions run at most two at a time. A
+transient recovery link closes when the internal `recovery-state` check reports
+no pending native work and no unsettled or unacknowledged delivery; host change
+notifications trigger that check, not polling. The marker clears only on a clean
+close with nothing pending.
+
 ## Observation and dashboard
 
 Observation uses public Durable entries, documents, submissions, task outcomes,
-and views. An inactive storage is copied with Node's SQLite backup API and read
-without `resume()`. The bounded copy is disposable; inspection never decodes
-private SQL or becomes a source writer.
+and views. The roster needs no storage read; a deep read of an inactive storage
+uses a cached public snapshot and never `resume()`s the Harness. The copy is
+disposable and inspected only through public reads; it never decodes private SQL
+or becomes a source writer.
 
 History, exact entries, branch reads, searches, and results have explicit bounds
 and continuation fields. Continue an incomplete page even when it has no
-matches. A no-target status is byte-bounded: it reports the measured byte figure
+matches. An activity digest, including live metadata and coverage, is at most
+16,000 UTF-8 bytes. Error rows take priority. Coverage reports dropped rows,
+truncated metadata, scan limits, and the exact serialized size. Its cursor
+continues an unfinished scan, not rows dropped by the digest bound. A no-target status is byte-bounded: it reports the measured byte figure
 and separate omitted counts for sessions, primaries, and failures, then points
 to `agent_list` for paged discovery. Provider signatures, image payloads, and
 redacted thinking are omitted with markers and counts. Task outcomes are
 execution evidence, not acceptance.
 
-The dashboard receives native conversation records through `dashboard-types.ts`.
-It does not parse ordinary JSONL. Its roster is one bounded page: rows plus
-coverage (`complete`, `storagesVisited`, `skipped`, `omitted`, `nextCursor`).
-Coverage names skipped stores and rows not loaded; a continuation cursor means
-more inventory to inspect and may end at an empty page, so a bounded or empty
-page is not proof of absence. Attention means a row needs operator action: an
-unavailable or claim-conflicted storage, a host's last error or failed
-compaction, a failed run that carries an error, or a provider retry whose
-attempts are exhausted. A stopped session and an interrupted turn keep their
-state glyph in their date group; a terminal outcome without an error is a
-record, not a request. The footer formats active conversations and
-retained native cost from the same page and refreshes on host change
-notifications, not a receipt poll. `+?` marks incomplete or unreadable cost.
-Repeated observations do not accumulate the same usage twice.
+The dashboard receives host-published conversation metadata through
+`dashboard-types.ts`. It does not parse ordinary JSONL. Each Durable host
+publishes one bounded view beside its catalog record: rows, `updatedAt`,
+`coverage.complete`, `coverage.omitted`, and an optional `unavailable` reason.
+The board reads only those views. It does not bootstrap services, copy a
+database, or launch a host for the roster. Missing or unavailable metadata is an
+explicit `unavailable` row, not proof of absence.
+
+Its roster is one bounded page: rows plus coverage (`complete`,
+`storagesVisited`, `skipped`, `omitted`, `nextCursor`). Coverage names skipped
+stores and rows not loaded; a continuation cursor means more inventory to
+inspect and may end at an empty page, so a bounded or empty page is not proof of
+absence. A row whose writer claim is absent or dead is metadata from a stopped
+host: owner `unknown`, and a previously `working` state shows as `interrupted`.
+`ownerLabel` names the host metadata timestamp and any unreadable-claim error.
+Health fields are retained at the view's publication time, not a fresh check; a
+later view can clear them.
+
+Attention means a row needs operator action: an unavailable or claim-conflicted
+storage, a host's last error or failed compaction, a failed run that carries an
+error, or a provider retry whose attempts are exhausted. A stopped session and
+an interrupted turn keep their state glyph in their date group; a terminal
+outcome without an error is a record, not a request.
+
+Board detail selection uses a deep read. The cold path opens a cached public
+snapshot of the storage database; the cache key includes the database and WAL
+identity by device, inode, size, and nanosecond modification time, plus writer
+claim state. An unchanged identity reuses the snapshot and its bounded per-method
+result cache without services, model runtime, or extension bootstrap. A changed
+identity requires another copy; a missing or unstable source refuses the read.
+The snapshot writes no source content and resumes no Harness. The public SQLite
+backup path can create source sidecars; an absent WAL becoming an empty WAL does
+not invalidate that snapshot. Other identity changes during the copy refuse
+caching. Cache operations serialize to protect snapshots during reads and
+eviction. The footer formats
+active conversations and retained native cost from the same published rows and
+refreshes on host change notifications, not a receipt poll. `+?` marks
+incomplete or unreadable cost. Repeated observations do not accumulate the same
+usage twice.
 
 The actual primary Pi conversation remains an ordinary terminal session. The
 board does not display a fabricated Durable copy as that primary. Equal-peer
@@ -207,7 +245,10 @@ SessionManager.
 Current storage lives under `<store>/durable/`: a bounded discovery metadata
 record and a SQLite file for each storage, plus directory bindings. Metadata
 locates a storage; native documents and entries remain authoritative for its
-conversation state. Directory bindings live in one `PlaceBook`; native and
+conversation state. The catalog record also carries the optional bounded `view`
+published by its host and the host-local `recoveryDue` marker; neither is
+storage identity, and host metadata strips both. Directory bindings live in one
+`PlaceBook`; native and
 primary controls resolve the same binding, and the longest bound directory wins.
 Host endpoints and claims live under `<agentDir>/durable-hosts/`; primary channel
 endpoints live under `<store>/.primaries/`. Long Unix socket paths use a short

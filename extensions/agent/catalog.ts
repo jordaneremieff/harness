@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	closeSync,
 	constants,
@@ -7,11 +7,13 @@ import {
 	mkdirSync,
 	openSync,
 	readSync,
+	renameSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { opendir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { type CatalogView, parseCatalogView } from "./catalog-view.ts";
 import { observeClaim } from "./claims.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { type HostMetadata, hostPaths, parseHostMetadata } from "./host-protocol.ts";
@@ -68,9 +70,13 @@ async function directoryRevision(root: string): Promise<string | undefined> {
 }
 export interface CatalogRecord extends HostMetadata {
 	createdAt: string;
+	/** Optional bounded conversation projection; absent means the projection is unknown. */
+	view?: CatalogView;
+	/** Host-local marker: true before admission or resume, false only on a clean idle host with no deliveries. */
+	recoveryDue?: boolean;
 }
 export function hostMetadata(record: CatalogRecord): HostMetadata {
-	const { createdAt: _createdAt, ...metadata } = record;
+	const { createdAt: _createdAt, view: _view, recoveryDue: _recoveryDue, ...metadata } = record;
 	return metadata;
 }
 export interface CatalogPage {
@@ -186,10 +192,63 @@ export class AgentCatalog {
 				throw new Error("Agent metadata is invalid");
 			parseHostMetadata(hostMetadata(record));
 			if (!isThinkingLevel(record.thinkingLevel)) throw new Error("Agent metadata has an unknown reasoning level");
+			if (record.view !== undefined) {
+				parseCatalogView(record.view);
+				this.checkViewIdentity(storageId, record.view);
+			}
+			if (record.recoveryDue !== undefined && typeof record.recoveryDue !== "boolean")
+				throw new Error("Agent metadata has an invalid recovery marker");
 			return record;
 		} finally {
 			closeSync(fd);
 		}
+	}
+
+	/**
+	 * Replace one record's bounded view, preserving every immutable field from
+	 * the stored record. The caller owns the storage writer claim; a symlink,
+	 * corrupt record, missing record, or wrong stored identity is refused.
+	 */
+	updateView(identity: string, view: CatalogView): CatalogRecord {
+		const record = this.read(identity);
+		const parsed = parseCatalogView(view);
+		this.checkViewIdentity(record.storageId, parsed);
+		return this.rewrite({ ...record, view: parsed });
+	}
+
+	private checkViewIdentity(storageId: string, view: CatalogView): void {
+		if ((view.storageId !== undefined && view.storageId !== storageId) || view.rows.some((row) => row.storageId !== storageId)) throw new Error("Agent view storageId does not match its catalog record");
+	}
+
+	/**
+	 * Set the host-local recovery marker, preserving the view and every immutable
+	 * field. The caller sets true before admission or resume and false only on a
+	 * clean idle host with no deliveries.
+	 */
+	markRecoveryDue(identity: string, recoveryDue: boolean): CatalogRecord {
+		if (typeof recoveryDue !== "boolean") throw new TypeError("recoveryDue must be a boolean");
+		const record = this.read(identity);
+		return this.rewrite({ ...record, recoveryDue });
+	}
+
+	/** Atomically replace one record; the caller owns the storage writer claim. */
+	private rewrite(record: CatalogRecord): CatalogRecord {
+		const text = `${JSON.stringify(record)}\n`;
+		if (Buffer.byteLength(text, "utf8") > MAX_RECORD_BYTES) throw new Error("Agent metadata exceeds its bound");
+		const path = this.path(record.storageId);
+		const temporary = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+		writeFileSync(temporary, text, { flag: "wx", mode: 0o600 });
+		try {
+			renameSync(temporary, path);
+		} catch (error) {
+			try {
+				unlinkSync(temporary);
+			} catch {
+				// The rename failure is retained.
+			}
+			throw error;
+		}
+		return record;
 	}
 
 	/** Bounded, symlink-refusing read of one record with its file identity. */

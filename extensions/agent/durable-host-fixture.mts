@@ -143,6 +143,18 @@ export async function fixtureRuntime(mode: FixtureMode): Promise<Models> {
 	return runtime;
 }
 
+/** A tool that always fails, producing an error tool result. */
+export function failingTool(): ToolRegistration {
+	return defineTool({
+		name: "failing-tool",
+		description: "Always fails.",
+		parameters: Type.Object({}),
+		execute: async () => {
+			throw new Error("intentional failure");
+		},
+	});
+}
+
 /** A runtime that answers each request with the next scripted message. */
 export async function scriptedRuntime(messages: readonly AssistantMessage[]): Promise<Models> {
 	const queue = [...messages];

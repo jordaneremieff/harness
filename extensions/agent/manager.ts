@@ -4,14 +4,15 @@ import { join, resolve } from "node:path";
 import { AgentCatalog, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
 import { formatDurableFooter } from "./footer.ts";
 import { buildStatusOverview } from "./status-overview.ts";
-import { createPrimaryChannel, connectPrimaryChannel, primaryEndpointOwnerState, type PrimaryChannel } from "./primary-channel.ts";
+import { createPrimaryChannel, connectPrimaryChannel, type PrimaryChannel } from "./primary-channel.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import { acquireHost, connectHost, type HostConnection } from "./host-client.ts";
-import type { HostMetadata } from "./host-protocol.ts";
+import { hostPaths, type HostMetadata } from "./host-protocol.ts";
+import { observeClaim } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
 import type { AgentConversationPage, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
 
-export const MANAGER_PROTOCOL = 7;
+export const MANAGER_PROTOCOL = 8;
 export interface AgentCaller {
 	id: string;
 	cwd: string;
@@ -76,12 +77,6 @@ class BoundedMap<V> {
 	}
 }
 
-function statusHasBusy(status: unknown): boolean {
-	if (status === null || typeof status !== "object") return false;
-	const rows = Array.isArray(status) ? status : ((status as { conversations?: unknown[] }).conversations ?? [status]);
-	return rows.some((row) => row !== null && typeof row === "object" && (row as { busy?: unknown }).busy === true);
-}
-
 /** A primary owns client connections, never a Durable scheduler or storage writer. */
 export class AgentManager {
 	readonly managerProtocol = MANAGER_PROTOCOL;
@@ -90,6 +85,9 @@ export class AgentManager {
 	private readonly options: AgentManagerOptions;
 	private readonly clients = new Map<string, HostConnection>();
 	private readonly opening = new Map<string, Promise<HostConnection>>();
+	private readonly recovering = new Set<string>();
+	private recoveryQueue: Promise<void> = Promise.resolve();
+	private readonly recoveryClients = new Map<string, () => void>();
 	private readonly primaries = new Map<string, PrimaryClient>();
 	private readonly primaryChannels = new Map<string, PrimaryChannel>();
 	private readonly closingPrimaries = new Map<string, Promise<void>>();
@@ -307,17 +305,34 @@ export class AgentManager {
 			coverage.skipped += page.coverage.skipped;
 			for (const record of page.records) {
 				coverage.storagesVisited++;
-				try { rows.push(...await this.observe(record, "dashboard", {}) as AgentConversationSummary[]); }
-				catch (error) {
-					coverage.skipped++;
-					rows.push({ id: record.storageId, storageId: record.storageId, cwd: record.cwd, name: record.name, modifiedAt: Date.parse(record.createdAt), owner: "unavailable", state: "unavailable", cost: 0, partial: true, error: errorText(error) });
-				}
+				const projection = this.catalogRows(record);
+				coverage.skipped += projection.skipped;
+				coverage.omitted += projection.omitted;
+				rows.push(...projection.rows);
 			}
 			coverage.nextCursor = page.nextCursor;
 			if (!page.nextCursor) { coverage.complete = true; break; }
 			cursor = page.nextCursor;
 		}
 		return { rows, coverage, observedAt };
+	}
+
+	private catalogRows(record: CatalogRecord): { rows: AgentConversationSummary[]; skipped: number; omitted: number } {
+		const view = record.view;
+		if (!view || view.unavailable) {
+			return { skipped: 1, omitted: 0, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, name: record.name, modifiedAt: Date.parse(view?.updatedAt ?? record.createdAt), owner: "unknown", state: "unavailable", cost: 0, partial: true, error: view?.unavailable ?? "Host metadata is unavailable; inspect this conversation for native state" }] };
+		}
+		const paths = hostPaths(record);
+		const claim = observeClaim(paths.claim, paths.identity);
+		const rows = view.rows.map((source) => {
+			const row = { ...source } as AgentConversationSummary;
+			row.owner = claim.kind === "unknown" ? "unavailable" : claim.kind === "live" ? "here" : "unknown";
+			row.ownerLabel = `Host metadata at ${view.updatedAt}${claim.kind === "unknown" ? `; ${claim.error}` : ""}`;
+			if (claim.kind !== "live" && row.state === "working") row.state = "interrupted";
+			if (claim.kind !== "live") row.currentTool = undefined;
+			return row;
+		});
+		return { rows, skipped: view.coverage.complete ? 0 : 1, omitted: view.coverage.omitted };
 	}
 
 	async snapshot(sessionId: string): Promise<AgentConversationSnapshot> { return this.observe(this.catalog.read(sessionId), "snapshot", { sessionId }) as Promise<AgentConversationSnapshot>; }
@@ -357,34 +372,85 @@ export class AgentManager {
 			if (!this.primaries.size) this.releaseClients();
 		}, { once: true });
 		await this.refreshFooter();
+		const due: CatalogRecord[] = [];
 		let cursor: string | undefined;
 		for (let pageIndex = 0; pageIndex < MAX_INVENTORY_PAGES; pageIndex++) {
 			if (this.stopping(primary)) return;
 			const page = await this.catalog.page({ cursor, limit: 20 });
-			await Promise.all(page.records.map(async (record) => {
-				if (this.stopping(primary)) return;
-				try {
-					const status = await this.observe(record, "status", {}, primary);
-					if (this.stopping(primary)) return;
-					if (statusHasBusy(status) || record.ownerId === ownerId || this.absentPrimaryOwner(record)) {
-						await this.connection(record, primary);
-					}
-				} catch (error) {
-					this.failures.set(record.storageId, errorText(error));
-				}
-			}));
-			if (!page.nextCursor) return;
-			cursor = page.nextCursor;
+			due.push(...page.records.filter((record) => record.recoveryDue === true));
+			cursor = page.nextCursor ?? undefined;
+			if (!cursor) break;
 		}
-		this.failures.set("startup", "Startup recovery reached its inventory bound; use agent_list for the remaining storage");
+		if (cursor) this.failures.set("startup", "Startup recovery reached its inventory bound; use agent_list for the remaining storage");
+		let next = 0;
+		const recover = async () => {
+			while (!this.stopping(primary) && next < due.length) {
+				const record = due[next++];
+				if (record) await this.recover(record, primary);
+			}
+		};
+		const recovery = this.recoveryQueue.then(async () => { await Promise.all([recover(), recover()]); });
+		this.recoveryQueue = recovery.catch(() => undefined);
+		await recovery;
 	}
 
-	private absentPrimaryOwner(record: CatalogRecord): boolean {
-		if (!record.ownerId) return false;
-		try { this.catalog.read(record.ownerId); return false; }
-		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false; }
-		const state = primaryEndpointOwnerState(this.options.root, record.ownerId);
-		return state === "absent" || state === "dead";
+	private async recover(record: CatalogRecord, primary: PrimaryClient): Promise<void> {
+		if (this.recovering.has(record.storageId) || this.clients.has(record.storageId)) return;
+		const paths = hostPaths(record);
+		const claim = observeClaim(paths.claim, paths.identity);
+		if (claim.kind === "unknown") { this.failures.set(record.storageId, claim.error); return; }
+		this.recovering.add(record.storageId);
+		try {
+			const open = claim.kind === "live" ? this.options.connect ?? connectHost : this.options.acquire ?? acquireHost;
+			const client = await open(hostMetadata(record));
+			if (this.stopping(primary)) { await client.close(); this.recovering.delete(record.storageId); return; }
+			await this.monitorRecovery(record.storageId, client, primary);
+		} catch (error) {
+			this.recovering.delete(record.storageId);
+			this.failures.set(record.storageId, errorText(error));
+		}
+	}
+
+	private async monitorRecovery(storageId: string, client: HostConnection, primary: PrimaryClient): Promise<void> {
+		let closed = false;
+		let unsubscribe = () => {};
+		let removeClose = () => {};
+		let checking = false;
+		let again = false;
+		const close = () => {
+			if (closed) return;
+			closed = true;
+			unsubscribe();
+			removeClose();
+			primary.signal.removeEventListener("abort", close);
+			this.recoveryClients.delete(storageId);
+			this.recovering.delete(storageId);
+			void client.close().catch((error) => this.failures.set(storageId, errorText(error)));
+		};
+		this.recoveryClients.set(storageId, close);
+		primary.signal.addEventListener("abort", close, { once: true });
+		removeClose = client.onClose(close);
+		const check = async () => {
+			if (closed) return;
+			if (checking) { again = true; return; }
+			checking = true;
+			try {
+				do {
+					again = false;
+					const state = await client.request("recovery-state") as { workPending?: boolean; deliveriesPending?: boolean };
+					if (state.workPending === false && state.deliveriesPending === false) close();
+					void this.refreshFooter();
+				} while (again && !closed);
+			} catch (error) { this.failures.set(storageId, errorText(error)); close(); }
+			finally { checking = false; }
+		};
+		try {
+			if (client.subscribeChanges) {
+				unsubscribe = await client.subscribeChanges(() => { void check(); }, primary.signal);
+				if (closed) unsubscribe();
+			}
+			await check();
+		} catch (error) { close(); throw error; }
 	}
 
 	private stopping(primary: PrimaryClient): boolean {
@@ -421,6 +487,7 @@ export class AgentManager {
 	}
 
 	private releaseClients(): void {
+		for (const close of this.recoveryClients.values()) close();
 		for (const unsubscribe of this.subscriptions.values()) unsubscribe();
 		this.subscriptions.clear();
 		const clients = [...this.clients.values()];

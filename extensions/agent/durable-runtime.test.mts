@@ -10,9 +10,10 @@
  */
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { it } from "node:test";
-import { hostMetadata } from "./catalog.ts";
+import { AgentCatalog, hostMetadata } from "./catalog.ts";
+import type { CatalogView } from "./catalog-view.ts";
 import { acquireHost } from "./host-client.ts";
 import { observeDurableStorage } from "./durable-runtime.ts";
 import { childCatalogRecord, killHost, runtimeFixture, trackHost, waitForFile, waitForReceipt } from "./durable-runtime-fixture.mts";
@@ -57,7 +58,7 @@ async function within(ready: Promise<void>, timeoutMs: number, message: string):
 	});
 }
 
-it("installs contributions against the cold observation Harness before the first read", { timeout: 180000 }, async (t) => {
+it("reads a cold observation without bootstrapping contributions", { timeout: 180000 }, async (t) => {
 	const f = runtimeFixture(t, { withAgentExtension: true });
 	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
 	trackHost(t, primary.pid);
@@ -71,14 +72,14 @@ it("installs contributions against the cold observation Harness before the first
 	const marker = join(f.testDir, "observation-create.txt");
 	process.env.DURABLE_TEST_CREATE_MARKER = marker;
 	try {
-		const observed = await observeDurableStorage(f.metadata, "status", {}) as { live: boolean; storageId: string; inventory: { contributions: Array<{ name: string }> } };
+		const observed = await observeDurableStorage(f.metadata, "status", { sessionId: f.metadata.storageId }) as { live: boolean; storageId: string; conversation?: unknown };
 		assert.equal(observed.live, false);
 		assert.equal(observed.storageId, f.metadata.storageId);
-		assert.ok(observed.inventory.contributions.some((item) => item.name === "fixture.effect"));
+		assert.ok(observed.conversation, "the cold status carries the retained conversation");
 	} finally {
 		delete process.env.DURABLE_TEST_CREATE_MARKER;
 	}
-	assert.ok(existsSync(marker), "the contribution create hook ran against the observation Harness");
+	assert.equal(existsSync(marker), false, "the cold read ran no contribution create");
 });
 
 it("spawns a cross-cwd child in an independent storage and delivers its result to the owner conversation", { timeout: 180000 }, async (t) => {
@@ -172,6 +173,72 @@ it("does not rerun an unsafe effect after SIGKILL and delivers the retained resu
 	} finally {
 		await second.close();
 	}
+});
+
+/** Wait until a host process exits, bounded. */
+async function waitForExit(pid: number, timeoutMs = 10000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		try { process.kill(pid, 0); } catch { return; }
+		if (Date.now() >= deadline) throw new Error("host did not exit before its deadline");
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+}
+
+/** Wait for the coalesced catalog view publication, bounded. */
+async function readViewWhenPublished(catalog: AgentCatalog, storageId: string, timeoutMs = 10000): Promise<CatalogView | undefined> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const view = catalog.read(storageId).view;
+		if (view !== undefined) return view;
+		if (Date.now() >= deadline) return undefined;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+}
+
+it("marks recovery due before admission and reports the recovery state", { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const catalog = new AgentCatalog(dirname(dirname(f.storagePath)));
+	const primary = await acquireHost(f.metadata, { env: f.env("request") });
+	trackHost(t, primary.pid);
+	try {
+		assert.deepEqual(await primary.request("recovery-state", {}), { workPending: false, deliveriesPending: false });
+		const submitted = await primary.request("submit", { message: "RECOVERY_MARK", requestId: "recovery-mark" }) as SubmitResult;
+		assert.ok(submitted.submissionId);
+		await waitForFile(join(f.testDir, "requested"));
+		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "admission marks the record before the request completes");
+		const busy = await primary.request("recovery-state", {}) as { workPending: boolean; deliveriesPending: boolean };
+		assert.equal(busy.workPending, true);
+		const view = await readViewWhenPublished(catalog, f.metadata.storageId);
+		assert.ok(view, "the gated host published a catalog view");
+		assert.ok(view.rows.some((row) => row.storageId === f.metadata.storageId), "the live view carries this storage's row");
+	} finally {
+		await primary.close().catch(() => {});
+	}
+});
+
+it("publishes a bounded catalog view and clears recovery due on a clean close", { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const catalog = new AgentCatalog(dirname(dirname(f.storagePath)));
+	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
+	const pid = primary.pid;
+	try {
+		const submitted = await primary.request("submit", { message: "VIEW_SOURCE", requestId: "view-source", ownerId: f.ownerId }) as SubmitResult;
+		const receipt = await waitForReceipt(primary, f.ownerId, submitted.submissionId);
+		assert.equal(receipt.status, "done");
+		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "the admitted request marked recovery due");
+		await primary.request("acknowledge", { ownerId: f.ownerId, submissionIds: [submitted.submissionId] });
+	} finally {
+		await primary.close().catch(() => {});
+	}
+	// SIGTERM inside the coalescing window: the clean close must flush the last view.
+	process.kill(pid, "SIGTERM");
+	await waitForExit(pid);
+	const view = await readViewWhenPublished(catalog, f.metadata.storageId);
+	assert.ok(view, "the clean close flushed the final catalog view");
+	assert.ok(view.rows.some((row) => row.storageId === f.metadata.storageId), "the view carries this storage's rows");
+	assert.equal(view.coverage.complete, true);
+	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false, "a clean idle close clears the marker");
 });
 
 it("keeps change notifications after reload replaces the durable host", { timeout: 120000 }, async (t) => {

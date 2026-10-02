@@ -1,24 +1,31 @@
 /**
- * Observation contract between native Durable session sources and the agent
- * dashboard. The parent owns reading Pi Durable storage; this module names the
- * data the UI consumes and imports no storage, worker, or activity module.
+ * Observation contract between host-published catalog metadata and the agent
+ * dashboard. The board reads only the bounded views a Durable host publishes
+ * beside its catalog record: it bootstraps no services, copies no database, and
+ * launches no host for the roster. A deep snapshot is available only for the
+ * selected conversation. This module names the data the UI consumes and imports
+ * no storage, worker, or activity module.
  */
 import type { Message } from "@earendil-works/pi-ai";
 
 /** Dashboard lifecycle bucket for one durable conversation. */
 export type AgentConversationState = "working" | "idle" | "done" | "failed" | "stopped" | "interrupted" | "new" | "unavailable";
 
-/** Writer ownership the source can observe for one conversation: held here, readable and claimable, or unreadable. */
+/**
+ * Source ownership for one row. `here` holds the writer claim; `unknown` is
+ * readable and claimable later; `unavailable` is unreadable or claim-conflicted.
+ * An absent or dead claim leaves the row `unknown`.
+ */
 export type AgentConversationOwner = "here" | "unavailable" | "unknown";
 
-/** One failed native compaction retained by a held storage. */
+/** One failed native compaction retained in the host-published view. */
 export interface DashboardCompactionFailure {
 	reason: "manual" | "threshold" | "overflow";
 	errorMessage?: string;
 	at: string;
 }
 
-/** One in-progress provider retry retained by a held storage. */
+/** One in-progress provider retry retained in the host-published view. */
 export interface DashboardAutoRetry {
 	attempt: number;
 	maxAttempts: number;
@@ -27,10 +34,10 @@ export interface DashboardAutoRetry {
 }
 
 /**
- * Recovery fields from a storage this process holds. An entry exists only for a
- * held storage, so an absent entry is not a health statement. An empty report
- * means the source lists no recovery issue. A later successful compaction
- * clears the failure; the retry's end clears the retry.
+ * Recovery fields retained in one host-published view. Values are a snapshot
+ * from the view's publication time, not a fresh health assertion. Absent fields
+ * mean the publication carried none, not that the storage is healthy. A later
+ * publication can clear a failure or retry that its source cleared.
  */
 export interface DashboardHealth {
 	lastError?: string;
@@ -52,13 +59,13 @@ export interface AgentConversationSummary {
 	cwd: string;
 	/** Effective model and reasoning level when resolved. */
 	model?: { provider: string; modelId: string; thinkingLevel: string };
-	/** Last known activity in epoch milliseconds; the latest entry timestamp, else the storage file time. */
+	/** Source-published update time in epoch milliseconds; the publication timestamp when the view carries no row time. */
 	modifiedAt: number;
 	/** "here" is held by this process; "unknown" is readable and claimable later; "unavailable" is unreadable or unclaimable. */
 	owner: AgentConversationOwner;
-	/** Optional owner detail for refusal guidance. */
+	/** Source detail for refusal guidance: the host metadata timestamp, plus a claim error when the claim is unreadable. */
 	ownerLabel?: string;
-	/** Dashboard lifecycle bucket. */
+	/** Dashboard lifecycle bucket from the published view. A row whose writer claim is absent or dead shows `interrupted` when the view said it was working. */
 	state: AgentConversationState;
 	/** Retained usage cost for the conversation. */
 	cost: number;
@@ -74,7 +81,7 @@ export interface AgentConversationSummary {
 	currentTool?: { name: string; argument: string };
 	/** Observed span of the latest user turn in milliseconds; absent without an established start. */
 	durationMs?: number;
-	/** Recovery detail from the held storage; absent otherwise. */
+	/** Retained recovery detail from the host-published view; absent when the publication carries none. */
 	health?: DashboardHealth;
 }
 
@@ -111,11 +118,11 @@ export interface AgentDashboardCoverage {
 	complete: boolean;
 	/** Storages visited for this page. */
 	storagesVisited: number;
-	/** Storages skipped as unreadable, refused, or unclaimable. */
+	/** Stores skipped as unreadable or unavailable, plus stores whose published view was incomplete. */
 	skipped: number;
-	/** Materialized rows excluded from this page by the row or byte budget; unscanned extent is unknown. */
+	/** Rows excluded by a host view or page budget; the unscanned extent is unknown. */
 	omitted: number;
-	/** Continuation cursor; a non-null value means more rows exist. */
+	/** Continuation cursor; a non-null value means more inventory may exist, and the cursor can end at an empty page, so the remaining extent is unknown. */
 	nextCursor: string | null;
 }
 
@@ -128,13 +135,14 @@ export interface AgentConversationPage {
 }
 
 /**
- * Async observation surface the dashboard consumes. The parent reads its
- * native Durable hosts; this UI calls no session service directly.
+ * Async observation surface the dashboard consumes. The parent reads the
+ * published catalog metadata and the selected transcript; this UI calls no
+ * session service directly.
  */
 export interface AgentObservationSources {
-	/** One bounded roster page from the Durable storages this process can reach. */
+	/** One bounded roster page built from host-published catalog views; the board opens no storage, copies no database, and launches no host. */
 	list(): Promise<AgentConversationPage>;
-	/** Active transcript and revision for one dashboard ID. */
+	/** Deep read of the selected conversation; the source may serve it from a cached public snapshot without services or model bootstrap. */
 	snapshot(id: string): Promise<AgentConversationSnapshot>;
 }
 
