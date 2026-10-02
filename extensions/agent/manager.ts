@@ -16,7 +16,7 @@ import type { ConversationSnapshotPage } from "./durable-observation.ts";
 import type { HostObservationScope } from "./host-client.ts";
 import type { ObservationFrame } from "./live-frames.ts";
 
-export const MANAGER_PROTOCOL = 9;
+export const MANAGER_PROTOCOL = 10;
 export interface AgentCaller {
 	id: string;
 	cwd: string;
