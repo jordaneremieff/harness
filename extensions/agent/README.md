@@ -225,10 +225,12 @@ The host runtime and the contribution code loaded in the same process share one
 control binding. That binding carries a version: a native reload that pairs new
 contribution code with a retained runtime of another version refuses with both
 versions and a restart message, instead of dispatching across two contracts. An
-open live observation reconnects to a live host only. It never launches a host
-by itself; a lost host signals its listeners unavailable and leaves relaunch to
-the manager's bounded recovery pool. A listener that attaches after a frame
-arrives receives that current frame at once.
+open live observation reconnects to a live host only. The observation link
+never relaunches a lost host; it signals its listeners unavailable and leaves
+relaunch to the manager's bounded recovery pool. Separately, when any read
+meets an older idle host, the manager performs the version replacement
+described below. A listener that attaches after a frame arrives receives that
+current frame at once.
 
 Every host advertises a runtime version in its readiness line and answers a
 `runtime-version` request. A host that reports no version predates the

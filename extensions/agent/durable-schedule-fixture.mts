@@ -1,13 +1,15 @@
 /**
  * Fixture for the reset and timer tests: one real DurableHost over a SQLite
  * file with the production agent contribution loaded, a faux provider, and an
- * optional held answer for the busy-boundary tests. No production runner
- * process is involved; the process tests use `durable-runtime-fixture.mts`.
+ * optional held answer for the busy-boundary tests. As a runner, it serves
+ * paused scheduling over the host protocol with an explicit native clock.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
+import { runHost } from "./host-process.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -27,6 +29,12 @@ export interface ScheduleFixtureOptions {
 	/** Hold the first model request open until `releaseAnswer()` runs. */
 	readonly deferFirstAnswer?: boolean;
 	readonly answer?: string;
+	/** Native clock shared across reopen. */
+	readonly now?: () => number;
+	/** Leave scheduling paused until the test explicitly resumes it. */
+	readonly resume?: boolean;
+	/** Existing storage paths for a subprocess reopen. */
+	readonly metadata?: HostMetadata;
 }
 
 export interface ScheduleFixture {
@@ -71,12 +79,12 @@ function gate(): Gate {
 }
 
 export async function scheduleFixture(t: { after(fn: () => void | Promise<void>): void }, options: ScheduleFixtureOptions = {}): Promise<ScheduleFixture> {
-	const root = mkdtempSync(join(tmpdir(), "durable-schedule-"));
-	const cwd = join(root, "work");
-	const agentDir = join(root, "agent");
-	const storagePath = join(root, "store.sqlite");
-	mkdirSync(cwd);
-	mkdirSync(agentDir);
+	const root = options.metadata === undefined ? mkdtempSync(join(tmpdir(), "durable-schedule-")) : dirname(options.metadata.storagePath);
+	const cwd = options.metadata?.cwd ?? join(root, "work");
+	const agentDir = options.metadata?.agentDir ?? join(root, "agent");
+	const storagePath = options.metadata?.storagePath ?? join(root, "store.sqlite");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
 	const extension = fileURLToPath(new URL("./index.ts", import.meta.url));
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: { mode: "off" }, retry: { enabled: false }, ...(options.agentExtension === true ? { extensions: [extension] } : {}) }));
 	const runtime = await createTestRuntime();
@@ -112,7 +120,7 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 		stream,
 		streamSimple: stream,
 	});
-	const storageId = "durable-schedule-fixture";
+	const storageId = options.metadata?.storageId ?? "durable-schedule-fixture";
 	const ownerId = "schedule-fixture-owner";
 	const errors: unknown[] = [];
 
@@ -133,12 +141,13 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 			registry: services.registry,
 			settings: services.settings,
 			env: services.env,
+			...(options.now === undefined ? {} : { now: options.now }),
 			agent: { model: { provider: testModel.provider, modelId: testModel.id } },
 			meta: { name: "schedule fixture", owner: ownerId },
 			resume: false,
 		});
 		await services.install(host.harness);
-		host.harness.resume();
+		if (options.resume !== false) host.harness.resume();
 		await reconcileDeliveries(host.harness, BACKGROUND_CONTEXT);
 		return { services, host };
 	};
@@ -192,7 +201,35 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 	t.after(async () => {
 		await fixture.host.close().catch(() => undefined);
 		await fixture.services.close().catch(() => undefined);
-		rmSync(root, { recursive: true, force: true });
+		if (options.metadata === undefined) rmSync(root, { recursive: true, force: true });
 	});
 	return fixture;
+}
+
+/** A paused native timer host with a caller-controlled clock, for process-loss tests. */
+async function main(): Promise<void> {
+	const raw = process.argv[2];
+	if (!raw) throw new Error("schedule fixture requires host metadata");
+	const metadata = parseHostMetadata(JSON.parse(raw));
+	const now = Number(process.env.DURABLE_TEST_NOW);
+	if (!Number.isSafeInteger(now) || now <= 0) throw new Error("DURABLE_TEST_NOW must be a positive integer");
+	const fixture = await scheduleFixture({ after() {} }, { agentExtension: true, metadata, now: () => now, resume: false });
+	const host = await runHost(() => ({
+		request: async (method, params) => {
+			if (method === "fixture-clock") return { now };
+			if (method === "fixture-resume") { fixture.host.harness.resume(); return { resumed: true }; }
+			return fixture.host.request(method, params as Record<string, unknown> | undefined);
+		},
+		close: () => fixture.close(),
+		isIdle: () => fixture.host.isIdle(),
+		onChange: (listener) => fixture.host.harness.subscribeCommits(() => listener()),
+	}), { metadata, idleMs: 0 });
+	await host.done;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+	main().catch((error: unknown) => {
+		process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
+		process.exitCode = 1;
+	});
 }

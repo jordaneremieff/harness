@@ -75,7 +75,7 @@ export type HostObservationListener = (frame: ObservationFrame | undefined, fres
 export interface HostObservation {
 	readonly scope: HostObservationScope;
 	readonly frame: ObservationFrame;
-	/** Replay the current frame, then every later frame; `unavailable` arrives once on connection loss. */
+	/** Replay the current frame, or unavailable for a retired observation; later loss reports unavailable once. */
 	onFrame(listener: HostObservationListener): () => void;
 	close(): Promise<void>;
 }
@@ -620,6 +620,11 @@ class HostConnectionImpl implements HostConnection {
 				return current;
 			},
 			onFrame: (listener) => {
+				if (entry.disposed) {
+					try { listener(entry.frame, false, "unavailable"); }
+					catch { /* A listener failure never changes observation state. */ }
+					return () => {};
+				}
 				entry.listeners.add(listener);
 				const current = entry.frame;
 				if (current !== undefined) {
@@ -653,6 +658,9 @@ class HostConnectionImpl implements HostConnection {
 			if (update.type !== "state") return;
 			const frame = frameFromOps(update.ops as unknown as readonly unknown[]);
 			if (frame !== undefined) this.deliverObservation(entry, frame, false);
+		}).catch((error: unknown) => {
+			this.closeObservationToken(token);
+			throw error;
 		});
 		if (this.closedValue || entry.disposed) {
 			await subscription.dispose().catch(() => undefined);
@@ -703,6 +711,21 @@ class HostConnectionImpl implements HostConnection {
 			.catch(() => undefined);
 	}
 
+	private notifyObservationUnavailable(entry: ObservationEntry): void {
+		for (const listener of [...entry.listeners]) {
+			try { listener(entry.frame, false, "unavailable"); }
+			catch { /* One listener failure never stops the others. */ }
+		}
+		entry.listeners.clear();
+	}
+
+	/** Retire a failed observation without closing the recovered transport. */
+	private failObservation(entry: ObservationEntry): void {
+		if (entry.disposed) return;
+		void this.releaseObservation(entry.id);
+		this.notifyObservationUnavailable(entry);
+	}
+
 	private disposeObservationEntries(): void {
 		for (const entry of [...this.observationEntries.values()]) {
 			entry.disposed = true;
@@ -710,15 +733,7 @@ class HostConnectionImpl implements HostConnection {
 			const subscription = entry.subscription;
 			entry.subscription = undefined;
 			if (subscription) void subscription.dispose().catch(() => undefined);
-			// A lost or closed connection tells every observer once; a silent drop leaves panes working forever.
-			for (const listener of [...entry.listeners]) {
-				try {
-					listener(entry.frame, false, "unavailable");
-				} catch {
-					// One listener failure never stops the others.
-				}
-			}
-			entry.listeners.clear();
+			this.notifyObservationUnavailable(entry);
 		}
 		this.observationEntries.clear();
 	}
@@ -783,7 +798,7 @@ class HostConnectionImpl implements HostConnection {
 		for (const entry of this.changeEntries.values()) void this.bindChangeEntry(entry).catch(() => undefined);
 		// A recovered observation starts from the host's current snapshot; the new
 		// subscription's baseline replaces any stale frame.
-		for (const entry of [...this.observationEntries.values()]) void this.bindObservation(entry).catch(() => undefined);
+		for (const entry of [...this.observationEntries.values()]) void this.bindObservation(entry).catch(() => this.failObservation(entry));
 		for (const call of calls) {
 			if (!this.pending.has(call.id)) continue;
 			if (!isRetrySafeHostMethod(call.method) || call.attempts >= this.retryAttempts) {

@@ -78,9 +78,9 @@ export type DeliveryMessage = string | DeliveryMessagePart[];
 /**
  * Who caused one admission. An operator action from the board or the
  * `/agent` command is `operator`; an agent tool from a model is `model`.
- * Every new intent records its origin explicitly; only an intent stored
- * before the field existed lacks one, and the delivery reader treats that
- * absence as `model` so its notice keeps the turn-triggering behavior.
+ * Each owned admission requires an explicit origin. A receipt with a missing
+ * or malformed origin stays pending and reports an error instead of choosing
+ * whether to wake its recipient.
  */
 export type DeliveryOrigin = "operator" | "model";
 
@@ -103,7 +103,7 @@ export type DeliveryReceipt = {
 	readonly ownerId: string;
 	readonly conversationId: ConversationId;
 	readonly operationId: string | null;
-	/** Admission origin copied from the intent; only a pre-field stored intent lacks it. */
+	/** Admission origin copied from the intent; the reader rejects a missing or malformed value. */
 	readonly origin?: DeliveryOrigin;
 	readonly status: "done" | "unanswered";
 	readonly entryId: EntryId | null;
@@ -293,7 +293,7 @@ export async function submitConversation(
 	const { message, requestId, ownerId, whenBusy, operationId, origin } = params;
 	let deduped = (await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined;
 	if (ownerId !== undefined) {
-		// Every current caller states its origin; a request without one comes from older agent code.
+		// An owned admission requires an explicit origin before its delivery intent is recorded.
 		if (origin === undefined) throw new Error("This request carries no admission origin, so the calling Pi runs older agent code. Restart that Pi window, then retry.");
 		const state = await conversation.commit(
 			(tx) => recordDeliveryIntent(tx, conversation.id, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), origin }),

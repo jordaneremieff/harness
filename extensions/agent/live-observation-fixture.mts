@@ -6,6 +6,8 @@
  * live observation methods. The runtime forwards commits as change
  * notifications so the host pump publishes frames.
  */
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureProvider, fixtureModelId, fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
@@ -22,8 +24,22 @@ async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>): Pr
 		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
 		resume: true,
 	});
+	const openedMarker = join(metadata.cwd, "observation-opened");
+	const snapshotMarker = join(metadata.cwd, "snapshot-gated");
+	const rejectReopen = process.env.DURABLE_TEST_OBSERVATION_REOPEN === "fail" && existsSync(openedMarker);
 	return {
-		request: (method, params) => durable.request(method, (params ?? undefined) as Record<string, unknown> | undefined),
+		request: async (method, params) => {
+			const input = (params ?? undefined) as Record<string, unknown> | undefined;
+			if (method === "snapshot" && input?.fixtureHold === true && !existsSync(snapshotMarker)) {
+				writeFileSync(snapshotMarker, "held");
+				await new Promise(() => {});
+			}
+			if (method === "observe-open") {
+				if (rejectReopen) throw new Error("observation reopen refused");
+				writeFileSync(openedMarker, "opened");
+			}
+			return durable.request(method, input);
+		},
 		close: () => durable.close(),
 		isIdle: () => durable.isIdle(),
 		onChange: (listener) => durable.harness.subscribeCommits(() => listener()),

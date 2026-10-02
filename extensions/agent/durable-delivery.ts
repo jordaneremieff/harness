@@ -684,6 +684,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 
 	/** One pass: settle intents, route every unacknowledged record, report the first failure. */
 	const scan = async (): Promise<void> => {
+		corruptRows.clear();
 		await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
 		const state = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
 		if (state === undefined) return;

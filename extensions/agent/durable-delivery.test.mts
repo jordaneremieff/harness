@@ -588,7 +588,7 @@ it("reports a malformed admission origin without crash-looping and keeps other r
 	});
 	const corruptId = await addReceipt(source, corruptOwner, "corrupt-origin");
 	const goodId = await addReceipt(source, goodOwner, "good-origin");
-	// Simulate a receipt written before the origin field existed.
+	// Remove the origin to exercise containment of a malformed current receipt.
 	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
 	await source.harness.commit(async (tx) => {
 		const state = await tx.doc(AgentDeliveryDoc);
@@ -615,6 +615,51 @@ it("reports a malformed admission origin without crash-looping and keeps other r
 	const status = (await source.request("status", {})) as { deliveryError?: string };
 	assert.match(status.deliveryError ?? "", /no valid admission origin/u, "the corruption stays visible in host status");
 	assert.ok(errors.every((error) => /no valid admission origin/u.test(error.message)), "every report names the corruption");
+});
+
+it("clears the delivery error after a malformed receipt is corrected", { timeout: 5000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const owner = randomUUID();
+	const channel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot, deliver() {}, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	const path = join(root, "source.sqlite");
+	const source = await openHost(path, "source-storage", root);
+	t.after(() => source.close());
+	const id = await addReceipt(source, owner, "corrected-origin");
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		const receipt = state.receipts[String(id)];
+		assert.ok(receipt);
+		const { origin: _removed, ...rest } = receipt;
+		state.receipts[String(id)] = rest;
+	}, BACKGROUND_CONTEXT);
+	let reported!: () => void;
+	const corruption = new Promise<void>((resolve) => { reported = resolve; });
+	let cleared!: () => void;
+	const clearance = new Promise<void>((resolve) => { cleared = resolve; });
+	let corrected = false;
+	const report = source.reportDeliveryError.bind(source);
+	source.reportDeliveryError = (error) => {
+		report(error);
+		if (corrected && error === undefined) cleared();
+	};
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path),
+		catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal, onError: () => reported() });
+	t.after(() => watcher.close());
+	await corruption;
+	assert.match(((await source.request("status", {})) as { deliveryError?: string }).deliveryError ?? "", /no valid admission origin/u);
+	corrected = true;
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		const receipt = state.receipts[String(id)];
+		assert.ok(receipt);
+		state.receipts[String(id)] = { ...receipt, origin: "operator" };
+	}, BACKGROUND_CONTEXT);
+	await clearance;
+	assert.equal(((await source.request("status", {})) as { deliveryError?: string }).deliveryError, undefined);
+	assert.equal((await deliveryState(source))?.receipts[String(id)]?.acknowledged, true);
 });
 
 it("holds a quiet notice for an older owner, then delivers after that owner restarts", { timeout: 30000 }, async (t) => {

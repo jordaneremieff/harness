@@ -15,15 +15,6 @@ interface TimerListPage {
 	readonly timers: TimerListRow[];
 }
 
-/** Wait for one timer deadline so a test reopens the host after it. */
-async function waitPastDeadline(deadline: number): Promise<void> {
-	const remaining = deadline - Date.now();
-	if (remaining <= 0) return;
-	await new Promise<void>((resolve) => {
-		setTimeout(resolve, remaining);
-	});
-}
-
 interface ScheduleInput {
 	readonly message: string;
 	readonly deadline: number;
@@ -110,12 +101,15 @@ it("keeps a pending timer as live work so the host cannot idle-retire", { timeou
 });
 
 it("resumes an overdue timer on reopen with its original deadline", { timeout: 60000 }, async (t) => {
-	const f = await scheduleFixture(t, { agentExtension: true });
-	const deadline = Date.now() + 600;
+	let now = Date.now();
+	const f = await scheduleFixture(t, { agentExtension: true, now: () => now, resume: false });
+	const deadline = now + 600;
 	const scheduled = await schedule(f, { message: "OVERDUE_TIMER", deadline, scheduleId: "timer-overdue", requestId: "timer-overdue-delivery" });
+	assert.equal(await f.searchCount("OVERDUE_TIMER"), 0, "the paused scheduler admits no input before close");
 	await f.close();
-	await waitPastDeadline(deadline + 200);
+	now = deadline + 200;
 	await f.reopen();
+	f.host.harness.resume();
 	const receipt = await f.waitForReceipt("timer-overdue-delivery");
 	assert.equal(receipt.status, "done");
 	const page = (await f.host.request("timer-list", { sessionId: f.storageId })) as TimerListPage;
@@ -123,7 +117,7 @@ it("resumes an overdue timer on reopen with its original deadline", { timeout: 6
 	assert.ok(row, "the recovered timer keeps its record");
 	assert.equal(row.status, "fired");
 	assert.equal(row.deadline, deadline, "replay does not recompute the deadline");
-	assert.ok((row.overdueMs ?? 0) > 0, "a fire after the original deadline records its overdue time");
+	assert.equal(row.overdueMs, 200, "the reopened timer records the controlled overdue interval");
 	assert.ok(row.firedAt !== null && row.firedAt > deadline);
 	assert.equal(await f.searchCount("OVERDUE_TIMER"), 1, "the overdue input is admitted once");
 });

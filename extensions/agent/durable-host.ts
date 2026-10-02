@@ -50,6 +50,8 @@ export interface DurableHostOptions {
 	readonly registry: HarnessOptions["registry"];
 	readonly settings?: HarnessOptions["settings"];
 	readonly env?: HarnessOptions["env"];
+	/** Clock used by native task deadlines and settlement timestamps. Defaults to the native wall clock. */
+	readonly now?: HarnessOptions["now"];
 	/** Model access. `ModelRuntime` already implements this interface. */
 	readonly models: Models;
 	/** Root-conversation agent choices, including the model. Applied when the root is created; ignored on an existing root. */
@@ -265,6 +267,7 @@ export class DurableHost {
 					registry: options.registry,
 					...(options.settings === undefined ? {} : { settings: options.settings }),
 					...(options.env === undefined ? {} : { env: options.env }),
+					...(options.now === undefined ? {} : { now: options.now }),
 					...(options.onReport === undefined ? {} : { onReport: options.onReport }),
 				},
 				context,
@@ -430,7 +433,7 @@ export class DurableHost {
 		throw new TypeError("whenBusy must be steer, followUp, or reject");
 	}
 
-	/** Admission origin; an absent value keeps the model-origin default at delivery. */
+	/** Validate a supplied admission origin; each admission method enforces its absence policy. */
 	private originParam(params: RequestParams | undefined): DeliveryOrigin | undefined {
 		const value = params?.origin;
 		if (value === undefined) return undefined;

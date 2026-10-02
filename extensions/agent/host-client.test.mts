@@ -12,6 +12,7 @@ import { HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
 import { acquireHost, connectHost, snapshotHost, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState, waitUntil, writeFixtureState } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
+import { waitForFile } from "./durable-runtime-fixture.mts";
 
 const fixturePath = fileURLToPath(new URL("./host-fixture.mts", import.meta.url));
 
@@ -423,11 +424,71 @@ it("signals unavailable without relaunching after a host kill while observing", 
 it("keeps the task-graph observation live across a host recovery", { timeout: 60000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const config = fixtureMetadata(root);
-	const connection = await acquireHost(config, observationLaunch({ launchTimeoutMs: 20000 }));
+	const connection = await acquireHost(config, observationLaunch());
 	track(t, connection.pid);
-	t.after(() => connection.close().catch(() => {}));
+	t.after(() => connection.close());
 	const observation = await observeFrames(connection, { scope: "tasks", sessionId: config.storageId });
 	assert.equal(observation.frame.scope, "tasks");
+	const firstPid = connection.pid;
+	let resumed!: () => void;
+	const freshFrame = new Promise<void>((resolve) => { resumed = resolve; });
+	observation.onFrame((frame, fresh, state) => {
+		if (connection.pid !== firstPid && fresh && state === "live") {
+			assert.equal(frame?.scope, "tasks");
+			resumed();
+		}
+	});
+	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
+	await waitForFile(join(root, "snapshot-gated"));
+	process.kill(firstPid, "SIGKILL");
+	await pending;
+	track(t, connection.pid);
+	await freshFrame;
+	assert.notEqual(connection.pid, firstPid, "the gated safe request recovers onto a replacement host");
+	assert.equal(connection.closed, false);
+	assert.equal(observation.frame.scope, "tasks");
+	const baseline = observation.frame.revision;
+	let changed!: () => void;
+	const nextFrame = new Promise<void>((resolve) => { changed = resolve; });
+	observation.onFrame((frame, fresh, state) => {
+		if (state === "live" && !fresh && frame?.scope === "tasks" && frame.revision > baseline) changed();
+	});
+	await connection.request("submit", { sessionId: config.storageId, message: "after recovery", requestId: "tasks-after-recovery" });
+	await nextFrame;
+	await observation.close();
+});
+
+it("marks a failed observation reopen unavailable while the recovered connection stays usable", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const config = fixtureMetadata(root);
+	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_OBSERVATION_REOPEN: "fail" } }));
+	track(t, connection.pid);
+	t.after(() => connection.close());
+	const observation = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
+	const firstPid = connection.pid;
+	let unavailable!: () => void;
+	const lost = new Promise<void>((resolve) => { unavailable = resolve; });
+	let failures = 0;
+	observation.onFrame((frame, fresh, state) => {
+		if (state !== "unavailable") return;
+		failures += 1;
+		assert.equal(frame?.scope, "conversation");
+		assert.equal(fresh, false);
+		unavailable();
+	});
+	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
+	await waitForFile(join(root, "snapshot-gated"));
+	process.kill(firstPid, "SIGKILL");
+	await pending;
+	track(t, connection.pid);
+	await lost;
+	assert.notEqual(connection.pid, firstPid);
+	assert.equal(connection.closed, false);
+	const late: Array<string | undefined> = [];
+	observation.onFrame((_frame, _fresh, state) => late.push(state));
+	assert.deepEqual(late, ["unavailable"], "a late listener never receives a stale live baseline");
+	await connection.request("status", { sessionId: config.storageId });
 	await observation.close();
 	await connection.close();
+	assert.equal(failures, 1, "the failed observation receives one unavailable event");
 });

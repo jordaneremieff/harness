@@ -51,6 +51,8 @@ export interface RunHostOptions {
 	readonly env?: Readonly<Record<string, string | undefined>>;
 	/** Readiness announcement. Defaults to the stdout readiness line. */
 	readonly announceReady?: (ready: HostReady) => void;
+	/** Schedule one idle check and return its cancellation function. Defaults to a wall-clock timer. */
+	readonly scheduleIdleCheck?: (check: () => void, delayMs: number) => () => void;
 }
 
 /** Owner of one storage for the process lifetime. */
@@ -220,7 +222,8 @@ class HostProcessServer implements HostProcess {
 	private readonly claim: HeldClaim;
 	private readonly idleMs: number;
 	private server: Server | undefined;
-	private idleTimer: ReturnType<typeof setTimeout> | undefined;
+	private cancelIdleCheck: (() => void) | undefined;
+	private readonly scheduleIdleCheck: NonNullable<RunHostOptions["scheduleIdleCheck"]>;
 	private connectionCount = 0;
 	private closing = false;
 	private closePromise: Promise<void> | undefined;
@@ -233,11 +236,15 @@ class HostProcessServer implements HostProcess {
 	private observationAgain = false;
 	private unsubscribeObservation: (() => void) | undefined;
 
-	constructor(runtime: HostRuntime, paths: HostPaths, claim: HeldClaim, idleMs: number) {
+	constructor(runtime: HostRuntime, paths: HostPaths, claim: HeldClaim, idleMs: number, scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"]) {
 		this.runtime = runtime;
 		this.paths = paths;
 		this.claim = claim;
 		this.idleMs = idleMs;
+		this.scheduleIdleCheck = scheduleIdleCheck ?? ((check, delayMs) => {
+			const timer = setTimeout(check, delayMs);
+			return () => clearTimeout(timer);
+		});
 		this.socketPath = paths.socket;
 		this.done = new Promise<void>((resolve, reject) => {
 			this.resolveDone = resolve;
@@ -484,10 +491,8 @@ class HostProcessServer implements HostProcess {
 		this.connectionCount = count;
 		if (this.closing) return;
 		if (count > 0) {
-			if (this.idleTimer) {
-				clearTimeout(this.idleTimer);
-				this.idleTimer = undefined;
-			}
+			this.cancelIdleCheck?.();
+			this.cancelIdleCheck = undefined;
 			return;
 		}
 		this.scheduleRetirement();
@@ -495,12 +500,12 @@ class HostProcessServer implements HostProcess {
 
 	private scheduleRetirement(): void {
 		if (this.closing || this.idleMs === 0 || this.connectionCount > 0) return;
-		if (this.idleTimer) clearTimeout(this.idleTimer);
-		this.idleTimer = setTimeout(() => this.onIdleCheck(), Math.max(1, this.idleMs));
+		this.cancelIdleCheck?.();
+		this.cancelIdleCheck = this.scheduleIdleCheck(() => this.onIdleCheck(), Math.max(1, this.idleMs));
 	}
 
 	private onIdleCheck(): void {
-		this.idleTimer = undefined;
+		this.cancelIdleCheck = undefined;
 		if (this.closing || this.connectionCount > 0) return;
 		if (!this.runtime.isIdle()) {
 			this.scheduleRetirement();
@@ -521,10 +526,8 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private async performShutdown(): Promise<void> {
-		if (this.idleTimer) {
-			clearTimeout(this.idleTimer);
-			this.idleTimer = undefined;
-		}
+		this.cancelIdleCheck?.();
+		this.cancelIdleCheck = undefined;
 		this.closing = true;
 		this.unsubscribeObservation?.();
 		this.unsubscribeObservation = undefined;
@@ -571,7 +574,7 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	let runtime: HostRuntime | undefined;
 	try {
 		runtime = await createRuntime();
-		const host = new HostProcessServer(runtime, paths, claim, idleMs);
+		const host = new HostProcessServer(runtime, paths, claim, idleMs, options.scheduleIdleCheck);
 		await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));
 		return host;
 	} catch (error) {
