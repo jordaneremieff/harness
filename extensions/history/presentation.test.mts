@@ -17,6 +17,7 @@ function registeredTools(): Map<string, ToolDefinition> {
 	const tools = new Map<string, ToolDefinition>();
 	history({
 		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
+		events: { emit: () => {} },
 	} as never);
 	return tools;
 }

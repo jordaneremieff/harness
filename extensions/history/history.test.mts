@@ -504,7 +504,8 @@ test("defensive execute validation rejects mutated parameters and observes cance
 		registerTool: (tool: ToolDefinition) => {
 			tools.push(tool);
 		},
-	} as ExtensionAPI);
+		events: { emit: () => {}, on: () => () => {} },
+	} as unknown as ExtensionAPI);
 	assert.deepEqual(
 		tools.map((tool) => tool.name),
 		["history_search", "history_read"],

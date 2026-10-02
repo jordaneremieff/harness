@@ -1,6 +1,8 @@
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { LIMITS, readHistory, searchHistory, toolResult } from "./core.ts";
+import { durableContribution } from "./durable.ts";
 import { renderReadCall, renderReadResult, renderSearchCall, renderSearchResult } from "./presentation.ts";
 
 const sessionId = Type.Optional(
@@ -46,6 +48,7 @@ const outputBytes = Type.Optional(
 );
 
 export default function history(pi: ExtensionAPI) {
+	pi.events.emit("durable:contribution", durableContribution(fileURLToPath(import.meta.url)));
 	pi.registerTool({
 		name: "history_search",
 		label: "History search",

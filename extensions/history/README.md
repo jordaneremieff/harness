@@ -183,7 +183,8 @@ rendered image blocks and no duplicate source payload in tool `details`.
 
 ## Bounds and lifecycle
 
-`core.ts` owns the hard bounds in `LIMITS`. Tool schemas and descriptions expose
+`reading.ts` owns the hard bounds in `LIMITS`; the ordinary and Durable
+entrypoints share those primitives. Tool schemas and descriptions expose
 their defaults and maxima. The controls bound independent resources:
 
 - Search entry visits through `getEntry`, text-slot visits, source UTF-8 bytes,
@@ -197,11 +198,64 @@ boundary remains discoverable. Every resumed call has fresh per-call limits.
 Cycle detection covers entries visited in that call; separate bounded calls
 do not retain a global cycle detector. Every call checks its abort signal.
 
-The adapter takes `ctx.sessionManager` at invocation. It holds no session
+The ordinary adapter takes `ctx.sessionManager` at invocation. It holds no session
 state, index, cache, archive, ledger, listeners, or background resources. Import
 and registration perform no I/O. There are no hooks, commands, environment
 variables, or activation changes. The tools return the same bounded text
 contract in TUI, RPC, JSON, and print modes without UI dependencies.
+
+## Durable agents
+
+A Durable agent receives its history capability from
+`extensions/history/durable.ts`. The ordinary factory in `index.ts` emits that
+contribution on the `durable:contribution` channel; a Durable session host
+matches its `source` to the loaded extension path, installs the contribution
+after its built-ins, and calls `create()` once per host. No host listens in an
+ordinary Pi session, so the emission has no effect there. The contribution
+takes every pi-durable runtime value from the host's module.
+
+The native form registers the same two tool names with the same argument names
+and bounds. Both declare `replay: "safe"`: each call reads committed entries
+only and repeats no external effect, so a rerun after process loss returns the
+same bounded page for the same pinned position. The native extension also
+installs one prompt section with the usage guidance, because Durable renders
+model guidance through sections rather than tool prompt fields.
+
+Semantic differences from the ordinary tools, all named in the tool results:
+
+- **Entry IDs are native Durable IDs (numbers).** `entryId`, `fromId`,
+  `startId`, `currentLeafId`, and continuation `fromId` use the Durable entry
+  ID; `id` and `conversationId` in entry metadata are numbers as stored.
+- **The walk is the conversation's fork-aware entry sequence.** Entries are
+  compared by ID and scanned newest to oldest, including entries inherited
+  through forks. There is no `parentId` chain, so `missing_parent` and `cycle`
+  do not occur; `ancestry_exhausted` means the walk reached the oldest visible
+  entry. An explicit `fromId` selects any visible entry, not only a tip.
+- **`sessionId` is the host's Durable storage ID.** A continuation carries it
+  and is rejected when it comes from another storage.
+- **`currentLeafId` is the newest entry visible in the calling conversation**
+  at the time of the call; it advances as the conversation grows and is not
+  part of the pinned continuation.
+- **Reads check conversation visibility.** `history_read` returns an entry
+  only when the calling conversation's fork-aware ancestry contains it, and
+  reports `membership: "checked_visible"`. The ordinary tools read the current
+  session without a branch-membership check.
+- **Search selects Durable source kinds.** `filter.source` `user`, `summary`,
+  and `toolResult` select `pi.user`, `pi.compaction`, and `pi.tool-result`
+  entries. Search text is the committed model messages
+  (`/model/<i>/content/...`), tool result content, and message errors; entry
+  `data` and context-edit messages are not searched, as structured fields.
+- **Pointers address Durable entry records.** The root manifest exposes `id`,
+  `conversationId`, `kind`, `model`, `data`, `head`, `edits`, and `byTaskId`;
+  a message is `/model/<i>`, a content block `/model/<i>/content/<b>`, and a
+  context edit `/edits/<e>` with its replacement messages below it.
+
+There are no terminal renderer functions in the native form: Durable has no Pi
+TUI renderer surface. The same withholding rules apply at Durable content-block
+locations: image payloads, provider signatures, and redacted thinking are not
+exposed. The native adapter holds no session state: each call takes the tool
+API at invocation, commits its reads on the session line, and returns the same
+bounded JSON text contract.
 
 ## Verification
 
@@ -218,12 +272,16 @@ argument validation, context-edit replacement manifests and withholding, and
 the adapter's invocation-owned session context. Mixed-source tests cover raw
 source selection, strictly true error flags, exact tool names, and composition
 of filters with every search bound. The ordinary-session regression loads the
-extension through Pi's resource loader and drives its registered tools with a
+extension through Pi's resource loader, checks the emitted Durable
+contribution's name and source, and drives its registered tools with a
 scripted provider. Its synthetic comparison shows irrelevant tool output using
 the unfiltered scan budget while the user filter reaches the stored user text.
 That test establishes deterministic selection under its fixture, not aggregate
-utility or model choice quality. Repository gates remain a separate evidence
-layer.
+utility or model choice quality. The Durable regression runs the contribution
+in a real Harness over `MemoryStorage` with pi-ai's faux provider, drives a
+model-issued call for each tool, checks the declared replay class, and compares
+repeated pinned pages across growing entries. Repository gates remain a
+separate evidence layer.
 
 The adapter uses the public `ExtensionAPI` and `ExtensionContext` contracts.
 The implementation uses only `getSessionId`, `getLeafId`, and `getEntry`.

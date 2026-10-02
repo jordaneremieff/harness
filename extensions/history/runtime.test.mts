@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-ai";
 import {
 	createAgentSession,
+	createEventBus,
 	DefaultResourceLoader,
 	ModelRuntime,
 	SessionManager,
@@ -35,10 +36,14 @@ test("ordinary Pi session loads history and executes source-filtered retrieval a
 			retry: { enabled: false },
 			cacheWarming: "off",
 		});
+		const eventBus = createEventBus();
+		const contributions: unknown[] = [];
+		eventBus.on("durable:contribution", (data) => contributions.push(data));
 		const resourceLoader = new DefaultResourceLoader({
 			cwd: root,
 			agentDir: join(root, "agent"),
 			settingsManager,
+			eventBus,
 			noExtensions: true,
 			noSkills: true,
 			noPromptTemplates: true,
@@ -49,6 +54,10 @@ test("ordinary Pi session loads history and executes source-filtered retrieval a
 		await resourceLoader.reload();
 		assert.deepEqual(resourceLoader.getExtensions().errors, []);
 		assert.equal(resourceLoader.getExtensions().extensions.length, 1);
+		assert.equal(contributions.length, 1);
+		const contribution = contributions[0] as { name?: string; source?: string };
+		assert.equal(contribution.name, "history");
+		assert.equal(contribution.source, fileURLToPath(new URL("./index.ts", import.meta.url)));
 		const sm = SessionManager.inMemory(root);
 		const target = sm.appendMessage({ role: "user", content: "release approved", timestamp: 1 });
 		const compact = sm.appendCompaction("release summary", target, 100);
