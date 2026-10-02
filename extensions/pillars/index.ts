@@ -17,6 +17,7 @@ import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resou
 import { Collector, utcDay } from "./collector.ts";
 import { COMMAND_HELP, commandCompletions, judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
 import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, MAX_DRAFT_BYTES, splitDraft } from "./draft.ts";
+import { pillarsDurableContribution } from "./durable.ts";
 import { exportLocal, parseCommand } from "./export.ts";
 import { accessEvidence, Deduplicator, type DeliveryExtent, extract, readEvidence, type ResultEvidence } from "./observation.ts";
 import { accessRenderers, usageMarkdown, usageRenderers } from "./presentation.ts";
@@ -24,6 +25,7 @@ import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./r
 import { PillarsStore } from "./store.ts";
 
 export default function pillarsExtension(pi: ExtensionAPI): void {
+	pi.events.emit("durable:contribution", pillarsDurableContribution(fileURLToPath(import.meta.url)));
 	let catalog: Catalog | undefined;
 	let collector: Collector | undefined;
 	let enabled = process.env.PI_PILLARS_COLLECT !== "0";

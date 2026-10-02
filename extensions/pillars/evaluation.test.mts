@@ -135,6 +135,7 @@ test("source approval covers the command implementation and live doctrine", asyn
 	const shutdown: Array<() => Promise<void>> = [];
 	try {
 		await evaluationExtension({
+			events: { emit() {}, on: () => () => {} },
 			registerFlag() {},
 			getFlag: () => approved,
 			registerTool() {},
@@ -175,6 +176,7 @@ test("an adapter failure before shutdown ownership restores the environment and 
 	try {
 		await assert.rejects(
 			evaluationExtension({
+				events: { emit() {}, on: () => () => {} },
 				registerFlag() {},
 				getFlag: () => "0".repeat(64),
 				registerTool() {},

@@ -361,6 +361,49 @@ a fresh private owner key. Forks do not replay history. Abrupt termination,
 failed final publication, and a stalled filesystem still leave unknown tails.
 The lock wait is limited to 100 milliseconds; contention is a reported error.
 
+## Durable agents
+
+Agents that run on Pi Durable receive a native form of this extension. The
+ordinary factory emits one contribution on the `durable:contribution`
+channel; the agent session host installs it beside its built-in tools. In an
+ordinary Pi session no host listens, and the emission has no effect.
+
+The native form speaks the host's vocabulary directly. It contributes the
+same `pillars` and `pillars_usage` tools, a prompt section with the usage
+guidance, and native hooks. The surfaces share the slice's corpus access,
+draft assessment, evidence store, and readback functions with the ordinary
+entrypoint; no ordinary session API runs inside the Durable form.
+
+The tools declare replay class `safe`. A corpus read and an in-memory page
+capture repeat no external effect. Attribution writes are deduplicated with
+stable task memo keys, so a replay after process loss does not silently count
+another access. Each tool also describes its structured result with an
+`outputSchema`, and carries it to nested-call declarations as
+`details.structuredContent`.
+
+Attribution uses the native tool and generation hooks. `beforeTool` and
+`afterTool` on `ToolTask` admit request and result observations for `pillars`
+and `read`; a `GenerationTask` `afterTools` hook flushes the round's admitted
+evidence, so a settled run leaves no pending cells; and the host shutdown
+signal releases the reader and flushes the collector. The store, its
+configuration variables, and the evidence meanings are the same as for the
+ordinary entrypoint.
+
+Documented differences from the ordinary entrypoint:
+
+- A draft assessment arrives as an `info` diagnostic attached to the tool
+  result, not as a separate hidden custom message. The model still receives it
+  exactly once, in the same continuation, and the source page stays unchanged
+  in the tool content.
+- The recorded model and reasoning come from the conversation's stored agent
+  choice. When the host default supplies either value, the observation records
+  `unknown` instead of the resolved value; the hook surface exposes no agent
+  resolution.
+- Collector diagnostics go to standard error, because a Durable agent session
+  has no UI host. Invalid `PI_PILLARS_COLLECT` values still disable collection.
+- The `/pillars` command has no Durable form. An agent session has no operator
+  command surface; the two tools carry the model-facing capability.
+
 ## Privacy and configuration
 
 The aggregate store contains UTC dates, resource/model/reasoning/version
