@@ -296,7 +296,10 @@ Actions apply only to the selected agent. They expose Stop current work,
 Configure, Tasks, Fork, Rewind, Reset context, Schedule message, Scheduled
 messages, Compact, Reconnect, Run agent command, and Details. Disabled actions
 state their reason. Stop, Reset, Rewind, and Compact confirm with Cancel selected.
-Native dialogs temporarily hide the dashboard and restore it afterwards. Entry,
+Native dialogs temporarily hide the dashboard and restore it afterwards. Esc
+returns one form step; Esc at the first step returns to Actions. Completed
+editor fields return prefilled; completed input values appear above the field,
+and blank Enter keeps them. Entry,
 conversation, and timer pickers supply identities internally. Schedule accepts
 HH:MM local or a relative time such as +30m, then confirms the exact deadline
 and busy disposition. Completed schedule fields stay with their target after
