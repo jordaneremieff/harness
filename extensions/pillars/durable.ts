@@ -6,7 +6,9 @@
  * the slice's corpus access, draft assessment, access-evidence store, and
  * readback functions. Attribution runs as native ToolTask hooks; each tool
  * round flushes the collected evidence through a GenerationTask `afterTools`
- * hook, and the host signal releases the store on shutdown.
+ * hook, the host signal releases the store on shutdown, and the close
+ * registration makes the host await the final flush. The contribution also
+ * supplies the `pillars` command for the judgment actions.
  */
 import { join } from "node:path";
 import type { Context, JsonValue } from "@earendil-works/chord";
@@ -19,16 +21,18 @@ import { ACCESS_DESCRIPTION, access, type AccessPage, parseAccess } from "./acce
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import type { Stage } from "./capacity.ts";
 import { Collector, utcDay } from "./collector.ts";
+import { judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
 import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, MAX_DRAFT_BYTES, splitDraft } from "./draft.ts";
 import { InputError } from "./input.ts";
 import { accessEvidence, type DeliveryExtent, extract, readEvidence, type ResultEvidence } from "./observation.ts";
-import { createReader, errorResponse, parseRequest, responseSchema, TOOL_DESCRIPTION } from "./readback.ts";
+import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./readback.ts";
 import { PillarsStore } from "./store.ts";
 
 export interface DurableContribution {
 	readonly name: string;
 	readonly source: string;
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
+	readonly commands?: readonly DurableCommand[];
 }
 
 export interface DurableContributionHost {
@@ -37,6 +41,7 @@ export interface DurableContributionHost {
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly storageId: string;
+	readonly harness: Durable.Harness;
 	readonly signal: AbortSignal;
 	onClose(dispose: () => void | Promise<void>): void;
 	readonly inventory: DurableInventory;
@@ -49,6 +54,21 @@ export interface DurableInventory {
 		readonly commands: readonly { readonly name: string; readonly description: string }[];
 	}[];
 	readonly ordinaryOnly: readonly string[];
+}
+
+export interface DurableCommand {
+	readonly name: string;
+	readonly description: string;
+	run(call: DurableCommandCall): Promise<string>;
+}
+
+export interface DurableCommandCall {
+	readonly args: string;
+	readonly conversation: Durable.Conversation;
+	readonly harness: Durable.Harness;
+	readonly context: Context;
+	readonly host: DurableContributionHost;
+	readonly invocationId: string;
 }
 
 /** Pi Durable details are JSON values; the corpus page and usage response are plain JSON objects. */
@@ -72,25 +92,27 @@ function assessmentDiagnostics(
 	return [{ severity: "info", message: draftAssessment(input.draft) }];
 }
 
-/** Description of one corpus page or source error, for nested-call declarations. */
-const sourceOutputSchema = Type.Union([
-	Type.Object({
-		schema: Type.Literal("pillars-source"),
-		resource: Type.String(),
-		referenceBodyDigest: Type.String(),
-		bodyBytes: Type.Integer(),
-		offset: Type.Integer(),
-		endOffset: Type.Integer(),
-		text: Type.String(),
-		nextOffset: Type.Optional(Type.Integer()),
-		resources: Type.Optional(Type.Array(Type.String())),
-	}),
-	Type.Object({
-		schema: Type.Literal("pillars-source-error"),
-		code: StringEnum(["invalid_input", "source_unavailable", "source_changed"] as const),
-		message: Type.Optional(Type.String()),
-	}),
-]);
+export const PILLARS_COMMAND_DESCRIPTION =
+	"Ask the conversation to check Pillars alignment, derive candidates, or review guidance. Accepts an optional hint.";
+
+const pillarsCommand: DurableCommand = {
+	name: "pillars",
+	description: PILLARS_COMMAND_DESCRIPTION,
+	async run(call) {
+		const request = parseJudgmentRequest(call.args);
+		if (!request) return "The pillars command accepts check, derive, or review with an optional hint.";
+		const submission = await call.conversation.submit(
+			{
+				type: "input",
+				content: judgmentPrompt(request),
+				requestId: `pillars:${call.invocationId}`,
+				whenBusy: "steer",
+			},
+			call.context,
+		);
+		return `Submitted the Pillars ${request.action} request as submission ${String(submission.id)}.`;
+	},
+};
 
 /**
  * Build one contribution for this slice. `source` is the absolute path of the
@@ -101,8 +123,9 @@ export function pillarsDurableContribution(source: string): DurableContribution 
 	return {
 		name: "pillars",
 		source,
+		commands: [pillarsCommand],
 		async create(host) {
-			const { AgentDoc, GenerationTask, ToolTask, defineExtension, defineTool, hook, section } = host.durable;
+			const { GenerationTask, ToolTask, defineExtension, defineTool, hook, section } = host.durable;
 			const store = new PillarsStore(process.env.PI_PILLARS_DIR ?? join(host.agentDir, "pillars"));
 			let enabled = process.env.PI_PILLARS_COLLECT !== "0";
 			if (process.env.PI_PILLARS_COLLECT !== undefined && !["0", "1"].includes(process.env.PI_PILLARS_COLLECT)) {
@@ -150,29 +173,17 @@ export function pillarsDurableContribution(source: string): DurableContribution 
 				);
 			}
 
-			async function readCwd(api: Durable.HookApi, context: Context): Promise<string> {
-				const agent = await api.snapshot(AgentDoc, api.conversationId, context);
-				return agent?.cwd ?? host.cwd;
-			}
-
-			async function callResource(
-				path: unknown,
-				api: Durable.HookApi,
-				context: Context,
-			): Promise<Resource | undefined> {
-				if (catalog === undefined) return undefined;
-				return resourceByPath(catalog, path, await readCwd(api, context));
+			/** HookApi exposes no agent; the contract resolves it through the host Harness. */
+			async function resolvedAgent(api: Durable.HookApi, context: Context): Promise<Durable.Agent | undefined> {
+				const conversation = await host.harness.conversation(api.conversationId, context);
+				return conversation?.agent(context);
 			}
 
 			/** Resolve one observed call's corpus resource, by name for pillars and by path for read. */
-			async function resourceFor(
-				call: ToolCall,
-				api: Durable.HookApi,
-				context: Context,
-			): Promise<Resource | undefined> {
+			async function resourceFor(call: ToolCall, cwd: string): Promise<Resource | undefined> {
 				if (catalog === undefined) return undefined;
 				if (call.name === "pillars") return resourceById(catalog, call.arguments.resource ?? "inventory");
-				if (call.name === "read") return callResource(call.arguments.path, api, context);
+				if (call.name === "read") return resourceByPath(catalog, call.arguments.path, cwd);
 				return undefined;
 			}
 
@@ -186,8 +197,8 @@ export function pillarsDurableContribution(source: string): DurableContribution 
 			async function admit(
 				resource: Resource,
 				stage: Stage,
+				agent: Durable.Agent | undefined,
 				evidence: (reference: Buffer | undefined) => ResultEvidence | undefined,
-				api: Durable.HookApi,
 				context: Context,
 			): Promise<void> {
 				let reference: Buffer | undefined;
@@ -196,7 +207,6 @@ export function pillarsDurableContribution(source: string): DurableContribution 
 				} catch {
 					collector?.incident("unresolvedAccessEvents");
 				}
-				const agent = await api.snapshot(AgentDoc, api.conversationId, context);
 				const cell = extract({
 					stage,
 					day: utcDay(),
@@ -212,10 +222,11 @@ export function pillarsDurableContribution(source: string): DurableContribution 
 
 			async function observeRequest(call: ToolCall, api: Durable.HookApi, context: Context): Promise<void> {
 				if (closing || collector === undefined) return;
-				const resource = await resourceFor(call, api, context);
+				const agent = await resolvedAgent(api, context);
+				const resource = await resourceFor(call, agent?.cwd ?? host.cwd);
 				if (resource === undefined) return;
 				if (!(await admitted("pillars.observed.request", api, context))) return;
-				await admit(resource, "tool_request", () => undefined, api, context);
+				await admit(resource, "tool_request", agent, () => undefined, context);
 			}
 
 			async function observeResult(
@@ -225,7 +236,8 @@ export function pillarsDurableContribution(source: string): DurableContribution 
 				context: Context,
 			): Promise<void> {
 				if (closing || collector === undefined) return;
-				const resource = await resourceFor(call, api, context);
+				const agent = await resolvedAgent(api, context);
+				const resource = await resourceFor(call, agent?.cwd ?? host.cwd);
 				if (resource === undefined) return;
 				if (!(await admitted("pillars.observed.result", api, context))) return;
 				const delivered =
@@ -233,11 +245,11 @@ export function pillarsDurableContribution(source: string): DurableContribution 
 				await admit(
 					resource,
 					"tool_result",
+					agent,
 					(reference) =>
 						call.name === "pillars"
 							? accessEvidence(result.content, resource.resourceId, result.isError === true, delivered)
 							: readEvidence(result.content, reference, result.isError === true),
-					api,
 					context,
 				);
 			}
@@ -304,16 +316,15 @@ export function pillarsDurableContribution(source: string): DurableContribution 
 									return {
 										content: [{ type: "text", text: JSON.stringify(result) }],
 										isError: true,
-										details: asDetails({ structuredContent: result }),
+										details: asDetails(result),
 									};
 								return {
 									content: [{ type: "text", text: JSON.stringify(result) }],
-									details: asDetails({ structuredContent: result }),
+									details: asDetails(result),
 									diagnostics: assessmentDiagnostics(input, context.abortSignal),
 								};
 							},
 						}),
-						outputSchema: sourceOutputSchema,
 					},
 					{
 						...defineTool({
@@ -340,11 +351,10 @@ export function pillarsDurableContribution(source: string): DurableContribution 
 								const result = await reader.read(args, context.abortSignal);
 								return {
 									content: [{ type: "text", text: JSON.stringify(result) }],
-									details: asDetails({ structuredContent: result }),
+									details: asDetails(result),
 								};
 							},
 						}),
-						outputSchema: responseSchema,
 					},
 				],
 				sections: [

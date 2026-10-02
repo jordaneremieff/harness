@@ -63,7 +63,7 @@ function useFixtureEnvironment(t: TestScope, fixture: Fixture): void {
 	});
 }
 
-function testHost(durable: typeof Durable, fixture: Fixture, signal: AbortSignal) {
+function testHost(durable: typeof Durable, fixture: Fixture, harness: Durable.Harness, signal: AbortSignal) {
 	const disposers: Array<() => void | Promise<void>> = [];
 	const host: DurableContributionHost = {
 		durable,
@@ -71,6 +71,7 @@ function testHost(durable: typeof Durable, fixture: Fixture, signal: AbortSignal
 		cwd: fixture.corpus,
 		agentDir: join(fixture.root, "agent"),
 		storageId: "pillars-durable-test",
+		harness,
 		signal,
 		onClose(dispose) {
 			disposers.push(dispose);
@@ -85,9 +86,9 @@ function testHost(durable: typeof Durable, fixture: Fixture, signal: AbortSignal
 	};
 }
 
-async function openHarness(
-	extension: Durable.Extension,
-	corpus: string,
+/** Open the host's Harness first, then install the contribution, matching the host bootstrap. */
+async function openContribution(
+	fixture: Fixture,
 	options: { readonly storage?: Durable.Storage; readonly extra?: readonly Durable.Extension[] } = {},
 ) {
 	const faux = fauxProvider();
@@ -95,7 +96,6 @@ async function openHarness(
 	models.setProvider(faux.provider);
 	const registry = Durable.createRegistry();
 	registry.install(CodingTools);
-	registry.install(extension);
 	for (const extra of options.extra ?? []) registry.install(extra);
 	const harness = await Durable.Harness.open(
 		options.storage ?? new Durable.MemoryStorage(),
@@ -103,14 +103,19 @@ async function openHarness(
 			models,
 			registry,
 			settings: { compaction: { enabled: false }, retry: { enabled: false } },
-			env: () => new NodeExecutionEnv({ cwd: corpus }),
+			env: () => new NodeExecutionEnv({ cwd: fixture.corpus }),
 		},
 		BACKGROUND_CONTEXT,
 	);
+	const controller = new AbortController();
+	const { host, closeAll } = testHost(Durable, fixture, harness, controller.signal);
+	const contribution = pillarsDurableContribution(ENTRY_SOURCE);
+	const extension = await contribution.create(host);
+	registry.install(extension);
 	const root = await harness.root(BACKGROUND_CONTEXT, {
 		agent: { model: { provider: faux.provider.id, modelId: "faux-1" } },
 	});
-	return { faux, harness, root };
+	return { faux, harness, root, host, closeAll, controller, contribution, extension, registry };
 }
 
 function toolResults(messages: readonly { role: string }[]): ToolResultMessage[] {
@@ -121,8 +126,8 @@ function textOf(message: ToolResultMessage): string {
 	return message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
 }
 
-function structuredSchema(message: ToolResultMessage): string | undefined {
-	return (message.details as { structuredContent?: { schema?: string } } | undefined)?.structuredContent?.schema;
+function detailsSchema(message: ToolResultMessage): string | undefined {
+	return (message.details as { schema?: string } | undefined)?.schema;
 }
 
 function aborted(signal: AbortSignal | undefined): Promise<void> {
@@ -177,17 +182,14 @@ function sumCounter(
 test("a model-issued call reaches each tool and both declare safe replay", async (t) => {
 	const fixture = await makeFixture(t);
 	useFixtureEnvironment(t, fixture);
-	const controller = new AbortController();
-	t.after(() => controller.abort());
-	const contribution = pillarsDurableContribution(ENTRY_SOURCE);
-	const { host } = testHost(Durable, fixture, controller.signal);
-	const extension = await contribution.create(host);
-	const tools = extension.tools ?? [];
-	assert.equal(tools.find((tool) => tool.name === "pillars")?.replay, "safe");
-	assert.equal(tools.find((tool) => tool.name === "pillars_usage")?.replay, "safe");
-	assert.ok("outputSchema" in (tools.find((tool) => tool.name === "pillars") ?? {}));
-	const { faux, harness, root } = await openHarness(extension, fixture.corpus);
+	const opened = await openContribution(fixture);
+	t.after(() => opened.controller.abort());
+	const { faux, harness, root } = opened;
 	try {
+		const tools = opened.extension.tools ?? [];
+		assert.equal(tools.find((tool) => tool.name === "pillars")?.replay, "safe");
+		assert.equal(tools.find((tool) => tool.name === "pillars_usage")?.replay, "safe");
+		assert.equal("outputSchema" in (tools.find((tool) => tool.name === "pillars") ?? {}), false);
 		faux.setResponses([
 			fauxAssistantMessage(
 				[
@@ -210,11 +212,12 @@ test("a model-issued call reaches each tool and both declare safe replay", async
 		const page = JSON.parse(textOf(source));
 		assert.equal(page.schema, "pillars-source");
 		assert.equal(page.resource, "principle-one");
-		assert.equal(structuredSchema(source), "pillars-source");
+		assert.equal(detailsSchema(source), "pillars-source");
+		assert.equal((source.details as { structuredContent?: unknown }).structuredContent, undefined);
 		const usage = results.find((result) => result.toolCallId === "usage-call");
 		assert.ok(usage);
 		assert.equal(JSON.parse(textOf(usage)).schema, "pillars-usage-response");
-		assert.equal(structuredSchema(usage), "pillars-usage-response");
+		assert.equal(detailsSchema(usage), "pillars-usage-response");
 		const read = results.find((result) => result.toolCallId === "read-call");
 		assert.ok(read);
 		assert.match(textOf(read), /Checked evidence/u);
@@ -228,12 +231,16 @@ test("a model-issued call reaches each tool and both declare safe replay", async
 			false,
 			"a call without a draft delivers no assessment diagnostic",
 		);
+		const resolved = await root.agent(BACKGROUND_CONTEXT);
 		const cells = await storedCells(fixture.store);
 		assert.equal(sumCounter(cells, "readRequests"), 2);
 		assert.equal(sumCounter(cells, "readResults"), 2);
 		assert.equal(sumCounter(cells, "bodyVerifiedAtObservation"), 2);
 		assert.ok(cells.every((cell) => cell.piVersion === VERSION));
-		assert.ok(cells.every((cell) => cell.model === `${faux.provider.id}/faux-1`));
+		assert.equal(resolved.model?.provider, faux.provider.id);
+		assert.ok(cells.every((cell) => cell.model === `${resolved.model?.provider}/${resolved.model?.modelId}`));
+		assert.ok(cells.every((cell) => cell.reasoning === resolved.thinkingLevel));
+		assert.notEqual(resolved.thinkingLevel, "unknown");
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 	}
@@ -242,12 +249,9 @@ test("a model-issued call reaches each tool and both declare safe replay", async
 test("a draft returns one assessment diagnostic beside the unchanged source page", async (t) => {
 	const fixture = await makeFixture(t);
 	useFixtureEnvironment(t, fixture);
-	const controller = new AbortController();
-	t.after(() => controller.abort());
-	const contribution = pillarsDurableContribution(ENTRY_SOURCE);
-	const { host } = testHost(Durable, fixture, controller.signal);
-	const extension = await contribution.create(host);
-	const { faux, harness, root } = await openHarness(extension, fixture.corpus);
+	const opened = await openContribution(fixture);
+	t.after(() => opened.controller.abort());
+	const { faux, harness, root } = opened;
 	try {
 		faux.setResponses([
 			fauxAssistantMessage(
@@ -271,7 +275,94 @@ test("a draft returns one assessment diagnostic beside the unchanged source page
 		assert.equal(JSON.parse(textOf(result).split("<harness>")[0]).schema, "pillars-source");
 		assert.match(textOf(result), /Pillars extension assessment task/u);
 		assert.match(textOf(result), /Ship the change unchecked/u);
-		assert.equal(structuredSchema(result), "pillars-source");
+		assert.equal(detailsSchema(result), "pillars-source");
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
+});
+
+test("the pillars command steers the judgment prompt and reuses one invocation", async (t) => {
+	const fixture = await makeFixture(t);
+	useFixtureEnvironment(t, fixture);
+	const opened = await openContribution(fixture);
+	t.after(() => opened.controller.abort());
+	const { faux, harness, root, host } = opened;
+	try {
+		const command = opened.contribution.commands?.find((entry) => entry.name === "pillars");
+		assert.ok(command);
+		const call = {
+			args: "check the proposed error handling",
+			conversation: root,
+			harness,
+			context: BACKGROUND_CONTEXT,
+			host,
+			invocationId: "judgment-invocation",
+		};
+		faux.setResponses([fauxAssistantMessage("Checked.")]);
+		const result = await command.run(call);
+		await harness.waitForIdle(BACKGROUND_CONTEXT);
+		assert.match(result, /Submitted the Pillars check request as submission \d+\./u);
+		const users = (await root.context(BACKGROUND_CONTEXT)).messages.filter((message) => message.role === "user");
+		assert.equal(users.length, 1);
+		const prompt = users[0];
+		assert.ok(typeof prompt.content === "string");
+		assert.match(prompt.content, /operator invoked \/pillars check/u);
+		assert.match(prompt.content, /proposed error handling/u);
+		const again = await command.run(call);
+		assert.equal(again, result, "the same invocation reuses its submission");
+		assert.equal(
+			(await root.context(BACKGROUND_CONTEXT)).messages.filter((message) => message.role === "user").length,
+			1,
+			"the repeated invocation submits no second prompt",
+		);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
+});
+
+test("the pillars command joins an active run as a steer", async (t) => {
+	const fixture = await makeFixture(t);
+	useFixtureEnvironment(t, fixture);
+	const opened = await openContribution(fixture);
+	t.after(() => opened.controller.abort());
+	const { faux, harness, root, host } = opened;
+	try {
+		const command = opened.contribution.commands?.find((entry) => entry.name === "pillars");
+		assert.ok(command);
+		let release!: () => void;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let entered!: () => void;
+		const started = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		let steered = false;
+		faux.setResponses([
+			async () => {
+				entered();
+				await held;
+				return fauxAssistantMessage("Held.");
+			},
+			(context) => {
+				steered = JSON.stringify(context.messages).includes("busy hint");
+				return fauxAssistantMessage("Steered.");
+			},
+		]);
+		const active = await root.submit({ type: "input", content: "Hold the run." }, BACKGROUND_CONTEXT);
+		await started;
+		await command.run({
+			args: "derive busy hint",
+			conversation: root,
+			harness,
+			context: BACKGROUND_CONTEXT,
+			host,
+			invocationId: "busy-invocation",
+		});
+		release();
+		await active.wait(BACKGROUND_CONTEXT);
+		await harness.waitForIdle(BACKGROUND_CONTEXT);
+		assert.equal(steered, true);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 	}
@@ -281,18 +372,12 @@ test("a stored-safe call reruns after process loss and records one completed obs
 	const fixture = await makeFixture(t);
 	useFixtureEnvironment(t, fixture);
 	const database = join(fixture.root, "session.sqlite");
-	const controller = new AbortController();
-	t.after(() => controller.abort());
-	const firstContribution = pillarsDurableContribution(ENTRY_SOURCE);
-	const firstHost = testHost(Durable, fixture, controller.signal);
-	const firstExtension = await firstContribution.create(firstHost.host);
-	const sourceTool = (firstExtension.tools ?? []).find((tool) => tool.name === "pillars");
+	const first = await openContribution(fixture, { storage: await openNodeSqliteStorage(database) });
+	t.after(() => first.controller.abort());
+	const sourceTool = (first.extension.tools ?? []).find((tool) => tool.name === "pillars");
 	assert.ok(sourceTool);
 	const blocker = blockingExtension(sourceTool);
-	const first = await openHarness(firstExtension, fixture.corpus, {
-		storage: await openNodeSqliteStorage(database),
-		extra: [blocker.extension],
-	});
+	first.registry.install(blocker.extension);
 	first.faux.setResponses([
 		fauxAssistantMessage([fauxToolCall("pillars", { resource: "principle-one" }, { id: "recover-call" })], {
 			stopReason: "toolUse",
@@ -303,15 +388,13 @@ test("a stored-safe call reruns after process loss and records one completed obs
 		.id;
 	await blocker.started;
 	await first.harness.close(BACKGROUND_CONTEXT);
-	await firstHost.closeAll();
+	await first.closeAll();
 
-	const secondContribution = pillarsDurableContribution(ENTRY_SOURCE);
-	const secondHost = testHost(Durable, fixture, controller.signal);
-	const secondExtension = await secondContribution.create(secondHost.host);
-	const second = await openHarness(secondExtension, fixture.corpus, {
+	const second = await openContribution(fixture, {
 		storage: await openNodeSqliteStorage(database),
 		extra: [blocker.extension],
 	});
+	t.after(() => second.controller.abort());
 	try {
 		second.faux.setResponses([fauxAssistantMessage("Recovered.")]);
 		const submission = await second.harness.submission(submissionId, BACKGROUND_CONTEXT);
@@ -323,7 +406,7 @@ test("a stored-safe call reruns after process loss and records one completed obs
 		assert.equal(blocker.state.executed, 1, "the interrupted attempt did not execute the tool");
 		const [result] = toolResults((await second.root.context(BACKGROUND_CONTEXT)).messages);
 		assert.equal(result.isError, false);
-		assert.equal(structuredSchema(result), "pillars-source");
+		assert.equal(detailsSchema(result), "pillars-source");
 		const cells = await storedCells(fixture.store);
 		const entry = cells.filter((cell) => cell.resourceClass === "entry" && cell.resourceId === "principle-one");
 		assert.equal(sumCounter(entry, "readResults"), 1, "the recovered result is observed once");
@@ -336,33 +419,30 @@ test("a stored-safe call reruns after process loss and records one completed obs
 test("the close flush completes before onClose resolves", async (t) => {
 	const fixture = await makeFixture(t);
 	useFixtureEnvironment(t, fixture);
-	const controller = new AbortController();
-	t.after(() => controller.abort());
-	const contribution = pillarsDurableContribution(ENTRY_SOURCE);
-	const { host, closeAll } = testHost(Durable, fixture, controller.signal);
-	const extension = await contribution.create(host);
-	const sourceTool = (extension.tools ?? []).find((tool) => tool.name === "pillars");
+	const opened = await openContribution(fixture);
+	t.after(() => opened.controller.abort());
+	const sourceTool = (opened.extension.tools ?? []).find((tool) => tool.name === "pillars");
 	assert.ok(sourceTool);
 	const blocker = blockingExtension(sourceTool);
-	const { faux, harness, root } = await openHarness(extension, fixture.corpus, { extra: [blocker.extension] });
+	opened.registry.install(blocker.extension);
 	try {
-		faux.setResponses([
+		opened.faux.setResponses([
 			fauxAssistantMessage([fauxToolCall("pillars", { resource: "principle-one" }, { id: "pending-call" })], {
 				stopReason: "toolUse",
 			}),
 			fauxAssistantMessage("Interrupted."),
 		]);
-		await root.submit({ type: "input", content: "Consult the corpus." }, BACKGROUND_CONTEXT);
+		await opened.root.submit({ type: "input", content: "Consult the corpus." }, BACKGROUND_CONTEXT);
 		await blocker.started;
-		await harness.close(BACKGROUND_CONTEXT);
+		await opened.harness.close(BACKGROUND_CONTEXT);
 		assert.equal((await storedCells(fixture.store)).length, 0, "the interrupted round left its observation pending");
-		await closeAll();
+		await opened.closeAll();
 		assert.equal(
 			sumCounter(await storedCells(fixture.store), "readRequests"),
 			1,
 			"the close flush stored the pending request",
 		);
 	} finally {
-		await harness.close(BACKGROUND_CONTEXT);
+		await opened.harness.close(BACKGROUND_CONTEXT);
 	}
 });

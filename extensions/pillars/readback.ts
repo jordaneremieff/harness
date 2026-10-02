@@ -147,7 +147,7 @@ type Schema = {
 const loadSchema = (name: string): Schema =>
 	JSON.parse(readFileSync(new URL(`./schemas/${name}.schema.json`, import.meta.url), "utf8"));
 export const requestSchema = loadSchema("request");
-export const responseSchema = loadSchema("response");
+const responseSchema = loadSchema("response");
 const exportSchema = loadSchema("export");
 function object(value: unknown): value is Record<string, unknown> {
 	return (

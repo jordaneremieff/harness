@@ -370,24 +370,26 @@ ordinary Pi session no host listens, and the emission has no effect.
 
 The native form speaks the host's vocabulary directly. It contributes the
 same `pillars` and `pillars_usage` tools, a prompt section with the usage
-guidance, and native hooks. The surfaces share the slice's corpus access,
-draft assessment, evidence store, and readback functions with the ordinary
-entrypoint; no ordinary session API runs inside the Durable form.
+guidance, native hooks, and a `pillars` command for the judgment actions. The
+surfaces share the slice's corpus access, draft assessment, evidence store,
+and readback functions with the ordinary entrypoint; no ordinary session API
+runs inside the Durable form.
 
 The tools declare replay class `safe`. A corpus read and an in-memory page
 capture repeat no external effect. Attribution writes are deduplicated with
 stable task memo keys, so a replay after process loss does not silently count
-another access. Each tool also describes its structured result with an
-`outputSchema`, and carries it to nested-call declarations as
-`details.structuredContent`.
+another access. Native `details` equal the ordinary tool details; the
+ordinary tools return no `structuredContent`, so the native form adds none.
 
 Attribution uses the native tool and generation hooks. `beforeTool` and
 `afterTool` on `ToolTask` admit request and result observations for `pillars`
 and `read`; a `GenerationTask` `afterTools` hook flushes the round's admitted
 evidence, so a settled run leaves no pending cells; the host shutdown signal
 releases the reader early; and the close registration makes the host await the
-final flush before it closes storage. The store, its configuration variables,
-and the evidence meanings are the same as for the ordinary entrypoint.
+final flush before it closes storage. Observations record the resolved
+agent's model and thinking level through the host Harness. The store, its
+configuration variables, and the evidence meanings are the same as for the
+ordinary entrypoint.
 
 Documented differences from the ordinary entrypoint:
 
@@ -395,14 +397,14 @@ Documented differences from the ordinary entrypoint:
   result, not as a separate hidden custom message. The model still receives it
   exactly once, in the same continuation, and the source page stays unchanged
   in the tool content.
-- The recorded model and reasoning come from the conversation's stored agent
-  choice. When the host default supplies either value, the observation records
-  `unknown` instead of the resolved value; the hook surface exposes no agent
-  resolution.
 - Collector diagnostics go to standard error, because a Durable agent session
   has no UI host. Invalid `PI_PILLARS_COLLECT` values still disable collection.
-- The `/pillars` command has no Durable form. An agent session has no operator
-  command surface; the two tools carry the model-facing capability.
+- The `pillars` command admits the judgment actions only. It submits the same
+  judgment prompt to the conversation as a steer. The ordinary browse, read,
+  usage, and help paths render through the terminal UI, which a Durable
+  command has no view for; `export` writes an operator filesystem path that
+  the calling session may not share. The two tools remain the model-facing
+  form for source reads and access evidence.
 
 ## Privacy and configuration
 
