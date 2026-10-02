@@ -1,20 +1,11 @@
 import { basename } from "node:path";
-import type { ExtensionContext, KeybindingsManager, SessionEntry, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, KeybindingsManager, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Input, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Keybinding, type TUI } from "@earendil-works/pi-tui";
-import type { AgentSessionSummary } from "./command.ts";
-import type { DetachedRunView } from "./detached.ts";
-import type { SessionDigest } from "./dashboard-data.ts";
-import { AgentConversation, cleanDashboardText, type ConversationDocument } from "./dashboard-conversation.ts";
+import type { AgentConversationEntry, AgentConversationSummary, AgentObservationSources, DashboardTarget } from "./dashboard-types.ts";
+import { AgentConversation, cleanDashboardText, renderableEntries, type ConversationDocument } from "./dashboard-conversation.ts";
 import { AgentMessageEditor } from "./dashboard-composer.ts";
 
-export interface AgentObservationSources {
-	sessions(): Promise<AgentSessionSummary[]>;
-	runs(): Promise<DetachedRunView[]>;
-	board(): Promise<SessionDigest[]>;
-	conversation(sessionId: string): Promise<{ entries: SessionEntry[]; partial: boolean; revision: string }>;
-}
-export type DashboardTarget = { kind: "session"; session: AgentSessionSummary } | { kind: "run"; run: DetachedRunView };
-export interface AgentDashboardSnapshot { observedAt: number; sessions: SessionDigest[]; error?: string }
+export interface AgentDashboardSnapshot { observedAt: number; sessions: readonly AgentConversationSummary[]; error?: string }
 interface ConversationView {
 	follow: boolean;
 	scroll: number;
@@ -39,7 +30,7 @@ export interface DashboardActions {
 }
 interface ActionRequest { target?: DashboardTarget }
 type StateAppearance = { label: string; glyph: string; color: ThemeColor };
-export const sessionAppearance: Record<SessionDigest["state"], StateAppearance> = {
+export const sessionAppearance: Record<AgentConversationSummary["state"], StateAppearance> = {
 	working: { label: "Working", glyph: "●", color: "accent" },
 	idle: { label: "Idle", glyph: "○", color: "muted" },
 	done: { label: "Done", glyph: "✓", color: "success" },
@@ -50,25 +41,25 @@ export const sessionAppearance: Record<SessionDigest["state"], StateAppearance> 
 	unavailable: { label: "Unavailable", glyph: "?", color: "error" },
 };
 const oneLine = (text: string) => cleanDashboardText(text).replace(/\s+/g, " ").trim();
-const titleOf = (row: SessionDigest) => oneLine(row.name || row.firstMessage || basename(row.cwd) || row.sessionId);
+const titleOf = (row: AgentConversationSummary) => oneLine(row.name || row.firstMessage || basename(row.cwd) || row.id);
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const pad = (text: string, width: number) => { const clipped = truncateToWidth(text, Math.max(0, width)); return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped))); };
 export function elapsed(ms: number): string {
 	const seconds = Math.max(0, Math.floor(ms / 1000));
 	return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m${seconds % 60}s` : seconds < 86400 ? `${Math.floor(seconds / 3600)}h${Math.floor(seconds % 3600 / 60)}m` : `${Math.floor(seconds / 86400)}d`;
 }
-function costOf(row: SessionDigest): string { return `${row.partial ? "≥" : ""}$${row.cost.toFixed(2)}`; }
-function activityOf(row: SessionDigest, now: number): string {
-	const parts = [`${row.toolCalls} tool calls`, `active ${elapsed(now - row.modifiedAt)} ago`];
+function costOf(row: AgentConversationSummary): string { return `${row.partial ? "≥" : ""}$${row.cost.toFixed(2)}`; }
+function activityOf(row: AgentConversationSummary, now: number): string {
+	const parts = [`${row.toolCalls ?? 0} tool calls`, `active ${elapsed(now - row.modifiedAt)} ago`];
 	if (row.durationMs !== undefined) parts.unshift(`${elapsed(row.durationMs)} duration`);
 	return parts.join(" · ");
 }
-/** Recovery detail for a live local worker; an absent report is not a health verdict. */
-function recoveryLines(row: SessionDigest, skipRetry = false): Array<{ color: ThemeColor; text: string }> {
+/** Recovery detail for a held storage; an absent report is not a health verdict. */
+function recoveryLines(row: AgentConversationSummary, skipRetry = false): Array<{ color: ThemeColor; text: string }> {
 	const health = row.health;
 	if (!health) return [];
 	const lines: Array<{ color: ThemeColor; text: string }> = [];
-	if (health.lastError) lines.push({ color: "error", text: `Last worker error: ${oneLine(health.lastError)}` });
+	if (health.lastError) lines.push({ color: "error", text: `Last host error: ${oneLine(health.lastError)}` });
 	if (health.compactionFailure) {
 		const failure = health.compactionFailure;
 		lines.push({ color: "warning", text: `Last compaction failure (${failure.reason}) at ${failure.at}: ${oneLine(failure.errorMessage ?? "no error text")}` });
@@ -76,7 +67,7 @@ function recoveryLines(row: SessionDigest, skipRetry = false): Array<{ color: Th
 	if (!skipRetry && health.autoRetry) lines.push({ color: "warning", text: `provider retry ${health.autoRetry.attempt}/${health.autoRetry.maxAttempts} after ${elapsed(health.autoRetry.delayMs)}: ${oneLine(health.autoRetry.errorMessage)}` });
 	return lines;
 }
-function healthMark(row: SessionDigest, theme: Theme): string {
+function healthMark(row: AgentConversationSummary, theme: Theme): string {
 	const health = row.health;
 	if (!health) return "";
 	if (health.lastError) return theme.fg("error", "!");
@@ -84,10 +75,11 @@ function healthMark(row: SessionDigest, theme: Theme): string {
 	if (health.autoRetry) return theme.fg("accent", "↻");
 	return "";
 }
-function stateLabel(row: SessionDigest): string {
-	return `${sessionAppearance[row.state].label}${row.owner === "window" ? " · other window" : row.owner === "detached" ? " · detached" : row.owner === "here" ? " · here" : ""}`;
+function stateLabel(row: AgentConversationSummary): string {
+	const owner = row.owner === "unavailable" ? " · unavailable" : row.owner === "unknown" ? " · stored" : "";
+	return `${sessionAppearance[row.state].label}${owner}`;
 }
-function sectionOf(row: SessionDigest, now: number): string {
+function sectionOf(row: AgentConversationSummary, now: number): string {
 	if (row.state === "working") return "Working";
 	if (row.state === "unavailable") return "Attention";
 	if (row.health?.lastError || row.health?.compactionFailure) return "Attention";
@@ -96,16 +88,16 @@ function sectionOf(row: SessionDigest, now: number): string {
 	const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
 	return row.modifiedAt >= today.getTime() ? "Today" : row.modifiedAt >= yesterday.getTime() ? "Yesterday" : "Earlier";
 }
-export function dashboardRecords(snapshot: AgentDashboardSnapshot | undefined, filter: string): SessionDigest[] {
+export function dashboardRecords(snapshot: AgentDashboardSnapshot | undefined, filter: string): AgentConversationSummary[] {
 	const terms = oneLine(filter).toLocaleLowerCase().split(" ").filter(Boolean);
 	const sections = ["Working", "Attention", "Today", "Yesterday", "Earlier"];
 	return (snapshot?.sessions ?? []).filter((row) => {
-		const text = `${titleOf(row)} ${row.firstMessage ?? ""} ${row.cwd} ${row.sessionId} ${stateLabel(row)} ${row.model?.provider ?? ""} ${row.model?.modelId ?? ""} ${row.model?.thinkingLevel ?? ""}`.toLocaleLowerCase();
+		const text = `${titleOf(row)} ${row.firstMessage ?? ""} ${row.cwd} ${row.id} ${stateLabel(row)} ${row.model?.provider ?? ""} ${row.model?.modelId ?? ""} ${row.model?.thinkingLevel ?? ""}`.toLocaleLowerCase();
 		return terms.every((term) => text.includes(term));
-	}).sort((a, b) => sections.indexOf(sectionOf(a, snapshot?.observedAt ?? Date.now())) - sections.indexOf(sectionOf(b, snapshot?.observedAt ?? Date.now())) || b.modifiedAt - a.modifiedAt || a.sessionId.localeCompare(b.sessionId));
+	}).sort((a, b) => sections.indexOf(sectionOf(a, snapshot?.observedAt ?? Date.now())) - sections.indexOf(sectionOf(b, snapshot?.observedAt ?? Date.now())) || b.modifiedAt - a.modifiedAt || a.id.localeCompare(b.id));
 }
-export async function readAgentDashboard(sources: Pick<AgentObservationSources, "board">): Promise<AgentDashboardSnapshot> {
-	try { return { observedAt: Date.now(), sessions: await sources.board() }; }
+export async function readAgentDashboard(sources: Pick<AgentObservationSources, "list">): Promise<AgentDashboardSnapshot> {
+	try { return { observedAt: Date.now(), sessions: await sources.list() }; }
 	catch (error) { return { observedAt: Date.now(), sessions: [], error: errorText(error) }; }
 }
 function totals(snapshot: AgentDashboardSnapshot | undefined): string {
@@ -117,7 +109,7 @@ function totals(snapshot: AgentDashboardSnapshot | undefined): string {
 export function dashboardText(snapshot: AgentDashboardSnapshot): string {
 	return ["Agent dashboard", totals(snapshot), ...(snapshot.error ? [`Store unavailable: ${snapshot.error}`] : []), ...dashboardRecords(snapshot, "").flatMap((row) => [
 		oneLine(`${sessionAppearance[row.state].glyph} ${stateLabel(row)} · ${titleOf(row)} · ${basename(row.cwd)} · ${row.model?.modelId ?? "unknown model"} · ${costOf(row)}`),
-		`  ${oneLine(row.sessionId)} · ${oneLine(row.cwd)}`,
+		`  ${oneLine(row.id)} · ${oneLine(row.cwd)}`,
 		...recoveryLines(row).map((line) => `  ${oneLine(line.text)}`),
 		...(row.latestReply ? [`  ${oneLine(row.latestReply).slice(0, 300)}`] : []),
 	]), "Use /agent help for actions."].join("\n");
@@ -146,7 +138,7 @@ export class AgentDashboard implements Component {
 	private resultScroll = 0;
 	private resultLength = 0;
 	private viewport = 1;
-	private history?: { id: string; entries: SessionEntry[]; partial: boolean; revision: string };
+	private history?: { id: string; entries: readonly AgentConversationEntry[]; partial: boolean; revision: string };
 	private historyError?: string;
 	private historyGeneration = 0;
 	private conversation?: AgentConversation;
@@ -197,8 +189,8 @@ export class AgentDashboard implements Component {
 		this.renderRequestedAt ??= Date.now();
 		this.tui.requestRender();
 	}
-	private rows(): SessionDigest[] { return dashboardRecords(this.state.snapshot, this.state.filter); }
-	private selected(): SessionDigest | undefined { return this.state.snapshot?.sessions.find((row) => row.sessionId === this.state.selected); }
+	private rows(): AgentConversationSummary[] { return dashboardRecords(this.state.snapshot, this.state.filter); }
+	private selected(): AgentConversationSummary | undefined { return this.state.snapshot?.sessions.find((row) => row.id === this.state.selected); }
 	private view(): ConversationView | undefined {
 		const id = this.state.selected; if (!id) return undefined;
 		let view = this.state.views.get(id);
@@ -217,7 +209,7 @@ export class AgentDashboard implements Component {
 	private selectValid(): boolean {
 		if (this.submitting || this.inputMode === "message" || this.inputMode === "new") return false;
 		const rows = this.rows();
-		return !rows.some((row) => row.sessionId === this.state.selected) && this.select(rows[0]?.sessionId);
+		return !rows.some((row) => row.id === this.state.selected) && this.select(rows[0]?.id);
 	}
 	async refresh(): Promise<void> {
 		if (this.closed || this.refreshPaused || this.refreshing) return;
@@ -242,7 +234,7 @@ export class AgentDashboard implements Component {
 		if (!id || this.refreshPaused) return;
 		const generation = ++this.historyGeneration;
 		try {
-			const data = await this.sources.conversation(id);
+			const data = await this.sources.snapshot(id);
 			if (this.closed || this.refreshPaused || generation !== this.historyGeneration || id !== this.state.selected) return;
 			this.historyError = undefined;
 			if (this.history?.id === id && this.history.revision === data.revision) return;
@@ -253,9 +245,9 @@ export class AgentDashboard implements Component {
 	}
 	private move(delta: number): void {
 		if (this.submitting) return;
-		const rows = this.rows(); const index = rows.findIndex((row) => row.sessionId === this.state.selected);
+		const rows = this.rows(); const index = rows.findIndex((row) => row.id === this.state.selected);
 		const next = Math.max(0, Math.min(rows.length - 1, index + delta));
-		if (this.select(rows[next]?.sessionId)) void this.readConversation();
+		if (this.select(rows[next]?.id)) void this.readConversation();
 	}
 	private compose(create = false): void {
 		if (!this.actions?.compose || this.submitting) return;
@@ -263,13 +255,13 @@ export class AgentDashboard implements Component {
 		const refusal = !create && row ? this.refusal(row) : undefined;
 		if (refusal) { this.state.notice = refusal; this.redraw(); return; }
 		if (!create) this.state.focus = "conversation";
-		this.inputMode = create ? "new" : "message"; this.composerId = create ? undefined : row?.sessionId;
+		this.inputMode = create ? "new" : "message"; this.composerId = create ? undefined : row?.id;
 		this.editor = new AgentMessageEditor(this.tui as TUI, this.theme, (text) => { void this.submit(text); });
 		this.editor.setText(this.state.drafts.get(this.composerId ?? "new") ?? ""); this.focused = this.hostFocused;
 	}
-	private refusal(row: SessionDigest): string | undefined {
-		if (row.owner === "window") return `Open in ${oneLine(row.ownerLabel || "another Pi window")} · ${basename(row.cwd)}`;
-		if (row.state === "unavailable" || row.owner === "unknown") return `${sessionAppearance[row.state].label}: ${oneLine(row.error || row.ownerLabel || "session control is unavailable")}`;
+	private refusal(row: AgentConversationSummary): string | undefined {
+		if (row.owner === "unavailable" || row.owner === "unknown") return oneLine(row.ownerLabel || row.error || `${sessionAppearance[row.state].label} control is unavailable`);
+		if (row.state === "unavailable") return oneLine(row.error || "conversation control is unavailable");
 		return undefined;
 	}
 	private saveDraft(): void {
@@ -278,7 +270,7 @@ export class AgentDashboard implements Component {
 	private finishInput(): void { this.inputMode = undefined; this.focused = this.hostFocused; this.redraw(); }
 	private async submissionMode(create: boolean, id?: string): Promise<"new" | "send" | "steer"> {
 		if (create) return "new";
-		const row = (await this.sources.board()).find((item) => item.sessionId === id);
+		const row = (await this.sources.list()).find((item) => item.id === id);
 		if (!row) throw new Error("Session is no longer available");
 		const refusal = this.refusal(row); if (refusal) throw new Error(refusal);
 		return row.state === "working" ? "steer" : "send";
@@ -359,14 +351,14 @@ export class AgentDashboard implements Component {
 				return true;
 			case "a": {
 				if (!this.actions || this.submitting) return true;
-				const row = this.selected(); this.dispose(); this.done({ target: row ? { kind: "session", session: row } : undefined }); return true;
+				const row = this.selected(); this.dispose(); this.done({ target: row }); return true;
 			}
 			default: return false;
 		}
 	}
 	private sessionInput(data: string): void {
 		const rows = this.rows();
-		const index = rows.findIndex((row) => row.sessionId === this.state.selected);
+		const index = rows.findIndex((row) => row.id === this.state.selected);
 		if (matchesKey(data, "home")) this.move(-index);
 		else if (matchesKey(data, "end")) this.move(rows.length - 1 - index);
 		else this.move(this.delta(data, this.viewport));
@@ -439,9 +431,9 @@ export class AgentDashboard implements Component {
 	}
 	private composerHeading(width: number): string {
 		if (this.inputMode === "new") return "New agent · task";
-		const row = this.state.snapshot?.sessions.find((item) => item.sessionId === this.composerId);
+		const row = this.state.snapshot?.sessions.find((item) => item.id === this.composerId);
 		const prefix = row?.state === "working" ? "Steer" : "Send to";
-		const title = row ? this.rosterTitles(this.rows(), Math.max(1, width - prefix.length - 1)).get(row.sessionId) ?? titleOf(row) : this.composerId ?? "session";
+		const title = row ? this.rosterTitles(this.rows(), Math.max(1, width - prefix.length - 1)).get(row.id) ?? titleOf(row) : this.composerId ?? "session";
 		return `${prefix} ${title}`;
 	}
 	render(width: number): string[] {
@@ -484,8 +476,8 @@ export class AgentDashboard implements Component {
 		if (this.state.focus === "sessions") this.viewport = Math.max(1, height - 1);
 		return Array.from({ length: height }, (_, index) => `${pad(roster[index] ?? "", railWidth)} ${this.theme.fg("borderMuted", "│")} ${conversation[index] ?? ""}`);
 	}
-	private rosterTitles(rows: SessionDigest[], width: number): Map<string, string> {
-		const groups = new Map<string, SessionDigest[]>();
+	private rosterTitles(rows: AgentConversationSummary[], width: number): Map<string, string> {
+		const groups = new Map<string, AgentConversationSummary[]>();
 		for (const row of this.state.snapshot?.sessions ?? rows) {
 			const key = truncateToWidth(titleOf(row), width);
 			const group = groups.get(key) ?? []; group.push(row); groups.set(key, group);
@@ -494,23 +486,23 @@ export class AgentDashboard implements Component {
 		for (const group of groups.values()) {
 			if (group.length < 2) continue;
 			for (const row of group) {
-				let length = Math.min(6, row.sessionId.length);
-				while (length < row.sessionId.length && group.some((other) => other.sessionId !== row.sessionId && other.sessionId.slice(-length) === row.sessionId.slice(-length))) length++;
-				const suffix = row.sessionId.slice(-length);
+				let length = Math.min(6, row.id.length);
+				while (length < row.id.length && group.some((other) => other.id !== row.id && other.id.slice(-length) === row.id.slice(-length))) length++;
+				const suffix = row.id.slice(-length);
 				const title = truncateToWidth(titleOf(row), Math.max(0, width - 1 - visibleWidth(suffix)));
-				titles.set(row.sessionId, `${title} ${suffix}`.trimStart());
+				titles.set(row.id, `${title} ${suffix}`.trimStart());
 			}
 		}
 		return titles;
 	}
-	private selector(rows: SessionDigest[], row: SessionDigest, width: number): string {
-		const position = `${rows.findIndex((item) => item.sessionId === row.sessionId) + 1}/${rows.length}${this.state.filter ? ` of ${this.state.snapshot?.sessions.length ?? 0}` : ""}`;
+	private selector(rows: AgentConversationSummary[], row: AgentConversationSummary, width: number): string {
+		const position = `${rows.findIndex((item) => item.id === row.id) + 1}/${rows.length}${this.state.filter ? ` of ${this.state.snapshot?.sessions.length ?? 0}` : ""}`;
 		const titleWidth = Math.max(1, width - visibleWidth(position) - 4);
-		const title = this.rosterTitles(rows, titleWidth).get(row.sessionId) ?? titleOf(row);
+		const title = this.rosterTitles(rows, titleWidth).get(row.id) ?? titleOf(row);
 		return `${this.theme.fg(sessionAppearance[row.state].color, sessionAppearance[row.state].glyph)} ${pad(title, titleWidth)}  ${position}`;
 	}
-	private rosterEntries(rows: SessionDigest[]): Array<{ row?: SessionDigest; text?: string }> {
-		const entries: Array<{ row?: SessionDigest; text?: string }> = [];
+	private rosterEntries(rows: AgentConversationSummary[]): Array<{ row?: AgentConversationSummary; text?: string }> {
+		const entries: Array<{ row?: AgentConversationSummary; text?: string }> = [];
 		let section = "";
 		for (const row of rows) {
 			const next = sectionOf(row, this.state.snapshot?.observedAt ?? Date.now());
@@ -519,15 +511,15 @@ export class AgentDashboard implements Component {
 		}
 		return entries;
 	}
-	private rosterRow(row: SessionDigest, width: number, title: string): string {
-		const selected = row.sessionId === this.state.selected; const appearance = sessionAppearance[row.state];
+	private rosterRow(row: AgentConversationSummary, width: number, title: string): string {
+		const selected = row.id === this.state.selected; const appearance = sessionAppearance[row.state];
 		const mark = healthMark(row, this.theme);
 		const line = `${selected ? "›" : " "}${this.theme.fg(appearance.color, appearance.glyph)} ${pad(title, Math.max(0, width - 3 - visibleWidth(mark)))}${mark}`;
 		return selected ? this.theme.bg("selectedBg", line) : line;
 	}
-	private renderRoster(rows: SessionDigest[], width: number, height: number): string[] {
+	private renderRoster(rows: AgentConversationSummary[], width: number, height: number): string[] {
 		const entries = this.rosterEntries(rows);
-		const selectedIndex = entries.findIndex((entry) => entry.row?.sessionId === this.state.selected);
+		const selectedIndex = entries.findIndex((entry) => entry.row?.id === this.state.selected);
 		const headerHeight = height >= 4 ? 1 : 0;
 		const pageSize = Math.max(1, height - headerHeight);
 		const start = Math.min(Math.max(0, entries.length - pageSize), Math.max(0, selectedIndex - Math.floor(pageSize / 2)));
@@ -536,7 +528,7 @@ export class AgentDashboard implements Component {
 		const titles = this.rosterTitles(rows, width - 4);
 		for (const entry of entries.slice(start, start + pageSize)) {
 			if (!entry.row) { lines.push(this.theme.fg("accent", ` ${entry.text}`)); continue; }
-			lines.push(this.rosterRow(entry.row, width, titles.get(entry.row.sessionId) ?? titleOf(entry.row)));
+			lines.push(this.rosterRow(entry.row, width, titles.get(entry.row.id) ?? titleOf(entry.row)));
 		}
 		return lines;
 	}
@@ -558,7 +550,7 @@ export class AgentDashboard implements Component {
 		return header;
 	}
 	/** The state slot carries current work or an in-progress retry; recovery lines follow separately. */
-	private conversationStatusLines(row: SessionDigest, width: number): string[] {
+	private conversationStatusLines(row: AgentConversationSummary, width: number): string[] {
 		const lines: string[] = [];
 		const retry = row.health?.autoRetry;
 		if (row.state === "working") {
@@ -570,16 +562,16 @@ export class AgentDashboard implements Component {
 		for (const line of recoveryLines(row, row.state === "working")) lines.push(this.theme.fg(line.color, truncateToWidth(line.text, width)));
 		return lines;
 	}
-	private conversationDocument(meaningful: SessionEntry[], view: ConversationView, width: number): { document: ConversationDocument; start: number } {
-		let start = Math.max(0, meaningful.length - view.messageLimit);
+	private conversationDocument(entries: readonly AgentConversationEntry[], view: ConversationView, width: number): { document: ConversationDocument; start: number } {
+		let start = Math.max(0, entries.length - view.messageLimit);
 		if (!view.follow && view.anchor) {
-			const anchored = meaningful.findIndex((entry) => entry.id === view.anchor?.id || view.anchor?.id.startsWith(`${entry.id}:`));
+			const anchored = entries.findIndex((entry) => entry.id === view.anchor?.id || view.anchor?.id.startsWith(`${entry.id}:`));
 			if (anchored >= 0) start = Math.min(start, anchored);
 		}
 		const measure = Math.min(112, width);
 		if (this.conversationWidth !== undefined && this.conversationWidth !== measure) { this.rememberAnchor(); this.anchorPending = true; }
 		if (!this.conversation) {
-			this.conversation = new AgentConversation(meaningful.slice(start), this.selected()?.cwd ?? ".", this.tui as TUI, view.expanded, view.showThinking);
+			this.conversation = new AgentConversation(entries.slice(start), this.selected()?.cwd ?? ".", this.tui as TUI, view.expanded, view.showThinking);
 			this.conversationStart = start;
 		}
 		this.conversationWidth = measure;
@@ -590,7 +582,7 @@ export class AgentDashboard implements Component {
 		const header = this.conversationHeader(width, height, withTitle); const view = this.view();
 		if (this.historyError) return [...header, this.theme.fg("error", "Conversation unavailable"), ...wrapTextWithAnsi(cleanDashboardText(this.historyError), width), "r retries"];
 		if (!this.history || !view) return [...header, "Read in progress…"];
-		const meaningful = this.history.entries.filter((entry) => ["message", "custom_message", "compaction", "branch_summary"].includes(entry.type));
+		const meaningful = renderableEntries(this.history.entries);
 		const { document, start } = this.conversationDocument(meaningful, view, width);
 		this.viewport = Math.max(1, height - header.length - 1);
 		if (this.anchorPending && !view.follow && view.anchor) {
@@ -600,7 +592,7 @@ export class AgentDashboard implements Component {
 		this.anchorPending = false;
 		view.scroll = view.follow ? Math.max(0, document.lines.length - this.viewport) : Math.max(0, Math.min(view.scroll, document.lines.length - 1));
 		this.rememberAnchor();
-		const top = `${start ? `${start} earlier messages · o loads more` : "Start of conversation"}${this.history.partial ? " · partial file capture" : ""}`;
+		const top = `${start ? `${start} earlier messages · o loads more` : "Start of conversation"}${this.history.partial ? " · partial transcript" : ""}`;
 		const gutter = " ".repeat(Math.min(3, Math.floor((width - Math.min(112, width)) / 2)));
 		const content = document.lines.slice(view.scroll, view.scroll + this.viewport).map((line) => gutter + line);
 		return [...header, this.theme.fg("dim", `${top} · ${view.scroll + (document.lines.length ? 1 : 0)}–${Math.min(document.lines.length, view.scroll + this.viewport)} / ${document.lines.length}`), ...(content.length ? content : ["No conversation messages yet."])];
@@ -612,7 +604,7 @@ export class AgentDashboard implements Component {
 		return lines.slice(this.resultScroll, this.resultScroll + height);
 	}
 	private renderHelp(width: number, height: number): string[] {
-		const lines = ["Agent conversations", "", this.sessionNavigation(), "Sessions is selected when the board opens. The selection keys above or j/k select a session. The configured confirmation key reads it; Tab also switches between Sessions and Conversation. A wide terminal previews the selected conversation beside the list. A narrow terminal shows the focused area.", "In Conversation, ↑↓ or j/k scrolls. Page Up/Down or b/Space pages the focused area. Home/End selects the first/last session or starts/follows the conversation. o loads earlier messages in Conversation. [ and ] selects sessions from either area.", "/ searches name, task, place, model, state or ID and focuses Sessions. Enter keeps the filter and shows the matches; Escape restores the previous filter, selection and focus.", "m opens the selected session's draft from either area. Enter opens a draft only in Conversation. The native editor submits with its configured submit key and inserts newlines with its configured newline key. Escape hides the editor and retains the draft. n drafts a task for a new agent.", "The recipient stays fixed while the editor is open or a submission is in progress. A fresh ownership check selects send for an idle agent or steer for active work. A refused submission retains the draft.", "a opens all native actions. Actions retain their trust and ownership checks. Escape returns from help or a result; otherwise it closes the dashboard.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "Sessions this Pi window runs also show the worker's last error, its last failed compaction, and an in-progress provider retry. A later successful compaction clears the failure, the retry's end clears the retry, and the next operation start clears the last error. Stored sessions, sessions owned by another window or a detached run, and primaries do not gain these fields; no warning on those rows is not a health check. The transcript error stays separate from these worker fields.", "", "Each visited session keeps its reading position, follow mode, loaded-message limit, expansion, thinking visibility and draft for this open dashboard, including native action dialogs. The board also retains its focused area through dialogs and resize. Closing the dashboard ends that state.", "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A same-host claim whose process no longer exists leaves the transcript outcome in force; the next control through this window replaces that claim. The dashboard never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files retain bounded identity metadata and a conversation tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds Unavailable sessions regardless of age, a worker's last error or last failed compaction at any transcript age, and Failed, Stopped and Interrupted outcomes from the last 24 hours. Older outcomes retain their state in date groups.", "Refresh runs once per second while this overlay is visible. Only changed files are parsed. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it."];
+		const lines = ["Agent conversations", "", this.sessionNavigation(), "Sessions is selected when the board opens. The selection keys above or j/k select a session. The configured confirmation key reads it; Tab also switches between Sessions and Conversation. A wide terminal previews the selected conversation beside the list. A narrow terminal shows the focused area.", "In Conversation, ↑↓ or j/k scrolls. Page Up/Down or b/Space pages the focused area. Home/End selects the first/last session or starts/follows the conversation. o loads earlier messages in Conversation. [ and ] selects sessions from either area.", "/ searches name, task, place, model, state or ID and focuses Sessions. Enter keeps the filter and shows the matches; Escape restores the previous filter, selection and focus.", "m opens the selected session's draft from either area. Enter opens a draft only in Conversation. The native editor submits with its configured submit key and inserts newlines with its configured newline key. Escape hides the editor and retains the draft. n drafts a task for a new agent.", "The recipient stays fixed while the editor is open or a submission is in progress. A fresh ownership check selects send for an idle agent or steer for active work. A refused submission retains the draft.", "a opens all native actions. Actions retain their trust and ownership checks. Escape returns from help or a result; otherwise it closes the dashboard.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "Sessions in a storage this Pi process holds also show the host's last error, its last failed compaction, and an in-progress provider retry. A later successful compaction clears the failure, the retry's end clears the retry, and the next operation start clears the last error. Conversations without a held storage gain no recovery fields; no warning on those rows is not a health check. The transcript error stays separate from these host fields.", "", "Each visited session keeps its reading position, follow mode, loaded-message limit, expansion, thinking visibility and draft for this open dashboard, including native action dialogs. The board also retains its focused area through dialogs and resize. Closing the dashboard ends that state.", "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "One Pi Durable host owns one storage. Rows come from the storages this process holds; a conversation held by another Pi window is outside this boundary. The dashboard never opens a storage, takes ownership, or writes native history.", "Spend sums retained native usage. ≥ marks incomplete cost data. The conversation shows committed entries, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds Unavailable sessions regardless of age, a host's last error or last failed compaction at any transcript age, and Failed, Stopped and Interrupted outcomes from the last 24 hours. Older outcomes retain their state in date groups.", "Refresh runs once per second while this overlay is visible. The source supplies whole summaries and the selected transcript; only changed readings are rebuilt. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it."];
 		const wrapped = lines.flatMap((line) => wrapTextWithAnsi(line, width));
 		this.helpScroll = Math.min(this.helpScroll, Math.max(0, wrapped.length - height));
 		return wrapped.slice(this.helpScroll, this.helpScroll + height);

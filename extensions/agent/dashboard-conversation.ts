@@ -1,14 +1,13 @@
 import { stripVTControlCharacters } from "node:util";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, ToolResultMessage } from "@earendil-works/pi-ai";
 import {
-	AssistantMessageComponent, BranchSummaryMessageComponent, CompactionSummaryMessageComponent,
-	CustomMessageComponent, ToolExecutionComponent, UserMessageComponent,
+	AssistantMessageComponent, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent,
 	createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition,
 	createLsToolDefinition, createPowerShellToolDefinition, createReadToolDefinition, createWriteToolDefinition,
-	getMarkdownTheme, sessionEntryToContextMessages, type SessionEntry,
+	getMarkdownTheme,
 } from "@earendil-works/pi-coding-agent";
 import { Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import type { AgentConversationEntry } from "./dashboard-types.ts";
 
 export function cleanDashboardText(text: string): string {
 	return stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, (char) => char === "\n" || char === "\t" ? char : "");
@@ -35,7 +34,29 @@ export interface ConversationBlock { id: string; component: Component }
 export interface ConversationDocument { lines: string[]; anchors: Array<{ id: string; line: number }> }
 const nativeTools = (cwd: string) => [createReadToolDefinition(cwd), createBashToolDefinition(cwd), createEditToolDefinition(cwd), createWriteToolDefinition(cwd), createGrepToolDefinition(cwd), createFindToolDefinition(cwd), createLsToolDefinition(cwd), createPowerShellToolDefinition(cwd)];
 
-/** A selected branch uses Pi's public chat components and built-in tool presentation. */
+function contentText(content: Message["content"]): string {
+	if (typeof content === "string") return content;
+	return content.flatMap((part) => part.type === "text" ? [part.text] : part.type === "image" ? ["[Image]"] : []).join("\n");
+}
+
+/**
+ * Entries the conversation surface can show. Native kinds without model
+ * messages contribute no visible block, so they never consume the load limit.
+ */
+export function renderableEntries(entries: readonly AgentConversationEntry[]): AgentConversationEntry[] {
+	return entries.filter((entry) => {
+		if (entry.kind === "pi.compaction" || entry.kind === "pi.reset") return true;
+		if (entry.kind === "pi.system") return false;
+		return (entry.model ?? []).some((message) => contentText(message.content).trim().length > 0);
+	});
+}
+
+function entryTimestamp(entry: AgentConversationEntry): number {
+	for (const message of entry.model ?? []) if ("timestamp" in message && typeof message.timestamp === "number") return message.timestamp;
+	return 0;
+}
+
+/** A conversation transcript uses Pi's public chat components and built-in tool presentation. */
 export class AgentConversation {
 	private blocks: ConversationBlock[] = [];
 	private cache?: { width: number; document: ConversationDocument };
@@ -45,16 +66,26 @@ export class AgentConversation {
 	private readonly tui: TUI;
 	private readonly expanded: boolean;
 	private readonly showThinking: boolean;
-	constructor(entries: SessionEntry[], cwd: string, tui: TUI, expanded: boolean, showThinking: boolean) {
+	constructor(entries: readonly AgentConversationEntry[], cwd: string, tui: TUI, expanded: boolean, showThinking: boolean) {
 		this.cwd = cwd; this.tui = tui; this.expanded = expanded; this.showThinking = showThinking;
 		this.definitions = nativeTools(cwd);
 		for (const source of entries) this.appendEntry(source);
 	}
-	private appendEntry(source: SessionEntry): void {
+	private appendEntry(source: AgentConversationEntry): void {
 		try {
-			const entry = displayValue(source) as SessionEntry;
-			for (const message of sessionEntryToContextMessages(entry)) this.appendMessage(entry.id, message);
+			const entry = displayValue(source) as AgentConversationEntry;
+			if (entry.kind === "pi.compaction") { this.appendCompaction(entry); return; }
+			if (entry.kind === "pi.reset") this.blocks.push({ id: `${entry.id}:reset`, component: new Text("── New context ──", 1, 1) });
+			for (const message of entry.model ?? []) this.appendMessage(entry.id, message);
 		} catch { this.blocks.push({ id: source.id, component: new Text("[Message unavailable: invalid stored content]", 1, 1) }); }
+	}
+	/** Native compaction entries keep their wrapped summary text under a distinct label. */
+	private appendCompaction(entry: AgentConversationEntry): void {
+		const text = (entry.model ?? []).map((message) => contentText(message.content)).join("\n").trim();
+		const message = { role: "custom" as const, customType: "compaction", content: text || "Compaction summary text is unavailable", display: true, timestamp: entryTimestamp(entry) };
+		const component = new CustomMessageComponent(message, undefined, getMarkdownTheme());
+		component.setExpanded(this.expanded);
+		this.blocks.push({ id: entry.id, component });
 	}
 	private tool(name: string, id: string, args: unknown, known = true): ToolExecutionComponent {
 		const definition = known ? this.definitions.find((item) => item.name === name) : undefined;
@@ -77,25 +108,17 @@ export class AgentConversation {
 		if (!tool) { tool = this.tool(message.toolName, message.toolCallId, {}, false); this.blocks.push({ id, component: tool }); }
 		tool.updateResult(message);
 	}
-	private appendMessage(id: string, message: AgentMessage): void {
+	private appendMessage(id: string, message: Message): void {
 		const markdown = getMarkdownTheme();
 		let component: Component | undefined;
 		switch (message.role) {
 			case "assistant": this.appendAssistant(id, message); return;
 			case "toolResult": this.appendResult(id, message); return;
 			case "user":
-				component = new UserMessageComponent(typeof message.content === "string" ? message.content : message.content.map((part) => part.type === "text" ? part.text : "[Image]").join("\n"), markdown); break;
-			case "custom":
-				if (message.display) { const custom = new CustomMessageComponent(message, undefined, markdown); custom.setExpanded(this.expanded); component = custom; } break;
-			case "compactionSummary": {
-				const summary = new CompactionSummaryMessageComponent(message, markdown); summary.setExpanded(this.expanded); component = summary; break;
-			}
-			case "branchSummary": {
-				const summary = new BranchSummaryMessageComponent(message, markdown); summary.setExpanded(this.expanded); component = summary; break;
-			}
-			case "bashExecution": {
-				const tool = this.tool("bash", id, { command: message.command });
-				tool.updateResult({ content: [{ type: "text", text: message.output }], isError: message.cancelled || (message.exitCode !== undefined && message.exitCode !== 0) }); component = tool; break;
+				component = new UserMessageComponent(contentText(message.content), markdown); break;
+			case "system": {
+				const text = contentText(message.content).trim();
+				if (text) component = new Text(text, 1, 1); break;
 			}
 		}
 		if (component) this.blocks.push({ id, component });

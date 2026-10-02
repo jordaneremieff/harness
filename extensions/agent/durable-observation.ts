@@ -1,0 +1,1344 @@
+/**
+ * agent/durable-observation: bounded read projections and cold snapshots over a
+ * Pi Durable storage.
+ *
+ * The projections read only public Harness surfaces: conversation entries,
+ * documents, submissions, and task inspections. Entry serialization omits
+ * provider signatures, image payloads, and redacted thinking with markers and
+ * counts, and exposes offsets and cursors for continuation. Nothing here decodes
+ * private SQL.
+ *
+ * `DurableObservation.open()` copies a SQLite file through `node:sqlite`'s
+ * backup API and opens the copy without `resume()`, so a live writer keeps sole
+ * ownership of the source. The copy is writable: harness bookkeeping stays in
+ * the temporary file. Read-only viewers never schedule work.
+ */
+import { mkdtemp, rm } from "node:fs/promises";
+import { statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { backup, DatabaseSync } from "node:sqlite";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Context } from "@earendil-works/chord";
+import type { Message, Models } from "@earendil-works/pi-ai";
+import { AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation, type ConversationId, type ConversationRecord, type Cursor, type EntryId, type EntryRecord, type HarnessOptions, type Storage, type SubmissionId, type SubmissionRecord, type TaskInspection, type UsageState } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationState, AgentConversationSummary } from "./dashboard-types.ts";
+import { AgentDeliveryDoc, AgentMetaDoc, pendingDeliveries, settleDeliveries, undeliveredForOwner, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
+
+/** Byte/unit bounds used by every projection in this module. */
+export const ENTRY_PREVIEW_UNITS = 1200;
+export const ENTRY_PAGE_UNITS = 12000;
+export const HISTORY_LIMIT_DEFAULT = 12;
+export const HISTORY_LIMIT_MAX = 50;
+export const SEARCH_MATCH_LIMIT_DEFAULT = 10;
+export const SEARCH_MATCH_LIMIT_MAX = 20;
+export const SEARCH_SCAN_LIMIT_DEFAULT = 128;
+export const ACTIVITY_TURN_LIMIT_DEFAULT = 4;
+export const ACTIVITY_TURN_LIMIT_MAX = 12;
+
+export interface EntryOmissions {
+	readonly providerSignatures: number;
+	readonly imagePayloads: number;
+	readonly redactedThinking: number;
+}
+
+export type DurableEntrySource = "user" | "assistant" | "toolResult" | "summary" | "custom";
+
+export interface DurableEntryRow {
+	readonly id: EntryId;
+	readonly kind: string;
+	readonly source: DurableEntrySource;
+	readonly role?: string;
+	readonly preview?: { readonly text: string; readonly truncated: boolean };
+	readonly text: string;
+	readonly truncated: boolean;
+	readonly nextOffset: number | null;
+	readonly omissions?: EntryOmissions;
+}
+
+export interface DurableInspectParams {
+	readonly view?: "activity" | "history" | "branch" | "search" | "exact" | "result";
+	readonly conversationId?: ConversationId;
+	readonly limit?: number;
+	readonly cursor?: Cursor;
+	readonly entryId?: EntryId;
+	readonly fromId?: EntryId;
+	readonly offset?: number;
+	readonly query?: string;
+	readonly source?: DurableEntrySource;
+	readonly submissionId?: SubmissionId;
+	readonly operationId?: string;
+}
+
+export interface ConversationSummary {
+	readonly conversationId: ConversationId;
+	readonly identity: string;
+	readonly name?: string;
+	readonly owner?: string;
+	readonly busy: boolean;
+	readonly parent?: { readonly conversationId: ConversationId; readonly at: EntryId };
+	readonly ownerTaskId?: number;
+}
+
+export interface ConversationStatus extends ConversationSummary {
+	readonly cwd?: string;
+	readonly lastText: string | null;
+	readonly live: unknown;
+	readonly inbox: unknown;
+	readonly usage: UsageState | undefined;
+	readonly agent: {
+		readonly model?: { readonly provider: string; readonly modelId: string };
+		readonly thinkingLevel: string;
+		readonly extensions: readonly string[];
+		readonly tools: readonly string[];
+		readonly cwd?: string;
+		readonly instructions?: string;
+	};
+	readonly tasks: readonly {
+		readonly id: number;
+		readonly kind: string;
+		readonly status: TaskInspection["state"]["kind"];
+		readonly background: boolean;
+		readonly owner?: number;
+		readonly abortRequested: boolean;
+	}[];
+	readonly submissions: readonly {
+		readonly id: number;
+		readonly type: "input" | "write";
+		readonly status: SubmissionRecord["status"];
+		readonly requestId?: string;
+		readonly entryId?: number;
+		readonly answerEntryId?: number;
+		readonly reason?: string;
+	}[];
+}
+
+const SIGNATURE_MARKER = "[omitted: provider signature]";
+const IMAGE_MARKER = "[omitted: image data]";
+const REDACTED_MARKER = "[omitted: redacted thinking]";
+
+/** External identity of one conversation in one storage. */
+export function durableIdentity(storageId: string, conversationId: ConversationId | undefined): string {
+	return conversationId === undefined ? storageId : `${storageId}:${conversationId}`;
+}
+
+/** Main database bytes plus the WAL, the logical source size a snapshot copies. */
+function snapshotSourceBytes(path: string): number {
+	let total = statSync(path).size;
+	try {
+		total += statSync(`${path}-wal`).size;
+	} catch {
+		// A missing WAL is an empty WAL.
+	}
+	return total;
+}
+
+/** Readable source category of one entry kind. */
+export function entrySource(kind: string): DurableEntrySource {
+	switch (kind) {
+		case "pi.user":
+			return "user";
+		case "pi.assistant":
+			return "assistant";
+		case "pi.tool-result":
+			return "toolResult";
+		case "pi.compaction":
+			return "summary";
+		default:
+			return "custom";
+	}
+}
+
+type OmissionCounts = { providerSignatures: number; imagePayloads: number; redactedThinking: number };
+
+function redactPart(part: unknown, omissions: OmissionCounts): unknown {
+	if (part === null || typeof part !== "object") return part;
+	const candidate = part as Record<string, unknown>;
+	switch (candidate.type) {
+		case "text": {
+			if (typeof candidate.textSignature !== "string") return part;
+			omissions.providerSignatures++;
+			return { ...candidate, textSignature: SIGNATURE_MARKER };
+		}
+		case "toolCall": {
+			if (typeof candidate.thoughtSignature !== "string") return part;
+			omissions.providerSignatures++;
+			return { ...candidate, thoughtSignature: SIGNATURE_MARKER };
+		}
+		case "thinking": {
+			let copy: Record<string, unknown> | undefined;
+			if (typeof candidate.thinkingSignature === "string") {
+				omissions.providerSignatures++;
+				copy = { ...candidate, thinkingSignature: SIGNATURE_MARKER };
+			}
+			if (candidate.redacted === true) {
+				omissions.redactedThinking++;
+				copy = { ...(copy ?? candidate), thinking: REDACTED_MARKER };
+			}
+			return copy ?? part;
+		}
+		case "image": {
+			omissions.imagePayloads++;
+			return { ...candidate, data: IMAGE_MARKER };
+		}
+		default:
+			return part;
+	}
+}
+
+function redactContent(content: unknown, omissions: OmissionCounts): unknown {
+	if (!Array.isArray(content)) return content;
+	return content.map((part) => redactPart(part, omissions));
+}
+
+function projectMessages(model: readonly Message[] | undefined, omissions: EntryOmissions): readonly Message[] | undefined {
+	if (model === undefined) return undefined;
+	return model.map((message) => {
+		const content = (message as { readonly content?: unknown }).content;
+		const projected = redactContent(content, omissions);
+		return projected === content ? message : ({ ...message, content: projected } as Message);
+	});
+}
+
+/** Redacted JSON serialization of one entry, with omission counts when any apply. */
+export function projectEntry(entry: EntryRecord): { readonly value: Record<string, unknown>; readonly text: string; readonly omissions?: EntryOmissions } {
+	const omissions: EntryOmissions = { providerSignatures: 0, imagePayloads: 0, redactedThinking: 0 };
+	const model = projectMessages(entry.model, omissions);
+	const value: Record<string, unknown> = model === entry.model ? { ...entry } : { ...entry, model };
+	const any = omissions.providerSignatures + omissions.imagePayloads + omissions.redactedThinking > 0;
+	return { value, text: JSON.stringify(value), ...(any ? { omissions } : {}) };
+}
+
+function searchablePart(part: unknown): string | undefined {
+	if (part === null || typeof part !== "object") return undefined;
+	const candidate = part as Record<string, unknown>;
+	if (candidate.type === "text" && typeof candidate.text === "string") return candidate.text;
+	if (candidate.type === "thinking" && candidate.redacted !== true && typeof candidate.thinking === "string") return candidate.thinking;
+	if (candidate.type === "toolCall" && typeof candidate.name === "string") return candidate.name;
+	return undefined;
+}
+
+function searchableMessage(message: Message): string[] {
+	const parts: string[] = [];
+	const content = (message as { readonly content?: unknown }).content;
+	if (typeof content === "string") parts.push(content);
+	else if (Array.isArray(content)) {
+		for (const part of content) {
+			const text = searchablePart(part);
+			if (text !== undefined) parts.push(text);
+		}
+	}
+	if (message.role === "toolResult" && typeof message.toolName === "string") parts.push(message.toolName);
+	return parts;
+}
+
+/** Literal searchable text: message text, visible thinking, tool names, and kind. Signatures and images stay out. */
+export function searchableText(entry: EntryRecord): string {
+	const parts: string[] = [entry.kind];
+	for (const message of entry.model ?? []) parts.push(...searchableMessage(message));
+	return parts.join("\n");
+}
+
+/** UTF-16 fragment that keeps surrogate pairs intact and returns the continuation offset. */
+export function fragment(text: string, offset: number, maxUnits: number): { readonly text: string; readonly start: number; readonly nextOffset: number | null; readonly truncated: boolean } {
+	const start = Math.max(0, Math.min(Number.isFinite(offset) ? Math.trunc(offset) : 0, text.length));
+	let end = Math.min(text.length, start + Math.max(0, maxUnits));
+	if (end < text.length && end > start) {
+		const code = text.charCodeAt(end - 1);
+		if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+	}
+	return { text: text.slice(start, end), start, nextOffset: end < text.length ? end : null, truncated: end < text.length };
+}
+
+function entryPreview(entry: EntryRecord): { readonly text: string; readonly truncated: boolean } | undefined {
+	const text = (entry.model ?? []).map(textOfMessage).join("\n");
+	if (text === "") return undefined;
+	const cut = fragment(text, 0, ENTRY_PREVIEW_UNITS);
+	return { text: cut.text, truncated: cut.truncated };
+}
+
+/** Bounded row of one entry: redacted text plus a readable preview. */
+export function entryRow(entry: EntryRecord, maxUnits = ENTRY_PAGE_UNITS): DurableEntryRow {
+	const projected = projectEntry(entry);
+	const cut = fragment(projected.text, 0, maxUnits);
+	const preview = entryPreview(entry);
+	return {
+		id: entry.id,
+		kind: entry.kind,
+		source: entrySource(entry.kind),
+		...(entry.model?.[0]?.role === undefined ? {} : { role: entry.model[0].role }),
+		...(preview === undefined ? {} : { preview }),
+		text: cut.text,
+		truncated: cut.truncated,
+		nextOffset: cut.nextOffset,
+		...(projected.omissions === undefined ? {} : { omissions: projected.omissions }),
+	};
+}
+
+function messageTextOf(entry: EntryRecord | undefined): string | null {
+	if (!entry) return null;
+	const text = (entry.model ?? []).map(textOfMessage).join("\n");
+	const cut = fragment(text, 0, ENTRY_PREVIEW_UNITS);
+	return cut.text;
+}
+
+function boundedLimit(value: number | undefined, fallback: number, max: number): number {
+	if (value === undefined) return fallback;
+	if (!Number.isInteger(value) || value < 1) throw new RangeError(`limit must be a positive integer, received ${String(value)}`);
+	return Math.min(value, max);
+}
+
+export type RequestParams = Record<string, unknown>;
+
+/** Shared request parsing for the live host and the cold observation. Every consumer uses these. */
+export function requestString(params: RequestParams | undefined, key: string): string | undefined {
+	const value = params?.[key];
+	if (value === undefined) return undefined;
+	if (typeof value !== "string") throw new TypeError(`${key} must be a string`);
+	return value;
+}
+
+export function requestRequiredString(params: RequestParams | undefined, key: string): string {
+	const value = requestString(params, key);
+	if (value === undefined || value === "") throw new TypeError(`${key} is required`);
+	return value;
+}
+
+export function requestBoolean(params: RequestParams | undefined, key: string): boolean | undefined {
+	const value = params?.[key];
+	if (value === undefined) return undefined;
+	if (typeof value !== "boolean") throw new TypeError(`${key} must be a boolean`);
+	return value;
+}
+
+export function requestInteger(params: RequestParams | undefined, key: string): number | undefined {
+	const value = params?.[key];
+	if (value === undefined) return undefined;
+	if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+	if (typeof value === "string" && /^-?[0-9]+$/.test(value)) {
+		const parsed = Number(value);
+		if (Number.isSafeInteger(parsed)) return parsed;
+	}
+	throw new TypeError(`${key} must be an integer`);
+}
+
+/** Positive safe integer from a raw value, such as an array member. */
+export function requestPositiveId(value: unknown, key: string): number | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+	if (typeof value === "string" && /^[0-9]+$/.test(value)) {
+		const parsed = Number(value);
+		if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+	}
+	throw new TypeError(`${key} must be a positive integer`);
+}
+
+/** A positive safe integer that must be present. */
+export function requestRequiredId(value: unknown, key: string): number {
+	const id = requestPositiveId(value, key);
+	if (id === undefined) throw new TypeError(`${key} is required`);
+	return id;
+}
+
+/** Spread one optional parameter under its key only when present. */
+export function optionalParam<K extends string, V>(key: K, value: V | undefined): { [P in K]?: V } {
+	return value === undefined ? {} : ({ [key]: value } as { [P in K]: V });
+}
+
+/** Resolve one conversation target by external identity or native ID; default root. */
+export function resolveSessionConversationId(storageId: string, sessionId: string | undefined, conversationId: number | undefined): ConversationId {
+	if (sessionId !== undefined && conversationId !== undefined) throw new TypeError("pass sessionId or conversationId, not both");
+	if (conversationId !== undefined) return conversationId as ConversationId;
+	if (sessionId === undefined || sessionId === storageId) return 1 as ConversationId;
+	const prefix = `${storageId}:`;
+	if (sessionId.startsWith(prefix)) {
+		const rest = sessionId.slice(prefix.length);
+		if (/^[0-9]+$/.test(rest)) {
+			const parsed = Number(rest);
+			if (Number.isSafeInteger(parsed) && parsed > 0) return parsed as ConversationId;
+		}
+	}
+	throw new Error(`session ${sessionId} does not belong to storage ${storageId}`);
+}
+
+/** Parse one inspection request into its native parameters. */
+export function parseInspectParams(params: RequestParams | undefined): DurableInspectParams {
+	const view = requestString(params, "view");
+	const source = requestString(params, "source");
+	const cursor = params?.cursor;
+	if (cursor !== undefined && (typeof cursor !== "object" || cursor === null || Array.isArray(cursor))) throw new TypeError("cursor must be an object");
+	return {
+		...optionalParam("view", view as DurableInspectParams["view"] | undefined),
+		...optionalParam("limit", requestInteger(params, "limit")),
+		...optionalParam("cursor", cursor as Cursor | undefined),
+		...optionalParam("entryId", requestPositiveId(params?.entryId, "entryId") as EntryId | undefined),
+		...optionalParam("fromId", requestPositiveId(params?.fromId, "fromId") as EntryId | undefined),
+		...optionalParam("offset", requestInteger(params, "offset")),
+		...optionalParam("query", requestString(params, "query")),
+		...optionalParam("source", source as DurableInspectParams["source"] | undefined),
+		...optionalParam("submissionId", requestPositiveId(params?.submissionId, "submissionId") as SubmissionId | undefined),
+		...optionalParam("operationId", requestString(params, "operationId")),
+	};
+}
+
+function parseEntryId(value: unknown): EntryId | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value as EntryId;
+	if (typeof value === "string" && /^[0-9]+$/.test(value)) {
+		const parsed = Number(value);
+		if (Number.isSafeInteger(parsed) && parsed > 0) return parsed as EntryId;
+	}
+	throw new TypeError(`entry ID must be a positive integer, received ${String(value)}`);
+}
+
+async function metaOf(harness: Harness, conversationId: ConversationId, context: Context): Promise<{ readonly name: string | undefined; readonly owner: string | undefined; readonly firstMessage: string | undefined; readonly updatedAt: number | undefined }> {
+	const meta = await harness.snapshot(AgentMetaDoc, conversationId, context);
+	return { name: meta?.name ?? undefined, owner: meta?.owner ?? undefined, firstMessage: meta?.firstMessage ?? undefined, updatedAt: meta?.updatedAt ?? undefined };
+}
+
+async function conversationSummary(harness: Harness, storageId: string, record: ConversationRecord, context: Context): Promise<ConversationSummary> {
+	const meta = await metaOf(harness, record.id, context);
+	const live = await harness.snapshot(LiveDoc, record.id, context);
+	return {
+		conversationId: record.id,
+		identity: durableIdentity(storageId, record.id === 1 ? undefined : record.id),
+		...(meta.name === undefined ? {} : { name: meta.name }),
+		...(meta.owner === undefined ? {} : { owner: meta.owner }),
+		busy: live?.run !== undefined,
+		...(record.parent === undefined ? {} : { parent: { conversationId: record.parent.conversationId, at: record.parent.at } }),
+		...(record.owner === undefined ? {} : { ownerTaskId: record.owner.taskId }),
+	};
+}
+
+export interface DurableListParams {
+	readonly limit?: number;
+	readonly cursor?: Cursor;
+	readonly ownerConversationId?: ConversationId;
+	readonly ownerTaskId?: number;
+}
+
+export async function readConversationList(harness: Harness, storageId: string, params: DurableListParams, context: Context): Promise<{ readonly items: readonly ConversationSummary[]; readonly next: Cursor | null }> {
+	const limit = boundedLimit(params.limit, 20, 50);
+	const page = await harness.commit(
+		(tx) =>
+			tx.scanConversations(
+				{
+					...(params.ownerConversationId === undefined ? {} : { ownerConversationId: params.ownerConversationId }),
+					...(params.ownerTaskId === undefined ? {} : { ownerTaskId: params.ownerTaskId as never }),
+				},
+				limit,
+				params.cursor,
+			),
+		context,
+	);
+	const items: ConversationSummary[] = [];
+	for (const record of page.items) items.push(await conversationSummary(harness, storageId, record, context));
+	return { items, next: page.next ?? null };
+}
+
+function trimTask(task: TaskInspection): ConversationStatus["tasks"][number] {
+	return {
+		id: task.record.id,
+		kind: task.record.kind,
+		status: task.state.kind,
+		background: task.record.background,
+		...(task.record.owner === undefined ? {} : { owner: task.record.owner }),
+		abortRequested: task.record.abortRequested,
+	};
+}
+
+function trimSubmission(submission: SubmissionRecord): ConversationStatus["submissions"][number] {
+	const base = {
+		id: submission.id,
+		type: submission.type,
+		status: submission.status,
+		...(submission.requestId === undefined ? {} : { requestId: submission.requestId }),
+	};
+	if (submission.status === "done") {
+		return { ...base, entryId: submission.entry, ...(submission.type === "input" ? { answerEntryId: submission.answer } : {}) };
+	}
+	if (submission.status === "placed") return { ...base, entryId: submission.entry };
+	if (submission.status === "unanswered") return { ...base, ...(submission.entry === undefined ? {} : { entryId: submission.entry }), reason: submission.reason };
+	return base;
+}
+
+export interface DurableStatusOptions {
+	readonly cwd?: string;
+}
+
+export async function readConversationStatus(
+	harness: Harness,
+	storageId: string,
+	conversationId: ConversationId,
+	options: DurableStatusOptions,
+	context: Context,
+): Promise<ConversationStatus | undefined> {
+	const record = await harness.commit((tx) => tx.conversation(conversationId), context);
+	if (!record) return undefined;
+	const summary = await conversationSummary(harness, storageId, record, context);
+	const conversation = await harness.conversation(conversationId, context);
+	if (!conversation) return undefined;
+	const [live, inbox, usage, agent, newest, inspection] = await Promise.all([
+		harness.snapshot(LiveDoc, conversationId, context),
+		harness.snapshot(InboxDoc, conversationId, context),
+		harness.snapshot(UsageDoc, conversationId, context),
+		conversation.agent(context),
+		conversation.entries({}, 1, undefined, context),
+		harness.inspect(context),
+	]);
+	return {
+		...summary,
+		cwd: agent.cwd ?? options.cwd,
+		lastText: messageTextOf(newest.items[0]),
+		live: live ?? null,
+		inbox: inbox ?? null,
+		usage,
+		agent: {
+			...(agent.model === undefined ? {} : { model: { provider: agent.model.provider, modelId: agent.model.modelId } }),
+			thinkingLevel: agent.thinkingLevel,
+			extensions: agent.extensions.map((extension) => extension.name),
+			tools: agent.tools.map((tool) => tool.name),
+			...(agent.cwd === undefined ? {} : { cwd: agent.cwd }),
+			...(agent.instructions === undefined ? {} : { instructions: agent.instructions }),
+		},
+		tasks: inspection.tasks.filter((task) => task.record.conversationId === conversationId).map(trimTask),
+		submissions: inspection.submissions.filter((submission) => submission.conversationId === conversationId).map(trimSubmission),
+	};
+}
+
+export async function readUsage(harness: Harness, context: Context): Promise<UsageState> {
+	return harness.usage(context);
+}
+
+/** Bounds of one dashboard snapshot. */
+export const SNAPSHOT_ENTRY_LIMIT = 200;
+export const SNAPSHOT_BYTE_LIMIT = 64 * 1024;
+
+/**
+ * Active entries without deriving model context. The view mount already holds
+ * them; disposing the state keeps the last immutable revision readable.
+ */
+async function activeEntries(conversation: Conversation, context: Context): Promise<readonly EntryRecord[]> {
+	const state = await conversation.viewState(context);
+	try {
+		return state.value.entries;
+	} finally {
+		state.dispose();
+	}
+}
+
+function textOfMessage(message: Message): string {
+	const content = (message as { readonly content?: unknown }).content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.flatMap((part) => (part !== null && typeof part === "object" && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string" ? [(part as { text: string }).text] : []))
+		.join("");
+}
+
+function assistantText(entry: EntryRecord | undefined): string | undefined {
+	if (entry?.kind !== "pi.assistant") return undefined;
+	const text = (entry.model ?? []).map(textOfMessage).join("");
+	return text === "" ? undefined : text;
+}
+
+function countToolCalls(entries: readonly EntryRecord[]): number {
+	let count = 0;
+	for (const entry of entries) {
+		for (const message of entry.model ?? []) {
+			const content = message.content;
+			if (!Array.isArray(content)) continue;
+			for (const part of content) if (part.type === "toolCall") count++;
+		}
+	}
+	return count;
+}
+
+function usageCost(usage: UsageState | undefined): { readonly cost: number; readonly partial: boolean } {
+	if (usage === undefined) return { cost: 0, partial: true };
+	let cost = 0;
+	for (const bucket of [usage.models, usage.tools]) {
+		for (const item of Object.values(bucket)) cost += item.cost.total;
+	}
+	return { cost, partial: false };
+}
+
+function newestTimestamp(entry: EntryRecord | undefined): number | undefined {
+	if (!entry) return undefined;
+	for (let index = (entry.model?.length ?? 0) - 1; index >= 0; index--) {
+		const timestamp = (entry.model?.[index] as { readonly timestamp?: unknown } | undefined)?.timestamp;
+		if (typeof timestamp === "number" && Number.isFinite(timestamp)) return timestamp;
+	}
+	return undefined;
+}
+
+function latestReceipt(delivery: AgentDeliveryState | undefined, conversationId: ConversationId): DeliveryReceipt | undefined {
+	if (!delivery) return undefined;
+	let latest: DeliveryReceipt | undefined;
+	for (const receipt of Object.values(delivery.receipts)) {
+		if (receipt.conversationId !== conversationId) continue;
+		if (latest === undefined || receipt.submissionId > latest.submissionId) latest = receipt;
+	}
+	return latest;
+}
+
+function dashboardState(busy: boolean, entries: readonly EntryRecord[], receipt: DeliveryReceipt | undefined): AgentConversationState {
+	if (busy) return "working";
+	if (entries.length === 0) return "new";
+	if (receipt?.status === "done") return "done";
+	if (receipt?.status === "unanswered") return receipt.reason === "aborted" ? "stopped" : "failed";
+	const newest = entries[entries.length - 1];
+	if (newest?.kind === "pi.assistant") return newest.model?.some((message) => message.role === "assistant" && message.stopReason === "aborted") === true ? "stopped" : "done";
+	if (newest?.kind === "pi.tool-result") return "interrupted";
+	return "idle";
+}
+
+export interface DurableDashboardParams {
+	readonly conversationId?: ConversationId;
+}
+
+export interface DurableDashboardOptions {
+	/** Working directory used when a conversation records none. */
+	readonly cwd?: string;
+	/** Writer ownership of this storage, as the dashboard reports it. */
+	readonly owner?: "here" | "unavailable" | "unknown";
+}
+
+function firstMessageOf(meta: { readonly firstMessage: string | undefined }, entries: readonly EntryRecord[]): string | undefined {
+	if (meta.firstMessage !== undefined) return meta.firstMessage;
+	const firstUser = entries.find((entry) => entry.kind === "pi.user");
+	if (firstUser === undefined) return undefined;
+	return messageTextOf(firstUser) ?? undefined;
+}
+
+function latestReplyOf(entries: readonly EntryRecord[]): string | undefined {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const text = assistantText(entries[index]);
+		if (text !== undefined) return text;
+	}
+	return undefined;
+}
+
+async function dashboardSummary(
+	harness: Harness,
+	storageId: string,
+	record: ConversationRecord,
+	delivery: AgentDeliveryState | undefined,
+	options: DurableDashboardOptions,
+	context: Context,
+): Promise<AgentConversationSummary> {
+	const [meta, live, usage, conversation] = await Promise.all([
+		metaOf(harness, record.id, context),
+		harness.snapshot(LiveDoc, record.id, context),
+		harness.snapshot(UsageDoc, record.id, context),
+		harness.conversation(record.id, context),
+	]);
+	const agent = conversation ? await conversation.agent(context) : undefined;
+	const entries = conversation ? await activeEntries(conversation, context) : [];
+	const receipt = latestReceipt(delivery, record.id);
+	const state = dashboardState(live?.run !== undefined, entries, receipt);
+	const cost = usageCost(usage);
+	const firstMessage = firstMessageOf(meta, entries);
+	const replyText = latestReplyOf(entries);
+	return {
+		id: durableIdentity(storageId, record.id === 1 ? undefined : record.id),
+		storageId,
+		...(meta.name === undefined ? {} : { name: meta.name }),
+		...(firstMessage === undefined ? {} : { firstMessage }),
+		cwd: agent?.cwd ?? options.cwd ?? "",
+		...(agent?.model === undefined ? {} : { model: { provider: agent.model.provider, modelId: agent.model.modelId, thinkingLevel: agent.thinkingLevel } }),
+		modifiedAt: newestTimestamp(entries[entries.length - 1]) ?? meta.updatedAt ?? 0,
+		owner: options.owner ?? "unavailable",
+		state,
+		cost: cost.cost,
+		partial: cost.partial,
+		...(replyText === undefined ? {} : { latestReply: replyText }),
+		...(state === "failed" || state === "stopped" ? { error: receipt?.reason ?? state } : {}),
+		toolCalls: countToolCalls(entries),
+	};
+}
+
+/** Dashboard roster for this storage: the root, native forks, and child conversations. */
+export async function readDashboard(
+	harness: Harness,
+	storageId: string,
+	params: DurableDashboardParams,
+	options: DurableDashboardOptions,
+	context: Context,
+): Promise<readonly AgentConversationSummary[]> {
+	const delivery = await harness.snapshot(AgentDeliveryDoc, context);
+	const conversationId = params.conversationId;
+	if (conversationId !== undefined) {
+		const record = await harness.commit((tx) => tx.conversation(conversationId), context);
+		return record === undefined ? [] : [await dashboardSummary(harness, storageId, record, delivery, options, context)];
+	}
+	const page = await harness.commit((tx) => tx.scanConversations({}, 200, undefined), context);
+	const summaries: AgentConversationSummary[] = [];
+	for (const record of page.items) summaries.push(await dashboardSummary(harness, storageId, record, delivery, options, context));
+	return summaries;
+}
+
+function snapshotEntry(entry: EntryRecord): AgentConversationEntry {
+	return {
+		id: String(entry.id),
+		kind: entry.kind,
+		...(entry.model === undefined ? {} : { model: entry.model }),
+		...(entry.data === undefined ? {} : { data: entry.data }),
+		...(entry.head === undefined ? {} : { head: String(entry.head) }),
+	};
+}
+
+/** One bounded, oldest-first active transcript with native model messages. */
+export async function readConversationSnapshot(harness: Harness, conversationId: ConversationId, context: Context): Promise<AgentConversationSnapshot> {
+	const conversation = await harness.conversation(conversationId, context);
+	if (!conversation) throw new Error(`conversation ${conversationId} does not exist`);
+	const entries = await activeEntries(conversation, context);
+	const selected: AgentConversationEntry[] = [];
+	let bytes = 0;
+	let partial = false;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry === undefined) continue;
+		const dto = snapshotEntry(entry);
+		const size = Buffer.byteLength(JSON.stringify(dto), "utf8");
+		if (selected.length >= SNAPSHOT_ENTRY_LIMIT || (selected.length > 0 && bytes + size > SNAPSHOT_BYTE_LIMIT)) {
+			partial = true;
+			break;
+		}
+		bytes += size;
+		selected.push(dto);
+	}
+	selected.reverse();
+	const oldest = entries[0];
+	const newest = entries[entries.length - 1];
+	const revision = oldest === undefined || newest === undefined ? "empty" : `${oldest.id}-${newest.id}-${entries.length}`;
+	return { entries: selected, partial: partial || selected.length < entries.length, revision };
+}
+
+export async function readReceipts(harness: Harness, ownerId: string | undefined, context: Context): Promise<readonly DeliveryReceipt[]> {
+	await settleDeliveries(harness, context);
+	const state = await harness.snapshot(AgentDeliveryDoc, context);
+	if (!state) return [];
+	return Object.values(state.receipts).filter((receipt) => ownerId === undefined || receipt.ownerId === ownerId);
+}
+
+interface HistoryPage {
+	readonly view: "history" | "branch";
+	readonly sessionId: string;
+	readonly conversationId: ConversationId;
+	readonly entries: readonly DurableEntryRow[];
+	readonly nextCursor: Cursor | null;
+	readonly order: "newestFirst";
+	readonly detail: string;
+}
+
+function collectHistoryEntries(items: readonly EntryRecord[], params: DurableInspectParams, remaining: number, seen: Set<EntryId>): { readonly entries: EntryRecord[]; readonly hitLimit: boolean } {
+	const entries: EntryRecord[] = [];
+	for (const entry of items) {
+		if (seen.has(entry.id)) continue;
+		seen.add(entry.id);
+		if (params.source !== undefined && entrySource(entry.kind) !== params.source) continue;
+		entries.push(entry);
+		if (entries.length >= remaining) return { entries, hitLimit: true };
+	}
+	return { entries, hitLimit: false };
+}
+
+async function scanHistory(conversation: Conversation, params: DurableInspectParams, end: EntryId | undefined, limit: number, context: Context): Promise<{ readonly entries: EntryRecord[]; readonly next: Cursor | undefined }> {
+	const scanned: EntryRecord[] = [];
+	const seen = new Set<EntryId>();
+	let cursor = params.cursor;
+	let next: Cursor | undefined;
+	for (let page = 0; page < 8; page++) {
+		const result = await conversation.entries(end === undefined ? {} : { maxEntryId: end }, limit + 1 - scanned.length, cursor, context);
+		const collected = collectHistoryEntries(result.items, params, limit + 1 - scanned.length, seen);
+		scanned.push(...collected.entries);
+		next = result.next;
+		if (collected.hitLimit || next === undefined) break;
+		cursor = next;
+	}
+	return { entries: scanned.slice(0, limit), next };
+}
+
+async function readHistoryPage(
+	storageId: string,
+	conversation: Conversation,
+	params: DurableInspectParams,
+	view: "history" | "branch",
+	context: Context,
+): Promise<HistoryPage> {
+	const limit = boundedLimit(params.limit, HISTORY_LIMIT_DEFAULT, HISTORY_LIMIT_MAX);
+	const end = view === "branch" ? (parseEntryId(params.fromId ?? params.entryId) ?? await currentLeaf(conversation, context)) : parseEntryId(params.entryId);
+	const scanned = await scanHistory(conversation, params, end, limit, context);
+	return {
+		view,
+		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
+		conversationId: conversation.id,
+		entries: scanned.entries.map((entry) => entryRow(entry)),
+		nextCursor: scanned.next ?? null,
+		order: "newestFirst",
+		detail: "Newest first. Redacted JSON representation; continue with nextCursor. Provider signatures, image data, and redacted thinking are omitted with markers and counts.",
+	};
+}
+
+async function currentLeaf(conversation: Conversation, context: Context): Promise<EntryId | undefined> {
+	return (await conversation.entries({}, 1, undefined, context)).items[0]?.id;
+}
+
+interface ExactPage {
+	readonly view: "exact";
+	readonly sessionId: string;
+	readonly conversationId: ConversationId;
+	readonly entryId: EntryId;
+	readonly offset: number;
+	readonly text: string;
+	readonly nextOffset: number | null;
+	readonly truncated: boolean;
+	readonly omissions?: EntryOmissions;
+}
+
+async function readExact(storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<ExactPage> {
+	const entryId = parseEntryId(params.entryId);
+	if (entryId === undefined) throw new TypeError("exact inspection requires entryId");
+	const page = await conversation.entries({ minEntryId: entryId, maxEntryId: entryId }, 1, undefined, context);
+	const entry = page.items[0];
+	if (entry === undefined || entry.id !== entryId) throw new Error(`entry ${entryId} is not visible from conversation ${conversation.id}`);
+	const projected = projectEntry(entry);
+	const cut = fragment(projected.text, params.offset ?? 0, ENTRY_PAGE_UNITS);
+	return {
+		view: "exact",
+		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
+		conversationId: conversation.id,
+		entryId,
+		offset: cut.start,
+		text: cut.text,
+		nextOffset: cut.nextOffset,
+		truncated: cut.truncated,
+		...(projected.omissions === undefined ? {} : { omissions: projected.omissions }),
+	};
+}
+
+interface SearchMatch {
+	readonly entryId: EntryId;
+	readonly kind: string;
+	readonly source: DurableEntrySource;
+	readonly matchOffset: number;
+	readonly excerpt: string;
+	readonly excerptText: string;
+	readonly truncated: boolean;
+}
+
+interface SearchCursor {
+	readonly cursor: Cursor | null;
+	readonly skip: number;
+	readonly scannedBytes: number;
+}
+
+interface SearchPage {
+	readonly view: "search";
+	readonly sessionId: string;
+	readonly conversationId: ConversationId;
+	readonly matches: readonly SearchMatch[];
+	readonly nextCursor: SearchCursor | null;
+	readonly coverage: { readonly scannedEntries: number; readonly scannedBytes: number; readonly complete: boolean };
+	readonly detail: string;
+}
+
+interface SearchScan {
+	readonly matches: readonly SearchMatch[];
+	readonly nextCursor: SearchCursor | null;
+	readonly complete: boolean;
+	readonly scannedEntries: number;
+	readonly scannedBytes: number;
+}
+
+function searchMatch(entry: EntryRecord, text: string, query: string): SearchMatch | undefined {
+	const at = text.indexOf(query);
+	if (at < 0) return undefined;
+	const cut = fragment(text, at, 512);
+	return { entryId: entry.id, kind: entry.kind, source: entrySource(entry.kind), matchOffset: at, excerpt: cut.text, excerptText: cut.text, truncated: cut.truncated };
+}
+
+function scanSearchEntry(entry: EntryRecord, params: DurableInspectParams, query: string): { readonly bytes: number; readonly match?: SearchMatch } {
+	const text = searchableText(entry);
+	const bytes = Buffer.byteLength(text, "utf8");
+	if (params.source !== undefined && entrySource(entry.kind) !== params.source) return { bytes };
+	const match = searchMatch(entry, text, query);
+	return match === undefined ? { bytes } : { bytes, match };
+}
+
+interface SearchPageScan {
+	readonly scannedEntries: number;
+	readonly scannedBytes: number;
+	/** Continuation inside this page after a match limit stopped the scan. */
+	readonly resume: SearchCursor | null;
+}
+
+function scanSearchPage(
+	items: readonly EntryRecord[],
+	params: DurableInspectParams,
+	query: string,
+	startSkip: number,
+	maxMatches: number,
+	budget: number,
+	matches: SearchMatch[],
+	pageCursor: Cursor | undefined,
+	priorBytes: number,
+): SearchPageScan {
+	let scannedEntries = 0;
+	let scannedBytes = 0;
+	for (let index = startSkip; index < items.length && scannedEntries < budget; index++) {
+		const entry = items[index];
+		if (entry === undefined) continue;
+		scannedEntries++;
+		const scan = scanSearchEntry(entry, params, query);
+		scannedBytes += scan.bytes;
+		if (scan.match !== undefined) matches.push(scan.match);
+		if (matches.length >= maxMatches || scannedEntries >= budget) {
+			return { scannedEntries, scannedBytes, resume: { cursor: pageCursor ?? null, skip: index + 1, scannedBytes: priorBytes + scannedBytes } };
+		}
+	}
+	return { scannedEntries, scannedBytes, resume: null };
+}
+
+async function scanSearch(conversation: Conversation, params: DurableInspectParams, query: string, maxMatches: number, context: Context): Promise<SearchScan> {
+	const prior = (params.cursor ?? null) as SearchCursor | null;
+	let cursor: Cursor | undefined = prior?.cursor ?? undefined;
+	let skip = prior?.skip ?? 0;
+	let scannedBytes = 0;
+	let scannedEntries = 0;
+	const matches: SearchMatch[] = [];
+	let complete = false;
+	let resume: SearchCursor | null = null;
+	while (scannedEntries < SEARCH_SCAN_LIMIT_DEFAULT && matches.length < maxMatches) {
+		const pageCursor = cursor;
+		const page = await conversation.entries({}, Math.min(32, SEARCH_SCAN_LIMIT_DEFAULT - scannedEntries), pageCursor, context);
+		if (page.items.length === 0) {
+			complete = true;
+			break;
+		}
+		const pageScan = scanSearchPage(page.items, params, query, skip, maxMatches, SEARCH_SCAN_LIMIT_DEFAULT - scannedEntries, matches, pageCursor, scannedBytes);
+		scannedEntries += pageScan.scannedEntries;
+		scannedBytes += pageScan.scannedBytes;
+		if (pageScan.resume !== null) {
+			resume = pageScan.resume;
+			break;
+		}
+		skip = 0;
+		cursor = page.next;
+		if (cursor === undefined) {
+			complete = true;
+			break;
+		}
+	}
+	return { matches, nextCursor: resume ?? (complete ? null : { cursor: cursor ?? null, skip, scannedBytes }), complete, scannedEntries, scannedBytes };
+}
+
+async function readSearch(storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<SearchPage> {
+	if (params.query === undefined || params.query === "") throw new TypeError("search inspection requires query");
+	const maxMatches = boundedLimit(params.limit, SEARCH_MATCH_LIMIT_DEFAULT, SEARCH_MATCH_LIMIT_MAX);
+	const scan = await scanSearch(conversation, params, params.query, maxMatches, context);
+	return {
+		view: "search",
+		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
+		conversationId: conversation.id,
+		matches: scan.matches,
+		nextCursor: scan.nextCursor,
+		coverage: { scannedEntries: scan.scannedEntries, scannedBytes: scan.scannedBytes, complete: scan.complete },
+		detail: "Case-sensitive literal match over entry kind, message text, visible thinking, and tool names. Signatures, images, redacted thinking, arguments, and arbitrary data are excluded. Repeat query and nextCursor to continue.",
+	};
+}
+
+interface TurnRow {
+	readonly entries: readonly DurableEntryRow[];
+}
+
+interface ActivityPage {
+	readonly view: "activity";
+	readonly sessionId: string;
+	readonly conversationId: ConversationId;
+	readonly turns: readonly TurnRow[];
+	readonly nextCursor: Cursor | null;
+	readonly coverage: { readonly scannedEntries: number; readonly complete: boolean };
+	readonly detail: string;
+}
+
+async function readActivity(storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<ActivityPage> {
+	const turnLimit = boundedLimit(params.limit, ACTIVITY_TURN_LIMIT_DEFAULT, ACTIVITY_TURN_LIMIT_MAX);
+	const collected: EntryRecord[] = [];
+	let cursor: Cursor | undefined = params.cursor;
+	let complete = true;
+	let scanned = 0;
+	// Collect newest-first until one more than the requested turn count or the entry budget.
+	while (scanned < 200) {
+		const page = await conversation.entries({}, 32, cursor, context);
+		collected.push(...page.items);
+		scanned += page.items.length;
+		cursor = page.next;
+		if (cursor === undefined) break;
+		const users = collected.reduce((count, entry) => count + (entry.kind === "pi.user" ? 1 : 0), 0);
+		if (users > turnLimit) {
+			complete = false;
+			break;
+		}
+	}
+	// Group oldest-first: every user entry starts a turn.
+	const oldestFirst = [...collected].reverse();
+	const turns: EntryRecord[][] = [];
+	for (const entry of oldestFirst) {
+		let turn = turns[turns.length - 1];
+		if (entry.kind === "pi.user" || turn === undefined) {
+			turn = [];
+			turns.push(turn);
+		}
+		turn.push(entry);
+	}
+	const selected = turns.slice(-turnLimit).reverse();
+	const oldestSelected = selected[selected.length - 1]?.[0];
+	const nextCursor: Cursor | null = complete || oldestSelected === undefined ? null : ({ after: oldestSelected.id } as Cursor);
+	return {
+		view: "activity",
+		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
+		conversationId: conversation.id,
+		turns: selected.map((turn) => ({ entries: turn.map((entry) => entryRow(entry, ENTRY_PREVIEW_UNITS)) })),
+		nextCursor,
+		coverage: { scannedEntries: scanned, complete },
+		detail: "Newest turns first, bounded and redacted. Continue with nextCursor.",
+	};
+}
+
+interface ResultPage {
+	readonly view: "result";
+	readonly sessionId: string;
+	readonly conversationId: ConversationId;
+	readonly submissionId: SubmissionId;
+	readonly status: SubmissionRecord["status"];
+	readonly requestId?: string;
+	readonly operationId?: string;
+	readonly entryId?: EntryId;
+	readonly answerEntryId?: EntryId;
+	readonly reason?: string;
+	readonly answer?: string;
+	readonly usage: UsageState;
+}
+
+async function resultTarget(harness: Harness, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<{ readonly submissionId: SubmissionId; readonly operationId?: string }> {
+	if (params.submissionId !== undefined) return { submissionId: params.submissionId, ...(params.operationId === undefined ? {} : { operationId: params.operationId }) };
+	if (params.operationId === undefined) throw new TypeError("result inspection requires submissionId or operationId");
+	const operationId = params.operationId;
+	const receipts = await readReceipts(harness, undefined, context);
+	const found = receipts.find((receipt) => receipt.operationId === operationId && receipt.conversationId === conversation.id);
+	if (!found) throw new Error(`no retained result for operation ${operationId}`);
+	return { submissionId: found.submissionId, operationId };
+}
+
+async function resultAnswer(harness: Harness, answerEntryId: EntryId, context: Context): Promise<{ readonly answer?: string; readonly reason?: string }> {
+	const answer = await harness.commit((tx) => tx.entry(AssistantEntry, answerEntryId), context);
+	const text = answer === undefined ? undefined : (answer.model ?? []).map(textOfMessage).join("");
+	return text === undefined || text === "" ? { reason: `durable answer entry ${answerEntryId} is not retained` } : { answer: text };
+}
+
+async function readResult(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<ResultPage> {
+	const target = await resultTarget(harness, conversation, params, context);
+	const submission = await harness.submission(target.submissionId, context);
+	if (!submission) throw new Error(`durable submission ${target.submissionId} is not retained`);
+	const record = await submission.status(context);
+	if (record.conversationId !== conversation.id) throw new Error(`durable submission ${target.submissionId} belongs to conversation ${record.conversationId}`);
+	const usage = await harness.usage(context);
+	const base = {
+		view: "result" as const,
+		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
+		conversationId: conversation.id,
+		submissionId: target.submissionId,
+		status: record.status,
+		...optionalParam("requestId", record.requestId),
+		...optionalParam("operationId", target.operationId),
+		usage,
+	};
+	if (record.type !== "input") return base;
+	if (record.status === "done") return { ...base, entryId: record.entry, answerEntryId: record.answer, ...(await resultAnswer(harness, record.answer, context)) };
+	if (record.status === "unanswered") return { ...base, ...(record.entry === undefined ? {} : { entryId: record.entry }), reason: record.reason };
+	return { ...base, ...(record.entry === undefined ? {} : { entryId: record.entry }) };
+}
+
+/** One bounded inspection over a conversation's committed entries, submissions, and receipts. */
+export async function readInspection(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<unknown> {
+	const view = params.view ?? "history";
+	switch (view) {
+		case "history":
+			return readHistoryPage(storageId, conversation, params, "history", context);
+		case "branch":
+			return readHistoryPage(storageId, conversation, params, "branch", context);
+		case "search":
+			return readSearch(storageId, conversation, params, context);
+		case "exact":
+			return readExact(storageId, conversation, params, context);
+		case "activity":
+			return readActivity(storageId, conversation, params, context);
+		case "result":
+			return readResult(harness, storageId, conversation, params, context);
+	}
+}
+
+export interface DurableObservationOptions {
+	readonly storageId: string;
+	readonly registry: HarnessOptions["registry"];
+	readonly models: Models;
+	readonly settings?: HarnessOptions["settings"];
+	readonly env?: HarnessOptions["env"];
+	readonly onReport?: HarnessOptions["onReport"];
+	/** Largest source database (main file plus WAL) a snapshot backup may copy. */
+	readonly maxSourceBytes?: number;
+	/** Longest a snapshot backup may run before it fails. */
+	readonly backupTimeoutMs?: number;
+}
+
+/** Default source bound for one cold snapshot. */
+export const SNAPSHOT_MAX_SOURCE_BYTES = 512 * 1024 * 1024;
+/** Default time bound for one cold snapshot backup. */
+export const SNAPSHOT_BACKUP_TIMEOUT_MS = 30_000;
+
+/** A caller-opened storage or a SQLite file copied through `node:sqlite` backup. */
+export type DurableSnapshotSource = { readonly backupFrom: string } | { readonly storage: Storage };
+
+interface SnapshotCopy {
+	readonly storage: Storage;
+	readonly cleanup: (() => Promise<void>) | undefined;
+}
+
+/** Copy one SQLite source into a bounded temporary snapshot. Never writes the source. */
+async function copySnapshot(backupFrom: string, maxSourceBytes: number, backupTimeoutMs: number): Promise<SnapshotCopy> {
+	const sourceBytes = snapshotSourceBytes(backupFrom);
+	if (sourceBytes > maxSourceBytes) throw new RangeError(`snapshot source is ${sourceBytes} bytes, above the ${maxSourceBytes} byte bound`);
+	const directory = await mkdtemp(join(tmpdir(), "pi-durable-snapshot-"));
+	const target = join(directory, "snapshot.sqlite");
+	try {
+		const source = new DatabaseSync(backupFrom, { readOnly: true });
+		let timer: NodeJS.Timeout | undefined;
+		try {
+			await Promise.race([
+				backup(source, target),
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(() => reject(new Error(`snapshot backup exceeded ${backupTimeoutMs} ms`)), backupTimeoutMs);
+				}),
+			]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+			source.close();
+		}
+		return { storage: await openNodeSqliteStorage(target), cleanup: async () => { await rm(directory, { recursive: true, force: true }); } };
+	} catch (error) {
+		await rm(directory, { recursive: true, force: true }).catch(() => {});
+		throw error;
+	}
+}
+
+/**
+ * Read-only Harness over a cold snapshot or a caller-supplied storage. Opening
+ * never calls `resume()`. The harness owns its storage: `close()` closes it and
+ * removes the temporary snapshot directory when one was created.
+ */
+export class DurableObservation {
+	readonly harness: Harness;
+	readonly storageId: string;
+	private readonly release: () => Promise<void>;
+
+	private constructor(harness: Harness, storageId: string, release: () => Promise<void>) {
+		this.harness = harness;
+		this.storageId = storageId;
+		this.release = release;
+	}
+
+	static async open(options: DurableObservationOptions & DurableSnapshotSource, context: Context = BACKGROUND_CONTEXT): Promise<DurableObservation> {
+		let storage: Storage;
+		let cleanup: (() => Promise<void>) | undefined;
+		if ("storage" in options) {
+			storage = options.storage;
+		} else {
+			const copy = await copySnapshot(options.backupFrom, options.maxSourceBytes ?? SNAPSHOT_MAX_SOURCE_BYTES, options.backupTimeoutMs ?? SNAPSHOT_BACKUP_TIMEOUT_MS);
+			storage = copy.storage;
+			cleanup = copy.cleanup;
+		}
+		let harness: Harness;
+		try {
+			harness = await Harness.open(
+				storage,
+				{
+					models: options.models,
+					registry: options.registry,
+					...(options.settings === undefined ? {} : { settings: options.settings }),
+					...(options.env === undefined ? {} : { env: options.env }),
+					...(options.onReport === undefined ? {} : { onReport: options.onReport }),
+				},
+				context,
+			);
+		} catch (error) {
+			try {
+				await storage.close(BACKGROUND_CONTEXT);
+			} catch {
+				// Retain the open failure.
+			}
+			if (cleanup) await cleanup().catch(() => {});
+			throw error;
+		}
+		const extra = cleanup;
+		return new DurableObservation(
+			harness,
+			options.storageId,
+			async () => {
+				try {
+					await harness.close(BACKGROUND_CONTEXT);
+				} finally {
+					if (extra) await extra();
+				}
+			},
+		);
+	}
+
+	async conversation(id: ConversationId, context: Context = BACKGROUND_CONTEXT): Promise<Conversation | undefined> {
+		return this.harness.conversation(id, context);
+	}
+
+	/** External identity of one conversation: the storage ID for the root. */
+	identity(conversationId?: ConversationId): string {
+		return conversationId === undefined || conversationId === 1 ? this.storageId : durableIdentity(this.storageId, conversationId);
+	}
+
+	async list(params: DurableListParams = {}, context: Context = BACKGROUND_CONTEXT): Promise<{ readonly items: readonly ConversationSummary[]; readonly next: Cursor | null }> {
+		return readConversationList(this.harness, this.storageId, params, context);
+	}
+
+	async status(conversationId: ConversationId, options: DurableStatusOptions = {}, context: Context = BACKGROUND_CONTEXT): Promise<ConversationStatus | undefined> {
+		return readConversationStatus(this.harness, this.storageId, conversationId, options, context);
+	}
+
+	async inspect(conversation: Conversation, params: DurableInspectParams = {}, context: Context = BACKGROUND_CONTEXT): Promise<unknown> {
+		return readInspection(this.harness, this.storageId, conversation, params, context);
+	}
+
+	async receipts(ownerId?: string, context: Context = BACKGROUND_CONTEXT): Promise<readonly DeliveryReceipt[]> {
+		return readReceipts(this.harness, ownerId, context);
+	}
+
+	async dashboard(params: DurableDashboardParams = {}, options: DurableDashboardOptions = {}, context: Context = BACKGROUND_CONTEXT): Promise<readonly AgentConversationSummary[]> {
+		return readDashboard(this.harness, this.storageId, params, options, context);
+	}
+
+	async snapshot(conversationId: ConversationId, context: Context = BACKGROUND_CONTEXT): Promise<AgentConversationSnapshot> {
+		return readConversationSnapshot(this.harness, conversationId, context);
+	}
+
+	async usage(context: Context = BACKGROUND_CONTEXT): Promise<UsageState> {
+		return readUsage(this.harness, context);
+	}
+
+	private async target(params: RequestParams | undefined, context: Context): Promise<Conversation> {
+		const conversationId = resolveSessionConversationId(this.storageId, requestString(params, "sessionId"), requestPositiveId(params?.conversationId, "conversationId"));
+		const conversation = await this.harness.conversation(conversationId, context);
+		if (!conversation) throw new Error(`conversation ${durableIdentity(this.storageId, conversationId === 1 ? undefined : conversationId)} does not exist`);
+		return conversation;
+	}
+
+	private async requestStatus(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		const sessionId = requestString(params, "sessionId");
+		const conversationId = requestPositiveId(params?.conversationId, "conversationId");
+		const options: DurableStatusOptions = optionalParam("cwd", requestString(params, "cwd"));
+		if (sessionId !== undefined || conversationId !== undefined) {
+			const conversation = await this.target(params, context);
+			const status = await readConversationStatus(this.harness, this.storageId, conversation.id, options, context);
+			if (!status) throw new Error(`conversation ${this.identity(conversation.id)} does not exist`);
+			return { conversation: status };
+		}
+		const page = await this.harness.commit((tx) => tx.scanConversations({}, 50, undefined), context);
+		const conversations: ConversationStatus[] = [];
+		for (const record of page.items) {
+			const status = await readConversationStatus(this.harness, this.storageId, record.id, options, context);
+			if (status) conversations.push(status);
+		}
+		return { conversations };
+	}
+
+	private async requestList(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		const list: DurableListParams = {
+			...optionalParam("limit", requestInteger(params, "limit")),
+			...(params?.cursor === undefined ? {} : { cursor: params.cursor as Cursor }),
+			...optionalParam("ownerConversationId", requestPositiveId(params?.ownerConversationId, "ownerConversationId") as ConversationId | undefined),
+			...optionalParam("ownerTaskId", requestInteger(params, "ownerTaskId")),
+		};
+		return readConversationList(this.harness, this.storageId, list, context);
+	}
+
+	private async requestDashboard(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		const conversationId = requestPositiveId(params?.conversationId, "conversationId");
+		return readDashboard(
+			this.harness,
+			this.storageId,
+			conversationId === undefined ? {} : { conversationId: conversationId as ConversationId },
+			{ owner: "unavailable", ...optionalParam("cwd", requestString(params, "cwd")) },
+			context,
+		);
+	}
+
+	private async requestReceipts(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		if (requestBoolean(params, "wait") === true) throw new TypeError("a cold snapshot cannot wait for receipts");
+		const ownerId = requestRequiredString(params, "ownerId");
+		const deliveries = await undeliveredForOwner(this.harness, ownerId, context);
+		const usages = new Map<ConversationId, unknown>();
+		const receipts = [];
+		for (const receipt of deliveries.receipts) {
+			if (!usages.has(receipt.conversationId)) usages.set(receipt.conversationId, (await this.harness.snapshot(UsageDoc, receipt.conversationId, context)) ?? null);
+			receipts.push({ ...receipt, identity: durableIdentity(this.storageId, receipt.conversationId === 1 ? undefined : receipt.conversationId), usage: usages.get(receipt.conversationId) });
+		}
+		return { receipts, reports: deliveries.reports, pending: await pendingDeliveries(this.harness, ownerId, context) };
+	}
+
+	/**
+	 * The live host's read-only request surface over a cold snapshot: inspect,
+	 * status, list, dashboard, snapshot, and receipts. External IDs and parameter
+	 * parsing are identical to `DurableHost.request`; write methods reject.
+	 */
+	async request(method: string, params?: RequestParams, context: Context = BACKGROUND_CONTEXT): Promise<unknown> {
+		switch (method) {
+			case "inspect": {
+				const conversation = await this.target(params, context);
+				return readInspection(this.harness, this.storageId, conversation, parseInspectParams(params), context);
+			}
+			case "status":
+				return this.requestStatus(params, context);
+			case "list":
+				return this.requestList(params, context);
+			case "dashboard":
+				return this.requestDashboard(params, context);
+			case "snapshot": {
+				const conversation = await this.target(params, context);
+				return readConversationSnapshot(this.harness, conversation.id, context);
+			}
+			case "receipts":
+				return this.requestReceipts(params, context);
+			default:
+				throw new TypeError(`cold observation does not support ${method}`);
+		}
+	}
+
+	async close(): Promise<void> {
+		await this.release();
+	}
+}
+
+/** Read-only inspection over a live Harness that the caller already owns. */
+export function inspectionReader(harness: Harness, storageId: string): {
+	list(params: DurableListParams, context: Context): Promise<{ readonly items: readonly ConversationSummary[]; readonly next: Cursor | null }>;
+	status(conversationId: ConversationId, options: DurableStatusOptions, context: Context): Promise<ConversationStatus | undefined>;
+	inspect(conversation: Conversation, params: DurableInspectParams, context: Context): Promise<unknown>;
+	receipts(ownerId: string | undefined, context: Context): Promise<readonly DeliveryReceipt[]>;
+	usage(context: Context): Promise<UsageState>;
+} {
+	return {
+		list: (params, context) => readConversationList(harness, storageId, params, context),
+		status: (conversationId, options, context) => readConversationStatus(harness, storageId, conversationId, options, context),
+		inspect: (conversation, params, context) => readInspection(harness, storageId, conversation, params, context),
+		receipts: (ownerId, context) => readReceipts(harness, ownerId, context),
+		usage: (context) => readUsage(harness, context),
+	};
+}

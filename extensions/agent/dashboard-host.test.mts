@@ -1,19 +1,20 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { initTheme, SessionManager, type ExtensionContext, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
+import { initTheme, type ExtensionContext, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as Keys, TUI_KEYBINDINGS, type Component, type TUI } from "@earendil-works/pi-tui";
 import { createAgentCommand } from "./command.ts";
-import { AgentDashboard, showAgentDashboard, type AgentObservationSources } from "./dashboard.ts";
+import { AgentDashboard, showAgentDashboard } from "./dashboard.ts";
 import { AgentActionPicker } from "./dashboard-actions.ts";
-import type { SessionDigest } from "./dashboard-data.ts";
+import type { AgentConversationEntry, AgentConversationSummary, AgentObservationSources } from "./dashboard-types.ts";
 
 initTheme("dark");
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const keys = new Keys(TUI_KEYBINDINGS) as KeybindingsManager;
 const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text } as Theme;
 type Factory = (tui: TUI, theme: Theme, keys: KeybindingsManager, done: (request: unknown) => void) => Component;
-const row: SessionDigest = { sessionId: "native-id", name: "Native session", cwd: "/work", path: "/store/native.jsonl", live: false, createdAt: 1, modifiedAt: 2, state: "new", cost: 0, partial: false, latestReply: "", toolCalls: 0 };
-const sources: AgentObservationSources = { sessions: async () => [row], runs: async () => [], board: async () => [row], conversation: async () => ({ entries: [], partial: false, revision: "1" }) };
+const row: AgentConversationSummary = { id: "native-id", storageId: "storage", name: "Native session", cwd: "/work", owner: "here", modifiedAt: 2, state: "new", cost: 0, partial: false, latestReply: "", toolCalls: 0 };
+const userEntry = (id: string, content: string, timestamp = 1): AgentConversationEntry => ({ id, kind: "pi.user", model: [{ role: "user", content, timestamp }] });
+const sources = (entries: AgentConversationEntry[] = []): AgentObservationSources => ({ list: async () => [row], snapshot: async () => ({ entries: [...entries], partial: false, revision: "1" }) });
 
 it("closes each overlay before native dialogs and restores selection and conversation afterward", async () => {
 	let overlays = 0; let inOverlay = false; let actions = 0;
@@ -35,7 +36,7 @@ it("closes each overlay before native dialogs and restores selection and convers
 		select: async () => { assert.equal(inOverlay, false); return "status: Read owner"; },
 		notify: () => assert.fail("actions return inside the board"),
 	} } as unknown as ExtensionContext;
-	const command = createAgentCommand([{ name: "status", description: "Read owner", args: [{ name: "session", complete: "session-control" }], run: async (args) => { assert.equal(inOverlay, false); assert.deepEqual(args, ["native-id"]); actions++; return "owner status sentinel"; } }], sources);
+	const command = createAgentCommand([{ name: "status", description: "Read owner", args: [{ name: "session", complete: "session-control" }], run: async (args) => { assert.equal(inOverlay, false); assert.deepEqual(args, ["native-id"]); actions++; return "owner status sentinel"; } }], sources());
 	await command.openDashboard(ctx);
 	assert.equal(overlays, 2); assert.equal(actions, 1); assert.equal(inOverlay, false);
 	assert.match(screens[0], /owner status sentinel/); assert.match(screens[1], /Sessions · ↑↓ select/);
@@ -53,14 +54,14 @@ it("restores the board after canceled dialogs and exposes action errors in a scr
 		return promise;
 	} } } as unknown as ExtensionContext;
 	let actions = 0;
-	await showAgentDashboard(sources, ctx, { run: async () => { assert.equal(closed, true); if (++actions === 1) return undefined; throw new Error("exact refusal sentinel"); } });
+	await showAgentDashboard(sources(), ctx, { run: async () => { assert.equal(closed, true); if (++actions === 1) return undefined; throw new Error("exact refusal sentinel"); } });
 	assert.match(views[1], /Native session/); assert.match(views[2], /exact refusal sentinel/); assert.equal(closed, true);
 });
 
 it("keeps passage and draft state through a native action dialog", async () => {
-	const native = SessionManager.inMemory("/work");
-	for (let index = 0; index < 100; index++) native.appendMessage({ role: "user", content: `native passage ${index}`, timestamp: index });
-	const observed = { ...sources, conversation: async () => ({ entries: native.getBranch(), partial: false, revision: "1" }) };
+	const entries: AgentConversationEntry[] = [];
+	for (let index = 0; index < 100; index++) entries.push(userEntry(`p${index}`, `native passage ${index}`, index));
+	const observed: AgentObservationSources = { list: async () => [row], snapshot: async () => ({ entries: [...entries], partial: false, revision: "1" }) };
 	let count = 0; let before: unknown;
 	const ctx = { mode: "tui", hasUI: true, ui: { custom: async (factory: Factory) => {
 		let resolve!: (value: unknown) => void; const result = new Promise((done) => { resolve = done; });
@@ -83,7 +84,7 @@ it("keeps passage and draft state through a native action dialog", async () => {
 
 it("the composer calls the same native command action and leaves the overlay open", async () => {
 	const calls: string[][] = []; let panel!: AgentDashboard; let finish!: () => void;
-	const command = createAgentCommand([{ name: "send", description: "Send", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async (args) => { calls.push(args); return "Admitted"; } }], sources);
+	const command = createAgentCommand([{ name: "send", description: "Send", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async (args) => { calls.push(args); return "Admitted"; } }], sources());
 	const ctx = { mode: "tui", hasUI: true, ui: { custom: async (factory: Factory) => {
 		const result = new Promise<void>((resolve) => { finish = resolve; });
 		panel = factory({ terminal: { rows: 24 }, requestRender() {} } as unknown as TUI, theme, keys, () => { panel.dispose(); finish(); }) as AgentDashboard;

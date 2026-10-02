@@ -1,10 +1,10 @@
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentSessionSummary } from "./command.ts";
+import type { AgentConversationSummary } from "./dashboard-types.ts";
 import { THINKING_LEVELS, validateConfigurationPatch, type ConfigurationPatch } from "./configuration.ts";
 
 function display(value: string): string { return stripVTControlCharacters(value).replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 256); }
-function values(snapshot: AgentSessionSummary, patch: ConfigurationPatch) {
+function values(snapshot: AgentConversationSummary, patch: ConfigurationPatch) {
 	return {
 		name: display(patch.name ?? snapshot.name ?? "(unnamed)"),
 		model: display(patch.model ?? (snapshot.model ? `${snapshot.model.provider}/${snapshot.model.modelId}` : "(unavailable)")),
@@ -23,11 +23,11 @@ async function fieldPatch(choice: string, shown: ReturnType<typeof values>, ctx:
 }
 
 /** Dialog edits stay local until Apply. The owner validates the current state at admission. */
-export async function configurationDialog(snapshot: AgentSessionSummary, ctx: ExtensionContext): Promise<ConfigurationPatch | undefined> {
+export async function configurationDialog(snapshot: AgentConversationSummary, ctx: ExtensionContext): Promise<ConfigurationPatch | undefined> {
 	let patch: ConfigurationPatch = {};
 	for (;;) {
 		const shown = values(snapshot, patch);
-		const choice = await ctx.ui.select(`Configure ${display(snapshot.sessionId)}\nSnapshot or draft: name=${shown.name || "(unnamed)"}; model=${shown.model}; reasoning=${shown.level}`, ["Name", "Model", "Reasoning", "Apply", "Cancel"]);
+		const choice = await ctx.ui.select(`Configure ${display(snapshot.id)}\nSnapshot or draft: name=${shown.name || "(unnamed)"}; model=${shown.model}; reasoning=${shown.level}`, ["Name", "Model", "Reasoning", "Apply", "Cancel"]);
 		if (choice === undefined || choice === "Cancel") return undefined;
 		try {
 			if (choice === "Apply") return validateConfigurationPatch(patch);

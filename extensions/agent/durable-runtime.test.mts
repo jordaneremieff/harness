@@ -1,0 +1,156 @@
+/**
+ * Production durable-runtime SIGKILL tests.
+ *
+ * Each test launches the real `durable-runner.ts` through `acquireHost` with a
+ * fixture agent home whose settings load the faux provider and unsafe effect
+ * tool from `testdata/durable-runtime`. The test kills the host process at a
+ * durable checkpoint, relaunches through `acquireHost`, and checks resumption,
+ * deduplication, the single unsafe effect, the retained result, and owner
+ * delivery acknowledgement.
+ */
+import assert from "node:assert/strict";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
+import { it } from "node:test";
+import { hostMetadata } from "./catalog.ts";
+import { acquireHost } from "./host-client.ts";
+import { observeDurableStorage } from "./durable-runtime.ts";
+import { childCatalogRecord, killHost, runtimeFixture, trackHost, waitForFile, waitForReceipt } from "./durable-runtime-fixture.mts";
+
+interface SubmitResult {
+	readonly submissionId: string | number;
+	readonly deduped: boolean;
+}
+
+interface HistoryPage {
+	readonly entries: readonly unknown[];
+}
+
+interface ReceiptsPage {
+	readonly receipts: readonly unknown[];
+}
+
+interface AcknowledgeResult {
+	readonly acknowledged: readonly unknown[];
+}
+
+interface SearchPage {
+	readonly matches: readonly unknown[];
+}
+
+it("installs contributions against the cold observation Harness before the first read", { timeout: 180000 }, async (t) => {
+	const f = runtimeFixture(t, { withAgentExtension: true });
+	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
+	trackHost(t, primary.pid);
+	try {
+		const submitted = await primary.request("submit", { message: "OBSERVE_ME", requestId: "observe-owner", ownerId: f.ownerId }) as SubmitResult;
+		const receipt = await waitForReceipt(primary, f.ownerId, submitted.submissionId);
+		assert.equal(receipt.status, "done");
+	} finally {
+		await primary.close().catch(() => {});
+	}
+	const marker = join(f.testDir, "observation-create.txt");
+	process.env.DURABLE_TEST_CREATE_MARKER = marker;
+	try {
+		const observed = await observeDurableStorage(f.metadata, "status", {}) as { live: boolean; storageId: string; inventory: { contributions: Array<{ name: string }> } };
+		assert.equal(observed.live, false);
+		assert.equal(observed.storageId, f.metadata.storageId);
+		assert.ok(observed.inventory.contributions.some((item) => item.name === "fixture.effect"));
+	} finally {
+		delete process.env.DURABLE_TEST_CREATE_MARKER;
+	}
+	assert.ok(existsSync(marker), "the contribution create hook ran against the observation Harness");
+});
+
+it("spawns a cross-cwd child in an independent storage and delivers its result to the owner conversation", { timeout: 180000 }, async (t) => {
+	const f = runtimeFixture(t, { withAgentExtension: true });
+	const primary = await acquireHost(f.metadata, { env: f.env("spawn") });
+	trackHost(t, primary.pid);
+	try {
+		const submitted = await primary.request("submit", { message: "SPAWN_CHILD: start the child and report back", requestId: "spawn-owner" }) as SubmitResult;
+		assert.equal(submitted.deduped, false);
+		await waitForFile(join(f.testDir, "delivered"));
+		const record = await childCatalogRecord(f);
+		assert.notEqual(record.storageId, f.metadata.storageId, "the child lives in an independent storage");
+		assert.equal(record.cwd, realpathSync(f.childCwd), "the child uses the requested working directory");
+		const child = await acquireHost(hostMetadata(record));
+		trackHost(t, child.pid);
+		try {
+			assert.notEqual(child.pid, primary.pid, "the child runs in its own host process");
+			const found = await primary.request("inspect", { view: "search", query: "Agent result from", source: "user" }) as { matches: Array<{ excerpt: string }> };
+			assert.equal(found.matches.length, 1, JSON.stringify(found));
+			const excerpt = found.matches[0]?.excerpt ?? "";
+			assert.match(excerpt, /CHILD_RESULT/u);
+			const submission = /\(submission (\d+)\)/u.exec(excerpt)?.[1];
+			assert.ok(submission, excerpt);
+			const deliveryRequest = `deliver:${record.storageId}:submission:${submission}`;
+			const repeat = await primary.request("submit", { message: "DUPLICATE_DELIVERY", requestId: deliveryRequest }) as SubmitResult;
+			assert.equal(repeat.deduped, true, "the delivery request ID is retained and deduplicated");
+			const after = await primary.request("inspect", { view: "search", query: "DUPLICATE_DELIVERY" }) as { matches: unknown[] };
+			assert.equal(after.matches.length, 0, "the deduplicated submit wrote no new entry");
+		} finally {
+			await child.close().catch(() => {});
+		}
+	} finally {
+		await primary.close().catch(() => {});
+	}
+});
+
+it("resumes an outstanding model request after SIGKILL without a duplicate submission", { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const first = await acquireHost(f.metadata, { env: f.env("request") });
+	trackHost(t, first.pid);
+	const submitted = await first.request("submit", { message: "complete the request", requestId: "kill-request", ownerId: f.ownerId }) as SubmitResult;
+	assert.equal(submitted.deduped, false);
+	await waitForFile(join(f.testDir, "requested"));
+	killHost(first.pid);
+	await first.close();
+
+	const second = await acquireHost(f.metadata, { env: f.env("answer") });
+	trackHost(t, second.pid);
+	try {
+		const receipt = await waitForReceipt(second, f.ownerId, submitted.submissionId);
+		assert.equal(receipt.status, "done");
+		assert.match(receipt.answer ?? "", /durable runtime answer/u);
+		const repeat = await second.request("submit", { message: "complete the request", requestId: "kill-request", ownerId: f.ownerId }) as SubmitResult;
+		assert.equal(repeat.submissionId, submitted.submissionId, "the same request ID reuses the retained submission");
+		assert.equal(repeat.deduped, true, "the repeated submit is deduplicated");
+		const history = await second.request("inspect", { view: "history", source: "user", limit: 10 }) as HistoryPage;
+		assert.equal(history.entries.length, 1, "recovery leaves one user entry");
+		const acknowledged = await second.request("acknowledge", { ownerId: f.ownerId, submissionIds: [submitted.submissionId] }) as AcknowledgeResult;
+		assert.equal(acknowledged.acknowledged.length, 1, "the owner acknowledges the receipt once");
+		const after = await second.request("receipts", { ownerId: f.ownerId }) as ReceiptsPage;
+		assert.equal(after.receipts.length, 0, "an acknowledged receipt is not delivered again");
+	} finally {
+		await second.close();
+	}
+});
+
+it("does not rerun an unsafe effect after SIGKILL and delivers the retained result once", { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const first = await acquireHost(f.metadata, { env: f.env("effect") });
+	trackHost(t, first.pid);
+	const submitted = await first.request("submit", { message: "run the effect", requestId: "kill-effect", ownerId: f.ownerId }) as SubmitResult;
+	assert.equal(submitted.deduped, false);
+	await waitForFile(join(f.testDir, "effect"));
+	killHost(first.pid);
+	await first.close();
+
+	const second = await acquireHost(f.metadata, { env: f.env("answer") });
+	trackHost(t, second.pid);
+	try {
+		const receipt = await waitForReceipt(second, f.ownerId, submitted.submissionId);
+		assert.equal(receipt.status, "done");
+		assert.match(receipt.answer ?? "", /durable runtime answer/u);
+		const effects = () => readFileSync(join(f.testDir, "effect.txt"), "utf8").trim().split("\n").filter((line) => line !== "").length;
+		assert.equal(effects(), 1, "the unsafe effect ran once before the kill");
+		const repeat = await second.request("submit", { message: "run the effect", requestId: "kill-effect", ownerId: f.ownerId }) as SubmitResult;
+		assert.equal(repeat.submissionId, submitted.submissionId);
+		assert.equal(repeat.deduped, true, "the repeated submit is deduplicated");
+		assert.equal(effects(), 1, "the resumed and deduplicated request reran no effect");
+		const interrupted = await second.request("inspect", { view: "search", query: "interrupted" }) as SearchPage;
+		assert.ok(interrupted.matches.length >= 1, "the interrupted tool result is retained");
+	} finally {
+		await second.close();
+	}
+});

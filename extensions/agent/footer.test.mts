@@ -1,77 +1,33 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
-import { aggregateFooter, FOOTER_ENTRY, formatAgentFooter, OwnedSpend, restoreFooter, SessionFooter } from "./footer.ts";
-import { fixture } from "./native-fixture.mts";
+import type { AgentConversationSummary } from "./dashboard-types.ts";
+import { formatDurableFooter } from "./footer.ts";
 
-const usage = (cost: number): Usage => ({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } });
-const message = (cost: number): AssistantMessage => ({ role: "assistant", api: "openai-completions", provider: "test", model: "test", content: [], usage: usage(cost), stopReason: "stop", timestamp: Date.now() });
+function row(id = "a", overrides: Partial<AgentConversationSummary> = {}): AgentConversationSummary {
+	return { id, storageId: "storage", cwd: "/work", owner: "here", modifiedAt: 1, state: "idle", cost: 0, partial: false, ...overrides };
+}
 
-test("owned spend excludes imported history and counts native usage categories once across replacement", () => {
-	const manager = SessionManager.inMemory();
-	manager.appendMessage(message(10));
-	const spend = new OwnedSpend(); spend.bind(manager);
-	manager.appendMessage(message(1));
-	manager.appendUsage("cache_warm", "test", "test", usage(2));
-	manager.appendMessage({ role: "toolResult", toolCallId: "tool", toolName: "nested", content: [], isError: false, timestamp: Date.now(), usage: usage(3) });
-	manager.appendCompaction("summary", manager.getLeafId() ?? "", 10, undefined, false, usage(4));
-	spend.sync(); spend.sync(); spend.bind(manager);
-	assert.deepEqual(spend.total, { cost: 10, incomplete: false });
-	const replacement = SessionManager.inMemory(); replacement.appendMessage(message(50));
-	spend.bind(replacement); replacement.appendMessage(message(0.0001)); spend.sync();
-	assert.equal(spend.total.cost, 10.0001);
-	replacement.appendMessage(message(Number.NaN)); spend.sync();
-	assert.equal(spend.total.incomplete, true);
-	assert.equal(spend.total.cost, 10.0001);
+test("counts only working conversations and keeps the empty footer", () => {
+	assert.equal(formatDurableFooter([]), "agents 0 · $0.00");
+	const rows = [
+		row("working", { state: "working", cost: 0.25 }),
+		row("idle", { state: "idle", cost: 1 }),
+		row("done", { state: "done", cost: 2 }),
+		row("failed", { state: "failed", cost: 4 }),
+		row("unavailable", { owner: "unavailable", state: "unavailable", cost: 8 }),
+	];
+	assert.equal(formatDurableFooter(rows), "agents 1 · $15.25");
 });
 
-test("footer distinguishes active, observed zero, incomplete spend, and detached records", () => {
-	const detached = { exists: false, recorded: 0, unavailable: 0 };
-	assert.equal(formatAgentFooter([], detached), "agents 0 · $0.00");
-	const state = { active: true, spend: { cost: 0.0001, incomplete: false } };
-	assert.equal(formatAgentFooter([state], detached), "agents 1 · $0.0001");
-	assert.equal(formatAgentFooter([{ ...state, spend: { cost: 0, incomplete: true } }], detached), "agents 1 · $0.00+?");
-	assert.match(formatAgentFooter([{ ...state, active: false }], { exists: true, recorded: 2, unavailable: 1 }) ?? "", /agents 0.*detached 2\/1 lost\/\$\?/u);
+test("sums native conversation costs and keeps sub-cent totals readable", () => {
+	assert.equal(formatDurableFooter([row("a", { cost: 0.1 }), row("b", { cost: 0.2 })]), "agents 0 · $0.30");
+	assert.equal(formatDurableFooter([row("a", { cost: 0.0001 })]), "agents 0 · $0.0001");
+	assert.equal(formatDurableFooter([row("a", { cost: 0 })]), "agents 0 · $0.00");
 });
 
-test("session checkpoints retain costs across reload and tree navigation but reject copied forks", () => {
-	const manager = SessionManager.inMemory();
-	const id = manager.getSessionId();
-	const first = manager.appendMessage(message(0));
-	const empty = aggregateFooter([]);
-	const footer = new SessionFooter(restoreFooter([], id), empty);
-	const current = { ...empty, spend: { cost: 2, incomplete: false } };
-	footer.observe(current); footer.observe(current);
-	manager.appendCustomEntry(FOOTER_ENTRY, structuredClone(footer.saved));
-	manager.branch(first);
-	assert.equal(restoreFooter(manager.getEntries(), id).spend.cost, 2);
-	assert.equal(restoreFooter(manager.getEntries(), "fork").spend.cost, 0);
-	const restored = new SessionFooter(restoreFooter(manager.getEntries(), id), empty);
-	assert.equal(restored.observe({ ...empty, spend: { cost: 1, incomplete: false } }).spend.cost, 3);
-	const separate = new SessionFooter(restoreFooter([], "second"), current);
-	assert.equal(separate.observe(current).spend.cost, 0);
-	assert.equal(formatAgentFooter([], { exists: true, recorded: 0, unavailable: 0 }), "agents 0 · $0.00");
-});
-
-test("ordinary host preserves native spend across reload, replacement, and close", async () => {
-	const f = await fixture(`export default function(pi) {
-		pi.registerCommand("fresh", { handler: async (_args, ctx) => { await ctx.newSession(); } });
-	}`);
-	try {
-		await f.worker.start("test"); await f.worker.waitForIdle();
-		assert.equal(f.worker.footerState().active, false);
-		f.worker.sessionManager().appendUsage("cache_warm", "test", "test", usage(0.5));
-		await f.worker.reload();
-		assert.equal(f.worker.footerState().spend.cost, 0.5);
-		await f.worker.start("again"); await f.worker.waitForIdle();
-		assert.equal(f.worker.footerState().spend.cost, 0.5);
-		const previous = f.worker.sessionId();
-		await f.worker.runCommand("fresh", "");
-		assert.notEqual(f.worker.sessionId(), previous);
-		assert.equal(f.worker.footerState().spend.cost, 0.5);
-		await f.worker.close();
-		assert.equal(f.worker.footerState().active, false);
-		assert.equal(f.worker.footerState().spend.cost, 0.5);
-	} finally { await f.close(); }
+test("marks incomplete native cost with +? and never reports detached work", () => {
+	assert.equal(formatDurableFooter([row("a", { cost: 0.25, partial: true })]), "agents 0 · $0.25+?");
+	assert.equal(formatDurableFooter([row("a", { cost: 0.25 }), row("b", { cost: 0.75, partial: true })]), "agents 0 · $1.00+?");
+	assert.equal(formatDurableFooter([row("a", { cost: Number.NaN }), row("b", { cost: -1 })]), "agents 0 · $0.00+?");
+	assert.doesNotMatch(formatDurableFooter([row("a", { state: "working" })]), /detached/);
 });

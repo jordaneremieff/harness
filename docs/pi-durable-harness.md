@@ -1,15 +1,15 @@
 # Pi durable-harness track
 
-Pi 1.0.0 has distinct ordinary and durable contracts. This repository uses the
-ordinary coding-agent SDK as its host. The separate experimental
-`@earendil-works/pi-durable` 1.0.0 package supplies durable tasks and
-conversations, not an ordinary-session replacement.
+Pi 1.0.0 has distinct ordinary and Durable contracts. Agent execution uses
+`@earendil-works/pi-durable` natively. The ordinary primary remains the terminal
+host. Each agent storage has an independent process, an exclusive writer claim,
+and native conversations. Public coding-agent services supply resources, trust,
+settings, and configured providers; native contributions supply capabilities.
 
-Verified 2026-10-02: installed `pi-agent-core/package.json` exports only its root
-and package metadata; `pi-agent-core/dist/harness` is absent. Agent-core no
-longer ships the AgentHarness lane runtime or Pico3 kernel. A durable package
-export does not replace ordinary extension loading, project trust, resource
-discovery, or submitted-result retrieval.
+Verified 2026-10-02 against the installed public package contracts and the agent
+slice sources. `pi-agent-core` exports its root and package metadata, not an
+AgentHarness lane runtime. Agent execution uses the separate Durable package;
+it does not patch core or emulate ordinary extension contexts.
 
 ## Release review coverage
 
@@ -306,8 +306,8 @@ separate from those development entrypoints.
 The installed extension loader binds Pi core imports to the running install.
 `dist/core/extensions/loader.js` aliases coding-agent, agent-core, TUI, AI and
 its named compatibility/provider subpaths, plus TypeBox root/compile/value.
-Server, client, and Chord are not in that alias map. The harness declares them
-as runtime dependencies, not host-supplied peers. Verified 2026-10-02 against
+Durable, Codemode, MCP, and Chord are not in that alias map. The harness declares
+them as runtime dependencies, not host-supplied peers. Verified 2026-10-02 against
 installed 1.0.0 `docs/packages.md` and `dist/core/package-manager.js`:
 `getGitDependencyInstallArgs()` uses `--omit=dev --legacy-peer-deps` for npm,
 `--omit=dev --omit=peer` for Bun, and `--prod` with peer/build configuration
@@ -322,13 +322,10 @@ factory entries from `dist/extensions/index.js`, consumed by `dist/main.js`.
 That aggregate factory list is not a package export. The root API does export
 `createCodemodeExtension`, `createToolSearchExtension`, and `createMcpExtension`
 (`dist/index.js`); installed `docs/sdk.md` requires SDK hosts to supply the
-factories they need. The agent extension's `extensions/agent/worker.ts` supplies
-those public factories as replaceable `builtin: true` entries to
-`createAgentSessionServices`. Child registration therefore comes from explicit
-host construction, not inheritance from a primary with the same cwd. An SDK
-host that omits the factories does not receive the CLI's registrations. This is
-the SDK's explicit factory contract, not a resource-discovery defect; it requires
-no private `dist/` import.
+factories they need. Ordinary SDK consumers must select them explicitly.
+Durable agents instead install native Codemode and MCP extensions through
+`extensions/agent/durable-execution.ts`. Their scripts create native nested
+call tasks rather than invoke an ordinary extension runner.
 
 ## Pi Durable 1.0.0
 
@@ -412,26 +409,52 @@ memory use.
 
 The SQLite Node adapter sets WAL and `synchronous = NORMAL`
 (`pi-durable/dist/storage/sqlite/node.js`). The README distinguishes process
-crashes from power or host failure. Neither failure mode was tested here.
-The README requires one process to own storage and states that there is no
-cross-process locking. Storage durability does not supply process ownership,
-forced termination of uncooperative code, or a replacement process.
+crashes from power or host failure. The agent's
+[`durable-host.test.mts`](../extensions/agent/durable-host.test.mts) kills real
+subprocesses during a model request and an unsafe tool effect, then reopens the
+database. These tests establish recovery at those checkpoints, request
+deduplication, and interruption without replay of that unsafe effect. The
+production-runner tests in `durable-runtime.test.mts` also exercise process
+replacement and owner receipts. These checks do not establish power-loss
+durability, general exactly-once effects, or orphan-process cleanup.
+
+Pi Durable requires one process to own storage and supplies no cross-process
+ownership lock. SQLite transaction locking does not prevent independent
+schedulers from opening the same storage. Storage durability does not supply
+process ownership or forced termination of uncooperative code.
 
 ### Published intent and repository decision
 
-The [Pi Durable post][durable-post] states that Durable does not replace the
-coding agent and that proven lessons flow back into it.
-The [Pi 1.0 announcement][pi-one-post] describes the separate experimental
-package for applications outside the terminal coding agent's shape. These are published design statements, not evidence that the
-ordinary SDK uses the durable runtime.
+The [Pi Durable post][durable-post] describes Durable as a separate runtime.
+The ordinary SDK does not acquire Durable behavior by sharing Pi packages.
+The agent slice uses Durable explicitly: `durable-runner.ts` acquires a storage
+writer claim before `durable-runtime.ts` assembles services and opens
+`DurableHost`. Native submission IDs, entries, documents, and task outcomes
+remain authoritative. Old ordinary agent files stay untouched and unread.
 
-The agent extension keeps ordinary Pi sessions with explicit ownership
-associations and owner-directed result delivery. Dispatch does not block the
-parent on a child's answer. Ordinary spawn and detached runs retain their
-existing ownership and result-delivery contracts. Adopt a durable primitive only
-when the selected host meets the complete replacement condition in
-[Convergence decisions](#convergence-decisions); a package export alone is not
-that condition.
+### Native extension integration boundary
+
+The host collects native contributions from the configured extension factories
+through the [contribution contract](conventions/durable-contributions.md).
+Each contribution supplies native tools, sections, hooks, wrappers, and tasks.
+The host reports configured extensions with no native contribution in status
+and the prompt. It does not instantiate a shadow SessionManager or dispatch
+ordinary lifecycle callbacks against Durable state.
+
+Public `createAgentSessionServices()` preserves cwd-bound resource loading,
+project trust, settings, and configured providers. Its `ModelRuntime` implements
+Durable's model interface directly. Prompt composition uses exported resource
+accessors and `formatSkillsForPrompt`; no private prompt builder is imported.
+
+The host supplies image-capable read and native coding tools. Codemode uses
+public `CodemodeSandbox`; MCP uses public `McpClient`. Nested invocation retains
+its intent and result as a native task and runs the selected tool hooks.
+Cancellation of an observation does not cancel admitted work. The contribution
+host's close callbacks run after its abort signal and before storage closes.
+
+The published coding-agent package excludes the experimental peer client and
+service distribution. The agent dashboard therefore uses Durable data without
+claiming equal-peer navigation of the real ordinary primary.
 
 ## Released ordinary-session changes
 
@@ -678,116 +701,30 @@ checks through the interactive host, not merely a successful registration.
 
 ## Idle session configuration
 
-Native setters and persistence checked 2026-10-02 against installed coding-agent
-1.0.0 `dist/core/agent-session.js` and `dist/core/session-manager.js`.
-The agent configuration behavior and tests in `extensions/agent/` were not
-independently reverified in this host source review.
-
-Ordinary `AgentSession.setModel`, `setThinkingLevel`, and `setSessionName` mutate
-native session state and history. Model and reasoning setters do not persist
-global defaults unless their options request it. They have no native idle guard.
-An input hook can still be in preflight while `isIdle` is true, so the owner must
-reserve configuration and exclude admitted work, pending input, and controls
-before mutation. `AgentSessionRuntime` replacement is not needed for these
-field changes.
-
-The model setter authenticates again, applies native model-switch defaults, and
-awaits model-selection hooks. Agent configuration then reapplies the explicitly
-requested or previously effective reasoning level through Pi's native clamp.
-The owner retains exclusion until those setters and awaited hooks settle.
-Native name and reasoning notifications do not await every asynchronous hook;
-an observed error snapshot is not a promise about later extension activity.
-Once a native setter starts, shutdown joins the admitted configuration before
-host disposal and writer release. This does not make setters atomic or supply
-cancellation inside their authentication await.
-
-Native append and the first-user-or-assistant flush boundary govern
-persistence. Setup-only configuration and custom entries do not create a new
-session file; once a user or assistant message exists, native persistence
-flushes the buffered entries. A failed append can leave actual in-memory state
-different from the saved file. Configuration reports both the actual snapshot
-and that uncertainty; it adds no rollback, replay, independent configuration
-store, or host migration.
+Agent configuration writes native `pi.agent` and `agent.meta` documents. The
+control refuses active conversations; the runtime validates the selected model
+and clamps reasoning through Pi's public model helper. Roots and children store
+explicit model and reasoning choices so native hooks read the same attribution.
+Configuration starts no task and changes no global model defaults.
 
 ## Footer retention boundary
 
-Verified 2026-10-02 against installed coding-agent 1.0.0
-`dist/core/agent-session.js`, `dist/core/session-manager.{js,d.ts}`,
-`dist/core/extensions/types.d.ts`, and `docs/session-format.md`.
-`AgentSession.reload()` retains the SessionManager and emits lifecycle events
-with reason `reload`. `appendEntry()` appends a native custom entry outside
-model context, then synchronously emits `entry_appended` to session subscribers.
-Checkpoint callbacks guard reentry and mark an append complete only after it
-returns, so an exception leaves the observation retryable. `SessionManager`
-mutates its in-memory entries before persistence; a failed write can leave an
-in-memory entry. Before a user or assistant message exists, an unflushed manager
-buffers setup and custom entries without creating its session file.
-`SessionManager._hasConversation()` makes the first user or assistant message
-the flush boundary. A user prompt therefore persists even if the first response
-never completes. Same-process reload retains buffered entries; reopening
-restores only files Pi actually saved. `getEntries()` covers all branches; session identity
-changes on new sessions and forks. Footer checkpoints therefore use exact native
-IDs and all-branch observations instead of a separate store or branch-relative totals.
-Controlled native-host and regular/fullscreen terminal checks exercise reload,
-reopening, fork/new isolation, mixed nesting, and visible idle totals. These
-observations do not establish retrospective spend or power-loss durability.
-Those runtime trials were not repeated for 1.0.0.
+The agent footer reads cumulative native usage per Durable conversation.
+Repeated observations do not add another local delta or write ordinary footer
+checkpoints. Missing or invalid cost remains marked incomplete. The dashboard
+and footer share native observation records; neither parses ordinary JSONL.
 
 ## Ordinary-agent reload and recovery boundary
 
-Native reload and loader boundaries checked 2026-10-02 against installed
-coding-agent 1.0.0 `dist/core/agent-session.js`,
-`dist/core/extensions/runner.js`, and `dist/core/extensions/loader.js`.
-The agent recovery behavior and native-host tests in
-`extensions/agent/reload-resume.test.mts` were not independently reverified
-in this host source review.
+The ordinary primary's reload ends only its client callbacks. Durable storage
+hosts remain independent processes. The next primary startup reconnects,
+receives retained reports and outcomes, and relaunches dead hosts with unfinished
+work. Canceled receipt waits release their listeners without canceling tasks.
 
-A primary reload emits shutdown before invalidating its extension runner, then
-reloads resources, builds a fresh runtime, and emits startup. When the
-session's tools come from `defaultTools`, the rebuilt runtime also activates
-tools newly added to that setting. Reload does not dispose
-separate ordinary child runtimes. The agent extension retains those hosts and
-writer claims, drops old primary callbacks, and rebinds callbacks on startup.
-Saved exact-parent associations use native custom entries, not another execution
-store. Reopening reconstructs idle ownership; it never restarts requests, tools,
-or pending queues. The first-user-or-assistant persistence boundary above still
-applies: setup-only associations in an unflushed parent remain in memory, while
-an existing user message allows a later native append to persist them.
-
-The installed `session-manager.js` mutates entries and the leaf before `_persist`.
-The public `ReadonlySessionManager` in `extensions/types.d.ts` exposes no rollback;
-command-only navigation and writable SDK branching do not supply tool-context
-repair. After an association append exception, agent retains a refusal for that
-parent across reload instead of trusting the failed in-memory entry or appending
-a fresh retry through its uncertain leaf. Deferred association updates remain
-pending. Agent-owned primary footer writes and message delivery pause; live totals
-and pending results remain observable in memory. A managed worker settles with
-an explicitly unsaved, pageable result rather than persisting its operation result
-after that failure.
-
-Native-host tests separate two histories: without intervening native writes,
-reopening preserves the prior saved branch and context; ordinary tool-error
-continuation writes a native tool result and assistant response after the missing
-entry, leaving an unrepaired parent chain on disk. Reopening does not repair that
-chain. The extension's refusal prevents false association/task admission, not
-arbitrary native disk-failure recovery.
-
-Failure paths differ. A reload rejection before runtime replacement leaves the
-old runner invalidated, but its registered event handlers still dispatch. Its
-context accessors reject stale use. Captured plain identity permits later retry
-and true-shutdown cleanup. A fresh agent runtime that fails before startup also
-finds its retained owner for true shutdown.
-
-By contrast, the extension loader catches a factory exception, discards that
-extension's registrations, reports a diagnostic, and continues without it. If
-reload omits the agent extension, retained children and claims stay live but
-the primary has neither agent controls nor its cleanup handler. A subsequent
-successful reload restores control. True quit from that omitted-extension runtime
-does not close the retained children. The installed public extension surface has
-no finalizer for the discarded owner. Tests reproduce that boundary and perform
-separate fixture cleanup; they do not establish automatic cleanup there. No
-process hook, second owner, or polling mechanism substitutes for the missing
-native finalizer.
+A native `agent_command` reload requires idle storage and settled controls.
+It reloads cwd-bound resources and native registrations, then reopens the same
+storage. A protocol change in a retained ordinary primary manager requires a Pi
+restart. The host never reads old ordinary agent sessions as Durable records.
 
 ## Current-session evidence retrieval
 
@@ -896,32 +833,27 @@ Pi Durable's `SubmissionRecord` retains input and answer entry IDs, while
 `TaskRecord` retains input and terminal `TaskOutcome`. Its entry and submission
 lookups support reacquisition after reopen
 (`pi-durable/dist/{types.d.ts,harness/types.d.ts}`). These are substantive
-retention primitives, not just status labels. They do not supply native
-operation-result lookup, byte-bounded report rendering, owner-loss notification,
-or detached control. Adopt them for submitted results only when exact content,
-lookup, retention, size bounds, and parent-session-loss behavior meet the
-application contract. Delete superseded storage in the same cutover.
+retention primitives, not just status labels. The agent host adds bounded
+inspection and owner-directed receipts over those public records. Each native
+fork retains the source unchanged in the same storage. The former ordinary
+worker and detached-run implementations are removed; their old files on disk
+remain untouched.
 
 ## Convergence decisions
 
-Host boundaries verified 2026-10-02 against the ordinary sources above and
-`pi-durable/dist/{index,types}.d.ts`,
-`pi-durable/dist/harness/{types,view,task-graph}.d.ts`, and the
-[durable README][durable-readme]. The ordinary SDK remains the selected host.
-A durable equivalent is not an ordinary-session replacement without the whole
-host contract.
+The agent slice adopts the public Durable runtime rather than reproduce its
+scheduler or transcript. The ordinary SDK remains the primary terminal host.
 
-| Repository capability | Host-owned replacement condition | Pi Durable 1.0.0 assessment and action |
-|---|---|---|
-| Ordinary session replacement | Public session services and AgentSessionRuntime preserve cwd, resources, trust, and lifecycle | Not met by Durable's HarnessOptions/Conversation. Use ordinary services and runtime replacement now. |
-| Turn completion and checkpoints | Host control preserves ordinary finishTurn, actionable boundaries, session projection, recovery, and queues | Not met for the ordinary host. GenerationHooks onYield/afterTools and task checkpoints are durable equivalents, not compatible ordinary callbacks. Keep ordinary boundaries. |
-| Request context | The host preserves Pi-owned prompt/tools through context, or explicitly transfers full request ownership through context_with_system | Not met by Durable beforeRequest and persistent ContextEdit. Durable sections build their own prompt. Keep the narrow ordinary hook and distinguish transient filtering from persistent edits. |
-| Worker execution/recovery | The selected host owns scheduling and recovery while preserving tools, hooks, cancellation, continuation, resources, trust, and process lifecycle | Partial primitives only. Durable tasks, inboxes, replay, and ownership do not supply ordinary factories or process control. Keep ordinary workers until the full condition holds. |
-| Live observation | The selected host supplies current views, ordered updates, and explicit closure/overflow behavior for the work it executes | Met inside a durable host by ConversationView, document watches, and task-graph watches. They do not observe ordinary workers. Use the selected host's state; do not duplicate progress or mistake live-task graphs for archive inventories. |
-| Remote control | A public process/attachment service preserves the required owner identity and control authority | Not met. Durable ownership is in-storage task ownership; its exported contract supplies no detached-process controller or cross-process writer lock. Keep the ordinary control boundary. |
-| Submitted results | The host owns exact content retrieval, retention, bounded reads, and parent-loss delivery behavior | Partial only. SubmissionRecord, TaskOutcome, and entries retain answers and outcomes, but no native operation-result lookup, byte-bounded report view, or owner-loss notification is supplied. No whole-contract cutover is established. |
-| Reusable source selection | The host resolves files, precedence, applicability, and model-visible resource delivery | Not met. Durable Registry/Agent select installed names and prompt sections, not ordinary filesystem resources or skills. Keep ordinary discovery and local application selection. |
-| Prose handover and doctrine | The application owns content meaning and authority, even when the host supplies transport and retention | Not an execution replacement condition. Durable reset, handoff, and compaction preserve or transport content; keep its meaning and authority here. |
+| Capability | Current owner and boundary |
+|---|---|
+| Agent execution and recovery | Durable generation, ToolTask, checkpoints, native replay classification, and retained outcomes inside independent storage hosts |
+| Resources and providers | Public cwd-bound coding-agent services; native contributions supply tools, prompts, hooks, and commands |
+| Process ownership | Agent host writer claim before storage open; authenticated local control socket and automatic dead-owner recovery |
+| Nested tools | Native call tasks, selected ToolTask hook chain, argument validation, committed intent, replay policy, and structured results |
+| Observation | Public native entries, documents, submissions, and task views; cold inspection uses a bounded SQLite snapshot without resume |
+| Owner delivery | Retained intents, reports, source IDs, and acknowledgements; no exactly-once cross-host promise |
+| UI | Existing agent dashboard over Durable data; the published experimental peer-client integration remains unavailable |
+| Handover and doctrine | Native transport and retention carry content; its meaning and authority remain application concerns |
 
 ## Refresh
 

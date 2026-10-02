@@ -2,30 +2,15 @@ import { basename } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
-import { showAgentDashboard, type AgentObservationSources, type DashboardTarget } from "./dashboard.ts";
-import type { UnavailableHostState } from "./worker.ts";
+import { showAgentDashboard, type DashboardActions } from "./dashboard.ts";
+import type { AgentConversationSummary, AgentObservationSources, DashboardTarget } from "./dashboard-types.ts";
 import { selectDashboardAction } from "./dashboard-actions.ts";
-
-export interface AgentSessionSummary {
-	sessionId: string;
-	name?: string;
-	firstMessage?: string;
-	model?: { provider: string; modelId: string; thinkingLevel: string };
-	provenance?: "live" | "stored";
-	parentSessionIds?: string[];
-	cwd: string;
-	modifiedAt: number;
-	live: boolean;
-	hostState?: UnavailableHostState;
-	operation?: string | null;
-	detachedRunId?: string;
-}
 
 interface CommandArgument {
 	name: string;
 	optional?: boolean;
 	rest?: boolean;
-	complete?: "session" | "session-control" | "run" | "command";
+	complete?: "session" | "session-control" | "command";
 }
 
 export interface AgentCommandAction {
@@ -52,48 +37,37 @@ function actionHelp(action: AgentCommandAction): string {
 
 type SearchChoice = AutocompleteItem & { search: string };
 
-function sessionLabel(row: AgentSessionSummary): string {
+function sessionLabel(row: AgentConversationSummary): string {
 	return plain(row.name ?? "") || `Session in ${plain(basename(row.cwd)) || "/"}`;
 }
 
-function sessionState(row: AgentSessionSummary): string {
-	if (row.hostState) return `Host ${row.hostState}; stored metadata`;
-	if (row.detachedRunId) return "Detached run; owner control";
-	if (row.operation) return "Active work";
-	return row.live ? "Open session" : "Stored session";
+function sessionState(row: AgentConversationSummary): string {
+	if (row.owner === "unavailable") return "Unavailable; stored metadata";
+	if (row.owner === "unknown") return "Stored session";
+	if (row.state === "working") return "Active work";
+	return "Open session";
 }
 
-function sessionChoice(row: AgentSessionSummary, sessions: AgentSessionSummary[], before: string, suffix: string): SearchChoice {
+function sessionChoice(row: AgentConversationSummary, sessions: readonly AgentConversationSummary[], before: string, suffix: string): SearchChoice {
 	const title = sessionLabel(row);
 	const duplicates = sessions.filter((other) => sessionLabel(other) === title);
-	const id = duplicates.some((other) => other.sessionId !== row.sessionId && other.sessionId.slice(0, 8) === row.sessionId.slice(0, 8)) ? row.sessionId : row.sessionId.slice(0, 8);
+	const id = duplicates.some((other) => other.id !== row.id && other.id.slice(0, 8) === row.id.slice(0, 8)) ? row.id : row.id.slice(0, 8);
 	return {
-		value: `${before}${row.sessionId}${suffix}`,
+		value: `${before}${row.id}${suffix}`,
 		label: duplicates.length > 1 || !row.name ? `${title} (${id})` : title,
-		description: `${sessionState(row)} · ${plain(row.cwd)} · ${new Date(row.modifiedAt).toISOString()}`,
-		search: `${row.sessionId} ${title} ${plain(row.cwd)}`,
+		description: `${sessionState(row)}${row.ownerLabel ? ` · ${plain(row.ownerLabel)}` : ""} · ${plain(row.cwd)} · ${new Date(row.modifiedAt).toISOString()}`,
+		search: `${row.id} ${title} ${plain(row.cwd)}`,
 	};
 }
 
-async function metadataChoices(sources: AgentObservationSources, action: AgentCommandAction, completion: CommandArgument["complete"], rest: string, before: string): Promise<SearchChoice[] | null> {
+async function metadataChoices(sources: AgentObservationSources, action: AgentCommandAction, rest: string, before: string): Promise<SearchChoice[] | null> {
 	const firstWord = rest.split(/\s+/, 1)[0];
 	const afterId = /\s/.test(rest);
 	const suffix = action.args.length > 1 ? " " : "";
-	if (completion === "run") {
-		const runs = await sources.runs();
-		if (afterId && runs.some((run) => run.runId === firstWord)) return null;
-		return runs.map((run) => ({
-			value: `${before}${run.runId}${suffix}`,
-			label: `${plain(run.prompt).slice(0, 60) || "Detached run"} (${run.runId.slice(0, 8)})`,
-			description: `${run.state} · ${plain(run.cwd)} · ${run.startedAt}`,
-			search: `${run.runId} ${plain(run.prompt)} ${plain(run.cwd)}`,
-		}));
-	}
-	const sessions = await sources.sessions();
+	const sessions = await sources.list();
 	// An exact ID ends selection. Later words belong to the message or correction.
-	if (afterId && sessions.some((row) => row.sessionId === firstWord)) return null;
-	return sessions.filter((row) => !row.detachedRunId || completion === "session-control").reverse()
-		.map((row) => sessionChoice(row, sessions, before, suffix));
+	if (afterId && sessions.some((row) => row.id === firstWord)) return null;
+	return sessions.slice().reverse().map((row) => sessionChoice(row, sessions, before, suffix));
 }
 
 function argumentHelp(action: AgentCommandAction, args: string[]): string | undefined {
@@ -111,8 +85,7 @@ export async function executeAgentAction(action: AgentCommandAction, args: strin
 
 function targetArgument(argument: CommandArgument, target?: DashboardTarget): string | undefined {
 	if (!target) return undefined;
-	if (argument.complete === "session" || argument.complete === "session-control") return target.kind === "session" ? target.session.sessionId : target.run.currentSessionId ?? target.run.sessionId;
-	if (argument.complete === "run") return target.kind === "run" ? target.run.runId : target.session.detachedRunId;
+	if (argument.complete === "session" || argument.complete === "session-control") return target.id;
 	return undefined;
 }
 
@@ -186,14 +159,15 @@ export function createAgentCommand(actions: AgentCommandAction[], sources: Agent
 		if (!ctx.hasUI || ctx.mode !== "tui" || dashboardOpen) return;
 		dashboardOpen = true;
 		try {
-			await showAgentDashboard(sources, ctx, {
+			const dashboardActions: DashboardActions = {
 				run: (target) => chooseDashboardAction(commands, target, ctx),
 				compose: async (mode, sessionId, text) => {
 					const action = find(mode);
 					if (!action) throw new Error(`Agent action unavailable: ${mode}`);
 					return executeAgentAction(action, mode === "new" ? [text] : [sessionId ?? "", text], ctx);
 				},
-			});
+			};
+			await showAgentDashboard(sources, ctx, dashboardActions);
 		}
 		finally { dashboardOpen = false; }
 	};
@@ -213,7 +187,7 @@ export function createAgentCommand(actions: AgentCommandAction[], sources: Agent
 			const before = `${split[1]} `;
 			if (argument.complete === "command") return actionItems(rest, before);
 			try {
-				const choices = await metadataChoices(sources, action, argument.complete, rest, before);
+				const choices = await metadataChoices(sources, action, rest, before);
 				if (!choices) return null;
 				return fuzzyFilter(choices, rest.trim(), (item) => item.search).map(({ search: _search, ...item }) => item);
 			} catch {

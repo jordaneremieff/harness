@@ -3,14 +3,14 @@ import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { type ExtensionAPI, type ExtensionCommandContext, type RegisteredCommand, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { CombinedAutocompleteProvider, Editor, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import { chooseDashboardAction, createAgentCommand, executeAgentAction, type AgentCommandAction, type AgentSessionSummary } from "./command.ts";
-import type { DashboardTarget } from "./dashboard.ts";
+import { chooseDashboardAction, createAgentCommand, executeAgentAction, type AgentCommandAction } from "./command.ts";
+import type { AgentConversationSummary, DashboardTarget } from "./dashboard-types.ts";
 import registerAgentExtension from "./index.ts";
 import { defined } from "./test-assertions.mts";
 
 function registration() {
 	let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
-	registerAgentExtension({ registerShortcut() {}, registerTool() {}, registerMessageRenderer() {}, on() {}, getThinkingLevel: () => "off", registerCommand(name: string, options: typeof command) {
+	registerAgentExtension({ events: { emit() {} }, registerShortcut() {}, registerTool() {}, registerMessageRenderer() {}, on() {}, getThinkingLevel: () => "off", registerCommand(name: string, options: typeof command) {
 		if (name === "agent") command = options;
 		else assert.equal(name, "restart");
 	} } as unknown as ExtensionAPI);
@@ -26,26 +26,25 @@ async function suggest(native: CombinedAutocompleteProvider, line: string, col =
 	return native.getSuggestions([line], 0, col, { signal });
 }
 
-const rows: AgentSessionSummary[] = [
-	{ sessionId: "stored-1", cwd: "/work/library", modifiedAt: 1, live: false },
-	{ sessionId: "open-2", name: "Review parser", cwd: "/work/parser", modifiedAt: 2, live: true, operation: null },
-	{ sessionId: "detached-3", name: "Audit", cwd: "/work/audit", modifiedAt: 3, live: false, detachedRunId: "run-3" },
+const rows: AgentConversationSummary[] = [
+	{ id: "stored-1", storageId: "storage", cwd: "/work/library", modifiedAt: 1, owner: "unknown", state: "new", cost: 0, partial: false },
+	{ id: "open-2", storageId: "storage", name: "Review parser", cwd: "/work/parser", modifiedAt: 2, owner: "here", state: "idle", cost: 0, partial: false },
+	{ id: "claimed-3", storageId: "storage", name: "Audit", cwd: "/work/audit", modifiedAt: 3, owner: "unavailable", ownerLabel: "another window", state: "unavailable", cost: 0, partial: false },
 ];
-function completionFixture(sessions: () => Promise<AgentSessionSummary[]> = async () => rows) {
+function completionFixture(sessions: () => Promise<readonly AgentConversationSummary[]> = async () => rows) {
 	return createAgentCommand([
 		{ name: "send", description: "Give a session its next task", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async () => undefined },
-		{ name: "runs", description: "Read detached results", args: [{ name: "run", optional: true, complete: "run" }], run: async () => undefined },
 		{ name: "steer", description: "Redirect work", args: [{ name: "session", complete: "session-control" }, { name: "message", rest: true }], run: async () => undefined },
 		{ name: "abort", description: "Stop work", args: [{ name: "session", complete: "session-control" }], run: async () => undefined },
 		{ name: "status", description: "Read owner status", args: [{ name: "session", complete: "session-control" }], run: async () => undefined },
-	], { sessions, board: async () => [], conversation: async () => { throw new Error("not requested"); }, runs: async () => [{ runId: "run-3", sessionId: "detached-3", prompt: "Audit dependencies", cwd: "/work/audit", state: "finished", startedAt: "2026-01-01", sessionsRoot: "/sessions", agentDir: "/agent", logFile: "/log", pid: 1, launchState: "started" }] });
+	], { list: sessions, snapshot: async () => { throw new Error("not requested"); } });
 }
 
 describe("agent command discovery and help", () => {
 	it("registers restart only as a top-level command without an exit listener at load", () => {
 		const commands = new Map<string, unknown>();
 		const listeners = process.listenerCount("exit");
-		registerAgentExtension({ registerShortcut() {}, registerTool() {}, registerMessageRenderer() {}, on: () => () => {}, registerCommand(name: string, command: unknown) { assert.equal(commands.has(name), false); commands.set(name, command); } } as unknown as ExtensionAPI);
+		registerAgentExtension({ events: { emit() {} }, registerShortcut() {}, registerTool() {}, registerMessageRenderer() {}, on: () => () => {}, registerCommand(name: string, command: unknown) { assert.equal(commands.has(name), false); commands.set(name, command); } } as unknown as ExtensionAPI);
 		assert.deepEqual([...commands.keys()], ["agent", "restart"]);
 		assert.equal(process.listenerCount("exit"), listeners);
 	});
@@ -58,10 +57,10 @@ describe("agent command discovery and help", () => {
 		const actions = await suggest(native, "/agent ");
 		assert.ok(actions);
 		assert.ok(actions.items.length > 0);
-		assert.deepEqual(actions.items.map((item) => item.label), ["new", "status", "send", "steer", "abort", "compact", "command", "list", "runs", "attach", "configure", "fork", "rewind", "detach", "place", "places", "unbind", "help"]);
+		assert.deepEqual(actions.items.map((item) => item.label), ["new", "list", "status", "send", "steer", "abort", "attach", "fork", "compact", "inspect", "rewind", "configure", "command", "place", "places", "unbind", "help"]);
 		assert.ok(actions.items.every((item) => item.description && !item.description.includes(" | ")));
 		assert.equal(actions.items.filter((item) => item.label === "list").length, 1);
-		assert.ok(!actions.items.some((item) => item.label === "ls"));
+		assert.ok(!actions.items.some((item) => item.label === "runs" || item.label === "detach"));
 		const { ctx, notices } = context();
 		for (const item of actions.items) {
 			await registration().handler(`help ${item.label}`, ctx);
@@ -75,11 +74,11 @@ describe("agent command discovery and help", () => {
 		const native = provider(registration());
 		for (const [input, choice, expected] of [
 			["/agent ne", "new", "/agent new "],
-			["/agent stop", "abort", "/agent abort "],
+			["/agent abo", "abort", "/agent abort "],
 			["/agent help rew", "rewind", "/agent help rewind"],
-			["/agent stop current", "abort", "/agent abort "],
-			["/agent separate work", "new", "/agent new "],
-			["/agent help stop current", "abort", "/agent help abort"],
+			["/agent mistaken", "rewind", "/agent rewind "],
+			["/agent correction", "steer", "/agent steer "],
+			["/agent help retained evidence", "inspect", "/agent help inspect"],
 		]) {
 			const result = defined(await suggest(native, input));
 			const selected = result.items.find((item) => item.label === choice);
@@ -104,13 +103,12 @@ describe("agent command discovery and help", () => {
 			["attach", /Missing session/],
 			["fork", /Missing session/],
 			["abort", /Missing session/],
-			["detach abc", /Missing prompt/],
 			["rewind abc entry", /Missing correction/],
-			["unbind", /Missing dir/],
+			["unbind", /Missing area/],
 			["status one two", /Too many arguments/],
 			["list unwanted", /Too many arguments/],
-			["new --help", /\/agent new \[prompt\]/],
-			["rewind -h", /Use an entry ID from agent_inspect/],
+			["new --help", /\/agent new \[task\]/],
+			["rewind -h", /Redo work from a mistaken entry/],
 			["console", /Unknown action "console"/],
 			["ls", /Unknown action "ls"/],
 			["help console", /Unknown action "console"/],
@@ -127,14 +125,14 @@ describe("agent command discovery and help", () => {
 
 	it("leaves prompts, messages, directory arguments and entry IDs as text, not invented choices", async () => {
 		const complete = defined(registration().getArgumentCompletions);
-		for (const text of ["new ", "new check errors", "place ", "unbind "])  {
+		for (const text of ["new ", "new check errors", "place ", "place . check errors", "unbind "])  {
 			assert.equal(await complete(text), null, text);
 		}
 	});
 
 	it("searches multiword descriptions without metadata reads or action execution", async () => {
 		const forbidden = async (): Promise<never> => { throw new Error("must not execute"); };
-		const command = createAgentCommand([{ name: "send", description: "Give a session its next task", args: [{ name: "message", rest: true }], run: forbidden }], { sessions: forbidden, runs: forbidden, board: forbidden, conversation: forbidden });
+		const command = createAgentCommand([{ name: "send", description: "Give a session its next task", args: [{ name: "message", rest: true }], run: forbidden }], { list: forbidden, snapshot: forbidden });
 		const complete = defined(command.getArgumentCompletions);
 		assert.equal(defined(await complete("next task"))[0].value, "send ");
 		assert.equal(await complete("send next task"), null);
@@ -143,7 +141,7 @@ describe("agent command discovery and help", () => {
 
 	it("preserves text that contains help words and reports invocation errors", async () => {
 		const calls: string[][] = [];
-		const command = createAgentCommand([{ name: "new", description: "Start work", args: [{ name: "prompt", optional: true, rest: true }], run: async (args) => { calls.push(args); throw new Error("trust denied"); } }], { sessions: async () => [], runs: async () => [], board: async () => [], conversation: async () => { throw new Error("not requested"); } });
+		const command = createAgentCommand([{ name: "new", description: "Start work", args: [{ name: "prompt", optional: true, rest: true }], run: async (args) => { calls.push(args); throw new Error("trust denied"); } }], { list: async () => [], snapshot: async () => { throw new Error("not requested"); } });
 		const { ctx, notices } = context();
 		await command.handler("new help with --help output", ctx);
 		assert.deepEqual(calls, [["help", "with", "--help", "output"]]);
@@ -172,51 +170,38 @@ describe("agent metadata completion", () => {
 		for (const [input, expected] of [
 			["/agent status Review par", "/agent status open-2"],
 			["/agent send Review par", "/agent send open-2 "],
-			["/agent runs Audit dep", "/agent runs run-3"],
 		]) {
 			const result = defined(await suggest(native, input));
 			assert.equal(native.applyCompletion([input], 0, input.length, result.items[0], result.prefix).lines[0], expected);
 		}
-		for (const input of ["/agent send open-2 ", "/agent send open-2 Review parser", "/agent status open-2 ", "/agent runs run-3 "]) {
+		for (const input of ["/agent send open-2 ", "/agent send open-2 Review parser", "/agent status open-2 "]) {
 			assert.equal(await suggest(native, input), null, input);
 		}
 	});
 
-	it("offers detached sessions for owner controls, but not new tasks", async () => {
+	it("labels claimed and discovery-only storages without claiming active work", async () => {
 		const command = completionFixture();
 		const complete = defined(command.getArgumentCompletions);
-		assert.ok(!defined(await complete("send ")).some((item) => item.value.includes("detached-3")));
-		for (const action of ["steer", "abort", "status"]) {
-			const controls = defined(await complete(`${action} Audit`));
-			assert.equal(controls[0].value, `${action} detached-3${action === "steer" ? " " : ""}`);
-			assert.match(defined(controls[0].description), /Detached run; owner control/);
-		}
-		const run = defined(await complete("runs dependencies"));
-		assert.equal(run[0].value, "runs run-3");
-		assert.match(run[0].label, /Audit dependencies/);
-		assert.match(defined(run[0].description), /finished/);
+		const claimed = defined(await complete("status Audit"));
+		assert.equal(claimed[0].value, "status claimed-3");
+		assert.match(defined(claimed[0].description), /Unavailable; stored metadata/);
+		assert.match(defined(claimed[0].description), /another window/);
+		assert.doesNotMatch(defined(claimed[0].description), /Active work|Open session/);
+		const stored = defined(await complete("status library"));
+		assert.match(defined(stored[0].description), /Stored session/);
+		assert.doesNotMatch(defined(stored[0].description), /Active work|Open session/);
 	});
 
-	it("keeps duplicate and unnamed choices distinct and removes terminal controls from metadata", async () => {
+	it("keeps duplicate and unnamed choices distinct", async () => {
 		const command = completionFixture(async () => [
-			{ ...rows[0], name: "\x1b[31mReview\nparser\x1b[0m", sessionId: "sameprefix-one" },
-			{ ...rows[0], name: "Review parser", sessionId: "sameprefix-two" },
-			{ ...rows[0], sessionId: "unnamed" },
+			{ ...rows[0], name: "\x1b[31mReview\nparser\x1b[0m", id: "sameprefix-one" },
+			{ ...rows[0], name: "Review parser", id: "sameprefix-two" },
+			{ ...rows[0], id: "unnamed" },
 		]);
 		const result = defined(await defined(command.getArgumentCompletions)("status "));
 		assert.equal(new Set(result.map((item) => item.label)).size, 3);
 		assert.ok(result.some((item) => item.label.includes("sameprefix-one")));
 		assert.ok(result.every((item) => !/[\x1b\n]/.test(item.label + item.description)));
-	});
-
-	it("labels unavailable hosts with stored metadata instead of active work", async () => {
-		for (const hostState of ["stopping", "cleanup-incomplete", "terminal", "replacement-failed"] as const) {
-			const command = completionFixture(async () => [{ ...rows[0], live: false, provenance: "stored", hostState }]);
-			const choices = defined(await defined(command.getArgumentCompletions)("status "));
-			assert.equal(choices.length, 1);
-			assert.match(defined(choices[0].description), new RegExp(`Host ${hostState}; stored metadata`, "u"));
-			assert.doesNotMatch(defined(choices[0].description), /Active work|Open session/u);
-		}
 	});
 
 	it("returns no invented session choices for empty or unavailable metadata", async () => {
@@ -226,7 +211,7 @@ describe("agent metadata completion", () => {
 });
 
 describe("dashboard action dispatch", () => {
-	const target: DashboardTarget = { kind: "session", session: rows[1] };
+	const target: DashboardTarget = rows[1];
 	function dialogs(choice: string | undefined, values: Array<string | undefined> = [], confirmed = true) {
 		const prompts: string[] = []; const confirmations: string[] = [];
 		const ctx = { ui: { select: async () => choice, input: async (title: string) => { prompts.push(title); return values.shift(); }, confirm: async (_title: string, text: string) => { confirmations.push(text); return confirmed; } } } as unknown as ExtensionCommandContext;
@@ -242,18 +227,16 @@ describe("dashboard action dispatch", () => {
 		assert.match(defined(await executeAgentAction(action, ["open-2"], d.ctx)), /Missing message/);
 		assert.equal(calls.length, 1);
 	});
-	it("prefills only correctly typed session or run IDs and never a directory or task", async () => {
-		const runTarget: DashboardTarget = { kind: "run", run: { runId: "native-run", sessionId: "old-session", currentSessionId: "native-session", prompt: "task", cwd: "/work", sessionsRoot: "/sessions", agentDir: "/agent", logFile: "/log", pid: 1, startedAt: "date", launchState: "started", state: "running" } };
-		for (const [argument, selected, values, expected] of [
-			[{ name: "session", complete: "session-control" }, runTarget, [], "native-session"],
-			[{ name: "run", complete: "run" }, runTarget, [], "native-run"],
-			[{ name: "run", complete: "run" }, target, ["typed-run"], "typed-run"],
-			[{ name: "dir" }, target, ["typed-directory"], "typed-directory"],
-			[{ name: "prompt", rest: true }, target, ["typed task"], "typed task"],
+	it("prefills only correctly typed session IDs and never a directory or task", async () => {
+		for (const [argument, values, expected] of [
+			[{ name: "session", complete: "session-control" }, [], "open-2"],
+			[{ name: "session", complete: "session" }, [], "open-2"],
+			[{ name: "dir" }, ["typed-directory"], "typed-directory"],
+			[{ name: "prompt", rest: true }, ["typed task"], "typed task"],
 		] as const) {
 			let received: string[] | undefined;
 			const action: AgentCommandAction = { name: "action", description: "Do work", args: [argument], run: async (args) => { received = args; return "ok"; } };
-			await chooseDashboardAction([action], selected, dialogs("action: Do work", [...values]).ctx);
+			await chooseDashboardAction([action], target, dialogs("action: Do work", [...values]).ctx);
 			assert.equal(received?.join(" "), expected);
 		}
 	});
@@ -298,7 +281,7 @@ describe("native agent command editor", () => {
 			const screen = lines.map(stripVTControlCharacters).join("\n");
 			assert.doesNotMatch(screen, /console/);
 			assert.match(screen, /new/);
-			assert.match(screen, width === 48 ? /Start separa/ : /Start separate work/);
+			assert.match(screen, width === 48 ? /Start a new/ : /Start a new Durable agent/);
 		}
 		editor.handleInput("\t");
 		assert.equal(editor.getText(), "/agent new ");

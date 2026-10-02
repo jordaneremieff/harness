@@ -16,7 +16,7 @@ function deferred() {
 function registrations() {
 	let command!: Parameters<ExtensionAPI["registerCommand"]>[1];
 	let shortcut!: Parameters<ExtensionAPI["registerShortcut"]>[1];
-	const api: Partial<ExtensionAPI> = { registerTool() {}, registerMessageRenderer() {}, on: () => () => {},
+	const api: Partial<ExtensionAPI> = { events: { emit() {}, on: () => () => {} }, registerTool() {}, registerMessageRenderer() {}, on: () => () => {},
 		registerCommand(name, value) { if (name === "agent") command = value; else assert.equal(name, "restart"); },
 		registerShortcut(key, value) { assert.equal(key, "ctrl+alt+g"); assert.equal(shortcut, undefined); shortcut = value; },
 	};
@@ -59,7 +59,7 @@ it("keeps the native editor draft intact across a mounted dashboard and uses onl
 	editor.setText("Unsent draft\nsecond line"); const before = editor.getText();
 	let panel: AgentDashboard | undefined; let close!: (value?: unknown) => void; let actions = 0; let ctx!: ExtensionContext;
 	const command = createAgentCommand([{ name: "status", description: "Read status", args: [], run: async (_args, actual) => { assert.equal(actual, ctx); actions++; return "Status read"; } }], {
-		sessions: async () => [], runs: async () => [], board: async () => [], conversation: async () => { throw new Error("No selection"); },
+		list: async () => [], snapshot: async () => { throw new Error("No selection"); },
 	});
 	ctx = context(async (factory) => {
 		const response = new Promise((resolve) => { close = resolve; });
