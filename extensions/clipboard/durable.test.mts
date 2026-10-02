@@ -57,19 +57,7 @@ test("serves every clipboard tool to a Durable model and classifies replay", { t
 		const contribution = clipboardContribution(source);
 		assert.equal(contribution.source, source, "the contribution names its emitting entrypoint");
 
-		const host: DurableContributionHost = {
-			durable: Durable,
-			// The clipboard contribution reads no services; the host supplies them for other slices.
-			services: {} as DurableContributionHost["services"],
-			cwd: root,
-			agentDir,
-			storageId: "clipboard-durable-test",
-			signal: new AbortController().signal,
-			inventory: {
-				contributions: [{ name: "clipboard", source, commands: [] }],
-				ordinaryOnly: [],
-			},
-		};
+		const host: DurableContributionHost = { durable: Durable, agentDir };
 		const extension = await contribution.create(host);
 		const replay = new Map((extension.tools ?? []).map((tool) => [tool.name, tool.replay]));
 		assert.deepEqual(Object.fromEntries(replay), {

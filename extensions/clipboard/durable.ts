@@ -16,9 +16,7 @@
  * the native tools return the same result text and details object.
  */
 
-import type { Context } from "@earendil-works/chord";
 import type * as Durable from "@earendil-works/pi-durable";
-import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import {
 	clipboardCopy,
 	clipboardGet,
@@ -46,49 +44,13 @@ export interface DurableContribution {
 	readonly source: string;
 	/** Build the native extension for one session host; called once per host. */
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
-	/** Commands that agent controls invoke by name, such as `agent_command`. */
-	readonly commands?: readonly DurableCommand[];
 }
 
-/** Everything the host installs; complete before the first `create()` call. */
-export interface DurableInventory {
-	readonly contributions: readonly {
-		readonly name: string;
-		readonly source: string;
-		readonly commands: readonly { readonly name: string; readonly description: string }[];
-	}[];
-	/** Resolved paths of configured extensions that emitted no contribution. */
-	readonly ordinaryOnly: readonly string[];
-}
-
+/** The host members this contribution uses. */
 export interface DurableContributionHost {
-	/** The host's pi-durable module. */
+	/** The host's pi-durable module. Take every pi-durable runtime value from it. */
 	readonly durable: typeof Durable;
-	/** Pi's cwd-bound services: settings, resources, and model runtime. Read-only use. */
-	readonly services: AgentSessionServices;
-	readonly cwd: string;
 	readonly agentDir: string;
-	/** The agent storage: one root conversation plus its forks and child agents. */
-	readonly storageId: string;
-	/** Aborted when the host shuts down. Release resources then. */
-	readonly signal: AbortSignal;
-	readonly inventory: DurableInventory;
-}
-
-export interface DurableCommand {
-	readonly name: string;
-	readonly description: string;
-	/**
-	 * Run against one conversation of the given host. The result text returns to
-	 * the caller. Key per-host bindings by `host` (for example a `WeakMap` filled
-	 * in `create()`), because one process can run several hosts.
-	 */
-	run(
-		args: string,
-		conversation: Durable.Conversation,
-		context: Context,
-		host: DurableContributionHost,
-	): Promise<string>;
 }
 
 /** The ordinary entrypoint this contribution speaks for, as its factory resolves it. */
