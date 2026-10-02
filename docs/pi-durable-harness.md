@@ -13,7 +13,7 @@ discovery, or submitted-result retrieval.
 
 ## Release review coverage
 
-<!-- pi-release-reviewed-through: unknown -->
+<!-- pi-release-reviewed-through: 1.0.0 -->
 
 The declaration above records the latest Pi release through which the harness
 completed cumulative release intake. Its value is a numeric major.minor.patch
