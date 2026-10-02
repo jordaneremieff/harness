@@ -29,7 +29,6 @@ export interface DurableContribution {
 	readonly name: string;
 	readonly source: string;
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
-	readonly commands?: readonly DurableCommand[];
 }
 
 export interface DurableContributionHost {
@@ -50,20 +49,6 @@ export interface DurableInventory {
 		readonly commands: readonly { readonly name: string; readonly description: string }[];
 	}[];
 	readonly ordinaryOnly: readonly string[];
-}
-
-export interface DurableCommand {
-	readonly name: string;
-	readonly description: string;
-	run(call: DurableCommandCall): Promise<string>;
-}
-
-export interface DurableCommandCall {
-	readonly args: string;
-	readonly conversation: Durable.Conversation;
-	readonly context: Context;
-	readonly host: DurableContributionHost;
-	readonly invocationId: string;
 }
 
 /** Pi Durable details are JSON values; the corpus page and usage response are plain JSON objects. */
