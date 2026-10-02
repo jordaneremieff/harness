@@ -182,6 +182,17 @@ it("derives primary cost from assistant usage and state from run events", () => 
 	assert.equal(observer.snapshot().descriptor.state, "idle");
 });
 
+it("skips a custom message stored with display:false like native Pi", () => {
+	const fakeWorld = fake() as Fake & { sessionManager: SessionManager; pi: ExtensionAPI };
+	fakeWorld.sessionManager.appendCustomMessageEntry("policy.contract", "hidden contract body", false);
+	fakeWorld.sessionManager.appendCustomMessageEntry("agent.peer", "visible notice body", true);
+	const observer = createPrimaryObserver();
+	observer.attach(fakeWorld.ctx, fakeWorld.pi);
+	const snapshot = observer.snapshot();
+	assert.equal(snapshot.entries.some((entry) => textOf(entry).includes("hidden contract body")), false);
+	assert.equal(snapshot.entries.filter((entry) => textOf(entry).includes("visible notice body")).length, 1);
+});
+
 it("re-reads the session after a quiet append that emits no extension event", () => {
 	const fakeWorld = fake() as Fake & { sessionManager: SessionManager; pi: ExtensionAPI };
 	const observer = createPrimaryObserver();

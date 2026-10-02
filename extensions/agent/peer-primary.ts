@@ -99,6 +99,8 @@ function customData(source: ProjectedSessionEntry["sourceEntry"]): { customType:
  */
 function projectedBlock(entry: ProjectedSessionEntry, now: number): AgentConversationEntry | undefined {
 	const source = entry.sourceEntry;
+	// Native Pi hides a custom message stored with display:false; the pane does the same.
+	if (source.type === "custom_message" && source.display === false) return undefined;
 	const visible = entry.messages.filter((message) => (message as { role?: unknown }).role !== "system");
 	if (source.type === "compaction") return compactionBlock(source, visible, now);
 	const messages = visible.map((message) => displayMessage(message, source, now)).filter((message): message is Message => message !== undefined);

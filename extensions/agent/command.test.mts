@@ -283,6 +283,20 @@ describe("dashboard action dispatch", () => {
 		assert.deepEqual(await chooseDashboardAction([action], rows[1], ctx), { text: "Queued", sessionId: "open-2" });
 		assert.match(prompts[0] ?? "", /Review parser/);
 	});
+	it("hides the peer window around a native prompt or dialog and shows it again", async () => {
+		const states: boolean[] = [];
+		const surface = { hide: () => { states.push(true); }, show: () => { states.push(false); } };
+		const action: AgentCommandAction = { name: "send", description: "Send task", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async () => "Queued" };
+		assert.equal(await chooseDashboardAction([action], target, dialogs("send: Send task", ["hello"]).ctx, surface), "Queued");
+		assert.deepEqual(states, [true, false]);
+		const dialogAction: AgentCommandAction = { name: "configure", description: "Change configuration", args: [{ name: "session", complete: "session" }], dialog: async () => "patched", run: async () => undefined };
+		states.length = 0;
+		assert.equal(await chooseDashboardAction([dialogAction], target, dialogs("configure: Change configuration").ctx, surface), "patched");
+		assert.deepEqual(states, [true, false]);
+		states.length = 0;
+		assert.equal(await chooseDashboardAction([action], target, dialogs(undefined).ctx, surface), undefined);
+		assert.deepEqual(states, [], "a canceled picker never hides the window");
+	});
 });
 
 describe("native agent command editor", () => {

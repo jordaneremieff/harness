@@ -11,7 +11,7 @@ import { Input, matchesKey, SelectList, truncateToWidth, visibleWidth, wrapTextW
 import { AgentRoster, type AgentDashboardSnapshot } from "./dashboard.ts";
 import { firstTaskEntry, renderableEntries } from "./dashboard-conversation.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationSummary, AgentDashboardCoverage } from "./dashboard-types.ts";
-import { agentDescriptor, createPeerWindowState, paneState, peerKey, type PeerAgentActions, type PeerAgentSource, type PeerActionResult, type PeerSlot, type PeerWindowState, type PrimaryObserver, type PeerTranscriptFactory } from "./peer-contract.ts";
+import { agentDescriptor, createPeerWindowState, paneState, peerKey, type PeerAgentActions, type PeerAgentSource, type PeerActionResult, type PeerNativeSurface, type PeerSlot, type PeerWindowState, type PrimaryObserver, type PeerTranscriptFactory } from "./peer-contract.ts";
 import { agentConversationTranscripts, PeerPane } from "./peer-pane.ts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { PeerTasksView } from "./peer-tasks.ts";
@@ -54,7 +54,9 @@ export interface PeerWindowHost {
 	primary: PrimaryObserver;
 	actions: PeerAgentActions;
 	/** Optional native action list for the focused agent, owned by the command layer. */
-	runActions?: (target: AgentConversationSummary | undefined) => Promise<PeerActionResult | undefined>;
+	runActions?: (target: AgentConversationSummary | undefined, surface?: PeerNativeSurface) => Promise<PeerActionResult | undefined>;
+	/** Hides this window while a native dialog owns the screen. */
+	nativeSurface?: PeerNativeSurface;
 	cwd: string;
 	sessionId: string;
 	now(): number;
@@ -164,7 +166,7 @@ export class PeerWindow implements Component {
 		this.factory = host.transcriptFactory ?? agentConversationTranscripts;
 		this.readyPromise = this.refresh();
 		this.scheduleRefresh();
-		this.unsubscribe = host.source.subscribe?.(() => { void this.refresh(); });
+		this.unsubscribe = host.source.subscribe?.(() => this.requestRender());
 		this.primaryUnsubscribe = host.primary.subscribe(() => this.requestRender());
 	}
 
@@ -390,7 +392,9 @@ export class PeerWindow implements Component {
 		const cache = this.agents.get(id) ?? {};
 		const summary = this.rows.find((row) => row.id === id) ?? cache.summary;
 		pane.nativeDraftSaved = false;
-		pane.setDescriptor(summary ? agentDescriptor(summary) : { id, kind: "agent", name: id, cwd: this.host.cwd, state: "new" });
+		const availability = this.host.source.availability?.(id);
+		const descriptor = summary ? agentDescriptor(summary) : { id, kind: "agent" as const, name: id, cwd: this.host.cwd, state: "new" as const };
+		pane.setDescriptor(availability?.state === "unavailable" ? { ...descriptor, state: "unavailable", detail: `last frame ${availability.at}` } : descriptor);
 		const { frame, snapshot } = this.agentPaneReading(id, cache);
 		const earlier = cache.earlier;
 		const older = earlier?.entries ?? [];
@@ -400,7 +404,7 @@ export class PeerWindow implements Component {
 		this.applyEarlier(earlier, older, pane);
 		pane.setContent({
 			entries: first ? [first, ...entries] : entries,
-			revision: `${snapshot?.revision ?? `loading:${id}`}|earlier:${older.length}:${earlier?.startReached ? 1 : 0}`,
+			revision: `${this.agentCommittedKey(snapshot, id)}|earlier:${older.length}:${earlier?.startReached ? 1 : 0}`,
 			live: liveEntries,
 			liveRevision: frame ? `live-${frame.revision}-${liveEntries.map(entrySignature).join(",")}` : "none",
 			cwd: summary?.cwd ?? this.host.cwd,
@@ -422,6 +426,13 @@ export class PeerWindow implements Component {
 		if (!earlier || earlier.applied === older.length) return;
 		earlier.applied = older.length;
 		pane.reanchor();
+	}
+
+	/** Committed content key: a live-only frame change does not rebuild the committed transcript. */
+	private agentCommittedKey(snapshot: (AgentConversationSnapshot & { nextBefore?: number | null }) | undefined, id: string): string {
+		if (!snapshot) return `loading:${id}`;
+		const last = snapshot.entries[snapshot.entries.length - 1]?.id ?? "none";
+		return `${snapshot.entries.length}:${last}`;
 	}
 
 	/** Prefer the live frame; a cold agent falls back to the last read snapshot. */
@@ -812,11 +823,12 @@ export class PeerWindow implements Component {
 			this.runLocal(purpose.command, text);
 			return;
 		}
-		if (key === "primary" && purpose.kind === "handoff") {
-			this.continuePrimary(purpose.text);
+		// Slash text from any pane is native Pi work: never admit it as an agent task.
+		if (purpose.kind === "handoff") {
+			this.continueDraftToNative(key, purpose.text);
 			return;
 		}
-		void this.submitText(key, purpose.kind === "handoff" ? purpose.text : purpose.kind === "plain" ? purpose.text : "");
+		void this.submitText(key, purpose.kind === "plain" ? purpose.text : "");
 	}
 
 	private async submitText(key: string, text: string): Promise<void> {
@@ -848,7 +860,7 @@ export class PeerWindow implements Component {
 		const id = key.startsWith("agent:") ? key.slice("agent:".length) : this.focusedAgentId();
 		if (!id) return;
 		const state = paneState(this.state, key);
-		const mode: "send" | "steer" = state.mode === "steer" ? "steer" : "send";
+		const mode: "send" | "steer" = state.mode === "followUp" ? "send" : "steer";
 		pane.submitting = true;
 		try {
 			const result = await this.host.actions.submit({ id, text, mode });
@@ -870,12 +882,15 @@ export class PeerWindow implements Component {
 	}
 
 	private continuePrimary(text: string): void {
-		const pane = this.panes.get("primary");
-		if (!pane) return;
+		this.continueDraftToNative("primary", text);
+	}
+
+	/** Move one pane's draft to the native editor and exit to Pi. */
+	private continueDraftToNative(key: string, text: string): void {
 		const previous = this.host.primary.handoffToNative(text);
 		if (previous.trim() !== "") this.state.nativeDraftBefore = previous;
-		pane.composer.setText("");
-		paneState(this.state, "primary").draft = "";
+		this.panes.get(key)?.composer.setText("");
+		paneState(this.state, key).draft = "";
 		this.finish();
 	}
 
@@ -903,14 +918,12 @@ export class PeerWindow implements Component {
 	private runViewCommand(command: LocalCommand): boolean {
 		switch (command.name) {
 			case "all": this.openAll(); return true;
-			case "new": this.openPrompt("New agent · task (blank creates an idle agent)", "", (value) => void this.createAgent(value)); return true;
 			case "view": this.openViewMenu(); return true;
 			case "focus": this.focusCommand(command.args[0]); return true;
 			case "expand": this.expandFocused(); return true;
 			case "restore": this.restoreSplit(); return true;
 			case "close": this.closeFocused(); return true;
 			case "pi": this.finish(); return true;
-			case "fork": this.pickEntry("fork"); return true;
 			case "repair": this.pickEntry("repair"); return true;
 			case "tasks": this.openTasks(); return true;
 			case "help": this.openHelp(); return true;
@@ -926,7 +939,7 @@ export class PeerWindow implements Component {
 			case "scroll": this.scrollCommand(command.args[0]); return;
 			case "mode": this.modeCommand(command.args[0]); return;
 			case "steer": this.setMode("steer"); return;
-			case "send": this.setMode("send"); return;
+			case "send": this.setMode("followUp"); return;
 			case "followup": this.setMode("followUp"); return;
 			case "auto": this.setMode("auto"); return;
 			default: return;
@@ -989,14 +1002,14 @@ export class PeerWindow implements Component {
 
 	private allowedModes(): string[] {
 		const slot = slotValue(this.state, this.state.focus);
-		return slot?.kind === "primary" ? ["auto", "steer", "followUp"] : ["send", "steer"];
+		return slot?.kind === "primary" ? ["auto", "steer", "followUp"] : ["followUp", "steer"];
 	}
 
 	private setMode(mode: string): void {
 		const pane = this.focusedPane();
 		if (!pane) return;
 		const allowed = this.allowedModes();
-		const normalized = mode === "followup" ? "followUp" : mode;
+		const normalized = mode === "followup" || mode === "send" ? "followUp" : mode;
 		if (!allowed.includes(normalized)) {
 			this.setNotice(`Mode ${mode} does not apply here · use ${allowed.join(", ")}`);
 			this.requestRender();
@@ -1012,7 +1025,7 @@ export class PeerWindow implements Component {
 			this.setMode(arg);
 			return;
 		}
-		this.openMenu(`Mode · ${this.focusedPane()?.key ?? "no pane"}`, this.allowedModes().map((mode) => ({ value: mode, label: mode, description: mode === "auto" ? "send now; follow-up when the primary is busy" : mode === "send" ? "admit a task" : "queue a correction" })), (value) => this.setMode(value));
+		this.openMenu(`Mode · ${this.focusedPane()?.key ?? "no pane"}`, this.allowedModes().map((mode) => ({ value: mode, label: mode === "followUp" ? "follow-up" : mode, description: mode === "auto" ? "send now; follow-up when the primary is busy" : mode === "followUp" ? "queue after the current answer" : "deliver at the next boundary" })), (value) => this.setMode(value));
 	}
 
 	private openViewMenu(): void {
@@ -1124,7 +1137,7 @@ export class PeerWindow implements Component {
 		const source = slotOf(this.state, `agent:${id}`) ?? this.state.focus;
 		this.actionRunning = true;
 		try {
-			const result = await run(target);
+			const result = await run(target, this.host.nativeSurface);
 			if (this.closed || !result) return;
 			this.setNotice(result.text);
 			if (result.sessionId && result.sessionId !== id) {
@@ -1206,11 +1219,13 @@ export async function showPeerWindow(options: PeerWindowOptions): Promise<void> 
 		if (state.left?.kind === "agent" && state.left.id === options.initialAgentId) state.focus = "left";
 		else state.right = { kind: "agent", id: options.initialAgentId };
 	}
+	const surface: { handle?: { setHidden(hidden: boolean): void } } = {};
 	const host: PeerWindowHost = {
 		source: options.source,
 		primary: options.primary,
 		actions: options.actions,
 		runActions: options.runActions,
+		nativeSurface: { hide: () => surface.handle?.setHidden(true), show: () => surface.handle?.setHidden(false) },
 		cwd: ctx.cwd,
 		sessionId: ctx.sessionManager.getSessionId(),
 		now: options.now ?? (() => Date.now()),
@@ -1220,5 +1235,6 @@ export async function showPeerWindow(options: PeerWindowOptions): Promise<void> 
 	await ctx.ui.custom<void>((tui, theme, keys, done) => new PeerWindow(tui, theme, keys, done, state, host), {
 		overlay: true,
 		overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 },
+		onHandle: (handle) => { surface.handle = handle; },
 	});
 }

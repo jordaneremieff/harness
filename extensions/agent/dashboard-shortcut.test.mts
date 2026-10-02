@@ -111,7 +111,7 @@ it("routes submit, new, fork, and repair through the operator command actions", 
 	for (const char of "do it") window.handleInput(char);
 	window.handleInput(ENTER);
 	await tick();
-	assert.deepEqual(calls.at(-1), { name: "send", args: ["agent:one", "do it"] });
+	assert.deepEqual(calls.at(-1), { name: "steer", args: ["agent:one", "do it"] });
 
 	window.handleInput("\x1b[18~"); // F7: new agent task.
 	for (const char of "make two") window.handleInput(char);
@@ -120,7 +120,9 @@ it("routes submit, new, fork, and repair through the operator command actions", 
 	assert.deepEqual(calls.at(-1), { name: "new", args: ["make two"] });
 	assert.ok([window.state.left, window.state.right].some((slot) => slot?.kind === "agent" && slot.id === "agent:new"), "the created agent opens in a pane");
 
-	for (const char of "/fork") window.handleInput(char);
+	for (const char of "/view") window.handleInput(char);
+	window.handleInput(ENTER);
+	for (let index = 0; index < 7; index++) window.handleInput(DOWN);
 	window.handleInput(ENTER);
 	window.handleInput(ENTER);
 	await tick();

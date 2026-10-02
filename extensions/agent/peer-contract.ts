@@ -64,6 +64,13 @@ export interface PeerTranscriptFactory {
 	}): PeerTranscript;
 }
 
+/** Live-observation availability for one agent, when the source tracks it. */
+export interface PeerAvailability {
+	state: "live" | "unavailable";
+	/** ISO timestamp of the last frame, or of the failure. */
+	at: string;
+}
+
 /**
  * Agent-side data source. `list` and `snapshot` are the published dashboard
  * reads; `subscribe` lets a host watch service push changes instead of the
@@ -79,6 +86,8 @@ export interface PeerAgentSource {
 	tasks?(id: string): Promise<TasksFrame>;
 	/** One earlier committed page, continued strictly older than `before`; optional. */
 	earlier?(id: string, before: number): Promise<{ entries: readonly AgentConversationEntry[]; nextBefore: number | null }>;
+	/** Observation availability when the source tracks a closed or lost watch. */
+	availability?(id: string): PeerAvailability | undefined;
 	subscribe?(listener: () => void): () => void;
 }
 
@@ -86,6 +95,12 @@ export interface PeerAgentSource {
 export interface PeerActionResult {
 	text: string;
 	sessionId?: string;
+}
+
+/** Hides the peer window while a native prompt or dialog owns the screen. */
+export interface PeerNativeSurface {
+	hide(): void;
+	show(): void;
 }
 
 /** Operations other modules own; the window only presents and routes them. */

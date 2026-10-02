@@ -10,6 +10,8 @@ it("keeps local commands in the window and hands other slash text to native Pi",
 	assert.deepEqual(classifySubmit("/focus agent"), { kind: "local", command: { name: "focus", args: ["agent"] } });
 	assert.deepEqual(classifySubmit("/Model"), { kind: "handoff", text: "/Model" });
 	assert.deepEqual(classifySubmit("/model"), { kind: "handoff", text: "/model" });
+	assert.deepEqual(classifySubmit("/new"), { kind: "handoff", text: "/new" });
+	assert.deepEqual(classifySubmit("/fork"), { kind: "handoff", text: "/fork" });
 	assert.deepEqual(classifySubmit("/template-one arg"), { kind: "handoff", text: "/template-one arg" });
 	assert.deepEqual(classifySubmit("/unknown"), { kind: "handoff", text: "/unknown" });
 	assert.deepEqual(classifySubmit("/refresh"), { kind: "local", command: { name: "refresh", args: [] } });

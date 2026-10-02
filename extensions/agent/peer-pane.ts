@@ -243,13 +243,19 @@ export class PeerPane {
 		return [fitLine(titleText, width), fitLine(theme.fg(this.error ? "warning" : "muted", truncateToWidth(status, width)), width)];
 	}
 
+	/** Mode shown in the footer: an agent pane never reads "auto". */
+	private modeLabel(): string {
+		if (this.kind === "primary") return this.state.mode === "followUp" ? "follow-up" : this.state.mode;
+		return this.state.mode === "followUp" ? "follow-up" : "steer";
+	}
+
 	render(width: number, height: number = this.options.tui.terminal.rows): string[] {
 		width = Math.max(1, Math.floor(width));
 		height = Math.max(0, Math.floor(height));
 		if (height === 0) return [];
 		const theme = this.options.theme;
 		const header = this.header(width);
-		const footer = fitLine(theme.fg("dim", truncateToWidth(this.descriptor ? footerText(this.descriptor, { mode: this.state.mode, notice: this.notice, nativeDraft: this.nativeDraftSaved }) : this.error ?? "", width)), width);
+		const footer = fitLine(theme.fg("dim", truncateToWidth(this.descriptor ? footerText(this.descriptor, { mode: this.modeLabel(), notice: this.notice, nativeDraft: this.nativeDraftSaved }) : this.error ?? "", width)), width);
 		const available = Math.max(0, height - header.length - 1);
 		const composerLines = this.composer.render(width);
 		const composerKeep = Math.min(composerLines.length, Math.max(0, available - 1));

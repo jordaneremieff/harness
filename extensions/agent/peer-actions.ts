@@ -13,7 +13,11 @@ export interface LocalCommand {
 }
 
 /** Commands the peer composer handles itself. Any other slash text leaves for native Pi. */
-const LOCAL_COMMANDS = new Set(["all", "new", "view", "focus", "expand", "restore", "close", "pi", "continue", "scroll", "mode", "fork", "repair", "help", "refresh", "tasks", "steer", "send", "followup", "auto"]);
+/**
+ * Commands the peer composer handles itself. Every name is distinct from Pi's
+ * own slash commands, so a native command name always follows the handoff path.
+ */
+const LOCAL_COMMANDS = new Set(["all", "view", "focus", "expand", "restore", "close", "pi", "continue", "scroll", "mode", "repair", "help", "refresh", "tasks", "steer", "send", "followup", "auto"]);
 
 export function parseLocalCommand(text: string): LocalCommand | undefined {
 	const trimmed = text.trim();

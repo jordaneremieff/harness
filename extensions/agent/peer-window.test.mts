@@ -6,7 +6,8 @@ import { initTheme, type KeybindingsManager, type Theme } from "@earendil-works/
 import { CURSOR_MARKER, KeybindingsManager as Keys, setKeybindings, TUI_KEYBINDINGS, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentConversationEntry, AgentConversationPage, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
 import type { ConversationFrame, ObservationFrame, TaskGraphRow, TasksFrame } from "./live-frames.ts";
-import { createPeerWindowState, type PeerAgentActions, type PeerAgentSource, type PeerWindowState, type PrimaryObserver, type PrimarySnapshot } from "./peer-contract.ts";
+import { createPeerWindowState, type PeerAgentActions, type PeerAgentSource, type PeerTranscriptFactory, type PeerWindowState, type PrimaryObserver, type PrimarySnapshot } from "./peer-contract.ts";
+import { agentConversationTranscripts } from "./peer-pane.ts";
 import { createPeerObservationSource, type PeerObservationHost } from "./peer-observation.ts";
 import { PeerWindow } from "./peer-window.ts";
 
@@ -84,9 +85,16 @@ class FakeSource implements PeerAgentSource {
 	snapshots = new Map<string, AgentConversationSnapshot & { nextBefore?: number | null }>();
 	frames = new Map<string, ConversationFrame>();
 	taskFrames = new Map<string, TasksFrame>();
+	listCalls = 0;
 	earlierCalls: Array<{ id: string; before: number }> = [];
+	availabilityImpl?: (id: string) => { state: "live" | "unavailable"; at: string } | undefined;
+	private readonly listeners = new Set<() => void>();
+	subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+	emitChange(): void { for (const listener of [...this.listeners]) listener(); }
+	availability(id: string): { state: "live" | "unavailable"; at: string } | undefined { return this.availabilityImpl?.(id); }
 	earlierImpl?: (id: string, before: number) => Promise<{ entries: AgentConversationEntry[]; nextBefore: number | null }>;
 	async list(): Promise<AgentConversationPage> {
+		this.listCalls++;
 		return { rows: this.rows, coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null }, observedAt: new Date(0).toISOString() };
 	}
 	async snapshot(id: string): Promise<AgentConversationSnapshot & { nextBefore?: number | null }> {
@@ -129,7 +137,7 @@ function agentState(id = "agent:a"): PeerWindowState {
 	return state;
 }
 
-function harness(options: { rows?: number; columns?: number; primary?: FakePrimary; rowsValue?: AgentConversationSummary[]; snapshots?: Map<string, AgentConversationSnapshot & { nextBefore?: number | null }>; configuredState?: PeerWindowState; runActions?: (target: AgentConversationSummary | undefined) => Promise<{ text: string; sessionId?: string } | undefined>; source?: PeerAgentSource } = {}): Harness {
+function harness(options: { rows?: number; columns?: number; primary?: FakePrimary; rowsValue?: AgentConversationSummary[]; snapshots?: Map<string, AgentConversationSnapshot & { nextBefore?: number | null }>; configuredState?: PeerWindowState; runActions?: (target: AgentConversationSummary | undefined, surface?: { hide(): void; show(): void }) => Promise<{ text: string; sessionId?: string } | undefined>; source?: PeerAgentSource; transcriptFactory?: PeerTranscriptFactory; nativeSurface?: { hide(): void; show(): void } } = {}): Harness {
 	const tui = { terminal: { rows: options.rows ?? 45, columns: options.columns ?? 140 }, requestRender() {} };
 	const primary = options.primary ?? new FakePrimary();
 	const fake = new FakeSource();
@@ -145,7 +153,7 @@ function harness(options: { rows?: number; columns?: number; primary?: FakePrima
 	};
 	let doneCount = 0;
 	const state = options.configuredState ?? createPeerWindowState();
-	const window = new PeerWindow(tui as unknown as TUI, theme, keys, () => { doneCount++; }, state, { source, primary, actions: impl, runActions: options.runActions, cwd: "/work", sessionId: "session-1", now: () => 0, refreshMs: 0 });
+	const window = new PeerWindow(tui as unknown as TUI, theme, keys, () => { doneCount++; }, state, { source, primary, actions: impl, runActions: options.runActions, nativeSurface: options.nativeSurface, transcriptFactory: options.transcriptFactory, cwd: "/work", sessionId: "session-1", now: () => 0, refreshMs: 0 });
 	return { window, primary, source: fake, state, actions, done: () => doneCount, tui };
 }
 
@@ -193,7 +201,7 @@ it("docks each pane composer and footer at the bottom with aligned rows", async 
 		const right = lines.map((line) => line.slice(leftWidth + 1));
 		const bottom = rows - 1;
 		assert.match(left[bottom], /mode auto/, `footer at ${width}x${rows}`);
-		assert.match(right[bottom], /mode auto/, `footer at ${width}x${rows}`);
+		assert.match(right[bottom], /○ idle/, `footer at ${width}x${rows}`);
 		assert.match(left[bottom - 1], /^─/);
 		assert.match(right[bottom - 1], /^─/);
 		assert.match(left[bottom - 3], /^─/);
@@ -413,20 +421,26 @@ it("submits plain primary text with the displayed mode and clears the draft", as
 	assert.equal(h.state.panes.get("primary")?.draft, "");
 });
 
-it("submits agent text through the existing controls and honors the steer mode", async () => {
+it("submits agent text through the existing controls and honors steer and follow-up", async () => {
 	const h = harness({ rowsValue: [agentRow()], snapshots: new Map([["agent:a", { entries: [userEntry("a1", "task")], partial: false, revision: "r1" }]]), configuredState: agentState() });
 	await h.window.ready();
 	h.window.handleInput(F3);
 	type(h.window, "do the task");
 	h.window.handleInput(ENTER);
 	await flush();
-	assert.deepEqual(h.actions[0], { name: "submit", input: { id: "agent:a", text: "do the task", mode: "send" } });
+	assert.deepEqual(h.actions[0], { name: "submit", input: { id: "agent:a", text: "do the task", mode: "steer" } }, "the default busy behavior steers");
+	type(h.window, "/followup");
+	h.window.handleInput(ENTER);
+	type(h.window, "queue this");
+	h.window.handleInput(ENTER);
+	await flush();
+	assert.deepEqual(h.actions[1], { name: "submit", input: { id: "agent:a", text: "queue this", mode: "send" } }, "follow-up maps to the send action");
 	type(h.window, "/steer");
 	h.window.handleInput(ENTER);
 	type(h.window, "change of plan");
 	h.window.handleInput(ENTER);
 	await flush();
-	assert.deepEqual(h.actions[1], { name: "submit", input: { id: "agent:a", text: "change of plan", mode: "steer" } });
+	assert.deepEqual(h.actions[2], { name: "submit", input: { id: "agent:a", text: "change of plan", mode: "steer" } });
 });
 
 it("selects the peer created by New", async () => {
@@ -446,7 +460,9 @@ it("places Fork beside its source and Repair with the operator's correction", as
 	const h = harness({ rowsValue: [agentRow()], snapshots: new Map([["agent:a", { entries: [userEntry("a1", "first"), assistantEntry("a2", "second")], partial: false, revision: "r1" }]]), configuredState: agentState() });
 	await h.window.ready();
 	h.window.handleInput(F3);
-	type(h.window, "/fork");
+	type(h.window, "/view");
+	h.window.handleInput(ENTER);
+	for (let index = 0; index < 7; index++) h.window.handleInput(DOWN);
 	h.window.handleInput(ENTER);
 	h.window.handleInput(ENTER);
 	await flush();
@@ -588,6 +604,149 @@ it("re-attaches live observation when the window reopens and shows new entries",
 	second.window.dispose();
 });
 
+it("hands slash text typed in an agent pane to native Pi, never to the agent", async () => {
+	const h = harness({ rowsValue: [agentRow()], snapshots: new Map([["agent:a", { entries: [userEntry("a1", "task")], partial: false, revision: "r1" }]]), configuredState: agentState() });
+	await h.window.ready();
+	h.window.handleInput(F3);
+	type(h.window, "/agent list");
+	h.window.handleInput(ENTER);
+	assert.deepEqual(h.primary.handed.map((item) => item.text), ["/agent list"]);
+	assert.equal(h.actions.length, 0, "no agent task is admitted for slash text");
+	assert.equal(h.done(), 1);
+});
+
+it("hands Pi's own /new and /fork to native Pi from the primary pane", async () => {
+	for (const text of ["/new", "/fork"]) {
+		const h = harness();
+		await h.window.ready();
+		type(h.window, text);
+		h.window.handleInput(ENTER);
+		assert.deepEqual(h.primary.handed.map((item) => item.text), [text], text);
+		assert.equal(h.done(), 1, text);
+	}
+});
+
+it("gives agent panes steer and follow-up modes and routes them as steer and send", async () => {
+	const h = harness({ rowsValue: [agentRow()], snapshots: new Map([["agent:a", { entries: [userEntry("a1", "task")], partial: false, revision: "r1" }]]), configuredState: agentState() });
+	await h.window.ready();
+	h.window.handleInput(F3);
+	let screen = stripVTControlCharacters(h.window.render(140).join("\n"));
+	const agentFooter = (): string => screen.split("\n").at(-1)?.slice(70) ?? "";
+	assert.match(agentFooter(), /mode steer/);
+	assert.doesNotMatch(agentFooter(), /mode auto/);
+
+	type(h.window, "/followup");
+	h.window.handleInput(ENTER);
+	screen = stripVTControlCharacters(h.window.render(140).join("\n"));
+	assert.match(screen.split("\n").at(-1)?.slice(70) ?? "", /mode follow-up/);
+	type(h.window, "queue this");
+	h.window.handleInput(ENTER);
+	await flush();
+	assert.deepEqual(h.actions.at(-1), { name: "submit", input: { id: "agent:a", text: "queue this", mode: "send" } });
+
+	type(h.window, "/steer");
+	h.window.handleInput(ENTER);
+	screen = stripVTControlCharacters(h.window.render(140).join("\n"));
+	assert.match(screen.split("\n").at(-1)?.slice(70) ?? "", /mode steer/);
+	type(h.window, "stop now");
+	h.window.handleInput(ENTER);
+	await flush();
+	assert.deepEqual(h.actions.at(-1), { name: "submit", input: { id: "agent:a", text: "stop now", mode: "steer" } });
+});
+
+it("hides the window around native action prompts", async () => {
+	const hidden: boolean[] = [];
+	const h = harness({
+		rowsValue: [agentRow()],
+		snapshots: new Map([["agent:a", { entries: [userEntry("a1", "task")], partial: false, revision: "r1" }]]),
+		configuredState: agentState(),
+		nativeSurface: { hide: () => { hidden.push(true); }, show: () => { hidden.push(false); } },
+		runActions: async (_target, surface) => { surface?.hide(); surface?.show(); return { text: "ok" }; },
+	});
+	await h.window.ready();
+	h.window.handleInput(F3);
+	type(h.window, "/view");
+	h.window.handleInput(ENTER);
+	for (let index = 0; index < 5; index++) h.window.handleInput(DOWN);
+	h.window.handleInput(ENTER);
+	await flush();
+	assert.deepEqual(hidden, [true, false], "the native prompt owns the screen while it runs");
+});
+
+it("rebuilds only the live tail on a live frame", async () => {
+	const committed = Array.from({ length: 200 }, (_, index) => index % 2 ? assistantEntry(`c${index}`, `committed ${index}`) : userEntry(`c${index}`, `committed ${index}`));
+	const created: number[] = [];
+	const factory: PeerTranscriptFactory = { create: (input) => { created.push(input.entries.length); return agentConversationTranscripts.create(input); } };
+	const h = harness({ rowsValue: [agentRow()], configuredState: agentState(), transcriptFactory: factory });
+	h.source.frames.set("agent:a", liveFrame({ revision: 1, entries: committed, live: [assistantEntry("live:generation", "tick 0")] }));
+	await h.window.ready();
+	h.window.render(140);
+	const headCreates = (): number => created.filter((count) => count >= 200).length;
+	assert.equal(headCreates(), 1);
+	for (let index = 1; index <= 50; index++) {
+		h.source.frames.set("agent:a", liveFrame({ revision: index + 1, entries: committed, live: [assistantEntry("live:generation", `tick ${index}`)] }));
+		h.source.emitChange();
+		h.window.render(140);
+	}
+	assert.equal(headCreates(), 1, "the committed transcript is not rebuilt for live-only frames");
+	assert.equal(h.source.listCalls, 1, "a frame notification does not read the roster");
+});
+
+it("keeps live-frame updates fast on a 200-entry transcript", async (t) => {
+	const committed = Array.from({ length: 200 }, (_, index) => index % 2 ? assistantEntry(`c${index}`, `committed ${index}`) : userEntry(`c${index}`, `committed ${index}`));
+	const h = harness({ rows: 45, columns: 140, rowsValue: [agentRow()], configuredState: agentState() });
+	h.source.frames.set("agent:a", liveFrame({ revision: 1, entries: committed, live: [assistantEntry("live:generation", "start")] }));
+	await h.window.ready();
+	h.window.render(140);
+	const samples: number[] = [];
+	for (let index = 0; index < 200; index++) {
+		h.source.frames.set("agent:a", liveFrame({ revision: index + 2, entries: committed, live: [assistantEntry("live:generation", `tick ${index} `.repeat(10))] }));
+		h.source.emitChange();
+		const start = performance.now();
+		h.window.render(140);
+		samples.push(performance.now() - start);
+	}
+	samples.sort((a, b) => a - b);
+	const p50 = samples[Math.floor(0.5 * (samples.length - 1))];
+	const p95 = samples[Math.floor(0.95 * (samples.length - 1))];
+	const max = samples[samples.length - 1];
+	t.diagnostic(`live-frame update on 200 entries: p50 ${p50.toFixed(2)}ms · p95 ${p95.toFixed(2)}ms · max ${max.toFixed(2)}ms`);
+	assert.ok(p95 <= 16, `live-frame p95 ${p95.toFixed(2)}ms must be at most 16ms`);
+	assert.ok(max <= 50, `live-frame max ${max.toFixed(2)}ms must be at most 50ms`);
+});
+
+it("shows an unavailable pane with the last frame time", async () => {
+	const h = harness({ rowsValue: [agentRow()], configuredState: agentState() });
+	h.source.availabilityImpl = () => ({ state: "unavailable", at: "2026-10-02T00:00:00.000Z" });
+	await h.window.ready();
+	const screen = stripVTControlCharacters(h.window.render(140).join("\n"));
+	assert.match(screen, /\? unavailable/);
+	assert.match(screen, /last frame 2026/);
+});
+
+it("marks the pane unavailable on a closed observation and live again on the next frame", async () => {
+	const listeners = new Set<(frame: ObservationFrame | undefined, fresh: boolean, state?: "live" | "unavailable") => void>();
+	const host: PeerObservationHost = {
+		async list() { return { rows: [agentRow()], coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null }, observedAt: new Date(0).toISOString() }; },
+		async snapshot() { return { entries: [], partial: false, revision: "snapshot", nextBefore: null, coverage: { complete: true, entries: 0, bytes: 0, hiddenExcluded: 0, entryLimitReached: false, byteLimitReached: false } }; },
+		async observeLive(_id, _scope, listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+	};
+	const source = createPeerObservationSource(host);
+	const h = harness({ configuredState: agentState(), source });
+	await h.window.ready();
+	for (const listener of [...listeners]) listener(liveFrame({ revision: 1, entries: [userEntry("u1", "before loss")] }), false, "live");
+	assert.match(stripVTControlCharacters(h.window.render(140).join("\n")), /before loss/);
+	for (const listener of [...listeners]) listener(undefined, false, "unavailable");
+	assert.equal(source.availability?.("agent:a")?.state, "unavailable");
+	const lost = stripVTControlCharacters(h.window.render(140).join("\n"));
+	assert.match(lost, /\? unavailable/);
+	assert.match(lost, /last frame/);
+	for (const listener of [...listeners]) listener(liveFrame({ revision: 2, entries: [userEntry("u1", "before loss"), userEntry("u2", "after reconnect")] }), false, "live");
+	assert.equal(source.availability?.("agent:a")?.state, "live");
+	assert.match(stripVTControlCharacters(h.window.render(140).join("\n")), /after reconnect/);
+	h.window.dispose();
+});
+
 it("keeps a 1,000-block transcript warm at 140 columns inside the frame budget", async (t) => {
 	const entries: AgentConversationEntry[] = [];
 	for (let index = 0; index < 1000; index++) {
@@ -602,7 +761,7 @@ it("keeps a 1,000-block transcript warm at 140 columns inside the frame budget",
 	assert.ok(first.every((line) => visibleWidth(line) <= 140));
 	const bottomLine = stripVTControlCharacters(first[44]);
 	assert.match(bottomLine.slice(0, 69), /mode auto/, "the long primary transcript still docks the footer at the bottom");
-	assert.match(bottomLine.slice(70), /mode auto/, "the long agent transcript still docks the footer at the bottom");
+	assert.match(bottomLine.slice(70), /mode steer/, "the long agent transcript still docks the footer at the bottom");
 	const samples: number[] = [];
 	for (let index = 0; index < 200; index++) {
 		h.window.handleInput("x");

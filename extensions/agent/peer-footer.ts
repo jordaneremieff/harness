@@ -51,8 +51,7 @@ export interface PeerFooterOptions {
  */
 export function footerText(descriptor: PeerDescriptor, options: PeerFooterOptions = {}): string {
 	const segments = [modelText(descriptor), formatCost(descriptor.cost, descriptor.partialCost), stateText(descriptor.state)];
-	if (options.mode && options.mode !== "auto") segments.push(`mode ${options.mode}`);
-	else if (options.mode === "auto") segments.push("mode auto");
+	if (options.mode) segments.push(`mode ${options.mode}`);
 	if (options.nativeDraft) segments.push("native draft saved");
 	if (descriptor.detail) segments.push(descriptor.detail);
 	if (options.notice) segments.push(options.notice);
