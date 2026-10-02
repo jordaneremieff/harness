@@ -30,7 +30,11 @@ function emitContribution(): MemoryDurableContribution {
 	return contributions[0] as MemoryDurableContribution;
 }
 
-function hostFor(contribution: MemoryDurableContribution, cwd: string): MemoryDurableContributionHost {
+function hostFor(
+	contribution: MemoryDurableContribution,
+	cwd: string,
+	harness: Durable.Harness,
+): MemoryDurableContributionHost {
 	return {
 		durable: Durable,
 		// The slice reads no service field; the empty object proves the host contract holds without one.
@@ -38,7 +42,9 @@ function hostFor(contribution: MemoryDurableContribution, cwd: string): MemoryDu
 		cwd,
 		agentDir: cwd,
 		storageId: "memory-durable-test",
+		harness,
 		signal: new AbortController().signal,
+		onClose: () => {},
 		inventory: {
 			contributions: [{ name: contribution.name, source: contribution.source, commands: [] }],
 			ordinaryOnly: [],
@@ -85,11 +91,10 @@ function messageText(message: ToolResultMessage): string {
 	return message.content.map((item) => (item.type === "text" ? item.text : "")).join("");
 }
 
-/** The structured object the tool reported under `details.structuredContent`. */
-function structured(message: ToolResultMessage): Record<string, unknown> {
-	const details = message.details as { structuredContent?: Record<string, unknown> } | undefined;
-	assert.ok(details?.structuredContent, "tool result details carry structuredContent");
-	return details.structuredContent;
+/** The native details object, which equals the ordinary tool details. */
+function nativeDetails(message: ToolResultMessage): Record<string, unknown> {
+	assert.ok(message.details !== undefined, "tool result carries details");
+	return message.details as Record<string, unknown>;
 }
 
 function sectionsOf(messages: readonly { role: string; sections?: Record<string, string | null> }[]) {
@@ -121,29 +126,39 @@ test("the ordinary factory emits one memory contribution with native contracts",
 	assert.equal(contribution.name, "memory");
 	assert.equal(contribution.source, fileURLToPath(new URL("./index.ts", import.meta.url)));
 
-	const extension = await contribution.create(hostFor(contribution, process.cwd()));
-	assert.deepEqual(
-		extension.sections?.map((section) => section.key),
-		["memory", "memory_index"],
+	const registry = Durable.createRegistry();
+	const harness = await Durable.Harness.open(
+		new Durable.MemoryStorage(),
+		{ models: createModels(), registry },
+		BACKGROUND_CONTEXT,
 	);
-	assert.deepEqual(
-		(extension.tools ?? []).map((tool) => [tool.name, tool.replay]),
-		[
-			["memory_search", "safe"],
-			["memory_read", "safe"],
-			["memory_history", "safe"],
-			["memory_write", "unsafe"],
-			["memory_edit", "unsafe"],
-			["memory_review", "unsafe"],
-			["memory_retire", "unsafe"],
-		],
-	);
-	const search = (extension.tools ?? []).find((tool) => tool.name === "memory_search") as
-		| { outputSchema?: unknown }
-		| undefined;
-	assert.equal(search?.outputSchema, memorySearchOutputSchema);
-	for (const tool of extension.tools ?? []) {
-		if (tool.name !== "memory_search") assert.equal(Object.hasOwn(tool, "outputSchema"), false);
+	try {
+		const extension = await contribution.create(hostFor(contribution, process.cwd(), harness));
+		assert.deepEqual(
+			extension.sections?.map((section) => section.key),
+			["memory", "memory_index"],
+		);
+		assert.deepEqual(
+			(extension.tools ?? []).map((tool) => [tool.name, tool.replay]),
+			[
+				["memory_search", "safe"],
+				["memory_read", "safe"],
+				["memory_history", "safe"],
+				["memory_write", "unsafe"],
+				["memory_edit", "unsafe"],
+				["memory_review", "unsafe"],
+				["memory_retire", "unsafe"],
+			],
+		);
+		const search = (extension.tools ?? []).find((tool) => tool.name === "memory_search") as
+			| { outputSchema?: unknown }
+			| undefined;
+		assert.equal(search?.outputSchema, memorySearchOutputSchema);
+		for (const tool of extension.tools ?? []) {
+			if (tool.name !== "memory_search") assert.equal(Object.hasOwn(tool, "outputSchema"), false);
+		}
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
 	}
 });
 
@@ -156,37 +171,35 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 	const previous = process.env.PI_MEMORY_DIR;
 	process.env.PI_MEMORY_DIR = corpus;
 
-	const contribution = emitContribution();
-	const extension = await contribution.create(hostFor(contribution, corpus));
 	const faux = fauxProvider();
 	const models = createModels();
 	models.setProvider(faux.provider);
 	const registry = Durable.createRegistry();
-	registry.install(extension);
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
 
 	// MemoryStorage is closed by Harness.close(), so an in-process recovery rerun
 	// cannot be exercised. The probe records the replay policy of the committed
 	// tool intent, which is the durable input to rerun classification.
 	const intents: Array<{ name: string; replay?: string }> = [];
-	let harness: Durable.Harness | undefined;
-	registry.install(
-		Durable.defineExtension({
-			name: "memory-durable-probe",
-			hooks: [
-				Durable.hook(Durable.ToolTask, {
-					afterTool: async (call, _result, api, context) => {
-						const task = await harness?.getTask(api.taskId, context);
-						const checkpoint = (task?.state as { checkpoint?: { replay?: string } } | undefined)?.checkpoint;
-						intents.push({ name: call.name, replay: checkpoint?.replay });
-						return undefined;
-					},
-				}),
-			],
-		}),
-	);
-
 	try {
-		harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+		const contribution = emitContribution();
+		const extension = await contribution.create(hostFor(contribution, corpus, harness));
+		registry.install(extension);
+		registry.install(
+			Durable.defineExtension({
+				name: "memory-durable-probe",
+				hooks: [
+					Durable.hook(Durable.ToolTask, {
+						afterTool: async (call, _result, api, context) => {
+							const task = await harness.getTask(api.taskId, context);
+							const checkpoint = (task?.state as { checkpoint?: { replay?: string } } | undefined)?.checkpoint;
+							intents.push({ name: call.name, replay: checkpoint?.replay });
+							return undefined;
+						},
+					}),
+				],
+			}),
+		);
 		const conversation = await harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: { provider: "faux", modelId: "faux-1" } },
 		});
@@ -262,15 +275,27 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 		const history = resultFor("memory_history");
 		const write = resultFor("memory_write");
 		const mutations = ["memory_write", "memory_edit", "memory_review", "memory_retire"].map(resultFor);
-		assert.equal(structured(search).kind, "index");
-		assert.equal(structured(read).kind, "note");
-		assert.equal(structured(history).kind, "history");
-		assert.deepEqual(JSON.parse(messageText(search)), structured(search));
-		assert.deepEqual(JSON.parse(messageText(read)), structured(read));
-		assert.deepEqual(JSON.parse(messageText(history)), structured(history));
+
+		const searchPage = JSON.parse(messageText(search)) as Record<string, unknown>;
+		assert.equal(searchPage.kind, "index");
+		assert.deepEqual(nativeDetails(search).structuredContent, searchPage);
+		assert.deepEqual(nativeDetails(search), { ...searchPage, structuredContent: searchPage });
+
+		const readPage = JSON.parse(messageText(read)) as Record<string, unknown>;
+		assert.equal(readPage.kind, "note");
+		assert.deepEqual(nativeDetails(read), readPage);
+		assert.equal(Object.hasOwn(nativeDetails(read), "structuredContent"), false);
+
+		const historyPage = JSON.parse(messageText(history)) as Record<string, unknown>;
+		assert.equal(historyPage.kind, "history");
+		assert.deepEqual(nativeDetails(history), historyPage);
+		assert.equal(Object.hasOwn(nativeDetails(history), "structuredContent"), false);
+
 		for (const message of mutations) {
-			assert.equal(structured(message).ok, true);
-			assert.ok(messageText(message).endsWith(JSON.stringify(structured(message))));
+			const details = nativeDetails(message);
+			assert.equal(details.ok, true);
+			assert.equal(Object.hasOwn(details, "structuredContent"), false);
+			assert.ok(messageText(message).endsWith(JSON.stringify(details)));
 		}
 		assert.match(messageText(write), /^Memory updated: durable-note\.md\n/);
 
@@ -289,7 +314,7 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 			{ name: "memory_retire", replay: "unsafe" },
 		]);
 	} finally {
-		if (harness !== undefined) await harness.close(BACKGROUND_CONTEXT);
+		await harness.close(BACKGROUND_CONTEXT);
 		if (previous === undefined) delete process.env.PI_MEMORY_DIR;
 		else process.env.PI_MEMORY_DIR = previous;
 		rmSync(root, { recursive: true, force: true });

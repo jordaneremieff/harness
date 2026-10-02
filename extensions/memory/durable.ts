@@ -23,8 +23,8 @@ import {
  *
  * The corpus and its revision history stay external, as in the ordinary form.
  * Nothing is copied into Durable documents. Every tool keeps the ordinary
- * name, parameter schema, and execution against `PI_MEMORY_DIR`; the ordinary
- * same-process mutation queue serializes corpus writes.
+ * name, parameter schema, details, and execution against `PI_MEMORY_DIR`; the
+ * ordinary same-process mutation queue serializes corpus writes.
  *
  * Replay classes are explicit per tool. Reads rescan current sources and
  * repeat no external effect, so they are replay-safe. Mutations publish a
@@ -50,7 +50,10 @@ export interface MemoryDurableContributionHost {
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly storageId: string;
+	/** The host's open Harness, available from `create()`. */
+	readonly harness: Durable.Harness;
 	readonly signal: AbortSignal;
+	onClose(dispose: () => void | Promise<void>): void;
 	readonly inventory: MemoryDurableInventory;
 }
 
@@ -72,13 +75,22 @@ export function createMemoryContribution(source: string): MemoryDurableContribut
 		source,
 		create(host) {
 			const { defineExtension, defineTool, section } = host.durable;
-			const readResult = (details: Record<string, unknown>) => ({
+			// The ordinary memory_search returns the page as both details and structuredContent.
+			const searchResult = (details: Record<string, unknown>) => {
+				const structured = details as Durable.JsonObject;
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(details) }],
+					details: { ...structured, structuredContent: structured },
+				};
+			};
+			// The other ordinary reads return the page as details only.
+			const plainResult = (details: Record<string, unknown>) => ({
 				content: [{ type: "text" as const, text: JSON.stringify(details) }],
-				details: { structuredContent: details as Durable.JsonObject },
+				details: details as Durable.JsonObject,
 			});
 			const mutationResult = (root: string, details: WriteReceipt) => ({
 				content: [{ type: "text" as const, text: memoryMutationText(root, details) }],
-				details: { structuredContent: details as unknown as Durable.JsonObject },
+				details: details as unknown as Durable.JsonObject,
 			});
 			const onCorpusLock = (root: string, operation: () => WriteReceipt): Promise<WriteReceipt> =>
 				withFileMutationQueue(join(root, ".memory-write.lock"), async () => operation());
@@ -90,7 +102,7 @@ export function createMemoryContribution(source: string): MemoryDurableContribut
 					replay: "safe",
 					execute: async (args, _api, context) => {
 						const details = await searchMemory(memoryRoot(), args, context.abortSignal);
-						return readResult(details);
+						return searchResult(details);
 					},
 				}),
 				// pi-durable ignores the extra property; nested-call declarations read it.
@@ -116,7 +128,7 @@ export function createMemoryContribution(source: string): MemoryDurableContribut
 						replay: "safe",
 						execute: async (args, _api, context) => {
 							const details = await readMemory(memoryRoot(), args, context.abortSignal);
-							return readResult(details);
+							return plainResult(details);
 						},
 					}),
 					defineTool({
@@ -126,7 +138,7 @@ export function createMemoryContribution(source: string): MemoryDurableContribut
 						replay: "safe",
 						execute: async (args, _api, context) => {
 							const details = await historyMemory(memoryRoot(), args, context.abortSignal);
-							return readResult(details);
+							return plainResult(details);
 						},
 					}),
 					defineTool({

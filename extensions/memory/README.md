@@ -114,8 +114,9 @@ usage guidelines that the ordinary tools declare as `promptGuidelines`.
 `before_agent_start` hook. Durable renders sections before every request, but
 the index text depends only on corpus content, so an unchanged corpus produces
 identical bytes and adds no system-prompt delta; a changed corpus reaches the
-next request. Tool result details carry the ordinary structured object under
-`details.structuredContent`; `memory_search` keeps its declared output schema.
+next request. Tool result details equal the ordinary tool details.
+`memory_search` adds its structured page beside them as
+`details.structuredContent` and keeps its declared output schema.
 
 `durable.test.mts` runs the contribution in a real Harness over `MemoryStorage`
 with the pi-ai faux provider. It drives a model-issued call for each tool,
