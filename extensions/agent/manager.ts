@@ -12,7 +12,7 @@ import { observeClaim } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
 import type { AgentConversationPage, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
 
-export const MANAGER_PROTOCOL = 8;
+export const MANAGER_PROTOCOL = 9;
 export interface AgentCaller {
 	id: string;
 	cwd: string;
@@ -44,6 +44,9 @@ const DEFAULT_FAILURE_LIMIT = 256;
 const MAX_ERROR_TEXT = 512;
 const MAX_INVENTORY_PAGES = 16;
 const MAX_LIST_VISITS = 32;
+const CRASH_WINDOW_MS = 60_000;
+const MAX_AUTOMATIC_RESTARTS = 3;
+const MANAGED_LINK = { retryAttempts: 0 } as const;
 
 function errorText(error: unknown): string {
 	const text = error instanceof Error ? error.message : String(error);
@@ -66,6 +69,7 @@ class BoundedMap<V> {
 			this.items.delete(oldest);
 		}
 	}
+	get(key: string): V | undefined { return this.items.get(key); }
 	has(key: string): boolean {
 		return this.items.has(key);
 	}
@@ -97,6 +101,9 @@ export class AgentManager {
 	private refreshAgain = false;
 	private readonly delivered: BoundedMap<true>;
 	private readonly failures: BoundedMap<string>;
+	private readonly crashes = new BoundedMap<{ times: number[]; stopped: boolean }>(DEFAULT_FAILURE_LIMIT);
+	private readonly recoveryErrors = new BoundedMap<string>(DEFAULT_FAILURE_LIMIT);
+	private readonly queuedRecovery = new Set<string>();
 	private shuttingDown = false;
 	constructor(options: AgentManagerOptions) {
 		this.options = options;
@@ -112,7 +119,7 @@ export class AgentManager {
 		if (existing && !existing.closed) return existing;
 		const pending = this.opening.get(record.storageId);
 		if (pending) return pending;
-		const open = (this.options.acquire ?? acquireHost)(hostMetadata(record)).then(async (client) => {
+		const open = (this.options.acquire ?? acquireHost)(hostMetadata(record), MANAGED_LINK).then(async (client) => {
 			if (this.shuttingDown || primary?.signal.aborted) {
 				await client.close().catch(() => undefined);
 				throw new Error(this.shuttingDown ? "Agent manager closed while opening its host" : "Agent primary released while opening its host");
@@ -130,7 +137,7 @@ export class AgentManager {
 		let client = this.clients.get(record.storageId);
 		if (!client || client.closed) {
 			try {
-				client = await (this.options.connect ?? connectHost)(hostMetadata(record));
+				client = await (this.options.connect ?? connectHost)(hostMetadata(record), MANAGED_LINK);
 				if (this.shuttingDown || primary?.signal.aborted) {
 					await client.close().catch(() => undefined);
 					client = undefined;
@@ -179,6 +186,11 @@ export class AgentManager {
 		}
 		const params: Record<string, unknown> = { ...input, sessionId, ownerId: caller.id };
 		if (method === "inspect" || method === "status" || method === "snapshot" || method === "dashboard") return this.observe(record, method, params);
+		if (method === "attach") {
+			this.crashes.delete(record.storageId);
+			this.recoveryErrors.delete(record.storageId);
+			this.failures.delete(record.storageId);
+		}
 		const client = await this.connection(record);
 		if (method === "attach") return this.attachClient(client, sessionId, input.model);
 		if ((method === "submit" || method === "rewind" || method === "fork") && params.requestId === undefined) Object.assign(params, { requestId: randomUUID() });
@@ -308,7 +320,8 @@ export class AgentManager {
 				const projection = this.catalogRows(record);
 				coverage.skipped += projection.skipped;
 				coverage.omitted += projection.omitted;
-				rows.push(...projection.rows);
+				const recoveryError = this.recoveryErrors.get(record.storageId);
+				rows.push(...projection.rows.map((row) => recoveryError === undefined ? row : { ...row, health: { ...row.health, lastError: recoveryError } }));
 			}
 			coverage.nextCursor = page.nextCursor;
 			if (!page.nextCursor) { coverage.complete = true; break; }
@@ -382,33 +395,68 @@ export class AgentManager {
 			if (!cursor) break;
 		}
 		if (cursor) this.failures.set("startup", "Startup recovery reached its inventory bound; use agent_list for the remaining storage");
+		await this.enqueueRecovery(due, primary);
+	}
+
+	private async enqueueRecovery(due: CatalogRecord[], primary: PrimaryClient, afterLoss = false): Promise<void> {
 		let next = 0;
 		const recover = async () => {
 			while (!this.stopping(primary) && next < due.length) {
 				const record = due[next++];
-				if (record) await this.recover(record, primary);
+				if (record) {
+					this.queuedRecovery.delete(record.storageId);
+					await this.recover(record, primary, afterLoss);
+				}
 			}
 		};
 		const recovery = this.recoveryQueue.then(async () => { await Promise.all([recover(), recover()]); });
 		this.recoveryQueue = recovery.catch(() => undefined);
 		await recovery;
+		for (const record of due.slice(next)) this.queuedRecovery.delete(record.storageId);
 	}
 
-	private async recover(record: CatalogRecord, primary: PrimaryClient): Promise<void> {
-		if (this.recovering.has(record.storageId) || this.clients.has(record.storageId)) return;
+	private async recover(record: CatalogRecord, primary: PrimaryClient, afterLoss: boolean): Promise<void> {
+		if (this.recovering.has(record.storageId) || this.clients.has(record.storageId) || this.crashes.get(record.storageId)?.stopped) return;
 		const paths = hostPaths(record);
 		const claim = observeClaim(paths.claim, paths.identity);
-		if (claim.kind === "unknown") { this.failures.set(record.storageId, claim.error); return; }
+		if (claim.kind === "unknown") { this.recordRecoveryError(record.storageId, claim.error); return; }
 		this.recovering.add(record.storageId);
 		try {
-			const open = claim.kind === "live" ? this.options.connect ?? connectHost : this.options.acquire ?? acquireHost;
-			const client = await open(hostMetadata(record));
+			const open = claim.kind === "live" && !afterLoss ? this.options.connect ?? connectHost : this.options.acquire ?? acquireHost;
+			const client = await open(hostMetadata(record), MANAGED_LINK);
 			if (this.stopping(primary)) { await client.close(); this.recovering.delete(record.storageId); return; }
+			this.recoveryErrors.delete(record.storageId);
 			await this.monitorRecovery(record.storageId, client, primary);
 		} catch (error) {
 			this.recovering.delete(record.storageId);
-			this.failures.set(record.storageId, errorText(error));
+			this.recordRecoveryError(record.storageId, errorText(error));
 		}
+	}
+
+	private recordRecoveryError(storageId: string, error: string): void {
+		this.failures.set(storageId, error);
+		this.recoveryErrors.set(storageId, error);
+		void this.refreshFooter();
+	}
+
+	private hostLost(storageId: string): void {
+		const primary = [...this.primaries.values()].find((candidate) => !this.stopping(candidate));
+		if (!primary || this.queuedRecovery.has(storageId)) return;
+		try {
+			const record = this.catalog.read(storageId);
+			if (record.recoveryDue !== true || this.crashes.get(storageId)?.stopped) return;
+			const now = Date.now();
+			const times = (this.crashes.get(storageId)?.times ?? []).filter((time) => now - time < CRASH_WINDOW_MS);
+			times.push(now);
+			const stopped = times.length > MAX_AUTOMATIC_RESTARTS;
+			this.crashes.set(storageId, { times, stopped });
+			if (stopped) {
+				this.recordRecoveryError(storageId, "Automatic recovery stopped after repeated host losses within 60 seconds. Inspect the host error, then use agent_attach to retry.");
+				return;
+			}
+			this.queuedRecovery.add(storageId);
+			void this.enqueueRecovery([record], primary, true).catch((error) => { this.queuedRecovery.delete(storageId); this.recordRecoveryError(storageId, errorText(error)); });
+		} catch (error) { this.recordRecoveryError(storageId, errorText(error)); }
 	}
 
 	private async monitorRecovery(storageId: string, client: HostConnection, primary: PrimaryClient): Promise<void> {
@@ -429,7 +477,12 @@ export class AgentManager {
 		};
 		this.recoveryClients.set(storageId, close);
 		primary.signal.addEventListener("abort", close, { once: true });
-		removeClose = client.onClose(close);
+		const lost = () => {
+			if (closed) return;
+			close();
+			this.hostLost(storageId);
+		};
+		removeClose = client.onClose(lost);
 		const check = async () => {
 			if (closed) return;
 			if (checking) { again = true; return; }
@@ -441,7 +494,10 @@ export class AgentManager {
 					if (state.workPending === false && state.deliveriesPending === false) close();
 					void this.refreshFooter();
 				} while (again && !closed);
-			} catch (error) { this.failures.set(storageId, errorText(error)); close(); }
+			} catch (error) {
+				lost();
+				this.failures.set(storageId, errorText(error));
+			}
 			finally { checking = false; }
 		};
 		try {
@@ -459,16 +515,18 @@ export class AgentManager {
 
 	private async subscribe(storageId: string, client: HostConnection): Promise<void> {
 		this.subscriptions.get(storageId)?.();
-		if (!client.subscribeChanges) return;
-		const unsubscribe = await client.subscribeChanges(() => { void this.refreshFooter(); }, this.lifecycle.signal);
-		this.subscriptions.set(storageId, unsubscribe);
 		client.onClose(() => {
 			if (this.clients.get(storageId) !== client) return;
 			this.clients.delete(storageId);
 			this.subscriptions.get(storageId)?.();
 			this.subscriptions.delete(storageId);
+			this.hostLost(storageId);
 			void this.refreshFooter();
 		});
+		if (!client.subscribeChanges) return;
+		const unsubscribe = await client.subscribeChanges(() => { void this.refreshFooter(); }, this.lifecycle.signal);
+		if (client.closed) unsubscribe();
+		else this.subscriptions.set(storageId, unsubscribe);
 	}
 
 	private async refreshFooter(): Promise<void> {

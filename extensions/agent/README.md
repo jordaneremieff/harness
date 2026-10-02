@@ -158,6 +158,14 @@ no pending native work and no unsettled or unacknowledged delivery; host change
 notifications trigger that check, not polling. The marker clears only on a clean
 close with nothing pending.
 
+While a primary remains registered, an unexpected host connection loss rereads
+that marker and queues recovery through the same bounded pool. The manager owns
+these relaunches; managed connections do not independently relaunch on request
+retries. Three automatic replacements are permitted per storage within sixty
+seconds. Further losses stop automatic recovery and put a host error in the
+board's Attention group. Inspect the error, then use `agent_attach` to clear the
+stop and retry. Intentional disconnects and unmarked storage do not relaunch.
+
 ## Observation and dashboard
 
 Observation uses public Durable entries, documents, submissions, task outcomes,
@@ -192,8 +200,9 @@ inspect and may end at an empty page, so a bounded or empty page is not proof of
 absence. A row whose writer claim is absent or dead is metadata from a stopped
 host: owner `unknown`, and a previously `working` state shows as `interrupted`.
 `ownerLabel` names the host metadata timestamp and any unreadable-claim error.
-Health fields are retained at the view's publication time, not a fresh check; a
-later view can clear them.
+Host health fields are retained at the view's publication time, not a fresh
+check; a later view can clear them. The manager adds its current recovery errors,
+including crash-loop stops, without changing the host's published view.
 
 Attention means a row needs operator action: an unavailable or claim-conflicted
 storage, a host's last error or failed compaction, a failed run that carries an

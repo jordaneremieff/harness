@@ -204,6 +204,49 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 	}
 });
 
+it("relaunches a connected host after SIGKILL while its primary stays alive", { timeout: 30000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const ownerId = randomUUID();
+	const controller = new AbortController();
+	const pids: number[] = [];
+	let resolveRecovered: () => void = () => {};
+	const recovered = new Promise<void>((resolve) => { resolveRecovered = resolve; });
+	const manager = new AgentManager({
+		root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir,
+		acquire: async (metadata, options) => {
+			assert.equal(options?.retryAttempts, 0, "the manager owns every automatic relaunch");
+			const client = await acquireHost(metadata, { ...options, env: f.env(pids.length === 0 ? "request" : "answer") });
+			pids.push(client.pid);
+			if (pids.length === 2) resolveRecovered();
+			trackHost(t, client.pid);
+			return client;
+		},
+	});
+	let receipt: Record<string, unknown> | undefined;
+	let resolveDelivered: () => void = () => {};
+	const delivered = new Promise<void>((resolve) => { resolveDelivered = resolve; });
+	try {
+		await manager.registerPrimary(ownerId, {
+			cwd: f.cwd, signal: controller.signal,
+			send: (_text, details) => { receipt = details as Record<string, unknown>; resolveDelivered(); },
+		});
+		const submitted = await manager.control("submit", { sessionId: f.metadata.storageId, message: "recover without restarting the primary", requestId: "connected-crash" }, { id: ownerId, cwd: f.cwd }) as SubmitResult;
+		await waitForFile(join(f.testDir, "requested"));
+		assert.equal(manager.catalog.read(f.metadata.storageId).recoveryDue, true);
+		killHost(pids[0] as number);
+		await within(delivered, 15000, "the live primary received no recovered result").catch(async (error) => { throw new Error(`${String(error)}; pids=${JSON.stringify(pids)}; status=${JSON.stringify(await manager.status())}`); });
+		await within(recovered, 10000, "the replacement connection did not become ready");
+		assert.equal(controller.signal.aborted, false);
+		assert.equal(pids.length, 2, "channel loss automatically launches one replacement");
+		assert.notEqual(pids[1], pids[0]);
+		assert.equal(receipt?.status, "done");
+		assert.equal(String(receipt?.submissionId), String(submitted.submissionId));
+		assert.match(String(receipt?.answer), /durable runtime answer/u);
+		const history = await manager.control("inspect", { sessionId: f.metadata.storageId, view: "history", source: "user", limit: 10 }, { id: ownerId, cwd: f.cwd }) as HistoryPage;
+		assert.equal(history.entries.length, 1, "relaunch resumes the retained submission without another input");
+	} finally { controller.abort(); manager.close(); }
+});
+
 it("does not rerun an unsafe effect after SIGKILL and delivers the retained result once", { timeout: 120000 }, async (t) => {
 	const f = runtimeFixture(t);
 	const first = await acquireHost(f.metadata, { env: f.env("effect") });

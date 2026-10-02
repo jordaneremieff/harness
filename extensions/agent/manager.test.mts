@@ -6,6 +6,7 @@ import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
 import { hostMetadata, type CatalogRecord } from "./catalog.ts";
+import { dashboardText } from "./dashboard.ts";
 import type { HostConnection } from "./host-client.ts";
 import { hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { waitUntil } from "./host-fixture.mts";
@@ -452,6 +453,62 @@ it("returns a failed attach configuration instead of a recovery status", async (
 		assert.equal(outcome.outcome, "failed");
 		assert.equal(outcome.recovery, undefined);
 	} finally { manager.close(); }
+});
+
+it("stops repeated live host losses in Attention and permits an explicit attach retry", async (t) => {
+	const root = fixtureRoot(t);
+	const connections: FakeConnection[] = [];
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		acquire: async (metadata, options) => {
+			assert.equal(options?.retryAttempts, 0);
+			const client = fakeConnection(metadata, async (method) => method === "recovery-state" ? { workPending: true, deliveriesPending: true } : {});
+			connections.push(client);
+			return client;
+		},
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	manager.catalog.updateView(record.storageId, { updatedAt: new Date().toISOString(), rows: [{ id: record.storageId, storageId: record.storageId, cwd: root, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } });
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	for (let index = 0; index < 3; index++) {
+		await connections[index]?.close();
+		await waitUntil(() => connections.length === index + 2);
+	}
+	await connections[3]?.close();
+	await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
+	assert.equal(connections.length, 4, "three replacements exhaust the short-window budget");
+	const stopped = await manager.dashboardPage();
+	assert.match(stopped.rows[0]?.health?.lastError ?? "", /Automatic recovery stopped/u);
+	assert.match(dashboardText({ observedAt: Date.now(), sessions: stopped.rows }), /1 need attention/u);
+	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+	assert.equal(connections.length, 5);
+	assert.equal((await manager.dashboardPage()).rows[0]?.health?.lastError, undefined);
+});
+
+it("does not relaunch an unmarked host or a host released with the last primary", async (t) => {
+	const root = fixtureRoot(t);
+	const connections: FakeConnection[] = [];
+	const controller = new AbortController();
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		acquire: async (metadata) => { const client = fakeConnection(metadata, async () => ({})); connections.push(client); return client; },
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	await manager.registerPrimary("owner-1", fakePrimary(controller.signal).client);
+	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+	await connections[0]?.close();
+	await manager.registerPrimary("owner-1", fakePrimary(controller.signal).client);
+	assert.equal(connections.length, 1, "an unmarked loss admits no recovery");
+	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	controller.abort();
+	assert.equal(connections[1]?.closed, true);
+	await Promise.resolve();
+	assert.equal(connections.length, 2, "intentional primary release admits no recovery");
 });
 
 it("keeps hundreds of clean catalog records out of board reads and host launches", { timeout: 60000 }, async (t) => {
