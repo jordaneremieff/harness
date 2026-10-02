@@ -4,9 +4,22 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { CURRENT_SESSION_VERSION, parseSessionEntries, type SessionEntry, type SessionHeader } from "@earendil-works/pi-coding-agent";
 import { claimPath, observeClaim as observeClaimFile, type ClaimObservation } from "./claims.ts";
+import type { ActiveAutoRetry, CompactionFailure } from "./activity.ts";
 import type { AgentSessionSummary } from "./command.ts";
 import type { DetachedRunView } from "./detached.ts";
 import { MAX_CAPTURE_BYTES } from "./store.ts";
+
+/**
+ * Recovery fields from one worker this process holds. An entry exists only for a
+ * held worker, so an absent entry is not a health statement. An empty report
+ * means the live worker lists no recovery issue. A later successful compaction
+ * clears the failure; the retry's end clears the retry.
+ */
+export interface DashboardWorkerHealth {
+	lastError?: string;
+	compactionFailure?: CompactionFailure;
+	autoRetry?: ActiveAutoRetry;
+}
 
 export interface SessionDigest extends AgentSessionSummary {
 	path: string;
@@ -25,6 +38,8 @@ export interface SessionDigest extends AgentSessionSummary {
 	currentTool?: { name: string; argument: string };
 	/** Latest user turn's observed span; absent without an established start. */
 	durationMs?: number;
+	/** Live recovery detail when this process holds the worker; absent otherwise. */
+	health?: DashboardWorkerHealth;
 }
 
 export interface DashboardOverlay {
@@ -32,6 +47,8 @@ export interface DashboardOverlay {
 	active: string[];
 	busy?: string[];
 	runs: DetachedRunView[];
+	/** Recovery detail for held workers, keyed by session ID. */
+	health?: ReadonlyMap<string, DashboardWorkerHealth>;
 }
 
 export interface DashboardConversation {
@@ -378,9 +395,22 @@ function applyOverlay(cached: CachedDigest, nativeRoot: string, overlay?: Dashbo
 		if (claim.kind === "absent" || claim.kind === "dead") applyRunResult(row, runs);
 		else applyClaim(row, claim);
 	}
+	applyHealth(row, overlay);
 	if (row.state === "working" && cached.turnStart !== undefined) row.durationMs = Math.max(0, Date.now() - cached.turnStart);
 	if (row.state !== "working" && row.state !== "interrupted") row.currentTool = undefined;
 	return row;
+}
+
+/** Health attaches only when this process holds the row; stored or remote rows gain nothing. */
+function applyHealth(row: SessionDigest, overlay?: DashboardOverlay): void {
+	if (!overlay?.held.includes(row.sessionId)) return;
+	const health = overlay.health?.get(row.sessionId);
+	if (!health) return;
+	row.health = {
+		...health,
+		...(health.compactionFailure ? { compactionFailure: { ...health.compactionFailure } } : {}),
+		...(health.autoRetry ? { autoRetry: { ...health.autoRetry } } : {}),
+	};
 }
 
 /** Digest cache holds no transcripts. Only the selected conversation retains native entries. */

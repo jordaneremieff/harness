@@ -6,7 +6,7 @@ import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { mock, test } from "node:test";
 import { CURRENT_SESSION_VERSION, parseSessionEntries, SessionManager } from "@earendil-works/pi-coding-agent";
-import { AgentDashboardData, type DashboardOverlay } from "./dashboard-data.ts";
+import { AgentDashboardData, type DashboardOverlay, type DashboardWorkerHealth } from "./dashboard-data.ts";
 import type { DetachedRunView } from "./detached.ts";
 import { MAX_CAPTURE_BYTES } from "./store.ts";
 
@@ -140,6 +140,46 @@ test("local overlays distinguish active work, busy hosts, idle hosts, and termin
 	assert.equal(rows.find((row) => row.sessionId === "busy")?.state, "unavailable");
 	assert.equal(rows.find((row) => row.sessionId === "idle")?.state, "idle");
 	assert.equal(rows.find((row) => row.sessionId === "failed")?.state, "failed");
+});
+
+test("worker recovery detail attaches only to held rows and distinguishes absent and empty reports", async (t) => {
+	const f = fixture(t);
+	for (const id of ["recovering", "healthy", "remote", "primary"]) f.put(id, [user(), assistant()]);
+	const health = new Map<string, DashboardWorkerHealth>([
+		["recovering", { lastError: "host notification failed", compactionFailure: { reason: "threshold", errorMessage: "compact target too large", at: stamp() }, autoRetry: { attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit exceeded" } }],
+		["healthy", {}],
+		["remote", { lastError: "must not attach" }],
+	]);
+	const rows = await f.data.read(overlay({ held: ["recovering", "healthy", "primary"], health }));
+	const byId = new Map(rows.map((row) => [row.sessionId, row]));
+	assert.equal(byId.get("recovering")?.health?.lastError, "host notification failed");
+	assert.deepEqual(byId.get("recovering")?.health?.compactionFailure, { reason: "threshold", errorMessage: "compact target too large", at: stamp() });
+	assert.deepEqual(byId.get("recovering")?.health?.autoRetry, { attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit exceeded" });
+	assert.deepEqual(byId.get("healthy")?.health, {}, "a held worker with no listed issue still reports");
+	assert.equal(byId.get("primary")?.health, undefined, "a held primary has no worker report");
+	assert.equal(byId.get("remote")?.health, undefined, "a row this process does not hold gains no worker detail");
+});
+
+test("a later read drops a removed report and copies nested health detail away from the source map", async (t) => {
+	const f = fixture(t);
+	f.put("s", [user(), assistant()]);
+	const entry = { lastError: "host notification failed", compactionFailure: { reason: "threshold" as const, errorMessage: "compact target too large", at: stamp() }, autoRetry: { attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit exceeded" } };
+	const health = new Map<string, DashboardWorkerHealth>([["s", entry]]);
+	const held = overlay({ held: ["s"], health });
+	const first = (await f.data.read(held)).find((row) => row.sessionId === "s");
+	assert.equal(first?.health?.lastError, "host notification failed");
+	const detail = first?.health;
+	assert.ok(detail?.compactionFailure);
+	assert.ok(detail.autoRetry);
+	detail.compactionFailure.reason = "manual";
+	detail.autoRetry.attempt = 99;
+	assert.equal(entry.compactionFailure.reason, "threshold", "the returned detail is a copy, not the source entry");
+	assert.equal(entry.autoRetry.attempt, 2);
+	health.set("s", {});
+	const replaced = (await f.data.read(held)).find((row) => row.sessionId === "s");
+	assert.deepEqual(replaced?.health, {}, "a replaced report drops the cached failure and retry");
+	const removed = (await f.data.read(overlay({ held: ["s"], health: new Map() }))).find((row) => row.sessionId === "s");
+	assert.equal(removed?.health, undefined, "a removed report leaves no cached detail");
 });
 
 test("same-host claims distinguish live windows, dead owners, and permission-limited live processes", async (t) => {

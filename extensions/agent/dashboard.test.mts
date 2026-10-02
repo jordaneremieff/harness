@@ -519,3 +519,95 @@ it("renders failures explicitly and gives headless callers a digest without open
 		assert.equal(elapsed(59000), "59s"); assert.equal(elapsed(60000), "1m0s"); assert.equal(elapsed(90000), "1m30s");
 	} finally { f.panel.dispose(); }
 });
+
+it("shows worker recovery detail on the selected row and never labels an absent report healthy", async () => {
+	const now = Date.now();
+	const recovering = row("recovering", { modifiedAt: now, health: { lastError: "host notification failed", compactionFailure: { reason: "overflow", errorMessage: "prompt too large", at: "2026-10-02T00:00:00.000Z" } } });
+	const healthy = row("healthy", { modifiedAt: now - 1000, health: {} });
+	const plain = row("plain", { modifiedAt: now - 2000 });
+	const f = fixture([recovering, healthy, plain]);
+	await tick();
+	try {
+		f.panel.state.selected = "recovering";
+		const recoveringScreen = f.screen(200);
+		assert.match(recoveringScreen, /Last worker error: host notification failed/);
+		assert.match(recoveringScreen, /Last compaction failure \(overflow\) at 2026-10-02T00:00:00\.000Z: prompt too large/);
+		const recoveringRailMarked = recoveringScreen.split("\n").some((line) => { const rail = line.split(" │ ")[0] ?? ""; return rail.includes("Session recovering") && rail.trimEnd().endsWith("!"); });
+		assert.ok(recoveringRailMarked, "the rail marks the recovery signal");
+		f.panel.state.selected = "healthy";
+		const healthyScreen = f.screen(200);
+		assert.doesNotMatch(healthyScreen, /Last worker error|Last compaction failure|provider retry/);
+		const healthyRailMarked = healthyScreen.split("\n").some((line) => { const rail = line.split(" │ ")[0] ?? ""; return rail.includes("Session healthy") && rail.trimEnd().endsWith("!"); });
+		assert.ok(!healthyRailMarked, "an empty report adds no marker");
+		f.panel.state.selected = "plain";
+		assert.doesNotMatch(f.screen(200), /Last worker error|Last compaction failure|provider retry/);
+	} finally { f.panel.dispose(); }
+});
+
+it("holds a settled worker recovery signal in Attention at any transcript age and leaves active retry in Working", async (t) => {
+	const now = new Date(2026, 0, 3, 12).getTime();
+	t.mock.timers.enable({ apis: ["Date"], now });
+	const day = 24 * 60 * 60 * 1000;
+	let rows = [
+		row("errored", { modifiedAt: now - 10 * day, state: "idle", owner: "here", health: { lastError: "host notification failed" } }),
+		row("compacted", { modifiedAt: now - 10 * day, state: "idle", owner: "here", health: { compactionFailure: { reason: "overflow", errorMessage: "too large", at: new Date(now).toISOString() } } }),
+		row("retrying", { modifiedAt: now, state: "working", owner: "here", health: { autoRetry: { attempt: 1, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit" } } }),
+		row("plain", { modifiedAt: now - 10 * day, state: "idle", owner: "here" }),
+	];
+	const f = fixture(rows, { board: async () => rows }); await tick();
+	try {
+		assert.match(f.screen(200), /1 working · 2 need attention/);
+		let ordered = dashboardRecords(f.panel.state.snapshot, "").map((item) => item.sessionId);
+		assert.equal(ordered[0], "retrying");
+		assert.ok(ordered.indexOf("errored") < ordered.indexOf("plain"));
+		assert.ok(ordered.indexOf("compacted") < ordered.indexOf("plain"));
+		rows = rows.map((item) => item.sessionId === "errored" || item.sessionId === "compacted" ? { ...item, health: {} } : item);
+		await f.panel.refresh();
+		assert.doesNotMatch(f.screen(200), /need attention/);
+		ordered = dashboardRecords(f.panel.state.snapshot, "").map((item) => item.sessionId);
+		assert.equal(ordered[0], "retrying");
+		assert.ok(ordered.indexOf("errored") > ordered.indexOf("retrying"));
+	} finally { f.panel.dispose(); }
+});
+
+it("shows an in-progress provider retry instead of the thinking fallback while keeping Working", async () => {
+	const f = fixture([row("retry", { state: "working", owner: "here", currentTool: undefined, health: { autoRetry: { attempt: 2, maxAttempts: 4, delayMs: 4000, errorMessage: "rate limit exceeded" } } })]);
+	await tick();
+	try {
+		f.panel.state.selected = "retry";
+		const screen = f.screen(200);
+		assert.match(screen, /Working/);
+		assert.match(screen, /provider retry 2\/4 after 4s: rate limit exceeded/);
+		assert.doesNotMatch(screen, /› Thinking/);
+	} finally { f.panel.dispose(); }
+});
+
+it("keeps the recovery marker and the unique title suffix together in the narrow rail", async () => {
+	const now = Date.now();
+	const rows = [
+		row("first-a123456", { name: "probe", cwd: "/work/probe", modifiedAt: now, health: { lastError: "host notification failed" } }),
+		row("second-b123456", { name: "probe", cwd: "/work/probe", modifiedAt: now - 1000 }),
+	];
+	const f = fixture(rows); await tick();
+	try {
+		for (const width of [200, 120]) {
+			const screen = f.screen(width);
+			const marked = screen.split("\n").some((line) => { const rail = line.split(" │ ")[0] ?? ""; return rail.includes("probe a123456") && rail.trimEnd().endsWith("!"); });
+			assert.ok(marked, `${width}: the marked row keeps its marker and suffix`);
+			assert.match(screen, /probe b123456/, `${width}: the unmarked duplicate keeps its suffix`);
+		}
+	} finally { f.panel.dispose(); }
+});
+
+it("bounds and sanitizes worker recovery text at every width", async () => {
+	const f = fixture([row("health", { health: { lastError: `bad \x1b[2J ${"宽".repeat(200)}`, compactionFailure: { reason: "manual", at: "2026-10-02T00:00:00.000Z" } } })]);
+	await tick();
+	try {
+		f.panel.state.selected = "health";
+		for (const width of [200, 120, 80, 40]) {
+			const lines = f.panel.render(width);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width), `${width} columns`);
+			assert.doesNotMatch(lines.join("\n"), /\x1b\[2J/, `${width}: the injected sequence never reaches the rendered output`);
+		}
+	} finally { f.panel.dispose(); }
+});

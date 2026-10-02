@@ -55,6 +55,18 @@ async function harness(): Promise<Harness> {
 	};
 }
 
+describe("process-held worker health", () => {
+	it("reads recovery fields from retained workers without calling an instance method", () => {
+		const recovering = { lastError: "host notification failed", lastCompactionFailure: { reason: "threshold", errorMessage: "compact target too large", at: "2026-10-02T00:00:00.000Z" }, activeAutoRetry: { attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit exceeded" } };
+		const clear = { lastError: undefined, lastCompactionFailure: undefined, activeAutoRetry: undefined, recoverySnapshot: () => assert.fail("the dashboard must not call a retained instance method") };
+		const retained = { sessions: new Map<string, unknown>([["held", recovering], ["clear", clear]]) } as unknown as AgentManager;
+		const health = AgentManager.workerHealth(retained);
+		assert.deepEqual(health.get("held"), { lastError: "host notification failed", compactionFailure: { reason: "threshold", errorMessage: "compact target too large", at: "2026-10-02T00:00:00.000Z" }, autoRetry: { attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit exceeded" } });
+		assert.deepEqual(health.get("clear"), {});
+		assert.equal(health.has("primary"), false, "a primary in the held set has no worker report");
+	});
+});
+
 describe("peer notification metadata", () => {
 	it("references the canonical rule without classifying sender claims as delegated authority", async () => {
 		const test = await harness();

@@ -359,11 +359,22 @@ rows instead of a separate tab.
 Working sessions come first, followed by Attention and date groups. Unavailable
 sessions remain in Attention until their condition changes. Failed, Stopped and
 Interrupted outcomes remain there for 24 hours; older outcomes keep their state
-glyph and color in their date group. The attention count uses the same
-observation time as the sections. The rail windows the full list without a
-display-count cap. Selection follows the full session ID across refreshes and
-list reordering. Colliding visible titles receive unique ID tails in the rail,
-selector, and composer heading.
+glyph and color in their date group. A worker's last error or last failed
+compaction holds its row in Attention at any transcript age; active work,
+including an in-progress provider retry, stays in Working. The attention count
+uses the same observation time as the sections. The rail windows the full list
+without a display-count cap. Selection follows the full session ID across
+refreshes and list reordering. Colliding visible titles receive unique ID tails
+in the rail, selector, and composer heading.
+
+Workers this window holds report their own recovery fields: the last host error,
+the last failed native compaction with reason and time, and an in-progress
+provider retry with attempt counts, delay, and message. A later successful
+compaction clears the failure, the retry's end clears the retry, and the next
+operation start clears the last error. These fields stay separate from the
+transcript-derived outcome and error. Stored sessions, sessions owned by another
+window or a detached run, and primaries do not gain these fields; no visible
+warning on one of those rows is not a health check.
 
 | Key outside input (defaults) | Action |
 | --- | --- |

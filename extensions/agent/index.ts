@@ -26,7 +26,7 @@ import { type Static, Type } from "typebox";
 import { createAgentCommand, type AgentSessionSummary, type AgentCommandAction } from "./command.ts";
 import { CONFIGURATION_LIMITS, CONFIGURATION_SYNTAX, THINKING_LEVELS, configurationSessionId, formatConfiguration, isThinkingLevel, parseConfigurationArguments, validateConfigurationPatch, type ConfigurationPatch, type ConfigurationResult } from "./configuration.ts";
 import { configurationDialog } from "./configuration-dialog.ts";
-import { AgentDashboardData } from "./dashboard-data.ts";
+import { AgentDashboardData, type DashboardWorkerHealth } from "./dashboard-data.ts";
 import { discoverSessions, type DiscoveryOptions } from "./discovery.ts";
 import { InspectOutputSchema, ListOutputSchema, RunsOutputSchema, StatusOutputSchema, liveStatusRow, observationResult, runObservation, runsObservation, statusObservation, supervisionObservation, unavailableObservation, type RunsObservation, type StatusObservation, type StatusRow } from "./observations.ts";
 import { validateInspect, type InspectOptions } from "./evidence.ts";
@@ -1480,6 +1480,17 @@ export class AgentManager {
 		return [...this.sessions.entries()].filter(([, worker]) => worker.hasActiveWork()).map(([id]) => id);
 	}
 
+	/**
+	 * Bounded recovery fields for process-held workers; stored or remote owners
+	 * supply nothing. Static so a reloaded extension reads a manager retained from
+	 * an earlier load; the session map and worker fields do not change.
+	 */
+	static workerHealth(manager: AgentManager): Map<string, DashboardWorkerHealth> {
+		const health = new Map<string, DashboardWorkerHealth>();
+		for (const [id, worker] of manager.sessions) health.set(id, AgentWorkerSession.recoverySnapshot(worker));
+		return health;
+	}
+
 	closeAll(): Promise<void> {
 		if (this.closeTask) return this.closeTask;
 		this.closing = true;
@@ -2205,7 +2216,7 @@ export default function registerAgentExtension(pi: ExtensionAPI) {
 		board: async () => {
 			const owner = await getManager();
 			const state = owner.restartState();
-			return (await getDashboardData()).read({ held: state.sessions, active: owner.activeSessionIds(), busy: state.busy, runs: owner.detachedRunViews() });
+			return (await getDashboardData()).read({ held: state.sessions, active: owner.activeSessionIds(), busy: state.busy, runs: owner.detachedRunViews(), health: AgentManager.workerHealth(owner) });
 		},
 		conversation: async (sessionId) => (await getDashboardData()).conversation(sessionId),
 	});

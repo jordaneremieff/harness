@@ -63,12 +63,34 @@ function activityOf(row: SessionDigest, now: number): string {
 	if (row.durationMs !== undefined) parts.unshift(`${elapsed(row.durationMs)} duration`);
 	return parts.join(" · ");
 }
+/** Recovery detail for a live local worker; an absent report is not a health verdict. */
+function recoveryLines(row: SessionDigest, skipRetry = false): Array<{ color: ThemeColor; text: string }> {
+	const health = row.health;
+	if (!health) return [];
+	const lines: Array<{ color: ThemeColor; text: string }> = [];
+	if (health.lastError) lines.push({ color: "error", text: `Last worker error: ${oneLine(health.lastError)}` });
+	if (health.compactionFailure) {
+		const failure = health.compactionFailure;
+		lines.push({ color: "warning", text: `Last compaction failure (${failure.reason}) at ${failure.at}: ${oneLine(failure.errorMessage ?? "no error text")}` });
+	}
+	if (!skipRetry && health.autoRetry) lines.push({ color: "warning", text: `provider retry ${health.autoRetry.attempt}/${health.autoRetry.maxAttempts} after ${elapsed(health.autoRetry.delayMs)}: ${oneLine(health.autoRetry.errorMessage)}` });
+	return lines;
+}
+function healthMark(row: SessionDigest, theme: Theme): string {
+	const health = row.health;
+	if (!health) return "";
+	if (health.lastError) return theme.fg("error", "!");
+	if (health.compactionFailure) return theme.fg("warning", "!");
+	if (health.autoRetry) return theme.fg("accent", "↻");
+	return "";
+}
 function stateLabel(row: SessionDigest): string {
 	return `${sessionAppearance[row.state].label}${row.owner === "window" ? " · other window" : row.owner === "detached" ? " · detached" : row.owner === "here" ? " · here" : ""}`;
 }
 function sectionOf(row: SessionDigest, now: number): string {
 	if (row.state === "working") return "Working";
 	if (row.state === "unavailable") return "Attention";
+	if (row.health?.lastError || row.health?.compactionFailure) return "Attention";
 	if (now - row.modifiedAt <= 24 * 60 * 60 * 1000 && ["failed", "stopped", "interrupted"].includes(row.state)) return "Attention";
 	const today = new Date(now); today.setHours(0, 0, 0, 0);
 	const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
@@ -96,6 +118,7 @@ export function dashboardText(snapshot: AgentDashboardSnapshot): string {
 	return ["Agent dashboard", totals(snapshot), ...(snapshot.error ? [`Store unavailable: ${snapshot.error}`] : []), ...dashboardRecords(snapshot, "").flatMap((row) => [
 		oneLine(`${sessionAppearance[row.state].glyph} ${stateLabel(row)} · ${titleOf(row)} · ${basename(row.cwd)} · ${row.model?.modelId ?? "unknown model"} · ${costOf(row)}`),
 		`  ${oneLine(row.sessionId)} · ${oneLine(row.cwd)}`,
+		...recoveryLines(row).map((line) => `  ${oneLine(line.text)}`),
 		...(row.latestReply ? [`  ${oneLine(row.latestReply).slice(0, 300)}`] : []),
 	]), "Use /agent help for actions."].join("\n");
 }
@@ -498,7 +521,8 @@ export class AgentDashboard implements Component {
 	}
 	private rosterRow(row: SessionDigest, width: number, title: string): string {
 		const selected = row.sessionId === this.state.selected; const appearance = sessionAppearance[row.state];
-		const line = `${selected ? "›" : " "}${this.theme.fg(appearance.color, appearance.glyph)} ${pad(title, width - 3)}`;
+		const mark = healthMark(row, this.theme);
+		const line = `${selected ? "›" : " "}${this.theme.fg(appearance.color, appearance.glyph)} ${pad(title, Math.max(0, width - 3 - visibleWidth(mark)))}${mark}`;
 		return selected ? this.theme.bg("selectedBg", line) : line;
 	}
 	private renderRoster(rows: SessionDigest[], width: number, height: number): string[] {
@@ -509,7 +533,7 @@ export class AgentDashboard implements Component {
 		const start = Math.min(Math.max(0, entries.length - pageSize), Math.max(0, selectedIndex - Math.floor(pageSize / 2)));
 		const filter = this.state.filter ? `${rows.length} of ${this.state.snapshot?.sessions.length ?? 0} · ${oneLine(this.state.filter)}` : `${rows.length} sessions`;
 		const lines = headerHeight ? [this.theme.fg("dim", truncateToWidth(`${filter}${start > 0 ? " · ↑" : ""}${start + pageSize < entries.length ? " · ↓" : ""}`, width))] : [];
-		const titles = this.rosterTitles(rows, width - 3);
+		const titles = this.rosterTitles(rows, width - 4);
 		for (const entry of entries.slice(start, start + pageSize)) {
 			if (!entry.row) { lines.push(this.theme.fg("accent", ` ${entry.text}`)); continue; }
 			lines.push(this.rosterRow(entry.row, width, titles.get(entry.row.sessionId) ?? titleOf(entry.row)));
@@ -530,9 +554,21 @@ export class AgentDashboard implements Component {
 		if (row && this.refusal(row)) header.push(this.theme.fg("warning", truncateToWidth(`Read-only: ${this.refusal(row)}`, width)));
 		if (row && height >= 10) header.push(this.theme.fg("muted", truncateToWidth(oneLine(`${basename(row.cwd)} · ${row.model ? `${row.model.modelId} ${row.model.thinkingLevel ?? "off"}` : "model unknown"}`), width)));
 		if (row && height >= 18) header.push(this.theme.fg("dim", truncateToWidth(activityOf(row, this.state.snapshot?.observedAt ?? Date.now()), width)));
-		if (row?.state === "working") header.push(this.theme.fg("accent", truncateToWidth(row.currentTool ? `› ${oneLine(row.currentTool.name)} ${oneLine(row.currentTool.argument)}` : "› Thinking", width)));
-		else if (row?.error) header.push(this.theme.fg("error", truncateToWidth(oneLine(row.error), width)));
+		if (row) header.push(...this.conversationStatusLines(row, width));
 		return header;
+	}
+	/** The state slot carries current work or an in-progress retry; recovery lines follow separately. */
+	private conversationStatusLines(row: SessionDigest, width: number): string[] {
+		const lines: string[] = [];
+		const retry = row.health?.autoRetry;
+		if (row.state === "working") {
+			const text = retry ? `provider retry ${retry.attempt}/${retry.maxAttempts} after ${elapsed(retry.delayMs)}: ${oneLine(retry.errorMessage)}` : row.currentTool ? `› ${oneLine(row.currentTool.name)} ${oneLine(row.currentTool.argument)}` : "› Thinking";
+			lines.push(this.theme.fg(retry ? "warning" : "accent", truncateToWidth(text, width)));
+		} else if (row.error) {
+			lines.push(this.theme.fg("error", truncateToWidth(oneLine(row.error), width)));
+		}
+		for (const line of recoveryLines(row, row.state === "working")) lines.push(this.theme.fg(line.color, truncateToWidth(line.text, width)));
+		return lines;
 	}
 	private conversationDocument(meaningful: SessionEntry[], view: ConversationView, width: number): { document: ConversationDocument; start: number } {
 		let start = Math.max(0, meaningful.length - view.messageLimit);
@@ -576,7 +612,7 @@ export class AgentDashboard implements Component {
 		return lines.slice(this.resultScroll, this.resultScroll + height);
 	}
 	private renderHelp(width: number, height: number): string[] {
-		const lines = ["Agent conversations", "", this.sessionNavigation(), "Sessions is selected when the board opens. The selection keys above or j/k select a session. The configured confirmation key reads it; Tab also switches between Sessions and Conversation. A wide terminal previews the selected conversation beside the list. A narrow terminal shows the focused area.", "In Conversation, ↑↓ or j/k scrolls. Page Up/Down or b/Space pages the focused area. Home/End selects the first/last session or starts/follows the conversation. o loads earlier messages in Conversation. [ and ] selects sessions from either area.", "/ searches name, task, place, model, state or ID and focuses Sessions. Enter keeps the filter and shows the matches; Escape restores the previous filter, selection and focus.", "m opens the selected session's draft from either area. Enter opens a draft only in Conversation. The native editor submits with its configured submit key and inserts newlines with its configured newline key. Escape hides the editor and retains the draft. n drafts a task for a new agent.", "The recipient stays fixed while the editor is open or a submission is in progress. A fresh ownership check selects send for an idle agent or steer for active work. A refused submission retains the draft.", "a opens all native actions. Actions retain their trust and ownership checks. Escape returns from help or a result; otherwise it closes the dashboard.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "Each visited session keeps its reading position, follow mode, loaded-message limit, expansion, thinking visibility and draft for this open dashboard, including native action dialogs. The board also retains its focused area through dialogs and resize. Closing the dashboard ends that state.", "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A same-host claim whose process no longer exists leaves the transcript outcome in force; the next control through this window replaces that claim. The dashboard never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files retain bounded identity metadata and a conversation tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds Unavailable sessions regardless of age, plus Failed, Stopped and Interrupted outcomes from the last 24 hours. Older outcomes retain their state in date groups.", "Refresh runs once per second while this overlay is visible. Only changed files are parsed. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it."];
+		const lines = ["Agent conversations", "", this.sessionNavigation(), "Sessions is selected when the board opens. The selection keys above or j/k select a session. The configured confirmation key reads it; Tab also switches between Sessions and Conversation. A wide terminal previews the selected conversation beside the list. A narrow terminal shows the focused area.", "In Conversation, ↑↓ or j/k scrolls. Page Up/Down or b/Space pages the focused area. Home/End selects the first/last session or starts/follows the conversation. o loads earlier messages in Conversation. [ and ] selects sessions from either area.", "/ searches name, task, place, model, state or ID and focuses Sessions. Enter keeps the filter and shows the matches; Escape restores the previous filter, selection and focus.", "m opens the selected session's draft from either area. Enter opens a draft only in Conversation. The native editor submits with its configured submit key and inserts newlines with its configured newline key. Escape hides the editor and retains the draft. n drafts a task for a new agent.", "The recipient stays fixed while the editor is open or a submission is in progress. A fresh ownership check selects send for an idle agent or steer for active work. A refused submission retains the draft.", "a opens all native actions. Actions retain their trust and ownership checks. Escape returns from help or a result; otherwise it closes the dashboard.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "Sessions this Pi window runs also show the worker's last error, its last failed compaction, and an in-progress provider retry. A later successful compaction clears the failure, the retry's end clears the retry, and the next operation start clears the last error. Stored sessions, sessions owned by another window or a detached run, and primaries do not gain these fields; no warning on those rows is not a health check. The transcript error stays separate from these worker fields.", "", "Each visited session keeps its reading position, follow mode, loaded-message limit, expansion, thinking visibility and draft for this open dashboard, including native action dialogs. The board also retains its focused area through dialogs and resize. Closing the dashboard ends that state.", "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "A live local writer claim identifies another Pi window. A pending transcript turn with that claim shows Working. PID reuse and remote hosts limit this observation.", "A same-host claim whose process no longer exists leaves the transcript outcome in force; the next control through this window replaces that claim. The dashboard never removes claims or opens sessions for writing. Another window requires control in that window.", "Spend sums retained native usage across branches. ≥ marks partial captures. Long files retain bounded identity metadata and a conversation tail; ancestry gaps remain partial. The conversation shows stored messages, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds Unavailable sessions regardless of age, a worker's last error or last failed compaction at any transcript age, and Failed, Stopped and Interrupted outcomes from the last 24 hours. Older outcomes retain their state in date groups.", "Refresh runs once per second while this overlay is visible. Only changed files are parsed. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it."];
 		const wrapped = lines.flatMap((line) => wrapTextWithAnsi(line, width));
 		this.helpScroll = Math.min(this.helpScroll, Math.max(0, wrapped.length - height));
 		return wrapped.slice(this.helpScroll, this.helpScroll + height);

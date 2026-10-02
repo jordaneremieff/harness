@@ -895,15 +895,24 @@ export class AgentWorkerSession {
 			...(this.streamingText && this.lastText ? { lastText: activityExcerpt(this.lastText, 600) } : {}),
 			pending: this.session.pendingMessageCount, lastPersistedAt: this.sessionManager().getEntries().at(-1)?.timestamp ?? null };
 	}
+	/**
+	 * Read-only recovery fields shared by the full status and the dashboard.
+	 * Static so a reloaded extension reads a worker retained from an earlier load
+	 * whose prototype lacks this method; the underlying fields do not change.
+	 */
+	static recoverySnapshot(worker: AgentWorkerSession): { lastError?: string; compactionFailure?: CompactionFailure; autoRetry?: ActiveAutoRetry } {
+		const failure = worker.lastCompactionFailure;
+		const retry = worker.activeAutoRetry;
+		return {
+			...(failure ? { compactionFailure: { ...failure, ...(failure.errorMessage ? { errorMessage: failure.errorMessage.slice(0, 2000) } : {}) } } : {}),
+			...(retry ? { autoRetry: { ...retry, errorMessage: retry.errorMessage.slice(0, 2000) } } : {}),
+			...(worker.lastError ? { lastError: worker.lastError.slice(0, 2000) } : {}),
+		};
+	}
 	async status(): Promise<WorkerStatus> {
 		const session = this.session;
 		const model = selectedModel(session);
-		const failure = this.lastCompactionFailure;
-		const retry = this.activeAutoRetry;
-		return { sessionId: this.sessionId(), cwd: session.sessionManager.getCwd(), name: session.sessionManager.getSessionName(), tipId: session.sessionManager.getLeafId(), model: { provider: model.provider, modelId: model.id, thinkingLevel: session.thinkingLevel }, operation: this.operation ?? null, tools: session.getAllTools().map((tool) => tool.name), activeTools: session.getActiveToolNames(), extensions: session.resourceLoader.getExtensions().extensions.map((extension) => extension.path), entryCount: session.sessionManager.getEntries().length, activity: this.activity(),
-			...(failure ? { compactionFailure: { ...failure, ...(failure.errorMessage ? { errorMessage: failure.errorMessage.slice(0, 2000) } : {}) } } : {}),
-			...(retry ? { autoRetry: { ...retry, errorMessage: retry.errorMessage.slice(0, 2000) } } : {}),
-			...(this.lastError ? { lastError: this.lastError.slice(0, 2000) } : {}) };
+		return { sessionId: this.sessionId(), cwd: session.sessionManager.getCwd(), name: session.sessionManager.getSessionName(), tipId: session.sessionManager.getLeafId(), model: { provider: model.provider, modelId: model.id, thinkingLevel: session.thinkingLevel }, operation: this.operation ?? null, tools: session.getAllTools().map((tool) => tool.name), activeTools: session.getActiveToolNames(), extensions: session.resourceLoader.getExtensions().extensions.map((extension) => extension.path), entryCount: session.sessionManager.getEntries().length, activity: this.activity(), ...AgentWorkerSession.recoverySnapshot(this) };
 	}
 	async inspect(options: InspectOptions = {}) {
 		this.assertAvailable();
