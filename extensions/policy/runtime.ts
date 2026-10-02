@@ -87,7 +87,7 @@ function inputSnapshot(value: unknown): Record<string, unknown> | undefined {
 		return undefined;
 	}
 }
-function samePin(left: StatePin | undefined, right: StatePin | undefined): boolean {
+export function samePin(left: StatePin | undefined, right: StatePin | undefined): boolean {
 	return (
 		left !== undefined &&
 		right !== undefined &&
@@ -95,7 +95,7 @@ function samePin(left: StatePin | undefined, right: StatePin | undefined): boole
 		left.generation === right.generation
 	);
 }
-function metadata(evaluations: ProgramEvaluation[]): unknown[] {
+export function metadata(evaluations: ProgramEvaluation[]): unknown[] {
 	return evaluations.map(
 		({ id, revision, phase, inputView, applicable, truth, action, unavailable, unavailableReasons, deny }) => ({
 			id,
@@ -118,7 +118,10 @@ export function relevantEvaluations<T extends { id: string; truth: unknown; unav
 	return evaluations.filter((entry) => entry.truth !== false || entry.unavailable || entry.deny);
 }
 
-function boundedRows(rows: readonly unknown[], maxBytes = 32768): { rows: unknown[]; total: number; omitted: number } {
+export function boundedRows(
+	rows: readonly unknown[],
+	maxBytes = 32768,
+): { rows: unknown[]; total: number; omitted: number } {
 	const retained: unknown[] = [];
 	let bytes = 2;
 	for (const row of rows) {
@@ -137,7 +140,7 @@ interface RowBundle {
 }
 
 /** Convert one missing-input evaluation into its unavailable form, honoring deny decisions. */
-function markUnavailable(rules: ProgramRule[]): (evaluation: ProgramEvaluation) => ProgramEvaluation {
+export function markUnavailable(rules: ProgramRule[]): (evaluation: ProgramEvaluation) => ProgramEvaluation {
 	return (evaluation) => {
 		if (evaluation.applicable !== true || evaluation.truth === false || evaluation.action.kind === "deny")
 			return evaluation;
@@ -150,12 +153,12 @@ function markUnavailable(rules: ProgramRule[]): (evaluation: ProgramEvaluation) 
 		};
 	};
 }
-function publicState(views: ReturnType<ObservationState["snapshot"]>): unknown[] {
+export function publicState(views: ReturnType<ObservationState["snapshot"]>): unknown[] {
 	return views.map((view) =>
 		Object.fromEntries(Object.entries(view).map(([key, value]) => [key, value === UNKNOWN ? "unavailable" : value])),
 	);
 }
-function guidanceText(lines: readonly string[]): string | undefined {
+export function guidanceText(lines: readonly string[]): string | undefined {
 	let text = GUIDANCE_PREFIX;
 	for (const line of new Set(lines)) {
 		const safe = line

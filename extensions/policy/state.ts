@@ -3,6 +3,32 @@ import { cloneJson, readPath, UNKNOWN } from "./data.ts";
 import { evaluateCondition, PROGRAM_LIMITS, type ProgramRule, type StateSpec } from "./program.ts";
 
 export const STATE_LIMITS = { turns: 1024, events: 1024, total: Number.MAX_SAFE_INTEGER } as const;
+
+/** JSON-safe persistence form of one window sample. */
+export type StoredEventSample = { at: number; turn: number; total: number | null };
+/** JSON-safe persistence form of one turn counter entry. */
+export type StoredTurnCounters = { turn: number; count: number; total: number | null };
+/** JSON-safe persistence form of one observation period. `spec` is stored JSON. */
+export type StoredObservationPeriod = {
+	id: string;
+	revision: string;
+	generation: number;
+	spec?: unknown;
+	startedAt: number;
+	resetReason: string;
+	count: number;
+	total: number | null;
+	turns: StoredTurnCounters[];
+	currentTurn?: { turn: number; count: number; total: number | null };
+	turnsUnavailable: boolean;
+	window: StoredEventSample[];
+	projected: number;
+	lastProjectedAt?: number;
+	projectedTurns: number[];
+	saturated: boolean;
+};
+/** JSON-safe persistence form of the whole observation state. */
+export type StoredObservationState = { nextGeneration: number; periods: StoredObservationPeriod[] };
 export interface StatePin {
 	id: string;
 	revision: string;
@@ -296,4 +322,145 @@ export class ObservationState {
 			return view ? [view] : [];
 		});
 	}
+
+	/** Serialize the complete observation state for durable storage. */
+	toJSON(): StoredObservationState {
+		return {
+			nextGeneration: this.nextGeneration,
+			periods: [...this.periods.values()].map((period) => ({
+				id: period.id,
+				revision: period.revision,
+				generation: period.generation,
+				...(period.spec ? { spec: cloneJson(period.spec) } : {}),
+				startedAt: period.startedAt,
+				resetReason: period.resetReason,
+				count: period.count,
+				total: storedTotal(period.total),
+				turns: [...period.turns.entries()].map(([turn, stats]) => ({
+					turn,
+					count: stats.count,
+					total: storedTotal(stats.total),
+				})),
+				...(period.currentTurn
+					? {
+							currentTurn: {
+								turn: period.currentTurn.turn,
+								count: period.currentTurn.count,
+								total: storedTotal(period.currentTurn.total),
+							},
+						}
+					: {}),
+				turnsUnavailable: period.turnsUnavailable,
+				window: period.window.map((sample) => ({
+					at: sample.at,
+					turn: sample.turn,
+					total: storedTotal(sample.total),
+				})),
+				projected: period.projected,
+				...(period.lastProjectedAt !== undefined ? { lastProjectedAt: period.lastProjectedAt } : {}),
+				projectedTurns: [...period.projectedTurns],
+				saturated: period.saturated,
+			})),
+		};
+	}
+
+	/** Restore a persisted state, or undefined when the stored value is not usable. */
+	static fromJSON(value: unknown): ObservationState | undefined {
+		if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+		const raw = value as { nextGeneration?: unknown; periods?: unknown };
+		if (!safeCount(raw.nextGeneration)) return undefined;
+		if (!Array.isArray(raw.periods) || raw.periods.length > PROGRAM_LIMITS.rules) return undefined;
+		const state = new ObservationState();
+		state.nextGeneration = raw.nextGeneration;
+		for (const entry of raw.periods) {
+			const period = storedPeriod(entry);
+			if (!period) return undefined;
+			state.periods.set(period.id, period);
+		}
+		return state;
+	}
+}
+
+function storedTotal(total: ObservedTotal): number | null {
+	return total === UNKNOWN ? null : total;
+}
+function storedFromTotal(value: unknown): ObservedTotal {
+	return (value === null ? UNKNOWN : typeof value === "number" && Number.isFinite(value) ? value : UNKNOWN) as ObservedTotal;
+}
+function safeCount(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+function storedEventSample(value: unknown): EventSample | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const raw = value as { at?: unknown; turn?: unknown; total?: unknown };
+	if (typeof raw.at !== "number" || !Number.isFinite(raw.at) || !safeCount(raw.turn)) return undefined;
+	return { at: raw.at, turn: raw.turn, total: storedFromTotal(raw.total) };
+}
+function storedTurns(value: unknown): Map<number, { count: number; total: ObservedTotal }> {
+	const turns = new Map<number, { count: number; total: ObservedTotal }>();
+	if (!Array.isArray(value)) return turns;
+	for (const entry of value) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const stats = entry as { turn?: unknown; count?: unknown; total?: unknown };
+		if (!safeCount(stats.turn) || !safeCount(stats.count)) continue;
+		turns.set(stats.turn, { count: stats.count, total: storedFromTotal(stats.total) });
+	}
+	return turns;
+}
+function storedWindow(value: unknown): EventSample[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((entry) => {
+		const sample = storedEventSample(entry);
+		return sample ? [sample] : [];
+	});
+}
+function storedProjectedTurns(value: unknown): Set<number> {
+	const turns = new Set<number>();
+	if (!Array.isArray(value)) return turns;
+	for (const turn of value) if (safeCount(turn)) turns.add(turn);
+	return turns;
+}
+function storedSpec(value: unknown): StateSpec | undefined {
+	if (value === undefined) return undefined;
+	try {
+		return cloneJson(value) as StateSpec;
+	} catch {
+		return undefined;
+	}
+}
+function storedCurrentTurn(value: unknown): ObservationPeriod["currentTurn"] {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const current = value as { turn?: unknown; count?: unknown; total?: unknown };
+	return safeCount(current.turn) && safeCount(current.count)
+		? { turn: current.turn, count: current.count, total: storedFromTotal(current.total) }
+		: undefined;
+}
+function storedPeriod(value: unknown): ObservationPeriod | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const raw = value as Record<string, unknown>;
+	if (typeof raw.id !== "string" || typeof raw.revision !== "string") return undefined;
+	if (!safeCount(raw.generation) || !safeCount(raw.count) || !safeCount(raw.projected)) return undefined;
+	if (typeof raw.startedAt !== "number" || !Number.isFinite(raw.startedAt)) return undefined;
+	const spec = storedSpec(raw.spec);
+	const currentTurn = storedCurrentTurn(raw.currentTurn);
+	return {
+		id: raw.id,
+		revision: raw.revision,
+		generation: raw.generation,
+		...(spec ? { spec } : {}),
+		startedAt: raw.startedAt,
+		resetReason: typeof raw.resetReason === "string" ? raw.resetReason : "restore",
+		count: raw.count,
+		total: storedFromTotal(raw.total),
+		turns: storedTurns(raw.turns),
+		...(currentTurn ? { currentTurn } : {}),
+		turnsUnavailable: raw.turnsUnavailable === true,
+		window: storedWindow(raw.window),
+		projected: raw.projected,
+		...(typeof raw.lastProjectedAt === "number" && Number.isFinite(raw.lastProjectedAt)
+			? { lastProjectedAt: raw.lastProjectedAt }
+			: {}),
+		projectedTurns: storedProjectedTurns(raw.projectedTurns),
+		saturated: raw.saturated === true,
+	};
 }

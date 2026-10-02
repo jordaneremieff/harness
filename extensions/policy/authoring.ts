@@ -188,7 +188,10 @@ function admission(draft: ParsedDraft, snapshot: RuleSnapshot): void {
 	assertProposalTransition(event, snapshot);
 }
 
-function caseContext(ctx: ExtensionContext, scope: DraftCase["scope"]): ExtensionContext {
+/** Session facts draft checking reads; a native host supplies these without an ExtensionContext. */
+export type DraftCheckContext = { cwd: string; model?: { provider: string; id: string } | null };
+
+function caseContext(ctx: DraftCheckContext, scope: DraftCase["scope"]): ExtensionContext {
 	const provider = scope?.provider ?? scope?.model?.slice(0, scope.model.indexOf("/"));
 	const id = scope?.model?.slice((scope.model?.indexOf("/") ?? -1) + 1);
 	return {
@@ -202,7 +205,7 @@ function caseContext(ctx: ExtensionContext, scope: DraftCase["scope"]): Extensio
 	} as ExtensionContext;
 }
 
-function caseScope(ctx: ExtensionContext) {
+function caseScope(ctx: DraftCheckContext) {
 	return {
 		provider: ctx.model?.provider,
 		model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
@@ -240,7 +243,7 @@ async function runCase(
 	snapshot: RuleSnapshot,
 	record: RuleRecord,
 	pi: Pick<ExtensionAPI, "getAllTools" | "getActiveTools">,
-	ctx: ExtensionContext,
+	ctx: DraftCheckContext,
 	capturedAt: number,
 ) {
 	const context = caseContext(ctx, entry.scope);
@@ -366,7 +369,7 @@ type Diagnostic = { severity: "error" | "warning"; message: string };
 function draftWarnings(
 	record: RuleRecord,
 	snapshot: RuleSnapshot,
-	ctx: ExtensionContext,
+	ctx: DraftCheckContext,
 	capturedAt: number,
 ): Diagnostic[] {
 	const diagnostics: Diagnostic[] = [];
@@ -397,8 +400,8 @@ function draftWarnings(
 export async function checkDraft(
 	params: Record<string, unknown>,
 	snapshot: RuleSnapshot,
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
+	pi: Pick<ExtensionAPI, "getAllTools" | "getActiveTools">,
+	ctx: DraftCheckContext,
 	parse: ParseDraft,
 ): Promise<unknown> {
 	let draft: ParsedDraft;

@@ -1,4 +1,5 @@
 /** Policy registration and operator controls over the shared event interpreter. */
+import { fileURLToPath } from "node:url";
 import {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -6,6 +7,7 @@ import {
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { createPolicyDurableExtension, type PolicyDurableContribution } from "./durable.ts";
 import {
 	candidatePermitsEffectChoice,
 	makeRuleAudit,
@@ -792,6 +794,13 @@ async function policyEffectVerb(
 }
 
 export default function registerPolicy(pi: ExtensionAPI): void {
+	// The contribution channel exists on the current Pi host; a host without it simply has no Durable form.
+	const eventBus = (pi as Partial<ExtensionAPI>).events;
+	eventBus?.emit("durable:contribution", {
+		name: "policy",
+		source: fileURLToPath(import.meta.url),
+		create: createPolicyDurableExtension,
+	} satisfies PolicyDurableContribution);
 	pi.registerFlag(POLICY_MODE_FLAG, {
 		type: "string",
 		description: `Policy mode (${POLICY_MODES.join(", ")}); overrides PI_POLICY_MODE`,
@@ -848,7 +857,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		resetRevision: (id) => runtime.resetRevision(id),
 		reset: (id, reason, revision) => runtime.reset(id === "--all" ? undefined : [id], reason, revision),
 		telemetry: async (from, to) => ({ report: formatTelemetry(await readTelemetry(dir, from, to)) }),
-		inspect: (view, params, ctx) => runtime.inspect(view, params, ctx),
+		inspect: (view, params, ctx) => runtime.inspect(view, params, ctx as ExtensionContext),
 	});
 	runtime.attach();
 	let panelState: PolicyPanelResult = { view: "rules", filter: "" };

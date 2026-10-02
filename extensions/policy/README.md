@@ -12,6 +12,46 @@ normalizes authoring syntax into the same execution steps. Command parsing is an
 internal evidence source, not a second policy pipeline. There is no script
 language, dynamic plugin loader, background service, or sibling protocol.
 
+## Durable agents
+
+Pi Durable conversations receive the same policy capability through
+[durable.ts](durable.ts), emitted from the ordinary factory as a
+`durable:contribution`. The contribution installs the four tools, one usage
+section, and native task hooks:
+
+- `ToolTask.beforeTool` is the input phase: an enforce-mode denial becomes
+  `block`, and an enforce-mode correction replaces the call's arguments.
+- `ToolTask.afterTool` is the result and completion phase: approved
+  assert-error corrections and guide annotations replace the result before it
+  is committed.
+- `GenerationTask.beforeRequest` is the context phase: context rules, retained
+  completion guidance, and the one-time shell contract card append user
+  messages to that request only.
+
+The approved rule store stays external and revision-checked. Observation
+periods, retained guidance, the delivered shell card, the counted turn, and a
+bounded ring of completed calls live in the per-conversation `policy.state`
+document, so a replay after process loss returns the recorded decision instead
+of deciding again. Pending evidence for one call is stored with `api.memo()`.
+Every state update recomputes and commits inside one in-process tail.
+
+Replay classes: `policy_rules` is `safe` because it only reads. The three
+mutating tools are `unsafe`, so an interrupted execution produces an
+interrupted result instead of repeating an external write. A `policy.state`
+document that cannot be normalized is discarded field by field; the rule store
+is never repaired from the document.
+
+Semantic differences from the ordinary runtime:
+
+- Observation periods are conversation-scoped rather than session-wide, so a
+  fork, child, or sibling conversation observes its own calls and turns.
+- `notice` mode has no terminal notification surface in a Durable agent. It
+  records the same evaluation metadata without showing operator notices.
+- Completion telemetry is written after the state commit, at most once. A
+  crash between the two loses that record rather than duplicating it.
+- The shell contract card is delivered on the first annotate/enforce request
+  of each conversation rather than once per session load.
+
 ## Starter policies
 
 [catalog.ts](catalog.ts) supplies the bundled starter catalog independently of

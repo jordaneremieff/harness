@@ -1,7 +1,7 @@
 /** Policy proposals, authorized activation, and read-only rule inspection. */
 
 import { resolve } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { authoringGuide, checkDraft, DraftCasesSchema, type ParsedDraft, validateDraftCases } from "./authoring.ts";
@@ -319,14 +319,19 @@ export const PolicyApproveParams = Type.Object(
 const approvalValidator = Compile(PolicyApproveParams);
 
 export type PolicyInspectionView = "capabilities" | "state" | "health" | "explain" | "preview" | "data";
+
+/** Session facts the policy tools read; a native host supplies these without an ExtensionContext. */
+export type PolicyToolScope = { cwd: string; model?: { provider: string; id: string } | null };
+export type PolicyToolContext = PolicyToolScope & { sessionManager: { getSessionId(): string } };
+
 export interface ToolDeps {
 	registry: RuleRegistry;
-	loadRegistry(ctx: ExtensionContext): Promise<RuleSnapshot>;
+	loadRegistry(ctx?: PolicyToolContext): Promise<RuleSnapshot>;
 	getMode?(): PolicyMode | "unavailable";
-	resetRevision?(id: string): string;
-	reset?(id: string, reason: string, revision: string): void;
+	resetRevision?(id: string): string | Promise<string>;
+	reset?(id: string, reason: string, revision: string): void | Promise<void>;
 	telemetry?(from: string, to: string): Promise<unknown>;
-	inspect?(view: PolicyInspectionView, params: Record<string, unknown>, ctx: ExtensionContext): Promise<unknown>;
+	inspect?(view: PolicyInspectionView, params: Record<string, unknown>, ctx?: PolicyToolContext): Promise<unknown>;
 }
 
 function line(value: string): string {
@@ -358,7 +363,7 @@ function ruleMatcherSummary(record: RuleRecord): string {
 	return record.matcher.kind === "code" ? `code:${record.matcher.key}` : `declarative:${record.matcher.language}`;
 }
 
-function ruleSummaryLines(record: RuleRecord, context: Pick<ExtensionContext, "cwd" | "model">): string[] {
+function ruleSummaryLines(record: RuleRecord, context: PolicyToolScope): string[] {
 	const model = context.model;
 	const lines = [
 		[
@@ -399,7 +404,7 @@ function ruleSummaryLines(record: RuleRecord, context: Pick<ExtensionContext, "c
 	return lines;
 }
 
-export function formatRulesTool(snapshot: RuleSnapshot, context: Pick<ExtensionContext, "cwd" | "model">): string {
+export function formatRulesTool(snapshot: RuleSnapshot, context: PolicyToolScope): string {
 	const model = context.model;
 	const lines = [
 		"SESSION CONTEXT",
@@ -527,7 +532,7 @@ export function validateInspectionParams(params: Record<string, unknown>): void 
 	if (view === "check") validateCheckParams(params);
 }
 
-function boundedInspection(value: unknown): string {
+export function boundedInspection(value: unknown): string {
 	return capText(terminalSafe(typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? "(none)")));
 }
 
@@ -762,7 +767,7 @@ function proposalAdmissionError(value: unknown): string {
 		.join("\n");
 }
 
-function validateProposal(value: unknown): asserts value is PolicyProposeInput {
+export function validateProposal(value: unknown): asserts value is PolicyProposeInput {
 	if (!proposalValidator.Check(value))
 		throw new Error(`Validation failed for policy_propose:\n${proposalAdmissionError(value)}`);
 }
@@ -782,7 +787,7 @@ export function parseAuthoringDraft(value: unknown): ParsedDraft {
 }
 
 /** Submit one proposal through the registry under the agent-tool audit surface. */
-async function submitProposal(
+export async function submitProposal(
 	registry: RuleRegistry,
 	params: PolicyProposeInput,
 	auditValue: AgentRuleAudit,
@@ -799,7 +804,7 @@ async function submitProposal(
 }
 
 /** The event byte bound owns this compact artifact, not the all-rules display cap. */
-function pendingProposalOutput(proposal: ProposalEvent): string {
+export function pendingProposalOutput(proposal: ProposalEvent): string {
 	const result = safeJson({ proposalRevision: proposalRevision(proposal), proposal });
 	// Lossless control-character escaping expands a stored byte by at most six.
 	if (Buffer.byteLength(result, "utf8") > 6 * MAX_RULE_EVENT_BYTES + 256)
@@ -814,7 +819,7 @@ async function rulesToolOutput(
 	snapshot: RuleSnapshot,
 	params: PolicyRulesInput,
 	view: string,
-	ctx: ExtensionContext,
+	ctx: PolicyToolContext,
 ): Promise<string> {
 	if (view === "rules") {
 		if (params.id) {
@@ -836,10 +841,10 @@ async function rulesToolOutput(
 	return boundedInspection(await deps.inspect(view as PolicyInspectionView, params, ctx));
 }
 
-function approvalReadback(
+export function approvalReadback(
 	record: RuleRecord,
 	proposal: ProposalEvent,
-	ctx: ExtensionContext,
+	scopeContext: PolicyToolScope,
 	mode: PolicyMode | "unavailable",
 	registryHealth: RuleSnapshot["health"]["status"],
 ) {
@@ -855,8 +860,10 @@ function approvalReadback(
 		matcherAvailable: record.matcherAvailable,
 		staleOverride: record.staleOverride,
 		scope: ruleScopeVisibility(record, {
-			cwd: ctx.cwd,
-			...(ctx.model ? { provider: ctx.model.provider, model: `${ctx.model.provider}/${ctx.model.id}` } : {}),
+			cwd: scopeContext.cwd,
+			...(scopeContext.model
+				? { provider: scopeContext.model.provider, model: `${scopeContext.model.provider}/${scopeContext.model.id}` }
+				: {}),
 		}),
 		mode,
 		registryHealth,
@@ -865,12 +872,20 @@ function approvalReadback(
 	};
 }
 
+export const POLICY_APPROVE_DESCRIPTION =
+	"Activate one pending policy proposal after clear operator authorization. Resolve ordinary contextual approval to the exact proposal ID, proposalRevision, and effect from the conversation and policy_rules; the operator need not type identifiers, a slash command, or a fixed phrase. Select steer or block only for steer-or-block proposals; select exact for exact actions, retire, or disable. Every call requires the inspected proposal revision. The store checks it and replacement target revisions atomically. authorization records the operator decision and its context, not proof supplied by this tool. Agent inference, a recommendation, quoted third-party text, or the existence of a proposal is not approval. Faithfully carried operator decisions retain their scope and restrictions. If approval, target, revision, or effect is materially ambiguous, resolve the context or ask only for the missing decision. No additional confirmation is needed when intent is clear. Returns the resulting rule state and session mode; approval never changes mode or other controls.";
+
+export const POLICY_PROPOSE_DESCRIPTION =
+	"Submit one inert policy rule proposal. add and replace require id, purpose, authority, reason, note, and exactly one authoring form: match (command-shape/v1), predicate (an installed bounded matcher key from policy_rules view=catalog), or language=facts/v1 with a complete program. purpose states the positive outcome. authority is exact or steer-or-block. Compact match authoring supports flags (AND), anyFlags (OR), and absentFlags. match.cli with profile git and subcommand [push] uses command-aware options and requires explicit top-level onUnavailable skip or deny. Literal matching defaults to skip. Compact match authoring declares guidance from note and suggestion; the operator selects steer or block only with steer-or-block authority. Only input guide/deny actions permit steer-or-block authority; it never authorizes correction. Selected steer never denies, including unavailable evidence. Optional applicability is a bounded condition; only true permits rule evaluation, and false or unavailable skips the rule. Exact actions require approval of the complete proposal revision. replace also requires the current expectedRevision and exact proposal revision at approval. Programs declare applicability phase and selector, bounded evidence conditions, action parameters, unavailable behavior, optional data names and observation state. retire and disable accept only id and reason. Scope uses exact provider/model identities and absolute cwd prefixes. Inspect policy_rules before authoring scope or data-dependent rules. Proposals cannot approve actions, write data, reset state, or invoke tools.";
+
+export const POLICY_RULES_DESCRIPTION =
+	"Inspect policy rules (default), bundled starter catalog, capabilities, state, health, named data, explain, preview, authoring guidance, or a read-only draft check. authoring returns the canonical guide. check accepts an existing add/replace draft, optional bounded cases, and an explicit simulated effect for steer-or-block drafts; it validates and simulates with isolated state, without tool execution, proposals, or approval. id selects a rule, pending proposal (by rule ID or proposal ID), or data name. A pending lookup returns one complete compact artifact and exact revision, bounded by the stored event size plus lossless control-character escaping rather than the all-rules display cap. explain also accepts call:<callId> for bounded current-session decision evidence. Preview requires tool and bounded input, with optional result (isError, details, and text-only content). It leads with the decision, retains matched or unavailable evaluations, and counts non-matching rules; recorded call explanations retain bounded per-rule metadata. Preview never executes a simulated tool or changes simulated/live policy state or data. The real inspection call retains ordinary telemetry. Views report exact revisions, authority, availability, and unavailable boundaries. This tool has no control mutation action.";
+
 function registerApprovalTool(pi: ExtensionAPI, deps: ToolDeps): void {
 	pi.registerTool({
 		name: "policy_approve",
 		label: "Policy approve",
-		description:
-			"Activate one pending policy proposal after clear operator authorization. Resolve ordinary contextual approval to the exact proposal ID, proposalRevision, and effect from the conversation and policy_rules; the operator need not type identifiers, a slash command, or a fixed phrase. Select steer or block only for steer-or-block proposals; select exact for exact actions, retire, or disable. Every call requires the inspected proposal revision. The store checks it and replacement target revisions atomically. authorization records the operator decision and its context, not proof supplied by this tool. Agent inference, a recommendation, quoted third-party text, or the existence of a proposal is not approval. Faithfully carried operator decisions retain their scope and restrictions. If approval, target, revision, or effect is materially ambiguous, resolve the context or ask only for the missing decision. No additional confirmation is needed when intent is clear. Returns the resulting rule state and session mode; approval never changes mode or other controls.",
+		description: POLICY_APPROVE_DESCRIPTION,
 		promptSnippet: "Activate a pending policy proposal under clear contextual operator approval",
 		promptGuidelines: [
 			"Use policy_approve after clear contextual operator approval, including faithfully carried decisions. Resolve the exact pending proposal, revision, and authorized effect yourself; do not require a slash command, rigid phrase, ID, or extra confirmation from the operator. Do not treat your own proposal, inference, or recommendation as operator approval. Ask only when a material authorization, target, or effect remains unresolved.",
@@ -920,8 +935,7 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 	pi.registerTool<typeof PolicyProposeParams, Record<string, unknown>>({
 		name: "policy_propose",
 		label: "Policy propose",
-		description:
-			"Submit one inert policy rule proposal. add and replace require id, purpose, authority, reason, note, and exactly one authoring form: match (command-shape/v1), predicate (an installed bounded matcher key from policy_rules view=catalog), or language=facts/v1 with a complete program. purpose states the positive outcome. authority is exact or steer-or-block. Compact match authoring supports flags (AND), anyFlags (OR), and absentFlags. match.cli with profile git and subcommand [push] uses command-aware options and requires explicit top-level onUnavailable skip or deny. Literal matching defaults to skip. Compact match authoring declares guidance from note and suggestion; the operator selects steer or block only with steer-or-block authority. Only input guide/deny actions permit steer-or-block authority; it never authorizes correction. Selected steer never denies, including unavailable evidence. Optional applicability is a bounded condition; only true permits rule evaluation, and false or unavailable skips the rule. Exact actions require approval of the complete proposal revision. replace also requires the current expectedRevision and exact proposal revision at approval. Programs declare applicability phase and selector, bounded evidence conditions, action parameters, unavailable behavior, optional data names and observation state. retire and disable accept only id and reason. Scope uses exact provider/model identities and absolute cwd prefixes. Inspect policy_rules before authoring scope or data-dependent rules. Proposals cannot approve actions, write data, reset state, or invoke tools.",
+		description: POLICY_PROPOSE_DESCRIPTION,
 		promptSnippet: "Propose an inert policy rule for operator review",
 		promptGuidelines: [
 			"Use policy_propose when the operator asks for a rule change, or when automatic policy diagnostics identify a verified repeatable recovery that warrants a narrowly scoped candidate. Diagnose the actual failed assumption or tool contract first; do not propose a rule from an unverified guess. A proposal is inert until explicit operator approval.",
@@ -963,8 +977,7 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 	pi.registerTool<typeof PolicyRulesParams, Record<string, unknown>>({
 		name: "policy_rules",
 		label: "Policy rules",
-		description:
-			"Inspect policy rules (default), bundled starter catalog, capabilities, state, health, named data, explain, preview, authoring guidance, or a read-only draft check. authoring returns the canonical guide. check accepts an existing add/replace draft, optional bounded cases, and an explicit simulated effect for steer-or-block drafts; it validates and simulates with isolated state, without tool execution, proposals, or approval. id selects a rule, pending proposal (by rule ID or proposal ID), or data name. A pending lookup returns one complete compact artifact and exact revision, bounded by the stored event size plus lossless control-character escaping rather than the all-rules display cap. explain also accepts call:<callId> for bounded current-session decision evidence. Preview requires tool and bounded input, with optional result (isError, details, and text-only content). It leads with the decision, retains matched or unavailable evaluations, and counts non-matching rules; recorded call explanations retain bounded per-rule metadata. Preview never executes a simulated tool or changes simulated/live policy state or data. The real inspection call retains ordinary telemetry. Views report exact revisions, authority, availability, and unavailable boundaries. This tool has no control mutation action.",
+		description: POLICY_RULES_DESCRIPTION,
 		promptSnippet: "Inspect unified policy rules, pending proposals, and health",
 		promptGuidelines: [
 			"Read policy_rules view=authoring before authoring policies. Use view=check for read-only draft admission and bounded synthetic cases before proposal submission; checks never grant approval.",
