@@ -40,6 +40,16 @@ export function sanitizeTerminalText(input: string): SanitizedText {
 	return { text, changed };
 }
 
+/** One line of terminal-safe text; line breaks become ↵. */
+export function safeLine(value: string): string {
+	return sanitizeTerminalText(value).text.replace(/\n/g, "↵");
+}
+
+/** One line of terminal-safe text bounded to `max` characters. */
+export function shortField(value: string, max = 200): string {
+	return Array.from(safeLine(value)).slice(0, max).join("");
+}
+
 interface BoundedOutput {
 	text: string;
 	truncated: boolean;

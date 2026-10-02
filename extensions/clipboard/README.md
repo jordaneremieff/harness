@@ -17,6 +17,31 @@ Each tool is one operation; there is no action multiplexer, and the model-facing
 API has no transient index addressing — stable ids are the only entry handle.
 `clipboard_paste` and `clipboard_get` return at most 8,000 Unicode characters per page, subject to the stricter 50 KiB and 2000-line output bounds. A `nextOffset` tells the caller how to continue.
 
+## Durable agents
+
+Durable agent sessions receive their tools from native Pi Durable
+contributions, not from ordinary Pi extensions. The ordinary factory emits a
+contribution from `index.ts`; `durable.ts` builds the native extension from it.
+Both entrypoints call the same operations, parameter schemas, and archive
+functions, so the archive stays the external store and the contribution holds
+no Durable documents.
+
+| Tool | Replay class | Reason |
+|---|---|---|
+| `clipboard_copy` | unsafe | A rerun overwrites newer clipboard content and appends a duplicate archive record. |
+| `clipboard_paste` | safe | A rerun only reads the clipboard. |
+| `clipboard_list` | safe | A rerun only reads the archive. |
+| `clipboard_get` | safe | A rerun only reads the archive. |
+| `clipboard_restore` | unsafe | A rerun overwrites newer clipboard content and appends a duplicate archive record. |
+
+An interrupted unsafe call returns an interrupted result instead of rerunning.
+Model-facing guidance renders as the prompt section `clipboard`, composed from
+the same snippets and guidelines the ordinary registration exposes. The native
+tools return the same result text and details object as the ordinary tools; the
+ordinary tool cards do not apply because a Durable session renders its own
+transcript. The `/clipboard` overlay is a TUI operator surface and has no
+Durable form.
+
 ## Tool cards
 
 Each tool draws a compact TUI card. A collapsed card never shows copied, pasted, or
@@ -206,7 +231,9 @@ The component is the sole height authority. It reads the host TUI row count and 
 
 ## Files
 
-- `index.ts`: the clipboard tools and the `/clipboard` host.
+- `index.ts`: the ordinary tool registrations, the Durable contribution emission, and the `/clipboard` host.
+- `operations.ts`: the shared parameter schemas, tool text, usage guidance, and tool operations.
+- `durable.ts`: the native Pi Durable contribution.
 - `store.ts`: private append-only archive and stable-id resolution.
 - `search.ts`: bounded literal discovery, candidate validation, and stateless continuation.
 - `pb.ts`: no-shell `pbcopy` and `pbpaste` wrappers.
@@ -236,3 +263,9 @@ replacement clipboard executables keep the test off the operator's archive and
 system clipboard. This establishes exercised execution, not live-model search
 judgment. Browser tests drive keyboard input, narrow layouts, disposal, and late
 results with controlled I/O; the query change does not alter that interface.
+
+The durable test builds the emitted contribution in a real Pi Durable Harness
+over MemoryStorage with the faux provider, drives a model-issued call for every
+tool, checks the declared replay classes, and verifies the rendered prompt
+section and the archive and clipboard effects. This establishes the native
+registration and exercise, not crash recovery at the storage layer.

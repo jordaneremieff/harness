@@ -3,6 +3,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerClipboard from "./index.ts";
 import type { SearchPage } from "./search.ts";
@@ -76,15 +77,30 @@ class Registry<T> {
 	}
 }
 
-function registry(): { tools: Registry<Tool>; commands: Registry<MockCommand> } {
+interface EmittedContribution {
+	name: string;
+	source: string;
+}
+
+function registry(): {
+	tools: Registry<Tool>;
+	commands: Registry<MockCommand>;
+	contributions: EmittedContribution[];
+} {
 	const tools = new Registry<Tool>();
 	const commands = new Registry<MockCommand>();
+	const contributions: EmittedContribution[] = [];
 	const pi = {
 		registerTool: (tool: Tool) => tools.set(tool.name, tool),
 		registerCommand: (name: string, command: MockCommand) => commands.set(name, command),
+		events: {
+			emit: (event: string, value: EmittedContribution) => {
+				if (event === "durable:contribution") contributions.push(value);
+			},
+		},
 	};
 	registerClipboard(pi as unknown as ExtensionAPI);
-	return { tools, commands };
+	return { tools, commands, contributions };
 }
 
 const execute = (tool: Tool, params: Record<string, unknown>) =>
@@ -142,12 +158,15 @@ after(async () => {
 
 describe("clipboard entrypoint", () => {
 	it("registers all tools and /clipboard", () => {
-		const { tools, commands } = registry();
+		const { tools, commands, contributions } = registry();
 		assert.deepEqual(
 			[...tools.keys()],
 			["clipboard_copy", "clipboard_paste", "clipboard_list", "clipboard_get", "clipboard_restore"],
 		);
 		assert.ok(commands.has("clipboard"));
+		assert.equal(contributions.length, 1, "the factory emits one Durable contribution");
+		assert.equal(contributions[0]?.name, "clipboard");
+		assert.equal(contributions[0]?.source, fileURLToPath(new URL("./index.ts", import.meta.url)));
 	});
 
 	it("restores a listed stable id after later writes shift list order", async () => {
