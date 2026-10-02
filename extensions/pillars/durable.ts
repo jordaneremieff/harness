@@ -39,6 +39,7 @@ export interface DurableContributionHost {
 	readonly agentDir: string;
 	readonly storageId: string;
 	readonly signal: AbortSignal;
+	onClose(dispose: () => void | Promise<void>): void;
 	readonly inventory: DurableInventory;
 }
 
@@ -54,12 +55,15 @@ export interface DurableInventory {
 export interface DurableCommand {
 	readonly name: string;
 	readonly description: string;
-	run(
-		args: string,
-		conversation: Durable.Conversation,
-		context: Context,
-		host: DurableContributionHost,
-	): Promise<string>;
+	run(call: DurableCommandCall): Promise<string>;
+}
+
+export interface DurableCommandCall {
+	readonly args: string;
+	readonly conversation: Durable.Conversation;
+	readonly context: Context;
+	readonly host: DurableContributionHost;
+	readonly invocationId: string;
 }
 
 /** Pi Durable details are JSON values; the corpus page and usage response are plain JSON objects. */
@@ -134,15 +138,16 @@ export function pillarsDurableContribution(source: string): DurableContribution 
 				process.stderr.write("The loaded Pillars source is unavailable. Access attribution remains unavailable.\n");
 			let closing = false;
 			let flushChain: Promise<void> = Promise.resolve();
-			host.signal.addEventListener(
-				"abort",
-				() => {
-					closing = true;
-					reader.clear();
-					void collector?.shutdown();
-				},
-				{ once: true },
-			);
+			let releaseWork: Promise<void> | undefined;
+			function release(): Promise<void> {
+				if (releaseWork !== undefined) return releaseWork;
+				closing = true;
+				reader.clear();
+				releaseWork = collector?.shutdown() ?? Promise.resolve();
+				return releaseWork;
+			}
+			host.signal.addEventListener("abort", () => void release(), { once: true });
+			host.onClose(() => release());
 
 			/** One delivered page is recorded for its result-stage observation; a replay keeps the first extent. */
 			async function recordDelivery(page: AccessPage, api: Durable.ToolExecutionApi, context: Context): Promise<void> {

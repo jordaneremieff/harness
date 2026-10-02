@@ -384,10 +384,10 @@ another access. Each tool also describes its structured result with an
 Attribution uses the native tool and generation hooks. `beforeTool` and
 `afterTool` on `ToolTask` admit request and result observations for `pillars`
 and `read`; a `GenerationTask` `afterTools` hook flushes the round's admitted
-evidence, so a settled run leaves no pending cells; and the host shutdown
-signal releases the reader and flushes the collector. The store, its
-configuration variables, and the evidence meanings are the same as for the
-ordinary entrypoint.
+evidence, so a settled run leaves no pending cells; the host shutdown signal
+releases the reader early; and the close registration makes the host await the
+final flush before it closes storage. The store, its configuration variables,
+and the evidence meanings are the same as for the ordinary entrypoint.
 
 Documented differences from the ordinary entrypoint:
 
