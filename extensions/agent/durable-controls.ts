@@ -75,6 +75,14 @@ export type DeliveryMessagePart = {
 };
 export type DeliveryMessage = string | DeliveryMessagePart[];
 
+/**
+ * Who caused one admission. An operator action from the board or the
+ * `/agent` command is `operator`; an agent tool from a model is `model`. An
+ * intent stored before this field existed has no origin and reads as `model`,
+ * so its notice keeps the turn-triggering delivery behavior.
+ */
+export type DeliveryOrigin = "operator" | "model";
+
 /** One durable delivery intent, written before the submission it describes. */
 export type DeliveryIntent = {
 	readonly requestId: string;
@@ -84,6 +92,7 @@ export type DeliveryIntent = {
 	readonly whenBusy: "steer" | "followUp" | "reject" | null;
 	readonly operationId: string | null;
 	readonly submissionId: SubmissionId | null;
+	readonly origin?: DeliveryOrigin;
 };
 
 /** One settled result waiting for its owner to acknowledge it. */
@@ -93,6 +102,8 @@ export type DeliveryReceipt = {
 	readonly ownerId: string;
 	readonly conversationId: ConversationId;
 	readonly operationId: string | null;
+	/** Admission origin copied from the intent; an absent value reads as `model`. */
+	readonly origin?: DeliveryOrigin;
 	readonly status: "done" | "unanswered";
 	readonly entryId: EntryId | null;
 	readonly answerEntryId: EntryId | null;
@@ -163,6 +174,7 @@ export interface DurableSubmitParams {
 	readonly ownerId?: string;
 	readonly whenBusy?: "steer" | "followUp" | "reject";
 	readonly operationId?: string;
+	readonly origin?: DeliveryOrigin;
 }
 
 export interface DurableSubmitResult {
@@ -213,7 +225,7 @@ export async function submitConversation(
 	params: DurableSubmitParams,
 	context: Context,
 ): Promise<DurableSubmitResult> {
-	const { message, requestId, ownerId, whenBusy, operationId } = params;
+	const { message, requestId, ownerId, whenBusy, operationId, origin } = params;
 	let deduped = (await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined;
 	if (ownerId !== undefined) {
 		const existing = await conversation.commit(async (tx) => {
@@ -237,6 +249,7 @@ export async function submitConversation(
 				whenBusy: whenBusy ?? null,
 				operationId: operationId ?? null,
 				submissionId: null,
+				origin: origin ?? "model",
 			});
 			return null;
 		}, context);
@@ -446,6 +459,7 @@ export interface DurableRewindParams {
 	readonly ownerId?: string;
 	readonly whenBusy?: "steer" | "followUp" | "reject";
 	readonly operationId?: string;
+	readonly origin?: DeliveryOrigin;
 }
 
 export interface DurableRewindResult {
@@ -497,6 +511,7 @@ export async function rewindConversation(
 			...(params.ownerId === undefined ? {} : { ownerId: params.ownerId }),
 			...(params.whenBusy === undefined ? {} : { whenBusy: params.whenBusy }),
 			...(params.operationId === undefined ? {} : { operationId: params.operationId }),
+			...(params.origin === undefined ? {} : { origin: params.origin }),
 		},
 		context,
 	);
@@ -770,6 +785,7 @@ function receiptRow(intent: DeliveryIntent, record: Extract<SubmissionRecord, { 
 		ownerId: intent.ownerId,
 		conversationId: intent.conversationId,
 		operationId: intent.operationId,
+		origin: intent.origin ?? "model",
 		status: record.status,
 		entryId: record.entry ?? null,
 		answerEntryId: record.status === "done" ? record.answer : null,

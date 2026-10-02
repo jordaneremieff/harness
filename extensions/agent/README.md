@@ -114,9 +114,19 @@ storage or abort work.
 A blank configure name clears the stored name. An exact `provider/model` is
 validated against the configured catalog, and the requested reasoning level is
 clamped by Pi. Configuration requires an idle conversation, starts no task, and
-changes no global defaults. Fork, rewind, and configure results carry a bounded
-status snapshot; if that read fails after the mutation, the result carries
-`snapshotError` and the successful receipt stays.
+changes no global defaults. A mutation result carries a compact status:
+identity, conversation, name, cwd, busy state, model, and the capability limits
+that matter. The full status stays available through `agent_status`. If the
+post-mutation status read fails, the result carries `snapshotError` and the
+successful receipt stays.
+
+The `/agent` control actions return short human text and, when an action creates
+or selects an agent, that agent's identity. Observation actions (`list`,
+`status`, `inspect`, `places`) keep their retained evidence. The status card
+labels its newest text by state: an active conversation shows `Working on the
+task`, and an idle conversation shows `Latest message`. The status contract
+carries no author role, so the card does not present that text as a pending
+assistant reply.
 
 ## Recovery and delivery
 
@@ -134,7 +144,8 @@ Retained outcomes include submission and answer entry IDs. The source storage's
 durable-delivery watcher is the sole retained-output delivery owner: after every
 native commit it settles intents atomically and groups receipts by native answer
 entry. A result notice lists every submission that shares that answer. Primary
-notice details retain each submission's request, operation, input entry, and owner.
+notice details retain each submission's request, operation, input entry, owner,
+and admission origin.
 Each recipient receives one notice for that answer,
 including when owner routes overlap. Distinct answers and unanswered submissions
 stay separate. The watcher acknowledges every receipt in the answer group in one
@@ -154,6 +165,23 @@ can repeat a notice if its in-memory deduplication was lost. Transmitted peer bo
 text bound and an explicit truncation marker; `agent_inspect` retains access to
 the full source. A delivery receipt never proves task acceptance or that an
 agent acted on a correction.
+
+Each admission records its origin before the submission: `operator` for the
+board composer and `/agent` actions, `model` for agent tools. The delivery
+intent stores that origin, so it survives a host crash and relaunch; an intent
+from before the field existed reads as `model`. An operator-only answer group
+displays and retains its notice with no primary turn and no steering. When any
+submission in the answer group came from a model, the notice keeps the wake
+behavior. A fallback broadcast never wakes a recipient's model. The notice
+names the agent by stored name, first-task excerpt, or short identity; full
+identities and submission rows stay in the details. The notice card shows the
+agent label, the outcome (finished, failed, or stopped), the answer body, and
+how to open the conversation on the board. Catalog follow-ups between Durable
+hosts keep their existing form.
+
+A registered primary refreshes its recorded model, reasoning level, and session
+name when the ordinary session changes them, so `agent_status` and endpoint
+discovery report the identity the operator runs.
 
 The host sets a top-level `recoveryDue` marker before it admits work, and when
 opening finds pending native work or pending delivery. Startup recovery reads

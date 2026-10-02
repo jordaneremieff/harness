@@ -39,7 +39,7 @@ it("preserves optional command inputs and resolves directory commands at the pri
 		{ method: "compact", input: { sessionId: "target", instructions: "preserve exact source links" } },
 		{ method: "attach", input: { sessionId: "target", model: "fixture/model" } },
 		{ method: "fork", input: { sessionId: "target", entryId: "7" } },
-		{ method: "place", input: { area: resolve(ctx.cwd, "../project"), prompt: "next task" } },
+		{ method: "place", input: { area: resolve(ctx.cwd, "../project"), prompt: "next task", origin: "operator" } },
 		{ method: "unbind", input: resolve(ctx.cwd, "./bound") },
 	]);
 	assert.equal(notices.length, 5);

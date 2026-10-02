@@ -128,6 +128,7 @@ function deferred() {
 
 interface CapturedPrimaryChannel {
 	readonly options: PrimaryChannelOptions;
+	readonly updates: Array<{ name: string | undefined; model: { provider: string; modelId: string } | undefined; thinkingLevel: string | undefined }>;
 	closed: boolean;
 }
 
@@ -138,7 +139,7 @@ function primaryFactory(onClose?: (channel: CapturedPrimaryChannel, invocation: 
 	const factory = async (options: PrimaryChannelOptions): Promise<PrimaryChannel> => {
 		invocations += 1;
 		const invocation = invocations;
-		const captured: CapturedPrimaryChannel = { options, closed: false };
+		const captured: CapturedPrimaryChannel = { options, updates: [], closed: false };
 		channels.push(captured);
 		const info = (): PrimaryInfo => ({
 			id: options.id,
@@ -155,6 +156,9 @@ function primaryFactory(onClose?: (channel: CapturedPrimaryChannel, invocation: 
 			id: options.id,
 			socketPath: join(options.sessionsRoot, ".primaries", `${options.id}.sock`),
 			info,
+			update: (info) => {
+				captured.updates.push(info);
+			},
 			close: async () => {
 				captured.closed = true;
 				await onClose?.(captured, invocation);
@@ -727,4 +731,91 @@ it("pages list rows and reports unavailable storages", { timeout: 15000 }, async
 	assert.equal(result.rows.every((row) => row.storageId === first.storageId), true);
 	assert.equal(result.coverage.unavailable.length, 1);
 	manager.close();
+});
+
+it("forwards admission origins and keeps absent origins absent", async (t) => {
+	const root = fixtureRoot(t);
+	const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+	const manager = new AgentManager(managerOptions(root, {
+		validateModel: () => {},
+		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
+			seen.push({ method, params: params as Record<string, unknown> });
+			return { submissionId: 9 };
+		}),
+	}));
+	const record = createRecord(manager, root);
+	const caller = { id: "caller", cwd: root, model: { provider: "fixture", modelId: "model-1" } };
+	try {
+		await manager.control("submit", { sessionId: record.storageId, message: "operator task", origin: "operator" }, caller);
+		await manager.control("submit", { sessionId: record.storageId, message: "model task", origin: "model" }, caller);
+		await manager.control("submit", { sessionId: record.storageId, message: "absent origin" }, caller);
+		await manager.spawn({ prompt: "board task", origin: "operator" }, caller);
+		const submits = seen.filter((entry) => entry.method === "submit");
+		assert.equal(submits[0]?.params.origin, "operator");
+		assert.equal(submits[1]?.params.origin, "model");
+		assert.equal(submits[2]?.params.origin, undefined);
+		assert.equal(submits[3]?.params.origin, "operator");
+	} finally { manager.close(); }
+});
+
+it("returns a compact status snapshot from a mutation instead of the full status", async (t) => {
+	const root = fixtureRoot(t);
+	const fullStatus = {
+		conversation: {
+			conversationId: 1,
+			identity: "storage-a",
+			name: "Review parser",
+			firstMessage: "review the parser and report every finding",
+			cwd: root,
+			busy: false,
+			lastText: "working on it",
+			agent: { model: { provider: "fixture", modelId: "model-1" }, thinkingLevel: "high", tools: ["bash", "write"], extensions: ["agent", "other"] },
+			live: { run: { taskId: 4 }, tools: [{ name: "bash", status: "running" }] },
+			submissions: [{ id: 1, type: "input", status: "done" }],
+		},
+		inventory: { contributions: [{ source: "a" }], ordinaryOnly: ["/home/example/extensions/legacy.ts"] },
+		pid: 42,
+		storageId: "storage-a",
+	};
+	const manager = new AgentManager(managerOptions(root, {
+		validateModel: () => {},
+		acquire: async (metadata) => fakeConnection(metadata, async (method) => (method === "status" ? fullStatus : { submissionId: 5 })),
+	}));
+	try {
+		const outcome = await manager.spawn({ prompt: "review the parser", origin: "operator" }, { id: "caller", cwd: root, model: { provider: "fixture", modelId: "model-1" } }) as {
+			status: { identity: string; conversationId: number; name?: string; cwd?: string; busy: boolean; state: string; agent: { model?: { provider: string; modelId: string }; thinkingLevel: string }; limits?: { ordinaryOnly: string[] } };
+		};
+		assert.equal(outcome.status.identity, "storage-a");
+		assert.equal(outcome.status.conversationId, 1);
+		assert.equal(outcome.status.name, "Review parser");
+		assert.equal(outcome.status.cwd, root);
+		assert.equal(outcome.status.busy, false);
+		assert.equal(outcome.status.state, "idle");
+		assert.deepEqual(outcome.status.agent.model, { provider: "fixture", modelId: "model-1" });
+		assert.equal(outcome.status.agent.thinkingLevel, "high");
+		assert.deepEqual(outcome.status.limits?.ordinaryOnly, ["/home/example/extensions/legacy.ts"]);
+		const serialized = JSON.stringify(outcome);
+		assert.equal(serialized.includes("firstMessage"), false, "the prompt excerpt does not repeat in the spawn result");
+		assert.equal(serialized.includes("lastText"), false, "live assistant text stays out of the spawn result");
+		assert.equal(serialized.includes("submissions"), false, "the submission inventory stays out of the spawn result");
+		assert.ok(serialized.length < 1024, `compact spawn result stays small (was ${serialized.length} characters)`);
+	} finally { manager.close(); }
+});
+
+it("refreshes the registered primary identity after model, thinking, and name changes", async (t) => {
+	const root = fixtureRoot(t);
+	const factory = primaryFactory();
+	const manager = new AgentManager(managerOptions(root, { createPrimary: factory.factory, connect: noHost }));
+	const primary = fakePrimary(new AbortController().signal);
+	try {
+		await manager.registerPrimary("owner-1", primary.client);
+		const channel = factory.channels[0];
+		assert.ok(channel);
+		manager.updatePrimary("owner-1", { model: { provider: "anthropic", modelId: "claude-opus-5-5" } });
+		manager.updatePrimary("owner-1", { thinkingLevel: "xhigh" });
+		manager.updatePrimary("owner-1", { name: "primary review" });
+		assert.deepEqual(channel.updates.at(-1), { name: "primary review", model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "xhigh" });
+		const status = await manager.status() as { primaries: Array<{ sessionId: string; name?: string; model?: { provider: string; modelId: string }; thinkingLevel?: string }> };
+		assert.deepEqual(status.primaries, [{ sessionId: "owner-1", cwd: "/work", name: "primary review", model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "xhigh" }]);
+	} finally { manager.close(); }
 });

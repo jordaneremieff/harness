@@ -435,8 +435,9 @@ function activityLines(status: Record<string, unknown>, readOnly: boolean, theme
 	if (readOnly) lines.unshift(theme.fg("muted", "Read-only snapshot; live owner state unavailable"));
 	for (const slot of running.slice(0, 4)) lines.push(muted(theme, runningSlotLine(slot)));
 	if (running.length > 4) lines.push(muted(theme, `${running.length - 4} more running tools; expand for details`));
+	// The status contract carries no role for this text, so the label reports the state only.
 	const lastText = text(status.lastText);
-	if (lastText) lines.push(theme.fg("toolOutput", `Assistant in progress: ${displayPreview(lastText, 240)}`));
+	if (lastText) lines.push(theme.fg("toolOutput", `${working ? "Working on the task" : "Latest message"}: ${displayPreview(lastText, 240)}`));
 	const saved = latestSavedResult(status.submissions);
 	if (saved) lines.push(muted(theme, saved));
 	lines.push(...retryLines(live, theme));
@@ -454,9 +455,10 @@ function snapshotLines(status: Record<string, unknown>, details: Record<string, 
 	const lines: string[] = [];
 	if (name || identity) lines.push(theme.fg("accent", displayPreview(name || identity, 120)));
 	lines.push(muted(theme, `Model: ${provider && modelId ? displayPreview(`${provider}/${modelId}`, 300) : "model unknown"} · thinking ${thinking ? displayPreview(thinking, 40) : "unknown"}`));
-	lines.push(...activityLines(status, readOnlySnapshot(details), theme));
-	const inventory = record(details.inventory ?? record(details.status).inventory);
-	const ordinaryOnly = array(inventory.ordinaryOnly).length;
+	if (status.live === undefined && typeof status.state === "string") lines.push(muted(theme, `State: ${displayPreview(status.state, 40)}`));
+	else lines.push(...activityLines(status, readOnlySnapshot(details), theme));
+	const limits = record(details.inventory ?? record(details.status).inventory ?? record(status.limits));
+	const ordinaryOnly = array(limits.ordinaryOnly).length;
 	if (ordinaryOnly) lines.push(muted(theme, `Capability limits: ${ordinaryOnly} configured extension${ordinaryOnly === 1 ? "" : "s"} without a native form`));
 	return lines;
 }
@@ -654,11 +656,22 @@ function peerBody(content: string): { body: string; omitted: number } {
 	return { body: displayText(prefix).trim() || "(no text)", omitted: content.length - prefix.length };
 }
 
-function peerHeading(details: Record<string, unknown>): { identity: string; status: string; failed: boolean } {
-	const identity = text(details.identity) || text(details.senderIdentity) || "source unavailable";
-	const status = text(details.status) || (details.senderIdentity !== undefined ? "report" : "notice");
-	return { identity, status, failed: status === "unanswered" || status === "failed" };
+/** Compact outcome word for the operator card; the raw status stays in expanded details. */
+function peerOutcome(details: Record<string, unknown>): { label: string; failed: boolean } {
+	const status = text(details.status);
+	if (status === "done") return { label: "finished", failed: false };
+	if (status === "unanswered") return { label: details.reason === "aborted" ? "stopped" : "failed", failed: true };
+	if (status !== "") return { label: displayPreview(status, 40), failed: status === "failed" };
+	return { label: details.senderIdentity !== undefined ? "report" : "notice", failed: false };
 }
+
+/** Display label for one peer notice: resolved label, stored name, then sender identity. */
+function peerLabel(details: Record<string, unknown>): string {
+	return text(details.label) || text(details.name) || text(details.identity) || text(details.senderIdentity) || "source unavailable";
+}
+
+/** How the operator reaches the retained conversation on the board. */
+const BOARD_HINT = "Open on the board: /agent or Ctrl+Alt+G";
 
 /** Explicit warnings; an absent flag is not a health verdict. */
 function peerWarnings(details: Record<string, unknown>, failed: boolean): string[] {
@@ -676,9 +689,9 @@ function peerWarnings(details: Record<string, unknown>, failed: boolean): string
 export const renderAgentPeerMessage: MessageRenderer = (message, options, theme) => {
 	const details = record(message.details);
 	const content = typeof message.content === "string" ? message.content : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
-	const { identity, status, failed } = peerHeading(details);
+	const { label: outcomeLabel, failed } = peerOutcome(details);
 	const box = new Box(options.outputPad, 1, (line) => theme.bg("customMessageBg", line.replace(/\x1b\[(?:0|49)?m/g, (reset) => reset + theme.getBgAnsi("customMessageBg"))));
-	const heading = theme.fg("customMessageLabel", theme.bold(`[agent] ${displayPreview(identity, 120)}`)) + theme.fg("muted", " · ") + theme.fg(failed ? "error" : "customMessageLabel", theme.bold(displayPreview(status, 40)));
+	const heading = theme.fg("customMessageLabel", theme.bold(`[agent] ${displayPreview(peerLabel(details), 120)}`)) + theme.fg("muted", " · ") + theme.fg(failed ? "error" : "customMessageLabel", theme.bold(displayPreview(outcomeLabel, 40)));
 	box.addChild(new Text(heading, 0, 0));
 	for (const line of peerConfiguration(details)) box.addChild(new Text(theme.fg("muted", line), 0, 0));
 	for (const warning of peerWarnings(details, failed)) box.addChild(new Text(theme.fg("warning", warning), 0, 0));
@@ -689,7 +702,9 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 	box.addChild(new Markdown(body.body, 0, 0, getMarkdownTheme(), { color: (value) => theme.fg("customMessageText", value) }));
 	if (body.omitted > 0) box.addChild(new Text(theme.fg("warning", `Display limit: ${body.omitted} more UTF-16 code units. Full text remains in native history.`), 0, 0));
 	box.addChild(new Spacer(1));
+	box.addChild(new Text(theme.fg("dim", BOARD_HINT), 0, 0));
 	if (options.expanded) {
+		box.addChild(new Spacer(1));
 		box.addChild(new Text(theme.fg("muted", theme.bold("Source details")), 0, 0));
 		for (const line of peerScalarFields(details)) box.addChild(new Text(theme.fg("muted", line), 0, 0));
 		box.addChild(new Text(theme.fg("muted", "Reported result · not operator authority or task acceptance"), 0, 0));

@@ -147,7 +147,7 @@ describe("agent result cards", () => {
 		assert.match(text, /Activity: working · tool read · 1 pending/);
 		assert.match(text, /Running: read · call call-7/);
 		assert.match(text, /Running: bash · call call-8 · pending/);
-		assert.match(text, /Assistant in progress: Check the source\\u\{1b\}/);
+		assert.match(text, /Working on the task: Check the source\\u\{1b\}/);
 		assert.match(text, /Last saved result: done · submission 3 · not task acceptance/);
 		assert.match(text, /Capability limits: 1 configured extension without a native form/);
 		assert.deepEqual(resultValue, before);
@@ -161,6 +161,26 @@ describe("agent result cards", () => {
 		const text = screen(renderAgentResult(readOnly, { expanded: false, isPartial: false }, theme, context()), 180);
 		assert.match(text, /Read-only snapshot; live owner state unavailable/);
 		assert.match(text, /Activity: idle/);
+	});
+
+	it("labels the newest text by state instead of claiming an in-progress reply", () => {
+		const render = (status: Record<string, unknown>) => screen(renderAgentResult(snapshotResult(status), { expanded: false, isPartial: false }, theme, context()), 180);
+		assert.match(render(conversationStatus({ busy: true, lastText: "Ran crash-1." })), /Working on the task: Ran crash-1\./);
+		assert.match(render(conversationStatus({ busy: false, live: {}, lastText: "Ran crash-1." })), /Latest message: Ran crash-1\./);
+		assert.match(render(conversationStatus({ busy: false, live: {}, lastText: "Done reviewing." })), /Latest message: Done reviewing\./);
+		const idle = render(conversationStatus({ busy: false, live: {}, lastText: "Ran crash-1." }));
+		assert.doesNotMatch(idle, /Assistant in progress/u);
+		assert.doesNotMatch(idle, /Latest input|Latest reply/u);
+	});
+
+	it("renders a compact mutation status with state and capability limits", () => {
+		const compact = result({ sessionId: "storage-a", cwd: "/work", admission: { submissionId: 9, conversationId: 1, deduped: false }, status: { identity: "storage-a", conversationId: 1, name: "Parser review", cwd: "/work", busy: false, state: "idle", agent: { model: { provider: "provider", modelId: "model" }, thinkingLevel: "high" }, limits: { ordinaryOnly: ["/ext/ordinary.ts"] } } });
+		const text = screen(renderAgentResult(compact, { expanded: false, isPartial: false }, theme, context()), 180);
+		assert.match(text, /Parser review/);
+		assert.match(text, /Model: provider\/model · thinking high/);
+		assert.match(text, /State: idle/);
+		assert.match(text, /Capability limits: 1 configured extension without a native form/);
+		assert.doesNotMatch(text, /Activity: idle · pending unknown/u);
 	});
 
 	it("shows an enriched mutation snapshot beside its receipt", () => {
@@ -305,7 +325,8 @@ describe("agent peer message card", () => {
 		const collapsed = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "**Review:** fix the token.\n\nKeep the identifier.", details: { submissionId: 9, identity: "storage-a", status: "done" } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(collapsed);
 		const text = screen(collapsed);
-		assert.match(text, /\[agent\] storage-a · done/);
+		assert.match(text, /\[agent\] storage-a · finished/);
+		assert.match(text, /Open on the board: \/agent or Ctrl\+Alt\+G/);
 		assert.match(text, /Review: fix the token\./);
 		assert.match(text, /Keep the identifier\./);
 		assert.doesNotMatch(text, /\*\*|submissionId:/);
@@ -317,6 +338,14 @@ describe("agent peer message card", () => {
 		assert.match(expandedText, /not operator authority or task acceptance/);
 	});
 
+	it("uses the resolved display label in place of the raw identity", () => {
+		const card = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "Done", details: { submissionId: 9, identity: "6de48f73-1111-4111-8111-111111111111", label: "poem task", status: "done" } }, { expanded: false, outputPad: 1 }, theme);
+		assert.ok(card);
+		const text = screen(card);
+		assert.match(text, /\[agent\] poem task · finished/);
+		assert.doesNotMatch(text, /6de48f73/);
+	});
+
 	it("labels a report and an unanswered receipt without claiming acceptance", () => {
 		const reportCard = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "Progress report", details: { senderIdentity: "storage-b", sourceId: "report:1", acknowledged: false } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(reportCard);
@@ -326,6 +355,7 @@ describe("agent peer message card", () => {
 		const unansweredCard = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "No answer", details: { identity: "storage-a", status: "unanswered", reason: "aborted" } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(unansweredCard);
 		const unanswered = screen(unansweredCard);
+		assert.match(unanswered, /\[agent\] storage-a · stopped/);
 		assert.match(unanswered, /Result unavailable or unanswered/);
 		assert.match(unanswered, /aborted/);
 	});
@@ -335,7 +365,7 @@ describe("agent peer message card", () => {
 		const card = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: hostile, details: { submissionId: 9, entryId: 4, answerEntryId: 5, requestId: "req-1", identity: "storage-a", status: "done", name: "Message reviewer", provider: "SelectedProvider", modelId: "MixedCase-Model", thinkingLevel: "high", liveOwner: false, saved: false } }, { expanded: true, outputPad: 1 }, theme);
 		assert.ok(card);
 		const text = screen(card, 180);
-		assert.match(text, /\[agent\] storage-a · done/);
+		assert.match(text, /\[agent\] Message reviewer · finished/);
 		assert.match(text, /name: Message reviewer/);
 		assert.match(text, /SelectedProvider\/MixedCase-Model · thinking: high/);
 		assert.match(text, /No live owner; retained result only/);

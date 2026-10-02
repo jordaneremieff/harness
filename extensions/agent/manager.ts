@@ -6,6 +6,7 @@ import { formatDurableFooter } from "./footer.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { createPrimaryChannel, connectPrimaryChannel, type PrimaryChannel } from "./primary-channel.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
+import type { DeliveryOrigin } from "./durable-controls.ts";
 import { acquireHost, connectHost, type HostConnection } from "./host-client.ts";
 import { hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { observeClaim } from "./claims.ts";
@@ -47,6 +48,50 @@ const MAX_LIST_VISITS = 32;
 const CRASH_WINDOW_MS = 60_000;
 const MAX_AUTOMATIC_RESTARTS = 3;
 const MANAGED_LINK = { retryAttempts: 0 } as const;
+
+/** Admission origin as request parameters; an absent origin stays absent. */
+function originParams(origin: DeliveryOrigin | undefined): { origin?: DeliveryOrigin } {
+	return origin === undefined ? {} : { origin };
+}
+
+function record(value: unknown): Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function stringField(value: unknown): string | undefined {
+	return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
+ * Compact projection of one host status: identity, admission-relevant session
+ * facts, and the capability limits that matter. The full status remains
+ * available through the `agent_status` tool.
+ */
+function compactStatus(value: unknown): unknown {
+	const wrapper = record(value);
+	const conversation = record(wrapper.conversation);
+	const agent = record(conversation.agent);
+	const model = record(agent.model);
+	const inventory = record(wrapper.inventory);
+	const ordinaryOnly = Array.isArray(inventory.ordinaryOnly) ? inventory.ordinaryOnly.filter((item): item is string => typeof item === "string") : [];
+	const provider = stringField(model.provider);
+	const modelId = stringField(model.modelId);
+	const name = stringField(conversation.name);
+	const cwd = stringField(conversation.cwd);
+	return {
+		...(typeof conversation.identity === "string" ? { identity: conversation.identity } : {}),
+		...(typeof conversation.conversationId === "number" ? { conversationId: conversation.conversationId } : {}),
+		...(name === undefined ? {} : { name }),
+		...(cwd === undefined ? {} : { cwd }),
+		busy: conversation.busy === true,
+		state: conversation.busy === true ? "working" : "idle",
+		agent: {
+			...(provider === undefined || modelId === undefined ? {} : { model: { provider, modelId } }),
+			thinkingLevel: stringField(agent.thinkingLevel) ?? "off",
+		},
+		...(ordinaryOnly.length === 0 ? {} : { limits: { ordinaryOnly } }),
+	};
+}
 
 function errorText(error: unknown): string {
 	const text = error instanceof Error ? error.message : String(error);
@@ -156,7 +201,7 @@ export class AgentManager {
 		return observeDurableStorage(record, method, params);
 	}
 
-	async spawn(input: { cwd?: string; model?: string; thinkingLevel?: string; name?: string; prompt?: string; trust?: boolean; requestId?: string }, caller: AgentCaller): Promise<unknown> {
+	async spawn(input: { cwd?: string; model?: string; thinkingLevel?: string; name?: string; prompt?: string; trust?: boolean; requestId?: string; origin?: DeliveryOrigin }, caller: AgentCaller): Promise<unknown> {
 		const cwd = realpathSync(resolve(caller.cwd, input.cwd ?? "."));
 		if (!statSync(cwd).isDirectory()) throw new Error("Agent cwd must be a directory");
 		const separator = input.model?.indexOf("/") ?? -1;
@@ -170,7 +215,7 @@ export class AgentManager {
 		let client: HostConnection;
 		try { client = await this.connection(record); }
 		catch (error) { if (created) this.catalog.discardUnopened(record); throw error; }
-		const admission = input.prompt ? await client.request("submit", { sessionId: record.storageId, message: input.prompt, requestId: input.requestId ?? randomUUID(), ownerId: caller.id }) : undefined;
+		const admission = input.prompt ? await client.request("submit", { sessionId: record.storageId, message: input.prompt, requestId: input.requestId ?? randomUUID(), ownerId: caller.id, ...originParams(input.origin) }) : undefined;
 		const outcome = { sessionId: record.storageId, cwd, admission, lifetime: "independent host process" };
 		return this.mutationSnapshot(client, outcome, record.storageId);
 	}
@@ -203,7 +248,7 @@ export class AgentManager {
 			const outcome = await client.request("configure", { sessionId, model });
 			if ((outcome as { outcome?: string })?.outcome === "failed") return outcome;
 		}
-		return { sessionId, status: await client.request("status", { sessionId }), recovery: "retained work resumes; no new input was submitted" };
+		return { sessionId, status: compactStatus(await client.request("status", { sessionId })), recovery: "retained work resumes; no new input was submitted" };
 	}
 
 	private async primaryMessage(method: string, input: Record<string, unknown>, sessionId: string, caller: AgentCaller): Promise<unknown> {
@@ -211,7 +256,8 @@ export class AgentManager {
 		try {
 			if (method !== "submit") throw new Error("A registered primary accepts messages, not Durable session controls");
 			const sourceId = typeof input.requestId === "string" ? input.requestId : randomUUID();
-			await channel.deliver({ sourceId, text: String(input.message ?? ""), details: { senderIdentity: caller.id, source: sourceId, liveOwner: true, saved: false, provider: caller.model?.provider ?? null, modelId: caller.model?.modelId ?? null, thinkingLevel: caller.thinkingLevel ?? null }, ...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}) });
+			const origin: DeliveryOrigin = input.origin === "operator" ? "operator" : "model";
+			await channel.deliver({ sourceId, text: String(input.message ?? ""), details: { senderIdentity: caller.id, source: sourceId, liveOwner: true, saved: false, origin, wake: origin !== "operator", provider: caller.model?.provider ?? null, modelId: caller.model?.modelId ?? null, thinkingLevel: caller.thinkingLevel ?? null }, ...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}) });
 			return { sessionId, admitted: true, sourceId, boundary: "Delivery does not prove action or task acceptance" };
 		} finally { await channel.close(); }
 	}
@@ -220,18 +266,18 @@ export class AgentManager {
 		if (outcome === null || typeof outcome !== "object" || Array.isArray(outcome)) return outcome;
 		const values = outcome as Record<string, unknown>;
 		const target = typeof values.identity === "string" ? values.identity : sessionId;
-		try { return { ...values, status: await client.request("status", { sessionId: target }) }; }
+		try { return { ...values, status: compactStatus(await client.request("status", { sessionId: target })) }; }
 		catch (error) { return { ...values, snapshotError: errorText(error) }; }
 	}
 
-	async place(input: { area?: string; topic?: string; prompt?: string; trust?: boolean; requestId?: string }, caller: AgentCaller): Promise<unknown> {
+	async place(input: { area?: string; topic?: string; prompt?: string; trust?: boolean; requestId?: string; origin?: DeliveryOrigin }, caller: AgentCaller): Promise<unknown> {
 		const area = realpathSync(resolve(caller.cwd, input.area ?? "."));
 		const result = await this.places.withArea(area, async (existing) => {
 			if (existing) {
-				const response = input.prompt ? await this.control("submit", { sessionId: existing.sessionId, message: input.prompt, requestId: input.requestId }, caller) : await this.control("attach", { sessionId: existing.sessionId }, caller);
+				const response = input.prompt ? await this.control("submit", { sessionId: existing.sessionId, message: input.prompt, ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) : await this.control("attach", { sessionId: existing.sessionId }, caller);
 				return { value: { ...response as object, sessionId: existing.sessionId }, sessionId: existing.sessionId, topic: existing.topic };
 			}
-			const created = await this.spawn({ cwd: area, name: input.topic, prompt: input.prompt, trust: input.trust, requestId: input.requestId }, caller) as { sessionId: string };
+			const created = await this.spawn({ cwd: area, name: input.topic, prompt: input.prompt, trust: input.trust, ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) as { sessionId: string };
 			return { value: created, sessionId: created.sessionId, topic: input.topic };
 		});
 		return result.value;
@@ -396,6 +442,20 @@ export class AgentManager {
 		}
 		if (cursor) this.failures.set("startup", "Startup recovery reached its inventory bound; use agent_list for the remaining storage");
 		await this.enqueueRecovery(due, primary);
+	}
+
+	/** Refresh the recorded identity of a registered primary; the channel endpoint record is rewritten. */
+	updatePrimary(ownerId: string, info: { name?: string; model?: { provider: string; modelId: string }; thinkingLevel?: string }): void {
+		const primary = this.primaries.get(ownerId);
+		if (!primary) return;
+		if ("name" in info) primary.name = info.name;
+		if ("model" in info) primary.model = info.model;
+		if ("thinkingLevel" in info) primary.thinkingLevel = info.thinkingLevel;
+		try {
+			this.primaryChannels.get(ownerId)?.update({ name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel });
+		} catch (error) {
+			this.failures.set(`primary:${ownerId}`, errorText(error));
+		}
 	}
 
 	private async enqueueRecovery(due: CatalogRecord[], primary: PrimaryClient, afterLoss = false): Promise<void> {

@@ -349,3 +349,34 @@ it("removes the endpoint when the abort signal fires", async (t) => {
 	await waitUntil(() => !existsSync(path));
 	await waitUntil(() => !existsSync(channel.socketPath));
 });
+
+it("rewrites the endpoint identity when a registered primary changes", async (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	const channel = await createPrimaryChannel(channelOptions(root, id));
+	t.after(() => void channel.close().catch(() => undefined));
+	channel.update({ name: "Renamed primary", model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "xhigh" });
+	assert.equal(channel.info().name, "Renamed primary");
+	assert.deepEqual(channel.info().model, { provider: "anthropic", modelId: "claude-opus-5-5" });
+	assert.equal(channel.info().thinkingLevel, "xhigh");
+	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { id: string; name?: string; model?: unknown; thinkingLevel?: string };
+	assert.equal(record.id, id);
+	assert.equal(record.name, "Renamed primary");
+	assert.deepEqual(record.model, { provider: "anthropic", modelId: "claude-opus-5-5" });
+	assert.equal(record.thinkingLevel, "xhigh");
+	const connection = await connectPrimaryChannel({ id, sessionsRoot: root });
+	try {
+		const info = await connection.info();
+		assert.equal(info.name, "Renamed primary");
+		assert.deepEqual(info.model, { provider: "anthropic", modelId: "claude-opus-5-5" });
+		assert.equal(info.thinkingLevel, "xhigh");
+	} finally {
+		await connection.close();
+	}
+	channel.update({ name: undefined, model: undefined, thinkingLevel: undefined });
+	assert.equal(channel.info().name, undefined);
+	assert.equal(channel.info().model, undefined);
+	assert.equal(channel.info().thinkingLevel, undefined);
+	const cleared = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as Record<string, unknown>;
+	assert.equal("name" in cleared, false, "a cleared name leaves no stale record field");
+});

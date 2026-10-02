@@ -167,9 +167,9 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath),
 		catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal, onError: (error) => errors.push(error) });
 	t.after(() => watcher.close());
-	const original = await source.request("submit", { message: "run", requestId: "original", operationId: "first-operation", ownerId: owner }, BACKGROUND_CONTEXT) as { submissionId: SubmissionId };
+	const original = await source.request("submit", { message: "run", requestId: "original", operationId: "first-operation", ownerId: owner, origin: "operator" }, BACKGROUND_CONTEXT) as { submissionId: SubmissionId };
 	await waitUntil(() => started);
-	const steer = await source.request("submit", { message: "correct", requestId: "steer", operationId: "steer-operation", ownerId: steerOwner, whenBusy: "steer" }, BACKGROUND_CONTEXT) as { submissionId: SubmissionId };
+	const steer = await source.request("submit", { message: "correct", requestId: "steer", operationId: "steer-operation", ownerId: steerOwner, whenBusy: "steer", origin: "model" }, BACKGROUND_CONTEXT) as { submissionId: SubmissionId };
 	const ids = [original.submissionId, steer.submissionId];
 	await source.harness.commit(async (tx) => {
 		const state = await tx.doc(AgentDeliveryDoc);
@@ -183,11 +183,14 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	const pending = await deliveryState(source);
 	assert.ok(ids.every((id) => pending?.receipts[String(id)]?.acknowledged === false));
 	assert.equal(pending?.receipts[String(original.submissionId)]?.answerEntryId, pending?.receipts[String(steer.submissionId)]?.answerEntryId);
-	const details = received[0]?.details as { submissions: { submissionId: SubmissionId; requestId: string; operationId: string }[] };
+	const details = received[0]?.details as { submissions: { submissionId: SubmissionId; requestId: string; operationId: string; origin?: string }[]; wake?: unknown };
 	assert.deepEqual(details.submissions.map((member) => member.submissionId), ids);
 	assert.deepEqual(details.submissions.map((member) => member.requestId), ["original", "steer"]);
 	assert.deepEqual(details.submissions.map((member) => member.operationId), ["first-operation", "steer-operation"]);
-	assert.match(received[0]?.text ?? "", new RegExp(`submissions ${ids.join(", ")}`, "u"));
+	assert.deepEqual(details.submissions.map((member) => member.origin), ["operator", "model"]);
+	assert.equal(details.wake, true, "one model-origin submission keeps the wake behavior for the whole answer group");
+	assert.match(received[0]?.text ?? "", /^Agent “run” finished\./u);
+	assert.doesNotMatch(received[0]?.text ?? "", /submissions/u);
 	releaseDelivery();
 	await waitFor(async () => ids.every((id) => revisions.at(-1)?.receipts[String(id)]?.acknowledged === true));
 	assert.equal(received.length, recipients === "distinct" ? 2 : 1, "one answer reaches each recipient once, including overlapping owner routes");
@@ -384,12 +387,110 @@ it("delivers a noncatalog owner to its registered primary channel with source me
 	assert.equal(details.metadataUnknown, undefined);
 	assert.equal(details.textTruncated, undefined, "a short body carries no truncation flag");
 	assert.equal(typeof details.thinkingLevel, "string");
+	assert.equal(details.label, "do the task");
+	assert.equal(details.wake, true, "an admission without an explicit origin keeps the wake behavior");
+	assert.match(message.text, /^Agent “do the task” finished\./u);
 	assert.match(message.text, /Results do not establish task acceptance/u);
 	assert.doesNotMatch(message.text, /no live owning session/u);
+	assert.doesNotMatch(message.text, /submissions/u);
 	const state = await deliveryState(source);
 	assert.equal(state?.receipts[String(submissionId)]?.acknowledged, true);
 	assert.deepEqual(errors, []);
 	await watcher.close();
+});
+
+it("delivers an operator-only answer group without waking the primary", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const owner = randomUUID();
+	const received: PrimaryDelivery[] = [];
+	const channel = await createPrimaryChannel({
+		id: owner,
+		cwd: root,
+		sessionsRoot,
+		deliver: (message) => {
+			received.push(message);
+		},
+		promptTrust: async () => undefined,
+	});
+	t.after(async () => {
+		await channel.close().catch(() => undefined);
+	});
+	const sourcePath = join(root, "source.sqlite");
+	const source = await openHost(sourcePath, "source-storage", root);
+	t.after(async () => {
+		await source.close().catch(() => undefined);
+	});
+	const admitted = (await source.request(
+		"submit",
+		{ sessionId: source.storageId, message: "board task", requestId: "operator-only", ownerId: owner, origin: "operator" },
+		BACKGROUND_CONTEXT,
+	)) as { submissionId: SubmissionId };
+	await source.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+	const errors: Error[] = [];
+	const watcher = startDurableDelivery({
+		host: source,
+		metadata: sourceMetadata(root, source.storageId, sourcePath),
+		catalog: new AgentCatalog(root),
+		sessionsRoot,
+		signal: new AbortController().signal,
+		onError: (error) => errors.push(error),
+	});
+	await waitUntil(() => received.length === 1);
+	const details = received[0]?.details as { wake?: unknown; submissions?: Array<{ origin?: string }> };
+	assert.equal(details.wake, false, "an operator-only answer group does not start a primary turn");
+	assert.deepEqual(details.submissions?.map((member) => member.origin), ["operator"]);
+	assert.match(received[0]?.text ?? "", /^Agent “board task” finished\./u);
+	assert.doesNotMatch(received[0]?.text ?? "", /submissions/u);
+	await watcher.close();
+	assert.deepEqual(errors, [], "delivery completes without errors");
+});
+
+it("keeps a stored admission origin across a host reopen before delivery", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const owner = randomUUID();
+	const received: PrimaryDelivery[] = [];
+	const channel = await createPrimaryChannel({
+		id: owner,
+		cwd: root,
+		sessionsRoot,
+		deliver: (message) => {
+			received.push(message);
+		},
+		promptTrust: async () => undefined,
+	});
+	t.after(async () => {
+		await channel.close().catch(() => undefined);
+	});
+	const sourcePath = join(root, "source.sqlite");
+	const first = await openHost(sourcePath, "source-storage", root);
+	const admitted = await first.request(
+		"submit",
+		{ sessionId: first.storageId, message: "restart task", requestId: "survives-restart", ownerId: owner, origin: "operator" },
+		BACKGROUND_CONTEXT,
+	) as { submissionId: SubmissionId };
+	await first.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+	await first.close();
+	const reopened = await openHost(sourcePath, "source-storage", root);
+	t.after(async () => {
+		await reopened.close().catch(() => undefined);
+	});
+	const errors: Error[] = [];
+	const watcher = startDurableDelivery({
+		host: reopened,
+		metadata: sourceMetadata(root, reopened.storageId, sourcePath),
+		catalog: new AgentCatalog(root),
+		sessionsRoot,
+		signal: new AbortController().signal,
+		onError: (error) => errors.push(error),
+	});
+	await waitUntil(() => received.length === 1);
+	const details = received[0]?.details as { wake?: unknown; submissions?: Array<{ origin?: string }> };
+	assert.deepEqual(details.submissions?.map((member) => member.origin), ["operator"], "the intent origin survives the reopen");
+	assert.equal(details.wake, false, "the reopened watcher keeps the operator-only delivery quiet");
+	await watcher.close();
+	assert.deepEqual(errors, []);
 });
 
 it("falls back to one registered live primary when the owning endpoint is absent", { timeout: 30000 }, async (t) => {
@@ -430,7 +531,9 @@ it("falls back to one registered live primary when the owning endpoint is absent
 	const message = received[0];
 	const details = message.details as Record<string, unknown>;
 	assert.equal(details.fallback, true);
-	assert.equal(details.label, "no live owning session");
+	assert.equal(details.fallbackLabel, "no live owning session");
+	assert.equal(details.label, "do the task");
+	assert.equal(details.wake, false, "a fallback broadcast never wakes a primary model");
 	assert.equal(details.originalOwnerId, absentOwner);
 	assert.equal(details.liveOwner, false);
 	assert.equal(details.deliveryRecipient, fallbackOwner);
@@ -695,7 +798,8 @@ it("broadcasts a fallback to every registered live primary exactly once", { time
 		const details = received[0]?.details as Record<string, unknown>;
 		assert.equal(received[0]?.sourceId, await receiptSourceId(source, submissionId));
 		assert.equal(details.fallback, true);
-		assert.equal(details.label, "no live owning session");
+		assert.equal(details.fallbackLabel, "no live owning session");
+		assert.equal(details.wake, false, "a fallback broadcast never wakes a primary model");
 		assert.equal(details.originalOwnerId, absentOwner);
 		assert.equal(details.deliveryRecipient, id);
 	}

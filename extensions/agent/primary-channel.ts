@@ -19,7 +19,7 @@
  * supplies `deliver` (usually `pi.sendMessage`) and `promptTrust` (usually a UI
  * select mapped by `promptProjectTrust`).
  */
-import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, unlinkSync, chmodSync, writeFileSync } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, chmodSync, writeFileSync } from "node:fs";
 import { randomUUID, createHash } from "node:crypto";
 import { opendir } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
@@ -111,6 +111,8 @@ export interface PrimaryChannel {
 	readonly id: string;
 	readonly socketPath: string;
 	info(): PrimaryInfo;
+	/** Replace the displayed identity fields; the announced server identity and socket stay unchanged. */
+	update(info: { name: string | undefined; model: { provider: string; modelId: string } | undefined; thinkingLevel: string | undefined }): void;
 	close(): Promise<void>;
 }
 
@@ -264,6 +266,17 @@ function publishEndpoint(path: string, endpoint: PrimaryEndpoint): void {
 	writeFileSync(path, JSON.stringify(endpoint), { flag: "wx", mode: 0o600 });
 }
 
+/** Replace one complete record atomically, so a reader never sees a partial write. */
+function rewriteEndpoint(path: string, endpoint: PrimaryEndpoint): void {
+	const temporary = `${path}.${process.pid}.tmp`;
+	try {
+		writeFileSync(temporary, JSON.stringify(endpoint), { mode: 0o600 });
+		renameSync(temporary, path);
+	} finally {
+		removeFile(temporary);
+	}
+}
+
 /** Remove one file, ignoring its absence. */
 function removeFile(path: string): void {
 	try {
@@ -340,16 +353,37 @@ class PrimaryChannelHost implements ServerHost {
 	};
 
 	private readonly options: PrimaryChannelOptions;
-	private readonly endpoint: PrimaryEndpoint;
+	private endpoint: PrimaryEndpoint;
+	private readonly endpointPath: string;
 
-	constructor(options: PrimaryChannelOptions, endpoint: PrimaryEndpoint) {
+	constructor(options: PrimaryChannelOptions, endpoint: PrimaryEndpoint, endpointPath: string) {
 		this.options = options;
 		this.endpoint = endpoint;
+		this.endpointPath = endpointPath;
 	}
 
 	info(): PrimaryInfo {
 		const { version: _version, serverId: _serverId, ...info } = this.endpoint;
 		return info;
+	}
+
+	/** Replace the displayed identity fields and rewrite the endpoint record atomically. */
+	update(info: { name: string | undefined; model: { provider: string; modelId: string } | undefined; thinkingLevel: string | undefined }): void {
+		const { version, id, serverId, cwd, hostname, pid, socketPath, startedAt } = this.endpoint;
+		this.endpoint = {
+			version,
+			id,
+			serverId,
+			cwd,
+			hostname,
+			pid,
+			socketPath,
+			startedAt,
+			...(info.name === undefined ? {} : { name: info.name }),
+			...(info.model === undefined ? {} : { model: { provider: info.model.provider, modelId: info.model.modelId } }),
+			...(info.thinkingLevel === undefined ? {} : { thinkingLevel: info.thinkingLevel }),
+		};
+		rewriteEndpoint(this.endpointPath, this.endpoint);
 	}
 
 	private async dispatch(call: ServiceCall): Promise<JsonValue | undefined> {
@@ -417,7 +451,7 @@ export async function createPrimaryChannel(options: PrimaryChannelOptions): Prom
 	const serverId = randomUUID();
 	const socketPath = primarySocketPath(serverId, directory);
 	const endpoint = endpointRecord(options, serverId, socketPath);
-	const host = new PrimaryChannelHost(options, endpoint);
+	const host = new PrimaryChannelHost(options, endpoint, endpointPath);
 	const server = createUnixServer(host, { serverId, path: socketPath, mode: 0o600 });
 	try {
 		await server.start();
@@ -454,7 +488,7 @@ export async function createPrimaryChannel(options: PrimaryChannelOptions): Prom
 		void close().catch(() => undefined);
 	};
 	options.signal?.addEventListener("abort", onAbort, { once: true });
-	return { id: options.id, socketPath, info: () => host.info(), close };
+	return { id: options.id, socketPath, info: () => host.info(), update: (info) => host.update(info), close };
 }
 
 /** Compose the unknown-id refusal with a bounded supported-id page. */

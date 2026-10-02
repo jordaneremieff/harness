@@ -18,7 +18,7 @@ import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { Harness, ROOT_CONVERSATION_ID, UsageDoc, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { acknowledgeDeliveries, acknowledgeReports, AgentDeliveryDoc, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
+import { acknowledgeDeliveries, acknowledgeReports, AgentDeliveryDoc, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
 import { durableIdentity, optionalParam, parseInspectParams, readConversationList, readConversationSnapshot, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
 
@@ -374,6 +374,7 @@ export class DurableHost {
 				...optionalParam("ownerId", requestString(params, "ownerId")),
 				...optionalParam("whenBusy", this.busyMode(params)),
 				...optionalParam("operationId", requestString(params, "operationId")),
+				...optionalParam("origin", this.originParam(params)),
 			},
 			context,
 		);
@@ -385,6 +386,14 @@ export class DurableHost {
 		if (value === undefined) return undefined;
 		if (value === "steer" || value === "followUp" || value === "reject") return value;
 		throw new TypeError("whenBusy must be steer, followUp, or reject");
+	}
+
+	/** Admission origin; an absent value keeps the model-origin default at delivery. */
+	private originParam(params: RequestParams | undefined): DeliveryOrigin | undefined {
+		const value = params?.origin;
+		if (value === undefined) return undefined;
+		if (value === "operator" || value === "model") return value;
+		throw new TypeError("origin must be operator or model");
 	}
 
 	private async receiptsRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
@@ -501,6 +510,7 @@ export class DurableHost {
 				...optionalParam("ownerId", requestString(params, "ownerId")),
 				...optionalParam("whenBusy", this.busyMode(params)),
 				...optionalParam("operationId", requestString(params, "operationId")),
+				...optionalParam("origin", this.originParam(params)),
 			},
 			context,
 		);

@@ -1,6 +1,6 @@
 /** Agent controls for independent Pi Durable hosts and the ordinary primary UI. */
 import { mkdirSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, getPackageDir, type AgentToolResult, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -89,19 +89,19 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			renderResult: cards[name].renderResult,
 		});
 	};
-	register("agent_spawn", "Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. The host survives this Pi process.", spawn, (input, ctx) => getManager().spawn(input, caller(ctx, pi)));
+	register("agent_spawn", "Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. The host survives this Pi process.", spawn, (input, ctx) => getManager().spawn({ ...input, origin: "model" }, caller(ctx, pi)));
 	register("agent_list", "Discover Durable agent identities and names without a writer. Repeat the query and cursor to continue bounded results.", Type.Object({ query: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })), cwd: Type.Optional(Type.String()), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })), cursor: Type.Optional(Type.String({ maxLength: 2048 })) }, { additionalProperties: false }), (input) => getManager().list(input));
 	register("agent_status", "Read Durable conversations and live host state. Unavailable evidence remains explicit.", Type.Object({ sessionId: Type.Optional(id) }, { additionalProperties: false }), (input) => getManager().status(input.sessionId as string | undefined));
 	register("agent_inspect", "Read retained Durable entries, results, and task state. Pass returned next objects as cursor. Result reads use submissionId or operationId; exact reads use entryId. Images and signatures are omitted.", inspect, (input, ctx) => control("inspect", input, ctx));
-	register("agent_send", "Admit a task, report, or correction. Idle agents start; busy agents receive durable steering. A receipt does not prove action.", message, (input, ctx) => control("submit", { ...input, whenBusy: "steer" }, ctx));
-	register("agent_steer", "Steer live or retained work through its Durable owner. Admitted steering survives process loss. Carried operator decisions retain their original scope; agent claims remain claims.", message, (input, ctx) => control("submit", { ...input, whenBusy: "steer" }, ctx));
+	register("agent_send", "Admit a task, report, or correction. Idle agents start; busy agents receive durable steering. A receipt does not prove action.", message, (input, ctx) => control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx));
+	register("agent_steer", "Steer live or retained work through its Durable owner. Admitted steering survives process loss. Carried operator decisions retain their original scope; agent claims remain claims.", message, (input, ctx) => control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx));
 	register("agent_abort", "Abort this agent's native task tree without deleting retained evidence. Other storage conversations remain separate.", byId, (input, ctx) => control("abort", input, ctx));
 	register("agent_attach", "Connect to a Durable storage host without new input. Retained unfinished work resumes automatically.", Type.Object({ sessionId: id, model: Type.Optional(Type.String()), trust: maybeTrust }, { additionalProperties: false }), (input, ctx) => control("attach", input, ctx));
 	register("agent_fork", "Create an idle native conversation branch in the same storage. The source remains unchanged.", Type.Object({ sessionId: id, entryId: Type.Optional(id), trust: maybeTrust }, { additionalProperties: false }), (input, ctx) => control("fork", input, ctx));
-	register("agent_rewind", "Fork before a mistaken entry and redo the work under your correction. The source stays unchanged. Files remain current.", Type.Object({ sessionId: id, entryId: id, correction: Type.String({ minLength: 1 }), trust: maybeTrust }, { additionalProperties: false }), (input, ctx) => control("rewind", input, ctx));
+	register("agent_rewind", "Fork before a mistaken entry and redo the work under your correction. The source stays unchanged. Files remain current.", Type.Object({ sessionId: id, entryId: id, correction: Type.String({ minLength: 1 }), trust: maybeTrust }, { additionalProperties: false }), (input, ctx) => control("rewind", { ...input, origin: "model" }, ctx));
 	register("agent_configure", "Change an idle Durable agent's name, exact model, or reasoning level. No task starts. Active work refuses configuration.", configure, (input, ctx) => control("configure", input, ctx));
 	register("agent_command", "Invoke a native contribution command, reload registrations, or fork to a tree entry through its Durable owner.", Type.Object({ sessionId: id, name: Type.String({ minLength: 1 }), args: Type.Optional(Type.String()) }, { additionalProperties: false }), (input, ctx) => control("command", input, ctx));
-	register("agent_place", "Use the agent bound to a directory, or create it. Longest bound directory wins. An optional prompt starts work.", Type.Object({ area: Type.Optional(Type.String()), topic: Type.Optional(Type.String()), prompt: Type.Optional(Type.String()), trust: maybeTrust }, { additionalProperties: false }), (input, ctx) => getManager().place(input, caller(ctx, pi)));
+	register("agent_place", "Use the agent bound to a directory, or create it. Longest bound directory wins. An optional prompt starts work.", Type.Object({ area: Type.Optional(Type.String()), topic: Type.Optional(Type.String()), prompt: Type.Optional(Type.String()), trust: maybeTrust }, { additionalProperties: false }), (input, ctx) => getManager().place({ ...input, origin: "model" }, caller(ctx, pi)));
 	register("agent_compact", "Compact another Durable agent after abort. For primary self-compaction, supply a complete continuity summary; it applies after this tool batch.", compact, async (input, ctx, callId) => {
 		if (input.sessionId === ctx.sessionManager.getSessionId()) {
 			if (input.instructions !== undefined) throw new Error("Primary self-compaction accepts summary, not instructions");
@@ -113,22 +113,109 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	}, true);
 
 	const sessionHelp = "Type part of a session name or directory, then press Tab to insert its ID.";
+	const outcome = (text: string, sessionId?: string): { text: string; sessionId?: string } => (sessionId === undefined ? { text } : { text, sessionId });
+	const shortIdentity = (identity: string): string => {
+		const tail = identity.includes(":") ? identity.slice(identity.lastIndexOf(":") + 1) : identity;
+		return (tail === "" ? identity : tail).slice(0, 8);
+	};
+	const excerpt = (value: string, limit = 48): string => {
+		const collapsed = value.replace(/\s+/g, " ").trim();
+		return collapsed.length > limit ? `${collapsed.slice(0, limit - 1)}…` : collapsed;
+	};
+	const failureDetail = (value: unknown): string => {
+		const error = (value as { error?: unknown } | null)?.error;
+		return typeof error === "string" && error !== "" ? `: ${excerpt(error, 80)}` : "";
+	};
+	/** Display label of one stored agent: name, else first-task excerpt, else short identity. */
+	const agentLabel = async (sessionId: string): Promise<string> => {
+		try {
+			const response = await getManager().status(sessionId) as { conversation?: { name?: unknown; firstMessage?: unknown; identity?: unknown } };
+			const conversation = response?.conversation;
+			const name = typeof conversation?.name === "string" ? excerpt(conversation.name) : "";
+			if (name !== "") return name;
+			const first = typeof conversation?.firstMessage === "string" ? excerpt(conversation.firstMessage) : "";
+			if (first !== "") return first;
+			return shortIdentity(typeof conversation?.identity === "string" ? conversation.identity : sessionId);
+		} catch {
+			return shortIdentity(sessionId);
+		}
+	};
 	const actions: AgentCommandAction[] = [
-		{ name: "new", description: "Start a new Durable agent", args: [{ name: "task", rest: true, optional: true }], help: "Describe the task in your own words. The agent uses your current directory and model. Its host survives this primary process; advanced overrides use agent_spawn.", run: async (args, ctx) => asText(await getManager().spawn({ prompt: args.join(" ") || undefined }, caller(ctx, pi))) },
+		{ name: "new", description: "Start a new Durable agent", args: [{ name: "task", rest: true, optional: true }], help: "Describe the task in your own words. The agent uses your current directory and model. Its host survives this primary process; advanced overrides use agent_spawn.", run: async (args, ctx) => {
+			const prompt = args.join(" ") || undefined;
+			const created = await getManager().spawn({ prompt, origin: "operator" }, caller(ctx, pi)) as { sessionId: string; cwd?: string; status?: { name?: string } };
+			const label = created.status?.name ?? (prompt === undefined ? shortIdentity(created.sessionId) : excerpt(prompt));
+			const place = basename(created.cwd ?? ctx.cwd);
+			return outcome(prompt === undefined ? `Created idle agent “${label}” in ${place}` : `Started agent “${label}” in ${place}`, created.sessionId);
+		} },
 		{ name: "list", description: "List Durable agents", args: [], help: "Read saved agents without a writer. Use agent_list to continue bounded pages.", run: async () => asText(await getManager().list()) },
 		{ name: "status", description: "Show agent state", args: [{ name: "session", optional: true, complete: "session" }], help: `Without a session, show bounded native conversation state. ${sessionHelp}`, run: async (args) => asText(await getManager().status(args[0])) },
-		...["send", "steer"].map((name): AgentCommandAction => ({ name, description: `Send ${name === "steer" ? "a correction" : "a task or report"}`, ...(name === "steer" ? { confirm: "This admits a new direction for the selected agent. Admission does not prove action." } : {}), help: `${sessionHelp} After the session, write your message. Busy agents receive steering at the next native boundary.`, args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async ([sessionId, ...words], ctx) => asText(await control("submit", { sessionId, message: words.join(" "), whenBusy: "steer" }, ctx)) })),
-		{ name: "abort", description: "Stop current work; keep the agent", confirm: "This stops the selected agent's current operation without deleting its evidence.", help: sessionHelp, args: [{ name: "session", complete: "session-control" }], run: async ([sessionId], ctx) => asText(await control("abort", { sessionId }, ctx)) },
-		{ name: "attach", description: "Connect to an agent; optionally change its idle model", help: `${sessionHelp} An explicit provider/model changes only an idle agent. No new input starts. Retained unfinished work resumes.`, args: [{ name: "session", complete: "session" }, { name: "model", optional: true }], run: async ([sessionId, model], ctx) => asText(await control("attach", { sessionId, ...(model === undefined ? {} : { model }) }, ctx)) },
-		{ name: "fork", description: "Create an idle native branch", help: "Use an optional entry ID from agent_inspect. The source remains unchanged.", args: [{ name: "session", complete: "session" }, { name: "entry", optional: true }], run: async ([sessionId, entryId], ctx) => asText(await control("fork", { sessionId, ...(entryId === undefined ? {} : { entryId }) }, ctx)) },
-		{ name: "compact", description: "Compact an agent through its owner", confirm: "This aborts active work and compacts the selected agent without resuming it.", args: [{ name: "session", complete: "session-control" }, { name: "instructions", rest: true, optional: true }], run: async ([sessionId, ...words], ctx) => asText(await control("compact", { sessionId, ...(words.length ? { instructions: words.join(" ") } : {}) }, ctx)) },
+		...["send", "steer"].map((name): AgentCommandAction => ({ name, description: `Send ${name === "steer" ? "a correction" : "a task or report"}`, ...(name === "steer" ? { confirm: "This admits a new direction for the selected agent. Admission does not prove action." } : {}), help: `${sessionHelp} After the session, write your message. Busy agents receive steering at the next native boundary.`, args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async ([sessionId, ...words], ctx) => {
+			await control("submit", { sessionId, message: words.join(" "), whenBusy: "steer", origin: "operator" }, ctx);
+			const label = await agentLabel(sessionId);
+			return outcome(name === "steer" ? `Queued a correction for “${label}”` : `Sent a task to “${label}”`, sessionId);
+		} })),
+		{ name: "abort", description: "Stop current work; keep the agent", confirm: "This stops the selected agent's current operation without deleting its evidence.", help: sessionHelp, args: [{ name: "session", complete: "session-control" }], run: async ([sessionId], ctx) => {
+			await control("abort", { sessionId }, ctx);
+			const label = await agentLabel(sessionId);
+			return outcome(`Requested stop for “${label}”`, sessionId);
+		} },
+		{ name: "attach", description: "Connect to an agent; optionally change its idle model", help: `${sessionHelp} An explicit provider/model changes only an idle agent. No new input starts. Retained unfinished work resumes.`, args: [{ name: "session", complete: "session" }, { name: "model", optional: true }], run: async ([sessionId, model], ctx) => {
+			const attached = await control("attach", { sessionId, ...(model === undefined ? {} : { model }) }, ctx);
+			const label = await agentLabel(sessionId);
+			if ((attached as { outcome?: unknown } | null)?.outcome === "failed") return outcome(`Configuration failed for “${label}”${failureDetail(attached)}`, sessionId);
+			return outcome(model === undefined ? `Connected to “${label}”` : `Connected to “${label}” with ${model}`, sessionId);
+		} },
+		{ name: "fork", description: "Create an idle native branch", help: "Use an optional entry ID from agent_inspect. The source remains unchanged.", args: [{ name: "session", complete: "session" }, { name: "entry", optional: true }], run: async ([sessionId, entryId], ctx) => {
+			const forked = await control("fork", { sessionId, ...(entryId === undefined ? {} : { entryId }) }, ctx) as { identity?: string; status?: { name?: string } };
+			const identity = forked.identity ?? sessionId;
+			const label = forked.status?.name ?? await agentLabel(identity);
+			return outcome(`Created branch “${label}”`, identity);
+		} },
+		{ name: "compact", description: "Compact an agent through its owner", confirm: "This aborts active work and compacts the selected agent without resuming it.", args: [{ name: "session", complete: "session-control" }, { name: "instructions", rest: true, optional: true }], run: async ([sessionId, ...words], ctx) => {
+			const result = await control("compact", { sessionId, ...(words.length ? { instructions: words.join(" ") } : {}) }, ctx) as { status?: string };
+			const label = await agentLabel(sessionId);
+			const status = typeof result?.status === "string" ? result.status : "requested";
+			return outcome(status === "completed" ? `Compacted “${label}”` : `Compaction ${status} for “${label}”`, sessionId);
+		} },
 		{ name: "inspect", description: "Read retained conversation evidence", args: [{ name: "session", complete: "session" }], run: async ([sessionId], ctx) => asText(await control("inspect", { sessionId }, ctx)) },
-		{ name: "rewind", description: "Redo work from a mistaken entry", confirm: "This creates a fork and starts corrected work against current files.", help: "Use an entry ID from agent_inspect. The source remains unchanged.", args: [{ name: "session", complete: "session" }, { name: "entry" }, { name: "correction", rest: true }], run: async ([sessionId, entryId, ...words], ctx) => asText(await control("rewind", { sessionId, entryId, correction: words.join(" ") }, ctx)) },
-		{ name: "configure", description: "Change an idle agent's configuration", args: [{ name: "session", complete: "session" }, { name: "configuration", rest: true }], run: async (args, ctx) => { const parsed = parseConfigurationArguments(args); return asText(await control("configure", { sessionId: parsed.sessionId, ...parsed.patch }, ctx)); }, dialog: async (target, ctx) => { if (!target) return "Select an agent before configuration."; const patch = await configurationDialog(target, ctx); return patch ? asText(await control("configure", { sessionId: target.id, ...patch }, ctx)) : undefined; } },
-		{ name: "command", description: "Run a native contribution command", confirm: "This invokes a command with the selected owner's authority.", args: [{ name: "session", complete: "session" }, { name: "name" }, { name: "args", rest: true, optional: true }], run: async ([sessionId, name, ...args], ctx) => asText(await control("command", { sessionId, name, args: args.join(" ") }, ctx)) },
-		{ name: "place", description: "Use a directory's agent", help: "The default is your current directory. A missing binding creates an agent. Use agent_place for directory paths with spaces.", args: [{ name: "area", optional: true }, { name: "task", optional: true, rest: true }], run: async ([area, ...words], ctx) => asText(await getManager().place({ area: area ? resolve(ctx.cwd, area) : ctx.cwd, prompt: words.join(" ") || undefined }, caller(ctx, pi))) },
+		{ name: "rewind", description: "Redo work from a mistaken entry", confirm: "This creates a fork and starts corrected work against current files.", help: "Use an entry ID from agent_inspect. The source remains unchanged.", args: [{ name: "session", complete: "session" }, { name: "entry" }, { name: "correction", rest: true }], run: async ([sessionId, entryId, ...words], ctx) => {
+			const result = await control("rewind", { sessionId, entryId, correction: words.join(" "), origin: "operator" }, ctx) as { identity?: string };
+			const label = await agentLabel(sessionId);
+			return outcome(`Rewound “${label}” before entry ${entryId}`, result.identity ?? sessionId);
+		} },
+		{ name: "configure", description: "Change an idle agent's configuration", args: [{ name: "session", complete: "session" }, { name: "configuration", rest: true }], run: async (args, ctx) => {
+			const parsed = parseConfigurationArguments(args);
+			const result = await control("configure", { sessionId: parsed.sessionId, ...parsed.patch }, ctx) as { outcome?: string };
+			const label = await agentLabel(parsed.sessionId);
+			return result?.outcome === "failed" ? outcome(`Configuration failed for “${label}”${failureDetail(result)}`, parsed.sessionId) : outcome(`Updated configuration for “${label}”`, parsed.sessionId);
+		}, dialog: async (target, ctx) => {
+			if (!target) return "Select an agent before configuration.";
+			const patch = await configurationDialog(target, ctx);
+			if (!patch) return undefined;
+			const result = await control("configure", { sessionId: target.id, ...patch }, ctx) as { outcome?: string };
+			const label = await agentLabel(target.id);
+			return result?.outcome === "failed" ? outcome(`Configuration failed for “${label}”${failureDetail(result)}`, target.id) : outcome(`Updated configuration for “${label}”`, target.id);
+		} },
+		{ name: "command", description: "Run a native contribution command", confirm: "This invokes a command with the selected owner's authority.", args: [{ name: "session", complete: "session" }, { name: "name" }, { name: "args", rest: true, optional: true }], run: async ([sessionId, name, ...args], ctx) => {
+			const result = await control("command", { sessionId, name, args: args.join(" ") }, ctx) as { reloaded?: boolean; text?: string };
+			const label = await agentLabel(sessionId);
+			const commandText = typeof result?.text === "string" ? excerpt(result.text, 80) : "";
+			return outcome(result?.reloaded === true ? `Reloaded host registrations for “${label}”` : `Ran command ${name} on “${label}”${commandText ? `: ${commandText}` : ""}`, sessionId);
+		} },
+		{ name: "place", description: "Use a directory's agent", help: "The default is your current directory. A missing binding creates an agent. Use agent_place for directory paths with spaces.", args: [{ name: "area", optional: true }, { name: "task", optional: true, rest: true }], run: async ([area, ...words], ctx) => {
+			const prompt = words.join(" ") || undefined;
+			const resolved = area ? resolve(ctx.cwd, area) : ctx.cwd;
+			const result = await getManager().place({ area: resolved, prompt, origin: "operator" }, caller(ctx, pi)) as { sessionId: string; status?: { name?: string } };
+			const label = result.status?.name ?? (prompt === undefined ? shortIdentity(result.sessionId) : excerpt(prompt));
+			return outcome(prompt === undefined ? `Using “${label}” in ${basename(resolved)}` : `Sent a task to “${label}” in ${basename(resolved)}`, result.sessionId);
+		} },
 		{ name: "places", description: "List directory bindings", args: [], run: async () => asText(getManager().places.read()) },
-		{ name: "unbind", description: "Remove a directory binding without deleting its agent", confirm: "This removes the directory binding, not its agent.", help: "Use an exact directory from /agent places.", args: [{ name: "area" }], run: async ([area], ctx) => asText(getManager().places.unbind(resolve(ctx.cwd, area)) ?? { removed: false }) },
+		{ name: "unbind", description: "Remove a directory binding without deleting its agent", confirm: "This removes the directory binding, not its agent.", help: "Use an exact directory from /agent places.", args: [{ name: "area" }], run: async ([area], ctx) => {
+			const resolved = resolve(ctx.cwd, area);
+			const removed = getManager().places.unbind(resolved);
+			return outcome(removed ? `Removed the directory binding for ${resolved}` : `No directory binding for ${resolved}`);
+		} },
 	];
 	const command = createAgentCommand(actions, { list: () => getManager().dashboardPage(), snapshot: (sessionId) => getManager().snapshot(sessionId) });
 	pi.registerCommand("agent", command);
@@ -141,11 +228,17 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		primaries.get(sessionId)?.abort();
 		const abort = new AbortController(); primaries.set(sessionId, abort);
 		await getManager().registerPrimary(sessionId, { signal: abort.signal, cwd: ctx.cwd, name: ctx.sessionManager.getSessionName(), model: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined, thinkingLevel: pi.getThinkingLevel(),
-			send: (text, details) => pi.sendMessage({ customType: "agent.peer", content: text, details, display: true }, { triggerTurn: true, deliverAs: "steer" }),
+			send: (text, details) => {
+				const wake = !(details !== null && typeof details === "object" && (details as { wake?: unknown }).wake === false);
+				pi.sendMessage({ customType: "agent.peer", content: text, details, display: true }, wake ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false });
+			},
 			status: (text) => ctx.ui.setStatus("agent", text),
 			promptTrust: (cwd) => ctx.hasUI ? promptProjectTrust(cwd, { select: (question, options) => ctx.ui.select(question, [...options]) }) : Promise.resolve(undefined),
 		});
 	});
+	pi.on("model_select", (event, ctx) => { getManager().updatePrimary(ctx.sessionManager.getSessionId(), { model: { provider: event.model.provider, modelId: event.model.id } }); });
+	pi.on("thinking_level_select", (event, ctx) => { getManager().updatePrimary(ctx.sessionManager.getSessionId(), { thinkingLevel: event.level }); });
+	pi.on("session_info_changed", (event, ctx) => { getManager().updatePrimary(ctx.sessionManager.getSessionId(), { name: event.name }); });
 	pi.on("agent_settled", () => { selfCompaction.clear(); });
 	pi.on("session_shutdown", (_event, ctx) => { selfCompaction.clear(); const id = ctx.sessionManager.getSessionId(); primaries.get(id)?.abort(); primaries.delete(id); });
 }
