@@ -330,7 +330,7 @@ test("real evo command retains pending releases despite aligned dependencies and
 	t.after(fixture.close);
 	const extensionDir = join(fixture.root, "extensions", "evo");
 	mkdirSync(extensionDir, { recursive: true });
-	for (const file of ["index.ts", "command.ts", "kickoff.ts", "release.ts"]) {
+	for (const file of ["index.ts", "command.ts", "kickoff.ts", "release.ts", "durable.ts"]) {
 		copyFileSync(new URL(file, import.meta.url), join(extensionDir, file));
 	}
 	writeFileSync(

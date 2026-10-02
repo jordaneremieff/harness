@@ -116,14 +116,21 @@ function registeredEvo(): {
 	commandNames: string[];
 	description: string | undefined;
 	toolRegistrations: number;
+	emissions: unknown[];
 } {
 	let handler: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
 	let description: string | undefined;
 	const sent: SentMessage[] = [];
 	const notifications: string[] = [];
 	const commandNames: string[] = [];
+	const emissions: unknown[] = [];
 	let toolRegistrations = 0;
 	const api = {
+		events: {
+			emit(channel: string, data: unknown) {
+				if (channel === "durable:contribution") emissions.push(data);
+			},
+		},
 		registerCommand(
 			name: string,
 			options: {
@@ -153,6 +160,7 @@ function registeredEvo(): {
 		commandNames,
 		description,
 		toolRegistrations,
+		emissions,
 	};
 }
 
@@ -639,6 +647,23 @@ test("trusted path headers cannot contain raw logical line separators", () => {
 		assert.equal(JSON.parse(evidenceLine.slice(evidencePrefix.length)), harnessRoot);
 		assert.equal(JSON.parse(workspaceLine.slice(workspacePrefix.length)), invocationCwd);
 	}
+});
+
+test("the factory emits the Durable contribution with its entrypoint source", () => {
+	const registered = registeredEvo();
+	assert.equal(registered.emissions.length, 1);
+	const contribution = registered.emissions[0] as {
+		name?: string;
+		source?: string;
+		commands?: Array<{ name?: string; description?: string }>;
+	};
+	assert.equal(contribution.name, "evo");
+	assert.equal(contribution.source, fileURLToPath(new URL("./index.ts", import.meta.url)));
+	assert.deepEqual(
+		contribution.commands?.map((command) => command.name),
+		["evo"],
+	);
+	assert.match(contribution.commands?.[0]?.description ?? "", /full Pi sessions/);
 });
 
 test("bare TUI invocation dispatches one race-safe user message", async () => {

@@ -207,8 +207,8 @@ TUI, RPC, print, and JSON contexts use the same command. Evo sends one user mess
 through Pi's `sendUserMessage()` with `followUp` delivery. Pi starts it when idle
 or queues it after active work. Evo never snapshots idle state or steers an
 existing turn. Pi disables command and prompt-template expansion for the injected
-message. Repeated invocations remain separate requests without a deduplication
-store.
+message. Ordinary repeated invocations remain separate requests without a
+deduplication store.
 
 The extension API returns void. Command return proves neither admission nor
 completion; the host must retain the session through asynchronous preflight and
@@ -221,19 +221,52 @@ The package root containing the loaded entrypoint is the evidence and worktree
 discovery root. Invocation cwd is context only. Required writes belong in the
 selected slices' dedicated worktrees.
 
+## Durable agents
+
+Agent sessions that run on Pi Durable receive `/evo` through the native
+contribution contract. The ordinary factory emits one contribution on the
+`durable:contribution` channel before it registers the command. A Durable
+session host collects that contribution and installs its extension; an ordinary
+Pi session has no listener, so the emission has no effect.
+
+The native form is a contribution command named `evo`. It uses the same
+direction parser, release intake, and kickoff builder as the ordinary command.
+The host's cwd supplies the invocation workspace line. The kickoff is submitted
+as follow-up input, so a busy conversation queues it after the active turn.
+
+The command offers no model tools, so it declares no replay classes. Durability
+belongs to the submission instead. The command derives the request ID from the
+SHA-256 digest of the kickoff. A repeated command whose kickoff is identical,
+for example after process loss, returns the existing submission instead of
+admitting a second one. That is the one semantic difference from the ordinary
+command, which keeps every repeated invocation as a separate request. Release
+intake is part of the kickoff, so a changed release state produces a new
+request.
+
+`durable.ts` holds the contribution and the shared command description.
+`durable.test.mts` runs the contribution in a real Harness over `MemoryStorage`
+with the pi-ai faux provider. It checks kickoff admission, request reuse for
+identical input, a distinct request for a changed direction, the host-cwd
+binding, direction refusal, and the absence of model tools.
+
 ## Implementation and checks
 
-- `index.ts` registers `/evo`, resolves its evidence root, reads release intake,
-  reports invalid input, and selects follow-up delivery.
+- `index.ts` registers `/evo`, emits the Durable contribution, resolves its
+  evidence root, reads release intake, reports invalid input, and selects
+  follow-up delivery.
 - `release.ts` reads published review coverage and bounds cumulative release notes.
 - `release.test.mts` checks source validation, publication boundaries, context
   limits, recovery priority, and directed focus with isolated Git fixtures.
 - `command.ts` sanitizes and bounds the direction.
 - `kickoff.ts` frames intent, direction, authority, and the required workflow read.
+- `durable.ts` builds the Durable contribution command: the same parser,
+  release intake, and kickoff, submitted with a kickoff-digest request ID.
+- `durable.test.mts` runs the contribution in a real Durable Harness: admission,
+  request reuse, distinct directions, the host-cwd binding, and direction refusal.
 - `evo.test.mts` checks parser boundaries, JSON isolation, direction precedence,
   the complete grant and reservations, and semantic requirements across the
-  kickoff and its owning workflow. It also checks mode-independent dispatch and
-  errors.
+  kickoff and its owning workflow. It also checks mode-independent dispatch,
+  errors, and the emitted contribution.
 - `evo.runtime.test.mts` loads the real extension into ordinary Pi sessions with a
   controlled provider. It checks exact delivered requests in all modes, repeated
   requests, preflight lifetime, active follow-up delivery, retained outcome, and
@@ -251,6 +284,7 @@ npm test
 ```
 
 These checks establish instruction construction and the exercised ordinary-session
-dispatch contract, not improved autonomous model selection or a successful release.
+and Durable-command dispatch contracts, not improved autonomous model selection
+or a successful release.
 Those claims need observed full-session outcomes and their use, review, and
 authorized delivery through the selected host.

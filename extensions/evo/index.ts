@@ -4,10 +4,12 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { parseEvoInvocation } from "./command.ts";
+import { createEvoContribution, EVO_COMMAND_DESCRIPTION } from "./durable.ts";
 import { buildEvoKickoff } from "./kickoff.ts";
 import { readPiReleaseIntake } from "./release.ts";
 
 const HARNESS_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+const ENTRYPOINT = fileURLToPath(import.meta.url);
 
 function reportInvalidInvocation(ctx: ExtensionCommandContext, message: string): void {
 	if (ctx.hasUI) ctx.ui.notify(message, "error");
@@ -15,9 +17,9 @@ function reportInvalidInvocation(ctx: ExtensionCommandContext, message: string):
 }
 
 export default function registerEvo(pi: ExtensionAPI): void {
+	pi.events.emit("durable:contribution", createEvoContribution({ source: ENTRYPOINT }));
 	pi.registerCommand("evo", {
-		description:
-			"Coordinate autonomous harness improvement through full Pi sessions; optional trailing text directs the run",
+		description: EVO_COMMAND_DESCRIPTION,
 		handler: async (rawArgs, ctx) => {
 			const invocation = parseEvoInvocation(rawArgs);
 			if (!invocation.ok) {
