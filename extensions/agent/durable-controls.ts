@@ -293,7 +293,8 @@ export async function submitConversation(
 	const { message, requestId, ownerId, whenBusy, operationId, origin } = params;
 	let deduped = (await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined;
 	if (ownerId !== undefined) {
-		if (origin === undefined) throw new Error("A retained admission requires its origin");
+		// Every current caller states its origin; a request without one comes from older agent code.
+		if (origin === undefined) throw new Error("This request carries no admission origin, so the calling Pi runs older agent code. Restart that Pi window, then retry.");
 		const state = await conversation.commit(
 			(tx) => recordDeliveryIntent(tx, conversation.id, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), origin }),
 			context,

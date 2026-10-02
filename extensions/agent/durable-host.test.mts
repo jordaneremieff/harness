@@ -191,6 +191,18 @@ it("rejects out-of-range transcript bounds", async (t) => {
 	}
 });
 
+it("refuses an owned submission without an origin and names the restart", async (t) => {
+	const storagePath = join(fixtureRoot(t), "run.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	try {
+		await assert.rejects(host.request("submit", { message: "from an older window", requestId: "old-window-1", ownerId: "owner-old" }), /calling Pi runs older agent code\. Restart that Pi window/);
+		const receipts = (await host.request("receipts", { ownerId: "owner-old" })) as { receipts: readonly unknown[] };
+		assert.equal(receipts.receipts.length, 0, "a refused admission leaves no delivery intent");
+	} finally {
+		await host.close();
+	}
+});
+
 it("serves submit, receipts, and acknowledge through request dispatch", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
