@@ -13,7 +13,7 @@ async function coldSource(t: { after(fn: () => void): void }) {
 	const pid = primary.pid;
 	let submissionId: number;
 	try {
-		const submitted = await primary.request("submit", { message: "COLD_SOURCE", requestId: "cold-source", ownerId: f.ownerId }) as { submissionId: number };
+		const submitted = await primary.request("submit", { message: "COLD_SOURCE", requestId: "cold-source", ownerId: f.ownerId, origin: "operator" }) as { submissionId: number };
 		submissionId = submitted.submissionId;
 		const receipt = await waitForReceipt(primary, f.ownerId, submissionId);
 		assert.equal(receipt.status, "done");
@@ -92,7 +92,7 @@ it("invalidates the snapshot when the database or WAL identity changes", async (
 	// A real second run mutates the source; a fresh copy picks up the new entry.
 	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
 	try {
-		const submitted = await primary.request("submit", { message: "COLD_SECOND", requestId: "cold-second", ownerId: f.ownerId }) as { submissionId: number };
+		const submitted = await primary.request("submit", { message: "COLD_SECOND", requestId: "cold-second", ownerId: f.ownerId, origin: "operator" }) as { submissionId: number };
 		await waitForReceipt(primary, f.ownerId, submitted.submissionId);
 	} finally {
 		await primary.close().catch(() => undefined);

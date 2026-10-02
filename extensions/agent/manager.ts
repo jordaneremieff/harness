@@ -7,14 +7,13 @@ import { buildStatusOverview } from "./status-overview.ts";
 import { createPrimaryChannel, connectPrimaryChannel, type PrimaryChannel } from "./primary-channel.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
-import { acquireHost, connectHost, type HostConnection } from "./host-client.ts";
-import { hostPaths, type HostMetadata } from "./host-protocol.ts";
+import { acquireHost, connectHost, type HostConnection, type HostObservationListener } from "./host-client.ts";
+import { HOST_RUNTIME_VERSION, hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { observeClaim } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
 import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
 import type { ConversationSnapshotPage } from "./durable-observation.ts";
 import type { HostObservationScope } from "./host-client.ts";
-import type { ObservationFrame } from "./live-frames.ts";
 
 export const MANAGER_PROTOCOL = 10;
 export interface AgentCaller {
@@ -151,6 +150,9 @@ export class AgentManager {
 	private readonly failures: BoundedMap<string>;
 	private readonly crashes = new BoundedMap<{ times: number[]; stopped: boolean }>(DEFAULT_FAILURE_LIMIT);
 	private readonly recoveryErrors = new BoundedMap<string>(DEFAULT_FAILURE_LIMIT);
+	private readonly updatePending = new BoundedMap<number>(DEFAULT_FAILURE_LIMIT);
+	private readonly queuedUpdates = new Set<string>();
+	private readonly updating = new Map<string, Promise<HostConnection>>();
 	private readonly queuedRecovery = new Set<string>();
 	private shuttingDown = false;
 	constructor(options: AgentManagerOptions) {
@@ -174,7 +176,10 @@ export class AgentManager {
 			}
 			this.clients.set(record.storageId, client);
 			await this.subscribe(record.storageId, client);
-			return client;
+			if (client.runtimeVersion === HOST_RUNTIME_VERSION) return client;
+			// An idle older host is replaced now, transparently for this caller; a busy one stays until idle.
+			this.noteHostVersion(record.storageId, client.runtimeVersion);
+			return this.replaceOutdatedHost(record, client, primary);
 		}).finally(() => { this.opening.delete(record.storageId); });
 		this.opening.set(record.storageId, open);
 		return open;
@@ -192,6 +197,7 @@ export class AgentManager {
 				} else {
 					this.clients.set(record.storageId, client);
 					await this.subscribe(record.storageId, client);
+					if (client.runtimeVersion !== HOST_RUNTIME_VERSION) this.noteHostVersion(record.storageId, client.runtimeVersion);
 				}
 			} catch {
 				client = undefined;
@@ -370,7 +376,9 @@ export class AgentManager {
 				coverage.skipped += projection.skipped;
 				coverage.omitted += projection.omitted;
 				const recoveryError = this.recoveryErrors.get(record.storageId);
-				rows.push(...projection.rows.map((row) => recoveryError === undefined ? row : { ...row, health: { ...row.health, lastError: recoveryError } }));
+				const updateVersion = this.updatePending.get(record.storageId);
+				const hostLabel = recoveryError ?? (updateVersion === undefined ? undefined : this.updateMessage(updateVersion));
+				rows.push(...projection.rows.map((row) => hostLabel === undefined ? row : { ...row, health: { ...row.health, lastError: hostLabel } }));
 			}
 			coverage.nextCursor = page.nextCursor;
 			if (!page.nextCursor) { coverage.complete = true; break; }
@@ -409,7 +417,7 @@ export class AgentManager {
 	async observeLive(
 		sessionId: string,
 		scope: "conversation" | "tasks",
-		listener: (frame: ObservationFrame, fresh: boolean) => void,
+		listener: HostObservationListener,
 		signal?: AbortSignal,
 	): Promise<(() => void) | undefined> {
 		if (this.shuttingDown) return undefined;
@@ -428,6 +436,7 @@ export class AgentManager {
 			}
 			this.clients.set(record.storageId, client);
 			await this.subscribe(record.storageId, client);
+			if (client.runtimeVersion !== HOST_RUNTIME_VERSION) this.noteHostVersion(record.storageId, client.runtimeVersion);
 		}
 		if (!client.observe) return undefined;
 		const observationScope: HostObservationScope = scope === "tasks" ? { scope: "tasks", sessionId: record.storageId } : { scope: "conversation", sessionId };
@@ -442,7 +451,11 @@ export class AgentManager {
 	async status(sessionId?: string): Promise<unknown> {
 		if (sessionId) return this.observe(this.catalog.read(sessionId), "status", { sessionId });
 		const page = await this.dashboardPage();
-		return buildStatusOverview(page, [...this.primaries].map(([sessionId, primary]) => ({ sessionId, cwd: primary.cwd ?? "", name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel })), [...this.failures.entries].map(([storageId, error]) => ({ storageId, error })));
+		const failures = [
+			[...this.failures.entries].map(([storageId, error]) => ({ storageId, error })),
+			[...this.updatePending.entries].map(([storageId, version]) => ({ storageId, error: this.updateMessage(version) })),
+		].flat();
+		return buildStatusOverview(page, [...this.primaries].map(([sessionId, primary]) => ({ sessionId, cwd: primary.cwd ?? "", name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel })), failures);
 	}
 
 	async registerPrimary(ownerId: string, primary: PrimaryClient): Promise<void> {
@@ -594,7 +607,10 @@ export class AgentManager {
 				do {
 					again = false;
 					const state = await client.request("recovery-state") as { workPending?: boolean; deliveriesPending?: boolean };
-					if (state.workPending === false && state.deliveriesPending === false) close();
+					if (state.workPending === false && state.deliveriesPending === false) {
+						this.noteOlderHost(storageId, client);
+						close();
+					}
 					void this.refreshFooter();
 				} while (again && !closed);
 			} catch (error) {
@@ -612,6 +628,122 @@ export class AgentManager {
 		} catch (error) { close(); throw error; }
 	}
 
+	/** Note one connected host when it runs older code; current hosts stay silent. */
+	private noteOlderHost(storageId: string, client: HostConnection): void {
+		if (client.runtimeVersion !== HOST_RUNTIME_VERSION) this.noteHostVersion(storageId, client.runtimeVersion);
+	}
+
+	/** Mark one connected storage host as older code; a replacement runs when the host is idle. */
+	private noteHostVersion(storageId: string, version: number): void {
+		if (version === HOST_RUNTIME_VERSION) return;
+		if (this.updatePending.get(storageId) !== version) {
+			this.updatePending.set(storageId, version);
+			void this.refreshFooter();
+		}
+		this.scheduleHostUpdate(storageId);
+	}
+
+	/** One plain status line for an older host. */
+	private updateMessage(version: number): string {
+		return `Host runtime version ${version}; this Pi runs version ${HOST_RUNTIME_VERSION}. It updates when idle.`;
+	}
+
+	private clearUpdatePending(storageId: string): void {
+		if (!this.updatePending.has(storageId)) return;
+		this.updatePending.delete(storageId);
+		void this.refreshFooter();
+	}
+
+	/** True when the host reports no active work; undefined when the check itself fails. */
+	private async hostIsIdle(client: HostConnection): Promise<boolean | undefined> {
+		try {
+			const state = await client.request("recovery-state") as { workPending?: boolean };
+			return state.workPending === false;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** Count one automatic replacement in the same crash window as a relaunch after an unexpected loss. */
+	private noteReplacement(storageId: string): boolean {
+		const now = Date.now();
+		const times = (this.crashes.get(storageId)?.times ?? []).filter((time) => now - time < CRASH_WINDOW_MS);
+		times.push(now);
+		const stopped = times.length > MAX_AUTOMATIC_RESTARTS;
+		this.crashes.set(storageId, { times, stopped });
+		if (stopped) {
+			this.recordRecoveryError(storageId, "Host update stopped after repeated replacements within 60 seconds. Inspect the host error, then use agent_attach to retry.");
+			return false;
+		}
+		return true;
+	}
+
+	/** One replacement per storage at a time, whether a caller or the queue requested it. */
+	private replaceOutdatedHost(record: CatalogRecord, client: HostConnection, primary?: PrimaryClient): Promise<HostConnection> {
+		const existing = this.updating.get(record.storageId);
+		if (existing) return existing;
+		const run = this.performHostUpdate(record, client, primary).finally(() => {
+			if (this.updating.get(record.storageId) === run) this.updating.delete(record.storageId);
+		});
+		this.updating.set(record.storageId, run);
+		return run;
+	}
+
+	/** Close one idle older host through its own close method and relaunch it with current code. */
+	private async performHostUpdate(record: CatalogRecord, client: HostConnection, primary?: PrimaryClient): Promise<HostConnection> {
+		if (client.closed || this.clients.get(record.storageId) !== client) return client;
+		if ((await this.hostIsIdle(client)) !== true) return client;
+		if (!this.noteReplacement(record.storageId)) return client;
+		// Detach first: the closing host's close notification must not queue an independent recovery.
+		if (this.clients.get(record.storageId) === client) {
+			this.clients.delete(record.storageId);
+			this.subscriptions.get(record.storageId)?.();
+			this.subscriptions.delete(record.storageId);
+		}
+		this.recoveryClients.get(record.storageId)?.();
+		this.queuedUpdates.delete(record.storageId);
+		try { await client.request("close"); } catch { /* The local close still releases the claim. */ }
+		await client.close().catch(() => undefined);
+		if (this.shuttingDown || primary?.signal.aborted) throw new Error("Agent primary released while updating its host");
+		const fresh = await (this.options.acquire ?? acquireHost)(hostMetadata(record), MANAGED_LINK);
+		if (this.shuttingDown) {
+			await fresh.close().catch(() => undefined);
+			throw new Error("Agent manager closed while updating its host");
+		}
+		this.clients.set(record.storageId, fresh);
+		await this.subscribe(record.storageId, fresh);
+		if (fresh.runtimeVersion === HOST_RUNTIME_VERSION) this.clearUpdatePending(record.storageId);
+		else {
+			this.updatePending.set(record.storageId, fresh.runtimeVersion);
+			this.recordRecoveryError(record.storageId, this.updateMessage(fresh.runtimeVersion));
+		}
+		void this.refreshFooter();
+		return fresh;
+	}
+
+	/** Queue one bounded replacement attempt on the existing recovery queue. */
+	private scheduleHostUpdate(storageId: string): void {
+		if (this.shuttingDown || this.queuedUpdates.has(storageId)) return;
+		const client = this.clients.get(storageId);
+		if (!client || client.closed || client.runtimeVersion === HOST_RUNTIME_VERSION) return;
+		let record: CatalogRecord;
+		try { record = this.catalog.read(storageId); } catch { return; }
+		this.queuedUpdates.add(storageId);
+		const run = async (): Promise<void> => {
+			try {
+				if (this.shuttingDown) return;
+				const current = this.clients.get(storageId);
+				if (!current || current.closed || current.runtimeVersion === HOST_RUNTIME_VERSION) return;
+				await this.replaceOutdatedHost(record, current);
+			} catch (error) {
+				this.recordRecoveryError(storageId, errorText(error));
+			} finally {
+				this.queuedUpdates.delete(storageId);
+			}
+		};
+		this.recoveryQueue = this.recoveryQueue.then(run).catch(() => undefined);
+	}
+
 	private stopping(primary: PrimaryClient): boolean {
 		return this.shuttingDown || primary.signal.aborted;
 	}
@@ -627,7 +759,10 @@ export class AgentManager {
 			void this.refreshFooter();
 		});
 		if (!client.subscribeChanges) return;
-		const unsubscribe = await client.subscribeChanges(() => { void this.refreshFooter(); }, this.lifecycle.signal);
+		const unsubscribe = await client.subscribeChanges(() => {
+			void this.refreshFooter();
+			if (client.runtimeVersion !== HOST_RUNTIME_VERSION) this.scheduleHostUpdate(storageId);
+		}, this.lifecycle.signal);
 		if (client.closed) unsubscribe();
 		else this.subscriptions.set(storageId, unsubscribe);
 	}

@@ -7,9 +7,29 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
-import type { ConversationId, EntryRecord } from "@earendil-works/pi-durable";
-import { readResetPlacement, waitForResetPlacement, type ResetResult } from "./durable-reset.ts";
+import type { ConversationId, EntryRecord, Harness, SubmissionRecord } from "@earendil-works/pi-durable";
+import type { ResetResult } from "./durable-reset.ts";
 import { scheduleFixture } from "./durable-schedule-fixture.mts";
+
+/** Event-based wait for a reset write to leave the queued state; the caller sees the placed record. */
+async function waitForPlacedReset(harness: Harness, conversationId: ConversationId, requestId: string): Promise<Extract<SubmissionRecord, { readonly type: "write" }>> {
+	for (;;) {
+		let wake: () => void = () => {};
+		const woke = new Promise<void>((resolve) => {
+			wake = resolve;
+		});
+		const unsubscribe = harness.subscribeCommits(() => {
+			queueMicrotask(wake);
+		});
+		try {
+			const record = await harness.commit((tx) => tx.submissionByRequest(conversationId, requestId), BACKGROUND_CONTEXT);
+			if (record !== undefined && record.type === "write" && record.status !== "queued") return record;
+			await woke;
+		} finally {
+			unsubscribe();
+		}
+	}
+}
 
 function messageText(messages: readonly Message[] | undefined): string {
 	if (messages === undefined) return "";
@@ -61,13 +81,13 @@ it("queues a busy reset until the next boundary and then places it", { timeout: 
 	await f.waitForFirstRequest();
 	const result = (await f.host.request("reset", { sessionId: f.storageId, handoff: "AFTER_HANDOFF", requestId: "reset-busy" })) as ResetResult;
 	assert.equal(result.status, "queued", "a busy conversation queues the reset");
-	const queued = await readResetPlacement(f.host.harness, conversation.id, "reset-busy", BACKGROUND_CONTEXT);
-	assert.equal(queued?.status, "queued");
+	const queued = await f.host.harness.commit((tx) => tx.submissionByRequest(conversation.id, "reset-busy"), BACKGROUND_CONTEXT);
+	assert.ok(queued?.type === "write" && queued.status === "queued");
 	f.releaseAnswer();
 	await run.wait(BACKGROUND_CONTEXT);
-	const placed = await waitForResetPlacement(f.host.harness, conversation.id, "reset-busy", BACKGROUND_CONTEXT);
-	assert.equal(placed.status, "placed");
-	assert.ok(placed.entryId !== null);
+	const placed = await waitForPlacedReset(f.host.harness, conversation.id, "reset-busy");
+	assert.equal(placed.status, "done");
+	assert.ok(placed.entry !== undefined);
 	const after = await conversation.context(BACKGROUND_CONTEXT);
 	assert.ok(contextText(after.messages).includes("AFTER_HANDOFF"));
 	assert.ok(!contextText(after.messages).includes("BLOCKING_TASK"), "the old run leaves the active context");
@@ -108,9 +128,9 @@ it("keeps a pending timer across a reset", { timeout: 60000 }, async (t) => {
 	assert.equal(cancelled.status, "cancelled");
 });
 
-it("reports an unknown reset placement request as absent", { timeout: 60000 }, async (t) => {
+it("retains no submission for an unknown reset request", { timeout: 60000 }, async (t) => {
 	const f = await scheduleFixture(t);
 	const conversation = await f.conversation();
-	const missing = await readResetPlacement(f.host.harness, conversation.id as ConversationId, "reset-missing", BACKGROUND_CONTEXT);
+	const missing = await f.host.harness.commit((tx) => tx.submissionByRequest(conversation.id, "reset-missing"), BACKGROUND_CONTEXT);
 	assert.equal(missing, undefined);
 });

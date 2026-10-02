@@ -11,7 +11,7 @@
  * never cancels background timers.
  */
 import type { Context } from "@earendil-works/chord";
-import { ResetEntry, type Conversation, type ConversationId, type EntryId, type Harness, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
+import { ResetEntry, type Conversation, type ConversationId, type EntryId, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
 
 export interface ResetRequest {
 	/** Operator-authored handoff text; absent starts the new context without a message. */
@@ -55,14 +55,6 @@ function resetResult(conversationId: ConversationId, requestId: string, record: 
 	};
 }
 
-/** Retained placement state of one reset request, or undefined when the request is unknown. */
-export async function readResetPlacement(harness: Harness, conversationId: ConversationId, requestId: string, context: Context): Promise<ResetResult | undefined> {
-	const record = await harness.commit((tx) => tx.submissionByRequest(conversationId, requestId), context);
-	if (record === undefined) return undefined;
-	if (record.type !== "write") throw new Error(`request ${requestId} already identifies a non-write submission`);
-	return resetResult(conversationId, requestId, record, false);
-}
-
 /**
  * Admit one reset write. An idle conversation places it in the admission
  * commit; a busy conversation queues it until the next boundary. The caller
@@ -87,65 +79,3 @@ export async function resetConversation(conversation: Conversation, params: Rese
 	return resetResult(conversation.id, params.requestId, record, false);
 }
 
-/** Cancel one in-flight wait when a signal aborts, without polling. */
-function abortWait(signals: readonly AbortSignal[]): { readonly promise: Promise<never>; readonly dispose: () => void } {
-	const listeners: Array<{ signal: AbortSignal; listener: () => void }> = [];
-	const promise = new Promise<never>((_resolve, reject) => {
-		for (const signal of signals) {
-			const listener = () => reject(signal.reason instanceof Error ? signal.reason : new Error("reset placement wait cancelled"));
-			listeners.push({ signal, listener });
-			if (signal.aborted) {
-				listener();
-				break;
-			}
-			signal.addEventListener("abort", listener, { once: true });
-		}
-	});
-	void promise.catch(() => {});
-	return { promise, dispose: () => { for (const { signal, listener } of listeners) signal.removeEventListener("abort", listener); } };
-}
-
-/** Resolve on the next committed publication, without polling. */
-function commitWake(harness: Harness): { readonly promise: Promise<void>; readonly dispose: () => void } {
-	let wake!: () => void;
-	const promise = new Promise<void>((resolve) => {
-		wake = resolve;
-	});
-	const unsubscribe = harness.subscribeCommits(() => {
-		queueMicrotask(wake);
-	});
-	return { promise, dispose: unsubscribe };
-}
-
-/** Read one retained reset write, or undefined when the request has no submission. */
-async function readResetRecord(harness: Harness, conversationId: ConversationId, requestId: string, context: Context): Promise<Extract<SubmissionRecord, { readonly type: "write" }> | undefined> {
-	const record = await harness.commit((tx) => tx.submissionByRequest(conversationId, requestId), context);
-	if (record === undefined) return undefined;
-	if (record.type !== "write") throw new Error(`request ${requestId} already identifies a non-write submission`);
-	return record;
-}
-
-/**
- * Resolve when the reset write places at a boundary or can no longer place.
- * The wait is event-based on committed publications; it never polls.
- */
-export async function waitForResetPlacement(harness: Harness, conversationId: ConversationId, requestId: string, context: Context, closeSignal?: AbortSignal): Promise<ResetResult> {
-	const signals = [context.abortSignal, closeSignal].filter((signal): signal is AbortSignal => signal !== undefined);
-	for (;;) {
-		const wake = commitWake(harness);
-		const abort = abortWait(signals);
-		try {
-			const record = await readResetRecord(harness, conversationId, requestId, context);
-			if (record === undefined) throw new Error(`reset ${requestId} is not retained in conversation ${conversationId}`);
-			if (record.status !== "queued") return resetResult(conversationId, requestId, record, false);
-			await Promise.race([wake.promise, abort.promise]);
-		} catch (error) {
-			const cancelled = signals.find((signal) => signal.aborted);
-			if (cancelled !== undefined) throw cancelled.reason instanceof Error ? cancelled.reason : new Error("reset placement wait cancelled");
-			throw error;
-		} finally {
-			wake.dispose();
-			abort.dispose();
-		}
-	}
-}

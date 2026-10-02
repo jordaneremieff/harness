@@ -8,7 +8,7 @@ import { createServer, type Socket } from "node:net";
 import { spawnSync } from "node:child_process";
 import { ServerError, type ServerHost } from "@earendil-works/pi-server";
 import { createUnixServer } from "@earendil-works/pi-server/unix";
-import { connectPrimaryChannel, createPrimaryChannel, primaryEndpointOwnerState, primaryEndpointPath, PrimaryChannelConflictError, PrimaryChannelUnavailableError, probePrimaryChannel, type PrimaryChannelOptions, type PrimaryDelivery } from "./primary-channel.ts";
+import { connectPrimaryChannel, createPrimaryChannel, PRIMARY_ENDPOINT_VERSION, primaryEndpointOwnerState, primaryEndpointPath, primaryEndpointStatus, PrimaryChannelConflictError, PrimaryChannelUnavailableError, probePrimaryChannel, type PrimaryChannelOptions, type PrimaryDelivery } from "./primary-channel.ts";
 
 interface Fixture {
 	readonly root: string;
@@ -75,7 +75,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<vo
 /** One recorded endpoint with an independent v4 server identity. */
 function endpointRecord(root: string, id: string, overrides: Record<string, unknown> = {}): string {
 	return JSON.stringify({
-		version: 1,
+		version: PRIMARY_ENDPOINT_VERSION,
 		id,
 		serverId: randomUUID(),
 		cwd: "/work/topic",
@@ -85,6 +85,13 @@ function endpointRecord(root: string, id: string, overrides: Record<string, unkn
 		startedAt: new Date().toISOString(),
 		...overrides,
 	});
+}
+
+/** A pid whose process has already exited, so a record on it classifies as dead. */
+function deadProcessId(): number {
+	const child = spawnSync(process.execPath, ["-e", ""], { stdio: ["ignore", "ignore", "ignore"] });
+	if (child.pid === undefined) throw new Error("the probe process did not report a pid");
+	return child.pid;
 }
 
 it("bounds a connection to a silent endpoint", async (t) => {
@@ -379,4 +386,51 @@ it("rewrites the endpoint identity when a registered primary changes", async (t)
 	assert.equal(channel.info().thinkingLevel, undefined);
 	const cleared = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as Record<string, unknown>;
 	assert.equal("name" in cleared, false, "a cleared name leaves no stale record field");
+});
+
+it("publishes the current endpoint version and refuses an older record with the restart reason", async (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	const channel = await createPrimaryChannel(channelOptions(root, id));
+	t.after(() => void channel.close().catch(() => undefined));
+	const path = primaryEndpointPath(root, id);
+	const published = JSON.parse(readFileSync(path, "utf8")) as { version: number };
+	assert.equal(published.version, PRIMARY_ENDPOINT_VERSION);
+	writeFileSync(path, JSON.stringify({ ...published, version: PRIMARY_ENDPOINT_VERSION - 1 }));
+	await assert.rejects(
+		connectPrimaryChannel({ id, sessionsRoot: root }),
+		(error: unknown) =>
+			error instanceof PrimaryChannelUnavailableError &&
+			String(error).includes(`endpoint version ${PRIMARY_ENDPOINT_VERSION - 1}`) &&
+			String(error).includes("Restart that Pi"),
+	);
+});
+
+it("classifies another endpoint version as incompatible, never dead or unknown", async (t) => {
+	const root = testRoot(t);
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	const id = uuidV7();
+	const path = primaryEndpointPath(root, id);
+	writeFileSync(path, endpointRecord(root, id, { version: 1 }));
+	assert.deepEqual(primaryEndpointStatus(root, id), { state: "incompatible", version: 1 });
+	writeFileSync(path, endpointRecord(root, id, { version: 1, pid: deadProcessId() }));
+	assert.deepEqual(primaryEndpointStatus(root, id), { state: "incompatible", version: 1 }, "a dead older owner stays incompatible");
+	writeFileSync(path, endpointRecord(root, id, { version: "1" }));
+	assert.deepEqual(primaryEndpointStatus(root, id), { state: "unknown" }, "a non-numeric version is malformed");
+	writeFileSync(path, endpointRecord(root, id, { version: undefined }));
+	assert.deepEqual(primaryEndpointStatus(root, id), { state: "unknown" }, "a missing version is malformed");
+});
+
+it("replaces an older endpoint record with a dead owner at registration", async (t) => {
+	const root = testRoot(t);
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	const id = uuidV7();
+	const dead = spawnSync(process.execPath, ["-e", ""]);
+	assert.ok(dead.pid);
+	writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id, { version: 1, pid: dead.pid }));
+	const channel = await createPrimaryChannel(channelOptions(root, id));
+	t.after(() => void channel.close().catch(() => undefined));
+	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { version: number; pid: number };
+	assert.equal(record.version, PRIMARY_ENDPOINT_VERSION, "a restart replaces the older record");
+	assert.equal(record.pid, process.pid);
 });

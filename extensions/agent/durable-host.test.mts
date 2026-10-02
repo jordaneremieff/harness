@@ -195,7 +195,7 @@ it("serves submit, receipts, and acknowledge through request dispatch", async (t
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
 	try {
-		const submitted = (await host.request("submit", { message: "report me", requestId: "receipt-1", ownerId: "owner-a", operationId: "op-9" })) as { submissionId: SubmissionId; identity: string };
+		const submitted = (await host.request("submit", { message: "report me", requestId: "receipt-1", ownerId: "owner-a", operationId: "op-9", origin: "operator" })) as { submissionId: SubmissionId; identity: string };
 		assert.equal(submitted.identity, fixtureStorageId);
 		const waiting = (await host.request("receipts", { ownerId: "owner-a", wait: true })) as { receipts: readonly { submissionId: SubmissionId; status: string; answerEntryId: number | null; operationId: string | null; identity: string }[]; reports: readonly unknown[]; pending: number };
 		assert.equal(waiting.receipts.length, 1);
@@ -220,16 +220,16 @@ it("reconciles an intent written before its submission and never overwrites an a
 	// Simulate a crash after the intent commit and before submission admission.
 	await first.harness.commit(async (tx) => {
 		const state = await tx.doc(AgentDeliveryDoc);
-		state.intents.push({ requestId: "recover-1", ownerId: "owner-r", conversationId: 1 as ConversationId, message: "recovered task", whenBusy: null, operationId: null, submissionId: null });
+		state.intents.push({ requestId: "recover-1", ownerId: "owner-r", conversationId: 1 as ConversationId, message: "recovered task", whenBusy: null, operationId: null, submissionId: null, origin: "operator" });
 	}, BACKGROUND_CONTEXT);
-	const submitted = await first.submit({ message: "recovered task", requestId: "recover-1", ownerId: "owner-r" });
+	const submitted = await first.submit({ message: "recovered task", requestId: "recover-1", ownerId: "owner-r", origin: "operator" });
 	await wait(first, submitted.submissionId);
 	await first.request("acknowledge", { ownerId: "owner-r", submissionIds: [submitted.submissionId] });
 	await first.close();
 
 	const second = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
 	try {
-		const repeated = (await second.request("submit", { message: "recovered task", requestId: "recover-1", ownerId: "owner-r" })) as { submissionId: SubmissionId; deduped: boolean };
+		const repeated = (await second.request("submit", { message: "recovered task", requestId: "recover-1", ownerId: "owner-r", origin: "operator" })) as { submissionId: SubmissionId; deduped: boolean };
 		assert.equal(repeated.submissionId, submitted.submissionId, "Durable deduplication reuses the submission");
 		assert.equal(repeated.deduped, true);
 		const receipts = (await second.request("receipts", { ownerId: "owner-r" })) as { receipts: readonly unknown[] };
@@ -664,7 +664,7 @@ async function crashAndResume(mode: "request" | "effect"): Promise<void> {
 		await death;
 		const tools = mode === "effect" ? [slowEffectTool(effectPath, rerunPath, false)] : [];
 		host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry(tools)), BACKGROUND_CONTEXT);
-		const admitted = await host.submit({ message: "do the task", requestId: runId, ownerId: "fixture-owner" });
+		const admitted = await host.submit({ message: "do the task", requestId: runId, ownerId: "fixture-owner", origin: "operator" });
 		assert.equal(String(admitted.submissionId), childSubmission, "the restart reuses the retained submission");
 		assert.equal(admitted.deduped, true, "the child's intent resolves through the retained submission");
 		const outcome = await wait(host, admitted.submissionId);

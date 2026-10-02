@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
+import type { ServiceCall } from "@earendil-works/chord";
+import { ServerError, type ServerHost } from "@earendil-works/pi-server";
+import { createUnixServer } from "@earendil-works/pi-server/unix";
 import { HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
 import { acquireHost, connectHost, snapshotHost, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState, waitUntil, writeFixtureState } from "./host-fixture.mts";
@@ -55,6 +59,56 @@ async function observeFrames(connection: HostConnection, scope: HostObservationS
 	if (!connection.observe) throw new Error("host connection does not publish live frames");
 	return connection.observe(scope);
 }
+
+/** One live host surface that predates the runtime-version member and rejects every method as an old runtime does. */
+async function openOlderHost(root: string): Promise<{ readonly metadata: ReturnType<typeof fixtureMetadata>; close(): Promise<void> }> {
+	const metadata = fixtureMetadata(root);
+	const paths = hostPaths(metadata);
+	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
+	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
+	writeFileSync(
+		paths.claim,
+		JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: metadata.storageId, cwd: metadata.cwd, createdAt: new Date().toISOString() }),
+		{ mode: 0o600 },
+	);
+	const host: ServerHost = {
+		serverServices: {
+			attachClient: () => ({
+				invokeService: async (call: ServiceCall) => {
+					throw new ServerError("service_invalid_value", `unknown durable host method ${call.member}`);
+				},
+				release: () => {},
+			}),
+		},
+		resolveSession: async () => { throw new ServerError("session_not_found", "this older host routes no sessions"); },
+		openSession: async () => { throw new ServerError("session_not_found", "this older host routes no sessions"); },
+	};
+	const server = createUnixServer(host, { serverId: paths.serverId, path: paths.socket, mode: 0o600 });
+	await server.start();
+	return { metadata, close: async () => { await server.close().catch(() => undefined); } };
+}
+
+it("detects an older host and refuses its new-only methods with the update reason", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const older = await openOlderHost(root);
+	t.after(() => older.close());
+	const connection = await connectHost(older.metadata, launch());
+	t.after(() => connection.close().catch(() => {}));
+	assert.equal(connection.runtimeVersion, 0, "a host without the version member reads as older");
+	await assert.rejects(
+		connection.request("timer-schedule", {}),
+		(error: unknown) => error instanceof Error && /older code and does not support timer-schedule; it updates when idle/u.test(error.message),
+	);
+	const observe = connection.observe?.bind(connection);
+	assert.ok(observe, "an attached connection exposes observations");
+	await assert.rejects(
+		observe({ scope: "conversation", sessionId: older.metadata.storageId }),
+		(error: unknown) => error instanceof Error && /older code and does not support observe-open; it updates when idle/u.test(error.message),
+	);
+	// An older host still serves the methods all versions share; its own error passes through.
+	await assert.rejects(connection.request("status", {}), /unknown durable host method status/u);
+	await connection.close();
+});
 
 it("launches a host, echoes, and attaches to the live claim", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
@@ -316,8 +370,11 @@ it("pushes live conversation frames and stops on observation close", { timeout: 
 	const frames: ConversationFrame[] = [];
 	const observation = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
 	observation.onFrame((frame) => {
-		if (frame.scope === "conversation") frames.push(frame);
+		if (frame?.scope === "conversation") frames.push(frame);
 	});
+	const attached: Array<{ fresh: boolean; state?: string }> = [];
+	observation.onFrame((_frame, isFresh, state) => attached.push({ fresh: isFresh, state }));
+	assert.deepEqual(attached, [{ fresh: true, state: "live" }], "the current frame arrives for a late listener");
 	const base = observation.frame;
 	assert.equal(base.scope, "conversation");
 	if (base.scope !== "conversation") assert.fail("expected a conversation frame");
@@ -343,24 +400,24 @@ it("pushes live conversation frames and stops on observation close", { timeout: 
 	assert.equal(frames.length, settled, "a closed observation receives no further frames");
 });
 
-it("reopens a fresh snapshot after a host kill while observing", { timeout: 60000 }, async (t) => {
+it("signals unavailable without relaunching after a host kill while observing", { timeout: 60000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const config = fixtureMetadata(root);
-	const connection = await acquireHost(config, observationLaunch({ launchTimeoutMs: 20000 }));
+	const connection = await acquireHost(config, observationLaunch({ launchTimeoutMs: 5000 }));
 	track(t, connection.pid);
 	t.after(() => connection.close().catch(() => {}));
 	const observation = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
-	const fresh: ConversationFrame[] = [];
-	observation.onFrame((frame, isFresh) => {
-		if (isFresh && frame.scope === "conversation") fresh.push(frame);
-	});
-	assert.equal(fresh.length, 0, "the initial baseline is returned by observe, not re-delivered");
+	const events: Array<{ fresh: boolean; state?: string }> = [];
+	observation.onFrame((_frame, isFresh, state) => events.push({ fresh: isFresh, state }));
+	assert.deepEqual(events, [{ fresh: true, state: "live" }], "the baseline arrives with the live state");
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
-	await untilAsync(() => connection.pid !== firstPid && fresh.length >= 1, 40000, "fresh frame after recovery");
-	assert.equal(connection.closed, false, "an observed connection recovers instead of shutting down");
-	track(t, connection.pid);
-	assert.equal(fresh[0]?.conversationId, 1);
+	await untilAsync(() => events.some((event) => event.state === "unavailable"), 40000, "unavailable signal");
+	const unavailable = events.filter((event) => event.state === "unavailable");
+	assert.equal(unavailable.length, 1, "one unavailable signal per listener");
+	assert.equal(unavailable[0]?.fresh, false);
+	assert.equal(connection.pid, firstPid, "an observation loss never relaunches the host");
+	assert.equal(connection.closed, true, "the connection closes for the manager's bounded recovery");
 });
 
 it("keeps the task-graph observation live across a host recovery", { timeout: 60000 }, async (t) => {

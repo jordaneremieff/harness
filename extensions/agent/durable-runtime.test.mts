@@ -13,11 +13,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
+import type { Models } from "@earendil-works/pi-ai";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import type { CatalogView } from "./catalog-view.ts";
 import { acquireHost } from "./host-client.ts";
 import { AgentManager } from "./manager.ts";
-import { observeDurableStorage } from "./durable-runtime.ts";
+import { observeDurableStorage, sessionKeyedModels } from "./durable-runtime.ts";
 import { childCatalogRecord, killHost, runtimeFixture, trackHost, waitForFile, waitForReceipt } from "./durable-runtime-fixture.mts";
 
 interface SubmitResult {
@@ -65,7 +66,7 @@ it("reads a cold observation without bootstrapping contributions", { timeout: 18
 	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
 	trackHost(t, primary.pid);
 	try {
-		const submitted = await primary.request("submit", { message: "OBSERVE_ME", requestId: "observe-owner", ownerId: f.ownerId }) as SubmitResult;
+		const submitted = await primary.request("submit", { message: "OBSERVE_ME", requestId: "observe-owner", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
 		const receipt = await waitForReceipt(primary, f.ownerId, submitted.submissionId);
 		assert.equal(receipt.status, "done");
 	} finally {
@@ -123,7 +124,7 @@ it("resumes an outstanding model request after SIGKILL without a duplicate submi
 	const f = runtimeFixture(t);
 	const first = await acquireHost(f.metadata, { env: f.env("request") });
 	trackHost(t, first.pid);
-	const submitted = await first.request("submit", { message: "complete the request", requestId: "kill-request", ownerId: f.ownerId }) as SubmitResult;
+	const submitted = await first.request("submit", { message: "complete the request", requestId: "kill-request", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
 	assert.equal(submitted.deduped, false);
 	await waitForFile(join(f.testDir, "requested"));
 	killHost(first.pid);
@@ -135,7 +136,7 @@ it("resumes an outstanding model request after SIGKILL without a duplicate submi
 		const receipt = await waitForReceipt(second, f.ownerId, submitted.submissionId);
 		assert.equal(receipt.status, "done");
 		assert.match(receipt.answer ?? "", /durable runtime answer/u);
-		const repeat = await second.request("submit", { message: "complete the request", requestId: "kill-request", ownerId: f.ownerId }) as SubmitResult;
+		const repeat = await second.request("submit", { message: "complete the request", requestId: "kill-request", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
 		assert.equal(repeat.submissionId, submitted.submissionId, "the same request ID reuses the retained submission");
 		assert.equal(repeat.deduped, true, "the repeated submit is deduplicated");
 		const history = await second.request("inspect", { view: "history", source: "user", limit: 10 }) as HistoryPage;
@@ -157,7 +158,7 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 	trackHost(t, first.pid);
 	let submitted: SubmitResult;
 	try {
-		submitted = await first.request("submit", { message: "recover the marked work", requestId: "marked-crash", ownerId }) as SubmitResult;
+		submitted = await first.request("submit", { message: "recover the marked work", requestId: "marked-crash", ownerId, origin: "operator" }) as SubmitResult;
 		await waitForFile(join(f.testDir, "requested"));
 		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true);
 		killHost(first.pid);
@@ -231,11 +232,11 @@ for (const steerDuringRun of [false, true]) it(`relaunches a connected host afte
 			cwd: f.cwd, signal: controller.signal,
 			send: (_text, details) => { receipts.push(details as Record<string, unknown>); resolveDelivered(); },
 		});
-		const submitted = await manager.control("submit", { sessionId: f.metadata.storageId, message: "recover without restarting the primary", requestId: "connected-crash" }, { id: ownerId, cwd: f.cwd }) as SubmitResult;
+		const submitted = await manager.control("submit", { sessionId: f.metadata.storageId, message: "recover without restarting the primary", requestId: "connected-crash", origin: "model" }, { id: ownerId, cwd: f.cwd }) as SubmitResult;
 		await waitForFile(join(f.testDir, steerDuringRun ? "effect" : "requested"));
 		const expectedIds = [submitted.submissionId];
 		if (steerDuringRun) {
-			const steered = await manager.control("submit", { sessionId: f.metadata.storageId, message: "include the correction", requestId: "crash-steer", whenBusy: "steer" }, { id: ownerId, cwd: f.cwd }) as SubmitResult;
+			const steered = await manager.control("submit", { sessionId: f.metadata.storageId, message: "include the correction", requestId: "crash-steer", whenBusy: "steer", origin: "model" }, { id: ownerId, cwd: f.cwd }) as SubmitResult;
 			expectedIds.push(steered.submissionId);
 		}
 		assert.equal(manager.catalog.read(f.metadata.storageId).recoveryDue, true);
@@ -262,7 +263,7 @@ it("does not rerun an unsafe effect after SIGKILL and delivers the retained resu
 	const f = runtimeFixture(t);
 	const first = await acquireHost(f.metadata, { env: f.env("effect") });
 	trackHost(t, first.pid);
-	const submitted = await first.request("submit", { message: "run the effect", requestId: "kill-effect", ownerId: f.ownerId }) as SubmitResult;
+	const submitted = await first.request("submit", { message: "run the effect", requestId: "kill-effect", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
 	assert.equal(submitted.deduped, false);
 	await waitForFile(join(f.testDir, "effect"));
 	killHost(first.pid);
@@ -276,7 +277,7 @@ it("does not rerun an unsafe effect after SIGKILL and delivers the retained resu
 		assert.match(receipt.answer ?? "", /durable runtime answer/u);
 		const effects = () => readFileSync(join(f.testDir, "effect.txt"), "utf8").trim().split("\n").filter((line) => line !== "").length;
 		assert.equal(effects(), 1, "the unsafe effect ran once before the kill");
-		const repeat = await second.request("submit", { message: "run the effect", requestId: "kill-effect", ownerId: f.ownerId }) as SubmitResult;
+		const repeat = await second.request("submit", { message: "run the effect", requestId: "kill-effect", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
 		assert.equal(repeat.submissionId, submitted.submissionId);
 		assert.equal(repeat.deduped, true, "the repeated submit is deduplicated");
 		assert.equal(effects(), 1, "the resumed and deduplicated request reran no effect");
@@ -335,7 +336,7 @@ it("publishes a bounded catalog view and clears recovery due on a clean close", 
 	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
 	const pid = primary.pid;
 	try {
-		const submitted = await primary.request("submit", { message: "VIEW_SOURCE", requestId: "view-source", ownerId: f.ownerId }) as SubmitResult;
+		const submitted = await primary.request("submit", { message: "VIEW_SOURCE", requestId: "view-source", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
 		const receipt = await waitForReceipt(primary, f.ownerId, submitted.submissionId);
 		assert.equal(receipt.status, "done");
 		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "the admitted request marked recovery due");
@@ -433,5 +434,57 @@ it("repairs an unavailable retained model through attach on an idle host", { tim
 		assert.deepEqual(repaired.conversation?.agent?.model, { provider: "durable-runtime-fixture", modelId: "fixture-model" }, "attach repairs the stored identity with the fixture model");
 	} finally {
 		await primary.close().catch(() => {});
+	}
+});
+
+it("keys streaming requests to the storage identity without changing other model calls", () => {
+	const calls: Array<{ method: string; options: Record<string, unknown> | undefined }> = [];
+	const fake = {
+		tag: "base",
+		getModel(this: unknown) {
+			if (this !== fake) throw new Error("a model method lost its binding");
+			return "base";
+		},
+		stream(_model: unknown, _context: unknown, options?: Record<string, unknown>) {
+			calls.push({ method: "stream", options });
+			return "stream";
+		},
+		streamSimple(_model: unknown, _context: unknown, options?: Record<string, unknown>) {
+			calls.push({ method: "streamSimple", options });
+			return "simple";
+		},
+	};
+	const models = sessionKeyedModels(fake as unknown as Models, "storage-7") as unknown as typeof fake;
+	assert.equal(models.tag, "base", "non-method properties pass through");
+	assert.equal(models.getModel(), "base", "other model methods keep their binding");
+	assert.equal(models.stream({}, {}, { reasoning: "low" }), "stream");
+	assert.deepEqual(calls.at(-1)?.options, { reasoning: "low", sessionId: "storage-7" });
+	assert.equal(models.streamSimple({}, {}, { sessionId: "caller", cacheRetention: "long" }), "simple");
+	assert.deepEqual(calls.at(-1)?.options, { sessionId: "caller", cacheRetention: "long" }, "a caller session ID wins and cacheRetention passes through");
+	const caller = { cacheRetention: "short" };
+	models.streamSimple({}, {}, caller);
+	assert.deepEqual(calls.at(-1)?.options, { cacheRetention: "short", sessionId: "storage-7" });
+	assert.deepEqual(caller, { cacheRetention: "short" }, "the caller's options object is not mutated");
+	models.streamSimple({}, {}, undefined);
+	assert.deepEqual(calls.at(-1)?.options, { sessionId: "storage-7" }, "an absent options object gains the session ID");
+});
+
+it("carries the storage identity into every provider stream request", { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
+	trackHost(t, primary.pid);
+	try {
+		const submitted = await primary.request("submit", { message: "CACHE_AFFINITY", requestId: "cache-affinity", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
+		const receipt = await waitForReceipt(primary, f.ownerId, submitted.submissionId);
+		assert.equal(receipt.status, "done");
+	} finally {
+		await primary.close().catch(() => undefined);
+	}
+	const recorded = readFileSync(join(f.testDir, "session-options.jsonl"), "utf8").trim().split("\n");
+	assert.ok(recorded.length >= 1, "the provider recorded its stream options");
+	for (const line of recorded) {
+		const options = JSON.parse(line) as { sessionId: string | null; transport: string | null };
+		assert.equal(options.sessionId, f.metadata.storageId, "the stream request carries the storage session key");
+		assert.equal(options.transport, "auto", "the stream request carries the configured transport");
 	}
 });

@@ -77,9 +77,10 @@ export type DeliveryMessage = string | DeliveryMessagePart[];
 
 /**
  * Who caused one admission. An operator action from the board or the
- * `/agent` command is `operator`; an agent tool from a model is `model`. An
- * intent stored before this field existed has no origin and reads as `model`,
- * so its notice keeps the turn-triggering delivery behavior.
+ * `/agent` command is `operator`; an agent tool from a model is `model`.
+ * Every new intent records its origin explicitly; only an intent stored
+ * before the field existed lacks one, and the delivery reader treats that
+ * absence as `model` so its notice keeps the turn-triggering behavior.
  */
 export type DeliveryOrigin = "operator" | "model";
 
@@ -92,7 +93,7 @@ export type DeliveryIntent = {
 	readonly whenBusy: "steer" | "followUp" | "reject" | null;
 	readonly operationId: string | null;
 	readonly submissionId: SubmissionId | null;
-	readonly origin?: DeliveryOrigin;
+	readonly origin: DeliveryOrigin;
 };
 
 /** One settled result waiting for its owner to acknowledge it. */
@@ -102,7 +103,7 @@ export type DeliveryReceipt = {
 	readonly ownerId: string;
 	readonly conversationId: ConversationId;
 	readonly operationId: string | null;
-	/** Admission origin copied from the intent; an absent value reads as `model`. */
+	/** Admission origin copied from the intent; only a pre-field stored intent lacks it. */
 	readonly origin?: DeliveryOrigin;
 	readonly status: "done" | "unanswered";
 	readonly entryId: EntryId | null;
@@ -195,7 +196,7 @@ export interface DeliveryAdmission {
 	readonly message: UserInput;
 	readonly whenBusy?: "steer" | "followUp" | "reject";
 	readonly operationId?: string;
-	readonly origin?: DeliveryOrigin;
+	readonly origin: DeliveryOrigin;
 }
 
 /** What the admission intent lookup found: no record, an unlinked record, or a retained submission. */
@@ -234,7 +235,7 @@ export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationI
 		whenBusy: admission.whenBusy ?? null,
 		operationId: admission.operationId ?? null,
 		submissionId: null,
-		origin: admission.origin ?? "model",
+		origin: admission.origin,
 	});
 	return { kind: "new" };
 }
@@ -292,8 +293,9 @@ export async function submitConversation(
 	const { message, requestId, ownerId, whenBusy, operationId, origin } = params;
 	let deduped = (await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined;
 	if (ownerId !== undefined) {
+		if (origin === undefined) throw new Error("A retained admission requires its origin");
 		const state = await conversation.commit(
-			(tx) => recordDeliveryIntent(tx, conversation.id, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), ...(origin === undefined ? {} : { origin }) }),
+			(tx) => recordDeliveryIntent(tx, conversation.id, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), origin }),
 			context,
 		);
 		if (state.kind === "linked") deduped = true;
@@ -817,7 +819,7 @@ function receiptRow(intent: DeliveryIntent, record: Extract<SubmissionRecord, { 
 		ownerId: intent.ownerId,
 		conversationId: intent.conversationId,
 		operationId: intent.operationId,
-		origin: intent.origin ?? "model",
+		origin: intent.origin,
 		status: record.status,
 		entryId: record.entry ?? null,
 		answerEntryId: record.status === "done" ? record.answer : null,

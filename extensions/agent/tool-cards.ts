@@ -480,6 +480,8 @@ export function renderAgentResult(result: AgentToolResult<unknown>, options: Too
 	const snapshot = snapshotStatus(details);
 	const snapshotError = text(details.snapshotError);
 	if (snapshotError) lines.push(theme.fg("warning", `Snapshot unavailable: ${displayPreview(snapshotError, 240)}`));
+	const deliveryError = text(details.deliveryError) || text(record(details.status).deliveryError);
+	if (deliveryError) lines.push(theme.fg("warning", `Delivery paused: ${displayPreview(deliveryError, 240)}`));
 	if (snapshot) lines.push(...snapshotLines(snapshot, details, theme));
 	if (options.expanded) {
 		lines.push(theme.fg("toolOutput", boundedSource(output)));

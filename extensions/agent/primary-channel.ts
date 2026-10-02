@@ -34,7 +34,13 @@ import type { ProjectTrustDecision } from "./trust-support.ts";
 
 /** Service id all primary channel calls use. */
 export const PRIMARY_CHANNEL_SERVICE_ID = "pi.agent.primary";
-const ENDPOINT_VERSION = 1;
+/**
+ * Endpoint record contract. Version 2 means the registered primary understands
+ * delivery details, including a quiet notice with `wake: false`. A host that
+ * meets an older endpoint holds that delivery and reports the restart, because
+ * an older primary ignores the quiet flag and wakes its model.
+ */
+export const PRIMARY_ENDPOINT_VERSION = 2;
 const ENDPOINT_BYTES = 16 * 1024;
 const LIST_LIMIT = 20;
 const VISIT_LIMIT = 256;
@@ -74,8 +80,14 @@ interface PrimaryEndpoint extends PrimaryInfo {
 	readonly serverId: string;
 }
 
-/** Cheap boundedly-read owner classification; `unknown` covers malformed and foreign records. */
-export type PrimaryEndpointOwnerState = "absent" | "dead" | "live" | "unknown";
+/** Cheap boundedly-read owner classification; `unknown` covers malformed and foreign records, `incompatible` a readable record with another contract version. */
+export type PrimaryEndpointOwnerState = "absent" | "dead" | "live" | "unknown" | "incompatible";
+
+/** Owner classification plus the observed endpoint version when the record is readable. */
+export interface PrimaryEndpointStatus {
+	readonly state: PrimaryEndpointOwnerState;
+	readonly version?: number;
+}
 
 export class PrimaryChannelUnavailableError extends Error {
 	constructor(message: string) {
@@ -204,23 +216,35 @@ function endpointPid(record: Record<string, unknown>): number {
 	return record.pid;
 }
 
-/** Validate one decoded endpoint record. */
+/** Validate one decoded endpoint record. The contract version is checked by the caller. */
 function parseEndpoint(value: unknown): PrimaryEndpoint {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new PrimaryChannelUnavailableError("primary endpoint is not an object");
 	const record = value as Record<string, unknown>;
-	if (record.version !== ENDPOINT_VERSION) throw new PrimaryChannelUnavailableError("primary endpoint version is not supported");
+	const version = record.version;
+	if (typeof version !== "number" || !Number.isSafeInteger(version) || version <= 0) throw new PrimaryChannelUnavailableError("primary endpoint version is invalid");
 	const identity = endpointIdentity(record);
 	const name = optionalString(record, "name");
 	const model = endpointModel(record);
 	const thinkingLevel = optionalString(record, "thinkingLevel");
 	return {
-		version: ENDPOINT_VERSION,
+		version,
 		...identity,
 		...(name === undefined ? {} : { name }),
 		...(model === undefined ? {} : { model }),
 		...(thinkingLevel === undefined ? {} : { thinkingLevel }),
 		pid: endpointPid(record),
 	};
+}
+
+/**
+ * One readable endpoint record with another contract version. A host holds its
+ * delivery for this owner and names the restart, instead of treating the owner
+ * as dead or unknown.
+ */
+export function primaryEndpointIncompatibleError(id: string, version: number): PrimaryChannelUnavailableError {
+	return new PrimaryChannelUnavailableError(
+		`primary owner ${id} runs an agent extension with endpoint version ${version}; this host requires version ${PRIMARY_ENDPOINT_VERSION}. Restart that Pi process to load the current extension.`,
+	);
 }
 
 /** One decoded endpoint record plus the file identity it was read from. */
@@ -426,7 +450,7 @@ class PrimaryChannelHost implements ServerHost {
 /** Build one endpoint record for this process. */
 function endpointRecord(options: PrimaryChannelOptions, serverId: string, socketPath: string): PrimaryEndpoint {
 	return {
-		version: ENDPOINT_VERSION,
+		version: PRIMARY_ENDPOINT_VERSION,
 		id: options.id,
 		serverId,
 		cwd: options.cwd,
@@ -505,6 +529,7 @@ export async function connectPrimaryChannel(options: { readonly id: string; read
 	const directory = join(resolve(options.sessionsRoot), ".primaries");
 	const endpoint = readEndpoint(primaryEndpointPath(options.sessionsRoot, options.id));
 	if (endpoint === undefined || endpoint.id !== options.id) throw await unavailable(directory, options.id);
+	if (endpoint.version !== PRIMARY_ENDPOINT_VERSION) throw primaryEndpointIncompatibleError(options.id, endpoint.version);
 	let client: Client;
 	try {
 		client = await connectClient(options.id, endpoint.socketPath, endpoint.serverId, timeoutMs);
@@ -548,19 +573,25 @@ export function primaryEndpointPath(sessionsRoot: string, id: string): string {
 	return join(resolve(sessionsRoot), ".primaries", `${id}.json`);
 }
 
-/** Cheap boundedly-read owner state without connecting; malformed and foreign records stay unknown. */
-export function primaryEndpointOwnerState(sessionsRoot: string, id: string): PrimaryEndpointOwnerState {
-	if (!UUID_ANY.test(id)) return "unknown";
+/** Cheap boundedly-read owner status without connecting; malformed and foreign records stay unknown. */
+export function primaryEndpointStatus(sessionsRoot: string, id: string): PrimaryEndpointStatus {
+	if (!UUID_ANY.test(id)) return { state: "unknown" };
 	let record: PrimaryEndpoint | undefined;
 	try {
 		record = readEndpoint(primaryEndpointPath(sessionsRoot, id));
 	} catch {
-		return "unknown";
+		return { state: "unknown" };
 	}
-	if (record === undefined) return "absent";
-	if (record.id !== id || record.hostname !== hostname()) return "unknown";
+	if (record === undefined) return { state: "absent" };
+	if (record.version !== PRIMARY_ENDPOINT_VERSION) return { state: "incompatible", version: record.version };
+	if (record.id !== id || record.hostname !== hostname()) return { state: "unknown", version: record.version };
 	const state = processState(record.pid);
-	return state === "dead" ? "dead" : state === "live" ? "live" : "unknown";
+	return { state: state === "dead" ? "dead" : state === "live" ? "live" : "unknown", version: record.version };
+}
+
+/** Owner state alone; an incompatible record never reads as dead or unknown. */
+export function primaryEndpointOwnerState(sessionsRoot: string, id: string): PrimaryEndpointOwnerState {
+	return primaryEndpointStatus(sessionsRoot, id).state;
 }
 
 /** One bounded liveness check that never mutates registration state. */

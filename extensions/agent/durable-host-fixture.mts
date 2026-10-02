@@ -205,7 +205,7 @@ async function main(): Promise<number> {
 	const [storagePath, mode, effectPath, , prompt, runId] = process.argv.slice(2);
 	const tools = mode === "effect" ? [slowEffectTool(effectPath)] : [];
 	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime(mode as FixtureMode), fixtureRegistry(tools)), BACKGROUND_CONTEXT);
-	const submission = await host.submit({ message: prompt, requestId: runId, ownerId: "fixture-owner" });
+	const submission = await host.submit({ message: prompt, requestId: runId, ownerId: "fixture-owner", origin: "operator" });
 	process.stdout.write(`SUBMISSION ${String(submission.submissionId)}\n`);
 	const keepAlive = setInterval(() => {}, 1 << 30);
 	await new Promise(() => {});

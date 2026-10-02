@@ -155,7 +155,7 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 		services: opened.services,
 		conversation: async () => await fixture.host.conversation(undefined),
 		submitMessage: async (message: string) => {
-			const result = (await fixture.host.request("submit", { sessionId: storageId, message, requestId: `fixture-submit:${Math.random().toString(36).slice(2)}`, ownerId })) as { submissionId: number };
+			const result = (await fixture.host.request("submit", { sessionId: storageId, message, requestId: `fixture-submit:${Math.random().toString(36).slice(2)}`, ownerId, origin: "operator" })) as { submissionId: number };
 			return result.submissionId;
 		},
 		waitForFirstRequest: () => requested.promise,

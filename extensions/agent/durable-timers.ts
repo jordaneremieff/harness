@@ -58,6 +58,8 @@ export type TimerInput = {
 /** Checkpoint of the timer task. The deadline lives in the input, never in the checkpoint. */
 export type TimerState = {
 	readonly phase: "wait";
+	/** True once the deadline was reached and the admission intent may be written. */
+	readonly firing?: boolean;
 };
 
 /** Terminal result of a fired timer. */
@@ -167,6 +169,9 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 	phases: {
 		wait: async (task, runtime, context) => {
 			await runtime.sleep(task.input.deadline, context);
+			// Record that the deadline was reached before any admission work, so
+			// an abort in the fire window settles the input instead of cancelling it.
+			await runtime.commit(() => ({ status: "running", checkpoint: { phase: "wait", firing: true } as TimerState }), context);
 			const conversationId = task.input.conversationId as ConversationId;
 			const conversation = await runtime.conversation(conversationId, context);
 			if (conversation === undefined) throw new Error(`scheduled input target ${task.input.identity} is not retained`);
@@ -218,15 +223,59 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 			);
 		},
 	},
-	abort: async (task, runtime, context) =>
-		runtime.commit(
+	abort: async (task, runtime, context) => {
+		const input = task.input;
+		const conversationId = input.conversationId as ConversationId;
+		const settledAt = runtime.now();
+		// An abort after the deadline reached admission work: the input fires once
+		// through the retained request ID instead of reporting a cancellation for
+		// an input that the delivery ledger may already hold.
+		if (task.state.checkpoint.firing === true) {
+			const conversation = await runtime.conversation(conversationId, context);
+			if (conversation !== undefined) {
+				let retained: SubmissionRecord | undefined;
+				await runtime.commit(async (tx) => {
+					retained = await tx.submissionByRequest(conversationId, input.requestId);
+					return undefined;
+				}, context);
+				await runtime.commit(async (tx) => {
+					await recordDeliveryIntent(tx, conversationId, { requestId: input.requestId, ownerId: input.ownerId, message: input.message, whenBusy: input.mode, origin: input.origin });
+					return undefined;
+				}, context);
+				const submission = await conversation.submit(
+					{ type: "input", content: input.message, requestId: input.requestId, whenBusy: input.mode },
+					context,
+				);
+				const result: TimerResult = {
+					deadline: input.deadline,
+					firedAt: settledAt,
+					overdueMs: Math.max(0, settledAt - input.deadline),
+					conversationId: input.conversationId,
+					submissionId: submission.id,
+					requestId: input.requestId,
+					mode: input.mode,
+					origin: input.origin,
+					deduped: retained !== undefined,
+				};
+				await runtime.commit(
+					async (tx) => {
+						await linkDeliveryIntent(tx, conversationId, input.requestId, submission.id);
+						await markTimerSettled(tx, Number(task.id), { status: "fired", firedAt: settledAt, overdueMs: result.overdueMs, submissionId: submission.id, settledAt });
+						return { status: "terminal", outcome: { status: "completed", result } };
+					},
+					context,
+				);
+				return;
+			}
+		}
+		await runtime.commit(
 			async (tx) => {
-				const settledAt = runtime.now();
 				await markTimerSettled(tx, Number(task.id), { status: "cancelled", firedAt: null, overdueMs: null, submissionId: null, settledAt });
 				return { status: "terminal", outcome: { status: "aborted" } };
 			},
 			context,
-		),
+		);
+	},
 });
 
 export interface ScheduleTimerParams {
@@ -417,11 +466,14 @@ export interface CancelTimerResult {
 /**
  * Cancel one pending timer and wait for its task to settle. A task that fires
  * before the abort mark wins the race; the returned status then reports
- * `fired` instead of claiming a cancellation.
+ * `fired` instead of claiming a cancellation. A given conversation must own
+ * the timer, so a wrong session ID refuses instead of cancelling another
+ * conversation's scheduled input.
  */
-export async function cancelTimer(harness: Harness, timerId: number, context: Context): Promise<CancelTimerResult> {
+export async function cancelTimer(harness: Harness, timerId: number, context: Context, conversationId?: ConversationId): Promise<CancelTimerResult> {
 	const record = (await harness.snapshot(AgentTimerDoc, context))?.timers.find((row) => row.timerId === timerId);
 	if (record === undefined) throw new Error(`timer ${timerId} is not retained in this storage`);
+	if (conversationId !== undefined && record.conversationId !== conversationId) throw new Error(`timer ${timerId} targets another conversation`);
 	const id = timerId as TaskId<never>;
 	const outcome = await harness.abortTask(id, context);
 	const settled = await harness.waitForTask(id, context);

@@ -119,6 +119,8 @@ export interface DurableInventory {
 	}[];
 	/** Resolved paths of configured extensions that emitted no contribution. */
 	readonly ordinaryOnly: readonly string[];
+	/** Configured extensions the resource loader could not load, present only when at least one failed. */
+	readonly failed?: readonly { readonly path: string; readonly error: string }[];
 }
 
 /** Inputs for the cwd-bound Durable bootstrap. */
@@ -351,11 +353,20 @@ function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: 
 			}),
 			Durable.section("cwd", () => services.cwd.replaceAll("\\", "/")),
 			Durable.section("ordinary_only", () => {
-				if (inventory.ordinaryOnly.length === 0) return undefined;
-				return [
-					"Configured extensions with no native Durable form in this conversation:",
-					...inventory.ordinaryOnly.map((path) => `- ${path}`),
-				].join("\n");
+				const lines: string[] = [];
+				if (inventory.ordinaryOnly.length > 0) {
+					lines.push(
+						"Configured extensions with no native Durable form in this conversation:",
+						...inventory.ordinaryOnly.map((path) => `- ${path}`),
+					);
+				}
+				if ((inventory.failed?.length ?? 0) > 0) {
+					lines.push(
+						"Configured extensions that failed to load in this conversation:",
+						...(inventory.failed ?? []).map((item) => `- ${item.path}: ${item.error}`),
+					);
+				}
+				return lines.length === 0 ? undefined : lines.join("\n");
 			}),
 		],
 	});
@@ -367,9 +378,19 @@ function matchContributions(contributions: readonly DurableContribution[], loade
 	return contributions.filter((contribution) => loaded.has(contribution.source));
 }
 
-/** Build the inventory from emitted contributions and the loaded extension paths. */
-function buildInventory(contributions: readonly DurableContribution[], loadedPaths: readonly string[]): DurableInventory {
+/** Longest load-failure line the inventory and its prompt section retain. */
+export const LOAD_FAILURE_MAX_CHARS = 240;
+
+/** Collapse one loader failure into a single bounded line for inventory and prompt use. */
+export function boundedLoadFailure(text: string): string {
+	const collapsed = text.replace(/[\u0000-\u001f\u007f-\u009f]+/gu, " ").replace(/\s+/gu, " ").trim();
+	return collapsed.length > LOAD_FAILURE_MAX_CHARS ? `${collapsed.slice(0, LOAD_FAILURE_MAX_CHARS - 3)}...` : collapsed;
+}
+
+/** Build the inventory from emitted contributions, loaded extension paths, and loader failures. */
+function buildInventory(contributions: readonly DurableContribution[], loadedPaths: readonly string[], loadErrors: LoadExtensionsResult["errors"]): DurableInventory {
 	const emitted = new Set(contributions.map((contribution) => contribution.source));
+	const failed = loadErrors.map((item) => ({ path: item.path, error: boundedLoadFailure(item.error) }));
 	return {
 		contributions: contributions.map((contribution) => ({
 			name: contribution.name,
@@ -377,6 +398,8 @@ function buildInventory(contributions: readonly DurableContribution[], loadedPat
 			commands: (contribution.commands ?? []).map((command) => ({ name: command.name, description: command.description })),
 		})),
 		ordinaryOnly: loadedPaths.filter((path) => !emitted.has(path)),
+		// The member appears only when something failed, like `timers` appears only when one waits.
+		...(failed.length === 0 ? {} : { failed }),
 	};
 }
 
@@ -586,7 +609,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 		reportIssues(report, collectionErrors, services, loaded, contributions);
 		const loadedPaths = loaded.extensions.map((extension) => extension.resolvedPath);
 		const matched = matchContributions(contributions, loadedPaths);
-		const inventory = buildInventory(matched, loadedPaths);
+		const inventory = buildInventory(matched, loadedPaths, loaded.errors);
 		const commands = buildCommands(matched);
 		const builtin = buildBuiltin(pi, services, inventory, controller.signal);
 		const registry = Durable.createRegistry();
@@ -626,6 +649,8 @@ export async function createDurableServices(options: CreateDurableServicesOption
 		};
 
 		const settings: Durable.HarnessSettings = {
+			/** Match an ordinary session's request transport so providers take their configured caching path. */
+			get stream() { return { transport: services.settingsManager.getTransport() }; },
 			get retry() { return services.settingsManager.getRetrySettings(); },
 			get compaction() { return services.settingsManager.getCompactionSettings(); },
 			get steeringMode() { return services.settingsManager.getSteeringMode(); },

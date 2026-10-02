@@ -138,6 +138,8 @@ it("validates every status variant, including unavailable rows", async (t) => {
 	structuredObservation(StatusOutputSchema, { conversation: status, inventory, pid: 4242, storageId: fixtureStorageId });
 	structuredObservation(StatusOutputSchema, { conversation: status, inventory, live: false, storageId: fixtureStorageId });
 	structuredObservation(StatusOutputSchema, { conversations: [status], inventory, pid: 4242, storageId: fixtureStorageId });
+	// The failure member appears only when an extension failed; both shapes are valid.
+	structuredObservation(StatusOutputSchema, { conversation: status, inventory: { ...inventory, failed: [{ path: "/ext/broken.ts", error: "boom" }] }, pid: 4242, storageId: fixtureStorageId });
 	const noTarget = (await host.request("status", {})) as { conversations: readonly unknown[] };
 	structuredObservation(StatusOutputSchema, { ...noTarget, inventory, pid: 4242, storageId: fixtureStorageId });
 

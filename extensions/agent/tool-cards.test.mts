@@ -188,6 +188,13 @@ describe("agent result cards", () => {
 		assert.doesNotMatch(text, /Activity: idle · pending unknown/u);
 	});
 
+	it("shows a stalled delivery from the host status", () => {
+		const status = result({ conversation: conversationStatus({ busy: false, live: {} }), inventory: { contributions: [], ordinaryOnly: [] }, pid: 1, storageId: "storage-a", deliveryError: "primary owner 18f6603b runs an agent extension with endpoint version 1; this host requires version 2. Restart that Pi process to load the current extension." });
+		const text = screen(renderAgentResult(status, { expanded: false, isPartial: false }, theme, context()), 240);
+		assert.match(text, /Delivery paused: /);
+		assert.match(text, /Restart that Pi process/u);
+	});
+
 	it("shows an enriched mutation snapshot beside its receipt", () => {
 		const fork = result({ conversationId: 2, identity: "storage-a:2", deduped: false, status: { conversation: conversationStatus({ name: "Forked review" }) } });
 		const text = screen(renderAgentResult(fork, { expanded: false, isPartial: false }, theme, context()), 180);

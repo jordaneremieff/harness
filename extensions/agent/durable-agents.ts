@@ -65,6 +65,60 @@ export type AgentControlDispatch = (
 	params: Readonly<Record<string, unknown>>,
 ) => Promise<unknown>;
 
+/** Version of the in-process control binding between one host runtime and the contributions it installs. */
+export const AGENT_CONTROL_BINDING_VERSION = 1;
+
+/** Process-global key shared by a host runtime and every contribution it installs. */
+export const AGENT_CONTROL_BINDING_KEY = Symbol.for("pi.agent.durable.controls");
+
+/** One versioned runtime dispatch bound for the lifetime of an installed contribution. */
+export interface AgentControlBinding {
+	readonly version: number;
+	readonly dispatch: AgentControlDispatch;
+}
+
+function controlGlobals(): Record<PropertyKey, unknown> {
+	return globalThis as unknown as Record<PropertyKey, unknown>;
+}
+
+/**
+ * Publish one runtime dispatch under a versioned envelope. The returned restore
+ * function clears the publication only while it is still current, so a later
+ * runtime in the same process keeps its own binding.
+ */
+export function publishAgentControlDispatch(dispatch: AgentControlDispatch): () => void {
+	const globals = controlGlobals();
+	const previous = globals[AGENT_CONTROL_BINDING_KEY];
+	globals[AGENT_CONTROL_BINDING_KEY] = { version: AGENT_CONTROL_BINDING_VERSION, dispatch } satisfies AgentControlBinding;
+	return () => {
+		const current = globals[AGENT_CONTROL_BINDING_KEY] as Partial<AgentControlBinding> | undefined;
+		if (current?.dispatch === dispatch) globals[AGENT_CONTROL_BINDING_KEY] = previous;
+	};
+}
+
+/**
+ * Resolve the binding for one loaded contribution. Only the versioned
+ * envelope resolves; a bare function, a foreign value, and another version
+ * refuse with a clear message, because the retained dispatch and this
+ * contribution code do not describe one contract and a host restart loads the
+ * matching runtime.
+ */
+export function resolveAgentControlDispatch(): AgentControlDispatch {
+	const raw = controlGlobals()[AGENT_CONTROL_BINDING_KEY];
+	if (raw === undefined) throw new Error("Native Durable host controls are unavailable in this process");
+	if (typeof raw !== "object" || raw === null) throw new Error("The native Durable host control binding is malformed. Restart the agent host.");
+	const version = (raw as { readonly version?: unknown }).version;
+	if (typeof version !== "number" || !Number.isSafeInteger(version) || version <= 0)
+		throw new Error("The native Durable host control binding is malformed. Restart the agent host.");
+	if (version !== AGENT_CONTROL_BINDING_VERSION)
+		throw new Error(
+			`The native Durable host control binding uses version ${version}; this contribution requires version ${AGENT_CONTROL_BINDING_VERSION}. Restart the agent host to load the matching runtime.`,
+		);
+	const dispatch = (raw as { readonly dispatch?: unknown }).dispatch;
+	if (typeof dispatch !== "function") throw new Error("The native Durable host control binding is malformed. Restart the agent host.");
+	return dispatch as AgentControlDispatch;
+}
+
 /** One command invocation, as the host control passes it to a registered command. */
 export type AgentCommandCall = DurableCommandCall;
 
@@ -790,6 +844,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			result = await dispatch("spawn", {
 				...args,
 				cwd,
+				origin: "model",
 				senderIdentity: identity(api.conversationId),
 				requestId: `spawn:${host.storageId}:${api.taskId}`,
 			});
@@ -909,6 +964,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				requestId: `agent-deliver:${api.taskId}`,
 				ownerId: senderIdentity,
 				senderIdentity,
+				origin: "model",
 				...(replyTo === undefined ? {} : { replyTo }),
 				whenBusy,
 			},
@@ -1143,6 +1199,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 						sessionId: args.sessionId,
 						entryId: args.entryId,
 						correction: args.correction,
+						origin: "model",
 						requestId: `rewind:${host.storageId}:${api.taskId}`,
 					},
 					`Rewind of ${args.sessionId} failed`,
@@ -1375,6 +1432,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				area,
 				...(args.topic === undefined ? {} : { topic: args.topic }),
 				...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+				origin: "model",
 				senderIdentity: identity(api.conversationId),
 				requestId: `place:${host.storageId}:${api.taskId}`,
 			});

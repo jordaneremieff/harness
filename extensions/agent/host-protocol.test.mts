@@ -3,10 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import {
+	HOST_RUNTIME_VERSION,
 	HOST_SOCKET_PATH_LIMIT_BYTES,
 	HostError,
 	formatHostReady,
+	hostMethodMinVersion,
 	hostPaths,
+	hostUpdatePendingError,
 	isCancelableHostWait,
 	isRetrySafeHostMethod,
 	parseHostMetadata,
@@ -78,12 +81,25 @@ it("classifies retry-safe methods and cancelable waits", () => {
 });
 
 it("parses the readiness line", () => {
-	const ready = formatHostReady({ pid: 7, socketPath: "/tmp/host.sock" });
+	const ready = formatHostReady({ pid: 7, socketPath: "/tmp/host.sock", runtimeVersion: HOST_RUNTIME_VERSION });
 	assert.equal(ready.endsWith("\n"), true);
-	assert.deepEqual(parseHostReadyLine(ready.trimEnd()), { pid: 7, socketPath: "/tmp/host.sock" });
+	assert.deepEqual(parseHostReadyLine(ready.trimEnd()), { pid: 7, socketPath: "/tmp/host.sock", runtimeVersion: HOST_RUNTIME_VERSION });
 	assert.equal(parseHostReadyLine("other output"), undefined);
 	assert.throws(() => parseHostReadyLine("PI_AGENT_HOST_READY {not json}"));
 	assert.throws(() => parseHostReadyLine('PI_AGENT_HOST_READY {"pid":0,"socketPath":"/tmp/x"}'));
+	// A line without the version is an older host by definition; a malformed present value is refused.
+	assert.deepEqual(parseHostReadyLine('PI_AGENT_HOST_READY {"pid":7,"socketPath":"/tmp/host.sock"}'), { pid: 7, socketPath: "/tmp/host.sock", runtimeVersion: 0 });
+	assert.throws(() => parseHostReadyLine('PI_AGENT_HOST_READY {"pid":7,"socketPath":"/tmp/host.sock","runtimeVersion":"1"}'));
+});
+
+it("reports method availability by runtime version", () => {
+	assert.equal(hostMethodMinVersion("status"), 0);
+	assert.equal(hostMethodMinVersion("reset"), 1);
+	assert.equal(hostMethodMinVersion("timer-schedule"), 1);
+	assert.equal(hostMethodMinVersion("observe-open"), 1);
+	const refusal = hostUpdatePendingError("timer-schedule");
+	assert.equal(refusal.code, "unavailable");
+	assert.match(refusal.message, /older code and does not support timer-schedule; it updates when idle/u);
 });
 
 it("carries a coded error class", () => {

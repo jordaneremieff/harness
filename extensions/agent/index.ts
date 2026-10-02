@@ -8,7 +8,7 @@ import { Type, type TSchema } from "typebox";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
 import { configurationDialog } from "./configuration-dialog.ts";
 import { THINKING_LEVELS, parseConfigurationArguments } from "./configuration.ts";
-import { createAgentContribution, type AgentControlDispatch } from "./durable-agents.ts";
+import { createAgentContribution, resolveAgentControlDispatch } from "./durable-agents.ts";
 import { createResetTimerActions, registerResetTimerTools } from "./durable-reset-timers.ts";
 import { AGENT_CONTROL_GUIDANCE, type AgentControlToolName } from "./control-guidance.ts";
 import { ListOutputSchema, StatusOutputSchema, InspectOutputSchema, structuredObservation } from "./observation-schema.ts";
@@ -22,10 +22,8 @@ import { promptProjectTrust } from "./trust-support.ts";
 
 export { AgentManager } from "./manager.ts";
 const ownerKey = Symbol.for("pi.extension.agent.owners");
-const controlsKey = Symbol.for("pi.agent.durable.controls");
 const processState = globalThis as typeof globalThis & {
 	[ownerKey]?: { managers: Map<string, AgentManager> };
-	[controlsKey]?: AgentControlDispatch;
 };
 processState[ownerKey] ??= { managers: new Map() };
 const owners = processState[ownerKey];
@@ -61,11 +59,7 @@ const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({ id: 
 const asText = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2);
 
 export default function registerAgentExtension(pi: ExtensionAPI): void {
-	pi.events.emit("durable:contribution", createAgentContribution({ source: fileURLToPath(import.meta.url), dispatch: (method, params) => {
-		const dispatch = processState[controlsKey];
-		if (!dispatch) throw new Error("Native Durable host controls are unavailable in this process");
-		return dispatch(method, params);
-	} }));
+	pi.events.emit("durable:contribution", createAgentContribution({ source: fileURLToPath(import.meta.url), dispatch: (method, params) => resolveAgentControlDispatch()(method, params) }));
 	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
 	const cards = createAgentToolCards();
 	const primaryObserver = createPrimaryObserver();
@@ -160,8 +154,8 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		} },
 		{ name: "list", description: "List Durable agents", args: [], help: "Read saved agents without a writer. Use agent_list to continue bounded pages.", run: async () => asText(await getManager().list()) },
 		{ name: "status", description: "Show agent state", args: [{ name: "session", optional: true, complete: "session" }], help: `Without a session, show bounded native conversation state. ${sessionHelp}`, run: async (args) => asText(await getManager().status(args[0])) },
-		...["send", "steer"].map((name): AgentCommandAction => ({ name, description: `Send ${name === "steer" ? "a correction" : "a task or report"}`, ...(name === "steer" ? { confirm: "This admits a new direction for the selected agent. Admission does not prove action." } : {}), help: `${sessionHelp} After the session, write your message. Busy agents receive steering at the next native boundary.`, args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async ([sessionId, ...words], ctx) => {
-			await control("submit", { sessionId, message: words.join(" "), whenBusy: "steer", origin: "operator" }, ctx);
+		...["send", "steer"].map((name): AgentCommandAction => ({ name, description: `Send ${name === "steer" ? "a correction" : "a task or report"}`, ...(name === "steer" ? { confirm: "This admits a new direction for the selected agent. Admission does not prove action." } : {}), help: `${sessionHelp} After the session, write your message. ${name === "steer" ? "A busy agent receives the correction at its next step." : "A busy agent receives the message after its current answer."}`, args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async ([sessionId, ...words], ctx) => {
+			await control("submit", { sessionId, message: words.join(" "), whenBusy: name === "steer" ? "steer" : "followUp", origin: "operator" }, ctx);
 			const label = await agentLabel(sessionId);
 			return outcome(name === "steer" ? `Queued a correction for “${label}”` : `Sent a task to “${label}”`, sessionId);
 		} })),

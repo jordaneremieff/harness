@@ -212,6 +212,8 @@ export const AgentConversationSummarySchema = object({
 export const DurableInventorySchema = object({
 	contributions: Type.Array(object({ name: string, source: string, commands: Type.Array(object({ name: string, description: string })) })),
 	ordinaryOnly: Type.Array(string),
+	/** Present only when at least one configured extension failed to load. */
+	failed: Type.Optional(Type.Array(object({ path: string, error: string }))),
 });
 
 /** One manager list row: the native summary plus its catalog and external identity. */
@@ -249,6 +251,8 @@ export type ListOutput = Static<typeof ListOutputSchema>;
  * - live host status with inventory: `{conversation|conversations, inventory, pid, storageId}`;
  * - cold primary status: the same without `pid` and with `live: false`;
  * - a bare `{conversation}` from the native attach path.
+ * A host status carries `deliveryError` while a retained delivery cannot reach
+ * its owner, with the reason and the restart that clears it.
  * A conversation status carries `timers`: its bounded pending scheduled inputs,
  * nearest deadline first, with `overdue` set when the deadline has passed.
  */
@@ -269,10 +273,10 @@ export const StatusOutputSchema = union([
 		observedAt: string,
 		discovery: string,
 	}),
-	object({ conversation: ConversationStatusSchema, inventory: DurableInventorySchema, pid: id, storageId: string }),
-	object({ conversation: ConversationStatusSchema, inventory: DurableInventorySchema, live: literal(false), storageId: string }),
-	object({ conversations: Type.Array(ConversationStatusSchema), inventory: DurableInventorySchema, pid: id, storageId: string }),
-	object({ conversations: Type.Array(ConversationStatusSchema), inventory: DurableInventorySchema, live: literal(false), storageId: string }),
+	object({ conversation: ConversationStatusSchema, inventory: DurableInventorySchema, pid: id, storageId: string, deliveryError: Type.Optional(string) }),
+	object({ conversation: ConversationStatusSchema, inventory: DurableInventorySchema, live: literal(false), storageId: string, deliveryError: Type.Optional(string) }),
+	object({ conversations: Type.Array(ConversationStatusSchema), inventory: DurableInventorySchema, pid: id, storageId: string, deliveryError: Type.Optional(string) }),
+	object({ conversations: Type.Array(ConversationStatusSchema), inventory: DurableInventorySchema, live: literal(false), storageId: string, deliveryError: Type.Optional(string) }),
 	object({ conversation: ConversationStatusSchema }),
 ]);
 export type StatusOutput = Static<typeof StatusOutputSchema>;

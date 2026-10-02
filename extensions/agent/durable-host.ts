@@ -192,6 +192,7 @@ export class DurableHost {
 	private readonly defaultCwd: string | undefined;
 	private readonly registry: HarnessOptions["registry"];
 	private readonly retryMaxAttempts: number | undefined;
+	private deliveryError: string | undefined;
 
 	private constructor(harness: Harness, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined) {
 		this.harness = harness;
@@ -490,10 +491,20 @@ export class DurableHost {
 		});
 	}
 
+	/**
+	 * Record the latest bounded delivery routing failure for status, or clear it.
+	 * A stalled delivery names its reason here, so an operator can act on it.
+	 */
+	reportDeliveryError(error: Error | undefined): void {
+		const message = error?.message;
+		this.deliveryError = message === undefined || message === "" ? undefined : message.length > 512 ? `${message.slice(0, 509)}...` : message;
+	}
+
 	private async statusRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const sessionId = requestString(params, "sessionId");
 		const conversationId = requestPositiveId(params?.conversationId, "conversationId");
 		const options: DurableStatusOptions = this.defaultCwd === undefined ? {} : { cwd: this.defaultCwd };
+		const reported = this.deliveryError === undefined ? {} : { deliveryError: this.deliveryError };
 		if (sessionId === undefined && conversationId === undefined) {
 			const page = await this.harness.commit((tx) => tx.scanConversations({}, 50, undefined), context);
 			const conversations: ConversationStatus[] = [];
@@ -501,12 +512,12 @@ export class DurableHost {
 				const status = await readConversationStatus(this.harness, this.storageId, record.id, options, context);
 				if (status) conversations.push(status);
 			}
-			return { conversations };
+			return { conversations, ...reported };
 		}
 		const conversation = await this.target(params, context);
 		const status = await readConversationStatus(this.harness, this.storageId, conversation.id, options, context);
 		if (!status) throw new Error(`conversation ${this.identity(conversation.id)} does not exist`);
-		return { conversation: status };
+		return { conversation: status, ...reported };
 	}
 
 	private async listRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
@@ -663,7 +674,8 @@ export class DurableHost {
 	private async timerCancelRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const timerId = requestPositiveId(params?.timerId, "timerId");
 		if (timerId === undefined) throw new TypeError("timerId is required");
-		return cancelTimer(this.harness, timerId, context);
+		const conversation = await this.target(params, context);
+		return cancelTimer(this.harness, timerId, context, conversation.id);
 	}
 
 	private async snapshotRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {

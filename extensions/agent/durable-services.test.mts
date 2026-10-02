@@ -7,7 +7,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { ProjectTrustStore, getPackageDir } from "@earendil-works/pi-coding-agent";
-import { createDurableServices } from "./durable-services.ts";
+import { createDurableServices, LOAD_FAILURE_MAX_CHARS } from "./durable-services.ts";
+import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { promptProjectTrust } from "./trust-support.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
@@ -75,6 +76,9 @@ const TRUST_THROW_EXTENSION = `export default function (pi) {
 	pi.on("project_trust", () => { throw new Error("trust handler failed"); });
 }
 `;
+
+/** An extension whose module import throws, with a message longer than the inventory bound. */
+const LOAD_THROW_EXTENSION = `throw new Error(${JSON.stringify("configured extension import failure detail ".repeat(16))});\n`;
 
 /** A 1x1 transparent PNG. */
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
@@ -153,6 +157,7 @@ it("collects contributions, matches sources, and installs the built-in registry"
 		});
 		assert.ok(services.settings.retry);
 		assert.equal(services.settings.retry.enabled, false);
+		assert.equal(services.settings.stream?.transport, "auto", "the host carries the configured request transport");
 		const sections = new Map(snapshot.sections().map(({ section }) => [section.key, section]));
 		const ordinaryOnly = await sections.get("ordinary_only")?.render({} as never, BACKGROUND_CONTEXT);
 		assert.ok(ordinaryOnly?.includes(f.silentPath));
@@ -602,4 +607,35 @@ it("rejects a packageDir that is not the coding agent package", async (t) => {
 		packageDir: f.root,
 		trusted: true,
 	}), /is not @earendil-works\/pi-coding-agent/u);
+});
+
+it("names configured extensions that failed to load in the inventory, status, and prompt limits", async (t) => {
+	const f = fixture(t);
+	const brokenPath = join(f.root, "broken-extension.ts");
+	writeFileSync(brokenPath, LOAD_THROW_EXTENSION);
+	const services = await createDurableServices({
+		cwd: f.cwd,
+		agentDir: f.agentDir,
+		storageId: "fixture-load-failure",
+		extensionPaths: [f.emitPath, f.silentPath, brokenPath],
+		trusted: true,
+		packageDir: getPackageDir(),
+	});
+	const installed = await installedHarness(services);
+	try {
+		assert.deepEqual((services.inventory.failed ?? []).map((item) => item.path), [brokenPath], "the failed extension is named");
+		const failure = services.inventory.failed?.[0];
+		assert.ok(failure);
+		assert.match(failure.error, /configured extension import failure detail/u);
+		assert.ok(failure.error.length <= LOAD_FAILURE_MAX_CHARS, "the error line is bounded");
+		assert.ok(!failure.error.includes("\n"), "the error line stays one line");
+		assert.deepEqual(services.inventory.ordinaryOnly, [f.silentPath], "a failed extension is not ordinary-only");
+		const sections = new Map(services.registry.snapshot().sections().map(({ section }) => [section.key, section]));
+		const limits = await sections.get("ordinary_only")?.render({} as never, BACKGROUND_CONTEXT);
+		assert.ok(limits?.includes(brokenPath), "the prompt limits name the failed extension");
+		assert.match(limits ?? "", /failed to load/u);
+		structuredObservation(StatusOutputSchema, { conversations: [], inventory: services.inventory, pid: 123, storageId: "fixture-load-failure" });
+	} finally {
+		await installed.close();
+	}
 });

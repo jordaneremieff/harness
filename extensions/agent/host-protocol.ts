@@ -17,6 +17,15 @@ import { type ClaimIdentity, claimPath } from "./claims.ts";
 
 /** Chord service identity for the storage host's request surface. */
 export const HOST_SERVICE_ID = "pi.agent.host";
+/**
+ * Host runtime contract version. Bump this when the host method set or the wire
+ * contract changes. A host that reports no version predates this handshake and
+ * reads as version 0, so a current client can recognize it and replace it when
+ * it goes idle.
+ */
+export const HOST_RUNTIME_VERSION = 1;
+/** Method member that reports the runtime version of one live host. */
+export const HOST_RUNTIME_VERSION_MEMBER = "runtime-version";
 /** Chord service identity for the host's coalesced change notifications. */
 export const HOST_CHANGE_SERVICE_ID = "pi.agent.host.changes";
 /** State member published on every actual host write. */
@@ -81,6 +90,8 @@ export interface HostPaths {
 export interface HostReady {
 	readonly pid: number;
 	readonly socketPath: string;
+	/** Runtime contract version; 0 when an older host omits the field. */
+	readonly runtimeVersion: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -168,7 +179,7 @@ export function hostPaths(metadata: Pick<HostMetadata, "agentDir" | "storageId" 
 }
 
 export function formatHostReady(ready: HostReady): string {
-	return `${HOST_READY_PREFIX}${JSON.stringify({ pid: ready.pid, socketPath: ready.socketPath })}\n`;
+	return `${HOST_READY_PREFIX}${JSON.stringify({ pid: ready.pid, socketPath: ready.socketPath, runtimeVersion: ready.runtimeVersion })}\n`;
 }
 
 /** Parse one readiness line. A non-matching line yields undefined; a matching line with a bad body throws. */
@@ -177,7 +188,10 @@ export function parseHostReadyLine(line: string): HostReady | undefined {
 	const value: unknown = JSON.parse(line.slice(HOST_READY_PREFIX.length));
 	if (!isRecord(value)) throw new Error("host readiness line is not an object");
 	if (typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid <= 0) throw new Error("host readiness pid must be a positive integer");
-	return { pid: value.pid, socketPath: boundedText(value.socketPath, "host readiness socketPath", PATH_LIMIT) };
+	// A missing runtime version is an older host by definition; a present value must be exact.
+	const runtimeVersion = value.runtimeVersion === undefined ? 0 : value.runtimeVersion;
+	if (typeof runtimeVersion !== "number" || !Number.isSafeInteger(runtimeVersion) || runtimeVersion < 0) throw new Error("host readiness runtimeVersion must be a nonnegative integer");
+	return { pid: value.pid, socketPath: boundedText(value.socketPath, "host readiness socketPath", PATH_LIMIT), runtimeVersion };
 }
 
 /**
@@ -203,6 +217,32 @@ export function observationTokenFromServiceId(serviceId: string): string | undef
 
 export function isRetrySafeHostMethod(method: string): boolean {
 	return HOST_RETRY_SAFE_METHODS.has(method);
+}
+
+/**
+ * First runtime version that serves one host method. Methods absent from the
+ * table exist in every version. A newer window calling a newer-only method on an
+ * older host gets the update-pending error instead of a raw unknown-method one.
+ */
+const HOST_METHOD_MIN_VERSION: ReadonlyMap<string, number> = new Map([
+	[HOST_RUNTIME_VERSION_MEMBER, 1],
+	["reset", 1],
+	["timer-schedule", 1],
+	["timer-list", 1],
+	["timer-cancel", 1],
+	["observe-open", 1],
+	["observe-frame", 1],
+	["observe-close", 1],
+]);
+
+/** First runtime version that serves one host method; 0 for every method all versions serve. */
+export function hostMethodMinVersion(method: string): number {
+	return HOST_METHOD_MIN_VERSION.get(method) ?? 0;
+}
+
+/** Clear refusal when an older host does not serve a method the caller needs. */
+export function hostUpdatePendingError(method: string): HostError {
+	return new HostError(`This agent's host runs older code and does not support ${method}; it updates when idle.`, "unavailable");
 }
 
 /**

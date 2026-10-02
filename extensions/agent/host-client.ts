@@ -19,9 +19,12 @@ import { observeClaim, readClaimFile } from "./claims.ts";
 import {
 	HOST_CHANGE_SERVICE_ID,
 	HOST_OBSERVE_MEMBER,
+	HOST_RUNTIME_VERSION_MEMBER,
 	HOST_SERVICE_ID,
 	HostError,
+	hostMethodMinVersion,
 	hostPaths,
+	hostUpdatePendingError,
 	isCancelableHostWait,
 	isRetrySafeHostMethod,
 	observationServiceId,
@@ -64,11 +67,16 @@ export interface HostLaunchOptions {
 export type HostObservationScope = { readonly scope: "conversation"; readonly sessionId: string; readonly conversationId?: number } | { readonly scope: "tasks"; readonly sessionId: string };
 
 /** One open live observation. `frame` is the latest delivered reading, never a cached cold copy. */
+/** One live-frame listener state: normal frames are `live`, a dropped connection is `unavailable`. */
+export type HostObservationState = "live" | "unavailable";
+/** One live-frame listener. An `unavailable` call carries the last known frame, or undefined. */
+export type HostObservationListener = (frame: ObservationFrame | undefined, fresh: boolean, state?: HostObservationState) => void;
+
 export interface HostObservation {
 	readonly scope: HostObservationScope;
 	readonly frame: ObservationFrame;
-	/** Add or remove one frame listener; `fresh` marks a frame from a new subscription. */
-	onFrame(listener: (frame: ObservationFrame, fresh: boolean) => void): () => void;
+	/** Replay the current frame, then every later frame; `unavailable` arrives once on connection loss. */
+	onFrame(listener: HostObservationListener): () => void;
 	close(): Promise<void>;
 }
 
@@ -78,6 +86,8 @@ export interface HostConnection {
 	readonly socketPath: string;
 	readonly storageId: string;
 	readonly metadata: HostMetadata;
+	/** Runtime contract version; 0 for an older host that predates the handshake. */
+	readonly runtimeVersion: number;
 	readonly closed: boolean;
 	request(method: string, params?: unknown, options?: HostRequestOptions): Promise<unknown>;
 	/**
@@ -105,6 +115,7 @@ interface Link {
 	readonly client: Client;
 	readonly pid: number;
 	readonly socketPath: string;
+	readonly runtimeVersion: number;
 }
 
 interface PendingCall {
@@ -130,7 +141,7 @@ interface ChangeEntry {
 interface ObservationEntry {
 	readonly id: number;
 	readonly scope: HostObservationScope;
-	readonly listeners: Set<(frame: ObservationFrame, fresh: boolean) => void>;
+	readonly listeners: Set<HostObservationListener>;
 	token: string | undefined;
 	subscription: ServiceSubscription | undefined;
 	frame: ObservationFrame | undefined;
@@ -292,7 +303,7 @@ async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions):
 	try {
 		if (ready.socketPath !== paths.socket) throw new Error(`durable host readiness path does not match the storage endpoint: ${ready.socketPath}`);
 		const client = await connectWithWait(paths, timeoutMs);
-		return { client, pid: ready.pid, socketPath: paths.socket };
+		return { client, pid: ready.pid, socketPath: paths.socket, runtimeVersion: ready.runtimeVersion };
 	} catch (error) {
 		child.kill("SIGKILL");
 		throw error;
@@ -304,7 +315,24 @@ async function attachLink(metadata: HostMetadata, options: HostLaunchOptions): P
 	const paths = hostPaths(metadata);
 	if (observeClaim(paths.claim, paths.identity).kind !== "live") throw new Error(`no live durable host for ${metadata.storageId}`);
 	const client = await connectWithWait(paths, options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS);
-	return { client, pid: claimPid(paths), socketPath: paths.socket };
+	return { client, pid: claimPid(paths), socketPath: paths.socket, runtimeVersion: await readRuntimeVersion(client, paths.serverId) };
+}
+
+/**
+ * Read one live host's runtime contract version. An older host answers the
+ * member with its unknown-method error and reads as version 0; that is version
+ * detection for a live peer, not a fallback for retired data.
+ */
+async function readRuntimeVersion(client: Client, serverId: string): Promise<number> {
+	try {
+		const value = await client.request({ serverId }, { serviceId: HOST_SERVICE_ID, member: HOST_RUNTIME_VERSION_MEMBER, args: [] });
+		const version = (value as { version?: unknown } | undefined)?.version;
+		if (typeof version !== "number" || !Number.isSafeInteger(version) || version <= 0) throw new Error("host runtime version is malformed");
+		return version;
+	} catch (error) {
+		if (error instanceof Error && error.message.includes("unknown durable host method")) return 0;
+		throw error;
+	}
 }
 
 /** Wait for a dying host's claim to stop reading as live, bounded by the launch timeout. */
@@ -346,6 +374,7 @@ class HostConnectionImpl implements HostConnection {
 	private client: Client;
 	private pidValue: number;
 	private socketPathValue: string;
+	private runtimeVersionValue: number;
 	private readonly pending = new Map<string, PendingCall>();
 	private readonly changeEntries = new Map<number, ChangeEntry>();
 	private readonly observationEntries = new Map<number, ObservationEntry>();
@@ -368,6 +397,7 @@ class HostConnectionImpl implements HostConnection {
 		this.client = link.client;
 		this.pidValue = link.pid;
 		this.socketPathValue = link.socketPath;
+		this.runtimeVersionValue = link.runtimeVersion;
 		this.launchOptions = launchOptions;
 		this.retryAttempts = launchOptions.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS;
 		this.installClient(link);
@@ -383,6 +413,10 @@ class HostConnectionImpl implements HostConnection {
 
 	get socketPath(): string {
 		return this.socketPathValue;
+	}
+
+	get runtimeVersion(): number {
+		return this.runtimeVersionValue;
 	}
 
 	get closed(): boolean {
@@ -412,6 +446,7 @@ class HostConnectionImpl implements HostConnection {
 		this.client = link.client;
 		this.pidValue = link.pid;
 		this.socketPathValue = link.socketPath;
+		this.runtimeVersionValue = link.runtimeVersion;
 		this.unsubscribeState = link.client.onConnectionStateChange((change) => {
 			if (this.closedValue || link.client !== this.client) return;
 			if (change.state === "disconnected") this.startRecovery(change.error ?? new Error("durable host connection was lost"));
@@ -422,6 +457,7 @@ class HostConnectionImpl implements HostConnection {
 		if (this.closedValue) return Promise.reject(new Error("durable host connection is closed"));
 		if (!isWellFormedRequestText(method)) return Promise.reject(new HostError("host request method must be 1..128 well-formed characters", "invalid"));
 		if (options.requestId !== undefined && !isWellFormedRequestText(options.requestId)) return Promise.reject(new HostError("host requestId must be 1..128 well-formed characters", "invalid"));
+		if (hostMethodMinVersion(method) > this.runtimeVersionValue) return Promise.reject(hostUpdatePendingError(method));
 		const signal = options.signal;
 		if (signal?.aborted) return Promise.reject(abortReason(signal));
 		const id = options.requestId ?? randomUUID();
@@ -551,6 +587,7 @@ class HostConnectionImpl implements HostConnection {
 	 */
 	async observe(scope: HostObservationScope, options: { readonly signal?: AbortSignal } = {}): Promise<HostObservation> {
 		if (this.closedValue) throw new Error("durable host connection is closed");
+		if (hostMethodMinVersion("observe-open") > this.runtimeVersionValue) throw hostUpdatePendingError("observe-open");
 		const signal = options.signal;
 		if (signal?.aborted) throw abortReason(signal);
 		const id = this.nextObservationId;
@@ -584,6 +621,14 @@ class HostConnectionImpl implements HostConnection {
 			},
 			onFrame: (listener) => {
 				entry.listeners.add(listener);
+				const current = entry.frame;
+				if (current !== undefined) {
+					try {
+						listener(current, true, "live");
+					} catch {
+						// One listener failure never stops the others.
+					}
+				}
 				return () => {
 					entry.listeners.delete(listener);
 				};
@@ -625,11 +670,11 @@ class HostConnectionImpl implements HostConnection {
 		if (baseline !== undefined) this.deliverObservation(entry, baseline, true);
 	}
 
-	private deliverObservation(entry: ObservationEntry, frame: ObservationFrame, fresh: boolean): void {
+	private deliverObservation(entry: ObservationEntry, frame: ObservationFrame, fresh: boolean, state: HostObservationState = "live"): void {
 		entry.frame = frame;
 		for (const listener of [...entry.listeners]) {
 			try {
-				listener(frame, fresh);
+				listener(frame, fresh, state);
 			} catch {
 				// One listener failure never stops the others.
 			}
@@ -652,6 +697,7 @@ class HostConnectionImpl implements HostConnection {
 
 	private closeObservationToken(token: string): void {
 		if (this.closedValue) return;
+		if (hostMethodMinVersion("observe-close") > this.runtimeVersionValue) return;
 		void this.client
 			.request({ serverId: this.serverId }, { serviceId: HOST_SERVICE_ID, member: "observe-close", args: [{ token }, randomUUID()] })
 			.catch(() => undefined);
@@ -664,6 +710,15 @@ class HostConnectionImpl implements HostConnection {
 			const subscription = entry.subscription;
 			entry.subscription = undefined;
 			if (subscription) void subscription.dispose().catch(() => undefined);
+			// A lost or closed connection tells every observer once; a silent drop leaves panes working forever.
+			for (const listener of [...entry.listeners]) {
+				try {
+					listener(entry.frame, false, "unavailable");
+				} catch {
+					// One listener failure never stops the others.
+				}
+			}
+			entry.listeners.clear();
 		}
 		this.observationEntries.clear();
 	}
@@ -708,14 +763,16 @@ class HostConnectionImpl implements HostConnection {
 
 	private async recover(cause: Error): Promise<void> {
 		const calls = [...this.pending.values()];
-		const recoverable = calls.some((call) => isRetrySafeHostMethod(call.method) && call.attempts < this.retryAttempts) || this.observationEntries.size > 0;
-		if (!recoverable) {
+		const retryable = calls.filter((call) => isRetrySafeHostMethod(call.method) && call.attempts < this.retryAttempts);
+		if (retryable.length === 0 && this.observationEntries.size === 0) {
 			this.shutdownLocal(cause);
 			return;
 		}
 		let link: Link;
 		try {
-			link = await acquireLink(this.metadata, this.launchOptions);
+			// An open observation reconnects to a live host only. Launch authority belongs to
+			// the manager's bounded recovery pool; an observation never relaunches a dead host.
+			link = retryable.length > 0 ? await acquireLink(this.metadata, this.launchOptions) : await attachLink(this.metadata, this.launchOptions);
 		} catch (error) {
 			this.shutdownLocal(toError(error));
 			return;

@@ -47,10 +47,6 @@ interface TokenState {
 /** Label bound for one task-graph frame; conversation labels beyond it stay absent. */
 export const TASK_LABEL_LIMIT = 64;
 
-function errorText(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
 /** One host's live observation state over an already-open Harness. */
 export class LiveObservationService {
 	private readonly harness: Harness;
@@ -263,10 +259,9 @@ export class LiveObservationService {
 					...(typeof meta?.name === "string" ? { name: meta.name } : {}),
 					...(typeof meta?.firstMessage === "string" ? { firstMessage: meta.firstMessage } : {}),
 				});
-			} catch (error) {
+			} catch {
 				labels.push({ conversationId: id, identity: durableIdentity(this.options.storageId, id === 1 ? undefined : id) });
 				// A missing label is display-only; the task row still carries the raw ID.
-				void errorText(error);
 			}
 		}
 		return labels;

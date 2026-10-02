@@ -17,7 +17,7 @@ import { ServerError } from "@earendil-works/pi-server";
 import type { RoutedServerServiceAttachment, Server, ServerHost } from "@earendil-works/pi-server";
 import { createUnixServer } from "@earendil-works/pi-server/unix";
 import { type ClaimFile, type ClaimIdentity, classifyClaim, readClaimFile } from "./claims.ts";
-import { formatHostReady, HOST_CHANGE_MEMBER, HOST_CHANGE_SERVICE_ID, HOST_OBSERVE_MEMBER, HOST_OBSERVE_SERVICE_ID, HOST_SERVICE_ID, hostPaths, isCancelableHostWait, observationTokenFromServiceId, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
+import { formatHostReady, HOST_CHANGE_MEMBER, HOST_CHANGE_SERVICE_ID, HOST_OBSERVE_MEMBER, HOST_OBSERVE_SERVICE_ID, HOST_RUNTIME_VERSION, HOST_RUNTIME_VERSION_MEMBER, HOST_SERVICE_ID, hostPaths, isCancelableHostWait, observationTokenFromServiceId, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
 import { isObservationFrame } from "./live-frames.ts";
 
 /** The host-side surface the parent runtime must supply. */
@@ -263,7 +263,7 @@ class HostProcessServer implements HostProcess {
 		}
 		// The runtime commit source wakes frame publication for every open observation.
 		this.unsubscribeObservation = this.runtime.onChange?.(() => this.scheduleObservationPump());
-		announce({ pid: this.pid, socketPath: this.paths.socket });
+		announce({ pid: this.pid, socketPath: this.paths.socket, runtimeVersion: HOST_RUNTIME_VERSION });
 		this.scheduleRetirement();
 	}
 
@@ -461,6 +461,8 @@ class HostProcessServer implements HostProcess {
 		const [rawParams, rawRequestId] = call.args;
 		const params = rawParams === null ? undefined : rawParams;
 		const requestId = typeof rawRequestId === "string" && rawRequestId !== "" ? rawRequestId : randomUUID();
+		// The runtime contract version is a host-process property; an older host has no branch here and errors below.
+		if (call.member === HOST_RUNTIME_VERSION_MEMBER) return { version: HOST_RUNTIME_VERSION };
 		try {
 			// Only an observational wait receives the disconnect or cancel signal;
 			// admitted Durable work never sees one.

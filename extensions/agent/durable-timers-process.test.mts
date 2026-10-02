@@ -4,10 +4,11 @@
  * across its idle window while a timer is pending.
  */
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { it } from "node:test";
 import { acquireHost, type HostConnection } from "./host-client.ts";
 import type { DeliveryReceipt } from "./durable-controls.ts";
-import { killHost, runtimeFixture, trackHost } from "./durable-runtime-fixture.mts";
+import { killHost, runtimeFixture, trackHost, waitForFile } from "./durable-runtime-fixture.mts";
 
 interface TimerListPage {
 	readonly timers: Array<{ timerId: number; status: string; deadline: number; firedAt: number | null; overdueMs: number | null }>;
@@ -23,15 +24,6 @@ async function waitForRequestReceipt(host: HostConnection, ownerId: string, requ
 		if (page.receipts.length > 0) await host.request("acknowledge", { ownerId, submissionIds: page.receipts.map((receipt) => receipt.submissionId) });
 		if (found !== undefined) return found;
 	}
-}
-
-/** Wait for one timer deadline so the test reopens the host after it. */
-async function waitPastDeadline(deadline: number): Promise<void> {
-	const remaining = deadline - Date.now();
-	if (remaining <= 0) return;
-	await new Promise<void>((resolve) => {
-		setTimeout(resolve, remaining);
-	});
 }
 
 it("fires a killed host's scheduled input once after reopen with the original deadline", { timeout: 120000 }, async (t) => {
@@ -64,6 +56,7 @@ it("fires a killed host's scheduled input once after reopen with the original de
 		assert.ok(row, "the recovered timer keeps its record");
 		assert.equal(row.status, "fired");
 		assert.equal(row.deadline, deadline, "the deadline survives the kill unchanged");
+		assert.ok((row.overdueMs ?? 0) > 0, "the recovered fire records its overdue time");
 		assert.ok(row.firedAt !== null && row.firedAt >= deadline);
 		const search = (await second.request("inspect", { view: "search", query: "PROCESS_TIMER" })) as { matches: unknown[] };
 		assert.equal(search.matches.length, 1, "the recovered timer admits one input");
@@ -74,9 +67,7 @@ it("fires a killed host's scheduled input once after reopen with the original de
 
 it("keeps the host process through its idle window while a timer is pending", { timeout: 120000 }, async (t) => {
 	const f = runtimeFixture(t, { withAgentExtension: true });
-	// A six-second idle window: the first retirement check falls between the
-	// disconnect and the deadline, and the reconnect lands before the next one.
-	const env = { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: "0.1" };
+	const env = f.env("answer");
 	const first = await acquireHost(f.metadata, { env });
 	trackHost(t, first.pid);
 	const pid = first.pid;
@@ -92,10 +83,10 @@ it("keeps the host process through its idle window while a timer is pending", { 
 		requestId: "idle-window-timer-delivery",
 	});
 	await first.close();
-	// Reconnecting after the deadline must reach the same process; a host that
-	// ignored the pending timer would retire at its first idle check and a
-	// reconnect would relaunch it with a new PID.
-	await waitPastDeadline(deadline + 300);
+	// No client remains, so only the storage host can fire the timer. The
+	// fixture provider writes `answered` when that run reaches the model; the
+	// host's initial idle windows elapse first. A retired host cannot write it.
+	await waitForFile(join(f.testDir, "answered"), 60000);
 	const second = await acquireHost(f.metadata, { env });
 	trackHost(t, second.pid);
 	try {

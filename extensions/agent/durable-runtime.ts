@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { dirname } from "node:path";
-import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { AgentCatalog, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
 import { boundCatalogView, type CatalogViewRow } from "./catalog-view.ts";
 import { observeColdStorage } from "./cold-observation.ts";
@@ -10,7 +10,7 @@ import type { HostMetadata } from "./host-protocol.ts";
 import type { HostRuntime } from "./host-process.ts";
 import { DurableHost } from "./durable-host.ts";
 import { createDurableServices, type DurableServices } from "./durable-services.ts";
-import type { AgentControlDispatch } from "./durable-agents.ts";
+import { publishAgentControlDispatch, type AgentControlDispatch } from "./durable-agents.ts";
 import { AgentDeliveryDoc, reconcileDeliveries } from "./durable-controls.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { AgentManager } from "./manager.ts";
@@ -22,8 +22,6 @@ function controlParams(input: unknown): Record<string, unknown> {
 	return { ...(input as Record<string, unknown> | undefined) };
 }
 
-const controlsKey = Symbol.for("pi.agent.durable.controls");
-const globals = globalThis as typeof globalThis & { [controlsKey]?: AgentControlDispatch };
 /** Methods that admit work or delivery into this storage. */
 const ADMITTING_METHODS: ReadonlySet<string> = new Set(["submit", "report", "rewind", "command", "compact", "spawn", "place", "reset", "timer-schedule"]);
 /** Coalesce a burst of native commits into one catalog view publication. */
@@ -57,6 +55,33 @@ function configuredModel(value: unknown): unknown {
 	if (split < 1 || split === value.length - 1) throw new Error("Model requires an exact provider/model identity");
 	return { provider: value.slice(0, split), modelId: value.slice(split + 1) };
 }
+
+/**
+ * Models adapter that adds one stable session identity to every streaming
+ * request. pi-ai providers derive prompt-cache affinity from
+ * `options.sessionId`; Durable generation supplies no session, so a host
+ * without this adapter re-reads the whole prompt prefix on each turn. One key
+ * per storage matches an ordinary session, and a fork in the same storage
+ * shares its source prefix. A caller-supplied session ID wins, and every other
+ * model operation keeps its result and its `this` binding. The adapter does not
+ * touch `cacheRetention`; pi-ai resolves that from its own environment.
+ */
+export function sessionKeyedModels(models: Models, sessionId: string): Models {
+	const withSession = (options: unknown): unknown => {
+		if (options !== null && typeof options === "object" && (options as { readonly sessionId?: unknown }).sessionId !== undefined) return options;
+		return { ...(options as Record<string, unknown> | undefined), sessionId };
+	};
+	return new Proxy(models, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (typeof value !== "function") return value;
+			if (property === "stream" || property === "streamSimple") {
+				return (model: unknown, context: unknown, options?: unknown) => value.call(target, model, context, withSession(options));
+			}
+			return value.bind(target);
+		},
+	});
+}
 function validateModel(services: DurableServices, model: { provider: string; modelId: string }, level: string): ModelThinkingLevel {
 	const selected = services.services.modelRuntime.getModel(model.provider, model.modelId);
 	if (!selected) throw new Error(`Model is not in the configured catalog: ${model.provider}/${model.modelId}`);
@@ -75,7 +100,6 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 	const changeListeners = new Set<() => void>();
 	let unsubscribeChanges: (() => void) | undefined;
 	const catalog = new AgentCatalog(dirname(dirname(metadata.storagePath)));
-	const priorDispatch = globals[controlsKey];
 	let publishTimer: ReturnType<typeof setTimeout> | undefined;
 	let publishPromise: Promise<void> | undefined;
 	let publishingView = false;
@@ -209,7 +233,7 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 		}
 		return request(method, params, typeof params.requestId === "string" ? params.requestId : randomUUID());
 	};
-	globals[controlsKey] = dispatch;
+	const restoreDispatch = publishAgentControlDispatch(dispatch);
 	/** Mark recovery due before scheduling when committed work or delivery is pending. */
 	async function markPendingRecovery(): Promise<void> {
 		const pending = await recoveryState();
@@ -230,7 +254,7 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 	/** Open the Harness without scheduling, install every contribution, then start scheduling. */
 	const openHost = async (): Promise<DurableHost> => {
 		const opened = await DurableHost.open({ storagePath: metadata.storagePath, storageId: metadata.storageId, cwd: metadata.cwd,
-			models: services.services.modelRuntime, registry: services.registry, settings: services.settings, env: services.env,
+			models: sessionKeyedModels(services.services.modelRuntime, metadata.storageId), registry: services.registry, settings: services.settings, env: services.env,
 			retryMaxAttempts: services.services.settingsManager.getRetrySettings().enabled ? services.services.settingsManager.getRetrySettings().maxRetries + 1 : 1,
 			agent: hostAgent(),
 			meta: { name: metadata.name, owner: metadata.ownerId }, commands: services.commands, contributionHost: services.contributionHost,
@@ -255,7 +279,7 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 		}
 	};
 	try { host = await openHost(); }
-	catch (error) { if (globals[controlsKey] === dispatch) globals[controlsKey] = priorDispatch; controller.abort(); await services.close().catch(() => {}); throw error; }
+	catch (error) { restoreDispatch(); controller.abort(); await services.close().catch(() => {}); throw error; }
 	const delivery = () => startDurableDelivery({ host, metadata, catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), signal: controller.signal, onError: (error) => { process.stderr.write(`Agent delivery: ${error.message}\n`); } });
 	let deliveries = delivery();
 
@@ -335,7 +359,7 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 	const closeHost = async (): Promise<void> => {
 		if (closed) return;
 		closed = true;
-		if (globals[controlsKey] === dispatch) globals[controlsKey] = priorDispatch;
+		restoreDispatch();
 		controller.abort();
 		if (publishTimer !== undefined) {
 			clearTimeout(publishTimer);

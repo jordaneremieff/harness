@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -13,9 +14,10 @@ import { DurableHost, type RequestParams } from "./durable-host.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, gateTool, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import type { HostConnection } from "./host-client.ts";
 import { waitUntil } from "./host-fixture.mts";
+import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import type { HostMetadata } from "./host-protocol.ts";
-import { parseHostMetadata } from "./host-protocol.ts";
-import { createPrimaryChannel, type PrimaryDelivery } from "./primary-channel.ts";
+import { HOST_RUNTIME_VERSION, parseHostMetadata } from "./host-protocol.ts";
+import { createPrimaryChannel, primaryEndpointPath, type PrimaryDelivery } from "./primary-channel.ts";
 
 function fixtureRoot(t: { after(fn: () => void | Promise<void>): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "durable-delivery-"));
@@ -64,6 +66,7 @@ function fakeTarget(target: DurableHost, calls: SubmitRecord[], gate?: Promise<v
 		socketPath: "/tmp/fake-target.sock",
 		storageId: target.storageId,
 		metadata: { storageId: target.storageId } as HostMetadata,
+		runtimeVersion: HOST_RUNTIME_VERSION,
 		get closed() {
 			return closed;
 		},
@@ -104,6 +107,24 @@ async function deliveryState(host: DurableHost) {
 	return host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
 }
 
+/** One readable endpoint record in the older contract: a live owner that ignores the quiet flag. */
+function writeOlderEndpoint(sessionsRoot: string, id: string, pid = process.pid): void {
+	mkdirSync(join(sessionsRoot, ".primaries"), { recursive: true, mode: 0o700 });
+	writeFileSync(
+		primaryEndpointPath(sessionsRoot, id),
+		JSON.stringify({
+			version: 1,
+			id,
+			serverId: randomUUID(),
+			cwd: "/older/work",
+			hostname: hostname(),
+			pid,
+			socketPath: join(sessionsRoot, ".primaries", "older.sock"),
+			startedAt: new Date().toISOString(),
+		}),
+	);
+}
+
 async function receiptSourceId(host: DurableHost, submissionId: SubmissionId): Promise<string> {
 	await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
 	const receipt = (await deliveryState(host))?.receipts[String(submissionId)];
@@ -122,7 +143,7 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5000): Pro
 async function addReceipt(source: DurableHost, ownerId: string, requestId = "source-receipt"): Promise<SubmissionId> {
 	const admitted = (await source.request(
 		"submit",
-		{ sessionId: source.storageId, message: "do the task", requestId, ownerId },
+		{ sessionId: source.storageId, message: "do the task", requestId, ownerId, origin: "model" },
 		BACKGROUND_CONTEXT,
 	)) as { submissionId: SubmissionId };
 	await source.wait(admitted.submissionId, BACKGROUND_CONTEXT);
@@ -183,17 +204,23 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	const pending = await deliveryState(source);
 	assert.ok(ids.every((id) => pending?.receipts[String(id)]?.acknowledged === false));
 	assert.equal(pending?.receipts[String(original.submissionId)]?.answerEntryId, pending?.receipts[String(steer.submissionId)]?.answerEntryId);
-	const details = received[0]?.details as { submissions: { submissionId: SubmissionId; requestId: string; operationId: string; origin?: string }[]; wake?: unknown };
+	const details = received[0]?.details as { deliveryRecipient: string; submissions: { submissionId: SubmissionId; requestId: string; operationId: string; ownerId: string; origin?: string }[]; wake?: unknown };
 	assert.deepEqual(details.submissions.map((member) => member.submissionId), ids);
 	assert.deepEqual(details.submissions.map((member) => member.requestId), ["original", "steer"]);
 	assert.deepEqual(details.submissions.map((member) => member.operationId), ["first-operation", "steer-operation"]);
 	assert.deepEqual(details.submissions.map((member) => member.origin), ["operator", "model"]);
-	assert.equal(details.wake, true, "one model-origin submission keeps the wake behavior for the whole answer group");
+	const own = details.submissions.filter((member) => member.ownerId === details.deliveryRecipient);
+	assert.equal(details.wake, own.some((member) => member.origin === "model"), "wake follows the recipient's own admissions");
 	assert.match(received[0]?.text ?? "", /^Agent “run” finished\./u);
 	assert.doesNotMatch(received[0]?.text ?? "", /submissions/u);
 	releaseDelivery();
 	await waitFor(async () => ids.every((id) => revisions.at(-1)?.receipts[String(id)]?.acknowledged === true));
 	assert.equal(received.length, recipients === "distinct" ? 2 : 1, "one answer reaches each recipient once, including overlapping owner routes");
+	for (const delivery of received) {
+		const messageDetails = delivery.details as { deliveryRecipient: string; submissions: Array<{ ownerId: string; origin?: string }>; wake?: unknown };
+		const recipientOwn = messageDetails.submissions.filter((member) => member.ownerId === messageDetails.deliveryRecipient);
+		assert.equal(messageDetails.wake, recipientOwn.some((member) => member.origin === "model"), `recipient ${messageDetails.deliveryRecipient} wakes only for its own model admissions`);
+	}
 	for (const revision of revisions) {
 		const members = ids.flatMap((id) => revision.receipts[String(id)] ?? []);
 		assert.ok(members.length === 0 || members.length === 2, "receipt materialization is atomic");
@@ -305,7 +332,7 @@ it("resumes after reopen and native dedup keeps one submission", { timeout: 3000
 	});
 	const preAdmission = (await target.request(
 		"submit",
-		{ sessionId: owner, message: "already admitted", requestId: expected, whenBusy: "followUp" },
+		{ sessionId: owner, message: "already admitted", requestId: expected, whenBusy: "followUp", origin: "model" },
 		BACKGROUND_CONTEXT,
 	)) as { submissionId: number };
 
@@ -388,7 +415,7 @@ it("delivers a noncatalog owner to its registered primary channel with source me
 	assert.equal(details.textTruncated, undefined, "a short body carries no truncation flag");
 	assert.equal(typeof details.thinkingLevel, "string");
 	assert.equal(details.label, "do the task");
-	assert.equal(details.wake, true, "an admission without an explicit origin keeps the wake behavior");
+	assert.equal(details.wake, true, "a model-origin admission wakes its owner");
 	assert.match(message.text, /^Agent “do the task” finished\./u);
 	assert.match(message.text, /Results do not establish task acceptance/u);
 	assert.doesNotMatch(message.text, /no live owning session/u);
@@ -491,6 +518,208 @@ it("keeps a stored admission origin across a host reopen before delivery", { tim
 	assert.equal(details.wake, false, "the reopened watcher keeps the operator-only delivery quiet");
 	await watcher.close();
 	assert.deepEqual(errors, []);
+});
+
+it("reports a same-storage owner inside its storage instead of falling back", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const primary = randomUUID();
+	const received: PrimaryDelivery[] = [];
+	const channel = await createPrimaryChannel({
+		id: primary,
+		cwd: root,
+		sessionsRoot,
+		deliver: (message) => {
+			received.push(message);
+		},
+		promptTrust: async () => undefined,
+	});
+	t.after(async () => {
+		await channel.close().catch(() => undefined);
+	});
+	const sourcePath = join(root, "source.sqlite");
+	const source = await openHost(sourcePath, "source-storage", root);
+	t.after(async () => {
+		await source.close().catch(() => undefined);
+	});
+	const admitted = (await source.request(
+		"submit",
+		{ sessionId: source.storageId, message: "scheduled task", requestId: "same-storage-owner", ownerId: source.storageId, origin: "model" },
+		BACKGROUND_CONTEXT,
+	)) as { submissionId: SubmissionId };
+	await source.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+	const errors: Error[] = [];
+	const watcher = startDurableDelivery({
+		host: source,
+		metadata: sourceMetadata(root, source.storageId, sourcePath),
+		catalog: new AgentCatalog(root),
+		sessionsRoot,
+		signal: new AbortController().signal,
+		onError: (error) => errors.push(error),
+	});
+	t.after(() => watcher.close());
+	await waitFor(async () => (await deliveryState(source))?.receipts[String(admitted.submissionId)]?.acknowledged === true);
+	assert.equal(received.length, 0, "a same-storage owner never routes through a primary");
+	assert.deepEqual(errors, []);
+});
+
+it("reports a malformed admission origin without crash-looping and keeps other rows moving", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const corruptOwner = randomUUID();
+	const goodOwner = randomUUID();
+	const received: PrimaryDelivery[] = [];
+	const channel = await createPrimaryChannel({
+		id: goodOwner,
+		cwd: root,
+		sessionsRoot,
+		deliver: (message) => {
+			received.push(message);
+		},
+		promptTrust: async () => undefined,
+	});
+	t.after(async () => {
+		await channel.close().catch(() => undefined);
+	});
+	const sourcePath = join(root, "source.sqlite");
+	const source = await openHost(sourcePath, "source-storage", root);
+	t.after(async () => {
+		await source.close().catch(() => undefined);
+	});
+	const corruptId = await addReceipt(source, corruptOwner, "corrupt-origin");
+	const goodId = await addReceipt(source, goodOwner, "good-origin");
+	// Simulate a receipt written before the origin field existed.
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		const receipt = state.receipts[String(corruptId)];
+		if (receipt !== undefined) {
+			const { origin: _removed, ...rest } = receipt;
+			state.receipts[String(corruptId)] = rest;
+		}
+	}, BACKGROUND_CONTEXT);
+	const errors: Error[] = [];
+	const watcher = startDurableDelivery({
+		host: source,
+		metadata: sourceMetadata(root, source.storageId, sourcePath),
+		catalog: new AgentCatalog(root),
+		sessionsRoot,
+		signal: new AbortController().signal,
+		onError: (error) => errors.push(error),
+	});
+	t.after(() => watcher.close());
+	await waitUntil(() => received.length >= 1);
+	await waitFor(async () => (await deliveryState(source))?.receipts[String(goodId)]?.acknowledged === true);
+	assert.equal((await deliveryState(source))?.receipts[String(corruptId)]?.acknowledged, false, "the malformed row stays pending");
+	assert.match(errors[0]?.message ?? "", /no valid admission origin/u);
+	const status = (await source.request("status", {})) as { deliveryError?: string };
+	assert.match(status.deliveryError ?? "", /no valid admission origin/u, "the corruption stays visible in host status");
+	assert.ok(errors.every((error) => /no valid admission origin/u.test(error.message)), "every report names the corruption");
+});
+
+it("holds a quiet notice for an older owner, then delivers after that owner restarts", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const owner = randomUUID();
+	const received: PrimaryDelivery[] = [];
+	const dead = spawnSync(process.execPath, ["-e", ""]);
+	assert.ok(dead.pid);
+	writeOlderEndpoint(sessionsRoot, owner, dead.pid);
+	const sourcePath = join(root, "source.sqlite");
+	const source = await openHost(sourcePath, "source-storage", root);
+	t.after(async () => {
+		await source.close().catch(() => undefined);
+	});
+	const admitted = (await source.request(
+		"submit",
+		{ sessionId: source.storageId, message: "board task", requestId: "older-owner", ownerId: owner, origin: "operator" },
+		BACKGROUND_CONTEXT,
+	)) as { submissionId: SubmissionId };
+	await source.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+	const errors: Error[] = [];
+	const watcher = startDurableDelivery({
+		host: source,
+		metadata: sourceMetadata(root, source.storageId, sourcePath),
+		catalog: new AgentCatalog(root),
+		sessionsRoot,
+		signal: new AbortController().signal,
+		onError: (error) => errors.push(error),
+	});
+	t.after(() => watcher.close());
+	await waitUntil(() => errors.length >= 1);
+	assert.match(errors[0]?.message ?? "", /endpoint version 1/u);
+	assert.match(errors[0]?.message ?? "", /Restart that Pi/u);
+	assert.equal(received.length, 0, "an older owner never receives the quiet notice");
+	const pending = await deliveryState(source);
+	assert.equal(pending?.receipts[String(admitted.submissionId)]?.acknowledged, false, "the row stays pending");
+	const status = (await source.request("status", {})) as { deliveryError?: string };
+	assert.match(status.deliveryError ?? "", /Restart that Pi/u, "the host status names the restart");
+	structuredObservation(StatusOutputSchema, { ...status, inventory: { contributions: [], ordinaryOnly: [] }, pid: 4, storageId: source.storageId });
+
+	// The older window restarts and registers the current endpoint; the held row delivers then.
+	const channel = await createPrimaryChannel({
+		id: owner,
+		cwd: root,
+		sessionsRoot,
+		deliver: (message) => {
+			received.push(message);
+		},
+		promptTrust: async () => undefined,
+	});
+	t.after(async () => {
+		await channel.close().catch(() => undefined);
+	});
+	await source.harness.commit(async () => {}, BACKGROUND_CONTEXT);
+	await waitUntil(() => received.length === 1);
+	await waitFor(async () => (await deliveryState(source))?.receipts[String(admitted.submissionId)]?.acknowledged === true);
+	const notice = received[0]?.details as { wake?: unknown } | undefined;
+	assert.equal(notice?.wake, false, "the delivered notice stays quiet");
+	const cleared = (await source.request("status", {})) as { deliveryError?: string };
+	assert.equal(cleared.deliveryError, undefined, "a successful pass clears the reported delivery error");
+});
+
+it("holds a fallback when a registered primary runs an older endpoint", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const absentOwner = randomUUID();
+	const older = randomUUID();
+	const compatible = randomUUID();
+	const received: PrimaryDelivery[] = [];
+	const channel = await createPrimaryChannel({
+		id: compatible,
+		cwd: root,
+		sessionsRoot,
+		deliver: (message) => {
+			received.push(message);
+		},
+		promptTrust: async () => undefined,
+	});
+	t.after(async () => {
+		await channel.close().catch(() => undefined);
+	});
+	writeOlderEndpoint(sessionsRoot, older);
+	const sourcePath = join(root, "source.sqlite");
+	const source = await openHost(sourcePath, "source-storage", root);
+	t.after(async () => {
+		await source.close().catch(() => undefined);
+	});
+	const submissionId = await addReceipt(source, absentOwner, "older-candidate");
+	const errors: Error[] = [];
+	const watcher = startDurableDelivery({
+		host: source,
+		metadata: sourceMetadata(root, source.storageId, sourcePath),
+		catalog: new AgentCatalog(root),
+		sessionsRoot,
+		signal: new AbortController().signal,
+		onError: (error) => errors.push(error),
+	});
+	t.after(() => watcher.close());
+	await waitUntil(() => errors.length >= 1);
+	assert.match(errors[0]?.message ?? "", /endpoint version 1/u);
+	assert.match(errors[0]?.message ?? "", /stays unacknowledged/u);
+	assert.equal(received.length, 0, "no registered primary receives while an older primary is registered");
+	const state = await deliveryState(source);
+	assert.equal(state?.receipts[String(submissionId)]?.acknowledged, false, "the fallback row stays pending");
 });
 
 it("falls back to one registered live primary when the owning endpoint is absent", { timeout: 30000 }, async (t) => {

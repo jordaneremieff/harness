@@ -8,7 +8,7 @@ import { it } from "node:test";
 import { hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { dashboardText } from "./dashboard.ts";
 import type { HostConnection } from "./host-client.ts";
-import { hostPaths, type HostMetadata } from "./host-protocol.ts";
+import { HOST_RUNTIME_VERSION, hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { waitUntil } from "./host-fixture.mts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
 import { connectPrimaryChannel, type PrimaryChannel, type PrimaryChannelOptions, type PrimaryInfo } from "./primary-channel.ts";
@@ -59,7 +59,7 @@ interface FakeConnection extends HostConnection {
 	change(): void;
 }
 
-function fakeConnection(metadata: HostMetadata, handler: (method: string, params: unknown) => Promise<unknown>): FakeConnection {
+function fakeConnection(metadata: HostMetadata, handler: (method: string, params: unknown) => Promise<unknown>, runtimeVersion: number = HOST_RUNTIME_VERSION): FakeConnection {
 	let closed = false;
 	const listeners = new Set<() => void>();
 	const changes = new Set<() => void>();
@@ -68,6 +68,7 @@ function fakeConnection(metadata: HostMetadata, handler: (method: string, params
 		socketPath: "/tmp/fake-host.sock",
 		storageId: metadata.storageId,
 		metadata,
+		runtimeVersion,
 		get closed() {
 			return closed;
 		},
@@ -799,6 +800,125 @@ it("returns a compact status snapshot from a mutation instead of the full status
 		assert.equal(serialized.includes("lastText"), false, "live assistant text stays out of the spawn result");
 		assert.equal(serialized.includes("submissions"), false, "the submission inventory stays out of the spawn result");
 		assert.ok(serialized.length < 1024, `compact spawn result stays small (was ${serialized.length} characters)`);
+	} finally { manager.close(); }
+});
+
+interface RecordedHost {
+	readonly connection: FakeConnection;
+	readonly requests: Array<{ method: string; params: Record<string, unknown> }>;
+}
+
+/** One fake host that records its calls and answers recovery-state with a caller-controlled value. */
+function recordedHost(metadata: HostMetadata, runtimeVersion: number, work: { pending: boolean }): RecordedHost {
+	const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+	const connection = fakeConnection(metadata, async (method, params) => {
+		requests.push({ method, params: (params ?? {}) as Record<string, unknown> });
+		if (method === "recovery-state") return { workPending: work.pending, deliveriesPending: false };
+		return {};
+	}, runtimeVersion);
+	return { connection, requests };
+}
+
+it("replaces an idle older host and moves the caller's request to current code", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const steps: RecordedHost[] = [];
+	let acquired = 0;
+	const manager = new AgentManager(managerOptions(root, {
+		acquire: async (metadata) => {
+			acquired += 1;
+			const step = recordedHost(metadata, acquired === 1 ? 0 : HOST_RUNTIME_VERSION, { pending: false });
+			steps.push(step);
+			return step.connection;
+		},
+		connect: noHost,
+	}));
+	const record = createRecord(manager, root);
+	try {
+		await manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root });
+		assert.equal(acquired, 2, "one idle replacement");
+		assert.ok(steps[0]?.requests.some((entry) => entry.method === "close"), "the older host closes through its own close method");
+		assert.ok(steps[1]?.requests.some((entry) => entry.method === "submit"), "the caller's request reaches the current host");
+	} finally { manager.close(); }
+});
+
+it("defers an older host update while it works and replaces it at the next idle notification", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const work = { pending: true };
+	const steps: RecordedHost[] = [];
+	let acquired = 0;
+	const manager = new AgentManager(managerOptions(root, {
+		acquire: async (metadata) => {
+			acquired += 1;
+			const step = recordedHost(metadata, acquired === 1 ? 0 : HOST_RUNTIME_VERSION, work);
+			steps.push(step);
+			return step.connection;
+		},
+		connect: noHost,
+	}));
+	const record = createRecord(manager, root);
+	try {
+		await manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root });
+		assert.equal(acquired, 1, "a busy host is not replaced");
+		assert.equal(steps[0]?.requests.some((entry) => entry.method === "close"), false);
+		work.pending = false;
+		steps[0]?.connection.change();
+		await waitUntil(() => acquired === 2, 10000);
+		assert.ok(steps[0]?.requests.some((entry) => entry.method === "close"), "the idle host closes at its next change notification");
+		assert.equal(steps[0]?.connection.closed, true);
+	} finally { manager.close(); }
+});
+
+it("stops automatic host replacement at the crash-window cap", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const steps: RecordedHost[] = [];
+	let acquired = 0;
+	const manager = new AgentManager(managerOptions(root, {
+		acquire: async (metadata) => {
+			acquired += 1;
+			const step = recordedHost(metadata, 0, { pending: false });
+			steps.push(step);
+			return step.connection;
+		},
+		connect: noHost,
+	}));
+	const record = createRecord(manager, root);
+	try {
+		await manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root });
+		// Each current-but-old host reports idle; change notifications drive the bounded chain.
+		for (let attempt = 0; attempt < 8 && acquired < 4; attempt++) {
+			steps.at(-1)?.connection.change();
+			await new Promise((resolve) => setTimeout(resolve, 40));
+		}
+		assert.equal(acquired, 4, "one initial host plus three bounded replacements");
+		steps.at(-1)?.connection.change();
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		assert.equal(acquired, 4, "the cap stops further replacements");
+		const status = await manager.status() as { failures: Array<{ error: string }> };
+		assert.ok(status.failures.some((failure) => /update stopped after repeated replacements/u.test(failure.error)));
+	} finally { manager.close(); }
+});
+
+it("keeps status readable from a busy older host and reports the pending update", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	let connected = 0;
+	const manager = new AgentManager(managerOptions(root, {
+		connect: async (metadata) => {
+			connected += 1;
+			return fakeConnection(metadata, async (method) => {
+				if (method === "recovery-state") return { workPending: true, deliveriesPending: false };
+				if (method === "status") return { conversation: { conversationId: 1, identity: metadata.storageId }, inventory: { contributions: [], ordinaryOnly: [] }, pid: 1, storageId: metadata.storageId };
+				return {};
+			}, 0);
+		},
+		acquire: noHost,
+	}));
+	const record = createRecord(manager, root);
+	try {
+		const status = await manager.status(record.storageId) as { inventory: { failed?: unknown } };
+		assert.equal(status.inventory.failed, undefined, "an older host's readable status carries no failure member");
+		assert.equal(connected, 1, "a busy older host stays connected");
+		const overview = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
+		assert.ok(overview.failures.some((failure) => failure.storageId === record.storageId && /Host runtime version 0/u.test(failure.error)), "the pending update is visible in status");
 	} finally { manager.close(); }
 });
 

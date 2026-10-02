@@ -26,10 +26,11 @@ import { opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
+import { type AgentCatalog, type CatalogRecord, hostMetadata } from "./catalog.ts";
 import {
 	AgentDeliveryDoc,
 	acknowledgeReports,
+	type DeliveryOrigin,
 	type DeliveryReceipt,
 	type DeliveryReport,
 	settleDeliveries,
@@ -39,9 +40,10 @@ import { acquireHost, type HostConnection } from "./host-client.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import {
 	connectPrimaryChannel,
+	primaryEndpointIncompatibleError,
+	primaryEndpointStatus,
 	type PrimaryChannelConnection,
 	type PrimaryDelivery,
-	primaryEndpointOwnerState,
 } from "./primary-channel.ts";
 
 const DEFAULT_RETRY_DELAY_MS = 500;
@@ -56,6 +58,12 @@ const FALLBACK_LABEL = "no live owning session";
 /** Bound for one peer body; the marker names the retained source for the full text. */
 const PEER_TEXT_LIMIT = 16_000;
 const PEER_TRUNCATION_MARKER = "\n\n[text truncated; use agent_inspect for retained full text]";
+
+/** Storage prefix of one external identity, for the same-storage check; the catalog owns strict validation. */
+function ownerStorageId(identity: string): string {
+	const separator = identity.indexOf(":");
+	return separator < 0 ? identity : identity.slice(0, separator);
+}
 
 /** Bound one peer body without splitting a surrogate pair; the marker appears only when cut. */
 function boundedPeerText(text: string): { text: string; truncated: boolean } {
@@ -138,17 +146,34 @@ interface SourceStatus {
 }
 
 /**
- * Admission origin of one receipt. An intent stored before the origin field
- * existed carries no value and reads as model-origin, so its notice keeps the
- * turn-triggering delivery behavior.
+ * Admission origin of one receipt. A missing or malformed origin is corruption,
+ * not a default: the row is reported and stays pending instead of silently
+ * waking or suppressing one owner.
  */
-function receiptOrigin(receipt: DeliveryReceipt): "operator" | "model" {
-	return receipt.origin === "operator" ? "operator" : "model";
+function receiptOrigin(receipt: DeliveryReceipt): DeliveryOrigin {
+	const origin = receipt.origin;
+	if (origin !== "operator" && origin !== "model")
+		throw new Error(`retained delivery ${receipt.submissionId} has no valid admission origin; the row stays pending`);
+	return origin;
 }
 
-/** True when any submission in an answer group came from a model; reports always wake. */
-function rowWakes(row: DeliveryRow): boolean {
-	return row.kind === "receipt" ? row.receipts.some((receipt) => receiptOrigin(receipt) === "model") : true;
+/** True when any of one recipient's submissions in this answer group came from a model. */
+function rowWakes(row: DeliveryRow, recipient: string): boolean {
+	if (row.kind !== "receipt") return true;
+	const own = row.receipts.filter((receipt) => receipt.ownerId === recipient);
+	if (own.length === 0) return true;
+	return own.some((receipt) => receiptOrigin(receipt) === "model");
+}
+
+/** First invalid admission origin in one row, as a containment error; undefined when every receipt reads. */
+function rowOriginFailure(row: DeliveryRow): Error | undefined {
+	if (row.kind !== "receipt") return undefined;
+	try {
+		for (const receipt of row.receipts) receiptOrigin(receipt);
+		return undefined;
+	} catch (error) {
+		return error instanceof Error ? error : new Error(String(error));
+	}
 }
 
 /** Plain outcome word for one settled receipt. */
@@ -284,23 +309,16 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let inFlight: Promise<void> | undefined;
 	let closePromise: Promise<void> | undefined;
 	let unsubscribe: (() => void) | undefined;
+	const corruptRows = new Set<string>();
 
+	/** Report one routing failure. The host keeps the latest failure in its status. */
 	const fail = (error: unknown): void => {
+		const failure = asError(error);
+		host.reportDeliveryError(failure);
 		try {
-			onError?.(asError(error));
+			onError?.(failure);
 		} catch {
 			// A reporting failure must not stop delivery.
-		}
-	};
-
-	/** Catalog lookup: only an absent record permits primary-channel routing; every other failure refuses. */
-	const ownerRecord = (ownerId: string): CatalogRecord | undefined => {
-		if (storageIdOf(ownerId) === metadata.storageId) return undefined;
-		try {
-			return catalog.read(ownerId);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-			throw error;
 		}
 	};
 
@@ -316,6 +334,27 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 		targets.set(record.storageId, connection);
 		return connection;
+	};
+
+	/** Catalog lookup: an absent record alone permits primary-channel routing; every other failure refuses. */
+	const ownerRecord = (ownerId: string): CatalogRecord | undefined => {
+		try {
+			return catalog.read(ownerId);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+			throw error;
+		}
+	};
+
+	/** Same-storage owners are agent conversations in this storage; their answer arrives as an in-storage follow-up. */
+	const deliverSameStorage = async (row: DeliveryRow, owner: string): Promise<void> => {
+		if (row.kind === "receipt") {
+			const requestId = receiptRequestId(metadata, row.receipt);
+			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row), requestId, whenBusy: "followUp" });
+			return;
+		}
+		const requestId = reportRequestId(metadata, row.report);
+		await host.request("submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, whenBusy: "followUp" });
 	};
 
 	const acknowledgeRow = async (row: DeliveryRow): Promise<void> => {
@@ -388,7 +427,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			deliveryRecipient,
 			liveOwner,
 			saved,
-			wake: fallback ? false : rowWakes(row),
+			wake: fallback ? false : rowWakes(row, deliveryRecipient),
 			...(body.truncated ? { textTruncated: true } : {}),
 			...actual.fields,
 			...(actual.unknown ? { metadataUnknown: true } : {}),
@@ -471,28 +510,36 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 	};
 
-	/** Deliver one fallback candidate; only absent or proven dead endpoints are skipped. */
+	/** One fallback candidate's outcome; an incompatible endpoint never receives a quiet notice. */
+	type CandidateOutcome =
+		| { readonly kind: "delivered" }
+		| { readonly kind: "skipped" }
+		| { readonly kind: "failed" }
+		| { readonly kind: "incompatible"; readonly version: number };
+
+	/** Deliver one fallback candidate; absent or proven dead endpoints are skipped, incompatible ones refuse. */
 	const deliverFallbackCandidate = async (
 		id: string,
 		row: DeliveryRow,
 		identity: string,
 		owner: string,
-	): Promise<"delivered" | "skipped" | "failed"> => {
-		if (row.deliveredTo.has(`primary:${id}`)) return "delivered";
-		const state = primaryEndpointOwnerState(sessionsRoot, id);
-		if (state === "absent" || state === "dead") return "skipped";
+	): Promise<CandidateOutcome> => {
+		if (row.deliveredTo.has(`primary:${id}`)) return { kind: "delivered" };
+		const status = primaryEndpointStatus(sessionsRoot, id);
+		if (status.state === "absent" || status.state === "dead") return { kind: "skipped" };
+		if (status.state === "incompatible") return { kind: "incompatible", version: status.version ?? 0 };
 		let connection: PrimaryChannelConnection;
 		try {
 			connection = await connectPrimaryChannel({ id, sessionsRoot });
 		} catch {
 			// A live or unknown candidate that cannot be reached is not proven absent.
-			return "failed";
+			return { kind: "failed" };
 		}
 		try {
 			await deliverChannel(connection, row, identity, owner, id, false, true);
-			return "delivered";
+			return { kind: "delivered" };
 		} catch {
-			return "failed";
+			return { kind: "failed" };
 		} finally {
 			await connection.close().catch(() => undefined);
 		}
@@ -511,28 +558,44 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		return candidates;
 	};
 
-	/** Deliver one row to every candidate; an unavailable live or unknown candidate stays unacknowledged. */
+	/** Deliver one row to every candidate; an unavailable or incompatible candidate holds the row. */
 	const broadcastFallback = async (
 		candidates: readonly string[],
 		row: DeliveryRow,
 		identity: string,
 		owner: string,
-	): Promise<{ delivered: number; unavailable: string | undefined }> => {
+	): Promise<{ delivered: number; unavailable: string | undefined; incompatible: { id: string; version: number } | undefined }> => {
 		let delivered = 0;
 		let unavailable: string | undefined;
+		let incompatible: { id: string; version: number } | undefined;
 		for (const id of candidates) {
-			if (closed || signal.aborted) return { delivered, unavailable };
+			if (closed || signal.aborted) return { delivered, unavailable, incompatible };
 			const outcome = await deliverFallbackCandidate(id, row, identity, owner);
-			if (outcome === "delivered") delivered += 1;
-			if (outcome === "failed") unavailable ??= id;
+			if (outcome.kind === "delivered") delivered += 1;
+			else if (outcome.kind === "failed") unavailable ??= id;
+			else if (outcome.kind === "incompatible") incompatible ??= { id, version: outcome.version };
 		}
-		return { delivered, unavailable };
+		return { delivered, unavailable, incompatible };
 	};
 
-	/** Broadcast the fallback to every registered live primary; incomplete discovery or an unavailable candidate refuses. */
+	const incompatibleFallbackError = (id: string, version: number, owner: string): Error =>
+		new Error(`${primaryEndpointIncompatibleError(id, version).message} The fallback for ${owner} stays unacknowledged.`);
+
+	/** Check every candidate before one delivery, so an older registered primary never sees a quiet notice. */
+	const preflightFallback = (candidates: readonly string[], owner: string): void => {
+		for (const id of candidates) {
+			if (closed || signal.aborted) return;
+			const status = primaryEndpointStatus(sessionsRoot, id);
+			if (status.state === "incompatible") throw incompatibleFallbackError(id, status.version ?? 0, owner);
+		}
+	};
+
+	/** Broadcast the fallback to every registered primary; an older, unreachable, or absent audience holds the row. */
 	const deliverFallbackOwner = async (row: DeliveryRow, identity: string, owner: string): Promise<void> => {
 		const candidates = await fallbackCandidates(owner);
-		const { delivered, unavailable } = await broadcastFallback(candidates, row, identity, owner);
+		preflightFallback(candidates, owner);
+		const { delivered, unavailable, incompatible } = await broadcastFallback(candidates, row, identity, owner);
+		if (incompatible !== undefined) throw incompatibleFallbackError(incompatible.id, incompatible.version, owner);
 		if (unavailable !== undefined)
 			throw new Error(
 				`registered primary ${unavailable} is live or unknown but unreachable; the fallback for ${owner} stays unacknowledged`,
@@ -541,15 +604,16 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			throw new Error(`no live owning session for ${owner} and no registered primary accepted delivery`);
 	};
 
-	/** Noncatalog owners: live or unknown endpoints refuse fallback; absent or dead owners use it. */
+	/** Noncatalog owners: an older, unknown, or dead endpoint never falls back to a broadcast. */
 	const deliverPrimary = async (row: DeliveryRow, owner: string): Promise<void> => {
 		if (row.deliveredTo.has(`primary:${owner}`)) return;
 		if (!PRIMARY_ID.test(owner))
 			throw new Error(`delivery owner ${owner} is not a canonical primary id; refusing fallback`);
 		const identity = row.kind === "receipt" ? host.identity(row.receipt.conversationId) : row.report.senderIdentity;
-		const state = primaryEndpointOwnerState(sessionsRoot, owner);
-		if (state === "live") await deliverLiveOwner(row, identity, owner);
-		else if (state === "unknown") throw new Error(`primary owner ${owner} has an unknown endpoint; refusing fallback`);
+		const status = primaryEndpointStatus(sessionsRoot, owner);
+		if (status.state === "live") await deliverLiveOwner(row, identity, owner);
+		else if (status.state === "incompatible") throw primaryEndpointIncompatibleError(owner, status.version ?? 0);
+		else if (status.state === "unknown") throw new Error(`primary owner ${owner} has an unknown endpoint; refusing fallback`);
 		else await deliverFallbackOwner(row, identity, owner);
 	};
 
@@ -579,6 +643,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	};
 
 	const routeOwner = async (row: DeliveryRow, owner: string): Promise<void> => {
+		if (ownerStorageId(owner) === metadata.storageId) {
+			await deliverSameStorage(row, owner);
+			return;
+		}
 		const record = ownerRecord(owner);
 		if (record !== undefined) await deliverCatalog(record, row, owner);
 		else await deliverPrimary(row, owner);
@@ -596,10 +664,16 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (!closed && !signal.aborted) await acknowledgeRow(row);
 	};
 
-	/** Route independent answers and reports even when another route fails. */
+	/** Route independent answers and reports even when another route fails; corruption is contained per row. */
 	const routeRows = async (rows: readonly DeliveryRow[]): Promise<Error | undefined> => {
 		let failure: Error | undefined;
 		for (const row of rows) {
+			const corruption = rowOriginFailure(row);
+			if (corruption !== undefined) {
+				corruptRows.add(rowSourceId(metadata, row));
+				fail(corruption);
+				continue;
+			}
 			const owners = rowOwners(row);
 			if (owners.length === 0) continue;
 			try { await routeRow(row, owners); }
@@ -626,6 +700,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		running = true;
 		try {
 			await scan();
+			if (corruptRows.size === 0) host.reportDeliveryError(undefined);
 			attempts = 0;
 		} catch (error) {
 			fail(error);

@@ -182,7 +182,7 @@ it("continues history, search, and exact reads from a cold snapshot", async (t) 
 it("includes receipts and reports in a cold snapshot and omits opaque provider fields", async (t) => {
 	const storagePath = join(fixtureRoot(t), "delivery.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([redactedAnswerMessage("redacted answer"), answerMessage("owner answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
-	const submitted = await host.submit({ message: "deliver to owner", requestId: "deliver-1", ownerId: "owner-cold" });
+	const submitted = await host.submit({ message: "deliver to owner", requestId: "deliver-1", ownerId: "owner-cold", origin: "operator" });
 	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
 	const report = (await host.request("report", { ownerId: "owner-cold", senderIdentity: "agent-cold", requestId: "rep-cold", message: "cold report" })) as { sourceId: string };
 	await host.close();
@@ -222,7 +222,7 @@ it("includes receipts and reports in a cold snapshot and omits opaque provider f
 it("finds a retained result by operation ID in a cold snapshot", async (t) => {
 	const storagePath = join(fixtureRoot(t), "operation.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
-	const submitted = await host.submit({ message: "operation prompt", requestId: "operation-1", ownerId: "owner-op", operationId: "op-cold-7" });
+	const submitted = await host.submit({ message: "operation prompt", requestId: "operation-1", ownerId: "owner-op", operationId: "op-cold-7", origin: "operator" });
 	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
 	await host.close();
 	const observation = await observationFor(storagePath);

@@ -63,7 +63,14 @@ The host matches each contribution's source to the loaded extension entrypoint.
 It opens the Harness without scheduling, supplies that Harness to contribution
 factories, installs built-ins and contributions in load order, then resumes.
 A configured extension without a contribution is named in status and the prompt. The host
-does not substitute ordinary execution for that missing capability.
+does not substitute ordinary execution for that missing capability. An extension
+that fails to import or whose factory throws is named in the same places as
+`failed`, with its path and a one-line error of at most 240 characters.
+
+Model requests carry the storage identity as their session ID and the
+configured transport, as an ordinary session's requests do. Providers that key
+prompt caches by session, such as OpenAI Codex, therefore reuse cached context
+across an agent's turns; forks in one storage share that key and their prefix.
 
 The host supplies:
 
@@ -125,11 +132,12 @@ successful receipt stays.
 
 The `/agent` control actions return short human text and, when an action creates
 or selects an agent, that agent's identity. Observation actions (`list`,
-`status`, `inspect`, `places`) keep their retained evidence. The status card
-labels its newest text by state: an active conversation shows `Working on the
-task`, and an idle conversation shows `Latest message`. The status contract
-carries no author role, so the card does not present that text as a pending
-assistant reply.
+`status`, `inspect`, `places`) keep their retained evidence. `/agent send`
+admits a follow-up when the target is busy; `/agent steer` admits steering. The
+model-facing `agent_send` tool keeps its documented steering disposition. The
+status card labels its newest text by role and state: `Latest reply` or
+`Latest input` when idle, and `Working on reply` or `Working on the task` while
+active.
 
 ## Recovery and delivery
 
@@ -153,7 +161,9 @@ Each recipient receives one notice for that answer,
 including when owner routes overlap. Distinct answers and unanswered submissions
 stay separate. The watcher acknowledges every receipt in the answer group in one
 commit only after all required recipients accept it. Reports remain separate. A catalog owner receives an untrusted
-follow-up in its own host. A noncatalog owner is an ordinary primary reached
+follow-up in its own host. A conversation in the same storage as the source
+receives the answer as an in-storage follow-up, never through a primary route. A
+noncatalog owner is an ordinary primary reached
 through its registered primary channel. Only an absent or proven-dead owner
 endpoint permits fallback: the watcher broadcasts to every live primary within
 one bounded discovery of registered endpoints, and each delivery is labeled
@@ -161,7 +171,13 @@ one bounded discovery of registered endpoints, and each delivery is labeled
 details. It acknowledges the row only after discovery and every delivery
 complete; a partial or unavailable scan leaves the row pending and reports that
 coverage explicitly. A live or unknown owner endpoint refuses fallback and
-retries. The primary does not poll receipts. Delivery is at-least-once; stable
+retries. An owner endpoint carries the primary channel contract version. A host
+that meets a live owner with another version holds that delivery pending and
+reports the endpoint version and the restart that clears it; it never treats the
+owner as dead and never falls back for it. A fallback broadcast checks every
+registered primary before the first delivery, so one incompatible candidate
+holds the whole fallback. The host keeps the latest routing failure in its
+status as `deliveryError`, and the status card shows it. The primary does not poll receipts. Delivery is at-least-once; stable
 answer-based request and source IDs let each receiver deduplicate retries and
 host restarts. A primary process loss after display but before acknowledgement
 can repeat a notice if its in-memory deduplication was lost. Transmitted peer bodies have a
@@ -171,11 +187,14 @@ agent acted on a correction.
 
 Each admission records its origin before the submission: `operator` for the
 peer-window composers and `/agent` actions, `model` for agent tools. The delivery
-intent stores that origin, so it survives a host crash and relaunch; an intent
-from before the field existed reads as `model`. An operator-only answer group
-displays and retains its notice with no primary turn and no steering. When any
-submission in the answer group came from a model, the notice keeps the wake
-behavior. A fallback broadcast never wakes a recipient's model. The notice
+intent requires that origin, so it survives a host crash and relaunch. An
+operator-only answer group displays and retains its notice with no primary turn
+and no steering. Wake follows the recipient's own admissions in the answer
+group: one recipient's model-origin submission never wakes another recipient
+whose submissions were operator-only. A fallback broadcast never wakes a
+recipient's model. A receipt whose stored origin is missing or malformed is
+reported and held pending; the watcher never defaults it to a model admission.
+The notice
 names the agent by stored name, first-task excerpt, or short identity; full
 identities and submission rows stay in the details. The notice card shows the
 agent label, the outcome (finished, failed, or stopped), the answer body, and
@@ -201,6 +220,29 @@ turn, and leaves history inspectable.
 A registered primary refreshes its recorded model, reasoning level, and session
 name when the ordinary session changes them, so `agent_status` and endpoint
 discovery report the identity the operator runs.
+
+The host runtime and the contribution code loaded in the same process share one
+control binding. That binding carries a version: a native reload that pairs new
+contribution code with a retained runtime of another version refuses with both
+versions and a restart message, instead of dispatching across two contracts. An
+open live observation reconnects to a live host only. It never launches a host
+by itself; a lost host signals its listeners unavailable and leaves relaunch to
+the manager's bounded recovery pool. A listener that attaches after a frame
+arrives receives that current frame at once.
+
+Every host advertises a runtime version in its readiness line and answers a
+`runtime-version` request. A host that reports no version predates the
+handshake and reads as version 0. A window that meets an older host closes it
+through the host's own close method and relaunches it with current code when
+the host is idle; while the host works, the window keeps using the methods the
+host supports, marks the storage `Host runtime version N; this Pi runs version
+M. It updates when idle.` in status and the All view, and replaces the host at
+its next idle change notification. Replacement never interrupts active work and
+shares the three replacements per sixty seconds cap with crash recovery;
+`agent_attach` clears a stopped update. A newer-only method (timers, reset,
+live observation) against an older host returns `This agent's host runs older
+code and does not support <method>; it updates when idle.` instead of a raw
+unknown-method error. A busy older host still serves its supported reads.
 
 The host sets a top-level `recoveryDue` marker before it admits work, and when
 opening finds pending native work or pending delivery. Startup recovery reads
@@ -250,11 +292,15 @@ draft, and a footer with model, reasoning level, retained cost, and state. The
 editor and footer sit on the pane's bottom rows. F2 and F3 focus the primary
 and agent panes, F4 expands or restores the focused pane, F5 closes it without
 aborting work, F6 opens All, F7 starts a new agent, F8 opens Tasks, and
-PageUp/PageDown scroll. The editors accept the same actions as slash commands:
-`/all`, `/new`, `/view`, `/focus`, `/expand`, `/restore`, `/close`, `/tasks`,
-`/fork`, `/repair`, `/scroll`, `/mode`, `/steer`, `/send`, `/followup`,
-`/auto`, `/refresh`, `/pi`, `/continue`, and `/help`. Escape returns to native
-Pi without aborting either peer. Drafts, reading positions, and follow state
+PageUp/PageDown scroll. The editors also accept window commands whose names Pi
+does not define: `/all`, `/view`, `/focus`, `/expand`, `/restore`, `/close`,
+`/tasks`, `/repair`, `/scroll`, `/mode`, `/steer`, `/send`, `/followup`,
+`/auto`, `/refresh`, `/pi`, `/continue`, and `/help`. New and Fork live on F7
+and the View menu, because `/new` and `/fork` belong to Pi. Any other slash
+text, typed in any pane, moves to the native editor and returns to Pi; the
+window never submits it to a peer. Escape returns to native Pi without aborting
+either peer. A native prompt or dialog started from the window hides the window
+while it runs, and the window returns afterward. Drafts, reading positions, and follow state
 survive focus changes, Expand, Close, and reopening within the Pi process.
 
 The primary pane projects the actual ordinary session from
@@ -264,7 +310,8 @@ it is busy. Any other slash text moves to the native editor through
 `ctx.ui.setEditorText` and returns focus to Pi, so Pi owns command expansion,
 completion, attachments, and submission; the window never submits slash text.
 An existing native draft is kept for restore. The primary's fork and tree
-navigation stay native Pi actions.
+navigation stay native Pi actions. Custom messages stored with `display: false`
+stay hidden, as in native Pi.
 
 The agent pane renders Pi's published chat components: user inputs, assistant
 text, thinking collapsed as the primary chat shows it, tool calls with their
@@ -277,8 +324,12 @@ ends, and the committed entry replaces its partial. Frames carry a revision
 and coverage, one watch serves every observer of a scope, and the last close
 stops it. Observation attaches to a running host; it never launches one.
 Two Pi windows on one store follow and steer the same agent through its single
-host; closing one window aborts nothing. The agent composer admits operator
-input as a follow-up or steering. Fork and Repair act on a committed entry and
+host; closing one window aborts nothing. The agent composer works like Pi's
+own editor: Enter starts work on an idle agent and steers a busy one at its
+next boundary; `/followup` switches the pane to queue input after the current
+answer, and `/steer` switches back. The pane footer names the active mode. When
+observation becomes unavailable, the pane says so with the time of its last
+frame instead of showing a stale state. Fork and Repair act on a committed entry and
 place the new conversation beside its source; files do not roll back.
 
 Tasks shows the selected storage's live task graph from Durable's

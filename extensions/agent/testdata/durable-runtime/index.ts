@@ -55,6 +55,11 @@ function mark(name: string): void {
 	writeFileSync(join(controlDir(), name), `${process.pid}\n`);
 }
 
+/** Append one provider request's session options, for the prompt-cache affinity test. */
+function recordSessionOptions(options: { readonly sessionId?: string; readonly transport?: string } | undefined): void {
+	appendFileSync(join(controlDir(), "session-options.jsonl"), `${JSON.stringify({ sessionId: options?.sessionId ?? null, transport: options?.transport ?? null })}\n`);
+}
+
 function message(content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"]): AssistantMessage {
 	return { role: "assistant", content, api: "openai-completions", provider: providerId, model: modelId, usage, stopReason, timestamp: Date.now() };
 }
@@ -105,7 +110,8 @@ function spawn(context: TranscriptContext) {
 	return completed([{ type: "text", text: "PRIMARY_DONE" }], "stop");
 }
 
-function stream(_model: unknown, context: TranscriptContext) {
+function stream(_model: unknown, context: TranscriptContext, options?: { readonly sessionId?: string; readonly transport?: string }) {
+	recordSessionOptions(options);
 	const mode = process.env.DURABLE_TEST_MODE ?? "answer";
 	if (mode === "request") return pending();
 	if (mode === "spawn") return spawn(context);

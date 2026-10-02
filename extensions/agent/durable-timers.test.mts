@@ -151,6 +151,30 @@ it("reports pending scheduled inputs in a session status with a bounded projecti
 	assert.equal(after.conversation?.timers?.length, 0, "cancelled timers leave the pending list");
 });
 
+it("refuses a timer cancellation from another conversation", { timeout: 60000 }, async (t) => {
+	const f = await scheduleFixture(t, { agentExtension: true });
+	const other = await f.host.harness.createConversation({ ownership: { kind: "ownerless" } }, BACKGROUND_CONTEXT);
+	const scheduled = await schedule(f, { message: "TARGET_CHECK", deadline: Date.now() + 30000, scheduleId: "target-check", requestId: "target-check-delivery" });
+	await assert.rejects(
+		f.host.request("timer-cancel", { sessionId: f.host.identity(other.id), timerId: scheduled.timerId }),
+		/targets another conversation/u,
+	);
+	const cancelled = (await f.host.request("timer-cancel", { sessionId: f.storageId, timerId: scheduled.timerId })) as { status: string };
+	assert.equal(cancelled.status, "cancelled", "the owning session still cancels its timer");
+});
+
+it("never reports a cancelled timer whose input was admitted", { timeout: 60000 }, async (t) => {
+	const f = await scheduleFixture(t, { agentExtension: true });
+	for (let index = 0; index < 8; index += 1) {
+		const requestId = `race-timer-delivery-${index}`;
+		const scheduled = await schedule(f, { message: `RACE_TIMER_${index}`, deadline: Date.now() - 1, scheduleId: `race-timer-${index}`, requestId });
+		const result = (await f.host.request("timer-cancel", { sessionId: f.storageId, timerId: scheduled.timerId })) as { status: string };
+		const record = await f.host.harness.commit((tx) => tx.submissionByRequest(1 as ConversationId, requestId), BACKGROUND_CONTEXT);
+		if (result.status === "cancelled") assert.equal(record, undefined, `cancelled timer ${index} admitted no input`);
+		else assert.notEqual(record, undefined, `a fired timer ${index} keeps its admitted input`);
+	}
+});
+
 it("records the admission origin that decides the answer notice wake", { timeout: 60000 }, async (t) => {
 	const f = await scheduleFixture(t, { agentExtension: true });
 	const operatorDeadline = Date.now() + 400;
