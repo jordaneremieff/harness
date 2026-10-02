@@ -7,8 +7,8 @@ import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, HarnessInspection, SubmissionId, TaskGraph } from "@earendil-works/pi-durable";
-import { AgentDeliveryDoc, DurableHost, sessionIsIdle, type DurableCommandHost, type DurableHostOptions } from "./durable-host.ts";
-import { answerMessage, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, redactedAnswerMessage, scriptedRuntime, slowEffectTool, toolCallMessage } from "./durable-host-fixture.mts";
+import { AgentDeliveryDoc, DurableHost, sessionIsIdle, type ConfigurationResult, type DurableCommandHost, type DurableHostOptions } from "./durable-host.ts";
+import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, reasoningRuntime, redactedAnswerMessage, scriptedRuntime, slowEffectTool, toolCallMessage } from "./durable-host-fixture.mts";
 
 const fixturePath = fileURLToPath(new URL("./durable-host-fixture.mts", import.meta.url));
 /** Byte bound for captured child output; oldest bytes drop first. */
@@ -313,6 +313,16 @@ it("forks at one entry and rewinds a decision into a corrected fork", async (t) 
 	}
 });
 
+it("reports a fresh host idle before any mutation", async (t) => {
+	const storagePath = join(fixtureRoot(t), "run.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	try {
+		assert.equal(host.isIdle(), true, "the open host establishes its idle cache before returning");
+	} finally {
+		await host.close();
+	}
+});
+
 it("configures an idle conversation and refuses a busy one", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
 	const started = defer();
@@ -333,6 +343,64 @@ it("configures an idle conversation and refuses a busy one", async (t) => {
 		release.resolve();
 		await wait(host, submitted.submissionId);
 		await host.request("configure", { name: "after idle" });
+	} finally {
+		release.resolve();
+		await host.close();
+	}
+});
+
+it("returns the full configure outcome with the model-clamped reasoning level", async (t) => {
+	const storagePath = join(fixtureRoot(t), "run.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await reasoningRuntime(), fixtureRegistry()), BACKGROUND_CONTEXT);
+	try {
+		const first = (await host.request("configure", { model: { provider: fixtureProvider, modelId: "plain" }, thinkingLevel: "high", name: "clamped agent" })) as ConfigurationResult;
+		assert.equal(first.sessionId, fixtureStorageId);
+		assert.equal(first.outcome, "applied");
+		assert.deepEqual(first.before, { name: "", model: `${fixtureProvider}/${fixtureModelId}`, thinkingLevel: "off" });
+		assert.deepEqual(first.requested, { name: "clamped agent", model: `${fixtureProvider}/plain`, thinkingLevel: "high" });
+		assert.deepEqual(first.after, { name: "clamped agent", model: `${fixtureProvider}/plain`, thinkingLevel: "off" });
+		assert.deepEqual(first.reasoning, { requested: "high", effective: "off", clamped: true });
+		assert.equal(first.hookErrors.count, 0);
+		assert.equal(first.persistence.nativeWrites, "completed");
+		assert.equal(first.persistence.fileExists, true);
+		assert.equal(first.truncated, undefined);
+
+		const minimal = (await host.request("configure", { model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "minimal" })) as ConfigurationResult;
+		assert.deepEqual(minimal.reasoning, { requested: "minimal", effective: "low", clamped: true });
+		assert.equal(minimal.after.thinkingLevel, "low");
+
+		const named = (await host.request("configure", { name: "renamed again" })) as ConfigurationResult;
+		assert.equal(named.outcome, "applied");
+		assert.equal(named.reasoning, undefined);
+		assert.equal(named.after.name, "renamed again");
+		assert.equal(named.after.model, `${fixtureProvider}/${fixtureModelId}`);
+
+		const missing = (await host.request("configure", { model: { provider: "absent", modelId: "model" }, thinkingLevel: "high" })) as ConfigurationResult;
+		assert.equal(missing.outcome, "failed");
+		assert.deepEqual(missing.after, missing.before);
+		assert.equal(missing.persistence.nativeWrites, "not-attempted");
+		assert.match(missing.error ?? "", /configured model catalog/u);
+	} finally {
+		await host.close();
+	}
+});
+
+it("aborts active work before compacting and does not resume it", { timeout: 30000 }, async (t) => {
+	const storagePath = join(fixtureRoot(t), "run.sqlite");
+	const started = defer();
+	const release = defer();
+	const registry = fixtureRegistry([gateTool(release.promise, started.resolve)]);
+	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("summary answer")]), registry), BACKGROUND_CONTEXT);
+	try {
+		const submitted = await host.submit({ message: "busy work", requestId: "compact-busy" });
+		await started.promise;
+		const compacted = (await host.request("compact", { instructions: "condense the work", wait: true })) as { status: string; entryId?: EntryId };
+		assert.equal(compacted.status, "completed");
+		const settled = await host.wait(submitted.submissionId);
+		assert.notEqual(settled.status, "done", "the interrupted submission does not complete");
+		const inspection = await host.inspect();
+		assert.equal(inspection.tasks.length, 0, "nothing resumes after compaction");
+		assert.equal(inspection.submissions.filter((item) => item.status === "queued" || item.status === "placed").length, 0);
 	} finally {
 		release.resolve();
 		await host.close();
@@ -548,6 +616,33 @@ it("treats unnamed rewinds as distinct invocations", async (t) => {
 		assert.equal(list.items.length, 3, "the root and two distinct forks exist");
 	} finally {
 		await host.close();
+	}
+});
+
+it("reports a freshly opened host as idle without waiting for a commit", async (t) => {
+	const storagePath = join(fixtureRoot(t), "run.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	try {
+		assert.equal(host.isIdle(), true, "open establishes the idle cache before any commit");
+		assert.equal(await host.refreshIdle(), true);
+	} finally {
+		await host.close();
+	}
+	const busyPath = join(fixtureRoot(t), "busy.sqlite");
+	const started = defer();
+	const release = defer();
+	const busy = await DurableHost.open(hostOptions(busyPath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("done")]), fixtureRegistry([gateTool(release.promise, started.resolve)])), BACKGROUND_CONTEXT);
+	try {
+		const submitted = await busy.submit({ message: "busy", requestId: "idle-fresh-1" });
+		await started.promise;
+		assert.equal(busy.isIdle(), false, "a live run is not idle");
+		assert.equal(await busy.refreshIdle(), false);
+		release.resolve();
+		await busy.wait(submitted.submissionId, BACKGROUND_CONTEXT);
+		assert.equal(await busy.refreshIdle(), true, "the settled run returns the host to idle");
+	} finally {
+		release.resolve();
+		await busy.close();
 	}
 });
 

@@ -705,21 +705,37 @@ Agent configuration writes native `pi.agent` and `agent.meta` documents. The
 control refuses active conversations; the runtime validates the selected model
 and clamps reasoning through Pi's public model helper. Roots and children store
 explicit model and reasoning choices so native hooks read the same attribution.
-Configuration starts no task and changes no global model defaults.
+A blank name clears `agent.meta.name`. An explicit model is validated against
+the configured catalog before the setter; an `agent_attach` model repair that
+fails returns its failure instead of a status snapshot. Configuration starts no
+task and changes no global model defaults.
 
 ## Footer retention boundary
 
-The agent footer reads cumulative native usage per Durable conversation.
-Repeated observations do not add another local delta or write ordinary footer
-checkpoints. Missing or invalid cost remains marked incomplete. The dashboard
-and footer share native observation records; neither parses ordinary JSONL.
+The agent footer reads cumulative native usage per Durable conversation from the
+same bounded dashboard page as the board. It refreshes on host change
+notifications, not on a receipt poll, and it writes no ordinary footer
+checkpoints. Repeated observations do not add another local delta. Missing or
+invalid cost remains marked incomplete.
+The dashboard and footer share native observation records; neither parses
+ordinary JSONL. A page reports `complete`, `storagesVisited`, `skipped`,
+`omitted`, and `nextCursor`; a continuation cursor means more inventory to
+inspect and may end at an empty page, so a bounded or empty page is not proof of
+absence. Status and dashboard collection return partial coverage with a cursor
+instead of refusing at an inventory bound.
 
 ## Ordinary-agent reload and recovery boundary
 
 The ordinary primary's reload ends only its client callbacks. Durable storage
-hosts remain independent processes. The next primary startup reconnects,
-receives retained reports and outcomes, and relaunches dead hosts with unfinished
-work. Canceled receipt waits release their listeners without canceling tasks.
+hosts remain independent processes. The next primary startup reconnects and
+registers its primary channel, receives retained reports and outcomes through
+host durable-delivery, and relaunches dead hosts with unfinished work. The host
+routes catalog owners as untrusted follow-ups; a noncatalog owner is reached
+through its registered primary channel, and only an absent or proven-dead owner
+endpoint permits a labeled fallback that broadcasts to every live registered
+primary within one bounded discovery, preserves the original owner identity,
+and stays pending unless discovery and every delivery complete.
+Canceled observation waits release their listeners without canceling tasks.
 
 A native `agent_command` reload requires idle storage and settled controls.
 It reloads cwd-bound resources and native registrations, then reopens the same
@@ -848,11 +864,11 @@ scheduler or transcript. The ordinary SDK remains the primary terminal host.
 |---|---|
 | Agent execution and recovery | Durable generation, ToolTask, checkpoints, native replay classification, and retained outcomes inside independent storage hosts |
 | Resources and providers | Public cwd-bound coding-agent services; native contributions supply tools, prompts, hooks, and commands |
-| Process ownership | Agent host writer claim before storage open; authenticated local control socket and automatic dead-owner recovery |
+| Process ownership | Agent host writer claim before storage open; same-user Unix control socket over the public `pi-server`/`pi-client` transport (private 0700 directory, owner-only 0600 socket, exact `serverId` handshake) and automatic dead-owner recovery |
 | Nested tools | Native call tasks, selected ToolTask hook chain, argument validation, committed intent, replay policy, and structured results |
-| Observation | Public native entries, documents, submissions, and task views; cold inspection uses a bounded SQLite snapshot without resume |
-| Owner delivery | Retained intents, reports, source IDs, and acknowledgements; no exactly-once cross-host promise |
-| UI | Existing agent dashboard over Durable data; the published experimental peer-client integration remains unavailable |
+| Observation | Public native entries, documents, submissions, and task views; bounded status and dashboard pages with explicit coverage; cold inspection uses a bounded SQLite snapshot without resume |
+| Owner delivery | Host durable-delivery owns retained intents, receipts, and reports; catalog follow-up or registered primary channel; labeled broadcast fallback only for an absent or dead owner, acknowledged only over complete discovery and deliveries; no exactly-once cross-host promise |
+| UI | Existing agent dashboard over Durable data with one bounded roster page and explicit coverage; the published experimental peer-client integration remains unavailable |
 | Handover and doctrine | Native transport and retention carry content; its meaning and authority remain application concerns |
 
 ## Refresh

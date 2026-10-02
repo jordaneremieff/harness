@@ -33,6 +33,7 @@ import * as Durable from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createBashTool, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import {
+	ProjectTrustStore,
 	SettingsManager,
 	createAgentSessionServices,
 	createEventBus,
@@ -44,8 +45,8 @@ import {
 	type InlineExtension,
 	type LoadExtensionsResult,
 	type ModelRuntime,
-	type ProjectTrustStore,
 } from "@earendil-works/pi-coding-agent";
+import { createProjectTrustResolver, type ProjectTrustDecision } from "./trust-support.ts";
 
 /** One command invocation as the host dispatches it. */
 export interface DurableCommandCall {
@@ -155,6 +156,8 @@ export interface CreateDurableServicesOptions {
 	readonly trusted?: boolean;
 	/** Saved project-trust decisions consulted when `trusted` is absent. */
 	readonly trustStore?: ProjectTrustStore;
+	/** Route one unresolved project-trust ask to the primary session; undefined refuses. */
+	readonly askPrimary?: (cwd: string) => Promise<ProjectTrustDecision | undefined>;
 	/** Full project-trust resolution, for a caller that already owns that logic. */
 	readonly resolveProjectTrust?: (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean>;
 	/** Receives non-fatal bootstrap failures: load errors and unmatched contributions. Must not throw. */
@@ -200,6 +203,7 @@ interface PiRuntime {
 	formatSkillsForPrompt: typeof formatSkillsForPrompt;
 	getAgentDir: typeof getAgentDir;
 	hasTrustRequiringProjectResources: typeof hasTrustRequiringProjectResources;
+	ProjectTrustStore: typeof ProjectTrustStore;
 	SettingsManager: typeof SettingsManager;
 }
 
@@ -210,6 +214,7 @@ const localRuntime: PiRuntime = {
 	formatSkillsForPrompt,
 	getAgentDir,
 	hasTrustRequiringProjectResources,
+	ProjectTrustStore,
 	SettingsManager,
 };
 
@@ -241,7 +246,7 @@ async function loadPiRuntime(packageDir: string | undefined): Promise<PiRuntime>
 	if (packageDir === undefined) return localRuntime;
 	const entry = resolvePackageEntry(packageDir);
 	const loaded = await import(pathToFileURL(entry).href) as Record<string, unknown>;
-	for (const name of ["createAgentSessionServices", "createEventBus", "createReadTool", "formatSkillsForPrompt", "getAgentDir", "hasTrustRequiringProjectResources", "SettingsManager"] as const) {
+	for (const name of ["createAgentSessionServices", "createEventBus", "createReadTool", "formatSkillsForPrompt", "getAgentDir", "hasTrustRequiringProjectResources", "ProjectTrustStore", "SettingsManager"] as const) {
 		if (typeof loaded[name] !== "function") throw new Error(`packageDir ${packageDir} does not export ${name}`);
 	}
 	return loaded as unknown as PiRuntime;
@@ -280,39 +285,6 @@ function readContribution(data: unknown, existing: readonly DurableContribution[
 	if (existing.some((contribution) => contribution.source === source)) throw new Error(`extension ${source} emitted more than one durable contribution`);
 	const commands = readCommandList(name, record.commands);
 	return { name, source, create: record.create as DurableContribution["create"], ...(commands === undefined ? {} : { commands }) };
-}
-
-/** Run one extension `project_trust` handler; a throw does not authorize project resources. */
-async function runTrustHandler(handler: (event: unknown, context: never) => unknown, cwd: string): Promise<{ trusted?: string; remember?: boolean } | undefined> {
-	try {
-		return await handler({ type: "project_trust", cwd }, { cwd, mode: "print", hasUI: false, ui: { notify() {}, select: async () => undefined, confirm: async () => false, input: async () => undefined } } as never) as { trusted?: string; remember?: boolean } | undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/** First decided project-trust handler across the pre-trust extension set. */
-async function handlerTrustDecision(cwd: string, extensions: LoadExtensionsResult, trustStore: ProjectTrustStore | undefined): Promise<boolean | undefined> {
-	for (const extension of extensions.extensions) {
-		for (const handler of extension.handlers.get("project_trust") ?? []) {
-			const result = await runTrustHandler(handler, cwd);
-			if (result?.trusted !== "yes" && result?.trusted !== "no") continue;
-			const trusted = result.trusted === "yes";
-			if (result.remember) trustStore?.set(cwd, trusted);
-			return trusted;
-		}
-	}
-	return undefined;
-}
-
-/** Resolve project trust from configured handlers, saved decisions, then the default setting. */
-async function resolveProjectTrust(pi: PiRuntime, options: CreateDurableServicesOptions, cwd: string, settings: SettingsManager, extensions: LoadExtensionsResult): Promise<boolean> {
-	if (!pi.hasTrustRequiringProjectResources(cwd)) return true;
-	const decided = await handlerTrustDecision(cwd, extensions, options.trustStore);
-	if (decided !== undefined) return decided;
-	const stored = options.trustStore?.get(cwd);
-	if (stored != null) return stored;
-	return settings.getDefaultProjectTrust() === "always";
 }
 
 /** Local calendar date for the prompt preamble. */
@@ -506,6 +478,21 @@ function reportIssues(report: (error: unknown) => void, collection: readonly Err
 	}
 }
 
+/** Build the public trust resolver for one cwd and saved store. */
+function projectTrustResolver(pi: PiRuntime, options: CreateDurableServicesOptions, cwd: string, settingsManager: SettingsManager, agentDir: string, report: (error: unknown) => void): (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean> {
+	if (options.resolveProjectTrust !== undefined) return options.resolveProjectTrust;
+	const trustStore = options.trustStore ?? new pi.ProjectTrustStore(agentDir);
+	return createProjectTrustResolver({
+		cwd,
+		settingsManager,
+		trustStore,
+		requiresTrust: pi.hasTrustRequiringProjectResources,
+		...(options.trusted === undefined ? {} : { trusted: options.trusted }),
+		...(options.askPrimary === undefined ? {} : { askPrimary: options.askPrimary }),
+		onReport: report,
+	});
+}
+
 /**
  * Create cwd-bound Pi services, collect native Durable contributions from the
  * loaded configured extensions, and install the Durable registry.
@@ -531,11 +518,8 @@ export async function createDurableServices(options: CreateDurableServicesOption
 	if (options.signal?.aborted) controller.abort(options.signal.reason);
 	else options.signal?.addEventListener("abort", forwardAbort, { once: true });
 
-	const requestedTrust = options.trusted;
-	const resolveTrust = options.resolveProjectTrust ?? (({ extensionsResult }: { extensionsResult: LoadExtensionsResult }): Promise<boolean> =>
-		requestedTrust === undefined
-			? resolveProjectTrust(pi, options, cwd, settingsManager, extensionsResult)
-			: Promise.resolve(requestedTrust));
+	const report = options.onReport ?? (() => {});
+	const resolveTrust = projectTrustResolver(pi, options, cwd, settingsManager, agentDir, report);
 	let services: AgentSessionServices;
 	try {
 		services = await pi.createAgentSessionServices({
@@ -560,7 +544,6 @@ export async function createDurableServices(options: CreateDurableServicesOption
 
 	const envs = new Map<string, NodeExecutionEnv>();
 	const closers: Array<() => void | Promise<void>> = [];
-	const report = options.onReport ?? (() => {});
 	let closed = false;
 	let harnessValue: Durable.Harness | undefined;
 	let installed = false;

@@ -14,7 +14,8 @@ const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: str
 type Factory = (tui: TUI, theme: Theme, keys: KeybindingsManager, done: (request: unknown) => void) => Component;
 const row: AgentConversationSummary = { id: "native-id", storageId: "storage", name: "Native session", cwd: "/work", owner: "here", modifiedAt: 2, state: "new", cost: 0, partial: false, latestReply: "", toolCalls: 0 };
 const userEntry = (id: string, content: string, timestamp = 1): AgentConversationEntry => ({ id, kind: "pi.user", model: [{ role: "user", content, timestamp }] });
-const sources = (entries: AgentConversationEntry[] = []): AgentObservationSources => ({ list: async () => [row], snapshot: async () => ({ entries: [...entries], partial: false, revision: "1" }) });
+const page = (items: readonly AgentConversationSummary[]) => ({ rows: items, coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null }, observedAt: new Date().toISOString() });
+const sources = (entries: AgentConversationEntry[] = []): AgentObservationSources => ({ list: async () => page([row]), snapshot: async () => ({ entries: [...entries], partial: false, revision: "1" }) });
 
 it("closes each overlay before native dialogs and restores selection and conversation afterward", async () => {
 	let overlays = 0; let inOverlay = false; let actions = 0;
@@ -61,7 +62,7 @@ it("restores the board after canceled dialogs and exposes action errors in a scr
 it("keeps passage and draft state through a native action dialog", async () => {
 	const entries: AgentConversationEntry[] = [];
 	for (let index = 0; index < 100; index++) entries.push(userEntry(`p${index}`, `native passage ${index}`, index));
-	const observed: AgentObservationSources = { list: async () => [row], snapshot: async () => ({ entries: [...entries], partial: false, revision: "1" }) };
+	const observed: AgentObservationSources = { list: async () => page([row]), snapshot: async () => ({ entries: [...entries], partial: false, revision: "1" }) };
 	let count = 0; let before: unknown;
 	const ctx = { mode: "tui", hasUI: true, ui: { custom: async (factory: Factory) => {
 		let resolve!: (value: unknown) => void; const result = new Promise((done) => { resolve = done; });

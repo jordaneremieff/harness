@@ -1,11 +1,11 @@
 import { basename } from "node:path";
 import type { ExtensionContext, KeybindingsManager, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Input, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Keybinding, type TUI } from "@earendil-works/pi-tui";
-import type { AgentConversationEntry, AgentConversationSummary, AgentObservationSources, DashboardTarget } from "./dashboard-types.ts";
+import type { AgentConversationEntry, AgentConversationSummary, AgentDashboardCoverage, AgentObservationSources, DashboardTarget } from "./dashboard-types.ts";
 import { AgentConversation, cleanDashboardText, renderableEntries, type ConversationDocument } from "./dashboard-conversation.ts";
 import { AgentMessageEditor } from "./dashboard-composer.ts";
 
-export interface AgentDashboardSnapshot { observedAt: number; sessions: readonly AgentConversationSummary[]; error?: string }
+export interface AgentDashboardSnapshot { observedAt: number; sessions: readonly AgentConversationSummary[]; coverage?: AgentDashboardCoverage; error?: string }
 interface ConversationView {
 	follow: boolean;
 	scroll: number;
@@ -79,11 +79,17 @@ function stateLabel(row: AgentConversationSummary): string {
 	const owner = row.owner === "unavailable" ? " · unavailable" : row.owner === "unknown" ? " · stored" : "";
 	return `${sessionAppearance[row.state].label}${owner}`;
 }
+/** Attention means the operator must act; a terminal outcome alone is a record. */
+function needsAttention(row: AgentConversationSummary): boolean {
+	if (row.owner === "unavailable" || row.state === "unavailable") return true;
+	if (row.health?.lastError || row.health?.compactionFailure) return true;
+	const retry = row.health?.autoRetry;
+	if (retry !== undefined && retry.attempt >= retry.maxAttempts) return true;
+	return row.state === "failed" && Boolean(row.error);
+}
 function sectionOf(row: AgentConversationSummary, now: number): string {
+	if (needsAttention(row)) return "Attention";
 	if (row.state === "working") return "Working";
-	if (row.state === "unavailable") return "Attention";
-	if (row.health?.lastError || row.health?.compactionFailure) return "Attention";
-	if (now - row.modifiedAt <= 24 * 60 * 60 * 1000 && ["failed", "stopped", "interrupted"].includes(row.state)) return "Attention";
 	const today = new Date(now); today.setHours(0, 0, 0, 0);
 	const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
 	return row.modifiedAt >= today.getTime() ? "Today" : row.modifiedAt >= yesterday.getTime() ? "Yesterday" : "Earlier";
@@ -96,18 +102,33 @@ export function dashboardRecords(snapshot: AgentDashboardSnapshot | undefined, f
 		return terms.every((term) => text.includes(term));
 	}).sort((a, b) => sections.indexOf(sectionOf(a, snapshot?.observedAt ?? Date.now())) - sections.indexOf(sectionOf(b, snapshot?.observedAt ?? Date.now())) || b.modifiedAt - a.modifiedAt || a.id.localeCompare(b.id));
 }
+/** Coverage of the returned page; an empty or bounded page is not proof of absence. */
+export function coverageText(coverage: AgentDashboardCoverage | undefined): string {
+	if (!coverage) return "";
+	const parts: string[] = [];
+	if (coverage.skipped) parts.push(`${coverage.skipped} store${coverage.skipped === 1 ? "" : "s"} skipped (unknown, not absent)`);
+	if (coverage.omitted) parts.push(`${coverage.omitted} row${coverage.omitted === 1 ? "" : "s"} not loaded`);
+	if (coverage.nextCursor) parts.push("more inventory to inspect");
+	if (!coverage.complete && !coverage.nextCursor) parts.push("coverage incomplete");
+	return parts.join(" · ");
+}
 export async function readAgentDashboard(sources: Pick<AgentObservationSources, "list">): Promise<AgentDashboardSnapshot> {
-	try { return { observedAt: Date.now(), sessions: await sources.list() }; }
-	catch (error) { return { observedAt: Date.now(), sessions: [], error: errorText(error) }; }
+	try {
+		const page = await sources.list();
+		const observed = Date.parse(page.observedAt);
+		return { observedAt: Number.isFinite(observed) ? observed : Date.now(), sessions: page.rows, coverage: page.coverage };
+	} catch (error) { return { observedAt: Date.now(), sessions: [], error: errorText(error) }; }
 }
 function totals(snapshot: AgentDashboardSnapshot | undefined): string {
 	const rows = snapshot?.sessions ?? [];
-	const working = rows.filter((row) => row.state === "working").length;
-	const attention = rows.filter((row) => sectionOf(row, snapshot?.observedAt ?? Date.now()) === "Attention").length;
+	const now = snapshot?.observedAt ?? Date.now();
+	const working = rows.filter((row) => sectionOf(row, now) === "Working").length;
+	const attention = rows.filter((row) => sectionOf(row, now) === "Attention").length;
 	return `${working} working${attention ? ` · ${attention} need attention` : ""} · ${rows.some((row) => row.partial) ? "≥" : ""}$${rows.reduce((sum, row) => sum + row.cost, 0).toFixed(2)} spent`;
 }
 export function dashboardText(snapshot: AgentDashboardSnapshot): string {
-	return ["Agent dashboard", totals(snapshot), ...(snapshot.error ? [`Store unavailable: ${snapshot.error}`] : []), ...dashboardRecords(snapshot, "").flatMap((row) => [
+	const coverage = coverageText(snapshot.coverage);
+	return ["Agent dashboard", totals(snapshot), ...(coverage ? [`Coverage: ${coverage}`] : []), ...(snapshot.error ? [`Store unavailable: ${snapshot.error}`] : []), ...dashboardRecords(snapshot, "").flatMap((row) => [
 		oneLine(`${sessionAppearance[row.state].glyph} ${stateLabel(row)} · ${titleOf(row)} · ${basename(row.cwd)} · ${row.model?.modelId ?? "unknown model"} · ${costOf(row)}`),
 		`  ${oneLine(row.id)} · ${oneLine(row.cwd)}`,
 		...recoveryLines(row).map((line) => `  ${oneLine(line.text)}`),
@@ -260,8 +281,7 @@ export class AgentDashboard implements Component {
 		this.editor.setText(this.state.drafts.get(this.composerId ?? "new") ?? ""); this.focused = this.hostFocused;
 	}
 	private refusal(row: AgentConversationSummary): string | undefined {
-		if (row.owner === "unavailable" || row.owner === "unknown") return oneLine(row.ownerLabel || row.error || `${sessionAppearance[row.state].label} control is unavailable`);
-		if (row.state === "unavailable") return oneLine(row.error || "conversation control is unavailable");
+		if (row.owner === "unavailable") return oneLine(row.ownerLabel || row.error || "conversation control is unavailable");
 		return undefined;
 	}
 	private saveDraft(): void {
@@ -270,7 +290,8 @@ export class AgentDashboard implements Component {
 	private finishInput(): void { this.inputMode = undefined; this.focused = this.hostFocused; this.redraw(); }
 	private async submissionMode(create: boolean, id?: string): Promise<"new" | "send" | "steer"> {
 		if (create) return "new";
-		const row = (await this.sources.list()).find((item) => item.id === id);
+		const page = await this.sources.list();
+		const row = page.rows.find((item) => item.id === id);
 		if (!row) throw new Error("Session is no longer available");
 		const refusal = this.refusal(row); if (refusal) throw new Error(refusal);
 		return row.state === "working" ? "steer" : "send";
@@ -464,7 +485,8 @@ export class AgentDashboard implements Component {
 	private renderWorkspace(width: number, height: number): string[] {
 		const rows = this.rows(); const selected = this.selected();
 		if (this.state.snapshot?.error) return [this.theme.fg("error", "Store unavailable"), ...wrapTextWithAnsi(cleanDashboardText(this.state.snapshot.error), width), "r retries"];
-		if (!rows.length || !selected) return [this.state.snapshot ? this.state.filter ? `No sessions match “${oneLine(this.state.filter)}”` : "No agent sessions yet. Press n to start one." : "Read in progress…"];
+		const coverage = coverageText(this.state.snapshot?.coverage);
+		if (!rows.length || !selected) return [this.state.snapshot ? this.state.filter ? `No sessions match “${oneLine(this.state.filter)}”` : "No agent sessions yet. Press n to start one." : "Read in progress…", ...(coverage ? [this.theme.fg("dim", coverage)] : [])];
 		const split = width >= 116;
 		if (!split) {
 			if (this.state.focus === "sessions" && this.inputMode !== "message" && this.inputMode !== "new") return this.renderRoster(rows, width, height);
@@ -524,7 +546,8 @@ export class AgentDashboard implements Component {
 		const pageSize = Math.max(1, height - headerHeight);
 		const start = Math.min(Math.max(0, entries.length - pageSize), Math.max(0, selectedIndex - Math.floor(pageSize / 2)));
 		const filter = this.state.filter ? `${rows.length} of ${this.state.snapshot?.sessions.length ?? 0} · ${oneLine(this.state.filter)}` : `${rows.length} sessions`;
-		const lines = headerHeight ? [this.theme.fg("dim", truncateToWidth(`${filter}${start > 0 ? " · ↑" : ""}${start + pageSize < entries.length ? " · ↓" : ""}`, width))] : [];
+		const header = [filter, coverageText(this.state.snapshot?.coverage)].filter(Boolean).join(" · ");
+		const lines = headerHeight ? [this.theme.fg("dim", truncateToWidth(`${header}${start > 0 ? " · ↑" : ""}${start + pageSize < entries.length ? " · ↓" : ""}`, width))] : [];
 		const titles = this.rosterTitles(rows, width - 4);
 		for (const entry of entries.slice(start, start + pageSize)) {
 			if (!entry.row) { lines.push(this.theme.fg("accent", ` ${entry.text}`)); continue; }
@@ -543,6 +566,8 @@ export class AgentDashboard implements Component {
 	private conversationHeader(width: number, height: number, withTitle: boolean): string[] {
 		const row = this.selected();
 		const header = [this.conversationHeading(width, withTitle)];
+		const coverage = coverageText(this.state.snapshot?.coverage);
+		if (coverage) header.push(this.theme.fg("dim", truncateToWidth(coverage, width)));
 		if (row && this.refusal(row)) header.push(this.theme.fg("warning", truncateToWidth(`Read-only: ${this.refusal(row)}`, width)));
 		if (row && height >= 10) header.push(this.theme.fg("muted", truncateToWidth(oneLine(`${basename(row.cwd)} · ${row.model ? `${row.model.modelId} ${row.model.thinkingLevel ?? "off"}` : "model unknown"}`), width)));
 		if (row && height >= 18) header.push(this.theme.fg("dim", truncateToWidth(activityOf(row, this.state.snapshot?.observedAt ?? Date.now()), width)));
@@ -604,7 +629,7 @@ export class AgentDashboard implements Component {
 		return lines.slice(this.resultScroll, this.resultScroll + height);
 	}
 	private renderHelp(width: number, height: number): string[] {
-		const lines = ["Agent conversations", "", this.sessionNavigation(), "Sessions is selected when the board opens. The selection keys above or j/k select a session. The configured confirmation key reads it; Tab also switches between Sessions and Conversation. A wide terminal previews the selected conversation beside the list. A narrow terminal shows the focused area.", "In Conversation, ↑↓ or j/k scrolls. Page Up/Down or b/Space pages the focused area. Home/End selects the first/last session or starts/follows the conversation. o loads earlier messages in Conversation. [ and ] selects sessions from either area.", "/ searches name, task, place, model, state or ID and focuses Sessions. Enter keeps the filter and shows the matches; Escape restores the previous filter, selection and focus.", "m opens the selected session's draft from either area. Enter opens a draft only in Conversation. The native editor submits with its configured submit key and inserts newlines with its configured newline key. Escape hides the editor and retains the draft. n drafts a task for a new agent.", "The recipient stays fixed while the editor is open or a submission is in progress. A fresh ownership check selects send for an idle agent or steer for active work. A refused submission retains the draft.", "a opens all native actions. Actions retain their trust and ownership checks. Escape returns from help or a result; otherwise it closes the dashboard.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "Sessions in a storage this Pi process holds also show the host's last error, its last failed compaction, and an in-progress provider retry. A later successful compaction clears the failure, the retry's end clears the retry, and the next operation start clears the last error. Conversations without a held storage gain no recovery fields; no warning on those rows is not a health check. The transcript error stays separate from these host fields.", "", "Each visited session keeps its reading position, follow mode, loaded-message limit, expansion, thinking visibility and draft for this open dashboard, including native action dialogs. The board also retains its focused area through dialogs and resize. Closing the dashboard ends that state.", "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "One Pi Durable host owns one storage. Rows come from the storages this process holds; a conversation held by another Pi window is outside this boundary. The dashboard never opens a storage, takes ownership, or writes native history.", "Spend sums retained native usage. ≥ marks incomplete cost data. The conversation shows committed entries, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention holds Unavailable sessions regardless of age, a host's last error or last failed compaction at any transcript age, and Failed, Stopped and Interrupted outcomes from the last 24 hours. Older outcomes retain their state in date groups.", "Refresh runs once per second while this overlay is visible. The source supplies whole summaries and the selected transcript; only changed readings are rebuilt. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it."];
+		const lines = ["Agent conversations", "", this.sessionNavigation(), "Sessions is selected when the board opens. The selection keys above or j/k select a session. The configured confirmation key reads it; Tab also switches between Sessions and Conversation. A wide terminal previews the selected conversation beside the list. A narrow terminal shows the focused area.", "In Conversation, ↑↓ or j/k scrolls. Page Up/Down or b/Space pages the focused area. Home/End selects the first/last session or starts/follows the conversation. o loads earlier messages in Conversation. [ and ] selects sessions from either area.", "/ searches name, task, place, model, state or ID and focuses Sessions. Enter keeps the filter and shows the matches; Escape restores the previous filter, selection and focus.", "m opens the selected session's draft from either area. Enter opens a draft only in Conversation. The native editor submits with its configured submit key and inserts newlines with its configured newline key. Escape hides the editor and retains the draft. n drafts a task for a new agent.", "The recipient stays fixed while the editor is open or a submission is in progress. A fresh ownership check selects send for an idle agent or steer for active work. A refused submission retains the draft.", "a opens all native actions. Actions retain their trust and ownership checks. Escape returns from help or a result; otherwise it closes the dashboard.", `${this.keys.getKeys("app.tools.expand").join("/") || "x"} or x expands tools and summaries. ${this.keys.getKeys("app.thinking.toggle").join("/") || "configured thinking key"} shows thinking.`, "", "Sessions in a storage this Pi process holds also show the host's last error, its last failed compaction, and an in-progress provider retry. A later successful compaction clears the failure, the retry's end clears the retry, and the next operation start clears the last error. Conversations without a held storage gain no recovery fields; no warning on those rows is not a health check. The transcript error stays separate from these host fields.", "", "Each visited session keeps its reading position, follow mode, loaded-message limit, expansion, thinking visibility and draft for this open dashboard, including native action dialogs. The board also retains its focused area through dialogs and resize. Closing the dashboard ends that state.", "", "State", ...Object.values(sessionAppearance).map((appearance) => `${appearance.glyph} ${appearance.label}`), "", "One Pi Durable host owns one storage. Rows come from every cataloged storage this process can read: live hosts and bounded cold snapshots. A storage held by another writer is observed read-only; the dashboard never opens a storage writer or writes native history.", "Spend sums retained native usage. ≥ marks incomplete cost data. The conversation shows committed entries, not unsaved streaming tokens. Images appear as labels; each text field has a display bound.", "Attention means a row needs you: an unavailable or claim-conflicted storage, the host's last error or a failed compaction at any transcript age, a failed run that carries an error, or a provider retry whose attempts are exhausted. A deliberately stopped session and an interrupted turn keep their state glyph in their date group; a failed or interrupted outcome without an error is a record, not a request.", "Refresh runs once per second while this overlay is visible. The source supplies whole summaries and the selected transcript; only changed readings are rebuilt. Refresh pauses when Pi leaves a render request unperformed for five seconds. A later render or key resumes it. Coverage names skipped stores and rows not loaded; a continuation cursor means more inventory to inspect, and a cursor may end at an empty page. An empty or bounded page is not proof of absence."];
 		const wrapped = lines.flatMap((line) => wrapTextWithAnsi(line, width));
 		this.helpScroll = Math.min(this.helpScroll, Math.max(0, wrapped.length - height));
 		return wrapped.slice(this.helpScroll, this.helpScroll + height);

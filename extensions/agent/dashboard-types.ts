@@ -8,7 +8,7 @@ import type { Message } from "@earendil-works/pi-ai";
 /** Dashboard lifecycle bucket for one durable conversation. */
 export type AgentConversationState = "working" | "idle" | "done" | "failed" | "stopped" | "interrupted" | "new" | "unavailable";
 
-/** Control ownership the source can observe for one conversation. */
+/** Writer ownership the source can observe for one conversation: held here, readable and claimable, or unreadable. */
 export type AgentConversationOwner = "here" | "unavailable" | "unknown";
 
 /** One failed native compaction retained by a held storage. */
@@ -54,7 +54,7 @@ export interface AgentConversationSummary {
 	model?: { provider: string; modelId: string; thinkingLevel: string };
 	/** Last known activity in epoch milliseconds; the latest entry timestamp, else the storage file time. */
 	modifiedAt: number;
-	/** This process holds the storage; "unavailable" and "unknown" rows are read-only. */
+	/** "here" is held by this process; "unknown" is readable and claimable later; "unavailable" is unreadable or unclaimable. */
 	owner: AgentConversationOwner;
 	/** Optional owner detail for refusal guidance. */
 	ownerLabel?: string;
@@ -105,13 +105,35 @@ export interface AgentConversationSnapshot {
 	revision: string;
 }
 
+/** Bounded coverage of one dashboard page. */
+export interface AgentDashboardCoverage {
+	/** True when the catalog scan reached its end within the visited-storage bound. */
+	complete: boolean;
+	/** Storages visited for this page. */
+	storagesVisited: number;
+	/** Storages skipped as unreadable, refused, or unclaimable. */
+	skipped: number;
+	/** Materialized rows excluded from this page by the row or byte budget; unscanned extent is unknown. */
+	omitted: number;
+	/** Continuation cursor; a non-null value means more rows exist. */
+	nextCursor: string | null;
+}
+
+/** One bounded dashboard page: roster rows plus the coverage of their collection. */
+export interface AgentConversationPage {
+	rows: readonly AgentConversationSummary[];
+	coverage: AgentDashboardCoverage;
+	/** Observation time as an ISO timestamp. */
+	observedAt: string;
+}
+
 /**
  * Async observation surface the dashboard consumes. The parent reads its
  * native Durable hosts; this UI calls no session service directly.
  */
 export interface AgentObservationSources {
-	/** Summaries across every Durable storage this process holds. */
-	list(): Promise<readonly AgentConversationSummary[]>;
+	/** One bounded roster page from the Durable storages this process can reach. */
+	list(): Promise<AgentConversationPage>;
 	/** Active transcript and revision for one dashboard ID. */
 	snapshot(id: string): Promise<AgentConversationSnapshot>;
 }

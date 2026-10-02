@@ -21,9 +21,9 @@ import { backup, DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import type { Message, Models } from "@earendil-works/pi-ai";
-import { AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation, type ConversationId, type ConversationRecord, type Cursor, type EntryId, type EntryRecord, type HarnessOptions, type Storage, type SubmissionId, type SubmissionRecord, type TaskInspection, type UsageState } from "@earendil-works/pi-durable";
+import { AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation, type ConversationId, type ConversationRecord, type Cursor, type EntryId, type EntryRecord, type HarnessOptions, type HarnessInspection, type LiveState, type Storage, type SubmissionId, type SubmissionRecord, type TaskInspection, type UsageState } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationState, AgentConversationSummary } from "./dashboard-types.ts";
+import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationState, AgentConversationSummary, DashboardAutoRetry, DashboardCompactionFailure, DashboardHealth } from "./dashboard-types.ts";
 import { AgentDeliveryDoc, AgentMetaDoc, pendingDeliveries, settleDeliveries, undeliveredForOwner, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
 
 /** Byte/unit bounds used by every projection in this module. */
@@ -36,6 +36,9 @@ export const SEARCH_MATCH_LIMIT_MAX = 20;
 export const SEARCH_SCAN_LIMIT_DEFAULT = 128;
 export const ACTIVITY_TURN_LIMIT_DEFAULT = 4;
 export const ACTIVITY_TURN_LIMIT_MAX = 12;
+/** Entry and byte bounds for one activity scan page set. */
+export const ACTIVITY_SCAN_ENTRIES = 200;
+export const ACTIVITY_SCAN_BYTES = 64 * 1024;
 
 export interface EntryOmissions {
 	readonly providerSignatures: number;
@@ -76,6 +79,8 @@ export interface ConversationSummary {
 	readonly identity: string;
 	readonly name?: string;
 	readonly owner?: string;
+	/** First input text, so a manager query can match it without reading entries. */
+	readonly firstMessage?: string;
 	readonly busy: boolean;
 	readonly parent?: { readonly conversationId: ConversationId; readonly at: EntryId };
 	readonly ownerTaskId?: number;
@@ -405,6 +410,7 @@ async function conversationSummary(harness: Harness, storageId: string, record: 
 		identity: durableIdentity(storageId, record.id === 1 ? undefined : record.id),
 		...(meta.name === undefined ? {} : { name: meta.name }),
 		...(meta.owner === undefined ? {} : { owner: meta.owner }),
+		...(meta.firstMessage === undefined ? {} : { firstMessage: meta.firstMessage }),
 		busy: live?.run !== undefined,
 		...(record.parent === undefined ? {} : { parent: { conversationId: record.parent.conversationId, at: record.parent.at } }),
 		...(record.owner === undefined ? {} : { ownerTaskId: record.owner.taskId }),
@@ -603,6 +609,97 @@ export interface DurableDashboardOptions {
 	readonly cwd?: string;
 	/** Writer ownership of this storage, as the dashboard reports it. */
 	readonly owner?: "here" | "unavailable" | "unknown";
+	/** Owner detail for refusal guidance, such as a live writer-claim label. */
+	readonly ownerLabel?: string;
+	/** Live writer: include recovery health, current tool, and turn duration. */
+	readonly live?: boolean;
+	/** Resolved generation retry ceiling for `autoRetry.maxAttempts`. */
+	readonly retryMaxAttempts?: number;
+	/** Clock override for tests. */
+	readonly now?: number;
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/** Blocked tasks of one conversation, as `harness.inspect()` reports them. */
+function blockedTasks(inspection: HarnessInspection, conversationId: ConversationId): Array<{ readonly error?: string; readonly reason: string }> {
+	const result: Array<{ error?: string; reason: string }> = [];
+	for (const task of inspection.tasks) {
+		if (task.record.conversationId !== conversationId || task.state.kind !== "blocked") continue;
+		const state = task.state;
+		result.push({ ...(state.error === undefined ? {} : { error: errorMessage(state.error) }), reason: state.reason });
+	}
+	return result;
+}
+
+/**
+ * Recovery health from committed live state and blocked tasks: a scheduled
+ * provider retry, a compaction waiting to retry, and the latest blocked task.
+ * Absent when nothing is failing, and never computed for a cold snapshot.
+ */
+export function dashboardHealth(live: LiveState | undefined, blocked: readonly { readonly error?: string; readonly reason: string }[], now: number, retryMaxAttempts: number | undefined): DashboardHealth | undefined {
+	const failing = live?.compactions?.find((status) => status.retry !== undefined);
+	const compactionFailure: DashboardCompactionFailure | undefined = failing?.retry === undefined ? undefined : { reason: failing.reason, errorMessage: failing.retry.error, at: new Date(failing.retry.at).toISOString() };
+	const retry = live?.generation?.retry;
+	const autoRetry: DashboardAutoRetry | undefined = retry === undefined || retryMaxAttempts === undefined ? undefined : { attempt: live?.generation?.attempt ?? 1, maxAttempts: retryMaxAttempts, delayMs: Math.max(0, retry.at - now), errorMessage: retry.error };
+	const lastError = blocked.find((task) => task.error !== undefined)?.error ?? blocked[0]?.reason;
+	if (lastError === undefined && compactionFailure === undefined && autoRetry === undefined) return undefined;
+	return { ...(lastError === undefined ? {} : { lastError }), ...(compactionFailure === undefined ? {} : { compactionFailure }), ...(autoRetry === undefined ? {} : { autoRetry }) };
+}
+
+function isToolCallPart(part: unknown, callId: string): part is { readonly arguments: Record<string, unknown> } {
+	if (part === null || typeof part !== "object") return false;
+	const candidate = part as { readonly type?: unknown; readonly id?: unknown; readonly arguments?: unknown };
+	return candidate.type === "toolCall" && candidate.id === callId && candidate.arguments !== undefined && typeof candidate.arguments === "object" && candidate.arguments !== null;
+}
+
+/** Arguments of one tool call committed in the active transcript. */
+function committedToolCallArguments(entries: readonly EntryRecord[], callId: string): Record<string, unknown> | undefined {
+	for (const entry of entries) {
+		for (const message of entry.model ?? []) {
+			const content = (message as { readonly content?: unknown }).content;
+			if (!Array.isArray(content)) continue;
+			const found = content.find((part) => isToolCallPart(part, callId));
+			if (found !== undefined && isToolCallPart(found, callId)) return found.arguments;
+		}
+	}
+	return undefined;
+}
+
+/** Arguments of one tool call, from the live partial first and then committed entries. */
+function toolCallArguments(live: LiveState | undefined, entries: readonly EntryRecord[], callId: string): Record<string, unknown> | undefined {
+	for (const part of live?.generation?.message?.content ?? []) {
+		if (part.type === "toolCall" && part.id === callId) return part.arguments as Record<string, unknown>;
+	}
+	return committedToolCallArguments(entries, callId);
+}
+
+/** First unresolved tool call of the live round, with its committed argument text. */
+function currentTool(live: LiveState | undefined, entries: readonly EntryRecord[]): { readonly name: string; readonly argument: string } | undefined {
+	const slot = live?.tools?.find((tool) => tool.status !== "done");
+	if (slot === undefined) return undefined;
+	const args = toolCallArguments(live, entries, slot.callId);
+	if (args === undefined) return undefined;
+	const argument = JSON.stringify(args);
+	return { name: slot.name, argument: argument.length > 200 ? argument.slice(0, 200) : argument };
+}
+
+/** Observed span of the latest user turn: the live clock while working, the final message time when settled. */
+function turnDuration(entries: readonly EntryRecord[], busy: boolean, now: number): number | undefined {
+	let started: number | undefined;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry?.kind !== "pi.user") continue;
+		started = newestTimestamp(entry);
+		break;
+	}
+	if (started === undefined) return undefined;
+	const end = busy ? now : newestTimestamp(entries[entries.length - 1]);
+	if (end === undefined) return undefined;
+	const span = end - started;
+	return span >= 0 ? span : undefined;
 }
 
 function firstMessageOf(meta: { readonly firstMessage: string | undefined }, entries: readonly EntryRecord[]): string | undefined {
@@ -618,6 +715,23 @@ function latestReplyOf(entries: readonly EntryRecord[]): string | undefined {
 		if (text !== undefined) return text;
 	}
 	return undefined;
+}
+
+/** Live-only dashboard fields: recovery health, current tool, and turn duration. */
+async function dashboardLiveExtras(
+	harness: Harness,
+	record: ConversationRecord,
+	live: LiveState | undefined,
+	entries: readonly EntryRecord[],
+	options: DurableDashboardOptions,
+	context: Context,
+): Promise<Partial<Pick<AgentConversationSummary, "health" | "currentTool" | "durationMs">>> {
+	if (options.live !== true) return {};
+	const now = options.now ?? Date.now();
+	const health = dashboardHealth(live, blockedTasks(await harness.inspect(context), record.id), now, options.retryMaxAttempts);
+	const tool = currentTool(live, entries);
+	const duration = turnDuration(entries, live?.run !== undefined, now);
+	return { ...(health === undefined ? {} : { health }), ...(tool === undefined ? {} : { currentTool: tool }), ...(duration === undefined ? {} : { durationMs: duration }) };
 }
 
 async function dashboardSummary(
@@ -641,6 +755,7 @@ async function dashboardSummary(
 	const cost = usageCost(usage);
 	const firstMessage = firstMessageOf(meta, entries);
 	const replyText = latestReplyOf(entries);
+	const liveExtras = await dashboardLiveExtras(harness, record, live, entries, options, context);
 	return {
 		id: durableIdentity(storageId, record.id === 1 ? undefined : record.id),
 		storageId,
@@ -650,11 +765,13 @@ async function dashboardSummary(
 		...(agent?.model === undefined ? {} : { model: { provider: agent.model.provider, modelId: agent.model.modelId, thinkingLevel: agent.thinkingLevel } }),
 		modifiedAt: newestTimestamp(entries[entries.length - 1]) ?? meta.updatedAt ?? 0,
 		owner: options.owner ?? "unavailable",
+		...(options.ownerLabel === undefined ? {} : { ownerLabel: options.ownerLabel }),
 		state,
 		cost: cost.cost,
 		partial: cost.partial,
 		...(replyText === undefined ? {} : { latestReply: replyText }),
 		...(state === "failed" || state === "stopped" ? { error: receipt?.reason ?? state } : {}),
+		...liveExtras,
 		toolCalls: countToolCalls(entries),
 	};
 }
@@ -954,39 +1071,90 @@ interface TurnRow {
 	readonly entries: readonly DurableEntryRow[];
 }
 
+/** Owner metadata for the activity view; null and empty fields mean a cold snapshot. */
+export interface DurableActivityMetadata {
+	/** Who holds the storage writer claim: `here` for the live host, otherwise the caller's classification. */
+	readonly owner: "here" | "unavailable" | "unknown";
+	/** True only when this process is the live writer; false for a cold snapshot. */
+	readonly live: boolean;
+	readonly operation: number | null;
+	readonly runningTools: readonly {
+		readonly toolCallId: string;
+		readonly name: string;
+		/** Assistant tool-call commit time; predates execution, so it is not a start time. */
+		readonly issuedAt?: string;
+		readonly elapsedMs?: number;
+		/** Basis of `elapsedMs` when present. */
+		readonly elapsedFrom?: "tool-call-entry";
+	}[];
+	readonly pending: number | null;
+	readonly streamedText?: string;
+	readonly lastError?: string;
+	readonly compactionFailure?: DashboardCompactionFailure;
+	readonly autoRetry?: DashboardAutoRetry;
+}
+
 interface ActivityPage {
 	readonly view: "activity";
 	readonly sessionId: string;
 	readonly conversationId: ConversationId;
 	readonly turns: readonly TurnRow[];
 	readonly nextCursor: Cursor | null;
-	readonly coverage: { readonly scannedEntries: number; readonly complete: boolean };
+	readonly metadata: DurableActivityMetadata;
+	readonly coverage: {
+		readonly scannedEntries: number;
+		readonly scannedBytes: number;
+		readonly complete: boolean;
+		readonly entryLimitReached: boolean;
+		readonly byteLimitReached: boolean;
+	};
 	readonly detail: string;
 }
 
-async function readActivity(storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<ActivityPage> {
-	const turnLimit = boundedLimit(params.limit, ACTIVITY_TURN_LIMIT_DEFAULT, ACTIVITY_TURN_LIMIT_MAX);
+/** Options the live host adds to inspection; a cold snapshot uses the defaults. */
+export interface DurableInspectionOptions {
+	/** Live writer: include owner metadata derived from LiveDoc and the inbox. */
+	readonly live?: boolean;
+	/** Writer-claim classification for the activity metadata owner. */
+	readonly owner?: "here" | "unavailable" | "unknown";
+	readonly retryMaxAttempts?: number;
+	readonly now?: number;
+}
+
+interface ActivityScan {
+	readonly collected: readonly EntryRecord[];
+	readonly complete: boolean;
+	readonly scannedEntries: number;
+	readonly scannedBytes: number;
+}
+
+async function scanActivity(conversation: Conversation, params: DurableInspectParams, turnLimit: number, context: Context): Promise<ActivityScan> {
 	const collected: EntryRecord[] = [];
 	let cursor: Cursor | undefined = params.cursor;
-	let complete = true;
-	let scanned = 0;
-	// Collect newest-first until one more than the requested turn count or the entry budget.
-	while (scanned < 200) {
+	let complete = false;
+	let scannedEntries = 0;
+	let scannedBytes = 0;
+	// Collect newest-first until one more than the requested turn count or either bound.
+	while (scannedEntries < ACTIVITY_SCAN_ENTRIES && scannedBytes < ACTIVITY_SCAN_BYTES) {
 		const page = await conversation.entries({}, 32, cursor, context);
 		collected.push(...page.items);
-		scanned += page.items.length;
+		scannedEntries += page.items.length;
+		for (const entry of page.items) scannedBytes += Buffer.byteLength(searchableText(entry), "utf8");
 		cursor = page.next;
-		if (cursor === undefined) break;
-		const users = collected.reduce((count, entry) => count + (entry.kind === "pi.user" ? 1 : 0), 0);
-		if (users > turnLimit) {
-			complete = false;
+		if (cursor === undefined) {
+			complete = true;
 			break;
 		}
+		const users = collected.reduce((count, entry) => count + (entry.kind === "pi.user" ? 1 : 0), 0);
+		if (users > turnLimit) break;
 	}
-	// Group oldest-first: every user entry starts a turn.
-	const oldestFirst = [...collected].reverse();
+	return { collected, complete, scannedEntries, scannedBytes };
+}
+
+/** Group oldest-first: every user entry starts a turn. */
+function groupActivityTurns(collected: readonly EntryRecord[]): EntryRecord[][] {
 	const turns: EntryRecord[][] = [];
-	for (const entry of oldestFirst) {
+	for (const entry of [...collected].reverse()) {
 		let turn = turns[turns.length - 1];
 		if (entry.kind === "pi.user" || turn === undefined) {
 			turn = [];
@@ -994,16 +1162,57 @@ async function readActivity(storageId: string, conversation: Conversation, param
 		}
 		turn.push(entry);
 	}
-	const selected = turns.slice(-turnLimit).reverse();
+	return turns;
+}
+
+async function activityMetadata(harness: Harness, conversation: Conversation, options: DurableInspectionOptions, context: Context): Promise<DurableActivityMetadata> {
+	if (options.live !== true) {
+		return { owner: options.owner ?? "unavailable", live: false, operation: null, runningTools: [], pending: null };
+	}
+	const live = await harness.snapshot(LiveDoc, conversation.id, context);
+	const inbox = await harness.snapshot(InboxDoc, conversation.id, context);
+	const now = options.now ?? Date.now();
+	const issuedAt = live?.generation?.message?.timestamp;
+	// The assistant tool-call timestamp predates execution; it is an issue time, not a start time.
+	// A running call without a committed generation message is still real work, listed without times.
+	const runningTools = (live?.tools ?? [])
+		.filter((tool) => tool.status !== "done")
+		.map((tool) => ({ toolCallId: tool.callId, name: tool.name, ...(issuedAt === undefined ? {} : { issuedAt: new Date(issuedAt).toISOString(), elapsedMs: Math.max(0, now - issuedAt), elapsedFrom: "tool-call-entry" as const }) }));
+	const health = dashboardHealth(live, blockedTasks(await harness.inspect(context), conversation.id), now, options.retryMaxAttempts);
+	const streamedText = live?.generation?.message === undefined ? undefined : textOfMessage(live.generation.message);
+	return {
+		owner: "here",
+		live: true,
+		operation: live?.run?.taskId ?? null,
+		runningTools,
+		pending: inbox === undefined ? null : inbox.items.length,
+		...(streamedText === undefined || streamedText === "" ? {} : { streamedText }),
+		...(health?.lastError === undefined ? {} : { lastError: health.lastError }),
+		...(health?.compactionFailure === undefined ? {} : { compactionFailure: health.compactionFailure }),
+		...(health?.autoRetry === undefined ? {} : { autoRetry: health.autoRetry }),
+	};
+}
+
+async function readActivity(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, options: DurableInspectionOptions, context: Context): Promise<ActivityPage> {
+	const turnLimit = boundedLimit(params.limit, ACTIVITY_TURN_LIMIT_DEFAULT, ACTIVITY_TURN_LIMIT_MAX);
+	const scan = await scanActivity(conversation, params, turnLimit, context);
+	const selected = groupActivityTurns(scan.collected).slice(-turnLimit).reverse();
 	const oldestSelected = selected[selected.length - 1]?.[0];
-	const nextCursor: Cursor | null = complete || oldestSelected === undefined ? null : ({ after: oldestSelected.id } as Cursor);
+	const nextCursor: Cursor | null = scan.complete || oldestSelected === undefined ? null : ({ after: oldestSelected.id } as Cursor);
 	return {
 		view: "activity",
 		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
 		conversationId: conversation.id,
 		turns: selected.map((turn) => ({ entries: turn.map((entry) => entryRow(entry, ENTRY_PREVIEW_UNITS)) })),
 		nextCursor,
-		coverage: { scannedEntries: scanned, complete },
+		metadata: await activityMetadata(harness, conversation, options, context),
+		coverage: {
+			scannedEntries: scan.scannedEntries,
+			scannedBytes: scan.scannedBytes,
+			complete: scan.complete,
+			entryLimitReached: scan.scannedEntries >= ACTIVITY_SCAN_ENTRIES,
+			byteLimitReached: scan.scannedBytes >= ACTIVITY_SCAN_BYTES,
+		},
 		detail: "Newest turns first, bounded and redacted. Continue with nextCursor.",
 	};
 }
@@ -1063,7 +1272,7 @@ async function readResult(harness: Harness, storageId: string, conversation: Con
 }
 
 /** One bounded inspection over a conversation's committed entries, submissions, and receipts. */
-export async function readInspection(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<unknown> {
+export async function readInspection(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context, options: DurableInspectionOptions = {}): Promise<unknown> {
 	const view = params.view ?? "history";
 	switch (view) {
 		case "history":
@@ -1075,7 +1284,7 @@ export async function readInspection(harness: Harness, storageId: string, conver
 		case "exact":
 			return readExact(storageId, conversation, params, context);
 		case "activity":
-			return readActivity(storageId, conversation, params, context);
+			return readActivity(harness, storageId, conversation, params, options, context);
 		case "result":
 			return readResult(harness, storageId, conversation, params, context);
 	}
@@ -1092,6 +1301,13 @@ export interface DurableObservationOptions {
 	readonly maxSourceBytes?: number;
 	/** Longest a snapshot backup may run before it fails. */
 	readonly backupTimeoutMs?: number;
+	/**
+	 * Writer-claim classification for dashboard rows. The caller composes this
+	 * with `observeClaim`: a live or unknown claim is unavailable, an absent or
+	 * dead claim is a readable, claimable storage whose owner is unknown here.
+	 * Without it rows report `unavailable`.
+	 */
+	readonly classifyOwner?: () => { readonly owner: "here" | "unavailable" | "unknown"; readonly label?: string };
 }
 
 /** Default source bound for one cold snapshot. */
@@ -1143,11 +1359,13 @@ export class DurableObservation {
 	readonly harness: Harness;
 	readonly storageId: string;
 	private readonly release: () => Promise<void>;
+	private readonly classifyOwner: () => { readonly owner: "here" | "unavailable" | "unknown"; readonly label?: string };
 
-	private constructor(harness: Harness, storageId: string, release: () => Promise<void>) {
+	private constructor(harness: Harness, storageId: string, release: () => Promise<void>, classifyOwner: () => { readonly owner: "here" | "unavailable" | "unknown"; readonly label?: string }) {
 		this.harness = harness;
 		this.storageId = storageId;
 		this.release = release;
+		this.classifyOwner = classifyOwner;
 	}
 
 	static async open(options: DurableObservationOptions & DurableSnapshotSource, context: Context = BACKGROUND_CONTEXT): Promise<DurableObservation> {
@@ -1193,6 +1411,7 @@ export class DurableObservation {
 					if (extra) await extra();
 				}
 			},
+			options.classifyOwner ?? (() => ({ owner: "unavailable" })),
 		);
 	}
 
@@ -1214,7 +1433,7 @@ export class DurableObservation {
 	}
 
 	async inspect(conversation: Conversation, params: DurableInspectParams = {}, context: Context = BACKGROUND_CONTEXT): Promise<unknown> {
-		return readInspection(this.harness, this.storageId, conversation, params, context);
+		return readInspection(this.harness, this.storageId, conversation, params, context, { owner: this.classifyOwner().owner });
 	}
 
 	async receipts(ownerId?: string, context: Context = BACKGROUND_CONTEXT): Promise<readonly DeliveryReceipt[]> {
@@ -1271,11 +1490,12 @@ export class DurableObservation {
 
 	private async requestDashboard(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversationId = requestPositiveId(params?.conversationId, "conversationId");
+		const owner = this.classifyOwner();
 		return readDashboard(
 			this.harness,
 			this.storageId,
 			conversationId === undefined ? {} : { conversationId: conversationId as ConversationId },
-			{ owner: "unavailable", ...optionalParam("cwd", requestString(params, "cwd")) },
+			{ owner: owner.owner, ...(owner.label === undefined ? {} : { ownerLabel: owner.label }), ...optionalParam("cwd", requestString(params, "cwd")) },
 			context,
 		);
 	}
@@ -1299,11 +1519,11 @@ export class DurableObservation {
 	 * parsing are identical to `DurableHost.request`; write methods reject.
 	 */
 	async request(method: string, params?: RequestParams, context: Context = BACKGROUND_CONTEXT): Promise<unknown> {
-		switch (method) {
-			case "inspect": {
-				const conversation = await this.target(params, context);
-				return readInspection(this.harness, this.storageId, conversation, parseInspectParams(params), context);
-			}
+			switch (method) {
+				case "inspect": {
+					const conversation = await this.target(params, context);
+					return readInspection(this.harness, this.storageId, conversation, parseInspectParams(params), context, { owner: this.classifyOwner().owner });
+				}
 			case "status":
 				return this.requestStatus(params, context);
 			case "list":

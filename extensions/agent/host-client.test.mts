@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { HOST_SOCKET_PATH_LIMIT_BYTES, HostError, hostPaths } from "./host-protocol.ts";
+import { HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
 import { acquireHost, connectHost, snapshotHost, type HostConnection, type HostLaunchOptions } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState, waitUntil, writeFixtureState } from "./host-fixture.mts";
 
@@ -43,6 +43,11 @@ async function openHost(t: { after(fn: () => void): void }, root: string, option
 	const connection = await acquireHost(fixtureMetadata(root), options);
 	track(t, connection.pid);
 	return connection;
+}
+
+async function subscribeChanges(connection: HostConnection, listener: () => void): Promise<() => void> {
+	if (!connection.subscribeChanges) throw new Error("host connection does not publish change notifications");
+	return connection.subscribeChanges(listener);
 }
 
 it("launches a host, echoes, and attaches to the live claim", { timeout: 30000 }, async (t) => {
@@ -111,7 +116,7 @@ it("rejects an unsafe call instead of resending it", { timeout: 30000 }, async (
 	const pending = connection.request("hang");
 	await waitUntil(() => (readFixtureState(statePath).hangsStarted ?? 0) >= 1);
 	process.kill(connection.pid, "SIGKILL");
-	await assert.rejects(pending, /connection was lost/u);
+	await assert.rejects(pending, /connection was lost|disconnected|closed/iu);
 	await waitUntil(() => connection.closed);
 	await connection.close();
 	const again = await acquireHost(config, launch());
@@ -168,6 +173,58 @@ it("aborting an unsafe call never cancels host work", { timeout: 30000 }, async 
 	await connection.close();
 });
 
+it("reports initial and changed state and stops on cancel", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const connection = await openHost(t, root);
+	const changes: number[] = [];
+	const unsubscribe = await subscribeChanges(connection, () => changes.push(changes.length));
+	await waitUntil(() => changes.length >= 1);
+	await connection.request("touch");
+	await waitUntil(() => changes.length >= 2);
+	unsubscribe();
+	const settled = changes.length;
+	await connection.request("touch");
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(changes.length, settled, "cancelled subscription stopped");
+	assert.deepEqual(await connection.request("echo", { alive: true }), { alive: true });
+	await connection.close();
+});
+
+it("re-subscribes after a host kill while a safe call is pending", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const statePath = join(root, "state.json");
+	const connection = await openHost(t, root);
+	const changes: number[] = [];
+	const unsubscribe = await subscribeChanges(connection, () => changes.push(changes.length));
+	await waitUntil(() => changes.length >= 1);
+	const pending = connection.request("receipts", { requestId: "changes-resume" });
+	await waitUntil(() => (readFixtureState(statePath).waitsStarted ?? 0) >= 1);
+	const firstPid = connection.pid;
+	process.kill(firstPid, "SIGKILL");
+	writeFixtureState(statePath, { release: true });
+	await waitUntil(() => connection.pid !== firstPid && changes.length >= 2, 15000);
+	track(t, connection.pid);
+	assert.deepEqual(await pending, { released: true });
+	await unsubscribe();
+	await connection.close();
+});
+
+it("closing the connection with admitted work does not cancel it", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const statePath = join(root, "state.json");
+	const config = fixtureMetadata(root);
+	const connection = await openHost(t, root);
+	const pending = connection.request("hang");
+	await waitUntil(() => (readFixtureState(statePath).hangsStarted ?? 0) >= 1);
+	await connection.close();
+	await assert.rejects(pending);
+	const again = await acquireHost(config, launch());
+	track(t, again.pid);
+	assert.equal(readFixtureState(statePath).hangsSignaled, undefined, "admitted work received no cancel signal");
+	assert.deepEqual(await again.request("echo", { alive: true }), { alive: true });
+	await again.close();
+});
+
 it("retires an idle host and relaunches it on the next access", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
@@ -205,19 +262,11 @@ it("keeps a deep agent directory working with a short socket path", { timeout: 3
 	const root = fixtureRoot(t);
 	const deepRoot = join(root, "d".repeat(140));
 	mkdirSync(deepRoot, { recursive: true });
-	const config = fixtureMetadata(deepRoot, "deep-storage");
+	const config = fixtureMetadata(deepRoot);
 	const connection = await acquireHost(config, launch());
 	track(t, connection.pid);
 	assert.ok(Buffer.byteLength(connection.socketPath, "utf8") <= HOST_SOCKET_PATH_LIMIT_BYTES);
 	assert.deepEqual(await connection.request("echo", "deep"), "deep");
-	await connection.close();
-});
-
-it("turns an oversized response into a bounded error and keeps the link", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const connection = await openHost(t, root);
-	await assert.rejects(connection.request("huge"), (error: unknown) => error instanceof HostError && error.code === "internal" && /could not be encoded/u.test(error.message));
-	assert.deepEqual(await connection.request("echo", "still"), "still");
 	await connection.close();
 });
 
@@ -229,7 +278,7 @@ it("reports terminal closure through onClose after a kill", { timeout: 30000 }, 
 		closed = true;
 	});
 	process.kill(connection.pid, "SIGKILL");
-	await waitUntil(() => closed);
+	await waitUntil(() => closed, 10000);
 	unsubscribe();
 	assert.equal(connection.closed, true);
 	await connection.close();

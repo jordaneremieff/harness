@@ -5,10 +5,11 @@
  * child process, it takes the claim through runHost, announces readiness, and
  * serves fixture methods until it retires or is killed.
  */
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { HostError, HOST_MAX_FRAME_BYTES, parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
+import { HostError, parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
 import { runHost, type HostRuntime } from "./host-process.ts";
 
 export interface FixtureState {
@@ -44,8 +45,15 @@ export function writeFixtureState(path: string, patch: FixtureState): FixtureSta
 	return next;
 }
 
+/** Stable per-root storage identity so separate test roots never share a socket path. */
+function storageIdForRoot(root: string): string {
+	const digest = createHash("sha256").update(root).digest("hex");
+	const variant = ((Number.parseInt(digest[16], 16) & 0x3) | 0x8).toString(16);
+	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-${variant}${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+}
+
 /** Stable metadata for one fixture host under a test root. */
-export function fixtureMetadata(root: string, storageId = "fixture-storage"): HostMetadata {
+export function fixtureMetadata(root: string, storageId = storageIdForRoot(root)): HostMetadata {
 	return {
 		storageId,
 		cwd: root,
@@ -70,6 +78,7 @@ export async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Pro
 
 function createFixtureRuntime(statePath: string): HostRuntime {
 	const waiters: Array<(value: unknown) => void> = [];
+	const changeListeners = new Set<() => void>();
 	let busy = false;
 	const poll = setInterval(() => {
 		const state = readFixtureState(statePath);
@@ -119,8 +128,9 @@ function createFixtureRuntime(statePath: string): HostRuntime {
 				case "hang":
 					writeFixtureState(statePath, { hangsStarted: (readFixtureState(statePath).hangsStarted ?? 0) + 1, ...(signal === undefined ? {} : { hangsSignaled: true }) });
 					return new Promise(() => {});
-				case "huge":
-					return "x".repeat(HOST_MAX_FRAME_BYTES + 16);
+				case "touch":
+					for (const listener of [...changeListeners]) listener();
+					return { touched: true };
 				case "busy":
 					busy = true;
 					return { busy: true };
@@ -140,6 +150,12 @@ function createFixtureRuntime(statePath: string): HostRuntime {
 			writeFixtureState(statePath, { closed: (readFixtureState(statePath).closed ?? 0) + 1 });
 		},
 		isIdle: () => !busy,
+		onChange: (listener) => {
+			changeListeners.add(listener);
+			return () => {
+				changeListeners.delete(listener);
+			};
+		},
 	};
 }
 

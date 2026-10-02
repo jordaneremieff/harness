@@ -59,7 +59,7 @@ it("keeps the native editor draft intact across a mounted dashboard and uses onl
 	editor.setText("Unsent draft\nsecond line"); const before = editor.getText();
 	let panel: AgentDashboard | undefined; let close!: (value?: unknown) => void; let actions = 0; let ctx!: ExtensionContext;
 	const command = createAgentCommand([{ name: "status", description: "Read status", args: [], run: async (_args, actual) => { assert.equal(actual, ctx); actions++; return "Status read"; } }], {
-		list: async () => [], snapshot: async () => { throw new Error("No selection"); },
+		list: async () => ({ rows: [], coverage: { complete: true, storagesVisited: 0, skipped: 0, omitted: 0, nextCursor: null }, observedAt: new Date().toISOString() }), snapshot: async () => { throw new Error("No selection"); },
 	});
 	ctx = context(async (factory) => {
 		const response = new Promise((resolve) => { close = resolve; });

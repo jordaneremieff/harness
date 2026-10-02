@@ -43,14 +43,6 @@ type ChildRecord = {
 	reported: Durable.EntryId[];
 };
 type ChildrenState = { children: ChildRecord[]; reporters: Record<string, number> };
-type PlaceRecord = {
-	readonly area: string;
-	readonly name?: string;
-	readonly conversationId?: Durable.ConversationId;
-	readonly anchorTaskId?: Durable.TaskId;
-	readonly foreignSessionId?: string;
-};
-type PlacesState = { places: PlaceRecord[]; reporters: Record<string, number> };
 
 /** Read tokens for the contribution's documents; storage identity is the kind. */
 const TestChildren = Durable.defineDoc<ChildrenState>({
@@ -60,12 +52,6 @@ const TestChildren = Durable.defineDoc<ChildrenState>({
 	history: "latest",
 	fork: "initial",
 	initial: () => ({ children: [], reporters: {} }),
-});
-const TestPlaces = Durable.defineDoc<PlacesState>({
-	kind: "agent.places",
-	version: 1,
-	scope: "session",
-	initial: () => ({ places: [], reporters: {} }),
 });
 
 const CONTROL_TOOLS = [
@@ -190,7 +176,9 @@ type DispatchCalls = Array<{ method: string; params: Record<string, unknown> }>;
 type DispatchHolder = {
 	harness?: Durable.Harness;
 	spawnSessionId?: string;
+	placeSessionId?: string;
 	inspectPages?: Array<Record<string, unknown>>;
+	configureOutcome?: "applied" | "failed";
 };
 
 /** Resolve an external identity used by the test dispatch against the opened harness. */
@@ -225,24 +213,74 @@ async function testConversation(holder: DispatchHolder, sessionId: unknown): Pro
 	return conversation;
 }
 
+/** Minimal value that satisfies the exported ConversationStatusSchema. */
+function conversationStatus(conversationId: Durable.ConversationId): Record<string, unknown> {
+	return {
+		conversationId,
+		identity: `${storageId}:${conversationId}`,
+		busy: false,
+		lastText: null,
+		live: null,
+		inbox: null,
+		agent: { thinkingLevel: "off", extensions: [], tools: [] },
+		tasks: [],
+		submissions: [],
+	};
+}
+
+const OBSERVED_AT = "2026-10-02T00:00:00.000Z";
+
+function statusObservation(params: Record<string, unknown>): Record<string, unknown> {
+	const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
+	if (sessionId === undefined) return { sessions: [], failures: [], observedAt: OBSERVED_AT };
+	return {
+		conversation: conversationStatus(sessionConversation(sessionId)),
+		inventory: { contributions: [], ordinaryOnly: [] },
+		pid: 123,
+		storageId,
+	};
+}
+
+function listObservation(): Record<string, unknown> {
+	return {
+		rows: [],
+		nextCursor: null,
+		coverage: { complete: true, storagesVisited: 0, unavailable: [] },
+		observedAt: OBSERVED_AT,
+		authority: "native catalog scan",
+	};
+}
+
+function inspectObservation(holder: DispatchHolder): Record<string, unknown> {
+	return (
+		holder.inspectPages?.shift() ?? {
+			view: "history",
+			sessionId: `${storageId}:1`,
+			conversationId: 1,
+			entries: [],
+			nextCursor: null,
+			order: "newestFirst",
+			detail: "inspection-evidence",
+		}
+	);
+}
+
 function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentControlDispatch {
 	return async (method, params) => {
 		calls.push({ method, params: { ...params } });
 		switch (method) {
 			case "status":
-				return params.sessionId === undefined
-					? { conversations: [] }
-					: { conversation: { conversationId: String(params.sessionId), busy: false } };
+				return statusObservation(params);
 			case "list":
-				return { items: [], next: null };
-			case "inspect": {
-				const page = holder.inspectPages?.shift();
-				return page ?? { view: params.view, text: "inspection-evidence" };
-			}
+				return listObservation();
+			case "inspect":
+				return inspectObservation(holder);
 			case "compact":
 				return { taskId: 7, status: "task" };
 			case "spawn":
 				return { sessionId: holder.spawnSessionId ?? "other-storage:1" };
+			case "place":
+				return { sessionId: holder.placeSessionId ?? "place-storage:1" };
 			case "command":
 				return { name: params.name, text: `command:${String(params.name)}`, conversationId: params.sessionId ?? null };
 			case "fork":
@@ -253,7 +291,7 @@ function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentCont
 				const conversation = await testConversation(holder, params.sessionId);
 				const change = agentChange(params);
 				if (Object.keys(change).length > 0) await conversation.configure(change, context);
-				return { sessionId: params.sessionId, ok: true };
+				return { sessionId: params.sessionId, outcome: holder.configureOutcome ?? "applied" };
 			}
 			case "attach": {
 				const conversation = await testConversation(holder, params.sessionId);
@@ -345,14 +383,14 @@ async function assistantTexts(harness: Durable.Harness, conversationId: Durable.
 	});
 }
 
-type ToolOutcome = { name: string; isError: boolean; text: string };
+type ToolOutcome = { name: string; isError: boolean; text: string; details?: unknown };
 
 async function toolOutcomes(harness: Durable.Harness, conversationId: Durable.ConversationId): Promise<ToolOutcome[]> {
 	const entries = await entriesOf(harness, conversationId);
 	return entries.flatMap((entry) => {
 		const message = entry.model?.[0];
 		return message?.role === "toolResult"
-			? [{ name: message.toolName, isError: message.isError, text: messageText(message) }]
+			? [{ name: message.toolName, isError: message.isError, text: messageText(message), details: message.details }]
 			: [];
 	});
 }
@@ -361,10 +399,6 @@ async function toolOutcomes(harness: Durable.Harness, conversationId: Durable.Co
 async function settle(harness: Durable.Harness, rootId: Durable.ConversationId): Promise<void> {
 	const children = await harness.snapshot(TestChildren, rootId, context);
 	for (const reporter of Object.values(children?.reporters ?? {})) {
-		await harness.waitForTask(reporter as Durable.TaskId, context);
-	}
-	const places = await harness.snapshot(TestPlaces, context);
-	for (const reporter of Object.values(places?.reporters ?? {})) {
 		await harness.waitForTask(reporter as Durable.TaskId, context);
 	}
 	const root = await harness.conversation(rootId, context);
@@ -596,6 +630,16 @@ it("drives one model-issued call per control tool", async (t) => {
 	}
 	const inspected = outcomes.find((outcome) => outcome.name === "agent_inspect");
 	assert.match(inspected?.text ?? "", /inspection-evidence/u);
+	const statusDetails = outcomes.find((outcome) => outcome.name === "agent_status")?.details as
+		| { structuredContent?: { conversation?: { conversationId?: number } } }
+		| undefined;
+	assert.ok(statusDetails?.structuredContent?.conversation, "status carries validated structured content");
+	const listDetails = outcomes.find((outcome) => outcome.name === "agent_list")?.details as
+		| { structuredContent?: { rows?: unknown[] } }
+		| undefined;
+	assert.ok(Array.isArray(listDetails?.structuredContent?.rows), "list carries validated structured content");
+	const inspectDetails = inspected?.details as { structuredContent?: { view?: string } } | undefined;
+	assert.equal(inspectDetails?.structuredContent?.view, "history", "inspect carries validated structured content");
 	const commanded = outcomes.find((outcome) => outcome.name === "agent_command");
 	assert.match(commanded?.text ?? "", /command:echo/u);
 
@@ -610,14 +654,12 @@ it("drives one model-issued call per control tool", async (t) => {
 		assert.ok(stored?.model, `${childRecord.name} stores an explicit model`);
 		assert.ok(stored?.thinkingLevel, `${childRecord.name} stores an explicit thinking level`);
 	}
-	const places = await harness.snapshot(TestPlaces, context);
-	assert.equal(places?.places.length, 1, "place recorded one owner");
-	assert.equal(places?.places[0]?.area, testCwd, "the place area is normalized");
-	const place = places?.places[0];
-	assert.ok(place?.conversationId !== undefined, "the storage area place stays local");
-	const placeAgent = await harness.snapshot(Durable.AgentDoc, place.conversationId, context);
-	assert.ok(placeAgent?.model, "the place owner stores an explicit model");
-	assert.ok(placeAgent?.thinkingLevel, "the place owner stores an explicit thinking level");
+	const placed = calls.find((call) => call.method === "place");
+	assert.ok(placed, "place used the host dispatch");
+	assert.equal(placed.params.area, testCwd, "the place area is normalized");
+	assert.equal(placed.params.topic, "area-x");
+	assert.match(String(placed.params.requestId), /^place:test-storage:\d+$/u);
+	assert.equal(placed.params.senderIdentity, storageId);
 
 	assert.ok(
 		calls.some((call) => call.method === "status"),
@@ -633,6 +675,10 @@ it("drives one model-issued call per control tool", async (t) => {
 	);
 	const listed = calls.find((call) => call.method === "list");
 	assert.equal(listed?.params.global, true, "list requests the global catalog");
+	const configured = calls.find((call) => call.method === "configure");
+	assert.ok(configured, "configure used the host dispatch");
+	assert.equal(configured.params.senderIdentity, storageId);
+	assert.match(String(configured.params.requestId), /^configure:test-storage:\d+$/u);
 	const compact = calls.find((call) => call.method === "compact");
 	assert.equal(compact, undefined, "self-compaction stays native");
 	const command = calls.find((call) => call.method === "command");
@@ -792,14 +838,14 @@ it("sends stable request IDs for foreign fork and rewind", async (t) => {
 	assert.equal(rewind.params.correction, "fix");
 });
 
-it("normalizes a place area and spawns a foreign host for a different directory", async (t) => {
+it("dispatches place with the resolved area and a stable request ID", async (t) => {
 	const route = createRoute();
 	const holder: DispatchHolder = {};
 	const calls: DispatchCalls = [];
 	const { registry } = buildRegistry(createDispatch(holder, calls));
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	holder.harness = harness;
-	holder.spawnSessionId = "other-storage:7";
+	holder.placeSessionId = "place-storage:7";
 	const area = realpathSync(mkdtempSync(join(tmpdir(), "durable-agents-place-")));
 	t.after(async () => {
 		await harness.close(context);
@@ -809,17 +855,17 @@ it("normalizes a place area and spawns a foreign host for a different directory"
 		tool: "agent_place",
 		args: { area: `${area}/.`, topic: "far", prompt: "CONTRACT: reply FAR" },
 	});
-	await say(root, "PLACE-FOREIGN");
+	await say(root, "PLACE");
 
-	const spawn = calls.find((call) => call.method === "spawn");
-	assert.ok(spawn, "a different area used the host dispatch");
-	assert.equal(spawn.params.cwd, area, "the dispatched cwd is the resolved area");
-	assert.match(String(spawn.params.requestId), /^place:test-storage:\d+$/u);
-	assert.equal(spawn.params.senderIdentity, storageId);
-	const state = await harness.snapshot(TestPlaces, context);
-	const place = state?.places.find((candidate) => candidate.area === area);
-	assert.equal(place?.foreignSessionId, "other-storage:7");
-	assert.equal(place?.conversationId, undefined, "no local conversation is created");
+	const place = calls.find((call) => call.method === "place");
+	assert.ok(place, "agent_place used the host dispatch");
+	assert.equal(place.params.area, area, "the dispatched area is resolved");
+	assert.equal(place.params.topic, "far");
+	assert.match(String(place.params.requestId), /^place:test-storage:\d+$/u);
+	assert.equal(place.params.senderIdentity, storageId);
+	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_place");
+	assert.ok(outcome && !outcome.isError, "the place result is not an error");
+	assert.match(outcome.text, /place-storage:7/u);
 });
 
 it("forwards an object inspect cursor for pagination", async (t) => {
@@ -830,8 +876,24 @@ it("forwards an object inspect cursor for pagination", async (t) => {
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	holder.harness = harness;
 	holder.inspectPages = [
-		{ view: "history", text: "page-one", next: { at: 7, tag: "more" } },
-		{ view: "history", text: "page-two", next: null },
+		{
+			view: "history",
+			sessionId: `${storageId}:1`,
+			conversationId: 1,
+			entries: [],
+			nextCursor: { at: 7, tag: "more" },
+			order: "newestFirst",
+			detail: "page-one",
+		},
+		{
+			view: "history",
+			sessionId: `${storageId}:1`,
+			conversationId: 1,
+			entries: [],
+			nextCursor: null,
+			order: "newestFirst",
+			detail: "page-two",
+		},
 	];
 	t.after(async () => {
 		await harness.close(context);
@@ -840,12 +902,20 @@ it("forwards an object inspect cursor for pagination", async (t) => {
 	await say(root, "INSPECT-PAGE-ONE");
 	const first = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_inspect");
 	assert.ok(first, "the first inspect returned a result");
-	const page = JSON.parse(first.text) as { next?: { at: number; tag: string } };
-	assert.deepEqual(page.next, { at: 7, tag: "more" });
+	const page = JSON.parse(first.text) as { nextCursor?: { at: number; tag: string } };
+	assert.deepEqual(page.nextCursor, { at: 7, tag: "more" });
+	const firstDetails = first.details as
+		| { structuredContent?: { nextCursor?: { at: number; tag: string } } }
+		| undefined;
+	assert.deepEqual(
+		firstDetails?.structuredContent?.nextCursor,
+		{ at: 7, tag: "more" },
+		"the validated structured content carries the cursor",
+	);
 
 	route.script.push({
 		tool: "agent_inspect",
-		args: { view: "history", cursor: page.next, limit: 1 },
+		args: { view: "history", cursor: page.nextCursor, limit: 1 },
 	});
 	await say(root, "INSPECT-PAGE-TWO");
 	const inspects = calls.filter((call) => call.method === "inspect");
@@ -857,6 +927,78 @@ it("forwards an object inspect cursor for pagination", async (t) => {
 		results.every((outcome) => !outcome.isError),
 		"both inspect calls succeeded",
 	);
+});
+
+it("renders the delegation guidance into the model-facing section", async () => {
+	const { extension } = buildRegistry();
+	const section = (extension.sections ?? []).find((candidate) => candidate.key === "agent-controls");
+	assert.ok(section, "the contribution has the control section");
+	const read = {
+		snapshot: async () => undefined,
+		snapshotAsOf: async () => undefined,
+	} as unknown as Durable.PromptInput["read"];
+	const input = {
+		conversationId: Durable.ROOT_CONVERSATION_ID,
+		agent: { thinkingLevel: "off" as const, extensions: [], tools: extension.tools ?? [], sections: [] },
+		env: undefined,
+		shown: {},
+		read,
+	};
+	const text = await section.render(input, context);
+	assert.ok(text, "the section renders when agent_spawn is offered");
+	assert.match(text, /Spawn a background full agent session/u);
+	assert.match(text, /Intent authority/u);
+	assert.match(text, /Never poll with sleeps/u);
+	assert.match(text, /Every conversation has an external identity/u);
+	assert.doesNotMatch(text, /agent_detach/u);
+	const withoutSpawn = await section.render(
+		{
+			...input,
+			agent: { ...input.agent, tools: (extension.tools ?? []).filter((tool) => tool.name === "agent_status") },
+		},
+		context,
+	);
+	assert.ok(withoutSpawn, "status-only guidance still renders");
+	assert.match(withoutSpawn, /- agent_status: Show agent session status/u);
+	assert.match(withoutSpawn, /Never poll with sleeps/u);
+	assert.doesNotMatch(withoutSpawn, /- agent_spawn:/u);
+	const withoutControls = await section.render(
+		{
+			...input,
+			agent: { ...input.agent, tools: (extension.tools ?? []).filter((tool) => !CONTROL_TOOLS.includes(tool.name)) },
+		},
+		context,
+	);
+	assert.equal(withoutControls, undefined, "no delegation section without any control");
+});
+
+it("returns the host configure outcome and refuses self configuration", async (t) => {
+	const route = createRoute();
+	const holder: DispatchHolder = {};
+	const calls: DispatchCalls = [];
+	const { registry } = buildRegistry(createDispatch(holder, calls));
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	holder.harness = harness;
+	t.after(async () => {
+		await harness.close(context);
+	});
+	const child = await spawnChild(harness, root, route, "alpha", "ALPHA");
+	const childSessionId = `${storageId}:${child.conversationId}`;
+	holder.configureOutcome = "failed";
+	route.script.push({ tool: "agent_configure", args: { sessionId: childSessionId, thinkingLevel: "high" } });
+	await say(root, "CONFIGURE-FAILED");
+	const failed = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_configure");
+	assert.equal(failed?.isError, true, "a failed outcome is an error result");
+	const details = failed?.details as { structuredContent?: { outcome?: string } } | undefined;
+	assert.equal(details?.structuredContent?.outcome, "failed", "the outcome is structured");
+
+	holder.configureOutcome = "applied";
+	route.script.push({ tool: "agent_configure", args: { sessionId: storageId, thinkingLevel: "high" } });
+	await say(root, "CONFIGURE-SELF");
+	const selfOutcome = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_configure");
+	assert.equal(selfOutcome?.isError, true, "self configuration is refused");
+	assert.match(selfOutcome?.text ?? "", /calling conversation/u);
+	assert.equal(calls.filter((call) => call.method === "configure").length, 1, "the self guard runs before dispatch");
 });
 
 it("keeps the fake model helpers honest", () => {

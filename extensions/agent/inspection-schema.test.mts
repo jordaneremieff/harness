@@ -5,18 +5,35 @@ import type { TSchema } from "typebox";
 import { Check } from "typebox/value";
 import register from "./index.ts";
 import { parseInspectParams } from "./durable-observation.ts";
+import { AGENT_CONTROL_TOOL_NAMES, AGENT_CONTROL_GUIDANCE } from "./control-guidance.ts";
+import { ListOutputSchema, StatusOutputSchema, InspectOutputSchema } from "./observation-schema.ts";
+
+interface ToolDeclaration { name: string; parameters: TSchema; outputSchema?: TSchema; promptSnippet?: string; promptGuidelines?: string[] }
+function declarations(): Map<string, ToolDeclaration> {
+	const tools = new Map<string, ToolDeclaration>();
+	register({
+		events: { emit() {} }, on: () => () => {},
+		registerTool: (tool: ToolDeclaration) => tools.set(tool.name, tool),
+		registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
+	} as unknown as ExtensionAPI);
+	return tools;
+}
+
+it("declares shared task guidance and exact observation results on primary tools", () => {
+	const tools = declarations();
+	for (const name of AGENT_CONTROL_TOOL_NAMES) {
+		const declaration = tools.get(name);
+		assert.ok(declaration);
+		assert.equal(declaration.promptSnippet, AGENT_CONTROL_GUIDANCE[name].snippet);
+		assert.deepEqual(declaration.promptGuidelines, [...AGENT_CONTROL_GUIDANCE[name].guidelines ?? []]);
+	}
+	assert.deepEqual(tools.get("agent_list")?.outputSchema, ListOutputSchema);
+	assert.deepEqual(tools.get("agent_status")?.outputSchema, StatusOutputSchema);
+	assert.deepEqual(tools.get("agent_inspect")?.outputSchema, InspectOutputSchema);
+});
 
 it("declares native result, exact-entry, and cursor inspection inputs on the primary", () => {
-	const tools = new Map<string, TSchema>();
-	register({
-		events: { emit() {} },
-		on: () => () => {},
-		registerTool: (tool: { name: string; parameters: TSchema }) => tools.set(tool.name, tool.parameters),
-		registerCommand() {},
-		registerShortcut() {},
-		registerMessageRenderer() {},
-	} as unknown as ExtensionAPI);
-	const schema = tools.get("agent_inspect");
+	const schema = declarations().get("agent_inspect")?.parameters;
 	assert.ok(schema);
 	const inputs = [
 		{ sessionId: "storage", view: "result", submissionId: 7 },

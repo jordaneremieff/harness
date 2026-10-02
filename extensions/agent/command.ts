@@ -64,7 +64,7 @@ async function metadataChoices(sources: AgentObservationSources, action: AgentCo
 	const firstWord = rest.split(/\s+/, 1)[0];
 	const afterId = /\s/.test(rest);
 	const suffix = action.args.length > 1 ? " " : "";
-	const sessions = await sources.list();
+	const sessions = (await sources.list()).rows;
 	// An exact ID ends selection. Later words belong to the message or correction.
 	if (afterId && sessions.some((row) => row.id === firstWord)) return null;
 	return sessions.slice().reverse().map((row) => sessionChoice(row, sessions, before, suffix));

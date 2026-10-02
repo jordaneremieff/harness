@@ -31,13 +31,14 @@ const rows: AgentConversationSummary[] = [
 	{ id: "open-2", storageId: "storage", name: "Review parser", cwd: "/work/parser", modifiedAt: 2, owner: "here", state: "idle", cost: 0, partial: false },
 	{ id: "claimed-3", storageId: "storage", name: "Audit", cwd: "/work/audit", modifiedAt: 3, owner: "unavailable", ownerLabel: "another window", state: "unavailable", cost: 0, partial: false },
 ];
+const page = (items: readonly AgentConversationSummary[]) => ({ rows: items, coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null }, observedAt: new Date().toISOString() });
 function completionFixture(sessions: () => Promise<readonly AgentConversationSummary[]> = async () => rows) {
 	return createAgentCommand([
 		{ name: "send", description: "Give a session its next task", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async () => undefined },
 		{ name: "steer", description: "Redirect work", args: [{ name: "session", complete: "session-control" }, { name: "message", rest: true }], run: async () => undefined },
 		{ name: "abort", description: "Stop work", args: [{ name: "session", complete: "session-control" }], run: async () => undefined },
 		{ name: "status", description: "Read owner status", args: [{ name: "session", complete: "session-control" }], run: async () => undefined },
-	], { list: sessions, snapshot: async () => { throw new Error("not requested"); } });
+	], { list: async () => page(await sessions()), snapshot: async () => { throw new Error("not requested"); } });
 }
 
 describe("agent command discovery and help", () => {
@@ -141,7 +142,7 @@ describe("agent command discovery and help", () => {
 
 	it("preserves text that contains help words and reports invocation errors", async () => {
 		const calls: string[][] = [];
-		const command = createAgentCommand([{ name: "new", description: "Start work", args: [{ name: "prompt", optional: true, rest: true }], run: async (args) => { calls.push(args); throw new Error("trust denied"); } }], { list: async () => [], snapshot: async () => { throw new Error("not requested"); } });
+		const command = createAgentCommand([{ name: "new", description: "Start work", args: [{ name: "prompt", optional: true, rest: true }], run: async (args) => { calls.push(args); throw new Error("trust denied"); } }], { list: async () => page([]), snapshot: async () => { throw new Error("not requested"); } });
 		const { ctx, notices } = context();
 		await command.handler("new help with --help output", ctx);
 		assert.deepEqual(calls, [["help", "with", "--help", "output"]]);

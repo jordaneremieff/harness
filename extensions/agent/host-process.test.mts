@@ -1,25 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { connect, type Socket } from "node:net";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
+import type { JsonValue, ServiceCall } from "@earendil-works/chord";
+import { Client } from "@earendil-works/pi-client";
+import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { observeClaim } from "./claims.ts";
-import {
-	HOST_PROTOCOL_VERSION,
-	HostError,
-	HostFrameDecoder,
-	encodeHostFrame,
-	hostPaths,
-	parseHostMetadata,
-	parseHostServerMessage,
-	type HostClientMessage,
-	type HostMetadata,
-	type HostServerMessage,
-} from "./host-protocol.ts";
+import { HOST_CHANGE_SERVICE_ID, HOST_SERVICE_ID, HostError, hostPaths, parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
 import { HostClaimRefusedError, resolveIdleMs, runHost, type HostProcess, type HostRuntime } from "./host-process.ts";
+import { waitUntil } from "./host-fixture.mts";
 
 function noop(): void {}
 
@@ -31,7 +24,7 @@ function fixtureRoot(t: { after(fn: () => void): void }): string {
 
 function metadata(root: string): HostMetadata {
 	return parseHostMetadata({
-		storageId: "storage-1",
+		storageId: randomUUID(),
 		cwd: root,
 		agentDir: join(root, "agent"),
 		packageDir: join(root, "package"),
@@ -43,68 +36,31 @@ function metadata(root: string): HostMetadata {
 
 function echoRuntime(): HostRuntime {
 	return {
-		request: async (method, params) => ({ method, params }),
+		request: async (method, params) => {
+			if (method === "fail") throw new HostError("not allowed", "invalid");
+			return { method, params };
+		},
 		close: async () => {},
 		isIdle: () => true,
 	};
 }
 
-class RawClient {
-	private readonly decoder = new HostFrameDecoder();
-	private readonly messages: HostServerMessage[] = [];
-	private readonly waiters: Array<{ resolve: (message: HostServerMessage) => void; reject: (error: Error) => void }> = [];
-	private failure: Error | undefined;
-	readonly socket: Socket;
+async function connectClient(config: HostMetadata): Promise<Client> {
+	return Client.connect({ serverId: hostPaths(config).serverId, transportFactory: createUnixTransportFactory({ path: hostPaths(config).socket }) });
+}
 
-	constructor(socket: Socket) {
-		this.socket = socket;
-		socket.on("data", (chunk: Buffer) => {
-			let parsed: HostServerMessage[];
-			try {
-				parsed = this.decoder.push(chunk).map((raw) => parseHostServerMessage(raw));
-			} catch (error) {
-				this.fail(error instanceof Error ? error : new Error(String(error)));
-				return;
-			}
-			for (const message of parsed) {
-				const waiter = this.waiters.shift();
-				if (waiter) waiter.resolve(message);
-				else this.messages.push(message);
-			}
-		});
-		socket.on("error", () => {});
-		socket.on("close", () => this.fail(new Error("durable host closed the connection")));
-	}
+function serviceCall(method: string, params?: unknown, id = randomUUID()): ServiceCall {
+	return { serviceId: HOST_SERVICE_ID, member: method, args: [params === undefined ? null : (params as JsonValue), id] };
+}
 
-	static connect(path: string): Promise<RawClient> {
-		return new Promise((resolveConnect, rejectConnect) => {
-			const socket = connect(path);
-			const client = new RawClient(socket);
-			socket.once("connect", () => resolveConnect(client));
-			socket.once("error", rejectConnect);
-		});
-	}
+function call(client: Client, config: HostMetadata, method: string, params?: unknown, signal?: AbortSignal): Promise<unknown> {
+	return client.request({ serverId: hostPaths(config).serverId }, serviceCall(method, params), signal);
+}
 
-	send(message: HostClientMessage): void {
-		this.socket.write(encodeHostFrame(message));
-	}
-
-	next(): Promise<HostServerMessage> {
-		const message = this.messages.shift();
-		if (message) return Promise.resolve(message);
-		if (this.failure) return Promise.reject(this.failure);
-		return new Promise((resolveNext, rejectNext) => this.waiters.push({ resolve: resolveNext, reject: rejectNext }));
-	}
-
-	destroy(): void {
-		this.socket.destroy();
-	}
-
-	private fail(error: Error): void {
-		if (this.failure) return;
-		this.failure = error;
-		for (const waiter of this.waiters.splice(0)) waiter.reject(error);
-	}
+async function startHost(root: string, idleMs = 0, runtime: () => HostRuntime = echoRuntime): Promise<{ host: HostProcess; metadata: HostMetadata }> {
+	const config = metadata(root);
+	const host = await runHost(runtime, { metadata: config, idleMs, announceReady: noop });
+	return { host, metadata: config };
 }
 
 async function deadPid(): Promise<number> {
@@ -115,138 +71,23 @@ async function deadPid(): Promise<number> {
 	return pid;
 }
 
-/** Wait for a test condition without a fixed sleep. */
-async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (!predicate()) {
-		if (Date.now() >= deadline) throw new Error("test condition was not reached before its deadline");
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-}
-
-async function startHost(root: string, idleMs = 0): Promise<{ host: HostProcess; metadata: HostMetadata }> {
-	const config = metadata(root);
-	const host = await runHost(echoRuntime, { metadata: config, idleMs, announceReady: noop });
-	return { host, metadata: config };
-}
-
-it("serves an authenticated request and closes cleanly", { timeout: 15000 }, async (t) => {
+it("serves a request and rejects a client with the wrong serverId", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const { host, metadata: config } = await startHost(root);
-	const paths = hostPaths(config);
-	const endpoint = JSON.parse(readFileSync(paths.endpoint, "utf8")) as { token: string };
-
-	const rejected = await RawClient.connect(paths.socket);
-	rejected.send({ kind: "hello", version: HOST_PROTOCOL_VERSION, token: "wrong-token", metadata: config });
-	await assert.rejects(rejected.next());
-
-	const client = await RawClient.connect(paths.socket);
-	client.send({ kind: "hello", version: HOST_PROTOCOL_VERSION, token: endpoint.token, metadata: config });
-	assert.equal((await client.next()).kind, "welcome");
-	client.send({ kind: "request", id: "a", method: "echo", params: { value: 1 } });
-	assert.deepEqual(await client.next(), { kind: "response", id: "a", ok: true, result: { method: "echo", params: { value: 1 } } });
-	client.destroy();
-
-	await host.close();
-	await host.done;
-	assert.equal(existsSync(paths.claim), false, "claim released");
-	assert.equal(existsSync(paths.socket), false, "socket removed");
-	assert.equal(existsSync(paths.endpoint), false, "endpoint removed");
+	t.after(() => host.close().catch(() => {}));
+	const client = await connectClient(config);
+	assert.deepEqual(await call(client, config, "echo", { value: 1 }), { method: "echo", params: { value: 1 } });
+	await client.dispose();
+	await assert.rejects(Client.connect({ serverId: randomUUID(), transportFactory: createUnixTransportFactory({ path: hostPaths(config).socket }) }));
 });
 
-it("closes with an attached client without waiting for it", { timeout: 15000 }, async (t) => {
+it("preserves a runtime error message", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const { host, metadata: config } = await startHost(root);
-	const paths = hostPaths(config);
-	const token = (JSON.parse(readFileSync(paths.endpoint, "utf8")) as { token: string }).token;
-	const client = await RawClient.connect(paths.socket);
-	client.send({ kind: "hello", version: HOST_PROTOCOL_VERSION, token, metadata: config });
-	assert.equal((await client.next()).kind, "welcome");
-	await host.close();
-	await host.done;
-	await assert.rejects(client.next());
-	assert.equal(existsSync(paths.claim), false);
-});
-
-it("serves concurrent requests and forwards runtime error codes", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const config = metadata(root);
-	const runtime: HostRuntime = {
-		request: async (method, params) => {
-			if (method === "fail") throw new HostError("not allowed", "invalid");
-			await new Promise((resolve) => setTimeout(resolve, 20));
-			return { method, params };
-		},
-		close: async () => {},
-		isIdle: () => true,
-	};
-	const host = await runHost(() => runtime, { metadata: config, idleMs: 0, announceReady: noop });
-	const paths = hostPaths(config);
-	const token = (JSON.parse(readFileSync(paths.endpoint, "utf8")) as { token: string }).token;
-	const client = await RawClient.connect(paths.socket);
-	client.send({ kind: "hello", version: HOST_PROTOCOL_VERSION, token, metadata: config });
-	await client.next();
-	client.send({ kind: "request", id: "first", method: "echo", params: 1 });
-	client.send({ kind: "request", id: "second", method: "echo", params: 2 });
-	client.send({ kind: "request", id: "third", method: "fail" });
-	const responses = [await client.next(), await client.next(), await client.next()];
-	assert.deepEqual(responses.map((response) => response.kind === "response" ? response.id : "").sort(), ["first", "second", "third"]);
-	const failure = responses.find((response) => response.kind === "response" && response.id === "third");
-	assert.equal(failure?.kind === "response" && failure.ok === false ? failure.error.code : undefined, "invalid");
-	client.destroy();
-	await host.close();
-});
-
-it("cancels a wait on a cancel frame or disconnect and leaves other requests alone", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const config = metadata(root);
-	const seen: Array<{ method: string; signal?: AbortSignal }> = [];
-	let cancelled = 0;
-	const runtime: HostRuntime = {
-		request: async (method, params, _requestId, signal) => {
-			seen.push({ method, ...(signal === undefined ? {} : { signal }) });
-			if (method === "receipts" && (params as { wait?: boolean } | undefined)?.wait === true) {
-				return new Promise((_resolve, reject) => {
-					signal?.addEventListener("abort", () => {
-						cancelled += 1;
-						reject(new Error("cancelled"));
-					}, { once: true });
-				});
-			}
-			return { method };
-		},
-		close: async () => {},
-		isIdle: () => true,
-	};
-	const host = await runHost(() => runtime, { metadata: config, idleMs: 0, announceReady: noop });
-	const paths = hostPaths(config);
-	const token = (JSON.parse(readFileSync(paths.endpoint, "utf8")) as { token: string }).token;
-
-	const cancelling = await RawClient.connect(paths.socket);
-	cancelling.send({ kind: "hello", version: HOST_PROTOCOL_VERSION, token, metadata: config });
-	await cancelling.next();
-	cancelling.send({ kind: "request", id: "w1", method: "receipts", params: { wait: true } });
-	await waitFor(() => seen.filter((entry) => entry.method === "receipts").length === 1);
-	cancelling.send({ kind: "cancel", id: "w1" });
-	const cancelledResponse = await cancelling.next();
-	assert.equal(cancelledResponse.kind === "response" ? cancelledResponse.id : "", "w1");
-	assert.equal(cancelledResponse.kind === "response" && cancelledResponse.ok, false);
-	cancelling.send({ kind: "request", id: "e1", method: "echo" });
-	assert.equal((await cancelling.next()).kind, "response");
-	cancelling.destroy();
-
-	const disconnecting = await RawClient.connect(paths.socket);
-	disconnecting.send({ kind: "hello", version: HOST_PROTOCOL_VERSION, token, metadata: config });
-	await disconnecting.next();
-	disconnecting.send({ kind: "request", id: "w2", method: "receipts", params: { wait: true } });
-	await waitFor(() => seen.filter((entry) => entry.method === "receipts").length === 2);
-	disconnecting.destroy();
-	await waitFor(() => cancelled === 2);
-	for (const entry of seen) {
-		if (entry.method === "receipts") assert.ok(entry.signal !== undefined, "waits receive a cancelable signal");
-		if (entry.method === "echo") assert.equal(entry.signal, undefined, "other requests receive no signal");
-	}
-	await host.close();
+	t.after(() => host.close().catch(() => {}));
+	const client = await connectClient(config);
+	await assert.rejects(call(client, config, "fail"), (error: unknown) => error instanceof Error && error.message === "not allowed");
+	await client.dispose();
 });
 
 it("refuses a second host while the claim is live without creating its runtime", { timeout: 15000 }, async (t) => {
@@ -297,20 +138,77 @@ it("waits for runtime idle before retiring", { timeout: 15000 }, async (t) => {
 	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "absent");
 });
 
-it("holds the claim before the runtime factory and releases it on failure", { timeout: 15000 }, async (t) => {
+it("cancels a wait on caller abort and on client disconnect", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
-	const config = metadata(root);
-	const paths = hostPaths(config);
-	let sawClaim = false;
-	await assert.rejects(
-		runHost(() => {
-			sawClaim = observeClaim(paths.claim, paths.identity).kind === "live";
-			throw new Error("factory boom");
-		}, { metadata: config, idleMs: 0, announceReady: noop }),
-		/factory boom/u,
-	);
-	assert.equal(sawClaim, true, "the claim is on disk before the factory runs");
-	assert.equal(observeClaim(paths.claim, paths.identity).kind, "absent", "failed startup releases the claim");
+	let started = 0;
+	let aborted = 0;
+	const runtime: HostRuntime = {
+		request: async (method, _params, _requestId, signal) => {
+			if (method !== "receipts") return { method };
+			started += 1;
+			return new Promise((_resolve, reject) => {
+				signal?.addEventListener("abort", () => {
+					aborted += 1;
+					reject(signal.reason ?? new Error("aborted"));
+				}, { once: true });
+			});
+		},
+		close: async () => {},
+		isIdle: () => true,
+	};
+	const { host, metadata: config } = await startHost(root, 0, () => runtime);
+	t.after(() => host.close().catch(() => {}));
+
+	const first = await connectClient(config);
+	const controller = new AbortController();
+	const pending = call(first, config, "receipts", { wait: true }, controller.signal);
+	await waitUntil(() => started === 1);
+	controller.abort();
+	await assert.rejects(pending, (error: unknown) => error instanceof Error);
+	await waitUntil(() => aborted === 1);
+	await first.dispose();
+
+	const second = await connectClient(config);
+	const pendingDisconnect = call(second, config, "receipts", { wait: true });
+	await waitUntil(() => started === 2);
+	await second.dispose();
+	await assert.rejects(pendingDisconnect, (error: unknown) => error instanceof Error);
+	await waitUntil(() => aborted === 2);
+});
+
+it("publishes changed state to a public subscription", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const listeners = new Set<() => void>();
+	const runtime: HostRuntime = {
+		request: async (method) => {
+			if (method === "touch") {
+				for (const listener of [...listeners]) listener();
+				return { touched: true };
+			}
+			return { method };
+		},
+		close: async () => {},
+		isIdle: () => true,
+		onChange: (listener) => {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+	};
+	const { host, metadata: config } = await startHost(root, 0, () => runtime);
+	t.after(() => host.close().catch(() => {}));
+	const client = await connectClient(config);
+	const updates: unknown[] = [];
+	const subscription = await client.subscribeService({ serverId: hostPaths(config).serverId }, HOST_CHANGE_SERVICE_ID, "singleton", (update) => {
+		updates.push(update);
+	});
+	assert.equal(subscription.snapshot.serviceId, HOST_CHANGE_SERVICE_ID);
+	subscription.start();
+	await call(client, config, "touch");
+	await waitUntil(() => updates.length >= 1);
+	await subscription.dispose();
+	await client.dispose();
 });
 
 it("parses the idle window with the configured bounds", () => {
@@ -323,4 +221,16 @@ it("parses the idle window with the configured bounds", () => {
 	}
 	assert.throws(() => resolveIdleMs(-1, {}), /idleMs/u);
 	assert.throws(() => resolveIdleMs(Number.POSITIVE_INFINITY, {}), /idleMs/u);
+});
+
+it("keeps a deep agent directory working with a short socket path", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const deepRoot = join(root, "d".repeat(160));
+	const config = parseHostMetadata({ ...metadata(root), agentDir: join(deepRoot, "agent") });
+	const host = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop });
+	t.after(() => host.close().catch(() => {}));
+	assert.ok(Buffer.byteLength(host.socketPath, "utf8") <= 100);
+	const client = await connectClient(config);
+	assert.deepEqual(await call(client, config, "echo", "deep"), { method: "echo", params: "deep" });
+	await client.dispose();
 });

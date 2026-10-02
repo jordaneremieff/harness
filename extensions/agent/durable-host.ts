@@ -23,6 +23,7 @@ import { durableIdentity, optionalParam, parseInspectParams, readConversationLis
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
 
 export type { AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
+export type { ConfigurationResult } from "./configuration.ts";
 export type { AgentDeliveryState, AgentMeta, DeliveryIntent, DeliveryReceipt, DeliveryReport, DurableConfigureParams, DurableRunOutcome, DurableSubmitParams, DurableSubmitResult } from "./durable-controls.ts";
 export type { ConversationStatus, ConversationSummary, DurableInspectParams, DurableListParams, DurableStatusOptions, RequestParams } from "./durable-observation.ts";
 export type { DurableCommandCall, DurableCommand as DurableContributionCommand } from "./durable-services.ts";
@@ -57,6 +58,8 @@ export interface DurableHostOptions {
 	readonly contributionHost?: DurableContributionHost;
 	/** Start scheduling unfinished work on open. Default true. */
 	readonly resume?: boolean;
+	/** Resolved generation retry ceiling (`maxRetries + 1`) for dashboard auto-retry health. */
+	readonly retryMaxAttempts?: number;
 	readonly onReport?: HarnessOptions["onReport"];
 }
 
@@ -154,17 +157,23 @@ export class DurableHost {
 	private readonly rootConversation: Conversation;
 	private readonly commands: ReadonlyMap<string, DurableHostCommand>;
 	private readonly contributionHost: DurableContributionHost | undefined;
+	private readonly models: Models;
+	private readonly storagePath: string;
 	private readonly lifecycle = new AbortController();
 	private closed = false;
 	private idleValue = false;
 	private idleDirty = true;
 	private commitGeneration = 0;
 	private readonly defaultCwd: string | undefined;
+	private readonly retryMaxAttempts: number | undefined;
 
-	private constructor(harness: Harness, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined) {
+	private constructor(harness: Harness, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, retryMaxAttempts: number | undefined) {
 		this.harness = harness;
 		this.storageId = storageId;
 		this.rootConversation = root;
+		this.models = models;
+		this.storagePath = storagePath;
+		this.retryMaxAttempts = retryMaxAttempts;
 		const commandMap = new Map<string, DurableHostCommand>();
 		if (Array.isArray(commands)) for (const command of commands as readonly DurableHostCommand[]) commandMap.set(command.name, command);
 		else for (const [name, command] of commands as ReadonlyMap<string, DurableHostCommand>) commandMap.set(name, command);
@@ -255,7 +264,10 @@ export class DurableHost {
 						}),
 			});
 			if (options.resume !== false) await reconcileDeliveries(harness, context);
-			return new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd);
+			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.retryMaxAttempts);
+			// A fresh host has no commit to trigger the subscriber; establish the idle cache now.
+			await host.refreshIdle(context);
+			return host;
 		} catch (error) {
 			try {
 				await harness.close(BACKGROUND_CONTEXT);
@@ -343,7 +355,13 @@ export class DurableHost {
 
 	private dashboardOptions(params: RequestParams | undefined): DurableDashboardOptions {
 		const cwd = requestString(params, "cwd");
-		return { owner: "here", ...(this.defaultCwd === undefined ? {} : { cwd: this.defaultCwd }), ...(cwd === undefined ? {} : { cwd }) };
+		return {
+			owner: "here",
+			live: true,
+			...(this.retryMaxAttempts === undefined ? {} : { retryMaxAttempts: this.retryMaxAttempts }),
+			...(this.defaultCwd === undefined ? {} : { cwd: this.defaultCwd }),
+			...(cwd === undefined ? {} : { cwd }),
+		};
 	}
 
 	private async submitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
@@ -415,7 +433,11 @@ export class DurableHost {
 
 	private async inspectRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
-		return readInspection(this.harness, this.storageId, conversation, parseInspectParams(params), context);
+		return readInspection(this.harness, this.storageId, conversation, parseInspectParams(params), context, {
+			live: true,
+			owner: "here",
+			...(this.retryMaxAttempts === undefined ? {} : { retryMaxAttempts: this.retryMaxAttempts }),
+		});
 	}
 
 	private async statusRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
@@ -502,6 +524,8 @@ export class DurableHost {
 
 	private async compactRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
+		// Stop every reached task first; compaction starts from an idle conversation and does not resume the stopped work.
+		await abortConversation(conversation, true, context);
 		return compactConversation(this.harness, conversation, requestString(params, "instructions"), requestBoolean(params, "wait") ?? true, context);
 	}
 
@@ -519,8 +543,7 @@ export class DurableHost {
 			...(thinking === undefined ? {} : { thinkingLevel: thinking as DurableConfigureParams["thinkingLevel"] }),
 			...(name === undefined ? {} : { name: name as string | null }),
 		};
-		await configureConversation(this.harness, conversation, change, context);
-		return { conversationId: conversation.id, identity: this.identity(conversation.id) };
+		return await configureConversation(this.harness, conversation, { sessionId: this.identity(conversation.id), models: this.models, storagePath: this.storagePath }, change, context);
 	}
 
 	private async commandRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {

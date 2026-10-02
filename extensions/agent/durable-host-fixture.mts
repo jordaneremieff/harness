@@ -82,15 +82,19 @@ export function slowEffectTool(sideEffectPath: string, rerunPath?: string, hang 
 	});
 }
 
-/** A gate tool that resolves when the test releases it. */
+/** A gate tool that resolves when the test releases it or the call is aborted. */
 export function gateTool(release: Promise<void>, onStarted?: () => void): ToolRegistration {
 	return defineTool({
 		name: "gate",
 		description: "Wait for the test to release the gate.",
 		parameters: Type.Object({}),
-		execute: async () => {
+		execute: async (_args, _api, context) => {
 			onStarted?.();
-			await release;
+			await new Promise<void>((resolve) => {
+				release.then(() => resolve());
+				if (context.abortSignal?.aborted) resolve();
+				else context.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+			});
 			return {};
 		},
 	});
@@ -152,6 +156,21 @@ export async function scriptedRuntime(messages: readonly AssistantMessage[]): Pr
 		id: fixtureProvider,
 		name: "Durable host fixture",
 		getModels: () => [testModel],
+		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
+		stream: streamSimple,
+		streamSimple,
+	});
+	return runtime;
+}
+
+/** A runtime holding the reasoning fixture model and a non-reasoning variant. */
+export async function reasoningRuntime(): Promise<Models> {
+	const runtime = await createTestRuntime();
+	const streamSimple = () => completed(answerMessage());
+	runtime.registerNativeProvider({
+		id: fixtureProvider,
+		name: "Durable host reasoning fixture",
+		getModels: () => [testModel, { ...testModel, id: "plain", name: "Plain model", reasoning: false }],
 		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
 		stream: streamSimple,
 		streamSimple,

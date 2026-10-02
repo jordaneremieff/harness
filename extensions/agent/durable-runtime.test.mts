@@ -38,6 +38,25 @@ interface SearchPage {
 	readonly matches: readonly unknown[];
 }
 
+/** Reject when `ready` does not settle before the public deadline signal fires. */
+async function within(ready: Promise<void>, timeoutMs: number, message: string): Promise<void> {
+	const deadline = AbortSignal.timeout(timeoutMs);
+	await new Promise<void>((resolve, reject) => {
+		const onAbort = () => reject(new Error(message));
+		deadline.addEventListener("abort", onAbort, { once: true });
+		ready.then(
+			() => {
+				deadline.removeEventListener("abort", onAbort);
+				resolve();
+			},
+			(error) => {
+				deadline.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
 it("installs contributions against the cold observation Harness before the first read", { timeout: 180000 }, async (t) => {
 	const f = runtimeFixture(t, { withAgentExtension: true });
 	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
@@ -152,5 +171,88 @@ it("does not rerun an unsafe effect after SIGKILL and delivers the retained resu
 		assert.ok(interrupted.matches.length >= 1, "the interrupted tool result is retained");
 	} finally {
 		await second.close();
+	}
+});
+
+it("keeps change notifications after reload replaces the durable host", { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
+	trackHost(t, primary.pid);
+	let unsubscribe: (() => void) | undefined;
+	try {
+		let notifications = 0;
+		let reloaded = false;
+		let resolveVerified: () => void = () => {};
+		let rejectGuard: (error: unknown) => void = () => {};
+		const verified = new Promise<void>((resolve) => {
+			resolveVerified = resolve;
+		});
+		const failed = new Promise<void>((_resolve, reject) => {
+			rejectGuard = reject;
+		});
+		let checking = false;
+		let checkAgain = false;
+		/** One guarded async check per change event: reload while idle, then verify the configured name. */
+		const advance = async (): Promise<void> => {
+			const status = (await primary.request("status", { sessionId: f.metadata.storageId })) as { conversation?: { name?: string } };
+			if (status.conversation?.name === "after reload") {
+				resolveVerified();
+				return;
+			}
+			if (reloaded) return;
+			const outcome = (await primary.request("command", { name: "reload", invocationId: "reload-changes" })) as { reloaded?: boolean };
+			if (outcome.reloaded !== true) return;
+			reloaded = true;
+			await primary.request("configure", { sessionId: f.metadata.storageId, name: "after reload" });
+		};
+		const runGuard = (): void => {
+			if (checking) {
+				checkAgain = true;
+				return;
+			}
+			checking = true;
+			void (async () => {
+				try {
+					for (;;) {
+						await advance();
+						if (!checkAgain) return;
+						checkAgain = false;
+					}
+				} catch (error) {
+					rejectGuard(error);
+				} finally {
+					checking = false;
+				}
+			})();
+		};
+		const subscribeChanges = primary.subscribeChanges?.bind(primary);
+		assert.ok(subscribeChanges, "the acquired connection exposes change subscriptions");
+		unsubscribe = await subscribeChanges(() => {
+			notifications += 1;
+			runGuard();
+		});
+		await Promise.race([within(verified, 30000, "no change notification carried the configured name after reload"), failed]);
+		assert.equal(reloaded, true, "the reload completed after the guarded idle check");
+		assert.ok(notifications >= 2, "the initial snapshot and a post-reload commit notified the persistent listener");
+	} finally {
+		unsubscribe?.();
+		await primary.close().catch(() => {});
+	}
+});
+
+it("repairs an unavailable retained model through attach on an idle host", { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t);
+	// The runner reads the passed metadata; the on-disk catalog record is not consulted for the open.
+	const unavailable = { provider: "absent", modelId: "missing-model" };
+	const metadata = { ...f.metadata, model: unavailable };
+	const primary = await acquireHost(metadata, { env: f.env("answer") });
+	trackHost(t, primary.pid);
+	try {
+		const before = (await primary.request("status", { sessionId: metadata.storageId })) as { conversation?: { agent?: { model?: { provider?: string; modelId?: string } } } };
+		assert.deepEqual(before.conversation?.agent?.model, unavailable, "the retained unavailable identity is reported before repair");
+		const repaired = (await primary.request("attach", { sessionId: metadata.storageId, model: { provider: "durable-runtime-fixture", modelId: "fixture-model" } })) as { conversation?: { agent?: { model?: { provider?: string; modelId?: string } } } };
+		assert.deepEqual(repaired.conversation?.agent?.model, { provider: "durable-runtime-fixture", modelId: "fixture-model" }, "attach repairs the stored identity with the fixture model");
+	} finally {
+		await primary.close().catch(() => {});
 	}
 });

@@ -22,8 +22,13 @@ The published coding-agent package does not expose that client integration.
 - Each storage has one writer claim. The process takes it before it opens
   SQLite or resumes the Durable scheduler. A live or unverified claim refuses
   a second writer. A dead local owner permits a replacement.
-- The primary talks to the host through a local authenticated socket. Closing
-  a client or canceling an observation does not cancel admitted work.
+- The primary talks to the host through the public `pi-server`/`pi-client`
+  Unix transport (the Pi service protocol). A private 0700 directory, an
+  owner-only 0600 socket, and the exact `serverId` handshake are the boundary;
+  no token crosses it. Closing a client or canceling an observation does not
+  cancel admitted work.
+- The primary registers one channel over the same public transport. That channel
+  returns peer messages and answers the host's project-trust prompts.
 - Host retirement requires no clients and no active work. `PI_AGENT_IDLE_MINUTES`
   controls the idle interval; zero disables retirement.
 
@@ -83,7 +88,7 @@ selection and MCP server configuration follow the current Pi settings.
 | `agent_send` | Admit a task, report, or correction. Busy recipients receive Durable steering. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. |
-| `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. |
+| `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. An explicit model is applied first; a failed configuration returns its failure instead of a status snapshot. |
 | `agent_configure` | Change an idle conversation's name, exact model, or reasoning level. |
 | `agent_fork` | Create an idle native fork at an entry or current leaf. |
 | `agent_rewind` | Fork before a mistaken entry and submit a correction. Files remain current. |
@@ -106,6 +111,13 @@ messages, steering, a new task, and a configuration dialog.
 `/agent unbind <area>` removes only the directory binding. It does not delete
 storage or abort work.
 
+A blank configure name clears the stored name. An exact `provider/model` is
+validated against the configured catalog, and the requested reasoning level is
+clamped by Pi. Configuration requires an idle conversation, starts no task, and
+changes no global defaults. Fork, rewind, and configure results carry a bounded
+status snapshot; if that read fails after the mutation, the result carries
+`snapshotError` and the successful receipt stays.
+
 ## Recovery and delivery
 
 An admitted input has a stable Durable request ID. Reconnecting or retrying the
@@ -118,14 +130,24 @@ Durable records an interrupted result for the next model step. This does not
 promise general exactly-once external effects, power-loss durability, or
 termination of an uncooperative shell descendant.
 
-Retained outcomes include submission and answer entry IDs. Reports and results
-wait in Durable documents for the addressed owner. An ordinary primary sends
-its native message before it acknowledges that source. A Durable owner receives
-a native follow-up with a stable request ID before the source is acknowledged.
-Cross-host delivery has no shared transaction. The native request ID deduplicates
-retries to Durable owners; a crash after ordinary-primary message delivery but
-before acknowledgement can repeat that notice. Source IDs identify repetitions. A delivery
-receipt never proves task acceptance or that an agent acted on a correction.
+Retained outcomes include submission and answer entry IDs. The source storage's
+durable-delivery watcher is the sole retained-output delivery owner: after every
+native commit it settles intents, routes each unacknowledged receipt or report,
+and only then acknowledges the source. A catalog owner receives an untrusted
+follow-up in its own host. A noncatalog owner is an ordinary primary reached
+through its registered primary channel. Only an absent or proven-dead owner
+endpoint permits fallback: the watcher broadcasts to every live primary within
+one bounded discovery of registered endpoints, and each delivery is labeled
+`no live owning session` while the original owner identity stays in the message
+details. It acknowledges the row only after discovery and every delivery
+complete; a partial or unavailable scan leaves the row pending and reports that
+coverage explicitly. A live or unknown owner endpoint refuses fallback and
+retries. The primary does not poll receipts. Delivery is at-least-once; stable
+request and source IDs let each receiver deduplicate, and a crash after display
+but before acknowledgement can repeat a notice. Transmitted peer bodies have a
+text bound and an explicit truncation marker; `agent_inspect` retains access to
+the full source. A delivery receipt never proves task acceptance or that an
+agent acted on a correction.
 
 ## Observation and dashboard
 
@@ -136,13 +158,26 @@ private SQL or becomes a source writer.
 
 History, exact entries, branch reads, searches, and results have explicit bounds
 and continuation fields. Continue an incomplete page even when it has no
-matches. Provider signatures, image payloads, and redacted thinking are omitted
-with markers and counts. Task outcomes are execution evidence, not acceptance.
+matches. A no-target status is byte-bounded: it reports the measured byte figure
+and separate omitted counts for sessions, primaries, and failures, then points
+to `agent_list` for paged discovery. Provider signatures, image payloads, and
+redacted thinking are omitted with markers and counts. Task outcomes are
+execution evidence, not acceptance.
 
 The dashboard receives native conversation records through `dashboard-types.ts`.
-It does not parse ordinary JSONL. The footer shows active conversations and
-retained native cost. `+?` marks incomplete or unreadable cost. Repeated
-observations do not accumulate the same usage twice.
+It does not parse ordinary JSONL. Its roster is one bounded page: rows plus
+coverage (`complete`, `storagesVisited`, `skipped`, `omitted`, `nextCursor`).
+Coverage names skipped stores and rows not loaded; a continuation cursor means
+more inventory to inspect and may end at an empty page, so a bounded or empty
+page is not proof of absence. Attention means a row needs operator action: an
+unavailable or claim-conflicted storage, a host's last error or failed
+compaction, a failed run that carries an error, or a provider retry whose
+attempts are exhausted. A stopped session and an interrupted turn keep their
+state glyph in their date group; a terminal outcome without an error is a
+record, not a request. The footer formats active conversations and
+retained native cost from the same page and refreshes on host change
+notifications, not a receipt poll. `+?` marks incomplete or unreadable cost.
+Repeated observations do not accumulate the same usage twice.
 
 The actual primary Pi conversation remains an ordinary terminal session. The
 board does not display a fabricated Durable copy as that primary. Equal-peer
@@ -172,9 +207,11 @@ SessionManager.
 Current storage lives under `<store>/durable/`: a bounded discovery metadata
 record and a SQLite file for each storage, plus directory bindings. Metadata
 locates a storage; native documents and entries remain authoritative for its
-conversation state. Host endpoints and claims live under
-`<agentDir>/durable-hosts/`. Long Unix socket paths use a short disposable path
-under the system temporary directory.
+conversation state. Directory bindings live in one `PlaceBook`; native and
+primary controls resolve the same binding, and the longest bound directory wins.
+Host endpoints and claims live under `<agentDir>/durable-hosts/`; primary channel
+endpoints live under `<store>/.primaries/`. Long Unix socket paths use a short
+disposable path under the system temporary directory.
 
 Old ordinary agent files stay on disk untouched. The extension does not migrate
 or read them through a compatibility path. A process with the old manager

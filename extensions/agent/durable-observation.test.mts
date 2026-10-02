@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ConversationId, SubmissionId } from "@earendil-works/pi-durable";
+import type { ConversationId, LiveState, SubmissionId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DurableHost } from "./durable-host.ts";
-import { DurableObservation, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
-import { answerMessage, fixtureRegistry, fixtureRuntime, fixtureStorageId, hostOptions, redactedAnswerMessage, scriptedRuntime } from "./durable-host-fixture.mts";
+import { ACTIVITY_SCAN_BYTES, DurableObservation, dashboardHealth, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
+import { answerMessage, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, redactedAnswerMessage, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 
 function fixtureRoot(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "durable-observation-"));
@@ -18,6 +18,14 @@ function fixtureRoot(t: { after(fn: () => void): void }): string {
 
 async function observationFor(storagePath: string, registry = fixtureRegistry()): Promise<DurableObservation> {
 	return DurableObservation.open({ backupFrom: storagePath, storageId: fixtureStorageId, models: await fixtureRuntime("answer"), registry }, BACKGROUND_CONTEXT);
+}
+
+function defer(): { promise: Promise<void>; resolve: () => void } {
+	let resolve!: () => void;
+	const promise = new Promise<void>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
 }
 
 it("reads a cold snapshot with the live request surface and no writer", async (t) => {
@@ -246,4 +254,108 @@ it("reads a status target by external identity and a fork by its identity", asyn
 	} finally {
 		await observation.close();
 	}
+});
+
+it("reports live activity metadata, current tool, and turn duration", async (t) => {
+	const storagePath = join(fixtureRoot(t), "live.sqlite");
+	const started = defer();
+	const release = defer();
+	const registry = fixtureRegistry([gateTool(release.promise, started.resolve)]);
+	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("done")]), registry), BACKGROUND_CONTEXT);
+	try {
+		const submitted = await host.submit({ message: "live metadata", requestId: "live-1" });
+		await started.promise;
+		const activity = (await host.request("inspect", { view: "activity" })) as {
+			metadata: {
+				owner: string;
+				live: boolean;
+				operation: number | null;
+				runningTools: readonly { toolCallId: string; name: string; issuedAt?: string; elapsedMs?: number; elapsedFrom?: string }[];
+				pending: number | null;
+				streamedText?: string;
+			};
+			coverage: { scannedBytes: number; byteLimitReached: boolean; complete: boolean };
+		};
+		assert.equal(activity.metadata.owner, "here");
+		assert.equal(activity.metadata.live, true);
+		assert.ok(activity.metadata.operation !== null, "the live run task is the operation");
+		assert.equal(activity.metadata.pending, 0, "no queued input");
+		const running = activity.metadata.runningTools.find((tool) => tool.name === "gate");
+		assert.ok(running, "the running gate call is listed");
+		if (running?.issuedAt !== undefined) {
+			assert.equal(running.elapsedFrom, "tool-call-entry");
+			assert.ok((running.elapsedMs ?? -1) >= 0);
+		}
+		assert.ok(activity.coverage.scannedBytes > 0);
+
+		const dashboard = (await host.request("dashboard")) as readonly { currentTool?: { name: string; argument: string }; durationMs?: number; health?: unknown }[];
+		const row = dashboard[0];
+		assert.ok(row);
+		assert.equal(row.currentTool?.name, "gate");
+		assert.match(row.currentTool?.argument ?? "", /^\{\}$/u);
+		assert.ok((row.durationMs ?? -1) >= 0, "a working turn has a wall-clock duration");
+		assert.equal(row.health, undefined, "a healthy live host reports no recovery health");
+		release.resolve();
+		assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
+	} finally {
+		release.resolve();
+		await host.close();
+	}
+});
+
+it("classifies the cold owner through the caller's claim observation", async (t) => {
+	const storagePath = join(fixtureRoot(t), "owner.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	await host.close();
+	const models = await fixtureRuntime("answer");
+	const readable = await DurableObservation.open({ backupFrom: storagePath, storageId: fixtureStorageId, models, registry: fixtureRegistry(), classifyOwner: () => ({ owner: "unknown" }) }, BACKGROUND_CONTEXT);
+	try {
+		const rows = (await readable.request("dashboard")) as readonly { owner: string; ownerLabel?: string }[];
+		assert.equal(rows[0]?.owner, "unknown", "a readable, claimable storage is not unavailable");
+	} finally {
+		await readable.close();
+	}
+	const claimed = await DurableObservation.open({ backupFrom: storagePath, storageId: fixtureStorageId, models, registry: fixtureRegistry(), classifyOwner: () => ({ owner: "unavailable", label: "PID 42" }) }, BACKGROUND_CONTEXT);
+	try {
+		const rows = (await claimed.request("dashboard")) as readonly { owner: string; ownerLabel?: string }[];
+		assert.equal(rows[0]?.owner, "unavailable");
+		assert.equal(rows[0]?.ownerLabel, "PID 42");
+	} finally {
+		await claimed.close();
+	}
+});
+
+it("bounds the activity scan by bytes and reports entry and byte flags", async (t) => {
+	const storagePath = join(fixtureRoot(t), "bytes.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	try {
+		const submitted = await host.submit({ message: `huge ${ "x".repeat(70_000) }`, requestId: "bytes-1" });
+		assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
+	} finally {
+		await host.close();
+	}
+	const observation = await observationFor(storagePath);
+	try {
+		const activity = (await observation.request("inspect", { view: "activity" })) as { coverage: { scannedBytes: number; complete: boolean; entryLimitReached: boolean; byteLimitReached: boolean } };
+		assert.ok(activity.coverage.scannedBytes >= ACTIVITY_SCAN_BYTES, "the scan measured at least the byte bound");
+		assert.equal(activity.coverage.byteLimitReached, true);
+		assert.equal(activity.coverage.entryLimitReached, false);
+	} finally {
+		await observation.close();
+	}
+});
+
+it("derives dashboard health only from live recovery state", () => {
+	const live = {
+		generation: { attempt: 3, retry: { at: 2000, error: "provider down" } },
+		compactions: [{ taskId: 1, reason: "threshold", blocking: true, attempt: 2, retry: { at: 3000, error: "summary failed" } }],
+	} as unknown as LiveState;
+	const health = dashboardHealth(live, [{ reason: "missing_task", error: "definition missing" }], 1000, 4);
+	assert.deepEqual(health, {
+		lastError: "definition missing",
+		compactionFailure: { reason: "threshold", errorMessage: "summary failed", at: new Date(3000).toISOString() },
+		autoRetry: { attempt: 3, maxAttempts: 4, delayMs: 1000, errorMessage: "provider down" },
+	});
+	assert.equal(dashboardHealth(undefined, [], 0, 4), undefined, "a cold snapshot has no health");
+	assert.equal(dashboardHealth(live, [], 1000, undefined)?.autoRetry, undefined, "without a resolved retry ceiling there is no retry row");
 });

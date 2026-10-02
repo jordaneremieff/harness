@@ -4,15 +4,18 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, getPackageDir, type AgentToolResult, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Text } from "@earendil-works/pi-tui";
 import { Type, type TSchema } from "typebox";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
 import { configurationDialog } from "./configuration-dialog.ts";
 import { THINKING_LEVELS, parseConfigurationArguments } from "./configuration.ts";
 import { createAgentContribution, type AgentControlDispatch } from "./durable-agents.ts";
+import { AGENT_CONTROL_GUIDANCE, type AgentControlToolName } from "./control-guidance.ts";
+import { ListOutputSchema, StatusOutputSchema, InspectOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { createAgentToolCards, renderAgentPeerMessage } from "./tool-cards.ts";
 import { AgentManager, MANAGER_PROTOCOL, type AgentCaller } from "./manager.ts";
 import { createRestartCommand, type RestartHosts } from "./restart.ts";
 import { MAX_CONTINUITY_SUMMARY, SelfCompaction } from "./self-compaction.ts";
+import { promptProjectTrust } from "./trust-support.ts";
 
 export { AgentManager } from "./manager.ts";
 const ownerKey = Symbol.for("pi.extension.agent.owners");
@@ -48,8 +51,9 @@ const inspect = Type.Object({
 }, { additionalProperties: false });
 const compact = Type.Object({ sessionId: id, instructions: Type.Optional(Type.String()), summary: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_CONTINUITY_SUMMARY })) }, { additionalProperties: false });
 const configure = Type.Object({ sessionId: id, name: Type.Optional(Type.String({ maxLength: 256 })), model: Type.Optional(Type.String({ maxLength: 512 })), thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)), trust: maybeTrust }, { additionalProperties: false });
-const result = (value: unknown): AgentToolResult<unknown> => ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }], details: value, structuredContent: JSON.parse(JSON.stringify(value ?? null)) });
-const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({ id: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, ...(ctx.model ? { model: { provider: ctx.model.provider, modelId: ctx.model.id } } : {}), thinkingLevel: pi.getThinkingLevel() });
+const result = (value: unknown, schema?: TSchema): AgentToolResult<unknown> => ({ ...((value as { outcome?: string } | null)?.outcome === "failed" ? { isError: true } : {}), content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }], details: value, structuredContent: schema ? structuredObservation(schema, value) : JSON.parse(JSON.stringify(value ?? null)) });
+const observationSchemas: Partial<Record<AgentControlToolName, TSchema>> = { agent_list: ListOutputSchema, agent_status: StatusOutputSchema, agent_inspect: InspectOutputSchema };
+const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({ id: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, ...(ctx.model ? { model: { provider: ctx.model.provider, modelId: ctx.model.id } } : {}), thinkingLevel: pi.getThinkingLevel(), validateModel: (model) => { if (!ctx.modelRegistry.find(model.provider, model.modelId)) throw new Error(`Model is not in the configured catalog: ${model.provider}/${model.modelId}`); } });
 const asText = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2);
 
 export default function registerAgentExtension(pi: ExtensionAPI): void {
@@ -59,6 +63,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		return dispatch(method, params);
 	} }));
 	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
+	const cards = createAgentToolCards();
 	const primaries = new Map<string, AbortController>();
 	const getManager = (): AgentManager => {
 		const agentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
@@ -75,11 +80,13 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		return manager;
 	};
 	const control = (method: string, input: Record<string, unknown>, ctx: ExtensionContext) => getManager().control(method, input, caller(ctx, pi));
-	const register = (name: string, description: string, parameters: TSchema, execute: (input: Record<string, unknown>, ctx: ExtensionContext, callId: string) => Promise<unknown>, modelOnly = false): void => {
-		pi.registerTool({ name, label: name.replace("agent_", "Agent "), description, parameters, outputSchema: Type.Unknown(), ...(modelOnly ? { exposure: "model-only" as const } : {}),
-			async execute(callId, input, _signal, _update, ctx) { return result(await execute(input as Record<string, unknown>, ctx, callId)); },
-			renderCall(input, theme) { const args = input as Record<string, unknown>; return new Text(`${theme.fg("toolTitle", name)}${args.sessionId ? ` ${String(args.sessionId).slice(0, 36)}` : ""}`, 0, 0); },
-			renderResult(value, options, theme) { const text = value.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"); return new Text(options.expanded ? text : theme.fg("muted", text.length > 600 ? `${text.slice(0, 600)}\nExpand for retained details.` : text), 0, 0); },
+	const register = (name: AgentControlToolName, description: string, parameters: TSchema, execute: (input: Record<string, unknown>, ctx: ExtensionContext, callId: string) => Promise<unknown>, modelOnly = false): void => {
+		const guidance = AGENT_CONTROL_GUIDANCE[name];
+		const schema = observationSchemas[name];
+		pi.registerTool({ name, label: name.replace("agent_", "Agent "), description, promptSnippet: guidance.snippet, promptGuidelines: [...guidance.guidelines ?? []], parameters, outputSchema: schema ?? Type.Unknown(), ...(modelOnly ? { exposure: "model-only" as const } : {}),
+			async execute(callId, input, _signal, _update, ctx) { return result(await execute(input as Record<string, unknown>, ctx, callId), schema); },
+			renderCall: cards[name].renderCall,
+			renderResult: cards[name].renderResult,
 		});
 	};
 	register("agent_spawn", "Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. The host survives this Pi process.", spawn, (input, ctx) => getManager().spawn(input, caller(ctx, pi)));
@@ -105,33 +112,38 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		return control("compact", input, ctx);
 	}, true);
 
+	const sessionHelp = "Type part of a session name or directory, then press Tab to insert its ID.";
 	const actions: AgentCommandAction[] = [
-		{ name: "new", description: "Start a new Durable agent", args: [{ name: "task", rest: true, optional: true }], run: async (args, ctx) => asText(await getManager().spawn({ prompt: args.join(" ") || undefined }, caller(ctx, pi))) },
-		{ name: "list", description: "List Durable agents", args: [], run: async () => asText(await getManager().list()) },
-		{ name: "status", description: "Show agent state", args: [{ name: "session", optional: true, complete: "session" }], run: async (args) => asText(await getManager().status(args[0])) },
-		...["send", "steer"].map((name): AgentCommandAction => ({ name, description: `Send ${name === "steer" ? "a correction" : "a task or report"}`, args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async ([sessionId, ...words], ctx) => asText(await control("submit", { sessionId, message: words.join(" "), whenBusy: "steer" }, ctx)) })),
-		...["abort", "attach", "fork", "compact"].map((name): AgentCommandAction => ({ name, description: `${name} a Durable agent`, args: [{ name: "session", complete: "session-control" }], run: async ([sessionId], ctx) => asText(await control(name, { sessionId }, ctx)) })),
+		{ name: "new", description: "Start a new Durable agent", args: [{ name: "task", rest: true, optional: true }], help: "Describe the task in your own words. The agent uses your current directory and model. Its host survives this primary process; advanced overrides use agent_spawn.", run: async (args, ctx) => asText(await getManager().spawn({ prompt: args.join(" ") || undefined }, caller(ctx, pi))) },
+		{ name: "list", description: "List Durable agents", args: [], help: "Read saved agents without a writer. Use agent_list to continue bounded pages.", run: async () => asText(await getManager().list()) },
+		{ name: "status", description: "Show agent state", args: [{ name: "session", optional: true, complete: "session" }], help: `Without a session, show bounded native conversation state. ${sessionHelp}`, run: async (args) => asText(await getManager().status(args[0])) },
+		...["send", "steer"].map((name): AgentCommandAction => ({ name, description: `Send ${name === "steer" ? "a correction" : "a task or report"}`, ...(name === "steer" ? { confirm: "This admits a new direction for the selected agent. Admission does not prove action." } : {}), help: `${sessionHelp} After the session, write your message. Busy agents receive steering at the next native boundary.`, args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async ([sessionId, ...words], ctx) => asText(await control("submit", { sessionId, message: words.join(" "), whenBusy: "steer" }, ctx)) })),
+		{ name: "abort", description: "Stop current work; keep the agent", confirm: "This stops the selected agent's current operation without deleting its evidence.", help: sessionHelp, args: [{ name: "session", complete: "session-control" }], run: async ([sessionId], ctx) => asText(await control("abort", { sessionId }, ctx)) },
+		{ name: "attach", description: "Connect to an agent; optionally change its idle model", help: `${sessionHelp} An explicit provider/model changes only an idle agent. No new input starts. Retained unfinished work resumes.`, args: [{ name: "session", complete: "session" }, { name: "model", optional: true }], run: async ([sessionId, model], ctx) => asText(await control("attach", { sessionId, ...(model === undefined ? {} : { model }) }, ctx)) },
+		{ name: "fork", description: "Create an idle native branch", help: "Use an optional entry ID from agent_inspect. The source remains unchanged.", args: [{ name: "session", complete: "session" }, { name: "entry", optional: true }], run: async ([sessionId, entryId], ctx) => asText(await control("fork", { sessionId, ...(entryId === undefined ? {} : { entryId }) }, ctx)) },
+		{ name: "compact", description: "Compact an agent through its owner", confirm: "This aborts active work and compacts the selected agent without resuming it.", args: [{ name: "session", complete: "session-control" }, { name: "instructions", rest: true, optional: true }], run: async ([sessionId, ...words], ctx) => asText(await control("compact", { sessionId, ...(words.length ? { instructions: words.join(" ") } : {}) }, ctx)) },
 		{ name: "inspect", description: "Read retained conversation evidence", args: [{ name: "session", complete: "session" }], run: async ([sessionId], ctx) => asText(await control("inspect", { sessionId }, ctx)) },
-		{ name: "rewind", description: "Redo work from a mistaken entry", args: [{ name: "session", complete: "session" }, { name: "entry" }, { name: "correction", rest: true }], run: async ([sessionId, entryId, ...words], ctx) => asText(await control("rewind", { sessionId, entryId, correction: words.join(" ") }, ctx)) },
+		{ name: "rewind", description: "Redo work from a mistaken entry", confirm: "This creates a fork and starts corrected work against current files.", help: "Use an entry ID from agent_inspect. The source remains unchanged.", args: [{ name: "session", complete: "session" }, { name: "entry" }, { name: "correction", rest: true }], run: async ([sessionId, entryId, ...words], ctx) => asText(await control("rewind", { sessionId, entryId, correction: words.join(" ") }, ctx)) },
 		{ name: "configure", description: "Change an idle agent's configuration", args: [{ name: "session", complete: "session" }, { name: "configuration", rest: true }], run: async (args, ctx) => { const parsed = parseConfigurationArguments(args); return asText(await control("configure", { sessionId: parsed.sessionId, ...parsed.patch }, ctx)); }, dialog: async (target, ctx) => { if (!target) return "Select an agent before configuration."; const patch = await configurationDialog(target, ctx); return patch ? asText(await control("configure", { sessionId: target.id, ...patch }, ctx)) : undefined; } },
-		{ name: "command", description: "Run a native contribution command", args: [{ name: "session", complete: "session" }, { name: "name" }, { name: "args", rest: true, optional: true }], run: async ([sessionId, name, ...args], ctx) => asText(await control("command", { sessionId, name, args: args.join(" ") }, ctx)) },
-		{ name: "place", description: "Use a directory's agent", args: [{ name: "area", optional: true }, { name: "task", optional: true, rest: true }], run: async ([area, ...words], ctx) => asText(await getManager().place({ area, prompt: words.join(" ") || undefined }, caller(ctx, pi))) },
+		{ name: "command", description: "Run a native contribution command", confirm: "This invokes a command with the selected owner's authority.", args: [{ name: "session", complete: "session" }, { name: "name" }, { name: "args", rest: true, optional: true }], run: async ([sessionId, name, ...args], ctx) => asText(await control("command", { sessionId, name, args: args.join(" ") }, ctx)) },
+		{ name: "place", description: "Use a directory's agent", help: "The default is your current directory. A missing binding creates an agent. Use agent_place for directory paths with spaces.", args: [{ name: "area", optional: true }, { name: "task", optional: true, rest: true }], run: async ([area, ...words], ctx) => asText(await getManager().place({ area: area ? resolve(ctx.cwd, area) : ctx.cwd, prompt: words.join(" ") || undefined }, caller(ctx, pi))) },
 		{ name: "places", description: "List directory bindings", args: [], run: async () => asText(getManager().places.read()) },
-		{ name: "unbind", description: "Remove a directory binding without deleting its agent", args: [{ name: "area" }], run: async ([area]) => asText(getManager().places.unbind(area) ?? { removed: false }) },
+		{ name: "unbind", description: "Remove a directory binding without deleting its agent", confirm: "This removes the directory binding, not its agent.", help: "Use an exact directory from /agent places.", args: [{ name: "area" }], run: async ([area], ctx) => asText(getManager().places.unbind(resolve(ctx.cwd, area)) ?? { removed: false }) },
 	];
-	const command = createAgentCommand(actions, { list: () => getManager().dashboard(), snapshot: (sessionId) => getManager().snapshot(sessionId) });
+	const command = createAgentCommand(actions, { list: () => getManager().dashboardPage(), snapshot: (sessionId) => getManager().snapshot(sessionId) });
 	pi.registerCommand("agent", command);
 	pi.registerShortcut("ctrl+alt+g", { description: "Open the agent dashboard", handler: (ctx) => command.openDashboard(ctx) });
 	pi.registerCommand("restart", createRestartCommand({ hosts: agentRestartHosts, managedChild: () => false }));
-	pi.registerMessageRenderer("agent.peer", (message, _options, theme) => new Text(theme.fg("accent", typeof message.content === "string" ? message.content : asText(message.content)), 0, 0));
+	pi.registerMessageRenderer("agent.peer", renderAgentPeerMessage);
 	pi.on("session_start", async (_event, ctx) => {
 		selfCompaction.clear();
 		const sessionId = ctx.sessionManager.getSessionId();
 		primaries.get(sessionId)?.abort();
 		const abort = new AbortController(); primaries.set(sessionId, abort);
-		await getManager().registerPrimary(sessionId, { signal: abort.signal,
-			send: (text, details) => pi.sendMessage({ customType: "agent.peer", content: text, details, display: true }, { triggerTurn: true, deliverAs: "followUp" }),
+		await getManager().registerPrimary(sessionId, { signal: abort.signal, cwd: ctx.cwd, name: ctx.sessionManager.getSessionName(), model: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined, thinkingLevel: pi.getThinkingLevel(),
+			send: (text, details) => pi.sendMessage({ customType: "agent.peer", content: text, details, display: true }, { triggerTurn: true, deliverAs: "steer" }),
 			status: (text) => ctx.ui.setStatus("agent", text),
+			promptTrust: (cwd) => ctx.hasUI ? promptProjectTrust(cwd, { select: (question, options) => ctx.ui.select(question, [...options]) }) : Promise.resolve(undefined),
 		});
 	});
 	pi.on("agent_settled", () => { selfCompaction.clear(); });

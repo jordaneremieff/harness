@@ -15,8 +15,9 @@
  * defining a second copy.
  */
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import type { Context } from "@earendil-works/chord";
-import type { Message, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	AssistantEntry,
 	defineDoc,
@@ -33,6 +34,7 @@ import {
 	type UsageState,
 	type UserInput,
 } from "@earendil-works/pi-durable";
+import { boundedConfigurationResult, configurationModel, configurationThinkingLevel, validateConfigurationPatch, type ConfigurationPatch, type ConfigurationResult, type ConfigurationState } from "./configuration.ts";
 
 /** Conversation metadata retained beside the transcript: display name, creating owner, and title fallback. */
 export type AgentMeta = {
@@ -538,24 +540,152 @@ export interface DurableConfigureParams {
 	readonly name?: string | null;
 }
 
-/** Change model, reasoning level, or display name. Requires an idle conversation. */
+/** Runtime inputs the caller supplies for one native configuration attempt. */
+export interface DurableConfigureOptions {
+	/** External identity returned in the result. */
+	readonly sessionId: string;
+	/** The host's model catalog, for resolving and clamping the selected model. */
+	readonly models: Models;
+	/** Storage file whose existence the persistence field reports. */
+	readonly storagePath?: string;
+}
+
+const CONFIGURATION_PERSISTENCE_NOTE = "Durable commits are atomic per transaction; storage contents are not independently verified. No rollback or replay.";
+
+/** No native configuration hook exists; extension failures reach the host report channel instead. */
+function configurationHookErrors(): ConfigurationResult["hookErrors"] {
+	return {
+		count: 0,
+		events: [],
+		omitted: 0,
+		observation: "Durable configuration runs no model-selection or tool hooks; extension failures reach the host report channel instead.",
+	};
+}
+
+/** Committed configuration state: display name, exact model identity, and reasoning level. */
+async function readConfigurationState(harness: Harness, conversation: Conversation, context: Context): Promise<ConfigurationState> {
+	const agent = await conversation.agent(context);
+	const meta = await harness.snapshot(AgentMetaDoc, conversation.id, context);
+	return {
+		name: meta?.name ?? "",
+		model: agent.model === undefined ? null : `${agent.model.provider}/${agent.model.modelId}`,
+		thinkingLevel: agent.thinkingLevel ?? null,
+	};
+}
+
+/** Validate host configure parameters into the shared patch contract. */
+function configurationPatch(params: DurableConfigureParams): ConfigurationPatch {
+	const input: Record<string, unknown> = {};
+	if (params.name !== undefined) input.name = params.name ?? "";
+	if (params.model !== undefined) {
+		if (params.model === null) throw new TypeError("model cannot be cleared; supply an exact provider/model identity");
+		input.model = `${params.model.provider}/${params.model.modelId}`;
+	}
+	if (params.thinkingLevel !== undefined) {
+		if (params.thinkingLevel === null) throw new TypeError("thinkingLevel cannot be cleared; supply a level");
+		input.thinkingLevel = params.thinkingLevel;
+	}
+	return validateConfigurationPatch(input);
+}
+
+interface ResolvedConfiguration {
+	readonly requestedLevel?: ModelThinkingLevel;
+	readonly effectiveLevel?: ModelThinkingLevel;
+	readonly error?: string;
+}
+
+/** Resolve the reasoning request against the target model's supported levels. */
+function resolveConfiguration(patch: ConfigurationPatch, before: ConfigurationState, models: Models): ResolvedConfiguration {
+	const requestedLevel = configurationThinkingLevel(patch, before.thinkingLevel);
+	if (requestedLevel === undefined) return {};
+	const target = patch.model ?? before.model;
+	if (target === null) return { error: "The conversation has no model to clamp the reasoning level against." };
+	const identity = configurationModel(target);
+	const resolved = models.getModel(identity.provider, identity.modelId);
+	if (resolved === undefined) return { error: "The requested model is not available in the configured model catalog." };
+	return { requestedLevel, effectiveLevel: clampThinkingLevel(resolved, requestedLevel) };
+}
+
+interface AppliedConfiguration {
+	readonly writes: boolean;
+	readonly error?: string;
+}
+
+/** Commit the selected agent change and then the name; each commit is atomic on its own. */
+async function applyConfiguration(conversation: Conversation, patch: ConfigurationPatch, effectiveLevel: ModelThinkingLevel | undefined, context: Context): Promise<AppliedConfiguration> {
+	const change: { model?: ModelRef; thinkingLevel?: ModelThinkingLevel } = {};
+	if (patch.model !== undefined) change.model = configurationModel(patch.model);
+	if (effectiveLevel !== undefined) change.thinkingLevel = effectiveLevel;
+	let writes = false;
+	if (Object.keys(change).length > 0) {
+		writes = true;
+		try {
+			await conversation.configure(change as AgentChange, context);
+		} catch {
+			return { writes, error: patch.model === undefined ? "The reasoning update was not retained." : "The model update was not retained." };
+		}
+	}
+	if (patch.name === undefined) return { writes };
+	try {
+		await writeConversationName(conversation, patch.name, context);
+	} catch {
+		return { writes: true, error: "The name update was not retained." };
+	}
+	return { writes: true };
+}
+
+function configurationResult(
+	sessionId: string,
+	before: ConfigurationState,
+	patch: ConfigurationPatch,
+	after: ConfigurationState,
+	resolved: ResolvedConfiguration,
+	applied: AppliedConfiguration | undefined,
+	fileExists: boolean,
+): ConfigurationResult {
+	const error = resolved.error ?? applied?.error;
+	const outcome = error === undefined ? "applied" : "failed";
+	const effective = resolved.effectiveLevel ?? before.thinkingLevel;
+	return boundedConfigurationResult({
+		sessionId,
+		outcome,
+		before,
+		beforeSource: "live",
+		requested: patch,
+		after,
+		afterSource: "live",
+		...(resolved.requestedLevel === undefined ? {} : { reasoning: { requested: resolved.requestedLevel, effective, clamped: resolved.requestedLevel !== effective } }),
+		hookErrors: configurationHookErrors(),
+		persistence: {
+			nativeWrites: applied === undefined || !applied.writes ? "not-attempted" : outcome === "applied" ? "completed" : "uncertain",
+			fileExists,
+			note: CONFIGURATION_PERSISTENCE_NOTE,
+		},
+		...(error === undefined ? {} : { error }),
+	});
+}
+
+/**
+ * Change model, reasoning level, or display name and return the configuration outcome.
+ * Requires an idle conversation. The requested reasoning level is clamped with the
+ * resolved model's supported levels, and the clamped value is what the commit retains.
+ */
 export async function configureConversation(
 	harness: Harness,
 	conversation: Conversation,
+	options: DurableConfigureOptions,
 	params: DurableConfigureParams,
 	context: Context,
-): Promise<void> {
+): Promise<ConfigurationResult> {
 	await assertConversationIdle(harness, conversation.id, context);
-	const change: {
-		model?: ModelRef | null;
-		thinkingLevel?: ModelThinkingLevel | null;
-	} = {};
-	if (params.model !== undefined) change.model = params.model;
-	if (params.thinkingLevel !== undefined) change.thinkingLevel = params.thinkingLevel;
-	if (Object.keys(change).length > 0) await conversation.configure(change as AgentChange, context);
-	if (params.name !== undefined) {
-		await writeConversationName(conversation, params.name, context);
-	}
+	const patch = configurationPatch(params);
+	const before = await readConfigurationState(harness, conversation, context);
+	const fileExists = options.storagePath !== undefined && existsSync(options.storagePath);
+	const resolved = resolveConfiguration(patch, before, options.models);
+	if (resolved.error !== undefined) return configurationResult(options.sessionId, before, patch, before, resolved, undefined, fileExists);
+	const applied = await applyConfiguration(conversation, patch, resolved.effectiveLevel, context);
+	const after = await readConfigurationState(harness, conversation, context);
+	return configurationResult(options.sessionId, before, patch, after, resolved, applied, fileExists);
 }
 
 export async function writeConversationName(conversation: Conversation, name: string | null, context: Context): Promise<void> {

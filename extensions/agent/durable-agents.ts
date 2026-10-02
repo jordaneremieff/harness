@@ -25,7 +25,14 @@ import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
+import { AGENT_CONTROL_TOOL_NAMES, agentControlGuidanceLines } from "./control-guidance.ts";
 import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
+import {
+	InspectOutputSchema,
+	ListOutputSchema,
+	StatusOutputSchema,
+	structuredObservation,
+} from "./observation-schema.ts";
 
 // ─── Contribution contract ──────────────────────────────────────────────────
 
@@ -33,6 +40,7 @@ import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
 export type AgentControlMethod =
 	| "submit"
 	| "spawn"
+	| "place"
 	| "inspect"
 	| "status"
 	| "list"
@@ -126,22 +134,6 @@ type AgentChildrenState = {
 	reporters: Record<string, number>;
 };
 
-/** One durable area owner conversation. */
-type AgentPlace = {
-	readonly area: string;
-	readonly name?: string;
-	/** Local place conversation when the owner lives in this storage. */
-	readonly conversationId?: Durable.ConversationId;
-	readonly anchorTaskId?: Durable.TaskId;
-	/** External identity of a place owner in another storage. */
-	readonly foreignSessionId?: string;
-};
-
-type AgentPlacesState = {
-	places: AgentPlace[];
-	reporters: Record<string, number>;
-};
-
 function sessionIdOf(value: unknown): string | undefined {
 	if (typeof value === "string") return value;
 	if (value === null || typeof value !== "object") return undefined;
@@ -149,13 +141,10 @@ function sessionIdOf(value: unknown): string | undefined {
 	return typeof candidate === "string" ? candidate : undefined;
 }
 
-/** Resolve a place area and the host area with symlinks applied. */
-function resolvePlaceArea(
-	requested: string,
-	hostCwd: string,
-): { kind: "ok"; area: string; hostArea: string } | { kind: "error"; message: string } {
+/** Resolve a place area with symlinks applied. */
+function resolvePlaceArea(requested: string): { kind: "ok"; area: string } | { kind: "error"; message: string } {
 	try {
-		return { kind: "ok", area: realpathSync(requested), hostArea: realpathSync(hostCwd) };
+		return { kind: "ok", area: realpathSync(requested) };
 	} catch (error) {
 		return {
 			kind: "error",
@@ -361,7 +350,9 @@ const InspectParams = Type.Object(
 		view: Type.Optional(StringEnum(["activity", "history", "branch", "search", "exact", "result"])),
 		limit: Type.Optional(Type.Integer({ minimum: 1 })),
 		cursor: Type.Optional(
-			Type.Record(Type.String(), Type.Unknown(), { description: "Opaque cursor object returned as next by a previous inspect page." }),
+			Type.Record(Type.String(), Type.Unknown(), {
+				description: "Opaque cursor object returned as next by a previous inspect page.",
+			}),
 		),
 		entryId: Type.Optional(PositiveId),
 		fromId: Type.Optional(PositiveId),
@@ -410,12 +401,10 @@ type PlaceInput = Static<typeof PlaceParams>;
 
 // ─── Extension ──────────────────────────────────────────────────────────────
 
-const GUIDANCE = [
-	"Use agent_spawn to start a child agent in this storage. Write each assignment as a contract: objective, output format, source guidance, and boundaries.",
-	"A child's answer arrives later as a message prefixed [agent <name> ...]. Settlement is execution evidence, not task acceptance; integrate the result before your final conclusion.",
-	"agent_status, agent_list, and agent_inspect read the session host's common observation. Use the identity they report as sessionId for agent_send, agent_steer, agent_abort, agent_configure, agent_compact, agent_rewind, and agent_command.",
-	"Every conversation has an external identity: the bare storage id for the root, storageId:conversationId otherwise. A child reports to the owner identity stated in its instructions.",
-].join("\n");
+const SECTION_PREAMBLE = [
+	"Every conversation has an external identity: the bare storage id for the root, storageId:conversationId otherwise. Use the identity from agent_status or agent_list as sessionId for agent_send, agent_steer, agent_abort, agent_configure, agent_compact, agent_rewind, and agent_command.",
+	"A child's answer arrives as a report in its owner conversation, prefixed [agent <name> ...].",
+];
 
 /**
  * Build the structural contribution. `index.ts` emits the result on the
@@ -467,13 +456,15 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const identity = (conversationId: Durable.ConversationId): string =>
 		conversationId === durable.ROOT_CONVERSATION_ID ? host.storageId : `${host.storageId}:${conversationId}`;
 
-	const isSelfCompact = (sessionId: string | undefined, conversationId: Durable.ConversationId): boolean => {
-		if (sessionId === undefined) return true;
+	const resolvesToSelf = (sessionId: string, conversationId: Durable.ConversationId): boolean => {
 		const resolved = target(sessionId);
 		if (resolved.kind === "root") return conversationId === durable.ROOT_CONVERSATION_ID;
 		if (resolved.kind === "local") return resolved.conversationId === conversationId;
 		return false;
 	};
+
+	const isSelfCompact = (sessionId: string | undefined, conversationId: Durable.ConversationId): boolean =>
+		sessionId === undefined || resolvesToSelf(sessionId, conversationId);
 
 	const hostControl = async (
 		method: AgentControlMethod,
@@ -485,6 +476,24 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			return textResult(controlText(await dispatch(method, params)));
 		} catch (error) {
 			return errorResult(`Host control ${method} failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	};
+
+	/** Forward one observation to the host dispatch and prove its output schema. */
+	const hostObservation = async (
+		method: AgentControlMethod,
+		params: Readonly<Record<string, unknown>>,
+		failure: string,
+		schema: Parameters<typeof structuredObservation>[0],
+	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
+		if (dispatch === undefined)
+			return errorResult(`${failure}: the host control is unavailable; this contribution has no dispatch callback.`);
+		try {
+			const value = await dispatch(method, params);
+			const structured = structuredObservation(schema, value) as Record<string, JsonValue>;
+			return { content: [{ type: "text", text: controlText(structured) }], details: { structuredContent: structured } };
+		} catch (error) {
+			return errorResult(`${failure}: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	};
 
@@ -519,13 +528,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		history: "latest",
 		fork: "initial",
 		initial: () => ({ children: [], reporters: {} }),
-	});
-
-	const Places = durable.defineDoc<AgentPlacesState>({
-		kind: "agent.places",
-		version: 1,
-		scope: "session",
-		initial: () => ({ places: [], reporters: {} }),
 	});
 
 	const Anchor = durable.defineTask<null, { phase: "done" }, null>({
@@ -1090,18 +1092,48 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		},
 	});
 
+	/** Configure one conversation through the host outcome contract. */
+	const dispatchConfigure = async (
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		args: ConfigureInput,
+	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
+		if (resolvesToSelf(args.sessionId, api.conversationId))
+			return errorResult("Cannot configure the calling conversation.");
+		if (dispatch === undefined)
+			return errorResult(
+				`Configure of ${args.sessionId} failed: the host control is unavailable; this contribution has no dispatch callback.`,
+			);
+		try {
+			const result = await dispatch("configure", {
+				sessionId: args.sessionId,
+				...defined(args, ["name", "model", "thinkingLevel"]),
+				senderIdentity: identity(api.conversationId),
+				requestId: `configure:${host.storageId}:${api.taskId}`,
+			});
+			const parsed: unknown = JSON.parse(JSON.stringify(result ?? null));
+			if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+				return errorResult(`Configure of ${args.sessionId} failed: the host returned no configuration outcome.`);
+			const structured = parsed as Record<string, JsonValue>;
+			const failed = (structured as { outcome?: unknown }).outcome === "failed";
+			return {
+				content: [{ type: "text", text: controlText(structured) }],
+				details: { structuredContent: structured },
+				...(failed ? { isError: true } : {}),
+			};
+		} catch (error) {
+			return errorResult(
+				`Configure of ${args.sessionId} failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	};
+
 	const configureTool = durable.defineTool({
 		name: "agent_configure",
 		description:
-			"Change a conversation's model, thinking level, instructions, working directory, or owner-visible name.",
+			"Change a conversation's model, thinking level, or owner-visible name through the session host's outcome contract.",
 		parameters: ConfigureParams,
 		replay: "unsafe",
-		execute: async (args: ConfigureInput) =>
-			dispatchControl(
-				"configure",
-				{ sessionId: args.sessionId, ...defined(args, ["name", "model", "thinkingLevel"]) },
-				`Configure of ${args.sessionId} failed`,
-			),
+		execute: async (args: ConfigureInput, api) => dispatchConfigure(api, args),
 	});
 
 	const compactTool = {
@@ -1155,47 +1187,72 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			}),
 	});
 
-	const statusTool = durable.defineTool({
-		name: "agent_status",
-		description:
-			"Inspect conversation state and tools through the session host's common observation. Without a target, report the storage overview.",
-		parameters: StatusParams,
-		replay: "safe",
-		execute: async (args: StatusInput) => hostControl("status", defined(args, ["sessionId"])),
-	});
+	const statusTool = {
+		...durable.defineTool({
+			name: "agent_status",
+			description:
+				"Inspect conversation state and tools through the session host's common observation. Without a target, report the storage overview.",
+			parameters: StatusParams,
+			replay: "safe",
+			execute: async (args: StatusInput) =>
+				hostObservation(
+					"status",
+					defined(args, ["sessionId"]),
+					`Status of ${args.sessionId ?? "the storage"} failed`,
+					StatusOutputSchema,
+				),
+		}),
+		outputSchema: StatusOutputSchema,
+	};
 
-	const listTool = durable.defineTool({
-		name: "agent_list",
-		description: "Discover retained conversations through the session host's common observation.",
-		parameters: ListParams,
-		replay: "safe",
-		execute: async (args: ListInput) =>
-			hostControl("list", { global: true, ...defined(args, ["query", "cwd", "limit", "cursor"]) }),
-	});
+	const listTool = {
+		...durable.defineTool({
+			name: "agent_list",
+			description: "Discover retained conversations through the session host's common observation.",
+			parameters: ListParams,
+			replay: "safe",
+			execute: async (args: ListInput) =>
+				hostObservation(
+					"list",
+					{ global: true, ...defined(args, ["query", "cwd", "limit", "cursor"]) },
+					"List of retained conversations failed",
+					ListOutputSchema,
+				),
+		}),
+		outputSchema: ListOutputSchema,
+	};
 
-	const inspectTool = durable.defineTool({
-		name: "agent_inspect",
-		description:
-			"Read one conversation's history, activity, ancestry, or search results through the session host's common observation.",
-		parameters: InspectParams,
-		replay: "safe",
-		execute: async (args: InspectInput) =>
-			hostControl("inspect", {
-				view: args.view ?? "history",
-				...defined(args, [
-					"sessionId",
-					"limit",
-					"cursor",
-					"entryId",
-					"fromId",
-					"offset",
-					"query",
-					"source",
-					"submissionId",
-					"operationId",
-				]),
-			}),
-	});
+	const inspectTool = {
+		...durable.defineTool({
+			name: "agent_inspect",
+			description:
+				"Read one conversation's history, activity, ancestry, or search results through the session host's common observation.",
+			parameters: InspectParams,
+			replay: "safe",
+			execute: async (args: InspectInput) =>
+				hostObservation(
+					"inspect",
+					{
+						view: args.view ?? "history",
+						...defined(args, [
+							"sessionId",
+							"limit",
+							"cursor",
+							"entryId",
+							"fromId",
+							"offset",
+							"query",
+							"source",
+							"submissionId",
+							"operationId",
+						]),
+					},
+					`Inspect of ${args.sessionId ?? "the calling conversation"} failed`,
+					InspectOutputSchema,
+				),
+		}),
+		outputSchema: InspectOutputSchema,
+	};
 
 	const attachTool = durable.defineTool({
 		name: "agent_attach",
@@ -1211,63 +1268,18 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	});
 
 	/** Resolve or create the durable owner of an area and record any delivered prompt. */
-	/** Resolve or create the durable owner of the storage area in this storage. */
-	const placeLocalInCommit = async (
-		tx: Durable.Tx,
-		api: Durable.ToolExecutionApi<ControlDetails>,
-		area: string,
-		topic: string | undefined,
-		prompt: string | undefined,
-		parent: ChildAgentValues,
-	): Promise<{ kind: "place"; place: AgentPlace; created: boolean } | { kind: "error"; message: string }> => {
-		const registry = await tx.doc(Places);
-		let place = registry.places.find((item) => item.area === area);
-		const created = place === undefined;
-		if (place === undefined) {
-			const anchor = await tx.createTask(Anchor, null, {
-				ownership: { kind: "conversation" },
-				conversationId: api.conversationId,
-				background: true,
-			});
-			const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
-			await durable.configure(tx, child.id, {
-				model: parent.model,
-				thinkingLevel: parent.thinkingLevel,
-				instructions: `You are the durable owner of ${area}, started by ${host.storageId}:${api.conversationId}.${topic === undefined ? "" : ` ${topic}`} Answer requests about this area; your answers are reported to the owner.`,
-			});
-			place = {
-				area,
-				...(topic === undefined ? {} : { name: topic }),
-				conversationId: child.id,
-				anchorTaskId: anchor,
-			};
-			registry.places.push(place);
-		}
-		if (prompt !== undefined && place.conversationId === undefined)
-			return { kind: "error", message: `The retained owner of ${area} has no local conversation.` };
-		const key = String(api.taskId);
-		if (prompt !== undefined && place.conversationId !== undefined && registry.reporters[key] === undefined) {
-			registry.reporters[key] = await tx.createTask(
-				Reporter,
-				reporterInput(topic ?? area, place.conversationId, prompt, "steer"),
-				{ ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true },
-			);
-		}
-		return { kind: "place", place, created };
-	};
-
-	/** Resolve or create the durable owner of another directory, in its own storage host. */
+	/** Resolve the shared place owner of an area through the host dispatch. */
 	const dispatchPlace = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		area: string,
 		args: PlaceInput,
 	): Promise<{ kind: "ok"; sessionId: string } | { kind: "error"; message: string }> => {
-		if (dispatch === undefined) return { kind: "error", message: "A different area needs the host dispatch callback." };
+		if (dispatch === undefined) return { kind: "error", message: "agent_place needs the host dispatch callback." };
 		let result: unknown;
 		try {
-			result = await dispatch("spawn", {
-				cwd: area,
-				...(args.topic === undefined ? {} : { name: args.topic }),
+			result = await dispatch("place", {
+				area,
+				...(args.topic === undefined ? {} : { topic: args.topic }),
 				...(args.prompt === undefined ? {} : { prompt: args.prompt }),
 				senderIdentity: identity(api.conversationId),
 				requestId: `place:${host.storageId}:${api.taskId}`,
@@ -1284,85 +1296,31 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			: { kind: "ok", sessionId };
 	};
 
-	const rememberPlace = async (
-		api: Durable.ToolExecutionApi<ControlDetails>,
-		context: Context,
-		area: string,
-		topic: string | undefined,
-		sessionId: string,
-	): Promise<void> => {
-		await api.commit(async (tx) => {
-			const registry = await tx.doc(Places);
-			registry.places.push({
-				area,
-				...(topic === undefined ? {} : { name: topic }),
-				foreignSessionId: sessionId,
-			});
-		}, context);
-	};
-
-	const placeForeign = async (
-		api: Durable.ToolExecutionApi<ControlDetails>,
-		context: Context,
-		area: string,
-		args: PlaceInput,
-	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
-		const known = (await api.snapshot(Places, context))?.places.find((item) => item.area === area);
-		if (known !== undefined) {
-			const sessionId = known.foreignSessionId ?? known.conversationId;
-			return textResult(
-				`Reusing the owner of ${area}: ${sessionId ?? "unknown"}.`,
-				sessionId === undefined ? { area } : { area, sessionId },
-			);
-		}
-		const outcome = await dispatchPlace(api, area, args);
-		if (outcome.kind === "error") return errorResult(outcome.message);
-		await rememberPlace(api, context, area, args.topic, outcome.sessionId);
-		return textResult(`Created the owner of ${area} as ${outcome.sessionId}.`, { sessionId: outcome.sessionId, area });
-	};
-
-	const placeLocalResult = async (
-		api: Durable.ToolExecutionApi<ControlDetails>,
-		context: Context,
-		area: string,
-		args: PlaceInput,
-	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
-		const parent = await resolveChildAgent(api, context);
-		if (parent.kind === "error") return errorResult(parent.message);
-		const result = await api.commit(
-			(tx) => placeLocalInCommit(tx, api, area, args.topic, args.prompt, parent.values),
-			context,
-		);
-		if (result.kind === "error") return errorResult(result.message);
-		const conversationId = result.place.conversationId;
-		if (conversationId === undefined) return errorResult(`The retained owner of ${area} has no local conversation.`);
-		return textResult(
-			result.created
-				? `Created the owner of ${area} as conversation ${conversationId}.`
-				: `Reusing the owner of ${area}: conversation ${conversationId}.`,
-			{ conversationId, area },
-		);
-	};
-
 	const placeTool = durable.defineTool({
 		name: "agent_place",
 		description:
-			"Resolve the durable owner of a directory: reuse its conversation when it exists, otherwise create it. The storage directory stays native; another directory starts a child in its own storage. Work delivered reports back to you.",
+			"Resolve the durable owner of a directory through the session host's shared place registry. Create it on first use; reuse it when its retained context and ownership serve the task.",
 		parameters: PlaceParams,
 		replay: "safe",
 		execute: async (args: PlaceInput, api, context) => {
 			const agent = await api.agent(context);
-			const resolved = resolvePlaceArea(args.area ?? agent.cwd ?? host.cwd, host.cwd);
+			const resolved = resolvePlaceArea(args.area ?? agent.cwd ?? host.cwd);
 			if (resolved.kind === "error") return errorResult(resolved.message);
-			return resolved.area === resolved.hostArea
-				? placeLocalResult(api, context, resolved.area, args)
-				: placeForeign(api, context, resolved.area, args);
+			const outcome = await dispatchPlace(api, resolved.area, args);
+			if (outcome.kind === "error") return errorResult(outcome.message);
+			return textResult(`The owner of ${resolved.area} is ${outcome.sessionId}.`, {
+				sessionId: outcome.sessionId,
+				area: resolved.area,
+			});
 		},
 	});
 
-	const guidance = durable.section("agent-controls", (input) =>
-		input.agent.tools.some((tool) => tool.name === "agent_spawn") ? GUIDANCE : undefined,
-	);
+	const guidance = durable.section("agent-controls", (input) => {
+		const selected = input.agent.tools.map((tool) => tool.name);
+		const anyControl = selected.some((name) => (AGENT_CONTROL_TOOL_NAMES as readonly string[]).includes(name));
+		if (!anyControl) return undefined;
+		return [...SECTION_PREAMBLE, ...agentControlGuidanceLines(selected)].join("\n");
+	});
 
 	return durable.defineExtension({
 		name: "agent",

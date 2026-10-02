@@ -4,7 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import { initTheme, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, KeybindingsManager as Keys, TUI_KEYBINDINGS, visibleWidth, type KeyId, type TUI } from "@earendil-works/pi-tui";
 import { AgentDashboard, dashboardRecords, dashboardText, elapsed, readAgentDashboard, showAgentDashboard, type DashboardActions } from "./dashboard.ts";
-import type { AgentConversationEntry, AgentConversationSummary, AgentObservationSources } from "./dashboard-types.ts";
+import type { AgentConversationEntry, AgentConversationPage, AgentConversationSummary, AgentObservationSources } from "./dashboard-types.ts";
 
 initTheme("dark");
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -19,10 +19,11 @@ const assistantEntry = (id: string, text: string, timestamp = 2): AgentConversat
 function row(id = "sample", overrides: Partial<AgentConversationSummary> = {}): AgentConversationSummary {
 	return { id, storageId: "storage", name: `Session ${id}`, cwd: `/work/${id}`, owner: "here", modifiedAt: Date.now(), state: "done", cost: 1.25, partial: false, latestReply: "**The result is ready.**\n\nThe tests pass.", firstMessage: "TASK SENTINEL", durationMs: 60000, toolCalls: 4, model: { provider: "test", modelId: "test-model", thinkingLevel: "high" }, ...overrides };
 }
+const page = (rows: readonly AgentConversationSummary[], coverage: Partial<AgentConversationPage["coverage"]> = {}): AgentConversationPage => ({ rows, coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null, ...coverage }, observedAt: new Date().toISOString() });
 function fixture(rows: AgentConversationSummary[] = [row()], overrides: Partial<AgentObservationSources> = {}, actions?: DashboardActions) {
 	const entries: AgentConversationEntry[] = [userEntry("u1", "User asks for a check", 1), assistantEntry("a1", "Assistant result sentinel", 2)];
 	const sources: AgentObservationSources = {
-		list: async () => rows,
+		list: async () => page(rows),
 		snapshot: async () => ({ entries: [...entries], revision: String(entries.length), partial: false }),
 		...overrides,
 	};
@@ -54,36 +55,62 @@ it("shows the selected native conversation with a rail, complete session selecti
 	} finally { f.panel.dispose(); }
 });
 
-it("keeps unresolved ownership in Attention and bounds terminal outcomes by the shared observation time", async (t) => {
+it("shows page coverage for skipped stores, unloaded rows, and more pages", async () => {
+	const f = fixture([], { list: async () => page([row()], { complete: false, skipped: 2, omitted: 3, nextCursor: "cursor" }) });
+	await tick();
+	try {
+		assert.match(f.screen(200), /2 stores skipped \(unknown, not absent\) · 3 rows not loaded · more inventory to inspect/);
+		const snapshot = await readAgentDashboard(f.sources);
+		assert.match(dashboardText(snapshot), /Coverage: 2 stores skipped \(unknown, not absent\) · 3 rows not loaded · more inventory to inspect/);
+	} finally { f.panel.dispose(); }
+});
+
+it("shows coverage beside an empty roster instead of claiming absence", async () => {
+	const f = fixture([], { list: async () => page([], { complete: false, skipped: 1, omitted: 0, nextCursor: null }) });
+	await tick();
+	try {
+		assert.match(f.screen(80), /No agent sessions yet/);
+		assert.match(f.screen(80), /1 store skipped \(unknown, not absent\) · coverage incomplete/);
+	} finally { f.panel.dispose(); }
+});
+
+it("groups Attention by operator need and keeps stopped or interrupted signals in date groups", async (t) => {
 	const now = new Date(2026, 0, 3, 12).getTime();
 	t.mock.timers.enable({ apis: ["Date"], now });
-	const states = ["failed", "stopped", "interrupted", "unavailable"] as const;
 	const day = 24 * 60 * 60 * 1000;
-	const rows = states.flatMap((state) => [row(`recent-${state}`, { state, modifiedAt: now - 1000 }), row(`old-${state}`, { state, owner: state === "unavailable" ? "unknown" : "here", modifiedAt: now - 2 * day })]);
-	rows.push(row("boundary", { state: "failed", modifiedAt: now - day }), row("today", { modifiedAt: now }));
-	const f = fixture(rows); await tick(); f.terminal.rows = 52;
+	const rows = [
+		row("failed-error", { state: "failed", error: "provider refused", modifiedAt: now - 10 * day }),
+		row("failed-plain", { state: "failed", modifiedAt: now - 1000 }),
+		row("stopped", { state: "stopped", error: "stopped by operator", modifiedAt: now - 1000 }),
+		row("interrupted", { state: "interrupted", modifiedAt: now - 1000 }),
+		row("recovered", { state: "done", modifiedAt: now - 1000 }),
+		row("recovered-idle", { state: "idle", modifiedAt: now - 1000 }),
+		row("host-error", { state: "idle", health: { lastError: "host notification failed" }, modifiedAt: now - 10 * day }),
+		row("compaction", { state: "idle", health: { compactionFailure: { reason: "overflow", errorMessage: "too large", at: new Date(now).toISOString() } }, modifiedAt: now - 10 * day }),
+		row("retry-active", { state: "working", health: { autoRetry: { attempt: 1, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit" } }, modifiedAt: now }),
+		row("retry-exhausted", { state: "working", health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit" } }, modifiedAt: now - 1000 }),
+		row("conflicted", { owner: "unavailable", state: "idle", ownerLabel: "claim held", modifiedAt: now - 1000 }),
+		row("unavailable", { state: "unavailable", owner: "unknown", modifiedAt: now - 10 * day }),
+	];
+	const f = fixture(rows); await tick(); f.terminal.rows = 60;
 	try {
-		assert.match(f.screen(200), /6 need attention/);
+		assert.match(f.screen(200), /1 working · 6 need attention/);
 		const ordered = dashboardRecords(f.panel.state.snapshot, "").map((item) => item.id);
-		assert.ok(ordered.indexOf("boundary") < ordered.indexOf("today"));
-		assert.ok(["failed", "stopped", "interrupted"].every((state) => ordered.indexOf(`old-${state}`) > ordered.indexOf("today")));
-		assert.ok(ordered.indexOf("old-unavailable") < ordered.indexOf("today"));
-		assert.doesNotMatch(f.screen(200), /Orphaned/);
+		const position = (id: string) => ordered.indexOf(id);
+		assert.equal(ordered[0], "retry-active", "only the active retry is in Working");
+		for (const id of ["failed-error", "host-error", "compaction", "retry-exhausted", "conflicted", "unavailable"]) assert.ok(position(id) < position("failed-plain"), `${id} needs attention`);
+		for (const id of ["failed-plain", "stopped", "interrupted", "recovered", "recovered-idle"]) assert.ok(position(id) > position("unavailable"), `${id} stays in a date group`);
 		const text = f.screen(200);
-		assert.ok(text.indexOf(" Today") < text.indexOf(" Earlier"));
-		assert.match(text, /! Session old-failed/);
-		assert.match(text, /■ Session old-stopped/);
-		t.mock.timers.tick(1);
-		assert.match(f.screen(200), /6 need attention/);
-		await f.panel.refresh();
-		assert.match(f.screen(200), /5 need attention/);
-		assert.ok(dashboardRecords(f.panel.state.snapshot, "").findIndex((item) => item.id === "boundary") > 5);
+		assert.match(text, /! Session failed-error/);
+		assert.match(text, /■ Session stopped/);
+		assert.match(text, /↯ Session interrupted/);
+		assert.doesNotMatch(f.screen(200), /Orphaned/);
 	} finally { f.panel.dispose(); }
 });
 
 it("omits unknown duration but preserves an observed zero duration beside the conversation", async () => {
 	let current = row("sample", { state: "working", durationMs: undefined });
-	const f = fixture([current], { list: async () => [current] }); await tick(); f.terminal.rows = 52;
+	const f = fixture([current], { list: async () => page([current]) }); await tick(); f.terminal.rows = 52;
 	try {
 		assert.doesNotMatch(f.screen(200), /duration ·|NaN/);
 		assert.match(f.screen(200), /4 tool calls · active/);
@@ -95,7 +122,7 @@ it("omits unknown duration but preserves an observed zero duration beside the co
 it("retains selection by ID across refresh and filters name, place, model and state", async () => {
 	const modifiedAt = Date.now();
 	let rows = [row("one", { modifiedAt }), row("two", { modifiedAt })];
-	const f = fixture(rows, { list: async () => rows }); await tick();
+	const f = fixture(rows, { list: async () => page(rows) }); await tick();
 	try {
 		f.panel.handleInput("]"); assert.equal(f.panel.state.selected, "two");
 		f.panel.handleInput("j"); assert.equal(f.panel.state.selected, "two", "scroll never changes the session");
@@ -205,7 +232,7 @@ it("uses the native input, preserves rejected drafts, selects send or steer from
 	let current = row("target", { owner: "here", state: "idle" });
 	let reject = true;
 	const calls: unknown[] = [];
-	const f = fixture([current], { list: async () => [current] }, { run: async () => undefined, compose: async (...args) => { calls.push(args); if (reject) throw new Error("admission refused"); return "Native receipt"; } });
+	const f = fixture([current], { list: async () => page([current]) }, { run: async () => undefined, compose: async (...args) => { calls.push(args); if (reject) throw new Error("admission refused"); return "Native receipt"; } });
 	await tick(); f.panel.focused = true;
 	try {
 		f.panel.handleInput("m"); f.panel.handleInput("hello 世界"); f.panel.handleInput("\r"); await tick();
@@ -221,20 +248,40 @@ it("uses the native input, preserves rejected drafts, selects send or steer from
 	} finally { f.panel.dispose(); }
 });
 
+it("allows compose for a readable cold storage and refuses an unclaimable one", async () => {
+	const calls: unknown[] = [];
+	const cold = row("cold", { owner: "unknown", state: "idle", modifiedAt: 2 });
+	const unreadable = row("unreadable", { owner: "unavailable", state: "unavailable", error: "claim refused", modifiedAt: 1 });
+	const f = fixture([cold, unreadable], {}, { run: async () => undefined, compose: async (...args) => { calls.push(args); return "Admitted"; } });
+	await tick(); f.panel.focused = true;
+	try {
+		f.panel.state.selected = "cold";
+		assert.match(f.screen(80), /m message/);
+		f.panel.handleInput("m");
+		assert.doesNotMatch(f.screen(80), /Read-only/);
+		f.panel.handleInput("cold task"); f.panel.handleInput("\r"); await tick();
+		assert.deepEqual(calls[0], ["send", "cold", "cold task"]);
+		f.panel.state.selected = "unreadable"; f.panel.handleInput("m");
+		assert.match(f.screen(80), /Read-only: claim refused/);
+		assert.doesNotMatch(f.screen(80), /m message/);
+		assert.equal(calls.length, 1);
+	} finally { f.panel.dispose(); }
+});
+
 it("coalesces refreshes, stops the live clock on disposal and rejects late reads", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval"] });
-	let calls = 0; let release!: (rows: AgentConversationSummary[]) => void;
-	const f = fixture([], { list: async () => { calls++; return new Promise((resolve) => { release = resolve; }); } });
+	let calls = 0; let release!: (page: AgentConversationPage) => void;
+	const f = fixture([], { list: async () => { calls++; return new Promise<AgentConversationPage>((resolve) => { release = resolve; }); } });
 	await tick(); t.mock.timers.tick(3000); assert.equal(calls, 1);
-	release([row()]); await tick(); t.mock.timers.tick(1000); assert.equal(calls, 2);
-	f.panel.dispose(); release([row("late")]); await tick(); t.mock.timers.tick(5000);
+	release(page([row()])); await tick(); t.mock.timers.tick(1000); assert.equal(calls, 2);
+	f.panel.dispose(); release(page([row("late")])); await tick(); t.mock.timers.tick(5000);
 	assert.equal(calls, 2); assert.equal(f.panel.state.snapshot?.sessions[0].id, "sample");
 });
 
 it("keeps a visible board responsive while a source read exceeds the visibility limit", async (t) => {
 	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
-	let calls = 0; let renders = 0; let release!: (rows: AgentConversationSummary[]) => void;
-	const f = fixture([], { list: async () => { calls++; return calls === 1 ? new Promise((resolve) => { release = resolve; }) : [row()]; } });
+	let calls = 0; let renders = 0; let release!: (page: AgentConversationPage) => void;
+	const f = fixture([], { list: async () => { calls++; return calls === 1 ? new Promise<AgentConversationPage>((resolve) => { release = resolve; }) : page([row()]); } });
 	f.tui.requestRender = () => { renders++; f.panel.render(120); };
 	await tick();
 	try {
@@ -242,7 +289,7 @@ it("keeps a visible board responsive while a source read exceeds the visibility 
 		assert.equal(calls, 1); assert.ok(renders >= 8);
 		f.panel.handleInput("?"); assert.match(f.screen(), /Agent conversations/);
 		f.panel.handleInput("\x1b");
-		release([row()]); await tick(); t.mock.timers.tick(1000); await tick();
+		release(page([row()])); await tick(); t.mock.timers.tick(1000); await tick();
 		assert.equal(calls, 2);
 		f.panel.handleInput("\x1b"); assert.equal(f.requests.length, 1);
 		t.mock.timers.tick(10000); await tick(); assert.equal(calls, 2);
@@ -252,7 +299,7 @@ it("keeps a visible board responsive while a source read exceeds the visibility 
 for (const resume of ["render", "key"] as const) it(`pauses unseen refresh and resumes on a later ${resume} without disabling Escape`, async (t) => {
 	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
 	let calls = 0; let requests = 0;
-	const f = fixture([], { list: async () => { calls++; return [row()]; } });
+	const f = fixture([], { list: async () => { calls++; return page([row()]); } });
 	f.tui.requestRender = () => { requests++; }; await tick(); f.panel.render(120);
 	try {
 		for (let index = 0; index < 6; index++) { t.mock.timers.tick(1000); await tick(); }
@@ -271,13 +318,13 @@ for (const resume of ["render", "key"] as const) it(`pauses unseen refresh and r
 
 it("does not let a late source result restart a hidden board", async (t) => {
 	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
-	let calls = 0; let renders = 0; let release!: (rows: AgentConversationSummary[]) => void;
-	const f = fixture([], { list: async () => { calls++; return calls === 1 ? new Promise((resolve) => { release = resolve; }) : [row()]; } });
+	let calls = 0; let renders = 0; let release!: (page: AgentConversationPage) => void;
+	const f = fixture([], { list: async () => { calls++; return calls === 1 ? new Promise<AgentConversationPage>((resolve) => { release = resolve; }) : page([row()]); } });
 	f.tui.requestRender = () => { renders++; }; await tick();
 	try {
 		for (let index = 0; index < 6; index++) { t.mock.timers.tick(1000); await tick(); }
 		const before = renders;
-		release([row("late")]); await tick(); t.mock.timers.tick(10000); await tick();
+		release(page([row("late")])); await tick(); t.mock.timers.tick(10000); await tick();
 		assert.equal(calls, 1); assert.equal(renders, before); assert.equal(f.panel.state.snapshot === undefined, true);
 		f.panel.render(120); t.mock.timers.tick(1000); await tick();
 		assert.equal(calls, 2); assert.equal(f.panel.state.snapshot?.sessions[0].id, "sample");
@@ -396,7 +443,7 @@ it("isolates recipient drafts and native undo while preserving multiline pasted 
 it("never retargets a pending submission after blur, refresh or attempted navigation", async () => {
 	let rows = [row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1 })];
 	let reject!: (error: Error) => void; const calls: unknown[] = []; let actions = 0;
-	const f = fixture(rows, { list: async () => rows }, { run: async () => { actions++; return undefined; }, compose: async (...args) => { calls.push(args); return new Promise((_resolve, fail) => { reject = fail; }); } });
+	const f = fixture(rows, { list: async () => page(rows) }, { run: async () => { actions++; return undefined; }, compose: async (...args) => { calls.push(args); return new Promise((_resolve, fail) => { reject = fail; }); } });
 	await tick();
 	try {
 		f.panel.handleInput("m"); f.panel.handleInput("correction for A"); f.panel.handleInput("\r"); await tick();
@@ -492,12 +539,15 @@ it("keeps filter matches in Sessions and restores the prior focus, selection and
 it("retains a recipient draft through focus changes and leaves foreign sessions read-only", async () => {
 	const f = fixture([row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1, owner: "unavailable", ownerLabel: "another window" })], {}, { run: async () => undefined, compose: async () => "sent" }); await tick();
 	try {
+		// Attention first: the unavailable row is selected. Move to the healthy date row and draft there.
+		f.panel.handleInput("]"); assert.equal(f.panel.state.selected, "a");
 		f.panel.handleInput("m"); f.panel.handleInput("Keep this draft"); f.panel.handleInput("\x1b");
-		f.panel.handleInput("\t"); f.panel.handleInput("\x1b[B"); await tick();
+		f.panel.handleInput("["); await tick();
 		f.panel.handleInput("\r");
+		assert.equal(f.panel.state.selected, "b");
 		assert.match(f.screen(80), /Read-only: .*another window/);
 		assert.doesNotMatch(f.screen(80), /m message|Enter message/);
-		f.panel.handleInput("\t"); f.panel.handleInput("\x1b[A"); await tick();
+		f.panel.handleInput("]"); await tick();
 		f.panel.handleInput("m"); assert.match(f.screen(80), /Keep this draft/); assert.equal(f.panel.state.selected, "a");
 	} finally { f.panel.dispose(); }
 });
@@ -562,7 +612,7 @@ it("holds a settled recovery signal in Attention at any transcript age and leave
 		row("retrying", { modifiedAt: now, state: "working", owner: "here", health: { autoRetry: { attempt: 1, maxAttempts: 3, delayMs: 4000, errorMessage: "rate limit" } } }),
 		row("plain", { modifiedAt: now - 10 * day, state: "idle", owner: "here" }),
 	];
-	const f = fixture(rows, { list: async () => rows }); await tick();
+	const f = fixture(rows, { list: async () => page(rows) }); await tick();
 	try {
 		assert.match(f.screen(200), /1 working · 2 need attention/);
 		let ordered = dashboardRecords(f.panel.state.snapshot, "").map((item) => item.id);

@@ -2,50 +2,41 @@
  * agent/host-process: one exclusive durable host process per storage.
  *
  * `runHost` takes the writer claim for the storage before it creates the
- * runtime, serves requests from an authenticated Unix socket, and retires when
- * no client is attached and the runtime reports idle for
- * `PI_AGENT_IDLE_MINUTES`. The runtime owns Durable work; this module owns the
- * claim, the transport, and the lifecycle. It announces readiness on stdout so
- * a launching client can connect without polling.
+ * runtime, then serves the storage over a local `pi-server` Unix endpoint. The
+ * runtime owns Durable work; this module owns the claim, the process lifecycle,
+ * and the public service surface. It announces readiness on stdout so a
+ * launching client can connect without polling.
  */
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { createServer, type Server, type Socket } from "node:net";
+import { randomUUID } from "node:crypto";
+import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
+import { decodeServiceControlCall } from "@earendil-works/chord";
+import type { Context, JsonValue, ServiceCall, ServiceProviderUpdate, ServiceSubscriptionSnapshot } from "@earendil-works/chord";
+import { ServerError } from "@earendil-works/pi-server";
+import type { RoutedServerServiceAttachment, Server, ServerHost } from "@earendil-works/pi-server";
+import { createUnixServer } from "@earendil-works/pi-server/unix";
 import { type ClaimFile, type ClaimIdentity, classifyClaim, readClaimFile } from "./claims.ts";
-import {
-	HostError,
-	HostFrameDecoder,
-	HOST_HELLO_TIMEOUT_MS,
-	HOST_PROTOCOL_VERSION,
-	encodeHostFrame,
-	formatHostReady,
-	hostPaths,
-	hostTokensMatch,
-	isCancelableHostWait,
-	newHostToken,
-	parseHostClientMessage,
-	parseHostMetadata,
-	type HostClientMessage,
-	type HostEndpoint,
-	type HostHello,
-	type HostMetadata,
-	type HostPaths,
-	type HostReady,
-	type HostRequestMessage,
-	type HostServerMessage,
-} from "./host-protocol.ts";
+import { formatHostReady, HOST_CHANGE_MEMBER, HOST_CHANGE_SERVICE_ID, HOST_SERVICE_ID, hostPaths, isCancelableHostWait, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
 
 /** The host-side surface the parent runtime must supply. */
 export interface HostRuntime {
 	/**
-	 * `requestId` is the transport request ID. `signal` is present only for a
-	 * cancelable observational wait; it aborts on client cancel or socket close
-	 * and must never cancel admitted Durable work.
+	 * `requestId` is the durable request ID; `submit` maps it to the Durable
+	 * request ID. `signal` follows the public cancel envelope, which may arrive
+	 * for any request; the runtime decides what it cancels. Observational waits
+	 * stop on it, admitted Durable work does not.
 	 */
 	request(method: string, params: unknown, requestId: string, signal?: AbortSignal): Promise<unknown>;
 	close(): Promise<void>;
 	isIdle(): boolean;
+	/**
+	 * Subscribe to actual storage writes for the change-notification service.
+	 * The source is the native commit stream; the runtime must not fire it for
+	 * read-only reads or for this notification bookkeeping. Absent: the host
+	 * serves the initial snapshot and publishes no changes.
+	 */
+	onChange?(listener: () => void): () => void;
 }
 
 /** Called once the claim is held; the runtime opens storage only after this point. */
@@ -89,20 +80,20 @@ interface ClaimRecord {
 	readonly createdAt: string;
 }
 
-interface ClientLink {
-	readonly decoder: HostFrameDecoder;
-	readonly controllers: Map<string, AbortController>;
-	helloReceived: boolean;
+/** One connection-scoped change subscription; publications are coalesced per turn. */
+interface ChangeSubscription {
+	readonly id: string;
+	readonly publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>;
+	readonly context: Context;
+	unsubscribe: () => void;
+	sequence: number;
+	pending: boolean;
 }
 
 const IDLE_MINUTES_MAX = 35791;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function reasonText(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 /** Read `PI_AGENT_IDLE_MINUTES` with the same bounds as the ordinary agent host. */
@@ -199,41 +190,28 @@ class HeldClaim {
 	}
 }
 
-function writeEndpoint(path: string, endpoint: HostEndpoint): void {
-	const temporary = `${path}.${process.pid}.tmp`;
-	try {
-		writeFileSync(temporary, JSON.stringify(endpoint), { mode: 0o600 });
-		renameSync(temporary, path);
-	} catch (error) {
-		rmSync(temporary, { force: true });
-		throw error;
-	}
-}
-
 class HostProcessServer implements HostProcess {
 	readonly pid = process.pid;
+	readonly socketPath: string;
 	readonly done: Promise<void>;
 	private readonly runtime: HostRuntime;
-	private readonly metadata: HostMetadata;
 	private readonly paths: HostPaths;
 	private readonly claim: HeldClaim;
 	private readonly idleMs: number;
-	private readonly links = new Map<Socket, ClientLink>();
-	private readonly socketPathValue: string;
 	private server: Server | undefined;
 	private idleTimer: ReturnType<typeof setTimeout> | undefined;
+	private connectionCount = 0;
 	private closing = false;
 	private closePromise: Promise<void> | undefined;
 	private resolveDone: () => void = () => {};
 	private rejectDone: (error: Error) => void = () => {};
 
-	constructor(runtime: HostRuntime, metadata: HostMetadata, paths: HostPaths, claim: HeldClaim, idleMs: number) {
+	constructor(runtime: HostRuntime, paths: HostPaths, claim: HeldClaim, idleMs: number) {
 		this.runtime = runtime;
-		this.metadata = metadata;
 		this.paths = paths;
 		this.claim = claim;
 		this.idleMs = idleMs;
-		this.socketPathValue = paths.socket;
+		this.socketPath = paths.socket;
 		this.done = new Promise<void>((resolve, reject) => {
 			this.resolveDone = resolve;
 			this.rejectDone = reject;
@@ -243,160 +221,142 @@ class HostProcessServer implements HostProcess {
 		void this.done.catch(() => {});
 	}
 
-	get socketPath(): string {
-		return this.socketPathValue;
-	}
-
 	async start(announce: (ready: HostReady) => void): Promise<void> {
-		const socketDirectory = dirname(this.paths.socket);
-		mkdirSync(socketDirectory, { recursive: true, mode: 0o700 });
-		chmodSync(socketDirectory, 0o700);
-		if (existsSync(this.paths.socket)) {
-			const stat = lstatSync(this.paths.socket);
-			if (!stat.isSocket()) throw new Error(`durable host socket path exists and is not a socket: ${this.paths.socket}`);
-			unlinkSync(this.paths.socket);
-		}
-		const server = createServer((socket) => this.handleSocket(socket));
+		const server = createUnixServer(this.host(), {
+			serverId: this.paths.serverId,
+			path: this.paths.socket,
+			onConnectionCountChanged: (count) => this.onConnectionCountChanged(count),
+		});
 		this.server = server;
 		try {
-			await new Promise<void>((resolveListen, rejectListen) => {
-				const onError = (error: Error) => {
-					server.off("listening", onListening);
-					rejectListen(error);
-				};
-				const onListening = () => {
-					server.off("error", onError);
-					resolveListen();
-				};
-				server.once("error", onError);
-				server.once("listening", onListening);
-				server.listen(this.paths.socket);
-			});
-			chmodSync(this.paths.socket, 0o600);
-			writeEndpoint(this.paths.endpoint, { version: HOST_PROTOCOL_VERSION, pid: this.pid, socketPath: this.paths.socket, token: this.claim.token, createdAt: new Date().toISOString() });
-			announce({ pid: this.pid, socketPath: this.paths.socket });
+			await server.start();
 		} catch (error) {
-			server.close();
-			this.removeTransportFiles();
+			await server.close().catch(() => undefined);
 			throw error;
+		}
+		announce({ pid: this.pid, socketPath: this.paths.socket });
+		this.scheduleRetirement();
+	}
+
+	private host(): ServerHost {
+		return {
+			serverServices: { attachClient: () => this.attachment() },
+			resolveSession: async (sessionId) => {
+				throw new ServerError("session_not_found", `session ${sessionId} is not routed by this host`);
+			},
+			openSession: async () => {
+				throw new ServerError("session_not_found", "this host routes no durable sessions");
+			},
+		};
+	}
+
+	private attachment(): RoutedServerServiceAttachment {
+		const subscriptions = new Map<string, ChangeSubscription>();
+		return {
+			invokeService: (call, publish, context) => this.invokeService(call, publish, context, subscriptions),
+			release: () => {
+				for (const entry of subscriptions.values()) entry.unsubscribe();
+				subscriptions.clear();
+			},
+		};
+	}
+
+	/** Route Chord control calls for the change service, then host methods. */
+	private async invokeService(
+		call: ServiceCall,
+		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>,
+		context: Context,
+		subscriptions: Map<string, ChangeSubscription>,
+	): Promise<JsonValue | undefined> {
+		const control = decodeServiceControlCall(call);
+		if (control?.type === "subscribe" && control.serviceId === HOST_CHANGE_SERVICE_ID) return this.subscribeChanges(control.subscriptionId, publish, context, subscriptions) as unknown as JsonValue;
+		if (control?.type === "unsubscribe") {
+			subscriptions.get(control.subscriptionId)?.unsubscribe();
+			subscriptions.delete(control.subscriptionId);
+			return { unsubscribed: true };
+		}
+		if (control !== undefined) return undefined;
+		return this.dispatch(call, context);
+	}
+
+	/**
+	 * One coalesced change subscription. The runtime commit source fires per
+	 * actual write; a burst collapses into one state publication per microtask
+	 * turn, so the primary refreshes its footer once per observed state change.
+	 */
+	private subscribeChanges(
+		subscriptionId: string,
+		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>,
+		context: Context,
+		subscriptions: Map<string, ChangeSubscription>,
+	): ServiceSubscriptionSnapshot {
+		const entry: ChangeSubscription = { id: subscriptionId, publish, context, unsubscribe: () => {}, sequence: 0, pending: false };
+		const notify = (): void => {
+			if (entry.pending) return;
+			entry.pending = true;
+			queueMicrotask(() => {
+				entry.pending = false;
+				if (subscriptions.get(subscriptionId) !== entry) return;
+				entry.sequence += 1;
+				const update: ServiceProviderUpdate = { type: "state", member: HOST_CHANGE_MEMBER, sequence: entry.sequence, ops: [["r", { revision: entry.sequence }]] };
+				void Promise.resolve(entry.publish(subscriptionId, update, entry.context)).catch(() => undefined);
+			});
+		};
+		entry.unsubscribe = this.runtime.onChange?.(notify) ?? (() => {});
+		subscriptions.set(subscriptionId, entry);
+		return {
+			serviceId: HOST_CHANGE_SERVICE_ID,
+			mode: "singleton",
+			instances: [{ members: [{ name: HOST_CHANGE_MEMBER, kind: "state", sequence: 0, ops: [["r", { revision: 0 }]] }] }],
+		};
+	}
+
+	/**
+	 * Dispatch one public service call. The durable request ID travels as the
+	 * second argument so a caller retry after link loss reuses it. The context
+	 * signal follows the public cancel envelope; only observational waits in the
+	 * runtime observe it, so a disconnect never cancels admitted Durable work.
+	 */
+	private async dispatch(call: ServiceCall, context: Context): Promise<JsonValue | undefined> {
+		if (call.serviceId !== HOST_SERVICE_ID) throw new ServerError("service_not_found", `unknown host service ${call.serviceId}`);
+		const [rawParams, rawRequestId] = call.args;
+		const params = rawParams === null ? undefined : rawParams;
+		const requestId = typeof rawRequestId === "string" && rawRequestId !== "" ? rawRequestId : randomUUID();
+		try {
+			// Only an observational wait receives the disconnect or cancel signal;
+			// admitted Durable work never sees one.
+			const signal = isCancelableHostWait(call.member, params) ? context.abortSignal : undefined;
+			const result = await this.runtime.request(call.member, params, requestId, signal);
+			return result as JsonValue | undefined;
+		} catch (error) {
+			// The public protocol carries bounded structural codes; the runtime
+			// message is preserved so consumers keep actionable errors.
+			throw new ServerError("service_invalid_value", error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	private onConnectionCountChanged(count: number): void {
+		this.connectionCount = count;
+		if (this.closing) return;
+		if (count > 0) {
+			if (this.idleTimer) {
+				clearTimeout(this.idleTimer);
+				this.idleTimer = undefined;
+			}
+			return;
 		}
 		this.scheduleRetirement();
 	}
 
-	private handleSocket(socket: Socket): void {
-		const link: ClientLink = { decoder: new HostFrameDecoder(), controllers: new Map(), helloReceived: false };
-		this.links.set(socket, link);
-		socket.setNoDelay(true);
-		socket.setTimeout(HOST_HELLO_TIMEOUT_MS, () => socket.destroy());
-		socket.on("data", (chunk: Buffer) => this.onData(socket, link, chunk));
-		socket.on("error", () => socket.destroy());
-		socket.on("close", () => this.onDisconnect(socket, link));
-	}
-
-	private onData(socket: Socket, link: ClientLink, chunk: Buffer): void {
-		let messages: HostClientMessage[];
-		try {
-			messages = link.decoder.push(chunk).map((message) => parseHostClientMessage(message));
-		} catch {
-			socket.destroy();
-			return;
-		}
-		for (const message of messages) this.onMessage(socket, link, message);
-	}
-
-	private onMessage(socket: Socket, link: ClientLink, message: HostClientMessage): void {
-		if (!link.helloReceived) {
-			if (message.kind !== "hello") {
-				socket.destroy();
-				return;
-			}
-			this.completeHello(socket, link, message);
-			return;
-		}
-		if (message.kind === "cancel") {
-			link.controllers.get(message.id)?.abort(new Error("durable host wait was cancelled by its client"));
-			return;
-		}
-		if (message.kind !== "request") {
-			socket.destroy();
-			return;
-		}
-		void this.dispatch(socket, link, message);
-	}
-
-	private completeHello(socket: Socket, link: ClientLink, hello: HostHello): void {
-		const matches = hello.version === HOST_PROTOCOL_VERSION
-			&& hostTokensMatch(hello.token, this.claim.token)
-			&& hello.metadata.storageId === this.metadata.storageId
-			&& resolve(hello.metadata.cwd) === resolve(this.metadata.cwd);
-		if (!matches) {
-			socket.destroy();
-			return;
-		}
-		link.helloReceived = true;
-		socket.setTimeout(0);
-		this.send(socket, { kind: "welcome", version: HOST_PROTOCOL_VERSION, pid: this.pid, storageId: this.metadata.storageId, socketPath: this.paths.socket });
-	}
-
-	private async dispatch(socket: Socket, link: ClientLink, request: HostRequestMessage): Promise<void> {
-		const controller = new AbortController();
-		const cancelable = isCancelableHostWait(request.method, request.params);
-		if (cancelable) link.controllers.set(request.id, controller);
-		let response: HostServerMessage;
-		try {
-			const result = await this.runtime.request(request.method, request.params, request.id, cancelable ? controller.signal : undefined);
-			response = { kind: "response", id: request.id, ok: true, result };
-		} catch (error) {
-			response = { kind: "response", id: request.id, ok: false, error: { message: reasonText(error), code: error instanceof HostError ? error.code : "internal" } };
-		} finally {
-			if (cancelable) link.controllers.delete(request.id);
-		}
-		this.send(socket, response);
-	}
-
-	private send(socket: Socket, message: HostServerMessage): void {
-		if (socket.destroyed) return;
-		let frame: Buffer;
-		try {
-			frame = encodeHostFrame(message);
-		} catch (error) {
-			if (message.kind !== "response" || !message.ok) {
-				socket.destroy();
-				return;
-			}
-			const fallback: HostServerMessage = { kind: "response", id: message.id, ok: false, error: { message: `durable host response could not be encoded (${reasonText(error)})`, code: "internal" } };
-			try {
-				frame = encodeHostFrame(fallback);
-			} catch {
-				socket.destroy();
-				return;
-			}
-		}
-		socket.write(frame);
-	}
-
-	private onDisconnect(socket: Socket, link: ClientLink): void {
-		this.links.delete(socket);
-		for (const controller of link.controllers.values()) controller.abort(new Error("durable host client disconnected during an observational wait"));
-		link.controllers.clear();
-		if (link.helloReceived) this.scheduleRetirement();
-	}
-
-	private attached(): number {
-		let count = 0;
-		for (const link of this.links.values()) if (link.helloReceived) count += 1;
-		return count;
-	}
-
 	private scheduleRetirement(): void {
-		if (this.closing || this.idleMs === 0) return;
+		if (this.closing || this.idleMs === 0 || this.connectionCount > 0) return;
 		if (this.idleTimer) clearTimeout(this.idleTimer);
 		this.idleTimer = setTimeout(() => this.onIdleCheck(), Math.max(1, this.idleMs));
 	}
 
 	private onIdleCheck(): void {
 		this.idleTimer = undefined;
-		if (this.closing || this.attached() > 0) return;
+		if (this.closing || this.connectionCount > 0) return;
 		if (!this.runtime.isIdle()) {
 			this.scheduleRetirement();
 			return;
@@ -420,31 +380,16 @@ class HostProcessServer implements HostProcess {
 			clearTimeout(this.idleTimer);
 			this.idleTimer = undefined;
 		}
-		const server = this.server;
-		let closed: Promise<void> | undefined;
-		if (server) closed = new Promise<void>((resolveClose) => server.close(() => resolveClose()));
-		for (const socket of [...this.links.keys()]) socket.destroy();
-		this.links.clear();
-		if (closed) await closed;
 		try {
+			const server = this.server;
+			if (server) await server.close();
 			await this.runtime.close();
 			this.claim.release();
-			this.removeTransportFiles();
 			this.resolveDone();
 		} catch (error) {
 			const failure = error instanceof Error ? error : new Error(String(error));
 			this.rejectDone(failure);
 			throw failure;
-		}
-	}
-
-	private removeTransportFiles(): void {
-		for (const path of [this.paths.endpoint, this.paths.socket]) {
-			try {
-				unlinkSync(path);
-			} catch (error) {
-				if (errnoCode(error) !== "ENOENT") throw error;
-			}
 		}
 	}
 }
@@ -473,12 +418,12 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
 	chmodSync(paths.directory, 0o700);
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
-	const token = newHostToken();
+	const token = randomUUID();
 	const claim = takeClaim(paths.claim, paths.identity, claimRecord(paths.identity, token));
 	let runtime: HostRuntime | undefined;
 	try {
 		runtime = await createRuntime();
-		const host = new HostProcessServer(runtime, metadata, paths, claim, idleMs);
+		const host = new HostProcessServer(runtime, paths, claim, idleMs);
 		await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));
 		return host;
 	} catch (error) {
