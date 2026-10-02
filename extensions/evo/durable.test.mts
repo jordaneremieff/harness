@@ -98,7 +98,7 @@ test("the contribution offers the evo command and no model tools", async () => {
 	assert.equal(extension.sections, undefined);
 });
 
-test("the durable command admits one kickoff and reuses an identical submission", async () => {
+test("identical invocations submit separately and a retried invocation submits once", async () => {
 	const contribution = createEvoContribution({ source: ENTRYPOINT });
 	const command = contribution.commands?.find((entry) => entry.name === "evo");
 	assert.ok(command);
@@ -111,21 +111,37 @@ test("the durable command admits one kickoff and reuses an identical submission"
 			direction: "Improve document explanations",
 			release,
 		});
-		const first = await command.run("Improve document explanations", conversation, BACKGROUND_CONTEXT, host);
+		const first = await command.run({
+			args: "Improve document explanations",
+			conversation,
+			context: BACKGROUND_CONTEXT,
+			host,
+			invocationId: "evo-invocation-1",
+		});
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
 		assert.deepEqual(await userTexts(conversation), [expected]);
 
-		const second = await command.run("Improve document explanations", conversation, BACKGROUND_CONTEXT, host);
+		const retry = await command.run({
+			args: "Improve document explanations",
+			conversation,
+			context: BACKGROUND_CONTEXT,
+			host,
+			invocationId: "evo-invocation-1",
+		});
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
-		assert.equal(second, first);
+		assert.equal(retry, first);
 		assert.deepEqual(await userTexts(conversation), [expected]);
 
-		const third = await command.run("Another direction", conversation, BACKGROUND_CONTEXT, host);
+		const second = await command.run({
+			args: "Improve document explanations",
+			conversation,
+			context: BACKGROUND_CONTEXT,
+			host,
+			invocationId: "evo-invocation-2",
+		});
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
-		assert.notEqual(third, first);
-		const texts = await userTexts(conversation);
-		assert.equal(texts.length, 2);
-		assert.match(texts[1] ?? "", /"Another direction"/);
+		assert.notEqual(second, first);
+		assert.deepEqual(await userTexts(conversation), [expected, expected]);
 
 		const answers = (await conversation.context(BACKGROUND_CONTEXT)).messages.filter(
 			(message) => message.role === "assistant",
@@ -147,7 +163,13 @@ test("the invocation workspace comes from the host, not the conversation agent c
 	);
 	try {
 		const release = await readPiReleaseIntake({ harnessRoot: HARNESS_ROOT });
-		await command.run("", conversation, BACKGROUND_CONTEXT, host);
+		await command.run({
+			args: "",
+			conversation,
+			context: BACKGROUND_CONTEXT,
+			host,
+			invocationId: "evo-invocation-cwd",
+		});
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
 		assert.deepEqual(
 			await userTexts(conversation),
@@ -165,7 +187,13 @@ test("an invalid direction is refused before any submission", async () => {
 	const { harness, conversation, host } = await openHarness(contribution, "/workspace/current-project");
 	try {
 		await assert.rejects(
-			command.run("x".repeat(MAX_DIRECTION_CODE_POINTS + 1), conversation, BACKGROUND_CONTEXT, host),
+			command.run({
+				args: "x".repeat(MAX_DIRECTION_CODE_POINTS + 1),
+				conversation,
+				context: BACKGROUND_CONTEXT,
+				host,
+				invocationId: "evo-invocation-invalid",
+			}),
 			/Unicode code points or fewer/,
 		);
 		await harness.waitForIdle(BACKGROUND_CONTEXT);

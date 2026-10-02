@@ -207,8 +207,8 @@ TUI, RPC, print, and JSON contexts use the same command. Evo sends one user mess
 through Pi's `sendUserMessage()` with `followUp` delivery. Pi starts it when idle
 or queues it after active work. Evo never snapshots idle state or steers an
 existing turn. Pi disables command and prompt-template expansion for the injected
-message. Ordinary repeated invocations remain separate requests without a
-deduplication store.
+message. Repeated invocations remain separate requests without a deduplication
+store.
 
 The extension API returns void. Command return proves neither admission nor
 completion; the host must retain the session through asynchronous preflight and
@@ -236,17 +236,14 @@ as follow-up input, so a busy conversation queues it after the active turn.
 
 The command offers no model tools, so it declares no replay classes. Durability
 belongs to the submission instead. The command derives the request ID from the
-SHA-256 digest of the kickoff. A repeated command whose kickoff is identical,
-for example after process loss, returns the existing submission instead of
-admitting a second one. That is the one semantic difference from the ordinary
-command, which keeps every repeated invocation as a separate request. Release
-intake is part of the kickoff, so a changed release state produces a new
-request.
+host-supplied invocation ID. A retry of the same invocation reuses its
+submission; two identical invocations stay two separate requests, the same as
+the ordinary command.
 
 `durable.ts` holds the contribution and the shared command description.
 `durable.test.mts` runs the contribution in a real Harness over `MemoryStorage`
-with the pi-ai faux provider. It checks kickoff admission, request reuse for
-identical input, a distinct request for a changed direction, the host-cwd
+with the pi-ai faux provider. It checks kickoff admission, separate submissions
+for identical invocations, reuse for a retried invocation, the host-cwd
 binding, direction refusal, and the absence of model tools.
 
 ## Implementation and checks
@@ -260,9 +257,10 @@ binding, direction refusal, and the absence of model tools.
 - `command.ts` sanitizes and bounds the direction.
 - `kickoff.ts` frames intent, direction, authority, and the required workflow read.
 - `durable.ts` builds the Durable contribution command: the same parser,
-  release intake, and kickoff, submitted with a kickoff-digest request ID.
+  release intake, and kickoff, submitted with a request ID from the invocation ID.
 - `durable.test.mts` runs the contribution in a real Durable Harness: admission,
-  request reuse, distinct directions, the host-cwd binding, and direction refusal.
+  separate identical invocations, retry reuse, the host-cwd binding, and
+  direction refusal.
 - `evo.test.mts` checks parser boundaries, JSON isolation, direction precedence,
   the complete grant and reservations, and semantic requirements across the
   kickoff and its owning workflow. It also checks mode-independent dispatch,

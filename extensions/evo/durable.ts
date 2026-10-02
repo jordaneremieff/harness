@@ -1,6 +1,5 @@
 /** Pi Durable entrypoint for the autonomous `/evo [direction]` harness evolution command. */
 
-import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/chord";
@@ -49,12 +48,17 @@ export interface DurableInventory {
 export interface DurableCommand {
 	readonly name: string;
 	readonly description: string;
-	run(
-		args: string,
-		conversation: Durable.Conversation,
-		context: Context,
-		host: DurableContributionHost,
-	): Promise<string>;
+	run(call: DurableCommandCall): Promise<string>;
+}
+
+/** One invocation of a contribution command. */
+export interface DurableCommandCall {
+	readonly args: string;
+	readonly conversation: Durable.Conversation;
+	readonly context: Context;
+	readonly host: DurableContributionHost;
+	/** Unique per invocation; stable when the caller retries the same invocation. */
+	readonly invocationId: string;
 }
 
 export interface EvoContributionOptions {
@@ -71,24 +75,23 @@ export function createEvoContribution(options: EvoContributionOptions): DurableC
 	const command: DurableCommand = {
 		name: "evo",
 		description: EVO_COMMAND_DESCRIPTION,
-		async run(rawArgs, conversation, context, host) {
-			const invocation = parseEvoInvocation(rawArgs);
+		async run(call) {
+			const invocation = parseEvoInvocation(call.args);
 			if (!invocation.ok) throw new Error(invocation.error);
 			const release = await readPiReleaseIntake({ harnessRoot: HARNESS_ROOT });
 			const kickoff = buildEvoKickoff({
 				harnessRoot: HARNESS_ROOT,
-				invocationCwd: host.cwd,
+				invocationCwd: call.host.cwd,
 				direction: invocation.direction,
 				release,
 			});
-			// The kickoff digest is the durable dedup key: a repeated command after
-			// process loss constructs the same text and finds its submission.
-			const requestId = `evo:${createHash("sha256").update(kickoff, "utf8").digest("hex")}`;
-			const submission = await conversation.submit(
-				{ type: "input", content: kickoff, whenBusy: "followUp", requestId },
-				context,
+			// The invocation ID is the durable dedup key: a retry of the same invocation
+			// finds its submission, and two identical invocations stay two requests.
+			const submission = await call.conversation.submit(
+				{ type: "input", content: kickoff, whenBusy: "followUp", requestId: `evo:${call.invocationId}` },
+				call.context,
 			);
-			return `Admitted the evo kickoff as submission ${String(submission.id)}; a repeated command with the same kickoff reuses it.`;
+			return `Admitted the evo kickoff as submission ${String(submission.id)}.`;
 		},
 	};
 	return {
