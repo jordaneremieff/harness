@@ -210,6 +210,27 @@ Host health fields are retained at the view's publication time, not a fresh
 check; a later view can clear them. The manager adds its current recovery errors,
 including crash-loop stops, without changing the host's published view.
 
+The transcript renders the selected conversation with Pi's published chat
+components: user inputs, assistant text, thinking (collapsed as the primary
+chat shows it), tool calls with their stored arguments and the built-in
+presentation when the tool has one, and each result attached to its call. A
+contributed tool without a built-in presentation shows its name and arguments
+as readable text. A bounded snapshot can omit the oldest entries; when it does
+and the session summary carries a first task, the board shows that task above
+the retained entries and labels the transcript partial. Blank-line runs between
+blocks are reduced to one line.
+
+`a` opens the native action list over the board. The board stays mounted and
+keeps its selection across action dialogs and results. Actions that need an
+agent use the selected one; actions that need none stay available. A native
+prompt or dialog takes the screen while it is open, and the board returns
+afterward. A result shows its display text and names the affected agent. A
+result that carries a new agent identity selects that agent and follows its
+tail. Prompts name an agent by its stored name, else a first-task excerpt, else
+a short identity. An active find filter stays visible in the board header with
+its match count; Escape clears the filter before a later Escape closes the
+board.
+
 Attention means a row needs operator action: an unavailable or claim-conflicted
 storage, a host's last error or failed compaction, a failed run that carries an
 error, or a provider retry whose attempts are exhausted. A stopped session and

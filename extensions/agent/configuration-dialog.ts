@@ -1,6 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
+import { agentDisplayName } from "./action-outcome.ts";
 import { THINKING_LEVELS, validateConfigurationPatch, type ConfigurationPatch } from "./configuration.ts";
 
 function display(value: string): string { return stripVTControlCharacters(value).replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 256); }
@@ -27,7 +28,8 @@ export async function configurationDialog(snapshot: AgentConversationSummary, ct
 	let patch: ConfigurationPatch = {};
 	for (;;) {
 		const shown = values(snapshot, patch);
-		const choice = await ctx.ui.select(`Configure ${display(snapshot.id)}\nSnapshot or draft: name=${shown.name || "(unnamed)"}; model=${shown.model}; reasoning=${shown.level}`, ["Name", "Model", "Reasoning", "Apply", "Cancel"]);
+		const label = display(agentDisplayName(snapshot));
+		const choice = await ctx.ui.select(`Configure “${label}”\nName: ${shown.name} · Model: ${shown.model} · Reasoning: ${shown.level}`, ["Name", "Model", "Reasoning", "Apply", "Cancel"]);
 		if (choice === undefined || choice === "Cancel") return undefined;
 		try {
 			if (choice === "Apply") return validateConfigurationPatch(patch);

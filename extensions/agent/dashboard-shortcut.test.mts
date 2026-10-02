@@ -57,13 +57,14 @@ it("keeps the native editor draft intact across a mounted dashboard and uses onl
 	const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text } as Theme;
 	const editor = new Editor(tui, { borderColor: (text) => text, selectList: { selectedPrefix: (text) => text, selectedText: (text) => text, description: (text) => text, scrollInfo: (text) => text, noMatch: (text) => text } });
 	editor.setText("Unsent draft\nsecond line"); const before = editor.getText();
-	let panel: AgentDashboard | undefined; let close!: (value?: unknown) => void; let actions = 0; let ctx!: ExtensionContext;
+	let panel: AgentDashboard | undefined; let actions = 0; let ctx!: ExtensionContext;
 	const command = createAgentCommand([{ name: "status", description: "Read status", args: [], run: async (_args, actual) => { assert.equal(actual, ctx); actions++; return "Status read"; } }], {
 		list: async () => ({ rows: [], coverage: { complete: true, storagesVisited: 0, skipped: 0, omitted: 0, nextCursor: null }, observedAt: new Date().toISOString() }), snapshot: async () => { throw new Error("No selection"); },
 	});
 	ctx = context(async (factory) => {
-		const response = new Promise((resolve) => { close = resolve; });
-		const component = await factory(tui, theme, keys, (value) => close(value));
+		let finish!: (value?: unknown) => void;
+		const response = new Promise((resolve) => { finish = resolve; });
+		const component = await factory(tui, theme, keys, (value) => finish(value));
 		if (component instanceof AgentActionPicker) { component.render(80); component.handleInput("\r"); }
 		else { assert.ok(component instanceof AgentDashboard); panel = component; }
 		try { return await response as never; } finally { if (component instanceof AgentDashboard) component.dispose(); }

@@ -4,7 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
-import { AgentConversation, cleanDashboardText, renderableEntries } from "./dashboard-conversation.ts";
+import { AgentConversation, cleanDashboardText, firstTaskEntry, renderableEntries } from "./dashboard-conversation.ts";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
 
 initTheme("dark");
@@ -39,10 +39,62 @@ it("uses native built-in tools, generic unknown tools and unmatched results with
 	assert.match(text, /example_tool/);
 	assert.match(text, /Generic result/);
 	assert.match(text, /Retained result without its call/);
-	assert.doesNotMatch(text, /Message unavailable/);
+	assert.doesNotMatch(text, /Message unavailable|\{\}/);
 	assert.equal(conversation.render(80), conversation.render(80));
 	conversation.invalidate();
 	assert.ok(conversation.render(50).lines.every((line) => visibleWidth(line) <= 50));
+});
+
+it("renders tool-call-only and thinking-only assistant entries and attaches their results", () => {
+	const entries: AgentConversationEntry[] = [
+		assistant("a", [
+			{ type: "thinking", thinking: "Plan the shell steps" },
+			{ type: "toolCall", id: "bash-one", name: "bash", arguments: { command: "echo step-1" } },
+			{ type: "toolCall", id: "write-one", name: "write", arguments: { path: "poem.txt", content: "line one\nline two\n" } },
+		]),
+		result("t1", "bash-one", "bash", "step-1\n"),
+		result("t2", "write-one", "write", "Successfully wrote to poem.txt"),
+	];
+	assert.deepEqual(renderableEntries(entries).map((entry) => entry.id), ["a", "t1", "t2"]);
+	const text = screen(new AgentConversation(entries, "/work", tui, false, false));
+	assert.match(text, /\$ echo step-1/);
+	assert.match(text, /poem\.txt/);
+	assert.match(text, /Thinking\.\.\./);
+	assert.doesNotMatch(text, /\{\}/);
+	assert.match(screen(new AgentConversation(entries, "/work", tui, false, true)), /Plan the shell steps/);
+});
+
+it("shows a retained result whose call is absent without an empty argument object", () => {
+	const entries: AgentConversationEntry[] = [result("t", "missing", "example_tool", "Retained output sentinel")];
+	assert.deepEqual(renderableEntries(entries).map((entry) => entry.id), ["t"]);
+	const text = screen(new AgentConversation(entries, "/work", tui, false, false));
+	assert.match(text, /example_tool/);
+	assert.match(text, /Retained output sentinel/);
+	assert.doesNotMatch(text, /\{\}/);
+});
+
+it("keeps one blank line between conversation blocks", () => {
+	const entries: AgentConversationEntry[] = [
+		user("u", "The task"),
+		assistant("a", [{ type: "text", text: "Working on it." }]),
+		result("t", "missing-call", "example_tool", "kept output"),
+	];
+	const lines = new AgentConversation(entries, "/work", tui, false, false).render(80).lines.map(stripVTControlCharacters);
+	assert.doesNotMatch(lines.join("\n"), /\n[ \t]*\n[ \t]*\n/);
+	for (let index = 1; index < lines.length; index++) {
+		assert.ok(!(lines[index]?.trim() === "" && lines[index - 1]?.trim() === ""), "two blank lines in a row");
+	}
+});
+
+it("recovers the first task from the session summary when the bounded transcript omits it", () => {
+	const late: AgentConversationEntry[] = [assistant("late", [{ type: "text", text: "Late answer" }])];
+	const synthetic = firstTaskEntry({ entries: late, partial: true }, { firstMessage: "Run the checks" });
+	assert.ok(synthetic);
+	const message = synthetic.model?.[0] as { content?: unknown } | undefined;
+	assert.equal(message?.content, "Run the checks");
+	assert.equal(firstTaskEntry({ entries: late, partial: true }, undefined), undefined);
+	assert.equal(firstTaskEntry({ entries: late, partial: false }, { firstMessage: "Run the checks" }), undefined);
+	assert.equal(firstTaskEntry({ entries: [user("u", "Run the checks")], partial: true }, { firstMessage: "Run the checks" }), undefined);
 });
 
 it("renders native compaction summaries and context resets with their retained text", () => {

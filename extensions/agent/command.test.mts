@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { type ExtensionAPI, type ExtensionCommandContext, type RegisteredCommand, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { CombinedAutocompleteProvider, Editor, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import { chooseDashboardAction, createAgentCommand, executeAgentAction, type AgentCommandAction } from "./command.ts";
+import { chooseDashboardAction, createAgentCommand, executeAgentAction, type AgentActionOutcome, type AgentCommandAction } from "./command.ts";
 import type { AgentConversationSummary, DashboardTarget } from "./dashboard-types.ts";
 import registerAgentExtension from "./index.ts";
 import { defined } from "./test-assertions.mts";
@@ -21,6 +21,8 @@ function context() {
 	return { notices, ctx: { mode: "print", hasUI: false, ui: { notify: (text: string, type: string) => notices.push({ text, type }) } } as unknown as ExtensionCommandContext };
 }
 const signal = new AbortController().signal;
+/** Display text of one action result, whichever form the action returned. */
+const textOf = (value: string | AgentActionOutcome | undefined): string | undefined => typeof value === "string" ? value : value?.text;
 function provider(command: ReturnType<typeof registration>) { return new CombinedAutocompleteProvider([{ name: "agent", ...command }], process.cwd()); }
 async function suggest(native: CombinedAutocompleteProvider, line: string, col = line.length) {
 	return native.getSuggestions([line], 0, col, { signal });
@@ -225,7 +227,7 @@ describe("dashboard action dispatch", () => {
 		assert.equal(await chooseDashboardAction([action], target, d.ctx), "queued, not delivered");
 		assert.deepEqual(calls, [["open-2", "help", "with", "--help", "output"]]);
 		assert.equal(d.prompts.length, 1);
-		assert.match(defined(await executeAgentAction(action, ["open-2"], d.ctx)), /Missing message/);
+		assert.match(defined(textOf(await executeAgentAction(action, ["open-2"], d.ctx))), /Missing message/);
 		assert.equal(calls.length, 1);
 	});
 	it("prefills only correctly typed session IDs and never a directory or task", async () => {
@@ -255,8 +257,42 @@ describe("dashboard action dispatch", () => {
 	it("rejects blank required input and extra positional words before any dispatch", async () => {
 		let calls = 0;
 		const action: AgentCommandAction = { name: "place", description: "Use directory", args: [{ name: "dir" }], run: async () => { calls++; return "bad"; } };
-		for (const value of ["", "two words"]) assert.match(defined(await chooseDashboardAction([action], target, dialogs("place: Use directory", [value]).ctx)), /requires one word/);
+		for (const value of ["", "two words"]) assert.match(defined(textOf(await chooseDashboardAction([action], target, dialogs("place: Use directory", [value]).ctx))), /requires one word/);
 		assert.equal(calls, 0);
+	});
+	it("shows outcome text and summarizes legacy control JSON with the agent display name", async () => {
+		const notices: string[] = [];
+		const command = createAgentCommand([
+			{ name: "new", description: "Start", args: [{ name: "task", rest: true, optional: true }], run: async () => ({ text: "Started agent “Review parser”", sessionId: "open-2" }) },
+			{ name: "send", description: "Send", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async () => JSON.stringify({ sessionId: "open-2", submissionId: 47, deduped: false }) },
+		], { list: async () => page(rows), snapshot: async () => { throw new Error("not requested"); } });
+		const ctx = { mode: "print", hasUI: true, ui: { notify: (text: string) => notices.push(text) } } as unknown as ExtensionCommandContext;
+		await command.handler("new task", ctx);
+		assert.deepEqual(notices, ["Started agent “Review parser”"]);
+		await command.handler("send open-2 hello", ctx);
+		assert.equal(notices[1], "Input admitted for “Review parser” (submission 47)");
+		assert.doesNotMatch(notices.join("\n"), /submissionId|\{/);
+	});
+	it("names the selected agent in action prompts and returns an outcome unchanged", async () => {
+		const prompts: string[] = [];
+		const ctx = { ui: { select: async () => "send: Send task", input: async (title: string) => { prompts.push(title); return "hello"; } } } as unknown as ExtensionCommandContext;
+		const action: AgentCommandAction = { name: "send", description: "Send task", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async () => ({ text: "Queued", sessionId: "open-2" }) };
+		assert.deepEqual(await chooseDashboardAction([action], rows[1], ctx), { text: "Queued", sessionId: "open-2" });
+		assert.match(prompts[0] ?? "", /Review parser/);
+	});
+	it("hides the board around a native prompt or dialog and shows it again", async () => {
+		const states: boolean[] = [];
+		const surface = { hide: () => states.push(true), show: () => states.push(false) };
+		const action: AgentCommandAction = { name: "send", description: "Send task", args: [{ name: "session", complete: "session" }, { name: "message", rest: true }], run: async () => "Queued" };
+		assert.equal(await chooseDashboardAction([action], target, dialogs("send: Send task", ["hello"]).ctx, surface), "Queued");
+		assert.deepEqual(states, [true, false]);
+		const dialogAction: AgentCommandAction = { name: "configure", description: "Change configuration", args: [{ name: "session", complete: "session" }], dialog: async () => "patched", run: async () => undefined };
+		states.length = 0;
+		assert.equal(await chooseDashboardAction([dialogAction], target, dialogs("configure: Change configuration").ctx, surface), "patched");
+		assert.deepEqual(states, [true, false]);
+		states.length = 0;
+		assert.equal(await chooseDashboardAction([action], target, dialogs(undefined).ctx, surface), undefined);
+		assert.deepEqual(states, [], "a canceled picker never hides the board");
 	});
 });
 

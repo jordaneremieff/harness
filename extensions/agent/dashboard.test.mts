@@ -669,3 +669,90 @@ it("bounds and sanitizes host recovery text at every width", async () => {
 		}
 	} finally { f.panel.dispose(); }
 });
+
+it("selects and follows an agent created from the new-task draft", async () => {
+	let spawned = false;
+	const f = fixture([row("old", { modifiedAt: 1 })], { list: async () => page(spawned ? [row("fresh", { modifiedAt: 2 }), row("old", { modifiedAt: 1 })] : [row("old", { modifiedAt: 1 })]) }, {
+		run: async () => undefined,
+		compose: async (mode) => { assert.equal(mode, "new"); spawned = true; return { text: "Started agent “fresh”", sessionId: "fresh" }; },
+	});
+	await tick();
+	try {
+		f.panel.handleInput("n"); f.panel.handleInput("fresh task"); f.panel.handleInput("\r"); await tick();
+		assert.equal(f.panel.state.selected, "fresh");
+		assert.equal(f.panel.state.focus, "conversation");
+		assert.equal(f.panel.state.views.get("fresh")?.follow, true);
+		assert.match(f.screen(), /Started agent/);
+	} finally { f.panel.dispose(); }
+});
+
+it("keeps the board open for actions and selects an agent returned by an action", async () => {
+	const targets: Array<string | undefined> = [];
+	const f = fixture([row("target", { modifiedAt: 2 }), row("branched", { modifiedAt: 1 })], {}, {
+		run: async (target) => { targets.push(target?.id); return { text: "Created branch", sessionId: "branched" }; },
+	});
+	await tick();
+	try {
+		f.panel.handleInput("a"); await tick();
+		assert.deepEqual(f.requests, [], "the board stays open");
+		assert.deepEqual(targets, ["target"]);
+		assert.equal(f.panel.state.selected, "branched");
+		assert.match(f.screen(), /Created branch/);
+		f.panel.handleInput("\x1b");
+		assert.equal(f.panel.state.actionResult, undefined);
+		assert.deepEqual(f.requests, [], "the first Escape returns to the board");
+		assert.equal(f.panel.state.selected, "branched");
+	} finally { f.panel.dispose(); }
+});
+
+it("shows outcome text and summarizes a legacy control result in the board", async () => {
+	let result: string | { text: string; sessionId?: string } = { text: "Started agent “target”", sessionId: "target" };
+	const f = fixture([row("target")], {}, { run: async () => result, compose: async () => undefined });
+	await tick();
+	try {
+		f.panel.handleInput("a"); await tick();
+		assert.match(f.screen(), /Started agent “target”/);
+		f.panel.handleInput("\x1b");
+		result = JSON.stringify({ sessionId: "target", submissionId: 47, deduped: false });
+		f.panel.handleInput("a"); await tick();
+		const text = f.screen();
+		assert.doesNotMatch(text, /submissionId|\{/);
+		assert.match(text, /Input admitted for “Session target” \(submission 47\)/);
+	} finally { f.panel.dispose(); }
+});
+
+it("shows the active find filter with its match count and clears it before closing", async () => {
+	const f = fixture([row("a", { modifiedAt: 2 }), row("b", { modifiedAt: 1 })]);
+	await tick();
+	try {
+		f.panel.handleInput("/"); f.panel.handleInput("Session b"); f.panel.handleInput("\r");
+		assert.match(f.screen(160), /find “Session b” 1 match of 2/);
+		f.panel.handleInput("\x1b");
+		assert.equal(f.panel.state.filter, "");
+		assert.deepEqual(f.requests, [], "the first Escape clears the filter");
+		f.panel.handleInput("\x1b");
+		assert.equal(f.requests.length, 1, "the second Escape closes");
+	} finally { f.panel.dispose(); }
+});
+
+it("pluralizes session counts", async () => {
+	const f = fixture([row("one")]);
+	await tick();
+	try {
+		const screen = f.screen(160);
+		assert.match(screen, /1 session/);
+		assert.doesNotMatch(screen, /1 sessions/);
+	} finally { f.panel.dispose(); }
+});
+
+it("shows the first task from the session summary when the bounded transcript drops it", async () => {
+	const late: AgentConversationEntry[] = [assistantEntry("late", "Late answer sentinel", 2)];
+	const f = fixture([row("bounded", { firstMessage: "FIRST TASK SENTINEL" })], { snapshot: async () => ({ entries: [...late], partial: true, revision: "partial" }) });
+	await tick();
+	try {
+		const screen = f.screen(160);
+		assert.match(screen, /FIRST TASK SENTINEL/);
+		assert.match(screen, /First task from session summary/);
+		assert.match(screen, /Late answer sentinel/);
+	} finally { f.panel.dispose(); }
+});

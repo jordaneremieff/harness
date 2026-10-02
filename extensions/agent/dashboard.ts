@@ -2,8 +2,10 @@ import { basename } from "node:path";
 import type { ExtensionContext, KeybindingsManager, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Input, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Keybinding, type TUI } from "@earendil-works/pi-tui";
 import type { AgentConversationEntry, AgentConversationSummary, AgentDashboardCoverage, AgentObservationSources, DashboardTarget } from "./dashboard-types.ts";
-import { AgentConversation, cleanDashboardText, renderableEntries, type ConversationDocument } from "./dashboard-conversation.ts";
+import { AgentConversation, cleanDashboardText, firstTaskEntry, renderableEntries, type ConversationDocument } from "./dashboard-conversation.ts";
 import { AgentMessageEditor } from "./dashboard-composer.ts";
+import { actionOutcomeText, agentDisplayName, outcomeSessionId } from "./action-outcome.ts";
+import type { AgentActionOutcome } from "./command.ts";
 
 export interface AgentDashboardSnapshot { observedAt: number; sessions: readonly AgentConversationSummary[]; coverage?: AgentDashboardCoverage; error?: string }
 interface ConversationView {
@@ -25,8 +27,12 @@ export interface DashboardState {
 	actionResult?: string;
 }
 export interface DashboardActions {
-	run(target: DashboardTarget | undefined): Promise<string | undefined>;
-	compose?(mode: "send" | "steer" | "new", sessionId: string | undefined, text: string): Promise<string | undefined>;
+	run(target: DashboardTarget | undefined, surface?: DashboardActionSurface): Promise<string | AgentActionOutcome | undefined>;
+	compose?(mode: "send" | "steer" | "new", sessionId: string | undefined, text: string): Promise<string | AgentActionOutcome | undefined>;
+}
+/** Control of the board overlay while a native dialog takes the screen. */
+export interface DashboardActionSurface {
+	setHidden(hidden: boolean): void;
 }
 interface ActionRequest { target?: DashboardTarget }
 type StateAppearance = { label: string; glyph: string; color: ThemeColor };
@@ -50,7 +56,8 @@ export function elapsed(ms: number): string {
 }
 function costOf(row: AgentConversationSummary): string { return `${row.partial ? "≥" : ""}$${row.cost.toFixed(2)}`; }
 function activityOf(row: AgentConversationSummary, now: number): string {
-	const parts = [`${row.toolCalls ?? 0} tool calls`, `active ${elapsed(now - row.modifiedAt)} ago`];
+	const calls = row.toolCalls ?? 0;
+	const parts = [`${calls} ${calls === 1 ? "tool call" : "tool calls"}`, `active ${elapsed(now - row.modifiedAt)} ago`];
 	if (row.durationMs !== undefined) parts.unshift(`${elapsed(row.durationMs)} duration`);
 	return parts.join(" · ");
 }
@@ -151,6 +158,8 @@ export class AgentDashboard implements Component {
 	private closed = false;
 	private refreshing = false;
 	private submitting = false;
+	private actionRunning = false;
+	private pendingSelection?: string;
 	private timer?: ReturnType<typeof setInterval>;
 	private refreshPaused = false;
 	private renderRequestedAt?: number;
@@ -159,7 +168,7 @@ export class AgentDashboard implements Component {
 	private resultScroll = 0;
 	private resultLength = 0;
 	private viewport = 1;
-	private history?: { id: string; entries: readonly AgentConversationEntry[]; partial: boolean; revision: string };
+	private history?: { id: string; entries: readonly AgentConversationEntry[]; partial: boolean; revision: string; firstTask?: AgentConversationEntry };
 	private historyError?: string;
 	private historyGeneration = 0;
 	private conversation?: AgentConversation;
@@ -179,8 +188,9 @@ export class AgentDashboard implements Component {
 	private readonly keys: KeybindingsManager;
 	private readonly done: (request?: ActionRequest) => void;
 	private readonly actions?: DashboardActions;
-	constructor(sources: AgentObservationSources, tui: Pick<TUI, "requestRender" | "terminal">, theme: Theme, keys: KeybindingsManager, done: (request?: ActionRequest) => void, state?: DashboardState, actions?: DashboardActions) {
-		this.sources = sources; this.tui = tui; this.theme = theme; this.keys = keys; this.done = done; this.actions = actions;
+	private readonly surface?: { handle?: DashboardActionSurface };
+	constructor(sources: AgentObservationSources, tui: Pick<TUI, "requestRender" | "terminal">, theme: Theme, keys: KeybindingsManager, done: (request?: ActionRequest) => void, state?: DashboardState, actions?: DashboardActions, surface?: { handle?: DashboardActionSurface }) {
+		this.sources = sources; this.tui = tui; this.theme = theme; this.keys = keys; this.done = done; this.actions = actions; this.surface = surface;
 		this.state = state ?? { filter: "", views: new Map(), drafts: new Map() };
 		this.state.focus ??= "sessions";
 		this.editor = new AgentMessageEditor(tui as TUI, theme, (text) => { void this.submit(text); });
@@ -221,6 +231,7 @@ export class AgentDashboard implements Component {
 	private select(id: string | undefined): boolean {
 		if (id === this.state.selected) return false;
 		this.rememberAnchor();
+		this.pendingSelection = undefined;
 		this.state.selected = id;
 		this.historyGeneration++;
 		this.history = undefined; this.historyError = undefined; this.conversation = undefined; this.document = undefined; this.conversationWidth = undefined;
@@ -230,7 +241,24 @@ export class AgentDashboard implements Component {
 	private selectValid(): boolean {
 		if (this.submitting || this.inputMode === "message" || this.inputMode === "new") return false;
 		const rows = this.rows();
+		if (this.pendingSelection !== undefined) {
+			const match = rows.find((row) => row.id === this.pendingSelection);
+			if (match === undefined) return false;
+			this.pendingSelection = undefined;
+			return this.select(match.id);
+		}
 		return !rows.some((row) => row.id === this.state.selected) && this.select(rows[0]?.id);
+	}
+	/** Select an agent by identity and follow its tail; a row not yet listed arrives on the next refresh. */
+	private selectAndFollow(id: string): void {
+		const pending = !this.state.snapshot?.sessions.some((row) => row.id === id);
+		this.select(id);
+		this.pendingSelection = pending ? id : undefined;
+		const view = this.view();
+		if (view) { view.follow = true; view.anchor = undefined; view.scroll = 0; }
+		this.anchorPending = false;
+		this.state.focus = "conversation";
+		void this.readConversation();
 	}
 	async refresh(): Promise<void> {
 		if (this.closed || this.refreshPaused || this.refreshing) return;
@@ -260,7 +288,9 @@ export class AgentDashboard implements Component {
 			this.historyError = undefined;
 			if (this.history?.id === id && this.history.revision === data.revision) return;
 			this.rememberAnchor(); this.anchorPending = true;
-			this.history = { id, ...data }; this.conversation = undefined;
+			const row = this.state.snapshot?.sessions.find((item) => item.id === id);
+			this.history = { id, ...data, firstTask: firstTaskEntry(data, row) };
+			this.conversation = undefined;
 		} catch (error) { if (!this.closed && !this.refreshPaused && generation === this.historyGeneration && id === this.state.selected) this.historyError = errorText(error); }
 		this.redraw();
 	}
@@ -296,6 +326,17 @@ export class AgentDashboard implements Component {
 		const refusal = this.refusal(row); if (refusal) throw new Error(refusal);
 		return row.state === "working" ? "steer" : "send";
 	}
+	private displayNameOf(id: string): string | undefined {
+		const row = this.state.snapshot?.sessions.find((item) => item.id === id);
+		return row === undefined ? undefined : agentDisplayName(row);
+	}
+	/** Show one action receipt, then select an agent the receipt names. */
+	private async acceptReceipt(receipt: string | AgentActionOutcome | undefined): Promise<void> {
+		this.state.notice = actionOutcomeText(receipt, (target) => this.displayNameOf(target)) ?? "Action returned no receipt";
+		const followId = outcomeSessionId(receipt);
+		await this.refresh();
+		if (!this.closed && followId !== undefined) this.selectAndFollow(followId);
+	}
 	private async submit(text: string): Promise<void> {
 		if (this.submitting || !this.actions?.compose) return;
 		const create = this.inputMode === "new"; const id = this.composerId;
@@ -309,11 +350,23 @@ export class AgentDashboard implements Component {
 			const receipt = await this.actions.compose(mode, id, text);
 			if (this.closed) return;
 			this.state.drafts.delete(id ?? "new"); this.editor.setText(""); this.finishInput();
-			this.state.notice = receipt || "Action returned no receipt";
-			await this.refresh();
+			await this.acceptReceipt(receipt);
 		} catch (error) {
 			if (!this.closed) { this.editor.setText(text); this.state.notice = `Refused: ${errorText(error)}`; }
 		} finally { this.submitting = false; this.redraw(); }
+	}
+	/** Run one board action; the board keeps its selection, hides for a native dialog, and shows the result. */
+	private async runActions(row: AgentConversationSummary | undefined): Promise<void> {
+		if (!this.actions || this.actionRunning || this.submitting) return;
+		this.actionRunning = true;
+		try {
+			const result = await this.actions.run(row, this.surface?.handle);
+			if (this.closed) return;
+			if (result !== undefined) this.state.actionResult = actionOutcomeText(result, (target) => this.displayNameOf(target)) ?? "Action returned no text";
+			const followId = outcomeSessionId(result);
+			if (followId !== undefined) { await this.refresh(); if (!this.closed) this.selectAndFollow(followId); }
+		} catch (error) { if (!this.closed) this.state.actionResult = `Refused: ${errorText(error)}`; }
+		finally { this.actionRunning = false; this.redraw(); }
 	}
 	private editInput(data: string): void {
 		if (matchesKey(data, "escape")) {
@@ -334,6 +387,7 @@ export class AgentDashboard implements Component {
 	private back(): void {
 		if (this.help) this.help = false;
 		else if (this.state.actionResult !== undefined) this.state.actionResult = undefined;
+		else if (this.state.filter) { this.state.filter = ""; if (this.selectValid()) void this.readConversation(); }
 		else { this.dispose(); this.done(); }
 	}
 	private delta(data: string, page: number): number {
@@ -371,8 +425,8 @@ export class AgentDashboard implements Component {
 				if (!this.submitting) { this.filterBefore = this.state.filter; this.selectionBefore = this.state.selected; this.focusBefore = this.state.focus ?? "sessions"; this.state.focus = "sessions"; this.inputMode = "filter"; this.input.setValue(this.state.filter); this.focused = this.hostFocused; }
 				return true;
 			case "a": {
-				if (!this.actions || this.submitting) return true;
-				const row = this.selected(); this.dispose(); this.done({ target: row }); return true;
+				if (!this.actions || this.submitting || this.actionRunning) return true;
+				void this.runActions(this.selected()); return true;
 			}
 			default: return false;
 		}
@@ -416,6 +470,7 @@ export class AgentDashboard implements Component {
 		if (this.inputMode === "filter") hints = ["Enter keep filter", "Esc cancel"];
 		else if (this.inputMode) hints = [`${this.keys.getKeys("tui.input.submit").join("/") || "Enter"} send`, `${this.keys.getKeys("tui.input.newLine").join("/") || "Ctrl+J"} newline`, "Esc keep draft"];
 		else if (this.help || this.state.actionResult !== undefined) hints = ["↑↓ scroll", "PgUp/PgDn page", "Esc back"];
+		else if (this.state.filter) hints = [...hints, "Esc clear find"];
 		const lines: string[] = [];
 		for (const hint of hints) {
 			const last = lines.length - 1;
@@ -464,7 +519,8 @@ export class AgentDashboard implements Component {
 		this.editingHidden = false; this.focused = this.hostFocused;
 		const small = () => {
 			this.editingHidden = true; this.focused = this.hostFocused;
-			return [truncateToWidth(this.inputMode ? "Resize to edit · Esc keeps draft" : `Agents · ${this.rows().length} sessions · Esc close`, width)];
+			const count = this.rows().length;
+			return [truncateToWidth(this.inputMode ? "Resize to edit · Esc keeps draft" : `Agents · ${count} ${count === 1 ? "session" : "sessions"} · Esc close`, width)];
 		};
 		if (height < 6 || width < 24) return small();
 		const inner = width - 4;
@@ -475,12 +531,20 @@ export class AgentDashboard implements Component {
 		const shownExtras = extras.slice(0, Math.max(0, available - 1));
 		const contentHeight = available - shownExtras.length;
 		this.viewport = contentHeight;
-		const heading = this.state.actionResult !== undefined ? "Action result" : `Agents  ${totals(this.state.snapshot)}`;
+		const heading = this.state.actionResult !== undefined ? "Action result" : `Agents  ${totals(this.state.snapshot)}${this.filterHeading()}`;
 		const rendered = this.content(inner, contentHeight);
 		const content = Array.from({ length: contentHeight }, (_, index) => rendered[index] ?? "");
 		const border = (left: string, right: string) => this.theme.fg("borderMuted", left + "─".repeat(width - 2) + right);
 		const frame = (line: string) => `${this.theme.fg("borderMuted", "│")} ${pad(line, inner)} ${this.theme.fg("borderMuted", "│")}`;
 		return [border("╭", "╮"), frame(this.theme.bold(heading)), frame(this.theme.fg("accent", this.navigationHeading())), ...content.map(frame), ...shownExtras.map(frame), ...hints.map(frame), border("╰", "╯")];
+	}
+	/** Active find for the board header: filter text plus its match count. */
+	private filterHeading(): string {
+		if (!this.state.filter) return "";
+		const matches = this.rows().length;
+		const total = this.state.snapshot?.sessions.length ?? 0;
+		const count = `${matches} ${matches === 1 ? "match" : "matches"}`;
+		return `  · find “${oneLine(this.state.filter)}” ${count}${total === matches ? "" : ` of ${total}`}`;
 	}
 	private renderWorkspace(width: number, height: number): string[] {
 		const rows = this.rows(); const selected = this.selected();
@@ -545,7 +609,7 @@ export class AgentDashboard implements Component {
 		const headerHeight = height >= 4 ? 1 : 0;
 		const pageSize = Math.max(1, height - headerHeight);
 		const start = Math.min(Math.max(0, entries.length - pageSize), Math.max(0, selectedIndex - Math.floor(pageSize / 2)));
-		const filter = this.state.filter ? `${rows.length} of ${this.state.snapshot?.sessions.length ?? 0} · ${oneLine(this.state.filter)}` : `${rows.length} sessions`;
+		const filter = this.state.filter ? `${rows.length} of ${this.state.snapshot?.sessions.length ?? 0} · ${oneLine(this.state.filter)}` : `${rows.length} ${rows.length === 1 ? "session" : "sessions"}`;
 		const header = [filter, coverageText(this.state.snapshot?.coverage)].filter(Boolean).join(" · ");
 		const lines = headerHeight ? [this.theme.fg("dim", truncateToWidth(`${header}${start > 0 ? " · ↑" : ""}${start + pageSize < entries.length ? " · ↓" : ""}`, width))] : [];
 		const titles = this.rosterTitles(rows, width - 4);
@@ -596,12 +660,24 @@ export class AgentDashboard implements Component {
 		const measure = Math.min(112, width);
 		if (this.conversationWidth !== undefined && this.conversationWidth !== measure) { this.rememberAnchor(); this.anchorPending = true; }
 		if (!this.conversation) {
-			this.conversation = new AgentConversation(entries.slice(start), this.selected()?.cwd ?? ".", this.tui as TUI, view.expanded, view.showThinking);
+			const slice = entries.slice(start);
+			const first = this.history?.firstTask;
+			this.conversation = new AgentConversation(first ? [first, ...slice] : slice, this.selected()?.cwd ?? ".", this.tui as TUI, view.expanded, view.showThinking);
 			this.conversationStart = start;
 		}
 		this.conversationWidth = measure;
 		this.document = this.conversation.render(measure);
 		return { document: this.document, start: this.conversationStart };
+	}
+	/** Keep the follow marker and the passage when a document is rebuilt. */
+	private settleScroll(view: ConversationView, document: ConversationDocument): void {
+		if (this.anchorPending && !view.follow && view.anchor) {
+			const anchor = document.anchors.find((item) => item.id === view.anchor?.id);
+			if (anchor) view.scroll = anchor.line + view.anchor.offset;
+		}
+		this.anchorPending = false;
+		view.scroll = view.follow ? Math.max(0, document.lines.length - this.viewport) : Math.max(0, Math.min(view.scroll, document.lines.length - 1));
+		this.rememberAnchor();
 	}
 	private renderConversation(width: number, height: number, withTitle: boolean): string[] {
 		const header = this.conversationHeader(width, height, withTitle); const view = this.view();
@@ -610,14 +686,8 @@ export class AgentDashboard implements Component {
 		const meaningful = renderableEntries(this.history.entries);
 		const { document, start } = this.conversationDocument(meaningful, view, width);
 		this.viewport = Math.max(1, height - header.length - 1);
-		if (this.anchorPending && !view.follow && view.anchor) {
-			const anchor = document.anchors.find((item) => item.id === view.anchor?.id);
-			if (anchor) view.scroll = anchor.line + view.anchor.offset;
-		}
-		this.anchorPending = false;
-		view.scroll = view.follow ? Math.max(0, document.lines.length - this.viewport) : Math.max(0, Math.min(view.scroll, document.lines.length - 1));
-		this.rememberAnchor();
-		const top = `${start ? `${start} earlier messages · o loads more` : "Start of conversation"}${this.history.partial ? " · partial transcript" : ""}`;
+		this.settleScroll(view, document);
+		const top = `${start ? `${start} earlier message${start === 1 ? "" : "s"} · o loads more` : this.history.firstTask ? "First task from session summary" : "Start of conversation"}${this.history.partial ? " · partial transcript" : ""}`;
 		const gutter = " ".repeat(Math.min(3, Math.floor((width - Math.min(112, width)) / 2)));
 		const content = document.lines.slice(view.scroll, view.scroll + this.viewport).map((line) => gutter + line);
 		return [...header, this.theme.fg("dim", `${top} · ${view.scroll + (document.lines.length ? 1 : 0)}–${Math.min(document.lines.length, view.scroll + this.viewport)} / ${document.lines.length}`), ...(content.length ? content : ["No conversation messages yet."])];
@@ -644,13 +714,9 @@ export async function showAgentDashboard(sources: AgentObservationSources, ctx: 
 		if (ctx.hasUI) ctx.ui.notify(text, "info"); else process.stderr.write(`${text}\n`);
 		return;
 	}
-	const state: DashboardState = { filter: "", views: new Map(), drafts: new Map() };
-	for (;;) {
-		const request = await ctx.ui.custom<ActionRequest | undefined>((tui, theme, keys, done) => new AgentDashboard(sources, tui, theme, keys, done, state, actions), {
-			overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: { top: 1, bottom: 1 } },
-		});
-		if (!request || !actions) return;
-		try { const result = await actions.run(request.target); if (result !== undefined) state.actionResult = result; }
-		catch (error) { state.actionResult = `Refused: ${errorText(error)}`; }
-	}
+	const surface: { handle?: DashboardActionSurface } = {};
+	await ctx.ui.custom<ActionRequest | undefined>((tui, theme, keys, done) => new AgentDashboard(sources, tui, theme, keys, done, { filter: "", views: new Map(), drafts: new Map() }, actions, surface), {
+		overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: { top: 1, bottom: 1 } },
+		onHandle: (handle) => { surface.handle = handle; },
+	});
 }

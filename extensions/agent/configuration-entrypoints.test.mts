@@ -31,8 +31,9 @@ test("native configuration dialogs keep drafts local, validate fields, and prese
 	assert.equal(d.notices.length, 2);
 	assert.match(d.notices[0], /requires at least one/);
 	assert.match(d.notices[1], /exact provider\/model identity/);
-	assert.match(d.titles[0], /Configure storage-1:7/);
-	assert.match(d.titles[0], /name=Parser review; model=test\/test-model; reasoning=high/);
+	assert.match(d.titles[0], /Configure “Parser review”/);
+	assert.match(d.titles[0], /Name: Parser review · Model: test\/test-model · Reasoning: high/);
+	assert.doesNotMatch(d.titles[0], /Snapshot or draft/);
 
 	const cancelled = dialogs(["Name", "Cancel"], ["Discarded name"]);
 	assert.equal(await configurationDialog(snapshot, cancelled.ctx), undefined);
@@ -43,7 +44,15 @@ test("configuration dialogs show fields without a stored model as unavailable", 
 	const snapshot = summary({ model: undefined, name: undefined });
 	const d = dialogs(["Apply"], []);
 	assert.equal(await configurationDialog(snapshot, d.ctx), undefined);
-	assert.match(d.titles[0], /name=\(unnamed\); model=\(unavailable\); reasoning=\(unavailable\)/);
+	assert.match(d.titles[0], /Configure “7”/);
+	assert.match(d.titles[0], /Name: \(unnamed\) · Model: \(unavailable\) · Reasoning: \(unavailable\)/);
+});
+
+test("configuration dialogs name an unnamed agent by its first task excerpt", async () => {
+	const snapshot = summary({ name: undefined, firstMessage: "Check the parser edge cases" });
+	const d = dialogs(["Cancel"], []);
+	assert.equal(await configurationDialog(snapshot, d.ctx), undefined);
+	assert.match(d.titles[0], /Configure “Check the parser edge cases”/);
 });
 
 test("the dashboard configure entry reaches the same dialog and returns its patch", async () => {

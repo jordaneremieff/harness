@@ -37,6 +37,17 @@ it("cancels without selecting an action and displays the selected description", 
 	} finally { setKeybindings(previous); }
 });
 
+it("names the selected agent in the action picker title", () => {
+	const previous = getKeybindings(); setKeybindings(keys);
+	const picker = new AgentActionPicker(choices, { terminal: { rows: 24 }, requestRender() {} }, theme, keys, () => {}, "Review parser");
+	try {
+		assert.match(picker.render(80).join("\n"), /Agent actions · Review parser/);
+		const narrow = picker.render(24);
+		assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
+		assert.match(narrow.join("\n"), /Agent actions · Revie/);
+	} finally { setKeybindings(previous); }
+});
+
 it("uses configured native selection keys and labels, including disabled bindings", () => {
 	const previous = getKeybindings();
 	const configured = new Keys(TUI_KEYBINDINGS, { "tui.select.up": ["ctrl+p"], "tui.select.down": ["ctrl+n"], "tui.select.confirm": ["ctrl+y"], "tui.select.cancel": ["ctrl+g"] }) as KeybindingsManager;

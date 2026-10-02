@@ -39,16 +39,50 @@ function contentText(content: Message["content"]): string {
 	return content.flatMap((part) => part.type === "text" ? [part.text] : part.type === "image" ? ["[Image]"] : []).join("\n");
 }
 
+/** Pi renders text, images, thinking and tool calls; a tool result always has its own card. */
+function messageIsRenderable(message: Message): boolean {
+	const content = message.content;
+	if (typeof content === "string") return content.trim().length > 0;
+	return content.some((part) => {
+		switch (part.type) {
+			case "text": return part.text.trim().length > 0;
+			case "image": return true;
+			case "toolCall": return true;
+			case "thinking": return part.thinking.trim().length > 0 || part.redacted === true;
+			default: return false;
+		}
+	});
+}
+
 /**
- * Entries the conversation surface can show. Native kinds without model
- * messages contribute no visible block, so they never consume the load limit.
+ * Entries the conversation surface can show. Assistant entries that carry only
+ * tool calls or thinking keep their tool cards and results attached; native
+ * kinds without visible content never consume the load limit.
  */
 export function renderableEntries(entries: readonly AgentConversationEntry[]): AgentConversationEntry[] {
 	return entries.filter((entry) => {
 		if (entry.kind === "pi.compaction" || entry.kind === "pi.reset") return true;
 		if (entry.kind === "pi.system") return false;
-		return (entry.model ?? []).some((message) => contentText(message.content).trim().length > 0);
+		if (entry.kind === "pi.tool-result") return true;
+		return (entry.model ?? []).some(messageIsRenderable);
 	});
+}
+
+/**
+ * First user task recovered from the session summary when the bounded
+ * transcript dropped the oldest entries. The summary carries the first input
+ * independently of the transcript bound, so the task stays visible.
+ */
+export function firstTaskEntry(
+	snapshot: { readonly entries: readonly AgentConversationEntry[]; readonly partial: boolean },
+	row: { readonly firstMessage?: string } | undefined,
+): AgentConversationEntry | undefined {
+	if (!snapshot.partial) return undefined;
+	const first = (row?.firstMessage ?? "").trim();
+	if (first === "") return undefined;
+	const present = snapshot.entries.some((entry) => entry.kind === "pi.user" && (entry.model ?? []).some((message) => contentText(message.content).startsWith(first)));
+	if (present) return undefined;
+	return { id: "first-task", kind: "pi.user", model: [{ role: "user", content: row?.firstMessage ?? first, timestamp: 0 }] };
 }
 
 function entryTimestamp(entry: AgentConversationEntry): number {
@@ -89,12 +123,14 @@ export class AgentConversation {
 	}
 	private tool(name: string, id: string, args: unknown, known = true): ToolExecutionComponent {
 		const definition = known ? this.definitions.find((item) => item.name === name) : undefined;
-		const tool = new ToolExecutionComponent(name, id, args, { showImages: false }, definition, this.tui, this.cwd);
+		// Pi's generic card prints a JSON object; an empty one renders as a bare `{}`.
+		const shown = args !== null && typeof args === "object" && !Array.isArray(args) && Object.keys(args).length === 0 ? undefined : args;
+		const tool = new ToolExecutionComponent(name, id, shown, { showImages: false }, definition, this.tui, this.cwd);
 		tool.setExpanded(this.expanded);
 		return tool;
 	}
 	private appendAssistant(id: string, message: AssistantMessage): void {
-		this.blocks.push({ id, component: new AssistantMessageComponent(message, !this.showThinking, getMarkdownTheme(), "Thinking (collapsed)") });
+		this.blocks.push({ id, component: new AssistantMessageComponent(message, !this.showThinking, getMarkdownTheme(), "Thinking...") });
 		for (const part of message.content) {
 			if (part.type !== "toolCall") continue;
 			const tool = this.tool(part.name, part.id, part.arguments);
@@ -105,7 +141,7 @@ export class AgentConversation {
 	}
 	private appendResult(id: string, message: ToolResultMessage): void {
 		let tool = this.tools.get(message.toolCallId);
-		if (!tool) { tool = this.tool(message.toolName, message.toolCallId, {}, false); this.blocks.push({ id, component: tool }); }
+		if (!tool) { tool = this.tool(message.toolName, message.toolCallId, undefined, false); this.blocks.push({ id, component: tool }); }
 		tool.updateResult(message);
 	}
 	private appendMessage(id: string, message: Message): void {
@@ -127,9 +163,17 @@ export class AgentConversation {
 		if (this.cache?.width === width) return this.cache.document;
 		const document: ConversationDocument = { lines: [], anchors: [] };
 		for (const { id, component } of this.blocks) {
+			let rendered: string[];
+			try { rendered = component.render(width); }
+			catch { rendered = ["[Message unavailable: renderer rejected stored content]"]; }
+			// Each native component pads itself; keep one blank line between blocks.
+			const first = rendered.findIndex((line) => cleanDashboardText(line).trim() !== "");
+			if (first < 0) continue;
+			let last = rendered.length - 1;
+			while (last > first && cleanDashboardText(rendered[last] ?? "").trim() === "") last--;
+			if (document.lines.length > 0) document.lines.push("");
 			document.anchors.push({ id, line: document.lines.length });
-			try { document.lines.push(...component.render(width)); }
-			catch { document.lines.push("[Message unavailable: renderer rejected stored content]"); }
+			document.lines.push(...rendered.slice(first, last + 1));
 		}
 		this.cache = { width, document };
 		return document;

@@ -16,8 +16,9 @@ export class AgentActionPicker implements Component {
 	private readonly theme: Theme;
 	private readonly keys: KeybindingsManager;
 	private readonly done: (choice?: string) => void;
-	constructor(choices: DashboardActionChoice[], tui: PickerTui, theme: Theme, keys: KeybindingsManager, done: (choice?: string) => void) {
-		this.choices = choices; this.tui = tui; this.theme = theme; this.keys = keys; this.done = done;
+	private readonly label?: string;
+	constructor(choices: DashboardActionChoice[], tui: PickerTui, theme: Theme, keys: KeybindingsManager, done: (choice?: string) => void, label?: string) {
+		this.choices = choices; this.tui = tui; this.theme = theme; this.keys = keys; this.done = done; this.label = label;
 	}
 	private selection(visible: number): SelectList {
 		if (this.list && this.visible === visible) return this.list;
@@ -51,18 +52,19 @@ export class AgentActionPicker implements Component {
 		const list = this.selection(Math.max(1, height - 5 - description.length));
 		const confirm = label("tui.select.confirm");
 		const navigation = [label("tui.select.up"), label("tui.select.down")].filter(Boolean).join("/");
-		return [this.theme.bold("Agent actions"), "", ...list.render(width), "", ...description.map((line) => this.theme.fg("muted", line)), truncateToWidth(`${navigation ? `${navigation} select` : ""}${confirm ? ` · ${confirm} choose` : ""}${cancel ? ` · ${cancel} back` : ""}`, width)];
+		const title = truncateToWidth(`Agent actions${this.label ? ` · ${this.label}` : ""}`, width);
+		return [this.theme.bold(title), "", ...list.render(width), "", ...description.map((line) => this.theme.fg("muted", line)), truncateToWidth(`${navigation ? `${navigation} select` : ""}${confirm ? ` · ${confirm} choose` : ""}${cancel ? ` · ${cancel} back` : ""}`, width)];
 	}
 	invalidate(): void { this.list?.invalidate(); }
 }
 
-export async function selectDashboardAction(choices: DashboardActionChoice[], ctx: ExtensionContext): Promise<string | undefined> {
+export async function selectDashboardAction(choices: DashboardActionChoice[], ctx: ExtensionContext, label?: string): Promise<string | undefined> {
 	if (ctx.mode !== "tui") {
 		const labels = choices.map((choice) => `${choice.name}: ${choice.description}`);
-		const selected = await ctx.ui.select("Agent actions", labels);
+		const selected = await ctx.ui.select(`Agent actions${label ? ` · ${label}` : ""}`, labels);
 		return choices[labels.indexOf(selected ?? "")]?.name;
 	}
-	return ctx.ui.custom<string | undefined>((tui, theme, keys, done) => new AgentActionPicker(choices, tui, theme, keys, done), {
+	return ctx.ui.custom<string | undefined>((tui, theme, keys, done) => new AgentActionPicker(choices, tui, theme, keys, done, label), {
 		overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: { top: 1, bottom: 1 } },
 	});
 }
