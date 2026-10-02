@@ -35,7 +35,12 @@ passes it must name `codemode` too. Managed sessions created by the
 public factory and follow the same setting.
 
 Keep native codemode's default `on` mode. It preserves direct tool declarations
-alongside script access. In `only` mode, Pi hides direct tool declarations.
+alongside script access, and each declared tool that scripts can call carries a
+one-line call note: `tools.<name>(args)` resolves to the tool's output. The
+full declaration is not repeated in that note; `describeTool(name)` returns
+it, and the `codemode` description lists the callable tools without `direct`
+exposure within `codemode.inlineBudget` (3000 estimated tokens by default). In
+`only` mode, Pi hides direct tool declarations.
 Native `read` has no output schema, so a script receives its text but not its
 image blocks. Use direct `read` for images. Activating codemode does not require
 an MCP server or `tool_search`.
@@ -155,6 +160,13 @@ omissions. Its output budget is a separate native limit. If Pi truncates that
 output, follow the reported output path or request less data before drawing a
 conclusion. Do not mistake a short script result for complete source coverage.
 
+The installed `docs/codemode.md` is the script API reference: globals, tool
+result shapes, the `models` API, and limits. It records the store bounds
+(262,144 characters of JSON per value, 1,048,576 across all values) and the
+failure contract: a failed, blocked, or invalid-argument call rejects with an
+`Error` carrying the tool's error text, and a failed script keeps its partial
+output while calls still running at script end are cancelled.
+
 ## Preserve source boundaries
 
 | Tool | Records | Required interpretation |
@@ -230,9 +242,43 @@ namespace `name` and `description`, omits `instructions`, and sets
 the full text. The [checked Pi contract](pi-durable-harness.md#mcp-and-deferred-tool-discovery)
 records the exposure, naming, and waiting rules with their sources.
 
+## Generate images from a script
+
+The `models` API runs image models with the session's credentials. OpenRouter
+image models, such as `google/gemini-2.5-flash-image` and
+`black-forest-labs/flux.2-pro`, use the same `OPENROUTER_API_KEY` or `/login`
+credential as its chat models. List the IDs that work with the current
+credentials with `models.getAvailableOfType("image")`. Generation can take
+minutes, so leave `timeout_ms` unset or generous; at most four `models` calls
+run at once per script, and further calls wait for a free slot.
+
+```javascript
+// @options: {"timeout_ms": 300000}
+const painter = await models.getModelOfType("image", "openrouter", "google/gemini-2.5-flash-image");
+const result = await models.generateImages(painter, {
+  input: [{ type: "text", text: "A red fox in the snow, watercolor" }],
+});
+if (result.stopReason !== "stop") return result.errorMessage;
+for (const block of result.output) {
+  if (block.type === "image") image(block);
+  else text(block.text);
+}
+```
+
+`generateImages` does not throw on provider errors; check `stopReason` and
+`errorMessage`. Show each image block with `image()`: printing the base64
+`data` with `text()` adds a large string the model cannot read, and a script
+that generates images without showing them gets a note in its result.
+Generated images are not saved to disk. Their usage is added to the `codemode`
+tool result and counts toward the session cost, as classifier calls do.
+
 ## Orchestration versus native execution
 
-The sandbox reaches the world only through declared tools. Use a script to run
+The sandbox has no Node APIs, file system, network, or timers. Scripts reach
+the outside world through script-callable tools and the `models` API.
+Script-callable tools are the active `direct` tools and every `codemode` or
+`deferred` tool; nested calls run through the same tool pipeline as direct
+calls, so validation, hooks, and permission checks apply. Use a script to run
 independent calls together, to filter or join structured tool output before it
 enters model context, to loop a project command over cases and return only the
 verdicts, or to reduce a few reads to one small structure. `bash` resolves
@@ -252,6 +298,10 @@ pipeline. Policy therefore intercepts the nested calls rather than only the
 outer script. A successful nested Pillars source read with a draft delivers the
 assessment task to the normal continuation. It does not prove that the model
 applied the assessment.
+
+Check a tool's presence with `"name" in tools` before an optional call. Reading
+an absent member throws an error that names the close matches, so a `typeof
+tools.name` probe fails instead of returning undefined.
 
 Only script output reaches the model as the codemode result. Pi retains bounded
 nested-call metadata, not complete nested results. Return the evidence needed
