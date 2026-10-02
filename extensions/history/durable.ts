@@ -42,18 +42,6 @@ export interface DurableContribution {
 	/** Absolute path of the emitting extension entrypoint. */
 	readonly source: string;
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
-	readonly commands?: readonly DurableCommand[];
-}
-
-export interface DurableCommand {
-	readonly name: string;
-	readonly description: string;
-	run(
-		args: string,
-		conversation: Durable.Conversation,
-		context: Context,
-		host: DurableContributionHost,
-	): Promise<string>;
 }
 
 export interface DurableContributionHost {
