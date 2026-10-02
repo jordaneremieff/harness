@@ -111,7 +111,6 @@ one bounded page per source, not an exhaustive inventory.
 const requests = [
   ["agent_list", { limit: 3 }],
   ["agent_status", {}],
-  ["agent_runs", {}],
   ["stash_list", { query: "recon", limit: 3 }],
   ["memory_search", { query: ["recon", "reconnaissance"], limit: 3 }],
   ["registry", { kind: "tool", search: "read", limit: 3 }],
@@ -135,8 +134,8 @@ return settled.map((result, index) => {
   ].includes(value.outcome);
   if (failed) return { tool, status: "tool-error", evidence: value };
 
-  const { rows, sessions, runs, matches, notes, records, ...metadata } = value;
-  const items = rows ?? sessions ?? runs ?? matches ?? notes ?? records ?? [];
+  const { rows, sessions, matches, notes, records, ...metadata } = value;
+  const items = rows ?? sessions ?? matches ?? notes ?? records ?? [];
   const selected = items.slice(0, 3);
   return {
     tool,
@@ -171,9 +170,8 @@ output while calls still running at script end are cancelled.
 
 | Tool | Records | Required interpretation |
 | --- | --- | --- |
-| `agent_list` | `rows` | Keep `coverage`, `nextCursor`, `scope`, and `continuation`. Filename order is not activity order. |
-| `agent_status` | `sessions` | Keep `source`, `coverage`, `observedAt`, `boundary`, and any `unavailable`. A stored capture is not live owner state. |
-| `agent_runs` | `runs` | Keep `found`, `coverage`, `observedAt`, and `boundary`. A recorded run state is not current execution evidence. |
+| `agent_list` | `rows` | Keep `coverage`, including its `unavailable` storages, `nextCursor`, `observedAt`, and `authority`. A row is catalog and conversation metadata, not live host state. |
+| `agent_status` | `sessions` | Keep `primaries`, `failures`, `coverage`, `observedAt`, and `discovery`. A row read from a storage without a live host is a snapshot, not live owner state. |
 | `stash_list` with query | `matches` | Keep `skipped`, `coverage`, `nextCursor`, `consistency`, and `representation`. Search does not activate a handover. |
 | `stash_list` without query | `records` | Keep `omittedRecords`, `textTruncated`, and `limitReached`. `coverage.complete: null` means store-wide coverage is unknown. |
 | `memory_search` | `notes` | Keep `scan`, `coverage`, `countScope`, `hasMore`, and `nextCursor`. Ranking and counts cover one source window. |

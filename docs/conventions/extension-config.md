@@ -17,9 +17,9 @@ Current consumers:
 
 | Variable | Extension | Purpose |
 |---|---|---|
-| `PI_AGENT_SESSIONS_DIR` | agent | Store root for native sessions, writer claims, places, and detached run records; default `<agentDir>/agent-sessions`. |
+| `PI_AGENT_SESSIONS_DIR` | agent | Store root for Durable agent storages, their discovery metadata, directory bindings, and primary delivery endpoints; default `<agentDir>/agent-sessions`. |
 | `PI_AGENT_DIR` | agent | Agent directory for session discovery, settings, and trust; default Pi's `getAgentDir()`. |
-| `PI_AGENT_IDLE_MINUTES` | agent | Idle managed-host release window in minutes; default `5`, `0` disables release. Invalid values refuse manager creation. |
+| `PI_AGENT_IDLE_MINUTES` | agent | Idle Durable host retirement window in minutes; default `5`, `0` disables retirement. Values outside `0` through `35791` refuse host start. |
 | `PI_MEMORY_DIR` | memory | Required absolute corpus directory; unset, empty, or relative returns Memory unavailable, with no default. |
 | `PI_BRAVE_API_KEY` | brave | Brave Web Search subscription token. Precedence: explicit client option, then this variable. |
 | `PI_STASH_DIR` | stash | Stash store directory override; default `<agentDir>/stash`. |
